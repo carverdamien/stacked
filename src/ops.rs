@@ -1,6 +1,8 @@
 //! Edits to a stack, as the commands and the UI make them.
 
-use crate::db::{Db, Patch, Result, err, new_change};
+use std::collections::HashMap;
+
+use crate::db::{Db, Error, Patch, Result, Stack, err, new_change};
 use crate::mbox::{Draft, format_mail};
 
 /// `git`'s idea of who is writing, without the timestamp it ends with.
@@ -26,41 +28,72 @@ pub fn revise(old: &Patch, d: Draft) -> Patch {
     Patch::new(old.change.clone(), d.author, d.date, d.message, d.diff)
 }
 
-/// Puts `drafts` on top of `name`, making it if need be. With `replace`,
-/// they are the whole stack instead, and a draft with the title of a patch
-/// it held is a new version of that patch: so importing a stack again after
-/// rebasing it keeps each patch's history.
-pub fn import(db: &mut Db, name: &str, drafts: Vec<Draft>, replace: bool) -> Result<usize> {
-    let mut patches = match db.stack(name) {
-        Ok(s) => s.patches.clone(),
-        Err(_) => vec![],
-    };
-    let n = drafts.len();
-    let mut olds: Vec<Patch> = if replace {
-        std::mem::take(&mut patches).iter().map(|id| db.patch(id).clone()).collect()
-    } else {
-        vec![]
-    };
+/// The patches `drafts` are, given the ones they replace: a draft from a
+/// commit in `by_commit` is that patch unless it changed; else one with the
+/// title of a patch it replaces is a new version of it; else it is new.
+pub fn match_drafts(
+    db: &mut Db,
+    olds: &[Patch],
+    drafts: Vec<Draft>,
+    by_commit: &HashMap<String, String>,
+) -> Result<Vec<String>> {
+    let mut left: Vec<&Patch> = olds.iter().collect();
+    let mut out = Vec::new();
     for d in drafts {
-        let p = match olds.iter().position(|o| o.title() == d.title()) {
+        let from_commit = d
+            .commit
+            .as_ref()
+            .and_then(|c| by_commit.get(c))
+            .and_then(|id| left.iter().position(|o| &o.id == id));
+        let at = from_commit.or_else(|| left.iter().position(|o| o.title() == d.title()));
+        let p = match at {
             Some(i) => {
-                let old = olds.remove(i);
+                let old = left.remove(i);
                 let mut d = d;
                 if d.author.is_none() {
                     d.author = old.author.clone();
                 }
-                revise(&old, d)
+                revise(old, d)
             }
             None => new_patch(d),
         };
-        patches.push(db.add_patch(p)?);
+        out.push(db.add_patch(p)?);
+    }
+    Ok(out)
+}
+
+/// Puts `drafts` on top of `name`, making it if need be. With `replace`,
+/// they are the whole stack instead, and a draft with the title of a patch
+/// it held is a new version of that patch: so importing a stack again after
+/// rebasing it keeps each patch's history.
+pub fn import(
+    db: &mut Db,
+    name: &str,
+    drafts: Vec<Draft>,
+    replace: bool,
+    base: Option<(String, String)>,
+) -> Result<usize> {
+    let (mut patches, mut on) = match db.head(name) {
+        Some((_, s)) => (s.patches.clone(), s.base.clone().zip(s.repo.clone())),
+        None => (vec![], None),
+    };
+    let n = drafts.len();
+    let olds: Vec<Patch> = if replace {
+        std::mem::take(&mut patches).iter().map(|id| db.patch(id).clone()).collect()
+    } else {
+        vec![]
+    };
+    patches.extend(match_drafts(db, &olds, drafts, &HashMap::new())?);
+    if replace || on.is_none() {
+        on = base.or(on);
     }
     let op = if replace {
         format!("import {n} patches, replacing")
     } else {
         format!("import {n} patches")
     };
-    db.set_stack(name, patches, &op)
+    let (base, repo) = on.unzip();
+    db.set_stack_on(name, patches, base, repo, &op)
 }
 
 /// Puts `d` into `name` at `at` (0 is the bottom), or on top.
@@ -131,4 +164,49 @@ pub fn previous<'a>(db: &'a Db, p: &Patch) -> Option<&'a Patch> {
     let versions = db.versions(&p.change);
     let i = versions.iter().position(|v| v.id == p.id)?;
     i.checked_sub(1).map(|i| versions[i])
+}
+
+/// The repository and base a stack applies to, or why it has none.
+pub fn base_of(s: &Stack) -> Result<(std::path::PathBuf, String)> {
+    match (&s.repo, &s.base) {
+        (Some(r), Some(b)) => Ok((r.into(), b.clone())),
+        _ => err(format!(
+            "{} has no base commit: import it from a range (`stacked import {} main..HEAD`) or set one (`stacked base {} REV`)",
+            s.name, s.name, s.name
+        )),
+    }
+}
+
+/// Opens `text` in $VISUAL or $EDITOR and gives back what was saved.
+pub fn edit_text(text: &str, suffix: &str) -> Result<String> {
+    let dir = std::env::temp_dir().join(format!("stacked-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).map_err(|e| Error(e.to_string()))?;
+    let path = dir.join(format!("edit{suffix}"));
+    std::fs::write(&path, text).map_err(|e| Error(e.to_string()))?;
+    let editor = std::env::var("VISUAL")
+        .or_else(|_| std::env::var("EDITOR"))
+        .unwrap_or_else(|_| "vi".into());
+    let status = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(format!("{editor} \"$@\""))
+        .arg("editor")
+        .arg(&path)
+        .status()
+        .map_err(|e| Error(format!("{editor}: {e}")))?;
+    let out = std::fs::read_to_string(&path).map_err(|e| Error(e.to_string()));
+    let _ = std::fs::remove_dir_all(&dir);
+    if !status.success() {
+        return err(format!("{editor} failed; nothing changed"));
+    }
+    out
+}
+
+/// `text` without its `#` lines, trimmed.
+pub fn strip_comments(text: &str) -> String {
+    text.lines()
+        .filter(|l| !l.starts_with('#'))
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim()
+        .to_string()
 }

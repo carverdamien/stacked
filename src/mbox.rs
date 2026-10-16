@@ -7,6 +7,8 @@ use crate::db::{Error, Patch, Result, err};
 /// A patch read from mail, not yet given a change.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Draft {
+    /// The commit it was made from, as its `From <sha>` line says.
+    pub commit: Option<String>,
     pub author: Option<String>,
     pub date: Option<String>,
     pub message: String,
@@ -22,6 +24,7 @@ impl Draft {
 impl From<&Patch> for Draft {
     fn from(p: &Patch) -> Draft {
         Draft {
+            commit: None,
             author: p.author.clone(),
             date: p.date.clone(),
             message: p.message.clone(),
@@ -42,24 +45,37 @@ fn is_separator(line: &str) -> bool {
 /// Every mail in `text`, in order. Text with no `From <id>` line is one
 /// mail, or none if it is blank.
 pub fn parse_mbox(text: &str) -> Result<Vec<Draft>> {
-    let mut mails: Vec<Vec<&str>> = Vec::new();
+    let mut mails: Vec<(Option<String>, Vec<&str>)> = Vec::new();
     let mut lines = text.split_inclusive('\n').peekable();
     if lines.peek().is_some_and(|l| !is_separator(l.trim_end_matches('\n'))) {
-        mails.push(Vec::new());
+        mails.push((None, Vec::new()));
     }
     for line in lines {
         if is_separator(line.trim_end_matches('\n')) {
-            mails.push(Vec::new());
+            mails.push((Some(line[5..45].to_string()), Vec::new()));
         } else {
-            mails.last_mut().unwrap().push(line);
+            mails.last_mut().unwrap().1.push(line);
         }
     }
     mails
         .into_iter()
-        .filter(|m| m.iter().any(|l| !l.trim().is_empty()))
+        .filter(|(_, m)| m.iter().any(|l| !l.trim().is_empty()))
         .enumerate()
-        .map(|(i, m)| parse_mail(&m.concat()).map_err(|e| Error(format!("mail {}: {e}", i + 1))))
+        .map(|(i, (commit, m))| {
+            let mut d =
+                parse_mail(&m.concat()).map_err(|e| Error(format!("mail {}: {e}", i + 1)))?;
+            d.commit = commit;
+            Ok(d)
+        })
         .collect()
+}
+
+/// The commit `format-patch --base` says the mail applies to.
+pub fn base_commit(text: &str) -> Option<String> {
+    text.lines()
+        .filter_map(|l| l.strip_prefix("base-commit: "))
+        .map(|s| s.trim().to_string())
+        .find(|s| s.len() == 40 && s.bytes().all(|b| b.is_ascii_hexdigit()))
 }
 
 /// One mail: headers, if it starts with any, then the message, then the
@@ -123,7 +139,12 @@ pub fn parse_mail(text: &str) -> Result<Draft> {
         None => body.to_string(),
     };
     draft.message = draft.message.trim_end().to_string();
-    draft.diff = strip_signature(&rest[start..].concat());
+    let diff: Vec<&str> = rest[start..]
+        .iter()
+        .filter(|l| !(l.starts_with("base-commit: ") || l.starts_with("prerequisite-patch-id: ")))
+        .copied()
+        .collect();
+    draft.diff = strip_signature(&diff.concat());
     if draft.message.is_empty() {
         return err("no title");
     }

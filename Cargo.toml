@@ -12,6 +12,8 @@ name = "stacked"
 path = "src/main.rs"
 
 [dependencies]
+indexmap = "2.14.2"
+self_review = { package = "self-review-rs", path = "../self-review-rs" }
 clap = { version = "4.6.7", features = ["derive"] }
 libc = "0.2.190"
 ratatui = "0.30.2"
