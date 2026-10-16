@@ -1,5 +1,15 @@
+pub mod ask;
+pub mod claude;
 pub mod db;
+pub mod diff;
+pub mod git;
 pub mod mbox;
 pub mod ops;
+pub mod phab;
+pub mod review;
+pub mod rows;
+pub mod thread;
 pub mod todo;
+pub mod tree;
 pub mod tui;
+pub mod view;

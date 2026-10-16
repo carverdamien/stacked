@@ -52,6 +52,12 @@ pub enum Record {
     Stack(Stack),
     Head(Head),
     Comment(Note),
+    Run(Run),
+    /// A line of what a run's claude wrote, as it wrote it.
+    Event {
+        run: String,
+        event: serde_json::Value,
+    },
     /// A line that could not be read.
     #[serde(skip)]
     Broken,
@@ -154,6 +160,46 @@ pub struct Note {
     pub time: i64,
 }
 
+/// An operation's start or result: an ask of claude's, putting a stack in
+/// the worktree, a pull from Phabricator. The latest record of an id is
+/// where it stands.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+pub struct Run {
+    pub id: String,
+    /// `edit`, `rebase`, `review`, `test`, `apply`, `pull`.
+    pub what: String,
+    pub stack: String,
+    pub state: RunState,
+    /// What was asked, for an ask.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub request: String,
+    /// What came of it.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub summary: String,
+    /// Claude's last reply, for an ask.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub output: String,
+    /// The stack it made.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rev: Option<usize>,
+    /// For an ask: all it was started with (`ask::Info`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ask: Option<serde_json::Value>,
+    /// The process running it, while it runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pid: Option<u32>,
+    pub time: i64,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum RunState {
+    #[default]
+    Started,
+    Done,
+    Failed,
+}
+
 pub fn now() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -190,6 +236,10 @@ pub struct Db {
     heads: BTreeMap<String, Option<usize>>,
     /// (change, comment id) to the index of its latest comment record.
     notes: BTreeMap<(String, String), usize>,
+    /// Run id to the index of its latest record.
+    runs: BTreeMap<String, usize>,
+    /// Run id to the indices of its events.
+    events: HashMap<String, Vec<usize>>,
     /// The bytes read.
     len: u64,
     /// The last line read has no newline: the next write starts with one.
@@ -225,6 +275,8 @@ impl Db {
             patches: HashMap::new(),
             heads: BTreeMap::new(),
             notes: BTreeMap::new(),
+            runs: BTreeMap::new(),
+            events: HashMap::new(),
             len: bytes.len() as u64,
             torn: !bytes.is_empty() && !bytes.ends_with(b"\n"),
             saved: 0,
@@ -297,6 +349,12 @@ impl Db {
             }
             Record::Comment(n) => {
                 self.notes.insert((n.change.clone(), n.id.clone()), at);
+            }
+            Record::Run(r) => {
+                self.runs.insert(r.id.clone(), at);
+            }
+            Record::Event { run, .. } => {
+                self.events.entry(run.clone()).or_default().push(at);
             }
         }
         self.records.push(rec);
@@ -650,6 +708,72 @@ impl Db {
                 _ => None,
             })
             .collect()
+    }
+
+    /// Where run `id` stands.
+    pub fn run(&self, id: &str) -> Option<&Run> {
+        match &self.records[*self.runs.get(id)?] {
+            Record::Run(r) => Some(r),
+            _ => None,
+        }
+    }
+
+    /// Every run as it stands, oldest started first.
+    pub fn runs(&self) -> Vec<&Run> {
+        let mut ids: Vec<(&String, &usize)> = self.runs.iter().collect();
+        // By where each was first written: ids are not in time order.
+        let first: HashMap<&str, usize> = self
+            .records
+            .iter()
+            .enumerate()
+            .rev()
+            .filter_map(|(i, r)| match r {
+                Record::Run(r) => Some((r.id.as_str(), i)),
+                _ => None,
+            })
+            .collect();
+        ids.sort_by_key(|(id, _)| first[id.as_str()]);
+        ids.into_iter().filter_map(|(id, _)| self.run(id)).collect()
+    }
+
+    /// What run `id`'s claude wrote, in order.
+    pub fn events(&self, id: &str) -> Vec<&serde_json::Value> {
+        self.events
+            .get(id)
+            .into_iter()
+            .flatten()
+            .filter_map(|&at| match &self.records[at] {
+                Record::Event { event, .. } => Some(event),
+                _ => None,
+            })
+            .collect()
+    }
+
+    pub fn add_event(&mut self, run: &str, event: serde_json::Value) -> Result<usize> {
+        self.push(Record::Event {
+            run: run.into(),
+            event,
+        })
+    }
+
+    /// Appends where run `r.id` stands now.
+    pub fn add_run(&mut self, r: Run) -> Result<usize> {
+        self.push(Record::Run(Run { time: now(), ..r }))
+    }
+
+    /// Appends a stack made from somewhere else than its name's head (a
+    /// landed ask's): its name moves to it.
+    pub fn add_node(&mut self, s: Stack) -> Result<usize> {
+        if let Some(p) = s.parent {
+            self.node(p)?;
+        }
+        check_name(&s.name)?;
+        self.push(Record::Stack(s))
+    }
+
+    /// Moves `name` to `rev`, or to none.
+    pub fn move_head_to(&mut self, name: &str, rev: Option<usize>, op: String) -> Result<usize> {
+        self.move_head(name, rev, op)
     }
 
     /// The comment `id` on `change`, if it is not deleted.
