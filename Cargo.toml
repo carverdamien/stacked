@@ -1,0 +1,24 @@
+[package]
+name = "stacked"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "stacked"
+path = "src/lib.rs"
+
+[[bin]]
+name = "stacked"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4.6.7", features = ["derive"] }
+libc = "0.2.190"
+ratatui = "0.30.2"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = { version = "1.0.154", features = ["preserve_order"] }
+sha1_smol = "1.0.1"
+similar = "2"
+
+[dev-dependencies]
+tempfile = "3.27.0"

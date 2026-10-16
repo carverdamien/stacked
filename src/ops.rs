@@ -1,0 +1,134 @@
+//! Edits to a stack, as the commands and the UI make them.
+
+use crate::db::{Db, Patch, Result, err, new_change};
+use crate::mbox::{Draft, format_mail};
+
+/// `git`'s idea of who is writing, without the timestamp it ends with.
+pub fn default_author() -> Option<String> {
+    let out = std::process::Command::new("git")
+        .args(["var", "GIT_AUTHOR_IDENT"])
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    let ident = String::from_utf8(out.stdout).ok()?;
+    let end = ident.rfind('>')?;
+    out.status.success().then(|| ident[..=end].to_string())
+}
+
+/// A new patch, a change of its own.
+pub fn new_patch(d: Draft) -> Patch {
+    let author = d.author.or_else(default_author);
+    Patch::new(new_change(&d.message), author, d.date, d.message, d.diff)
+}
+
+/// A new version of `old`.
+pub fn revise(old: &Patch, d: Draft) -> Patch {
+    Patch::new(old.change.clone(), d.author, d.date, d.message, d.diff)
+}
+
+/// Puts `drafts` on top of `name`, making it if need be. With `replace`,
+/// they are the whole stack instead, and a draft with the title of a patch
+/// it held is a new version of that patch: so importing a stack again after
+/// rebasing it keeps each patch's history.
+pub fn import(db: &mut Db, name: &str, drafts: Vec<Draft>, replace: bool) -> Result<usize> {
+    let mut patches = match db.stack(name) {
+        Ok(s) => s.patches.clone(),
+        Err(_) => vec![],
+    };
+    let n = drafts.len();
+    let mut olds: Vec<Patch> = if replace {
+        std::mem::take(&mut patches).iter().map(|id| db.patch(id).clone()).collect()
+    } else {
+        vec![]
+    };
+    for d in drafts {
+        let p = match olds.iter().position(|o| o.title() == d.title()) {
+            Some(i) => {
+                let old = olds.remove(i);
+                let mut d = d;
+                if d.author.is_none() {
+                    d.author = old.author.clone();
+                }
+                revise(&old, d)
+            }
+            None => new_patch(d),
+        };
+        patches.push(db.add_patch(p)?);
+    }
+    let op = if replace {
+        format!("import {n} patches, replacing")
+    } else {
+        format!("import {n} patches")
+    };
+    db.set_stack(name, patches, &op)
+}
+
+/// Puts `d` into `name` at `at` (0 is the bottom), or on top.
+pub fn add(db: &mut Db, name: &str, d: Draft, at: Option<usize>) -> Result<String> {
+    let mut patches = db.stack(name)?.patches.clone();
+    let at = at.unwrap_or(patches.len());
+    if at > patches.len() {
+        return err(format!("{name} has {} patches", patches.len()));
+    }
+    let title = d.title().to_string();
+    let id = db.add_patch(new_patch(d))?;
+    patches.insert(at, id.clone());
+    db.set_stack(name, patches, &format!("add {}: {title}", &id[..8]))?;
+    Ok(id)
+}
+
+/// Moves the patch at `from` to `to`, both counted from 0 at the bottom.
+pub fn move_patch(db: &mut Db, name: &str, from: usize, to: usize) -> Result<usize> {
+    let mut patches = db.stack(name)?.patches.clone();
+    if from >= patches.len() || to >= patches.len() {
+        return err(format!("{name} has {} patches", patches.len()));
+    }
+    let id = patches.remove(from);
+    patches.insert(to, id.clone());
+    db.set_stack(name, patches, &format!("move {} from {} to {}", &id[..8], from + 1, to + 1))
+}
+
+pub fn drop_patches(db: &mut Db, name: &str, at: &[usize]) -> Result<usize> {
+    let s = db.stack(name)?;
+    let dropped: Vec<&str> = at.iter().map(|&i| &s.patches[i][..8]).collect();
+    let op = format!("drop {}", dropped.join(" "));
+    let patches = (0..s.patches.len())
+        .filter(|i| !at.contains(i))
+        .map(|i| s.patches[i].clone())
+        .collect();
+    db.set_stack(name, patches, &op)
+}
+
+/// Makes `d` the new version of the patch at `at`.
+pub fn replace(db: &mut Db, name: &str, at: usize, d: Draft, verb: &str) -> Result<usize> {
+    let mut patches = db.stack(name)?.patches.clone();
+    let old = db.patch(&patches[at]).clone();
+    let id = db.add_patch(revise(&old, d))?;
+    if id == old.id {
+        return Ok(db.head(name).unwrap().0);
+    }
+    patches[at] = id.clone();
+    db.set_stack(name, patches, &format!("{verb} {} as {}", &old.id[..8], &id[..8]))
+}
+
+/// The patch as it is edited and shown: its mail.
+pub fn render(p: &Patch) -> String {
+    format_mail(&Draft::from(p), "")
+}
+
+/// What changed from `old` to `new`, their mails diffed.
+pub fn interdiff(old: &Patch, new: &Patch) -> String {
+    let (a, b) = (render(old), render(new));
+    similar::TextDiff::from_lines(&a, &b)
+        .unified_diff()
+        .context_radius(3)
+        .header(&old.id[..8], &new.id[..8])
+        .to_string()
+}
+
+/// The previous version of `p`, if it has one.
+pub fn previous<'a>(db: &'a Db, p: &Patch) -> Option<&'a Patch> {
+    let versions = db.versions(&p.change);
+    let i = versions.iter().position(|v| v.id == p.id)?;
+    i.checked_sub(1).map(|i| versions[i])
+}
