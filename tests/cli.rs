@@ -19,6 +19,12 @@ fn git(dir: &Path, args: &[&str]) -> String {
     String::from_utf8(out.stdout).unwrap()
 }
 
+/// Commits and tags in `repo` unsigned, whatever the user's git config.
+fn unsigned(repo: &Path) {
+    git(repo, &["config", "commit.gpgsign", "false"]);
+    git(repo, &["config", "tag.gpgsign", "false"]);
+}
+
 struct Env {
     _tmp: tempfile::TempDir,
     root: PathBuf,
@@ -26,30 +32,53 @@ struct Env {
     db: PathBuf,
 }
 
-/// A repo with a base commit and three on top, the last with a title that
-/// is not ASCII and long enough to be folded.
+const TEN: &str = "one\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nten\n";
+
+/// A repo with a base commit and three on top that apply in any order, the
+/// last with a title that is not ASCII and long enough to be folded.
 fn env() -> Env {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().canonicalize().unwrap();
     let src = root.join("src");
     std::fs::create_dir(&src).unwrap();
     git(&src, &["init", "-q", "-b", "main"]);
-    std::fs::write(src.join("a.txt"), "one\ntwo\nthree\n").unwrap();
+    unsigned(&src);
+    std::fs::write(src.join("a.txt"), TEN).unwrap();
     git(&src, &["add", "."]);
     git(&src, &["commit", "-qm", "base"]);
     git(&src, &["tag", "base"]);
-    std::fs::write(src.join("a.txt"), "one\n2\nthree\n").unwrap();
+    std::fs::write(src.join("a.txt"), TEN.replace("two", "2")).unwrap();
     git(&src, &["commit", "-qam", "Bug 1 - change two"]);
     std::fs::write(src.join("b.txt"), "new\n").unwrap();
     git(&src, &["add", "."]);
     git(&src, &["commit", "-qm", "Bug 2 - add b\n\nA body.\n\nMore body."]);
-    std::fs::write(src.join("a.txt"), "1\n2\nthree\n").unwrap();
+    std::fs::write(src.join("a.txt"), TEN.replace("two", "2").replace("nine", "9")).unwrap();
     git(
         &src,
         &["commit", "-qam", "Bug 3 - café, a very long title that format-patch will fold over more than one line"],
     );
     let db = root.join("db.jsonl");
     Env { _tmp: tmp, root, src, db }
+}
+
+/// A repo of one commit, for the database alone: where it is, and the
+/// commit.
+fn tiny() -> (tempfile::TempDir, PathBuf, String) {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = tmp.path().canonicalize().unwrap().join("r");
+    std::fs::create_dir(&repo).unwrap();
+    git(&repo, &["init", "-q", "-b", "main"]);
+    unsigned(&repo);
+    std::fs::write(repo.join("a.txt"), "a\n").unwrap();
+    git(&repo, &["add", "."]);
+    git(&repo, &["commit", "-qm", "base"]);
+    let base = git(&repo, &["rev-parse", "HEAD"]).trim().to_string();
+    (tmp, repo, base)
+}
+
+/// A diff making `file` hold `line`.
+fn new_file(file: &str, line: &str) -> String {
+    format!("diff --git a/{file} b/{file}\nnew file mode 100644\n--- /dev/null\n+++ b/{file}\n@@ -0,0 +1 @@\n+{line}\n")
 }
 
 fn stacked_in(
@@ -66,6 +95,7 @@ fn stacked_in(
         .args(args)
         .env_remove("VISUAL")
         .env("EDITOR", "false")
+        .env("STACKED_CONFIG", "/nonexistent/stacked.toml")
         .env("GIT_AUTHOR_NAME", "A U Thor")
         .env("GIT_AUTHOR_EMAIL", "author@example.com")
         .env("GIT_COMMITTER_NAME", "C O Mitter")
@@ -145,7 +175,7 @@ fn round_trip_through_git() {
     git(&e.root, &["clone", "-q", e.src.to_str().unwrap(), "dst"]);
     git(&dst, &["checkout", "-q", "base"]);
     let mut am = Command::new("git")
-        .args(["am", "-q"])
+        .args(["-c", "commit.gpgsign=false", "am", "-q"])
         .current_dir(&dst)
         .env("GIT_COMMITTER_NAME", "C")
         .env("GIT_COMMITTER_EMAIL", "c@example.com")
@@ -255,9 +285,10 @@ fn reimport_keeps_changes() {
 
 #[test]
 fn a_broken_line_is_passed_over_never_cut() {
-    let tmp = tempfile::tempdir().unwrap();
+    let (tmp, repo, base) = tiny();
+    let repo = repo.to_str().unwrap();
     let path = tmp.path().join("db.jsonl");
-    Db::edit(&path, |db| db.new_stack("s")).unwrap();
+    Db::edit(&path, |db| db.new_stack("s", &base, repo)).unwrap();
     let good = std::fs::read_to_string(&path).unwrap();
     // A write cut short by a crash.
     let torn = format!("{good}{{\"t\":\"stack\",\"na");
@@ -265,7 +296,7 @@ fn a_broken_line_is_passed_over_never_cut() {
     let db = Db::load(&path).unwrap();
     assert_eq!(db.stacks().len(), 1);
     assert_eq!(db.warnings.len(), 1, "{:?}", db.warnings);
-    let rev = Db::edit(&path, |db| db.new_stack("t")).unwrap();
+    let rev = Db::edit(&path, |db| db.new_stack("t", &base, repo)).unwrap();
     let text = std::fs::read_to_string(&path).unwrap();
     assert!(text.starts_with(&torn), "nothing is cut off:\n{text}");
     assert_eq!(rev, 4, "the torn line keeps its number");
@@ -281,16 +312,52 @@ fn a_broken_line_is_passed_over_never_cut() {
 }
 
 #[test]
+fn a_reader_reads_only_what_was_appended() {
+    let (tmp, repo, base) = tiny();
+    let path = tmp.path().join("db.jsonl");
+    Db::edit(&path, |db| db.new_stack("s", &base, repo.to_str().unwrap())).unwrap();
+    let mut reader = Db::load(&path).unwrap();
+    assert!(!reader.catch_up().unwrap());
+    // Another process is half way through writing a line.
+    let line = serde_json::to_string(&Record::Head(stacked::db::Head {
+        name: "s".into(),
+        rev: None,
+        op: "delete".into(),
+        time: 0,
+    }))
+    .unwrap();
+    let (a, b) = line.split_at(10);
+    use std::io::Write;
+    let mut f = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
+    f.write_all(a.as_bytes()).unwrap();
+    assert!(reader.catch_up().unwrap());
+    assert!(reader.stack("s").is_ok(), "half a line is not read");
+    f.write_all(format!("{b}\n").as_bytes()).unwrap();
+    assert!(reader.catch_up().unwrap());
+    assert!(reader.stack("s").is_err(), "the whole line is");
+    assert!(reader.warnings.is_empty(), "{:?}", reader.warnings);
+    Db::edit(&path, |db| db.undo("s")).unwrap();
+    reader.catch_up().unwrap();
+    let full = Db::load(&path).unwrap();
+    assert_eq!(reader.records, full.records);
+    assert_eq!(reader.head("s").map(|(r, _)| r), full.head("s").map(|(r, _)| r));
+    // The lines claude writes are appended without reading the file.
+    Db::append(&path, &[Record::Event { run: "r".into(), event: serde_json::json!({"type": "x"}) }]).unwrap();
+    reader.catch_up().unwrap();
+    assert_eq!(reader.events("r").len(), 1);
+}
+
+#[test]
 fn records_only_ever_append() {
-    let tmp = tempfile::tempdir().unwrap();
+    let (tmp, repo, base) = tiny();
     let path = tmp.path().join("db.jsonl");
     let d = |m: &str| Draft {
         message: m.into(),
-        diff: "diff --git a/x b/x\n".into(),
+        diff: new_file(&format!("{m}.txt"), m),
         author: Some("A <a@b>".into()),
         ..Default::default()
     };
-    Db::edit(&path, |db| db.new_stack("s")).unwrap();
+    Db::edit(&path, |db| db.new_stack("s", &base, repo.to_str().unwrap())).unwrap();
     for m in ["one", "two", "three"] {
         let before = std::fs::read(&path).unwrap();
         Db::edit(&path, |db| ops::add(db, "s", d(m), None)).unwrap();
@@ -299,20 +366,223 @@ fn records_only_ever_append() {
     Db::edit(&path, |db| ops::move_patch(db, "s", 0, 2)).unwrap();
     Db::edit(&path, |db| db.undo("s")).unwrap();
     let db = Db::load(&path).unwrap();
-    assert!(matches!(db.records[0], Record::Stacked { version: 1 }));
+    assert!(matches!(db.records[0], Record::Stacked { version: 2 }));
     let s = db.stack("s").unwrap();
     let titles: Vec<&str> = s.patches.iter().map(|id| db.patch(id).title()).collect();
     assert_eq!(titles, ["one", "two", "three"]);
 }
 
-/// Runs an ask with `claude` standing in for claude, and waits for it.
-fn ask(e: &Env, claude: &Path, args: &[&str]) -> String {
-    let mut all = vec!["ask", "s"];
+/// A repo whose fourth patch changes again a line the first one changed:
+/// it applies on top of the first, not without it.
+fn dependent() -> Env {
+    let e = env();
+    std::fs::write(e.src.join("a.txt"), TEN.replace("two", "II").replace("nine", "9")).unwrap();
+    git(&e.src, &["commit", "-qam", "Bug 4 - two again"]);
+    e
+}
+
+#[test]
+fn only_patches_that_apply_go_in() {
+    let e = dependent();
+    e.ok(&["import", "s", "base"]);
+    let before = std::fs::read(&e.db).unwrap();
+    let unchanged = |what: &str| assert_eq!(std::fs::read(&e.db).unwrap(), before, "{what} wrote nothing");
+
+    let (fine, _, err) = e.run(&["move", "s", "4", "1"]);
+    assert!(!fine && err.contains("patch 1 (Bug 4 - two again) does not apply to its base"), "{err}");
+    assert!(err.contains("nothing changed"), "{err}");
+    unchanged("a move");
+    let (fine, _, err) = e.run(&["drop", "s", "1"]);
+    assert!(!fine && err.contains("patch 3 (Bug 4 - two again) does not apply to the patches below it"), "{err}");
+    unchanged("a drop");
+    // What does apply goes in.
+    e.ok(&["move", "s", "3", "1"]);
+    e.ok(&["drop", "s", "1"]);
+    assert_eq!(e.titles(), ["Bug 1 - c", "Bug 2 - a", "Bug 4 - t"]);
+    let before = std::fs::read(&e.db).unwrap();
+    let unchanged = |what: &str| assert_eq!(std::fs::read(&e.db).unwrap(), before, "{what} wrote nothing");
+
+    // A diff that does not apply, by hand.
+    let bad = "diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -1,2 +1,2 @@\n one\n-zwei\n+drei\n";
+    let (fine, _, err) = stacked_in(&e.src, &e.db, &["add", "s", "-m", "Bug 5 - nonsense"], bad, &[]);
+    assert!(!fine && err.contains("patch 4 (Bug 5 - nonsense) does not apply"), "{err}");
+    let (fine, _, err) = stacked_in(&e.src, &e.db, &["add", "s", "-m", "Bug 5 - no diff"], "", &[]);
+    assert!(!fine && err.contains("has no diff"), "{err}");
+    unchanged("an add");
+    // Mail that needs a patch the stack does not have.
+    let mail = git(&e.src, &["format-patch", "--stdout", "--base=base", "HEAD~1..HEAD"]);
+    let (fine, _, err) = stacked_in(&e.src, &e.db, &["import", "t", "--base", "base"], &mail, &[]);
+    assert!(!fine && err.contains("does not apply to its base"), "{err}");
+    let (fine, _, err) = stacked_in(&e.src, &e.db, &["import", "t"], &mail.replace("base-commit", "x"), &[]);
+    assert!(!fine && err.contains("does not say what it applies to"), "{err}");
+    // A base the patches do not apply to.
+    let (fine, _, err) = e.run(&["base", "s", "HEAD"]);
+    assert!(!fine && err.contains("does not apply to its base"), "{err}");
+    unchanged("an import or a base");
+    assert!(e.ok(&["check"]).contains("s: applies"));
+}
+
+#[test]
+fn a_hand_edit_that_does_not_apply_comes_back() {
+    let e = env();
+    e.ok(&["import", "s", "base"]);
+    // The first time, the editor breaks the hunk; given it back with why,
+    // it puts it right and changes the title.
+    let editor = e.script(
+        "editor.sh",
+        &format!(
+            r#"if grep -q '^# stacked: ' "$1"; then
+  grep '^# stacked: ' "$1" > {why}
+  sed -e '/^# stacked: /d' -e 's/^ ONE$/ one/' -e 's/^Subject: Bug 1 - change two$/Subject: Bug 1 - change two, by hand/' "$1" > "$1.new" && mv "$1.new" "$1"
+else
+  sed 's/^ one$/ ONE/' "$1" > "$1.new" && mv "$1.new" "$1"
+fi
+"#,
+            why = e.root.join("why").display()
+        ),
+    );
+    let (fine, _, err) = stacked_in(&e.src, &e.db, &["edit", "s", "1"], "", &[("EDITOR", &editor)]);
+    assert!(fine, "{err}");
+    let why = std::fs::read_to_string(e.root.join("why")).unwrap();
+    assert!(why.contains("patch 1 (Bug 1 - change two) does not apply to its base"), "{why}");
+    assert!(why.contains("fix it and save, or empty the file to give up"), "{why}");
+    assert_eq!(e.column(3)[0], "Bug 1 - change two, by hand");
+    // Emptied, it changes nothing.
+    let before = std::fs::read(&e.db).unwrap();
+    let empty = e.script("empty.sh", ": > \"$1\"\n");
+    let (fine, _, err) = stacked_in(&e.src, &e.db, &["edit", "s", "1"], "", &[("EDITOR", &empty)]);
+    assert!(fine && err.contains("emptied; nothing changed"), "{err}");
+    assert_eq!(std::fs::read(&e.db).unwrap(), before);
+}
+
+#[test]
+fn a_todo_list_that_does_not_apply_comes_back() {
+    let e = dependent();
+    e.ok(&["import", "s", "base"]);
+    // Puts Bug 4 first; given the list back, puts it back last.
+    let editor = e.script(
+        "todo.sh",
+        &format!(
+            r#"if grep -q '^# stacked: ' "$1"; then
+  grep '^# stacked: ' "$1" > {why}
+  grep '^pick' "$1" | sort -k3 > "$1.new" && mv "$1.new" "$1"
+else
+  grep '^pick' "$1" | tail -r > "$1.new" && mv "$1.new" "$1"
+fi
+"#,
+            why = e.root.join("why").display()
+        ),
+    );
+    let (fine, _, err) = stacked_in(&e.src, &e.db, &["edit", "s"], "", &[("EDITOR", &editor)]);
+    assert!(fine, "{err}");
+    let why = std::fs::read_to_string(e.root.join("why")).unwrap();
+    assert!(why.contains("patch 1 (Bug 4 - two again) does not apply to its base"), "{why}");
+    assert_eq!(e.titles(), ["Bug 1 - c", "Bug 2 - a", "Bug 3 - c", "Bug 4 - t"]);
+}
+
+/// Appends a stack as a stacked before the check might have: no base, or
+/// one somewhere else, or patches that do not apply.
+fn old_stack(e: &Env, drafts: &[(&str, &str)], base: Option<&str>, repo: Option<&str>) {
+    let mut recs = Vec::new();
+    let mut ids = Vec::new();
+    for (title, diff) in drafts {
+        let p = ops::new_patch(Draft {
+            message: title.to_string(),
+            diff: diff.to_string(),
+            author: Some("A <a@b>".into()),
+            ..Default::default()
+        });
+        ids.push(p.id.clone());
+        recs.push(Record::Patch(p));
+    }
+    recs.push(Record::Stack(stacked::db::Stack {
+        name: "s".into(),
+        patches: ids,
+        base: base.map(String::from),
+        repo: repo.map(String::from),
+        parent: None,
+        op: "from before".into(),
+        time: 0,
+    }));
+    Db::append(&e.db, &recs).unwrap();
+}
+
+#[test]
+fn a_stack_that_cannot_be_checked_takes_only_comments() {
+    let e = env();
+    let one = new_file("one.txt", "one");
+    let two = new_file("two.txt", "two");
+    old_stack(&e, &[("Bug 1 - one", &one), ("Bug 2 - two", &two)], None, None);
+    let before = std::fs::read(&e.db).unwrap();
+    for args in [&["move", "s", "2", "1"][..], &["drop", "s", "1"], &["delete", "s"]] {
+        let (fine, _, err) = e.run(args);
+        assert!(!fine && err.contains("s is read-only: it has no base commit"), "{args:?}: {err}");
+    }
+    let (fine, _, err) = e.run(&["edit", "s", "1"]);
+    assert!(!fine && err.contains("read-only"), "no editor is opened: {err}");
+    assert_eq!(std::fs::read(&e.db).unwrap(), before);
+    assert!(e.ok(&["check"]).contains("s: s is read-only"));
+    // Comments still go in.
+    e.ok(&["comment", "s", "--patch", "1", "Still", "readable."]);
+    assert!(e.ok(&["comments", "s", "--patch", "1"]).contains("you: Still readable."));
+    e.ok(&["comment", "s", "--patch", "1", "--line", "one.txt:+one", "On", "the", "line."]);
+    e.ok(&["comment", "s", "On", "the", "stack."]);
+    assert_eq!(e.ok(&["comments", "s"]).lines().filter(|l| !l.starts_with(' ')).count(), 3);
+    // But claude is sent none: it works on a stack as it applies.
+    let id = e.ok(&["comment", "s", "Anything."]);
+    let (fine, _, err) = e.run(&["send", "s", id.trim()]);
+    assert!(!fine && err.contains("cannot send: s is read-only"), "{err}");
+    // Given a base it applies to, it can change again.
+    e.ok(&["base", "s", "base"]);
+    e.ok(&["move", "s", "2", "1"]);
+    assert_eq!(e.column(3), ["Bug 2 - two", "Bug 1 - one"]);
+
+    // Nor can one whose repository is not there.
+    let e = env();
+    let base = git(&e.src, &["rev-parse", "base"]).trim().to_string();
+    old_stack(&e, &[("Bug 1 - one", &one)], Some(&base), Some("/nowhere"));
+    let (fine, _, err) = e.run(&["drop", "s", "1"]);
+    assert!(!fine && err.contains("its repository, /nowhere, is not there"), "{err}");
+    e.ok(&["comment", "s", "--patch", "1", "Fine."]);
+}
+
+#[test]
+fn a_stack_from_before_the_check_is_not_gone_back_to() {
+    let e = env();
+    let base = git(&e.src, &["rev-parse", "base"]).trim().to_string();
+    let src = e.src.to_str().unwrap();
+    // On a.txt as it is not: it does not apply.
+    let bad = "diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-uno\n+one\n";
+    old_stack(&e, &[("Bug 1 - bad", bad), ("Bug 2 - two", &new_file("two.txt", "two"))], Some(&base), Some(src));
+    let check = e.ok(&["check"]);
+    assert!(check.contains("s: patch 1 (Bug 1 - bad) does not apply to its base"), "{check}");
+    // An edit that makes it apply goes in; going back to it does not.
+    e.ok(&["drop", "s", "1"]);
+    assert_eq!(e.column(3), ["Bug 2 - two"]);
+    let (fine, _, err) = e.run(&["undo", "s"]);
+    assert!(!fine && err.contains("does not apply"), "{err}");
+    // Nor is it picked from the tree.
+    let old = Db::load(&e.db).unwrap().tree("s")[0].0;
+    let (fine, _, err) = e.run(&["select", &old.to_string()]);
+    assert!(!fine && err.contains("does not apply"), "{err}");
+}
+
+/// Sends comments of stack s to `claude`, standing in for claude, and
+/// waits for them to be answered.
+fn send(e: &Env, claude: &Path, args: &[&str], env: &[(&str, &Path)]) -> (bool, String, String) {
+    let mut all = vec!["send", "s"];
     all.extend(args);
     all.push("--wait");
-    let (fine, out, err) = stacked_in(&e.src, &e.db, &all, "", &[("STACKED_CLAUDE", claude)]);
-    assert!(fine, "{err}");
-    out
+    let mut envs = vec![("STACKED_CLAUDE", claude)];
+    envs.extend(env);
+    stacked_in(&e.src, &e.db, &all, "", &envs)
+}
+
+/// The comment just written's short id.
+fn comment(e: &Env, args: &[&str]) -> String {
+    let mut all = vec!["comment", "s"];
+    all.extend(args);
+    e.ok(&all).trim().to_string()
 }
 
 /// A claude that runs `$body` and says `$result`, as stream-json.
@@ -326,14 +596,29 @@ fn fake_claude(e: &Env, name: &str, body: &str, result: &str) -> PathBuf {
     )
 }
 
+/// Waits for `n` runs to have landed, and none to be going.
+fn landed(e: &Env, n: usize) {
+    for _ in 0..200 {
+        let db = Db::load(&e.db).unwrap();
+        let runs = db.runs();
+        if runs.iter().filter(|r| r.state != RunState::Started).count() >= n
+            && runs.iter().all(|r| r.state != RunState::Started)
+        {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    panic!("the runs did not land:\n{}", e.ok(&["runs"]));
+}
+
 #[test]
-fn claude_edits_in_a_worktree_of_its_own() {
+fn a_comment_on_the_stack_lets_the_agent_change_it_all() {
     let e = env();
     e.ok(&["import", "s", "base"]);
-    e.ok(&["comment", "s", "2", "Please split the body change out."]);
+    let id = comment(&e, &["Squash", "the", "top", "into", "the", "bottom,", "and", "add", "c."]);
     let before = e.column(2);
     let user_head = git(&e.src, &["rev-parse", "HEAD"]);
-    // Squash the top patch into the bottom one, and add one in the middle.
+    // Squash the top patch into the bottom one, and add one on top.
     let claude = fake_claude(
         &e,
         "claude-edit.sh",
@@ -346,67 +631,144 @@ chmod +x "$seq"
 GIT_SEQUENCE_EDITOR="$seq" git -c user.name=C -c user.email=c@x rebase -q -i HEAD~3 >&2
 rm "$seq"
 echo extra > c.txt && git add c.txt && git -c user.name=C -c user.email=c@x commit -qm "Bug 4 - add c""#,
-        "Done. {\"c1\": \"Split it out.\"}",
+        r#"Done. {"replies": {"c1": "Squashed it, and added c."}}"#,
     );
-    let out = stacked_in(
-        &e.src,
-        &e.db,
-        &["ask", "s", "edit", "squash", "the", "top", "into", "the", "bottom", "--wait"],
-        "",
-        &[("STACKED_CLAUDE", &claude), ("STACKED_SRC", &e.src)],
-    );
-    assert!(out.0, "{}", out.2);
-    assert!(out.1.contains("done") && out.1.contains("claude's edit is @"), "{}", out.1);
+    let (fine, out, err) = send(&e, &claude, &[&id], &[("STACKED_SRC", &e.src)]);
+    assert!(fine, "{err}");
+    assert!(out.contains(&format!("{id}\tsent (may change the code)")), "{out}");
+    assert!(out.contains(&format!("{id}\tthe stack\tagent replied (change)")), "{out}");
+    assert!(out.contains("  agent: Squashed it, and added c."), "{out}");
     assert_eq!(e.column(3), ["Bug 1 - change two", "Bug 2 - add b", "Bug 4 - add c"]);
     let after = e.column(2);
     assert_ne!(after[0], before[0], "the bottom patch has a new version");
     assert_eq!(after[1], before[1], "the middle patch is the same");
     assert_eq!(e.ok(&["versions", "s", "1"]).lines().count(), 2);
-    // Its reply is a turn of the comment's thread.
-    let comments = e.ok(&["comment", "s", "2"]);
-    assert!(comments.contains("```claude edit\nSplit it out.\n```"), "{comments}");
     // The user's worktree did not move, and claude's is gone.
     assert_eq!(git(&e.src, &["rev-parse", "HEAD"]), user_head);
     assert_eq!(git(&e.src, &["worktree", "list"]).lines().count(), 1);
     // All of it is in the database: the run and what claude wrote.
     let runs = e.ok(&["runs"]);
-    assert!(runs.contains("edit s \"squash the top into the bottom\"\tdone"), "{runs}");
-    let id = runs.split('\t').next().unwrap();
-    let transcript = e.ok(&["transcript", id]);
+    assert!(runs.contains("change s \"Squash the top into the bottom, and add c.\"\tdone\tthe agent changed the stack"), "{runs}");
+    let run = runs.split('\t').next().unwrap();
+    let transcript = e.ok(&["transcript", run]);
     assert!(transcript.contains("● session started · fake") && transcript.contains("exit 0"), "{transcript}");
+    // Answered, it is not sent again by --all.
+    let (fine, _, err) = e.run(&["send", "s", "--all"]);
+    assert!(!fine && err.contains("no comment to send"), "{err}");
     // Undo puts back the stack from before the ask.
     e.ok(&["undo", "s"]);
     assert_eq!(e.column(2), before);
 }
 
 #[test]
+fn a_comment_on_a_patch_lets_the_agent_change_only_it() {
+    let e = env();
+    e.ok(&["import", "s", "base"]);
+    let id = comment(&e, &["--patch", "2", "--line", "b.txt:+new", "Split", "b", "out."]);
+    assert!(e.ok(&["comments", "s", "--patch", "2"]).contains(&format!("{id}\tpatch 2 · b.txt: new\n  you: Split b out.")));
+    // In a worktree of the stack up to patch 2: it splits the patch in two,
+    // the title staying on the first, and checks the patch above still
+    // applies, with the command the prompt gives it.
+    let claude = fake_claude(
+        &e,
+        "claude-split.sh",
+        &format!(
+            r#"set -e
+test "$(git log --format=%s -1)" = "Bug 2 - add b"
+test "$(git rev-list --count HEAD)" = 3
+git reset -q HEAD~1
+echo x > x.txt && git add x.txt && git -c user.name=C -c user.email=c@x commit -qm "Bug 2 - add b"
+git add b.txt && git -c user.name=C -c user.email=c@x commit -qm "Bug 2b - b itself"
+fits=$(printf '%s\n' "$2" | sed -n 's/.*run `\([^`]* fits [^`]*\)`.*/\1/p' | head -1)
+$fits > {out}"#,
+            out = e.root.join("fits.txt").display()
+        ),
+        r#"{"replies": {"c1": "Split: b is a patch of its own."}}"#,
+    );
+    let (fine, out, err) = send(&e, &claude, &[&id], &[]);
+    assert!(fine, "{err}");
+    assert_eq!(
+        std::fs::read_to_string(e.root.join("fits.txt")).unwrap().trim(),
+        "fits: the patches above still apply on this change"
+    );
+    assert_eq!(e.titles(), ["Bug 1 - c", "Bug 2 - a", "Bug 2b - ", "Bug 3 - c"]);
+    // The comment followed its line to the piece that has it.
+    assert!(out.contains("\tpatch 3 · b.txt: new\tagent replied (change)"), "{out}");
+    assert!(out.contains("agent: Split: b is a patch of its own."), "{out}");
+    assert!(e.ok(&["comments", "s", "--patch", "2"]).is_empty());
+    assert!(e.ok(&["log", "s"]).contains("agent: patch 2 split in 2"));
+
+    // Needing more than its patch, the comment goes to the stack, to be sent
+    // again from there.
+    let id = comment(&e, &["--patch", "1", "Rename", "two", "everywhere."]);
+    let promote = fake_claude(
+        &e,
+        "claude-promote.sh",
+        "",
+        r#"{"replies": {"c1": "Patch 3 says two as well."}, "promote": "patch 3 says two as well"}"#,
+    );
+    let (fine, _, err) = send(&e, &promote, &[&id], &[]);
+    assert!(fine, "{err}");
+    let all = e.ok(&["comments", "s", "--show", "failed"]);
+    assert!(all.contains("\tthe stack\tmoved from patch 1 · ✉ message: Bug 1 - change two"), "{all}");
+    assert!(all.contains("This needs more than the patch: patch 3 says two as well"), "{all}");
+    assert!(e.ok(&["comments", "s", "--patch", "1"]).is_empty());
+    // There, it waits to be sent again.
+    assert!(e.ok(&["comments", "s", "--show", "to-send"]).contains("\tthe stack\tmoved from patch 1"));
+}
+
+#[test]
 fn an_ask_landing_after_the_stack_moved_is_a_branch() {
     let e = env();
     e.ok(&["import", "s", "base"]);
+    let id = comment(&e, &["Amend", "the", "top."]);
     let claude = fake_claude(
         &e,
         "claude-slow.sh",
         r#"sleep 1; echo x >> a.txt; git -c user.name=C -c user.email=c@x commit -qam "Bug 3 - café, a very long title that format-patch will fold over more than one line" --amend"#,
-        "ok",
+        r#"{"replies": {"c1": "Amended."}}"#,
     );
-    let (fine, id, err) = stacked_in(&e.src, &e.db, &["ask", "s", "edit", "amend"], "", &[("STACKED_CLAUDE", &claude)]);
+    let (fine, _, err) = stacked_in(&e.src, &e.db, &["send", "s", &id], "", &[("STACKED_CLAUDE", &claude)]);
     assert!(fine, "{err}");
     e.ok(&["drop", "s", "1"]);
-    for _ in 0..100 {
-        let db = Db::load(&e.db).unwrap();
-        if db.run(id.trim()).unwrap().state != RunState::Started {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(100));
-    }
+    landed(&e, 1);
     assert_eq!(e.column(3).len(), 2, "the stack stays where the user took it");
     let tree = e.ok(&["tree", "s"]);
-    assert!(tree.contains("claude: amend"), "{tree}");
-    assert!(e.ok(&["runs"]).contains("is a branch"));
+    assert!(tree.contains("agent: the stack"), "{tree}");
+    assert!(e.ok(&["runs"]).contains("it is a branch"));
 }
 
 #[test]
-fn claude_rebases_reviews_and_tests() {
+fn several_asks_wait_their_turn() {
+    let e = env();
+    e.ok(&["import", "s", "base"]);
+    let one = comment(&e, &["First."]);
+    let two = comment(&e, &["Second."]);
+    let three = comment(&e, &["--patch", "2", "Why b?"]);
+    let claude = fake_claude(&e, "claude-wait.sh", "sleep 1", r#"{"replies": {"c1": "Seen."}}"#);
+    let env = [("STACKED_CLAUDE", claude.as_path())];
+    let (fine, out, err) = stacked_in(&e.src, &e.db, &["send", "s", &one], "", &env);
+    assert!(fine && out.contains("sent"), "{out}{err}");
+    // A change has the stack to itself: what comes after waits, ready.
+    let (fine, out, err) = stacked_in(&e.src, &e.db, &["send", "s", &two], "", &env);
+    assert!(fine, "{err}");
+    assert!(out.contains("ready (may change the code), it goes once the agent's change on the stack lands"), "{out}");
+    let (fine, out, err) = stacked_in(&e.src, &e.db, &["send", "s", &three, "--answer-only"], "", &env);
+    assert!(fine, "{err}");
+    assert!(out.contains("ready (answer only)"), "{out}");
+    let waiting = e.ok(&["comments", "s", "--show", "in-progress"]);
+    assert_eq!(waiting.lines().filter(|l| !l.starts_with(' ')).count(), 3, "{waiting}");
+    // Each goes in turn, on its own.
+    landed(&e, 3);
+    let runs = e.ok(&["runs"]);
+    assert_eq!(runs.lines().filter(|l| l.contains("\tdone\t")).count(), 3, "{runs}");
+    let read = e.ok(&["comments", "s", "--show", "to-read"]);
+    assert_eq!(read.matches("agent: Seen.").count(), 3, "{read}");
+    assert!(e.ok(&["comments", "s", "--show", "to-read-only"]).contains(&three));
+}
+
+#[test]
+fn the_agent_rebases_reviews_and_tests() {
     let e = env();
     // A commit on main for the stack to go onto.
     git(&e.src, &["checkout", "-q", "-b", "upstream", "base"]);
@@ -416,65 +778,175 @@ fn claude_rebases_reviews_and_tests() {
     git(&e.src, &["checkout", "-q", "main"]);
     e.ok(&["import", "s", "base"]);
 
-    let claude = fake_claude(&e, "claude-rebase.sh", "git rebase -q --onto \"$ONTO\" \"$BASE\"", "rebased");
     let onto = git(&e.src, &["rev-parse", "upstream"]).trim().to_string();
     let base = git(&e.src, &["rev-parse", "base"]).trim().to_string();
-    let script = e.script(
-        "claude-rebase-env.sh",
-        &format!("ONTO={onto} BASE={base} exec {} \"$@\"", claude.display()),
+    let rebase = fake_claude(
+        &e,
+        "claude-rebase.sh",
+        &format!("git rebase -q --onto {onto} {base}"),
+        &format!(r#"Rebased. {{"replies": {{"c1": "Rebased."}}, "base": "{onto}"}}"#),
     );
-    let out = ask(&e, &script, &["rebase", "--onto", "upstream"]);
-    assert!(out.contains("done"), "{out}");
+    let id = comment(&e, &["Rebase", "onto", "upstream."]);
+    let (fine, _, err) = send(&e, &rebase, &[&id], &[]);
+    assert!(fine, "{err}");
     let mail = e.ok(&["export", "s"]);
+    assert!(!mail.contains("Subject: upstream"), "the commit it went onto is no patch");
     let dst = e.root.join("dst");
     git(&e.root, &["clone", "-q", e.src.to_str().unwrap(), "dst"]);
     git(&dst, &["checkout", "-q", &onto]);
-    let mut am = Command::new("git").args(["am", "-q"]).current_dir(&dst).stdin(Stdio::piped()).spawn().unwrap();
+    let mut am = Command::new("git").args(["-c", "commit.gpgsign=false", "am", "-q"]).current_dir(&dst).stdin(Stdio::piped()).spawn().unwrap();
     use std::io::Write;
     am.stdin.take().unwrap().write_all(mail.as_bytes()).unwrap();
     assert!(am.wait().unwrap().success(), "the stack applies onto upstream");
-    assert!(e.ok(&["log", "s"]).contains(&format!("claude: rebase onto {}", &onto[..12])));
+    assert!(e.ok(&["log", "s"]).contains(&format!("agent: rebase onto {}", &onto[..12])));
+    assert!(e.ok(&["stacks"]).contains("3 patches"));
 
+    // A review is an answer that opens comments of its own.
     let review = fake_claude(
         &e,
         "claude-review.sh",
         "",
-        r#"{"comments": [{"patch": 2, "file": "b.txt", "side": "+", "line": "new", "text": "Say what b is for."},
+        r#"{"replies": {"c1": "Two things."}, "comments": [{"patch": 2, "file": "b.txt", "side": "+", "line": "new", "text": "Say what b is for."},
             {"patch": 1, "file": "nowhere", "side": "+", "line": "?", "text": "On the whole patch."}]}"#,
     );
-    let out = ask(&e, &review, &["review"]);
-    assert!(out.contains("left 2 comments"), "{out}");
-    let c = e.ok(&["comment", "s", "2"]);
-    assert!(c.contains("b.txt: new") && c.contains("Say what b is for."), "{c}");
-    let c = e.ok(&["comment", "s", "1"]);
-    assert!(c.contains("On the whole patch."), "{c}");
+    let id = comment(&e, &["Review", "it."]);
+    let (fine, out, err) = send(&e, &review, &[&id, "--answer-only"], &[]);
+    assert!(fine, "{err}");
+    assert!(out.contains("agent replied (answer only) · opened 2 comments"), "{out}");
+    let c = e.ok(&["comments", "s", "--patch", "2"]);
+    assert!(c.contains("b.txt: new") && c.contains("agent: Say what b is for."), "{c}");
+    let c = e.ok(&["comments", "s", "--patch", "1"]);
+    assert!(c.contains("patch 1, as a whole") && c.contains("On the whole patch."), "{c}");
+    assert!(e.ok(&["runs"]).contains("the agent answered 1 comment and opened 2"));
 
-    // A test runs where claude likes, here the repo, and reads the stack
-    // with the command it is given.
+    // A build and test runs where claude likes, here the repo, and reads
+    // the stack with the command it is given.
     let test = fake_claude(
         &e,
         "claude-test.sh",
         r#"test "$PWD" = "$STACKED_SRC" || exit 3"#,
-        r#"{"patches": {"1": "builds; 3 tests pass", "3": "fails: a.txt"}}"#,
+        r#"{"replies": {"c1": "Built them."}, "patches": {"1": "builds; 3 tests pass", "3": "fails: a.txt"}}"#,
     );
-    let out = stacked_in(
-        &e.src,
-        &e.db,
-        &["ask", "s", "test", "--wait"],
-        "",
-        &[("STACKED_CLAUDE", &test), ("STACKED_SRC", &e.src)],
-    );
-    assert!(out.1.contains("claude tested 2 patches"), "{} {}", out.1, out.2);
-    assert!(e.ok(&["comment", "s", "3"]).contains("fails: a.txt"));
+    let id = comment(&e, &["Build", "and", "test."]);
+    let (fine, _, err) = send(&e, &test, &[&id, "--build-and-test"], &[("STACKED_SRC", &e.src)]);
+    assert!(fine, "{err}");
+    assert!(e.ok(&["runs"]).contains(": 2 patches"));
+    assert!(e.ok(&["comments", "s", "--patch", "3"]).contains("fails: a.txt (tested @"));
     let db = Db::load(&e.db).unwrap();
-    let id = db.runs().last().unwrap().id.clone();
-    let info = stacked::ask::info(db.run(&id).unwrap()).unwrap();
+    let info = stacked::ask::info(db.runs().last().unwrap()).unwrap();
     assert!(info.prompt.contains("export s --rev"), "{}", info.prompt);
+    // A line's comment is not for building and testing.
+    let line = comment(&e, &["--patch", "2", "--line", "b.txt:+new", "Test", "this."]);
+    let (fine, _, err) = e.run(&["send", "s", &line, "--build-and-test"]);
+    assert!(!fine && err.contains("only a comment on the stack or on a patch as a whole"), "{err}");
 
-    // A claude that fails changes nothing but says so.
+    // A claude that fails changes nothing but says so, and the comment can
+    // be sent again.
     let bad = e.script("claude-bad.sh", "echo oops >&2; exit 7");
-    let out = ask(&e, &bad, &["edit", "anything"]);
-    assert!(out.contains("failed") && out.contains("claude failed (7): oops"), "{out}");
+    let id = comment(&e, &["Anything."]);
+    let (fine, out, err) = send(&e, &bad, &[&id], &[]);
+    assert!(!fine && err.contains("1 of them failed"), "{err}");
+    assert!(out.contains("ask failed: the agent failed (7): oops"), "{out}");
+    assert!(e.ok(&["comments", "s", "--show", "to-send"]).contains(&id));
+}
+
+#[test]
+fn unfinished_work_is_kept_and_a_stack_that_does_not_apply_takes_no_ask() {
+    let e = env();
+    e.ok(&["import", "s", "base"]);
+    let before = e.column(2);
+    let messy = fake_claude(&e, "claude-messy.sh", "echo half > new.txt", r#"{"replies": {"c1": "done, I think"}}"#);
+    let id = comment(&e, &["Add", "new.txt."]);
+    let (fine, out, _) = send(&e, &messy, &[&id], &[]);
+    assert!(!fine && out.contains("ask failed") && out.contains("left work uncommitted"), "{out}");
+    let runs = e.ok(&["runs"]);
+    let kept = runs.split("it is left in ").nth(1).unwrap().trim().to_string();
+    assert!(Path::new(&kept).join("new.txt").exists(), "{kept}");
+    assert_eq!(e.column(2), before, "nothing changed");
+    git(&e.src, &["worktree", "remove", "--force", &kept]);
+
+    // A stack from before the check, whose patches do not apply to its
+    // base, is sent nothing, and nothing is left behind.
+    let other = git(&e.src, &["rev-parse", "HEAD"]).trim().to_string();
+    let db = Db::load(&e.db).unwrap();
+    let p = db.patch(&db.stack("s").unwrap().patches[0]).clone();
+    drop(db);
+    old_stack(&e, &[(p.title(), &p.diff)], Some(&other), Some(e.src.to_str().unwrap()));
+    let id = comment(&e, &["Anything."]);
+    let (fine, _, err) = stacked_in(&e.src, &e.db, &["send", "s", &id], "", &[("STACKED_CLAUDE", &messy)]);
+    assert!(!fine && err.contains("cannot send: patch 1") && err.contains("does not apply to its base"), "{err}");
+    assert_eq!(git(&e.src, &["worktree", "list"]).lines().count(), 1);
+}
+
+#[test]
+fn what_the_agent_makes_is_checked_too() {
+    let e = env();
+    e.ok(&["import", "s", "base"]);
+    let before = e.column(2);
+    let patches = || {
+        let db = Db::load(&e.db).unwrap();
+        db.records.iter().filter(|r| matches!(r, Record::Patch(_))).count()
+    };
+    let stored = patches();
+    // An empty commit is a patch with no diff: it does not apply.
+    let empty = fake_claude(
+        &e,
+        "claude-empty.sh",
+        r#"git -c user.name=C -c user.email=c@x commit -q --allow-empty -m "Bug 9 - nothing""#,
+        r#"{"replies": {"c1": "added it"}}"#,
+    );
+    let id = comment(&e, &["Add", "an", "empty", "patch."]);
+    let (fine, out, _) = send(&e, &empty, &[&id], &[]);
+    assert!(!fine && out.contains("has no diff"), "{out}");
+    let runs = e.ok(&["runs"]);
+    let kept = runs.split("its work is left in ").nth(1).unwrap().trim().to_string();
+    assert!(Path::new(&kept).is_dir(), "{kept}");
+    assert_eq!(e.column(2), before, "the stack is as it was");
+    assert_eq!(patches(), stored, "no patch of it is stored");
+    git(&e.src, &["worktree", "remove", "--force", &kept]);
+}
+
+#[test]
+fn reviews_from_phabricator_are_threads() {
+    use stacked::phab::{Pulled, Remote, RevisionComments};
+    let e = env();
+    e.ok(&["import", "s", "base"]);
+    let db = Db::load(&e.db).unwrap();
+    let p = db.patch(&db.stack("s").unwrap().patches[1]).clone();
+    let remote = |phid: &str, path: Option<&str>, line: usize, text: &str, reply: Option<&str>| Remote {
+        phid: phid.into(),
+        author: "reviewer".into(),
+        text: text.into(),
+        created: 0,
+        path: path.map(String::from),
+        line,
+        line_text: path.map(|_| "new".into()),
+        reply_to: reply.map(String::from),
+    };
+    let pulled = Pulled {
+        revisions: vec![RevisionComments {
+            revision: "D1".into(),
+            source: p.change.clone(),
+            comments: vec![
+                remote("c1", Some("b.txt"), 1, "What is b?", None),
+                remote("c2", None, 0, "Looks fine overall.", None),
+                remote("c3", Some("b.txt"), 1, "And why now?", Some("c1")),
+            ],
+        }],
+    };
+    let n = Db::edit(&e.db, |db| stacked::review::file(db, "s", &pulled)).unwrap();
+    assert_eq!(n, 3);
+    assert_eq!(Db::edit(&e.db, |db| stacked::review::file(db, "s", &pulled)).unwrap(), 0, "nothing twice");
+    let db = Db::load(&e.db).unwrap();
+    let notes = db.notes(&p.change);
+    assert_eq!(notes.len(), 2, "a reply is a turn of its thread");
+    let inline = notes.iter().find(|n| n.id == "phab:c1").unwrap();
+    assert_eq!(inline.text, "```reviewer reviewer\nWhat is b?\n```\n```reviewer reviewer\nAnd why now?\n```");
+    let rows = stacked::rows::patch_rows(&p, &notes, 80, &Default::default());
+    let at = rows.iter().position(|r| r.text == "+new").unwrap();
+    assert!(rows[at + 1].text.contains("reviewer's comment"), "{:#?}", &rows[at..]);
+    let general = notes.iter().find(|n| n.id == "phab:c2").unwrap();
+    assert_eq!(general.line, stacked::view::title_key(&p), "a general comment is on the title");
 }
 
 #[test]
@@ -502,7 +974,7 @@ fn comments_stay_on_their_line_across_versions() {
     let db = Db::load(&e.db).unwrap();
     let s = db.stack("s").unwrap();
     let p = db.patch(&s.patches[0]).clone();
-    let rows = stacked::rows::patch_rows(&p, &[], 80);
+    let rows = stacked::rows::patch_rows(&p, &[], 80, &Default::default());
     let line = rows.iter().find(|r| r.text == "+2").unwrap().key.clone().unwrap();
     Db::edit(&e.db, |db| {
         db.set_note(stacked::db::Note {
@@ -528,11 +1000,235 @@ fn comments_stay_on_their_line_across_versions() {
     let p2 = db.patch(&s.patches[0]);
     assert_ne!(p2.id, p.id);
     let notes = db.notes(&p2.change);
-    let rows = stacked::rows::patch_rows(p2, &notes, 80);
+    let rows = stacked::rows::patch_rows(p2, &notes, 80, &Default::default());
     let at = rows.iter().position(|r| r.text == "+2").unwrap();
     assert!(rows[at + 1].head && rows[at + 3].text.contains("why 2?"), "{:#?}", &rows[at..at + 4]);
     let (lines, _) = stacked::rows::split_lines(&rows);
     assert!(lines.iter().any(|l| l.left.is_some() && l.right.is_some() && l.left != l.right));
+}
+
+#[test]
+fn a_patch_is_edited_where_the_cursor_is() {
+    let e = env();
+    e.ok(&["import", "s", "base"]);
+    // An editor named vim, as stacked knows it: told the line as +LINE.
+    let bin = e.root.join("bin");
+    std::fs::create_dir(&bin).unwrap();
+    let args = e.root.join("args");
+    let vim = bin.join("vim");
+    let script = |body: &str| {
+        std::fs::write(&vim, format!("#!/bin/sh\necho \"$1\" >> {}\nfile=\"$2\"\n{body}\n", args.display())).unwrap();
+        Command::new("chmod").arg("+x").arg(&vim).status().unwrap();
+    };
+    let edit = |extra: &[&str]| {
+        let mut all = vec!["edit", "s"];
+        all.extend(extra);
+        stacked_in(&e.src, &e.db, &all, "", &[("EDITOR", &vim)])
+    };
+    let said = || std::fs::read_to_string(&args).unwrap();
+
+    // The patch as mail, at a line.
+    script("sed -i '' 's/^Subject: Bug 2 - add b$/Subject: Bug 2 - add bee/' \"$file\"");
+    let (fine, _, err) = edit(&["2", "--line", "7"]);
+    assert!(fine, "{err}");
+    assert_eq!(said().lines().last(), Some("+7"));
+    assert_eq!(e.column(3)[1], "Bug 2 - add bee");
+
+    // A file as the patch leaves it, at a line: the patch is made again
+    // from it, the rest of it as it was.
+    script("sed -i '' 's/^2$/deux/' \"$file\"");
+    let (fine, _, err) = edit(&["1", "--path", "a.txt", "--line", "2"]);
+    assert!(fine && err.contains("edited a.txt in Bug 1 - change two"), "{err}");
+    assert_eq!(said().lines().last(), Some("+2"));
+    let mail = e.ok(&["show", "s", "1"]);
+    assert!(mail.contains("-two\n+deux\n") && mail.contains("Subject: Bug 1 - change two"), "{mail}");
+    assert_eq!(e.ok(&["versions", "s", "1"]).lines().count(), 2);
+    assert!(e.ok(&["check"]).contains("s: applies"));
+
+    // One the patch above cannot take is not taken; it is kept, and taken
+    // up again from where it was left.
+    script("sed -i '' 's/^eight$/huit/' \"$file\"");
+    let (fine, _, err) = edit(&["1", "--path", "a.txt", "--line", "8"]);
+    assert!(!fine && err.contains("patch 3 (Bug 3 - café") && err.contains("does not apply"), "{err}");
+    let kept = err.split("Your edit is kept in ").nth(1).unwrap().split(':').next().unwrap().to_string();
+    assert!(std::fs::read_to_string(&kept).unwrap().contains("huit"));
+    assert_eq!(e.ok(&["versions", "s", "1"]).lines().count(), 2, "nothing changed");
+    script("sed -i '' 's/^huit$/eight/' \"$file\"");
+    let (fine, _, err) = edit(&["1", "--path", "a.txt", "--from", &kept]);
+    assert!(fine && err.contains("saved as it was"), "back as it was: {err}");
+    let (fine, _, err) = edit(&["1", "--path", "b.txt"]);
+    assert!(!fine && err.contains("does not change b.txt"), "{err}");
+}
+
+#[test]
+fn a_trim_writes_a_new_database_from_a_rev_on() {
+    let e = env();
+    e.ok(&["import", "s", "base"]);
+    e.ok(&["move", "s", "3", "1"]);
+    let id = comment(&e, &["--patch", "2", "--line", "a.txt:+2", "Why", "2?"]);
+    e.ok(&["reply", "s", &id, "Because."]);
+    comment(&e, &["Rebase", "it."]);
+    let answer = fake_claude(&e, "claude-answer.sh", "", r#"{"replies": {"c1": "Seen."}}"#);
+    let (fine, _, err) = send(&e, &answer, &[&id, "--answer-only"], &[]);
+    assert!(fine, "{err}");
+    let d = Db::load(&e.db).unwrap();
+    let p = d.patch(&d.stack("s").unwrap().patches[1]).clone();
+    drop(d);
+    let keys = stacked::rows::patch_rows(&p, &[], 80, &Default::default())
+        .into_iter()
+        .filter(|r| r.text == "+2")
+        .filter_map(|r| r.key)
+        .collect::<Vec<_>>();
+    Db::edit(&e.db, |db| {
+        db.set_view("s", "to read")?;
+        db.mark_read(&p.change, keys.clone()).map(|_| ())
+    })
+    .unwrap();
+    // The cut: what there is now is the start; then a drop and an undo.
+    let cut = Db::load(&e.db).unwrap().records.len() + 1;
+    e.ok(&["drop", "s", "1"]);
+    e.ok(&["undo", "s"]);
+    let before = std::fs::read(&e.db).unwrap();
+    let new = e.root.join("new.jsonl");
+    let out = e.ok(&["trim", new.to_str().unwrap(), "--from", &format!("@{cut}")]);
+    assert!(out.contains(&format!("wrote {}", new.display())) && out.contains(&format!("from @{cut} on")), "{out}");
+    assert_eq!(std::fs::read(&e.db).unwrap(), before, "the old file is only read");
+    let on = |args: &[&str]| {
+        let (fine, out, err) = stacked_in(&e.src, &new, args, "", &[]);
+        assert!(fine, "stacked {args:?} on the new file: {err}");
+        out
+    };
+    // The same stack, the same comments, filter and read marks.
+    assert_eq!(on(&["show", "s"]), e.ok(&["show", "s"]));
+    assert_eq!(on(&["comments", "s"]), e.ok(&["comments", "s"]));
+    let made = Db::load(&new).unwrap();
+    assert_eq!(made.view("s"), Some("to read"));
+    assert_eq!(made.read_keys(&p.change), keys.into_iter().collect());
+    assert!(made.warnings.is_empty() && on(&["check"]).contains("s: applies"));
+    // The history kept: its start, then the drop and the undo; the ask that
+    // landed before is left out.
+    let log = on(&["log", "s"]);
+    let lines: Vec<&str> = log.lines().collect();
+    assert!(lines[0].contains("(the start of a trimmed history)"), "{log}");
+    assert!(log.contains("drop ") && log.contains("undo"), "{log}");
+    assert!(on(&["runs"]).is_empty(), "the ask had landed before the cut");
+    // It undoes as the old one does: back before the drop is its start.
+    let (fine, _, err) = stacked_in(&e.src, &new, &["undo", "s"], "", &[]);
+    assert!(!fine && err.contains("nothing to undo"), "{err}");
+    assert!(on(&["redo", "s"]).is_empty());
+    assert_eq!(on(&["show", "s"]).lines().count(), 2, "redo is the drop");
+    // Only what there is now; never over a file.
+    let now = e.root.join("now.jsonl");
+    e.ok(&["trim", now.to_str().unwrap()]);
+    let made = Db::load(&now).unwrap();
+    assert_eq!(made.tree("s").len(), 1, "one state of the stack");
+    assert_eq!(made.notes(&p.change).len(), 1);
+    let (fine, _, err) = e.run(&["trim", now.to_str().unwrap()]);
+    assert!(!fine && err.contains("is there already"), "{err}");
+    let (fine, _, err) = e.run(&["trim", e.root.join("x.jsonl").to_str().unwrap(), "--from", "@9999"]);
+    assert!(!fine && err.contains("is not a rev"), "{err}");
+}
+
+#[test]
+fn the_agent_answers_on_the_history() {
+    let e = env();
+    e.ok(&["import", "s", "base"]);
+    e.ok(&["move", "s", "3", "1"]);
+    let log = e.ok(&["log", "s"]);
+    let moved = log.lines().find(|l| l.contains("\tmove ")).unwrap();
+    let rev: usize = moved.split('\t').next().unwrap().trim_start_matches('@').parse().unwrap();
+    let id = comment(&e, &["--about", &format!("@{rev}"), "Why", "was", "it", "moved?"]);
+    assert!(e.ok(&["comments", "s"]).contains(&format!("{id}\tthe history, @{rev} · move")));
+    // Asked about to answer only: it changes nothing.
+    let (fine, _, err) = e.run(&["send", "s", &id]);
+    assert!(!fine && err.contains("asked about to answer only"), "{err}");
+    let (fine, _, err) = e.run(&["comment", "s", "--about", "@999", "What?"]);
+    assert!(!fine && err.contains("is not in the history of s"), "{err}");
+    // Told the history and what the move did, and given the commands that
+    // read the history, the agent answers, and opens a comment on a line.
+    let told = e.root.join("told");
+    let agent = fake_claude(
+        &e,
+        "agent-history.sh",
+        &format!("printf '%s\\n' \"$@\" > {}", told.display()),
+        r#"{"replies": {"c1": "To put c first."}, "comments": [{"patch": 1, "file": "a.txt", "side": "+", "line": "9", "text": "This is the one moved."}]}"#,
+    );
+    let (fine, out, err) = send(&e, &agent, &[&id, "--answer-only"], &[]);
+    assert!(fine, "{err}");
+    assert!(out.contains("agent: To put c first.") && out.contains("opened 1 comment"), "{out}");
+    let told = std::fs::read_to_string(&told).unwrap();
+    assert!(told.contains("on the stack's history, about @") && told.contains("The stack's history, oldest first"), "{told}");
+    assert!(told.contains(&format!("What @{rev} was:")) && told.contains("↕ Bug 3 - café"), "{told}");
+    assert!(told.contains("export s --rev @N") && told.contains("Bash(") && told.contains(" log *)"), "{told}");
+    assert!(!told.contains("acceptEdits"), "it changes nothing");
+    let c = e.ok(&["comments", "s", "--patch", "1"]);
+    assert!(c.contains("a.txt: 9") && c.contains("agent: This is the one moved."), "{c}");
+}
+
+#[test]
+fn an_ask_being_started_is_not_taken_for_one_left_behind() {
+    let e = env();
+    e.ok(&["import", "s", "base"]);
+    let from = Db::load(&e.db).unwrap().head("s").unwrap().0;
+    // Started long ago, as a worktree taking minutes to make.
+    let run = |id: &str, starter: u32| {
+        Record::Run(stacked::db::Run {
+            id: id.into(),
+            what: "answer".into(),
+            stack: "s".into(),
+            state: RunState::Started,
+            ask: Some(serde_json::json!({"way": "answer", "scope": "stack", "from": from, "notes": []})),
+            starter: Some(starter),
+            time: 1,
+            ..Default::default()
+        })
+    };
+    // A process that is gone, for a starter that is.
+    let mut gone = Command::new("true").spawn().unwrap();
+    let dead = gone.id();
+    gone.wait().unwrap();
+    Db::append(&e.db, &[run("slow", std::process::id()), run("lost", dead)]).unwrap();
+    // Still being started while who started it lives.
+    let db = Db::load(&e.db).unwrap();
+    assert_eq!(stacked::ask::land_orphans(&e.db, &db), 1);
+    let db = Db::load(&e.db).unwrap();
+    assert_eq!(db.run("slow").unwrap().state, RunState::Started, "being started");
+    assert!(stacked::ask::running(db.run("slow").unwrap()));
+    assert_eq!(db.run("lost").unwrap().state, RunState::Failed, "who started it is gone");
+}
+
+#[test]
+fn the_settings_are_a_file_in_home() {
+    let e = env();
+    e.ok(&["import", "s", "base"]);
+    let cfg = e.root.join("stacked.toml");
+    std::fs::write(
+        &cfg,
+        format!("file = \"{}\"\neditor = \"vim\"\n[view]\nlayout = \"sideways\"\n", e.db.display()),
+    )
+    .unwrap();
+    // `config` prints every setting, the file's and the defaults, and what
+    // is wrong; what it prints reads back.
+    let run = |args: &[&str]| {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_stacked"));
+        cmd.current_dir(&e.src).args(args).env("STACKED_CONFIG", &cfg).env_remove("STACKED_FILE");
+        let out = cmd.output().unwrap();
+        (String::from_utf8(out.stdout).unwrap(), String::from_utf8(out.stderr).unwrap())
+    };
+    let (out, _) = run(&["config"]);
+    assert!(out.starts_with(&format!("# read from {}", cfg.display())), "{out}");
+    assert!(out.contains("# wrong: ") && out.contains("view.layout: \"sideways\""), "{out}");
+    assert!(out.contains("editor = \"vim\"") && out.contains("layout = \"unified\""), "{out}");
+    assert!(out.contains("menu = [\"space\"]") && out.contains("[agent]"), "{out}");
+    let copy = e.root.join("copy.toml");
+    std::fs::write(&copy, &out).unwrap();
+    let again = Command::new(env!("CARGO_BIN_EXE_stacked")).arg("config").env("STACKED_CONFIG", &copy).output().unwrap();
+    assert!(!String::from_utf8(again.stdout).unwrap().contains("# wrong"), "what it prints is a good file");
+    // The database the settings name is the one opened when none is; what
+    // is wrong with them is said by every command.
+    let (out, err) = run(&["stacks"]);
+    assert!(out.starts_with("s\t3 patches"), "{out}");
+    assert!(err.contains("view.layout"), "{err}");
 }
 
 #[test]

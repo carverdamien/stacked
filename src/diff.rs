@@ -15,6 +15,8 @@ pub struct Line {
     /// it would sit -- the number of the line that follows it there.
     pub old_no: usize,
     pub new_no: usize,
+    /// Its line in the diff's text, from 0.
+    pub at: usize,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -25,6 +27,8 @@ pub struct Hunk {
     /// Content-based id for the "reviewed" mark.
     pub hkey: String,
     pub new_start: usize,
+    /// Its header's line in the diff's text, from 0.
+    pub at: usize,
     /// New-side line numbers of the first and last present (ctx/+) lines.
     pub first_new: usize,
     pub last_new: usize,
@@ -38,6 +42,9 @@ pub struct FileDiff {
     pub path: String,
     pub header: Vec<String>,
     pub hunks: Vec<Hunk>,
+    /// Its `diff --git` line in the diff's text, from 0; its header's lines
+    /// follow it.
+    pub at: usize,
 }
 
 impl FileDiff {
@@ -101,7 +108,7 @@ pub fn parse_diff(text: &str, mode: &str) -> Vec<FileDiff> {
     let mut in_hunk = false;
     let (mut new_no, mut old_no) = (0usize, 0usize);
 
-    for line in text.lines() {
+    for (at, line) in text.lines().enumerate() {
         if let Some(rest) = line.strip_prefix("diff --git ") {
             let path = match line.split_once(" b/") {
                 Some((_, p)) => p.to_string(),
@@ -112,6 +119,7 @@ pub fn parse_diff(text: &str, mode: &str) -> Vec<FileDiff> {
                 path,
                 header: vec![line.into()],
                 hunks: Vec::new(),
+                at,
             });
             in_hunk = false;
             counts.clear();
@@ -126,6 +134,7 @@ pub fn parse_diff(text: &str, mode: &str) -> Vec<FileDiff> {
                 header: line.into(),
                 new_start,
                 hid: format!("{mode}\0{}\0{old_start}\0{new_start}", current.path),
+                at,
                 ..Default::default()
             });
             new_no = new_start;
@@ -150,6 +159,7 @@ pub fn parse_diff(text: &str, mode: &str) -> Vec<FileDiff> {
             key,
             old_no,
             new_no,
+            at,
         });
         if origin != '-' {
             if hunk.last_new == 0 {

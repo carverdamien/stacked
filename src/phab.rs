@@ -1,7 +1,8 @@
 //! Reviewers' comments from Phabricator: each patch's revision (its
 //! `Differential Revision:` trailer) read over Conduit with the token
-//! moz-phab and arc keep in `~/.arcrc`. Taken from self-review's, less what
-//! files them in its sessions: `review::pull` files them in the database.
+//! moz-phab and arc keep in `~/.arcrc`, or the one the settings give.
+//! Taken from self-review's, less what files them in its sessions:
+//! `review::pull` files them in the database.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -17,42 +18,53 @@ pub struct Conduit {
     token: String,
 }
 
-fn arcrc() -> Option<Value> {
-    let home = std::env::var("HOME").ok()?;
-    let text = std::fs::read_to_string(Path::new(&home).join(".arcrc")).ok()?;
+fn arcrc(path: &Path) -> Option<Value> {
+    let text = std::fs::read_to_string(path).ok()?;
     serde_json::from_str(&text).ok()
 }
 
 impl Conduit {
-    /// The endpoint for `url` (a revision's link), with its token from
-    /// ~/.arcrc; the only host there when `url` names none.
+    /// The endpoint for `url` (a revision's link), with its token: the
+    /// settings', for their Phabricator, else the arcrc's; there, the host
+    /// `url` names, else the settings' Phabricator, else the only one.
     pub fn for_url(url: Option<&str>) -> Result<Conduit, String> {
-        let rc = arcrc().ok_or("no ~/.arcrc: log in with moz-phab (or arc) first")?;
-        let hosts = rc
-            .get("hosts")
-            .and_then(Value::as_object)
-            .ok_or("~/.arcrc has no hosts")?;
+        let cfg = &crate::config::get().reviews;
         let host_of = |u: &str| {
             u.split("://")
                 .nth(1)
                 .and_then(|r| r.split('/').next())
                 .map(String::from)
         };
-        let want = url.and_then(host_of);
+        let mine = cfg.url.as_deref().and_then(host_of);
+        let want = url.and_then(host_of).or(mine.clone());
+        if let (Some(token), Some(base)) = (&cfg.token, &cfg.url)
+            && want == mine
+        {
+            return Ok(Conduit {
+                api: format!("{base}/api/"),
+                token: token.clone(),
+            });
+        }
+        let rc_path = cfg.arcrc.display().to_string();
+        let rc = arcrc(&cfg.arcrc).ok_or(format!("no {rc_path}: log in with moz-phab (or arc) first"))?;
+        let hosts = rc
+            .get("hosts")
+            .and_then(Value::as_object)
+            .ok_or(format!("{rc_path} has no hosts"))?;
         let pick = hosts
             .iter()
             .find(|(api, _)| want.is_none() || host_of(api) == want)
             .or_else(|| (hosts.len() == 1).then(|| hosts.iter().next().unwrap()));
         let Some((api, v)) = pick else {
             return Err(format!(
-                "no token for {} in ~/.arcrc",
+                "no token for {} in {rc_path}",
                 want.unwrap_or_default()
             ));
         };
         let token = v
             .get("token")
             .and_then(Value::as_str)
-            .ok_or("~/.arcrc has no token for that host")?;
+            .ok_or(format!("{rc_path} has no token for that host"))?;
         let mut api = api.clone();
         if !api.ends_with('/') {
             api.push('/');
@@ -321,13 +333,24 @@ pub fn anchor(lines: &[NoteLine], c: &Remote) -> Option<String> {
         .map(|l| l.key.clone())
 }
 
-/// A patch's revision, `D123`, and the link its trailer gives.
+/// A patch's revision, `D123`, and the link its trailer gives: the
+/// settings' trailer (`Differential Revision:`), a bare `D123` on the
+/// settings' Phabricator.
 pub fn revision_of(message: &str) -> Option<(String, String)> {
+    let cfg = &crate::config::get().reviews;
+    let trailer = format!("{}:", cfg.trailer);
     message.lines().find_map(|line| {
-        let rest = line.strip_prefix("Differential Revision:")?.trim();
-        let (_, last) = rest.rsplit_once('/')?;
+        let rest = line.strip_prefix(&trailer)?.trim();
+        let last = rest.rsplit('/').next()?;
         let digits = last.strip_prefix('D')?;
-        (!digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()))
-            .then(|| (last.to_string(), rest.to_string()))
+        if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        let link = if rest.contains('/') {
+            rest.to_string()
+        } else {
+            format!("{}/{last}", cfg.url.as_deref()?)
+        };
+        Some((last.to_string(), link))
     })
 }

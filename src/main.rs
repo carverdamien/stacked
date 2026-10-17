@@ -3,32 +3,62 @@ use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand, ValueEnum};
 
-use stacked::ask::{self, Kind};
-use stacked::db::{Db, Error, Note, Record, Result, err};
+use stacked::ask;
+use stacked::db::{Db, Error, Note, Patch, Record, Result, Way, err, local_time as time, short_id, stack_change};
 use stacked::mbox::{Draft, base_commit, format_mbox, parse_mail, parse_mbox};
-use stacked::ops::{self, edit_text, strip_comments};
-use stacked::todo::{self, Action};
-use stacked::{git, review, tree, view};
+use stacked::ops;
+use stacked::thread::{Role, append_turn, thread_turns};
+use stacked::tui::{Busy, Show, note_state, shows};
+use stacked::view::{MSG_PATH, find_line, fold, note_lines, title_key};
+use stacked::{git, review, tree};
 
 /// A stack editor. Patches, stacks and every edit made to them, comments
-/// and what claude and Phabricator said: all in one file that is only ever
+/// and what the agent (claude) and Phabricator said: all in one file that is only ever
 /// appended to. The worktree is not touched unless `apply` is asked to.
 #[derive(Parser)]
 #[command(version)]
 struct Cli {
-    /// The database: else $STACKED_FILE, else ./stacked.jsonl.
+    /// The database: else $STACKED_FILE, else the settings' `file`, else
+    /// ./stacked.jsonl.
     #[arg(short, long, global = true)]
     file: Option<PathBuf>,
     #[command(subcommand)]
     cmd: Option<Cmd>,
 }
 
+/// Which comments `comments` lists, as the editor's Show… picks them.
 #[derive(Clone, Copy, ValueEnum)]
-enum AskKind {
-    Edit,
-    Rebase,
-    Review,
-    Test,
+enum ShowArg {
+    All,
+    /// Not sent, and not answered.
+    ToSend,
+    /// The agent's answer is their last word.
+    ToRead,
+    /// ... from an ask that could only answer.
+    ToReadOnly,
+    /// ... from an ask that could change the code.
+    ToReadWrite,
+    /// Ready to go to the agent, or with it.
+    InProgress,
+    /// Their ask failed, or they moved to the stack.
+    Failed,
+    /// On a line their patch no longer has.
+    Gone,
+}
+
+impl ShowArg {
+    fn show(self) -> Show {
+        match self {
+            ShowArg::All => Show::All,
+            ShowArg::ToSend => Show::ToSend,
+            ShowArg::ToRead => Show::ToRead,
+            ShowArg::ToReadOnly => Show::ToReadAnswer,
+            ShowArg::ToReadWrite => Show::ToReadChange,
+            ShowArg::InProgress => Show::InProgress,
+            ShowArg::Failed => Show::Failed,
+            ShowArg::Gone => Show::Gone,
+        }
+    }
 }
 
 #[derive(Subcommand)]
@@ -38,11 +68,16 @@ enum Cmd {
     Open { file: Option<PathBuf> },
     /// The stacks: name, patches, the stack it is on.
     Stacks,
-    /// Make an empty stack.
-    New { name: String },
+    /// Make an empty stack, on a commit of the repository here.
+    New {
+        name: String,
+        /// The commit its patches will apply to; else HEAD.
+        #[arg(long)]
+        base: Option<String>,
+    },
     /// Put commits on top of a stack, making it if need be: RANGE's
     /// (`main..HEAD`, or `main` for that) from the repository here, else
-    /// the mail on stdin (`git format-patch --stdout`).
+    /// the mail on stdin (`git format-patch --stdout`). Only if they apply.
     Import {
         name: String,
         range: Option<String>,
@@ -50,10 +85,16 @@ enum Cmd {
         /// stack held is a new version of it.
         #[arg(long)]
         replace: bool,
+        /// The commit mail on stdin applies to, when it does not say
+        /// (`format-patch --base` makes it say).
+        #[arg(long)]
+        base: Option<String>,
     },
-    /// Set the commit a stack applies to, in the repository here.
+    /// Set the commit a stack applies to, in the repository here: only if
+    /// its patches apply there.
     Base { name: String, rev: String },
-    /// Put one patch on a stack: a mail, or a diff on stdin and -m.
+    /// Put one patch on a stack, making it if need be: a mail, or a diff on
+    /// stdin and -m. Only if it applies.
     Add {
         name: String,
         /// The message, when stdin is a bare diff.
@@ -62,6 +103,9 @@ enum Cmd {
         /// Where to put it, counting from 1 at the bottom; else on top.
         #[arg(long)]
         at: Option<usize>,
+        /// The commit a new stack is on; else HEAD.
+        #[arg(long)]
+        base: Option<String>,
     },
     /// A stack's patches, bottom first; or one patch as mail.
     Show { name: String, patch: Option<String> },
@@ -73,8 +117,22 @@ enum Cmd {
         #[arg(long)]
         rev: Option<String>,
     },
-    /// Edit a stack as `git rebase -i` would; or one patch, in $EDITOR.
-    Edit { name: String, patch: Option<String> },
+    /// Edit a stack as `git rebase -i` would; or one patch, in $EDITOR: as
+    /// mail, or one of its files as the patch leaves it (--path), the patch
+    /// made again from what is saved.
+    Edit {
+        name: String,
+        patch: Option<String>,
+        /// The line, from 1, to open the editor at.
+        #[arg(long, requires = "patch")]
+        line: Option<usize>,
+        /// A file the patch changes, to edit as the patch leaves it.
+        #[arg(long, requires = "patch")]
+        path: Option<String>,
+        /// What to start the file from: an edit not taken before.
+        #[arg(long, requires = "path")]
+        from: Option<PathBuf>,
+    },
     /// Move a patch to another position, counting from 1 at the bottom.
     Move { name: String, patch: String, to: usize },
     /// Take patches out of a stack. They stay in the database.
@@ -83,7 +141,8 @@ enum Cmd {
         #[arg(required = true)]
         patches: Vec<String>,
     },
-    /// Every edit, head moved and run, oldest first: a stack's, or all.
+    /// Every edit and every move of a head, oldest first: a stack's, or
+    /// all. `runs` has the asks, applies and pulls.
     Log { name: Option<String> },
     /// A stack's tree of edits, newest first.
     Tree { name: String },
@@ -106,34 +165,71 @@ enum Cmd {
         #[arg(long)]
         from: Option<String>,
     },
-    /// Comment on a patch, as a whole (its title), or list its comments.
+    /// Comment on a stack, on one of its patches as a whole, or on a line
+    /// of one. Its short id is printed, for `send` and `reply`. Where a
+    /// comment is, is what the agent may change when it is asked: the stack,
+    /// or that patch.
     Comment {
         name: String,
-        patch: String,
-        text: Option<String>,
-    },
-    /// Ask claude to edit, rebase, review or test a stack. It runs on its
-    /// own; what came of it lands in the database.
-    Ask {
-        name: String,
-        kind: AskKind,
-        /// What to do, for an edit; what to look for, for a review or a
-        /// test.
-        request: Vec<String>,
-        /// For a rebase: the commit to go onto.
-        #[arg(long)]
-        onto: Option<String>,
-        /// The patch it is about.
+        /// The patch: its position from 1, or its id or change; else the
+        /// comment is on the stack.
         #[arg(long)]
         patch: Option<String>,
-        /// Wait for it to land, and print what came of it.
+        /// A line of the patch, as FILE:LINE with LINE as the diff has it,
+        /// `+`, `-` or a space first: `a.txt:+TWO`.
+        #[arg(long, requires = "patch")]
+        line: Option<String>,
+        /// A record of the stack's history (`stacked log` lists them), as
+        /// @12: a question on it, for the agent to answer only.
+        #[arg(long, conflicts_with = "patch")]
+        about: Option<String>,
+        #[arg(required = true)]
+        text: Vec<String>,
+    },
+    /// A stack's comments, its own then each patch's, or one patch's: each
+    /// its short id, where it is, where it stands, and its thread.
+    Comments {
+        name: String,
+        #[arg(long)]
+        patch: Option<String>,
+        #[arg(long, value_enum)]
+        show: Option<ShowArg>,
+    },
+    /// Reply to a comment, by its short id.
+    Reply {
+        name: String,
+        id: String,
+        #[arg(required = true)]
+        text: Vec<String>,
+    },
+    /// Ask the agent about comments, by their short ids, or --all that can
+    /// be sent. It may change the code where they are, unless told to
+    /// answer only, or to build and test. It runs on its own: its answer
+    /// lands as a turn of each thread.
+    Send {
+        name: String,
+        ids: Vec<String>,
+        /// Every comment that can be sent: the stack's and each patch's, or
+        /// `--patch`'s.
+        #[arg(long, conflicts_with = "ids")]
+        all: bool,
+        #[arg(long, requires = "all")]
+        patch: Option<String>,
+        /// The agent only answers: nothing changes.
+        #[arg(long, conflicts_with = "build_and_test")]
+        answer_only: bool,
+        /// The agent builds and tests, in a workspace of its choosing: on the
+        /// stack's comments and patches' as a whole.
+        #[arg(long)]
+        build_and_test: bool,
+        /// Wait for them to be answered, and print the threads.
         #[arg(long)]
         wait: bool,
     },
     /// The runs, oldest first: asks, applies and pulls, and what came of
     /// them.
     Runs { name: Option<String> },
-    /// What a run's claude wrote.
+    /// What a run's agent wrote.
     Transcript { id: String },
     /// Pull a stack's reviews from Phabricator.
     Pull { name: String },
@@ -145,8 +241,23 @@ enum Cmd {
         #[arg(long)]
         branch: Option<String>,
     },
-    /// The lines of the database passed over, if any.
+    /// The lines of the database passed over, if any; and whether each
+    /// stack applies.
     Check,
+    /// Write a new database: this one, the start of its history left out.
+    /// What there was before --from is the new one's start, and everything
+    /// from it on follows; without --from, only what there is now. This one
+    /// is only read.
+    Trim {
+        new: PathBuf,
+        /// The first rev of the history kept, as @12.
+        #[arg(long)]
+        from: Option<String>,
+    },
+    /// The settings, as they are: every one, in the form of the file they
+    /// are read from (~/.stacked.toml, or $STACKED_CONFIG), to start one
+    /// from: `stacked config > ~/.stacked.toml`.
+    Config,
     /// An ask's prompt (for the ask's wrapper).
     #[command(hide = true)]
     Prompt { id: String },
@@ -156,6 +267,10 @@ enum Cmd {
     /// File what a finished ask did (for the ask's wrapper).
     #[command(hide = true)]
     Land { id: String },
+    /// Whether the patches above still apply on what an ask changing a
+    /// patch has in its worktree (for the agent).
+    #[command(hide = true)]
+    Fits { id: String },
 }
 
 fn die(msg: &str) -> ! {
@@ -174,20 +289,6 @@ fn stdin() -> Result<String> {
     Ok(s)
 }
 
-pub fn time(t: i64) -> String {
-    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
-    let t = t as libc::time_t;
-    unsafe { libc::localtime_r(&t, &mut tm) };
-    format!(
-        "{:04}-{:02}-{:02} {:02}:{:02}",
-        tm.tm_year + 1900,
-        tm.tm_mon + 1,
-        tm.tm_mday,
-        tm.tm_hour,
-        tm.tm_min
-    )
-}
-
 fn parse_rev(s: &str) -> Result<usize> {
     s.trim_start_matches('@')
         .parse()
@@ -198,82 +299,116 @@ fn here() -> PathBuf {
     std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
 }
 
-/// Edits `name` through a todo list: the editor runs with no lock held, so
-/// the stack is checked to be as it was before anything is written.
-fn edit_stack(path: &Path, name: &str) -> Result<()> {
-    let db = Db::load(path)?;
-    let s = db.stack(name)?;
-    let (rev, _) = db.head(name).unwrap();
-    let lines = match todo::parse(&edit_text(&todo::render(&db, s), ".todo")?)? {
-        Some(l) => todo::resolve(&db, l)?,
-        None => {
-            eprintln!("stacked: the list was emptied; nothing changed");
-            return Ok(());
-        }
-    };
-    let mut drafts = Vec::new();
-    for (action, id) in &lines {
-        let p = db.patch(id);
-        drafts.push(match action {
-            Action::Pick | Action::Drop => None,
-            Action::Reword => {
-                let message = strip_comments(&edit_text(&p.message, ".txt")?);
-                if message.is_empty() {
-                    return err(format!("the message of {} was emptied; nothing changed", &id[..8]));
-                }
-                Some(Draft {
-                    message,
-                    ..Draft::from(p)
-                })
-            }
-            Action::Edit => Some(parse_mail(&edit_text(&ops::render(p), ".patch")?)?),
-        });
-    }
-    Db::edit(path, |db| {
-        if db.head(name).map(|(r, _)| r) != Some(rev) {
-            return err(format!("{name} changed while it was being edited; nothing changed"));
-        }
-        let mut patches = Vec::new();
-        let mut verbs = Vec::new();
-        for ((action, id), draft) in lines.iter().zip(drafts) {
-            match (action, draft) {
-                (Action::Drop, _) => verbs.push(format!("drop {}", &id[..8])),
-                (_, Some(d)) => {
-                    let old = db.patch(id).clone();
-                    let new = db.add_patch(ops::revise(&old, d))?;
-                    if new != old.id {
-                        let verb = if *action == Action::Edit { "edit" } else { "reword" };
-                        verbs.push(format!("{verb} {}", &id[..8]));
-                    }
-                    patches.push(new);
-                }
-                (_, None) => patches.push(id.clone()),
-            }
-        }
-        let op = if verbs.is_empty() {
-            "reorder".to_string()
-        } else {
-            verbs.join(", ")
-        };
-        if db.set_stack(name, patches, &op)? == rev {
-            eprintln!("stacked: nothing changed");
-        }
-        Ok(())
-    })
+/// `rev` (else HEAD) of the repository here, and where that repository is:
+/// what a new stack is checked against.
+fn commit_here(rev: Option<&str>) -> Result<(String, String)> {
+    let repo = git::toplevel(&here())
+        .map_err(|_| Error("not in a git repository: a stack's patches are checked to apply to a commit of one".into()))?;
+    Ok((git::rev_parse(&here(), rev.unwrap_or("HEAD"))?, repo))
 }
 
-fn edit_patch(path: &Path, name: &str, spec: &str) -> Result<()> {
-    let db = Db::load(path)?;
+fn now_ms() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0)
+}
+
+/// The patch of stack `name` that `spec` names.
+fn patch_of(db: &Db, name: &str, spec: &str) -> Result<Patch> {
     let s = db.stack(name)?;
-    let at = db.resolve(s, spec)?;
-    let id = s.patches[at].clone();
-    let draft = parse_mail(&edit_text(&ops::render(db.patch(&id)), ".patch")?)?;
-    Db::edit(path, |db| {
-        if db.stack(name)?.patches.get(at) != Some(&id) {
-            return err(format!("{name} changed while it was being edited; nothing changed"));
+    Ok(db.patch(&s.patches[db.resolve(s, spec)?]).clone())
+}
+
+/// `FILE:LINE` of patch `p`: its file, the side (`+`, `-` or a space), and
+/// the line's text. FILE is the first of the patch's files that a colon
+/// ends.
+fn line_of(p: &Patch, spec: &str) -> Result<String> {
+    let lines = note_lines(p);
+    for (i, _) in spec.match_indices(':') {
+        let (file, rest) = (&spec[..i], &spec[i + 1..]);
+        if !lines.iter().any(|l| l.file == file) {
+            continue;
         }
-        ops::replace(db, name, at, draft, "edit").map(|_| ())
-    })
+        let (side, text) = match rest.chars().next() {
+            Some(c @ ('+' | '-' | ' ')) => (c, &rest[1..]),
+            _ => (' ', rest),
+        };
+        return find_line(&lines, file, side, text)
+            .ok_or_else(|| Error(format!("{file} has no line {}{text:?} in this patch", side.to_string().trim())));
+    }
+    err(format!("{spec:?} names none of this patch's files: FILE:LINE, as a.txt:+TWO"))
+}
+
+/// Where comment `n` of stack `name` is, said.
+fn where_on(db: &Db, name: &str, n: &Note) -> String {
+    if n.about.is_some() {
+        return format!("the history, {}", n.preview);
+    }
+    if n.on_stack() {
+        return "the stack".into();
+    }
+    let at = db
+        .stack(name)
+        .ok()
+        .and_then(|s| s.patches.iter().position(|id| db.patch(id).change == n.change))
+        .map_or("a patch no longer in the stack".to_string(), |i| format!("patch {}", i + 1));
+    let p = db.versions(&n.change).last().map(|p| (*p).clone());
+    if n.file == MSG_PATH && p.is_some_and(|p| title_key(&p) == n.line) {
+        format!("{at}, as a whole")
+    } else {
+        format!("{at} · {}: {}", n.file, n.preview)
+    }
+}
+
+fn print_note(db: &Db, name: &str, n: &Note, busy: &Busy) {
+    let state = note_state(db, name, n, busy);
+    let state = if state.is_empty() { String::new() } else { format!("\t{state}") };
+    println!("{}\t{}{state}", short_id(&n.change, &n.id), where_on(db, name, n));
+    for t in thread_turns(&n.text) {
+        let who = match t.role {
+            Role::You => "you",
+            Role::Agent => "agent",
+            Role::Reviewer => t.tag.as_deref().unwrap_or("reviewer"),
+        };
+        for (k, line) in t.body.lines().enumerate() {
+            if k == 0 {
+                println!("  {who}: {line}");
+            } else {
+                println!("    {line}");
+            }
+        }
+    }
+}
+
+/// The comments of stack `name`, its own then each patch's, or patch
+/// `spec`'s; each with whether its line is gone from its patch.
+fn comments_of(db: &Db, name: &str, spec: Option<&str>) -> Result<Vec<(Note, bool)>> {
+    let s = db.stack(name)?;
+    let mut subjects: Vec<(String, Option<Patch>)> = Vec::new();
+    match spec {
+        Some(spec) => {
+            let p = patch_of(db, name, spec)?;
+            subjects.push((p.change.clone(), Some(p)));
+        }
+        None => {
+            subjects.push((stack_change(name), None));
+            for id in &s.patches {
+                let p = db.patch(id).clone();
+                subjects.push((p.change.clone(), Some(p)));
+            }
+        }
+    }
+    let mut out = Vec::new();
+    for (change, p) in subjects {
+        let keys: std::collections::HashSet<String> =
+            p.as_ref().map(|p| note_lines(p).into_iter().map(|l| l.key).collect()).unwrap_or_default();
+        for n in db.notes(&change) {
+            let gone = p.is_some() && !keys.contains(&n.line);
+            out.push((n.clone(), gone));
+        }
+    }
+    Ok(out)
 }
 
 fn print_run(r: &stacked::db::Run) {
@@ -302,24 +437,33 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
                 );
             }
         }
-        Cmd::New { name } => {
-            Db::edit(path, |db| db.new_stack(&name))?;
+        Cmd::New { name, base } => {
+            let (base, repo) = commit_here(base.as_deref())?;
+            Db::edit(path, |db| db.new_stack(&name, &base, &repo))?;
         }
-        Cmd::Import { name, range, replace } => {
-            let (mail, base) = match &range {
-                Some(r) => {
+        Cmd::Import { name, range, replace, base } => {
+            let (mail, base) = match (&range, base) {
+                (Some(r), _) => {
                     let (mail, base) = git::format_patch(&here(), r)?;
                     (mail, Some(base))
                 }
-                None => {
+                (None, given) => {
                     let mail = stdin()?;
-                    let base = base_commit(&mail);
+                    let base = match given {
+                        Some(rev) => Some(commit_here(Some(&rev))?.0),
+                        None => base_commit(&mail),
+                    };
                     (mail, base)
                 }
             };
             let drafts = parse_mbox(&mail)?;
             if drafts.is_empty() {
                 return err("no commits to import");
+            }
+            if base.is_none() && Db::load(path)?.head(&name).is_none() {
+                return err(
+                    "the mail does not say what it applies to: give --base REV, or make it with `git format-patch --base=REV`",
+                );
             }
             let on = match base {
                 Some(b) => Some((b, git::toplevel(&here())?)),
@@ -336,7 +480,7 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
                 db.set_stack_on(&name, s.patches, Some(base), Some(repo), &op)
             })?;
         }
-        Cmd::Add { name, message, at } => {
+        Cmd::Add { name, message, at, base } => {
             let text = stdin()?;
             let draft = match message {
                 Some(m) => Draft {
@@ -346,9 +490,15 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
                 },
                 None => parse_mail(&text)?,
             };
+            let new = match Db::load(path)?.head(&name) {
+                Some(_) => None,
+                None => Some(commit_here(base.as_deref())?),
+            };
             Db::edit(path, |db| {
-                if db.head(&name).is_none() {
-                    db.new_stack(&name)?;
+                if let Some((base, repo)) = &new
+                    && db.head(&name).is_none()
+                {
+                    db.new_stack(&name, base, repo)?;
                 }
                 ops::add(db, &name, draft, at.map(|n| n.saturating_sub(1)))
             })?;
@@ -386,8 +536,33 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
             let ps: Vec<_> = at.iter().map(|&i| db.patch(&s.patches[i])).collect();
             print!("{}", format_mbox(&ps));
         }
-        Cmd::Edit { name, patch: None } => edit_stack(path, &name)?,
-        Cmd::Edit { name, patch: Some(p) } => edit_patch(path, &name, &p)?,
+        Cmd::Edit { name, patch: None, .. } => eprintln!("stacked: {}", ops::edit_stack(path, &name)?),
+        Cmd::Edit { name, patch: Some(p), line, path: None, .. } => {
+            let db = Db::load(path)?;
+            let at = db.resolve(db.stack(&name)?, &p)?;
+            eprintln!("stacked: {}", ops::edit_patch(path, &name, at, line)?);
+        }
+        Cmd::Edit { name, patch: Some(p), line, path: Some(f), from } => {
+            let db = Db::load(path)?;
+            let at = db.resolve(db.stack(&name)?, &p)?;
+            let text = match &from {
+                Some(from) => Some(std::fs::read_to_string(from).map_err(|e| Error(format!("{}: {e}", from.display())))?),
+                None => None,
+            };
+            match ops::edit_code(path, &name, at, &f, line.unwrap_or(1), text)? {
+                ops::Edited::Done(said) => eprintln!("stacked: {said}"),
+                ops::Edited::Unchanged => eprintln!("stacked: saved as it was: nothing changed"),
+                ops::Edited::Refused { why, text } => {
+                    let short = f.rsplit('/').next().unwrap_or(&f);
+                    let keep = std::env::temp_dir().join(format!("stacked-edit-{}-{short}", std::process::id()));
+                    std::fs::write(&keep, text).map_err(|e| Error(format!("{}: {e}", keep.display())))?;
+                    return err(format!(
+                        "{why}; nothing changed. Your edit is kept in {k}: `stacked edit {name} {p} --path {f} --from {k}` takes it up again",
+                        k = keep.display()
+                    ));
+                }
+            }
+        }
         Cmd::Move { name, patch, to } => Db::edit(path, |db| {
             let from = db.resolve(db.stack(&name)?, &patch)?;
             ops::move_patch(db, &name, from, to.saturating_sub(1)).map(|_| ())
@@ -470,76 +645,171 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
             };
             print!("{}", ops::interdiff(old, new));
         }
-        Cmd::Comment { name, patch, text } => {
+        Cmd::Comment { name, patch, line, about: Some(rev), text } => {
+            let _ = (patch, line);
+            let rev = parse_rev(&rev)?;
             let db = Db::load(path)?;
-            let s = db.stack(&name)?;
-            let p = db.patch(&s.patches[db.resolve(s, &patch)?]).clone();
-            match text {
-                None => {
-                    for n in db.notes(&p.change) {
-                        println!("{} · {}: {}\n{}\n", n.id, n.file, n.preview, n.text);
+            db.stack(&name)?;
+            let Some(e) = stacked::history::entries(&db, &name).into_iter().find(|e| e.rev == rev) else {
+                return err(format!("@{rev} is not in the history of {name}: `stacked log {name}` lists it"));
+            };
+            let note = Note {
+                change: stack_change(&name),
+                id: format!("h{}", now_ms()),
+                text: text.join(" "),
+                preview: e.text.chars().take(80).collect(),
+                about: Some(rev),
+                ..Default::default()
+            };
+            let short = short_id(&note.change, &note.id);
+            Db::edit(path, |db| db.set_note(note))?;
+            println!("{short}");
+        }
+        Cmd::Comment { name, patch, line, about: None, text } => {
+            let text = text.join(" ");
+            let db = Db::load(path)?;
+            db.stack(&name)?;
+            let note = match (&patch, &line) {
+                (None, _) => Note {
+                    change: stack_change(&name),
+                    id: format!("s{}", now_ms()),
+                    text,
+                    ..Default::default()
+                },
+                (Some(spec), None) => {
+                    let p = patch_of(&db, &name, spec)?;
+                    Note {
+                        change: p.change.clone(),
+                        id: format!("p{}", now_ms()),
+                        line: title_key(&p),
+                        text,
+                        file: MSG_PATH.into(),
+                        preview: p.title().chars().take(80).collect(),
+                        ..Default::default()
                     }
                 }
-                Some(t) => {
-                    let key = view::title_key(&p);
-                    Db::edit(path, |db| {
-                        let text = match db.note(&p.change, &key) {
-                            Some(n) => format!("{}\n{t}", n.text),
-                            None => t.clone(),
-                        };
-                        db.set_note(Note {
-                            change: p.change.clone(),
-                            id: key.clone(),
-                            line: key.clone(),
-                            text,
-                            file: view::MSG_PATH.into(),
-                            preview: p.title().into(),
-                            ..Default::default()
-                        })
-                    })?;
+                (Some(spec), Some(l)) => {
+                    let p = patch_of(&db, &name, spec)?;
+                    let key = line_of(&p, l)?;
+                    // A comment on the line already: this is a turn of it.
+                    match db.note(&p.change, &key) {
+                        Some(n) => Note {
+                            text: append_turn(&n.text, Role::You, &text, None),
+                            failed: None,
+                            ..n.clone()
+                        },
+                        None => {
+                            let at = note_lines(&p).into_iter().find(|nl| nl.key == key).unwrap();
+                            Note {
+                                change: p.change.clone(),
+                                id: key.clone(),
+                                line: key,
+                                text,
+                                file: at.file,
+                                preview: fold(&at.text).chars().take(80).collect(),
+                                ..Default::default()
+                            }
+                        }
+                    }
+                }
+            };
+            let short = short_id(&note.change, &note.id);
+            Db::edit(path, |db| db.set_note(note))?;
+            println!("{short}");
+        }
+        Cmd::Comments { name, patch, show } => {
+            let db = Db::load(path)?;
+            let busy = ask::with_agent(&db);
+            let show = show.map_or(Show::All, ShowArg::show);
+            for (n, gone) in comments_of(&db, &name, patch.as_deref())? {
+                if shows(show, &n, &busy, gone) {
+                    print_note(&db, &name, &n, &busy);
                 }
             }
         }
-        Cmd::Ask { name, kind, request, onto, patch, wait } => {
+        Cmd::Reply { name, id, text } => {
+            let text = text.join(" ");
+            Db::edit(path, |db| {
+                let n = db.find_note(&name, &id)?.clone();
+                db.set_note(Note {
+                    text: append_turn(&n.text, Role::You, &text, None),
+                    failed: None,
+                    ..n
+                })
+            })?;
+        }
+        Cmd::Send { name, ids, all, patch, answer_only, build_and_test, wait } => {
+            let way = match (answer_only, build_and_test) {
+                (_, true) => Way::Test,
+                (true, _) => Way::Answer,
+                _ => Way::Change,
+            };
             let db = Db::load(path)?;
-            let focus = match &patch {
-                Some(p) => {
-                    let s = db.stack(&name)?;
-                    Some(s.patches[db.resolve(s, p)?].clone())
+            let since = db.records.len();
+            let busy = ask::with_agent(&db);
+            let picked: Vec<Note> = if all {
+                comments_of(&db, &name, patch.as_deref())?
+                    .into_iter()
+                    .map(|(n, _)| n)
+                    .filter(|n| ask::sendable(n) && !busy.contains_key(&(n.change.clone(), n.id.clone())))
+                    .filter(|n| way != Way::Test || ask::can_test(&db, n))
+                    .collect()
+            } else if ids.is_empty() {
+                return err("name the comments to send by their short ids (`stacked comments NAME` lists them), or --all");
+            } else {
+                ids.iter().map(|id| db.find_note(&name, id).cloned()).collect::<Result<_>>()?
+            };
+            if picked.is_empty() {
+                return err("no comment to send");
+            }
+            // Comments go together only from one place: the stack, or one
+            // patch.
+            let mut batches: Vec<(ask::Scope, Vec<(String, String)>)> = Vec::new();
+            for n in &picked {
+                let scope = ask::scope_of(n);
+                let at = (n.change.clone(), n.id.clone());
+                match batches.iter_mut().find(|(s, _)| *s == scope) {
+                    Some((_, b)) => b.push(at),
+                    None => batches.push((scope, vec![at])),
                 }
-                None => None,
-            };
-            let kind = match kind {
-                AskKind::Edit => Kind::Edit,
-                AskKind::Rebase => Kind::Rebase,
-                AskKind::Review => Kind::Review,
-                AskKind::Test => Kind::Test,
-            };
-            let request = request.join(" ");
-            let id = ask::start(
-                path,
-                &ask::Spec {
-                    kind,
-                    stack: &name,
-                    request: &request,
-                    focus: focus.as_deref(),
-                    onto: onto.as_deref(),
-                },
-            )?;
-            println!("{id}");
+            }
+            for (_, batch) in &batches {
+                let waits = ask::send(path, &name, batch, way)?;
+                for (c, i) in batch {
+                    match &waits {
+                        None => println!("{}\tsent ({})", short_id(c, i), way.said()),
+                        Some(w) => println!("{}\tready ({}), it goes {w}", short_id(c, i), way.said()),
+                    }
+                }
+            }
             if wait {
+                let sent: Vec<(String, String)> = picked.iter().map(|n| (n.change.clone(), n.id.clone())).collect();
                 loop {
                     std::thread::sleep(std::time::Duration::from_millis(200));
                     let db = Db::load(path)?;
-                    let r = db.run(&id).unwrap();
-                    if r.state != stacked::db::RunState::Started {
-                        print_run(r);
-                        break;
+                    ask::land_orphans(path, &db);
+                    let db = Db::load(path)?;
+                    let busy = ask::with_agent(&db);
+                    let going = sent
+                        .iter()
+                        .any(|k| busy.contains_key(k) || db.note(&k.0, &k.1).is_some_and(|n| n.queued.is_some()));
+                    if going {
+                        continue;
                     }
-                    if !ask::running(r) && r.pid.is_some() {
-                        print_run(&ask::land(path, &id, Some("killed"))?);
-                        break;
+                    // What came of it: every comment written since, the
+                    // sent ones where they are now (a split moves them with
+                    // their line), and those an answer opened.
+                    let mut failed = 0;
+                    for n in db.stack_notes(&name) {
+                        if db.note_history(&n.change, &n.id).last().is_some_and(|(rev, _)| *rev > since) {
+                            failed += n.failed.is_some() as usize;
+                            print_note(&db, &name, n, &busy);
+                        }
                     }
+                    if failed > 0 {
+                        return err(format!("{failed} of them failed"));
+                    }
+                    break;
                 }
             }
         }
@@ -566,6 +836,19 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
         }
         Cmd::Pull { name } => print_run(&review::pull(path, &name)?),
         Cmd::Apply { name, branch } => print_run(&ops::apply_stack(path, &name, branch.as_deref())?),
+        Cmd::Trim { new, from } => {
+            let from = from.as_deref().map(parse_rev).transpose()?;
+            println!("{}", stacked::trim::trim(path, &new, from)?.said(&new));
+        }
+        Cmd::Config => {
+            let p = stacked::config::path();
+            let state = if p.exists() { "read from" } else { "none in" };
+            println!("# {state} {}", p.display());
+            for w in stacked::config::warnings() {
+                println!("# wrong: {w}");
+            }
+            print!("{}", stacked::config::get().render());
+        }
         Cmd::Check => {
             let db = Db::load(path)?;
             for w in &db.warnings {
@@ -573,6 +856,12 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
             }
             if db.warnings.is_empty() {
                 println!("{} records, none passed over", db.records.len());
+            }
+            for s in db.stacks() {
+                match db.verify(s) {
+                    Ok(()) => println!("{}: applies", s.name),
+                    Err(e) => println!("{}: {}", s.name, e.0.trim_end_matches("; nothing changed")),
+                }
             }
         }
         Cmd::Prompt { id } => {
@@ -585,6 +874,7 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
         }
         Cmd::Record { id } => ask::record(path, &id, std::io::stdin().lock())?,
         Cmd::Land { id } => print_run(&ask::land(path, &id, None)?),
+        Cmd::Fits { id } => println!("{}", ask::fits(path, &id)?),
     }
     Ok(())
 }
@@ -611,7 +901,19 @@ fn main() {
     }
     let path = file
         .or_else(|| std::env::var_os("STACKED_FILE").map(PathBuf::from))
+        .or_else(|| stacked::config::get().file.clone())
         .unwrap_or_else(|| PathBuf::from("stacked.jsonl"));
+    // What is wrong with the settings is said: by the editor in its bar,
+    // here for the commands, but those asks run by themselves.
+    let quiet = matches!(
+        cli.cmd,
+        Some(Cmd::Open { .. } | Cmd::Prompt { .. } | Cmd::Record { .. } | Cmd::Land { .. } | Cmd::Fits { .. } | Cmd::Config) | None
+    );
+    if !quiet {
+        for w in stacked::config::warnings() {
+            eprintln!("stacked: {w}");
+        }
+    }
     let res = match cli.cmd {
         Some(Cmd::Open { .. }) | None => stacked::tui::run(&path),
         Some(cmd) => run(&path, cmd),

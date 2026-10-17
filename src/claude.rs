@@ -78,14 +78,13 @@ lines (\\n line breaks, a line per point) so it is easy to read in a \
 terminal -- no prose, no \
 markdown, no code fences.";
 
-const GIT_SUBCOMMANDS: [&str; 15] = [
+const GIT_SUBCOMMANDS: [&str; 14] = [
     "status",
     "log",
     "show",
     "diff",
     "add",
     "restore",
-    "stash",
     "reset",
     "commit",
     "rebase",
@@ -102,7 +101,8 @@ const READ_COMMANDS: [&str; 22] = [
 ];
 
 /// The git history operations, and read-only tools, an editing ask may run
-/// without asking: no network, so an ask can never touch a remote.
+/// without asking: no network, so an ask can never touch a remote. No
+/// stash either: a worktree shares it with the user's.
 pub fn allowed_tools() -> String {
     let mut tools: Vec<String> = GIT_SUBCOMMANDS
         .iter()
@@ -331,9 +331,9 @@ pub fn format_event(event: &Value) -> Vec<String> {
                 .and_then(Value::as_bool)
                 .unwrap_or(false)
             {
-                vec!["✗ claude reported an error".into()]
+                vec!["✗ the agent reported an error".into()]
             } else {
-                vec!["✓ claude finished".into()]
+                vec!["✓ the agent finished".into()]
             }
         }
         _ => Vec::new(),
@@ -376,7 +376,7 @@ mod tests {
         assert_eq!(format_event(&res), ["  ↳ x y"]);
         assert_eq!(
             format_event(&serde_json::json!({"type": "result", "is_error": true})),
-            ["✗ claude reported an error"]
+            ["✗ the agent reported an error"]
         );
     }
 

@@ -87,12 +87,19 @@ fn new_thread(p: &crate::db::Patch, lines: &[crate::view::NoteLine], c: &Remote)
         by: Some(c.author.clone()),
         remote: vec![c.phid.clone()],
         time: now(),
+        ..Default::default()
     }
 }
 
 /// Pulls the reviews of `name`'s patches into the database, the result a
 /// run of its own.
 pub fn pull(db_path: &std::path::Path, name: &str) -> Result<Run> {
+    if crate::config::get().reviews.source == crate::config::Source::None {
+        return crate::db::err(format!(
+            "reviews come from nowhere: reviews.source is \"none\" in {}",
+            crate::config::path().display()
+        ));
+    }
     let revs = revisions(&Db::load(db_path)?, name)?;
     let id = format!("pull-{}-{}", now(), std::process::id());
     let fetched = if revs.is_empty() {

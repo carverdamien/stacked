@@ -13,21 +13,41 @@ pub fn git(dir: &Path, args: &[&str]) -> Result<String> {
 }
 
 pub fn git_in(dir: &Path, args: &[&str], stdin: Option<&str>) -> Result<String> {
+    git_env(dir, args, stdin, &[])
+}
+
+/// As `git_in`, with `env` set for git.
+pub fn git_env(
+    dir: &Path,
+    args: &[&str],
+    stdin: Option<&str>,
+    env: &[(&str, &Path)],
+) -> Result<String> {
     let mut child = Command::new("git")
         .args(args)
         .current_dir(dir)
+        .envs(env.iter().map(|(k, v)| (*k, *v)))
         .stdin(if stdin.is_some() { Stdio::piped() } else { Stdio::null() })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| Error(format!("git: {e}")))?;
-    if let Some(text) = stdin {
-        // A git that stops reading early says why on stderr.
-        let _ = child.stdin.take().unwrap().write_all(text.as_bytes());
-    }
+    // Written meanwhile, from a thread: a git that answers as it reads
+    // would otherwise wait on its output being read while this waits on its
+    // input being taken. One that stops reading early says why on stderr.
+    let writer = stdin.map(|text| {
+        let mut pipe = child.stdin.take().unwrap();
+        let text = text.to_string();
+        std::thread::spawn(move || {
+            let _ = pipe.write_all(text.as_bytes());
+        })
+    });
     let out = child
         .wait_with_output()
         .map_err(|e| Error(format!("git: {e}")))?;
+    if let Some(w) = writer {
+        let _ = w.join();
+    }
     if !out.status.success() {
         return err(format!(
             "git {}: {}",
@@ -69,13 +89,28 @@ pub fn dirty(dir: &Path) -> Result<bool> {
     Ok(!git(dir, &["status", "--porcelain", "--untracked-files=no"])?.trim().is_empty())
 }
 
-/// A worktree of its own at `at`, detached at `base`, with `mbox` applied.
+/// A worktree of its own at `at`, detached at `base`, with `mbox` applied;
+/// none if the patches do not apply.
 pub fn scratch(repo: &Path, at: &Path, base: &str, mbox: &str) -> Result<()> {
     git(repo, &["worktree", "add", "--quiet", "--detach", &at.to_string_lossy(), base])?;
-    if !mbox.is_empty() {
-        git_in(at, &["am", "--quiet", "--keep-non-patch"], Some(mbox))?;
+    if !mbox.is_empty()
+        && let Err(e) = git_in(at, &["-c", "commit.gpgsign=false", "am", "--quiet", "--keep-non-patch"], Some(mbox))
+    {
+        remove_scratch(repo, at);
+        return err(format!("the stack does not apply to its base: {}", e.0));
     }
     Ok(())
+}
+
+/// Anything not committed, untracked files too.
+pub fn unfinished(dir: &Path) -> Result<bool> {
+    let status = git(dir, &["status", "--porcelain"])?;
+    let gitdir = git(dir, &["rev-parse", "--git-dir"])?;
+    let gitdir = Path::new(gitdir.trim());
+    let busy = ["rebase-merge", "rebase-apply", "MERGE_HEAD", "CHERRY_PICK_HEAD"]
+        .iter()
+        .any(|f| dir.join(gitdir).join(f).exists());
+    Ok(!status.trim().is_empty() || busy)
 }
 
 pub fn remove_scratch(repo: &Path, at: &Path) {
