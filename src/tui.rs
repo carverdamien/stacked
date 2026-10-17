@@ -111,6 +111,16 @@ pub enum Focus {
 
 /// How the code is drawn, as self-review draws it: one column, the two
 /// sides line by line, or the two sides each a pane of its own (compact).
+/// The panes of History…: the history, the stack as it was at the record
+/// picked, and its patch as it was.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum HistFocus {
+    #[default]
+    List,
+    Stack,
+    Patch,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Layout {
     Unified,
@@ -571,6 +581,15 @@ pub struct App {
     /// The record the history's cursor is on: it stays on it as records
     /// come, newest first, above it.
     hist_rev: Option<usize>,
+    /// History…'s pane the cursor is in; the patch picked in the stack as
+    /// it was; the cursor in that patch, and its top.
+    pub hist_focus: HistFocus,
+    pub hist_patch: usize,
+    pub hist_cursor: usize,
+    hist_top: usize,
+    /// The rows of that patch as it was, and what they were built from.
+    pub hist_rows: Vec<Row>,
+    hist_built: Option<String>,
     /// The run a transcript is of, and how far it is scrolled up.
     transcript: Option<String>,
     scroll: usize,
@@ -671,13 +690,6 @@ fn going(db: &Db) -> Vec<String> {
         .collect()
 }
 
-fn now_ms() -> u128 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis())
-        .unwrap_or(0)
-}
-
 impl App {
     /// The editor on the database at `path`, with the settings in use.
     pub fn new(path: &Path) -> Result<App> {
@@ -732,6 +744,12 @@ impl App {
             pick: 0,
             pick_top: 0,
             hist_rev: None,
+            hist_focus: HistFocus::List,
+            hist_patch: 0,
+            hist_cursor: 0,
+            hist_top: 0,
+            hist_rows: vec![],
+            hist_built: None,
             transcript: None,
             scroll: 0,
             versions: None,
@@ -1299,6 +1317,10 @@ impl App {
         }
         match self.screen {
             Screen::Main => self.main_key(k),
+            Screen::History => {
+                self.history_key(k);
+                Effect::None
+            }
             Screen::Transcript => {
                 self.transcript_key(k);
                 Effect::None
@@ -1808,11 +1830,20 @@ impl App {
                 out.push("Press Enter, or Space, to put this version back in the stack, or read it whole.".into());
                 out.push("Press ↑↓ for another version, Esc to go back.".into());
             }
-            Screen::History => {
-                out.push("Press Enter to go to it: the stack it made, the comment, the run.".into());
-                out.push("Press Space to start a new database from there: the history before it left out.".into());
-                out.push("Press ↑↓ for another, Esc to go back.".into());
-            }
+            Screen::History => match self.hist_focus {
+                HistFocus::List => {
+                    out.push("Press Enter to go to it: the stack it made, the comment, the run.".into());
+                    out.push("Press Space to ask the agent about it, answer only, or to start a new database from there.".into());
+                    out.push("Press ↑↓ for another, → for the stack as it was then, and its patches; Esc to leave the history.".into());
+                }
+                HistFocus::Stack => {
+                    out.push("Press Enter, or →, to read the patch as it was.".into());
+                    out.push("Press ↑↓ for another of its patches, ← for the history. Only to look at: Esc leaves the history, to edit or comment.".into());
+                }
+                HistFocus::Patch => {
+                    out.push("Press ↑↓ (pgup pgdn home end) to scroll, ← for the stack. The patch as it was, its comments as they stood: Esc leaves the history, to edit or comment.".into());
+                }
+            },
             Screen::Transcript | Screen::Text => {
                 out.push("Press ↑↓ (pgup pgdn home end) to scroll, Esc to go back.".into())
             }
@@ -1878,6 +1909,78 @@ impl App {
             keys += if self.comments { ", → for the comments" } else { ", → to show the comments" };
         }
         format!("{keys}.")
+    }
+
+    /// History…'s keys: ↑↓ in the pane the cursor is in, ← → from pane to
+    /// pane, enter on a record goes to it; esc leaves. The stack and its
+    /// patch as they were are only to look at: nothing is edited, nor
+    /// asked, from them.
+    fn history_key(&mut self, k: KeyEvent) {
+        let patches = self.hist_state().map_or(0, |(_, s)| s.patches.len());
+        match (self.hist_focus, k.code) {
+            (_, KeyCode::Esc) => self.screen = Screen::Main,
+            (HistFocus::List, KeyCode::Right) => {
+                if self.hist_state().is_some() {
+                    self.hist_focus = HistFocus::Stack;
+                }
+            }
+            (HistFocus::List, _) => {
+                let was = self.pick;
+                self.list_key(k);
+                if self.pick != was {
+                    self.hist_patch = 0;
+                    self.hist_cursor = 0;
+                    self.hist_top = 0;
+                }
+            }
+            (HistFocus::Stack, KeyCode::Left) => self.hist_focus = HistFocus::List,
+            (HistFocus::Stack, KeyCode::Right | KeyCode::Enter) => {
+                if patches > 0 {
+                    self.hist_focus = HistFocus::Patch;
+                }
+            }
+            (HistFocus::Stack, code) => {
+                let last = patches.saturating_sub(1);
+                let was = self.hist_patch;
+                self.hist_patch = match code {
+                    KeyCode::Down => (self.hist_patch + 1).min(last),
+                    KeyCode::Up => self.hist_patch.saturating_sub(1),
+                    KeyCode::Home => 0,
+                    KeyCode::End => last,
+                    KeyCode::PageDown => (self.hist_patch + self.page()).min(last),
+                    KeyCode::PageUp => self.hist_patch.saturating_sub(self.page()),
+                    _ => self.hist_patch,
+                };
+                if self.hist_patch != was {
+                    self.hist_cursor = 0;
+                    self.hist_top = 0;
+                }
+            }
+            (HistFocus::Patch, KeyCode::Left) => self.hist_focus = HistFocus::Stack,
+            (HistFocus::Patch, KeyCode::Enter) => {
+                self.status = "a preview, as it was: esc leaves the history, to edit or comment".into();
+            }
+            (HistFocus::Patch, code) => {
+                let last = self.hist_rows.len().saturating_sub(1);
+                self.hist_cursor = match code {
+                    KeyCode::Down => (self.hist_cursor + 1).min(last),
+                    KeyCode::Up => self.hist_cursor.saturating_sub(1),
+                    KeyCode::PageDown => (self.hist_cursor + self.page()).min(last),
+                    KeyCode::PageUp => self.hist_cursor.saturating_sub(self.page()),
+                    KeyCode::Home => 0,
+                    KeyCode::End => last,
+                    _ => self.hist_cursor,
+                };
+            }
+        }
+    }
+
+    /// The stack as it was just after the record History…'s cursor is on:
+    /// its rev and itself, if it was on one.
+    pub fn hist_state(&self) -> Option<(usize, Stack)> {
+        let e = self.history().into_iter().nth(self.pick)?;
+        let at = crate::history::stack_at(&self.db, &self.stack, e.rev)?;
+        Some((at, self.db.node(at).ok()?.clone()))
     }
 
     /// The lists: the tree, the stacks, the runs, the versions, the
@@ -2070,7 +2173,9 @@ impl App {
     fn common(&self, items: &mut Vec<Item>) {
         let w = self.read_only().is_none();
         items.push(Item::line());
-        if self.current().is_some() || self.db.names().contains(&self.stack.as_str()) {
+        // Nothing is edited from History…, only looked at.
+        let edits = self.screen != Screen::History;
+        if edits && (self.current().is_some() || self.db.names().contains(&self.stack.as_str())) {
             if let Some((_, op)) = self.db.undo_target(&self.stack) {
                 items.push(Item::new(format!("Undo: {op}"), Action::Undo).when(w));
             }
@@ -2620,7 +2725,7 @@ impl App {
         }
         let name = self.stack.clone();
         let text = text.trim().to_string();
-        let stamp = now_ms();
+        let stamp = crate::db::unique();
         self.edit(|db| {
             let note = match target {
                 Target::Stack => Note {
@@ -2759,6 +2864,10 @@ impl App {
         self.pick = 0;
         self.pick_top = 0;
         self.hist_rev = None;
+        self.hist_focus = HistFocus::List;
+        self.hist_patch = 0;
+        self.hist_cursor = 0;
+        self.hist_top = 0;
         if screen == Screen::Tree {
             let head = self.db.head(&self.stack).map(|(r, _)| r);
             self.pick = tree::graph(&self.db, &self.stack)
@@ -2988,7 +3097,26 @@ impl App {
         match self.screen {
             Screen::Runs => self.draw_runs(buf, body),
             Screen::Transcript => self.draw_transcript(buf, body),
-            Screen::History => cursor = self.draw_history(buf, body),
+            Screen::History => {
+                let w = body.width as usize;
+                if w < 60 {
+                    cursor = self.draw_history(buf, body);
+                } else {
+                    let list_w = (w * 2 / 5).max(30);
+                    let stack_w = (w / 5).clamp(18, 32);
+                    let (x1, x2) = (list_w, list_w + 1 + stack_w);
+                    for y in 0..body.height {
+                        buf.set_string(body.x + x1 as u16, body.y + y, "│", color::meta());
+                        buf.set_string(body.x + x2 as u16, body.y + y, "│", color::meta());
+                    }
+                    let list = Rect::new(body.x, body.y, list_w as u16, body.height);
+                    let stack = Rect::new(body.x + (x1 + 1) as u16, body.y, stack_w as u16, body.height);
+                    let patch = Rect::new(body.x + (x2 + 1) as u16, body.y, (w - x2 - 1) as u16, body.height);
+                    cursor = self.draw_history(buf, list);
+                    self.draw_history_stack(buf, stack);
+                    self.draw_history_patch(buf, patch);
+                }
+            }
             Screen::Text => self.draw_text(buf, body),
             Screen::Tree | Screen::Stacks | Screen::Versions => {
                 let (left, (right, _)) = self.columns(buf, body, true, false, None);
@@ -3139,6 +3267,11 @@ impl App {
                     (Screen::Main, Some(_)) => "enter: comment · ",
                     (Screen::Main, None) => "enter or ",
                     (Screen::Transcript | Screen::Text, _) => "↑↓: scroll · ",
+                    (Screen::History, _) => match self.hist_focus {
+                        HistFocus::List => "enter: go to it · →: the stack then · ",
+                        HistFocus::Stack => "enter: read it · ←: the history · ",
+                        HistFocus::Patch => "↑↓: scroll · ←: the stack · ",
+                    },
                     _ => "enter: pick · ",
                 };
                 let keys = match (self.screen, self.reading) {
@@ -3804,7 +3937,7 @@ impl App {
         // it stands.
         let mut lines: Vec<(Option<usize>, String, Style)> = Vec::new();
         for (i, e) in events.iter().enumerate() {
-            lines.push((Some(i), format!(" {} {}", local_time(e.time), e.text), Style::new()));
+            lines.push((Some(i), format!(" {}{} {}", e.lanes, local_time(e.time), e.text), Style::new()));
             for n in self.about(e.rev) {
                 let last = thread_turns(&n.text)
                     .last()
@@ -3819,7 +3952,7 @@ impl App {
                     .unwrap_or_default();
                 let state = self.tag(&n, &busy);
                 let state = if state.is_empty() { String::new() } else { format!(" · {state}") };
-                lines.push((None, format!("     └ {last}{state}"), by_style(Some(&by_of(&n)))));
+                lines.push((None, format!(" {}   └ {last}{state}", e.under), by_style(Some(&by_of(&n)))));
             }
         }
         let editing = match &self.mode {
@@ -3851,6 +3984,65 @@ impl App {
             }
         }
         cursor
+    }
+
+    /// The stack as it was at the record picked: which, and its patches.
+    fn draw_history_stack(&self, buf: &mut Buffer, area: Rect) {
+        let (w, h) = (area.width as usize, area.height as usize);
+        let Some((rev, s)) = self.hist_state() else {
+            put(buf, area, 1, 0, w, "no stack then", color::dim());
+            return;
+        };
+        let mut head = color::header();
+        if self.hist_focus == HistFocus::Stack {
+            head = head.add_modifier(Modifier::UNDERLINED);
+        }
+        put(buf, area, 0, 0, w, &fit(&format!(" @{rev} · {}", s.op), w), head);
+        put(buf, area, 0, 1, w, &fit(&format!(" as it was, {}", local_time(s.time)), w), color::dim());
+        if s.patches.is_empty() {
+            put(buf, area, 1, 2, w, "an empty stack", color::dim());
+        }
+        let rows = h.saturating_sub(2);
+        let top = self.hist_patch.saturating_sub(rows.saturating_sub(1));
+        for (y, (i, id)) in s.patches.iter().enumerate().skip(top).take(rows).enumerate() {
+            let mut st = Style::new();
+            if i == self.hist_patch {
+                st = st.add_modifier(if self.hist_focus == HistFocus::Stack { Modifier::REVERSED } else { Modifier::BOLD });
+            }
+            put(buf, area, 0, y + 2, w, &fit(&format!(" {:>2} {}", i + 1, self.db.patch(id).title()), w), st);
+        }
+    }
+
+    /// The patch picked, as it was, its comments as they stood: only to
+    /// look at.
+    fn draw_history_patch(&mut self, buf: &mut Buffer, area: Rect) {
+        let (w, h) = (area.width as usize, area.height as usize);
+        let Some(e) = self.history().into_iter().nth(self.pick) else { return };
+        let Some((_, s)) = self.hist_state() else { return };
+        let Some(id) = s.patches.get(self.hist_patch.min(s.patches.len().saturating_sub(1))).cloned() else {
+            return;
+        };
+        let want = format!("{id}\0{}\0{w}\0{}", e.rev, self.db.changes());
+        if self.hist_built.as_deref() != Some(&want) {
+            let p = self.db.patch(&id).clone();
+            let notes = crate::history::notes_at(&self.db, &p.change, e.rev);
+            let refs: Vec<&Note> = notes.iter().collect();
+            self.hist_rows = patch_rows(&p, &refs, w.saturating_sub(1), &Deco::default());
+            self.hist_built = Some(want);
+            self.hist_cursor = self.hist_cursor.min(self.hist_rows.len().saturating_sub(1));
+        }
+        let focus = self.hist_focus == HistFocus::Patch;
+        let rows = h;
+        if self.hist_cursor < self.hist_top {
+            self.hist_top = self.hist_cursor;
+        } else if self.hist_cursor >= self.hist_top + rows {
+            self.hist_top = self.hist_cursor + 1 - rows;
+        }
+        for y in 0..rows {
+            let i = self.hist_top + y;
+            let Some(row) = self.hist_rows.get(i) else { break };
+            put(buf, area, 0, y, w, &fit(&row.text, w), row_style(row, focus && i == self.hist_cursor));
+        }
     }
 
     fn draw_text(&self, buf: &mut Buffer, area: Rect) {

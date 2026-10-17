@@ -153,7 +153,9 @@ fn down_to(app: &mut App, text: &str) {
 
 /// Draws until the screen shows `what`, the file read again meanwhile.
 fn wait_for(app: &mut App, what: &str) -> String {
-    for _ in 0..100 {
+    // Patient: the asks of every test run at once, each its worktree to
+    // make.
+    for _ in 0..300 {
         app.refresh();
         let screen = draw(app);
         if screen.contains(what) {
@@ -162,6 +164,12 @@ fn wait_for(app: &mut App, what: &str) -> String {
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
     panic!("never shown: {what:?}\n{}", draw(app));
+}
+
+/// What History…'s first pane, the history, shows: two fifths of the
+/// screen's 120 columns.
+fn history_pane(screen: &str) -> String {
+    screen.lines().map(|l| l.chars().take(48).collect::<String>()).collect::<Vec<_>>().join("\n")
 }
 
 /// The comments of stack `name`'s patch `k`.
@@ -967,6 +975,108 @@ fn the_history_of_the_stack_its_patches_and_comments() {
 }
 
 #[test]
+fn the_history_shows_the_stack_and_its_patch_as_they_were() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    // A comment on a line of the first patch, deleted after; then the
+    // first patch dropped.
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Enter]);
+    save(&mut app, "too loud");
+    keys(&mut app, &[KeyCode::Down]);
+    choose(&mut app, "Delete this comment");
+    choose(&mut app, "Delete it");
+    keys(&mut app, &[KeyCode::Left]);
+    choose(&mut app, "Drop this patch");
+    choose(&mut app, "Drop it");
+    keys(&mut app, &[KeyCode::Home]);
+    choose(&mut app, "History…");
+    // Three panes: the history, the stack as it was, its patch as it was.
+    let screen = draw(&mut app);
+    assert!(screen.lines().nth(1).unwrap().contains("@") && screen.contains("· drop "), "{screen}");
+    assert!(screen.contains(" as it was,") && screen.contains("  1 Bug 2 - add b") && !screen.contains("  2 Bug"), "{screen}");
+    assert!(screen.contains("+bee"), "its patch:\n{screen}");
+    // Down to the import: both patches, and the first's comment as it
+    // stood then, for it was written after.
+    let import = app.history().iter().position(|e| e.text.contains("import")).unwrap();
+    for _ in 0..import {
+        keys(&mut app, &[KeyCode::Down]);
+    }
+    let screen = draw(&mut app);
+    assert!(screen.contains("  1 Bug 1 - shout two") && screen.contains("  2 Bug 2 - add b"), "{screen}");
+    assert!(screen.contains("+TWO") && !screen.contains("too loud"), "{screen}");
+    let written = app.history().iter().position(|e| e.text.contains("· written ·")).unwrap();
+    for _ in written..import {
+        keys(&mut app, &[KeyCode::Up]);
+    }
+    assert!(draw(&mut app).contains("too loud"), "the comment, as it stood once written");
+    // → to the stack, ↓ its second patch, → to read it.
+    keys(&mut app, &[KeyCode::Right]);
+    assert_eq!(app.hist_focus, stacked::tui::HistFocus::Stack);
+    keys(&mut app, &[KeyCode::Down, KeyCode::Right]);
+    assert_eq!(app.hist_focus, stacked::tui::HistFocus::Patch);
+    assert!(draw(&mut app).contains("+bee"));
+    // Only to look at: nothing is written, the menu has no edits.
+    let before = std::fs::read(&db).unwrap();
+    keys(&mut app, &[KeyCode::Down, KeyCode::Enter]);
+    assert!(app.status.contains("a preview"), "{}", app.status);
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    let all: Vec<String> = items(&app).into_iter().map(|(l, _)| l).collect();
+    assert!(!all.iter().any(|l| l.starts_with("Undo") || l.starts_with("Comment") || l.starts_with("Edit")), "{all:?}");
+    keys(&mut app, &[KeyCode::Esc]);
+    assert_eq!(std::fs::read(&db).unwrap(), before);
+    // Esc leaves the history, for the stack as it is.
+    keys(&mut app, &[KeyCode::Esc]);
+    assert_eq!(app.screen, Screen::Main);
+}
+
+#[test]
+fn the_history_draws_the_branches_of_the_tree() {
+    let (_tmp, db, _src) = setup();
+    // A move, undone, then a drop made from where the move was: two
+    // branches off the import.
+    Db::edit(&db, |d| stacked::ops::move_patch(d, "s", 1, 0).map(|_| ())).unwrap();
+    Db::edit(&db, |d| d.undo("s").map(|_| ())).unwrap();
+    Db::edit(&db, |d| stacked::ops::drop_patches(d, "s", &[1]).map(|_| ())).unwrap();
+    // A comment on the drop, drawn under it, the lanes going on beside it.
+    let rev = Db::load(&db).unwrap().head("s").unwrap().0;
+    Db::edit(&db, |d| {
+        d.set_note(Note {
+            change: stack_change("s"),
+            id: "h1".into(),
+            text: "why?".into(),
+            preview: "@x".into(),
+            about: Some(rev),
+            ..Default::default()
+        })
+    })
+    .unwrap();
+    let mut app = open(&db).unwrap();
+    draw(&mut app);
+    keys(&mut app, &[KeyCode::Home]);
+    choose(&mut app, "History…");
+    let screen = history_pane(&draw(&mut app));
+    let line = |what: &str| screen.lines().find(|l| l.contains(what)).unwrap_or_else(|| panic!("no {what:?}:\n{screen}")).to_string();
+    // As the tree draws them: the drop on the stack's lane, filled, it
+    // being where the stack is; the move on a lane of its own; both joining
+    // the import.
+    assert!(line("· drop ").starts_with(" ●   "), "{screen}");
+    assert!(line("· undo ").starts_with(" │   "), "{screen}");
+    assert!(line("· move ").starts_with(" │ ○ "), "{screen}");
+    assert!(line("· import ").starts_with(" ○ ┘ "), "{screen}");
+    assert!(line("└ you: why?").starts_with(" │      └"), "{screen}");
+    // The times line up past the lanes.
+    let at = |what: &str| line(what).split("20").next().unwrap().chars().count();
+    assert_eq!(at("· drop "), at("· import "));
+    // The tree draws them the same.
+    keys(&mut app, &[KeyCode::Esc]);
+    choose(&mut app, "Tree of edits…");
+    let tree = draw(&mut app);
+    assert!(tree.contains(" ● @") && tree.contains(" │ ○ @") && tree.contains(" ○ ┘ @"), "{tree}");
+}
+
+#[test]
 fn the_agent_is_asked_about_the_history_to_answer_only() {
     let (_tmp, db, _src) = setup();
     fake_claude();
@@ -979,7 +1089,7 @@ fn the_agent_is_asked_about_the_history_to_answer_only() {
     let rev = app.history()[0].rev;
     // A question on the drop, written under it, asked to answer only.
     choose(&mut app, "Ask agent about this, answer only…");
-    let screen = draw(&mut app);
+    let screen = history_pane(&draw(&mut app));
     let at = screen.lines().position(|l| l.contains(&format!("@{rev} · drop"))).unwrap();
     assert!(screen.lines().nth(at + 1).unwrap().contains(&format!("a question on @{rev}")), "under it:\n{screen}");
     typed(&mut app, "why drop it?");
@@ -993,8 +1103,8 @@ fn the_agent_is_asked_about_the_history_to_answer_only() {
     assert_eq!(n.text, "why drop it?");
     drop(d);
     // Its answer shows under the record.
-    let screen = wait_for(&mut app, "agent replied (answer only)");
-    assert!(screen.contains("     └ agent: Seen."), "{screen}");
+    let screen = wait_for(&mut app, "└ agent: Seen.");
+    assert!(screen.contains(" │    └ agent: Seen. · agent replied"), "under the record, the lanes beside it:\n{screen}");
     // Among the stack's comments it says what it is about, and is asked
     // about only to answer.
     choose(&mut app, "Go to its comments");

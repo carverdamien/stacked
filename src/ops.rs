@@ -212,7 +212,7 @@ pub fn apply_stack(
         Err(e) => (RunState::Failed, e.0.clone()),
     };
     let run = Run {
-        id: format!("apply-{}-{}", crate::db::now(), std::process::id()),
+        id: format!("apply-{}", crate::db::unique()),
         what: "apply".into(),
         stack: name.into(),
         state,

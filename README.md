@@ -243,9 +243,28 @@ every comment and every run; the editor shows them where they belong:
 - `History…`, on the stack's header: everything that happened to the stack,
   newest first: its edits, the moves of its head (undo, redo, select),
   every record of its comments (written, asked, answered, moved, deleted)
-  and every run that landed. Enter goes to it: the stack in the tree, the
-  comment where it is, the run's transcript. Space, `Ask agent about this,
-  answer only…` (below), or `Start a new database here…` (further below).
+  and every run that landed. Beside them, the tree of edits' lanes: each
+  edit on its branch's lane, marked as the tree marks it (`●` where the
+  stack is, `○` the others, `┘` where a branch leaves the state it was
+  edited from), and the lanes going on past every other record, so which
+  branch an edit is on, and where an undo jumped, can be read in the order
+  it all happened. Enter goes to it: the stack in the tree, the comment
+  where it is, the run's transcript. Space, `Ask agent about this, answer
+  only…` (below), or `Start a new database here…` (further below).
+
+  History… has three panes: the history on the left, then the stack as it
+  was just after the record picked (its patches), then its patch picked,
+  as it was, with its comments as they stood. → and ← go from pane to pane,
+  ↑↓ go through each, and enter on a patch reads it. Those two are only to
+  look at: nothing is edited, commented on or asked from them, nor undone
+  or redone from History…; esc leaves it, for the stack as it is.
+
+  ```
+   ●   2026-10-17 09:57 @9 · drop 1ca5b141 · 1 patch
+   │   2026-10-17 09:57 @8 · undo move 1ca5b141 from 2 to 1 → @6
+   │ ○ 2026-10-17 09:57 @7 · move 1ca5b141 from 2 to 1 · 2 patches
+   ○ ┘ 2026-10-17 09:57 @6 · import 2 patches · 2 patches
+  ```
 - `Versions of this patch…`, on a patch: every version, oldest first, each
   with the edit that first had it; beside it what changed from the version
   before, or the version whole. `Put this version back in the stack` is an
@@ -445,7 +464,7 @@ the other.
   rows, line keys, comment threads.
 - `panes.rs`: the compact layout's two panes.
 - `reading.rs`, `blocks.rs`: the reading mode's marks, by blocks of code.
-- `tree.rs`: the tree of edits as a graph.
+- `tree.rs`: the tree of edits as a graph, and the lanes the history draws.
 - `history.rs`: a stack's history, as the editor shows it and the agent is
   told it.
 - `trim.rs`: a new database, the start of the history left out.
@@ -473,7 +492,8 @@ menus by place, what `?` says where, writing in every pane, a comment asked
 about and its stream and answer shown in place, the screen never waiting on
 the agent, redrawing not slowing as the agent writes, the filter kept in
 the file, the three views, reading by hunks and by a Rust file's blocks,
-editing a patch by hand at the cursor, the history screens, the agent
+editing a patch by hand at the cursor, the history screens, the branches
+History… draws and the stack and patch it shows as they were, the agent
 asked about a record of the history, a new database started from it, a
 moved comment and an answer's comments, the
 comments pane's previews, and moving a patch. The tests in `check.rs` show

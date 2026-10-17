@@ -307,12 +307,6 @@ fn commit_here(rev: Option<&str>) -> Result<(String, String)> {
     Ok((git::rev_parse(&here(), rev.unwrap_or("HEAD"))?, repo))
 }
 
-fn now_ms() -> u128 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis())
-        .unwrap_or(0)
-}
 
 /// The patch of stack `name` that `spec` names.
 fn patch_of(db: &Db, name: &str, spec: &str) -> Result<Patch> {
@@ -655,7 +649,7 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
             };
             let note = Note {
                 change: stack_change(&name),
-                id: format!("h{}", now_ms()),
+                id: format!("h{}", stacked::db::unique()),
                 text: text.join(" "),
                 preview: e.text.chars().take(80).collect(),
                 about: Some(rev),
@@ -672,7 +666,7 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
             let note = match (&patch, &line) {
                 (None, _) => Note {
                     change: stack_change(&name),
-                    id: format!("s{}", now_ms()),
+                    id: format!("s{}", stacked::db::unique()),
                     text,
                     ..Default::default()
                 },
@@ -680,7 +674,7 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
                     let p = patch_of(&db, &name, spec)?;
                     Note {
                         change: p.change.clone(),
-                        id: format!("p{}", now_ms()),
+                        id: format!("p{}", stacked::db::unique()),
                         line: title_key(&p),
                         text,
                         file: MSG_PATH.into(),

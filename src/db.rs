@@ -262,6 +262,18 @@ pub fn stack_change(name: &str) -> String {
     format!("{STACK}{name}")
 }
 
+/// An id no other process, and no other call of this one, makes: the time
+/// in milliseconds, the process, and a count. Ids of runs, batches and
+/// comments; those made earlier sort before.
+pub fn unique() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis());
+    format!("{ms}-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed))
+}
+
 /// A comment's short id: six hex characters, for the command line.
 pub fn short_id(change: &str, id: &str) -> String {
     sha1_smol::Sha1::from(format!("{change}\0{id}")).digest().to_string()[..6].to_string()
@@ -1246,6 +1258,20 @@ fn check_name(name: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ids_are_never_made_twice() {
+        // Many at once, in the same millisecond, from threads of one
+        // process: as asks are launched away from the screen.
+        let all: Vec<String> = (0..8)
+            .map(|_| std::thread::spawn(|| (0..500).map(|_| unique()).collect::<Vec<_>>()))
+            .collect::<Vec<_>>()
+            .into_iter()
+            .flat_map(|t| t.join().unwrap())
+            .collect();
+        let distinct: std::collections::HashSet<&String> = all.iter().collect();
+        assert_eq!(distinct.len(), all.len());
+    }
 
     #[test]
     fn a_thread_never_waits_on_its_own_lock() {

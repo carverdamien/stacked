@@ -234,7 +234,7 @@ pub fn queue(db_path: &Path, name: &str, notes: &[(String, String)], way: Way) -
     if notes.is_empty() {
         return err("no comment to send");
     }
-    let batch = format!("b{}-{}", now(), std::process::id());
+    let batch = format!("b{}", crate::db::unique());
     // Checked first with no lock held (it takes a moment on a big
     // repository); under it, the check is remembered.
     if let Ok(db) = Db::load(db_path)
@@ -370,7 +370,7 @@ fn claim(db: &mut Db) -> Result<Vec<String>> {
             continue;
         }
         let Some((from, _)) = db.head(&name) else { continue };
-        let id = format!("{}-{}-{}", now(), std::process::id(), started.len());
+        let id = crate::db::unique();
         let shown = notes
             .iter()
             .enumerate()

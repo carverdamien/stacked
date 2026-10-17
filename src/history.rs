@@ -16,7 +16,16 @@ pub struct Entry {
     pub time: i64,
     pub text: String,
     pub to: Goto,
+    /// The tree of edits' lanes on its line: an edit's own mark on its
+    /// branch's lane, as the tree draws it; for any other record the lanes
+    /// going on past it. As wide as every entry's.
+    pub lanes: String,
+    /// The lanes going on below it: for what is drawn under it.
+    pub under: String,
 }
+
+/// The widest the lanes are drawn: eight branches open at once.
+const LANES: usize = 16;
 
 #[derive(Debug, Clone)]
 pub enum Goto {
@@ -67,12 +76,16 @@ pub fn entries(db: &Db, name: &str) -> Vec<Entry> {
                 time: s.time,
                 text: format!("@{rev} · {} · {} patch{}", s.op, s.patches.len(), plural(s.patches.len())),
                 to: Goto::Stack(rev),
+                lanes: String::new(),
+                under: String::new(),
             }),
             Record::Head(h) if h.name == name => out.push(Entry {
                 rev,
                 time: h.time,
                 text: format!("@{rev} · {} → {}", h.op, h.rev.map_or("deleted".into(), |r| format!("@{r}"))),
                 to: Goto::Stack(h.rev.unwrap_or(rev)),
+                lanes: String::new(),
+                under: String::new(),
             }),
             Record::Comment(n) if changes.contains(&n.change) => {
                 let key = (n.change.clone(), n.id.clone());
@@ -90,6 +103,8 @@ pub fn entries(db: &Db, name: &str) -> Vec<Entry> {
                         change: n.change.clone(),
                         id: n.id.clone(),
                     },
+                    lanes: String::new(),
+                    under: String::new(),
                 });
                 last.insert(key, n);
             }
@@ -98,12 +113,50 @@ pub fn entries(db: &Db, name: &str) -> Vec<Entry> {
                 time: run.time,
                 text: format!("@{rev} · {} {:?} · {}", run.what, run.state, short(&run.summary, 80)).to_lowercase(),
                 to: Goto::Run(run.id.clone()),
+                lanes: String::new(),
+                under: String::new(),
             }),
             _ => {}
         }
     }
     out.reverse();
+    draw_lanes(db, name, &mut out);
     out
+}
+
+/// The tree of edits' lanes beside `entries`, newest first: each edit
+/// drawn on its branch's lane as the tree draws it, the lanes passing every
+/// other record; all as wide as the widest, and no wider than `LANES`.
+fn draw_lanes(db: &Db, name: &str, entries: &mut [Entry]) {
+    let head = db.head(name).map(|(r, _)| r);
+    let mut lanes = crate::tree::Lanes::default();
+    for e in entries.iter_mut() {
+        e.lanes = match db.rev(e.rev) {
+            Some(Record::Stack(s)) if s.name == name => lanes.node(e.rev, s.parent, Some(e.rev) == head),
+            _ => lanes.passing(),
+        };
+        e.under = lanes.passing();
+    }
+    let width = entries
+        .iter()
+        .map(|e| e.lanes.chars().count().max(e.under.chars().count()))
+        .max()
+        .unwrap_or(0)
+        .min(LANES);
+    let fit = |s: &str| -> String {
+        let chars: Vec<char> = s.trim_end().chars().collect();
+        if chars.len() > width {
+            let mut cut: String = chars[..width.saturating_sub(2)].iter().collect();
+            cut.push_str("… ");
+            cut
+        } else {
+            format!("{}{}", chars.iter().collect::<String>(), " ".repeat(width - chars.len()))
+        }
+    };
+    for e in entries {
+        e.lanes = fit(&e.lanes);
+        e.under = fit(&e.under);
+    }
 }
 
 /// What the edit that made stack `rev` changed, from the stack it was made
@@ -186,6 +239,40 @@ pub fn note_change(before: Option<&Note>, n: &Note) -> String {
         };
     }
     "changed".into()
+}
+
+/// The stack `name` was on just after record `rev`: its rev, if it was on
+/// one (it may not be made yet, or be deleted).
+pub fn stack_at(db: &Db, name: &str, rev: usize) -> Option<usize> {
+    let mut on = None;
+    for (i, r) in db.records.iter().enumerate().take(rev) {
+        match r {
+            Record::Stack(s) if s.name == name => on = Some(i + 1),
+            Record::Head(h) if h.name == name => on = h.rev,
+            _ => {}
+        }
+    }
+    on
+}
+
+/// The comments on `change` as they stood just after record `rev`, oldest
+/// first.
+pub fn notes_at(db: &Db, change: &str, rev: usize) -> Vec<Note> {
+    let mut at: Vec<(String, Note)> = Vec::new();
+    for r in db.records.iter().take(rev) {
+        if let Record::Comment(n) = r {
+            let had = at.iter().position(|(id, _)| *id == n.id && n.change == change);
+            match (had, n.change == change, n.text.is_empty()) {
+                (Some(k), _, true) => {
+                    at.remove(k);
+                }
+                (Some(k), _, false) => at[k].1 = n.clone(),
+                (None, true, false) => at.push((n.id.clone(), n.clone())),
+                _ => {}
+            }
+        }
+    }
+    at.into_iter().map(|(_, n)| n).collect()
 }
 
 /// Record `rev` of stack `name`'s history said in full, as the agent is

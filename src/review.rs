@@ -101,7 +101,7 @@ pub fn pull(db_path: &std::path::Path, name: &str) -> Result<Run> {
         ));
     }
     let revs = revisions(&Db::load(db_path)?, name)?;
-    let id = format!("pull-{}-{}", now(), std::process::id());
+    let id = format!("pull-{}", crate::db::unique());
     let fetched = if revs.is_empty() {
         Err("no patch of the stack has a Differential Revision".to_string())
     } else {
