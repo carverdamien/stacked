@@ -107,11 +107,22 @@ on the stack under the left pane's header, on a patch under its title in
 the left pane, on a line under the line, a reply under its comment, in the
 middle or in the comments pane. The pane being written in takes half the
 width meanwhile. Typing and the arrows edit, enter breaks the line, and esc
-asks what to do with it: `Save it`, `Save it and ask agent` (and `answer
-only`, and for the stack's or a patch's, `to build and test`), `Throw it
-away`, `Keep writing`. Esc with nothing written just closes it. `Comment in
-$EDITOR` and `Reply in $EDITOR` are in the menus too. Nothing is typed at
-the bottom: the bottom line only says things.
+asks what to do with it: `Save it`, `Save it and ask agent` (and `the whole
+stack` for a patch's, `answer only`, and for the stack's or a patch's, `to
+build and test`), `Throw it away`, `Keep writing`. Esc with nothing written
+just closes it. `Comment in $EDITOR` and `Reply in $EDITOR` are in the menus
+too. Nothing is typed at the bottom: the bottom line only says things.
+
+When the last word of a comment is yours, its menu has `Edit your reply…`
+(`Edit your comment…` when no one has answered it) and `Edit your reply in
+$EDITOR`: what you said last, written again in place, the turns before it
+as they were. Not while the agent works on it. A comment waiting its turn
+leaves the agent's queue while it is edited, so that it is not asked as it
+was: thrown away, or left as it was, it goes back on; edited, it waits to
+be asked again (or `Save it and ask agent`). In $EDITOR it is only what you
+said, nothing dropped, a line starting with `#` as any. The comment's
+history says `you edited it`. On the command line: `stacked reply NAME ID
+--edit TEXT`.
 
 ## Editing a patch by hand
 
@@ -145,6 +156,9 @@ comment is, is what the agent may change:
 - A comment on a patch, as a whole or on a line: only that patch, which the
   agent may split in place. Its worktree is the stack up to that patch;
   the patches above it, it may read with `stacked export`, not change.
+  Unless it is asked of the whole stack (below): when you know already that
+  the answer needs more than the patch (another patch changed, a new one on
+  top), as a comment on the stack would.
 
 There are three ways to ask, from a comment's menu, or `Ask agent about all
 …` on the left header (the stack's comments) or the comments pane's header
@@ -152,6 +166,12 @@ There are three ways to ask, from a comment's menu, or `Ask agent about all
 
 - `Ask agent`: it may change the code within the comment's place; its reply
   says what changed.
+- `Ask agent, the whole stack`, on a patch's comment (and `Save it and ask
+  agent, the whole stack` as you write one): a change, with the whole stack
+  in its worktree, as for the stack's own comments: it may change any
+  patch, add patches anywhere, reorder them. The comment stays on its line,
+  and its reply lands in its thread. On the command line, `stacked send
+  NAME ID --whole-stack`.
 - `Ask agent, answer only`: read-only, enforced by its tools; only the reply
   lands. An answer may open comments of its own on lines within the place,
   as a review does: the asking comment then says `opened 4 comments, 1 with
@@ -175,7 +195,8 @@ the agent runs `stacked fits`, which says whether the patches above still
 apply on its change; if they would not, or the comment needs more than its
 patch, it changes nothing and the comment moves to the stack's comments,
 with the agent's why as its last turn and `moved from patch 2 · a.txt: TWO`
-on its first line, to be asked again from there. `Go to where it came from`
+on its first line, to be asked again from there (asked of the whole stack
+from the start, it would not have had to). `Go to where it came from`
 and `Move it back to patch 2` are in its menu. Comments on lines follow a
 split or merged patch to the piece that has their line. A stack's change
 made from a stack you have edited since is a branch of the tree of edits,
@@ -508,7 +529,8 @@ through `git am`, the tree, recovery from broken lines, comments on the
 stack, a patch and a line, every way of asking about them (a script stands
 in for the agent and rewrites commits with git, runs `stacked fits`,
 answers, opens comments, tests), a split following its comments, a comment
-moved to the stack, asks waiting their turn, a rebase, a branch when the
+moved to the stack, a patch's comment asked of the whole stack adding a
+patch on top, a reply written again, asks waiting their turn, a rebase, a branch when the
 stack moved on (and left out of the history), failures kept to look at, comments staying on their line
 across versions, a patch edited by hand (as mail and as code, at a line,
 refused and taken up again), trimming, the settings, filing Phabricator
@@ -522,8 +544,9 @@ the file, the three views, reading by hunks and by a Rust file's blocks,
 editing a patch by hand at the cursor, the history screens, the branches
 History… draws and the stack diff it shows beside each change, the agent
 asked about a record of the history, a new database started from it, a
-moved comment and an answer's comments, the
-comments pane's previews, and moving a patch. The tests in `check.rs` show
+moved comment and an answer's comments, a patch's comment asked of the
+whole stack, what you said last written again (off the queue meanwhile),
+the comments pane's previews, and moving a patch. The tests in `check.rs` show
 the check's index holds only what the patches touch, that it writes nothing
 to the repository, and how a patch's files are read before and after it;
 those in `history.rs`, what the history leaves out (comments, runs, a move

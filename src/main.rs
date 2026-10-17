@@ -7,7 +7,7 @@ use stacked::ask;
 use stacked::db::{Db, Error, Note, Patch, Record, Result, Way, err, local_time as time, short_id, stack_change};
 use stacked::mbox::{Draft, base_commit, format_mbox, parse_mail, parse_mbox};
 use stacked::ops;
-use stacked::thread::{Role, append_turn, thread_turns};
+use stacked::thread::{Role, append_turn, replace_last_turn, thread_turns};
 use stacked::tui::{Busy, Show, note_state, shows};
 use stacked::view::{MSG_PATH, find_line, fold, note_lines, title_key};
 use stacked::{git, review, tree};
@@ -199,6 +199,12 @@ enum Cmd {
     Reply {
         name: String,
         id: String,
+        /// Write what you said last again, rather than add to it: only when
+        /// the last word is yours, and not while the agent works on it. A
+        /// comment waiting its turn leaves the agent's queue, to be sent
+        /// again.
+        #[arg(long)]
+        edit: bool,
         #[arg(required = true)]
         text: Vec<String>,
     },
@@ -222,6 +228,11 @@ enum Cmd {
         /// stack's comments and patches' as a whole.
         #[arg(long)]
         build_and_test: bool,
+        /// A patch's comments, sent to the whole stack: the agent may change
+        /// any patch, add patches anywhere, reorder them, as for the stack's
+        /// own comments, not only the patch they are on.
+        #[arg(long, conflicts_with_all = ["answer_only", "build_and_test"])]
+        whole_stack: bool,
         /// Wait for them to be answered, and print the threads.
         #[arg(long)]
         wait: bool,
@@ -723,18 +734,41 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
                 }
             }
         }
-        Cmd::Reply { name, id, text } => {
+        Cmd::Reply { name, id, edit, text } => {
             let text = text.join(" ");
-            Db::edit(path, |db| {
+            let off = Db::edit(path, |db| {
                 let n = db.find_note(&name, &id)?.clone();
+                if !edit {
+                    db.set_note(Note {
+                        text: append_turn(&n.text, Role::You, &text, None),
+                        failed: None,
+                        ..n
+                    })?;
+                    return Ok(None);
+                }
+                if ask::with_agent(db).contains_key(&(n.change.clone(), n.id.clone())) {
+                    return err("the agent is working on it: wait for it to land");
+                }
+                let Some(again) = replace_last_turn(&n.text, &text) else {
+                    return err("the last word is not yours: reply instead");
+                };
+                if again == n.text {
+                    return Ok(None);
+                }
+                let off = n.queued.is_some().then(|| short_id(&n.change, &n.id));
                 db.set_note(Note {
-                    text: append_turn(&n.text, Role::You, &text, None),
+                    text: again,
                     failed: None,
+                    queued: None,
                     ..n
-                })
+                })?;
+                Ok(off)
             })?;
+            if let Some(short) = off {
+                println!("{short}\tedited: off the agent's queue, until it is sent again");
+            }
         }
-        Cmd::Send { name, ids, all, patch, answer_only, build_and_test, wait } => {
+        Cmd::Send { name, ids, all, patch, answer_only, build_and_test, whole_stack, wait } => {
             let way = match (answer_only, build_and_test) {
                 (_, true) => Way::Test,
                 (true, _) => Way::Answer,
@@ -759,22 +793,23 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
                 return err("no comment to send");
             }
             // Comments go together only from one place: the stack, or one
-            // patch.
+            // patch; to the whole stack, all together.
             let mut batches: Vec<(ask::Scope, Vec<(String, String)>)> = Vec::new();
             for n in &picked {
-                let scope = ask::scope_of(n);
+                let scope = if whole_stack { ask::Scope::Stack } else { ask::scope_of(n) };
                 let at = (n.change.clone(), n.id.clone());
                 match batches.iter_mut().find(|(s, _)| *s == scope) {
                     Some((_, b)) => b.push(at),
                     None => batches.push((scope, vec![at])),
                 }
             }
+            let said = if whole_stack { stacked::db::WHOLE } else { way.said() };
             for (_, batch) in &batches {
-                let waits = ask::send(path, &name, batch, way)?;
+                let waits = ask::send(path, &name, batch, way, whole_stack)?;
                 for (c, i) in batch {
                     match &waits {
-                        None => println!("{}\tsent ({})", short_id(c, i), way.said()),
-                        Some(w) => println!("{}\tready ({}), it goes {w}", short_id(c, i), way.said()),
+                        None => println!("{}\tsent ({said})", short_id(c, i)),
+                        Some(w) => println!("{}\tready ({said}), it goes {w}", short_id(c, i)),
                     }
                 }
             }

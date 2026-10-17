@@ -7,7 +7,7 @@
 use std::collections::HashSet;
 
 use crate::db::{Db, Note, Patch, Record, Stack, local_time};
-use crate::thread::{Role, last_reply_way, last_role};
+use crate::thread::{Role, last_mine, last_reply_way, last_role, thread_turns};
 
 /// A record that changed the stack, and where it took it.
 #[derive(Debug, Clone)]
@@ -385,7 +385,7 @@ pub fn note_change(before: Option<&Note>, n: &Note) -> String {
         return "moved".into();
     }
     if n.queued.is_some() && b.queued.is_none() {
-        return format!("sent to the agent ({})", n.queued.as_ref().unwrap().way.said());
+        return format!("sent to the agent ({})", n.queued.as_ref().unwrap().said());
     }
     if n.queued.is_none() && b.queued.is_some() && n.text == b.text {
         return "taken by the agent".into();
@@ -394,6 +394,14 @@ pub fn note_change(before: Option<&Note>, n: &Note) -> String {
         return "ask failed".into();
     }
     if n.text != b.text {
+        // What you said last written again, not added to: a reply to your
+        // own turn goes on a line of its own.
+        if let (Some(now), Some(then)) = (last_mine(&n.text), last_mine(&b.text))
+            && thread_turns(&n.text).len() == thread_turns(&b.text).len()
+            && !now.starts_with(&format!("{then}\n"))
+        {
+            return "you edited it".into();
+        }
         return match last_role(&n.text) {
             Some(Role::Agent) => format!("agent replied ({})", way_said(&last_reply_way(&n.text).unwrap_or_default())),
             Some(Role::Reviewer) => "a reviewer replied".into(),

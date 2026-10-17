@@ -238,12 +238,27 @@ impl Way {
 }
 
 /// A comment sent and waiting: how, and the batch it goes in. Comments
-/// sent together go in one ask.
+/// sent together go in one ask. A patch's comment may be sent to the whole
+/// stack (`stack`): the agent may then change any patch, as for the
+/// stack's own comments, not only its patch.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct Queued {
     pub way: Way,
     pub batch: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub stack: bool,
 }
+
+impl Queued {
+    /// How it is said to the user: `answer only`, `may change the whole
+    /// stack`.
+    pub fn said(&self) -> &'static str {
+        if self.stack { WHOLE } else { self.way.said() }
+    }
+}
+
+/// How a change asked of the whole stack, from a patch's comment, is said.
+pub const WHOLE: &str = "may change the whole stack";
 
 /// Where a promoted comment was.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Default)]

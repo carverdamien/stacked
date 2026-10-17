@@ -133,6 +133,22 @@ pub fn append_turn(text: &str, role: Role, body: &str, tag: Option<&str>) -> Str
     render_thread(&turns)
 }
 
+/// Your last turn of `text`, if the last word is yours: what you wrote
+/// since the agent's or a reviewer's last turn, the comment itself if no
+/// one has answered it.
+pub fn last_mine(text: &str) -> Option<String> {
+    thread_turns(text).pop().filter(|t| t.role == Role::You).map(|t| t.body)
+}
+
+/// `text` with your last turn written again as `body`; none if the last
+/// word is not yours.
+pub fn replace_last_turn(text: &str, body: &str) -> Option<String> {
+    let mut turns = thread_turns(text);
+    let last = turns.last_mut().filter(|t| t.role == Role::You)?;
+    last.body = body.trim().to_string();
+    Some(render_thread(&turns))
+}
+
 /// The mode claude's latest reply was given in, "unknown" for one from
 /// before modes were recorded, None when there is no reply.
 pub fn last_reply_mode(text: &str) -> Option<String> {
@@ -202,4 +218,29 @@ pub fn thread_line_roles(lines: &[String]) -> Vec<LineRole> {
         }
     }
     roles
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn your_last_turn_is_written_again() {
+        let asked = "why so loud?";
+        assert_eq!(last_mine(asked).as_deref(), Some("why so loud?"));
+        assert_eq!(replace_last_turn(asked, " why so loud, really? ").as_deref(), Some("why so loud, really?"));
+        // Answered, and replied to twice: the replies since are one turn.
+        let text = append_turn(&append_turn(asked, Role::Agent, "It is a shout.", Some("answer")), Role::You, "louder", None);
+        let text = append_turn(&text, Role::You, "much louder", None);
+        assert_eq!(last_mine(&text).as_deref(), Some("louder\nmuch louder"));
+        let again = replace_last_turn(&text, "quieter").unwrap();
+        let turns = thread_turns(&again);
+        assert_eq!(turns.len(), 3);
+        assert_eq!((turns[1].role, turns[1].body.as_str(), turns[1].tag.as_deref()), (Role::Agent, "It is a shout.", Some("answer")));
+        assert_eq!((turns[2].role, turns[2].body.as_str()), (Role::You, "quieter"));
+        // The agent's last word, or a reviewer's: none of yours to edit.
+        let answered = append_turn(asked, Role::Agent, "It is a shout.", Some("answer"));
+        assert_eq!((last_mine(&answered), replace_last_turn(&answered, "x")), (None, None));
+        assert_eq!(last_mine(&append_turn(asked, Role::Reviewer, "Agreed.", Some("ann"))), None);
+    }
 }

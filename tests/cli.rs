@@ -718,6 +718,34 @@ $fits > {out}"#,
 }
 
 #[test]
+fn a_comment_on_a_patch_sent_to_the_whole_stack_may_change_any_of_it() {
+    let e = env();
+    e.ok(&["import", "s", "base"]);
+    let id = comment(&e, &["--patch", "1", "--line", "a.txt:+2", "Test", "this,", "in", "a", "patch", "on", "top."]);
+    // The worktree holds the whole stack, the patches above too: a new
+    // commit on top of it all.
+    let claude = fake_claude(
+        &e,
+        "claude-whole.sh",
+        r#"set -e
+test "$(git rev-list --count HEAD)" = 4
+echo t > t.txt && git add t.txt && git -c user.name=C -c user.email=c@x commit -qm "Bug 4 - test 2""#,
+        r#"{"replies": {"c1": "Tested, in patch 4."}}"#,
+    );
+    let (fine, out, err) = send(&e, &claude, &[&id, "--whole-stack"], &[]);
+    assert!(fine, "{err}");
+    assert!(out.contains(&format!("{id}\tsent (may change the whole stack)")), "{out}");
+    assert_eq!(e.titles(), ["Bug 1 - c", "Bug 2 - a", "Bug 3 - c", "Bug 4 - t"]);
+    assert!(e.ok(&["log", "s"]).contains("agent: the stack"));
+    // Its reply in its thread, the comment still on its line of patch 1.
+    let c = e.ok(&["comments", "s", "--patch", "1"]);
+    assert!(c.contains(&format!("{id}\tpatch 1 · a.txt: 2")) && c.contains("agent: Tested, in patch 4."), "{c}");
+    // Only a change goes to the whole stack.
+    let (fine, _, err) = e.run(&["send", "s", &id, "--whole-stack", "--answer-only"]);
+    assert!(!fine && err.contains("cannot be used with"), "{err}");
+}
+
+#[test]
 fn an_ask_landing_after_the_stack_moved_is_a_branch() {
     let e = env();
     e.ok(&["import", "s", "base"]);
@@ -1063,6 +1091,28 @@ fn a_patch_is_edited_where_the_cursor_is() {
     assert!(fine && err.contains("saved as it was"), "back as it was: {err}");
     let (fine, _, err) = edit(&["1", "--path", "b.txt"]);
     assert!(!fine && err.contains("does not change b.txt"), "{err}");
+}
+
+#[test]
+fn what_you_said_last_may_be_written_again() {
+    let e = env();
+    e.ok(&["import", "s", "base"]);
+    let id = comment(&e, &["--patch", "1", "Why", "2?"]);
+    e.ok(&["reply", "s", &id, "--edit", "Why", "2, not two?"]);
+    let c = e.ok(&["comments", "s", "--patch", "1"]);
+    assert!(c.contains("you: Why 2, not two?") && !c.contains("you: Why 2?\n"), "{c}");
+    // Answered, the last word is the agent's.
+    let answer = fake_claude(&e, "claude-seen.sh", "", r#"{"replies": {"c1": "Seen."}}"#);
+    let (fine, _, err) = send(&e, &answer, &[&id, "--answer-only"], &[]);
+    assert!(fine, "{err}");
+    let (fine, _, err) = e.run(&["reply", "s", &id, "--edit", "Hm."]);
+    assert!(!fine && err.contains("the last word is not yours"), "{err}");
+    // Replied to, the reply is what is written again, the rest as it was.
+    e.ok(&["reply", "s", &id, "Thanks."]);
+    e.ok(&["reply", "s", &id, "--edit", "Thanks, and why 9?"]);
+    let c = e.ok(&["comments", "s", "--patch", "1"]);
+    assert!(c.contains("you: Why 2, not two?") && c.contains("agent: Seen.") && c.contains("you: Thanks, and why 9?"), "{c}");
+    assert!(!c.contains("you: Thanks.\n"), "{c}");
 }
 
 #[test]

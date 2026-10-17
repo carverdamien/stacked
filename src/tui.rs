@@ -33,7 +33,7 @@ use crate::panes::{Compact, Panes, Scroll, pane_streams, spans};
 use crate::reading::{Blocks, Finder, Reading, Target as Block};
 use crate::review;
 use crate::rows::{By, Deco, Kind, Row, by_of, patch_rows, split_lines, split_row, stack_rows};
-use crate::thread::{Role, append_turn, last_reply_way, last_role, thread_turns};
+use crate::thread::{Role, append_turn, last_mine, last_reply_way, last_role, replace_last_turn, thread_turns};
 use crate::tree;
 use crate::view::{MSG_PATH, note_lines, title_key};
 
@@ -277,6 +277,8 @@ pub enum Target {
     },
     /// A reply to a comment.
     Reply { change: String, id: String },
+    /// Your last turn of a comment, written again.
+    Edit { change: String, id: String },
     /// A comment on the stack's history: on its record `rev`.
     About(usize),
 }
@@ -287,6 +289,10 @@ pub struct Edit {
     pub ed: Editor,
     pub target: Target,
     pub pane: Focus,
+    /// The comment whose last turn is edited, taken off the agent's queue
+    /// meanwhile: how it was on it. It goes back on if it is left as it
+    /// was.
+    pub held: Option<crate::db::Queued>,
 }
 
 /// Where the keys go, over the screen.
@@ -345,7 +351,13 @@ pub enum Action {
     CommentLine,
     Reply,
     CommentInEditor,
+    /// Your last turn of the comment, written again: here, or in $EDITOR.
+    EditMine,
+    EditMineInEditor,
     Send(Way),
+    /// A patch's comment sent to the whole stack: the agent may change any
+    /// patch.
+    SendWhole,
     SendAll(Way),
     Unsend,
     OpenStream,
@@ -392,6 +404,8 @@ pub enum Action {
     Transcript(String),
     /// What to do with a comment written: save it, and send it if `way`.
     Save(Option<Way>),
+    /// Save a patch's comment, and send it to the whole stack.
+    SaveWhole,
     ThrowAway,
     KeepWriting,
     Quit,
@@ -415,9 +429,14 @@ fn about(action: &Action) -> String {
         Action::CommentLine => "create a comment on this line".into(),
         Action::Reply => "reply to this comment".into(),
         Action::CommentInEditor => "write it in $EDITOR".into(),
+        Action::EditMine => "write what you said last again, here: it is not asked again until you ask".into(),
+        Action::EditMineInEditor => "write what you said last again, in $EDITOR".into(),
         Action::Send(Way::Change) => "ask the agent, which may change the code within this comment's place".into(),
         Action::Send(Way::Answer) => "ask the agent, to answer only: nothing changes".into(),
         Action::Send(Way::Test) => "ask the agent to build and test, in a workspace of its choosing".into(),
+        Action::SendWhole => {
+            "ask the agent, which may change the whole stack, as for the stack's own comments: any patch, new patches anywhere, their order".into()
+        }
         Action::SendAll(Way::Change) => "ask the agent about every comment listed; it may change the code".into(),
         Action::SendAll(Way::Answer) => "ask the agent about every comment listed, to answer only".into(),
         Action::SendAll(Way::Test) => "ask the agent to build and test, for every comment listed".into(),
@@ -459,6 +478,7 @@ fn about(action: &Action) -> String {
         Action::Transcript(_) => "see what the agent wrote".into(),
         Action::Save(None) => "save the comment".into(),
         Action::Save(Some(w)) => format!("save the comment and ask the agent ({})", w.said()),
+        Action::SaveWhole => format!("save the comment and ask the agent ({})", crate::db::WHOLE),
         Action::ThrowAway => "throw what you wrote away".into(),
         Action::KeepWriting => "go back to writing".into(),
         Action::Quit => "quit: the agent's asks carry on".into(),
@@ -2093,8 +2113,8 @@ impl App {
     fn edit_key(&mut self, mut e: Edit, k: KeyEvent) -> Effect {
         match e.ed.key(k) {
             Op::Stay => self.mode = Mode::Edit(e),
-            Op::Close => {}
-            Op::Done(_) if matches!(e.target, Target::About(_)) => {
+            Op::Close => self.settle_edit(&e, false),
+            Op::Done(_) if self.answer_only(&e.target) => {
                 let w = self.read_only().is_none();
                 let items = vec![
                     Item::new("Save it and ask agent, answer only", Action::Save(Some(Way::Answer))).when(w),
@@ -2111,6 +2131,14 @@ impl App {
                 let mut items = vec![Item::new("Save it", Action::Save(None))];
                 if send {
                     items.push(Item::new("Save it and ask agent", Action::Save(Some(Way::Change))).when(self.read_only().is_none()));
+                    let a_patch_s = match &e.target {
+                        Target::Patch(_) | Target::Line { .. } => true,
+                        Target::Reply { change, .. } | Target::Edit { change, .. } => *change != stack_change(&self.stack),
+                        _ => false,
+                    };
+                    if a_patch_s {
+                        items.push(Item::new("Save it and ask agent, the whole stack", Action::SaveWhole).when(self.read_only().is_none()));
+                    }
                     items.push(Item::new("Save it and ask agent, answer only", Action::Save(Some(Way::Answer))).when(self.read_only().is_none()));
                     if matches!(e.target, Target::Stack | Target::Patch(_)) {
                         items.push(Item::new("Save it and ask agent to build and test", Action::Save(Some(Way::Test))).when(self.read_only().is_none()));
@@ -2130,9 +2158,69 @@ impl App {
     /// claude works on the thread.
     fn can_send_target(&self, t: &Target) -> bool {
         match t {
-            Target::Reply { change, id } => !self.busy().contains_key(&(change.clone(), id.clone())),
+            Target::Reply { change, id } | Target::Edit { change, id } => !self.busy().contains_key(&(change.clone(), id.clone())),
             _ => true,
         }
+    }
+
+    /// Whether what is written for `t` may only be asked to answer: a
+    /// question on the history, or a turn of one.
+    fn answer_only(&self, t: &Target) -> bool {
+        match t {
+            Target::About(_) => true,
+            Target::Reply { change, id } | Target::Edit { change, id } => self.db.note(change, id).is_some_and(|n| n.about.is_some()),
+            _ => false,
+        }
+    }
+
+    /// What you said last on the comment `t` writes your last turn of
+    /// again.
+    fn mine_of(&self, t: &Target) -> Option<String> {
+        match t {
+            Target::Edit { change, id } => last_mine(&self.db.note(change, id)?.text),
+            _ => None,
+        }
+    }
+
+    /// Writes what you said last on the comment picked again, in place: off
+    /// the agent's queue meanwhile, if it is on it, so that it is not asked
+    /// as it was.
+    fn edit_mine(&mut self) {
+        let Some(c) = self.picked() else { return };
+        let Some(mine) = last_mine(&c.text) else { return };
+        if self.busy().contains_key(&(c.change.clone(), c.id.clone())) {
+            self.status = "the agent is working on it: wait for it to land".into();
+            return;
+        }
+        let held = c.queued.clone();
+        if held.is_some() {
+            if let Err(e) = ask::unsend(&self.path, &[(c.change.clone(), c.id.clone())]) {
+                self.status = e.0;
+                return;
+            }
+            self.reload();
+        }
+        self.write(Target::Edit { change: c.change, id: c.id }, self.focus, &mine);
+        if let Mode::Edit(e) = &mut self.mode {
+            e.held = held;
+        }
+    }
+
+    /// Once what you said last is written again, or not: a comment taken
+    /// off the agent's queue for it goes back on if it is as it was, and
+    /// waits to be asked again if it `changed`.
+    fn settle_edit(&mut self, e: &Edit, changed: bool) {
+        let (Target::Edit { change, id }, Some(q)) = (&e.target, &e.held) else { return };
+        if changed {
+            self.status = "edited: off the agent's queue, until you ask again".into();
+            return;
+        }
+        match ask::requeue(&self.path, change, id, q.clone()) {
+            Ok(()) => self.status = format!("as it was: back on the agent's queue ({})", q.said()),
+            Err(err) => self.status = err.0,
+        }
+        self.reload();
+        self.launch();
     }
 
     fn moving_key(&mut self, from: usize, mut to: usize, k: KeyEvent) {
@@ -2342,6 +2430,13 @@ impl App {
         let with = busy.get(&(c.change.clone(), c.id.clone()));
         items.push(Item::new("Reply…", Action::Reply));
         items.push(Item::new("Reply in $EDITOR", Action::CommentInEditor));
+        // The last word yours: it may be written again, not while the agent
+        // works on it.
+        if last_mine(&c.text).is_some() {
+            let what = if thread_turns(&c.text).len() > 1 { "reply" } else { "comment" };
+            items.push(Item::new(format!("Edit your {what}…"), Action::EditMine).when(with.is_none()));
+            items.push(Item::new(format!("Edit your {what} in $EDITOR"), Action::EditMineInEditor).when(with.is_none()));
+        }
         items.push(Item::line());
         match with {
             Some((_, run)) => {
@@ -2355,6 +2450,9 @@ impl App {
             None => {
                 let s = ask::sendable(c);
                 items.push(Item::new("Ask agent", Action::Send(Way::Change)).when(w && s));
+                if !c.on_stack() {
+                    items.push(Item::new("Ask agent, the whole stack", Action::SendWhole).when(w && s));
+                }
                 items.push(Item::new("Ask agent, answer only", Action::Send(Way::Answer)).when(w && s));
                 if ask::can_test(&self.db, c) {
                     items.push(Item::new("Ask agent to build and test", Action::Send(Way::Test)).when(w && s));
@@ -2447,6 +2545,14 @@ impl App {
                     self.write(Target::Reply { change: c.change, id: c.id }, self.focus, "");
                 }
             }
+            Action::EditMine => self.edit_mine(),
+            Action::EditMineInEditor => {
+                if let Some(c) = self.picked()
+                    && last_mine(&c.text).is_some()
+                {
+                    return Effect::EditComment(Target::Edit { change: c.change, id: c.id });
+                }
+            }
             Action::CommentInEditor => {
                 let target = match self.picked() {
                     Some(c) => Target::Reply { change: c.change, id: c.id },
@@ -2459,12 +2565,17 @@ impl App {
             }
             Action::Send(way) => {
                 if let Some(c) = self.picked() {
-                    self.send(vec![(c.change, c.id)], way);
+                    self.send(vec![(c.change, c.id)], way, false);
+                }
+            }
+            Action::SendWhole => {
+                if let Some(c) = self.picked() {
+                    self.send(vec![(c.change, c.id)], Way::Change, true);
                 }
             }
             Action::SendAll(way) => {
                 let notes = self.listed_sendable(way);
-                self.send(notes, way);
+                self.send(notes, way, false);
             }
             Action::Unsend => {
                 if let Some(c) = self.picked() {
@@ -2715,16 +2826,26 @@ impl App {
             Action::Save(way) => {
                 if let Some(e) = self.pending.take() {
                     let text = e.ed.text();
-                    if let Some(saved) = self.save(&e.target, &text)
-                        && let Some(way) = way
-                    {
-                        self.send(vec![saved], way);
+                    let was = self.mine_of(&e.target);
+                    match (self.save(&e.target, &text), way) {
+                        (Some(saved), Some(way)) => self.send(vec![saved], way, false),
+                        (saved, _) => self.settle_edit(&e, saved.is_some() && was.as_deref() != Some(text.trim())),
+                    }
+                }
+            }
+            Action::SaveWhole => {
+                if let Some(e) = self.pending.take() {
+                    let text = e.ed.text();
+                    if let Some(saved) = self.save(&e.target, &text) {
+                        self.send(vec![saved], Way::Change, true);
                     }
                 }
             }
             Action::ThrowAway => {
-                self.pending = None;
                 self.status = "thrown away".into();
+                if let Some(e) = self.pending.take() {
+                    self.settle_edit(&e, false);
+                }
             }
             Action::KeepWriting => {
                 if let Some(e) = self.pending.take() {
@@ -2742,6 +2863,7 @@ impl App {
             ed: Editor::new(text),
             target,
             pane,
+            held: None,
         });
     }
 
@@ -2805,6 +2927,15 @@ impl App {
                         ..n
                     }
                 }
+                Target::Edit { change, id } => {
+                    let n = db.note(change, id).cloned().ok_or_else(|| crate::db::Error("the comment is gone".into()))?;
+                    // Answered meanwhile, it is a reply.
+                    let text = replace_last_turn(&n.text, &text).unwrap_or_else(|| append_turn(&n.text, Role::You, &text, None));
+                    if text == n.text {
+                        return Ok((change.clone(), id.clone()));
+                    }
+                    Note { text, failed: None, ..n }
+                }
                 Target::About(rev) => Note {
                     change: stack_change(&name),
                     id: format!("h{stamp}"),
@@ -2823,19 +2954,20 @@ impl App {
         })
     }
 
-    /// Puts `notes` on the agent's queue; they are started away from the
-    /// screen.
-    fn send(&mut self, notes: Vec<(String, String)>, way: Way) {
+    /// Puts `notes` on the agent's queue, to the whole stack if `whole`;
+    /// they are started away from the screen.
+    fn send(&mut self, notes: Vec<(String, String)>, way: Way, whole: bool) {
         let n = notes.len();
-        if let Err(e) = ask::queue(&self.path, &self.stack, &notes, way) {
+        if let Err(e) = ask::queue(&self.path, &self.stack, &notes, way, whole) {
             self.status = e.0;
             self.reload();
             return;
         }
         self.reload();
+        let said = if whole { crate::db::WHOLE } else { way.said() };
         self.status = match ask::waits_on(&self.db, &self.stack, way) {
-            None => format!("asked the agent about {n} comment{} ({}): it is on it", plural(n), way.said()),
-            Some(w) => format!("asked the agent about {n} comment{} ({}): ready, it goes {w}", plural(n), way.said()),
+            None => format!("asked the agent about {n} comment{} ({said}): it is on it", plural(n)),
+            Some(w) => format!("asked the agent about {n} comment{} ({said}): ready, it goes {w}", plural(n)),
         };
         self.launch();
     }
@@ -3005,6 +3137,33 @@ impl App {
                 }
             }
             Effect::EditTodo => self.status = ops::edit_stack(&self.path, &name)?,
+            Effect::EditComment(Target::Edit { change, id }) => {
+                let Some(n) = self.db.note(&change, &id).cloned() else { return Ok(()) };
+                let Some(mine) = last_mine(&n.text) else { return Ok(()) };
+                // Off the agent's queue meanwhile; nothing is dropped from
+                // what you wrote, a line starting with # as any.
+                if n.queued.is_some() {
+                    ask::unsend(&self.path, &[(change.clone(), id.clone())])?;
+                }
+                let e = Edit {
+                    ed: Editor::new(""),
+                    target: Target::Edit { change, id },
+                    pane: self.focus,
+                    held: n.queued.clone(),
+                };
+                let text = match edit_text(&format!("{mine}\n"), ".txt") {
+                    Ok(t) => t.trim().to_string(),
+                    Err(err) => {
+                        self.settle_edit(&e, false);
+                        return Err(err);
+                    }
+                };
+                let changed = !text.is_empty() && text != mine;
+                if changed {
+                    self.save(&e.target, &text);
+                }
+                self.settle_edit(&e, changed);
+            }
             Effect::EditComment(target) => {
                 let text = strip_comments(&edit_text(
                     "\n# Your comment. Lines starting with # are dropped.\n",
@@ -3364,6 +3523,10 @@ impl App {
             Target::Patch(_) => "a comment on the patch".to_string(),
             Target::Line { preview, .. } => format!("a comment on: {}", short(preview, 30)),
             Target::Reply { .. } => "a reply".to_string(),
+            Target::Edit { change, id } => {
+                let reply = self.db.note(change, id).is_some_and(|n| thread_turns(&n.text).len() > 1);
+                format!("your {}, edited", if reply { "reply" } else { "comment" })
+            }
             Target::About(rev) => format!("a question on @{rev}, for the agent to answer"),
         };
         Some(e.ed.draw(buf, area, 0, y, w, bh, &title))
@@ -3646,12 +3809,12 @@ impl App {
         }
         let first = match &e.target {
             Target::Line { key, .. } => self.rows.iter().position(|r| r.key.as_deref() == Some(key) && r.note.is_none())?,
-            Target::Reply { id, .. } => self.rows.iter().position(|r| r.note.as_deref() == Some(id))?,
+            Target::Reply { id, .. } | Target::Edit { id, .. } => self.rows.iter().position(|r| r.note.as_deref() == Some(id))?,
             _ => return None,
         };
         let mut last = first;
         while self.rows.get(last + 1).is_some_and(|r| matches!(r.kind, Kind::Comment | Kind::Stream)) {
-            if let Target::Reply { id, .. } = &e.target
+            if let Target::Reply { id, .. } | Target::Edit { id, .. } = &e.target
                 && self.rows[last + 1].note.as_deref() != Some(id)
             {
                 break;
@@ -3794,7 +3957,7 @@ impl App {
             put(buf, area, 0, y, w, &fit(&format!("{mark} {who} · {at}"), w), head);
             put(buf, area, 0, y + 1, w, &fit(&format!("   {last}"), w), tail);
             y += per;
-            if editing == Some(Target::Reply { change: n.change.clone(), id: n.id.clone() }) {
+            if matches!(&editing, Some(Target::Reply { change, id } | Target::Edit { change, id }) if *change == n.change && *id == n.id) {
                 cursor = self.draw_editor(buf, area, y, Focus::Notes);
                 y += edit_h;
             }
@@ -4128,11 +4291,13 @@ pub fn where_was(db: &Db, name: &str, m: &crate::db::Moved) -> String {
 /// ready, failed, replied, moved, and what its answer opened.
 pub fn note_state(db: &Db, name: &str, n: &Note, busy: &Busy) -> String {
     let mut parts = Vec::new();
-    if let Some((way, _)) = busy.get(&(n.change.clone(), n.id.clone())) {
-        parts.push(format!("with the agent ({})", way.said()));
+    if let Some((way, run)) = busy.get(&(n.change.clone(), n.id.clone())) {
+        // A patch's comment, asked of the whole stack.
+        let whole = *way == Way::Change && !n.on_stack() && ask::run_scope(db, run) == Some(Scope::Stack);
+        parts.push(format!("with the agent ({})", if whole { crate::db::WHOLE } else { way.said() }));
     } else if let Some(q) = &n.queued {
         let on = ask::waits_on(db, name, q.way).unwrap_or_else(|| "next".into());
-        parts.push(format!("ready ({}), {on}", q.way.said()));
+        parts.push(format!("ready ({}), {on}", q.said()));
     } else if let Some(f) = &n.failed {
         parts.push(format!("ask failed: {}", f.split_whitespace().collect::<Vec<_>>().join(" ")));
     } else if last_role(&n.text) == Some(Role::Agent) && n.moved.is_none() {

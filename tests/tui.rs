@@ -500,6 +500,7 @@ fn comments_are_written_where_they_will_show() {
         [
             "Save it",
             "Save it and ask agent",
+            "Save it and ask agent, the whole stack",
             "Save it and ask agent, answer only",
             "",
             "Throw it away",
@@ -701,6 +702,156 @@ fn fake_claude() -> PathBuf {
         path
     })
     .clone()
+}
+
+#[test]
+fn what_you_said_last_may_be_written_again() {
+    let (_tmp, db, _src) = setup();
+    fake_claude();
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Enter]);
+    save(&mut app, "why so loud?");
+    keys(&mut app, &[KeyCode::Down]);
+    assert!(app.rows[app.cursor].head);
+    // Unanswered, it is the comment itself, written again where it is.
+    choose(&mut app, "Edit your comment…");
+    assert!(matches!(&app.mode, Mode::Edit(e) if e.ed.text() == "why so loud?"), "{:?}", app.mode);
+    assert!(draw(&mut app).contains("your comment, edited"));
+    typed(&mut app, " really");
+    keys(&mut app, &[KeyCode::Esc]);
+    choose(&mut app, "Save it");
+    let n = notes_of(&db, "s", 0).remove(0);
+    assert_eq!(n.text, "why so loud? really");
+    // Or in $EDITOR.
+    let target = stacked::tui::Target::Edit { change: n.change.clone(), id: n.id.clone() };
+    assert_eq!(choose(&mut app, "Edit your comment in $EDITOR"), Effect::EditComment(target));
+    // Answered, the agent's word is last: nothing of yours to edit.
+    Db::edit(&db, |d| {
+        let n = d.note(&n.change, &n.id).cloned().unwrap();
+        d.set_note(Note {
+            text: append_turn(&n.text, Role::Agent, "It is a shout.", Some("answer")),
+            ..n
+        })
+    })
+    .unwrap();
+    app.refresh();
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    assert!(!items(&app).iter().any(|(l, _)| l.starts_with("Edit your")), "{:?}", items(&app));
+    keys(&mut app, &[KeyCode::Esc]);
+    // Replied to, the reply is what is written again, the rest as it was.
+    choose(&mut app, "Reply…");
+    save(&mut app, "louder");
+    choose(&mut app, "Edit your reply…");
+    for _ in 0.."louder".len() {
+        key(&mut app, KeyCode::Backspace);
+    }
+    typed(&mut app, "quieter");
+    keys(&mut app, &[KeyCode::Esc]);
+    choose(&mut app, "Save it");
+    let text = notes_of(&db, "s", 0).remove(0).text;
+    let turns = stacked::thread::thread_turns(&text);
+    let said: Vec<&str> = turns.iter().map(|t| t.body.as_str()).collect();
+    assert_eq!(said, ["why so loud? really", "It is a shout.", "quieter"]);
+    // Waiting its turn, it leaves the agent's queue while it is edited: edited,
+    // it waits to be asked again.
+    let wait = |db: &Path| {
+        Db::edit(db, |d| {
+            let n = d.notes(&d.patch(&d.stack("s")?.patches[0]).change.clone()).into_iter().next().cloned().unwrap();
+            d.set_note(Note {
+                queued: Some(stacked::db::Queued {
+                    way: stacked::db::Way::Answer,
+                    batch: "b-waiting".into(),
+                    stack: false,
+                }),
+                ..n
+            })
+        })
+        .unwrap();
+    };
+    wait(&db);
+    app.refresh();
+    choose(&mut app, "Edit your reply…");
+    assert!(notes_of(&db, "s", 0)[0].queued.is_none(), "off the queue meanwhile");
+    typed(&mut app, ", please");
+    keys(&mut app, &[KeyCode::Esc]);
+    choose(&mut app, "Save it");
+    assert!(app.status.contains("off the agent's queue, until you ask again"), "{}", app.status);
+    let n = notes_of(&db, "s", 0).remove(0);
+    assert!(n.queued.is_none() && n.text.ends_with("quieter, please"), "{n:?}");
+    // The edit thrown away, it goes back on, and is asked as it was.
+    wait(&db);
+    app.refresh();
+    choose(&mut app, "Edit your reply…");
+    typed(&mut app, " now");
+    keys(&mut app, &[KeyCode::Esc]);
+    choose(&mut app, "Throw it away");
+    assert!(app.status.contains("as it was: back on the agent's queue (answer only)"), "{}", app.status);
+    // Not while the agent works on it.
+    wait_for(&mut app, "⋯ Reading the patch.");
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    assert!(items(&app).contains(&("Edit your reply…".to_string(), false)), "{:?}", items(&app));
+    keys(&mut app, &[KeyCode::Esc]);
+    wait_for(&mut app, "agent replied (answer only)");
+    // Its history says which were edits.
+    let d = Db::load(&db).unwrap();
+    let n = notes_of(&db, "s", 0).remove(0);
+    let mut said = Vec::new();
+    let mut before: Option<&Note> = None;
+    for (_, x) in d.note_history(&n.change, &n.id) {
+        said.push(stacked::history::note_change(before, x));
+        before = Some(x);
+    }
+    assert_eq!(said.iter().filter(|s| *s == "you edited it").count(), 3, "{said:?}");
+    assert_eq!(said.iter().filter(|s| *s == "you replied").count(), 1, "{said:?}");
+    choose(&mut app, "History of this comment…");
+    let screen = draw(&mut app);
+    assert!(screen.contains("· written") && screen.contains("· you edited it"), "the first edit, there:\n{screen}");
+}
+
+#[test]
+fn a_comment_on_a_patch_may_be_sent_to_the_whole_stack() {
+    let (_tmp, db, _src) = setup();
+    fake_claude();
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Enter]);
+    typed(&mut app, "test it in a patch of its own");
+    keys(&mut app, &[KeyCode::Esc]);
+    // Written on a patch, it may be saved and sent past its patch.
+    let all: Vec<String> = items(&app).into_iter().map(|(l, _)| l).collect();
+    assert_eq!(all[1..3], ["Save it and ask agent", "Save it and ask agent, the whole stack"], "{all:?}");
+    choose(&mut app, "Save it");
+    // Its menu has it too, beside asking about its patch alone.
+    keys(&mut app, &[KeyCode::Down]);
+    assert!(app.rows[app.cursor].head);
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    let all: Vec<String> = items(&app).into_iter().map(|(l, _)| l).collect();
+    let at = all.iter().position(|l| l == "Ask agent").unwrap();
+    assert_eq!(all[at + 1], "Ask agent, the whole stack", "{all:?}");
+    choose(&mut app, "Ask agent, the whole stack");
+    assert!(app.status.contains("asked the agent about 1 comment (may change the whole stack)"), "{}", app.status);
+    let screen = wait_for(&mut app, "⋯ Reading the patch.");
+    assert!(screen.contains("with the agent (may change the whole stack)"), "{screen}");
+    // The ask has the whole stack; its answer lands in the thread, on its
+    // line.
+    let d = Db::load(&db).unwrap();
+    let run = d.runs().last().unwrap().id.clone();
+    assert_eq!(stacked::ask::run_scope(&d, &run), Some(stacked::ask::Scope::Stack));
+    drop(d);
+    let screen = wait_for(&mut app, "agent replied (change)");
+    assert!(screen.contains("Seen.") && screen.contains("you · a.txt: TWO"), "{screen}");
+    // A comment on the stack has the whole stack already.
+    keys(&mut app, &[KeyCode::Left, KeyCode::Home]);
+    choose(&mut app, "Comment on the stack…");
+    save(&mut app, "and the rest of it");
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "   └ comment");
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    let all: Vec<String> = items(&app).into_iter().map(|(l, _)| l).collect();
+    assert!(all.contains(&"Ask agent".to_string()) && !all.iter().any(|l| l.contains("the whole stack")), "{all:?}");
 }
 
 #[test]

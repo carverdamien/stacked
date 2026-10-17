@@ -5,7 +5,8 @@
 //! claude may change the code, answer only, or build and test. Where the
 //! comment is sets what claude may change (`Scope`): a comment on the stack,
 //! the whole stack; a comment on a patch or on one of its lines, only that
-//! patch. Comments sent together go in one ask.
+//! patch, unless it is sent to the whole stack. Comments sent together go
+//! in one ask.
 //!
 //! A sent comment waits as ready, and goes as soon as nothing stands in its
 //! way, as in self-review: one changing ask at a time on a stack, answer-only
@@ -62,6 +63,20 @@ pub fn scope_of(n: &Note) -> Scope {
     } else {
         Scope::Patch(n.change.clone())
     }
+}
+
+/// The scope an ask of `n` has: the one it is in, or the whole stack when
+/// it was sent so.
+fn asked_scope(n: &Note) -> Scope {
+    match &n.queued {
+        Some(q) if q.stack => Scope::Stack,
+        _ => scope_of(n),
+    }
+}
+
+/// The scope run `id` was started with, if it is an ask.
+pub fn run_scope(db: &Db, id: &str) -> Option<Scope> {
+    light(db.run(id)?).map(|l| l.scope)
 }
 
 /// A comment claude is shown, by the label the prompt gives it.
@@ -210,11 +225,12 @@ fn position(db: &Db, name: &str, change: &str) -> Option<usize> {
         .position(|id| db.patch(id).change == change)
 }
 
-/// Sends `notes` (change, id) of stack `name` to the agent, in `way`: they
-/// wait as ready, together, and go as soon as nothing stands in their way.
-/// What they wait on, if they could not go at once.
-pub fn send(db_path: &Path, name: &str, notes: &[(String, String)], way: Way) -> Result<Option<String>> {
-    queue(db_path, name, notes, way)?;
+/// Sends `notes` (change, id) of stack `name` to the agent, in `way`, to
+/// the whole stack if `whole`: they wait as ready, together, and go as soon
+/// as nothing stands in their way. What they wait on, if they could not go
+/// at once.
+pub fn send(db_path: &Path, name: &str, notes: &[(String, String)], way: Way, whole: bool) -> Result<Option<String>> {
+    queue(db_path, name, notes, way, whole)?;
     launch(db_path)?;
     let db = Db::load(db_path)?;
     let waiting = notes
@@ -230,9 +246,14 @@ pub fn send(db_path: &Path, name: &str, notes: &[(String, String)], way: Way) ->
 /// Puts `notes` of stack `name` on the agent's queue, in `way`, together:
 /// `launch` starts them when nothing stands in their way. The editor
 /// launches elsewhere than where it draws: making a worktree takes time.
-pub fn queue(db_path: &Path, name: &str, notes: &[(String, String)], way: Way) -> Result<()> {
+/// With `whole`, a patch's comments are sent to the whole stack: the agent
+/// may change any patch, add patches anywhere, reorder them.
+pub fn queue(db_path: &Path, name: &str, notes: &[(String, String)], way: Way, whole: bool) -> Result<()> {
     if notes.is_empty() {
         return err("no comment to send");
+    }
+    if whole && way != Way::Change {
+        return err("only a change is asked of the whole stack");
     }
     let batch = format!("b{}", crate::db::unique());
     // Checked first with no lock held (it takes a moment on a big
@@ -263,21 +284,36 @@ pub fn queue(db_path: &Path, name: &str, notes: &[(String, String)], way: Way) -
             if way != Way::Answer && n.about.is_some() {
                 return err("a comment on the history is asked about to answer only: it changes nothing");
             }
+            let reach = if whole { Scope::Stack } else { scope_of(&n) };
             match &scope {
-                None => scope = Some(scope_of(&n)),
-                Some(s) if *s != scope_of(&n) => return err("comments sent together must be on one patch, or all on the stack"),
+                None => scope = Some(reach),
+                Some(s) if *s != reach => return err("comments sent together must be on one patch, or all on the stack"),
                 _ => {}
             }
             db.set_note(Note {
                 queued: Some(Queued {
                     way,
                     batch: batch.clone(),
+                    stack: whole && !n.on_stack(),
                 }),
                 failed: None,
                 ..n
             })?;
         }
         Ok(())
+    })
+}
+
+/// Puts comment (change, id) back on the agent's queue as it was, `q`:
+/// taken off while it was edited, and left as it was. Not if it is on the
+/// queue again already, or with the agent.
+pub fn requeue(db_path: &Path, change: &str, id: &str, q: Queued) -> Result<()> {
+    Db::edit(db_path, |db| {
+        let Some(n) = db.note(change, id).cloned() else { return Ok(()) };
+        if n.queued.is_some() || with_agent(db).contains_key(&(change.to_string(), id.to_string())) {
+            return Ok(());
+        }
+        db.set_note(Note { queued: Some(q), ..n })
     })
 }
 
@@ -318,7 +354,7 @@ fn claim(db: &mut Db) -> Result<Vec<String>> {
             let Some(q) = &n.queued else { continue };
             let entry = batches.entry(q.batch.clone()).or_insert_with(|| {
                 order.push(q.batch.clone());
-                (s.name.clone(), q.way, scope_of(n), Vec::new())
+                (s.name.clone(), q.way, asked_scope(n), Vec::new())
             });
             entry.3.push(n.clone());
         }
