@@ -947,39 +947,35 @@ fn the_history_of_the_stack_its_patches_and_comments() {
     keys(&mut app, &[KeyCode::Esc]);
     assert!(draw(&mut app).contains("  1 Bug 1 - shout two "));
 
-    // The stack's: everything that happened, newest first; enter goes to it.
+    // The stack's: what changed it, newest first, its comments not among
+    // them; enter goes to the stack it made, in the tree.
     keys(&mut app, &[KeyCode::Home]);
     choose(&mut app, "History…");
     assert_eq!(app.screen, Screen::History);
-    let screen = draw(&mut app);
-    let first = screen.lines().position(|l| l.contains("back to version")).unwrap();
-    let written = screen.lines().position(|l| l.contains("· written · a.txt: TWO")).unwrap();
-    assert!(first < written, "newest first:\n{screen}");
-    for _ in 0..app.history().len() {
-        if app.history()[app.pick].text.contains("· written") {
-            break;
-        }
-        key(&mut app, KeyCode::Down);
-    }
+    let screen = history_pane(&draw(&mut app));
+    let back = screen.lines().position(|l| l.contains("· back to version")).unwrap();
+    let reword = screen.lines().position(|l| l.contains("· reword ")).unwrap();
+    assert!(back < reword && screen.contains("· import "), "newest first:\n{screen}");
+    assert!(!screen.contains("written") && !screen.contains("replied"), "no comments:\n{screen}");
+    assert_eq!(app.history().len(), 3, "{screen}");
+    keys(&mut app, &[KeyCode::Down]);
+    let rev = app.history()[app.pick].rev;
     keys(&mut app, &[KeyCode::Enter]);
-    assert_eq!((app.screen, app.focus), (Screen::Main, Focus::Diff));
-    draw(&mut app);
-    assert!(app.rows[app.cursor].head && app.rows[app.cursor + 2].text.contains("why so loud?"), "on the comment");
+    assert_eq!(app.screen, Screen::Tree);
+    assert_eq!(stacked::tree::graph(&Db::load(&db).unwrap(), "s")[app.pick].rev, rev);
 
-    // The tree: what an edit changed.
-    keys(&mut app, &[KeyCode::Left, KeyCode::Home]);
-    choose(&mut app, "Tree of edits…");
+    // The tree: what that edit changed.
     choose(&mut app, "What this edit changed…");
     let screen = draw(&mut app);
-    assert!(screen.contains("~ Bug 1 - shout two has a new version"), "{screen}");
+    assert!(screen.contains(" 1 ~ Bug 1 - shout two, reworded") && screen.contains("+Subject: Bug 1 - shout two, reworded"), "{screen}");
 }
 
 #[test]
-fn the_history_shows_the_stack_and_its_patch_as_they_were() {
+fn the_history_shows_each_change_as_a_stack_diff() {
     let (_tmp, db, _src) = setup();
     let mut app = open(&db).unwrap();
-    // A comment on a line of the first patch, deleted after; then the
-    // first patch dropped.
+    // A comment on a line of the first patch, deleted after; the first
+    // patch reworded, then dropped.
     keys(&mut app, &[KeyCode::Right]);
     down_to(&mut app, "+TWO");
     keys(&mut app, &[KeyCode::Enter]);
@@ -987,46 +983,62 @@ fn the_history_shows_the_stack_and_its_patch_as_they_were() {
     keys(&mut app, &[KeyCode::Down]);
     choose(&mut app, "Delete this comment");
     choose(&mut app, "Delete it");
+    Db::edit(&db, |d| {
+        let s = d.stack("s")?.clone();
+        let mut draft = stacked::mbox::Draft::from(d.patch(&s.patches[0]));
+        draft.message = "Bug 1 - shout two, reworded".into();
+        stacked::ops::replace(d, "s", 0, draft, "reword").map(|_| ())
+    })
+    .unwrap();
+    app.refresh();
     keys(&mut app, &[KeyCode::Left]);
     choose(&mut app, "Drop this patch");
     choose(&mut app, "Drop it");
     keys(&mut app, &[KeyCode::Home]);
     choose(&mut app, "History…");
-    // Three panes: the history, the stack as it was, its patch as it was.
+    // Only what changed the stack, each in short; the comments changed
+    // nothing of it.
+    let list = history_pane(&draw(&mut app));
+    let line = |what: &str| list.lines().find(|l| l.contains(what)).unwrap_or_else(|| panic!("no {what:?}:\n{list}")).to_string();
+    assert!(line("· drop ").contains(" −1 · drop ") && line("· reword ").contains(" ~1 · reword ") && line("· import ").contains(" +2 · import "), "{list}");
+    assert_eq!(app.history().len(), 3, "{list}");
+    // Beside it, the drop's stack diff: from the stack before to the one
+    // after, the one dropped where it was.
     let screen = draw(&mut app);
-    assert!(screen.lines().nth(1).unwrap().contains("@") && screen.contains("· drop "), "{screen}");
-    assert!(screen.contains(" as it was,") && screen.contains("  1 Bug 2 - add b") && !screen.contains("  2 Bug"), "{screen}");
-    assert!(screen.contains("+bee"), "its patch:\n{screen}");
-    // Down to the import: both patches, and the first's comment as it
-    // stood then, for it was written after.
-    let import = app.history().iter().position(|e| e.text.contains("import")).unwrap();
-    for _ in 0..import {
-        keys(&mut app, &[KeyCode::Down]);
-    }
+    assert!(screen.contains(" the stack @") && screen.contains("   − Bug 1 - shout two, reworded, was 1"), "{screen}");
+    assert!(screen.contains("  1   Bug 2 - add b"), "{screen}");
+    // The reword's: a new version, what changed in it under it.
+    keys(&mut app, &[KeyCode::Down]);
     let screen = draw(&mut app);
-    assert!(screen.contains("  1 Bug 1 - shout two") && screen.contains("  2 Bug 2 - add b"), "{screen}");
-    assert!(screen.contains("+TWO") && !screen.contains("too loud"), "{screen}");
-    let written = app.history().iter().position(|e| e.text.contains("· written ·")).unwrap();
-    for _ in written..import {
-        keys(&mut app, &[KeyCode::Up]);
-    }
-    assert!(draw(&mut app).contains("too loud"), "the comment, as it stood once written");
-    // → to the stack, ↓ its second patch, → to read it.
-    keys(&mut app, &[KeyCode::Right]);
-    assert_eq!(app.hist_focus, stacked::tui::HistFocus::Stack);
-    keys(&mut app, &[KeyCode::Down, KeyCode::Right]);
-    assert_eq!(app.hist_focus, stacked::tui::HistFocus::Patch);
-    assert!(draw(&mut app).contains("+bee"));
+    assert!(screen.contains("  1 ~ Bug 1 - shout two, reworded") && screen.contains("+Subject: Bug 1 - shout two, reworded"), "{screen}");
+    assert!(screen.contains("  2   Bug 2 - add b") && !screen.contains("+TWO"), "only what changed:\n{screen}");
+    // The import's: the stack made, every patch added.
+    keys(&mut app, &[KeyCode::Down]);
+    let screen = draw(&mut app);
+    assert!(screen.contains(" the stack made, @") && screen.contains("  1 + Bug 1 - shout two") && screen.contains("  2 + Bug 2 - add b"), "{screen}");
+    // → to the stack diff, ↓ through it.
+    keys(&mut app, &[KeyCode::Up, KeyCode::Right]);
+    assert_eq!(app.hist_focus, stacked::tui::HistFocus::Diff);
+    keys(&mut app, &[KeyCode::Down]);
+    assert_eq!(app.hist_cursor, 1);
+    // Too narrow for both: the one the cursor is in.
+    let mut buf = Buffer::empty(Rect::new(0, 0, 50, 30));
+    app.draw(&mut buf);
+    let narrow: String = (0..buf.area.width).map(|x| buf[(x, 1)].symbol()).collect();
+    assert!(narrow.starts_with(" the stack @"), "{narrow}");
     // Only to look at: nothing is written, the menu has no edits.
     let before = std::fs::read(&db).unwrap();
-    keys(&mut app, &[KeyCode::Down, KeyCode::Enter]);
-    assert!(app.status.contains("a preview"), "{}", app.status);
+    keys(&mut app, &[KeyCode::Enter]);
+    assert!(app.status.contains("only to look at"), "{}", app.status);
     keys(&mut app, &[KeyCode::Char(' ')]);
     let all: Vec<String> = items(&app).into_iter().map(|(l, _)| l).collect();
     assert!(!all.iter().any(|l| l.starts_with("Undo") || l.starts_with("Comment") || l.starts_with("Edit")), "{all:?}");
     keys(&mut app, &[KeyCode::Esc]);
     assert_eq!(std::fs::read(&db).unwrap(), before);
-    // Esc leaves the history, for the stack as it is.
+    // ← back to the history, on the same record; esc leaves it.
+    keys(&mut app, &[KeyCode::Left]);
+    assert_eq!(app.hist_focus, stacked::tui::HistFocus::List);
+    assert!(app.history()[app.pick].text.contains("· reword "));
     keys(&mut app, &[KeyCode::Esc]);
     assert_eq!(app.screen, Screen::Main);
 }
@@ -1090,7 +1102,7 @@ fn the_agent_is_asked_about_the_history_to_answer_only() {
     // A question on the drop, written under it, asked to answer only.
     choose(&mut app, "Ask agent about this, answer only…");
     let screen = history_pane(&draw(&mut app));
-    let at = screen.lines().position(|l| l.contains(&format!("@{rev} · drop"))).unwrap();
+    let at = screen.lines().position(|l| l.contains(&format!("@{rev} −1 · drop"))).unwrap();
     assert!(screen.lines().nth(at + 1).unwrap().contains(&format!("a question on @{rev}")), "under it:\n{screen}");
     typed(&mut app, "why drop it?");
     keys(&mut app, &[KeyCode::Esc]);
@@ -1110,7 +1122,7 @@ fn the_agent_is_asked_about_the_history_to_answer_only() {
     choose(&mut app, "Go to its comments");
     assert!(app.on_stack && app.screen == Screen::Main);
     let screen = draw(&mut app);
-    assert!(screen.contains(&format!("about @{rev} · drop")) && screen.contains("history @"), "{screen}");
+    assert!(screen.contains(&format!("about @{rev} −1 · drop")) && screen.contains("history @"), "{screen}");
     keys(&mut app, &[KeyCode::Char(' ')]);
     let all: Vec<String> = items(&app).into_iter().map(|(l, _)| l).collect();
     assert!(all.contains(&"Ask agent, answer only".to_string()) && !all.contains(&"Ask agent".to_string()), "{all:?}");
@@ -1257,7 +1269,7 @@ fn picking_from_the_tree_and_the_stacks() {
     assert_eq!(app.screen, Screen::Tree);
     let screen = draw(&mut app);
     assert!(screen.contains("● @") && screen.contains("drop "), "{screen}");
-    assert!(screen.contains("− Bug 1 - shout two dropped"), "what the edit changed:\n{screen}");
+    assert!(screen.contains("   − Bug 1 - shout two, was 1"), "what the edit changed:\n{screen}");
     // The stack before the drop, its patches on the right.
     keys(&mut app, &[KeyCode::Down]);
     let screen = draw(&mut app);

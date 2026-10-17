@@ -239,31 +239,59 @@ every comment and every run; the editor shows them where they belong:
 - `Tree of edits…`, on the stack's header: every state of the stack, the
   one being edited marked; enter edits from another. Beside each, its
   patches and what its edit changed; Space, `What this edit changed…` in
-  full: patches added, dropped, moved, and each new version's interdiff.
-- `History…`, on the stack's header: everything that happened to the stack,
-  newest first: its edits, the moves of its head (undo, redo, select),
-  every record of its comments (written, asked, answered, moved, deleted)
-  and every run that landed. Beside them, the tree of edits' lanes: each
-  edit on its branch's lane, marked as the tree marks it (`●` where the
-  stack is, `○` the others, `┘` where a branch leaves the state it was
-  edited from), and the lanes going on past every other record, so which
-  branch an edit is on, and where an undo jumped, can be read in the order
-  it all happened. Enter goes to it: the stack in the tree, the comment
-  where it is, the run's transcript. Space, `Ask agent about this, answer
-  only…` (below), or `Start a new database here…` (further below).
-
-  History… has three panes: the history on the left, then the stack as it
-  was just after the record picked (its patches), then its patch picked,
-  as it was, with its comments as they stood. → and ← go from pane to pane,
-  ↑↓ go through each, and enter on a patch reads it. Those two are only to
-  look at: nothing is edited, commented on or asked from them, nor undone
-  or redone from History…; esc leaves it, for the stack as it is.
+  full: its stack diff (below), from the stack it was edited from.
+- `History…`, on the stack's header: what changed the stack, newest first:
+  its edits, and the moves of its head (undo, redo, select, delete) that
+  took it to another stack. Comments, runs and the rest change nothing of
+  it and are left out; so is an ask that landed as a branch, the stack
+  having moved on (the tree of edits has it). Each says what it changed in
+  short (`+1` added, `−1` dropped, `~1` a new version, `↕1` moved), then
+  what it was. Beside them, the tree of edits' lanes: each edit on its
+  branch's lane, marked as the tree marks it (`●` where the stack is, `○`
+  the others, `┘` where a branch leaves the state it was edited from), and
+  the lanes going on past each move of the head, so which branch an edit
+  is on, and where an undo jumped, can be read in the order it all
+  happened. Enter goes to the stack it made, in the tree. Space, `Ask agent
+  about this, answer only…` (below), or `Start a new database here…`
+  (further below).
 
   ```
-   ●   2026-10-17 09:57 @9 · drop 1ca5b141 · 1 patch
-   │   2026-10-17 09:57 @8 · undo move 1ca5b141 from 2 to 1 → @6
-   │ ○ 2026-10-17 09:57 @7 · move 1ca5b141 from 2 to 1 · 2 patches
-   ○ ┘ 2026-10-17 09:57 @6 · import 2 patches · 2 patches
+   ●     2026-10-17 19:50 @12 ~1 · edit e80b0801 as e35c91e0
+   │     2026-10-17 19:50 @10 +1 · undo drop 1e346401 → @4
+   │ ○   2026-10-17 19:50 @8 −1 · drop 1e346401
+   │ │   2026-10-17 19:50 @7 ↕1 · undo move 1e346401 from 2 to 1 → @4
+   │ │ ○ 2026-10-17 19:50 @6 ↕1 · move 1e346401 from 2 to 1
+   ○ ┘ ┘ 2026-10-17 19:50 @4 +2 · import 2 patches
+  ```
+
+  Beside the history, the stack diff of the record picked, from the stack
+  before it to the one after: the stack after, bottom first, each patch by
+  its place and marked (`+` added, `~` a new version with what changed in
+  its mail under it, `↕` moved, from where it was; unmarked, as it was),
+  and each patch dropped, marked `−`, where it was. A patch is known across
+  its versions, so one only shifted by what was added or dropped below it
+  is not taken for moved. → goes into it, ↑↓ scroll it, ← goes back. It is
+  only to look at: nothing is edited, commented on or asked from it, nor
+  undone or redone from History…; esc leaves it, for the stack as it is.
+
+  ```
+   the stack @4 → @12
+   edit e80b0801 as e35c91e0 · 2026-10-17 19:50
+    1 ~ Bug 1 - parse skips blank lines, total does not overflow (reworded)
+        @@ -1,6 +1,6 @@
+         From: A <a@b>
+         Date: Sat, 17 Oct 2026 19:50:52 +0200
+        -Subject: Bug 1 - parse skips blank lines, total does not overflow
+        +Subject: Bug 1 - parse skips blank lines, total does not overflow (reworded)
+        …
+        @@ -26,7 +26,7 @@
+         +    let mut sum = 0u64;
+              for i in items {
+         -        sum += i;
+        -+        sum += *i as u64;
+        ++        sum += u64::from(*i);
+              }
+    2   Bug 2 - a readme
   ```
 - `Versions of this patch…`, on a patch: every version, oldest first, each
   with the edit that first had it; beside it what changed from the version
@@ -280,14 +308,13 @@ the command line.
 On a record of `History…`, Space, `Ask agent about this, answer only…`
 writes a question under it (`why was it dropped?`, `what changed since?`),
 and esc asks it: answer only, so the agent changes nothing. It is told the
-stack's history, oldest first, and that record in full (what an edit
-changed, each new version's interdiff; where a head moved; what a comment
-said then; what came of a run), and may run stacked's read-only commands to
-look further: `log`, `tree`, `export --rev @N`, `versions`, `interdiff`,
+stack's history, oldest first, and that record in full: when, what it was,
+from which stack to which, and its stack diff, each new version's
+interdiff in it. It may run stacked's read-only commands to look further: `log`, `tree`, `export --rev @N`, `versions`, `interdiff`,
 `show`, `comments`. Its answer lands in the thread, and it may open comments
 of its own on lines of the stack as it is now, as any answer may.
 
-The question is a comment on the stack, `about @7 · drop …` among its
+The question is a comment on the stack, `about @7 −1 · drop …` among its
 comments; in `History…` it shows under its record with where it stands, and
 the record's menu goes to it. Its own menu only asks to answer, and goes
 back to the record (`Go to @7 in the history`). On the command line:
@@ -465,8 +492,8 @@ the other.
 - `panes.rs`: the compact layout's two panes.
 - `reading.rs`, `blocks.rs`: the reading mode's marks, by blocks of code.
 - `tree.rs`: the tree of edits as a graph, and the lanes the history draws.
-- `history.rs`: a stack's history, as the editor shows it and the agent is
-  told it.
+- `history.rs`: a stack's history, what changed it, and stack diffs: as the
+  editor shows them and the agent is told them.
 - `trim.rs`: a new database, the start of the history left out.
 - `todo.rs`: the `git rebase -i` style list.
 - `config.rs`, `keys.rs`: the settings, and the keys they map.
@@ -482,7 +509,7 @@ stack, a patch and a line, every way of asking about them (a script stands
 in for the agent and rewrites commits with git, runs `stacked fits`,
 answers, opens comments, tests), a split following its comments, a comment
 moved to the stack, asks waiting their turn, a rebase, a branch when the
-stack moved on, failures kept to look at, comments staying on their line
+stack moved on (and left out of the history), failures kept to look at, comments staying on their line
 across versions, a patch edited by hand (as mail and as code, at a line,
 refused and taken up again), trimming, the settings, filing Phabricator
 threads, apply, and what does not apply being refused, edited again, or
@@ -493,12 +520,15 @@ about and its stream and answer shown in place, the screen never waiting on
 the agent, redrawing not slowing as the agent writes, the filter kept in
 the file, the three views, reading by hunks and by a Rust file's blocks,
 editing a patch by hand at the cursor, the history screens, the branches
-History… draws and the stack and patch it shows as they were, the agent
+History… draws and the stack diff it shows beside each change, the agent
 asked about a record of the history, a new database started from it, a
 moved comment and an answer's comments, the
 comments pane's previews, and moving a patch. The tests in `check.rs` show
 the check's index holds only what the patches touch, that it writes nothing
-to the repository, and how a patch's files are read before and after it.
+to the repository, and how a patch's files are read before and after it;
+those in `history.rs`, what the history leaves out (comments, runs, a move
+to where the stack is, a branch put straight back) and how a stack diff
+follows each patch by its change, a move told from a shift.
 
 ## Not done yet
 

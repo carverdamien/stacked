@@ -496,12 +496,19 @@ fn history_part(db: &Db, i: &Info, s: &Stack, cmd: &str) -> String {
     // The latest of a long history.
     let skip = entries.len().saturating_sub(300);
     let mut p = format!(
-        "\nThe stack's history, oldest first, each record by its rev{}:\n",
+        "\nThe stack's history, oldest first: each record that changed it (an edit, an undo, a redo, a \
+         select), by its rev, and what it changed in short (+ patches added, − dropped, ~ given a new \
+         version, ↕ moved){}:\n",
         if skip > 0 { format!(" ({skip} older ones left out)") } else { String::new() }
     );
     for e in &entries[skip..] {
         p.push_str(&format!("  {} {}\n", crate::db::local_time(e.time), e.text));
     }
+    p.push_str(
+        "\nA record asked about comes with its stack diff: the stack after it, bottom first, each patch \
+         by its place and marked (+ added, ~ a new version, what changed in its mail indented under it, \
+         ↕ moved, from where it `was`; unmarked, as it was), and each patch dropped, marked −.\n",
+    );
     for rev in revs {
         p.push_str(&format!("\nWhat @{rev} was:\n"));
         for l in crate::history::about(db, name, rev).into_iter().take(400) {

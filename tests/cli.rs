@@ -736,6 +736,11 @@ fn an_ask_landing_after_the_stack_moved_is_a_branch() {
     let tree = e.ok(&["tree", "s"]);
     assert!(tree.contains("agent: the stack"), "{tree}");
     assert!(e.ok(&["runs"]).contains("it is a branch"));
+    // The history leaves it out, and the stack put back: they changed
+    // nothing of it.
+    let history: Vec<String> = stacked::history::entries(&Db::load(&e.db).unwrap(), "s").into_iter().map(|h| h.text).collect();
+    assert_eq!(history.len(), 2, "the import and the drop: {history:?}");
+    assert!(!history.iter().any(|t| t.contains("agent") || t.contains("branch")), "{history:?}");
 }
 
 #[test]
@@ -1138,7 +1143,7 @@ fn the_agent_answers_on_the_history() {
     let moved = log.lines().find(|l| l.contains("\tmove ")).unwrap();
     let rev: usize = moved.split('\t').next().unwrap().trim_start_matches('@').parse().unwrap();
     let id = comment(&e, &["--about", &format!("@{rev}"), "Why", "was", "it", "moved?"]);
-    assert!(e.ok(&["comments", "s"]).contains(&format!("{id}\tthe history, @{rev} · move")));
+    assert!(e.ok(&["comments", "s"]).contains(&format!("{id}\tthe history, @{rev} ↕1 · move")));
     // Asked about to answer only: it changes nothing.
     let (fine, _, err) = e.run(&["send", "s", &id]);
     assert!(!fine && err.contains("asked about to answer only"), "{err}");

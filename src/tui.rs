@@ -86,6 +86,56 @@ fn diff_style(line: &str) -> Style {
     }
 }
 
+/// A stack diff's lines, coloured as they say: added, dropped, a new
+/// version and what changed in it, moved; the patches as they were, dim.
+fn diff_lines(diff: &[Diffed]) -> Vec<(String, Style)> {
+    diff.iter()
+        .map(|d| {
+            let st = match d {
+                Diffed::Same => color::dim(),
+                Diffed::Made | Diffed::Deleted => Style::new(),
+                Diffed::Base { .. } => color::hunk(),
+                Diffed::Patch { added: true, .. } => color::add(),
+                Diffed::Patch { changed: true, .. } => color::hunk(),
+                Diffed::Patch { was: Some(_), .. } => Style::new(),
+                Diffed::Patch { .. } => color::dim(),
+                Diffed::Dropped { .. } => color::del(),
+                Diffed::Code(l) => diff_style(l),
+            };
+            (format!(" {}", d.text()), st)
+        })
+        .collect()
+}
+
+/// `line` cut into lines of at most `w` characters, between words where it
+/// can be, those after the first indented by `indent`: a long line of a
+/// stack diff, kept in its pane.
+fn fold(line: &str, w: usize, indent: usize) -> Vec<String> {
+    let mut rest: Vec<char> = line.chars().collect();
+    if rest.len() <= w || w <= indent + 10 {
+        return vec![line.to_string()];
+    }
+    let mut out = Vec::new();
+    while rest.len() > w {
+        // The last space in the line's second half, else where it ends.
+        let cut = match rest[..=w].iter().rposition(|c| *c == ' ') {
+            Some(at) if at > w / 2 => at,
+            _ => w,
+        };
+        out.push(rest[..cut].iter().collect::<String>().trim_end().to_string());
+        rest.drain(..cut);
+        while rest.first() == Some(&' ') {
+            rest.remove(0);
+        }
+        if rest.is_empty() {
+            return out;
+        }
+        rest.splice(0..0, std::iter::repeat_n(' ', indent));
+    }
+    out.push(rest.into_iter().collect());
+    out
+}
+
 fn plural(n: usize) -> &'static str {
     if n == 1 { "" } else { "s" }
 }
@@ -109,18 +159,17 @@ pub enum Focus {
     Notes,
 }
 
-/// How the code is drawn, as self-review draws it: one column, the two
-/// sides line by line, or the two sides each a pane of its own (compact).
-/// The panes of History…: the history, the stack as it was at the record
-/// picked, and its patch as it was.
+/// The panes of History…: the history, and the stack diff of the record
+/// picked.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum HistFocus {
     #[default]
     List,
-    Stack,
-    Patch,
+    Diff,
 }
 
+/// How the code is drawn, as self-review draws it: one column, the two
+/// sides line by line, or the two sides each a pane of its own (compact).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Layout {
     Unified,
@@ -389,7 +438,7 @@ fn about(action: &Action) -> String {
         Action::Tree => "see every state of the stack, and edit from any".into(),
         Action::EditFrom(rev) => format!("edit from @{rev}"),
         Action::WhatChanged(rev) => format!("read what the edit that made @{rev} changed"),
-        Action::History => "read everything that happened to the stack, newest first".into(),
+        Action::History => "read what changed the stack, newest first, each with its stack diff".into(),
         Action::Versions => "see every version of this patch, and what changed from one to the next".into(),
         Action::UseVersion(_) => "put this version back in the stack".into(),
         Action::AskAbout(rev) => format!("write a question on @{rev}, for the agent to answer: it may open comments, it changes nothing"),
@@ -529,7 +578,7 @@ pub struct TextView {
     back: Screen,
 }
 
-pub use crate::history::{Entry, Goto};
+pub use crate::history::{Diffed, Entry};
 use crate::history::{note_change, way_said};
 
 pub struct App {
@@ -581,15 +630,15 @@ pub struct App {
     /// The record the history's cursor is on: it stays on it as records
     /// come, newest first, above it.
     hist_rev: Option<usize>,
-    /// History…'s pane the cursor is in; the patch picked in the stack as
-    /// it was; the cursor in that patch, and its top.
+    /// History…'s pane the cursor is in; the line of the stack diff the
+    /// cursor is on, and its top.
     pub hist_focus: HistFocus,
-    pub hist_patch: usize,
     pub hist_cursor: usize,
     hist_top: usize,
-    /// The rows of that patch as it was, and what they were built from.
-    pub hist_rows: Vec<Row>,
-    hist_built: Option<String>,
+    /// The lines of the stack diff of the record picked, and what they were
+    /// made of: the stacks diffed, the width.
+    pub hist_rows: Vec<(String, Style)>,
+    hist_built: Option<(Option<usize>, Option<usize>, usize)>,
     /// The run a transcript is of, and how far it is scrolled up.
     transcript: Option<String>,
     scroll: usize,
@@ -618,7 +667,12 @@ pub struct App {
     /// The comments the agent works on, as last read, and how many records
     /// the database had then.
     busy_memo: std::cell::RefCell<Option<(usize, std::rc::Rc<Busy>)>>,
+    hist_memo: std::cell::RefCell<HistMemo>,
 }
+
+/// The stack's history, as last made: of which stack, at how many records
+/// (an agent's stream aside).
+type HistMemo = Option<((String, usize), std::rc::Rc<Vec<Entry>>)>;
 
 /// What work done away from the screen came to.
 enum Done {
@@ -745,7 +799,6 @@ impl App {
             pick_top: 0,
             hist_rev: None,
             hist_focus: HistFocus::List,
-            hist_patch: 0,
             hist_cursor: 0,
             hist_top: 0,
             hist_rows: vec![],
@@ -764,6 +817,7 @@ impl App {
             judged: None,
             bg: Background::new(),
             busy_memo: std::cell::RefCell::new(None),
+            hist_memo: std::cell::RefCell::new(None),
             db,
             cfg,
         };
@@ -1830,20 +1884,19 @@ impl App {
                 out.push("Press Enter, or Space, to put this version back in the stack, or read it whole.".into());
                 out.push("Press ↑↓ for another version, Esc to go back.".into());
             }
-            Screen::History => match self.hist_focus {
-                HistFocus::List => {
-                    out.push("Press Enter to go to it: the stack it made, the comment, the run.".into());
-                    out.push("Press Space to ask the agent about it, answer only, or to start a new database from there.".into());
-                    out.push("Press ↑↓ for another, → for the stack as it was then, and its patches; Esc to leave the history.".into());
+            Screen::History => {
+                out.push("The history lists what changed the stack: its edits, and the moves of its head (undo, redo, select, delete); beside each, the stack diff from the stack before it to the one after: + added, − dropped, ~ a new version (what changed in it under it), ↕ moved.".into());
+                match self.hist_focus {
+                    HistFocus::List => {
+                        out.push("Press Enter to go to the stack it made, in the tree of edits.".into());
+                        out.push("Press Space to ask the agent about it, answer only, or to start a new database from there.".into());
+                        out.push("Press ↑↓ for another, → to scroll its stack diff; Esc to leave the history.".into());
+                    }
+                    HistFocus::Diff => {
+                        out.push("Press ↑↓ (pgup pgdn home end) to scroll, ← for the history. Only to look at: Esc leaves the history, to edit or comment.".into());
+                    }
                 }
-                HistFocus::Stack => {
-                    out.push("Press Enter, or →, to read the patch as it was.".into());
-                    out.push("Press ↑↓ for another of its patches, ← for the history. Only to look at: Esc leaves the history, to edit or comment.".into());
-                }
-                HistFocus::Patch => {
-                    out.push("Press ↑↓ (pgup pgdn home end) to scroll, ← for the stack. The patch as it was, its comments as they stood: Esc leaves the history, to edit or comment.".into());
-                }
-            },
+            }
             Screen::Transcript | Screen::Text => {
                 out.push("Press ↑↓ (pgup pgdn home end) to scroll, Esc to go back.".into())
             }
@@ -1911,56 +1964,30 @@ impl App {
         format!("{keys}.")
     }
 
-    /// History…'s keys: ↑↓ in the pane the cursor is in, ← → from pane to
-    /// pane, enter on a record goes to it; esc leaves. The stack and its
-    /// patch as they were are only to look at: nothing is edited, nor
-    /// asked, from them.
+    /// History…'s keys: ↑↓ in the pane the cursor is in, ← → from one to
+    /// the other, enter on a record goes to it; esc leaves. The stack diff
+    /// is only to look at: nothing is edited, nor asked, from it.
     fn history_key(&mut self, k: KeyEvent) {
-        let patches = self.hist_state().map_or(0, |(_, s)| s.patches.len());
         match (self.hist_focus, k.code) {
             (_, KeyCode::Esc) => self.screen = Screen::Main,
             (HistFocus::List, KeyCode::Right) => {
-                if self.hist_state().is_some() {
-                    self.hist_focus = HistFocus::Stack;
+                if self.hist_entry().is_some() {
+                    self.hist_focus = HistFocus::Diff;
                 }
             }
             (HistFocus::List, _) => {
                 let was = self.pick;
                 self.list_key(k);
                 if self.pick != was {
-                    self.hist_patch = 0;
                     self.hist_cursor = 0;
                     self.hist_top = 0;
                 }
             }
-            (HistFocus::Stack, KeyCode::Left) => self.hist_focus = HistFocus::List,
-            (HistFocus::Stack, KeyCode::Right | KeyCode::Enter) => {
-                if patches > 0 {
-                    self.hist_focus = HistFocus::Patch;
-                }
+            (HistFocus::Diff, KeyCode::Left) => self.hist_focus = HistFocus::List,
+            (HistFocus::Diff, KeyCode::Enter) => {
+                self.status = "the stack diff is only to look at: esc leaves the history, to edit or comment".into();
             }
-            (HistFocus::Stack, code) => {
-                let last = patches.saturating_sub(1);
-                let was = self.hist_patch;
-                self.hist_patch = match code {
-                    KeyCode::Down => (self.hist_patch + 1).min(last),
-                    KeyCode::Up => self.hist_patch.saturating_sub(1),
-                    KeyCode::Home => 0,
-                    KeyCode::End => last,
-                    KeyCode::PageDown => (self.hist_patch + self.page()).min(last),
-                    KeyCode::PageUp => self.hist_patch.saturating_sub(self.page()),
-                    _ => self.hist_patch,
-                };
-                if self.hist_patch != was {
-                    self.hist_cursor = 0;
-                    self.hist_top = 0;
-                }
-            }
-            (HistFocus::Patch, KeyCode::Left) => self.hist_focus = HistFocus::Stack,
-            (HistFocus::Patch, KeyCode::Enter) => {
-                self.status = "a preview, as it was: esc leaves the history, to edit or comment".into();
-            }
-            (HistFocus::Patch, code) => {
+            (HistFocus::Diff, code) => {
                 let last = self.hist_rows.len().saturating_sub(1);
                 self.hist_cursor = match code {
                     KeyCode::Down => (self.hist_cursor + 1).min(last),
@@ -1975,12 +2002,9 @@ impl App {
         }
     }
 
-    /// The stack as it was just after the record History…'s cursor is on:
-    /// its rev and itself, if it was on one.
-    pub fn hist_state(&self) -> Option<(usize, Stack)> {
-        let e = self.history().into_iter().nth(self.pick)?;
-        let at = crate::history::stack_at(&self.db, &self.stack, e.rev)?;
-        Some((at, self.db.node(at).ok()?.clone()))
+    /// The record History…'s cursor is on.
+    pub fn hist_entry(&self) -> Option<Entry> {
+        self.history().get(self.pick).cloned()
     }
 
     /// The lists: the tree, the stacks, the runs, the versions, the
@@ -2557,7 +2581,9 @@ impl App {
                 }
             }
             Action::WhatChanged(rev) => {
-                let lines = self.what_changed(rev);
+                let Ok(s) = self.db.node(rev) else { return Effect::None };
+                let mut lines = vec![(format!("@{rev} · {} · {}", local_time(s.time), s.op), color::file())];
+                lines.extend(diff_lines(&crate::history::what_changed(&self.db, rev)));
                 self.open_text(format!("what the edit that made @{rev} changed"), lines);
             }
             Action::History => self.open_list(Screen::History),
@@ -2639,9 +2665,11 @@ impl App {
                 }
             }
             Action::GoToHistory(rev) => {
+                // On it, or what changed the stack last before it.
                 self.open_list(Screen::History);
-                self.pick = self.history().iter().position(|e| e.rev == rev).unwrap_or(0);
-                self.hist_rev = Some(rev);
+                let all = self.history();
+                self.pick = all.iter().position(|e| e.rev <= rev).unwrap_or(0);
+                self.hist_rev = all.get(self.pick).map(|e| e.rev);
             }
             Action::AskTrim(rev) => {
                 let to = self.trimmed_path(rev);
@@ -2865,7 +2893,6 @@ impl App {
         self.pick_top = 0;
         self.hist_rev = None;
         self.hist_focus = HistFocus::List;
-        self.hist_patch = 0;
         self.hist_cursor = 0;
         self.hist_top = 0;
         if screen == Screen::Tree {
@@ -2943,24 +2970,10 @@ impl App {
             }
             Screen::Versions => self.mode = Mode::Menu(self.main_menu()),
             Screen::History => {
-                let Some(e) = self.history().get(self.pick).cloned() else { return };
-                match e.to {
-                    Goto::Stack(rev) => {
-                        self.open_list(Screen::Tree);
-                        self.pick = tree::graph(&self.db, &self.stack).iter().position(|l| l.rev == rev).unwrap_or(0);
-                    }
-                    Goto::Note { change, id } => {
-                        if self.db.note(&change, &id).is_some() {
-                            self.go_to(&change, &id);
-                        } else {
-                            let lines = self.note_history_lines(&change, &id);
-                            self.open_text("history of a deleted comment".into(), lines);
-                        }
-                    }
-                    Goto::Run(id) => {
-                        self.perform(Action::Transcript(id));
-                    }
-                }
+                // The stack it made, or, deleted, the one it was.
+                let Some(rev) = self.hist_entry().and_then(|e| e.to.or(e.from)) else { return };
+                self.open_list(Screen::Tree);
+                self.pick = tree::graph(&self.db, &self.stack).iter().position(|l| l.rev == rev).unwrap_or(0);
             }
             _ => {}
         }
@@ -3018,33 +3031,6 @@ impl App {
             .collect()
     }
 
-    /// What the edit that made stack `rev` changed, as the history says it,
-    /// coloured as its lines are.
-    fn what_changed(&self, rev: usize) -> Vec<(String, Style)> {
-        crate::history::what_changed(&self.db, rev)
-            .into_iter()
-            .enumerate()
-            .map(|(i, l)| {
-                let st = if i == 0 {
-                    color::file()
-                } else if let Some(d) = l.strip_prefix("    ") {
-                    diff_style(d)
-                } else if l.starts_with("+ ") {
-                    color::add()
-                } else if l.starts_with("− ") {
-                    color::del()
-                } else if l.starts_with("~ ") {
-                    color::hunk()
-                } else if l == "nothing changed" {
-                    color::dim()
-                } else {
-                    Style::new()
-                };
-                (l, st)
-            })
-            .collect()
-    }
-
     /// Every record of a comment, oldest first, and what each was.
     fn note_history_lines(&self, change: &str, id: &str) -> Vec<(String, Style)> {
         let mut out = Vec::new();
@@ -3062,10 +3048,19 @@ impl App {
         out
     }
 
-    /// Everything that happened to the stack, newest first: its edits, its
-    /// head's moves, its comments, its runs.
-    pub fn history(&self) -> Vec<Entry> {
-        crate::history::entries(&self.db, &self.stack)
+    /// What changed the stack, newest first: its edits, and the moves of
+    /// its head. Made again only when the database has more than an agent's
+    /// stream.
+    pub fn history(&self) -> std::rc::Rc<Vec<Entry>> {
+        let key = (self.stack.clone(), self.db.changes());
+        if let Some((k, all)) = &*self.hist_memo.borrow()
+            && *k == key
+        {
+            return all.clone();
+        }
+        let all = std::rc::Rc::new(crate::history::entries(&self.db, &self.stack));
+        *self.hist_memo.borrow_mut() = Some((key, all.clone()));
+        all
     }
 
     /// The comments on the history's record `rev`, oldest first.
@@ -3099,22 +3094,20 @@ impl App {
             Screen::Transcript => self.draw_transcript(buf, body),
             Screen::History => {
                 let w = body.width as usize;
-                if w < 60 {
+                // Too narrow for both: the one the cursor is in.
+                if w < 60 && self.hist_focus == HistFocus::Diff {
+                    self.draw_history_diff(buf, body);
+                } else if w < 60 {
                     cursor = self.draw_history(buf, body);
                 } else {
                     let list_w = (w * 2 / 5).max(30);
-                    let stack_w = (w / 5).clamp(18, 32);
-                    let (x1, x2) = (list_w, list_w + 1 + stack_w);
                     for y in 0..body.height {
-                        buf.set_string(body.x + x1 as u16, body.y + y, "│", color::meta());
-                        buf.set_string(body.x + x2 as u16, body.y + y, "│", color::meta());
+                        buf.set_string(body.x + list_w as u16, body.y + y, "│", color::meta());
                     }
                     let list = Rect::new(body.x, body.y, list_w as u16, body.height);
-                    let stack = Rect::new(body.x + (x1 + 1) as u16, body.y, stack_w as u16, body.height);
-                    let patch = Rect::new(body.x + (x2 + 1) as u16, body.y, (w - x2 - 1) as u16, body.height);
+                    let diff = Rect::new(body.x + (list_w + 1) as u16, body.y, (w - list_w - 1) as u16, body.height);
                     cursor = self.draw_history(buf, list);
-                    self.draw_history_stack(buf, stack);
-                    self.draw_history_patch(buf, patch);
+                    self.draw_history_diff(buf, diff);
                 }
             }
             Screen::Text => self.draw_text(buf, body),
@@ -3268,9 +3261,8 @@ impl App {
                     (Screen::Main, None) => "enter or ",
                     (Screen::Transcript | Screen::Text, _) => "↑↓: scroll · ",
                     (Screen::History, _) => match self.hist_focus {
-                        HistFocus::List => "enter: go to it · →: the stack then · ",
-                        HistFocus::Stack => "enter: read it · ←: the history · ",
-                        HistFocus::Patch => "↑↓: scroll · ←: the stack · ",
+                        HistFocus::List => "enter: go to it · →: its stack diff · ",
+                        HistFocus::Diff => "↑↓: scroll · ←: the history · ",
                     },
                     _ => "enter: pick · ",
                 };
@@ -3875,11 +3867,11 @@ impl App {
         if self.screen == Screen::Tree {
             lines.push((String::new(), Style::new()));
             lines.push((self.say_keys(" what this edit changed (space: in full)".into()), color::meta()));
-            for (l, st) in self.what_changed(rev).into_iter().skip(1) {
-                if !l.starts_with("    ") {
-                    lines.push((format!(" {l}"), st));
-                }
-            }
+            let changed: Vec<Diffed> = crate::history::what_changed(&self.db, rev)
+                .into_iter()
+                .filter(|d| d.is_change() && !matches!(d, Diffed::Code(_)))
+                .collect();
+            lines.extend(diff_lines(&changed));
         }
         for (y, (l, st)) in lines.iter().take(h).enumerate() {
             put(buf, area, 0, y, w, &fit(l, w), *st);
@@ -3986,53 +3978,35 @@ impl App {
         cursor
     }
 
-    /// The stack as it was at the record picked: which, and its patches.
-    fn draw_history_stack(&self, buf: &mut Buffer, area: Rect) {
+    /// The stack diff of the record picked: from the stack before it to the
+    /// one after, each patch marked, what changed in each new version under
+    /// it. Only to look at.
+    fn draw_history_diff(&mut self, buf: &mut Buffer, area: Rect) {
         let (w, h) = (area.width as usize, area.height as usize);
-        let Some((rev, s)) = self.hist_state() else {
-            put(buf, area, 1, 0, w, "no stack then", color::dim());
+        let Some(e) = self.hist_entry() else {
+            put(buf, area, 1, 0, w, "nothing changed the stack yet", color::dim());
             return;
         };
-        let mut head = color::header();
-        if self.hist_focus == HistFocus::Stack {
-            head = head.add_modifier(Modifier::UNDERLINED);
-        }
-        put(buf, area, 0, 0, w, &fit(&format!(" @{rev} · {}", s.op), w), head);
-        put(buf, area, 0, 1, w, &fit(&format!(" as it was, {}", local_time(s.time)), w), color::dim());
-        if s.patches.is_empty() {
-            put(buf, area, 1, 2, w, "an empty stack", color::dim());
-        }
-        let rows = h.saturating_sub(2);
-        let top = self.hist_patch.saturating_sub(rows.saturating_sub(1));
-        for (y, (i, id)) in s.patches.iter().enumerate().skip(top).take(rows).enumerate() {
-            let mut st = Style::new();
-            if i == self.hist_patch {
-                st = st.add_modifier(if self.hist_focus == HistFocus::Stack { Modifier::REVERSED } else { Modifier::BOLD });
-            }
-            put(buf, area, 0, y + 2, w, &fit(&format!(" {:>2} {}", i + 1, self.db.patch(id).title()), w), st);
-        }
-    }
-
-    /// The patch picked, as it was, its comments as they stood: only to
-    /// look at.
-    fn draw_history_patch(&mut self, buf: &mut Buffer, area: Rect) {
-        let (w, h) = (area.width as usize, area.height as usize);
-        let Some(e) = self.history().into_iter().nth(self.pick) else { return };
-        let Some((_, s)) = self.hist_state() else { return };
-        let Some(id) = s.patches.get(self.hist_patch.min(s.patches.len().saturating_sub(1))).cloned() else {
-            return;
-        };
-        let want = format!("{id}\0{}\0{w}\0{}", e.rev, self.db.changes());
-        if self.hist_built.as_deref() != Some(&want) {
-            let p = self.db.patch(&id).clone();
-            let notes = crate::history::notes_at(&self.db, &p.change, e.rev);
-            let refs: Vec<&Note> = notes.iter().collect();
-            self.hist_rows = patch_rows(&p, &refs, w.saturating_sub(1), &Deco::default());
+        let want = (e.from, e.to, w);
+        if self.hist_built != Some(want) {
+            // Made, or deleted, its header says.
+            let mut diff = crate::history::stack_diff(&self.db, e.from, e.to, true);
+            diff.retain(|d| !matches!(d, Diffed::Made | Diffed::Deleted));
+            self.hist_rows = diff_lines(&diff)
+                .into_iter()
+                .flat_map(|(l, st)| fold(&l, w.saturating_sub(1), 6).into_iter().map(move |l| (l, st)))
+                .collect();
             self.hist_built = Some(want);
             self.hist_cursor = self.hist_cursor.min(self.hist_rows.len().saturating_sub(1));
         }
-        let focus = self.hist_focus == HistFocus::Patch;
-        let rows = h;
+        let focus = self.hist_focus == HistFocus::Diff;
+        let mut head = color::header();
+        if focus {
+            head = head.add_modifier(Modifier::UNDERLINED);
+        }
+        put(buf, area, 0, 0, w, &fit(&format!(" {}", e.span()), w), head);
+        put(buf, area, 0, 1, w, &fit(&format!(" {} · {}", e.op, local_time(e.time)), w), color::dim());
+        let rows = h.saturating_sub(2);
         if self.hist_cursor < self.hist_top {
             self.hist_top = self.hist_cursor;
         } else if self.hist_cursor >= self.hist_top + rows {
@@ -4040,8 +4014,9 @@ impl App {
         }
         for y in 0..rows {
             let i = self.hist_top + y;
-            let Some(row) = self.hist_rows.get(i) else { break };
-            put(buf, area, 0, y, w, &fit(&row.text, w), row_style(row, focus && i == self.hist_cursor));
+            let Some((l, st)) = self.hist_rows.get(i) else { break };
+            let st = if focus && i == self.hist_cursor { st.add_modifier(Modifier::REVERSED) } else { *st };
+            put(buf, area, 0, y + 2, w, &fit(l, w), st);
         }
     }
 
@@ -4247,4 +4222,19 @@ fn event_loop(terminal: &mut DefaultTerminal, app: &mut App) -> Result<()> {
 #[allow(dead_code)]
 fn _short_id(c: &str, i: &str) -> String {
     short_id(c, i)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn a_long_line_of_a_stack_diff_folds_between_words() {
+        let line = " 1 ~ Bug 1 - parse skips blank lines, total does not overflow (reworded)";
+        assert_eq!(
+            super::fold(line, 40, 6),
+            [" 1 ~ Bug 1 - parse skips blank lines,", "      total does not overflow (reworded)"]
+        );
+        // A word longer than the line is cut where the line ends.
+        assert_eq!(super::fold("     ++averyveryverylongwordindeedsolong", 20, 6), ["     ++averyveryvery", "      longwordindeed", "      solong"]);
+        assert_eq!(super::fold("short", 20, 6), ["short"]);
+    }
 }

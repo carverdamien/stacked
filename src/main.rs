@@ -645,7 +645,9 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
             let db = Db::load(path)?;
             db.stack(&name)?;
             let Some(e) = stacked::history::entries(&db, &name).into_iter().find(|e| e.rev == rev) else {
-                return err(format!("@{rev} is not in the history of {name}: `stacked log {name}` lists it"));
+                return err(format!(
+                    "@{rev} is not in the history of {name}, the records that changed it: `stacked log {name}` lists its edits"
+                ));
             };
             let note = Note {
                 change: stack_change(&name),
