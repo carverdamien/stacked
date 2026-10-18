@@ -1,6 +1,5 @@
-//! `stacked demo`, done for the reader step by step, as Tab or waiting
-//! does it: each step done, the tour over in under five minutes, nothing
-//! written on disk.
+//! `stacked demo`, done for the reader step by step, as Tab does it: each
+//! step done, the tour over, nothing written on disk.
 #![cfg(feature = "demo")]
 
 use std::collections::BTreeSet;
@@ -32,7 +31,6 @@ fn temporary() -> BTreeSet<String> {
 
 #[test]
 fn the_tour_is_done_step_by_step_in_memory() {
-    assert!(Tour::longest() < Duration::from_secs(5 * 60), "{:?}", Tour::longest());
     let before = temporary();
     let (mut app, mut tour) = Tour::new().unwrap();
     let mut said = Vec::new();
@@ -43,6 +41,13 @@ fn the_tour_is_done_step_by_step_in_memory() {
         let screen = text(&buf);
         assert!(screen.contains(&format!("stacked demo · {} of {STEPS}", k + 1)), "{screen}");
         said.push(screen);
+        // Nothing goes on by itself: the step waits for the reader.
+        for _ in 0..4 {
+            std::thread::sleep(Duration::from_millis(50));
+            app.refresh();
+            tour.tick(&mut app);
+        }
+        assert_eq!(tour.step(), k, "step {} went on by itself", k + 1);
         tour.show(&mut app);
         let started = Instant::now();
         while tour.step() == k && !tour.over() {

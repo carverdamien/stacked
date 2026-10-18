@@ -1,8 +1,8 @@
 //! `stacked demo`: a tour of the editor, a few minutes long, on a game of
 //! tic-tac-toe played in a file, board.txt, a move a patch. Its database
 //! and its repository are kept in memory (memory.rs): nothing is written
-//! on disk. Each step says what to press, and why; Tab does it for you, as
-//! waiting does, so that the tour ends in under five minutes.
+//! on disk. Each step says what to press, and why, and waits for you to do
+//! it; Tab does it for you.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -178,13 +178,10 @@ fn agent(path: &Path, id: &str) -> Result<()> {
     })
 }
 
-/// Where the tour is: its step, since when, the patches it plays.
+/// Where the tour is: its step, the patches it plays.
 pub struct Tour {
     path: PathBuf,
     step: usize,
-    since: Instant,
-    /// The last key the reader pressed: the tour does not hurry them.
-    pressed: Instant,
     /// Enter, at a step where it goes on.
     entered: bool,
     /// The moves still to play, as the tour adds them, and when it last did.
@@ -212,14 +209,11 @@ impl Tour {
         crate::memory::stand_in(agent);
         Db::edit(&path, |db| db.new_stack(STACK, &base, REPO))?;
         let app = App::new(&path)?;
-        let now = Instant::now();
         Ok((
             app,
             Tour {
                 path,
                 step: 0,
-                since: now,
-                pressed: now,
                 entered: false,
                 adding: None,
                 note: String::new(),
@@ -234,11 +228,6 @@ impl Tour {
 
     pub fn over(&self) -> bool {
         self.over
-    }
-
-    /// How long the tour takes, were nothing pressed: every step's wait.
-    pub fn longest() -> Duration {
-        (0..STEPS).map(wait).sum()
     }
 
     /// The patch of O's mistake, or of its fix: where it is in the stack.
@@ -287,7 +276,7 @@ impl Tour {
     /// and, at its end, the board.
     pub fn say(&self, app: &App) -> (String, Option<String>) {
         let text = match self.step {
-            0 => "Welcome to stacked, an editor of stacks of patches: you read them, comment on their lines, ask an agent about them, reorder them, and every edit is kept, to undo. This tour plays tic-tac-toe in a file, board.txt, a move a patch. It takes about four minutes, and writes nothing on disk. Press Enter to go on. At every step Tab does it for you, as does waiting; ctrl-c leaves.",
+            0 => "Welcome to stacked, an editor of stacks of patches: you read them, comment on their lines, ask an agent about them, reorder them, and every edit is kept, to undo. This tour plays tic-tac-toe in a file, board.txt, a move a patch. It takes a few minutes, and writes nothing on disk. Press Enter to go on. Each step waits for you; Tab does it for you, and ctrl-c leaves.",
             1 => "The project: board.txt, an empty board. The stack, game, is empty too (`stacked new game --base main` makes one). Stacks are made of commits, as `stacked import game main..HEAD` makes them. Here the tour plays five moves, a patch each: press Enter.",
             2 => "Each move is a patch, bottom first, as they were committed. ↓ and ↑ pick one: pick patch 3, X takes the top right corner.",
             3 => "Press → to read it, in the middle: the line it changes, as it was (−) and is (+), among a few as they are. ↓↑ go through its lines; ← goes back to the patches.",
@@ -389,8 +378,8 @@ impl Tour {
         app.refresh();
     }
 
-    /// What the tour does as time goes: the moves played one by one, the
-    /// step done for you once waited for, the next once it is done.
+    /// What the tour does as time goes: the moves played one by one, and the
+    /// next step once the step is done, by you or for you.
     pub fn tick(&mut self, app: &mut App) {
         if let Some((k, at)) = self.adding
             && at.elapsed() >= Duration::from_millis(400)
@@ -414,23 +403,9 @@ impl Tour {
                 return;
             }
             self.step += 1;
-            self.since = Instant::now();
             self.entered = false;
             self.note.clear();
-            return;
         }
-        // Done for you, once waited for, the reader doing nothing.
-        let idle = self.since.max(self.pressed).elapsed();
-        if idle >= wait(self.step) && matches!(app.mode, Mode::Normal) && self.adding.is_none() {
-            self.note = "done for you".into();
-            self.show(app);
-            self.since = Instant::now();
-        }
-    }
-
-    /// What is left to wait, at the step.
-    fn left(&self) -> Duration {
-        wait(self.step).saturating_sub(self.since.max(self.pressed).elapsed())
     }
 
     /// The editor drawn into `buf`, the tour's words under it: where the
@@ -458,7 +433,7 @@ impl Tour {
         for (i, l) in lines.iter().take(ph.saturating_sub(2)).enumerate() {
             put(buf, area, 2, h - ph + 1 + i, w.saturating_sub(4), l, Style::new());
         }
-        let mut foot = format!(" Tab: do it for me · ctrl-c: leave · on its own in {}s ", self.left().as_secs());
+        let mut foot = " Tab: do it for me · ctrl-c: leave ".to_string();
         if !self.note.is_empty() {
             foot = format!(" {} ·{foot}", self.note);
         }
@@ -490,7 +465,6 @@ impl Tour {
             if k.kind == KeyEventKind::Release {
                 continue;
             }
-            self.pressed = Instant::now();
             if k.code == KeyCode::Char('c') && k.modifiers.contains(KeyModifiers::CONTROL) {
                 return Ok(());
             }
@@ -514,19 +488,6 @@ impl Tour {
             }
         }
     }
-}
-
-/// How long step `k` waits for the reader before it is done for them.
-fn wait(k: usize) -> Duration {
-    Duration::from_secs(match k {
-        0 => 15,
-        1 => 10,
-        4 => 40,
-        5 | 6 => 20,
-        8 => 25,
-        k if k == STEPS - 1 => 20,
-        _ => 15,
-    })
 }
 
 /// The tour, in this terminal.
