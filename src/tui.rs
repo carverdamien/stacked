@@ -1341,6 +1341,44 @@ impl App {
         }
         let Some(spot) = spot else { return Effect::None };
         let was = self.on(spot);
+        if !self.pick_spot(spot) {
+            return Effect::None;
+        }
+        if right {
+            return press(self, KeyCode::Char(' '));
+        }
+        if was {
+            return press(self, KeyCode::Enter);
+        }
+        Effect::None
+    }
+
+    /// The mouse over `(x, y)` of the screen: what is there picked, as the
+    /// arrows would, so that a click does on it what Enter does. In a menu,
+    /// its item; a patch being moved goes there. Not while a comment is
+    /// written, nor over what `?` says.
+    pub fn hover(&mut self, x: u16, y: u16) {
+        let Some(spot) = self.spot_at(x, y) else { return };
+        match &mut self.mode {
+            Mode::Menu(m) => {
+                if let Spot::Item(i) = spot {
+                    m.sel = i;
+                }
+            }
+            Mode::Moving { to, .. } => {
+                if let Spot::Patch(Some(at)) = spot {
+                    *to = at;
+                }
+            }
+            Mode::Normal => {
+                self.pick_spot(spot);
+            }
+            _ => {}
+        }
+    }
+
+    /// `spot` picked, as the arrows would: whether it is one to pick.
+    fn pick_spot(&mut self, spot: Spot) -> bool {
         match spot {
             Spot::Patch(None) => {
                 self.focus = Focus::List;
@@ -1375,15 +1413,9 @@ impl App {
                 self.hist_focus = HistFocus::Diff;
                 self.hist_cursor = i;
             }
-            Spot::Item(_) | Spot::Box => return Effect::None,
+            Spot::Item(_) | Spot::Box => return false,
         }
-        if right {
-            return press(self, KeyCode::Char(' '));
-        }
-        if was {
-            return press(self, KeyCode::Enter);
-        }
-        Effect::None
+        true
     }
 
     /// The line the middle pane's cursor is on, if a comment can go on it:

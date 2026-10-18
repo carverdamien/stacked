@@ -11,7 +11,8 @@
 //!
 //! The lines for the server: `k NAME MODS`, a key (`k c HEX MODS` for a
 //! character, by its code), MODS `c` ctrl, `a` alt, `s` shift, or `-`;
-//! `m X Y l|r`, a click on a cell, with the left or the right button.
+//! `m X Y l|r`, a click on a cell, with the left or the right button; `v X
+//! Y`, the mouse over another cell.
 
 /// Where the cursor is, in a run's modifiers: past ratatui's own.
 pub const CURSOR: u32 = 1 << 16;
@@ -160,6 +161,21 @@ pub fn click(x: f64, y: f64, cw: f64, ch: f64, right: bool) -> String {
     format!("m {} {} {}", (x / cw) as u32, (y / ch) as u32, if right { "r" } else { "l" })
 }
 
+/// The mouse at `(x, y)` pixels of the screen, its cells `cw` by `ch`, made
+/// a line for the server when it is over another cell than `last`, the one
+/// it was over.
+pub fn moved(last: &mut Option<(u32, u32)>, x: f64, y: f64, cw: f64, ch: f64) -> String {
+    if cw <= 0.0 || ch <= 0.0 || x < 0.0 || y < 0.0 {
+        return String::new();
+    }
+    let at = ((x / cw) as u32, (y / ch) as u32);
+    if *last == Some(at) {
+        return String::new();
+    }
+    *last = Some(at);
+    format!("v {} {}", at.0, at.1)
+}
+
 /// The wheel turned `dy` pixels, kept with what it turned before: a line up
 /// or down for each notch of it, as ↑↓.
 pub fn wheel(turned: &mut f64, dy: f64) -> String {
@@ -193,6 +209,7 @@ mod wasm {
 
     static OUT: Mutex<Vec<u8>> = Mutex::new(Vec::new());
     static TURNED: Mutex<f64> = Mutex::new(0.0);
+    static OVER: Mutex<Option<(u32, u32)>> = Mutex::new(None);
 
     /// Room for `n` bytes, the text of the call after.
     #[unsafe(no_mangle)]
@@ -231,6 +248,12 @@ mod wasm {
     #[unsafe(no_mangle)]
     pub extern "C" fn click(x: f64, y: f64, cw: f64, ch: f64, right: u32) -> usize {
         give(super::click(x, y, cw, ch, right != 0))
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn moved(x: f64, y: f64, cw: f64, ch: f64) -> usize {
+        let mut over = OVER.lock().unwrap();
+        give(super::moved(&mut over, x, y, cw, ch))
     }
 
     #[unsafe(no_mangle)]
@@ -278,6 +301,11 @@ mod tests {
         assert_eq!(click(17.0, 41.0, 8.0, 20.0, false), "m 2 2 l");
         assert_eq!(click(0.0, 0.0, 8.0, 20.0, true), "m 0 0 r");
         assert_eq!(click(5.0, 5.0, 0.0, 20.0, false), "");
+        // The mouse moved: said when it is over another cell.
+        let mut over = None;
+        assert_eq!(moved(&mut over, 17.0, 41.0, 8.0, 20.0), "v 2 2");
+        assert_eq!(moved(&mut over, 20.0, 45.0, 8.0, 20.0), "", "the same cell");
+        assert_eq!(moved(&mut over, 25.0, 45.0, 8.0, 20.0), "v 3 2");
         let mut turned = 0.0;
         assert_eq!(wheel(&mut turned, 30.0), "");
         assert_eq!(wheel(&mut turned, 30.0), "k Down -", "a notch, with what it turned before");

@@ -56,11 +56,13 @@ command is the database to open: `stacked FILE` is `stacked open FILE`.
 
 `stacked web` (built with `--features web`) serves the editor on this
 machine and opens the browser on it: the same editor, the same keys, drawn
-in the page as in a terminal. A click picks what is under it, as the arrows
-would; a click on what is picked already (so a double click) is Enter; a
-right click picks it and opens its menu, as Space does; in a menu, a click
-does the item, and outside it, closes it. The wheel is ↑↓, and a paste types
-what is pasted, into a comment being written. `--port N` listens on port N
+in the page as in a terminal. The cursor follows the mouse: what is under it
+is picked, as the arrows would (a patch of the list, a line, a comment, an
+item of a list or of a menu; a patch being moved goes there), so a click is
+Enter on it, and a right click Space, its menu. Outside a menu, a click
+closes it; writing a comment, or reading what `?` says, the mouse moves
+nothing. The wheel is ↑↓, and a paste types what is pasted, into a comment
+being written. `--port N` listens on port N
 (else any free one), `--no-open` only says where it is.
 
 It listens on 127.0.0.1 only, and only a page holding the token in the
@@ -586,8 +588,9 @@ History… draws and the stack diff it shows beside each change, the agent
 asked about a record of the history, a new database started from it, a
 moved comment and an answer's comments, a patch's comment asked of the
 whole stack, what you said last written again (off the queue meanwhile),
-a comment moved to the stack taking the cursor with it, clicks (picking,
-Enter on what is picked, a right click's menu, a menu's item), the comments
+a comment moved to the stack taking the cursor with it, the mouse (the
+cursor following it, a click as Enter, a right click's menu, a menu's item),
+the comments
 pane's previews, and moving a patch. With `--features web`, `tests/web.rs`
 serves the editor and asks it over HTTP as a browser would: the token
 needed, the page, the wasm, the rows as they change, a key and a click; and

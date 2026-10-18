@@ -196,6 +196,39 @@ fn at_from(screen: &str, text: &str, from: usize) -> (u16, u16) {
 }
 
 #[test]
+fn the_cursor_follows_the_mouse() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    // Over the second patch: picked, its patch in the middle; a click on it
+    // is Enter: read, the cursor in the middle.
+    let (x, y) = at(&draw(&mut app), "Bug 2 - add b");
+    app.hover(x, y);
+    assert_eq!((app.focus, app.on_stack, app.sel), (Focus::List, false, 1));
+    assert!(draw(&mut app).contains("+bee"));
+    app.click(x, y, false);
+    assert_eq!(app.focus, Focus::Diff, "one click");
+    // Over a line of it: the cursor there.
+    let (x, y) = at(&draw(&mut app), "+bee");
+    app.hover(x, y);
+    assert!(app.rows[app.cursor].text.starts_with("+bee"));
+    // In a menu, over an item: the one Enter does.
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    let (x, y) = at(&draw(&mut app), "Comment in $EDITOR");
+    app.hover(x, y);
+    match &app.mode {
+        Mode::Menu(m) => assert_eq!(m.items[m.sel].label, "Comment in $EDITOR"),
+        other => panic!("{other:?}"),
+    }
+    // Writing, the mouse moves nothing.
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Enter]);
+    assert!(matches!(app.mode, Mode::Edit(_)));
+    let (cursor, screen) = (app.cursor, draw(&mut app));
+    let (x, y) = at(&screen, "Bug 1 - shout two");
+    app.hover(x, y);
+    assert!(matches!(app.mode, Mode::Edit(_)) && app.cursor == cursor && app.focus == Focus::Diff);
+}
+
+#[test]
 fn a_click_picks_and_a_second_does_as_enter() {
     let (_tmp, db, _src) = setup();
     let mut app = open(&db).unwrap();

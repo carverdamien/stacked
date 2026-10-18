@@ -67,7 +67,7 @@ enum Cmd {
     /// `stacked` alone opens the default database.
     Open { file: Option<PathBuf> },
     /// The editor in a browser: a server on this machine, and the browser
-    /// opened on it. Clicks pick, a click on what is picked is Enter, a right
+    /// opened on it. The cursor follows the mouse: a click is Enter, a right
     /// click Space. Built with `--features web`.
     #[cfg(feature = "web")]
     Web {
