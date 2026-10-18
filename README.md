@@ -14,6 +14,15 @@ or run it in place with `stacked/target/release/stacked` after
 `cargo build --release` in `stacked/`. It needs `git`, an agent for asks
 (`claude`, unless the settings name another), and `curl` for Phabricator.
 
+With the editor in a browser too (`stacked web`, below), built with the
+`web` feature; its browser half is compiled to wasm, with Rust's
+wasm32-unknown-unknown target:
+
+```sh
+rustup target add wasm32-unknown-unknown
+cargo install --path stacked --features web
+```
+
 ## Running
 
 ```sh
@@ -42,6 +51,29 @@ stacked config > ~/.stacked.toml   # every setting, to start a settings file fro
 
 `-f FILE` points any command at a database. A first argument that is not a
 command is the database to open: `stacked FILE` is `stacked open FILE`.
+
+## In a browser
+
+`stacked web` (built with `--features web`) serves the editor on this
+machine and opens the browser on it: the same editor, the same keys, drawn
+in the page as in a terminal. A click picks what is under it, as the arrows
+would; a click on what is picked already (so a double click) is Enter; a
+right click picks it and opens its menu, as Space does; in a menu, a click
+does the item, and outside it, closes it. The wheel is ↑↓, and a paste types
+what is pasted, into a comment being written. `--port N` listens on port N
+(else any free one), `--no-open` only says where it is.
+
+It listens on 127.0.0.1 only, and only a page holding the token in the
+address it opened (a new one each time) may see it or drive it: a page from
+elsewhere could otherwise send it keys. The editor runs where `stacked web`
+was started: `$EDITOR`, for what is edited in it, opens there. Quit is
+quit, the page saying so; ctrl-c there stops it too.
+
+The server runs the editor as the terminal does, drawn into a buffer of the
+page's size, and sends the page the rows that changed (server-sent events);
+the page sends its keys and clicks back. What the page does is wasm
+(`web/client.rs`: the rows made HTML, the keys and clicks made lines for
+the server), carried by fifty lines of JS (`web/index.html`).
 
 ## The editor
 
@@ -198,7 +230,8 @@ apply on its change; if they would not, or the comment needs more than its
 patch, it changes nothing and the comment moves to the stack's comments,
 with the agent's why as its last turn and `moved from patch 2 · a.txt: TWO`
 on its first line, to be asked again from there (asked of the whole stack
-from the start, it would not have had to). `Go to where it came from`
+from the start, it would not have had to). The cursor goes with it if it
+was on it, and the bottom line says so. `Go to where it came from`
 and `Move it back to patch 2` are in its menu. Comments on lines follow a
 split or merged patch to the piece that has their line. A stack's change
 made from a stack you have edited since is a branch of the tree of edits,
@@ -207,8 +240,10 @@ and yours stays where it is. A rebase says onto what (the agent adds
 
 Where it stands shows on the comment's first line, or under it when that is
 too long: ready (and on what), with the agent (and the last lines of its
-stream under it), agent replied (changed, answered, tested), failed (and
-why), moved. Enter on a comment the agent is working on opens its stream in
+stream under it: what it says and runs, and while it thinks, one line
+counting it, `✻ thinking · ~688 tokens`, with the words of it when claude
+gives them), agent replied (changed, answered, tested), failed (and why),
+moved. Enter on a comment the agent is working on opens its stream in
 place; esc folds it. The comments pane marks each (`●` with the agent, `◌`
 ready, `✓` replied, `✗` failed, `↑` moved), its header counts them (`4
 comments · 1 with the agent · 2 to read`), and the top bar too (`agent ●2 ·
@@ -522,7 +557,10 @@ the other.
 - `config.rs`, `keys.rs`: the settings, and the keys they map.
 - `editor.rs`: the inline comment editor.
 - `paint.rs`: colours, and drawing text and boxes.
-- `tui.rs`: the editor, and the work it does away from the screen.
+- `tui.rs`: the editor, and the work it does away from the screen; what a
+  click is on.
+- `web.rs`, `web/client.rs`, `web/index.html`, `build.rs`: `stacked web`,
+  its server, its wasm and its page; the build script compiles the wasm.
 
 ## Tests
 
@@ -548,7 +586,14 @@ History… draws and the stack diff it shows beside each change, the agent
 asked about a record of the history, a new database started from it, a
 moved comment and an answer's comments, a patch's comment asked of the
 whole stack, what you said last written again (off the queue meanwhile),
-the comments pane's previews, and moving a patch. The tests in `check.rs` show
+a comment moved to the stack taking the cursor with it, clicks (picking,
+Enter on what is picked, a right click's menu, a menu's item), the comments
+pane's previews, and moving a patch. With `--features web`, `tests/web.rs`
+serves the editor and asks it over HTTP as a browser would: the token
+needed, the page, the wasm, the rows as they change, a key and a click; and
+`web.rs` tests the rows and the lines both ways, with the client's own tests
+(`web/client.rs`, compiled to the machine as well as to wasm). The stream's
+thinking is tested in `ask.rs`. The tests in `check.rs` show
 the check's index holds only what the patches touch, that it writes nothing
 to the repository, and how a patch's files are read before and after it;
 those in `history.rs`, what the history leaves out (comments, runs, a move

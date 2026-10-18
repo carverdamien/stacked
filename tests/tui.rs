@@ -179,6 +179,77 @@ fn notes_of(db: &Path, name: &str, k: usize) -> Vec<Note> {
     d.notes(&d.patch(&s.patches[k]).change).into_iter().cloned().collect()
 }
 
+/// Where `text` is on a screen drawn: its first cell.
+fn at(screen: &str, text: &str) -> (u16, u16) {
+    at_from(screen, text, 0)
+}
+
+/// Where `text` is on a screen drawn, from column `from` on.
+fn at_from(screen: &str, text: &str, from: usize) -> (u16, u16) {
+    for (y, line) in screen.lines().enumerate() {
+        let rest: String = line.chars().skip(from).collect();
+        if let Some(b) = rest.find(text) {
+            return ((from + rest[..b].chars().count()) as u16, y as u16);
+        }
+    }
+    panic!("no {text:?} on the screen from column {from}:\n{screen}");
+}
+
+#[test]
+fn a_click_picks_and_a_second_does_as_enter() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    // A patch clicked is picked: it shows in the middle.
+    let (x, y) = at(&draw(&mut app), "Bug 2 - add b");
+    assert_eq!(app.click(x, y, false), Effect::None);
+    assert_eq!((app.focus, app.on_stack, app.sel), (Focus::List, false, 1));
+    assert!(draw(&mut app).contains("+bee"));
+    // Clicked again, as Enter: read, the cursor in the middle.
+    app.click(x, y, false);
+    assert_eq!(app.focus, Focus::Diff);
+    // A line right-clicked: picked, and its menu, as Space.
+    let (x, y) = at(&draw(&mut app), "+bee");
+    app.click(x, y, true);
+    assert!(app.rows[app.cursor].text.starts_with("+bee"));
+    assert!(matches!(app.mode, Mode::Menu(_)), "{:?}", app.mode);
+    // In a menu, a click does the item; in the box but on none, nothing.
+    let screen = draw(&mut app);
+    let (x, y) = at(&screen, "Comment on this line…");
+    app.click(x, y - 1, false);
+    assert!(matches!(app.mode, Mode::Menu(_)), "the box's edge");
+    app.click(x, y, false);
+    assert!(matches!(app.mode, Mode::Edit(_)), "{:?}", app.mode);
+    // Writing, a click does nothing.
+    draw(&mut app);
+    app.click(1, 2, false);
+    assert!(matches!(app.mode, Mode::Edit(_)));
+    save(&mut app, "a bee");
+    // Outside a menu, a click closes it.
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    draw(&mut app);
+    app.click(0, 29, false);
+    assert_eq!(app.mode, Mode::Normal);
+    // The comment, in the comments pane (from column 90): picked, then
+    // gone to.
+    let (x, y) = at_from(&draw(&mut app), "a bee", 90);
+    app.click(x, y, false);
+    assert_eq!((app.focus, app.note_sel), (Focus::Notes, 0));
+    app.click(x, y, false);
+    assert_eq!(app.focus, Focus::Diff, "gone to");
+    // Lists too: History…'s second record (the import, a move after it),
+    // picked, then gone to, in the tree.
+    Db::edit(&db, |d| stacked::ops::move_patch(d, "s", 1, 0).map(|_| ())).unwrap();
+    app.refresh();
+    keys(&mut app, &[KeyCode::Left, KeyCode::Home]);
+    choose(&mut app, "History…");
+    let screen = draw(&mut app);
+    let (x, y) = at(&screen, "import");
+    app.click(x, y, false);
+    assert_eq!(app.pick, 1);
+    app.click(x, y, false);
+    assert_eq!(app.screen, Screen::Tree);
+}
+
 #[test]
 fn titles_on_the_left_the_patch_in_the_middle() {
     let (_tmp, db, _src) = setup();
@@ -1331,6 +1402,32 @@ fn a_new_database_starts_where_the_history_is_picked() {
     choose(&mut app, "Write it");
     app.settle();
     assert!(db.with_file_name(format!("db-from-{rev}-2.jsonl")).exists(), "{}", app.status);
+}
+
+#[test]
+fn a_comment_moved_to_the_stack_takes_the_cursor_with_it() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Enter]);
+    save(&mut app, "rename two everywhere");
+    keys(&mut app, &[KeyCode::Down]);
+    assert!(app.rows[app.cursor].head);
+    // The agent moves it to the stack, as it does what needs more than the
+    // patch: the cursor goes with it, and says what to do there.
+    let n = notes_of(&db, "s", 0).remove(0);
+    Db::edit(&db, |d| stacked::ask::promote(d, "s", &n, "patch 2 says two too")).unwrap();
+    app.refresh();
+    let screen = draw(&mut app);
+    assert!(app.on_stack && app.rows[app.cursor].head, "on it:\n{screen}");
+    assert!(screen.contains("moved from patch 1 · a.txt: TWO"), "{screen}");
+    assert!(
+        app.status
+            .starts_with("moved to the stack's comments, the cursor with it: there, Ask agent may change the whole stack · patch 2 says two too"),
+        "{}",
+        app.status
+    );
 }
 
 #[test]

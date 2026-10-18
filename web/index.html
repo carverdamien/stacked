@@ -1,0 +1,80 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>stacked</title>
+<style>
+:root { --fg: #cccccc; --bg: #1e1e1e; }
+html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); color: var(--fg); }
+#screen { margin: 0; font: 14px/1.3 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre; user-select: none; cursor: default; }
+#screen div { height: 1.3em; overflow: hidden; }
+.cur { outline: 1px solid var(--fg); outline-offset: -1px; }
+#gone { position: fixed; inset: 0; display: none; place-items: center; background: #000c; color: #fff; font: 16px sans-serif; }
+</style>
+</head>
+<body>
+<pre id="screen"></pre>
+<div id="gone">stacked has quit: start it again, then reload.</div>
+<script>
+// Only carries things: the server's lines to the wasm, what the wasm makes
+// of them to the page, and what it makes of the page's keys and clicks to
+// the server (web/client.rs says what each is).
+const token = new URLSearchParams(location.search).get('t');
+const screen = document.getElementById('screen'), gone = document.getElementById('gone');
+const enc = new TextEncoder(), dec = new TextDecoder();
+let w, cw = 8, ch = 16, pending = '', sending = false;
+const read = n => dec.decode(new Uint8Array(w.memory.buffer, w.out(), n));
+const call = (f, text, ...rest) => {
+  const b = enc.encode(text), p = w.alloc(b.length);
+  new Uint8Array(w.memory.buffer, p, b.length).set(b);
+  return read(f(p, b.length, ...rest));
+};
+// One at a time, in order: what comes meanwhile goes together, next.
+const flush = () => {
+  if (sending || !pending) return;
+  sending = true;
+  const body = pending;
+  pending = '';
+  fetch('/input?t=' + token, {method: 'POST', body}).finally(() => { sending = false; flush(); });
+};
+const send = line => { if (line) { pending += line + '\n'; flush(); } };
+// A cell: a hundredth of a hundred characters' width, a row's height.
+const size = () => {
+  const row = document.createElement('div'), m = document.createElement('span');
+  m.textContent = 'M'.repeat(100);
+  row.append(m);
+  screen.append(row);
+  cw = m.getBoundingClientRect().width / 100;
+  ch = row.getBoundingClientRect().height;
+  row.remove();
+  return [Math.floor(innerWidth / cw), Math.floor(innerHeight / ch)];
+};
+WebAssembly.instantiateStreaming(fetch('/client.wasm?t=' + token)).then(({instance}) => {
+  w = instance.exports;
+  const [cols, rows] = size();
+  const events = new EventSource(`/events?t=${token}&cols=${cols}&rows=${rows}`);
+  events.onmessage = e => {
+    const out = call(w.screen, e.data), nl = out.indexOf('\n');
+    const [op, a, b] = (nl < 0 ? out : out.slice(0, nl)).split(' ');
+    if (op === 'size') screen.replaceChildren(...Array.from({length: +b}, () => document.createElement('div')));
+    else if (op === 'row' && screen.children[+a]) screen.children[+a].innerHTML = out.slice(nl + 1);
+    else if (op === 'bye') { events.close(); gone.style.display = 'grid'; }
+  };
+  addEventListener('keydown', e => {
+    const line = call(w.key, e.key, e.ctrlKey, e.altKey, e.shiftKey, e.metaKey);
+    if (line) { e.preventDefault(); send(line); }
+  });
+  screen.addEventListener('mousedown', e => {
+    if (e.button !== 0 && e.button !== 2) return;
+    e.preventDefault();
+    const r = screen.getBoundingClientRect();
+    send(read(w.click(e.clientX - r.left, e.clientY - r.top, cw, ch, e.button === 2)));
+  });
+  screen.addEventListener('contextmenu', e => e.preventDefault());
+  addEventListener('wheel', e => send(read(w.wheel(e.deltaY))));
+  addEventListener('paste', e => { e.preventDefault(); send(call(w.paste, e.clipboardData.getData('text'))); });
+  addEventListener('resize', () => send('s ' + size().join(' ')));
+});
+</script>
+</body>
+</html>

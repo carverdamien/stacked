@@ -66,6 +66,18 @@ enum Cmd {
     /// Open the editor: `stacked FILE` is `stacked open FILE`, and
     /// `stacked` alone opens the default database.
     Open { file: Option<PathBuf> },
+    /// The editor in a browser: a server on this machine, and the browser
+    /// opened on it. Clicks pick, a click on what is picked is Enter, a right
+    /// click Space. Built with `--features web`.
+    #[cfg(feature = "web")]
+    Web {
+        /// The port of 127.0.0.1 to listen on; else any free one.
+        #[arg(long, default_value_t = 0)]
+        port: u16,
+        /// Only say where it is: do not open the browser.
+        #[arg(long)]
+        no_open: bool,
+    },
     /// The stacks: name, patches, the stack it is on.
     Stacks,
     /// Make an empty stack, on a commit of the repository here.
@@ -429,6 +441,16 @@ fn print_run(r: &stacked::db::Run) {
 fn run(path: &Path, cmd: Cmd) -> Result<()> {
     match cmd {
         Cmd::Open { .. } => unreachable!(),
+        #[cfg(feature = "web")]
+        Cmd::Web { port, no_open } => {
+            let bound = stacked::web::bind(port)?;
+            let url = bound.url();
+            eprintln!("stacked: the editor is at {url} · quit it there, or ctrl-c here");
+            if !no_open {
+                stacked::web::open_browser(&url);
+            }
+            bound.serve(path)?;
+        }
         Cmd::Stacks => {
             let db = Db::load(path)?;
             for s in db.stacks() {

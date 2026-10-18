@@ -31,3 +31,5 @@ pub mod tree;
 pub mod trim;
 pub mod tui;
 pub mod view;
+#[cfg(feature = "web")]
+pub mod web;

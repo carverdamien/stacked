@@ -304,6 +304,8 @@ fn message_lines(message: &Value) -> Vec<String> {
                 out.push(format!("⚙ {name}: {}", tool_summary(b.get("input"))));
             }
             Some("tool_result") => out.push(format!("  ↳ {}", result_summary(b.get("content")))),
+            // What it thinks, when it is not kept from the stream.
+            Some("thinking") => out.extend(text_of(b.get("thinking")).lines().filter(|l| !l.trim().is_empty()).map(|l| format!("✻ {l}"))),
             _ => {}
         }
     }
@@ -321,6 +323,11 @@ pub fn format_event(event: &Value) -> Vec<String> {
             } else {
                 format!("● session started · {model}")
             }]
+        }
+        // How far its thinking has gone, its words kept from the stream.
+        Some("system") if event.get("subtype").and_then(Value::as_str) == Some("thinking_tokens") => {
+            let n = event.get("estimated_tokens").and_then(Value::as_u64).unwrap_or(0);
+            vec![format!("✻ thinking · ~{n} tokens")]
         }
         Some("assistant") | Some("user") => {
             message_lines(event.get("message").unwrap_or(&Value::Null))
@@ -367,6 +374,14 @@ mod tests {
     fn formats_stream_events() {
         let init = serde_json::json!({"type": "system", "subtype": "init", "model": "m"});
         assert_eq!(format_event(&init), ["● session started · m"]);
+        let counted = serde_json::json!({"type": "system", "subtype": "thinking_tokens", "estimated_tokens": 688});
+        assert_eq!(format_event(&counted), ["✻ thinking · ~688 tokens"]);
+        let kept = serde_json::json!({"type": "assistant", "message": {"content": [{"type": "thinking", "thinking": "", "signature": "x"}]}});
+        assert!(format_event(&kept).is_empty(), "nothing of it to say");
+        let said = serde_json::json!({"type": "assistant", "message": {"content": [{"type": "thinking", "thinking": "first\n\nthen"}]}});
+        assert_eq!(format_event(&said), ["✻ first", "✻ then"]);
+        let other = serde_json::json!({"type": "system", "subtype": "dev_intent"});
+        assert!(format_event(&other).is_empty());
         let tool = serde_json::json!({"type": "assistant", "message": {"content": [
             {"type": "text", "text": "a\nb"},
             {"type": "tool_use", "name": "Bash", "input": {"command": "ls"}}]}});

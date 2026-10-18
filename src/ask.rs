@@ -1434,15 +1434,25 @@ pub fn land_orphans(db_path: &Path, db: &Db) -> usize {
 /// read from the end, as it is on every redraw while the agent writes.
 pub fn tail(db: &Db, id: &str, n: usize) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
+    // Its thinking counted as it goes: of the counts in a row, the last.
+    let mut counted = false;
     for v in db.events(id).into_iter().rev() {
         if out.len() >= n {
             break;
+        }
+        let count = v.get("type").and_then(Value::as_str) == Some("system")
+            && v.get("subtype").and_then(Value::as_str) == Some("thinking_tokens");
+        if count && counted {
+            continue;
         }
         let lines = match v.get("type").and_then(Value::as_str) {
             Some("text") => vec![str_of(v.get("text"))],
             Some("exit") => vec![format!("exit {}", str_of(v.get("code")))],
             _ => format_event(v),
         };
+        if !lines.is_empty() {
+            counted = count;
+        }
         out.extend(lines.into_iter().rev());
     }
     out.truncate(n);
@@ -1454,5 +1464,62 @@ pub fn tail(db: &Db, id: &str, n: usize) -> Vec<String> {
 pub fn stop(r: &Run) {
     if let Some(pid) = r.pid {
         unsafe { libc::kill(-(pid as i32), libc::SIGTERM) };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::{Record, VERSION};
+
+    /// A database holding run `r`'s stream, `events`.
+    fn streamed(events: &[Value]) -> Db {
+        let mut bytes = serde_json::to_string(&Record::Stacked { version: VERSION }).unwrap() + "\n";
+        for e in events {
+            bytes += &serde_json::to_string(&Record::Event { run: "r".into(), event: e.clone() }).unwrap();
+            bytes.push('\n');
+        }
+        Db::from_bytes(Path::new("t.jsonl"), bytes.as_bytes()).unwrap()
+    }
+
+    #[test]
+    fn the_stream_says_the_agent_is_thinking() {
+        // As claude writes it, its thinking kept from the stream: counted,
+        // a block with no words in it.
+        let count = |n: u64| serde_json::json!({"type": "system", "subtype": "thinking_tokens", "estimated_tokens": n});
+        let mut events = vec![
+            serde_json::json!({"type": "system", "subtype": "dev_intent", "kind": "android_app"}),
+            serde_json::json!({"type": "system", "subtype": "init", "model": "claude-opus-5-5"}),
+        ];
+        events.extend([50, 200, 350].map(count));
+        // Thinking still: its count as it is now, one line.
+        let db = streamed(&events);
+        assert_eq!(tail(&db, "r", 10), ["● session started · claude-opus-5-5", "✻ thinking · ~350 tokens"]);
+        events.extend([500, 688].map(count));
+        events.extend([
+            serde_json::json!({"type": "assistant", "message": {"content": [{"type": "thinking", "thinking": "", "signature": "x"}]}}),
+            serde_json::json!({"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "Bash", "input": {"command": "git status --short"}}]}}),
+            serde_json::json!({"type": "user", "message": {"content": [{"type": "tool_result", "content": "clean"}]}}),
+            count(120),
+            count(240),
+            serde_json::json!({"type": "assistant", "message": {"content": [{"type": "text", "text": "Nothing changed."}]}}),
+            serde_json::json!({"type": "result", "result": "{}"}),
+            serde_json::json!({"type": "exit", "code": 0}),
+        ]);
+        let db = streamed(&events);
+        assert_eq!(
+            tail(&db, "r", 20),
+            [
+                "● session started · claude-opus-5-5",
+                "✻ thinking · ~688 tokens",
+                "⚙ Bash: git status --short",
+                "  ↳ clean",
+                "✻ thinking · ~240 tokens",
+                "Nothing changed.",
+                "✓ the agent finished",
+                "exit 0",
+            ]
+        );
+        assert_eq!(tail(&db, "r", 3), ["Nothing changed.", "✓ the agent finished", "exit 0"]);
     }
 }

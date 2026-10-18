@@ -168,6 +168,35 @@ pub enum HistFocus {
     Diff,
 }
 
+/// What a cell of the screen shows, for a click there: the stack's header,
+/// or a patch of the list by its place; a row of the middle; the comments
+/// pane's header, or a comment; an item of a menu, or of a list screen; a
+/// line of History…'s stack diff; or a box over the rest (a menu, an editor,
+/// help), where a click is on nothing but what is in it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Spot {
+    Patch(Option<usize>),
+    Row(usize),
+    NotesHead,
+    Note(usize),
+    Item(usize),
+    Pick(usize),
+    HistRow(usize),
+    Box,
+}
+
+/// That `spot` is drawn at `(x, y)` of `area`, `w` by `h`: what a click
+/// there is on.
+fn spot_in(spots: &std::cell::RefCell<Vec<(Rect, Spot)>>, area: Rect, (x, y, w, h): (usize, usize, usize, usize), spot: Spot) {
+    let w = w.min((area.width as usize).saturating_sub(x));
+    let h = h.min((area.height as usize).saturating_sub(y));
+    if w > 0 && h > 0 {
+        spots
+            .borrow_mut()
+            .push((Rect::new(area.x + x as u16, area.y + y as u16, w as u16, h as u16), spot));
+    }
+}
+
 /// How the code is drawn, as self-review draws it: one column, the two
 /// sides line by line, or the two sides each a pane of its own (compact).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -688,6 +717,9 @@ pub struct App {
     /// the database had then.
     busy_memo: std::cell::RefCell<Option<(usize, std::rc::Rc<Busy>)>>,
     hist_memo: std::cell::RefCell<HistMemo>,
+    /// What each part of the screen showed when it was last drawn, for a
+    /// click: drawn later, on top.
+    spots: std::cell::RefCell<Vec<(Rect, Spot)>>,
 }
 
 /// The stack's history, as last made: of which stack, at how many records
@@ -838,6 +870,7 @@ impl App {
             bg: Background::new(),
             busy_memo: std::cell::RefCell::new(None),
             hist_memo: std::cell::RefCell::new(None),
+            spots: std::cell::RefCell::new(Vec::new()),
             db,
             cfg,
         };
@@ -1230,6 +1263,129 @@ impl App {
         self.db.note(&change, &id).cloned()
     }
 
+    /// That `spot` is drawn on line `y` of `area`, from `x`, `w` wide.
+    fn spot(&self, area: Rect, (x, y, w): (usize, usize, usize), spot: Spot) {
+        spot_in(&self.spots, area, (x, y, w, 1), spot);
+    }
+
+    /// What was drawn at `(x, y)` of the screen when it was last drawn: on
+    /// top, the last drawn there.
+    pub fn spot_at(&self, x: u16, y: u16) -> Option<Spot> {
+        self.spots
+            .borrow()
+            .iter()
+            .rev()
+            .find(|(r, _)| x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height)
+            .map(|(_, s)| *s)
+    }
+
+    /// Whether the cursor is on `spot` already.
+    fn on(&self, spot: Spot) -> bool {
+        match spot {
+            Spot::Patch(None) => self.focus == Focus::List && self.on_stack,
+            Spot::Patch(Some(i)) => self.focus == Focus::List && !self.on_stack && self.sel == i,
+            Spot::Row(i) => self.focus == Focus::Diff && self.cursor == i,
+            Spot::NotesHead => self.focus == Focus::Notes && self.notes_head,
+            Spot::Note(i) => self.focus == Focus::Notes && !self.notes_head && self.note_sel == i,
+            Spot::Pick(i) => self.pick == i && (self.screen != Screen::History || self.hist_focus == HistFocus::List),
+            Spot::HistRow(i) => self.hist_focus == HistFocus::Diff && self.hist_cursor == i,
+            Spot::Item(_) | Spot::Box => false,
+        }
+    }
+
+    /// A click at `(x, y)` of the screen, with the right button if `right`:
+    /// in a menu, the item done (and outside it, the menu closed); else
+    /// what is there picked, as the arrows would, and if it was picked
+    /// already, done as Enter does; or, a right click, its menu, as Space
+    /// opens it. Keys as they are, whatever the settings map: Enter is
+    /// Enter.
+    pub fn click(&mut self, x: u16, y: u16, right: bool) -> Effect {
+        let spot = self.spot_at(x, y);
+        let press = |app: &mut App, code: KeyCode| app.pressed(KeyEvent::new(code, KeyModifiers::NONE));
+        match &mut self.mode {
+            Mode::Menu(m) => {
+                return match spot {
+                    Some(Spot::Item(i)) => {
+                        m.sel = i;
+                        press(self, KeyCode::Enter)
+                    }
+                    Some(Spot::Box) => Effect::None,
+                    _ => {
+                        self.mode = Mode::Normal;
+                        Effect::None
+                    }
+                };
+            }
+            Mode::Help { back, .. } => {
+                self.mode = (**back).clone();
+                return Effect::None;
+            }
+            // What the agent writes, read in place: folded.
+            Mode::Stream { .. } => {
+                self.mode = Mode::Normal;
+                return Effect::None;
+            }
+            // A patch being moved goes where clicked, and is put down there
+            // with a click on it.
+            Mode::Moving { to, .. } => {
+                if let Some(Spot::Patch(Some(at))) = spot {
+                    if *to == at {
+                        return press(self, KeyCode::Enter);
+                    }
+                    *to = at;
+                }
+                return Effect::None;
+            }
+            Mode::Edit(_) => return Effect::None,
+            Mode::Normal => {}
+        }
+        let Some(spot) = spot else { return Effect::None };
+        let was = self.on(spot);
+        match spot {
+            Spot::Patch(None) => {
+                self.focus = Focus::List;
+                self.on_stack = true;
+            }
+            Spot::Patch(Some(i)) => {
+                self.focus = Focus::List;
+                self.on_stack = false;
+                self.sel = i;
+            }
+            Spot::Row(i) => {
+                self.focus = Focus::Diff;
+                self.cursor = i;
+            }
+            Spot::NotesHead => {
+                self.focus = Focus::Notes;
+                self.notes_head = true;
+            }
+            Spot::Note(i) => {
+                self.focus = Focus::Notes;
+                self.notes_head = false;
+                self.note_sel = i;
+            }
+            Spot::Pick(i) => {
+                self.pick = i;
+                if self.screen == Screen::History {
+                    self.hist_focus = HistFocus::List;
+                    self.hist_rev = self.history().get(i).map(|e| e.rev);
+                }
+            }
+            Spot::HistRow(i) => {
+                self.hist_focus = HistFocus::Diff;
+                self.hist_cursor = i;
+            }
+            Spot::Item(_) | Spot::Box => return Effect::None,
+        }
+        if right {
+            return press(self, KeyCode::Char(' '));
+        }
+        if was {
+            return press(self, KeyCode::Enter);
+        }
+        Effect::None
+    }
+
     /// The line the middle pane's cursor is on, if a comment can go on it:
     /// (change, key, file, preview).
     fn commentable(&self) -> Option<(String, String, String, String)> {
@@ -1262,6 +1418,8 @@ impl App {
     /// Reads what was appended: what an edit just wrote, or another
     /// process.
     fn reload(&mut self) {
+        // The comment the cursor is on, should the agent move it away.
+        let on = self.picked().map(|n| (n.change, n.id));
         if let Err(e) = self.db.catch_up() {
             self.status = e.0;
         }
@@ -1274,8 +1432,34 @@ impl App {
             }
         }
         self.going = going(&self.db);
+        if let Some((change, id)) = on {
+            self.follow(&change, &id);
+        }
         self.clamp();
         self.judge();
+    }
+
+    /// The comment the cursor was on, (change, id), moved to the stack's
+    /// comments (it needs more than its patch, the agent says): the cursor
+    /// goes with it, to ask again there.
+    fn follow(&mut self, change: &str, id: &str) {
+        if change == stack_change(&self.stack) || self.db.note(change, id).is_some() {
+            return;
+        }
+        let moved = self
+            .db
+            .stack_notes(&self.stack)
+            .into_iter()
+            .find(|n| n.moved.as_ref().is_some_and(|m| m.change == change && m.id == id))
+            .cloned();
+        let Some(n) = moved else { return };
+        self.go_to(&n.change, &n.id);
+        let why = thread_turns(&n.text).pop().map(|t| t.body).unwrap_or_default();
+        let why = why.strip_prefix("This needs more than the patch: ").unwrap_or(&why);
+        self.status = format!(
+            "moved to the stack's comments, the cursor with it: there, Ask agent may change the whole stack · {}",
+            short(why, 200)
+        );
     }
 
     fn clamp(&mut self) {
@@ -1337,6 +1521,11 @@ impl App {
                 }
             }
         };
+        self.pressed(k)
+    }
+
+    /// Key `k`, as the settings map it: done.
+    fn pressed(&mut self, k: KeyEvent) -> Effect {
         // ctrl-c is the terminal's, as in every program: out.
         if k.code == KeyCode::Char('c') && k.modifiers.contains(KeyModifiers::CONTROL) {
             return Effect::Quit;
@@ -3254,6 +3443,7 @@ impl App {
             return None;
         }
         self.body_h = h - 2;
+        self.spots.borrow_mut().clear();
         let body = Rect::new(area.x, area.y + 1, area.width, area.height - 2);
         let mut cursor = None;
         match self.screen {
@@ -3471,11 +3661,13 @@ impl App {
         let bh = rows + 2 + below;
         let (x, y) = (w.saturating_sub(bw) / 2, h.saturating_sub(bh) / 2);
         window(buf, area, x, y, bw, bh, &m.title, color::meta());
+        spot_in(&self.spots, area, (x, y, bw, bh), Spot::Box);
         for (r, (i, item)) in m.items.iter().enumerate().skip(m.top).take(rows).enumerate() {
             if item.action == Action::Line {
                 put(buf, area, x + 1, y + 1 + r, bw - 2, &"─".repeat(bw - 2), color::meta());
                 continue;
             }
+            spot_in(&self.spots, area, (x + 1, y + 1 + r, bw - 2, 1), Spot::Item(i));
             let mut st = if item.enabled { Style::new() } else { color::dim() };
             if i == m.sel {
                 st = st.add_modifier(Modifier::REVERSED);
@@ -3500,6 +3692,7 @@ impl App {
         let bh = (text.len() + 2).min(h);
         let (x, y) = (w.saturating_sub(bw) / 2, h.saturating_sub(bh) / 2);
         window(buf, area, x, y, bw, bh, "what can I do here", color::meta());
+        spot_in(&self.spots, area, (x, y, bw, bh), Spot::Box);
         for (k, (l, st)) in text.iter().take(bh.saturating_sub(2)).enumerate() {
             put(buf, area, x + 2, y + 1 + k, bw - 4, l, *st);
         }
@@ -3538,6 +3731,7 @@ impl App {
             }
             Target::About(rev) => format!("a question on @{rev}, for the agent to answer"),
         };
+        spot_in(&self.spots, area, (0, y, w, bh), Spot::Box);
         Some(e.ed.draw(buf, area, 0, y, w, bh, &title))
     }
 
@@ -3560,6 +3754,7 @@ impl App {
             st = if self.focus == Focus::List { st.add_modifier(Modifier::REVERSED) } else { st.add_modifier(Modifier::UNDERLINED) };
         }
         put(buf, area, 0, 0, w, &fit(&header, w), st);
+        self.spot(area, (0, 0, w), Spot::Patch(None));
         let Some(s) = self.current().cloned() else {
             let say = if self.db.names().contains(&self.stack.as_str()) {
                 format!("{} is deleted: Undo, in the menu, brings it back", self.stack)
@@ -3632,6 +3827,7 @@ impl App {
                 };
             }
             put(buf, area, 0, y, w, &line, st);
+            self.spot(area, (0, y, w), Spot::Patch(Some(at)));
             y += 1;
             if editing == Some(Target::Patch(p.change.clone())) {
                 cursor = self.draw_editor(buf, area, y, Focus::List);
@@ -3807,6 +4003,7 @@ impl App {
         }
         let tw = w.saturating_sub(x0 - x);
         put(buf, area, x0, y, tw, &fit(&row.text, tw), row_style(row, selected));
+        self.spot(area, (x, y, w), Spot::Row(i));
     }
 
     /// The last row of what a comment being written in the middle goes
@@ -3912,6 +4109,7 @@ impl App {
             st = st.add_modifier(Modifier::REVERSED);
         }
         put(buf, area, 0, 0, w, &fit(&header, w), st);
+        self.spot(area, (0, 0, w), Spot::NotesHead);
         // The one the middle's cursor is in, when the cursor is there.
         let lit = match self.focus {
             Focus::Notes if !self.notes_head => Some(self.note_sel),
@@ -3965,6 +4163,7 @@ impl App {
             };
             put(buf, area, 0, y, w, &fit(&format!("{mark} {who} · {at}"), w), head);
             put(buf, area, 0, y + 1, w, &fit(&format!("   {last}"), w), tail);
+            spot_in(&self.spots, area, (0, y, w, per), Spot::Note(i));
             y += per;
             if matches!(&editing, Some(Target::Reply { change, id } | Target::Edit { change, id }) if *change == n.change && *id == n.id) {
                 cursor = self.draw_editor(buf, area, y, Focus::Notes);
@@ -3992,6 +4191,7 @@ impl App {
             let text = format!(" {}@{} {}", l.lanes, l.rev, s.op);
             let st = if i == self.pick { Style::new().add_modifier(Modifier::REVERSED) } else { Style::new() };
             put(buf, area, 0, y, w, &fit(&text, w), st);
+            self.spot(area, (0, y, w), Spot::Pick(i));
         }
     }
 
@@ -4003,6 +4203,7 @@ impl App {
             let text = format!(" {name} ({n} patches)");
             let st = if i == self.pick { Style::new().add_modifier(Modifier::REVERSED) } else { Style::new() };
             put(buf, area, 0, y, w, &fit(&text, w), st);
+            self.spot(area, (0, y, w), Spot::Pick(i));
         }
     }
 
@@ -4062,6 +4263,7 @@ impl App {
             let text = format!(" v{}{here} {made}", i + 1);
             let st = if i == self.pick { Style::new().add_modifier(Modifier::REVERSED) } else { Style::new() };
             put(buf, area, 0, y, w, &fit(&text, w), st);
+            self.spot(area, (0, y, w), Spot::Pick(i));
         }
     }
 
@@ -4135,12 +4337,18 @@ impl App {
         }
         let mut cursor = None;
         let mut y = 1;
-        for (k, (i, text, st)) in lines.iter().enumerate().skip(self.pick_top) {
+        let mut owner = 0;
+        for (k, (i, text, st)) in lines.iter().enumerate() {
+            owner = i.unwrap_or(owner);
+            if k < self.pick_top {
+                continue;
+            }
             if y > h {
                 break;
             }
             let st = if *i == Some(self.pick) { st.add_modifier(Modifier::REVERSED) } else { *st };
             put(buf, area, 0, y, w, &fit(text, w), st);
+            self.spot(area, (0, y, w), Spot::Pick(owner));
             y += 1;
             if editing && k == at + below {
                 cursor = self.draw_editor(buf, area, y, Focus::Diff);
@@ -4189,6 +4397,7 @@ impl App {
             let Some((l, st)) = self.hist_rows.get(i) else { break };
             let st = if focus && i == self.hist_cursor { st.add_modifier(Modifier::REVERSED) } else { *st };
             put(buf, area, 0, y + 2, w, &fit(l, w), st);
+            spot_in(&self.spots, area, (0, y + 2, w, 1), Spot::HistRow(i));
         }
     }
 
@@ -4238,6 +4447,7 @@ impl App {
         for (y, (i, (text, st))) in lines.iter().enumerate().skip(top).take(h).enumerate() {
             let st = if i == self.pick { st.add_modifier(Modifier::REVERSED) } else { *st };
             put(buf, area, 0, y, w, &fit(text, w), st);
+            self.spot(area, (0, y, w), Spot::Pick(i));
         }
     }
 
