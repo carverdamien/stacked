@@ -399,6 +399,17 @@ fn the_keys_are_the_settings() {
     assert_eq!(key(&mut app, KeyCode::Char('q')), Effect::Quit);
 }
 
+#[test]
+fn what_is_said_names_the_keys_of_the_settings() {
+    let (_tmp, db, _src) = setup();
+    let (cfg, wrong) = stacked::config::Config::parse("[keys]\nup = [\"k\", \"up\"]\ndown = [\"j\", \"down\"]\n").unwrap();
+    assert!(wrong.is_empty(), "{wrong:?}");
+    stacked::config::init(stacked::config::Config::default());
+    let app = App::with_config(&db, cfg).unwrap();
+    // The arrows alone, as in pairs.
+    assert_eq!(app.say_keys("press ↓ to pick it, ↑ to go back, ↑↓ for another".into()), "press j to pick it, k to go back, kj for another");
+}
+
 /// As `choose`, the menu opened with `menu`.
 fn choose_with(app: &mut App, label: &str, menu: char) -> Effect {
     if !matches!(app.mode, Mode::Menu(_)) {
@@ -575,6 +586,10 @@ fn a_move_that_does_not_apply_stays_to_be_placed() {
     keys(&mut app, &[KeyCode::Home, KeyCode::Enter]);
     assert!(app.status.contains("does not apply"), "{}", app.status);
     assert!(matches!(app.mode, Mode::Moving { .. }), "still placing it");
+    // The status line says why, and, never cut, how to go on from there.
+    let screen = draw(&mut app);
+    let status = screen.lines().last().unwrap().trim_end();
+    assert!(status.contains("does not apply") && status.ends_with("· ↑↓: elsewhere · esc: leave it where it was"), "{status}");
     keys(&mut app, &[KeyCode::Esc]);
     assert!(draw(&mut app).contains("  3 Bug 3 - two again"), "left where it was");
 }

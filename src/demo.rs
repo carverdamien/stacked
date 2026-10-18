@@ -31,21 +31,21 @@ const FILE: &str = "board.txt";
 /// why. O's fourth move is a mistake, and X's fifth makes it pay for it.
 const MOVES: [(char, usize, &str, &str); 5] = [
     ('X', 4, "X takes the center", "Four lines go through the center, more than through any other square."),
-    ('O', 0, "O takes the top left corner", "A corner, the answer to the center."),
-    ('X', 2, "X takes the top right corner", "With the center, the diagonal is X's but for its bottom left corner."),
-    ('O', 8, "O takes the bottom right corner", "The corner across from O's first."),
-    ('X', 6, "X takes the bottom left corner, and wins", "Three on the diagonal: the top right corner, the center, the bottom left."),
+    ('O', 0, "O takes the top left corner", "A corner is the best answer to X in the center."),
+    ('X', 2, "X takes the top right corner", "With the center and the top right corner, X needs only the bottom left corner to win on the diagonal."),
+    ('O', 8, "O takes the bottom right corner", "O takes the corner across from its first move."),
+    ('X', 6, "X takes the bottom left corner, and wins", "X has three on the diagonal: the top right corner, the center and the bottom left corner."),
 ];
 
 /// The fourth move and the fifth, as the stand-in for the agent makes them
 /// again: O blocks the diagonal, and then X blocks O.
 const FIXES: [(char, usize, &str, &str); 2] = [
-    ('O', 6, "O blocks the diagonal at the bottom left", "X had the top right corner and the center: the bottom left corner was X's win."),
-    ('X', 3, "X blocks O's left column", "O had the top left and the bottom left corners: the middle of the left side was O's win. X has two in the middle row, too."),
+    ('O', 6, "O blocks the diagonal at the bottom left", "X has the top right corner and the center, so the bottom left corner would win for X."),
+    ('X', 3, "X blocks O's left column", "O has the top left and the bottom left corners, so the middle of the left side would win for O. Taking it, X also has two in the middle row."),
 ];
 
 /// Why O's fix needs more than its patch, as the agent says it.
-const MORE: &str = "O blocking the bottom left corner takes the square X wins on in patch 5: patch 5 has to change too";
+const MORE: &str = "if O takes the bottom left corner in patch 4, X can no longer win there in patch 5, so patch 5 has to change too";
 
 /// How long the stand-in takes over each thing it writes.
 const PACE: Duration = Duration::from_millis(600);
@@ -78,11 +78,14 @@ fn mark(text: &str, cell: usize, who: char) -> String {
     lines.join("\n") + "\n"
 }
 
-/// board.txt from `before` to `after`, as `git diff` writes it.
+/// board.txt from `before` to `after`, as `git diff` writes it, but with
+/// the whole board around the move: the moves before it are seen with it.
+/// So a patch applies on the board it was played on, and nowhere else.
 fn diff(before: &str, after: &str) -> String {
+    let whole = before.lines().count().max(after.lines().count());
     let d = similar::TextDiff::from_lines(before, after)
         .unified_diff()
-        .context_radius(3)
+        .context_radius(whole)
         .header(&format!("a/{FILE}"), &format!("b/{FILE}"))
         .to_string();
     format!("diff --git a/{FILE} b/{FILE}\n{d}")
@@ -123,7 +126,7 @@ fn agent(path: &Path, id: &str) -> Result<()> {
         json!({"type": "system", "subtype": "init", "model": "the tour's stand-in for claude"}),
         json!({"type": "system", "subtype": "thinking_tokens", "estimated_tokens": 180}),
         json!({"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "Bash", "input": {"command": format!("stacked show {STACK}")}}]}}),
-        json!({"type": "assistant", "message": {"content": [{"type": "text", "text": "The bottom left corner is X's win in patch 5: O has to take it, and X then plays elsewhere."}]}}),
+        json!({"type": "assistant", "message": {"content": [{"type": "text", "text": "X wins at the bottom left corner in patch 5, so O has to take that corner in patch 4, and then X has to play somewhere else in patch 5."}]}}),
     ];
     for event in events {
         std::thread::sleep(PACE);
@@ -169,18 +172,18 @@ fn agent(path: &Path, id: &str) -> Result<()> {
                 patches[w] = db.add_patch(fifth)?;
                 let rev = db.set_stack(STACK, patches, "agent: the stack")?;
                 (
-                    "Patch 4: O takes the bottom left corner, which blocks X's diagonal. Patch 5 changes with it, as X can no longer win there: X takes the middle of the left side, which blocks O's left column.".to_string(),
+                    "Patch 4: O takes the bottom left corner, which blocks X's diagonal. Patch 5 changes with it, because X can no longer win at the bottom left: now X takes the middle of the left side, which blocks O's left column.".to_string(),
                     format!("the agent changed the stack, @{rev}; 1 comment answered"),
                     Some(rev),
                 )
             }
             None if info.way == Way::Change => (
-                "I am the tour's stand-in for the agent, and only know O's mistake, in patch 4. In your stacks, claude reads your comment and the code around it, in a worktree of its own, changes what you asked, and answers here.".to_string(),
+                "I am the tour's stand-in for the agent, and I only know how to fix O's mistake in patch 4. In your own stacks, claude reads your comment and the code around it, changes what you asked in a worktree of its own, and answers here.".to_string(),
                 "the agent answered".to_string(),
                 None,
             ),
             None => (
-                "Asked to answer only, I change nothing: O's mistake is fixed asking the whole stack. In your stacks, claude answers here, having read the code around it.".to_string(),
+                "You asked me to answer only, so I change nothing. To fix O's mistake, ask the agent about the whole stack. In your own stacks, claude reads the code around your comment and answers here.".to_string(),
                 "the agent answered".to_string(),
                 None,
             ),
@@ -216,6 +219,8 @@ pub struct Tour {
     adding: Option<(usize, Instant)>,
     /// What the tour says of itself at the step: it did it for you.
     note: String,
+    /// The move tried at its step was refused: what Esc then ends.
+    refused: bool,
     over: bool,
 }
 
@@ -245,6 +250,7 @@ impl Tour {
                 entered: false,
                 adding: None,
                 note: String::new(),
+                refused: false,
                 over: false,
             },
         ))
@@ -315,7 +321,8 @@ impl Tour {
             5 => s.is_some_and(|s| s.patches.iter().any(|p| app.db.patch(p).title() == FIXES[0].2)),
             6 => app.screen == Screen::History,
             7 => app.screen == Screen::Main,
-            8 => app.status.contains("does not apply") || last_op().starts_with("move"),
+            // Refused, and no longer moving: Esc left the patch where it was.
+            8 => (self.refused || last_op().starts_with("move")) && !matches!(app.mode, Mode::Moving { .. }),
             9 => last_op().starts_with("redo"),
             10 => app.layout != Layout::Unified || app.reading,
             _ => self.entered,
@@ -335,24 +342,22 @@ impl Tour {
             let (notes, on_patch) = self.asking(app);
             !on_patch && !notes.is_empty()
         };
-        // A patch moved where it applied: what Undo takes back first.
-        let reordered = app.db.log(Some(STACK)).iter().any(|(_, r)| matches!(r, Record::Stack(s) if s.op.starts_with("move")));
         let text = match self.step {
-            0 => "Welcome to stacked, an editor of stacks of patches: you read them, comment on their lines, ask an agent about them, reorder them, and every edit is kept, to undo. This tour plays tic-tac-toe in a file, board.txt, a move a patch. It takes a few minutes, and writes nothing on disk. Press Enter to go on. Each step waits for you; Tab does it for you, and ctrl-c leaves.",
-            1 => "The project: board.txt, an empty board. The stack, game, is empty too (`stacked new game --base main` makes one). Stacks are made of commits, as `stacked import game main..HEAD` makes them. Here the tour plays five moves, a patch each: press Enter.",
-            2 => "Each move is a patch, bottom first, as they were committed. ↓ and ↑ pick one: pick patch 3, X takes the top right corner.",
-            3 => "Press → to read it, in the middle: the line it changes, as it was (−) and is (+), among a few as they are. ↓↑ go through its lines; ← goes back to the patches.",
-            4 => "Patch 4 is a mistake: O takes the bottom right corner, and in patch 5 X wins at the bottom left. Comment on patch 4, as in a review: ← to the patches, ↓ to patch 4, → to read it, ↓ to its + line, then Enter, write why, Esc, and Save it.",
-            5 if moved => "Asked about patch 4 alone, the agent says the fix needs more than the patch, and your comment moved to the stack's own comments, the cursor with it. There, Space, then Ask agent: on the stack, it may change any patch.",
-            5 => "Ask the agent to fix it. The fix changes patch 5 too, as X can no longer win where O blocks: so with the cursor on your comment, Space, then Ask agent, the whole stack. (A stand-in answers here, in memory; in your stacks claude does, in a worktree of its own.)",
-            6 => "Patches 4 and 5 have new versions: O blocks the diagonal, and X blocks O's left column. Only patches that apply go in. History… shows what changed the stack: ← to the patches, ↑ to the stack's header (≡ game), Space, then History….",
-            7 => "Newest first, each change of the stack, and beside it its stack diff: the patches as they were and are, and what changed in a new version, under it. ↓↑ for another; Esc leaves the history.",
-            8 => "A patch goes only where it applies. Pick patch 5, X blocks O's left column; Space, Move this patch…, ↑ to the top, then Enter: refused, as it needs X in the center, from patch 1. stacked knows whether patches apply, not the rules of the game.",
-            9 if reordered => "Every edit can be undone, and redone. Space, then Undo (among the menu's last items, named after the edit it takes back): your move is taken back, the patches in the order they were played. Then Space, then Redo: moved again. The tree of edits keeps every state the stack was in.",
-            9 => "Every edit can be undone, and redone. Space, then Undo (among the menu's last items, named after the edit it takes back): the agent's change is taken back, and patches 4 and 5 are O's mistake and X's win again. Then Space, then Redo: the fix is back. The tree of edits keeps every state the stack was in.",
-            10 if !app.sides_fit() => "Press 1: it switches how the code is drawn (unified, side by side, compact). Side by side needs a wider middle than this one: ← on the patches hides them (→ on the comments hides those). 2 switches to reading, where Space marks a block of code read. And ? says what can be done where the cursor is.",
-            10 => "Press 1: it switches how the code is drawn (unified, side by side, compact). 2 switches to reading, where Space marks a block of code read. And ? says what can be done where the cursor is.",
-            _ => "That is stacked. On a project of yours: `stacked import NAME main..HEAD` makes a stack of its commits, `stacked` opens the editor on it, `stacked web` in a browser, `stacked --help` says the rest. The board, its patches applied, below. Press Enter to leave.",
+            0 => "Welcome to stacked, an editor of stacks of patches. In stacked you read patches, comment on their lines, ask an agent about them and reorder them, and stacked keeps every edit, so you can undo it. This tour plays tic-tac-toe in a file, board.txt, with one patch per move. It takes a few minutes and writes nothing on disk. Each step waits for you to do what it says; Tab does the step for you, and ctrl-c leaves the tour. Press Enter to go on.",
+            1 => "The project has one file, board.txt, with an empty board, and one stack, game, with no patches yet. (`stacked new game --base main` makes an empty stack, and `stacked import game main..HEAD` makes a stack of the commits on top of main.) Press Enter, and the tour plays five moves, one patch for each.",
+            2 => "On the left is the stack, game: one patch per move, in the order the moves were played, from patch 1, X takes the center. Press ↑↓ to pick a patch: pick patch 3, X takes the top right corner.",
+            3 => "Press → to read patch 3, X takes the top right corner. The middle shows the whole board: the moves before patch 3 as they are, and the row that patch 3 changes, as it was (−) and as it is (+). (git's patches show 3 lines around a change; the tour's patches show the whole board.) ↑↓ go through patch 3's lines, and ← goes back to the patches.",
+            4 => "Patch 4 is a mistake: O takes the bottom right corner, which lets X win at the bottom left in patch 5. Comment on patch 4, as in a review: press ← to go to the patches, ↓ to pick patch 4, → to read it, and ↓ to go to its + line. Then press Enter, write why it is a mistake, press Esc, and choose Save it.",
+            5 if moved => "You asked the agent about patch 4 alone, and the agent says that fixing O's mistake needs more than patch 4: patch 5, X's win, has to change too. So your comment moved from patch 4 to the stack's own comments, and the cursor moved with it. Ask the agent from there, where it may change any patch: press Space, then choose Ask agent.",
+            5 => "Ask the agent to fix O's mistake in patch 4. The fix changes patch 5 too, because X can no longer win where O blocks. So with the cursor on your comment on patch 4, press Space, then choose Ask agent, the whole stack. (In the tour, a stand-in for the agent answers, in memory. In your own stacks, claude answers, and makes its changes in a worktree of its own.)",
+            6 => "The agent rewrote patches 4 and 5: now O blocks the diagonal, and X blocks O's left column. stacked accepted the new patches because they apply. History… shows each change of the stack: press ← to go to the patches and ↑ to go to the stack's header (≡ game), then press Space and choose History….",
+            7 => "This is the history of the stack, game, newest change first. Beside the picked change is its stack diff: the patches before and after that change, and under each new version of a patch, what changed in it. Press ↑↓ to pick another change, and Esc to leave the history.",
+            8 if self.refused => "stacked refused to move patch 5: patch 5 was made on the board that patches 1 to 4 leave, so it does not apply to an empty board. stacked checks whether patches apply; it does not know the rules of the game. You are still moving patch 5, and could try another place: press Esc to stop moving it, and leave it where it was.",
+            8 => "A patch can only go where it applies. In the list of patches, press ↓ until patch 5, X blocks O's left column, is picked. Then press Space and choose Move this patch…, press ↑ until patch 5 is at the top of the list, and press Enter to put it there.",
+            9 => "Every edit can be undone and redone. Press Space and choose Undo, near the end of the menu; the item is named after the edit it takes back. Undo takes back the agent's change: patches 4 and 5 are O's mistake and X's win again. Then press Space and choose Redo: the agent's change is back. stacked keeps every state the stack was in, as a tree of edits.",
+            10 if !app.sides_fit() => "Press 1 to switch how the code is drawn: unified, side by side, or compact. Side by side needs a wider middle than this one: press ← on the patches to hide them, or → on the comments to hide the comments. Press 2 to switch to reading, where Space marks a block of code as read. And ? says what you can do where the cursor is.",
+            10 => "Press 1 to switch how the code is drawn: unified, side by side, or compact. Press 2 to switch to reading, where Space marks a block of code as read. And ? says what you can do where the cursor is.",
+            _ => "That is stacked. In a project of yours, `stacked import NAME main..HEAD` makes a stack of the commits on top of main, `stacked` opens the editor, `stacked web` opens the editor in a browser, and `stacked --help` lists the other commands. Below is board.txt as the stack's patches leave it. Press Enter to leave the tour.",
         };
         let end = (self.step == STEPS - 1).then(|| {
             let n = app.db.stack(STACK).map_or(0, |s| s.patches.len());
@@ -390,7 +395,7 @@ impl Tour {
                     change: p.change.clone(),
                     id: line.key.clone(),
                     line: line.key.clone(),
-                    text: "O has to block the diagonal: X wins at the bottom left.".into(),
+                    text: "O has to block X's diagonal here: X wins at the bottom left in patch 5.".into(),
                     file: line.file.clone(),
                     preview: line.text.clone(),
                     ..Default::default()
@@ -414,13 +419,30 @@ impl Tour {
                     Err(e) => fail(app, e),
                 }
             }
-            6 => app.screen = Screen::History,
+            // From the stack's header, as by hand: back from the history,
+            // the list of patches is where the next step starts.
+            6 => {
+                app.focus = Focus::List;
+                app.on_stack = true;
+                app.screen = Screen::History;
+            }
             7 => app.screen = Screen::Main,
             8 => {
+                // A patch being moved by hand meanwhile: left where it was.
+                if matches!(app.mode, Mode::Moving { .. }) {
+                    app.mode = Mode::Normal;
+                }
                 let Some(at) = Tour::find(app, [MOVES[4].2, FIXES[1].2]) else { return };
+                // Picked in the list of patches, as the step says.
+                app.focus = Focus::List;
+                app.on_stack = false;
+                app.sel = at;
                 match Db::edit(&path, |db| crate::ops::move_patch(db, STACK, at, 0)) {
                     Ok(_) => app.status = "moved".into(),
-                    Err(e) => fail(app, e),
+                    Err(e) => {
+                        self.refused = true;
+                        fail(app, e);
+                    }
                 }
             }
             9 => {
@@ -456,6 +478,10 @@ impl Tour {
             }
             self.adding = (n + 1 < MOVES.len()).then(|| (n + 1, Instant::now()));
             app.refresh();
+        }
+        // The move refused: the status line says so only until the next key.
+        if self.step == 8 && app.status.contains("does not apply") {
+            self.refused = true;
         }
         if self.done(app) {
             if self.step == STEPS - 1 {
@@ -625,10 +651,9 @@ mod tests {
         assert_eq!(x.lines().nth(7).unwrap(), "  .  |  X  |  .");
         let o = mark(&x, 6, 'O');
         assert_eq!(o.lines().nth(11).unwrap(), "  O  |  .  |  .");
-        // The rows far enough apart that a move in one, its context with
-        // it, touches no other row's marks.
-        let d = diff(&empty, &x);
-        assert!(d.starts_with("diff --git a/board.txt b/board.txt\n--- a/board.txt\n+++ b/board.txt\n@@ "), "{d}");
-        assert!(!d.lines().any(|l| l == "   .  |  .  |  ."), "another row's marks, as context:\n{d}");
+        // The whole board around a move, the moves before it with it.
+        let d = diff(&x, &o);
+        assert!(d.starts_with("diff --git a/board.txt b/board.txt\n--- a/board.txt\n+++ b/board.txt\n@@ -1,13 +1,13 @@\n"), "{d}");
+        assert!(d.lines().any(|l| l == "   .  |  X  |  ."), "the move before, as context:\n{d}");
     }
 }

@@ -59,23 +59,26 @@ command is the database to open: `stacked FILE` is `stacked open FILE`.
 ## A tour
 
 `stacked demo` (built with `--features demo`) teaches the editor in a few
-minutes, on a game of tic-tac-toe played in a file, board.txt, a move a
-patch. It starts from an empty board and an empty stack, and plays five
-moves as patches: O's fourth is a mistake, and X's fifth wins off it. Then
-you pick and read a patch, comment on O's mistake, and ask the agent about
-the whole stack, as its fix changes X's win too: a stand-in answers, and
-makes the two moves again, O blocking, X blocking O in turn (asked about
-patch 4 alone, it says that needs more than the patch, and the comment goes
-to the stack). You read the history, try to move a patch where it does not
-apply, which is refused, undo the agent's change and redo it, and switch
-the views; at its end, the board as its patches leave it. Each step says
-what to press, and why, and waits for you to do it: Tab does it for you,
-and ctrl-c leaves.
+minutes, with a game of tic-tac-toe played in a file, board.txt, one patch
+per move. It starts from an empty board and an empty stack, and plays five
+moves as patches. Each patch shows the whole board, so the moves before it
+can be seen. O's fourth move is a mistake, and X's fifth move wins because
+of it. Then you pick and read a patch, comment on O's mistake, and ask the
+agent about the whole stack, because the fix changes X's winning move too.
+A stand-in for the agent answers and rewrites both moves: O blocks X, and
+then X blocks O. (If you ask about patch 4 alone, the stand-in says that
+the fix needs more than that patch, and your comment moves to the stack.)
+You read the history, and try to move a patch, which stacked refuses,
+because each patch only applies to the board that the patches before it
+leave. You undo the agent's change and redo it, and switch the views. At
+the end, the tour shows the board as the stack's patches leave it. Each
+step says what to press, and why, and waits for you to do it: Tab does the
+step for you, and ctrl-c leaves the tour.
 
 It writes nothing on disk: its database and its repository are kept in
-memory, its patches applied there as `git apply` would apply them, and what
-would write on disk (`$EDITOR`, apply, trim) or reach Phabricator says it is
-not in the demo.
+memory, and its patches are applied there as `git apply` would apply them.
+Anything that would write on disk (`$EDITOR`, apply, trim) or reach
+Phabricator says that it is not in the demo.
 
 ## In a browser
 
@@ -148,7 +151,9 @@ thread is shown over the top or the bottom of the patch, as it is above or
 below. Enter goes to it.
 
 Moving a patch is ↑↓ to place it, enter to put it there, after the menu's
-`Move this patch…`. Dropping a patch, deleting a stack or a comment,
+`Move this patch…`. If the patch does not apply at that place, stacked
+refuses, and the patch is still being moved: the status line says why, and
+that ↑↓ place it elsewhere and Esc leaves it where it was. Dropping a patch, deleting a stack or a comment,
 applying, and stopping an ask ask first, in a menu of their own; for what
 cannot be undone, the menu starts on `Keep it`. ctrl-c quits, as it does
 everywhere.

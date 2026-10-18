@@ -2171,6 +2171,8 @@ impl App {
         [
             ("pgup pgdn home end", pages),
             ("↑↓", arrows),
+            ("↑", l(Key::Up)),
+            ("↓", l(Key::Down)),
             ("←", l(Key::Left)),
             ("→", l(Key::Right)),
             ("Enter", l(Key::Enter)),
@@ -2717,7 +2719,7 @@ impl App {
         if crate::memory::is_file(&self.path)
             && matches!(action, Action::Pull | Action::AskApply | Action::Apply | Action::AskTrim(_) | Action::Trim(_))
         {
-            self.status = "not in the demo: that writes on disk, or reaches Phabricator".into();
+            self.status = "not in the demo: this would write on disk, or reach Phabricator".into();
             return Effect::None;
         }
         match action {
@@ -3360,7 +3362,7 @@ impl App {
         // $EDITOR edits a file on disk: not the demo's.
         #[cfg(feature = "demo")]
         if crate::memory::is_file(&self.path) {
-            self.status = "not in the demo: $EDITOR edits a file on disk; enter writes here, in the editor".into();
+            self.status = self.say_keys("not in the demo: $EDITOR would edit a file on disk; press Enter on a line to write a comment here instead".into());
             return Ok(());
         }
         match e {
@@ -3691,6 +3693,17 @@ impl App {
         let y = area.height as usize - 1;
         let text = if self.status.is_empty() {
             format!(" {}", self.say_keys(self.hint()))
+        } else if matches!(self.mode, Mode::Moving { .. }) {
+            // Refused, and still moving: why, cut short if it must be, and
+            // the keys that go on from here, never cut.
+            let on = self.say_keys(" · ↑↓: elsewhere · esc: leave it where it was".into());
+            let room = w.saturating_sub(1 + on.chars().count());
+            let why = if self.status.chars().count() > room {
+                format!("{}…", self.status.chars().take(room.saturating_sub(1)).collect::<String>())
+            } else {
+                self.status.clone()
+            };
+            format!(" {why}{on}")
         } else {
             format!(" {}", self.status)
         };
