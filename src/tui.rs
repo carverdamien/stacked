@@ -1781,12 +1781,17 @@ impl App {
         self.drawn_layout(self.mid_w) == Layout::Compact
     }
 
+    /// Whether the middle, as last drawn, is wide enough for two sides.
+    pub fn sides_fit(&self) -> bool {
+        self.mid_w == 0 || self.mid_w >= self.cfg.view.split_width
+    }
+
     /// 1: unified, side-by-side, compact, in turn; two sides when the
     /// middle is wide enough for them.
     fn cycle_layout(&mut self) {
         let next = self.layout.next();
-        let need = self.cfg.view.split_width;
-        if next != Layout::Unified && self.mid_w > 0 && self.mid_w < need {
+        if next != Layout::Unified && !self.sides_fit() {
+            let need = self.cfg.view.split_width;
             self.status = self.say_keys(format!(
                 "side-by-side needs {need} columns: ← on the patches hides them, → on the comments hides them"
             ));

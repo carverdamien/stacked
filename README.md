@@ -60,10 +60,14 @@ command is the database to open: `stacked FILE` is `stacked open FILE`.
 
 `stacked demo` (built with `--features demo`) teaches the editor in a few
 minutes, on a game of tic-tac-toe played in a file, board.txt, a move a
-patch. It starts from an empty board and an empty stack, plays five moves
-as patches, then has you pick and read a patch, comment on O's mistake, ask
-the agent about it (a stand-in answers, and makes O block the diagonal),
-read the history, move a patch where it still applies, undo it, and switch
+patch. It starts from an empty board and an empty stack, and plays five
+moves as patches: O's fourth is a mistake, and X's fifth wins off it. Then
+you pick and read a patch, comment on O's mistake, and ask the agent about
+the whole stack, as its fix changes X's win too: a stand-in answers, and
+makes the two moves again, O blocking, X blocking O in turn (asked about
+patch 4 alone, it says that needs more than the patch, and the comment goes
+to the stack). You read the history, try to move a patch where it does not
+apply, which is refused, undo the agent's change and redo it, and switch
 the views; at its end, the board as its patches leave it. Each step says
 what to press, and why, and waits for you to do it: Tab does it for you,
 and ctrl-c leaves.
