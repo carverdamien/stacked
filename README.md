@@ -23,6 +23,10 @@ rustup target add wasm32-unknown-unknown
 cargo install --path stacked --features web
 ```
 
+With a tour of it, to learn it by (`stacked demo`, below), built with the
+`demo` feature: `cargo install --path stacked --features demo` (or
+`--features web,demo` for both).
+
 ## Running
 
 ```sh
@@ -51,6 +55,23 @@ stacked config > ~/.stacked.toml   # every setting, to start a settings file fro
 
 `-f FILE` points any command at a database. A first argument that is not a
 command is the database to open: `stacked FILE` is `stacked open FILE`.
+
+## A tour
+
+`stacked demo` (built with `--features demo`) teaches the editor in under
+five minutes, on a game of tic-tac-toe played in a file, board.txt, a move
+a patch. It starts from an empty board and an empty stack, plays five moves
+as patches, then has you pick and read a patch, comment on O's mistake, ask
+the agent about it (a stand-in answers, and makes O block the diagonal),
+read the history, move a patch where it still applies, undo it, and switch
+the views; at its end, the board as its patches leave it. Each step says
+what to press, and why: Tab does it for you, and so does waiting, so it is
+over in under five minutes; ctrl-c leaves.
+
+It writes nothing on disk: its database and its repository are kept in
+memory, its patches applied there as `git apply` would apply them, and what
+would write on disk (`$EDITOR`, apply, trim) or reach Phabricator says it is
+not in the demo.
 
 ## In a browser
 
@@ -563,6 +584,8 @@ the other.
   click is on.
 - `web.rs`, `web/client.rs`, `web/index.html`, `build.rs`: `stacked web`,
   its server, its wasm and its page; the build script compiles the wasm.
+- `demo.rs`, `memory.rs`: `stacked demo`, the tour; and the database and
+  repository it keeps in memory, with a stand-in for the agent.
 
 ## Tests
 
@@ -595,8 +618,11 @@ pane's previews, and moving a patch. With `--features web`, `tests/web.rs`
 serves the editor and asks it over HTTP as a browser would: the token
 needed, the page, the wasm, the rows as they change, a key and a click; and
 `web.rs` tests the rows and the lines both ways, with the client's own tests
-(`web/client.rs`, compiled to the machine as well as to wasm). The stream's
-thinking is tested in `ask.rs`. The tests in `check.rs` show
+(`web/client.rs`, compiled to the machine as well as to wasm). With `--features
+demo`, `tests/demo.rs` takes the tour, each step done as Tab does it: the
+stand-in's fix, the board at its end, in under five minutes, nothing made
+on disk; `memory.rs` tests its diffs applied as git applies them. The
+stream's thinking is tested in `ask.rs`. The tests in `check.rs` show
 the check's index holds only what the patches touch, that it writes nothing
 to the repository, and how a patch's files are read before and after it;
 those in `history.rs`, what the history leaves out (comments, runs, a move

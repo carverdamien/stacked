@@ -50,6 +50,10 @@ pub fn can_check(s: &crate::db::Stack) -> Result<(&str, &str)> {
 
 /// Is `base` a commit of the repository at `repo`?
 pub fn reachable(repo: &Path, base: &str) -> Result<()> {
+    #[cfg(feature = "demo")]
+    if let Some(tree) = crate::memory::tree(repo, base) {
+        return tree.map(|_| ());
+    }
     if !repo.is_dir() {
         return err(format!("its repository, {}, is not there", repo.display()));
     }
@@ -65,6 +69,22 @@ fn short(base: &str) -> &str {
 /// Checks that `patches` apply, in order, to `base` in `repo`: the first
 /// that does not, and git's word on why, is the error.
 pub fn applies(repo: &Path, base: &str, patches: &[&Patch]) -> Result<()> {
+    // A repository kept in memory: applied there, as git would.
+    #[cfg(feature = "demo")]
+    if let Some(tree) = crate::memory::tree(repo, base) {
+        let mut tree = tree?;
+        for (i, p) in patches.iter().enumerate() {
+            crate::memory::apply(&mut tree, &p.diff).map_err(|e| {
+                let on = if i == 0 {
+                    format!("its base, {}", short(base))
+                } else {
+                    "the patches below it".to_string()
+                };
+                Error(format!("patch {} ({}) does not apply to {on} ({})", i + 1, p.title(), e.0))
+            })?;
+        }
+        return Ok(());
+    }
     let key = key(repo, base, patches);
     if APPLIES.lock().unwrap().as_ref().is_some_and(|s| s.contains(&key)) {
         return Ok(());
@@ -281,6 +301,16 @@ pub fn texts(repo: &Path, base: &str, patches: &[&Patch], old_path: &str, path: 
     let Some((last, below)) = patches.split_last() else {
         return Ok((None, None));
     };
+    #[cfg(feature = "demo")]
+    if let Some(tree) = crate::memory::tree(repo, base) {
+        let mut tree = tree?;
+        for p in below {
+            crate::memory::apply(&mut tree, &p.diff)?;
+        }
+        let before = tree.get(old_path).cloned();
+        crate::memory::apply(&mut tree, &last.diff)?;
+        return Ok((before, tree.get(path).cloned()));
+    }
     reachable(repo, base)?;
     let ix = Index::new(repo, base, Some(&touched(repo, patches)))?;
     if !below.is_empty() {
@@ -308,6 +338,22 @@ pub fn versions(repo: &Path, base: &str, patches: &[&Patch]) -> Result<HashMap<S
     let Some((last, below)) = patches.split_last() else {
         return Ok(HashMap::new());
     };
+    #[cfg(feature = "demo")]
+    if let Some(tree) = crate::memory::tree(repo, base) {
+        let mut tree = tree?;
+        for p in below {
+            crate::memory::apply(&mut tree, &p.diff)?;
+        }
+        let files = crate::diff::parse_diff(&last.diff, "");
+        let lines = |t: &crate::memory::Tree, path: &str| t.get(path).map(|t| t.lines().map(String::from).collect());
+        let before: Vec<Option<Vec<String>>> = files.iter().map(|f| lines(&tree, &f.path)).collect();
+        crate::memory::apply(&mut tree, &last.diff)?;
+        return Ok(files
+            .iter()
+            .zip(before)
+            .map(|(f, old)| (f.path.clone(), Sides { old, new: lines(&tree, &f.path) }))
+            .collect());
+    }
     reachable(repo, base)?;
     let ix = Index::new(repo, base, Some(&touched(repo, patches)))?;
     if !below.is_empty() {

@@ -1441,7 +1441,7 @@ impl App {
     /// the work away from the screen came to.
     pub fn refresh(&mut self) {
         let polled = self.poll();
-        let len = std::fs::metadata(&self.path).map(|m| m.len()).unwrap_or(0);
+        let len = Db::file_len(&self.path);
         if len != self.db.bytes_read() || polled {
             self.reload();
         }
@@ -2706,6 +2706,15 @@ impl App {
 
     fn perform(&mut self, action: Action) -> Effect {
         let name = self.stack.clone();
+        // Kept in memory, as the demo's database: nothing that writes on
+        // disk, or reaches Phabricator.
+        #[cfg(feature = "demo")]
+        if crate::memory::is_file(&self.path)
+            && matches!(action, Action::Pull | Action::AskApply | Action::Apply | Action::AskTrim(_) | Action::Trim(_))
+        {
+            self.status = "not in the demo: that writes on disk, or reaches Phabricator".into();
+            return Effect::None;
+        }
         match action {
             Action::Line | Action::Cancel => {}
             Action::Open => {
@@ -3343,6 +3352,12 @@ impl App {
     /// Runs what needs $EDITOR; the terminal is the editor's meanwhile.
     pub fn effect(&mut self, e: Effect) -> Result<()> {
         let name = self.stack.clone();
+        // $EDITOR edits a file on disk: not the demo's.
+        #[cfg(feature = "demo")]
+        if crate::memory::is_file(&self.path) {
+            self.status = "not in the demo: $EDITOR edits a file on disk; enter writes here, in the editor".into();
+            return Ok(());
+        }
         match e {
             Effect::EditPatch { line } if self.patch_id().is_some() => {
                 self.status = ops::edit_patch(&self.path, &name, self.sel, line)?

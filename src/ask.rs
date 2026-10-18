@@ -331,7 +331,7 @@ pub fn unsend(db_path: &Path, notes: &[(String, String)]) -> Result<()> {
 
 /// Starts every ask that may go now; the runs started.
 pub fn launch(db_path: &Path) -> Result<Vec<String>> {
-    if !db_path.exists() {
+    if !Db::exists(db_path) {
         return Ok(vec![]);
     }
     let claimed = Db::edit(db_path, claim)?;
@@ -734,6 +734,12 @@ fn start(db_path: &Path, id: &str) -> Result<()> {
     let mut i = info(&run).ok_or_else(|| Error(format!("run {id} is not an ask")))?;
     let s = db.node(i.from)?.clone();
     let (repo, base) = base_of(&s)?;
+    // A repository kept in memory, as the demo's: answered there, by the
+    // stand-in it names, not by claude in a worktree on disk.
+    #[cfg(feature = "demo")]
+    if crate::memory::is_repo(&repo) {
+        return crate::memory::agent(db_path, id);
+    }
     i.base = base.clone();
     i.repo = repo.to_string_lossy().into_owned();
     let upto = match &i.scope {

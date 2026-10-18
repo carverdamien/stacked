@@ -12,12 +12,16 @@ pub mod check;
 pub mod claude;
 pub mod config;
 pub mod db;
+#[cfg(feature = "demo")]
+pub mod demo;
 pub mod diff;
 pub mod editor;
 pub mod git;
 pub mod history;
 pub mod keys;
 pub mod mbox;
+#[cfg(feature = "demo")]
+pub mod memory;
 pub mod ops;
 pub mod paint;
 pub mod panes;

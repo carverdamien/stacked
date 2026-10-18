@@ -69,6 +69,11 @@ enum Cmd {
     /// The editor in a browser: a server on this machine, and the browser
     /// opened on it. The cursor follows the mouse: a click is Enter, a right
     /// click Space. Built with `--features web`.
+    /// A tour of the editor, a few minutes long, on a game of tic-tac-toe
+    /// played in a file, a move a patch: it writes nothing on disk. Built
+    /// with `--features demo`.
+    #[cfg(feature = "demo")]
+    Demo,
     #[cfg(feature = "web")]
     Web {
         /// The port of 127.0.0.1 to listen on; else any free one.
@@ -441,6 +446,8 @@ fn print_run(r: &stacked::db::Run) {
 fn run(path: &Path, cmd: Cmd) -> Result<()> {
     match cmd {
         Cmd::Open { .. } => unreachable!(),
+        #[cfg(feature = "demo")]
+        Cmd::Demo => stacked::demo::run()?,
         #[cfg(feature = "web")]
         Cmd::Web { port, no_open } => {
             let bound = stacked::web::bind(port)?;

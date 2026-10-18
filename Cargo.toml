@@ -16,6 +16,9 @@ path = "src/main.rs"
 # by build.rs, with Rust's wasm32-unknown-unknown target
 # (`rustup target add wasm32-unknown-unknown`).
 web = ["dep:unicode-width"]
+# `stacked demo`: a tour of the editor on a game of tic-tac-toe, its
+# database and repository kept in memory: nothing is written on disk.
+demo = []
 
 [dependencies]
 clap = { version = "4.6.7", features = ["derive"] }

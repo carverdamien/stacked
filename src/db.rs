@@ -419,7 +419,18 @@ pub struct Db {
 }
 
 /// The database's lock, held until dropped.
-pub struct Lock(File);
+pub struct Lock(Held);
+
+/// What a lock holds: its file, locked; or a file kept in memory, the
+/// lock of those, and its bytes.
+enum Held {
+    File(File),
+    #[cfg(feature = "demo")]
+    Memory {
+        _held: std::sync::MutexGuard<'static, ()>,
+        bytes: std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
+    },
+}
 
 thread_local! {
     /// This thread holds a database's lock: taking one again would wait on
@@ -449,15 +460,35 @@ fn give_lock(f: &File) {
     LOCKED.with(|l| l.set(false));
 }
 
+impl Lock {
+    /// The file locked, when it is on disk.
+    fn file(&mut self) -> &mut File {
+        match &mut self.0 {
+            Held::File(f) => f,
+            #[cfg(feature = "demo")]
+            Held::Memory { .. } => unreachable!("a file kept in memory has no file"),
+        }
+    }
+}
+
 impl Drop for Lock {
     fn drop(&mut self) {
-        give_lock(&self.0);
+        match &self.0 {
+            Held::File(f) => give_lock(f),
+            #[cfg(feature = "demo")]
+            Held::Memory { .. } => LOCKED.with(|l| l.set(false)),
+        }
     }
 }
 
 impl Db {
     /// Reads `path`; a missing file is an empty database.
     pub fn load(path: &Path) -> Result<Db> {
+        #[cfg(feature = "demo")]
+        if let Some(m) = crate::memory::file(path) {
+            let bytes = m.lock().unwrap().clone();
+            return Db::parse(path, &bytes);
+        }
         let mut bytes = Vec::new();
         match File::open(path) {
             Ok(mut f) => {
@@ -560,7 +591,7 @@ impl Db {
     /// Reads what was appended since: the file only grows, so only the new
     /// bytes, and the line that was cut short again. Whether there was any.
     pub fn catch_up(&mut self) -> Result<bool> {
-        let size = std::fs::metadata(&self.path).map(|m| m.len()).unwrap_or(0);
+        let size = Db::file_len(&self.path);
         if size == self.len {
             return Ok(false);
         }
@@ -574,6 +605,12 @@ impl Db {
             self.warnings.pop();
             self.len = self.tail;
             self.torn = false;
+        }
+        #[cfg(feature = "demo")]
+        if let Some(m) = crate::memory::file(&self.path) {
+            let bytes = m.lock().unwrap()[self.len as usize..].to_vec();
+            self.read(&bytes)?;
+            return Ok(true);
         }
         let mut f = File::open(&self.path).map_err(|e| Error(format!("{}: {e}", self.path.display())))?;
         use std::io::Seek;
@@ -589,11 +626,19 @@ impl Db {
     /// it: for what nothing else depends on, as the lines a run's claude
     /// writes, which come fast.
     pub fn append(path: &Path, recs: &[Record]) -> Result<()> {
+        #[cfg(feature = "demo")]
+        if crate::memory::is_file(path) {
+            let (mut db, mut lock) = Db::lock(path)?;
+            for rec in recs {
+                db.push(rec.clone())?;
+            }
+            return db.save(&mut lock);
+        }
         let io = |e: std::io::Error| Error(format!("{}: {e}", path.display()));
         let f = File::options().create(true).append(true).read(true).open(path).map_err(io)?;
         take_lock(&f, path)?;
-        let mut f = Lock(f);
-        let f = &mut f.0;
+        let mut lock = Lock(Held::File(f));
+        let f = lock.file();
         let size = f.metadata().map_err(io)?.len();
         let mut out = String::new();
         if size == 0 {
@@ -678,6 +723,20 @@ impl Db {
     /// until the lock is dropped, so an edit made from it loses no one
     /// else's.
     pub fn lock(path: &Path) -> Result<(Db, Lock)> {
+        #[cfg(feature = "demo")]
+        if let Some(m) = crate::memory::file(path) {
+            if LOCKED.with(|l| l.get()) {
+                return err(format!(
+                    "{}: locked already by this thread: taking it again would wait for ever",
+                    path.display()
+                ));
+            }
+            let guard = crate::memory::lock();
+            LOCKED.with(|l| l.set(true));
+            let bytes = m.lock().unwrap().clone();
+            let lock = Lock(Held::Memory { _held: guard, bytes: m });
+            return Ok((Db::parse(path, &bytes)?, lock));
+        }
         let f = File::options()
             .create(true)
             .append(true)
@@ -685,9 +744,10 @@ impl Db {
             .open(path)
             .map_err(|e| Error(format!("{}: {e}", path.display())))?;
         take_lock(&f, path)?;
-        let mut lock = Lock(f);
+        // Given back if reading fails: the lock first.
+        let mut lock = Lock(Held::File(f));
         let mut bytes = Vec::new();
-        lock.0
+        lock.file()
             .read_to_end(&mut bytes)
             .map_err(|e| Error(format!("{}: {e}", path.display())))?;
         Ok((Db::parse(path, &bytes)?, lock))
@@ -716,8 +776,14 @@ impl Db {
             out.push('\n');
         }
         let io = |e: std::io::Error| Error(format!("{}: {e}", self.path.display()));
-        lock.0.write_all(out.as_bytes()).map_err(io)?;
-        lock.0.sync_data().map_err(io)?;
+        match &mut lock.0 {
+            Held::File(f) => {
+                f.write_all(out.as_bytes()).map_err(io)?;
+                f.sync_data().map_err(io)?;
+            }
+            #[cfg(feature = "demo")]
+            Held::Memory { bytes, .. } => bytes.lock().unwrap().extend_from_slice(out.as_bytes()),
+        }
         self.len += out.len() as u64;
         self.torn = false;
         self.saved = self.records.len();
@@ -727,6 +793,24 @@ impl Db {
     /// The bytes read: when the file is longer, someone else wrote to it.
     pub fn bytes_read(&self) -> u64 {
         self.len
+    }
+
+    /// Whether there is a database at `path`, wherever it is kept.
+    pub fn exists(path: &Path) -> bool {
+        #[cfg(feature = "demo")]
+        if crate::memory::is_file(path) {
+            return true;
+        }
+        path.exists()
+    }
+
+    /// How long the database at `path` is, wherever it is kept.
+    pub fn file_len(path: &Path) -> u64 {
+        #[cfg(feature = "demo")]
+        if let Some(m) = crate::memory::file(path) {
+            return m.lock().unwrap().len() as u64;
+        }
+        std::fs::metadata(path).map(|m| m.len()).unwrap_or(0)
     }
 
     fn push(&mut self, rec: Record) -> Result<usize> {
