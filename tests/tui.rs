@@ -367,10 +367,13 @@ fn question_mark_says_what_can_be_done_where_the_cursor_is() {
     save(&mut app, "why so loud?");
     keys(&mut app, &[KeyCode::Down]);
     key(&mut app, KeyCode::Char('?'));
-    assert!(draw(&mut app).contains("Press Enter to reply to this comment."));
+    assert!(draw(&mut app).contains("Press Enter to edit what you said last, or add to it."));
     keys(&mut app, &[KeyCode::Esc]);
     // In a menu, it says what the selected item does.
     keys(&mut app, &[KeyCode::Char(' ')]);
+    key(&mut app, KeyCode::Char('?'));
+    assert!(draw(&mut app).contains("Press Enter to edit what you said last, or add to it."));
+    keys(&mut app, &[KeyCode::Char('?'), KeyCode::Down, KeyCode::Down]);
     key(&mut app, KeyCode::Char('?'));
     assert!(draw(&mut app).contains("Press Enter to reply to this comment."));
     keys(&mut app, &[KeyCode::Char('?')]);
@@ -516,9 +519,11 @@ fn comments_are_written_where_they_will_show() {
     let screen = draw(&mut app);
     assert!(screen.contains("└ comment:") && screen.contains("why so loud?") && screen.contains("really?"), "{screen}");
     assert!(screen.contains("[1]"), "{screen}");
-    // On the comment, enter replies, under it.
+    // On the comment, the last word yours, enter opens it under it, to edit
+    // or add to.
     keys(&mut app, &[KeyCode::Down, KeyCode::Enter]);
-    assert!(draw(&mut app).contains("a reply"));
+    assert!(draw(&mut app).contains("your comment: edit it, or add to it"));
+    keys(&mut app, &[KeyCode::Enter]);
     save(&mut app, "it is a shout");
     let notes = notes_of(&db, "s", 0);
     assert_eq!(notes.len(), 1);
@@ -715,15 +720,25 @@ fn what_you_said_last_may_be_written_again() {
     save(&mut app, "why so loud?");
     keys(&mut app, &[KeyCode::Down]);
     assert!(app.rows[app.cursor].head);
-    // Unanswered, it is the comment itself, written again where it is.
+    // Unanswered, it is the comment itself, written again where it is: the
+    // menu's first, as enter does.
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    assert_eq!(items(&app)[0].0, "Edit your comment…");
     choose(&mut app, "Edit your comment…");
     assert!(matches!(&app.mode, Mode::Edit(e) if e.ed.text() == "why so loud?"), "{:?}", app.mode);
-    assert!(draw(&mut app).contains("your comment, edited"));
+    assert!(draw(&mut app).contains("your comment: edit it, or add to it"));
     typed(&mut app, " really");
     keys(&mut app, &[KeyCode::Esc]);
     choose(&mut app, "Save it");
     let n = notes_of(&db, "s", 0).remove(0);
     assert_eq!(n.text, "why so loud? really");
+    // Enter on its line opens it too; left as it was, it closes.
+    keys(&mut app, &[KeyCode::Up]);
+    assert!(app.rows[app.cursor].text.starts_with("+TWO"));
+    keys(&mut app, &[KeyCode::Enter]);
+    assert!(matches!(&app.mode, Mode::Edit(e) if e.ed.text() == "why so loud? really"), "{:?}", app.mode);
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Down]);
+    assert_eq!(app.mode, Mode::Normal);
     // Or in $EDITOR.
     let target = stacked::tui::Target::Edit { change: n.change.clone(), id: n.id.clone() };
     assert_eq!(choose(&mut app, "Edit your comment in $EDITOR"), Effect::EditComment(target));
@@ -743,7 +758,10 @@ fn what_you_said_last_may_be_written_again() {
     // Replied to, the reply is what is written again, the rest as it was.
     choose(&mut app, "Reply…");
     save(&mut app, "louder");
-    choose(&mut app, "Edit your reply…");
+    // Enter, the last word yours again, opens it.
+    assert!(draw(&mut app).contains("enter: edit it · "));
+    keys(&mut app, &[KeyCode::Enter]);
+    assert!(matches!(&app.mode, Mode::Edit(e) if e.ed.text() == "louder"), "{:?}", app.mode);
     for _ in 0.."louder".len() {
         key(&mut app, KeyCode::Backspace);
     }
@@ -1066,7 +1084,8 @@ fn the_history_of_the_stack_its_patches_and_comments() {
     down_to(&mut app, "+TWO");
     keys(&mut app, &[KeyCode::Enter]);
     save(&mut app, "why so loud?");
-    keys(&mut app, &[KeyCode::Down, KeyCode::Enter]);
+    // Enter on it, the last word yours, opens it: a line added to it.
+    keys(&mut app, &[KeyCode::Down, KeyCode::Enter, KeyCode::Enter]);
     save(&mut app, "louder");
     // A comment's history: each state it was in.
     choose(&mut app, "History of this comment…");

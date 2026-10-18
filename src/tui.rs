@@ -429,7 +429,7 @@ fn about(action: &Action) -> String {
         Action::CommentLine => "create a comment on this line".into(),
         Action::Reply => "reply to this comment".into(),
         Action::CommentInEditor => "write it in $EDITOR".into(),
-        Action::EditMine => "write what you said last again, here: it is not asked again until you ask".into(),
+        Action::EditMine => "edit what you said last, or add to it".into(),
         Action::EditMineInEditor => "write what you said last again, in $EDITOR".into(),
         Action::Send(Way::Change) => "ask the agent, which may change the code within this comment's place".into(),
         Action::Send(Way::Answer) => "ask the agent, to answer only: nothing changes".into(),
@@ -1776,6 +1776,9 @@ impl App {
                     let busy = self.busy();
                     return Some(if busy.contains_key(&(n.change.clone(), n.id.clone())) {
                         Action::OpenStream
+                    } else if last_mine(&n.text).is_some() {
+                        // The last word yours: a reply would only add to it.
+                        Action::EditMine
                     } else {
                         Action::Reply
                     });
@@ -2182,25 +2185,25 @@ impl App {
         }
     }
 
-    /// Writes what you said last on the comment picked again, in place: off
-    /// the agent's queue meanwhile, if it is on it, so that it is not asked
-    /// as it was.
-    fn edit_mine(&mut self) {
-        let Some(c) = self.picked() else { return };
+    /// Opens what you said last on comment (change, id) in an editor in
+    /// `pane`, to write it again or add to it: off the agent's queue
+    /// meanwhile, if it is on it, so that it is not asked as it was.
+    fn edit_mine(&mut self, change: String, id: String, pane: Focus) {
+        let Some(c) = self.db.note(&change, &id).cloned() else { return };
         let Some(mine) = last_mine(&c.text) else { return };
-        if self.busy().contains_key(&(c.change.clone(), c.id.clone())) {
+        if self.busy().contains_key(&(change.clone(), id.clone())) {
             self.status = "the agent is working on it: wait for it to land".into();
             return;
         }
         let held = c.queued.clone();
         if held.is_some() {
-            if let Err(e) = ask::unsend(&self.path, &[(c.change.clone(), c.id.clone())]) {
+            if let Err(e) = ask::unsend(&self.path, &[(change.clone(), id.clone())]) {
                 self.status = e.0;
                 return;
             }
             self.reload();
         }
-        self.write(Target::Edit { change: c.change, id: c.id }, self.focus, &mine);
+        self.write(Target::Edit { change, id }, pane, &mine);
         if let Mode::Edit(e) = &mut self.mode {
             e.held = held;
         }
@@ -2428,15 +2431,15 @@ impl App {
     fn comment_items(&self, c: &Note, items: &mut Vec<Item>, w: bool) {
         let busy = self.busy();
         let with = busy.get(&(c.change.clone(), c.id.clone()));
-        items.push(Item::new("Reply…", Action::Reply));
-        items.push(Item::new("Reply in $EDITOR", Action::CommentInEditor));
-        // The last word yours: it may be written again, not while the agent
-        // works on it.
+        // The last word yours, it may be written again, or added to, as
+        // enter does; not while the agent works on it.
         if last_mine(&c.text).is_some() {
             let what = if thread_turns(&c.text).len() > 1 { "reply" } else { "comment" };
             items.push(Item::new(format!("Edit your {what}…"), Action::EditMine).when(with.is_none()));
             items.push(Item::new(format!("Edit your {what} in $EDITOR"), Action::EditMineInEditor).when(with.is_none()));
         }
+        items.push(Item::new("Reply…", Action::Reply));
+        items.push(Item::new("Reply in $EDITOR", Action::CommentInEditor));
         items.push(Item::line());
         match with {
             Some((_, run)) => {
@@ -2531,13 +2534,14 @@ impl App {
             }
             Action::CommentLine => {
                 if let Some((change, key, file, preview)) = self.commentable() {
-                    // Yours on the line already: what is written is a reply.
-                    let target = if self.db.note(&change, &key).is_some() {
-                        Target::Reply { change, id: key }
-                    } else {
-                        Target::Line { change, key, file, preview }
-                    };
-                    self.write(target, Focus::Diff, "");
+                    // Yours on the line already: what you said last written
+                    // again, or added to, if the last word is yours; else a
+                    // reply.
+                    match self.db.note(&change, &key).map(|n| last_mine(&n.text).is_some()) {
+                        Some(true) => self.edit_mine(change, key, Focus::Diff),
+                        Some(false) => self.write(Target::Reply { change, id: key }, Focus::Diff, ""),
+                        None => self.write(Target::Line { change, key, file, preview }, Focus::Diff, ""),
+                    }
                 }
             }
             Action::Reply => {
@@ -2545,7 +2549,11 @@ impl App {
                     self.write(Target::Reply { change: c.change, id: c.id }, self.focus, "");
                 }
             }
-            Action::EditMine => self.edit_mine(),
+            Action::EditMine => {
+                if let Some(c) = self.picked() {
+                    self.edit_mine(c.change, c.id, self.focus);
+                }
+            }
             Action::EditMineInEditor => {
                 if let Some(c) = self.picked()
                     && last_mine(&c.text).is_some()
@@ -3415,6 +3423,7 @@ impl App {
                     (Screen::Main, Some(Action::Open)) => "enter: read it · ",
                     (Screen::Main, Some(Action::GoToNote)) => "enter: go to it · ",
                     (Screen::Main, Some(Action::Reply)) => "enter: reply · ",
+                    (Screen::Main, Some(Action::EditMine)) => "enter: edit it · ",
                     (Screen::Main, Some(Action::OpenStream)) => "enter: what the agent writes · ",
                     (Screen::Main, Some(_)) => "enter: comment · ",
                     (Screen::Main, None) => "enter or ",
@@ -3525,7 +3534,7 @@ impl App {
             Target::Reply { .. } => "a reply".to_string(),
             Target::Edit { change, id } => {
                 let reply = self.db.note(change, id).is_some_and(|n| thread_turns(&n.text).len() > 1);
-                format!("your {}, edited", if reply { "reply" } else { "comment" })
+                format!("your {}: edit it, or add to it", if reply { "reply" } else { "comment" })
             }
             Target::About(rev) => format!("a question on @{rev}, for the agent to answer"),
         };

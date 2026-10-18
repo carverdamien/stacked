@@ -113,10 +113,12 @@ build and test`), `Throw it away`, `Keep writing`. Esc with nothing written
 just closes it. `Comment in $EDITOR` and `Reply in $EDITOR` are in the menus
 too. Nothing is typed at the bottom: the bottom line only says things.
 
-When the last word of a comment is yours, its menu has `Edit your reply…`
-(`Edit your comment…` when no one has answered it) and `Edit your reply in
-$EDITOR`: what you said last, written again in place, the turns before it
-as they were. Not while the agent works on it. A comment waiting its turn
+When the last word of a comment is yours, enter on it opens what you said
+last, in place, to edit or add to (a reply would only add to it), the turns
+before it as they were; enter on its line does too. Its menu has the same
+first, `Edit your reply…` (`Edit your comment…` when no one has answered
+it), and `Edit your reply in $EDITOR`; `Reply…` adds to it without showing
+it. Not while the agent works on it. A comment waiting its turn
 leaves the agent's queue while it is edited, so that it is not asked as it
 was: thrown away, or left as it was, it goes back on; edited, it waits to
 be asked again (or `Save it and ask agent`). In $EDITOR it is only what you
