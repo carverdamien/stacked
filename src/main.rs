@@ -46,8 +46,9 @@ enum ShowArg {
     Failed,
     /// On a line their patch no longer has.
     Gone,
-    /// Deleted, each as it was.
-    Deleted,
+    /// Closed, each as it was.
+    #[value(alias = "deleted")]
+    Closed,
 }
 
 impl ShowArg {
@@ -62,7 +63,7 @@ impl ShowArg {
             ShowArg::InProgress => Show::InProgress,
             ShowArg::Failed => Show::Failed,
             ShowArg::Gone => Show::Gone,
-            ShowArg::Deleted => Show::Deleted,
+            ShowArg::Closed => Show::Closed,
         }
     }
 }
@@ -642,8 +643,8 @@ fn print_thread(db: &Db, name: &str, n: &Note, state: &str) {
 }
 
 /// The deleted comments of stack `name`, its own then each patch's, or
-/// patch `spec`'s: each as it was, with the rev that deleted it.
-fn deleted_of(db: &Db, name: &str, spec: Option<&str>) -> Result<Vec<(usize, Note)>> {
+/// patch `spec`'s: each as it was, with the rev that closed it.
+fn closed_of(db: &Db, name: &str, spec: Option<&str>) -> Result<Vec<(usize, Note)>> {
     let s = db.stack(name)?;
     let changes: Vec<String> = match spec {
         Some(spec) => vec![patch_of(db, name, spec)?.change.clone()],
@@ -1071,10 +1072,10 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
             Db::edit(path, |db| db.set_note(note))?;
             println!("{short}");
         }
-        Cmd::Comments { name, patch, show: Some(ShowArg::Deleted) } => {
+        Cmd::Comments { name, patch, show: Some(ShowArg::Closed) } => {
             let db = Db::load(path)?;
-            for (rev, n) in deleted_of(&db, &name, patch.as_deref())? {
-                print_thread(&db, &name, &n, &format!("deleted @{rev}"));
+            for (rev, n) in closed_of(&db, &name, patch.as_deref())? {
+                print_thread(&db, &name, &n, &format!("closed @{rev}"));
             }
         }
         Cmd::Comments { name, patch, show } => {

@@ -385,10 +385,10 @@ pub fn note_change(before: Option<&Note>, n: &Note) -> String {
         };
     };
     if n.text.is_empty() {
-        return "deleted".into();
+        return "closed".into();
     }
     if b.text.is_empty() {
-        return "brought back".into();
+        return "reopened".into();
     }
     if n.change != b.change || n.id != b.id {
         return "moved".into();

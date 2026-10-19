@@ -309,8 +309,8 @@ pub enum Show {
     InProgress,
     Failed,
     Gone,
-    /// The comments deleted, each as it was: none of the others.
-    Deleted,
+    /// The comments closed, each as it was: none of the others.
+    Closed,
     Nothing,
 }
 
@@ -325,7 +325,7 @@ impl Show {
         Show::InProgress,
         Show::Failed,
         Show::Gone,
-        Show::Deleted,
+        Show::Closed,
         Show::Nothing,
     ];
 
@@ -340,12 +340,16 @@ impl Show {
             Show::InProgress => "in progress",
             Show::Failed => "failed or moved",
             Show::Gone => "gone",
-            Show::Deleted => "deleted",
+            Show::Closed => "closed",
             Show::Nothing => "none",
         }
     }
 
     pub fn parse(s: &str) -> Option<Show> {
+        // As a database kept it before comments were closed, not deleted.
+        if s == "deleted" {
+            return Some(Show::Closed);
+        }
         Show::ALL.into_iter().find(|w| w.name() == s)
     }
 }
@@ -540,15 +544,15 @@ pub enum Action {
     AskStop(String),
     Stop(String),
     GoToOpened,
-    AskDeleteOpened,
-    DeleteOpened,
+    AskCloseOpened,
+    CloseOpened,
     GoToOrigin,
     MoveBack,
     NoteHistory,
-    AskDeleteComment,
-    DeleteComment,
-    /// A deleted comment back, as it was.
-    Restore,
+    AskCloseComment,
+    CloseComment,
+    /// A closed comment open again, as it was.
+    Reopen,
     ShowMenu,
     SetShow(Show),
     Undo,
@@ -660,12 +664,12 @@ fn about(action: &Action) -> String {
         Action::OpenStream => "read what the agent is writing".into(),
         Action::AskStop(_) | Action::Stop(_) => "stop the agent: the ask lands as failed".into(),
         Action::GoToOpened => "go to the comments its answer opened".into(),
-        Action::AskDeleteOpened | Action::DeleteOpened => "delete it and the comments its answer opened".into(),
+        Action::AskCloseOpened | Action::CloseOpened => "close it and the comments its answer opened".into(),
         Action::GoToOrigin => "go to where it was before it moved to the stack".into(),
         Action::MoveBack => "move it back where it came from".into(),
         Action::NoteHistory => "read every state this comment has been in".into(),
-        Action::AskDeleteComment | Action::DeleteComment => "delete this comment (Show…, deleted, brings it back)".into(),
-        Action::Restore => "bring this comment back, as it was when it was deleted".into(),
+        Action::AskCloseComment | Action::CloseComment => "close this comment, done with: it leaves the comments shown (Show…, closed, lists it, to reopen)".into(),
+        Action::Reopen => "reopen this comment, as it was when it was closed".into(),
         Action::ShowMenu => "pick which comments the panes show".into(),
         Action::SetShow(s) => format!("show the comments {}", s.name()),
         Action::Undo => "go back to the stack before this edit".into(),
@@ -1426,11 +1430,11 @@ impl App {
         shows(show, n, busy, &self.held_replies(), gone)
     }
 
-    /// The comments the filter lets the middle pane show: the deleted ones,
+    /// The comments the filter lets the middle pane show: the closed ones,
     /// each as it was, when the filter is those.
     fn shown_notes(&self) -> Vec<Note> {
-        if self.show == Show::Deleted {
-            return self.deleted().into_iter().map(|(_, n)| n).collect();
+        if self.show == Show::Closed {
+            return self.closed().into_iter().map(|(_, n)| n).collect();
         }
         let busy = self.busy();
         let lines = self.line_keys();
@@ -1440,9 +1444,9 @@ impl App {
             .collect()
     }
 
-    /// The comments the middle pane would show that were deleted: each as it
+    /// The comments the middle pane would show that were closed: each as it
     /// was last, with the rev that deleted it.
-    fn deleted(&self) -> Vec<(usize, Note)> {
+    fn closed(&self) -> Vec<(usize, Note)> {
         self.subject_change().map(|c| self.db.deleted_notes(&self.stack, &c)).unwrap_or_default()
     }
 
@@ -1454,7 +1458,7 @@ impl App {
         Show::ALL
             .into_iter()
             .map(|s| match s {
-                Show::Deleted => (s, self.deleted().len()),
+                Show::Closed => (s, self.closed().len()),
                 _ => (s, notes.iter().filter(|n| self.shows(s, n, &busy, self.gone(n, &lines))).count()),
             })
             .collect()
@@ -1475,20 +1479,20 @@ impl App {
         if let Some((id, turns)) = self.written_turns() {
             deco.writing.insert(id, turns);
         }
-        // A deleted comment says when it was, on its first line.
+        // A closed comment says when it was, on its first line.
         let deleted: HashMap<String, usize> = match self.show {
-            Show::Deleted => self.deleted().into_iter().map(|(rev, n)| (n.id, rev)).collect(),
+            Show::Closed => self.closed().into_iter().map(|(rev, n)| (n.id, rev)).collect(),
             _ => HashMap::new(),
         };
         for n in notes {
             let tag = match deleted.get(&n.id) {
-                Some(rev) => format!("deleted @{rev}"),
+                Some(rev) => format!("closed @{rev}"),
                 None => self.tag(n, &busy),
             };
             if !tag.is_empty() {
                 deco.tags.insert(n.id.clone(), tag);
             }
-            if self.show != Show::Deleted && self.db.collapsed(&n.change, &n.id) {
+            if self.show != Show::Closed && self.db.collapsed(&n.change, &n.id) {
                 deco.collapsed.insert(n.id.clone());
             }
             if let Some((_, run)) = busy.get(&(n.change.clone(), n.id.clone())) {
@@ -1622,7 +1626,7 @@ impl App {
     /// pane was not put away.
     pub fn notes_shown(&self) -> bool {
         let any = match self.show {
-            Show::Deleted => !self.deleted().is_empty(),
+            Show::Closed => !self.closed().is_empty(),
             _ => !self.subject_notes().is_empty(),
         };
         self.screen == Screen::Main && self.comments.shown() && any
@@ -1672,8 +1676,8 @@ impl App {
         let change = self.subject_change()?;
         let id = self.rows.get(self.target_row())?.note.clone()?;
         self.db.note(&change, &id).cloned().or_else(|| match self.show {
-            // Deleted, as it was, shown so.
-            Show::Deleted => self.deleted().into_iter().map(|(_, n)| n).find(|n| n.id == id),
+            // Closed, as it was, shown so.
+            Show::Closed => self.closed().into_iter().map(|(_, n)| n).find(|n| n.id == id),
             _ => None,
         })
     }
@@ -1686,8 +1690,8 @@ impl App {
         all_turns(&c.text).into_iter().nth(i).map(|t| (i, t))
     }
 
-    /// Whether `n` is deleted: shown as it was, only to bring back.
-    fn is_deleted(&self, n: &Note) -> bool {
+    /// Whether `n` is closed: shown as it was, only to reopen.
+    fn is_closed(&self, n: &Note) -> bool {
         self.db.note(&n.change, &n.id).is_none()
     }
 
@@ -2532,8 +2536,8 @@ impl App {
             Focus::Diff if self.reading_here() => Some(Action::MarkUnread),
             Focus::Diff => {
                 if let Some(n) = self.picked() {
-                    // Deleted: its menu, to bring it back.
-                    if self.is_deleted(&n) {
+                    // Closed: its menu, to reopen it.
+                    if self.is_closed(&n) {
                         return None;
                     }
                     if self.db.collapsed(&n.change, &n.id) {
@@ -3360,8 +3364,8 @@ impl App {
                         By::Agent => "agent's comment".into(),
                         By::Reviewer => format!("{}'s comment", c.by.clone().unwrap_or_default()),
                     };
-                    if self.is_deleted(&c) {
-                        title = format!("{title}, deleted");
+                    if self.is_closed(&c) {
+                        title = format!("{title}, closed");
                     }
                     self.comment_items(&c, &mut items, w);
                 } else {
@@ -3439,9 +3443,9 @@ impl App {
     }
 
     fn comment_items(&self, c: &Note, items: &mut Vec<Item>, w: bool) {
-        // Deleted: to bring back as it was, or to see what it went through.
-        if self.is_deleted(c) {
-            items.push(Item::new("Bring it back", Action::Restore));
+        // Closed: to reopen as it was, or to see what it went through.
+        if self.is_closed(c) {
+            items.push(Item::new("Reopen it", Action::Reopen));
             items.push(Item::new("History of this comment…", Action::NoteHistory));
             return;
         }
@@ -3528,7 +3532,7 @@ impl App {
         }
         if !self.db.opened_from(&self.stack, &c.change, &c.id).is_empty() {
             items.push(Item::new("Go to the comments it opened", Action::GoToOpened));
-            items.push(Item::new("Delete it and the comments it opened…", Action::AskDeleteOpened).when(open));
+            items.push(Item::new("Close it and the comments it opened…", Action::AskCloseOpened).when(open));
         }
         if let Some(m) = &c.moved {
             items.push(Item::new("Go to where it came from", Action::GoToOrigin));
@@ -3539,7 +3543,7 @@ impl App {
             items.push(Item::new("Collapse this comment", Action::Collapse));
         }
         items.push(Item::new("History of this comment…", Action::NoteHistory));
-        items.push(Item::new("Delete this comment…", Action::AskDeleteComment).when(open));
+        items.push(Item::new("Close this comment…", Action::AskCloseComment).when(open));
     }
 
     fn perform(&mut self, action: Action) -> Effect {
@@ -3757,14 +3761,14 @@ impl App {
                     self.go_to(&o.0, &o.1);
                 }
             }
-            Action::AskDeleteOpened => {
+            Action::AskCloseOpened => {
                 if let Some(c) = self.picked() {
                     let n = self.db.opened_from(&name, &c.change, &c.id).len();
-                    let title = format!("delete this comment and the {n} it opened? it cannot be undone");
-                    self.mode = Mode::Menu(Menu::ask(title, Item::new("Delete them", Action::DeleteOpened), "Keep them", true));
+                    let title = format!("close this comment and the {n} it opened? Show…, closed, can reopen each");
+                    self.mode = Mode::Menu(Menu::ask(title, Item::new("Close them", Action::CloseOpened), "Keep them open", true));
                 }
             }
-            Action::DeleteOpened => {
+            Action::CloseOpened => {
                 if let Some(c) = self.picked() {
                     self.edit(|db| {
                         let mut all: Vec<Note> = db.opened_from(&name, &c.change, &c.id).into_iter().cloned().collect();
@@ -3791,27 +3795,27 @@ impl App {
                     self.open_text(format!("history of a comment · {}", short(&c.preview, 40)), self.note_history_lines(&c.change, &c.id));
                 }
             }
-            Action::AskDeleteComment => {
+            Action::AskCloseComment => {
                 self.mode = Mode::Menu(Menu::ask(
-                    "delete this comment? Show…, deleted, can bring it back",
-                    Item::new("Delete it", Action::DeleteComment),
-                    "Keep it",
+                    "close this comment? Show…, closed, can reopen it",
+                    Item::new("Close it", Action::CloseComment),
+                    "Keep it open",
                     true,
                 ));
             }
-            Action::DeleteComment => {
+            Action::CloseComment => {
                 if let Some(c) = self.picked()
                     && self.edit(|db| db.set_note(Note { text: String::new(), ..c })).is_some()
                 {
-                    self.status = "deleted: Show…, deleted, on a header, lists it to bring back".into();
+                    self.status = "closed: Show…, closed, on a header, lists it to reopen".into();
                 }
             }
-            Action::Restore => {
-                // Not asked again, as it may have been when deleted.
-                if let Some(c) = self.picked().filter(|c| self.is_deleted(c))
+            Action::Reopen => {
+                // Not asked again, as it may have been when closed.
+                if let Some(c) = self.picked().filter(|c| self.is_closed(c))
                     && self.edit(|db| db.set_note(Note { queued: None, ..c })).is_some()
                 {
-                    self.status = "brought back, as it was".into();
+                    self.status = "reopened, as it was".into();
                 }
             }
             Action::ShowMenu => {
@@ -5986,8 +5990,8 @@ pub fn shows(show: Show, n: &Note, busy: &Busy, held: &Held, gone: bool) -> bool
         Show::InProgress => with || n.queued.is_some(),
         Show::Failed => n.failed.is_some() || n.moved.is_some(),
         Show::Gone => gone,
-        // The comments there are are not deleted: those are shown apart.
-        Show::Deleted => false,
+        // The comments there are are open: the closed ones are shown apart.
+        Show::Closed => false,
     }
 }
 

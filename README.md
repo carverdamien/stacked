@@ -52,7 +52,7 @@ stacked comment bug123 rebase onto origin/main        # a comment on the stack
 stacked comment bug123 --patch 2 split this in two    # on a patch as a whole
 stacked comment bug123 --patch 2 --line a.txt:+TWO why?   # on one of its lines
 stacked comments bug123            # every comment: short id, where, state, thread
-stacked comments bug123 --show deleted   # the deleted ones, as each was
+stacked comments bug123 --show closed    # the closed ones, as each was
 stacked send bug123 4f1c2a --wait  # the agent works on it; its answer lands in the thread
 stacked send bug123 --all --answer-only   # every comment that can be sent
 stacked reply bug123 4f1c2a and keep the title
@@ -426,7 +426,7 @@ ask agent`'s:
   without a checkout. Only the reply comes back. An
   answer may open comments of its own on lines within the place, as a
   review does: the asking comment then says `opened 4 comments, 1 with your
-  replies`, and its menu goes to them, or deletes it and them.
+  replies`, and its menu goes to them, or closes it and them.
 - `build and test`, on the stack's comments and a patch's as a whole: it may
   run any command, in a workspace of its choosing by its own rules
   (CLAUDE.md), never the user's worktree; it changes nothing in the stack.
@@ -518,11 +518,12 @@ review · 2 to read`), and the top bar too (`agent ●2 · ready:1`).
 `Show…`, on either header, picks what both panes show, each with its
 count: all, to send, to review, to read (any, from an answer, from a change), in
 progress, failed or moved, gone (on a line the patch no longer has),
-deleted, none. It is kept per stack, in the file. A comment deleted is not
-lost, as the file only grows: `deleted` shows each as it was, `deleted @12`
-on its first line, its menu (which Enter opens) to `Bring it back` or to
-read its history. The agent's comments moved to the stack are not deleted,
-nor what is moved back.
+closed, none. It is kept per stack, in the file. A comment you are done
+with is closed, from its menu (`Close this comment…`): it leaves the
+comments shown. It is not lost, as the file only grows: `closed` shows each
+as it was, `closed @12` on its first line, its menu (which Enter opens) to
+`Reopen it` or to read its history. The agent's comments moved to the stack
+are not closed, nor what is moved back.
 
 A comment you no longer need to read can be collapsed by hand: its menu's
 `Collapse this comment` shows it in the middle as one quiet line, which
@@ -748,7 +749,7 @@ every comment and every run; the editor shows them where they belong:
   before, or the version whole. `Put this version back in the stack` is an
   edit like any.
 - `History of this comment…`, on a comment: every state it was in, with the
-  rev and time of each; a deleted one's too, from `Show…`, `deleted`.
+  rev and time of each; a closed one's too, from `Show…`, `closed`.
 
 `stacked log`, `tree`, `versions`, `interdiff` and `runs` say the same on
 the command line.

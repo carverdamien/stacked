@@ -1714,22 +1714,24 @@ fn one_setting_is_read_written_and_taken_out() {
 }
 
 #[test]
-fn deleted_comments_are_listed_as_they_were() {
+fn closed_comments_are_listed_as_they_were() {
     let e = env();
     e.ok(&["import", "s", "base"]);
     let id = comment(&e, &["--patch", "1", "Why", "2?"]);
-    assert_eq!(e.ok(&["comments", "s", "--show", "deleted"]), "");
-    // Deleted as the editor deletes one: its text emptied.
+    assert_eq!(e.ok(&["comments", "s", "--show", "closed"]), "");
+    // Closed as the editor closes one: its text emptied.
     Db::edit(&e.db, |db| {
         let n = db.stack_notes("s").into_iter().next().cloned().unwrap();
         db.set_note(stacked::db::Note { text: String::new(), ..n })
     })
     .unwrap();
     assert!(!e.ok(&["comments", "s"]).contains("Why 2?"));
-    let out = e.ok(&["comments", "s", "--show", "deleted"]);
-    assert!(out.starts_with(&id) && out.contains("\tdeleted @") && out.contains("  you: Why 2?"), "{out}");
-    assert_eq!(e.ok(&["comments", "s", "--patch", "1", "--show", "deleted"]), out);
-    assert_eq!(e.ok(&["comments", "s", "--patch", "2", "--show", "deleted"]), "");
+    let out = e.ok(&["comments", "s", "--show", "closed"]);
+    assert!(out.starts_with(&id) && out.contains("\tclosed @") && out.contains("  you: Why 2?"), "{out}");
+    assert_eq!(e.ok(&["comments", "s", "--patch", "1", "--show", "closed"]), out);
+    assert_eq!(e.ok(&["comments", "s", "--patch", "2", "--show", "closed"]), "");
+    // As it was called before: deleted.
+    assert_eq!(e.ok(&["comments", "s", "--show", "deleted"]), out);
 }
 
 #[test]

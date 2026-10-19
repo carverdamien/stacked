@@ -815,12 +815,12 @@ fn deleting_a_comment_asks_first() {
     save(&mut app, "why so loud?");
     keys(&mut app, &[KeyCode::Down]);
     // The question is asked careful, keeping it selected.
-    choose(&mut app, "Delete this comment");
-    assert_eq!(items(&app)[0].0, "Delete it");
+    choose(&mut app, "Close this comment");
+    assert_eq!(items(&app)[0].0, "Close it");
     keys(&mut app, &[KeyCode::Enter]);
     assert!(draw(&mut app).contains("why so loud?"), "enter kept it");
-    choose(&mut app, "Delete this comment");
-    choose(&mut app, "Delete it");
+    choose(&mut app, "Close this comment");
+    choose(&mut app, "Close it");
     assert!(!draw(&mut app).contains("why so loud?"));
 }
 
@@ -2022,15 +2022,15 @@ fn the_history_of_the_stack_its_patches_and_comments() {
 fn the_history_shows_each_change_as_a_stack_diff() {
     let (_tmp, db, _src) = setup();
     let mut app = open(&db).unwrap();
-    // A comment on a line of the first patch, deleted after; the first
+    // A comment on a line of the first patch, closed after; the first
     // patch reworded, then dropped.
     keys(&mut app, &[KeyCode::Right]);
     down_to(&mut app, "+TWO");
     keys(&mut app, &[KeyCode::Enter]);
     save(&mut app, "too loud");
     keys(&mut app, &[KeyCode::Down]);
-    choose(&mut app, "Delete this comment");
-    choose(&mut app, "Delete it");
+    choose(&mut app, "Close this comment");
+    choose(&mut app, "Close it");
     Db::edit(&db, |d| {
         let s = d.stack("s")?.clone();
         let mut draft = stacked::mbox::Draft::from(d.patch(&s.patches[0]));
@@ -2326,9 +2326,9 @@ fn an_answer_opens_comments_of_its_own() {
     assert!(app.rows[app.cursor].head && app.rows[app.cursor].text.contains("agent's comment"));
     keys(&mut app, &[KeyCode::Left, KeyCode::Home, KeyCode::Right]);
     down_to(&mut app, "   └ comment");
-    choose(&mut app, "Delete it and the comments it opened…");
-    assert_eq!(items(&app)[1].0, "Keep them");
-    choose(&mut app, "Delete them");
+    choose(&mut app, "Close it and the comments it opened…");
+    assert_eq!(items(&app)[1].0, "Keep them open");
+    choose(&mut app, "Close them");
     assert!(Db::load(&db).unwrap().stack_notes("s").is_empty());
 }
 
@@ -2526,7 +2526,7 @@ fn how_the_agent_is_asked_is_one_pick_kept_for_the_stack() {
 }
 
 #[test]
-fn a_deleted_comment_is_shown_as_it_was_and_brought_back() {
+fn a_closed_comment_is_shown_as_it_was_and_reopened() {
     let (_tmp, db, _src) = setup();
     let mut app = open(&db).unwrap();
     keys(&mut app, &[KeyCode::Right]);
@@ -2535,31 +2535,31 @@ fn a_deleted_comment_is_shown_as_it_was_and_brought_back() {
     typed(&mut app, "why so loud?");
     keys(&mut app, &[KeyCode::Esc]);
     choose(&mut app, "Save it");
-    // Deleted from its menu, after stacked asks, which says it can be
-    // brought back.
+    // Closed from its menu, after stacked asks, which says it can be
+    // reopened.
     keys(&mut app, &[KeyCode::Down]);
-    choose(&mut app, "Delete this comment…");
-    assert!(draw(&mut app).contains("delete this comment? Show…, deleted, can bring it back"));
-    choose(&mut app, "Delete it");
-    assert!(app.status.contains("Show…, deleted"), "{}", app.status);
+    choose(&mut app, "Close this comment…");
+    assert!(draw(&mut app).contains("close this comment? Show…, closed, can reopen it"));
+    choose(&mut app, "Close it");
+    assert!(app.status.contains("Show…, closed"), "{}", app.status);
     assert!(!draw(&mut app).contains("why so loud?"));
-    // Show…, deleted, from the stack's header: on the patch, it is there as
+    // Show…, closed, from the stack's header: on the patch, it is there as
     // it was, saying when it was deleted.
     keys(&mut app, &[KeyCode::Left, KeyCode::Up]);
     choose(&mut app, "Show…");
-    choose(&mut app, "  deleted");
+    choose(&mut app, "  closed");
     keys(&mut app, &[KeyCode::Down, KeyCode::Right]);
     let screen = draw(&mut app);
-    assert!(screen.contains("why so loud?") && screen.contains("└ comment · deleted @"), "{screen}");
-    // Its menu, which Enter opens: to bring it back, or its history. (The
+    assert!(screen.contains("why so loud?") && screen.contains("└ comment · closed @"), "{screen}");
+    // Its menu, which Enter opens: to reopen it, or its history. (The
     // cursor came back where it was in the patch, under the comment.)
     keys(&mut app, &[KeyCode::Home]);
     down_to(&mut app, "   └ comment");
     assert_eq!(app.enter(), None);
     key(&mut app, KeyCode::Char(' '));
-    assert_eq!(items(&app)[..2], [("Bring it back".to_string(), true), ("History of this comment…".to_string(), true)]);
-    choose(&mut app, "Bring it back");
-    assert!(app.status.contains("brought back"), "{}", app.status);
+    assert_eq!(items(&app)[..2], [("Reopen it".to_string(), true), ("History of this comment…".to_string(), true)]);
+    choose(&mut app, "Reopen it");
+    assert!(app.status.contains("reopened"), "{}", app.status);
     let d = Db::load(&db).unwrap();
     let change = d.patch(&d.stack("s").unwrap().patches[0]).change.clone();
     assert_eq!(d.notes(&change).iter().map(|n| n.text.as_str()).collect::<Vec<_>>(), ["why so loud?"]);
