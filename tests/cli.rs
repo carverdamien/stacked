@@ -1122,7 +1122,7 @@ fn what_the_agent_makes_is_checked_too() {
 }
 
 #[test]
-fn reviews_from_phabricator_are_threads() {
+fn reviews_from_phabricator_wait_for_review_then_are_threads() {
     use stacked::phab::{Pulled, Remote, RevisionComments};
     let e = env();
     e.ok(&["import", "s", "base"]);
@@ -1138,20 +1138,33 @@ fn reviews_from_phabricator_are_threads() {
         line_text: path.map(|_| "new".into()),
         reply_to: reply.map(String::from),
     };
-    let pulled = Pulled {
-        revisions: vec![RevisionComments {
-            revision: "D1".into(),
-            source: p.change.clone(),
-            comments: vec![
-                remote("c1", Some("b.txt"), 1, "What is b?", None),
-                remote("c2", None, 0, "Looks fine overall.", None),
-                remote("c3", Some("b.txt"), 1, "And why now?", Some("c1")),
-            ],
-        }],
+    let pulled = |comments: Vec<Remote>| -> Result<Pulled, String> {
+        Ok(Pulled {
+            revisions: vec![RevisionComments {
+                revision: "D1".into(),
+                source: p.change.clone(),
+                comments,
+            }],
+        })
     };
-    let n = Db::edit(&e.db, |db| stacked::review::file(db, "s", &pulled)).unwrap();
-    assert_eq!(n, 3);
-    assert_eq!(Db::edit(&e.db, |db| stacked::review::file(db, "s", &pulled)).unwrap(), 0, "nothing twice");
+    let first = vec![
+        remote("c1", Some("b.txt"), 1, "What is b?", None),
+        remote("c2", None, 0, "Looks fine overall.", None),
+        remote("c3", Some("b.txt"), 1, "And why now?", Some("c1")),
+    ];
+    // Pulled, the reviews wait for review, as the agent's work does: nothing
+    // is filed yet. A reply to a thread new with it is a turn of it.
+    let run = Db::edit(&e.db, |db| stacked::review::file(db, "s", "pull-1", 1, &pulled(first.clone()))).unwrap();
+    assert_eq!(run.summary, "3 new comments from 1 revision: they wait for your review");
+    assert!(Db::load(&e.db).unwrap().notes(&p.change).is_empty(), "nothing filed before it is reviewed");
+    let landed = e.ok(&["landed", "s"]);
+    assert!(landed.starts_with("pull-1\t") && landed.contains("\t2 opened comments\n"), "{landed}");
+    // Pulled again meanwhile: nothing twice.
+    let again = Db::edit(&e.db, |db| stacked::review::file(db, "s", "pull-2", 1, &pulled(first.clone()))).unwrap();
+    assert_eq!((again.summary.as_str(), again.held.is_none()), ("nothing new from 1 revision", true));
+    // Accepted, they are threads.
+    let out = e.ok(&["review", "s", "pull-1", "--accept-all"]);
+    assert!(out.contains("pull-1\treviewed: 2 opened comments accepted"), "{out}");
     let db = Db::load(&e.db).unwrap();
     let notes = db.notes(&p.change);
     assert_eq!(notes.len(), 2, "a reply is a turn of its thread");
@@ -1162,6 +1175,24 @@ fn reviews_from_phabricator_are_threads() {
     assert!(rows[at + 1].text.contains("reviewer's comment"), "{:#?}", &rows[at..]);
     let general = notes.iter().find(|n| n.id == "phab:c2").unwrap();
     assert_eq!(general.line, stacked::view::title_key(&p), "a general comment is on the title");
+    // Later, a reply to a thread there is a reply held: accepted, the
+    // reviewer's turn of it. A new thread rejected is not pulled again.
+    let mut later = first.clone();
+    later.push(remote("c4", Some("b.txt"), 1, "Ping?", Some("c3")));
+    later.push(remote("c5", None, 0, "Also, the title.", None));
+    let run = Db::edit(&e.db, |db| stacked::review::file(db, "s", "pull-3", 1, &pulled(later.clone()))).unwrap();
+    assert_eq!(run.summary, "2 new comments from 1 revision: they wait for your review");
+    let h = run.held.unwrap();
+    assert_eq!((h.replies.len(), h.opened.len(), h.replies[0].who()), (1, 1, "reviewer"));
+    let marks = [("reply 0".to_string(), true), ("opened 0".to_string(), false)].into();
+    Db::edit(&e.db, |db| stacked::held::close(db, "pull-3", &marks, None)).unwrap();
+    let db = Db::load(&e.db).unwrap();
+    let inline = db.note(&p.change, "phab:c1").unwrap();
+    assert!(inline.text.ends_with("```reviewer reviewer\nPing?\n```"), "{}", inline.text);
+    assert!(inline.remote.contains(&"c4".to_string()), "{:?}", inline.remote);
+    assert!(db.note(&p.change, "phab:c5").is_none(), "rejected, it is not filed");
+    let again = Db::edit(&e.db, |db| stacked::review::file(db, "s", "pull-4", 1, &pulled(later))).unwrap();
+    assert_eq!(again.summary, "nothing new from 1 revision", "nor pulled again");
 }
 
 #[test]
@@ -1811,7 +1842,7 @@ fn a_trim_writes_a_new_database_from_a_rev_on() {
                     id: n.id.clone(),
                     text: "Kept.".into(),
                     tag: "answer".into(),
-                    promote: None,
+                    ..Default::default()
                 }],
                 ..Default::default()
             }),

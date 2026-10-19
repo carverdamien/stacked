@@ -1,10 +1,12 @@
-//! The agent's work held for review. When an ask lands, nothing changes
-//! under you: what it brought back is held in its run, in the queue of work
-//! to review, oldest first. It may hold a change of the stack, replies to
-//! the comments it was asked about, and comments it opened. Each part is
-//! accepted or rejected, the change of the stack as one; once every part
-//! is, the review closes: what was accepted is applied, and the rest is
-//! dropped for good. Until then, the stack is not edited by hand if the
+//! Work held for review: the agent's, and the reviewers'. When an ask
+//! lands, nothing changes under you: what it brought back is held in its
+//! run, in the queue of work to review, oldest first. It may hold a change
+//! of the stack, replies to the comments it was asked about, and comments
+//! it opened. Reviews pulled from Phabricator are held the same way, in
+//! their pull's run: the reviewers' new comments, and their replies. Each
+//! part is accepted or rejected, the change of the stack as one; once every
+//! part is, the review closes: what was accepted is applied, and the rest
+//! is dropped for good. Until then, the stack is not edited by hand if the
 //! agent changed it, and the comments it answered are not written on.
 
 use std::collections::{BTreeMap, HashMap};
@@ -42,7 +44,8 @@ pub struct Change {
     pub of: String,
 }
 
-/// A reply held, to comment (change, id).
+/// A reply held, to comment (change, id): the agent's, or, pulled from
+/// Phabricator, a reviewer's.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
 pub struct Reply {
     pub change: String,
@@ -55,6 +58,34 @@ pub struct Reply {
     /// the comment moves to the stack's comments.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub promote: Option<String>,
+    /// Pulled: the reviewer who wrote it, and the remote comment it is,
+    /// kept with its thread so that it is not pulled again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reviewer: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote: Option<String>,
+}
+
+impl Reply {
+    /// Thread `text` with this reply as its last turn: the reviewer's who
+    /// wrote it, or the agent's.
+    pub fn after(&self, text: &str) -> String {
+        match &self.reviewer {
+            Some(who) => append_turn(text, Role::Reviewer, &self.text, Some(who)),
+            None => append_turn(text, Role::Agent, &self.text, Some(&self.tag)),
+        }
+    }
+
+    /// Who wrote it, as a reply's owner is said: `the agent`, `ann`.
+    pub fn who(&self) -> &str {
+        self.reviewer.as_deref().unwrap_or("the agent")
+    }
+}
+
+/// Whether run `r` is a pull of reviews from Phabricator: the work it
+/// holds, the reviewers'.
+pub fn pulled(r: &Run) -> bool {
+    r.what == "pull"
 }
 
 /// A part of the work held, to accept or reject.
@@ -192,15 +223,21 @@ fn under_review(db: &Db, id: &str) -> Result<(Run, Held, Review)> {
     Ok((r, h, v))
 }
 
-/// Reply `rp` put into its thread, as the agent's turn, the comment moved
-/// to stack `name`'s comments if it needs more than its patch.
+/// Reply `rp` put into its thread, as the agent's turn or the reviewer's,
+/// the comment moved to stack `name`'s comments if it needs more than its
+/// patch.
 fn apply_reply(db: &mut Db, name: &str, rp: &Reply) -> Result<()> {
     // Gone meanwhile: nothing to answer.
     let Some(mut n) = db.note(&rp.change, &rp.id).cloned() else { return Ok(()) };
     if !rp.text.trim().is_empty() {
+        let mut remote = n.remote.clone();
+        remote.extend(rp.remote.clone());
+        // The agent's answer ends a failed ask; a reviewer's reply does not.
+        let failed = if rp.reviewer.is_some() { n.failed.clone() } else { None };
         n = Note {
-            text: append_turn(&n.text, Role::Agent, &rp.text, Some(&rp.tag)),
-            failed: None,
+            text: rp.after(&n.text),
+            remote,
+            failed,
             ..n
         };
         db.set_note(n.clone())?;

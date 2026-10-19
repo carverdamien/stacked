@@ -56,7 +56,7 @@ stacked comments bug123 --show deleted   # the deleted ones, as each was
 stacked send bug123 4f1c2a --wait  # the agent works on it; its answer lands in the thread
 stacked send bug123 --all --answer-only   # every comment that can be sent
 stacked reply bug123 4f1c2a and keep the title
-stacked pull bug123                # reviewers' comments from Phabricator
+stacked pull bug123                # reviewers' comments from Phabricator, held for your review
 stacked apply bug123 --branch bug123   # only now does the worktree change
 stacked export bug123 | git am     # or put it anywhere by hand
 stacked trim new.jsonl --from @40  # a new database, the history before @40 left out
@@ -552,7 +552,8 @@ claude does.
 
 When an ask lands, nothing changes under you while you read or write.
 What the agent brought back is held, in a queue of work to review, the
-first landed first. One landed ask may hold three kinds of parts: its
+first landed first; the reviews pulled from Phabricator wait in it too
+(Phabricator, below). One landed ask may hold three kinds of parts: its
 change of the stack, if it changed it; its replies to the comments it was
 asked about; and the comments it opened (an answer's, or a build and
 test's findings on each patch's title). You accept or reject each part. A
@@ -985,9 +986,17 @@ brings it back.
 `pull`, or the menu's `Pull reviews from Phabricator`, reads the revision in
 each patch's `Differential Revision:` trailer (the settings can name
 another) over Conduit, with the token moz-phab keeps in `~/.arcrc`, or the
-settings'. Each thread is a comment on its line, or on the patch's title for
-one on the whole revision. A reply is a turn of its thread. Pulling again
-adds only what is new. A reviewer's comment can be asked about like any.
+settings'. What is new waits for your review, in the queue of work the
+agent's asks land in (below): nothing is filed before you accept it. Each
+new thread is a comment opened, on its line, or on the patch's title for
+one on the whole revision, its replies pulled with it turns of it; a reply
+to a thread there already is a reply to it, the reviewer's turn (`ann's
+reply waits for your review`, `Accept ann's reply`). The banner counts the
+pulls apart (`1 pull from Phabricator waits for your review`), and the
+review says what was pulled. Pulling again holds only what is new: what was
+pulled before, waiting, accepted or rejected, is passed over, so a comment
+you rejected does not come back. A reviewer's comment can be asked about
+like any.
 
 ## Applying
 
@@ -1076,8 +1085,8 @@ across versions, a patch edited by hand (as mail and as code, at a line,
 refused and taken up again), trimming, the settings (a checkout's own over
 them, an ask on a stack having its checkout's wherever stacked runs, one
 git tracks not read; and the tools every ask may use, set up with the
-agent, in the checkout's own or with `--global`), filing Phabricator
-threads, apply, and
+agent, in the checkout's own or with `--global`), Phabricator's comments
+held for review then filed (none twice, none rejected again), apply, and
 what does not apply being refused, edited again, or read-only. `tests/tui.rs` draws the editor into a buffer and presses keys:
 that no letter but 1 and 2 does anything, keys mapped by the settings, the
 menus by place, what `?` says where, writing in every pane, a comment asked
@@ -1095,7 +1104,8 @@ Enter, a right click's menu, a menu's item), the comments pane's previews,
 moving a patch, searching (what is in sight first, the patches then the
 files they touch, the history), the agents' worktrees made ahead as the
 stack's checkout says, the banner of the agent's work (Esc to it and
-back, open a line for each, Enter on each), the comment editor hiding
+back, open a line for each, Enter on each; the reviews pulled waiting in
+it as the agent's work does), the comment editor hiding
 nothing in each view of the code, each pane keeping where its cursor
 was, the patch's title kept at the top of the middle, and the side panes'
 modes (expanded, compact, hidden). With `--features web`, `tests/web.rs`

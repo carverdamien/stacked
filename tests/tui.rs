@@ -1279,7 +1279,7 @@ fn held(db: &Path, run: &str, change: &str, id: &str, text: &str, with_change: b
             id: id.into(),
             text: text.into(),
             tag: way.into(),
-            promote: None,
+            ..Default::default()
         };
         d.add_run(stacked::db::Run {
             id: run.into(),
@@ -1375,7 +1375,7 @@ fn landed_work_is_reviewed_from_the_banner_part_by_part() {
             id: n.id.clone(),
             text: text.into(),
             tag: "change".into(),
-            promote: None,
+            ..Default::default()
         };
         let shown: Vec<serde_json::Value> = notes.iter().map(|n| serde_json::json!({"label": "c1", "change": n.change, "id": n.id})).collect();
         d.add_run(stacked::db::Run {
@@ -3021,4 +3021,58 @@ fn expanded_the_patches_say_their_titles_whole() {
     // Compact: its number, and the lines it adds and removes.
     keys(&mut app, &[KeyCode::Left]);
     assert_eq!(pane(&mut app), ["  1 +1 −1"]);
+}
+
+#[test]
+fn reviews_pulled_wait_in_the_banner_as_the_agent_s_work_does() {
+    use stacked::phab::{Pulled, Remote, RevisionComments};
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    let d = Db::load(&db).unwrap();
+    let change = d.patch(&d.stack("s").unwrap().patches[0]).change.clone();
+    drop(d);
+    let pulled = |comments: Vec<Remote>| -> Result<Pulled, String> {
+        Ok(Pulled { revisions: vec![RevisionComments { revision: "D1".into(), source: change.clone(), comments }] })
+    };
+    let by_ann = |phid: &str, text: &str, reply: Option<&str>| Remote {
+        phid: phid.into(),
+        author: "ann".into(),
+        text: text.into(),
+        created: 0,
+        path: None,
+        line: 0,
+        line_text: None,
+        reply_to: reply.map(String::from),
+    };
+    // A pull: ann's comment waits for review, nothing filed yet.
+    Db::edit(&db, |d| stacked::review::file(d, "s", "pull-1", 1, &pulled(vec![by_ann("c1", "Why shout?", None)]))).unwrap();
+    app.refresh();
+    let screen = draw(&mut app);
+    assert!(
+        screen.contains("⟳ 1 pull from Phabricator waits for your review · the next: 1 opened comment, pulled from Phabricator"),
+        "{screen}"
+    );
+    assert!(notes_of(&db, "s", 0).is_empty(), "nothing filed yet");
+    // On the banner, its line; Enter reviews it.
+    keys(&mut app, &[KeyCode::Esc]);
+    assert!(draw(&mut app).contains("   ⟳ Review 1 opened comment, pulled from Phabricator"));
+    keys(&mut app, &[KeyCode::Enter]);
+    assert_eq!(app.screen, Screen::Review);
+    let screen = draw(&mut app);
+    assert!(screen.contains(" pulled from Phabricator: 1 opened comment") && screen.contains("a reviewer's comment, where it would be"), "{screen}");
+    keys(&mut app, &[KeyCode::Esc]);
+    assert!(draw(&mut app).contains("your review of the comments pulled"));
+    choose(&mut app, "Accept all remaining and Close");
+    let notes = notes_of(&db, "s", 0);
+    assert_eq!((notes.len(), notes[0].by.as_deref()), (1, Some("ann")));
+    // Pulled later, ann's reply to it waits, said on the comment; taken at
+    // once from its menu, it is ann's turn of the thread.
+    Db::edit(&db, |d| stacked::review::file(d, "s", "pull-2", 1, &pulled(vec![by_ann("c1", "Why shout?", None), by_ann("c2", "Still?", Some("c1"))]))).unwrap();
+    app.refresh();
+    keys(&mut app, &[KeyCode::Right, KeyCode::Home]);
+    assert!(draw(&mut app).contains("ann's reply waits for your review"));
+    down_to(&mut app, "   └ ann's comment");
+    choose(&mut app, "Accept ann's reply");
+    let text = notes_of(&db, "s", 0).remove(0).text;
+    assert!(text.ends_with("```reviewer ann\nStill?\n```"), "{text}");
 }

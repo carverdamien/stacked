@@ -300,11 +300,13 @@ enum Cmd {
         #[arg(long, requires = "wait")]
         accept: bool,
     },
-    /// What the agent brought back that waits for your review, on a stack:
-    /// each landed ask, the first landed first, and what it holds.
+    /// What waits for your review on a stack, the first landed first: what
+    /// each ask brought back, and the reviews each pull brought from
+    /// Phabricator; and what each holds.
     Landed { name: String },
-    /// Close the review of what an ask brought back (by its run, as
-    /// `landed` lists it, else the first landed): accept all of it that is
+    /// Close the review of what landed, an ask's work or a pull's reviews
+    /// (by its run, as `landed` lists it, else the first landed): accept all
+    /// of it that is
     /// not marked yet, or reject it. What is accepted is applied; what is
     /// rejected is dropped for good. Rejecting a change of the stack
     /// rejects its replies too.
@@ -321,7 +323,8 @@ enum Cmd {
     Runs { name: Option<String> },
     /// What a run's agent wrote.
     Transcript { id: String },
-    /// Pull a stack's reviews from Phabricator.
+    /// Pull a stack's reviews from Phabricator: what is new waits for your
+    /// review, as the agent's work does (`landed`, `review`).
     Pull { name: String },
     /// Put a stack into the worktree here: its base checked out and its
     /// patches committed, detached or on --branch. Only with nothing

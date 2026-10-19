@@ -1452,7 +1452,7 @@ fn held_replies(db: &Db, i: &Info, replies: &Map<String, Value>) -> Vec<crate::h
                 id: sh.id.clone(),
                 text: replies.get(&sh.label).map(|v| str_of(Some(v)))?,
                 tag: i.way.name().into(),
-                promote: None,
+                ..Default::default()
             })
         })
         .collect()
@@ -1494,6 +1494,7 @@ fn land_patch(db: &mut Db, run: &Run, i: &Info, result: &str, replies: &Map<Stri
                     text: String::new(),
                     tag: i.way.name().into(),
                     promote: Some(why.clone()),
+                    ..Default::default()
                 }),
                 None => {}
             }

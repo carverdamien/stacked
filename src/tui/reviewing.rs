@@ -1,4 +1,5 @@
-//! The review of what the agent brought back. On the left, its parts, in
+//! The review of what landed: what the agent brought back, or the reviews
+//! a pull brought from Phabricator. On the left, its parts, in
 //! three sections: the stack operations its change makes, a line for each
 //! patch; the comments it opened; its replies. On the right, the part the
 //! cursor is on as it would be: the stack diff of the change, or the
@@ -231,13 +232,14 @@ impl App {
                         let Some(n) = self.db.note(&rp.change, &rp.id) else {
                             return ("its comment was deleted: nothing to answer".into(), vec![], 0);
                         };
-                        let text = append_turn(&n.text, Role::Agent, &rp.text, Some(&rp.tag));
+                        let text = rp.after(&n.text);
                         let said = match &rp.promote {
                             Some(why) => format!(" its reply, as it would be in its thread; then it moves to the stack's comments: {why}"),
                             None => " its reply, as it would be in its thread".to_string(),
                         };
                         (Note { text, ..n.clone() }, said)
                     }
+                    Part::Opened(k) if crate::held::pulled(r) => (h.opened[k].clone(), " a reviewer's comment, where it would be".to_string()),
                     Part::Opened(k) => (h.opened[k].clone(), " a comment it opened, where it would be".to_string()),
                     Part::Stack => unreachable!(),
                 };
@@ -271,6 +273,9 @@ impl App {
         let list_w = if w < 60 { w } else { (w * 2 / 5).max(30) };
         let list = Rect::new(body.x, body.y, list_w as u16, body.height);
         let title = self.work(&rv.run).map_or(String::new(), |(r, h)| {
+            if crate::held::pulled(r) {
+                return format!(" pulled from Phabricator: {}", h.said());
+            }
             let asked = if r.request.is_empty() { String::new() } else { format!(" · asked \"{}\"", r.request) };
             format!(" the agent's work: {}{asked}", h.said())
         });
@@ -458,7 +463,9 @@ impl App {
             Item::line(),
             Item::new("Keep reviewing", Action::Cancel),
         ];
-        let mut m = Menu::new("your review of the agent's work", items, None);
+        let pulled = self.reviewing.as_ref().and_then(|rv| self.db.run(&rv.run)).is_some_and(crate::held::pulled);
+        let of = if pulled { "the comments pulled" } else { "the agent's work" };
+        let mut m = Menu::new(format!("your review of {of}"), items, None);
         m.note = Some(self.review_summary());
         m
     }

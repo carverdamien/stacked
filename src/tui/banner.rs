@@ -1,5 +1,6 @@
 //! The banner, under the top bar of the main screen: the agent's work on
-//! the stack. What landed and waits for your review, what the agent works
+//! the stack, and the reviews pulled. What landed and waits for your review
+//! (an ask's work, a pull's comments from Phabricator), what the agent works
 //! on, and the comments that wait their turn: said in one line; while the
 //! cursor is on it, open, a line for each, to review what landed or go to
 //! the comment of the rest. Esc goes to it from the panes, and from it back
@@ -7,6 +8,18 @@
 
 use super::reviewing::first_words;
 use super::*;
+
+/// How the work run `r` holds landed, said after what it holds: pulled
+/// from Phabricator, or what the agent was asked (cut to `room`).
+pub(super) fn landed_how(r: &crate::db::Run, room: usize) -> String {
+    if crate::held::pulled(r) {
+        ", pulled from Phabricator".into()
+    } else if r.request.is_empty() {
+        String::new()
+    } else {
+        format!(", asked \"{}\"", short(&r.request, room))
+    }
+}
 
 /// A line of the banner, open: a piece of the agent's work on the stack.
 #[derive(Debug, Clone, PartialEq)]
@@ -53,16 +66,19 @@ impl App {
         let ready = count(|l| matches!(l, BannerLine::Ready(..)));
         let mut said = Vec::new();
         if landed > 0 {
-            let mut head = if landed == 1 {
-                "1 landed ask waits for your review".to_string()
-            } else {
-                format!("{landed} landed asks wait for your review")
+            // The asks' work, and the reviews pulled, each counted.
+            let pulls = lines.iter().filter(|l| matches!(l, BannerLine::Landed(run) if self.db.run(run).is_some_and(crate::held::pulled))).count();
+            let of = |n: usize, one: &str, many: &str| if n == 1 { format!("1 {one}") } else { format!("{n} {many}") };
+            let what = match (landed - pulls, pulls) {
+                (asks, 0) => of(asks, "landed ask", "landed asks"),
+                (0, pulls) => of(pulls, "pull from Phabricator", "pulls from Phabricator"),
+                (asks, pulls) => format!("{} and {}", of(asks, "landed ask", "landed asks"), of(pulls, "pull from Phabricator", "pulls from Phabricator")),
             };
+            let mut head = format!("{what} {} for your review", if landed == 1 { "waits" } else { "wait" });
             if let Some(BannerLine::Landed(run)) = lines.first()
                 && let Some((r, h)) = self.work(run)
             {
-                let asked = if r.request.is_empty() { String::new() } else { format!(", asked \"{}\"", r.request) };
-                head += &format!(" · the next: {}{asked}", h.said());
+                head += &format!(" · the next: {}{}", h.said(), landed_how(r, usize::MAX));
             }
             said.push(head);
         }
@@ -84,12 +100,11 @@ impl App {
         Some(format!(" {mark} {}", said.join(" · ")))
     }
 
-    /// The banner's menu: each landed ask, to review.
+    /// The banner's menu: each landed ask, and each pull, to review.
     pub(super) fn banner_items(&self, items: &mut Vec<Item>) {
         for id in self.queue() {
             let Some((r, h)) = self.work(&id) else { continue };
-            let asked = if r.request.is_empty() { String::new() } else { format!(", asked \"{}\"", short(&r.request, 40)) };
-            items.push(Item::new(format!("Review {}{asked}", h.said()), Action::Review(id.clone(), None)));
+            items.push(Item::new(format!("Review {}{}", h.said(), landed_how(r, 40)), Action::Review(id.clone(), None)));
         }
     }
 
@@ -102,10 +117,7 @@ impl App {
     fn banner_line(&self, l: &BannerLine) -> String {
         match l {
             BannerLine::Landed(run) => match self.work(run) {
-                Some((r, h)) => {
-                    let asked = if r.request.is_empty() { String::new() } else { format!(", asked \"{}\"", short(&r.request, 40)) };
-                    format!("   ⟳ Review {}{asked}", h.said())
-                }
+                Some((r, h)) => format!("   ⟳ Review {}{}", h.said(), landed_how(r, 40)),
                 None => format!("   ⟳ Review {run}"),
             },
             BannerLine::Going(run) => {

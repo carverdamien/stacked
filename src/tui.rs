@@ -636,8 +636,8 @@ fn about(action: &Action) -> String {
         Action::RewindInEditor(_) => "rewind the conversation from your turn, in $EDITOR".into(),
         Action::Collapse => "show this comment in the middle as one quiet line, until you expand it".into(),
         Action::Expand => "show this comment whole again".into(),
-        Action::TakeReply(..) => "accept the agent's reply: it goes into the thread now, out of the review of the agent's work".into(),
-        Action::Review(..) => "review what the agent brought back: accept or reject each part of it".into(),
+        Action::TakeReply(..) => "accept this reply: it goes into its thread now, out of the review of what it landed with".into(),
+        Action::Review(..) => "review what landed, the agent's work or the comments pulled from Phabricator: accept or reject each part of it".into(),
         Action::MarkPart(true) => "mark this part accepted: it is applied when the review closes".into(),
         Action::MarkPart(false) => "mark this part rejected: it is dropped when the review closes".into(),
         Action::MarkComments(true) => "mark every comment of this work accepted".into(),
@@ -2590,7 +2590,7 @@ impl App {
         match self.screen {
             Screen::Main if self.on_banner => {
                 out.push(
-                    "The banner says what the agent's work on this stack is, a line for each: what landed and waits for your review (nothing of it is applied before you review it), what the agent works on, and the comments that wait their turn."
+                    "The banner says what the agent's work on this stack is, a line for each: what landed and waits for your review (the agent's work, the comments pulled from Phabricator: nothing of it is applied before you review it), what the agent works on, and the comments that wait their turn."
                         .into(),
                 );
                 out.push(match self.banner_lines().get(self.banner_sel) {
@@ -2602,7 +2602,7 @@ impl App {
             }
             Screen::Review => {
                 out.push(
-                    "The review of what the agent brought back: the stack operations of its change, the comments it opened, its replies. Each is accepted or rejected; the change of the stack is one part, and rejecting it rejects the comments too."
+                    "The review of what landed, the agent's work or the comments pulled from Phabricator: the stack operations of a change, the comments opened, the replies. Each is accepted or rejected; a change of the stack is one part, and rejecting it rejects the comments too."
                         .into(),
                 );
                 out.push("Press Enter to accept or reject the part the cursor is on, Space for its menu, → to scroll what it looks like and ← to come back.".into());
@@ -3313,7 +3313,7 @@ impl App {
                 self.banner_items(&mut items);
             }
             (Screen::Review, _) => {
-                title = "this part of the agent's work".into();
+                title = "this part of what landed".into();
                 self.review_items(&mut items);
             }
             (Screen::Main, Focus::List) if self.on_stack => {
@@ -3499,11 +3499,14 @@ impl App {
             // with a change of the stack, reviewed with it.
             None if held.is_some() => {
                 let (run, k) = held.clone().unwrap();
-                let alone = self.db.run(&run).and_then(|r| r.held.as_ref()).is_some_and(|h| h.stack.is_none());
+                let r = self.db.run(&run);
+                let alone = r.and_then(|r| r.held.as_ref()).is_some_and(|h| h.stack.is_none());
+                let who = r.and_then(|r| r.held.as_ref()).and_then(|h| h.replies.get(k)).map_or("the agent", |rp| rp.who());
                 if alone {
-                    items.push(Item::new("Accept the agent's reply", Action::TakeReply(run.clone(), k)));
+                    items.push(Item::new(format!("Accept {who}'s reply"), Action::TakeReply(run.clone(), k)));
                 }
-                items.push(Item::new("Review the agent's work…", Action::Review(run, Some(crate::held::Part::Reply(k)))));
+                let review = if r.is_some_and(crate::held::pulled) { "Review the comments pulled…" } else { "Review the agent's work…" };
+                items.push(Item::new(review, Action::Review(run, Some(crate::held::Part::Reply(k)))));
             }
             None if c.queued.is_some() => items.push(Item::new("Take it back from the agent's queue", Action::Unsend)),
             None if c.about.is_some() => {
@@ -6031,8 +6034,9 @@ pub fn note_state(db: &Db, name: &str, n: &Note, busy: &Busy) -> String {
     } else if let Some(q) = &n.queued {
         let on = ask::waits_on(db, name, q.way).unwrap_or_else(|| "next".into());
         parts.push(format!("ready ({}), {on}", q.said()));
-    } else if crate::held::reply_waiting(db, &n.change, &n.id).is_some() {
-        parts.push("the agent's reply waits for your review".into());
+    } else if let Some((run, k)) = crate::held::reply_waiting(db, &n.change, &n.id) {
+        let who = db.run(&run).and_then(|r| r.held.as_ref()).and_then(|h| h.replies.get(k)).map_or("the agent", |rp| rp.who());
+        parts.push(format!("{who}'s reply waits for your review"));
     } else if let Some(f) = &n.failed {
         parts.push(format!("ask failed: {}", f.split_whitespace().collect::<Vec<_>>().join(" ")));
     } else if last_role(&n.text) == Some(Role::Agent) && n.moved.is_none() {

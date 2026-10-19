@@ -249,6 +249,7 @@ fn agent(path: &Path, id: &str) -> Result<()> {
                     text: text.into(),
                     tag: info.way.name().into(),
                     promote: promote.map(String::from),
+                    ..Default::default()
                 })
                 .collect()
         };
