@@ -216,6 +216,18 @@ pub fn waits_on(db: &Db, name: &str, way: Way) -> Option<String> {
     }
 }
 
+/// Why stack `name` cannot be edited by hand now, if it cannot: the agent
+/// is changing it, from the stack as it took it, so nothing else may
+/// change the stack meanwhile.
+pub fn blocked(db: &Db, name: &str) -> Option<String> {
+    let (_, i) = asks_going(db, name).into_iter().find(|(_, i)| i.way == Way::Change)?;
+    let on = match &i.scope {
+        Scope::Stack => "the stack".to_string(),
+        Scope::Patch(c) => format!("patch {}", position(db, name, c).map_or("?".into(), |p| (p + 1).to_string())),
+    };
+    Some(format!("the agent is changing {on}: the stack can be edited by hand again once the agent's work lands"))
+}
+
 /// Where the patch of `change` is in stack `name`, from 0.
 fn position(db: &Db, name: &str, change: &str) -> Option<usize> {
     db.stack(name)

@@ -557,12 +557,18 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
                 Some(b) => Some((b, git::toplevel(&here())?)),
                 None => None,
             };
-            Db::edit(path, |db| ops::import(db, &name, drafts, replace, on))?;
+            Db::edit(path, |db| {
+                if db.head(&name).is_some() {
+                    ops::by_hand(db, &name)?;
+                }
+                ops::import(db, &name, drafts, replace, on)
+            })?;
         }
         Cmd::Base { name, rev } => {
             let base = git::rev_parse(&here(), &rev)?;
             let repo = git::toplevel(&here())?;
             Db::edit(path, |db| {
+                ops::by_hand(db, &name)?;
                 let s = db.stack(&name)?.clone();
                 let op = format!("base {}", &base[..12]);
                 db.set_stack_on(&name, s.patches, Some(base), Some(repo), &op)
@@ -588,6 +594,7 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
                 {
                     db.new_stack(&name, base, repo)?;
                 }
+                ops::by_hand(db, &name)?;
                 ops::add(db, &name, draft, at.map(|n| n.saturating_sub(1)))
             })?;
         }
@@ -666,10 +673,12 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
             }
         }
         Cmd::Move { name, patch, to } => Db::edit(path, |db| {
+            ops::by_hand(db, &name)?;
             let from = db.resolve(db.stack(&name)?, &patch)?;
             ops::move_patch(db, &name, from, to.saturating_sub(1)).map(|_| ())
         })?,
         Cmd::Drop { name, patches } => Db::edit(path, |db| {
+            ops::by_hand(db, &name)?;
             let s = db.stack(&name)?;
             let at = patches.iter().map(|p| db.resolve(s, p)).collect::<Result<Vec<_>>>()?;
             ops::drop_patches(db, &name, &at).map(|_| ())
@@ -713,17 +722,30 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
             }
         }
         Cmd::Undo { name } => {
-            Db::edit(path, |db| db.undo(&name))?;
+            Db::edit(path, |db| {
+                ops::by_hand(db, &name)?;
+                db.undo(&name)
+            })?;
         }
         Cmd::Redo { name } => {
-            Db::edit(path, |db| db.redo(&name))?;
+            Db::edit(path, |db| {
+                ops::by_hand(db, &name)?;
+                db.redo(&name)
+            })?;
         }
         Cmd::Select { rev } => {
             let rev = parse_rev(&rev)?;
-            Db::edit(path, |db| db.select(rev))?;
+            Db::edit(path, |db| {
+                let name = db.node(rev)?.name.clone();
+                ops::by_hand(db, &name)?;
+                db.select(rev)
+            })?;
         }
         Cmd::Delete { name } => {
-            Db::edit(path, |db| db.delete_stack(&name))?;
+            Db::edit(path, |db| {
+                ops::by_hand(db, &name)?;
+                db.delete_stack(&name)
+            })?;
         }
         Cmd::Versions { name, patch } => {
             let db = Db::load(path)?;
@@ -795,8 +817,12 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
                 (Some(spec), Some(l)) => {
                     let p = patch_of(&db, &name, spec)?;
                     let key = line_of(&p, l)?;
-                    // A comment on the line already: this is a turn of it.
+                    // A comment on the line already: this is a turn of it,
+                    // not while the agent works on it.
                     match db.note(&p.change, &key) {
+                        Some(n) if ask::with_agent(&db).contains_key(&(n.change.clone(), n.id.clone())) => {
+                            return err("the agent is working on the comment on that line: wait for it to land");
+                        }
                         Some(n) => Note {
                             text: append_turn(&n.text, Role::You, &text, None),
                             failed: None,
@@ -841,6 +867,11 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
             let text = text.join(" ");
             let off = Db::edit(path, |db| {
                 let n = db.find_note(&name, &id)?.clone();
+                // Not while the agent works on it: its reply is to what it
+                // was asked.
+                if ask::with_agent(db).contains_key(&(n.change.clone(), n.id.clone())) {
+                    return err("the agent is working on it: wait for it to land");
+                }
                 // Which turn, from 1, of how many.
                 let at = |k: usize| {
                     let all = all_turns(&n.text).len();
@@ -850,9 +881,6 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
                     Ok(k - 1)
                 };
                 if delete.is_some() || bring_back.is_some() {
-                    if ask::with_agent(db).contains_key(&(n.change.clone(), n.id.clone())) {
-                        return err("the agent is working on it: wait for it to land");
-                    }
                     let again = match (delete, bring_back) {
                         (Some(1), _) => return err("turn 1 is the comment itself: only its replies can be deleted"),
                         (Some(k), _) => delete_turn(&n.text, at(k)?).ok_or_else(|| Error(format!("turn {k} is deleted already")))?,
@@ -869,9 +897,6 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
                         ..n
                     })?;
                     return Ok(None);
-                }
-                if ask::with_agent(db).contains_key(&(n.change.clone(), n.id.clone())) {
-                    return err("the agent is working on it: wait for it to land");
                 }
                 let again = match turn {
                     Some(k) => {

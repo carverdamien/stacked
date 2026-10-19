@@ -336,9 +336,22 @@ at a time; a change waiting holds back the answers asked after it. An asked
 comment that cannot go yet waits as ready, says what it waits on, and goes
 on its own when that lands. Nothing is asked on a stack that does not apply.
 
+While the agent changes a stack, the stack is not edited by hand: the
+agent's change is made from the stack as it took it. The menus' edits of
+the stack and its patches are off meanwhile, and the menu says why:
+editing a patch or one of its files, editing the stack as a list, moving,
+dropping, undo and redo, picking a state from the tree or a version,
+deleting the stack. The same commands refuse on the command line.
+Comments are written as ever, except those the agent works on: their
+`Reply` and edits wait for the agent's reply to land, as the reply is to
+what was asked. An edit by hand open in $EDITOR when the agent takes the
+stack is not lost: a file's edit is kept, to `Edit it again` later; a
+patch's mail, or the stack's list, opens again with why at its top. A
+comment waiting its turn is off the agent's queue while you reply to it,
+and goes back on with your reply.
+
 Changes are checked when they land, like any edit. A patch's change slots
-into the stack as it is by then; if the patch itself was edited meanwhile,
-the ask fails and the comment waits to be asked again. Before it finishes,
+into the stack in its place. Before it finishes,
 the agent runs `stacked fits`, which says whether the patches above still
 apply on its change; if they would not, or the comment needs more than its
 patch, it changes nothing and the comment moves to the stack's comments,
@@ -347,10 +360,8 @@ on its first line, to be asked again from there (asked of the whole stack
 from the start, it would not have had to). The cursor goes with it if it
 was on it, and the bottom line says so. `Go to where it came from`
 and `Move it back to patch 2` are in its menu. Comments on lines follow a
-split or merged patch to the piece that has their line. A stack's change
-made from a stack you have edited since is a branch of the tree of edits,
-and yours stays where it is. A rebase says onto what (the agent adds
-`"base"` to its answer): the stack's base moves there.
+split or merged patch to the piece that has their line. A rebase says onto
+what (the agent adds `"base"` to its answer): the stack's base moves there.
 
 Where it stands shows on the comment's first line, or under it when that is
 too long: ready (and on what), with the agent (and the last lines of its
@@ -437,8 +448,7 @@ every comment and every run; the editor shows them where they belong:
 - `History…`, on the stack's header: what changed the stack, newest first:
   its edits, and the moves of its head (undo, redo, select, delete) that
   took it to another stack. Comments, runs and the rest change nothing of
-  it and are left out; so is an ask that landed as a branch, the stack
-  having moved on (the tree of edits has it). Each says what it changed in
+  it and are left out. Each says what it changed in
   short (`+1` added, `−1` dropped, `~1` a new version, `↕1` moved), then
   what it was. Beside them, the tree of edits' lanes: each edit on its
   branch's lane, marked as the tree marks it (`●` where the stack is, `○`
@@ -723,8 +733,8 @@ stack, a patch and a line, every way of asking about them (a script stands
 in for the agent and rewrites commits with git, runs `stacked fits`,
 answers, opens comments, tests), a split following its comments, a comment
 moved to the stack, a patch's comment asked of the whole stack adding a
-patch on top, a reply written again, asks waiting their turn, a rebase, a branch when the
-stack moved on (and left out of the history), failures kept to look at, comments staying on their line
+patch on top, a reply written again, asks waiting their turn, a rebase, the stack not
+edited by hand while the agent changes it, failures kept to look at, comments staying on their line
 across versions, a patch edited by hand (as mail and as code, at a line,
 refused and taken up again), trimming, the settings, filing Phabricator
 threads, apply, and what does not apply being refused, edited again, or

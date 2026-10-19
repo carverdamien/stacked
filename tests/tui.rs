@@ -993,6 +993,78 @@ fn what_you_said_last_may_be_written_again() {
     assert!(screen.contains("· written") && screen.contains("· you edited it"), "the first edit, there:\n{screen}");
 }
 
+/// The agent changing `scope` of stack `s`, asked by comment (change, id):
+/// its run as it is while it works, its process this one.
+fn changing(db: &Path, change: &str, id: &str, scope: serde_json::Value) {
+    Db::edit(db, |d| {
+        let from = d.head("s").unwrap().0;
+        let ask = serde_json::json!({"way": "change", "scope": scope, "from": from, "notes": [{"label": "c1", "change": change, "id": id}]});
+        d.add_run(stacked::db::Run {
+            id: "run-changing".into(),
+            what: "edit".into(),
+            stack: "s".into(),
+            state: stacked::db::RunState::Started,
+            pid: Some(std::process::id()),
+            ask: Some(ask),
+            time: stacked::db::now(),
+            ..Default::default()
+        })
+        .map(|_| ())
+    })
+    .unwrap();
+}
+
+#[test]
+fn while_the_agent_changes_the_stack_it_is_not_edited_by_hand_nor_its_comment_written_on() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Enter]);
+    save(&mut app, "why so loud?");
+    let n = notes_of(&db, "s", 0).remove(0);
+    changing(&db, &n.change, &n.id, serde_json::json!({"patch": n.change}));
+    app.refresh();
+    // Its comment is read, not written on: its reply is to what it was asked.
+    keys(&mut app, &[KeyCode::Down, KeyCode::Char(' ')]);
+    let all = items(&app);
+    assert!(all.contains(&("Reply".into(), false)) && all.contains(&("Edit your comment".into(), false)), "{all:?}");
+    keys(&mut app, &[KeyCode::Esc]);
+    // The patch is not edited by hand, and the menu says why; other lines
+    // are commented on as ever.
+    down_to(&mut app, " three");
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    let why = "the agent is changing patch 1: the stack can be edited by hand again once the agent's work lands";
+    let Mode::Menu(m) = &app.mode else { panic!("{:?}", app.mode) };
+    assert_eq!(m.note.as_deref(), Some(why));
+    let all = items(&app);
+    assert!(all.contains(&("Comment on this line".into(), true)), "{all:?}");
+    assert!(all.contains(&("Edit this patch in $EDITOR".into(), false)), "{all:?}");
+    assert!(all.iter().any(|(l, ok)| l.starts_with("Edit a.txt here") && !ok), "{all:?}");
+    keys(&mut app, &[KeyCode::Esc]);
+    // Nor moved, dropped, undone.
+    keys(&mut app, &[KeyCode::Left, KeyCode::Char(' ')]);
+    let all = items(&app);
+    for l in ["Move this patch…", "Edit this patch in $EDITOR", "Drop this patch…"] {
+        assert!(all.contains(&(l.into(), false)), "{l}: {all:?}");
+    }
+    assert!(!all.iter().any(|(l, ok)| l.starts_with("Undo") && *ok), "{all:?}");
+    keys(&mut app, &[KeyCode::Esc]);
+    // Landed, the stack is the user's again.
+    Db::edit(&db, |d| {
+        let r = d.run("run-changing").cloned().unwrap();
+        d.add_run(stacked::db::Run {
+            state: stacked::db::RunState::Done,
+            ..r
+        })
+        .map(|_| ())
+    })
+    .unwrap();
+    app.refresh();
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    assert!(items(&app).contains(&("Drop this patch…".into(), true)), "{:?}", items(&app));
+}
+
 fn ctrl(app: &mut App, code: KeyCode) {
     app.key(KeyEvent::new(code, KeyModifiers::CONTROL));
 }

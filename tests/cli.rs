@@ -746,29 +746,34 @@ echo t > t.txt && git add t.txt && git -c user.name=C -c user.email=c@x commit -
 }
 
 #[test]
-fn an_ask_landing_after_the_stack_moved_is_a_branch() {
+fn the_stack_is_not_edited_by_hand_while_the_agent_changes_it() {
     let e = env();
     e.ok(&["import", "s", "base"]);
     let id = comment(&e, &["Amend", "the", "top."]);
+    let line = comment(&e, &["--patch", "1", "--line", "a.txt:+2", "Why", "2?"]);
     let claude = fake_claude(
         &e,
         "claude-slow.sh",
-        r#"sleep 1; echo x >> a.txt; git -c user.name=C -c user.email=c@x commit -qam "Bug 3 - café, a very long title that format-patch will fold over more than one line" --amend"#,
+        r#"sleep 2; echo x >> a.txt; git -c user.name=C -c user.email=c@x commit -qam "Bug 3 - café, a very long title that format-patch will fold over more than one line" --amend"#,
         r#"{"replies": {"c1": "Amended."}}"#,
     );
     let (fine, _, err) = stacked_in(&e.src, &e.db, &["send", "s", &id], "", &[("STACKED_CLAUDE", &claude)]);
     assert!(fine, "{err}");
-    e.ok(&["drop", "s", "1"]);
+    // Its edit is made from the stack as it took it: nothing else changes
+    // the stack meanwhile, nor is its comment written on.
+    let why = "the agent is changing the stack: the stack can be edited by hand again once the agent's work lands";
+    for args in [&["drop", "s", "1"][..], &["move", "s", "1", "2"], &["undo", "s"], &["delete", "s"]] {
+        let (fine, _, err) = e.run(args);
+        assert!(!fine && err.contains(why), "{args:?}: {err}");
+    }
+    let (fine, _, err) = e.run(&["reply", "s", &id, "Also", "this."]);
+    assert!(!fine && err.contains("the agent is working on it"), "{err}");
+    // Comments, others than its own, are written on as ever.
+    e.ok(&["reply", "s", &line, "Really?"]);
     landed(&e, 1);
-    assert_eq!(e.column(3).len(), 2, "the stack stays where the user took it");
-    let tree = e.ok(&["tree", "s"]);
-    assert!(tree.contains("agent: the stack"), "{tree}");
-    assert!(e.ok(&["runs"]).contains("it is a branch"));
-    // The history leaves it out, and the stack put back: they changed
-    // nothing of it.
-    let history: Vec<String> = stacked::history::entries(&Db::load(&e.db).unwrap(), "s").into_iter().map(|h| h.text).collect();
-    assert_eq!(history.len(), 2, "the import and the drop: {history:?}");
-    assert!(!history.iter().any(|t| t.contains("agent") || t.contains("branch")), "{history:?}");
+    assert!(e.ok(&["comments", "s"]).contains("agent: Amended."));
+    e.ok(&["drop", "s", "1"]);
+    assert_eq!(e.column(3).len(), 2, "landed, the stack is the user's again");
 }
 
 #[test]

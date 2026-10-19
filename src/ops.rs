@@ -104,6 +104,15 @@ pub fn import(
     db.set_stack_on(name, patches, base, repo, &op)
 }
 
+/// That stack `name` may be edited by hand now: not while the agent
+/// changes it. Every edit of the user's asks first; the agent's own do not.
+pub fn by_hand(db: &Db, name: &str) -> Result<()> {
+    match crate::ask::blocked(db, name) {
+        Some(why) => err(why),
+        None => Ok(()),
+    }
+}
+
 /// Puts `d` into `name` at `at` (0 is the bottom), or on top.
 pub fn add(db: &mut Db, name: &str, d: Draft, at: Option<usize>) -> Result<String> {
     let mut patches = db.stack(name)?.patches.clone();
@@ -253,6 +262,7 @@ pub fn edit_stack(path: &std::path::Path, name: &str) -> Result<String> {
     use crate::todo::{self, Action};
     let db = Db::load(path)?;
     db.writable(name)?;
+    by_hand(&db, name)?;
     let s = db.stack(name)?.clone();
     let (rev, _) = db.head(name).unwrap();
     // What was last made of each message or patch edited.
@@ -265,6 +275,11 @@ pub fn edit_stack(path: &std::path::Path, name: &str) -> Result<String> {
         let Some(lines) = todo::parse(&strip_errors(&edited))? else {
             return Ok("the list was emptied; nothing changed".into());
         };
+        // The agent took the stack meanwhile: the list waits in the editor.
+        if let Err(e) = Db::load(path).and_then(|now| by_hand(&now, name)) {
+            list = with_error(&e.0, &edited, "save again once the agent's work has landed, or empty the list to give up");
+            continue;
+        }
         let plan = || -> Result<Plan> {
             let lines = todo::resolve(&db, lines)?;
             let mut drafts = Vec::new();
@@ -310,6 +325,7 @@ pub fn edit_stack(path: &std::path::Path, name: &str) -> Result<String> {
         }
     };
     Db::edit(path, |db| {
+        by_hand(db, name)?;
         if db.head(name).map(|(r, _)| r) != Some(rev) {
             return err(format!("{name} changed while it was being edited; nothing changed"));
         }
@@ -374,6 +390,7 @@ pub fn mail_line(p: &Patch, row: &crate::rows::Row) -> usize {
 pub fn edit_patch(path: &std::path::Path, name: &str, at: usize, line: Option<usize>) -> Result<String> {
     let db = Db::load(path)?;
     db.writable(name)?;
+    by_hand(&db, name)?;
     let s = db.stack(name)?.clone();
     let old = db.patch(&s.patches[at]).clone();
     let mut text = render(&old);
@@ -382,6 +399,11 @@ pub fn edit_patch(path: &std::path::Path, name: &str, at: usize, line: Option<us
         let edited = strip_errors(&edit_file(&text, "edit.patch", line)?);
         if edited.trim().is_empty() {
             return Ok("the patch was emptied; nothing changed".into());
+        }
+        // The agent took the stack meanwhile: the edit waits in the editor.
+        if let Err(e) = Db::load(path).and_then(|now| by_hand(&now, name)) {
+            text = with_error(&e.0, &edited, "save again once the agent's work has landed, or empty the file to give up");
+            continue;
         }
         let tried = crate::mbox::parse_mail(&edited).and_then(|d| {
             let new = revise(&old, d.clone());
@@ -399,6 +421,7 @@ pub fn edit_patch(path: &std::path::Path, name: &str, at: usize, line: Option<us
         }
     };
     Db::edit(path, |db| {
+        by_hand(db, name)?;
         if db.stack(name)?.patches.get(at) != Some(&old.id) {
             return err(format!("{name} changed while it was being edited; nothing changed"));
         }
@@ -502,6 +525,7 @@ fn edit_copy(
 ) -> Result<Edited> {
     let db = Db::load(path)?;
     db.writable(name)?;
+    by_hand(&db, name)?;
     let s = db.stack(name)?.clone();
     let (repo, base) = base_of(&s)?;
     let old = db.patch(&s.patches[at]).clone();
@@ -551,6 +575,10 @@ fn edit_copy(
     }
     let draft = Draft::from(&new);
     Db::edit(path, |db| {
+        // The agent took the stack meanwhile: yours is kept, to take up again.
+        if let Err(e) = by_hand(db, name) {
+            return Ok(Edited::Refused { why: e.0, kept: Kept::Text(edited.clone()) });
+        }
         if db.stack(name)?.patches.get(at) != Some(&old.id) {
             return err(format!("{name} changed while it was being edited; nothing changed"));
         }
@@ -578,6 +606,7 @@ fn edit_in(
     use crate::git::git;
     let db = Db::load(path)?;
     db.writable(name)?;
+    by_hand(&db, name)?;
     let s = db.stack(name)?.clone();
     let (repo, base) = base_of(&s)?;
     let old = db.patch(&s.patches[at]).clone();
@@ -620,6 +649,9 @@ fn edit_in(
         Taken::Unchanged => Ok(Edited::Unchanged),
         Taken::Refused { why, commit } => Ok(Edited::Refused { why, kept: kept(commit) }),
         Taken::Ready { draft, said, commit } => Db::edit(path, |db| {
+            if let Err(e) = by_hand(db, name) {
+                return Ok(Edited::Refused { why: e.0, kept: kept(commit.clone()) });
+            }
             // Edited meanwhile: yours is kept, to take up again.
             if db.stack(name)?.patches.get(at) != Some(&old.id) {
                 return Ok(Edited::Refused {

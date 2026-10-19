@@ -1044,6 +1044,12 @@ impl App {
             .filter(|why| why.starts_with("read-only"))
     }
 
+    /// Why the stack cannot be edited by hand now, if it cannot: it is
+    /// read-only, or the agent is changing it.
+    pub fn by_hand(&self) -> Option<String> {
+        self.read_only().map(String::from).or_else(|| ask::blocked(&self.db, &self.stack))
+    }
+
     /// Runs `work` in a thread of its own; what it comes to is read when
     /// the screen is next drawn.
     fn spawn(&self, work: impl FnOnce() -> Done + Send + 'static) {
@@ -2654,41 +2660,29 @@ impl App {
         self.write_again(Target::Edit { change, id }, pane);
     }
 
-    /// Opens the turn of a comment `t` writes again in an editor in `pane`:
-    /// off the agent's queue meanwhile, if the comment is on it, so that it
-    /// is not asked as it was. Not while the agent works on it.
+    /// Opens the turn of a comment `t` writes again in an editor in `pane`,
+    /// as `write` does: not while the agent works on it, off its queue
+    /// meanwhile.
     fn write_again(&mut self, t: Target, pane: Focus) {
-        let (Target::Edit { change, id } | Target::Turn { change, id, .. }) = &t else { return };
-        let (change, id) = (change.clone(), id.clone());
         let Some(text) = self.mine_of(&t) else { return };
-        if self.busy().contains_key(&(change.clone(), id.clone())) {
-            self.status = "the agent is working on it: wait for it to land".into();
-            return;
-        }
-        let held = self.db.note(&change, &id).and_then(|c| c.queued.clone());
-        if held.is_some() {
-            if let Err(e) = ask::unsend(&self.path, &[(change, id)]) {
-                self.status = e.0;
-                return;
-            }
-            self.reload();
-        }
         self.write(t, pane, &text);
-        if let Mode::Edit(e) = &mut self.mode {
-            e.held = held;
-        }
     }
 
-    /// Once a turn is written again, or not: a comment taken off the
-    /// agent's queue for it goes back on if it is as it was, and waits to
-    /// be asked again if it `changed`.
+    /// Once a comment is written on, or not: taken off the agent's queue
+    /// for it, it goes back on as it was, or with a reply `changed` it; a
+    /// turn written again waits to be asked again.
     fn settle_edit(&mut self, e: &Edit, changed: bool) {
-        let (Target::Edit { change, id } | Target::Turn { change, id, .. }, Some(q)) = (&e.target, &e.held) else { return };
-        if changed {
+        let (Target::Reply { change, id } | Target::Edit { change, id } | Target::Turn { change, id, .. }, Some(q)) = (&e.target, &e.held)
+        else {
+            return;
+        };
+        let reply = matches!(e.target, Target::Reply { .. });
+        if changed && !reply {
             self.status = "edited: off the agent's queue, until you ask again".into();
             return;
         }
         match ask::requeue(&self.path, change, id, q.clone()) {
+            Ok(()) if changed => self.status = format!("your reply is added: back on the agent's queue ({})", q.said()),
             Ok(()) => self.status = format!("as it was: back on the agent's queue ({})", q.said()),
             Err(err) => self.status = err.0,
         }
@@ -2706,8 +2700,19 @@ impl App {
             KeyCode::Esc => return,
             KeyCode::Enter if to == from => return,
             KeyCode::Enter => {
+                // Taken by the agent meanwhile: no place would do.
+                if let Some(why) = self.by_hand() {
+                    self.status = why;
+                    return;
+                }
                 let name = self.stack.clone();
-                if self.edit(|db| ops::move_patch(db, &name, from, to)).is_some() {
+                if self
+                    .edit(|db| {
+                        ops::by_hand(db, &name)?;
+                        ops::move_patch(db, &name, from, to)
+                    })
+                    .is_some()
+                {
                     self.sel = to;
                     return;
                 }
@@ -2756,16 +2761,16 @@ impl App {
     /// The items for the menu's end, everywhere: undo, redo, the view, the
     /// runs, quit.
     fn common(&self, items: &mut Vec<Item>) {
-        let w = self.read_only().is_none();
+        let h = self.by_hand().is_none();
         items.push(Item::line());
         // Nothing is edited from History…, only looked at.
         let edits = self.screen != Screen::History;
         if edits && (self.current().is_some() || self.db.names().contains(&self.stack.as_str())) {
             if let Some((_, op)) = self.db.undo_target(&self.stack) {
-                items.push(Item::new(format!("Undo: {op}"), Action::Undo).when(w));
+                items.push(Item::new(format!("Undo: {op}"), Action::Undo).when(h));
             }
             if let Some((_, op)) = self.db.redo_target(&self.stack) {
-                items.push(Item::new(format!("Redo: {op}"), Action::Redo).when(w));
+                items.push(Item::new(format!("Redo: {op}"), Action::Redo).when(h));
             }
         }
         if !self.db.runs().is_empty() {
@@ -2846,8 +2851,10 @@ impl App {
 
     /// All that can be done where the cursor is, then the menu's end.
     pub fn main_menu(&self) -> Menu {
-        let ro = self.read_only().map(String::from);
-        let w = ro.is_none();
+        let w = self.read_only().is_none();
+        // Edited by hand: not while the agent changes the stack.
+        let hands = self.by_hand();
+        let h = hands.is_none();
         let n = self.patch_count();
         let mut title = self.stack.clone();
         let mut items = Vec::new();
@@ -2859,7 +2866,7 @@ impl App {
                     self.send_all_items(&mut items, true);
                     items.push(Item::new("Show…", Action::ShowMenu));
                     items.push(Item::line());
-                    items.push(Item::new("Edit the stack as a list in $EDITOR", Action::EditList).when(w && n > 0));
+                    items.push(Item::new("Edit the stack as a list in $EDITOR", Action::EditList).when(h && n > 0));
                     items.push(Item::new("Tree of edits…", Action::Tree));
                     items.push(Item::new("History…", Action::History));
                     if self.cfg.reviews.source != crate::config::Source::None {
@@ -2872,16 +2879,16 @@ impl App {
                     items.push(Item::new("Switch stack…", Action::Stacks));
                 }
                 if self.current().is_some() {
-                    items.push(Item::new("Delete this stack…", Action::AskDeleteStack).when(w));
+                    items.push(Item::new("Delete this stack…", Action::AskDeleteStack).when(h));
                 }
             }
             (Screen::Main, Focus::List) if n > 0 => {
                 title = self.patch_title();
                 items.push(Item::new("Read this patch", Action::Open));
                 items.push(Item::new("Comment on this patch…", Action::CommentPatch));
-                items.push(Item::new("Move this patch…", Action::MovePatch).when(w && n > 1));
-                items.push(Item::new("Edit this patch in $EDITOR", Action::EditPatch).when(w));
-                items.push(Item::new("Drop this patch…", Action::AskDrop).when(w));
+                items.push(Item::new("Move this patch…", Action::MovePatch).when(h && n > 1));
+                items.push(Item::new("Edit this patch in $EDITOR", Action::EditPatch).when(h));
+                items.push(Item::new("Drop this patch…", Action::AskDrop).when(h));
                 items.push(Item::new("Versions of this patch…", Action::Versions));
             }
             (Screen::Main, Focus::Notes) if self.notes_head => {
@@ -2911,16 +2918,16 @@ impl App {
                         items.push(Item::line());
                         if let Some((file, _)) = self.code_place() {
                             let short = file.rsplit('/').next().unwrap_or(&file).to_string();
-                            items.push(Item::new(format!("Edit {short} here in $EDITOR"), Action::EditCode).when(w).with(self.edit_choices()));
+                            items.push(Item::new(format!("Edit {short} here in $EDITOR"), Action::EditCode).when(h).with(self.edit_choices()));
                         }
-                        items.push(Item::new("Edit this patch in $EDITOR", Action::EditPatch).when(w));
+                        items.push(Item::new("Edit this patch in $EDITOR", Action::EditPatch).when(h));
                     }
                 }
             }
             (Screen::Tree, _) => {
                 if let Some(l) = tree::graph(&self.db, &self.stack).get(self.pick) {
                     title = format!("@{}", l.rev);
-                    items.push(Item::new("Edit from this one", Action::EditFrom(l.rev)).when(w));
+                    items.push(Item::new("Edit from this one", Action::EditFrom(l.rev)).when(h));
                     items.push(Item::new("What this edit changed…", Action::WhatChanged(l.rev)));
                 }
             }
@@ -2939,7 +2946,7 @@ impl App {
                 if let Some((p, _)) = self.versions_list().get(self.pick) {
                     title = "this version".into();
                     let current = self.current().is_some_and(|s| s.patches.contains(&p.id));
-                    items.push(Item::new("Put this version back in the stack", Action::UseVersion(p.id.clone())).when(w && !current));
+                    items.push(Item::new("Put this version back in the stack", Action::UseVersion(p.id.clone())).when(h && !current));
                     if self.whole {
                         items.push(Item::new("Read what changed from the version before", Action::Whole(false)));
                     } else {
@@ -2950,7 +2957,7 @@ impl App {
             _ => {}
         }
         self.common(&mut items);
-        Menu::new(title, items, ro)
+        Menu::new(title, items, hands)
     }
 
     /// The Send all items of a header: the comments listed that can be sent.
@@ -3009,7 +3016,11 @@ impl App {
             }
             _ => {}
         }
-        items.push(Item::new("Reply", Action::Reply).with(self.write_choices(Action::Reply, Action::CommentInEditor)));
+        items.push(
+            Item::new("Reply", Action::Reply)
+                .when(with.is_none())
+                .with(self.write_choices(Action::Reply, Action::CommentInEditor)),
+        );
         // A reply, not the comment itself: that is deleted whole.
         if let Some((i, t)) = &here
             && !t.deleted
@@ -3075,12 +3086,15 @@ impl App {
                 self.focus = Focus::Diff;
             }
             Action::GoToNote => self.go_to_note(),
-            Action::MovePatch => {
-                self.mode = Mode::Moving {
-                    from: self.sel,
-                    to: self.sel,
+            Action::MovePatch => match self.by_hand() {
+                Some(why) => self.status = why,
+                None => {
+                    self.mode = Mode::Moving {
+                        from: self.sel,
+                        to: self.sel,
+                    }
                 }
-            }
+            },
             Action::EditPatch => return Effect::EditPatch { line: self.mail_place() },
             Action::EditCode => {
                 if let Some((file, line)) = self.code_place() {
@@ -3106,7 +3120,10 @@ impl App {
             }
             Action::Drop => {
                 let at = self.sel;
-                self.edit(|db| ops::drop_patches(db, &name, &[at]));
+                self.edit(|db| {
+                    ops::by_hand(db, &name)?;
+                    ops::drop_patches(db, &name, &[at])
+                });
             }
             Action::CommentStack => self.write(Target::Stack, Focus::List, ""),
             Action::CommentPatch => {
@@ -3320,15 +3337,27 @@ impl App {
                 self.edit(|db| db.set_view(&name, show));
             }
             Action::Undo => {
-                self.edit(|db| db.undo(&name));
+                self.edit(|db| {
+                    ops::by_hand(db, &name)?;
+                    db.undo(&name)
+                });
             }
             Action::Redo => {
-                self.edit(|db| db.redo(&name));
+                self.edit(|db| {
+                    ops::by_hand(db, &name)?;
+                    db.redo(&name)
+                });
             }
             Action::EditList => return Effect::EditTodo,
             Action::Tree => self.open_list(Screen::Tree),
             Action::EditFrom(rev) => {
-                if self.edit(|db| db.select(rev)).is_some() {
+                if self
+                    .edit(|db| {
+                        ops::by_hand(db, &name)?;
+                        db.select(rev)
+                    })
+                    .is_some()
+                {
                     self.status = format!("editing @{rev}");
                     self.screen = Screen::Main;
                 }
@@ -3351,6 +3380,7 @@ impl App {
             Action::UseVersion(id) => {
                 let change = self.db.patch(&id).change.clone();
                 let done = self.edit(|db| {
+                    ops::by_hand(db, &name)?;
                     let s = db.stack(&name)?.clone();
                     let Some(at) = s.patches.iter().position(|p| db.patch(p).change == change) else {
                         return err("its patch is no longer in the stack");
@@ -3458,7 +3488,10 @@ impl App {
                 self.mode = Mode::Menu(Menu::ask(title, Item::new("Delete it", Action::DeleteStack), "Keep it", false));
             }
             Action::DeleteStack => {
-                self.edit(|db| db.delete_stack(&name));
+                self.edit(|db| {
+                    ops::by_hand(db, &name)?;
+                    db.delete_stack(&name)
+                });
             }
             Action::Transcript(id) => {
                 self.transcript = Some(id);
@@ -3467,6 +3500,13 @@ impl App {
             }
             Action::Save(way) => {
                 if let Some(e) = self.pending.take() {
+                    // Taken by the agent meanwhile: what you wrote stays in
+                    // the editor.
+                    if let Some(why) = self.locked_target(&e.target) {
+                        self.status = why;
+                        self.mode = Mode::Edit(e);
+                        return Effect::None;
+                    }
                     let text = e.ed.text();
                     let was = self.mine_of(&e.target);
                     match (self.save(&e.target, &text), way) {
@@ -3477,6 +3517,11 @@ impl App {
             }
             Action::SaveWhole => {
                 if let Some(e) = self.pending.take() {
+                    if let Some(why) = self.locked_target(&e.target) {
+                        self.status = why;
+                        self.mode = Mode::Edit(e);
+                        return Effect::None;
+                    }
                     let text = e.ed.text();
                     if let Some(saved) = self.save(&e.target, &text) {
                         self.send(vec![saved], Way::Change, true);
@@ -3501,20 +3546,51 @@ impl App {
 
     /// Opens the editor for `target`, in `pane`.
     fn write(&mut self, target: Target, pane: Focus, text: &str) {
-        // A comment collapsed is expanded to be written on: what it says is
-        // in sight.
-        if let Target::Reply { change, id } | Target::Edit { change, id } | Target::Turn { change, id, .. } = &target
-            && self.db.collapsed(change, id)
-        {
+        let mut held = None;
+        if let Target::Reply { change, id } | Target::Edit { change, id } | Target::Turn { change, id, .. } = &target {
             let (change, id) = (change.clone(), id.clone());
-            self.edit(|db| db.set_collapsed(&change, &id, false));
+            if let Some(why) = self.locked(&change, &id) {
+                self.status = why;
+                return;
+            }
+            // A comment collapsed is expanded to be written on: what it says
+            // is in sight.
+            if self.db.collapsed(&change, &id) {
+                self.edit(|db| db.set_collapsed(&change, &id, false));
+            }
+            // Off the agent's queue meanwhile, so that the agent does not
+            // take it as it was.
+            held = self.db.note(&change, &id).and_then(|c| c.queued.clone());
+            if held.is_some() {
+                if let Err(e) = ask::unsend(&self.path, &[(change, id)]) {
+                    self.status = e.0;
+                    return;
+                }
+                self.reload();
+            }
         }
         self.mode = Mode::Edit(Edit {
             ed: Editor::new(text),
             target,
             pane,
-            held: None,
+            held,
         });
+    }
+
+    /// Why comment (change, id) cannot be written on now, if it cannot:
+    /// the agent is working on it, and its reply is to what it was asked.
+    fn locked(&self, change: &str, id: &str) -> Option<String> {
+        self.busy()
+            .contains_key(&(change.to_string(), id.to_string()))
+            .then(|| "the agent is working on this comment: wait for its reply to land".to_string())
+    }
+
+    /// Why what is written for `t` cannot be saved now, if it cannot.
+    fn locked_target(&self, t: &Target) -> Option<String> {
+        match t {
+            Target::Reply { change, id } | Target::Edit { change, id } | Target::Turn { change, id, .. } => self.locked(change, id),
+            _ => None,
+        }
     }
 
     /// Saves `text` where `target` says: a new comment, or your turn of the
@@ -3804,6 +3880,10 @@ impl App {
             Effect::EditTodo => self.status = ops::edit_stack(&self.path, &name)?,
             Effect::EditComment(target @ (Target::Edit { .. } | Target::Turn { .. })) => {
                 let (Target::Edit { change, id } | Target::Turn { change, id, .. }) = &target else { return Ok(()) };
+                if let Some(why) = self.locked(change, id) {
+                    self.status = why;
+                    return Ok(());
+                }
                 let Some(n) = self.db.note(change, id).cloned() else { return Ok(()) };
                 let Some(mine) = self.mine_of(&target) else { return Ok(()) };
                 // Off the agent's queue meanwhile; nothing is dropped from
@@ -3831,11 +3911,34 @@ impl App {
                 self.settle_edit(&e, changed);
             }
             Effect::EditComment(target) => {
-                let text = strip_comments(&edit_text(
-                    "\n# Your comment. Lines starting with # are dropped.\n",
-                    ".txt",
-                )?);
-                self.save(&target, &text);
+                // A reply: not while the agent works on the comment, which
+                // is off its queue meanwhile.
+                let mut held = None;
+                if let Target::Reply { change, id } = &target {
+                    if let Some(why) = self.locked(change, id) {
+                        self.status = why;
+                        return Ok(());
+                    }
+                    held = self.db.note(change, id).and_then(|n| n.queued.clone());
+                    if held.is_some() {
+                        ask::unsend(&self.path, &[(change.clone(), id.clone())])?;
+                    }
+                }
+                let e = Edit {
+                    ed: Editor::new(""),
+                    target,
+                    pane: self.focus,
+                    held,
+                };
+                let text = match edit_text("\n# Your comment. Lines starting with # are dropped.\n", ".txt") {
+                    Ok(t) => strip_comments(&t),
+                    Err(err) => {
+                        self.settle_edit(&e, false);
+                        return Err(err);
+                    }
+                };
+                let saved = self.save(&e.target, &text);
+                self.settle_edit(&e, saved.is_some());
             }
             _ => {}
         }
