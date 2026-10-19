@@ -358,6 +358,12 @@ enum Cmd {
         #[arg(long, requires = "key", conflicts_with = "values")]
         unset: bool,
     },
+    /// Sets something of stacked up, asking you: `agent`, the tools every
+    /// ask may use.
+    Setup {
+        #[command(subcommand)]
+        what: SetupWhat,
+    },
     /// An ask's prompt (for the ask's wrapper).
     #[command(hide = true)]
     Prompt { id: String },
@@ -387,6 +393,90 @@ fn stdin() -> Result<String> {
         .read_to_string(&mut s)
         .map_err(|e| Error(format!("stdin: {e}")))?;
     Ok(s)
+}
+
+#[derive(Subcommand)]
+enum SetupWhat {
+    /// The tools every ask may use besides stacked's own: the agent is
+    /// started (and stopped at once) in the stack's repository, else here,
+    /// where it has your MCP servers, and says what it has; you let every
+    /// ask use each, or not, and what you let it is written in the
+    /// settings, as agent.tools.
+    Agent { name: Option<String> },
+}
+
+/// Asks the agent what tools it has in `dir`, then you, on stdin, which
+/// every ask may use: an MCP server's all at once or one by one, then each
+/// other tool stacked does not give. What you let it is written in the
+/// settings' file at `settings`, as agent.tools, what you did not taken out.
+fn setup_agent(dir: &Path, settings: &Path) -> Result<()> {
+    use std::io::BufRead;
+    let (tools, servers) = stacked::ask::agent_tools(dir)?;
+    let mut chosen: Vec<String> = stacked::config::get().agent.tools.clone();
+    let mut lines = std::io::stdin().lock().lines();
+    let mut answer = |q: &str| -> String {
+        eprint!("{q} ");
+        lines.next().and_then(|l| l.ok()).unwrap_or_default().trim().to_ascii_lowercase()
+    };
+    let keep = |chosen: &mut Vec<String>, tool: &str, yes: bool| {
+        chosen.retain(|t| t != tool);
+        if yes {
+            chosen.push(tool.to_string());
+        }
+    };
+    eprintln!(
+        "stacked: the agent, in {}, has {} tools; every ask has {} already, and the commands stacked lets each kind of ask run.",
+        dir.display(),
+        tools.len(),
+        stacked::ask::GIVEN.join(", ")
+    );
+    // An MCP server's tools, all at once or one by one.
+    let mut names: Vec<String> = servers.clone();
+    for t in &tools {
+        if let Some(s) = t.strip_prefix("mcp__").and_then(|r| r.split_once("__")).map(|(s, _)| s.to_string())
+            && !names.contains(&s)
+        {
+            names.push(s);
+        }
+    }
+    for server in &names {
+        let prefix = format!("mcp__{server}__");
+        let its: Vec<&String> = tools.iter().filter(|t| t.starts_with(&prefix)).collect();
+        let all = format!("{prefix}*");
+        let short: Vec<&str> = its.iter().map(|t| &t[prefix.len()..]).collect();
+        eprintln!("The MCP server {server}: {}.", if short.is_empty() { "no tools".into() } else { short.join(", ") });
+        match answer(&format!("Let every ask use all of its tools ({all})? [y/N/e: each]")).as_str() {
+            "y" | "yes" => {
+                chosen.retain(|t| !t.starts_with(&prefix));
+                chosen.push(all);
+            }
+            "e" | "each" => {
+                chosen.retain(|t| *t != all);
+                for t in its {
+                    let yes = matches!(answer(&format!("  {t}? [y/N]")).as_str(), "y" | "yes");
+                    keep(&mut chosen, t, yes);
+                }
+            }
+            _ => chosen.retain(|t| !t.starts_with(&prefix)),
+        }
+    }
+    // Any other tool stacked does not give every ask.
+    for t in tools.iter().filter(|t| !t.starts_with("mcp__") && !stacked::ask::GIVEN.contains(&t.as_str())) {
+        let warn = if stacked::ask::CHANGING.contains(&t.as_str()) {
+            " It changes things: an answer could too."
+        } else {
+            ""
+        };
+        let yes = matches!(answer(&format!("Let every ask use {t}?{warn} [y/N]")).as_str(), "y" | "yes");
+        keep(&mut chosen, t, yes);
+    }
+    stacked::config::set(settings, "agent.tools", &chosen).map_err(Error)?;
+    eprintln!(
+        "stacked: agent.tools written in {}: {}",
+        settings.display(),
+        if chosen.is_empty() { "none".to_string() } else { chosen.join(", ") }
+    );
+    Ok(())
 }
 
 fn parse_rev(s: &str) -> Result<usize> {
@@ -1206,6 +1296,13 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
                 stacked::config::set(&p, &key, &values).map_err(Error)?;
                 eprintln!("stacked: {key} written in {}", p.display());
             }
+        }
+        Cmd::Setup { what: SetupWhat::Agent { name } } => {
+            let dir = match name {
+                Some(n) => ops::base_of(Db::load(path)?.stack(&n)?)?.0,
+                None => here(),
+            };
+            setup_agent(&dir, &stacked::config::path())?;
         }
         Cmd::Check => {
             let db = Db::load(path)?;

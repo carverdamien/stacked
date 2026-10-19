@@ -56,6 +56,7 @@ stacked trim new.jsonl --from @40  # a new database, the history before @40 left
 stacked config > ~/.stacked.toml   # every setting, to start a settings file from
 stacked config editor hx           # one written in the settings file; KEY alone reads it
 stacked config --unset editor      # ... taken out of it
+stacked setup agent bug123         # which of the agent's tools every ask may use, asked one by one
 ```
 
 `-f FILE` points any command at a database. A first argument that is not a
@@ -742,7 +743,15 @@ settings:
   (`mcp__bugzilla__*`; there is no way to name every server's at once), one
   of its tools (`mcp__bugzilla__get_bug`), a command (`Bash(jq *)`, each
   command of a pipe needing its own). An answer may use them too, so give
-  only tools that read. `worktrees`, where the agents' worktrees go, else
+  only tools that read. `stacked setup agent [NAME]` writes it with you: it
+  starts the agent in the stack's repository (else where it is run), where
+  it has your MCP servers, and stops it as soon as it has said what tools it
+  has; then it asks, for each MCP server, whether every ask may use all its
+  tools (`mcp__moz__*`), none, or which one by one, and for each other tool
+  stacked does not give every ask, whether it may, saying of those that
+  change things (`Bash`, `Edit`, `Write`…) that an answer could change
+  things too. No answer is no. What you let it is added to `tools`, what
+  you did not taken out, the rest of the file as it was. `worktrees`, where the agents' worktrees go, else
   `.stacked/` at the top of the stack's repository.
 - `[reviews]`: `source`, `"phabricator"` or `"none"` (no pulling); `url`,
   the Phabricator a bare `D123` trailer is on; `arcrc`, where the tokens

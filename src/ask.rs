@@ -834,6 +834,58 @@ cd "$cwd" || exit 1
 "$exe" -f "$db" land "$id" > /dev/null 2>&1
 "#;
 
+/// What the agent has, as it says when it starts in `dir`, in its first
+/// event (`system/init`): its tools, and its MCP servers by name. It is
+/// stopped then, before it is asked anything.
+pub fn agent_tools(dir: &Path) -> Result<(Vec<String>, Vec<String>)> {
+    let claude = match CLAUDE.lock().unwrap().clone() {
+        Some((claude, _)) => claude.to_string_lossy().into_owned(),
+        None => crate::config::get().agent_command(),
+    };
+    let mut c = Command::new(&claude);
+    c.args(["-p", "Say OK.", "--output-format", "stream-json", "--verbose"]);
+    c.args(crate::config::get().agent_args());
+    c.current_dir(dir).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
+    let mut child = c.spawn().map_err(|e| Error(format!("{claude}: {e}")))?;
+    let out = child.stdout.take().ok_or_else(|| Error(format!("{claude}: no output")))?;
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for line in std::io::BufReader::new(out).lines().map_while(|l| l.ok()) {
+            if let Ok(v) = serde_json::from_str::<Value>(&line)
+                && v.get("type").and_then(Value::as_str) == Some("system")
+                && v.get("subtype").and_then(Value::as_str) == Some("init")
+            {
+                let _ = tx.send(v);
+                return;
+            }
+        }
+    });
+    let init = rx.recv_timeout(std::time::Duration::from_secs(60));
+    let _ = child.kill();
+    let _ = child.wait();
+    let init = init.map_err(|_| Error(format!("{claude} said nothing of its tools: it did not start, or not as claude does")))?;
+    let names = |key: &str, field: Option<&str>| -> Vec<String> {
+        init.get(key)
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|t| match field {
+                Some(f) => t.get(f).and_then(Value::as_str),
+                None => t.as_str(),
+            })
+            .map(String::from)
+            .collect()
+    };
+    Ok((names("tools", None), names("mcp_servers", Some("name"))))
+}
+
+/// The tools every ask is given, whatever it is: they only read.
+pub const GIVEN: [&str; 4] = ["Read", "Grep", "Glob", "LS"];
+
+/// Tools that change things: let every ask use them, and an answer may
+/// change things too.
+pub const CHANGING: [&str; 7] = ["Bash", "Edit", "MultiEdit", "Write", "NotebookEdit", "Task", "KillShell"];
+
 /// The worktrees of a stack's own that changes, and answers, work in:
 /// `agent`, `agent-2`…, `answer-only-agent`… under `.stacked/NAME`.
 pub const AGENT: &str = "agent";

@@ -1312,6 +1312,39 @@ fn every_ask_may_use_the_tools_the_settings_add() {
 }
 
 #[test]
+fn the_tools_every_ask_may_use_are_set_up_with_the_agent() {
+    let e = env();
+    e.ok(&["import", "s", "base"]);
+    // A claude that says what it has, then would go on: it is stopped once
+    // it said it.
+    let init = serde_json::json!({"type": "system", "subtype": "init", "model": "fake",
+        "tools": ["Task", "Bash", "Glob", "Grep", "LS", "Read", "Edit", "WebFetch",
+            "mcp__moz__get_bug", "mcp__moz__get_revision", "mcp__notes__read", "mcp__notes__write"],
+        "mcp_servers": [{"name": "moz", "status": "connected"}, {"name": "notes", "status": "connected"}]});
+    let pwd = e.root.join("pwd");
+    let claude = e.script("claude-init.sh", &format!("pwd > {}\necho '{init}'\nsleep 30\n", pwd.display()));
+    let settings = e.root.join("settings.toml");
+    std::fs::write(&settings, "[agent]\ntools = [\"mcp__notes__write\"]\n").unwrap();
+    // All of moz's; notes' one by one, the one that reads; of the others,
+    // WebFetch alone.
+    let started = std::time::Instant::now();
+    let (fine, _, err) = stacked_in(
+        &e.src,
+        &e.db,
+        &["setup", "agent", "s"],
+        "y\ne\ny\nn\nn\nn\nn\ny\n",
+        &[("STACKED_CLAUDE", &claude), ("STACKED_CONFIG", &settings)],
+    );
+    assert!(fine, "{err}");
+    assert!(started.elapsed() < std::time::Duration::from_secs(20), "stopped once it said what it has");
+    assert_eq!(std::fs::read_to_string(&pwd).unwrap().trim(), e.src.display().to_string(), "in the stack's repository");
+    assert!(err.contains("The MCP server moz: get_bug, get_revision."), "{err}");
+    assert!(err.contains("Let every ask use Edit? It changes things: an answer could too. [y/N]"), "{err}");
+    let (_, out, _) = stacked_in(&e.src, &e.db, &["config", "agent.tools"], "", &[("STACKED_CONFIG", &settings)]);
+    assert_eq!(out, "mcp__moz__*\nmcp__notes__read\nWebFetch\n", "the write of notes taken out");
+}
+
+#[test]
 fn a_file_is_shown_as_a_patch_leaves_it() {
     let e = env();
     e.ok(&["import", "s", "base"]);
