@@ -151,7 +151,9 @@ which is the stack's own place, then the patches' titles, bottom first, with
 how many comments wait on an answer. The middle shows what the left pane's
 cursor is on: a patch (its message, then its diff, the comments under the
 lines they are on), or, on the header, the stack itself (its patches, then
-the comments on the stack). The right pane lists the comments the middle
+the comments on the stack). Scrolled past, a patch's title stays on the
+middle's first line, the rest under it, in every view of the code; a click
+on it goes back to it. The right pane lists the comments the middle
 shows, under a header of its own; with none, it is not there.
 
 There are five keys, and two of self-review's (Copied from self-review-rs,

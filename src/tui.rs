@@ -5126,6 +5126,9 @@ impl App {
         let mut editor_y: Option<usize> = None;
         // Not while the cursor is on the banner: it comes back there.
         let lit = |i: usize, app: &App| i == app.cursor && app.focus != Focus::List && !app.on_banner;
+        // A patch's title, its message's first line: on the first line of
+        // the middle once it is scrolled past, the rows under it.
+        let title = if self.on_stack { None } else { self.rows.iter().position(|r| r.msg_at == Some(0) && r.note.is_none()) };
         // Each row drawn: the line of the pane it is on, and where it starts.
         let mut drawn: Vec<(usize, usize, usize)> = Vec::new();
         match layout {
@@ -5143,7 +5146,23 @@ impl App {
                         self.top = self.cursor + 1 - h;
                     }
                 }
+                // Pinned, the title leaves the rows a line less: the cursor,
+                // or the anchor and its box, in it.
+                let pinned = |top: usize| h > 2 && title.is_some_and(|t| top > t);
+                if pinned(self.top) {
+                    match anchor {
+                        Some(a) if a + 1 + gap > self.top + h - 1 => self.top = (a + 2 + gap).saturating_sub(h).min(a),
+                        None if self.cursor + 1 >= self.top + h => self.top = self.cursor + 2 - h,
+                        _ => {}
+                    }
+                }
                 let mut y = 0;
+                if pinned(self.top)
+                    && let Some(t) = title
+                {
+                    self.draw_title(buf, area, w, t);
+                    y = 1;
+                }
                 for i in self.top..self.rows.len() {
                     if y >= h {
                         break;
@@ -5167,8 +5186,18 @@ impl App {
                 } else if cur + 1 + gap > top + h {
                     top = (cur + 1 + gap).saturating_sub(h).min(cur);
                 }
+                let pinned = |top: usize| h > 2 && title.and_then(|t| index.get(&t)).is_some_and(|&l| top > l);
+                if pinned(top) && cur + 2 + gap > top + h {
+                    top = (cur + 2 + gap).saturating_sub(h).min(cur);
+                }
                 self.top = lines.get(top).map_or(0, split_row);
                 let mut y = 0;
+                if pinned(top)
+                    && let Some(t) = title
+                {
+                    self.draw_title(buf, area, w, t);
+                    y = 1;
+                }
                 for (k, line) in lines.iter().enumerate().skip(top) {
                     if y >= h {
                         break;
@@ -5197,27 +5226,36 @@ impl App {
             }
             Layout::Compact => {
                 let p = self.panes.clone();
+                // The title above both panes: pinned, the panes under it.
+                let above = |pos: &HashMap<usize, usize>, top: usize| title.and_then(|t| pos.get(&t)).is_some_and(|&k| k < top);
+                let pin = h > 2 && above(&p.lpos, self.compact.top[0]) && above(&p.rpos, self.compact.top[1]);
+                let panes_h = h - pin as usize;
                 // Moved by row (to a comment, to a comment being written):
                 // the panes go there; with a box, in what it leaves of them.
-                let lines_h = h.saturating_sub(gap).max(1);
+                let lines_h = panes_h.saturating_sub(gap).max(1);
                 if let Some(a) = anchor {
                     self.compact.resync(&p, a, lines_h);
                 } else {
-                    self.compact.resync(&p, self.cursor, h);
+                    self.compact.resync(&p, self.cursor, panes_h);
                 }
                 if anchor.is_none()
-                    && let Some(row) = self.compact.settle(&p, h)
+                    && let Some(row) = self.compact.settle(&p, panes_h)
                 {
                     self.cursor = row;
                 }
+                if pin
+                    && let Some(t) = title
+                {
+                    self.draw_title(buf, area, w, t);
+                }
                 let scroll = self.compact.scroll;
                 // The lines after the anchor's, under the box.
-                let mut shift = 0;
+                let mut shift = pin as usize;
                 for (k, (l, r)) in self.compact.lines(&p, lines_h).into_iter().enumerate() {
                     let y = k + shift;
                     if anchor.is_some() && editor_y.is_none() && (l == anchor || r == anchor) {
                         editor_y = Some(y + 1);
-                        shift = gap;
+                        shift += gap;
                     }
                     if y >= h {
                         break;
@@ -5258,6 +5296,13 @@ impl App {
         }
         self.draw_preview(buf, area, &drawn);
         None
+    }
+
+    /// The patch's title, row `t`, on the first line of the middle at
+    /// `area`, `w` wide: its row is scrolled past. A click on it goes to it.
+    fn draw_title(&self, buf: &mut Buffer, area: Rect, w: usize, t: usize) {
+        put(buf, area, 0, 0, w, &fit(&self.rows[t].text, w), color::header());
+        self.spot(area, (0, 0, w), Spot::Row(t));
     }
 
     /// Row `i` at `(x, y)`, `w` wide: in the reading mode after its margin,

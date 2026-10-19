@@ -2931,3 +2931,48 @@ fn down_to_pick(app: &mut App, name: &str) {
     }
     panic!("no stack {name:?}");
 }
+
+/// What a line of the screen shows right of the patches pane.
+fn right_of_list(line: &str) -> &str {
+    line.split_once('│').map_or(line, |(_, rest)| rest)
+}
+
+#[test]
+fn the_patch_s_title_stays_at_the_top_of_the_middle() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    // A screen of 12 lines: the patch does not fit in it.
+    let small = |app: &mut App| {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 120, 12));
+        app.draw(&mut buf);
+        (0..12).map(|y| (0..120).map(|x| buf[(x, y)].symbol()).collect::<String>()).collect::<Vec<_>>().join("\n")
+    };
+    keys(&mut app, &[KeyCode::Right]);
+    for view in ["unified", "side by side", "compact"] {
+        // At the top, the title is its own row, under ✉ message.
+        keys(&mut app, &[KeyCode::Home]);
+        let screen = small(&mut app);
+        assert!(right_of_list(screen.lines().nth(1).unwrap()).starts_with("✉ message"), "{view}:\n{screen}");
+        // Far down, its row scrolled past: on the first line, the rows
+        // under it, the cursor's in sight.
+        for _ in 0..app.rows.len() {
+            if app.rows[app.cursor].text.starts_with("+LINE 39") {
+                break;
+            }
+            key(&mut app, KeyCode::Down);
+            small(&mut app);
+        }
+        let screen = small(&mut app);
+        let lines: Vec<&str> = screen.lines().collect();
+        assert!(right_of_list(lines[1]).starts_with("   Bug 1 - shout two"), "{view}: pinned:\n{screen}");
+        assert_eq!(lines.iter().filter(|l| right_of_list(l).contains("Bug 1 - shout two")).count(), 1, "{view}: once:\n{screen}");
+        assert!(lines[2..lines.len() - 1].iter().any(|l| l.contains("LINE 39")), "{view}: the cursor's row:\n{screen}");
+        keys(&mut app, &[KeyCode::Char('1')]);
+    }
+    // A click on it goes to its row.
+    keys(&mut app, &[KeyCode::End]);
+    small(&mut app);
+    app.click(40, 1, false);
+    small(&mut app);
+    assert!(app.rows[app.cursor].text.starts_with("   Bug 1 - shout two"), "{:?}", app.rows[app.cursor].text);
+}
