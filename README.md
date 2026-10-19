@@ -229,7 +229,11 @@ ask agent`, `[x] change  [ ] the whole stack  [ ] answer only  [ ] build and
 test` (the whole stack for a patch's comment, build and test for the
 stack's or a patch's as a whole), as it is of a comment's `Ask agent`: one
 pick, kept for the stack. Esc asks even when nothing changed, so that what
-you wrote earlier can be saved and sent as it is. With nothing written (or,
+you wrote earlier can be sent as it is: as nothing would be saved or thrown
+away, the menu is then `Ask agent` (the same choice), `Leave it as it is`,
+`Keep writing`. Changed, what you wrote earlier (your reply, a turn written
+again) has `Throw the changes away` rather than `Throw it away`: the
+comment stays as it was. With nothing written (or,
 when you rewind a conversation, nothing but the lines stacked wrote), Esc
 just closes the editor, as nothing would be saved. Left as it was, the
 editor closes too when the agent cannot be asked from it: the stack is
@@ -246,8 +250,8 @@ first, `Edit your reply` (`Edit your comment` when no one has answered it),
 here or in $EDITOR; `Reply` adds to it without showing it. Not while the
 agent works on it. A comment waiting its turn
 leaves the agent's queue while it is edited, so that it is not asked as it
-was: thrown away, or left as it was, it goes back on; edited, it waits to
-be asked again (or `Save it and ask agent`). In $EDITOR it is only what you
+was: its changes thrown away, or left as it is, it goes back on; edited, it
+waits to be asked again (or `Save it and ask agent`). In $EDITOR it is only what you
 said, nothing dropped, a line starting with `#` as any. The comment's
 history says `you edited it`. On the command line: `stacked reply NAME ID
 --edit TEXT`.

@@ -923,16 +923,26 @@ fn what_you_said_last_may_be_written_again() {
     let n = notes_of(&db, "s", 0).remove(0);
     assert_eq!(n.text, "why so loud? really");
     // Enter on its line opens it too. Left as it was, Esc still asks what to
-    // do with it: it may be sent as it is.
+    // do with it: it may be sent as it is. Nothing would be saved, nor
+    // thrown away: it is left as it is.
     keys(&mut app, &[KeyCode::Up]);
     assert!(app.rows[app.cursor].text.starts_with("+TWO"));
     keys(&mut app, &[KeyCode::Enter]);
     assert!(matches!(&app.mode, Mode::Edit(e) if e.ed.text() == "why so loud? really"), "{:?}", app.mode);
+    // The editor's foot and the bar say so; changed, what Esc does then.
+    assert!(draw(&mut app).contains("enter: a new line · esc: send as it is, or leave it"));
+    assert_eq!(app.hint(), "enter: a new line · esc: send as it is, or leave it");
+    typed(&mut app, "!");
+    assert!(draw(&mut app).contains("enter: a new line · esc: save, send or throw away"));
+    key(&mut app, KeyCode::Backspace);
     keys(&mut app, &[KeyCode::Esc]);
     let labels: Vec<String> = items(&app).into_iter().map(|(l, _)| l).collect();
-    assert_eq!(labels, ["Save it", "Save it and ask agent", "", "Throw it away", "Keep writing"]);
-    choose(&mut app, "Throw it away");
+    assert_eq!(labels, ["Ask agent", "", "Leave it as it is", "Keep writing"]);
+    assert_eq!(choices_named(&app, "Ask agent"), ["change", "the whole stack", "answer only"]);
+    assert_eq!(app.help()[0], "Press Enter to ask the agent about the comment as it is (may change the code).");
+    choose(&mut app, "Leave it as it is");
     assert_eq!(app.mode, Mode::Normal);
+    assert_eq!(app.status, "left as it is");
     assert_eq!(notes_of(&db, "s", 0).remove(0).text, "why so loud? really");
     keys(&mut app, &[KeyCode::Down]);
     // Or in $EDITOR.
@@ -1000,7 +1010,7 @@ fn what_you_said_last_may_be_written_again() {
     choose_as(&mut app, "Edit your reply", "here");
     typed(&mut app, " now");
     keys(&mut app, &[KeyCode::Esc]);
-    choose(&mut app, "Throw it away");
+    choose(&mut app, "Throw the changes away");
     assert!(app.status.contains("as it was: back on the agent's queue (answer only)"), "{}", app.status);
     // Not while the agent works on it.
     wait_for(&mut app, "⋯ Reading the patch.");
@@ -1099,6 +1109,7 @@ fn esc_asks_what_to_do_with_a_comment_unless_nothing_would_be_done() {
     app.refresh();
     down_to(&mut app, "     ▎ agent:");
     choose_as(&mut app, "Edit the agent's reply", "here");
+    assert_eq!(app.hint(), "enter: a new line · esc: close");
     keys(&mut app, &[KeyCode::Esc]);
     assert_eq!(app.mode, Mode::Normal);
     keys(&mut app, &[KeyCode::Home]);
@@ -1107,8 +1118,9 @@ fn esc_asks_what_to_do_with_a_comment_unless_nothing_would_be_done() {
     typed(&mut app, " Loudly.");
     keys(&mut app, &[KeyCode::Esc]);
     let labels: Vec<String> = items(&app).into_iter().map(|(l, _)| l).collect();
-    assert_eq!(labels, ["Save it", "", "Throw it away", "Keep writing"]);
-    choose(&mut app, "Throw it away");
+    assert_eq!(labels, ["Save it", "", "Throw the changes away", "Keep writing"]);
+    choose(&mut app, "Throw the changes away");
+    assert_eq!(app.status, "your changes are thrown away: the comment is as it was");
     // Replied to, the last word is yours: opened again and left as it was,
     // Esc still asks what to do with it, and it is asked as it is.
     choose_as(&mut app, "Reply", "here");
@@ -1116,8 +1128,10 @@ fn esc_asks_what_to_do_with_a_comment_unless_nothing_would_be_done() {
     keys(&mut app, &[KeyCode::Enter]);
     assert!(matches!(&app.mode, Mode::Edit(e) if e.ed.text() == "louder"), "{:?}", app.mode);
     keys(&mut app, &[KeyCode::Esc]);
-    assert_eq!(items(&app)[1], ("Save it and ask agent".to_string(), true));
-    choose_as(&mut app, "Save it and ask agent", "answer only");
+    assert_eq!(items(&app)[0], ("Ask agent".to_string(), true));
+    let before = notes_of(&db, "s", 0).remove(0).text;
+    choose_as(&mut app, "Ask agent", "answer only");
+    assert_eq!(notes_of(&db, "s", 0).remove(0).text, before, "nothing written: asked as it is");
     assert!(app.status.contains("asked the agent about 1 comment (answer only)"), "{}", app.status);
     let said: Vec<String> = stacked::thread::thread_turns(&notes_of(&db, "s", 0).remove(0).text).into_iter().map(|t| t.body).collect();
     assert_eq!(said, ["why so loud?", "It is a shout.", "louder"]);

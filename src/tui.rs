@@ -580,9 +580,26 @@ pub enum Action {
     Save(Option<Way>),
     /// Save a patch's comment, and send it to the whole stack.
     SaveWhole,
+    /// A comment written again but left as it was: sent as it is (a
+    /// patch's, to the whole stack), or the editor closed on it.
+    SendAsItIs(Way),
+    SendWholeAsItIs,
+    LeaveAsItIs,
     ThrowAway,
+    /// What was changed of a comment written again thrown away.
+    ThrowChanges,
     KeepWriting,
     Quit,
+}
+
+/// What saving a comment and asking about it, `a`, is for one left as it
+/// was: asking about it as it is.
+fn as_it_is(a: Action) -> Action {
+    match a {
+        Action::Save(Some(way)) => Action::SendAsItIs(way),
+        Action::SaveWhole => Action::SendWholeAsItIs,
+        a => a,
+    }
 }
 
 /// What `action` does, to follow "Press Enter to".
@@ -675,7 +692,11 @@ fn about(action: &Action) -> String {
         Action::Save(None) => "save the comment".into(),
         Action::Save(Some(w)) => format!("save the comment and ask the agent ({})", w.said()),
         Action::SaveWhole => format!("save the comment and ask the agent ({})", crate::db::WHOLE),
+        Action::SendAsItIs(w) => format!("ask the agent about the comment as it is ({})", w.said()),
+        Action::SendWholeAsItIs => format!("ask the agent about the comment as it is ({})", crate::db::WHOLE),
+        Action::LeaveAsItIs => "close the editor: the comment stays as it is".into(),
         Action::ThrowAway => "throw what you wrote away".into(),
+        Action::ThrowChanges => "throw your changes away: the comment stays as it was".into(),
         Action::KeepWriting => "go back to writing".into(),
         Action::Quit => "quit: the agent's asks carry on".into(),
     }
@@ -2856,22 +2877,39 @@ impl App {
             self.settle_edit(&e, false);
             return Effect::None;
         }
+        // Left as it was, nothing is saved nor thrown away: it is asked as
+        // it is, or left so. Changed, a comment written again throws away
+        // the changes alone.
+        let again = matches!(e.target, Target::Edit { .. } | Target::Turn { .. });
+        let rest = [
+            Item::line(),
+            match (changed, again) {
+                (false, _) => Item::new("Leave it as it is", Action::LeaveAsItIs),
+                (true, true) => Item::new("Throw the changes away", Action::ThrowChanges),
+                (true, false) => Item::new("Throw it away", Action::ThrowAway),
+            },
+            Item::new("Keep writing", Action::KeepWriting),
+        ];
         if self.answer_only(&e.target) {
             let mut items = vec![];
             if send {
-                items.push(Item::new("Save it and ask agent, answer only", Action::Save(Some(Way::Answer))).when(w));
+                items.push(match changed {
+                    true => Item::new("Save it and ask agent, answer only", Action::Save(Some(Way::Answer))).when(w),
+                    false => Item::new("Ask agent, answer only", Action::SendAsItIs(Way::Answer)),
+                });
             }
-            items.extend([
-                Item::new("Save it", Action::Save(None)),
-                Item::line(),
-                Item::new("Throw it away", Action::ThrowAway),
-                Item::new("Keep writing", Action::KeepWriting),
-            ]);
+            if changed {
+                items.push(Item::new("Save it", Action::Save(None)));
+            }
+            items.extend(rest);
             self.pending = Some(e);
             self.mode = Mode::Menu(Menu::new("the question", items, self.read_only().map(String::from)));
             return Effect::None;
         }
-        let mut items = vec![Item::new("Save it", Action::Save(None))];
+        let mut items = vec![];
+        if changed {
+            items.push(Item::new("Save it", Action::Save(None)));
+        }
         if send {
             let a_patch_s = match &e.target {
                 Target::Patch(_) | Target::Line { .. } => true,
@@ -2881,15 +2919,33 @@ impl App {
                 _ => false,
             };
             let test = matches!(e.target, Target::Stack | Target::Patch(_));
-            let choices = self.ask_choices(a_patch_s, test, true);
-            items.push(Item::new("Save it and ask agent", Action::Save(Some(Way::Change))).when(w).with(choices));
+            let mut choices = self.ask_choices(a_patch_s, test, true);
+            if changed {
+                items.push(Item::new("Save it and ask agent", Action::Save(Some(Way::Change))).when(w).with(choices));
+            } else {
+                for c in &mut choices.list {
+                    c.action = c.action.take().map(as_it_is);
+                }
+                items.push(Item::new("Ask agent", Action::SendAsItIs(Way::Change)).with(choices));
+            }
         }
-        items.push(Item::line());
-        items.push(Item::new("Throw it away", Action::ThrowAway));
-        items.push(Item::new("Keep writing", Action::KeepWriting));
+        items.extend(rest);
         self.pending = Some(e);
         self.mode = Mode::Menu(Menu::new("the comment", items, self.read_only().map(String::from)));
         Effect::None
+    }
+
+    /// What Esc does in the editor `e`, as `edit_key` decides it: changed,
+    /// it asks whether to save, send or throw away; left as it was, whether
+    /// to send it as it is; else it closes the editor.
+    fn esc_does(&self, e: &Edit) -> &'static str {
+        let ask = self.can_send_target(&e.target) && self.read_only().is_none();
+        match (self.nothing_written(e), e.ed.modified(), ask) {
+            (false, true, true) => "esc: save, send or throw away",
+            (false, true, false) => "esc: save or throw away",
+            (false, false, true) => "esc: send as it is, or leave it",
+            _ => "esc: close",
+        }
     }
 
     /// Whether the editor `e` holds nothing that saving it would keep: no
@@ -3889,8 +3945,16 @@ impl App {
                     }
                 }
             }
-            Action::ThrowAway => {
-                self.status = "thrown away".into();
+            // Saving what did not change writes nothing: it is asked as it is.
+            Action::SendAsItIs(way) => return self.perform(Action::Save(Some(way))),
+            Action::SendWholeAsItIs => return self.perform(Action::SaveWhole),
+            Action::ThrowAway | Action::ThrowChanges | Action::LeaveAsItIs => {
+                self.status = match action {
+                    Action::ThrowAway => "thrown away",
+                    Action::ThrowChanges => "your changes are thrown away: the comment is as it was",
+                    _ => "left as it is",
+                }
+                .into();
                 if let Some(e) = self.pending.take() {
                     self.settle_edit(&e, false);
                 }
@@ -4651,7 +4715,7 @@ impl App {
                 None => "↑↓ choose · enter: do it · esc: close · ?: what it does".into(),
             },
             Mode::Moving { .. } => "↑↓ to place it · enter: put it there · esc: leave it where it was".into(),
-            Mode::Edit(_) => "enter: a new line · esc: save, send or throw away".into(),
+            Mode::Edit(e) => format!("enter: a new line · {}", self.esc_does(e)),
             Mode::Help { .. } => "any key: back, and that key".into(),
             Mode::Stream { .. } => "↑↓: scroll · esc: fold it".into(),
             Mode::Normal if self.screen == Screen::Main && self.on_banner => {
@@ -4853,7 +4917,7 @@ impl App {
         };
         spot_in(&self.spots, area, (0, y, w, bh), Spot::Box);
         self.edit_box.set(Some(Rect::new(area.x, area.y + y as u16, w as u16, bh as u16)));
-        let cursor = e.ed.draw(buf, area, 0, y, w, bh, &title);
+        let cursor = e.ed.draw(buf, area, 0, y, w, bh, &title, self.esc_does(e));
         matches!(self.mode, Mode::Edit(_)).then_some(cursor)
     }
 

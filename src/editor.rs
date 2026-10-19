@@ -270,9 +270,9 @@ impl Editor {
 
     /// Draws the editor as a box of `w` by `h` at `(x, y)` of `area`: `title`
     /// on its top edge, the text inside (scrolled when taller), the keys on
-    /// its bottom edge. Where the cursor goes.
+    /// its bottom edge, `esc` saying what Esc does. Where the cursor goes.
     #[allow(clippy::too_many_arguments)]
-    pub fn draw(&self, buf: &mut Buffer, area: Rect, x: usize, y: usize, w: usize, h: usize, title: &str) -> (u16, u16) {
+    pub fn draw(&self, buf: &mut Buffer, area: Rect, x: usize, y: usize, w: usize, h: usize, title: &str, esc: &str) -> (u16, u16) {
         let (w, h) = (w.max(8), h.max(3));
         let inner = w - 2;
         let text_h = h - 2;
@@ -285,7 +285,7 @@ impl Editor {
         }
         self.vtop.set(vtop);
         window(buf, area, x, y, w, h, title, color::note());
-        let foot = " enter: a new line · esc: save, send or throw away ";
+        let foot = format!(" enter: a new line · {esc} ");
         let room = inner.saturating_sub(2);
         put(buf, area, x + 2, y + h - 1, room, &foot.chars().take(room).collect::<String>(), color::meta());
         if vtop > 0 {
