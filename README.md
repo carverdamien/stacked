@@ -318,7 +318,9 @@ ask agent`'s:
   add patches anywhere, reorder them. The comment stays on its line, and
   its reply lands in its thread. On the command line, `stacked send NAME ID
   --whole-stack`.
-- `answer only`: read-only, enforced by its tools; only the reply lands. An
+- `answer only`: read-only, enforced by its tools: it reads the code and
+  the stack, and it may read the web with `curl` (a bug on Bugzilla, a
+  revision on Phabricator, a page of documentation). Only the reply lands. An
   answer may open comments of its own on lines within the place, as a
   review does: the asking comment then says `opened 4 comments, 1 with your
   replies`, and its menu goes to them, or deletes it and them.

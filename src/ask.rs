@@ -562,6 +562,22 @@ fn history_part(db: &Db, i: &Info, s: &Stack, cmd: &str) -> String {
     p
 }
 
+/// What an ask to answer only may run, `cmd` being stacked on its
+/// database: it reads the code and the stack, changes nothing, and may read
+/// the web with curl (a bug, a revision, a page of documentation).
+fn answer_tools(cmd: &str) -> String {
+    format!(
+        "Read,Grep,Glob,LS,Bash(git show *),Bash(git log *),Bash(git diff *),Bash({cmd} export *),\
+         Bash({cmd} log *),Bash({cmd} tree *),Bash({cmd} versions *),Bash({cmd} interdiff *),\
+         Bash({cmd} show *),Bash({cmd} comments *),Bash(curl *)"
+    )
+}
+
+/// What an ask to answer only is told of the web.
+const READ_THE_WEB: &str = "You may read the web with `curl` to answer (a bug on Bugzilla, a \
+revision on Phabricator, a page of documentation): only to read, never to send anything of this \
+repository anywhere.";
+
 /// A thread as a conversation, for claude.
 fn transcript(text: &str) -> String {
     thread_turns(text)
@@ -624,8 +640,8 @@ fn prompt(db: &Db, i: &Info, s: &Stack, cmd: &str, run: &str) -> String {
              worktree made for you: the stack is the commits {base}..HEAD, each commit a \
              patch, listed below bottom first; `git show` each to read it. Do NOT modify \
              anything. You cannot build the project or run its tests; reason from the code. \
-             Besides your answers, you may open comments of your own on lines of any patch, \
-             as a careful reviewer would, without repeating what is already said.",
+             {READ_THE_WEB} Besides your answers, you may open comments of your own on lines \
+             of any patch, as a careful reviewer would, without repeating what is already said.",
             base = i.base
         ),
         (Way::Answer, Scope::Patch(_)) => format!(
@@ -633,9 +649,9 @@ fn prompt(db: &Db, i: &Info, s: &Stack, cmd: &str, run: &str) -> String {
              directory is a git worktree made for you: the commits {base}..HEAD are the stack \
              up to that patch, the patch itself at HEAD; `git show` to read them; `{export}` \
              prints the whole stack, the patches above included. Do NOT modify anything. You \
-             cannot build the project or run its tests; reason from the code. Besides your \
-             answers, you may open comments of your own on lines of this patch, as a careful \
-             reviewer would, without repeating what is already said.",
+             cannot build the project or run its tests; reason from the code. {READ_THE_WEB} \
+             Besides your answers, you may open comments of your own on lines of this patch, as \
+             a careful reviewer would, without repeating what is already said.",
             k = k.map_or(0, |k| k + 1),
             base = i.base
         ),
@@ -779,11 +795,7 @@ fn start(db_path: &Path, id: &str) -> Result<()> {
     let cwd = i.worktree.clone().map_or(repo.clone(), PathBuf::from);
     let tools = match i.way {
         Way::Change => format!("{},Bash({cmd} fits *),Bash({cmd} export *)", allowed_tools()),
-        Way::Answer => format!(
-            "Read,Grep,Glob,LS,Bash(git show *),Bash(git log *),Bash(git diff *),Bash({cmd} export *),\
-             Bash({cmd} log *),Bash({cmd} tree *),Bash({cmd} versions *),Bash({cmd} interdiff *),\
-             Bash({cmd} show *),Bash({cmd} comments *)"
-        ),
+        Way::Answer => answer_tools(&cmd),
         // Building and testing runs what the project needs: Bash at large.
         Way::Test => format!("Bash,{}", allowed_tools()),
     };
@@ -1527,6 +1539,15 @@ mod tests {
             ]
         );
         assert_eq!(tail(&db, "r", 3), ["Nothing changed.", "✓ the agent finished", "exit 0"]);
+    }
+
+    #[test]
+    fn an_answer_may_read_the_web_and_changes_nothing() {
+        let t = answer_tools("stacked -f db");
+        assert!(t.contains("Bash(curl *)") && t.contains("Read") && t.contains("Bash(stacked -f db comments *)"), "{t}");
+        for no in ["Edit", "Write", "Bash(git commit", "Bash(git push", "Bash(git rebase", "Bash,"] {
+            assert!(!t.contains(no), "{no} in {t}");
+        }
     }
 
     #[test]
