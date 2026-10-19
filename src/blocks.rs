@@ -249,8 +249,10 @@ fn nest(
     let mut blocks: Vec<Block> = Vec::new();
     let mut stack: Vec<usize> = Vec::new();
     for (start, end) in sorted {
+        // A parent holds all of it: `} else {` ends a block and starts its
+        // sibling, which the first does not hold.
         while let Some(&top) = stack.last() {
-            if blocks[top].end < start {
+            if blocks[top].end < end {
                 stack.pop();
             } else {
                 break;
@@ -272,19 +274,71 @@ fn nest(
     blocks
 }
 
-/// Line number -> the smallest of `blocks[range]` holding it, for 1..=size.
+/// Line number -> the block of `blocks[range]` it is a line of, for
+/// 1..=size: of those holding it, the innermost; between two as deep, the
+/// one it ends (`} else {` is its `if`'s), then the smallest.
 #[allow(clippy::needless_range_loop)]
 fn innermost(blocks: &[Block], range: std::ops::Range<usize>, size: usize) -> Vec<Option<usize>> {
-    let mut at = vec![None; size + 2];
-    let mut order: Vec<usize> = range.collect();
-    order.sort_by_key(|&i| blocks[i].start as i64 - blocks[i].end as i64);
-    for i in order {
+    let mut at: Vec<Option<usize>> = vec![None; size + 2];
+    let rank = |i: usize, no: usize| {
+        let b = &blocks[i];
+        (b.depth, b.end == no, std::cmp::Reverse(b.end - b.start))
+    };
+    for i in range {
         let b = &blocks[i];
         for no in b.start.max(1)..=b.end.min(size) {
-            at[no] = Some(i);
+            if at[no].is_none_or(|j| rank(i, no) > rank(j, no)) {
+                at[no] = Some(i);
+            }
         }
     }
     at
+}
+
+/// The runs of each block of `spans` (a block's code between its own empty
+/// lines, its inner blocks each one piece of it) where empty lines split it
+/// in more than one; not one that is an inner block itself. `lines` are
+/// the file's, numbered from 1.
+fn inner_runs(spans: &[(usize, usize)], lines: &[String]) -> Vec<(usize, usize)> {
+    let blocks = nest(spans, Side::New, &[], 0);
+    let mut children: Vec<Vec<usize>> = vec![Vec::new(); blocks.len()];
+    for (i, b) in blocks.iter().enumerate() {
+        if let Some(p) = b.parent {
+            children[p].push(i);
+        }
+    }
+    let empty = |no: usize| lines.get(no.wrapping_sub(1)).is_none_or(|l| l.trim().is_empty());
+    let mut out = Vec::new();
+    for (p, b) in blocks.iter().enumerate() {
+        if b.end <= b.start + 1 {
+            continue;
+        }
+        // Its own lines: those of no inner block.
+        let mut own = vec![true; b.end - b.start + 1];
+        for &c in &children[p] {
+            for no in blocks[c].start.max(b.start)..=blocks[c].end.min(b.end) {
+                own[no - b.start] = false;
+            }
+        }
+        let mut runs = Vec::new();
+        let mut first = None;
+        for no in b.start + 1..=b.end {
+            let split = no == b.end || (own[no - b.start] && empty(no));
+            match (split, first) {
+                (false, None) => first = Some(no),
+                (true, Some(f)) => {
+                    runs.push((f, no - 1));
+                    first = None;
+                }
+                _ => {}
+            }
+        }
+        if runs.len() > 1 {
+            let inner: HashSet<(usize, usize)> = children[p].iter().map(|&c| (blocks[c].start, blocks[c].end)).collect();
+            out.extend(runs.into_iter().filter(|r| !inner.contains(r)));
+        }
+    }
+    out
 }
 
 /// `fd`'s blocks from the new version of the file, and the old one for
@@ -316,6 +370,8 @@ pub fn file_blocks(
             runs.push((f, no - 1));
         }
     }
+    // A block's own code split at its empty lines, each run a block too.
+    runs.extend(inner_runs(&spans, new_lines));
     let all: Vec<(usize, usize)> = spans.iter().chain(runs.iter()).copied().collect();
     let mut blocks = nest(&all, Side::New, &runs, 0);
     let n_new = blocks.len();
@@ -348,13 +404,15 @@ pub fn file_blocks(
         }
     };
     // Where something removed before new line `pos` belongs: the innermost
-    // { } block it sat strictly inside, else the run of top-level code around
-    // it, else nowhere.
+    // { } block it sat strictly inside, or run of a block's code it sat in,
+    // else the run of top-level code around it, else nowhere.
     let removed_home = |blocks: &[Block], pos: usize| -> Option<usize> {
         let mut b = new_block(pos);
         while let Some(i) = b {
             let blk = &blocks[i];
-            if blk.run || !(blk.start < pos && pos <= blk.end) {
+            let top_run = blk.run && blk.parent.is_none();
+            let holds = if blk.run { blk.start <= pos } else { blk.start < pos } && pos <= blk.end;
+            if top_run || !holds {
                 b = blk.parent;
             } else {
                 break;
@@ -386,7 +444,7 @@ pub fn file_blocks(
         if blocks[i].parent.is_none() {
             let pos = *first_line.get(&blocks[i].start).unwrap_or(&0);
             let home = removed_home(&blocks, pos);
-            blocks[i].parent = home.filter(|&h| !blocks[h].run);
+            blocks[i].parent = home.filter(|&h| !(blocks[h].run && blocks[h].parent.is_none()));
         }
     }
     for i in n_new..n_all {
@@ -478,6 +536,38 @@ mod tests {
             Some(vec![(4, 6)]),
             "an #include is one line"
         );
+    }
+
+    #[test]
+    fn a_line_is_its_innermost_block_s_and_empty_lines_split_a_block() {
+        let old = "fn a() {\n    let x = 1;\n    let y = 3;\n\n    if x {\n        uno();\n    } else {\n        dos();\n    }\n\n    v();\n}\n";
+        let new = old.replace("y = 3", "y = 2").replace("uno", "one").replace("dos", "two").replace("v()", "w()");
+        let d = similar::TextDiff::from_lines(old, &new).unified_diff().context_radius(20).header("a/f.rs", "b/f.rs").to_string();
+        let diff = format!("diff --git a/f.rs b/f.rs\n{d}");
+        let fd = &parse_diff(&diff, "m")[0];
+        let fb = file_blocks(fd, Some(&lines(&new)), None).unwrap();
+        let spans = |text: &str| -> Vec<(usize, usize)> {
+            let l = fd.hunks[0].lines.iter().find(|l| l.text == text).unwrap_or_else(|| panic!("no {text:?}"));
+            fb.chain(&l.key).iter().map(|&i| (fb.blocks[i].start, fb.blocks[i].end)).collect()
+        };
+        // Its header and its footer are the function's.
+        assert_eq!(spans(" fn a() {"), [(1, 12)]);
+        assert_eq!(spans(" }"), [(1, 12)]);
+        // Its code between empty lines: a run each, inside it.
+        assert_eq!(spans(" fn a() {").len(), 1);
+        assert_eq!(spans("     let x = 1;"), [(2, 3), (1, 12)]);
+        assert_eq!(spans("+    w();"), [(11, 11), (1, 12)]);
+        // The if's lines its own; `} else {` ends the first block, which
+        // wins over the one it starts, as deep.
+        assert_eq!(spans("     if x {"), [(5, 7), (5, 9), (1, 12)]);
+        assert_eq!(spans("     } else {"), [(5, 7), (5, 9), (1, 12)]);
+        assert_eq!(spans("+        two();"), [(7, 9), (5, 9), (1, 12)]);
+        assert_eq!(spans("     }"), [(7, 9), (5, 9), (1, 12)]);
+        // The two blocks of the if are siblings, the else not inside the
+        // first.
+        let first = fb.blocks.iter().position(|b| (b.start, b.end) == (5, 7)).unwrap();
+        let second = fb.blocks.iter().position(|b| (b.start, b.end) == (7, 9)).unwrap();
+        assert_eq!(fb.blocks[first].parent, fb.blocks[second].parent);
     }
 
     #[test]

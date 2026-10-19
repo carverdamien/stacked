@@ -366,7 +366,13 @@ code meanwhile: the other panes still have theirs). A block is the
 innermost block of code around the line with lines not read yet, from a
 tree-sitter grammar (Rust, C, C++, Python, JavaScript, TypeScript, Java,
 Go) or else the file's braces: on a line whose block is read, the block
-around it, and once those are read, the hunk. A mark never reaches past the
+around it, and once those are read, the hunk. A block's first line (its
+header) and its last (its footer) are its own: Space on either marks it
+whole. A line of more than one block is the innermost's, and of two as deep
+(`} else {`, which ends one and starts the next) the one it ends. Inside a
+block, empty lines split its code into runs of lines, its inner blocks each
+one piece of a run: each run is a block of its own, so Space on a line of
+one marks its run, then the block around it. A mark never reaches past the
 hunk the cursor is in: a block over several hunks, as a long function or a
 namespace is, is read in this hunk alone, the margin and the bar saying
 `in this hunk`. Files with no blocks are read a hunk at a time; Space on a

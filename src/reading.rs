@@ -111,7 +111,9 @@ impl Reading<'_> {
             if !inside.is_subset(self.read) {
                 let old = if b.side == Side::Old { " as they were" } else { "" };
                 let part = if inside.len() < b.changed.len() { ", in this hunk" } else { "" };
-                return whole(inside, format!("the block of lines {}–{}{old}{part}", b.start, b.end));
+                // A run of code between empty lines is lines, not a block.
+                let what = if b.run { "the lines" } else { "the block of lines" };
+                return whole(inside, format!("{what} {}–{}{old}{part}", b.start, b.end));
             }
         }
         whole(hunk, "this hunk".into())
@@ -324,6 +326,33 @@ mod tests {
         let r = Reading { rows: &rows, blocks: &none, read: &unread, marks: &marks };
         assert_eq!(r.to_mark(two).map(|t| (t.what, t.new.len())), Some(("this hunk".into(), 4)));
         assert_eq!(r.next_unread(0, true), Some(row(&rows, "-  uno")));
+    }
+
+    #[test]
+    fn a_block_s_header_reads_it_whole_and_its_code_between_empty_lines_a_run_at_a_time() {
+        let old = "fn a() {\n    let x = 1;\n    let y = 3;\n\n    v();\n}\n";
+        let new = old.replace("y = 3", "y = 2").replace("v()", "w()");
+        let d = similar::TextDiff::from_lines(old, &new).unified_diff().context_radius(20).header("a/f.rs", "b/f.rs").to_string();
+        let diff = format!("diff --git a/f.rs b/f.rs\n{d}");
+        let p = Patch::new("c".into(), None, None, "t".into(), diff.clone());
+        let fd = &crate::diff::parse_diff(&diff, &crate::view::mode("c"))[0];
+        let fb = crate::blocks::file_blocks(fd, Some(&lines(&new)), None).map(Arc::new);
+        let blocks = Blocks::from([("f.rs".to_string(), fb)]);
+        let rows = patch_rows(&p, &[], 80, &Deco::default());
+        let mut read = HashSet::new();
+        // On its first lines, their run first, then the function.
+        let x = row(&rows, "     let x = 1;");
+        let r = Reading { rows: &rows, blocks: &blocks, read: &read, marks: &[] };
+        let run = r.to_mark(x).unwrap();
+        assert_eq!((run.what.as_str(), run.new.len()), ("the lines 2–3", 2));
+        read.extend(run.keys);
+        let r = Reading { rows: &rows, blocks: &blocks, read: &read, marks: &[] };
+        assert_eq!(r.to_mark(x).map(|t| (t.what, t.new.len())), Some(("the block of lines 1–6".into(), 2)));
+        // On its header, the function whole, at once.
+        let header = row(&rows, " fn a() {");
+        let none = HashSet::new();
+        let r = Reading { rows: &rows, blocks: &blocks, read: &none, marks: &[] };
+        assert_eq!(r.to_mark(header).map(|t| (t.what, t.new.len())), Some(("the block of lines 1–6".into(), 4)));
     }
 
     #[test]
