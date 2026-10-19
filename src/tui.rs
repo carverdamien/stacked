@@ -950,6 +950,9 @@ enum Done {
         rev: Option<usize>,
         why: Option<String>,
     },
+    /// A stack's agents' worktrees made ahead: its repository and their
+    /// folder; or why they could not be.
+    Precreated(std::result::Result<(PathBuf, PathBuf), String>),
 }
 
 /// The work done away from the screen, each in a thread of its own, so the
@@ -966,6 +969,10 @@ struct Background {
     doing: Vec<&'static str>,
     /// The stack being checked, and its rev.
     judging: Option<(String, Option<usize>)>,
+    /// The stacks whose agents' worktrees were made ahead, and where: their
+    /// repository and folder, to remove them once the editor exits.
+    precreating: Vec<String>,
+    precreated: Vec<(PathBuf, PathBuf)>,
 }
 
 impl Background {
@@ -978,6 +985,8 @@ impl Background {
             again: false,
             doing: vec![],
             judging: None,
+            precreating: vec![],
+            precreated: vec![],
         }
     }
 }
@@ -1096,7 +1105,30 @@ impl App {
             app.on_stack = true;
         }
         app.judge();
+        app.precreate();
         Ok(app)
+    }
+
+    /// The current stack's agents' worktrees made ahead, away from the
+    /// screen, as the settings say (`precreate`): once per stack.
+    fn precreate(&mut self) {
+        let kinds = ask::precreated(&self.cfg.agent);
+        if kinds.is_empty() || self.bg.precreating.contains(&self.stack) || self.db.stack(&self.stack).is_err() {
+            return;
+        }
+        #[cfg(feature = "demo")]
+        if crate::memory::is_file(&self.path) {
+            return;
+        }
+        self.bg.precreating.push(self.stack.clone());
+        let (path, name, under) = (self.path.clone(), self.stack.clone(), self.cfg.agent.worktrees.clone());
+        self.spawn(move || Done::Precreated(ask::precreate(&path, &name, &kinds, under.as_deref()).map_err(|e| e.0)));
+    }
+
+    /// Once the editor exits: the agents' worktrees it made ahead removed,
+    /// away from it, but those an agent works in or left work in.
+    pub fn leave(&self) {
+        ask::forget(&self.path, &self.bg.precreated, &ask::precreated(&self.cfg.agent));
     }
 
     /// Checks the stack the current name is on, once per stack: why it
@@ -1190,6 +1222,12 @@ impl App {
                 }
                 self.judged = Some(Judged { name, rev, why });
             }
+            Done::Precreated(Ok(made)) => {
+                if !self.bg.precreated.contains(&made) {
+                    self.bg.precreated.push(made);
+                }
+            }
+            Done::Precreated(Err(e)) => self.status = format!("the agents' worktrees could not be made ahead: {e}"),
         }
     }
 
@@ -3014,8 +3052,8 @@ impl App {
             Choice::new("pwd", "pwd", "this checkout, moved to the patch for the edit, then back where it was", None),
             Choice::new(
                 "worktree",
-                format!(".stacked/{}", self.stack),
-                format!("the stack's own worktree, .stacked/{} in its repository, kept between edits", self.stack),
+                format!(".stacked/{}/user", self.stack),
+                format!("the stack's own worktree, .stacked/{}/user in its repository, kept between edits", self.stack),
                 None,
             ),
         ];
@@ -4123,6 +4161,7 @@ impl App {
                     self.built = None;
                     self.show = self.db.view(&self.stack).and_then(Show::parse).unwrap_or(Show::All);
                     self.judge();
+                    self.precreate();
                 }
                 self.screen = Screen::Main;
             }
@@ -5627,7 +5666,10 @@ fn event_loop(terminal: &mut DefaultTerminal, app: &mut App) -> Result<()> {
             continue;
         };
         match app.key(k) {
-            Effect::Quit => return Ok(()),
+            Effect::Quit => {
+                app.leave();
+                return Ok(());
+            }
             Effect::None => {}
             e => {
                 ratatui::restore();

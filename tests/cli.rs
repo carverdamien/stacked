@@ -645,9 +645,11 @@ echo extra > c.txt && git add c.txt && git -c user.name=C -c user.email=c@x comm
     assert_ne!(after[0], before[0], "the bottom patch has a new version");
     assert_eq!(after[1], before[1], "the middle patch is the same");
     assert_eq!(e.ok(&["versions", "s", "1"]).lines().count(), 2);
-    // The user's worktree did not move, and claude's is gone.
+    // The user's worktree did not move; claude's is kept, the stack's own,
+    // for the next change to take.
     assert_eq!(git(&e.src, &["rev-parse", "HEAD"]), user_head);
-    assert_eq!(git(&e.src, &["worktree", "list"]).lines().count(), 1);
+    let list = git(&e.src, &["worktree", "list"]);
+    assert!(list.lines().count() == 2 && list.contains("/.stacked/s/agent "), "{list}");
     // All of it is in the database: the run and what claude wrote.
     let runs = e.ok(&["runs"]);
     assert!(
@@ -663,6 +665,106 @@ echo extra > c.txt && git add c.txt && git -c user.name=C -c user.email=c@x comm
     // Undo puts back the stack from before the ask.
     e.ok(&["undo", "s"]);
     assert_eq!(e.column(2), before);
+}
+
+#[test]
+fn the_agents_work_in_worktrees_of_the_stack_s_own_reused_while_clean() {
+    let e = env();
+    e.ok(&["import", "s", "base"]);
+    let here = e.root.join("here");
+    let subject = e.root.join("subject");
+    let claude = fake_claude(
+        &e,
+        "claude-here.sh",
+        &format!("pwd > {}\ngit log --format=%s -1 > {}", here.display(), subject.display()),
+        r#"{"replies": {"c1": "Looked."}}"#,
+    );
+    let pwd = || std::fs::read_to_string(&here).unwrap().trim().to_string();
+    let last = || {
+        let runs = e.ok(&["runs"]);
+        let run = runs.lines().last().unwrap().split('\t').next().unwrap().to_string();
+        e.ok(&["transcript", &run])
+    };
+    let agent = e.src.join(".stacked/s/agent");
+    // A change works in the stack's own worktree, made the first time.
+    let id = comment(&e, &["Look."]);
+    let (fine, _, err) = send(&e, &claude, &[&id], &[]);
+    assert!(fine, "{err}");
+    assert_eq!(pwd(), agent.display().to_string());
+    assert!(last().contains(&format!("$ git worktree add --detach {}", agent.display())), "{}", last());
+    // The next takes it again: only what differs is written.
+    let id = comment(&e, &["Look", "again."]);
+    assert!(send(&e, &claude, &[&id], &[]).0);
+    assert_eq!(pwd(), agent.display().to_string());
+    let t = last();
+    assert!(t.contains("$ git switch --detach") && t.contains(&format!(", in {}", agent.display())) && !t.contains("worktree add"), "{t}");
+    // One an agent left unfinished work in stays as it is, to look at; the
+    // next takes another.
+    let messy = fake_claude(&e, "claude-messy.sh", "echo half > half.txt", r#"{"replies": {"c1": "Half done."}}"#);
+    let id = comment(&e, &["Do", "half."]);
+    let (fine, out, _) = send(&e, &messy, &[&id], &[]);
+    assert!(!fine && out.contains(&format!("the agent left work uncommitted, or a rebase half done: it is left in {}", agent.display())), "{out}");
+    assert!(agent.join("half.txt").exists());
+    let id = comment(&e, &["Once", "more."]);
+    assert!(send(&e, &claude, &[&id], &[]).0);
+    assert_eq!(pwd(), e.src.join(".stacked/s/agent-2").display().to_string());
+
+    // An answer works in the repository as it is, unless the settings say
+    // otherwise: then in the stack's own worktree for answers.
+    let settings = e.root.join("settings.toml");
+    std::fs::write(&settings, "[agent]\nanswer_only_worktree = \"ondemand\"\nworktree = \"pwd\"\n").unwrap();
+    let id = comment(&e, &["Why?"]);
+    assert!(send(&e, &claude, &[&id, "--answer-only"], &[("STACKED_CONFIG", &settings)]).0);
+    assert_eq!(pwd(), e.src.join(".stacked/s/answer-only-agent").display().to_string());
+    // A change in pwd: the user's checkout, moved to the stack while the
+    // agent works, back where it was after.
+    let head = git(&e.src, &["rev-parse", "HEAD"]);
+    let id = comment(&e, &["Change", "it."]);
+    let (fine, _, err) = send(&e, &claude, &[&id], &[("STACKED_CONFIG", &settings)]);
+    assert!(fine, "{err}");
+    assert_eq!(pwd(), e.src.display().to_string());
+    assert!(std::fs::read_to_string(&subject).unwrap().starts_with("Bug 3 - café"), "at the stack's top");
+    assert_eq!(git(&e.src, &["rev-parse", "HEAD"]), head);
+    assert_eq!(git(&e.src, &["symbolic-ref", "--short", "HEAD"]).trim(), "main");
+    // Not while it has changes to files git tracks.
+    std::fs::write(e.src.join("a.txt"), "mine\n").unwrap();
+    let id = comment(&e, &["Again."]);
+    let (fine, out, _) = send(&e, &claude, &[&id], &[("STACKED_CONFIG", &settings)]);
+    assert!(!fine && out.contains("has changes to files git tracks"), "{out}");
+    assert_eq!(std::fs::read_to_string(e.src.join("a.txt")).unwrap(), "mine\n");
+}
+
+#[test]
+fn the_agents_worktrees_are_made_ahead_and_removed_away_from_the_editor() {
+    use stacked::ask::{AGENT, ANSWERING, forget, precreate};
+    let e = env();
+    e.ok(&["import", "s", "base"]);
+    // Made ahead, the whole stack applied in each.
+    let (repo, dir) = precreate(&e.db, "s", &[AGENT, ANSWERING], None).unwrap();
+    assert_eq!(dir, e.src.join(".stacked/s"));
+    let (agent, answering) = (dir.join("agent"), dir.join("answer-only-agent"));
+    assert!(git(&agent, &["log", "--format=%s", "-1"]).starts_with("Bug 3 - café"));
+    assert!(answering.join(".git").exists());
+    // An ask takes one, with nothing to make.
+    let claude = fake_claude(&e, "claude-ok.sh", "", r#"{"replies": {"c1": "Fine."}}"#);
+    let id = comment(&e, &["Look."]);
+    assert!(send(&e, &claude, &[&id], &[]).0);
+    let runs = e.ok(&["runs"]);
+    let run = runs.lines().last().unwrap().split('\t').next().unwrap().to_string();
+    let t = e.ok(&["transcript", &run]);
+    assert!(t.contains("$ git switch --detach") && !t.contains("worktree add"), "{t}");
+    // Removed away from the editor, once it exits: but one holding anything
+    // uncommitted, as git refuses to.
+    std::fs::write(answering.join("mine.txt"), "x\n").unwrap();
+    forget(&e.db, &[(repo, dir.clone())], &[AGENT, ANSWERING]);
+    for _ in 0..100 {
+        if !agent.exists() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    assert!(!agent.exists(), "removed");
+    assert!(answering.join("mine.txt").exists(), "kept: it holds something uncommitted");
 }
 
 #[test]
@@ -1340,14 +1442,18 @@ fn a_file_is_edited_in_the_stack_s_worktree_or_in_this_checkout() {
     let branch = || git(&e.src, &["symbolic-ref", "--short", "HEAD"]).trim().to_string();
     let top = head();
 
-    // In the stack's own worktree, made the first time: at patch 1, the
-    // editor in it; what the edit changes there, a new file too, is patch
-    // 1 again.
+    // In the stack's own worktree, .stacked/s/user, made the first time: at
+    // patch 1, the editor in it; what the edit changes there, a new file
+    // too, is patch 1 again. One of before, .stacked/s itself, is moved
+    // there.
+    git(&e.src, &["worktree", "add", "--quiet", "--detach", e.src.join(".stacked/s").to_str().unwrap(), "base"]);
     script("sed -i '' 's/^2$/deux/' \"$file\"\necho new > c.txt");
     let (fine, _, err) = edit(&["1", "--path", "a.txt", "--line", "2", "--in", "worktree"]);
     assert!(fine && err.contains("edited a.txt and c.txt in Bug 1 - change two"), "{err}");
-    let kept = e.src.join(".stacked/s");
+    let kept = e.src.join(".stacked/s/user");
     assert_eq!(last(), format!("+2 {} Bug 1 - change two", kept.display()));
+    let list = git(&e.src, &["worktree", "list"]);
+    assert!(list.contains("/.stacked/s/user ") && !list.contains("/.stacked/s "), "moved: {list}");
     let mail = e.ok(&["show", "s", "1"]);
     assert!(mail.contains("-two\n+deux\n") && mail.contains("+++ b/c.txt"), "{mail}");
     assert!(mail.contains("Subject: Bug 1 - change two"), "{mail}");

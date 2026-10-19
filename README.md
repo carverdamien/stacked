@@ -39,7 +39,7 @@ stacked show bug123                # its patches, bottom first
 stacked show bug123 2 --path a.txt # a file as patch 2 leaves it, no checkout made
 stacked edit bug123                # as `git rebase -i`: reorder, drop, reword, edit
 stacked edit bug123 2 --path a.txt --line 12   # a file as patch 2 leaves it, at line 12
-stacked edit bug123 2 --path a.txt --in worktree   # ... in the stack's own worktree, .stacked/bug123
+stacked edit bug123 2 --path a.txt --in worktree   # ... in the stack's own worktree, .stacked/bug123/user
 stacked edit bug123 2 --line 30    # patch 2 as mail, at line 30
 stacked comment bug123 rebase onto origin/main        # a comment on the stack
 stacked comment bug123 --patch 2 split this in two    # on a patch as a whole
@@ -282,7 +282,7 @@ TEXT`.
 
 On a line of code, the menu's `Edit a.txt here in $EDITOR` opens the file
 as the patch leaves it, at that line. Where it is edited is the item's
-choice, `[x] tmp/file  [ ] pwd  [ ] .stacked/NAME`, kept for the stack:
+choice, `[x] tmp/file  [ ] pwd  [ ] .stacked/NAME/user`, kept for the stack:
 
 - `tmp/file`: a copy of the file alone, in a temporary folder. It is quick,
   but the editor sees nothing around it: no project for a language server's
@@ -295,11 +295,13 @@ choice, `[x] tmp/file  [ ] pwd  [ ] .stacked/NAME`, kept for the stack:
   the editor runs there, and then the checkout goes back to the branch or
   commit it was on. The editor, its language server, and your build there
   see the whole project as the patch leaves it.
-- `.stacked/NAME`: the stack's own worktree, at the top of its repository,
-  made the first time and kept (`.stacked/` goes in the repository's
-  `info/exclude`, out of `git status`'s sight). Each edit moves it to its
-  patch; your checkout is not touched. The first one checks out every file;
-  the next ones only what differs.
+- `.stacked/NAME/user`: your worktree of the stack, at the top of its
+  repository, made the first time and kept (`.stacked/` goes in the
+  repository's `info/exclude`, out of `git status`'s sight). Each edit moves
+  it to its patch; your checkout is not touched. The first one checks out
+  every file; the next ones only what differs. The agents' worktrees are
+  beside it (below); one made before they were, `.stacked/NAME` itself, is
+  moved to `.stacked/NAME/user` the first time it is needed.
 
 In a checkout, what the edit changes there is the patch's new version: the
 files git tracks, and the files new since the edit started (files git
@@ -380,9 +382,10 @@ ask agent`'s:
   the repository, it has the servers you added there. What it was not let
   use is said in its stream (`⛔ not allowed: mcp__moz__get_bug: …`) and in
   its run's summary, to allow it if it should be. No worktree is made for
-  it, which in a big repository takes a while: as self-review's answers do,
-  it runs in the stack's repository as it is checked out, and is told that
-  this need not be the stack. It reads the stack through stacked: `stacked
+  it, which in a big repository takes a while, unless the settings say so
+  (below): as self-review's answers do, it runs in the stack's repository as
+  it is checked out, and is told that this need not be the stack. It reads
+  the stack through stacked: `stacked
   export`, `stacked show NAME N`, and `stacked show NAME N --path FILE`, a
   file as patch N leaves it, whether the stack changes it or not, read
   without a checkout. Only the reply comes back. An
@@ -394,6 +397,36 @@ ask agent`'s:
   (CLAUDE.md), never the user's worktree; it changes nothing in the stack.
   What it found comes back in the reply and on each patch's title, saying which
   stack it tested.
+
+Where an agent works costs time and space: a worktree is a checkout of
+every file. So the stack has worktrees of its own, `.stacked/NAME/agent`
+for changes and `.stacked/NAME/answer-only-agent` for answers, beside
+yours (`.stacked/NAME/user`), out of git's sight. An ask takes the first
+that no running ask is in and that holds nothing uncommitted, moves it to
+what it is asked about, and leaves it there when it lands, for the next
+ask to take: only what differs is written. One busy, the next ask takes
+`agent-2`, `agent-3`. One an agent left work unfinished in is left as it
+is, for you to look at; the ask says so when it fails (`it is left in
+…/.stacked/NAME/agent`), and the next takes another. Where each kind of ask
+works is a setting of `[agent]`: `worktree` for a change, and
+`answer_only_worktree` for an answer, each `pwd`, `ondemand` or
+`precreate`:
+
+- `ondemand`, a change's unless set: the stack's own worktree, made the
+  first time an ask needs it, and kept until you remove it (`git worktree
+  remove .stacked/NAME/agent`).
+- `precreate`: the same, made when the editor opens the stack, and each
+  stack it switches to, away from the screen, so that no ask waits for it;
+  removed when the editor exits, away from it too, but those an agent is
+  working in or left anything uncommitted in.
+- `pwd`, an answer's unless set: the stack's repository as it is checked
+  out. For an answer, as it is. For a change, moved to the stack, the agent
+  working in your checkout, then back where it was once it lands; not while
+  it has changes to files git tracks. While it works, leave the checkout to
+  it.
+
+`agent.worktrees` puts the agents' worktrees elsewhere than `.stacked/`: in
+that folder, under one of each repository's own.
 
 Several go at once, by self-review's rule: one changing ask at a time on a
 stack, answer-only asks together, a build and test once no change runs, one
@@ -434,11 +467,13 @@ stream under it: what it says and runs, and while it thinks, one line
 counting it, `✻ thinking · ~688 tokens`, with the words of it when claude
 gives them), agent replied (changed, answered, tested), failed (and why),
 moved. Until the agent writes its first line, one line says what is being
-run to start it, as it runs: for a change, `starting: git worktree add
---detach … BASE` (its worktree, which takes a while in a big repository),
-`starting: git am --keep-non-patch, 3 patches` (the stack, up to what it is
-asked about); then `starting: claude -p … --permission-mode …, in WORKTREE`
-(or the repository, for an answer or a build and test). They stay
+run to start it, as it runs: `starting: git worktree add --detach … BASE`
+(the stack's own worktree, made the first time, which takes a while in a
+big repository) or `starting: git switch --detach BASE, in WORKTREE` (taken
+again), then `starting: git am --keep-non-patch, 3 patches` (the stack, up
+to what it is asked about); then `starting: claude -p … --permission-mode
+…, in WORKTREE` (or the repository, for an answer as it is by default, or a
+build and test). They stay
 at the top of its stream, as `$ git worktree add …`, in the stream, in
 `Runs…` and in `stacked transcript RUN`. Enter on a comment the agent is
 working on opens its stream in place; esc folds it. The comments pane marks each (`●` with the agent, `◌`
@@ -700,12 +735,15 @@ settings:
   code, with `{file}` and `{line}` where they go (`hx {file}:{line}`); else
   `$VISUAL`, `$EDITOR`, vi, told the line as each takes it.
 - `[agent]`: `command`, the program run as the agent; `args`, added to
-  every run; `model`; `tools`, tools every ask may use besides its own, as
+  every run; `worktree` and `answer_only_worktree`, where a change and an
+  answer work: `pwd`, `ondemand` or `precreate` (Asking the agent, above;
+  `ondemand` and `pwd` unless set); `model`; `tools`, tools every ask may use besides its own, as
   claude names them for `--allowedTools`: all of an MCP server's
   (`mcp__bugzilla__*`; there is no way to name every server's at once), one
   of its tools (`mcp__bugzilla__get_bug`), a command (`Bash(jq *)`, each
   command of a pipe needing its own). An answer may use them too, so give
-  only tools that read. `worktrees`, where the asks' worktrees go.
+  only tools that read. `worktrees`, where the agents' worktrees go, else
+  `.stacked/` at the top of the stack's repository.
 - `[reviews]`: `source`, `"phabricator"` or `"none"` (no pulling); `url`,
   the Phabricator a bare `D123` trailer is on; `arcrc`, where the tokens
   are; `token`, one for `url` instead; `trailer`, the trailer naming a

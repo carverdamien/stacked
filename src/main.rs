@@ -166,7 +166,7 @@ enum Cmd {
         path: Option<String>,
         /// Where the file is edited: `tmp`, a copy of it alone; `pwd`, this
         /// checkout, moved to the patch for the edit, then back; `worktree`,
-        /// the stack's own, .stacked/NAME in its repository. Else where the
+        /// the stack's own, .stacked/NAME/user in its repository. Else where the
         /// stack's menus last picked.
         #[arg(long = "in", value_name = "WHERE", requires = "path", value_parser = ["tmp", "pwd", "worktree"])]
         place: Option<String>,

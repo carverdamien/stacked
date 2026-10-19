@@ -502,7 +502,7 @@ pub enum Place {
     /// The checkout of the stack's repository at this path (where stacked
     /// runs): moved to the patch for the edit, then back where it was.
     Checkout(std::path::PathBuf),
-    /// The stack's own worktree, `.stacked/NAME` in its repository, made
+    /// The stack's own worktree, `.stacked/NAME/user` in its repository, made
     /// the first time and kept.
     Worktree,
 }

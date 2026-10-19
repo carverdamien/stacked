@@ -53,7 +53,40 @@ pub enum Source {
     None,
 }
 
-#[derive(Debug, Clone, PartialEq, Default)]
+/// Where an ask's agent works.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Workspace {
+    /// The stack's repository as it is checked out: as it is, for an
+    /// answer; moved to the stack and back, for a change.
+    Pwd,
+    /// A worktree of the stack's own, made the first time an ask needs one,
+    /// and reused while it holds nothing an agent left unfinished.
+    OnDemand,
+    /// The same, made when the editor opens the stack, and removed when it
+    /// exits.
+    Precreate,
+}
+
+impl Workspace {
+    pub fn name(self) -> &'static str {
+        match self {
+            Workspace::Pwd => "pwd",
+            Workspace::OnDemand => "ondemand",
+            Workspace::Precreate => "precreate",
+        }
+    }
+
+    fn parse(s: &str) -> Option<Workspace> {
+        match s {
+            "pwd" => Some(Workspace::Pwd),
+            "ondemand" => Some(Workspace::OnDemand),
+            "precreate" => Some(Workspace::Precreate),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct Agent {
     /// The program run as claude; else `$STACKED_CLAUDE`'s, else `claude`.
     pub command: Option<String>,
@@ -64,8 +97,27 @@ pub struct Agent {
     /// Tools every ask may use besides its own, as claude names them for
     /// `--allowedTools`: an MCP server's, a command.
     pub tools: Vec<String>,
-    /// Where the worktrees made for asks go; else the system's temp dir.
+    /// Where a change works.
+    pub worktree: Workspace,
+    /// Where an answer works.
+    pub answer_only_worktree: Workspace,
+    /// Where the agents' worktrees go; else `.stacked/` at the top of the
+    /// stack's repository.
     pub worktrees: Option<PathBuf>,
+}
+
+impl Default for Agent {
+    fn default() -> Agent {
+        Agent {
+            command: None,
+            args: Vec::new(),
+            model: None,
+            tools: Vec::new(),
+            worktree: Workspace::OnDemand,
+            answer_only_worktree: Workspace::Pwd,
+            worktrees: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -214,6 +266,8 @@ struct WrittenAgent {
     args: Vec<String>,
     model: Option<String>,
     tools: Vec<String>,
+    worktree: Option<String>,
+    answer_only_worktree: Option<String>,
     worktrees: Option<String>,
 }
 
@@ -273,7 +327,19 @@ impl Config {
             model: w.agent.model,
             tools: w.agent.tools,
             worktrees: w.agent.worktrees.as_deref().map(expand),
+            ..Agent::default()
         };
+        for (key, written, at) in [
+            ("agent.worktree", &w.agent.worktree, &mut c.agent.worktree),
+            ("agent.answer_only_worktree", &w.agent.answer_only_worktree, &mut c.agent.answer_only_worktree),
+        ] {
+            if let Some(s) = written {
+                match Workspace::parse(s) {
+                    Some(p) => *at = p,
+                    None => wrong.push(format!("{key}: {s:?} is not pwd, ondemand or precreate")),
+                }
+            }
+        }
         if let Some(s) = w.reviews.source {
             match s.as_str() {
                 "phabricator" => c.reviews.source = Source::Phabricator,
@@ -419,15 +485,6 @@ impl Config {
         out
     }
 
-    /// Where the worktree of ask `id` goes.
-    pub fn worktree(&self, id: &str) -> PathBuf {
-        self.agent
-            .worktrees
-            .clone()
-            .unwrap_or_else(std::env::temp_dir)
-            .join(format!("stacked-{id}"))
-    }
-
     /// Every setting as it is, in the file's form, each said: what `stacked
     /// config` prints, to start a file from.
     pub fn render(&self) -> String {
@@ -463,10 +520,23 @@ impl Config {
              # a command (\"Bash(jq *)\"). An answer may use them too: give only tools that read.\n",
         );
         out.push_str(&format!("tools = {}\n", list(&self.agent.tools)));
-        out.push_str("# Where the git worktrees made for asks go.\n");
+        out.push_str(
+            "# Where a change works: \"ondemand\", a worktree of the stack's own (.stacked/NAME/agent)\n\
+             # made the first time and reused while it holds nothing unfinished; \"precreate\", the\n\
+             # same made when the editor opens the stack, removed when it exits; \"pwd\", the\n\
+             # stack's repository as it is checked out, moved to the stack and back (refused\n\
+             # while it has changes).\n",
+        );
+        out.push_str(&format!("worktree = {}\n", q(self.agent.worktree.name())));
+        out.push_str(
+            "# Where an answer works: \"pwd\", the stack's repository as it is checked out; or\n\
+             # \"ondemand\" or \"precreate\", as for a change (.stacked/NAME/answer-only-agent).\n",
+        );
+        out.push_str(&format!("answer_only_worktree = {}\n", q(self.agent.answer_only_worktree.name())));
+        out.push_str("# Where the agents' worktrees go.\n");
         out.push_str(&match &self.agent.worktrees {
             Some(w) => format!("worktrees = {}\n", path(w)),
-            None => "# worktrees = ...   (the system's temp dir)\n".into(),
+            None => "# worktrees = ...   (.stacked/ at the top of the stack's repository)\n".into(),
         });
         out.push_str("\n[reviews]\n# Where `pull` reads reviews from: \"phabricator\", or \"none\".\n");
         out.push_str(&format!(
@@ -559,13 +629,15 @@ enum Kind {
 
 /// Every setting there is, as the file names it, and what it holds; the
 /// keys', `keys.NAME`, are lists.
-const SETTINGS: [(&str, Kind); 19] = [
+const SETTINGS: [(&str, Kind); 21] = [
     ("file", Kind::Text),
     ("editor", Kind::Text),
     ("agent.command", Kind::Text),
     ("agent.args", Kind::List),
     ("agent.model", Kind::Text),
     ("agent.tools", Kind::List),
+    ("agent.worktree", Kind::Text),
+    ("agent.answer_only_worktree", Kind::Text),
     ("agent.worktrees", Kind::Text),
     ("reviews.source", Kind::Text),
     ("reviews.url", Kind::Text),
@@ -632,6 +704,8 @@ pub fn value_of(c: &Config, key: &str) -> Result<Vec<String>, String> {
         "agent.args" => c.agent.args.clone(),
         "agent.model" => opt(&c.agent.model),
         "agent.tools" => c.agent.tools.clone(),
+        "agent.worktree" => vec![c.agent.worktree.name().into()],
+        "agent.answer_only_worktree" => vec![c.agent.answer_only_worktree.name().into()],
         "agent.worktrees" => path(&c.agent.worktrees),
         "reviews.source" => vec![match c.reviews.source {
             Source::Phabricator => "phabricator".into(),

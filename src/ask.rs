@@ -14,13 +14,19 @@
 //! `launch` starts what can go; it runs when a comment is sent and when an
 //! ask lands, so what waits goes on its own.
 //!
-//! A change gets a git worktree of its own. For the stack, all its patches
-//! as commits; for a patch, the stack up to it: the patches below as commits
-//! and the patch on top, the patches above to read only. A patch change
+//! A change works in a git worktree of the stack's own, `.stacked/NAME/agent`
+//! (`agent-2`… when it is busy, or holds what an agent left unfinished),
+//! made the first time and taken again by the next, or made ahead by the
+//! editor; or, as the settings say, in the user's checkout moved to the
+//! stack and back. For the stack, all its patches as commits; for a patch,
+//! the stack up to it: the patches below as commits and the patch on top,
+//! the patches above to read only. A patch change
 //! checks, with `stacked fits`, that the patches above still apply on it; if
 //! they would not, claude changes nothing and the comment is promoted to the
 //! stack. An answer runs in the repository as it is checked out, as
-//! self-review's do: a worktree of a big repository takes long to make. It
+//! self-review's do (unless the settings give it a worktree of the stack's
+//! own, `.stacked/NAME/answer-only-agent`): a worktree of a big repository
+//! takes long to make. It
 //! reads the stack through stacked (`export`, `show`, and a file as a patch
 //! leaves it, `show --path`), and is let run nothing that changes anything.
 //! A build and test runs in the repository too, given the stack by `stacked
@@ -42,6 +48,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use crate::claude::{allowed_tools, format_event, parse_claude_replies, parse_review_notes};
+use crate::config::Workspace;
 use crate::db::{
     Db, Error, Moved, Note, Patch, Queued, Record, Result, Run, RunState, Stack, Way, err, now,
     stack_change,
@@ -104,9 +111,19 @@ pub struct Info {
     pub base: String,
     #[serde(default)]
     pub repo: String,
-    /// The worktree made for it.
+    /// The worktree it works in.
     #[serde(default)]
     pub worktree: Option<String>,
+    /// Its worktree is one of the stack's own, kept once it lands for the
+    /// next ask to take, while it holds nothing an agent left unfinished.
+    #[serde(default)]
+    pub kept: bool,
+    /// The user's checkout it works in, moved to the stack: where it was,
+    /// to go back to once it lands, and the files git did not track then.
+    #[serde(default)]
+    pub back: Option<git::Head>,
+    #[serde(default)]
+    pub untracked: Vec<String>,
     /// For a patch: its id when the ask started, and where it was.
     #[serde(default)]
     pub patch: Option<(String, usize)>,
@@ -459,6 +476,9 @@ fn claim(db: &mut Db) -> Result<Vec<String>> {
             base: String::new(),
             repo: String::new(),
             worktree: None,
+            kept: false,
+            back: None,
+            untracked: Vec::new(),
             patch: None,
             commits: vec![],
             prompt: String::new(),
@@ -648,10 +668,17 @@ fn prompt(db: &Db, i: &Info, s: &Stack, cmd: &str, run: &str) -> String {
     let k = i.patch.as_ref().map(|(_, k)| *k);
     let export = format!("{cmd} export {} --rev {}", s.name, i.from);
     let show = format!("{cmd} show {} --rev {}", s.name, i.from);
+    // Where it works, told it.
+    let here = if i.back.is_some() {
+        "The current directory is the user's own checkout, put at the stack for you: it goes \
+         back where it was once you are done"
+    } else {
+        "The current directory is a git worktree made for you"
+    };
     let mut p = match (i.way, &i.scope) {
         (Way::Change, Scope::Stack) => format!(
-            "You are changing a stack of patches, as the comments below ask. The current \
-             directory is a git worktree made for you: the stack is the commits {base}..HEAD, \
+            "You are changing a stack of patches, as the comments below ask. {here}: the \
+             stack is the commits {base}..HEAD, \
              each commit a patch, listed below bottom first. You may change any of them: \
              edit files and `git commit --amend`, `git commit --fixup` then \
              `GIT_SEQUENCE_EDITOR=true git rebase -i --autosquash {base}`, `git rebase -i` \
@@ -664,8 +691,8 @@ fn prompt(db: &Db, i: &Info, s: &Stack, cmd: &str, run: &str) -> String {
         ),
         (Way::Change, Scope::Patch(_)) => format!(
             "You are changing one patch of a stack, patch {k} of {n}, as the comments below \
-             ask. The current directory is a git worktree made for you: the commits \
-             {base}..HEAD are the stack up to that patch, the patches below it and the patch \
+             ask. {here}: the commits {base}..HEAD are the stack up to that patch, the \
+             patches below it and the patch \
              itself on top, at HEAD. You may change only this patch: amend HEAD, or split it \
              into several commits in its place (its title stays on the first). Do not touch \
              the commits below it. The patches above it are not here: you may read them, not \
@@ -677,6 +704,26 @@ fn prompt(db: &Db, i: &Info, s: &Stack, cmd: &str, run: &str) -> String {
             k = k.map_or(0, |k| k + 1),
             base = i.base,
             orig = i.commits.last().map_or("HEAD", |c| c.0.as_str())
+        ),
+        (Way::Answer, Scope::Stack) if i.worktree.is_some() => format!(
+            "You are answering comments on a stack of patches. The current directory is a git \
+             worktree made for you: the stack is the commits {base}..HEAD, each commit a \
+             patch, listed below bottom first; `git show` each to read it. Do NOT modify \
+             anything. You cannot build the project or run its tests; reason from the code. \
+             {READ_THE_WEB} Besides your answers, you may open comments of your own on lines \
+             of any patch, as a careful reviewer would, without repeating what is already said.",
+            base = i.base
+        ),
+        (Way::Answer, Scope::Patch(_)) if i.worktree.is_some() => format!(
+            "You are answering comments on one patch of a stack, patch {k} of {n}. The current \
+             directory is a git worktree made for you: the commits {base}..HEAD are the stack \
+             up to that patch, the patch itself at HEAD; `git show` to read them; `{export}` \
+             prints the whole stack, the patches above included. Do NOT modify anything. You \
+             cannot build the project or run its tests; reason from the code. {READ_THE_WEB} \
+             Besides your answers, you may open comments of your own on lines of this patch, as \
+             a careful reviewer would, without repeating what is already said.",
+            k = k.map_or(0, |k| k + 1),
+            base = i.base
         ),
         (Way::Answer, Scope::Stack) => format!(
             "You are answering comments on a stack of patches, listed below bottom first; they \
@@ -787,6 +834,147 @@ cd "$cwd" || exit 1
 "$exe" -f "$db" land "$id" > /dev/null 2>&1
 "#;
 
+/// The worktrees of a stack's own that changes, and answers, work in:
+/// `agent`, `agent-2`…, `answer-only-agent`… under `.stacked/NAME`.
+pub const AGENT: &str = "agent";
+pub const ANSWERING: &str = "answer-only-agent";
+
+/// Where stack `name`'s agents' worktrees are: `.stacked/NAME` in its
+/// repository, else under `under` (the settings' `agent.worktrees`), in a
+/// folder of the repository's own.
+fn agents_dir(repo: &Path, name: &str, under: Option<&Path>) -> Result<PathBuf> {
+    match under {
+        Some(d) => {
+            let top = git::toplevel(repo)?;
+            let tag = sha1_smol::Sha1::from(&top).digest().to_string();
+            let short = Path::new(&top).file_name().map_or(String::new(), |n| n.to_string_lossy().into_owned());
+            Ok(d.join(format!("{short}-{}", &tag[..8])).join(name))
+        }
+        None => git::stack_dir(repo, name),
+    }
+}
+
+/// `kind`'s worktrees in `dir`, as named: KIND, then KIND-2, KIND-3…
+fn slot(dir: &Path, kind: &str, k: usize) -> PathBuf {
+    dir.join(if k == 1 { kind.to_string() } else { format!("{kind}-{k}") })
+}
+
+/// The first of `kind`'s worktrees in `dir` that no other running ask is
+/// in and that holds nothing an agent left unfinished, taken for run `id`:
+/// written as its worktree in the database, so that no other takes it. One
+/// not there yet is made by `git::ready`.
+fn take_slot(db_path: &Path, id: &str, dir: &Path, kind: &str) -> Result<PathBuf> {
+    let mut k = 1;
+    loop {
+        let at = slot(dir, kind, k);
+        k += 1;
+        // What an agent left unfinished stays as it is, to look at.
+        if at.join(".git").exists() && git::unfinished(&at).unwrap_or(true) {
+            continue;
+        }
+        let path = at.to_string_lossy().into_owned();
+        let taken = Db::edit(db_path, |db| {
+            let busy = db
+                .runs()
+                .iter()
+                .filter(|r| r.state == RunState::Started && r.id != id)
+                .any(|r| info(r).and_then(|i| i.worktree).as_deref() == Some(path.as_str()));
+            if busy {
+                return Ok(false);
+            }
+            let run = db.run(id).cloned().ok_or_else(|| Error(format!("no run {id}")))?;
+            let mut i = info(&run).ok_or_else(|| Error(format!("run {id} is not an ask")))?;
+            i.worktree = Some(path.clone());
+            i.kept = true;
+            db.add_run(Run {
+                ask: Some(serde_json::to_value(&i).unwrap()),
+                ..run
+            })?;
+            Ok(true)
+        })?;
+        if taken {
+            return Ok(at);
+        }
+    }
+}
+
+/// The kinds of worktree the agent's settings have made when the editor
+/// opens a stack, and removed when it exits.
+pub fn precreated(agent: &crate::config::Agent) -> Vec<&'static str> {
+    let mut kinds = Vec::new();
+    if agent.worktree == Workspace::Precreate {
+        kinds.push(AGENT);
+    }
+    if agent.answer_only_worktree == Workspace::Precreate {
+        kinds.push(ANSWERING);
+    }
+    kinds
+}
+
+/// Stack `name`'s first worktree of each of `kinds` made, if it is not
+/// there, the whole stack applied in it: for the asks to come not to wait
+/// for it; `under`, the settings' `agent.worktrees`. Where they are, to
+/// remove once the editor exits.
+pub fn precreate(db_path: &Path, name: &str, kinds: &[&str], under: Option<&Path>) -> Result<(PathBuf, PathBuf)> {
+    let db = Db::load(db_path)?;
+    let s = db.stack(name)?;
+    let (repo, base) = base_of(s)?;
+    let dir = agents_dir(&repo, name, under)?;
+    let patches: Vec<&Patch> = s.patches.iter().map(|p| db.patch(p)).collect();
+    let mbox = format_mbox(&patches);
+    for kind in kinds {
+        let at = slot(&dir, kind, 1);
+        if !at.join(".git").exists() {
+            git::ready(&repo, &at, &base, &mbox, patches.len(), &|_| {})?;
+        }
+    }
+    Ok((repo, dir))
+}
+
+/// The worktrees of `kinds` in each of `dirs` (a repository, and a stack's
+/// agents' folder in it) removed, away from the caller, which need not
+/// wait: but those an ask is working in, and, as git refuses to remove
+/// them, those with anything uncommitted.
+pub fn forget(db_path: &Path, dirs: &[(PathBuf, PathBuf)], kinds: &[&str]) {
+    let busy: HashSet<String> = Db::load(db_path)
+        .map(|db| {
+            db.runs()
+                .iter()
+                .filter(|r| r.state == RunState::Started)
+                .filter_map(|r| info(r)?.worktree)
+                .collect()
+        })
+        .unwrap_or_default();
+    for (repo, dir) in dirs {
+        let mut gone: Vec<PathBuf> = Vec::new();
+        for kind in kinds {
+            for k in 1.. {
+                let at = slot(dir, kind, k);
+                if !at.join(".git").exists() {
+                    break;
+                }
+                if !busy.contains(&*at.to_string_lossy()) {
+                    gone.push(at);
+                }
+            }
+        }
+        if gone.is_empty() {
+            continue;
+        }
+        let mut c = Command::new("sh");
+        c.arg("-c")
+            .arg("for w; do git worktree remove \"$w\"; done; git worktree prune")
+            .arg("sh")
+            .args(&gone)
+            .current_dir(repo)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        std::os::unix::process::CommandExt::process_group(&mut c, 0);
+        let _ = c.spawn();
+    }
+}
+
 /// Starts claimed run `id`: its worktree made, its prompt written, claude
 /// started.
 fn start(db_path: &Path, id: &str) -> Result<()> {
@@ -821,22 +1009,57 @@ fn start(db_path: &Path, id: &str) -> Result<()> {
             k + 1
         }
     };
-    // Only a change has a worktree: an answer reads the stack through
-    // stacked, in the repository as it is, as a build and test does.
+    // Where it works, as the settings say: an answer in the repository as it
+    // is (pwd), else in a worktree of the stack's own, the stack up to its
+    // place applied; a change in one, or in the user's checkout moved to the
+    // stack (pwd); a build and test in the repository, where it likes.
+    let agent = &crate::config::get().agent;
+    let patches: Vec<&Patch> = s.patches[..upto].iter().map(|p| db.patch(p)).collect();
+    let mbox = format_mbox(&patches);
+    match (i.way, agent.worktree, agent.answer_only_worktree) {
+        (Way::Test, _, _) | (Way::Answer, _, Workspace::Pwd) => {}
+        (Way::Change, Workspace::Pwd, _) => {
+            if git::unfinished_tracked(&repo)? {
+                return err(format!(
+                    "{} has changes to files git tracks: a change asked there (agent.worktree = \"pwd\") needs it clean; nothing asked",
+                    repo.display()
+                ));
+            }
+            let back = git::head_of(&repo)?;
+            i.untracked = git::untracked(&repo)?.into_iter().collect();
+            if let Err(e) = git::ready(&repo, &repo, &base, &mbox, upto, &step) {
+                let _ = git::back_to(&repo, &back);
+                return Err(e);
+            }
+            i.back = Some(back);
+            i.worktree = Some(repo.to_string_lossy().into_owned());
+        }
+        (way, _, _) => {
+            let kind = if way == Way::Change { AGENT } else { ANSWERING };
+            let dir = agents_dir(&repo, &s.name, agent.worktrees.as_deref())?;
+            let slot = take_slot(db_path, id, &dir, kind)?;
+            git::ready(&repo, &slot, &base, &mbox, upto, &step)?;
+            i.worktree = Some(slot.to_string_lossy().into_owned());
+            i.kept = true;
+        }
+    }
+    // Back where it was, the user's checkout, should starting go no further.
+    let undo = |i: &Info| {
+        if let Some(back) = &i.back {
+            let _ = git::back_to(&repo, back);
+        }
+    };
     if i.way == Way::Change {
-        let wt = crate::config::get().worktree(id);
-        let patches: Vec<&Patch> = s.patches[..upto].iter().map(|p| db.patch(p)).collect();
-        git::scratch(&repo, &wt, &base, &format_mbox(&patches), upto, &step)?;
+        let wt = PathBuf::from(i.worktree.clone().unwrap_or_default());
         let shas: Vec<String> = git::git(&wt, &["rev-list", "--reverse", &format!("{base}..HEAD")])?
             .lines()
             .map(String::from)
             .collect();
         if shas.len() != upto {
-            git::remove_scratch(&repo, &wt);
+            undo(&i);
             return err(format!("{upto} patches made {} commits: is one empty?", shas.len()));
         }
         i.commits = shas.into_iter().zip(s.patches[..upto].iter().cloned()).collect();
-        i.worktree = Some(wt.to_string_lossy().into_owned());
     }
     let exe = match CLAUDE.lock().unwrap().clone() {
         Some((_, stacked)) => stacked,
@@ -875,9 +1098,7 @@ fn start(db_path: &Path, id: &str) -> Result<()> {
         }
     })?;
     if landed {
-        if let Some(wt) = &i.worktree {
-            git::remove_scratch(&repo, Path::new(wt));
-        }
+        undo(&i);
         return err("it was landed while its worktree was made");
     }
     let mut c = Command::new("sh");
@@ -1046,7 +1267,8 @@ pub fn land(db_path: &Path, id: &str, exit: Option<&str>) -> Result<Run> {
         let output = result_text(&dry.events(id));
         let _ = file(&mut dry, &started, &i, &output);
     }
-    let mut wt = None;
+    // Where it worked, to leave as it should be once it is filed.
+    let mut after: Option<Info> = None;
     let run = Db::edit(db_path, |db| {
         let Some(started) = db.run(id).cloned() else {
             return err(format!("no run {id}"));
@@ -1058,7 +1280,7 @@ pub fn land(db_path: &Path, id: &str, exit: Option<&str>) -> Result<Run> {
         let Some(i) = info(&started) else {
             return err(format!("run {id} is not an ask"));
         };
-        wt = i.worktree.clone().map(|w| (i.repo.clone(), w));
+        after = Some(i.clone());
         let events = db.events(id);
         let code = exit_code(db, id, exit);
         let output = result_text(&events);
@@ -1070,20 +1292,17 @@ pub fn land(db_path: &Path, id: &str, exit: Option<&str>) -> Result<Run> {
                 .filter(|e| e.get("type").and_then(Value::as_str) == Some("text"))
                 .map(|e| str_of(e.get("text")))
                 .collect();
-            let keep = i
-                .worktree
-                .as_deref()
-                .is_some_and(|w| git::unfinished(Path::new(w)).unwrap_or(false));
+            let keep = left_work(&i);
             let mut summary = format!("the agent failed ({code}): {}", said.join("\n").trim());
             if keep {
-                summary += &format!("; its work is left in {}", i.worktree.as_deref().unwrap());
+                summary += &format!("; its work is left in {}", left_in(&i));
             }
             Landed::failed(summary, keep)
         } else {
             // Whatever goes wrong filing it is what came of it: a run left
             // started would be landed again and again.
             file(db, &started, &i, &output).unwrap_or_else(|e| {
-                let at = i.worktree.as_deref().map_or(String::new(), |w| format!("; its work is left in {w}"));
+                let at = i.worktree.as_ref().map_or(String::new(), |_| format!("; its work is left in {}", left_in(&i)));
                 Landed::failed(format!("could not file what the agent did: {}{at}", e.0), true)
             })
         };
@@ -1097,7 +1316,7 @@ pub fn land(db_path: &Path, id: &str, exit: Option<&str>) -> Result<Run> {
             mark_failed(db, &i, &landed.summary)?;
         }
         if landed.keep {
-            wt = None;
+            after = None;
         }
         // Held for review: in the queue, unless it brought nothing back.
         let held = (landed.ok && !landed.held.is_empty()).then(|| Held { at: now(), ..landed.held });
@@ -1112,11 +1331,56 @@ pub fn land(db_path: &Path, id: &str, exit: Option<&str>) -> Result<Run> {
         db.add_run(run.clone())?;
         Ok(run)
     })?;
-    if let Some((repo, wt)) = wt {
-        git::remove_scratch(Path::new(&repo), Path::new(&wt));
+    if let Some(i) = after {
+        leave(&i);
     }
     launch(db_path)?;
     Ok(run)
+}
+
+/// Whether the agent left work unfinished where run `i` worked: anything
+/// uncommitted; in the user's checkout, of what was not there before.
+fn left_work(i: &Info) -> bool {
+    let Some(w) = i.worktree.as_deref() else {
+        return false;
+    };
+    let w = Path::new(w);
+    if i.back.is_some() {
+        git::unfinished_tracked(w).unwrap_or(true)
+            || git::untracked(w).map_or(true, |now| now.iter().any(|f| !i.untracked.contains(f)))
+    } else {
+        git::unfinished(w).unwrap_or(false)
+    }
+}
+
+/// Where run `i`'s agent left its work, said: in the user's checkout, with
+/// how to take it back.
+fn left_in(i: &Info) -> String {
+    let w = i.worktree.clone().unwrap_or_default();
+    match &i.back {
+        Some(git::Head::Branch(b)) => format!("your checkout, {w}, at the stack: `git switch {b}` takes it back"),
+        Some(git::Head::Commit(c)) => {
+            format!("your checkout, {w}, at the stack: `git switch --detach {}` takes it back", &c[..12.min(c.len())])
+        }
+        None => w,
+    }
+}
+
+/// Where run `i` worked, once it is filed and nothing is left unfinished
+/// there: a worktree made for it alone (by a stacked of before), removed;
+/// one of the stack's own, kept for the next ask; the user's checkout,
+/// back where it was.
+fn leave(i: &Info) {
+    let Some(w) = i.worktree.as_deref() else {
+        return;
+    };
+    match &i.back {
+        Some(back) => {
+            let _ = git::back_to(Path::new(w), back);
+        }
+        None if !i.kept => git::remove_scratch(Path::new(&i.repo), Path::new(w)),
+        None => {}
+    }
 }
 
 /// Claude's replies to the comments it was sent, held: turns `way` names.

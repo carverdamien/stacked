@@ -90,23 +90,6 @@ pub fn dirty(dir: &Path) -> Result<bool> {
     Ok(!git(dir, &["status", "--porcelain", "--untracked-files=no"])?.trim().is_empty())
 }
 
-/// A worktree of its own at `at`, detached at `base`, with `mbox` applied,
-/// `n` patches; none if the patches do not apply. `step` is told each git
-/// command before it runs, as one line.
-pub fn scratch(repo: &Path, at: &Path, base: &str, mbox: &str, n: usize, step: &dyn Fn(String)) -> Result<()> {
-    step(format!("git worktree add --detach {} {}", at.display(), &base[..12.min(base.len())]));
-    git(repo, &["worktree", "add", "--quiet", "--detach", &at.to_string_lossy(), base])?;
-    if mbox.is_empty() {
-        return Ok(());
-    }
-    step(format!("git am --keep-non-patch, {n} patch{}", if n == 1 { "" } else { "es" }));
-    if let Err(e) = git_in(at, &["-c", "commit.gpgsign=false", "am", "--quiet", "--keep-non-patch"], Some(mbox)) {
-        remove_scratch(repo, at);
-        return err(format!("the stack does not apply to its base: {}", e.0));
-    }
-    Ok(())
-}
-
 /// Anything not committed, untracked files too.
 pub fn unfinished(dir: &Path) -> Result<bool> {
     let status = git(dir, &["status", "--porcelain"])?;
@@ -133,17 +116,56 @@ pub fn checkout_of(repo: &Path, dir: &Path) -> Result<PathBuf> {
     Ok(PathBuf::from(top))
 }
 
-/// The stack `name`'s own worktree, `.stacked/NAME` at the top of the
-/// checkout `repo`: made at `base` the first time, and `.stacked/` kept
-/// out of git's sight in every checkout of the repository.
-pub fn kept_worktree(repo: &Path, name: &str, base: &str) -> Result<PathBuf> {
+/// Where stack `name`'s worktrees are, `.stacked/NAME` at the top of the
+/// checkout `repo`, `.stacked/` kept out of git's sight in every checkout of
+/// the repository: yours, `user`, and the agents'. One made before there
+/// were others, `.stacked/NAME` itself, is moved to `user` in it.
+pub fn stack_dir(repo: &Path, name: &str) -> Result<PathBuf> {
     let top = PathBuf::from(toplevel(repo)?);
-    let dir = top.join(".stacked").join(name);
     exclude(&top, "/.stacked/")?;
-    if !dir.join(".git").exists() {
-        git(&top, &["worktree", "add", "--quiet", "--detach", &dir.to_string_lossy(), base])?;
+    let dir = top.join(".stacked").join(name);
+    if dir.join(".git").is_file() {
+        let aside = top.join(".stacked").join(format!("{name}.user"));
+        git(&top, &["worktree", "move", &dir.to_string_lossy(), &aside.to_string_lossy()])?;
+        std::fs::create_dir_all(&dir).map_err(|e| Error(format!("{}: {e}", dir.display())))?;
+        git(&top, &["worktree", "move", &aside.to_string_lossy(), &dir.join("user").to_string_lossy()])?;
     }
     Ok(dir)
+}
+
+/// Your worktree of stack `name`, `.stacked/NAME/user` at the top of the
+/// checkout `repo`: made at `base` the first time, and kept.
+pub fn kept_worktree(repo: &Path, name: &str, base: &str) -> Result<PathBuf> {
+    let dir = stack_dir(repo, name)?.join("user");
+    if !dir.join(".git").exists() {
+        let _ = git(repo, &["worktree", "prune"]);
+        git(repo, &["worktree", "add", "--quiet", "--detach", &dir.to_string_lossy(), base])?;
+    }
+    Ok(dir)
+}
+
+/// The worktree at `at` put at `base` with `mbox` applied, `n` patches: made
+/// if it is not there, else moved there (it holds nothing unfinished, so
+/// nothing is lost, and only what differs is written). Not applied, it is
+/// left at `base`. `step` is told each git command before it runs.
+pub fn ready(repo: &Path, at: &Path, base: &str, mbox: &str, n: usize, step: &dyn Fn(String)) -> Result<()> {
+    let short = &base[..12.min(base.len())];
+    if at.join(".git").exists() {
+        step(format!("git switch --detach {short}, in {}", at.display()));
+        git(at, &["switch", "--quiet", "--detach", base])?;
+    } else {
+        step(format!("git worktree add --detach {} {short}", at.display()));
+        let _ = git(repo, &["worktree", "prune"]);
+        if let Some(parent) = at.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| Error(format!("{}: {e}", parent.display())))?;
+        }
+        git(repo, &["worktree", "add", "--quiet", "--detach", &at.to_string_lossy(), base])?;
+    }
+    if mbox.is_empty() {
+        return Ok(());
+    }
+    step(format!("git am --keep-non-patch, {n} patch{}", if n == 1 { "" } else { "es" }));
+    am(at, mbox).map_err(|e| Error(format!("the stack does not apply to its base: {}", e.0)))
 }
 
 /// `pattern` in the repository's `info/exclude`, unless it is there.
@@ -178,7 +200,7 @@ pub fn unfinished_tracked(dir: &Path) -> Result<bool> {
 }
 
 /// Where a checkout is: on a branch, or at a commit.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Head {
     Branch(String),
     Commit(String),
