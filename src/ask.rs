@@ -1528,4 +1528,15 @@ mod tests {
         );
         assert_eq!(tail(&db, "r", 3), ["Nothing changed.", "✓ the agent finished", "exit 0"]);
     }
+
+    #[test]
+    fn the_agent_is_told_the_thread_as_it_stands() {
+        // Its turn trimmed, it is told it as you left it; deleted, not at all.
+        let text = append_turn("why?", Role::Agent, "Because, at length.", Some("answer"));
+        let text = append_turn(&text, Role::You, "and here?", None);
+        let text = crate::thread::edit_turn(&text, 1, "Because.").unwrap();
+        assert_eq!(transcript(&text), "The user: why?\nYou (the agent, earlier): Because.\nThe user: and here?");
+        let text = crate::thread::delete_turn(&text, 1).unwrap();
+        assert_eq!(transcript(&text), "The user: why?\nThe user: and here?");
+    }
 }

@@ -7,7 +7,7 @@ use stacked::ask;
 use stacked::db::{Db, Error, Note, Patch, Record, Result, Way, err, local_time as time, short_id, stack_change};
 use stacked::mbox::{Draft, base_commit, format_mbox, parse_mail, parse_mbox};
 use stacked::ops;
-use stacked::thread::{Role, append_turn, replace_last_turn, thread_turns};
+use stacked::thread::{Role, all_turns, append_turn, bring_back_turn, delete_turn, edit_turn, replace_last_turn};
 use stacked::tui::{Busy, Show, note_state, shows};
 use stacked::view::{MSG_PATH, find_line, fold, note_lines, title_key};
 use stacked::{git, review, tree};
@@ -224,7 +224,9 @@ enum Cmd {
         #[arg(long, value_enum)]
         show: Option<ShowArg>,
     },
-    /// Reply to a comment, by its short id.
+    /// Reply to a comment, by its short id. Or change one turn of its
+    /// thread, by where it is in the thread as `comments` lists it: 1 is
+    /// the comment, 2 the first reply, and a deleted turn counts.
     Reply {
         name: String,
         id: String,
@@ -234,7 +236,18 @@ enum Cmd {
         /// again.
         #[arg(long)]
         edit: bool,
-        #[arg(required = true)]
+        /// With --edit, the turn to write again, whoever said it.
+        #[arg(long, value_name = "N", requires = "edit")]
+        turn: Option<usize>,
+        /// Delete the reply that is turn N: the thread says that it was
+        /// deleted, and the agent is no longer told it. What it said is
+        /// kept, for --bring-back.
+        #[arg(long, value_name = "N", conflicts_with_all = ["edit", "bring_back"])]
+        delete: Option<usize>,
+        /// Bring back the deleted turn N, as it was.
+        #[arg(long, value_name = "N", conflicts_with_all = ["edit", "delete"])]
+        bring_back: Option<usize>,
+        #[arg(required_unless_present_any = ["delete", "bring_back"], conflicts_with_all = ["delete", "bring_back"])]
         text: Vec<String>,
     },
     /// Ask the agent about comments, by their short ids, or --all that can
@@ -413,7 +426,11 @@ fn print_note(db: &Db, name: &str, n: &Note, busy: &Busy) {
 fn print_thread(db: &Db, name: &str, n: &Note, state: &str) {
     let state = if state.is_empty() { String::new() } else { format!("\t{state}") };
     println!("{}\t{}{state}", short_id(&n.change, &n.id), where_on(db, name, n));
-    for t in thread_turns(&n.text) {
+    for (i, t) in all_turns(&n.text).into_iter().enumerate() {
+        if t.deleted {
+            println!("  (you deleted {})", t.name(i));
+            continue;
+        }
         let who = match t.role {
             Role::You => "you",
             Role::Agent => "agent",
@@ -820,10 +837,31 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
                 }
             }
         }
-        Cmd::Reply { name, id, edit, text } => {
+        Cmd::Reply { name, id, edit, turn, delete, bring_back, text } => {
             let text = text.join(" ");
             let off = Db::edit(path, |db| {
                 let n = db.find_note(&name, &id)?.clone();
+                // Which turn, from 1, of how many.
+                let at = |k: usize| {
+                    let all = all_turns(&n.text).len();
+                    if k == 0 || k > all {
+                        return err(format!("there is no turn {k}: the thread has {all}"));
+                    }
+                    Ok(k - 1)
+                };
+                if delete.is_some() || bring_back.is_some() {
+                    if ask::with_agent(db).contains_key(&(n.change.clone(), n.id.clone())) {
+                        return err("the agent is working on it: wait for it to land");
+                    }
+                    let again = match (delete, bring_back) {
+                        (Some(1), _) => return err("turn 1 is the comment itself: only its replies can be deleted"),
+                        (Some(k), _) => delete_turn(&n.text, at(k)?).ok_or_else(|| Error(format!("turn {k} is deleted already")))?,
+                        (_, Some(k)) => bring_back_turn(&n.text, at(k)?).ok_or_else(|| Error(format!("turn {k} is not deleted")))?,
+                        _ => unreachable!(),
+                    };
+                    db.set_note(Note { text: again, ..n })?;
+                    return Ok(None);
+                }
                 if !edit {
                     db.set_note(Note {
                         text: append_turn(&n.text, Role::You, &text, None),
@@ -835,8 +873,19 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
                 if ask::with_agent(db).contains_key(&(n.change.clone(), n.id.clone())) {
                     return err("the agent is working on it: wait for it to land");
                 }
-                let Some(again) = replace_last_turn(&n.text, &text) else {
-                    return err("the last word is not yours: reply instead");
+                let again = match turn {
+                    Some(k) => {
+                        let Some(again) = edit_turn(&n.text, at(k)?, &text) else {
+                            return err(format!("turn {k} is deleted: bring it back to edit it"));
+                        };
+                        again
+                    }
+                    None => {
+                        let Some(again) = replace_last_turn(&n.text, &text) else {
+                            return err("the last word is not yours: reply instead");
+                        };
+                        again
+                    }
                 };
                 if again == n.text {
                     return Ok(None);

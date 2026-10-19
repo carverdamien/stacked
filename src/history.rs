@@ -7,7 +7,7 @@
 use std::collections::HashSet;
 
 use crate::db::{Db, Note, Patch, Record, Stack, local_time};
-use crate::thread::{Role, last_mine, last_reply_way, last_role, thread_turns};
+use crate::thread::{Role, all_turns, last_mine, last_mine_at, last_reply_way, last_role, thread_turns};
 
 /// A record that changed the stack, and where it took it.
 #[derive(Debug, Clone)]
@@ -397,6 +397,20 @@ pub fn note_change(before: Option<&Note>, n: &Note) -> String {
         return "ask failed".into();
     }
     if n.text != b.text {
+        // One turn written again, deleted or brought back, where it is:
+        // which, and whose. Your last written again is said below.
+        let (now, then) = (all_turns(&n.text), all_turns(&b.text));
+        if now.len() == then.len()
+            && let [i] = (0..now.len()).filter(|&i| now[i] != then[i]).collect::<Vec<_>>()[..]
+        {
+            let what = now[i].name(i);
+            match (then[i].deleted, now[i].deleted) {
+                (false, true) => return format!("you deleted {what}"),
+                (true, false) => return format!("you brought back {what}"),
+                _ if last_mine_at(&n.text) != Some(i) => return format!("you edited {what}"),
+                _ => {}
+            }
+        }
         // What you said last written again, not added to: a reply to your
         // own turn goes on a line of its own.
         if let (Some(now), Some(then)) = (last_mine(&n.text), last_mine(&b.text))

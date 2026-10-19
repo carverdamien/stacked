@@ -993,6 +993,90 @@ fn what_you_said_last_may_be_written_again() {
     assert!(screen.contains("· written") && screen.contains("· you edited it"), "the first edit, there:\n{screen}");
 }
 
+fn ctrl(app: &mut App, code: KeyCode) {
+    app.key(KeyEvent::new(code, KeyModifiers::CONTROL));
+}
+
+#[test]
+fn any_turn_of_a_thread_is_written_again_deleted_and_brought_back() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Enter]);
+    save(&mut app, "why so loud?");
+    // The agent answers at length, and you ask more.
+    let n = notes_of(&db, "s", 0).remove(0);
+    Db::edit(&db, |d| {
+        let text = append_turn(&n.text, Role::Agent, "It is a shout. Shouting is for the lines that matter.", Some("answer"));
+        d.set_note(Note {
+            text: append_turn(&text, Role::You, "and why here?", None),
+            ..n.clone()
+        })
+    })
+    .unwrap();
+    app.refresh();
+    // On the agent's turn, the menu writes it again, or deletes it.
+    down_to(&mut app, "     agent:");
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    let labels: Vec<String> = items(&app).into_iter().map(|(l, _)| l).collect();
+    assert_eq!(labels[..3], ["Edit the agent's reply", "Reply", "Delete the agent's reply"], "{labels:?}");
+    keys(&mut app, &[KeyCode::Esc]);
+    // Trimmed to what matters, with a shell's keys: from the line's start,
+    // four words on, the rest cut.
+    choose_as(&mut app, "Edit the agent's reply", "here");
+    assert!(matches!(&app.mode, Mode::Edit(e) if e.ed.text().ends_with("lines that matter.")), "{:?}", app.mode);
+    assert!(draw(&mut app).contains("the agent's reply: edit it"));
+    ctrl(&mut app, KeyCode::Char('a'));
+    for _ in 0..4 {
+        ctrl(&mut app, KeyCode::Right);
+    }
+    ctrl(&mut app, KeyCode::Char('k'));
+    keys(&mut app, &[KeyCode::Esc]);
+    choose(&mut app, "Save it");
+    let text = notes_of(&db, "s", 0).remove(0).text;
+    let turns = stacked::thread::thread_turns(&text);
+    let said: Vec<(Role, &str)> = turns.iter().map(|t| (t.role, t.body.as_str())).collect();
+    assert_eq!(said, [(Role::You, "why so loud?"), (Role::Agent, "It is a shout."), (Role::You, "and why here?")]);
+    assert_eq!(turns[1].tag.as_deref(), Some("answer"), "still the agent's answer");
+    // Deleted: a quiet line where it was, and the agent is no longer told it.
+    assert_eq!(app.rows[app.cursor].text, "     agent:");
+    choose(&mut app, "Delete the agent's reply");
+    assert!(app.status.contains("you deleted the agent's reply"), "{}", app.status);
+    let screen = draw(&mut app);
+    assert!(screen.contains("(you deleted the agent's reply)") && !screen.contains("It is a shout."), "{screen}");
+    let text = notes_of(&db, "s", 0).remove(0).text;
+    let said: Vec<String> = stacked::thread::thread_turns(&text).into_iter().map(|t| t.body).collect();
+    assert_eq!(said, ["why so loud?", "and why here?"]);
+    // The menu of its line brings it back, as it was.
+    assert!(app.rows[app.cursor].text.contains("(you deleted the agent's reply)"));
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    assert_eq!(items(&app)[0].0, "Bring back the agent's reply");
+    assert!(!items(&app).iter().any(|(l, _)| l.starts_with("Delete the")), "{:?}", items(&app));
+    choose(&mut app, "Bring back the agent's reply");
+    assert!(draw(&mut app).contains("It is a shout."));
+    // The comment itself is written again where it is, and deleted whole.
+    keys(&mut app, &[KeyCode::Up, KeyCode::Up]);
+    assert_eq!(app.rows[app.cursor].text, "     you:");
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    let labels: Vec<String> = items(&app).into_iter().map(|(l, _)| l).collect();
+    assert_eq!(labels[..2], ["Edit your comment", "Reply"], "{labels:?}");
+    assert!(!labels.iter().any(|l| l.starts_with("Delete your")), "{labels:?}");
+    keys(&mut app, &[KeyCode::Esc]);
+    // Its history says what was done to which turn.
+    let d = Db::load(&db).unwrap();
+    let mut said = Vec::new();
+    let mut before: Option<&Note> = None;
+    for (_, x) in d.note_history(&n.change, &n.id) {
+        said.push(stacked::history::note_change(before, x));
+        before = Some(x);
+    }
+    assert_eq!(
+        said[said.len() - 3..],
+        ["you edited the agent's reply", "you deleted the agent's reply", "you brought back the agent's reply"]
+    );
+}
+
 #[test]
 fn a_comment_on_a_patch_may_be_sent_to_the_whole_stack() {
     let (_tmp, db, _src) = setup();

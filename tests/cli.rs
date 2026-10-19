@@ -1261,6 +1261,42 @@ fn what_you_said_last_may_be_written_again() {
 }
 
 #[test]
+fn any_turn_may_be_written_again_deleted_and_brought_back() {
+    use stacked::thread::{Role, append_turn};
+    let e = env();
+    e.ok(&["import", "s", "base"]);
+    let id = comment(&e, &["--patch", "1", "Why", "2?"]);
+    // Answered at length, and thanked.
+    Db::edit(&e.db, |db| {
+        let n = db.stack_notes("s").into_iter().next().cloned().unwrap();
+        let text = append_turn(&n.text, Role::Agent, "Seen, at length.", Some("answer"));
+        db.set_note(stacked::db::Note { text: append_turn(&text, Role::You, "Thanks.", None), ..n })
+    })
+    .unwrap();
+    // The agent's turn, the second, trimmed.
+    e.ok(&["reply", "s", &id, "--edit", "--turn", "2", "Seen."]);
+    let c = e.ok(&["comments", "s", "--patch", "1"]);
+    assert!(c.contains("\n  you: Why 2?\n  agent: Seen.\n  you: Thanks.\n"), "{c}");
+    // Deleted, a line says so where it was; the thread still counts it.
+    e.ok(&["reply", "s", &id, "--delete", "2"]);
+    let c = e.ok(&["comments", "s", "--patch", "1"]);
+    assert!(c.contains("\n  you: Why 2?\n  (you deleted the agent's reply)\n  you: Thanks.\n"), "{c}");
+    for (args, says) in [
+        (&["--delete", "2"][..], "turn 2 is deleted already"),
+        (&["--edit", "--turn", "2", "Hm."], "turn 2 is deleted: bring it back to edit it"),
+        (&["--delete", "1"], "turn 1 is the comment itself: only its replies can be deleted"),
+        (&["--bring-back", "4"], "there is no turn 4: the thread has 3"),
+        (&["--bring-back", "3"], "turn 3 is not deleted"),
+    ] {
+        let (fine, _, err) = e.run(&[&["reply", "s", &id][..], args].concat());
+        assert!(!fine && err.contains(says), "{args:?}: {err}");
+    }
+    // Brought back, as it was.
+    e.ok(&["reply", "s", &id, "--bring-back", "2"]);
+    assert!(e.ok(&["comments", "s", "--patch", "1"]).contains("\n  you: Why 2?\n  agent: Seen.\n  you: Thanks.\n"));
+}
+
+#[test]
 fn a_trim_writes_a_new_database_from_a_rev_on() {
     let e = env();
     e.ok(&["import", "s", "base"]);

@@ -7,7 +7,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::db::{Note, Patch};
 use crate::diff::parse_diff;
-use crate::thread::{Role, thread_turns};
+use crate::thread::{Role, all_turns};
 use crate::view::{MSG_PATH, message_keys, mode};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -21,7 +21,9 @@ pub enum Kind {
     Meta,
     Msg,
     Comment,
-    /// A line of claude's stream, under the comment it is working on.
+    /// A quiet line of a comment: one of claude's stream, under the comment
+    /// it is working on; where the comment stands, when its first line has
+    /// no room for it; a turn deleted.
     Stream,
     Blank,
 }
@@ -52,6 +54,9 @@ pub struct Row {
     pub by: Option<By>,
     /// The first row of a comment.
     pub head: bool,
+    /// The turn of its comment's thread a row shows, of all its turns
+    /// (those deleted too), from 0.
+    pub turn: Option<usize>,
     pub path: Option<String>,
     /// The line's text, kept with a comment on it.
     pub preview: Option<String>,
@@ -165,15 +170,21 @@ pub fn comment_rows(n: &Note, width: usize, deco: &Deco) -> Vec<Row> {
             out.push(row(Kind::Stream, format!("     {part}"), false));
         }
     }
-    for t in thread_turns(&n.text) {
+    for (i, t) in all_turns(&n.text).into_iter().enumerate() {
+        let of = |r: Row| Row { turn: Some(i), ..r };
+        // Deleted: a quiet line where it was.
+        if t.deleted {
+            out.push(of(row(Kind::Stream, format!("     (you deleted {})", t.name(i)), false)));
+            continue;
+        }
         let who = match t.role {
             Role::You => "you",
             Role::Agent => "agent",
             Role::Reviewer => t.tag.as_deref().unwrap_or("reviewer"),
         };
-        out.push(row(Kind::Comment, format!("     {who}:"), false));
+        out.push(of(row(Kind::Comment, format!("     {who}:"), false)));
         for line in wrap(&t.body, width.saturating_sub(7)) {
-            out.push(row(Kind::Comment, format!("       {line}"), false));
+            out.push(of(row(Kind::Comment, format!("       {line}"), false)));
         }
     }
     for line in deco.streams.get(&n.id).into_iter().flatten() {

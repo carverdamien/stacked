@@ -33,7 +33,10 @@ use crate::panes::{Compact, Panes, Scroll, pane_streams, spans};
 use crate::reading::{Blocks, Finder, Reading, Target as Block};
 use crate::review;
 use crate::rows::{By, Deco, Kind, Row, by_of, patch_rows, split_lines, split_row, stack_rows};
-use crate::thread::{Role, append_turn, last_mine, last_reply_way, last_role, replace_last_turn, thread_turns};
+use crate::thread::{
+    Role, Turn, all_turns, append_turn, bring_back_turn, delete_turn, edit_turn, last_mine, last_mine_at, last_reply_way, last_role,
+    replace_last_turn, thread_turns,
+};
 use crate::tree;
 use crate::view::{MSG_PATH, note_lines, title_key};
 
@@ -314,6 +317,9 @@ pub enum Target {
     Reply { change: String, id: String },
     /// Your last turn of a comment, written again.
     Edit { change: String, id: String },
+    /// Another turn of a comment's thread, written again, whoever said it:
+    /// `turn` of all its turns, those deleted too.
+    Turn { change: String, id: String, turn: usize },
     /// A comment on the stack's history: on its record `rev`.
     About(usize),
 }
@@ -442,6 +448,12 @@ pub enum Action {
     /// Your last turn of the comment, written again: here, or in $EDITOR.
     EditMine,
     EditMineInEditor,
+    /// The turn of the thread the cursor is on, of all its turns: written
+    /// again, here or in $EDITOR; deleted; brought back.
+    EditTurn(usize),
+    EditTurnInEditor(usize),
+    DeleteTurn(usize),
+    BringBackTurn(usize),
     Send(Way),
     /// A patch's comment sent to the whole stack: the agent may change any
     /// patch.
@@ -521,6 +533,12 @@ fn about(action: &Action) -> String {
         Action::CommentInEditor => "write it in $EDITOR".into(),
         Action::EditMine => "edit what you said last, or add to it".into(),
         Action::EditMineInEditor => "write what you said last again, in $EDITOR".into(),
+        Action::EditTurn(_) => "edit the turn of the thread the cursor is on, whoever wrote it: the agent is told it as you leave it".into(),
+        Action::EditTurnInEditor(_) => "edit the turn of the thread the cursor is on, in $EDITOR".into(),
+        Action::DeleteTurn(_) => {
+            "delete the turn of the thread the cursor is on: a line says that it was deleted, the agent is no longer told it, and its menu can bring it back".into()
+        }
+        Action::BringBackTurn(_) => "bring back the deleted turn the cursor is on, as it was".into(),
         Action::Send(Way::Change) => "ask the agent, which may change the code within this comment's place".into(),
         Action::Send(Way::Answer) => "ask the agent, to answer only: nothing changes".into(),
         Action::Send(Way::Test) => "ask the agent to build and test, in a workspace of its choosing".into(),
@@ -1393,6 +1411,14 @@ impl App {
             Show::Deleted => self.deleted().into_iter().map(|(_, n)| n).find(|n| n.id == id),
             _ => None,
         })
+    }
+
+    /// The turn of comment `c`'s thread the cursor is on, in the middle:
+    /// where it is among all its turns, and what it is.
+    fn turn_here(&self, c: &Note) -> Option<(usize, Turn)> {
+        let row = self.rows.get(self.target_row())?;
+        let i = row.turn.filter(|_| row.note.as_deref() == Some(c.id.as_str()))?;
+        all_turns(&c.text).into_iter().nth(i).map(|t| (i, t))
     }
 
     /// Whether `n` is deleted: shown as it was, only to bring back.
@@ -2551,7 +2577,9 @@ impl App {
                 if send {
                     let a_patch_s = match &e.target {
                         Target::Patch(_) | Target::Line { .. } => true,
-                        Target::Reply { change, .. } | Target::Edit { change, .. } => *change != stack_change(&self.stack),
+                        Target::Reply { change, .. } | Target::Edit { change, .. } | Target::Turn { change, .. } => {
+                            *change != stack_change(&self.stack)
+                        }
                         _ => false,
                     };
                     let test = matches!(e.target, Target::Stack | Target::Patch(_));
@@ -2573,10 +2601,14 @@ impl App {
     }
 
     /// Whether a comment written for `t` can be sent once saved: not while
-    /// claude works on the thread.
+    /// claude works on the thread; a turn written again, if the last word
+    /// is yours, as it is for asking.
     fn can_send_target(&self, t: &Target) -> bool {
         match t {
             Target::Reply { change, id } | Target::Edit { change, id } => !self.busy().contains_key(&(change.clone(), id.clone())),
+            Target::Turn { change, id, .. } => {
+                !self.busy().contains_key(&(change.clone(), id.clone())) && self.db.note(change, id).is_some_and(ask::sendable)
+            }
             _ => true,
         }
     }
@@ -2586,49 +2618,61 @@ impl App {
     fn answer_only(&self, t: &Target) -> bool {
         match t {
             Target::About(_) => true,
-            Target::Reply { change, id } | Target::Edit { change, id } => self.db.note(change, id).is_some_and(|n| n.about.is_some()),
+            Target::Reply { change, id } | Target::Edit { change, id } | Target::Turn { change, id, .. } => {
+                self.db.note(change, id).is_some_and(|n| n.about.is_some())
+            }
             _ => false,
         }
     }
 
-    /// What you said last on the comment `t` writes your last turn of
-    /// again.
+    /// What the turn `t` writes again says now: what you said last, or the
+    /// turn it is.
     fn mine_of(&self, t: &Target) -> Option<String> {
         match t {
             Target::Edit { change, id } => last_mine(&self.db.note(change, id)?.text),
+            Target::Turn { change, id, turn } => {
+                all_turns(&self.db.note(change, id)?.text).into_iter().nth(*turn).filter(|t| !t.deleted).map(|t| t.body)
+            }
             _ => None,
         }
     }
 
     /// Opens what you said last on comment (change, id) in an editor in
-    /// `pane`, to write it again or add to it: off the agent's queue
-    /// meanwhile, if it is on it, so that it is not asked as it was.
+    /// `pane`, to write it again or add to it.
     fn edit_mine(&mut self, change: String, id: String, pane: Focus) {
-        let Some(c) = self.db.note(&change, &id).cloned() else { return };
-        let Some(mine) = last_mine(&c.text) else { return };
+        self.write_again(Target::Edit { change, id }, pane);
+    }
+
+    /// Opens the turn of a comment `t` writes again in an editor in `pane`:
+    /// off the agent's queue meanwhile, if the comment is on it, so that it
+    /// is not asked as it was. Not while the agent works on it.
+    fn write_again(&mut self, t: Target, pane: Focus) {
+        let (Target::Edit { change, id } | Target::Turn { change, id, .. }) = &t else { return };
+        let (change, id) = (change.clone(), id.clone());
+        let Some(text) = self.mine_of(&t) else { return };
         if self.busy().contains_key(&(change.clone(), id.clone())) {
             self.status = "the agent is working on it: wait for it to land".into();
             return;
         }
-        let held = c.queued.clone();
+        let held = self.db.note(&change, &id).and_then(|c| c.queued.clone());
         if held.is_some() {
-            if let Err(e) = ask::unsend(&self.path, &[(change.clone(), id.clone())]) {
+            if let Err(e) = ask::unsend(&self.path, &[(change, id)]) {
                 self.status = e.0;
                 return;
             }
             self.reload();
         }
-        self.write(Target::Edit { change, id }, pane, &mine);
+        self.write(t, pane, &text);
         if let Mode::Edit(e) = &mut self.mode {
             e.held = held;
         }
     }
 
-    /// Once what you said last is written again, or not: a comment taken
-    /// off the agent's queue for it goes back on if it is as it was, and
-    /// waits to be asked again if it `changed`.
+    /// Once a turn is written again, or not: a comment taken off the
+    /// agent's queue for it goes back on if it is as it was, and waits to
+    /// be asked again if it `changed`.
     fn settle_edit(&mut self, e: &Edit, changed: bool) {
-        let (Target::Edit { change, id }, Some(q)) = (&e.target, &e.held) else { return };
+        let (Target::Edit { change, id } | Target::Turn { change, id, .. }, Some(q)) = (&e.target, &e.held) else { return };
         if changed {
             self.status = "edited: off the agent's queue, until you ask again".into();
             return;
@@ -2928,14 +2972,35 @@ impl App {
         }
         let busy = self.busy();
         let with = busy.get(&(c.change.clone(), c.id.clone()));
-        // The last word yours, it may be written again, or added to, as
-        // enter does; not while the agent works on it.
-        if last_mine(&c.text).is_some() {
-            let what = if thread_turns(&c.text).len() > 1 { "reply" } else { "comment" };
-            let choices = self.write_choices(Action::EditMine, Action::EditMineInEditor);
-            items.push(Item::new(format!("Edit your {what}"), Action::EditMine).when(with.is_none()).with(choices));
+        // The turn the cursor is on, in the middle, may be written again,
+        // whoever said it, deleted, or brought back; elsewhere on the
+        // comment, what you said last, if the last word is yours, as enter
+        // does. Not while the agent works on it.
+        let here = self.turn_here(c);
+        let last = last_mine_at(&c.text);
+        match &here {
+            Some((i, t)) if t.deleted => {
+                items.push(Item::new(format!("Bring back {}", t.name(*i)), Action::BringBackTurn(*i)).when(with.is_none()));
+            }
+            Some((i, t)) if Some(*i) != last => {
+                let choices = self.write_choices(Action::EditTurn(*i), Action::EditTurnInEditor(*i));
+                items.push(Item::new(format!("Edit {}", t.name(*i)), Action::EditTurn(*i)).when(with.is_none()).with(choices));
+            }
+            _ if last.is_some() => {
+                let what = if thread_turns(&c.text).len() > 1 { "reply" } else { "comment" };
+                let choices = self.write_choices(Action::EditMine, Action::EditMineInEditor);
+                items.push(Item::new(format!("Edit your {what}"), Action::EditMine).when(with.is_none()).with(choices));
+            }
+            _ => {}
         }
         items.push(Item::new("Reply", Action::Reply).with(self.write_choices(Action::Reply, Action::CommentInEditor)));
+        // A reply, not the comment itself: that is deleted whole.
+        if let Some((i, t)) = &here
+            && !t.deleted
+            && *i > 0
+        {
+            items.push(Item::new(format!("Delete {}", t.name(*i)), Action::DeleteTurn(*i)).when(with.is_none()));
+        }
         items.push(Item::line());
         match with {
             Some((_, run)) => {
@@ -3058,6 +3123,35 @@ impl App {
                     && last_mine(&c.text).is_some()
                 {
                     return Effect::EditComment(Target::Edit { change: c.change, id: c.id });
+                }
+            }
+            Action::EditTurn(turn) => {
+                if let Some(c) = self.picked() {
+                    self.write_again(Target::Turn { change: c.change, id: c.id, turn }, self.focus);
+                }
+            }
+            Action::EditTurnInEditor(turn) => {
+                if let Some(c) = self.picked() {
+                    return Effect::EditComment(Target::Turn { change: c.change, id: c.id, turn });
+                }
+            }
+            Action::DeleteTurn(turn) | Action::BringBackTurn(turn) => {
+                let delete = matches!(action, Action::DeleteTurn(_));
+                if let Some(c) = self.picked() {
+                    let what = all_turns(&c.text).get(turn).map(|t| t.name(turn)).unwrap_or_default();
+                    let done = self.edit(|db| {
+                        let n = db.note(&c.change, &c.id).cloned().ok_or_else(|| crate::db::Error("the comment is gone".into()))?;
+                        let text = if delete { delete_turn(&n.text, turn) } else { bring_back_turn(&n.text, turn) };
+                        let text = text.ok_or_else(|| crate::db::Error(format!("{what} changed meanwhile: nothing is done")))?;
+                        db.set_note(Note { text, ..n })
+                    });
+                    if done.is_some() {
+                        self.status = if delete {
+                            format!("you deleted {what}: the menu of its line can bring it back")
+                        } else {
+                            format!("{what} is back, as it was")
+                        };
+                    }
                 }
             }
             Action::CommentInEditor => {
@@ -3453,6 +3547,14 @@ impl App {
                     }
                     Note { text, failed: None, ..n }
                 }
+                Target::Turn { change, id, turn } => {
+                    let n = db.note(change, id).cloned().ok_or_else(|| crate::db::Error("the comment is gone".into()))?;
+                    let text = edit_turn(&n.text, *turn, &text).ok_or_else(|| crate::db::Error("the turn you edited was deleted meanwhile".into()))?;
+                    if text == n.text {
+                        return Ok((change.clone(), id.clone()));
+                    }
+                    Note { text, failed: None, ..n }
+                }
                 Target::About(rev) => Note {
                     change: stack_change(&name),
                     id: format!("h{stamp}"),
@@ -3661,9 +3763,10 @@ impl App {
                 }
             }
             Effect::EditTodo => self.status = ops::edit_stack(&self.path, &name)?,
-            Effect::EditComment(Target::Edit { change, id }) => {
-                let Some(n) = self.db.note(&change, &id).cloned() else { return Ok(()) };
-                let Some(mine) = last_mine(&n.text) else { return Ok(()) };
+            Effect::EditComment(target @ (Target::Edit { .. } | Target::Turn { .. })) => {
+                let (Target::Edit { change, id } | Target::Turn { change, id, .. }) = &target else { return Ok(()) };
+                let Some(n) = self.db.note(change, id).cloned() else { return Ok(()) };
+                let Some(mine) = self.mine_of(&target) else { return Ok(()) };
                 // Off the agent's queue meanwhile; nothing is dropped from
                 // what you wrote, a line starting with # as any.
                 if n.queued.is_some() {
@@ -3671,7 +3774,7 @@ impl App {
                 }
                 let e = Edit {
                     ed: Editor::new(""),
-                    target: Target::Edit { change, id },
+                    target,
                     pane: self.focus,
                     held: n.queued.clone(),
                 };
@@ -4106,6 +4209,10 @@ impl App {
                 let reply = self.db.note(change, id).is_some_and(|n| thread_turns(&n.text).len() > 1);
                 format!("your {}: edit it, or add to it", if reply { "reply" } else { "comment" })
             }
+            Target::Turn { change, id, turn } => {
+                let t = self.db.note(change, id).and_then(|n| all_turns(&n.text).into_iter().nth(*turn));
+                format!("{}: edit it", t.map_or("the turn".into(), |t| t.name(*turn)))
+            }
             Target::About(rev) => format!("a question on @{rev}, for the agent to answer"),
         };
         spot_in(&self.spots, area, (0, y, w, bh), Spot::Box);
@@ -4392,6 +4499,8 @@ impl App {
         let first = match &e.target {
             Target::Line { key, .. } => self.rows.iter().position(|r| r.key.as_deref() == Some(key) && r.note.is_none())?,
             Target::Reply { id, .. } | Target::Edit { id, .. } => self.rows.iter().position(|r| r.note.as_deref() == Some(id))?,
+            // Under the turn written again, over those after it.
+            Target::Turn { id, turn, .. } => return self.rows.iter().rposition(|r| r.note.as_deref() == Some(id) && r.turn == Some(*turn)),
             _ => return None,
         };
         let mut last = first;
@@ -4538,7 +4647,7 @@ impl App {
             put(buf, area, 0, y + 1, w, &fit(&format!("   {last}"), w), tail);
             spot_in(&self.spots, area, (0, y, w, per), Spot::Note(i));
             y += per;
-            if matches!(&editing, Some(Target::Reply { change, id } | Target::Edit { change, id }) if *change == n.change && *id == n.id) {
+            if matches!(&editing, Some(Target::Reply { change, id } | Target::Edit { change, id } | Target::Turn { change, id, .. }) if *change == n.change && *id == n.id) {
                 cursor = self.draw_editor(buf, area, y, Focus::Notes);
                 y += edit_h;
             }

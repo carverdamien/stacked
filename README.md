@@ -196,8 +196,15 @@ Comments are written where they will show, in an editor inline: a comment
 on the stack under the left pane's header, on a patch under its title in
 the left pane, on a line under the line, a reply under its comment, in the
 middle or in the comments pane. The pane being written in takes half the
-width meanwhile. Typing and the arrows edit, enter breaks the line, and esc
-asks what to do with it: `Save it`, `Save it and ask agent`, `Throw it
+width meanwhile. Typing and the arrows edit, and enter breaks the line.
+ctrl-a and ctrl-e go to the start and the end of the line. ctrl-k cuts the
+rest of the line, or at its end the line break, and ctrl-k again adds what
+it cuts to that; ctrl-y puts what was cut last where the cursor is, in this
+comment or in the next one. ctrl-← and ctrl-→ go a word back and a word on,
+as alt-← and alt-→ (alt-b and alt-f) do; a word is what is between blanks.
+On a Mac, ctrl-← and ctrl-→ switch desktops unless that is turned off in
+the keyboard settings, so use alt (option) there. Esc
+asks what to do with the comment: `Save it`, `Save it and ask agent`, `Throw it
 away`, `Keep writing`. The menu opens under the comment (above it when
 there is no room under), and the comment stays where it was written, to
 read again before it is saved. How the agent is asked is the choice of `Save it and
@@ -221,6 +228,23 @@ be asked again (or `Save it and ask agent`). In $EDITOR it is only what you
 said, nothing dropped, a line starting with `#` as any. The comment's
 history says `you edited it`. On the command line: `stacked reply NAME ID
 --edit TEXT`.
+
+Any turn of a thread can be written again, whoever wrote it. With the
+cursor on one of its lines in the middle, the menu's first item is `Edit
+the agent's reply` (or `Edit your comment`, `Edit ann's reply`), here or in
+$EDITOR: trim the agent's answer down to what you need, and the agent is
+told it as you left it the next time it is asked. `Delete the agent's
+reply` deletes that reply only; the comment itself is deleted whole, with
+`Delete this comment…`. Where the reply was, a quiet line says `(you
+deleted the agent's reply)`. The agent is no longer told that reply, and
+the menu of that line has `Bring back the agent's reply`, which puts it
+back as it was. When the agent's last answer is deleted, your question is
+the last word again, to ask again. None of this is done while the agent
+works on the comment. The comment's history says which turn was edited,
+deleted or brought back. On the command line, N counts the turns as
+`stacked comments` lists them, from 1 for the comment itself, a deleted
+turn counting: `stacked reply NAME ID --edit --turn N TEXT`, `stacked reply
+NAME ID --delete N`, `stacked reply NAME ID --bring-back N`.
 
 ## Editing a patch by hand
 
@@ -587,7 +611,9 @@ by its line number, its rev: `@12`.
 - A comment record is the whole comment as it is now; its earlier records
   are its history. The agent's turns are fenced ```` ```agent ````
   (```` ```claude ````, as the first files have them, reads the same). A
-  read mark holds the lines it read; taking it back is a record naming it.
+  turn you deleted is fenced ```` ```deleted ```` with whose it was, what
+  it said kept in it, each line quoted with `>`, to bring it back. A read
+  mark holds the lines it read; taking it back is a record naming it.
 - A crash can only cut the last line short. A line that cannot be read is
   passed over with a warning (`stacked check` lists them) and keeps its line
   number, so every rev after it stays the same. The next write ends a cut
