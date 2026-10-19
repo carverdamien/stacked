@@ -508,6 +508,17 @@ fn setup_agent(dir: &Path, settings: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Whether the process `pid` is gone: exited (reaped now, if it was this
+/// one's child, as an ask's started here is), or not there at all.
+fn gone(pid: u32) -> bool {
+    let mut status = 0;
+    match unsafe { libc::waitpid(pid as i32, &mut status, libc::WNOHANG) } {
+        0 => false,
+        p if p == pid as i32 => true,
+        _ => !ask::alive(pid),
+    }
+}
+
 fn parse_rev(s: &str) -> Result<usize> {
     s.trim_start_matches('@')
         .parse()
@@ -1173,10 +1184,31 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
                 let ours = |r: &stacked::db::Run| {
                     ask::info(r).is_some_and(|i| i.notes.iter().any(|sh| sent.contains(&(sh.change.clone(), sh.id.clone()))))
                 };
+                // The processes of the asks about it: until each is gone,
+                // what landing does after filing (the checkout moved back,
+                // the next asks started) is not done.
+                let mut pids: Vec<u32> = Vec::new();
                 loop {
                     std::thread::sleep(std::time::Duration::from_millis(200));
                     let db = Db::load(path)?;
                     ask::land_orphans(path, &db);
+                    // What is going, and what landed, as one look at the
+                    // database sees them: an ask landing meanwhile is in
+                    // neither, and is seen the next time.
+                    let db = Db::load(path)?;
+                    for r in db.runs().into_iter().filter(|r| ours(r) && r.state == stacked::db::RunState::Started) {
+                        if let Some(pid) = r.pid.filter(|p| !pids.contains(p)) {
+                            pids.push(pid);
+                        }
+                    }
+                    let busy = ask::with_agent(&db);
+                    // A change waiting for the review of the one before it
+                    // goes once you have reviewed that: nothing to wait for.
+                    let reviewing = stacked::held::change_waiting(&db, &name).is_some();
+                    let going = sent.iter().any(|k| {
+                        busy.contains_key(k)
+                            || db.note(&k.0, &k.1).is_some_and(|n| n.queued.as_ref().is_some_and(|q| !(reviewing && q.way == Way::Change)))
+                    });
                     // Accepted as soon as landed: what waited on its review
                     // goes.
                     if accept {
@@ -1186,18 +1218,11 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
                         }
                         if !landed.is_empty() {
                             ask::launch(path)?;
+                            continue;
                         }
                     }
-                    let db = Db::load(path)?;
-                    let busy = ask::with_agent(&db);
-                    // A change waiting for the review of the one before it
-                    // goes once you have reviewed that: nothing to wait for.
-                    let reviewing = stacked::held::change_waiting(&db, &name).is_some();
-                    let going = sent.iter().any(|k| {
-                        busy.contains_key(k)
-                            || db.note(&k.0, &k.1).is_some_and(|n| n.queued.as_ref().is_some_and(|q| !(reviewing && q.way == Way::Change)))
-                    });
-                    if going {
+                    pids.retain(|&pid| !gone(pid));
+                    if going || !pids.is_empty() {
                         continue;
                     }
                     for r in stacked::held::queue(&db, &name).into_iter().filter(|r| ours(r)) {
