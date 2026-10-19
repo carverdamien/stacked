@@ -666,6 +666,10 @@ follows each patch by its change, a move told from a shift.
   the file only grows. To build: `deleted` in `Show…`, each as it was, with
   `History of this comment…` and `Bring it back` in its menu, and `stacked
   comments NAME --show deleted`.
+- `stacked config` only prints every setting. To build, as `git config`
+  does: `stacked config KEY` prints one (`view.layout`), `stacked config KEY
+  VALUE` writes it in the settings file, the rest of the file as it was and
+  the value checked first, and `--unset KEY` takes it out.
 - When an ask lands, the screen changes on its own: the stack moves to the
   agent's edit if you have not edited since. self-review-rs now holds
   changes until `R`; should stacked do the same?
