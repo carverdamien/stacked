@@ -163,9 +163,15 @@ the help then names those:
 - The arrows move. ↑↓ go through the patches (the header is above the
   first), the lines of the patch, or the comments (their header above the
   first); pgup, pgdn, home and end go further. ← and → go from pane to
-  pane: ← on the patches hides them, for the middle to have the width, and
-  ← again brings them back; → on the comments hides them the same way, the
-  bar saying how many there are.
+  pane, and past the side panes cycle what they show: expanded, compact,
+  hidden. ← on the expanded patches makes them compact (each its number
+  and the lines it adds and removes, `+12 −3`, in a narrow pane), ← again
+  hides them, for the middle to have the width, and ← from the middle
+  brings them back expanded (each its number and title, whole, folded
+  under itself when the pane is too narrow). → on the comments does the
+  same: compact, a line for each (who, and where it is); hidden, the bar
+  saying how many there are; expanded again, each with the first line of
+  what was said last.
 - Enter does what is to be done where the cursor is: on a patch, read it; on
   a line, comment on it; on a comment, reply, or, while the agent works on
   it, open what it is writing; in the comments pane, go to the comment.
@@ -835,8 +841,10 @@ settings:
   are; `token`, one for `url` instead; `trailer`, the trailer naming a
   revision (`Differential Revision`).
 - `[view]`: `layout` at the start (`unified`, `side-by-side`, `compact`);
-  `reading`, to start reading; `patches` and `comments`, the panes shown at
-  the start; `stream_lines`, the agent's lines under a comment; and
+  `reading`, to start reading; `patches` and `comments`, the side panes at
+  the start, `"expanded"`, `"compact"` or `"hidden"` (`true` and `false`,
+  as before, are expanded and hidden); `stream_lines`, the agent's lines
+  under a comment; and
   `split_width`, the columns two sides need.
 - `[colors]`: what paints each part of the screen, as git writes a colour
   (`git config color.diff.new "green bold"`): a foreground, then a
@@ -1088,8 +1096,9 @@ moving a patch, searching (what is in sight first, the patches then the
 files they touch, the history), the agents' worktrees made ahead as the
 stack's checkout says, the banner of the agent's work (Esc to it and
 back, open a line for each, Enter on each), the comment editor hiding
-nothing in each view of the code, and each pane keeping where its cursor
-was. With `--features web`, `tests/web.rs`
+nothing in each view of the code, each pane keeping where its cursor
+was, the patch's title kept at the top of the middle, and the side panes'
+modes (expanded, compact, hidden). With `--features web`, `tests/web.rs`
 serves the editor and asks it over HTTP as a browser would: the token
 needed, the page, the wasm, the rows as they change, a key and a click; and
 `web.rs` tests the rows and the lines both ways, with the client's own tests

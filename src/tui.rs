@@ -6,12 +6,12 @@
 //! database; claude's asks run on their own and what they did shows up when
 //! it lands.
 //!
-//! The keys are few: the arrows move (← on the patches hides them, → on the
-//! comments too), enter does what is to be done where the cursor is, space
-//! is the menu of all that can be done there, `?` says what that is, and esc
-//! goes back. Nothing else is a shortcut: what the menu does, only the menu
-//! does. Comments are written in an editor inline where they will show, and
-//! sent to claude from their menu.
+//! The keys are few: the arrows move (← on the patches makes them compact,
+//! then hides them; → on the comments too), enter does what is to be done
+//! where the cursor is, space is the menu of all that can be done there,
+//! `?` says what that is, and esc goes back. Nothing else is a shortcut:
+//! what the menu does, only the menu does. Comments are written in an
+//! editor inline where they will show, and sent to claude from their menu.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -865,6 +865,7 @@ pub struct TextView {
     back: Screen,
 }
 
+pub use crate::config::Pane;
 pub use crate::history::{Diffed, Entry};
 use crate::history::{note_change, way_said};
 
@@ -894,10 +895,11 @@ pub struct App {
     pub searching: Option<Searching>,
     pub searches: Vec<String>,
     pub focus: Focus,
-    /// The patches are shown, on the left.
-    pub list: bool,
-    /// The comments are shown, on the right, when there are any.
-    pub comments: bool,
+    /// How the patches are shown, on the left: expanded, compact or
+    /// hidden.
+    pub list: Pane,
+    /// How the comments are shown, on the right, when there are any.
+    pub comments: Pane,
     /// The comment selected in the comments pane, of `notes()`.
     pub note_sel: usize,
     /// The comments pane's cursor is on its header.
@@ -973,6 +975,9 @@ pub struct App {
     /// The comments the agent works on, as last read, and how many records
     /// the database had then.
     busy_memo: std::cell::RefCell<Option<(usize, std::rc::Rc<Busy>)>>,
+    /// The lines each patch adds and removes, by its id: the compact
+    /// patches pane's stats.
+    stats_memo: std::cell::RefCell<HashMap<String, (usize, usize)>>,
     /// The comments whose reply waits for review, as last read, and how
     /// many changes the database had then.
     held_memo: std::cell::RefCell<Option<(usize, std::rc::Rc<Held>)>>,
@@ -1151,6 +1156,7 @@ impl App {
             judged: None,
             bg: Background::new(),
             busy_memo: std::cell::RefCell::new(None),
+            stats_memo: std::cell::RefCell::new(HashMap::new()),
             held_memo: std::cell::RefCell::new(None),
             hist_memo: std::cell::RefCell::new(None),
             spots: std::cell::RefCell::new(Vec::new()),
@@ -1619,7 +1625,7 @@ impl App {
             Show::Deleted => !self.deleted().is_empty(),
             _ => !self.subject_notes().is_empty(),
         };
-        self.screen == Screen::Main && self.comments && any
+        self.screen == Screen::Main && self.comments.shown() && any
     }
 
     /// The comments the middle pane shows, in its order: each its first row
@@ -1974,7 +1980,9 @@ impl App {
         self.sel = self.sel.min(n.saturating_sub(1));
         if n == 0 {
             self.on_stack = true;
-            self.list = true;
+            if !self.list.shown() {
+                self.list = Pane::Expanded;
+            }
             if self.focus == Focus::List {
                 self.on_stack = true;
             }
@@ -2183,17 +2191,25 @@ impl App {
                 self.sel = last;
             }
             (Focus::List, KeyCode::Right) if self.current().is_some() => self.focus = Focus::Diff,
-            // Further left than the patches: they make way for the middle.
+            // Further left than the patches: they say less, compact, then
+            // make way for the middle, hidden.
             (Focus::List, KeyCode::Left) if self.current().is_some() => {
-                self.list = false;
-                self.focus = Focus::Diff;
+                self.list = self.list.next();
+                if !self.list.shown() {
+                    self.focus = Focus::Diff;
+                }
             }
+            // To the patches; hidden, they are shown again, expanded.
             (Focus::Diff, KeyCode::Left | KeyCode::Esc) => {
-                self.list = true;
+                if !self.list.shown() {
+                    self.list = self.list.next();
+                }
                 self.focus = Focus::List;
             }
             (Focus::Diff, KeyCode::Right) if !self.subject_notes().is_empty() => {
-                self.comments = true;
+                if !self.comments.shown() {
+                    self.comments = self.comments.next();
+                }
                 // The comment the cursor is in, else the next one down.
                 let at = self.note_at_cursor().unwrap_or_else(|| {
                     let notes = self.notes();
@@ -2216,11 +2232,13 @@ impl App {
                 };
             }
             (Focus::Notes, KeyCode::Left | KeyCode::Esc) => self.focus = Focus::Diff,
-            // Further right than the comments: they make way for the middle,
-            // which is where it was.
+            // Further right than the comments: they say less, a line each,
+            // then make way for the middle, which is where it was.
             (Focus::Notes, KeyCode::Right) => {
-                self.comments = false;
-                self.focus = Focus::Diff;
+                self.comments = self.comments.next();
+                if !self.comments.shown() {
+                    self.focus = Focus::Diff;
+                }
             }
             (Focus::Notes, KeyCode::Up) if self.note_sel == 0 => self.notes_head = true,
             (Focus::Notes, KeyCode::Down) if self.notes_head => {
@@ -2297,7 +2315,7 @@ impl App {
         if next != Layout::Unified && !self.sides_fit() {
             let need = self.cfg.view.split_width;
             self.status = self.say_keys(format!(
-                "side-by-side needs {need} columns: ← on the patches hides them, → on the comments hides them"
+                "side-by-side needs {need} columns: ← on the patches makes them compact, then hides them; → on the comments too"
             ));
             return;
         }
@@ -2645,12 +2663,12 @@ impl App {
                 }
                 match self.focus {
                     Focus::List => out.push(
-                        "Press ↑↓ for another patch, or the stack at the top; → to read it; ← to hide the patches."
+                        "Press ↑↓ for another patch, or the stack at the top; → to read it; ← for less of the patches: compact, then hidden."
                             .into(),
                     ),
                     Focus::Diff => out.push(self.arrows_help()),
                     Focus::Notes => out.push(
-                        "Press ↑↓ for another comment, or the list at the top (the middle stays where it is, and shows it at its top or bottom); ← to go back; → to hide the comments."
+                        "Press ↑↓ for another comment, or the list at the top (the middle stays where it is, and shows it at its top or bottom); ← to go back; → for less of the comments: a line each, then hidden."
                             .into(),
                     ),
                 }
@@ -2771,9 +2789,9 @@ impl App {
             return format!("{keys}.");
         }
         let mut keys = "Press ↑↓ (pgup pgdn home end) to move".to_string();
-        keys += if self.list { ", ← for the patches" } else { ", ← to show the patches" };
+        keys += if self.list.shown() { ", ← for the patches" } else { ", ← to show the patches" };
         if !self.subject_notes().is_empty() {
-            keys += if self.comments { ", → for the comments" } else { ", → to show the comments" };
+            keys += if self.comments.shown() { ", → for the comments" } else { ", → to show the comments" };
         }
         format!("{keys}.")
     }
@@ -4647,7 +4665,7 @@ impl App {
             Screen::Review => self.draw_review(buf, body),
             Screen::Search => cursor = self.draw_search(buf, body),
             Screen::Tree | Screen::Stacks | Screen::Versions => {
-                let (left, (right, _)) = self.columns(buf, body, true, false, None);
+                let (left, (right, _)) = self.columns(buf, body, (body.width as usize / 4).clamp(20, 40), 0);
                 let left = left.unwrap();
                 match self.screen {
                     Screen::Tree => self.draw_tree(buf, left),
@@ -4660,9 +4678,10 @@ impl App {
                 }
             }
             Screen::Main => {
-                let notes = self.notes_shown();
+                let right = if self.notes_shown() { self.comments } else { Pane::Hidden };
                 let wide = self.writing().map(|e| e.pane);
-                let (left, (middle, right)) = self.columns(buf, body, self.list, notes, wide);
+                let (left_w, right_w) = self.side_widths(body.width as usize, self.list, right, wide);
+                let (left, (middle, right)) = self.columns(buf, body, left_w, right_w);
                 // The middle first: the comments pane lists its rows.
                 cursor = self.draw_patch(buf, middle).or(cursor);
                 if let Some(left) = left {
@@ -4680,18 +4699,36 @@ impl App {
         cursor
     }
 
-    /// The body cut into the patches (if `left`), the middle, and the
-    /// comments (if `right`), with lines between. The pane a comment is
-    /// written in, `wide`, takes half the width.
-    fn columns(&self, buf: &mut Buffer, body: Rect, left: bool, right: bool, wide: Option<Focus>) -> (Option<Rect>, (Rect, Option<Rect>)) {
-        let w = body.width as usize;
-        let mut left_w = if left { (w / 4).clamp(20, 40) } else { 0 };
-        let mut right_w = if right { (w / 4).clamp(24, 44) } else { 0 };
+    /// How wide the side panes are, of `w`, as `left` and `right` show
+    /// them: expanded, a quarter of the width (what does not fit in it
+    /// folds: the patches' titles whole); compact, what they show needs, the
+    /// patches a quarter at most, the comments a fifth; hidden, not at all.
+    /// The pane a comment is written in, `wide`, takes half the width.
+    fn side_widths(&mut self, w: usize, left: Pane, right: Pane, wide: Option<Focus>) -> (usize, usize) {
+        let mut left_w = match left {
+            Pane::Hidden => 0,
+            Pane::Compact => self.list_wants().clamp(10, (w / 4).max(10)),
+            Pane::Expanded => (w / 4).clamp(20, 40),
+        };
+        let mut right_w = match right {
+            Pane::Hidden => 0,
+            Pane::Compact => self.notes_wants().clamp(12, (w / 5).max(12)),
+            Pane::Expanded => (w / 4).clamp(24, 44),
+        };
         match wide {
-            Some(Focus::List) if left => left_w = left_w.max(w / 2),
-            Some(Focus::Notes) if right => right_w = right_w.max(w / 2),
+            Some(Focus::List) if left.shown() => left_w = left_w.max(w / 2),
+            Some(Focus::Notes) if right.shown() => right_w = right_w.max(w / 2),
             _ => {}
         }
+        (left_w, right_w)
+    }
+
+    /// The body cut into a pane `left_w` wide on the left and one `right_w`
+    /// wide on the right (none, 0 wide), the middle between, with lines
+    /// between them.
+    fn columns(&self, buf: &mut Buffer, body: Rect, left_w: usize, right_w: usize) -> (Option<Rect>, (Rect, Option<Rect>)) {
+        let w = body.width as usize;
+        let (left, right) = (left_w > 0, right_w > 0);
         let line = |buf: &mut Buffer, x: usize| {
             for y in 0..body.height {
                 buf.set_string(body.x + x as u16, body.y + y, "│", color::meta());
@@ -4712,6 +4749,116 @@ impl App {
         (l, (mid, r))
     }
 
+    /// The patches pane's header: the stack's own place.
+    fn list_header(&self) -> String {
+        let own = self.db.notes(&stack_change(&self.stack)).len();
+        match self.current() {
+            Some(s) => {
+                let mut t = format!(" ≡ {} · {} patch{}", self.stack, s.patches.len(), if s.patches.len() == 1 { "" } else { "es" });
+                if own > 0 {
+                    t += &format!(" · {own} comment{}", plural(own));
+                }
+                t
+            }
+            None => format!(" ≡ {}", if self.stack.is_empty() { "no stack" } else { &self.stack }),
+        }
+    }
+
+    /// What the patches pane says of patch `id`, as `mode` shows it: its
+    /// title (expanded) or the lines it adds and removes (compact); and its
+    /// tags: what is read of it, reading; its comments the agent has not
+    /// answered last.
+    fn patch_said(&mut self, id: &str, mode: Pane) -> (String, String) {
+        let mut tag = match self.reading.then(|| self.read_of(id)) {
+            Some((n, m)) if m > 0 && n == m => " ✓".to_string(),
+            Some((n, m)) if m > 0 => format!(" {n}/{m}"),
+            _ => String::new(),
+        };
+        let p = self.db.patch(id);
+        let open = self.db.notes(&p.change).iter().filter(|n| last_role(&n.text) != Some(Role::Agent)).count();
+        if open > 0 {
+            tag += &format!(" [{open}]");
+        }
+        let said = match mode {
+            Pane::Compact => {
+                let (added, removed) = self.stats(id);
+                format!("+{added} −{removed}")
+            }
+            _ => p.title().to_string(),
+        };
+        (said, tag)
+    }
+
+    /// The lines patch `id` adds and removes, counted once: its versions do
+    /// not change.
+    fn stats(&self, id: &str) -> (usize, usize) {
+        if let Some(s) = self.stats_memo.borrow().get(id) {
+            return *s;
+        }
+        let mut s = (0, 0);
+        for f in crate::diff::parse_diff(&self.db.patch(id).diff, "") {
+            for l in f.hunks.iter().flat_map(|h| h.lines.iter()) {
+                match l.origin {
+                    '+' => s.0 += 1,
+                    '-' => s.1 += 1,
+                    _ => {}
+                }
+            }
+        }
+        self.stats_memo.borrow_mut().insert(id.to_string(), s);
+        s
+    }
+
+    /// How wide the patches pane is to be, compact: its widest line.
+    fn list_wants(&mut self) -> usize {
+        let Some(ids) = self.current().map(|s| s.patches.clone()) else { return 0 };
+        let mut most = 0;
+        for id in &ids {
+            let (said, tag) = self.patch_said(id, Pane::Compact);
+            most = most.max(4 + said.chars().count() + tag.chars().count());
+        }
+        most + 1
+    }
+
+    /// What the comments pane says of comment `n`: its mark (with the agent,
+    /// waiting its turn, its reply waiting for review, failed, moved,
+    /// answered), who opened it and where it is; then the first line of
+    /// what was said last.
+    fn note_said(&self, n: &Note, busy: &Busy, held: &Held) -> (String, String) {
+        let key = (n.change.clone(), n.id.clone());
+        let mark = if busy.contains_key(&key) {
+            "●"
+        } else if n.queued.is_some() {
+            "◌"
+        } else if held.contains_key(&key) {
+            "◆"
+        } else if n.failed.is_some() {
+            "✗"
+        } else if n.moved.is_some() {
+            "↑"
+        } else if last_role(&n.text) == Some(Role::Agent) {
+            "✓"
+        } else {
+            " "
+        };
+        let who = n.by.as_deref().unwrap_or("you");
+        let at = match n.about {
+            Some(rev) => format!("history @{rev}"),
+            None if n.on_stack() => "the stack".to_string(),
+            None => format!("{}: {}", n.file, n.preview),
+        };
+        let last = thread_turns(&n.text).last().map(|t| t.body.lines().next().unwrap_or("").to_string()).unwrap_or_default();
+        (format!("{mark} {who} · {at}"), format!("   {last}"))
+    }
+
+    /// How wide the comments pane is to be, compact: its widest line, of
+    /// the comments on what the middle shows.
+    fn notes_wants(&self) -> usize {
+        let (busy, held) = (self.busy(), self.held_replies());
+        let lines = self.subject_notes().into_iter().map(|n| self.note_said(&n, &busy, &held).0.chars().count());
+        lines.max().unwrap_or(0) + 1
+    }
+
     fn draw_bar(&self, buf: &mut Buffer, area: Rect) {
         let w = area.width as usize;
         let file = self.path.file_name().unwrap_or_default().to_string_lossy();
@@ -4724,11 +4871,11 @@ impl App {
                 }
                 // With the patches out of sight, which one this is; with the
                 // comments, how many there are.
-                if !self.list && self.screen == Screen::Main && !s.patches.is_empty() && !self.on_stack {
+                if !self.list.shown() && self.screen == Screen::Main && !s.patches.is_empty() && !self.on_stack {
                     text += &format!(" · patch {} of {}", self.sel + 1, s.patches.len());
                 }
                 let notes = self.subject_notes().len();
-                if !self.comments && self.screen == Screen::Main && notes > 0 {
+                if !self.comments.shown() && self.screen == Screen::Main && notes > 0 {
                     text += &format!(" · {notes} comment{}", plural(notes));
                 }
                 if self.screen == Screen::Main {
@@ -4993,17 +5140,7 @@ impl App {
     fn draw_list(&mut self, buf: &mut Buffer, area: Rect) -> Option<(u16, u16)> {
         let w = area.width as usize;
         // The header: the stack's own place.
-        let own = self.db.notes(&stack_change(&self.stack)).len();
-        let header = match self.current() {
-            Some(s) => {
-                let mut t = format!(" ≡ {} · {} patch{}", self.stack, s.patches.len(), if s.patches.len() == 1 { "" } else { "es" });
-                if own > 0 {
-                    t += &format!(" · {own} comment{}", plural(own));
-                }
-                t
-            }
-            None => format!(" ≡ {}", if self.stack.is_empty() { "no stack" } else { &self.stack }),
-        };
+        let header = self.list_header();
         let mut st = color::header();
         if self.on_stack {
             st = if self.focus == Focus::List && !self.on_banner {
@@ -5048,32 +5185,48 @@ impl App {
             }
             _ => (self.sel, false),
         };
+        // Each patch's lines: its number and, compact, its stats; expanded,
+        // its title whole, folded under itself where the pane is narrower;
+        // its tags at the end of its first.
+        let lines: Vec<Vec<String>> = order
+            .iter()
+            .enumerate()
+            .map(|(at, &i)| {
+                let (said, tag) = self.patch_said(&s.patches[i], self.list);
+                let mark = if moving && at == on { " ↕".to_string() } else { format!("{:>2}", at + 1) };
+                let head = format!(" {mark} ");
+                let (head_w, tag_w) = (head.chars().count(), tag.chars().count());
+                let mut folded = vec![said.clone()];
+                if self.list == Pane::Expanded && head_w + said.chars().count() + tag_w > w {
+                    folded = wrap(&said, w.saturating_sub(head_w + tag_w).max(1));
+                }
+                if folded.is_empty() {
+                    folded.push(String::new());
+                }
+                folded
+                    .iter()
+                    .enumerate()
+                    .map(|(k, part)| match k {
+                        0 => format!("{}{tag}", fit(&format!("{head}{part}"), w.saturating_sub(tag_w))),
+                        _ => format!("{}{part}", " ".repeat(head_w)),
+                    })
+                    .collect()
+            })
+            .collect();
+        // The first patch shown: the one the cursor is on in sight, all its
+        // lines.
         let h = area.height as usize;
-        let top = on.saturating_sub(h.saturating_sub(2 + edit_h));
-        for (at, &i) in order.iter().enumerate().skip(top) {
+        let room = h.saturating_sub(1 + edit_h);
+        let mut top = on.min(lines.len().saturating_sub(1));
+        let mut used = lines.get(top).map_or(1, Vec::len);
+        while top > 0 && used + lines[top - 1].len() <= room {
+            top -= 1;
+            used += lines[top].len();
+        }
+        for (at, (&i, its)) in order.iter().zip(&lines).enumerate().skip(top) {
             if y >= h {
                 break;
             }
-            // Reading, what is read of it: ✓ when all of it is.
-            let mut tag = match self.reading.then(|| self.read_of(&s.patches[i])) {
-                Some((n, m)) if m > 0 && n == m => " ✓".to_string(),
-                Some((n, m)) if m > 0 => format!(" {n}/{m}"),
-                _ => String::new(),
-            };
-            let p = self.db.patch(&s.patches[i]);
-            let open = self
-                .db
-                .notes(&p.change)
-                .iter()
-                .filter(|n| last_role(&n.text) != Some(Role::Agent))
-                .count();
-            if open > 0 {
-                tag += &format!(" [{open}]");
-            }
-            let mark = if moving && at == on { " ↕".to_string() } else { format!("{:>2}", at + 1) };
-            let text = format!(" {mark} {}", p.title());
-            let room = w.saturating_sub(tag.chars().count());
-            let line = format!("{}{tag}", fit(&text, room));
             let mut st = Style::new();
             if at == on && !self.on_stack {
                 st = if self.focus == Focus::List || moving {
@@ -5082,10 +5235,16 @@ impl App {
                     st.add_modifier(Modifier::BOLD)
                 };
             }
-            put(buf, area, 0, y, w, &line, st);
-            self.spot(area, (0, y, w), Spot::Patch(Some(at)));
-            y += 1;
-            if editing == Some(Target::Patch(p.change.clone())) {
+            for line in its {
+                if y >= h {
+                    break;
+                }
+                put(buf, area, 0, y, w, &fit(line, w), st);
+                self.spot(area, (0, y, w), Spot::Patch(Some(at)));
+                y += 1;
+            }
+            let change = self.db.patch(&s.patches[i]).change.clone();
+            if editing == Some(Target::Patch(change)) {
                 cursor = self.draw_editor(buf, area, y, Focus::List);
                 y += edit_h;
             }
@@ -5457,7 +5616,9 @@ impl App {
             _ => self.note_at_cursor(),
         };
         let editing = self.writing().filter(|e| e.pane == Focus::Notes).map(|e| e.target.clone());
-        let per = 2;
+        // A comment's lines: compact, its mark, who and where; expanded, the
+        // first line of what was said last too.
+        let per = if self.comments == Pane::Compact { 1 } else { 2 };
         let edit_h = self.editor_height(area, Focus::Notes);
         let fits = ((h.saturating_sub(1 + edit_h)) / per).max(1);
         let on = lit.unwrap_or(0);
@@ -5466,29 +5627,10 @@ impl App {
         let mut cursor = None;
         let mut y = 1;
         for (i, n) in all.iter().enumerate().skip(first) {
-            if y + 1 >= h {
+            if y + per > h {
                 break;
             }
-            let who = n.by.as_deref().unwrap_or("you");
-            let mark = if busy.contains_key(&(n.change.clone(), n.id.clone())) {
-                "●"
-            } else if n.queued.is_some() {
-                "◌"
-            } else if held.contains_key(&(n.change.clone(), n.id.clone())) {
-                "◆"
-            } else if n.failed.is_some() {
-                "✗"
-            } else if n.moved.is_some() {
-                "↑"
-            } else if last_role(&n.text) == Some(Role::Agent) {
-                "✓"
-            } else {
-                " "
-            };
-            let last = thread_turns(&n.text)
-                .last()
-                .map(|t| t.body.lines().next().unwrap_or("").to_string())
-                .unwrap_or_default();
+            let (said, last) = self.note_said(n, &busy, &held);
             let mut head = by_style(Some(&by_of(n)));
             let mut tail = color::dim();
             if lit == Some(i) {
@@ -5496,13 +5638,10 @@ impl App {
                 head = head.add_modifier(m);
                 tail = Style::new().add_modifier(m);
             }
-            let at = match n.about {
-                Some(rev) => format!("history @{rev}"),
-                None if n.on_stack() => "the stack".to_string(),
-                None => format!("{}: {}", n.file, n.preview),
-            };
-            put(buf, area, 0, y, w, &fit(&format!("{mark} {who} · {at}"), w), head);
-            put(buf, area, 0, y + 1, w, &fit(&format!("   {last}"), w), tail);
+            put(buf, area, 0, y, w, &fit(&said, w), head);
+            if per == 2 {
+                put(buf, area, 0, y + 1, w, &fit(&last, w), tail);
+            }
             spot_in(&self.spots, area, (0, y, w, per), Spot::Note(i));
             y += per;
             if matches!(&editing, Some(Target::Reply { change, id } | Target::Edit { change, id } | Target::Turn { change, id, .. } | Target::Rewind { change, id, .. }) if *change == n.change && *id == n.id) {

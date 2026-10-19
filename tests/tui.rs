@@ -7,7 +7,7 @@ use ratatui::layout::Rect;
 
 use stacked::db::{Db, Note, stack_change};
 use stacked::thread::{Role, append_turn};
-use stacked::tui::{App, Effect, Focus, Layout, Mode, Screen, Show};
+use stacked::tui::{App, Effect, Focus, Layout, Mode, Pane, Screen, Show};
 
 fn git(dir: &Path, args: &[&str]) {
     let out = Command::new("git")
@@ -571,18 +571,27 @@ fn question_mark_says_what_can_be_done_where_the_cursor_is() {
 }
 
 #[test]
-fn left_on_the_patches_hides_them() {
+fn left_on_the_patches_cycles_them_compact_hidden_expanded() {
     let (_tmp, db, _src) = setup();
     let mut app = open(&db).unwrap();
-    draw(&mut app);
+    let screen = draw(&mut app);
+    assert!(app.list == Pane::Expanded && screen.contains("  2 Bug 2 - add b"), "expanded at the start:\n{screen}");
+    // Compact: each patch's number and the lines it adds and removes.
     keys(&mut app, &[KeyCode::Left]);
-    assert!(!app.list && app.focus == Focus::Diff);
+    assert!(app.list == Pane::Compact && app.focus == Focus::List);
+    let screen = draw(&mut app);
+    assert!(screen.contains("\n  1 +2 −2 ") && screen.contains("\n  2 +1 −0 "), "{screen}");
+    assert!(!screen.contains("Bug 2 - add b"), "no title:\n{screen}");
+    // Hidden: the middle has the width.
+    keys(&mut app, &[KeyCode::Left]);
+    assert!(app.list == Pane::Hidden && app.focus == Focus::Diff);
     let screen = draw(&mut app);
     assert!(!screen.contains("Bug 2 - add b"), "the patches are gone:\n{screen}");
     assert!(screen.lines().nth(1).unwrap().starts_with("✉ message"), "the patch has the width:\n{screen}");
     assert!(screen.contains("patch 1 of 2"), "{screen}");
+    // Expanded again, the cursor in it.
     keys(&mut app, &[KeyCode::Left]);
-    assert!(app.list && app.focus == Focus::List);
+    assert!(app.list == Pane::Expanded && app.focus == Focus::List);
     assert!(draw(&mut app).contains("  2 Bug 2 - add b"));
 }
 
@@ -598,7 +607,14 @@ fn right_on_the_comments_hides_them() {
     let cursor = app.cursor;
     keys(&mut app, &[KeyCode::Right]);
     assert_eq!(app.focus, Focus::Notes);
-    // Further right than the comments: they make way for the patch.
+    // Further right than the comments: a line each, compact; then they
+    // make way for the patch.
+    let shown = |app: &mut App| draw(app).matches("why so loud?").count();
+    assert_eq!(shown(&mut app), 2, "in its thread, and in the pane");
+    keys(&mut app, &[KeyCode::Right]);
+    assert!(app.comments == Pane::Compact && app.focus == Focus::Notes);
+    assert!(draw(&mut app).contains("you · a.txt: TWO"));
+    assert_eq!(shown(&mut app), 1, "in its thread alone");
     keys(&mut app, &[KeyCode::Right]);
     assert!(!app.notes_shown() && app.focus == Focus::Diff);
     assert_eq!(app.cursor, cursor, "the patch is where it was");
@@ -612,7 +628,7 @@ fn right_on_the_comments_hides_them() {
     let screen = draw(&mut app);
     assert!(screen.contains("→ to show"), "{screen}");
     keys(&mut app, &[KeyCode::Right]);
-    assert!(app.notes_shown() && app.focus == Focus::Notes);
+    assert!(app.notes_shown() && app.comments == Pane::Expanded && app.focus == Focus::Notes);
     assert!(draw(&mut app).contains("you · a.txt: TWO"));
 }
 
@@ -2975,4 +2991,34 @@ fn the_patch_s_title_stays_at_the_top_of_the_middle() {
     app.click(40, 1, false);
     small(&mut app);
     assert!(app.rows[app.cursor].text.starts_with("   Bug 1 - shout two"), "{:?}", app.rows[app.cursor].text);
+}
+
+#[test]
+fn expanded_the_patches_say_their_titles_whole() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("src");
+    std::fs::create_dir(&src).unwrap();
+    git(&src, &["init", "-q", "-b", "main"]);
+    git(&src, &["config", "commit.gpgsign", "false"]);
+    std::fs::write(src.join("a.txt"), "a\n").unwrap();
+    git(&src, &["add", "."]);
+    git(&src, &["commit", "-qm", "base"]);
+    std::fs::write(src.join("a.txt"), "b\n").unwrap();
+    let title = "Bug 3 - a title long enough to need more than one line of the patches pane, which folds it";
+    git(&src, &["commit", "-qam", title]);
+    let db = tmp.path().join("db.jsonl");
+    stacked(&src, &db, &["import", "s", "HEAD~1"]);
+    let mut app = open(&db).unwrap();
+    // The patches pane's lines, under its header.
+    let pane = |app: &mut App| -> Vec<String> {
+        let screen = draw(app);
+        screen.lines().skip(2).map(|l| l.split('│').next().unwrap().trim_end().to_string()).take_while(|l| !l.is_empty()).collect()
+    };
+    // Expanded: the title whole, folded under its number.
+    let lines = pane(&mut app);
+    assert!(lines.len() > 1 && lines[1].starts_with("    "), "{lines:?}");
+    assert_eq!(lines.join(" ").split_whitespace().skip(1).collect::<Vec<_>>().join(" "), title, "{lines:?}");
+    // Compact: its number, and the lines it adds and removes.
+    keys(&mut app, &[KeyCode::Left]);
+    assert_eq!(pane(&mut app), ["  1 +1 −1"]);
 }

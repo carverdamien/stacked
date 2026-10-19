@@ -170,7 +170,9 @@ impl App {
             KeyCode::Esc => self.on_banner = false,
             KeyCode::Down if self.banner_sel >= last => {
                 self.on_banner = false;
-                self.list = true;
+                if !self.list.shown() {
+                    self.list = Pane::Expanded;
+                }
                 self.focus = Focus::List;
                 self.on_stack = true;
             }

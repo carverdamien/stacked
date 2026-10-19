@@ -314,7 +314,7 @@ fn the_views_say_how_to_widen_a_middle_too_narrow_for_two_sides() {
         screen(&mut app, &tour);
     }
     assert!(tour.say(&app).0.contains("needs a wider middle than this one"), "{}", tour.say(&app).0);
-    // ← to the patches and ← again: hidden, the middle has the room.
+    // ← to the patches and ← again: compact, the middle has the room.
     press(&mut app, KeyCode::Left);
     press(&mut app, KeyCode::Left);
     for _ in 0..2 {
