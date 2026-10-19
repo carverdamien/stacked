@@ -7,7 +7,7 @@ use stacked::ask;
 use stacked::db::{Db, Error, Note, Patch, Record, Result, Way, err, local_time as time, short_id, stack_change};
 use stacked::mbox::{Draft, base_commit, format_mbox, parse_mail, parse_mbox};
 use stacked::ops;
-use stacked::thread::{Role, all_turns, append_turn, bring_back_turn, delete_turn, edit_turn, replace_last_turn};
+use stacked::thread::{Role, all_turns, append_turn, edit_turn, replace_last_turn, rewind_from};
 use stacked::tui::{Busy, Show, note_state, shows};
 use stacked::view::{MSG_PATH, find_line, fold, note_lines, title_key};
 use stacked::{git, review, tree};
@@ -227,9 +227,9 @@ enum Cmd {
         #[arg(long, value_enum)]
         show: Option<ShowArg>,
     },
-    /// Reply to a comment, by its short id. Or change one turn of its
-    /// thread, by where it is in the thread as `comments` lists it: 1 is
-    /// the comment, 2 the first reply, and a deleted turn counts.
+    /// Reply to a comment, by its short id. Or change its thread: one turn
+    /// written again, or the conversation rewound; N counts the turns as
+    /// `comments` lists them, from 1 for the comment itself.
     Reply {
         name: String,
         id: String,
@@ -237,20 +237,17 @@ enum Cmd {
         /// the last word is yours, and not while the agent works on it. A
         /// comment waiting its turn leaves the agent's queue, to be sent
         /// again.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "rewind")]
         edit: bool,
         /// With --edit, the turn to write again, whoever said it.
         #[arg(long, value_name = "N", requires = "edit")]
         turn: Option<usize>,
-        /// Delete the reply that is turn N: the thread says that it was
-        /// deleted, and the agent is no longer told it. What it said is
-        /// kept, for --bring-back.
-        #[arg(long, value_name = "N", conflicts_with_all = ["edit", "bring_back"])]
-        delete: Option<usize>,
-        /// Bring back the deleted turn N, as it was.
-        #[arg(long, value_name = "N", conflicts_with_all = ["edit", "delete"])]
-        bring_back: Option<usize>,
-        #[arg(required_unless_present_any = ["delete", "bring_back"], conflicts_with_all = ["delete", "bring_back"])]
+        /// Rewind the conversation from turn N if it is yours, else from
+        /// your turn above it: TEXT takes the place of that turn and of
+        /// every turn after it.
+        #[arg(long, value_name = "N")]
+        rewind: Option<usize>,
+        #[arg(required = true)]
         text: Vec<String>,
     },
     /// Ask the agent about comments, by their short ids, or --all that can
@@ -450,11 +447,8 @@ fn print_note(db: &Db, name: &str, n: &Note, busy: &Busy) {
 fn print_thread(db: &Db, name: &str, n: &Note, state: &str) {
     let state = if state.is_empty() { String::new() } else { format!("\t{state}") };
     println!("{}\t{}{state}", short_id(&n.change, &n.id), where_on(db, name, n));
-    for (i, t) in all_turns(&n.text).into_iter().enumerate() {
-        if t.deleted {
-            println!("  (you deleted {})", t.name(i));
-            continue;
-        }
+    // A turn deleted the first way: left out.
+    for t in all_turns(&n.text).into_iter().filter(|t| !t.deleted) {
         let who = match t.role {
             Role::You => "you",
             Role::Agent => "agent",
@@ -891,7 +885,7 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
                 }
             }
         }
-        Cmd::Reply { name, id, edit, turn, delete, bring_back, text } => {
+        Cmd::Reply { name, id, edit, turn, rewind, text } => {
             let text = text.join(" ");
             let off = Db::edit(path, |db| {
                 let n = db.find_note(&name, &id)?.clone();
@@ -903,25 +897,16 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
                 if stacked::held::reply_waiting(db, &n.change, &n.id).is_some() {
                     return err("the agent's reply to it waits for your review: review it first");
                 }
-                // Which turn, from 1, of how many.
+                // Which turn, from 1, as `comments` lists them: where it is
+                // among all the turns, those deleted the first way too.
                 let at = |k: usize| {
-                    let all = all_turns(&n.text).len();
-                    if k == 0 || k > all {
-                        return err(format!("there is no turn {k}: the thread has {all}"));
+                    let listed: Vec<usize> = all_turns(&n.text).iter().enumerate().filter(|(_, t)| !t.deleted).map(|(i, _)| i).collect();
+                    match k.checked_sub(1).and_then(|k| listed.get(k)) {
+                        Some(&i) => Ok(i),
+                        None => err(format!("there is no turn {k}: the thread has {}", listed.len())),
                     }
-                    Ok(k - 1)
                 };
-                if delete.is_some() || bring_back.is_some() {
-                    let again = match (delete, bring_back) {
-                        (Some(1), _) => return err("turn 1 is the comment itself: only its replies can be deleted"),
-                        (Some(k), _) => delete_turn(&n.text, at(k)?).ok_or_else(|| Error(format!("turn {k} is deleted already")))?,
-                        (_, Some(k)) => bring_back_turn(&n.text, at(k)?).ok_or_else(|| Error(format!("turn {k} is not deleted")))?,
-                        _ => unreachable!(),
-                    };
-                    db.set_note(Note { text: again, ..n })?;
-                    return Ok(None);
-                }
-                if !edit {
+                if !edit && rewind.is_none() {
                     db.set_note(Note {
                         text: append_turn(&n.text, Role::You, &text, None),
                         failed: None,
@@ -929,14 +914,20 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
                     })?;
                     return Ok(None);
                 }
-                let again = match turn {
-                    Some(k) => {
+                let again = match (rewind, turn) {
+                    (Some(k), _) => {
+                        let Some(from) = rewind_from(&n.text, at(k)?) else {
+                            return err(format!("turn {k} has no turn of yours there or above it: `--edit --turn {k}` writes it again"));
+                        };
+                        stacked::thread::rewind(&n.text, from, &text).ok_or_else(|| Error("nothing to write: the conversation is as it was".into()))?
+                    }
+                    (None, Some(k)) => {
                         let Some(again) = edit_turn(&n.text, at(k)?, &text) else {
-                            return err(format!("turn {k} is deleted: bring it back to edit it"));
+                            return err(format!("turn {k} cannot be written again"));
                         };
                         again
                     }
-                    None => {
+                    (None, None) => {
                         let Some(again) = replace_last_turn(&n.text, &text) else {
                             return err("the last word is not yours: reply instead");
                         };

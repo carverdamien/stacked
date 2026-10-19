@@ -90,6 +90,11 @@ impl Editor {
         }
     }
 
+    /// The cursor at the start of the text: to write above what is there.
+    pub fn to_start(&mut self) {
+        (self.row, self.col) = (0, 0);
+    }
+
     /// The text, each line's trailing blanks dropped, and blank lines at
     /// either end.
     pub fn text(&self) -> String {

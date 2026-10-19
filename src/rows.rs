@@ -23,7 +23,7 @@ pub enum Kind {
     Comment,
     /// A quiet line of a comment: one of claude's stream, under the comment
     /// it is working on; where the comment stands, when its first line has
-    /// no room for it; a turn deleted.
+    /// no room for it; the comment, collapsed.
     Stream,
     Blank,
 }
@@ -94,6 +94,10 @@ pub struct Deco {
     pub read: Option<HashSet<String>>,
     /// The comments collapsed by hand, by id: a quiet line each.
     pub collapsed: HashSet<String>,
+    /// The turns of a comment being written in the editor, by its id: from
+    /// the first, to the one after the last, of all its turns. The editor
+    /// shows them, and its rows do not.
+    pub writing: HashMap<String, (usize, usize)>,
 }
 
 /// `3/10`: how many of `keys` are read, of how many.
@@ -186,11 +190,12 @@ pub fn comment_rows(n: &Note, width: usize, deco: &Deco) -> Vec<Row> {
             out.push(row(Kind::Stream, format!("     {part}"), false));
         }
     }
+    let hidden = deco.writing.get(&n.id).copied().unwrap_or((usize::MAX, usize::MAX));
     for (i, t) in all_turns(&n.text).into_iter().enumerate() {
         let of = |r: Row| Row { turn: Some(i), ..r };
-        // Deleted: a quiet line where it was.
-        if t.deleted {
-            out.push(of(row(Kind::Stream, format!("     (you deleted {})", t.name(i)), false)));
+        // Deleted the first way: shown nowhere. Written in the editor: shown
+        // there only.
+        if t.deleted || (hidden.0..hidden.1).contains(&i) {
             continue;
         }
         let who = match t.role {

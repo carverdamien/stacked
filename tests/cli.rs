@@ -1333,39 +1333,53 @@ fn what_you_said_last_may_be_written_again() {
 }
 
 #[test]
-fn any_turn_may_be_written_again_deleted_and_brought_back() {
+fn any_turn_may_be_written_again_and_the_conversation_rewound() {
     use stacked::thread::{Role, append_turn};
     let e = env();
     e.ok(&["import", "s", "base"]);
     let id = comment(&e, &["--patch", "1", "Why", "2?"]);
-    // Answered at length, and thanked.
+    // Answered at length, thanked, answered again; and a turn deleted the
+    // first way, which nothing shows, nor counts.
     Db::edit(&e.db, |db| {
         let n = db.stack_notes("s").into_iter().next().cloned().unwrap();
         let text = append_turn(&n.text, Role::Agent, "Seen, at length.", Some("answer"));
-        db.set_note(stacked::db::Note { text: append_turn(&text, Role::You, "Thanks.", None), ..n })
+        let text = append_turn(&text, Role::You, "Thanks.", None);
+        let text = format!("{text}\n```deleted agent answer\n> Gone.\n```");
+        db.set_note(stacked::db::Note { text: append_turn(&text, Role::Agent, "You are welcome.", Some("answer")), ..n })
     })
     .unwrap();
+    let c = e.ok(&["comments", "s", "--patch", "1"]);
+    assert!(c.contains("\n  you: Why 2?\n  agent: Seen, at length.\n  you: Thanks.\n  agent: You are welcome.\n") && !c.contains("Gone"), "{c}");
     // The agent's turn, the second, trimmed.
     e.ok(&["reply", "s", &id, "--edit", "--turn", "2", "Seen."]);
+    assert!(e.ok(&["comments", "s", "--patch", "1"]).contains("\n  agent: Seen.\n  you: Thanks.\n"));
+    // Rewound from the agent's last turn, the fourth: from your turn above
+    // it, the third, which the new text takes the place of, and the rest.
+    e.ok(&["reply", "s", &id, "--rewind", "4", "Thanks, and why 9?"]);
     let c = e.ok(&["comments", "s", "--patch", "1"]);
-    assert!(c.contains("\n  you: Why 2?\n  agent: Seen.\n  you: Thanks.\n"), "{c}");
-    // Deleted, a line says so where it was; the thread still counts it.
-    e.ok(&["reply", "s", &id, "--delete", "2"]);
-    let c = e.ok(&["comments", "s", "--patch", "1"]);
-    assert!(c.contains("\n  you: Why 2?\n  (you deleted the agent's reply)\n  you: Thanks.\n"), "{c}");
+    assert!(c.contains("\n  you: Why 2?\n  agent: Seen.\n  you: Thanks, and why 9?\n") && !c.contains("welcome"), "{c}");
     for (args, says) in [
-        (&["--delete", "2"][..], "turn 2 is deleted already"),
-        (&["--edit", "--turn", "2", "Hm."], "turn 2 is deleted: bring it back to edit it"),
-        (&["--delete", "1"], "turn 1 is the comment itself: only its replies can be deleted"),
-        (&["--bring-back", "4"], "there is no turn 4: the thread has 3"),
-        (&["--bring-back", "3"], "turn 3 is not deleted"),
+        (&["--rewind", "9", "Hm."][..], "there is no turn 9: the thread has 3"),
+        (&["--rewind", "2", "--edit", "Hm."], "cannot be used with"),
     ] {
         let (fine, _, err) = e.run(&[&["reply", "s", &id][..], args].concat());
         assert!(!fine && err.contains(says), "{args:?}: {err}");
     }
-    // Brought back, as it was.
-    e.ok(&["reply", "s", &id, "--bring-back", "2"]);
-    assert!(e.ok(&["comments", "s", "--patch", "1"]).contains("\n  you: Why 2?\n  agent: Seen.\n  you: Thanks.\n"));
+    // From the comment itself, the whole thread is written again; the
+    // history says so.
+    e.ok(&["reply", "s", &id, "--rewind", "1", "Why", "two?"]);
+    let c = e.ok(&["comments", "s", "--patch", "1"]);
+    assert!(c.ends_with("\n  you: Why two?\n"), "{c}");
+    let d = Db::load(&e.db).unwrap();
+    let n = d.stack_notes("s").into_iter().next().cloned().unwrap();
+    let mut said = Vec::new();
+    let mut before: Option<&stacked::db::Note> = None;
+    for (_, x) in d.note_history(&n.change, &n.id) {
+        said.push(stacked::history::note_change(before, x));
+        before = Some(x);
+    }
+    assert!(said.contains(&"you rewound the conversation from your reply".to_string()), "{said:?}");
+    assert_eq!(said.last().map(String::as_str), Some("you rewound the conversation from your comment"), "{said:?}");
 }
 
 #[test]

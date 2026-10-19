@@ -2,10 +2,15 @@
 //! blocks naming what it was asked to do (```claude, as self-review and
 //! stacked's first files have them, is read the same), a reviewer's
 //! comments pulled from Phabricator are fenced ```reviewer blocks naming
-//! who wrote them, and every other line is yours. A turn you deleted is a
-//! fenced ```deleted block naming whose it was, what it said kept in it,
-//! quoted, to be brought back: the thread shows that it was deleted, and
-//! the agent is not told it.
+//! who wrote them, and every other line is yours. A conversation is
+//! rewound from one of your turns: your new text takes the place of that
+//! turn and of every turn after it.
+//!
+//! A turn deleted by stacked's first way of deleting one is a fenced
+//! ```deleted block, what it said quoted in it: it is read only to be left
+//! out, shown nowhere and told to no one, and nothing writes one any more.
+//! Once no database holds such turns, `DELETED_OPEN`, `Turn::deleted` and
+//! the split between `all_turns` and `thread_turns` can go.
 
 pub const AGENT_OPEN: &str = "```agent";
 /// The agent's fence as it was first written.
@@ -22,14 +27,13 @@ pub enum Role {
 }
 
 /// A turn: who, what, and the fence's tag -- the mode for claude's ("" when
-/// it names none), the name for a reviewer's; and whether you deleted it.
+/// it names none), the name for a reviewer's; and whether it was deleted,
+/// the first way: then shown nowhere, and told to no one.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Turn {
     pub role: Role,
     pub body: String,
     pub tag: Option<String>,
-    /// Deleted: shown as such, and not told to the agent; what it said is
-    /// kept, to bring it back.
     pub deleted: bool,
 }
 
@@ -231,26 +235,66 @@ pub fn edit_turn(text: &str, i: usize, body: &str) -> Option<String> {
     Some(render_thread(&turns))
 }
 
-/// `text` with turn `i` of all its turns deleted, what it said kept to
-/// bring it back; none if there is no such turn, it is deleted already, or
-/// it is the only one that stands.
-pub fn delete_turn(text: &str, i: usize) -> Option<String> {
+/// Where a rewind from turn `i` of all the turns of `text` starts: that
+/// turn if it is yours, else your turn above it; none if there is no turn
+/// of yours there, nor above.
+pub fn rewind_from(text: &str, i: usize) -> Option<usize> {
+    let turns = all_turns(text);
+    (0..=i.min(turns.len().checked_sub(1)?)).rev().find(|&j| !turns[j].deleted && turns[j].role == Role::You)
+}
+
+/// `text` rewound from turn `k` of all its turns: the turns before it as
+/// they were, then `body`, yours, in the place of that turn and of every
+/// turn after it. None if `body` is empty: then nothing changes.
+pub fn rewind(text: &str, k: usize, body: &str) -> Option<String> {
     let mut turns = all_turns(text);
-    if turns.iter().filter(|t| !t.deleted).count() < 2 {
+    if body.trim().is_empty() || k >= turns.len() {
         return None;
     }
-    let t = turns.get_mut(i).filter(|t| !t.deleted)?;
-    t.deleted = true;
+    turns.truncate(k);
+    turns.push(Turn {
+        role: Role::You,
+        body: body.trim().to_string(),
+        tag: None,
+        deleted: false,
+    });
     Some(render_thread(&turns))
 }
 
-/// `text` with deleted turn `i` of all its turns back, as it was; none if
-/// there is no such turn, or it is not deleted.
-pub fn bring_back_turn(text: &str, i: usize) -> Option<String> {
-    let mut turns = all_turns(text);
-    let t = turns.get_mut(i).filter(|t| t.deleted)?;
-    t.deleted = false;
-    Some(render_thread(&turns))
+/// What the editor of a rewind says first, in $EDITOR: its rules.
+pub const REWIND_SAYS: [&str; 7] = [
+    "# You are rewinding this conversation from one of your turns. Write",
+    "# above these lines what takes its place. Once you save, that turn and",
+    "# every turn after it, quoted below, are gone, and your text is the",
+    "# conversation's last turn. The lines stacked wrote here, starting with",
+    "# #, are dropped; any other line is yours, # or not. If you write",
+    "# nothing, or quit without saving, the conversation is as it was.",
+    "#",
+];
+
+/// The lines a rewind from turn `k` of all the turns of `text` writes in
+/// its editor, each starting with `#`: what goes once it is saved, that
+/// turn included, each turn under who said it.
+pub fn rewound_lines(text: &str, k: usize) -> Vec<String> {
+    let mut out = Vec::new();
+    for t in all_turns(text).into_iter().skip(k).filter(|t| !t.deleted) {
+        let who = match t.role {
+            Role::You => "you".to_string(),
+            Role::Agent => "agent".to_string(),
+            Role::Reviewer => t.tag.clone().filter(|w| !w.is_empty()).unwrap_or_else(|| "reviewer".into()),
+        };
+        out.push(format!("# {who}:"));
+        out.extend(t.body.lines().map(|l| if l.trim().is_empty() { "#".to_string() } else { format!("#   {l}") }));
+    }
+    out
+}
+
+/// `text` without the lines stacked `wrote` in it, as they were written:
+/// any other line is the user's, `#` or not.
+pub fn without_written(text: &str, wrote: &[String]) -> String {
+    let wrote: std::collections::HashSet<&str> = wrote.iter().map(|l| l.trim_end()).collect();
+    let kept: Vec<&str> = text.lines().filter(|l| !wrote.contains(l.trim_end())).collect();
+    kept.join("\n").trim().to_string()
 }
 
 /// The mode claude's latest reply was given in, "unknown" for one from
@@ -349,7 +393,7 @@ mod tests {
     }
 
     #[test]
-    fn any_turn_is_written_again_or_deleted_and_brought_back() {
+    fn any_turn_is_written_again_and_a_conversation_rewound_from_yours() {
         let text = append_turn("hi", Role::Agent, "hi\n\n```rust\nlong code\n```", Some("answer"));
         let text = append_turn(&text, Role::You, "how are you", None);
         let text = append_turn(&text, Role::Reviewer, "Fine.", Some("ann"));
@@ -361,32 +405,36 @@ mod tests {
         assert_eq!((turns[1].role, turns[1].body.as_str(), turns[1].tag.as_deref()), (Role::Agent, "hi", Some("answer")));
         assert_eq!(edit_turn(&text, 1, " "), None, "nothing to write: no edit");
         assert_eq!(edit_turn(&text, 9, "x"), None);
-        // Deleted, it stands no more: your two turns stay two, the agent is
-        // not told it, and what it said is kept, code and all.
-        let gone = delete_turn(&text, 1).unwrap();
-        let said: Vec<String> = thread_turns(&gone).into_iter().map(|t| t.body).collect();
-        assert_eq!(said, ["hi", "how are you", "Fine."]);
-        let all = all_turns(&gone);
-        assert_eq!(all.len(), 4);
-        assert!(all[1].deleted && all[1].role == Role::Agent && all[1].body == "hi\n\n```rust\nlong code\n```", "{all:?}");
-        assert_eq!((delete_turn(&gone, 1), edit_turn(&gone, 1, "x")), (None, None), "deleted already");
-        // Your last word deleted, the last word is ann's; ann's deleted, the
-        // last word is yours again, to edit.
-        let gone = delete_turn(&gone, 3).unwrap();
-        assert_eq!(last_role(&gone), Some(Role::You));
-        assert_eq!((last_mine(&gone).as_deref(), last_mine_at(&gone)), (Some("how are you"), Some(2)));
-        assert_eq!(all_turns(&gone)[3].name(3), "ann's reply");
-        // A reply after a deleted turn is a turn of its own.
-        let more = append_turn(&gone, Role::You, "well?", None);
-        assert_eq!(all_turns(&more).len(), 5);
-        assert_eq!(last_mine(&more).as_deref(), Some("well?"));
-        // Brought back, each is as it was.
-        let back = bring_back_turn(&bring_back_turn(&gone, 1).unwrap(), 3).unwrap();
-        assert_eq!(all_turns(&back), all_turns(&text));
-        assert_eq!(bring_back_turn(&back, 1), None, "not deleted");
-        // The only turn that stands is not deleted: the comment is.
-        assert_eq!(delete_turn("hi", 0), None);
-        let answered = delete_turn(&append_turn("q", Role::Agent, "a", Some("answer")), 1).unwrap();
-        assert_eq!(delete_turn(&answered, 0), None);
+        // A rewind goes from your turn there, or from yours above.
+        assert_eq!((0..4).map(|i| rewind_from(&text, i)).collect::<Vec<_>>(), [Some(0), Some(0), Some(2), Some(2)]);
+        assert_eq!(rewind_from(&append_turn("", Role::Agent, "Look.", Some("answer")), 0), None, "none of yours");
+        // What goes is written as # lines, under who said it, that turn
+        // included; the new text takes its place and that of all after it.
+        let lines = rewound_lines(&text, 2);
+        assert_eq!(lines, ["# you:", "#   how are you", "# ann:", "#   Fine."]);
+        let edited = format!("how is it going?\n{}", lines.join("\n"));
+        let again = rewind(&text, 2, &without_written(&edited, &lines)).unwrap();
+        let said: Vec<(Role, String)> = all_turns(&again).into_iter().map(|t| (t.role, t.body)).collect();
+        assert_eq!(said, [(Role::You, "hi".into()), (Role::Agent, "hi\n\n```rust\nlong code\n```".into()), (Role::You, "how is it going?".into())]);
+        // Lines of yours starting with #, kept; with nothing of yours, nothing
+        // changes.
+        assert_eq!(without_written(&format!("# Title\n{}", lines.join("\n")), &lines), "# Title");
+        assert_eq!(rewind(&text, 2, &without_written(&lines.join("\n"), &lines)), None);
+        // From the comment itself, the whole thread is written again.
+        assert_eq!(all_turns(&rewind(&text, 0, "bye").unwrap()).len(), 1);
+    }
+
+    #[test]
+    fn a_turn_deleted_the_first_way_is_read_only_to_be_left_out() {
+        // As stacked's first way of deleting a turn wrote it: fenced, quoted.
+        let text = "hi\n```deleted agent answer\n> hello\n```\nhow are you";
+        let all = all_turns(text);
+        assert_eq!(all.len(), 3);
+        assert!(all[1].deleted && all[1].role == Role::Agent);
+        let said: Vec<String> = thread_turns(text).into_iter().map(|t| t.body).collect();
+        assert_eq!(said, ["hi", "how are you"]);
+        // Kept as it was when the thread is written again.
+        let more = append_turn(text, Role::You, "well?", None);
+        assert!(more.contains("```deleted agent answer\n> hello\n```"), "{more}");
     }
 }

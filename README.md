@@ -240,18 +240,29 @@ Any turn of a thread can be written again, whoever wrote it. With the
 cursor on one of its lines in the middle, the menu's first item is `Edit
 the agent's reply` (or `Edit your comment`, `Edit ann's reply`), here or in
 $EDITOR: trim the agent's answer down to what you need, and the agent is
-told it as you left it the next time it is asked. `Delete the agent's
-reply` deletes that reply only; the comment itself is deleted whole, with
-`Delete this comment…`. Where the reply was, a quiet line says `(you
-deleted the agent's reply)`. The agent is no longer told that reply, and
-the menu of that line has `Bring back the agent's reply`, which puts it
-back as it was. When the agent's last answer is deleted, your question is
-the last word again, to ask again. None of this is done while the agent
-works on the comment. The comment's history says which turn was edited,
-deleted or brought back. On the command line, N counts the turns as
-`stacked comments` lists them, from 1 for the comment itself, a deleted
-turn counting: `stacked reply NAME ID --edit --turn N TEXT`, `stacked reply
-NAME ID --delete N`, `stacked reply NAME ID --bring-back N`.
+told it as you left it the next time it is asked. While a turn is written
+again, the editor shows it, and the thread above the editor no longer
+does.
+
+A conversation can also be rewound: `Rewind the conversation from your
+reply` (or `from your comment`), on a turn of yours, or on the agent's or
+a reviewer's to rewind from your turn above it. The editor opens empty for
+your new text, and under it, every line starting with `#`, is what goes
+once you save: your turn and every turn after it. Your text then takes the
+place of all of it: the turns before your turn stay as they were, and your
+text is the last word, to ask the agent again. Only the lines stacked wrote
+are dropped when you save; any other line is yours, `#` or not. In
+$EDITOR, `#` lines at the top say these rules too. Leave nothing but
+stacked's lines, or throw the text away, and nothing changes. A thread the
+agent or a reviewer opened has no turn of yours to rewind from at its
+start: `Edit the agent's reply` is the way there. Your last word is
+written again with `Edit your reply`, not rewound. None of this is done
+while the agent works on the comment, or while its reply waits for your
+review. The comment's history says which turn was edited, or that the
+conversation was rewound. On the command line, N counts the turns as
+`stacked comments` lists them, from 1 for the comment itself: `stacked
+reply NAME ID --edit --turn N TEXT`, `stacked reply NAME ID --rewind N
+TEXT`.
 
 ## Editing a patch by hand
 
@@ -705,8 +716,9 @@ by its line number, its rev: `@12`.
 - A comment record is the whole comment as it is now; its earlier records
   are its history. The agent's turns are fenced ```` ```agent ````
   (```` ```claude ````, as the first files have them, reads the same). A
-  turn you deleted is fenced ```` ```deleted ```` with whose it was, what
-  it said kept in it, each line quoted with `>`, to bring it back. A
+  turn deleted by stacked's first way of deleting one is fenced ````
+  ```deleted ````, each line of it quoted with `>`: it is read only to be
+  left out, and nothing writes one any more. A
   comment collapsed, or expanded, is a record naming it, apart from its
   history. A read mark holds the lines it read; taking it back is a record
   naming it.
@@ -847,6 +859,10 @@ follows each patch by its change, a move told from a shift.
 
 ## Not done yet
 
+- Turns deleted by stacked's first way of deleting one (```` ```deleted ````)
+  are still read, only to be left out. Once no database holds them, that
+  code goes, and with it the split of a thread's turns between those that
+  stand and all of them.
 - How apply picks a branch, which belongs to publishing: the editor applies
   on no branch, `stacked apply --branch` on one.
 - A stack-wide review runs one agent; one per patch is not done.

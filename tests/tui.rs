@@ -1353,7 +1353,7 @@ fn ctrl(app: &mut App, code: KeyCode) {
 }
 
 #[test]
-fn any_turn_of_a_thread_is_written_again_deleted_and_brought_back() {
+fn any_turn_is_written_again_and_the_conversation_rewound() {
     let (_tmp, db, _src) = setup();
     let mut app = open(&db).unwrap();
     keys(&mut app, &[KeyCode::Right]);
@@ -1371,17 +1371,20 @@ fn any_turn_of_a_thread_is_written_again_deleted_and_brought_back() {
     })
     .unwrap();
     app.refresh();
-    // On the agent's turn, the menu writes it again, or deletes it.
+    // On the agent's turn, the menu writes it again, or rewinds the
+    // conversation from your comment above it.
     down_to(&mut app, "     agent:");
     keys(&mut app, &[KeyCode::Char(' ')]);
     let labels: Vec<String> = items(&app).into_iter().map(|(l, _)| l).collect();
-    assert_eq!(labels[..3], ["Edit the agent's reply", "Reply", "Delete the agent's reply"], "{labels:?}");
+    assert_eq!(labels[..3], ["Edit the agent's reply", "Reply", "Rewind the conversation from your comment"], "{labels:?}");
     keys(&mut app, &[KeyCode::Esc]);
     // Trimmed to what matters, with a shell's keys: from the line's start,
-    // four words on, the rest cut.
+    // four words on, the rest cut. Edited, the turn is in the editor only.
     choose_as(&mut app, "Edit the agent's reply", "here");
     assert!(matches!(&app.mode, Mode::Edit(e) if e.ed.text().ends_with("lines that matter.")), "{:?}", app.mode);
-    assert!(draw(&mut app).contains("the agent's reply: edit it"));
+    let screen = draw(&mut app);
+    assert!(screen.contains("the agent's reply: edit it"), "{screen}");
+    assert_eq!(screen.matches("Shouting is for the lines").count(), 1, "once, in the editor:\n{screen}");
     ctrl(&mut app, KeyCode::Char('a'));
     for _ in 0..4 {
         ctrl(&mut app, KeyCode::Right);
@@ -1394,31 +1397,59 @@ fn any_turn_of_a_thread_is_written_again_deleted_and_brought_back() {
     let said: Vec<(Role, &str)> = turns.iter().map(|t| (t.role, t.body.as_str())).collect();
     assert_eq!(said, [(Role::You, "why so loud?"), (Role::Agent, "It is a shout."), (Role::You, "and why here?")]);
     assert_eq!(turns[1].tag.as_deref(), Some("answer"), "still the agent's answer");
-    // Deleted: a quiet line where it was, and the agent is no longer told it.
-    assert_eq!(app.rows[app.cursor].text, "     agent:");
-    choose(&mut app, "Delete the agent's reply");
-    assert!(app.status.contains("you deleted the agent's reply"), "{}", app.status);
+    // Rewound from your comment: the editor empty for the new text, what
+    // goes under it as # lines, and in the editor only.
+    choose_as(&mut app, "Rewind the conversation from your comment", "here");
+    let Mode::Edit(e) = &app.mode else { panic!("{:?}", app.mode) };
+    assert_eq!(e.ed.text(), "# you:\n#   why so loud?\n# agent:\n#   It is a shout.\n# you:\n#   and why here?");
     let screen = draw(&mut app);
-    assert!(screen.contains("(you deleted the agent's reply)") && !screen.contains("It is a shout."), "{screen}");
+    assert!(screen.contains("rewind from your comment: write what replaces it"), "{screen}");
+    assert_eq!(screen.matches("why so loud?").count(), 1, "{screen}");
+    // Left with nothing written, the conversation is as it was.
+    keys(&mut app, &[KeyCode::Esc]);
+    assert_eq!(app.mode, Mode::Normal);
+    assert_eq!(notes_of(&db, "s", 0).remove(0).text, text);
+    // Written, the new text takes the place of all of it.
+    choose_as(&mut app, "Rewind the conversation from your comment", "here");
+    typed(&mut app, "why so very loud?");
+    keys(&mut app, &[KeyCode::Esc]);
+    choose(&mut app, "Save it");
+    let text = notes_of(&db, "s", 0).remove(0).text;
+    assert_eq!(text, "why so very loud?");
+    // From a reply of yours, the turns before it are kept; lines of yours
+    // starting with # too.
+    Db::edit(&db, |d| {
+        let n = d.note(&n.change, &n.id).cloned().unwrap();
+        let text = append_turn(&n.text, Role::Agent, "It shouts.", Some("answer"));
+        let text = append_turn(&text, Role::You, "Why here?", None);
+        d.set_note(Note {
+            text: append_turn(&text, Role::Agent, "Because.", Some("answer")),
+            ..n
+        })
+    })
+    .unwrap();
+    app.refresh();
+    keys(&mut app, &[KeyCode::Home]);
+    down_to(&mut app, "       Because.");
+    // In $EDITOR, from your reply above, the third turn.
+    let rewind = stacked::tui::Target::Rewind { change: n.change.clone(), id: n.id.clone(), from: 2 };
+    assert_eq!(choose_as(&mut app, "Rewind the conversation from your reply", "in $EDITOR"), Effect::EditComment(rewind));
+    choose_as(&mut app, "Rewind the conversation from your reply", "here");
+    typed(&mut app, "# Why here?");
+    keys(&mut app, &[KeyCode::Enter]);
+    typed(&mut app, "And not there?");
+    keys(&mut app, &[KeyCode::Esc]);
+    choose(&mut app, "Save it");
     let text = notes_of(&db, "s", 0).remove(0).text;
     let said: Vec<String> = stacked::thread::thread_turns(&text).into_iter().map(|t| t.body).collect();
-    assert_eq!(said, ["why so loud?", "and why here?"]);
-    // The menu of its line brings it back, as it was.
-    assert!(app.rows[app.cursor].text.contains("(you deleted the agent's reply)"));
+    assert_eq!(said, ["why so very loud?", "It shouts.", "# Why here?\nAnd not there?"]);
+    // Your last word, written again, is Edit your reply's: no rewind there.
+    keys(&mut app, &[KeyCode::Home]);
+    down_to(&mut app, "       And not there?");
     keys(&mut app, &[KeyCode::Char(' ')]);
-    assert_eq!(items(&app)[0].0, "Bring back the agent's reply");
-    assert!(!items(&app).iter().any(|(l, _)| l.starts_with("Delete the")), "{:?}", items(&app));
-    choose(&mut app, "Bring back the agent's reply");
-    assert!(draw(&mut app).contains("It is a shout."));
-    // The comment itself is written again where it is, and deleted whole.
-    keys(&mut app, &[KeyCode::Up, KeyCode::Up]);
-    assert_eq!(app.rows[app.cursor].text, "     you:");
-    keys(&mut app, &[KeyCode::Char(' ')]);
-    let labels: Vec<String> = items(&app).into_iter().map(|(l, _)| l).collect();
-    assert_eq!(labels[..2], ["Edit your comment", "Reply"], "{labels:?}");
-    assert!(!labels.iter().any(|l| l.starts_with("Delete your")), "{labels:?}");
+    assert!(!items(&app).iter().any(|(l, _)| l.starts_with("Rewind")), "{:?}", items(&app));
     keys(&mut app, &[KeyCode::Esc]);
-    // Its history says what was done to which turn.
+    // Its history says what was done.
     let d = Db::load(&db).unwrap();
     let mut said = Vec::new();
     let mut before: Option<&Note> = None;
@@ -1426,10 +1457,9 @@ fn any_turn_of_a_thread_is_written_again_deleted_and_brought_back() {
         said.push(stacked::history::note_change(before, x));
         before = Some(x);
     }
-    assert_eq!(
-        said[said.len() - 3..],
-        ["you edited the agent's reply", "you deleted the agent's reply", "you brought back the agent's reply"]
-    );
+    assert!(said.contains(&"you edited the agent's reply".to_string()), "{said:?}");
+    assert!(said.contains(&"you rewound the conversation from your comment".to_string()), "{said:?}");
+    assert_eq!(said.last().map(String::as_str), Some("you rewound the conversation from your reply"), "{said:?}");
 }
 
 #[test]

@@ -403,19 +403,24 @@ pub fn note_change(before: Option<&Note>, n: &Note) -> String {
         return "ask failed".into();
     }
     if n.text != b.text {
-        // One turn written again, deleted or brought back, where it is:
-        // which, and whose. Your last written again is said below.
         let (now, then) = (all_turns(&n.text), all_turns(&b.text));
+        // Rewound from one of your turns: the turns before it as they were,
+        // your text in its place, the turns after it gone.
+        if let Some(k) = now.len().checked_sub(1)
+            && then.len() > now.len()
+            && now[..k] == then[..k]
+            && now[k].role == Role::You
+            && then[k].role == Role::You
+        {
+            return format!("you rewound the conversation from {}", then[k].name(k));
+        }
+        // One turn written again, where it is: which, and whose. Your last
+        // written again is said below.
         if now.len() == then.len()
             && let [i] = (0..now.len()).filter(|&i| now[i] != then[i]).collect::<Vec<_>>()[..]
+            && last_mine_at(&n.text) != Some(i)
         {
-            let what = now[i].name(i);
-            match (then[i].deleted, now[i].deleted) {
-                (false, true) => return format!("you deleted {what}"),
-                (true, false) => return format!("you brought back {what}"),
-                _ if last_mine_at(&n.text) != Some(i) => return format!("you edited {what}"),
-                _ => {}
-            }
+            return format!("you edited {}", now[i].name(i));
         }
         // What you said last written again, not added to: a reply to your
         // own turn goes on a line of its own.
