@@ -164,7 +164,9 @@ them other keys, and the help then names those:
 - `?` says what can be done where the cursor is, as `Press Enter to create a
   comment on this line.`, and where the arrows go. The next key closes it
   and does what it does, so the key it names can be pressed straight away.
-- Esc goes back: out of a menu, a list, a stream.
+- Esc goes back: out of a menu, a list, a stream; and up, from the
+  comments to the middle, to the patches, to the stack's header, to the
+  banner of the agent's work waiting for review, when there is some.
 - `1` cycles the views of the code, as in self-review: unified, side by
   side, and compact, the two sides each a pane of its own with no gaps,
   scrolled together or one alone (← → turn which, and past the old side or
@@ -430,6 +432,37 @@ reply waits for your review`), and is not written on, nor asked again,
 before you take its reply. Enter on it takes the reply into its thread at
 once, accepted, out of the review (its menu's `Accept the agent's reply`).
 A reply that goes with a change of the stack is reviewed with that change.
+
+In the editor, a banner under the top bar says what waits (`⟳ 2 landed
+asks wait for your review · the next: a change of patch 2, 1 reply, asked
+"…"`), and only that: landing writes nothing on the bottom line. Esc goes
+back up to the banner, from a comment to the middle, to the patches, to the
+stack's header, then the banner; ↑ from the stack's header goes there too.
+On the banner, Enter opens the review of the next landed ask, the first
+landed, and Space lists them all, to review any of them.
+
+A review lists the parts on the left, in three sections: the stack
+operations of the change (a line for each patch: `noop`, `add`, `modify`,
+`move`, `remove`, and the base when it is rebased), the comments it opened,
+and its replies. On the right is the part the cursor is on, as it would be:
+the stack diff of the change, from the stack as it is, each new version's
+interdiff under it; or the comment where it would be, the reply as the
+last turn of its thread. That side is only to look at: → goes into it to
+scroll, and ← comes back. Enter accepts the part the cursor is on, or
+rejects it if accepted; every line of the stack operations is the one part
+of the change. Space has `Mark as accepted` or `Mark as rejected`, `Mark all
+comments accepted` and `Mark all comments rejected`. Marking the change
+rejected marks the comments rejected too, and marking it accepted again
+puts their marks back as they were; a comment cannot be accepted while
+the change is rejected. Esc says what is marked, by kind of part
+(`replies: 1 accepted, 1 to review`), and asks what to do: `Save` keeps
+the marks in the file, for the review to go on from them when you open it
+again; `Discard` throws away the marks made since the review was opened;
+`Close review`, once every part is marked, applies what is accepted;
+`Accept all remaining and Close` and `Reject all remaining and Close`
+mark what is left and close. A reply that goes with a change of the stack
+opens that review, on the reply, from its comment (Enter, or `Review the
+agent's work…` in its menu).
 
 On the command line, `stacked landed NAME` lists the queue: each landed ask
 by its run, what it holds, and each part of it. `stacked review NAME [RUN]

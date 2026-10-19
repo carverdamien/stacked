@@ -1164,9 +1164,14 @@ fn the_agent_s_reply_waits_for_review_and_enter_takes_it() {
     held(&db, "run-change", &n.change, &n.id, "Changed it.", true);
     app.refresh();
     keys(&mut app, &[KeyCode::Char(' ')]);
-    assert!(items(&app).contains(&("Accept the agent's reply".into(), false)), "{:?}", items(&app));
+    let all = items(&app);
+    assert!(all.contains(&("Review the agent's work…".into(), true)) && !all.iter().any(|(l, _)| l.starts_with("Accept")), "{all:?}");
+    // Enter opens the review of that work, on the reply.
     keys(&mut app, &[KeyCode::Esc, KeyCode::Enter]);
-    assert!(app.status.contains("this reply goes with the agent's change of the stack"), "{}", app.status);
+    assert_eq!(app.screen, Screen::Review);
+    assert!(draw(&mut app).contains("its reply, as it would be in its thread"), "on the reply");
+    app.screen = Screen::Main;
+    app.reviewing = None;
     keys(&mut app, &[KeyCode::Up, KeyCode::Char(' ')]);
     let Mode::Menu(m) = &app.mode else { panic!("{:?}", app.mode) };
     assert_eq!(
@@ -1174,6 +1179,170 @@ fn the_agent_s_reply_waits_for_review_and_enter_takes_it() {
         Some("the agent's change of patch 1 waits for your review: the stack can be edited by hand again once you have reviewed it")
     );
     assert!(items(&app).contains(&("Edit this patch in $EDITOR".into(), false)), "{:?}", items(&app));
+}
+
+#[test]
+fn landed_work_is_reviewed_from_the_banner_part_by_part() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Enter]);
+    save(&mut app, "why so loud?");
+    down_to(&mut app, "+LINE 39");
+    keys(&mut app, &[KeyCode::Enter]);
+    save(&mut app, "and this?");
+    let notes = notes_of(&db, "s", 0);
+    // What the agent brought back: patch 2 dropped, a reply to each
+    // comment, a comment of its own on patch 1's title.
+    Db::edit(&db, |d| {
+        let (from, s) = d.head("s").map(|(r, s)| (r, s.clone())).unwrap();
+        let p1 = d.patch(&s.patches[0]).clone();
+        let reply = |n: &Note, text: &str| stacked::held::Reply {
+            change: n.change.clone(),
+            id: n.id.clone(),
+            text: text.into(),
+            tag: "change".into(),
+            promote: None,
+        };
+        let shown: Vec<serde_json::Value> = notes.iter().map(|n| serde_json::json!({"label": "c1", "change": n.change, "id": n.id})).collect();
+        d.add_run(stacked::db::Run {
+            id: "run-review".into(),
+            what: "change".into(),
+            stack: "s".into(),
+            state: stacked::db::RunState::Done,
+            request: "why so loud?".into(),
+            ask: Some(serde_json::json!({"way": "change", "scope": "stack", "from": from, "notes": shown})),
+            held: Some(stacked::held::Held {
+                at: stacked::db::now(),
+                stack: Some(stacked::held::Change {
+                    patches: vec![p1.id.clone()],
+                    base: s.base.clone(),
+                    op: "agent: the stack".into(),
+                    of: "the stack".into(),
+                }),
+                replies: vec![reply(&notes[0], "It shouts less now."), reply(&notes[1], "Left as it was.")],
+                opened: vec![Note {
+                    change: p1.change.clone(),
+                    id: "agent:run-review:0".into(),
+                    line: stacked::view::title_key(&p1),
+                    text: "```agent change\nPatch 2 is gone.\n```".into(),
+                    file: stacked::view::MSG_PATH.into(),
+                    preview: p1.title().into(),
+                    by: Some("agent".into()),
+                    ..Default::default()
+                }],
+            }),
+            ..Default::default()
+        })
+        .map(|_| ())
+    })
+    .unwrap();
+    app.refresh();
+    // The banner says what waits; Esc goes up to it, by the stack's header.
+    let screen = draw(&mut app);
+    assert!(
+        screen.contains("⟳ 1 landed ask waits for your review · the next: a change of the stack, 2 replies, 1 opened comment"),
+        "{screen}"
+    );
+    keys(&mut app, &[KeyCode::Esc]);
+    assert!(app.focus == Focus::List && !app.on_stack);
+    keys(&mut app, &[KeyCode::Esc]);
+    assert!(app.on_stack && !app.on_banner);
+    keys(&mut app, &[KeyCode::Esc]);
+    assert!(app.on_banner);
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    assert!(items(&app)[0].0.starts_with("Review a change of the stack, 2 replies"), "{:?}", items(&app));
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Enter]);
+    assert_eq!(app.screen, Screen::Review);
+    // Its three sections; the change of the stack, a line for each patch.
+    let screen = draw(&mut app);
+    for l in ["stack operations · to review", "noop    1 Bug 1 - shout two", "remove  2 Bug 2 - add b", " comments opened", " replies"] {
+        assert!(screen.contains(l), "{l}:\n{screen}");
+    }
+    assert!(screen.contains("what accepting it does to the stack"), "{screen}");
+    // Enter accepts, then rejects; each comment is shown where it would be.
+    keys(&mut app, &[KeyCode::Enter]);
+    assert!(draw(&mut app).contains("stack operations · accepted"));
+    down_to_review(&mut app, "Patch 2 is");
+    assert!(draw(&mut app).contains("a comment it opened, where it would be"));
+    keys(&mut app, &[KeyCode::Enter]);
+    down_to_review(&mut app, "It shouts less now.");
+    keys(&mut app, &[KeyCode::Enter, KeyCode::Enter]);
+    assert!(draw(&mut app).contains("its reply, as it would be in its thread"));
+    let marks = |app: &App| app.reviewing.as_ref().unwrap().marks.clone();
+    let m = marks(&app);
+    assert_eq!((m["stack"], m["opened 0"], m["reply 0"]), (true, true, false));
+    // The change rejected rejects every comment with it; accepted again,
+    // each is as it was.
+    keys(&mut app, &[KeyCode::Home]);
+    choose(&mut app, "Mark as rejected");
+    assert!(marks(&app).values().all(|m| !m), "{:?}", marks(&app));
+    choose(&mut app, "Mark as accepted");
+    assert_eq!(marks(&app), [("opened 0", true), ("reply 0", false), ("stack", true)].map(|(k, m)| (k.to_string(), m)).into());
+    // Esc says what is marked, by kind, and closes only once all are.
+    keys(&mut app, &[KeyCode::Esc]);
+    let Mode::Menu(m) = &app.mode else { panic!("{:?}", app.mode) };
+    assert_eq!(
+        m.note.as_deref(),
+        Some("the change of the stack: accepted\ncomments opened: 1 accepted\nreplies: 1 rejected, 1 to review")
+    );
+    assert!(items(&app).contains(&("Close review".into(), false)), "{:?}", items(&app));
+    // Saved, the marks are there when it is opened again.
+    choose(&mut app, "Save");
+    assert_eq!(app.screen, Screen::Main);
+    assert_eq!(Db::load(&db).unwrap().review("run-review").unwrap().marks.len(), 3);
+    app.on_banner = true;
+    keys(&mut app, &[KeyCode::Enter]);
+    assert_eq!(marks(&app).len(), 3);
+    // Thrown away, what was marked since is not.
+    down_to_review(&mut app, "Left as it was.");
+    keys(&mut app, &[KeyCode::Enter, KeyCode::Esc]);
+    choose(&mut app, "Discard");
+    assert!(app.status.contains("thrown away"), "{}", app.status);
+    assert_eq!(Db::load(&db).unwrap().review("run-review").unwrap().marks.len(), 3);
+    // What is not marked accepted at once, then closed: what was accepted is
+    // applied, the rest dropped.
+    app.on_banner = true;
+    keys(&mut app, &[KeyCode::Enter, KeyCode::Esc]);
+    choose(&mut app, "Accept all remaining and Close");
+    assert!(
+        app.status.contains("reviewed: its change accepted; 1 opened comment accepted; 1 reply accepted, 1 rejected"),
+        "{}",
+        app.status
+    );
+    assert_eq!(app.screen, Screen::Main);
+    let d = Db::load(&db).unwrap();
+    assert_eq!(d.stack("s").unwrap().patches.len(), 1, "patch 2 dropped");
+    let notes = notes_of(&db, "s", 0);
+    let said: String = notes.iter().map(|n| n.text.clone()).collect();
+    assert!(said.contains("Left as it was.") && !said.contains("It shouts less now.") && said.contains("Patch 2 is gone."), "{said}");
+    assert!(!draw(&mut app).contains("⟳"), "nothing waits");
+}
+
+/// Down the review's list until the cursor is on the line holding `text`.
+fn down_to_review(app: &mut App, text: &str) {
+    for _ in 0..50 {
+        if selected_line(app).is_some_and(|l| l.contains(text)) {
+            return;
+        }
+        let sel = app.reviewing.as_ref().map(|r| r.sel);
+        key(app, KeyCode::Down);
+        if app.reviewing.as_ref().map(|r| r.sel) == sel {
+            break;
+        }
+    }
+    panic!("no line {text:?} in the review:\n{}", draw(app));
+}
+
+/// The text of the review's line the cursor is on, as drawn.
+fn selected_line(app: &mut App) -> Option<String> {
+    let mut buf = Buffer::empty(Rect::new(0, 0, 120, 30));
+    app.draw(&mut buf);
+    (0..30).find_map(|y| {
+        let reversed = (0..48).all(|x| buf[(x, y)].modifier.contains(ratatui::style::Modifier::REVERSED));
+        reversed.then(|| (0..48).map(|x| buf[(x, y)].symbol()).collect())
+    })
 }
 
 fn ctrl(app: &mut App, code: KeyCode) {
@@ -1381,12 +1550,16 @@ fn a_comment_is_sent_from_its_menu_and_answered_in_place() {
     assert!(draw(&mut app).contains("● session started · fake"));
     keys(&mut app, &[KeyCode::Esc]);
     assert_eq!(app.mode, Mode::Normal);
-    // Its answer lands as a turn of the thread.
+    // Its answer lands, and waits for your review: the banner says so, and
+    // nothing else changes, not even the bottom line.
+    let screen = wait_for(&mut app, "⟳ 1 landed ask waits for your review");
+    assert!(screen.contains("the next: 1 reply, asked \"why so loud?\"") && !screen.contains("Seen."), "{screen}");
+    assert!(!app.status.contains("answer done"), "{}", app.status);
+    // Accepted, it is a turn of the thread.
     accept_landed(&mut app, &db);
     let screen = wait_for(&mut app, "agent replied (answer only)");
     assert!(screen.contains("Seen.") && screen.contains("✓ you · a.txt: TWO"), "{screen}");
-    assert!(screen.contains("1 to read"), "{screen}");
-    assert!(app.status.contains("the agent's answer done"), "{}", app.status);
+    assert!(screen.contains("1 to read") && !screen.contains("⟳"), "{screen}");
 
     // Show… picks what both panes show, each with its count; kept per stack.
     keys(&mut app, &[KeyCode::Right, KeyCode::Home]);

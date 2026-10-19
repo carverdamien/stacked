@@ -259,6 +259,12 @@ impl Diffed {
 pub fn stack_diff(db: &Db, from: Option<usize>, to: Option<usize>, code: bool) -> Vec<Diffed> {
     let before = from.and_then(|r| db.node(r).ok());
     let after = to.and_then(|r| db.node(r).ok());
+    stacks_diff(db, before, after, code)
+}
+
+/// As `stack_diff`, from stack `before` to `after`, either of them one that
+/// is not in the database: what accepting the agent's change would make.
+pub fn stacks_diff(db: &Db, before: Option<&Stack>, after: Option<&Stack>, code: bool) -> Vec<Diffed> {
     let mut out = Vec::new();
     match (before, after) {
         (None, Some(_)) => out.push(Diffed::Made),

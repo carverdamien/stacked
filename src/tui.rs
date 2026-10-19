@@ -40,6 +40,9 @@ use crate::thread::{
 use crate::tree;
 use crate::view::{MSG_PATH, note_lines, title_key};
 
+pub mod reviewing;
+pub use reviewing::Reviewing;
+
 fn by_style(by: Option<&By>) -> Style {
     match by {
         Some(By::Agent) => color::add(),
@@ -188,6 +191,10 @@ pub enum Spot {
     Pick(usize),
     HistRow(usize),
     Box,
+    /// The banner saying what landed work waits for review.
+    Banner,
+    /// Line `i` of a review's list.
+    ReviewLine(usize),
 }
 
 /// That `spot` is drawn at `(x, y)` of `area`, `w` by `h`: what a click
@@ -247,6 +254,8 @@ pub enum Screen {
     History,
     /// A text to read: what an edit changed, a comment's history.
     Text,
+    /// The review of what the agent brought back.
+    Review,
 }
 
 /// What the comments pane shows, as self-review's filter.
@@ -460,6 +469,18 @@ pub enum Action {
     /// The agent's reply that waits for review taken into its thread at
     /// once: of run `0`, its reply `1`.
     TakeReply(String, usize),
+    /// The review of what run `0` brought back opened, on part `1`.
+    Review(String, Option<crate::held::Part>),
+    /// In the review: the part the cursor is on marked accepted (true) or
+    /// rejected; every comment so.
+    MarkPart(bool),
+    MarkComments(bool),
+    /// The review's marks saved; those made since it opened thrown away;
+    /// the review closed, the parts not marked yet accepted or rejected
+    /// if said.
+    ReviewSave,
+    ReviewDiscard,
+    ReviewClose(Option<bool>),
     Send(Way),
     /// A patch's comment sent to the whole stack: the agent may change any
     /// patch.
@@ -548,6 +569,16 @@ fn about(action: &Action) -> String {
         Action::Collapse => "show this comment in the middle as one quiet line, until you expand it".into(),
         Action::Expand => "show this comment whole again".into(),
         Action::TakeReply(..) => "accept the agent's reply: it goes into the thread now, out of the review of the agent's work".into(),
+        Action::Review(..) => "review what the agent brought back: accept or reject each part of it".into(),
+        Action::MarkPart(true) => "mark this part accepted: it is applied when the review closes".into(),
+        Action::MarkPart(false) => "mark this part rejected: it is dropped when the review closes".into(),
+        Action::MarkComments(true) => "mark every comment of this work accepted".into(),
+        Action::MarkComments(false) => "mark every comment of this work rejected".into(),
+        Action::ReviewSave => "save your marks and leave: the review goes on from them when you open it again".into(),
+        Action::ReviewDiscard => "leave, throwing away the marks you made since you opened the review".into(),
+        Action::ReviewClose(None) => "close the review: what you accepted is applied, what you rejected is dropped for good".into(),
+        Action::ReviewClose(Some(true)) => "accept every part not marked yet, then close the review".into(),
+        Action::ReviewClose(Some(false)) => "reject every part not marked yet, then close the review".into(),
         Action::Send(Way::Change) => "ask the agent, which may change the code within this comment's place".into(),
         Action::Send(Way::Answer) => "ask the agent, to answer only: nothing changes".into(),
         Action::Send(Way::Test) => "ask the agent to build and test, in a workspace of its choosing".into(),
@@ -765,6 +796,11 @@ pub struct App {
     pub sel: usize,
     /// The left pane's cursor is on its header, the stack's place.
     pub on_stack: bool,
+    /// The cursor is on the banner saying what landed work waits for
+    /// review, above the panes.
+    pub on_banner: bool,
+    /// The review of what the agent brought back, being made.
+    pub reviewing: Option<Reviewing>,
     pub focus: Focus,
     /// The patches are shown, on the left.
     pub list: bool,
@@ -833,6 +869,7 @@ pub struct App {
     /// What the last key did, when that needs saying: gone with the next.
     pub status: String,
     body_h: usize,
+    body_w: usize,
     /// The runs still going when the database was last read: when one
     /// lands, the status line says what came of it.
     going: Vec<String>,
@@ -959,6 +996,8 @@ impl App {
             stack,
             sel: 0,
             on_stack: false,
+            on_banner: false,
+            reviewing: None,
             focus: Focus::List,
             list: cfg.view.patches,
             comments: cfg.view.comments,
@@ -997,6 +1036,7 @@ impl App {
             refused: None,
             status,
             body_h: 20,
+            body_w: 80,
             going: going(&db),
             judged: None,
             bg: Background::new(),
@@ -1488,6 +1528,8 @@ impl App {
             Spot::Note(i) => self.focus == Focus::Notes && !self.notes_head && self.note_sel == i,
             Spot::Pick(i) => self.pick == i && (self.screen != Screen::History || self.hist_focus == HistFocus::List),
             Spot::HistRow(i) => self.hist_focus == HistFocus::Diff && self.hist_cursor == i,
+            Spot::Banner => self.on_banner,
+            Spot::ReviewLine(i) => self.reviewing.as_ref().is_some_and(|r| r.sel == i && !r.in_main),
             Spot::Item(_) | Spot::Choice(..) | Spot::Box => false,
         }
     }
@@ -1596,7 +1638,17 @@ impl App {
 
     /// `spot` picked, as the arrows would: whether it is one to pick.
     fn pick_spot(&mut self, spot: Spot) -> bool {
+        if !matches!(spot, Spot::Item(_) | Spot::Choice(..) | Spot::Box) {
+            self.on_banner = spot == Spot::Banner;
+        }
         match spot {
+            Spot::Banner => {}
+            Spot::ReviewLine(i) => {
+                if let Some(r) = &mut self.reviewing {
+                    r.sel = i;
+                    r.in_main = false;
+                }
+            }
             Spot::Patch(None) => {
                 self.focus = Focus::List;
                 self.on_stack = true;
@@ -1672,9 +1724,12 @@ impl App {
         if let Err(e) = self.db.catch_up() {
             self.status = e.0;
         }
+        // What landed says so, but what waits for review: the banner says
+        // that, not to interrupt.
         for id in std::mem::take(&mut self.going) {
             if let Some(r) = self.db.run(&id)
                 && r.state != RunState::Started
+                && r.held.is_none()
             {
                 let state = format!("{:?}", r.state).to_lowercase();
                 self.status = format!("the agent's {} {state}: {}", r.what, r.summary);
@@ -1835,6 +1890,7 @@ impl App {
         }
         match self.screen {
             Screen::Main => self.main_key(k),
+            Screen::Review => self.review_key(k),
             Screen::History => {
                 self.history_key(k);
                 Effect::None
@@ -1865,6 +1921,25 @@ impl App {
         {
             return e;
         }
+        // On the banner: Enter reviews the first landed, ↓ goes back to the
+        // stack's header.
+        if self.on_banner {
+            match k.code {
+                KeyCode::Enter => {
+                    if let Some(id) = self.queue().first().cloned() {
+                        self.open_review(&id, None);
+                    }
+                }
+                KeyCode::Down => {
+                    self.on_banner = false;
+                    self.list = true;
+                    self.focus = Focus::List;
+                    self.on_stack = true;
+                }
+                _ => {}
+            }
+            return Effect::None;
+        }
         let n = self.patch_count();
         let last = n.saturating_sub(1);
         match (self.focus, k.code) {
@@ -1877,6 +1952,10 @@ impl App {
                     }
                 };
             }
+            // Esc goes back up: from a patch to the stack's header, from there
+            // to the banner, if there is one.
+            (Focus::List, KeyCode::Esc) if !self.on_stack => self.on_stack = true,
+            (Focus::List, KeyCode::Esc) | (Focus::List, KeyCode::Up) if self.on_stack && self.banner().is_some() => self.on_banner = true,
             (Focus::List, KeyCode::Down) if self.on_stack => {
                 if n > 0 {
                     self.on_stack = false;
@@ -2240,8 +2319,10 @@ impl App {
                     return Some(if busy.contains_key(&(n.change.clone(), n.id.clone())) {
                         Action::OpenStream
                     } else if let Some((run, k)) = held {
-                        // Its reply waiting for review: taken at once.
-                        Action::TakeReply(run, k)
+                        // Its reply waiting for review: taken at once; or,
+                        // going with a change of the stack, reviewed with it.
+                        let alone = self.db.run(&run).and_then(|r| r.held.as_ref()).is_some_and(|h| h.stack.is_none());
+                        if alone { Action::TakeReply(run, k) } else { Action::Review(run, Some(crate::held::Part::Reply(k))) }
                     } else if last_mine(&n.text).is_some() {
                         // The last word yours: a reply would only add to it.
                         Action::EditMine
@@ -2282,6 +2363,21 @@ impl App {
             _ => {}
         }
         match self.screen {
+            Screen::Main if self.on_banner => {
+                out.push(
+                    "The banner says how much of the agent's work has landed and waits for your review: nothing of it is applied before you review it."
+                        .into(),
+                );
+                out.push("Press Enter to review the next one, the first landed; Space to pick one; ↓ to go to the stack.".into());
+            }
+            Screen::Review => {
+                out.push(
+                    "The review of what the agent brought back: the stack operations of its change, the comments it opened, its replies. Each is accepted or rejected; the change of the stack is one part, and rejecting it rejects the comments too."
+                        .into(),
+                );
+                out.push("Press Enter to accept or reject the part the cursor is on, Space for its menu, → to scroll what it looks like and ← to come back.".into());
+                out.push("Press Esc to save your marks, to throw them away, or to close the review: what you accepted is applied then.".into());
+            }
             Screen::Main if self.reading_here() => {
                 match self.reading_at() {
                     None => out.push(
@@ -2789,8 +2885,8 @@ impl App {
     fn common(&self, items: &mut Vec<Item>) {
         let h = self.by_hand().is_none();
         items.push(Item::line());
-        // Nothing is edited from History…, only looked at.
-        let edits = self.screen != Screen::History;
+        // Nothing is edited from History…, nor from a review: only looked at.
+        let edits = !matches!(self.screen, Screen::History | Screen::Review);
         if edits && (self.current().is_some() || self.db.names().contains(&self.stack.as_str())) {
             if let Some((_, op)) = self.db.undo_target(&self.stack) {
                 items.push(Item::new(format!("Undo: {op}"), Action::Undo).when(h));
@@ -2885,6 +2981,15 @@ impl App {
         let mut title = self.stack.clone();
         let mut items = Vec::new();
         match (self.screen, self.focus) {
+            // Each landed ask waiting for review, to review.
+            (Screen::Main, _) if self.on_banner => {
+                title = "what waits for your review".into();
+                self.banner_items(&mut items);
+            }
+            (Screen::Review, _) => {
+                title = "this part of the agent's work".into();
+                self.review_items(&mut items);
+            }
             (Screen::Main, Focus::List) if self.on_stack => {
                 title = format!("the stack {}", self.stack);
                 if self.current().is_some() {
@@ -3069,7 +3174,10 @@ impl App {
             None if held.is_some() => {
                 let (run, k) = held.clone().unwrap();
                 let alone = self.db.run(&run).and_then(|r| r.held.as_ref()).is_some_and(|h| h.stack.is_none());
-                items.push(Item::new("Accept the agent's reply", Action::TakeReply(run, k)).when(alone));
+                if alone {
+                    items.push(Item::new("Accept the agent's reply", Action::TakeReply(run.clone(), k)));
+                }
+                items.push(Item::new("Review the agent's work…", Action::Review(run, Some(crate::held::Part::Reply(k)))));
             }
             None if c.queued.is_some() => items.push(Item::new("Take it back from the agent's queue", Action::Unsend)),
             None if c.about.is_some() => {
@@ -3233,6 +3341,19 @@ impl App {
                     self.launch();
                 }
             }
+            Action::Review(run, part) => self.open_review(&run, part),
+            Action::MarkPart(accept) => {
+                if let Some(p) = self.review_part() {
+                    self.mark(p, accept);
+                }
+            }
+            Action::MarkComments(accept) => self.mark_comments(accept),
+            Action::ReviewSave => self.review_save(),
+            Action::ReviewDiscard => {
+                self.leave_review();
+                self.status = "the marks you made since you opened the review are thrown away".into();
+            }
+            Action::ReviewClose(rest) => self.review_close(rest),
             Action::Collapse | Action::Expand => {
                 let collapse = matches!(action, Action::Collapse);
                 if let Some(c) = self.picked()
@@ -4061,10 +4182,23 @@ impl App {
         if w < 20 || h < 4 {
             return None;
         }
-        self.body_h = h - 2;
         self.edit_box.set(None);
         self.spots.borrow_mut().clear();
-        let body = Rect::new(area.x, area.y + 1, area.width, area.height - 2);
+        // What landed work waits for review, under the top bar, on the main
+        // screen.
+        let banner = (self.screen == Screen::Main && h > 4).then(|| self.banner()).flatten();
+        if banner.is_none() {
+            self.on_banner = false;
+        }
+        let top = 1 + banner.is_some() as usize;
+        self.body_h = h - top - 1;
+        self.body_w = w;
+        let body = Rect::new(area.x, area.y + top as u16, area.width, (h - top - 1) as u16);
+        if let Some(text) = &banner {
+            let st = if self.on_banner { color::header().add_modifier(Modifier::REVERSED) } else { color::header() };
+            put(buf, area, 0, 1, w, &fit(text, w), st);
+            spot_in(&self.spots, area, (0, 1, w, 1), Spot::Banner);
+        }
         let mut cursor = None;
         match self.screen {
             Screen::Runs => self.draw_runs(buf, body),
@@ -4088,6 +4222,7 @@ impl App {
                 }
             }
             Screen::Text => self.draw_text(buf, body),
+            Screen::Review => self.draw_review(buf, body),
             Screen::Tree | Screen::Stacks | Screen::Versions => {
                 let (left, (right, _)) = self.columns(buf, body, true, false, None);
                 let left = left.unwrap();
@@ -4225,6 +4360,12 @@ impl App {
             Mode::Edit(_) => "enter: a new line · esc: save, send or throw away".into(),
             Mode::Help { .. } => "any key: back, and that key".into(),
             Mode::Stream { .. } => "↑↓: scroll · esc: fold it".into(),
+            Mode::Normal if self.screen == Screen::Main && self.on_banner => {
+                "enter: review the next · space: pick one · ↓: the stack · ?: what can I do here".into()
+            }
+            Mode::Normal if self.screen == Screen::Review => {
+                "↑↓ choose · enter: accept or reject · →: look closer · space: menu · esc: save, discard or close".into()
+            }
             Mode::Normal if self.reading_here() => {
                 "space: mark this block read · enter: unread · 1: view · 2: comment · ?: what can I do here".into()
             }
@@ -4284,8 +4425,11 @@ impl App {
         // The choices in one column, past the longest label that has them.
         let pad = m.items.iter().filter(|i| i.choices.is_some()).map(|i| i.label.chars().count()).max().unwrap_or(0);
         let widest = m.items.iter().map(|i| i.row(pad).0.chars().count()).max().unwrap_or(0);
-        let bw = (widest.max(m.title.chars().count() + 2).max(24) + 4).min(w.saturating_sub(2));
-        let note = m.note.as_deref().map(|n| wrap(n, bw.saturating_sub(4))).unwrap_or_default();
+        // A note of short lines, as a review's summary, each line in full.
+        let note_w = m.note.as_deref().map_or(0, |n| n.lines().map(|l| l.chars().count()).max().unwrap_or(0).min(60));
+        let bw = (widest.max(note_w).max(m.title.chars().count() + 2).max(24) + 4).min(w.saturating_sub(2));
+        // A line of its own for each line of the note.
+        let note: Vec<String> = m.note.as_deref().map_or(vec![], |n| n.lines().flat_map(|l| wrap(l, bw.saturating_sub(4))).collect());
         let below = if note.is_empty() { 0 } else { note.len() + 1 };
         let rows = m.items.len().min(h.saturating_sub(2 + below).max(1));
         if m.sel < m.top {
@@ -4428,7 +4572,11 @@ impl App {
         };
         let mut st = color::header();
         if self.on_stack {
-            st = if self.focus == Focus::List { st.add_modifier(Modifier::REVERSED) } else { st.add_modifier(Modifier::UNDERLINED) };
+            st = if self.focus == Focus::List && !self.on_banner {
+                st.add_modifier(Modifier::REVERSED)
+            } else {
+                st.add_modifier(Modifier::UNDERLINED)
+            };
         }
         put(buf, area, 0, 0, w, &fit(&header, w), st);
         self.spot(area, (0, 0, w), Spot::Patch(None));
