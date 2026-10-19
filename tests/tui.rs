@@ -213,10 +213,10 @@ fn the_cursor_follows_the_mouse() {
     assert!(app.rows[app.cursor].text.starts_with("+bee"));
     // In a menu, over an item: the one Enter does.
     keys(&mut app, &[KeyCode::Char(' ')]);
-    let (x, y) = at(&draw(&mut app), "Comment in $EDITOR");
+    let (x, y) = at(&draw(&mut app), "[ ] in $EDITOR");
     app.hover(x, y);
     match &app.mode {
-        Mode::Menu(m) => assert_eq!(m.items[m.sel].label, "Comment in $EDITOR"),
+        Mode::Menu(m) => assert_eq!(m.items[m.sel].label, "Comment on this line"),
         other => panic!("{other:?}"),
     }
     // Writing, the mouse moves nothing.
@@ -247,7 +247,7 @@ fn a_click_picks_and_a_second_does_as_enter() {
     assert!(matches!(app.mode, Mode::Menu(_)), "{:?}", app.mode);
     // In a menu, a click does the item; in the box but on none, nothing.
     let screen = draw(&mut app);
-    let (x, y) = at(&screen, "Comment on this line…");
+    let (x, y) = at(&screen, "Comment on this line");
     app.click(x, y - 1, false);
     assert!(matches!(app.mode, Mode::Menu(_)), "the box's edge");
     app.click(x, y, false);
@@ -410,6 +410,54 @@ fn what_is_said_names_the_keys_of_the_settings() {
     assert_eq!(app.say_keys("press ↓ to pick it, ↑ to go back, ↑↓ for another".into()), "press j to pick it, k to go back, kj for another");
 }
 
+/// As `choose`, the item's choice drawn as `pick` (or starting so)
+/// picked first, with →.
+fn choose_as(app: &mut App, label: &str, pick: &str) -> Effect {
+    if !matches!(app.mode, Mode::Menu(_)) {
+        assert_eq!(key(app, KeyCode::Char(' ')), Effect::None);
+    }
+    let all = items(app);
+    let want = all
+        .iter()
+        .position(|(l, _)| l.starts_with(label))
+        .unwrap_or_else(|| panic!("no {label:?} in {all:?}"));
+    for _ in 0..all.len() * 2 {
+        match &app.mode {
+            Mode::Menu(m) if m.sel == want => break,
+            _ => {
+                key(app, KeyCode::Down);
+            }
+        }
+    }
+    let list = choices_of(app, want);
+    assert!(list.iter().any(|c| c.starts_with(pick)), "no {pick:?} among {label:?}'s {list:?}");
+    for _ in 0..list.len() {
+        let shown = match &app.mode {
+            Mode::Menu(m) => m.items[want].choices.as_ref().map(|c| c.list[c.picked].shown.clone()),
+            _ => None,
+        };
+        if shown.is_some_and(|s| s.starts_with(pick)) {
+            break;
+        }
+        key(app, KeyCode::Right);
+    }
+    key(app, KeyCode::Enter)
+}
+
+/// The choices of the open menu's item `i`, as drawn.
+fn choices_of(app: &App, i: usize) -> Vec<String> {
+    match &app.mode {
+        Mode::Menu(m) => m.items[i].choices.as_ref().map(|c| c.list.iter().map(|c| c.shown.clone()).collect()).unwrap_or_default(),
+        _ => vec![],
+    }
+}
+
+/// The choices of the open menu's item `label`, as drawn.
+fn choices_named(app: &App, label: &str) -> Vec<String> {
+    let at = items(app).iter().position(|(l, _)| l == label).unwrap_or_else(|| panic!("no {label:?} in {:?}", items(app)));
+    choices_of(app, at)
+}
+
 /// As `choose`, the menu opened with `menu`.
 fn choose_with(app: &mut App, label: &str, menu: char) -> Effect {
     if !matches!(app.mode, Mode::Menu(_)) {
@@ -451,13 +499,15 @@ fn the_menu_goes_by_place() {
     for label in ["Comment on the stack…", "Show…", "Tree of edits…", "History…", "Apply the stack to the worktree…", "Delete this stack…"] {
         assert!(stack.contains(&label.to_string()), "{label}: {stack:?}");
     }
-    assert!(stack.iter().any(|l| l.starts_with("Ask agent about all 0")), "{stack:?}");
+    assert!(stack.contains(&"Ask agent about all".to_string()), "{stack:?}");
     assert!(!stack.contains(&"Move this patch…".to_string()), "{stack:?}");
     // A line's.
     keys(&mut app, &[KeyCode::Down, KeyCode::Right]);
     down_to(&mut app, "+TWO");
     let line = labels(&mut app);
-    assert_eq!(line[..2], ["Comment on this line…", "Comment in $EDITOR"], "{line:?}");
+    assert_eq!(line[0], "Comment on this line", "{line:?}");
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    assert_eq!(choices_named(&app, "Comment on this line"), ["here", "in $EDITOR"]);
 }
 
 #[test]
@@ -488,7 +538,7 @@ fn question_mark_says_what_can_be_done_where_the_cursor_is() {
     keys(&mut app, &[KeyCode::Char(' ')]);
     key(&mut app, KeyCode::Char('?'));
     assert!(draw(&mut app).contains("Press Enter to edit what you said last, or add to it."));
-    keys(&mut app, &[KeyCode::Char('?'), KeyCode::Down, KeyCode::Down]);
+    keys(&mut app, &[KeyCode::Char('?'), KeyCode::Down]);
     key(&mut app, KeyCode::Char('?'));
     assert!(draw(&mut app).contains("Press Enter to reply to this comment."));
     keys(&mut app, &[KeyCode::Char('?')]);
@@ -619,16 +669,11 @@ fn comments_are_written_where_they_will_show() {
     let all: Vec<String> = items(&app).into_iter().map(|(l, _)| l).collect();
     assert_eq!(
         all,
-        [
-            "Save it",
-            "Save it and ask agent",
-            "Save it and ask agent, the whole stack",
-            "Save it and ask agent, answer only",
-            "",
-            "Throw it away",
-            "Keep writing"
-        ]
+        ["Save it", "Save it and ask agent", "", "Throw it away", "Keep writing"]
     );
+    // How it is asked, a choice of its item; a line's comment, of a patch,
+    // may be asked of the whole stack.
+    assert_eq!(choices_named(&app, "Save it and ask agent"), ["change", "the whole stack", "answer only"]);
     // Esc keeps writing too.
     keys(&mut app, &[KeyCode::Esc]);
     assert!(matches!(app.mode, Mode::Edit(_)));
@@ -792,7 +837,7 @@ fn the_comments_pane_previews_without_moving_the_patch() {
     assert!(draw(&mut app).contains("▲ comment 1 of 2, above"));
     // Space offers what can be done to the selected comment; a reply is
     // written in the pane, under the comment.
-    choose(&mut app, "Reply…");
+    choose_as(&mut app, "Reply", "here");
     let screen = draw(&mut app);
     assert!(screen.contains("a reply"), "{screen}");
     save(&mut app, "replied from the pane");
@@ -804,7 +849,8 @@ fn the_comments_pane_previews_without_moving_the_patch() {
         keys(&mut app, &[KeyCode::Char(' ')]);
         items(&app).into_iter().map(|(l, _)| l).collect()
     };
-    assert!(all.contains(&"Ask agent about all 2".to_string()) && all.contains(&"Show…".to_string()), "{all:?}");
+    assert!(all.contains(&"Ask agent about all".to_string()) && all.contains(&"Show…".to_string()), "{all:?}");
+    assert_eq!(choices_named(&app, "Ask agent about all")[..2], ["change (2)", "answer only (2)"]);
 }
 
 /// A claude that says what it does for a second, then answers each comment
@@ -842,8 +888,8 @@ fn what_you_said_last_may_be_written_again() {
     // Unanswered, it is the comment itself, written again where it is: the
     // menu's first, as enter does.
     keys(&mut app, &[KeyCode::Char(' ')]);
-    assert_eq!(items(&app)[0].0, "Edit your comment…");
-    choose(&mut app, "Edit your comment…");
+    assert_eq!(items(&app)[0].0, "Edit your comment");
+    choose_as(&mut app, "Edit your comment", "here");
     assert!(matches!(&app.mode, Mode::Edit(e) if e.ed.text() == "why so loud?"), "{:?}", app.mode);
     assert!(draw(&mut app).contains("your comment: edit it, or add to it"));
     typed(&mut app, " really");
@@ -860,7 +906,7 @@ fn what_you_said_last_may_be_written_again() {
     assert_eq!(app.mode, Mode::Normal);
     // Or in $EDITOR.
     let target = stacked::tui::Target::Edit { change: n.change.clone(), id: n.id.clone() };
-    assert_eq!(choose(&mut app, "Edit your comment in $EDITOR"), Effect::EditComment(target));
+    assert_eq!(choose_as(&mut app, "Edit your comment", "in $EDITOR"), Effect::EditComment(target));
     // Answered, the agent's word is last: nothing of yours to edit.
     Db::edit(&db, |d| {
         let n = d.note(&n.change, &n.id).cloned().unwrap();
@@ -875,7 +921,7 @@ fn what_you_said_last_may_be_written_again() {
     assert!(!items(&app).iter().any(|(l, _)| l.starts_with("Edit your")), "{:?}", items(&app));
     keys(&mut app, &[KeyCode::Esc]);
     // Replied to, the reply is what is written again, the rest as it was.
-    choose(&mut app, "Reply…");
+    choose_as(&mut app, "Reply", "here");
     save(&mut app, "louder");
     // Enter, the last word yours again, opens it.
     assert!(draw(&mut app).contains("enter: edit it · "));
@@ -909,7 +955,7 @@ fn what_you_said_last_may_be_written_again() {
     };
     wait(&db);
     app.refresh();
-    choose(&mut app, "Edit your reply…");
+    choose_as(&mut app, "Edit your reply", "here");
     assert!(notes_of(&db, "s", 0)[0].queued.is_none(), "off the queue meanwhile");
     typed(&mut app, ", please");
     keys(&mut app, &[KeyCode::Esc]);
@@ -920,7 +966,7 @@ fn what_you_said_last_may_be_written_again() {
     // The edit thrown away, it goes back on, and is asked as it was.
     wait(&db);
     app.refresh();
-    choose(&mut app, "Edit your reply…");
+    choose_as(&mut app, "Edit your reply", "here");
     typed(&mut app, " now");
     keys(&mut app, &[KeyCode::Esc]);
     choose(&mut app, "Throw it away");
@@ -928,7 +974,7 @@ fn what_you_said_last_may_be_written_again() {
     // Not while the agent works on it.
     wait_for(&mut app, "⋯ Reading the patch.");
     keys(&mut app, &[KeyCode::Char(' ')]);
-    assert!(items(&app).contains(&("Edit your reply…".to_string(), false)), "{:?}", items(&app));
+    assert!(items(&app).contains(&("Edit your reply".to_string(), false)), "{:?}", items(&app));
     keys(&mut app, &[KeyCode::Esc]);
     wait_for(&mut app, "agent replied (answer only)");
     // Its history says which were edits.
@@ -959,16 +1005,17 @@ fn a_comment_on_a_patch_may_be_sent_to_the_whole_stack() {
     keys(&mut app, &[KeyCode::Esc]);
     // Written on a patch, it may be saved and sent past its patch.
     let all: Vec<String> = items(&app).into_iter().map(|(l, _)| l).collect();
-    assert_eq!(all[1..3], ["Save it and ask agent", "Save it and ask agent, the whole stack"], "{all:?}");
+    assert_eq!(all[1], "Save it and ask agent", "{all:?}");
+    assert_eq!(choices_named(&app, "Save it and ask agent")[..2], ["change", "the whole stack"]);
     choose(&mut app, "Save it");
     // Its menu has it too, beside asking about its patch alone.
     keys(&mut app, &[KeyCode::Down]);
     assert!(app.rows[app.cursor].head);
     keys(&mut app, &[KeyCode::Char(' ')]);
     let all: Vec<String> = items(&app).into_iter().map(|(l, _)| l).collect();
-    let at = all.iter().position(|l| l == "Ask agent").unwrap();
-    assert_eq!(all[at + 1], "Ask agent, the whole stack", "{all:?}");
-    choose(&mut app, "Ask agent, the whole stack");
+    assert!(all.iter().any(|l| l == "Ask agent"), "{all:?}");
+    assert_eq!(choices_named(&app, "Ask agent")[..2], ["change", "the whole stack"]);
+    choose_as(&mut app, "Ask agent", "the whole stack");
     assert!(app.status.contains("asked the agent about 1 comment (may change the whole stack)"), "{}", app.status);
     let screen = wait_for(&mut app, "⋯ Reading the patch.");
     assert!(screen.contains("with the agent (may change the whole stack)"), "{screen}");
@@ -988,7 +1035,8 @@ fn a_comment_on_a_patch_may_be_sent_to_the_whole_stack() {
     down_to(&mut app, "   └ comment");
     keys(&mut app, &[KeyCode::Char(' ')]);
     let all: Vec<String> = items(&app).into_iter().map(|(l, _)| l).collect();
-    assert!(all.contains(&"Ask agent".to_string()) && !all.iter().any(|l| l.contains("the whole stack")), "{all:?}");
+    assert!(all.contains(&"Ask agent".to_string()), "{all:?}");
+    assert!(!choices_named(&app, "Ask agent").contains(&"the whole stack".to_string()));
 }
 
 #[test]
@@ -1001,7 +1049,7 @@ fn a_comment_is_sent_from_its_menu_and_answered_in_place() {
     keys(&mut app, &[KeyCode::Enter]);
     typed(&mut app, "why so loud?");
     keys(&mut app, &[KeyCode::Esc]);
-    choose(&mut app, "Save it and ask agent, answer only");
+    choose_as(&mut app, "Save it and ask agent", "answer only");
     assert!(app.status.contains("asked the agent about 1 comment (answer only)"), "{}", app.status);
     // While claude works, its stream shows under the comment, and the top
     // bar and the comments pane say so.
@@ -1050,7 +1098,7 @@ fn the_screen_never_waits_on_the_agent() {
     keys(&mut app, &[KeyCode::Esc]);
     // Asked, the ask is started elsewhere: its worktree is not made while
     // the screen waits, and keys go on working meanwhile.
-    choose(&mut app, "Save it and ask agent");
+    choose_as(&mut app, "Save it and ask agent", "change");
     assert!(app.working(), "the ask starts away from the screen");
     keys(&mut app, &[KeyCode::Down, KeyCode::Up]);
     app.settle();
@@ -1724,6 +1772,40 @@ fn an_empty_database() {
     keys(&mut app, &[KeyCode::Enter]);
     assert_eq!(items(&app), vec![("Quit".to_string(), true)]);
     assert_eq!(key(&mut app, KeyCode::Enter), Effect::Quit);
+}
+
+#[test]
+fn how_the_agent_is_asked_is_one_pick_kept_for_the_stack() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Enter]);
+    typed(&mut app, "why so loud?");
+    keys(&mut app, &[KeyCode::Esc]);
+    // Saving: how to ask is the choice of one item, change at first.
+    let at = items(&app).iter().position(|(l, _)| l == "Save it and ask agent").unwrap();
+    while !matches!(&app.mode, Mode::Menu(m) if m.sel == at) {
+        key(&mut app, KeyCode::Down);
+    }
+    assert!(draw(&mut app).contains("Save it and ask agent    [x] change  [ ] the whole stack  [ ] answer only"));
+    key(&mut app, KeyCode::Right);
+    assert_eq!(Db::load(&db).unwrap().choice("s", "ask"), Some("whole"));
+    // Saved without asking; on the comment, Ask agent starts on the same
+    // pick, the whole stack.
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Esc]);
+    choose(&mut app, "Save it");
+    keys(&mut app, &[KeyCode::Down, KeyCode::Char(' ')]);
+    let at = items(&app).iter().position(|(l, _)| l == "Ask agent").unwrap();
+    match &app.mode {
+        Mode::Menu(m) => {
+            let c = m.items[at].choices.as_ref().unwrap();
+            assert_eq!(c.list[c.picked].shown, "the whole stack");
+        }
+        other => panic!("{other:?}"),
+    }
+    // Where a comment is written is a pick of its own.
+    assert_eq!(Db::load(&db).unwrap().choice("s", "write"), None);
 }
 
 /// The column, in characters, where `needle` starts in `line`.

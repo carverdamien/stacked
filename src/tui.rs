@@ -368,19 +368,49 @@ pub struct Item {
 /// one picked. What is picked is kept per stack, in the database.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Choices {
-    /// What they are a choice of, as kept: `edit`.
+    /// What they are a choice of, as kept: `edit`, `ask`, `write`.
     pub of: &'static str,
-    /// What is picked, as the bar and `?` say it: `where`.
+    /// What is picked, as the bar and `?` say it: `where`, `how`.
     pub what: &'static str,
-    /// Each choice: its name as kept, as drawn, and what it is, said.
-    pub names: Vec<(&'static str, String, String)>,
+    pub list: Vec<Choice>,
     pub picked: usize,
 }
 
+/// One of an item's choices.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Choice {
+    /// Its name, as kept.
+    pub name: &'static str,
+    /// As drawn.
+    pub shown: String,
+    /// What it is, as `?` says it.
+    pub said: String,
+    /// What Enter does with it picked, if not the item's own action.
+    pub action: Option<Action>,
+}
+
+impl Choice {
+    fn new(name: &'static str, shown: impl Into<String>, said: impl Into<String>, action: Option<Action>) -> Choice {
+        Choice {
+            name,
+            shown: shown.into(),
+            said: said.into(),
+            action,
+        }
+    }
+}
+
 impl Choices {
+    /// `list`, the stack's pick of `of` picked if there is one of it, else
+    /// the first.
+    fn new(of: &'static str, what: &'static str, list: Vec<Choice>, pick: Option<&str>) -> Choices {
+        let picked = list.iter().position(|c| Some(c.name) == pick).unwrap_or(0);
+        Choices { of, what, list, picked }
+    }
+
     /// The one picked: its name as kept.
     pub fn pick(&self) -> &'static str {
-        self.names[self.picked].0
+        self.list[self.picked].name
     }
 }
 
@@ -570,21 +600,33 @@ impl Item {
         }
     }
 
-    /// What its row says: its label, then its choices; and each choice,
+    /// What its row says: its label, then its choices, which start past
+    /// `pad` columns (the menu's choices in one column); and each choice,
     /// where it starts in the row and how wide it is.
-    pub fn row(&self) -> (String, Vec<(usize, usize)>) {
+    pub fn row(&self, pad: usize) -> (String, Vec<(usize, usize)>) {
         let mut text = self.label.clone();
         let mut at = Vec::new();
         if let Some(c) = &self.choices {
+            let width = text.chars().count();
+            text.extend(std::iter::repeat_n(' ', pad.saturating_sub(width)));
             text.push_str("  ");
-            for (k, (_, shown, _)) in c.names.iter().enumerate() {
+            for (k, ch) in c.list.iter().enumerate() {
                 text.push_str("  ");
-                let one = format!("{} {shown}", if k == c.picked { "[x]" } else { "[ ]" });
+                let one = format!("{} {}", if k == c.picked { "[x]" } else { "[ ]" }, ch.shown);
                 at.push((text.chars().count(), one.chars().count()));
                 text.push_str(&one);
             }
         }
         (text, at)
+    }
+
+    /// What Enter on it does: its pick's action, if the pick has one, else
+    /// its own.
+    pub fn doing(&self) -> Action {
+        self.choices
+            .as_ref()
+            .and_then(|c| c.list[c.picked].action.clone())
+            .unwrap_or_else(|| self.action.clone())
     }
 }
 
@@ -1367,7 +1409,7 @@ impl App {
                             .get_mut(i)
                             .filter(|i| i.enabled)
                             .and_then(|i| i.choices.as_mut())
-                            .filter(|c| k < c.names.len())
+                            .filter(|c| k < c.list.len())
                             .map(|c| {
                                 c.picked = k;
                                 (c.of, c.pick())
@@ -2101,9 +2143,9 @@ impl App {
         match &self.mode {
             Mode::Menu(m) => {
                 if let Some(item) = m.chosen() {
-                    out.push(format!("Press Enter to {}.", about(&item.action)));
+                    out.push(format!("Press Enter to {}.", about(&item.doing())));
                     if let Some(c) = &item.choices {
-                        let each: Vec<String> = c.names.iter().map(|(_, shown, said)| format!("{shown}, {said}")).collect();
+                        let each: Vec<String> = c.list.iter().map(|ch| format!("{}, {}", ch.shown, ch.said)).collect();
                         out.push(format!("Press ← → to pick {}: {}. What is picked is kept for this stack.", c.what, each.join("; ")));
                     }
                 }
@@ -2411,7 +2453,7 @@ impl App {
             KeyCode::Left | KeyCode::Right => {
                 let right = k.code == KeyCode::Right;
                 let picked = m.items.get_mut(m.sel).filter(|i| i.enabled).and_then(|i| i.choices.as_mut()).map(|c| {
-                    let n = c.names.len();
+                    let n = c.list.len();
                     c.picked = if right { (c.picked + 1) % n } else { (c.picked + n - 1) % n };
                     (c.of, c.pick())
                 });
@@ -2428,7 +2470,7 @@ impl App {
             }
             KeyCode::Enter => {
                 return match m.chosen() {
-                    Some(item) => self.perform(item.action.clone()),
+                    Some(item) => self.perform(item.doing()),
                     None => Effect::None,
                 };
             }
@@ -2458,19 +2500,18 @@ impl App {
                 let send = self.can_send_target(&e.target);
                 let mut items = vec![Item::new("Save it", Action::Save(None))];
                 if send {
-                    items.push(Item::new("Save it and ask agent", Action::Save(Some(Way::Change))).when(self.read_only().is_none()));
                     let a_patch_s = match &e.target {
                         Target::Patch(_) | Target::Line { .. } => true,
                         Target::Reply { change, .. } | Target::Edit { change, .. } => *change != stack_change(&self.stack),
                         _ => false,
                     };
-                    if a_patch_s {
-                        items.push(Item::new("Save it and ask agent, the whole stack", Action::SaveWhole).when(self.read_only().is_none()));
-                    }
-                    items.push(Item::new("Save it and ask agent, answer only", Action::Save(Some(Way::Answer))).when(self.read_only().is_none()));
-                    if matches!(e.target, Target::Stack | Target::Patch(_)) {
-                        items.push(Item::new("Save it and ask agent to build and test", Action::Save(Some(Way::Test))).when(self.read_only().is_none()));
-                    }
+                    let test = matches!(e.target, Target::Stack | Target::Patch(_));
+                    let choices = self.ask_choices(a_patch_s, test, true);
+                    items.push(
+                        Item::new("Save it and ask agent", Action::Save(Some(Way::Change)))
+                            .when(self.read_only().is_none())
+                            .with(choices),
+                    );
                 }
                 items.push(Item::line());
                 items.push(Item::new("Throw it away", Action::ThrowAway));
@@ -2637,27 +2678,55 @@ impl App {
     /// Where a file of a patch is edited by hand, as radio buttons: a copy
     /// of it alone, this checkout, or the stack's own worktree.
     fn edit_choices(&self) -> Choices {
-        let names = vec![
-            ("tmp", "tmp/file".to_string(), "a copy of the file alone, in a temporary folder".to_string()),
-            (
-                "pwd",
-                "pwd".to_string(),
-                "this checkout, moved to the patch for the edit, then back where it was".to_string(),
-            ),
-            (
+        let list = vec![
+            Choice::new("tmp", "tmp/file", "a copy of the file alone, in a temporary folder", None),
+            Choice::new("pwd", "pwd", "this checkout, moved to the patch for the edit, then back where it was", None),
+            Choice::new(
                 "worktree",
                 format!(".stacked/{}", self.stack),
                 format!("the stack's own worktree, .stacked/{} in its repository, kept between edits", self.stack),
+                None,
             ),
         ];
-        let chosen = self.db.choice(&self.stack, "edit");
-        let picked = names.iter().position(|(n, _, _)| Some(*n) == chosen).unwrap_or(0);
-        Choices {
-            of: "edit",
-            what: "where",
-            names,
-            picked,
+        Choices::new("edit", "where", list, self.db.choice(&self.stack, "edit"))
+    }
+
+    /// How the agent is asked about a comment, as radio buttons: to change
+    /// the code (and `whole`, for a patch's: the whole stack), to answer
+    /// only, or (`test`) to build and test. Each asks, or, `saving` a
+    /// comment being written, saves it and asks.
+    fn ask_choices(&self, whole: bool, test: bool, saving: bool) -> Choices {
+        let act = |way: Way| Some(if saving { Action::Save(Some(way)) } else { Action::Send(way) });
+        let mut list = vec![Choice::new("change", "change", "it may change the code within the comment's place", act(Way::Change))];
+        if whole {
+            let a = if saving { Action::SaveWhole } else { Action::SendWhole };
+            list.push(Choice::new(
+                "whole",
+                "the whole stack",
+                "a change with the whole stack in its worktree: it may change any patch, add or reorder them",
+                Some(a),
+            ));
         }
+        list.push(Choice::new("answer", "answer only", "it answers, and changes nothing", act(Way::Answer)));
+        if test {
+            list.push(Choice::new(
+                "test",
+                "build and test",
+                "it builds and tests in a workspace of its own, and changes nothing",
+                act(Way::Test),
+            ));
+        }
+        Choices::new("ask", "how", list, self.db.choice(&self.stack, "ask"))
+    }
+
+    /// Where a comment is written, as radio buttons: here, in an editor in
+    /// place (`here`), or in $EDITOR (`editor`).
+    fn write_choices(&self, here: Action, editor: Action) -> Choices {
+        let list = vec![
+            Choice::new("here", "here", "in an editor in place, where it will show", Some(here)),
+            Choice::new("editor", "in $EDITOR", "in $EDITOR, a file of its own", Some(editor)),
+        ];
+        Choices::new("write", "where", list, self.db.choice(&self.stack, "write"))
     }
 
     /// Where this stack's files are edited by hand, as its menus picked.
@@ -2727,8 +2796,8 @@ impl App {
                 } else {
                     if self.commentable().is_some() {
                         title = format!("line: {}", self.rows.get(self.cursor).and_then(|r| r.preview.clone()).unwrap_or_default());
-                        items.push(Item::new("Comment on this line…", Action::CommentLine));
-                        items.push(Item::new("Comment in $EDITOR", Action::CommentInEditor));
+                        let choices = self.write_choices(Action::CommentLine, Action::CommentInEditor);
+                        items.push(Item::new("Comment on this line", Action::CommentLine).with(choices));
                     }
                     // Edited by hand, where the cursor is.
                     if self.focus == Focus::Diff && !self.on_stack && self.patch_id().is_some() {
@@ -2781,13 +2850,21 @@ impl App {
     fn send_all_items(&self, items: &mut Vec<Item>, test: bool) {
         let w = self.read_only().is_none();
         let n = self.listed_sendable(Way::Change).len();
-        let all = |t: &str| format!("Ask agent about all {n}{t}");
-        items.push(Item::new(all(""), Action::SendAll(Way::Change)).when(w && n > 0));
-        items.push(Item::new(all(", answer only"), Action::SendAll(Way::Answer)).when(w && n > 0));
+        let t = if test { self.listed_sendable(Way::Test).len() } else { 0 };
+        let mut list = vec![
+            Choice::new("change", format!("change ({n})"), "each may change the code within its place", Some(Action::SendAll(Way::Change))),
+            Choice::new("answer", format!("answer only ({n})"), "each is answered, and nothing changes", Some(Action::SendAll(Way::Answer))),
+        ];
         if test {
-            let t = self.listed_sendable(Way::Test).len();
-            items.push(Item::new(format!("Ask agent to build and test, for all {t}"), Action::SendAll(Way::Test)).when(w && t > 0));
+            list.push(Choice::new(
+                "test",
+                format!("build and test ({t})"),
+                "the agent builds and tests, for each, and changes nothing",
+                Some(Action::SendAll(Way::Test)),
+            ));
         }
+        let choices = Choices::new("ask", "how", list, self.db.choice(&self.stack, "ask"));
+        items.push(Item::new("Ask agent about all", Action::SendAll(Way::Change)).when(w && (n > 0 || t > 0)).with(choices));
     }
 
     fn comment_items(&self, c: &Note, items: &mut Vec<Item>, w: bool) {
@@ -2797,11 +2874,10 @@ impl App {
         // enter does; not while the agent works on it.
         if last_mine(&c.text).is_some() {
             let what = if thread_turns(&c.text).len() > 1 { "reply" } else { "comment" };
-            items.push(Item::new(format!("Edit your {what}…"), Action::EditMine).when(with.is_none()));
-            items.push(Item::new(format!("Edit your {what} in $EDITOR"), Action::EditMineInEditor).when(with.is_none()));
+            let choices = self.write_choices(Action::EditMine, Action::EditMineInEditor);
+            items.push(Item::new(format!("Edit your {what}"), Action::EditMine).when(with.is_none()).with(choices));
         }
-        items.push(Item::new("Reply…", Action::Reply));
-        items.push(Item::new("Reply in $EDITOR", Action::CommentInEditor));
+        items.push(Item::new("Reply", Action::Reply).with(self.write_choices(Action::Reply, Action::CommentInEditor)));
         items.push(Item::line());
         match with {
             Some((_, run)) => {
@@ -2814,14 +2890,8 @@ impl App {
             }
             None => {
                 let s = ask::sendable(c);
-                items.push(Item::new("Ask agent", Action::Send(Way::Change)).when(w && s));
-                if !c.on_stack() {
-                    items.push(Item::new("Ask agent, the whole stack", Action::SendWhole).when(w && s));
-                }
-                items.push(Item::new("Ask agent, answer only", Action::Send(Way::Answer)).when(w && s));
-                if ask::can_test(&self.db, c) {
-                    items.push(Item::new("Ask agent to build and test", Action::Send(Way::Test)).when(w && s));
-                }
+                let choices = self.ask_choices(!c.on_stack(), ask::can_test(&self.db, c), false);
+                items.push(Item::new("Ask agent", Action::Send(Way::Change)).when(w && s).with(choices));
             }
         }
         if let Some(rev) = c.about {
@@ -3851,7 +3921,9 @@ impl App {
     fn draw_menu(&mut self, buf: &mut Buffer, area: Rect) {
         let (w, h) = (area.width as usize, area.height as usize);
         let Mode::Menu(m) = &mut self.mode else { return };
-        let widest = m.items.iter().map(|i| i.row().0.chars().count()).max().unwrap_or(0);
+        // The choices in one column, past the longest label that has them.
+        let pad = m.items.iter().filter(|i| i.choices.is_some()).map(|i| i.label.chars().count()).max().unwrap_or(0);
+        let widest = m.items.iter().map(|i| i.row(pad).0.chars().count()).max().unwrap_or(0);
         let bw = (widest.max(m.title.chars().count() + 2).max(24) + 4).min(w.saturating_sub(2));
         let note = m.note.as_deref().map(|n| wrap(n, bw.saturating_sub(4))).unwrap_or_default();
         let below = if note.is_empty() { 0 } else { note.len() + 1 };
@@ -3875,7 +3947,7 @@ impl App {
             if i == m.sel {
                 st = st.add_modifier(Modifier::REVERSED);
             }
-            let (text, choices) = item.row();
+            let (text, choices) = item.row(pad);
             put(buf, area, x + 1, y + 1 + r, bw - 2, &fit(&format!(" {text}"), bw - 2), st);
             // Each choice a spot of its own, over the item's: a click picks it.
             for (k, (start, width)) in choices.into_iter().enumerate() {

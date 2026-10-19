@@ -194,18 +194,22 @@ on the stack under the left pane's header, on a patch under its title in
 the left pane, on a line under the line, a reply under its comment, in the
 middle or in the comments pane. The pane being written in takes half the
 width meanwhile. Typing and the arrows edit, enter breaks the line, and esc
-asks what to do with it: `Save it`, `Save it and ask agent` (and `the whole
-stack` for a patch's, `answer only`, and for the stack's or a patch's, `to
-build and test`), `Throw it away`, `Keep writing`. Esc with nothing written
-just closes it. `Comment in $EDITOR` and `Reply in $EDITOR` are in the menus
-too. Nothing is typed at the bottom: the bottom line only says things.
+asks what to do with it: `Save it`, `Save it and ask agent`, `Throw it
+away`, `Keep writing`. How the agent is asked is the choice of `Save it and
+ask agent`, `[x] change  [ ] the whole stack  [ ] answer only  [ ] build and
+test` (the whole stack for a patch's comment, build and test for the
+stack's or a patch's as a whole), as it is of a comment's `Ask agent`: one
+pick, kept for the stack. Esc with nothing written just closes it. Where a
+comment is written is a choice too, kept for the stack: `Comment on this
+line`, `Reply` and `Edit your reply` each have `[x] here  [ ] in $EDITOR`.
+Nothing is typed at the bottom: the bottom line only says things.
 
 When the last word of a comment is yours, enter on it opens what you said
 last, in place, to edit or add to (a reply would only add to it), the turns
 before it as they were; enter on its line does too. Its menu has the same
-first, `Edit your reply…` (`Edit your comment…` when no one has answered
-it), and `Edit your reply in $EDITOR`; `Reply…` adds to it without showing
-it. Not while the agent works on it. A comment waiting its turn
+first, `Edit your reply` (`Edit your comment` when no one has answered it),
+here or in $EDITOR; `Reply` adds to it without showing it. Not while the
+agent works on it. A comment waiting its turn
 leaves the agent's queue while it is edited, so that it is not asked as it
 was: thrown away, or left as it was, it goes back on; edited, it waits to
 be asked again (or `Save it and ask agent`). In $EDITOR it is only what you
@@ -272,27 +276,28 @@ comment is, is what the agent may change:
   the answer needs more than the patch (another patch changed, a new one on
   top), as a comment on the stack would.
 
-There are three ways to ask, from a comment's menu, or `Ask agent about all
-…` on the left header (the stack's comments) or the comments pane's header
-(what the list shows):
+A comment's menu asks with `Ask agent`, and `Ask agent about all` on the
+left header (the stack's comments) or the comments pane's header (what the
+list shows) asks about each comment listed. How it asks is the item's
+choice, picked with ← →, kept for the stack, and the same as `Save it and
+ask agent`'s:
 
-- `Ask agent`: it may change the code within the comment's place; its reply
+- `change`: it may change the code within the comment's place; its reply
   says what changed.
-- `Ask agent, the whole stack`, on a patch's comment (and `Save it and ask
-  agent, the whole stack` as you write one): a change, with the whole stack
-  in its worktree, as for the stack's own comments: it may change any
-  patch, add patches anywhere, reorder them. The comment stays on its line,
-  and its reply lands in its thread. On the command line, `stacked send
-  NAME ID --whole-stack`.
-- `Ask agent, answer only`: read-only, enforced by its tools; only the reply
-  lands. An answer may open comments of its own on lines within the place,
-  as a review does: the asking comment then says `opened 4 comments, 1 with
-  your replies`, and its menu goes to them, or deletes it and them.
-- `Ask agent to build and test`, on the stack's comments and a patch's as a
-  whole: it may run any command, in a workspace of its choosing by its own
-  rules (CLAUDE.md), never the user's worktree; it changes nothing in the
-  stack. What it found lands in the reply and on each patch's title, saying
-  which stack it tested.
+- `the whole stack`, on a patch's comment: a change, with the whole stack in
+  its worktree, as for the stack's own comments: it may change any patch,
+  add patches anywhere, reorder them. The comment stays on its line, and
+  its reply lands in its thread. On the command line, `stacked send NAME ID
+  --whole-stack`.
+- `answer only`: read-only, enforced by its tools; only the reply lands. An
+  answer may open comments of its own on lines within the place, as a
+  review does: the asking comment then says `opened 4 comments, 1 with your
+  replies`, and its menu goes to them, or deletes it and them.
+- `build and test`, on the stack's comments and a patch's as a whole: it may
+  run any command, in a workspace of its choosing by its own rules
+  (CLAUDE.md), never the user's worktree; it changes nothing in the stack.
+  What it found lands in the reply and on each patch's title, saying which
+  stack it tested.
 
 Several go at once, by self-review's rule: one changing ask at a time on a
 stack, answer-only asks together, a build and test once no change runs, one
