@@ -1,18 +1,25 @@
 # stacked
 
-Usage notes on `stacked`, a stack editor, that do not belong in its
-`--help`. Run `cargo test` in `stacked/` after any change to the tool. Press
-`?` in the editor: it says what can be done where the cursor is.
+A stack editor, in the terminal. Patches, the stacks they make and every
+edit made to them, comments on them, and what the agent (claude) and
+Phabricator said: all in one file that is only ever appended to, so that
+any edit can be undone and the history read back. A comment can be asked of
+the agent, which answers it or changes the patches; what it brings back
+waits for your review. Your checkout is not touched unless you ask.
+
+What follows are the notes on using it that do not belong in its `--help`.
+Press `?` in the editor: it says what can be done where the cursor is.
 
 ## Install
 
 ```sh
-cargo install --path stacked
+cargo install --git https://github.com/carverdamien/stacked
 ```
 
-or run it in place with `stacked/target/release/stacked` after
-`cargo build --release` in `stacked/`. It needs `git`, an agent for asks
-(`claude`, unless the settings name another), and `curl` for Phabricator.
+or, in a clone of this repository, `cargo install --path .`; or run it in
+place with `target/release/stacked` after `cargo build --release`. It needs
+`git`, an agent for asks (`claude`, unless the settings name another), and
+`curl` for Phabricator.
 
 With the editor in a browser too (`stacked web`, below), built with the
 `web` feature; its browser half is compiled to wasm, with Rust's
@@ -20,11 +27,11 @@ wasm32-unknown-unknown target:
 
 ```sh
 rustup target add wasm32-unknown-unknown
-cargo install --path stacked --features web
+cargo install --path . --features web
 ```
 
 With a tour of it, to learn it by (`stacked demo`, below), built with the
-`demo` feature: `cargo install --path stacked --features demo` (or
+`demo` feature: `cargo install --path . --features demo` (or
 `--features web,demo` for both).
 
 ## Running
@@ -146,8 +153,9 @@ lines they are on), or, on the header, the stack itself (its patches, then
 the comments on the stack). The right pane lists the comments the middle
 shows, under a header of its own; with none, it is not there.
 
-There are five keys, and two of self-review's; the settings can make any of
-them other keys, and the help then names those:
+There are five keys, and two of self-review's (Copied from self-review-rs,
+below, says what it is); the settings can make any of them other keys, and
+the help then names those:
 
 - The arrows move. ↑↓ go through the patches (the header is above the
   first), the lines of the patch, or the comments (their header above the
@@ -938,6 +946,13 @@ command line's.
 
 ## Copied from self-review-rs
 
+stacked started from self-review-rs, a reviewer of your own changes in the
+terminal (the worktree's, or a stack's, `main..HEAD`), whose comments claude
+is asked about as stacked's are. It lives in
+[my-moz-tools](https://github.com/carverdamien/my-moz-tools), beside
+self-review, the Python tool it rewrites in Rust; "as in self-review" here
+means both.
+
 stacked does not depend on self-review-rs. It has its own copies of
 `diff.rs` (lines keyed by their text, so a comment, or a read mark, stays on
 a line the next version keeps), `claude.rs` (allowed tools, reading replies
@@ -951,11 +966,16 @@ the other.
 
 ## Layout of the code
 
+- `main.rs`: the command line; the library does the rest.
 - `db.rs`: the file, its records and its lock.
 - `check.rs`: whether patches apply, before they go in; the files as a
   patch leaves them.
 - `ops.rs`: edits to a stack, `$EDITOR` (the patch as mail, its code), apply.
-- `ask.rs`: asking the agent about comments, from the queue to landing.
+- `git.rs`: what stacked asks of git: mail from a range, the stack's
+  worktrees and the agents', a checkout to edit a patch in.
+- `ask.rs`, `claude.rs`: asking the agent about comments, from the queue to
+  landing; claude's command line, its stream and its replies.
+- `held.rs`: what an ask brought back, held for your review.
 - `review.rs`, `phab.rs`: Phabricator.
 - `mbox.rs`: reading `git format-patch` mail, writing mail for `git am`.
 - `rows.rs`, `view.rs`, `diff.rs`, `thread.rs`: the patch or the stack as
@@ -967,17 +987,24 @@ the other.
   editor shows them and the agent is told them.
 - `trim.rs`: a new database, the start of the history left out.
 - `todo.rs`: the `git rebase -i` style list.
+- `search.rs`: searching what stacked holds, in a thread of its own.
 - `config.rs`, `keys.rs`: the settings, and the keys they map.
+- `setup.rs`: `stacked setup agent --tui`, the agent's tools on a screen.
 - `editor.rs`: the inline comment editor.
 - `paint.rs`: colours, and drawing text and boxes.
 - `tui.rs`: the editor, and the work it does away from the screen; what a
-  click is on.
+  click is on. `tui/reviewing.rs` and `tui/searching.rs`: its screens for
+  reviewing what the agent brought back, and for searching.
 - `web.rs`, `web/client.rs`, `web/index.html`, `build.rs`: `stacked web`,
   its server, its wasm and its page; the build script compiles the wasm.
 - `demo.rs`, `memory.rs`: `stacked demo`, the tour; and the database and
   repository it keeps in memory, with a stand-in for the agent.
 
 ## Tests
+
+Run `cargo test` after any change; `cargo test --features web,demo` runs
+the browser's and the tour's too (the web feature needs the wasm target, as
+in Install). No test runs claude: a script stands in for it.
 
 `tests/cli.rs` builds a repo and drives the binary. It covers a round trip
 through `git am`, the tree, recovery from broken lines, comments on the
@@ -988,9 +1015,9 @@ moved to the stack, a patch's comment asked of the whole stack adding a
 patch on top, a reply written again, asks waiting their turn, a rebase, the stack not
 edited by hand while the agent changes it, failures kept to look at, comments staying on their line
 across versions, a patch edited by hand (as mail and as code, at a line,
-refused and taken up again), trimming, the settings, filing Phabricator
-threads, apply, and what does not apply being refused, edited again, or
-read-only. `tests/tui.rs` draws the editor into a buffer and presses keys:
+refused and taken up again), trimming, the settings (and the tools every
+ask may use, set up with the agent), filing Phabricator threads, apply, and
+what does not apply being refused, edited again, or read-only. `tests/tui.rs` draws the editor into a buffer and presses keys:
 that no letter but 1 and 2 does anything, keys mapped by the settings, the
 menus by place, what `?` says where, writing in every pane, a comment asked
 about and its stream and answer shown in place, the screen never waiting on
@@ -1000,11 +1027,12 @@ editing a patch by hand at the cursor, the history screens, the branches
 History… draws and the stack diff it shows beside each change, the agent
 asked about a record of the history, a new database started from it, a
 moved comment and an answer's comments, a patch's comment asked of the
-whole stack, what you said last written again (off the queue meanwhile),
-a comment moved to the stack taking the cursor with it, the mouse (the
-cursor following it, a click as Enter, a right click's menu, a menu's item),
-the comments
-pane's previews, and moving a patch. With `--features web`, `tests/web.rs`
+whole stack, what you said last written again (off the queue meanwhile;
+left as it was, asked as it is or left so), a comment moved to the stack
+taking the cursor with it, the mouse (the cursor following it, a click as
+Enter, a right click's menu, a menu's item), the comments pane's previews,
+moving a patch, and searching (what is in sight first, the patches then the
+files they touch, the history). With `--features web`, `tests/web.rs`
 serves the editor and asks it over HTTP as a browser would: the token
 needed, the page, the wasm, the rows as they change, a key and a click; and
 `web.rs` tests the rows and the lines both ways, with the client's own tests
@@ -1016,7 +1044,10 @@ the check's index holds only what the patches touch, that it writes nothing
 to the repository, and how a patch's files are read before and after it;
 those in `history.rs`, what the history leaves out (comments, runs, a move
 to where the stack is, a branch put straight back) and how a stack diff
-follows each patch by its change, a move told from a shift.
+follows each patch by its change, a move told from a shift. Those in
+`setup.rs` show the setup screen's boxes, a server's tools let all at once
+or one by one; those in `search.rs`, which lines of a file a hunk shows
+already.
 
 ## Not done yet
 
@@ -1030,3 +1061,7 @@ follows each patch by its change, a move told from a shift.
 - An agent other than claude must speak claude's command line and stream.
 - Only git mail is read: no `hg export`.
 - Nothing submits to Phabricator: `stacked apply`, then moz-phab.
+
+## License
+
+MIT: see [LICENSE](LICENSE).
