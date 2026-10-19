@@ -1094,6 +1094,96 @@ fn a_patch_is_edited_where_the_cursor_is() {
 }
 
 #[test]
+fn a_file_is_edited_in_the_stack_s_worktree_or_in_this_checkout() {
+    let e = env();
+    e.ok(&["import", "s", "base"]);
+    // An editor named vim, told the line as +LINE: it says where it ran,
+    // and at which commit, then edits the file.
+    let bin = e.root.join("bin");
+    std::fs::create_dir(&bin).unwrap();
+    let said = e.root.join("said");
+    let vim = bin.join("vim");
+    let script = |body: &str| {
+        let log = format!("echo \"$1 $(pwd) $(git log -1 --format=%s)\" >> {}", said.display());
+        std::fs::write(&vim, format!("#!/bin/sh\n{log}\nfile=\"$2\"\n{body}\n")).unwrap();
+        Command::new("chmod").arg("+x").arg(&vim).status().unwrap();
+    };
+    let edit = |extra: &[&str]| {
+        let mut all = vec!["edit", "s"];
+        all.extend(extra);
+        stacked_in(&e.src, &e.db, &all, "", &[("EDITOR", &vim)])
+    };
+    let last = || std::fs::read_to_string(&said).unwrap().lines().last().unwrap().to_string();
+    let head = || git(&e.src, &["rev-parse", "HEAD"]);
+    let branch = || git(&e.src, &["symbolic-ref", "--short", "HEAD"]).trim().to_string();
+    let top = head();
+
+    // In the stack's own worktree, made the first time: at patch 1, the
+    // editor in it; what the edit changes there, a new file too, is patch
+    // 1 again.
+    script("sed -i '' 's/^2$/deux/' \"$file\"\necho new > c.txt");
+    let (fine, _, err) = edit(&["1", "--path", "a.txt", "--line", "2", "--in", "worktree"]);
+    assert!(fine && err.contains("edited a.txt and c.txt in Bug 1 - change two"), "{err}");
+    let kept = e.src.join(".stacked/s");
+    assert_eq!(last(), format!("+2 {} Bug 1 - change two", kept.display()));
+    let mail = e.ok(&["show", "s", "1"]);
+    assert!(mail.contains("-two\n+deux\n") && mail.contains("+++ b/c.txt"), "{mail}");
+    assert!(mail.contains("Subject: Bug 1 - change two"), "{mail}");
+    assert!(e.ok(&["check"]).contains("s: applies"));
+    // Out of git's sight in the repository, which is as it was.
+    assert_eq!(git(&e.src, &["status", "--porcelain"]), "");
+    assert_eq!((head(), branch()), (top.clone(), "main".to_string()));
+    assert!(std::fs::read_to_string(e.src.join(".git/info/exclude")).unwrap().contains("/.stacked/"));
+    // Kept: the next edit moves it to its patch.
+    script("sed -i '' 's/^new$/newer/' \"$file\"");
+    let (fine, _, err) = edit(&["2", "--path", "b.txt", "--line", "1", "--in", "worktree"]);
+    assert!(fine && err.contains("edited b.txt in Bug 2 - add b"), "{err}");
+    assert_eq!(last(), format!("+1 {} Bug 2 - add b", kept.display()));
+    assert_eq!(git(&e.src, &["worktree", "list"]).lines().count(), 2);
+
+    // In this checkout: moved to patch 2 for the edit, then back on main,
+    // the files of yours git does not track left alone.
+    std::fs::write(e.src.join("notes.txt"), "mine\n").unwrap();
+    script("sed -i '' 's/^newer$/fresh/' \"$file\"");
+    let (fine, _, err) = edit(&["2", "--path", "b.txt", "--line", "1", "--in", "pwd"]);
+    assert!(fine && err.contains("edited b.txt in Bug 2 - add b"), "{err}");
+    assert_eq!(last(), format!("+1 {} Bug 2 - add b", e.src.display()));
+    assert!(e.ok(&["show", "s", "2"]).contains("+fresh"));
+    assert_eq!((head(), branch()), (top.clone(), "main".to_string()));
+    assert_eq!(git(&e.src, &["status", "--porcelain"]), "?? notes.txt\n");
+    // Not over changes of yours to what git tracks.
+    std::fs::write(e.src.join("a.txt"), "mine\n").unwrap();
+    let (fine, _, err) = edit(&["2", "--path", "b.txt", "--in", "pwd"]);
+    assert!(!fine && err.contains("has uncommitted changes"), "{err}");
+    git(&e.src, &["checkout", "a.txt"]);
+
+    // Closed without saving, in either: nothing changed.
+    let size = std::fs::metadata(&e.db).unwrap().len();
+    script("true");
+    for w in ["pwd", "worktree"] {
+        let (fine, _, err) = edit(&["1", "--path", "a.txt", "--in", w]);
+        assert!(fine && err.contains("saved as it was: nothing changed"), "{w}: {err}");
+    }
+    assert_eq!(std::fs::metadata(&e.db).unwrap().len(), size);
+    assert_eq!((head(), branch()), (top.clone(), "main".to_string()));
+
+    // Without --in, where the stack's menus picked. One the patch above
+    // cannot take is not taken: it is kept in a commit, and taken up again
+    // from there.
+    Db::edit(&e.db, |db| db.set_choice("s", "edit", "worktree")).unwrap();
+    script("sed -i '' 's/^eight$/huit/' \"$file\"");
+    let (fine, _, err) = edit(&["1", "--path", "a.txt", "--line", "8"]);
+    assert!(!fine && err.contains("patch 3 (Bug 3 - café") && err.contains("does not apply"), "{err}");
+    assert_eq!(last(), format!("+8 {} Bug 1 - change two", kept.display()));
+    assert!(err.contains("--in worktree --from "), "{err}");
+    let commit = err.split("--from ").nth(1).unwrap().split('`').next().unwrap().to_string();
+    assert_eq!(e.ok(&["versions", "s", "1"]).lines().count(), 2, "nothing changed");
+    script("sed -i '' 's/^huit$/eight/' \"$file\"");
+    let (fine, _, err) = edit(&["1", "--path", "a.txt", "--in", "worktree", "--from", &commit]);
+    assert!(fine && err.contains("saved as it was"), "back as it was: {err}");
+}
+
+#[test]
 fn what_you_said_last_may_be_written_again() {
     let e = env();
     e.ok(&["import", "s", "base"]);

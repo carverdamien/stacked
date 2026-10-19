@@ -148,9 +148,16 @@ enum Cmd {
         /// A file the patch changes, to edit as the patch leaves it.
         #[arg(long, requires = "patch")]
         path: Option<String>,
-        /// What to start the file from: an edit not taken before.
+        /// Where the file is edited: `tmp`, a copy of it alone; `pwd`, this
+        /// checkout, moved to the patch for the edit, then back; `worktree`,
+        /// the stack's own, .stacked/NAME in its repository. Else where the
+        /// stack's menus last picked.
+        #[arg(long = "in", value_name = "WHERE", requires = "path", value_parser = ["tmp", "pwd", "worktree"])]
+        place: Option<String>,
+        /// What to start from: an edit not taken before, as the file it was
+        /// kept in (tmp), or the commit (pwd, worktree).
         #[arg(long, requires = "path")]
-        from: Option<PathBuf>,
+        from: Option<String>,
     },
     /// Move a patch to another position, counting from 1 at the bottom.
     Move { name: String, patch: String, to: usize },
@@ -578,23 +585,37 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
             let at = db.resolve(db.stack(&name)?, &p)?;
             eprintln!("stacked: {}", ops::edit_patch(path, &name, at, line)?);
         }
-        Cmd::Edit { name, patch: Some(p), line, path: Some(f), from } => {
+        Cmd::Edit { name, patch: Some(p), line, path: Some(f), place, from } => {
             let db = Db::load(path)?;
             let at = db.resolve(db.stack(&name)?, &p)?;
-            let text = match &from {
-                Some(from) => Some(std::fs::read_to_string(from).map_err(|e| Error(format!("{}: {e}", from.display())))?),
-                None => None,
+            let place = ops::Place::named(place.as_deref().or(db.choice(&name, "edit")).unwrap_or("tmp"));
+            let again = match (&from, &place) {
+                (None, _) => None,
+                (Some(from), ops::Place::Copy) => {
+                    Some(ops::Kept::Text(std::fs::read_to_string(from).map_err(|e| Error(format!("{from}: {e}")))?))
+                }
+                (Some(commit), place) => Some(ops::Kept::Commit {
+                    place: place.clone(),
+                    commit: commit.clone(),
+                }),
             };
-            match ops::edit_code(path, &name, at, &f, line.unwrap_or(1), text)? {
+            match ops::edit_code(path, &name, at, &f, line.unwrap_or(1), &place, again)? {
                 ops::Edited::Done(said) => eprintln!("stacked: {said}"),
                 ops::Edited::Unchanged => eprintln!("stacked: saved as it was: nothing changed"),
-                ops::Edited::Refused { why, text } => {
+                ops::Edited::Refused { why, kept: ops::Kept::Text(text) } => {
                     let short = f.rsplit('/').next().unwrap_or(&f);
                     let keep = std::env::temp_dir().join(format!("stacked-edit-{}-{short}", std::process::id()));
                     std::fs::write(&keep, text).map_err(|e| Error(format!("{}: {e}", keep.display())))?;
                     return err(format!(
                         "{why}; nothing changed. Your edit is kept in {k}: `stacked edit {name} {p} --path {f} --from {k}` takes it up again",
                         k = keep.display()
+                    ));
+                }
+                ops::Edited::Refused { why, kept: ops::Kept::Commit { place, commit } } => {
+                    return err(format!(
+                        "{why}; nothing changed. Your edit is kept in commit {short}: `stacked edit {name} {p} --path {f} --in {w} --from {commit}` takes it up again",
+                        short = &commit[..12.min(commit.len())],
+                        w = place.name(),
                     ));
                 }
             }

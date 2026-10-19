@@ -57,6 +57,10 @@ pub enum Record {
     Run(Run),
     /// What a stack's comments pane shows (a filter), until changed.
     View { stack: String, show: String },
+    /// A choice of a stack's menus, picked with ← →, until changed: `of`
+    /// names it (`edit`: where a file is edited by hand), `pick` the one
+    /// picked.
+    Choice { stack: String, of: String, pick: String },
     /// Lines of a patch marked read, in the reading mode; or a mark taken
     /// back.
     Read(Mark),
@@ -394,6 +398,9 @@ pub struct Db {
     note_records: HashMap<(String, String), Vec<usize>>,
     /// Stack name to the index of its latest view record.
     views: HashMap<String, usize>,
+    /// (stack name, what the choice is of) to the index of its latest
+    /// choice record.
+    choices: BTreeMap<(String, String), usize>,
     /// Change to the indices of its read marks not taken back, oldest
     /// first.
     marks: HashMap<String, Vec<usize>>,
@@ -515,6 +522,7 @@ impl Db {
             notes: BTreeMap::new(),
             note_records: HashMap::new(),
             views: HashMap::new(),
+            choices: BTreeMap::new(),
             marks: HashMap::new(),
             runs: BTreeMap::new(),
             run_order: Vec::new(),
@@ -701,6 +709,9 @@ impl Db {
             }
             Record::View { stack, .. } => {
                 self.views.insert(stack.clone(), at);
+            }
+            Record::Choice { stack, of, .. } => {
+                self.choices.insert((stack.clone(), of.clone()), at);
             }
             Record::Read(m) => {
                 let marks = self.marks.entry(m.change.clone()).or_default();
@@ -1212,6 +1223,37 @@ impl Db {
             self.push(Record::View {
                 stack: name.into(),
                 show: show.into(),
+            })?;
+        }
+        Ok(())
+    }
+
+    /// What stack `name` picked for its menus' choice `of`, if it ever did.
+    pub fn choice(&self, name: &str, of: &str) -> Option<&str> {
+        match &self.records[*self.choices.get(&(name.to_string(), of.to_string()))?] {
+            Record::Choice { pick, .. } => Some(pick),
+            _ => None,
+        }
+    }
+
+    /// Every choice stack `name` picked: what it is of, and the pick.
+    pub fn choices(&self, name: &str) -> Vec<(&str, &str)> {
+        self.choices
+            .range((name.to_string(), String::new())..)
+            .take_while(|((s, _), _)| s == name)
+            .filter_map(|(_, &at)| match &self.records[at] {
+                Record::Choice { of, pick, .. } => Some((of.as_str(), pick.as_str())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    pub fn set_choice(&mut self, name: &str, of: &str, pick: &str) -> Result<()> {
+        if self.choice(name, of) != Some(pick) {
+            self.push(Record::Choice {
+                stack: name.into(),
+                of: of.into(),
+                pick: pick.into(),
             })?;
         }
         Ok(())

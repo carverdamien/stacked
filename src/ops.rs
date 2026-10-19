@@ -418,17 +418,81 @@ pub enum Edited {
     Done(String),
     /// Saved as it was: nothing changed.
     Unchanged,
-    /// The stack does not apply with it (why): the text edited, kept to
-    /// edit again.
-    Refused { why: String, text: String },
+    /// The stack does not apply with it (why): the edit, kept to edit
+    /// again.
+    Refused { why: String, kept: Kept },
+}
+
+/// An edit not taken, kept to edit again.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Kept {
+    /// The file as it was left, edited as a copy.
+    Text(String),
+    /// A commit of the patch with the edit in it, made where it was edited.
+    Commit { place: Place, commit: String },
+}
+
+/// Where a file of a patch is edited by hand.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Place {
+    /// A copy of the file alone, in a temporary folder.
+    Copy,
+    /// The checkout of the stack's repository at this path (where stacked
+    /// runs): moved to the patch for the edit, then back where it was.
+    Checkout(std::path::PathBuf),
+    /// The stack's own worktree, `.stacked/NAME` in its repository, made
+    /// the first time and kept.
+    Worktree,
+}
+
+impl Place {
+    /// As the menus' choice and `--in` name it.
+    pub fn name(&self) -> &'static str {
+        match self {
+            Place::Copy => "tmp",
+            Place::Checkout(_) => "pwd",
+            Place::Worktree => "worktree",
+        }
+    }
+
+    /// The place `name` is, a checkout being the one stacked runs in.
+    pub fn named(name: &str) -> Place {
+        match name {
+            "pwd" => Place::Checkout(std::env::current_dir().unwrap_or_default()),
+            "worktree" => Place::Worktree,
+            _ => Place::Copy,
+        }
+    }
 }
 
 /// Edits `file` as the patch at `at` of stack `name` leaves it, in the
-/// editor at `line`, from `text` if given (an edit refused before), else
-/// the file. The patch's part for that file is made again from what is
-/// saved, and the new version goes in the stack once the stack is seen to
-/// apply with it.
+/// editor at `line`, where `place` says: a copy of the file alone, or a
+/// checkout of the stack up to the patch. `again`, an edit not taken
+/// before, is where it starts from (and a commit, where it was made).
+/// What the edit makes of the patch goes in the stack once the stack is
+/// seen to apply with it.
 pub fn edit_code(
+    path: &std::path::Path,
+    name: &str,
+    at: usize,
+    file: &str,
+    line: usize,
+    place: &Place,
+    again: Option<Kept>,
+) -> Result<Edited> {
+    match (place, again) {
+        (_, Some(Kept::Commit { place, commit })) => edit_in(path, name, at, file, line, &place, Some(commit)),
+        (Place::Copy, Some(Kept::Text(text))) => edit_copy(path, name, at, file, line, Some(text)),
+        (Place::Copy, None) => edit_copy(path, name, at, file, line, None),
+        (place, _) => edit_in(path, name, at, file, line, place, None),
+    }
+}
+
+/// Edits `file` as the patch at `at` of stack `name` leaves it, as a copy
+/// alone, in the editor at `line`, from `text` if given (an edit refused
+/// before), else the file. The patch's part for that file is made again
+/// from what is saved.
+fn edit_copy(
     path: &std::path::Path,
     name: &str,
     at: usize,
@@ -467,7 +531,7 @@ pub fn edit_code(
     if !diff.lines().any(|l| l.starts_with("diff --git ")) {
         return Ok(Edited::Refused {
             why: format!("{} would change nothing: drop it instead", old.title()),
-            text: edited,
+            kept: Kept::Text(edited),
         });
     }
     let new = revise(
@@ -482,7 +546,7 @@ pub fn edit_code(
     if let Err(e) = crate::check::stack(&s, &all) {
         return Ok(Edited::Refused {
             why: e.0.trim_end_matches("; nothing changed").to_string(),
-            text: edited,
+            kept: Kept::Text(edited),
         });
     }
     let draft = Draft::from(&new);
@@ -493,6 +557,155 @@ pub fn edit_code(
         replace(db, name, at, draft, "edit")?;
         Ok(Edited::Done(format!("edited {file} in {}", old.title())))
     })
+}
+
+/// Edits the patch at `at` of stack `name` in a checkout of the stack up
+/// to it, `file` opened in the editor at `line`: the stack's worktree, or
+/// the checkout `place` names, which goes back where it was after. The
+/// checkout is put at the stack's base with the patches up to it applied,
+/// or at `again`, the commit an edit not taken left. What the edit changes
+/// there (the files it tracks, and the files new since it started) is the
+/// patch's new version, its message and author as they were.
+fn edit_in(
+    path: &std::path::Path,
+    name: &str,
+    at: usize,
+    file: &str,
+    line: usize,
+    place: &Place,
+    again: Option<String>,
+) -> Result<Edited> {
+    use crate::git::git;
+    let db = Db::load(path)?;
+    db.writable(name)?;
+    let s = db.stack(name)?.clone();
+    let (repo, base) = base_of(&s)?;
+    let old = db.patch(&s.patches[at]).clone();
+    let dir = match place {
+        Place::Checkout(d) => crate::git::checkout_of(&repo, d)?,
+        Place::Worktree => crate::git::kept_worktree(&repo, name, &base)?,
+        Place::Copy => return err("a copy is not a checkout"),
+    };
+    // Nothing of yours to lose, and no switching midway.
+    if crate::git::unfinished_tracked(&dir)? {
+        return err(format!("{} has uncommitted changes: commit or stash them first; nothing changed", dir.display()));
+    }
+    let back = crate::git::head_of(&dir)?;
+    let before = crate::git::untracked(&dir)?;
+    let taken = (|| {
+        match &again {
+            Some(c) => {
+                git(&dir, &["switch", "--quiet", "--detach", c])?;
+            }
+            None => {
+                git(&dir, &["switch", "--quiet", "--detach", &base])?;
+                let patches: Vec<&Patch> = s.patches[..=at].iter().map(|id| db.patch(id)).collect();
+                crate::git::am(&dir, &crate::mbox::format_mbox(&patches))?;
+            }
+        }
+        run_editor(&dir.join(file), Some(line), Some(&dir))?;
+        take_edit(&db, &s, at, &old, &dir, &before)
+    })();
+    // An edit that failed midway leaves nothing behind; a checkout of
+    // yours goes back where it was.
+    if taken.is_err() {
+        crate::git::discard(&dir, &before);
+    }
+    if let Place::Checkout(_) = place {
+        crate::git::discard(&dir, &before);
+        crate::git::back_to(&dir, &back)?;
+    }
+    let kept = |commit: String| Kept::Commit { place: place.clone(), commit };
+    match taken? {
+        Taken::Unchanged => Ok(Edited::Unchanged),
+        Taken::Refused { why, commit } => Ok(Edited::Refused { why, kept: kept(commit) }),
+        Taken::Ready { draft, said, commit } => Db::edit(path, |db| {
+            // Edited meanwhile: yours is kept, to take up again.
+            if db.stack(name)?.patches.get(at) != Some(&old.id) {
+                return Ok(Edited::Refused {
+                    why: format!("{name} changed while it was being edited"),
+                    kept: kept(commit.clone()),
+                });
+            }
+            replace(db, name, at, draft.clone(), "edit")?;
+            Ok(Edited::Done(said.clone()))
+        }),
+    }
+}
+
+/// What an edit in a checkout came to, before anything is written.
+enum Taken {
+    Unchanged,
+    /// Not taken (why); the commit holding it.
+    Refused { why: String, commit: String },
+    /// The patch's new version, what it changed said, and the commit
+    /// holding it.
+    Ready { draft: Draft, said: String, commit: String },
+}
+
+/// The edit made in the checkout at `dir`, as the patch at `at`: what it
+/// changed in the files git tracks there, and the files new since
+/// `before`, put in the patch's commit, then read back from it, with the
+/// patch's message and author as they were; and whether the stack applies
+/// with it.
+fn take_edit(
+    db: &Db,
+    s: &Stack,
+    at: usize,
+    old: &Patch,
+    dir: &std::path::Path,
+    before: &std::collections::BTreeSet<String>,
+) -> Result<Taken> {
+    use crate::git::git;
+    git(dir, &["add", "--update"])?;
+    let new: Vec<String> = crate::git::untracked(dir)?.difference(before).cloned().collect();
+    if !new.is_empty() {
+        let mut args = vec!["add", "--"];
+        args.extend(new.iter().map(String::as_str));
+        git(dir, &args)?;
+    }
+    let changed = git(dir, &["diff", "--cached", "--name-only"])?;
+    let changed: Vec<&str> = changed.lines().filter(|l| !l.is_empty()).collect();
+    if changed.is_empty() {
+        return Ok(Taken::Unchanged);
+    }
+    git(dir, &["-c", "commit.gpgsign=false", "commit", "--quiet", "--amend", "--no-edit", "--no-verify", "--allow-empty"])?;
+    let commit = crate::git::rev_parse(dir, "HEAD")?;
+    let mail = git(dir, &["format-patch", "-1", "--stdout", "--no-signature", "--keep-subject", "HEAD"])?;
+    let diff = crate::mbox::parse_mbox(&mail)?.into_iter().next().map(|d| d.diff).unwrap_or_default();
+    let draft = Draft { diff, ..Draft::from(old) };
+    if !draft.diff.lines().any(|l| l.starts_with("diff --git ")) {
+        return Ok(Taken::Refused {
+            why: format!("{} would change nothing: drop it instead", old.title()),
+            commit,
+        });
+    }
+    let new = revise(old, draft.clone());
+    if new.id == old.id {
+        return Ok(Taken::Unchanged);
+    }
+    let mut all: Vec<&Patch> = s.patches.iter().map(|id| db.patch(id)).collect();
+    all[at] = &new;
+    if let Err(e) = crate::check::stack(s, &all) {
+        return Ok(Taken::Refused {
+            why: e.0.trim_end_matches("; nothing changed").to_string(),
+            commit,
+        });
+    }
+    Ok(Taken::Ready {
+        draft,
+        said: format!("edited {} in {}", said_files(&changed), old.title()),
+        commit,
+    })
+}
+
+/// `a.txt`, `a.txt and b.txt`, `a.txt, b.txt and c.txt`.
+fn said_files(files: &[&str]) -> String {
+    match files {
+        [] => String::new(),
+        [one] => one.to_string(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+    }
 }
 
 /// The part of a diff for one file, `fd` as it was, made again for `new`:
@@ -633,21 +846,28 @@ pub fn edit_file(text: &str, name: &str, line: Option<usize>) -> Result<String> 
     std::fs::create_dir_all(&dir).map_err(|e| Error(e.to_string()))?;
     let path = dir.join(name);
     std::fs::write(&path, text).map_err(|e| Error(e.to_string()))?;
-    let cfg = crate::config::get();
-    let editor = cfg.editor();
-    let status = std::process::Command::new("sh")
-        .arg("-c")
-        .arg(cfg.editing(line))
-        .arg("editor")
-        .arg(&path)
-        .status()
-        .map_err(|e| Error(format!("{editor}: {e}")))?;
+    let ran = run_editor(&path, line, None);
     let out = std::fs::read_to_string(&path).map_err(|e| Error(e.to_string()));
     let _ = std::fs::remove_dir_all(&dir);
+    ran?;
+    out
+}
+
+/// Runs the editor on `file`, at `line` if given, in `dir` if given (else
+/// where stacked runs): an error if it says it failed.
+fn run_editor(file: &std::path::Path, line: Option<usize>, dir: Option<&std::path::Path>) -> Result<()> {
+    let cfg = crate::config::get();
+    let editor = cfg.editor();
+    let mut cmd = std::process::Command::new("sh");
+    cmd.arg("-c").arg(cfg.editing(line)).arg("editor").arg(file);
+    if let Some(dir) = dir {
+        cmd.current_dir(dir);
+    }
+    let status = cmd.status().map_err(|e| Error(format!("{editor}: {e}")))?;
     if !status.success() {
         return err(format!("{editor} failed; nothing changed"));
     }
-    out
+    Ok(())
 }
 
 /// `text` without its `#` lines, trimmed.

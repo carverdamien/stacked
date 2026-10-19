@@ -180,6 +180,8 @@ pub enum Spot {
     NotesHead,
     Note(usize),
     Item(usize),
+    /// Choice `k` of menu item `i`.
+    Choice(usize, usize),
     Pick(usize),
     HistRow(usize),
     Box,
@@ -357,6 +359,29 @@ pub struct Item {
     pub label: String,
     pub action: Action,
     pub enabled: bool,
+    /// Its choices, as radio buttons, one of them picked: ← → pick
+    /// another, and Enter does the item with it.
+    pub choices: Option<Choices>,
+}
+
+/// An item's choices, drawn as radio buttons after its label, `[x]` on the
+/// one picked. What is picked is kept per stack, in the database.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Choices {
+    /// What they are a choice of, as kept: `edit`.
+    pub of: &'static str,
+    /// What is picked, as the bar and `?` say it: `where`.
+    pub what: &'static str,
+    /// Each choice: its name as kept, as drawn, and what it is, said.
+    pub names: Vec<(&'static str, String, String)>,
+    pub picked: usize,
+}
+
+impl Choices {
+    /// The one picked: its name as kept.
+    pub fn pick(&self) -> &'static str {
+        self.names[self.picked].0
+    }
 }
 
 /// What a menu item, or enter, does. An `Ask...` asks first: a menu of its
@@ -520,6 +545,7 @@ impl Item {
             label: label.into(),
             action,
             enabled: true,
+            choices: None,
         }
     }
 
@@ -529,12 +555,36 @@ impl Item {
         self
     }
 
+    /// With `choices`, as radio buttons.
+    fn with(mut self, choices: Choices) -> Item {
+        self.choices = Some(choices);
+        self
+    }
+
     fn line() -> Item {
         Item {
             label: String::new(),
             action: Action::Line,
             enabled: false,
+            choices: None,
         }
+    }
+
+    /// What its row says: its label, then its choices; and each choice,
+    /// where it starts in the row and how wide it is.
+    pub fn row(&self) -> (String, Vec<(usize, usize)>) {
+        let mut text = self.label.clone();
+        let mut at = Vec::new();
+        if let Some(c) = &self.choices {
+            text.push_str("  ");
+            for (k, (_, shown, _)) in c.names.iter().enumerate() {
+                text.push_str("  ");
+                let one = format!("{} {shown}", if k == c.picked { "[x]" } else { "[ ]" });
+                at.push((text.chars().count(), one.chars().count()));
+                text.push_str(&one);
+            }
+        }
+        (text, at)
     }
 }
 
@@ -599,12 +649,12 @@ pub enum Effect {
     EditPatch {
         line: Option<usize>,
     },
-    /// `file` as the patch leaves it, at `line`; from `text`, an edit
-    /// refused before, if given.
+    /// `file` as the patch leaves it, at `line`, where the stack's menus
+    /// say it is edited; from `again`, an edit not taken before, if given.
     EditCode {
         file: String,
         line: usize,
-        text: Option<String>,
+        again: Option<ops::Kept>,
     },
     EditTodo,
     EditComment(Target),
@@ -702,8 +752,8 @@ pub struct App {
     /// asked.
     pending: Option<Edit>,
     /// An edit of a patch's code the stack did not take: its file, line and
-    /// text, to edit again.
-    refused: Option<(String, usize, String)>,
+    /// the edit as it was left, to edit again.
+    refused: Option<(String, usize, ops::Kept)>,
     /// What the last key did, when that needs saying: gone with the next.
     pub status: String,
     body_h: usize,
@@ -1289,7 +1339,7 @@ impl App {
             Spot::Note(i) => self.focus == Focus::Notes && !self.notes_head && self.note_sel == i,
             Spot::Pick(i) => self.pick == i && (self.screen != Screen::History || self.hist_focus == HistFocus::List),
             Spot::HistRow(i) => self.hist_focus == HistFocus::Diff && self.hist_cursor == i,
-            Spot::Item(_) | Spot::Box => false,
+            Spot::Item(_) | Spot::Choice(..) | Spot::Box => false,
         }
     }
 
@@ -1308,6 +1358,24 @@ impl App {
                     Some(Spot::Item(i)) => {
                         m.sel = i;
                         press(self, KeyCode::Enter)
+                    }
+                    // A choice picked, the item not done yet.
+                    Some(Spot::Choice(i, k)) => {
+                        m.sel = i;
+                        let picked = m
+                            .items
+                            .get_mut(i)
+                            .filter(|i| i.enabled)
+                            .and_then(|i| i.choices.as_mut())
+                            .filter(|c| k < c.names.len())
+                            .map(|c| {
+                                c.picked = k;
+                                (c.of, c.pick())
+                            });
+                        if let Some((of, pick)) = picked {
+                            self.pick_choice(of, pick);
+                        }
+                        Effect::None
                     }
                     Some(Spot::Box) => Effect::None,
                     _ => {
@@ -1361,7 +1429,7 @@ impl App {
         let Some(spot) = self.spot_at(x, y) else { return };
         match &mut self.mode {
             Mode::Menu(m) => {
-                if let Spot::Item(i) = spot {
+                if let Spot::Item(i) | Spot::Choice(i, _) = spot {
                     m.sel = i;
                 }
             }
@@ -1413,7 +1481,7 @@ impl App {
                 self.hist_focus = HistFocus::Diff;
                 self.hist_cursor = i;
             }
-            Spot::Item(_) | Spot::Box => return false,
+            Spot::Item(_) | Spot::Choice(..) | Spot::Box => return false,
         }
         true
     }
@@ -2034,6 +2102,10 @@ impl App {
             Mode::Menu(m) => {
                 if let Some(item) = m.chosen() {
                     out.push(format!("Press Enter to {}.", about(&item.action)));
+                    if let Some(c) = &item.choices {
+                        let each: Vec<String> = c.names.iter().map(|(_, shown, said)| format!("{shown}, {said}")).collect();
+                        out.push(format!("Press ← → to pick {}: {}. What is picked is kept for this stack.", c.what, each.join("; ")));
+                    }
                 }
                 out.push("Press ↑↓ for another item, Esc to close the menu.".into());
                 return out;
@@ -2335,6 +2407,18 @@ impl App {
                 m.sel = 0;
                 m.step(false);
             }
+            // On an item with choices, another one picked, and kept.
+            KeyCode::Left | KeyCode::Right => {
+                let right = k.code == KeyCode::Right;
+                let picked = m.items.get_mut(m.sel).filter(|i| i.enabled).and_then(|i| i.choices.as_mut()).map(|c| {
+                    let n = c.names.len();
+                    c.picked = if right { (c.picked + 1) % n } else { (c.picked + n - 1) % n };
+                    (c.of, c.pick())
+                });
+                if let Some((of, pick)) = picked {
+                    self.pick_choice(of, pick);
+                }
+            }
             KeyCode::Esc | KeyCode::Char(' ') => {
                 // A comment written stays being written.
                 if let Some(e) = self.pending.take() {
@@ -2550,6 +2634,43 @@ impl App {
         items.push(Item::new("Quit", Action::Quit));
     }
 
+    /// Where a file of a patch is edited by hand, as radio buttons: a copy
+    /// of it alone, this checkout, or the stack's own worktree.
+    fn edit_choices(&self) -> Choices {
+        let names = vec![
+            ("tmp", "tmp/file".to_string(), "a copy of the file alone, in a temporary folder".to_string()),
+            (
+                "pwd",
+                "pwd".to_string(),
+                "this checkout, moved to the patch for the edit, then back where it was".to_string(),
+            ),
+            (
+                "worktree",
+                format!(".stacked/{}", self.stack),
+                format!("the stack's own worktree, .stacked/{} in its repository, kept between edits", self.stack),
+            ),
+        ];
+        let chosen = self.db.choice(&self.stack, "edit");
+        let picked = names.iter().position(|(n, _, _)| Some(*n) == chosen).unwrap_or(0);
+        Choices {
+            of: "edit",
+            what: "where",
+            names,
+            picked,
+        }
+    }
+
+    /// Where this stack's files are edited by hand, as its menus picked.
+    fn edit_place(&self) -> ops::Place {
+        ops::Place::named(self.db.choice(&self.stack, "edit").unwrap_or("tmp"))
+    }
+
+    /// `pick`, kept for this stack as its choice of `of`.
+    fn pick_choice(&mut self, of: &str, pick: &str) {
+        let name = self.stack.clone();
+        self.edit(|db| db.set_choice(&name, of, pick));
+    }
+
     /// All that can be done where the cursor is, then the menu's end.
     pub fn main_menu(&self) -> Menu {
         let ro = self.read_only().map(String::from);
@@ -2614,7 +2735,7 @@ impl App {
                         items.push(Item::line());
                         if let Some((file, _)) = self.code_place() {
                             let short = file.rsplit('/').next().unwrap_or(&file).to_string();
-                            items.push(Item::new(format!("Edit {short} here in $EDITOR"), Action::EditCode).when(w));
+                            items.push(Item::new(format!("Edit {short} here in $EDITOR"), Action::EditCode).when(w).with(self.edit_choices()));
                         }
                         items.push(Item::new("Edit this patch in $EDITOR", Action::EditPatch).when(w));
                     }
@@ -2751,15 +2872,15 @@ impl App {
             Action::EditPatch => return Effect::EditPatch { line: self.mail_place() },
             Action::EditCode => {
                 if let Some((file, line)) = self.code_place() {
-                    return Effect::EditCode { file, line, text: None };
+                    return Effect::EditCode { file, line, again: None };
                 }
             }
             Action::EditAgain => {
-                if let Some((file, line, text)) = self.refused.take() {
+                if let Some((file, line, kept)) = self.refused.take() {
                     return Effect::EditCode {
                         file,
                         line,
-                        text: Some(text),
+                        again: Some(kept),
                     };
                 }
             }
@@ -3382,12 +3503,13 @@ impl App {
             Effect::EditPatch { line } if self.patch_id().is_some() => {
                 self.status = ops::edit_patch(&self.path, &name, self.sel, line)?
             }
-            Effect::EditCode { file, line, text } if self.patch_id().is_some() => {
-                match ops::edit_code(&self.path, &name, self.sel, &file, line, text)? {
+            Effect::EditCode { file, line, again } if self.patch_id().is_some() => {
+                let place = self.edit_place();
+                match ops::edit_code(&self.path, &name, self.sel, &file, line, &place, again)? {
                     ops::Edited::Done(said) => self.status = said,
                     ops::Edited::Unchanged => self.status = "saved as it was: nothing changed".into(),
-                    ops::Edited::Refused { why, text } => {
-                        self.refused = Some((file, line, text));
+                    ops::Edited::Refused { why, kept } => {
+                        self.refused = Some((file, line, kept));
                         let items = vec![
                             Item::new("Edit it again", Action::EditAgain),
                             Item::new("Throw the edit away", Action::ThrowEdit),
@@ -3667,7 +3789,10 @@ impl App {
     /// The keys there are, where the keys go now.
     pub fn hint(&self) -> String {
         match &self.mode {
-            Mode::Menu(_) => "↑↓ choose · enter: do it · esc: close · ?: what it does".into(),
+            Mode::Menu(m) => match m.chosen().and_then(|i| i.choices.as_ref()) {
+                Some(c) => format!("↑↓ choose · ←→: {} · enter: do it · esc: close · ?: what it does", c.what),
+                None => "↑↓ choose · enter: do it · esc: close · ?: what it does".into(),
+            },
             Mode::Moving { .. } => "↑↓ to place it · enter: put it there · esc: leave it where it was".into(),
             Mode::Edit(_) => "enter: a new line · esc: save, send or throw away".into(),
             Mode::Help { .. } => "any key: back, and that key".into(),
@@ -3726,7 +3851,7 @@ impl App {
     fn draw_menu(&mut self, buf: &mut Buffer, area: Rect) {
         let (w, h) = (area.width as usize, area.height as usize);
         let Mode::Menu(m) = &mut self.mode else { return };
-        let widest = m.items.iter().map(|i| i.label.chars().count()).max().unwrap_or(0);
+        let widest = m.items.iter().map(|i| i.row().0.chars().count()).max().unwrap_or(0);
         let bw = (widest.max(m.title.chars().count() + 2).max(24) + 4).min(w.saturating_sub(2));
         let note = m.note.as_deref().map(|n| wrap(n, bw.saturating_sub(4))).unwrap_or_default();
         let below = if note.is_empty() { 0 } else { note.len() + 1 };
@@ -3750,7 +3875,14 @@ impl App {
             if i == m.sel {
                 st = st.add_modifier(Modifier::REVERSED);
             }
-            put(buf, area, x + 1, y + 1 + r, bw - 2, &fit(&format!(" {}", item.label), bw - 2), st);
+            let (text, choices) = item.row();
+            put(buf, area, x + 1, y + 1 + r, bw - 2, &fit(&format!(" {text}"), bw - 2), st);
+            // Each choice a spot of its own, over the item's: a click picks it.
+            for (k, (start, width)) in choices.into_iter().enumerate() {
+                if 1 + start < bw - 2 {
+                    spot_in(&self.spots, area, (x + 2 + start, y + 1 + r, width.min(bw - 3 - start), 1), Spot::Choice(i, k));
+                }
+            }
         }
         for (k, line) in note.iter().enumerate() {
             put(buf, area, x + 2, y + 2 + rows + k, bw - 4, line, color::comment());

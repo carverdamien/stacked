@@ -1,8 +1,9 @@
 //! What stacked asks of git: mail from a range, a worktree of its own for
-//! claude, and putting a stack into the user's worktree when asked to.
+//! claude, a checkout to edit a patch in, and putting a stack into the
+//! user's worktree when asked to.
 
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use crate::db::{Error, Result, err};
@@ -111,6 +112,126 @@ pub fn unfinished(dir: &Path) -> Result<bool> {
         .iter()
         .any(|f| dir.join(gitdir).join(f).exists());
     Ok(!status.trim().is_empty() || busy)
+}
+
+/// The top of the checkout at `dir`, if it is a checkout of the same
+/// repository as `repo`'s: one whose objects are `repo`'s.
+pub fn checkout_of(repo: &Path, dir: &Path) -> Result<PathBuf> {
+    let top = toplevel(dir).map_err(|_| Error(format!("{} is not a git checkout", dir.display())))?;
+    let common = |d: &Path| -> Result<PathBuf> {
+        let c = git(d, &["rev-parse", "--path-format=absolute", "--git-common-dir"])?;
+        let c = PathBuf::from(c.trim());
+        Ok(c.canonicalize().unwrap_or(c))
+    };
+    if common(dir)? != common(repo)? {
+        return err(format!("{} is not a checkout of {}", dir.display(), repo.display()));
+    }
+    Ok(PathBuf::from(top))
+}
+
+/// The stack `name`'s own worktree, `.stacked/NAME` at the top of the
+/// checkout `repo`: made at `base` the first time, and `.stacked/` kept
+/// out of git's sight in every checkout of the repository.
+pub fn kept_worktree(repo: &Path, name: &str, base: &str) -> Result<PathBuf> {
+    let top = PathBuf::from(toplevel(repo)?);
+    let dir = top.join(".stacked").join(name);
+    exclude(&top, "/.stacked/")?;
+    if !dir.join(".git").exists() {
+        git(&top, &["worktree", "add", "--quiet", "--detach", &dir.to_string_lossy(), base])?;
+    }
+    Ok(dir)
+}
+
+/// `pattern` in the repository's `info/exclude`, unless it is there.
+fn exclude(repo: &Path, pattern: &str) -> Result<()> {
+    let common = git(repo, &["rev-parse", "--path-format=absolute", "--git-common-dir"])?;
+    let file = PathBuf::from(common.trim()).join("info").join("exclude");
+    let mut text = std::fs::read_to_string(&file).unwrap_or_default();
+    if text.lines().any(|l| l.trim() == pattern) {
+        return Ok(());
+    }
+    if !text.is_empty() && !text.ends_with('\n') {
+        text.push('\n');
+    }
+    text.push_str(pattern);
+    text.push('\n');
+    let say = |e: std::io::Error| Error(format!("{}: {e}", file.display()));
+    std::fs::create_dir_all(file.parent().unwrap_or(Path::new("."))).map_err(say)?;
+    std::fs::write(&file, text).map_err(say)
+}
+
+/// Changes to the files git tracks at `dir`, or a rebase, merge or
+/// cherry-pick under way there: what moving the checkout would lose.
+pub fn unfinished_tracked(dir: &Path) -> Result<bool> {
+    if dirty(dir)? {
+        return Ok(true);
+    }
+    let gitdir = git(dir, &["rev-parse", "--absolute-git-dir"])?;
+    let gitdir = Path::new(gitdir.trim());
+    Ok(["rebase-merge", "rebase-apply", "MERGE_HEAD", "CHERRY_PICK_HEAD"]
+        .iter()
+        .any(|f| gitdir.join(f).exists()))
+}
+
+/// Where a checkout is: on a branch, or at a commit.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Head {
+    Branch(String),
+    Commit(String),
+}
+
+/// Where the checkout at `dir` is.
+pub fn head_of(dir: &Path) -> Result<Head> {
+    match git(dir, &["symbolic-ref", "--quiet", "--short", "HEAD"]) {
+        Ok(b) if !b.trim().is_empty() => Ok(Head::Branch(b.trim().to_string())),
+        _ => Ok(Head::Commit(rev_parse(dir, "HEAD")?)),
+    }
+}
+
+/// The checkout at `dir` back at `head`.
+pub fn back_to(dir: &Path, head: &Head) -> Result<()> {
+    match head {
+        Head::Branch(b) => git(dir, &["switch", "--quiet", b])?,
+        Head::Commit(c) => git(dir, &["switch", "--quiet", "--detach", c])?,
+    };
+    Ok(())
+}
+
+/// The files at `dir` git neither tracks nor ignores.
+pub fn untracked(dir: &Path) -> Result<std::collections::BTreeSet<String>> {
+    Ok(git(dir, &["ls-files", "--others", "--exclude-standard", "-z"])?
+        .split('\0')
+        .filter(|f| !f.is_empty())
+        .map(String::from)
+        .collect())
+}
+
+/// What is not committed at `dir` undone: the files git tracks as they
+/// are in its commit, and the files new since `before` gone. A `git am`
+/// left midway is given up.
+pub fn discard(dir: &Path, before: &std::collections::BTreeSet<String>) {
+    if git(dir, &["rev-parse", "--absolute-git-dir"]).is_ok_and(|g| Path::new(g.trim()).join("rebase-apply").exists()) {
+        let _ = git(dir, &["am", "--abort"]);
+    }
+    let _ = git(dir, &["reset", "--quiet", "--hard"]);
+    if let Ok(now) = untracked(dir) {
+        for f in now.difference(before) {
+            let _ = std::fs::remove_file(dir.join(f));
+        }
+    }
+}
+
+/// `mbox` applied at `dir` as commits, unsigned; none of it if it does
+/// not all apply.
+pub fn am(dir: &Path, mbox: &str) -> Result<()> {
+    if mbox.is_empty() {
+        return Ok(());
+    }
+    if let Err(e) = git_in(dir, &["-c", "commit.gpgsign=false", "am", "--quiet", "--keep-non-patch"], Some(mbox)) {
+        let _ = git(dir, &["am", "--abort"]);
+        return Err(e);
+    }
+    Ok(())
 }
 
 pub fn remove_scratch(repo: &Path, at: &Path) {

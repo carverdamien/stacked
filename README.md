@@ -38,6 +38,7 @@ stacked                            # ... on $STACKED_FILE, the settings' file, e
 stacked show bug123                # its patches, bottom first
 stacked edit bug123                # as `git rebase -i`: reorder, drop, reword, edit
 stacked edit bug123 2 --path a.txt --line 12   # a file as patch 2 leaves it, at line 12
+stacked edit bug123 2 --path a.txt --in worktree   # ... in the stack's own worktree, .stacked/bug123
 stacked edit bug123 2 --line 30    # patch 2 as mail, at line 30
 stacked comment bug123 rebase onto origin/main        # a comment on the stack
 stacked comment bug123 --patch 2 split this in two    # on a patch as a whole
@@ -153,7 +154,10 @@ them other keys, and the help then names those:
   the history, Phabricator, apply, switch, delete) are on the left header
   only; a patch's on a patch; a line's on a line; a comment's on a comment.
   ↑↓ and enter; ↑ from the top is Quit. What a read-only stack cannot do is
-  shown dimmed, and the menu says why.
+  shown dimmed, and the menu says why. An item may have choices, radio
+  buttons after its label (`[x] tmp/file  [ ] pwd`): ← → pick one, a click
+  on one picks it, and Enter does the item with the one picked, which is
+  kept for the stack in the database.
 - `?` says what can be done where the cursor is, as `Press Enter to create a
   comment on this line.`, and where the arrows go. The next key closes it
   and does what it does, so the key it names can be pressed straight away.
@@ -212,14 +216,37 @@ history says `you edited it`. On the command line: `stacked reply NAME ID
 ## Editing a patch by hand
 
 On a line of code, the menu's `Edit a.txt here in $EDITOR` opens the file
-as the patch leaves it, at that line. What is saved makes the patch's part
-for that file again (the file before the patch and as saved, diffed by
-git), the rest of the patch as it was, and the new version goes in once the
-stack is seen to apply with it. If the patches above no longer apply on it,
-it is not taken, and nothing is lost: `Edit it again` opens it as you left
-it, or `Throw the edit away`. On the command line, `stacked edit NAME PATCH
---path FILE --line N` does the same; an edit not taken is kept in a file,
-and `--from FILE` takes it up again.
+as the patch leaves it, at that line. Where it is edited is the item's
+choice, `[x] tmp/file  [ ] pwd  [ ] .stacked/NAME`, kept for the stack:
+
+- `tmp/file`: a copy of the file alone, in a temporary folder. It is quick,
+  but the editor sees nothing around it: no project for a language server's
+  go to definition. What is saved makes the patch's part for that file again
+  (the file before the patch and as saved, diffed by git), the rest of the
+  patch as it was.
+- `pwd`: the checkout stacked runs in, when it is one of the stack's
+  repository and nothing it tracks has changes. It is put at the stack's
+  base with the patches up to this one applied (as commits, not signed),
+  the editor runs there, and then the checkout goes back to the branch or
+  commit it was on. The editor, its language server, and your build there
+  see the whole project as the patch leaves it.
+- `.stacked/NAME`: the stack's own worktree, at the top of its repository,
+  made the first time and kept (`.stacked/` goes in the repository's
+  `info/exclude`, out of `git status`'s sight). Each edit moves it to its
+  patch; your checkout is not touched. The first one checks out every file;
+  the next ones only what differs.
+
+In a checkout, what the edit changes there is the patch's new version: the
+files git tracks, and the files new since the edit started (files git
+ignores, and the ones that were there before, are left out). Its message
+and author stay as they were. Closed without saving, nothing changes. The
+new version goes in once the stack is seen to apply with it. If the patches
+above no longer apply on it, it is not taken, and nothing is lost: `Edit it
+again` opens it as you left it, or `Throw the edit away`. On the command
+line, `stacked edit NAME PATCH --path FILE --line N` does the same, `--in
+tmp|pwd|worktree` saying where (else where the stack's menu last picked); an
+edit not taken is kept in a file (`tmp`) or a commit, and `--from FILE` or
+`--from COMMIT` takes it up again.
 
 `Edit this patch in $EDITOR`, there or on the patch, opens the patch as
 mail at the line the cursor is on: its message, its diff. It comes back

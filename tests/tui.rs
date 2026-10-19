@@ -687,7 +687,7 @@ fn a_patch_is_edited_by_hand_where_the_cursor_is() {
     down_to(&mut app, "+TWO");
     // On a line: its file as the patch leaves it, opened at the line; or
     // the patch, opened where the line is in it.
-    assert_eq!(choose(&mut app, "Edit a.txt here in $EDITOR"), Effect::EditCode { file: "a.txt".into(), line: 2, text: None });
+    assert_eq!(choose(&mut app, "Edit a.txt here in $EDITOR"), Effect::EditCode { file: "a.txt".into(), line: 2, again: None });
     let line = match choose(&mut app, "Edit this patch in $EDITOR") {
         Effect::EditPatch { line: Some(l) } => l,
         e => panic!("{e:?}"),
@@ -714,7 +714,7 @@ fn a_patch_is_edited_by_hand_where_the_cursor_is() {
     // From a hunk's header, its first line; from the patches, the same as
     // where the middle's cursor is.
     down_to(&mut app, "@@ -39");
-    assert_eq!(choose(&mut app, "Edit a.txt here"), Effect::EditCode { file: "a.txt".into(), line: 39, text: None });
+    assert_eq!(choose(&mut app, "Edit a.txt here"), Effect::EditCode { file: "a.txt".into(), line: 39, again: None });
     keys(&mut app, &[KeyCode::Left]);
     assert!(matches!(choose(&mut app, "Edit this patch in $EDITOR"), Effect::EditPatch { line: Some(_) }));
 }
@@ -1724,4 +1724,54 @@ fn an_empty_database() {
     keys(&mut app, &[KeyCode::Enter]);
     assert_eq!(items(&app), vec![("Quit".to_string(), true)]);
     assert_eq!(key(&mut app, KeyCode::Enter), Effect::Quit);
+}
+
+/// The column, in characters, where `needle` starts in `line`.
+fn column(line: &str, needle: &str) -> usize {
+    line[..line.find(needle).unwrap()].chars().count()
+}
+
+#[test]
+fn where_a_file_is_edited_is_a_choice_of_its_item_kept_per_stack() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "+TWO");
+    // The item's choices are radio buttons after it: a copy of the file at
+    // first.
+    key(&mut app, KeyCode::Char(' '));
+    let want = items(&app).iter().position(|(l, _)| l.starts_with("Edit a.txt here")).unwrap();
+    while !matches!(&app.mode, Mode::Menu(m) if m.sel == want) {
+        key(&mut app, KeyCode::Down);
+    }
+    let screen = draw(&mut app);
+    assert!(screen.contains(" Edit a.txt here in $EDITOR    [x] tmp/file  [ ] pwd  [ ] .stacked/s"), "{screen}");
+    assert!(screen.lines().last().unwrap().contains("←→: where"), "{screen}");
+    // → picks the next one, around the end, and ← the one before; each is
+    // kept for the stack at once.
+    key(&mut app, KeyCode::Right);
+    assert!(draw(&mut app).contains("[ ] tmp/file  [x] pwd  [ ] .stacked/s"));
+    keys(&mut app, &[KeyCode::Right, KeyCode::Right, KeyCode::Left]);
+    assert!(draw(&mut app).contains("[ ] tmp/file  [ ] pwd  [x] .stacked/s"));
+    assert_eq!(Db::load(&db).unwrap().choice("s", "edit"), Some("worktree"));
+    assert_eq!(Db::load(&db).unwrap().choice("t", "edit"), None, "another stack's is its own");
+    // ? says what each one is.
+    key(&mut app, KeyCode::Char('?'));
+    let screen = draw(&mut app);
+    assert!(screen.contains("Press ← → to pick where: tmp/file, a copy of the file alone"), "{screen}");
+    key(&mut app, KeyCode::Esc);
+    // A click on a choice picks it; the menu stays open.
+    let screen = draw(&mut app);
+    let (y, line) = screen.lines().enumerate().find(|(_, l)| l.contains("[ ] pwd")).unwrap();
+    assert_eq!(app.click(column(line, "[ ] pwd") as u16 + 1, y as u16, false), Effect::None);
+    assert!(matches!(app.mode, Mode::Menu(_)));
+    assert!(draw(&mut app).contains("[ ] tmp/file  [x] pwd  [ ] .stacked/s"));
+    assert_eq!(Db::load(&db).unwrap().choice("s", "edit"), Some("pwd"));
+    // Opened again, the stack's pick is there; Enter edits there.
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "+TWO");
+    key(&mut app, KeyCode::Char(' '));
+    assert!(draw(&mut app).contains("[ ] tmp/file  [x] pwd  [ ] .stacked/s"));
+    assert_eq!(choose(&mut app, "Edit a.txt here in $EDITOR"), Effect::EditCode { file: "a.txt".into(), line: 2, again: None });
 }

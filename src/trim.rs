@@ -239,13 +239,23 @@ pub fn trim(src: &Path, dst: &Path, from: Option<usize>) -> Result<Trimmed> {
     for n in notes {
         new.push(Record::Comment(n.clone()), None);
     }
-    // Each stack's filter; the read marks standing.
+    // Each stack's filter and choices; the read marks standing.
     for name in heads.keys() {
         if let Some(show) = before.view(name) {
             new.push(
                 Record::View {
                     stack: name.clone(),
                     show: show.to_string(),
+                },
+                None,
+            );
+        }
+        for (of, pick) in before.choices(name) {
+            new.push(
+                Record::Choice {
+                    stack: name.clone(),
+                    of: of.to_string(),
+                    pick: pick.to_string(),
                 },
                 None,
             );
