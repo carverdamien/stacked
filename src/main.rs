@@ -69,9 +69,11 @@ enum Cmd {
     /// The editor in a browser: a server on this machine, and the browser
     /// opened on it. The cursor follows the mouse: a click is Enter, a right
     /// click Space. Built with `--features web`.
-    /// A tour of the editor, a few minutes long, on a game of tic-tac-toe
-    /// played in a file, a move a patch: it writes nothing on disk. Built
-    /// with `--features demo`.
+    /// A tour of the editor, in sections, the most useful first, on a game
+    /// of tic-tac-toe played in a file, a move a patch. It writes nothing on
+    /// disk but `[demo] seen` in the settings: opened again, it starts on
+    /// the list of its sections, to start at any of them. Built with
+    /// `--features demo`.
     #[cfg(feature = "demo")]
     Demo,
     #[cfg(feature = "web")]

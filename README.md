@@ -58,27 +58,46 @@ command is the database to open: `stacked FILE` is `stacked open FILE`.
 
 ## A tour
 
-`stacked demo` (built with `--features demo`) teaches the editor in a few
-minutes, with a game of tic-tac-toe played in a file, board.txt, one patch
-per move. It starts from an empty board and an empty stack, and plays five
-moves as patches. Each patch shows the whole board, so the moves before it
-can be seen. O's fourth move is a mistake, and X's fifth move wins because
-of it. Then you pick and read a patch, comment on O's mistake, and ask the
-agent about the whole stack, because the fix changes X's winning move too.
-A stand-in for the agent answers and rewrites both moves: O blocks X, and
-then X blocks O. (If you ask about patch 4 alone, the stand-in says that
-the fix needs more than that patch, and your comment moves to the stack.)
-You read the history, and try to move a patch, which stacked refuses,
-because each patch only applies to the board that the patches before it
-leave. You undo the agent's change and redo it, and switch the views. At
-the end, the tour shows the board as the stack's patches leave it. Each
-step says what to press, and why, and waits for you to do it: Tab does the
-step for you, and ctrl-c leaves the tour.
+`stacked demo` (built with `--features demo`) teaches the editor with a game
+of tic-tac-toe played in a file, board.txt, one patch per move. It starts
+from an empty board and an empty stack, and plays five moves as patches.
+Each patch shows the whole board, so the moves before it can be seen. O's
+fourth move is a mistake, and X's fifth move wins because of it. The tour
+has 13 sections, the most useful first, and takes about fifteen minutes:
 
-It writes nothing on disk: its database and its repository are kept in
-memory, and its patches are applied there as `git apply` would apply them.
-Anything that would write on disk (`$EDITOR`, apply, trim) or reach
-Phabricator says that it is not in the demo.
+1. Read a stack and its patches.
+2. Comment on a line: O's mistake.
+3. Ask the agent to change the code: asked about the whole stack, because
+   the fix changes X's winning move too, a stand-in for the agent rewrites
+   both moves (O blocks X, then X blocks O), and you can watch it write.
+   Asked about patch 4 alone, the stand-in says that the fix needs more
+   than that patch, and your comment moves to the stack.
+4. Reply to the agent with a question, asked answer only.
+5. Keep track of what you have read, in reading.
+6. Switch how the code is drawn: unified, side by side, compact.
+7. The history of the stack, and the versions of a patch.
+8. Move a patch: stacked refuses, because each patch only applies to the
+   board that the patches before it leave; Esc stops moving it.
+9. Drop a patch, undo the drop, and see the tree of edits.
+10. Ask the agent to add a patch: a comment on the stack asks for O's next
+    move, and the stand-in adds it as patch 6.
+11. See what the agent did, in Runs….
+12. Where help is (`?`), and how to change the keys.
+13. Start on a project of yours. At the end, the tour shows the board as
+    the stack's patches leave it.
+
+Each step says what to press, and why, and waits for you to do it: Tab does
+the step for you, and ctrl-c leaves the tour. The first time it is opened,
+the tour writes `[demo] seen = true` in the settings file (below), the rest
+of the file as it was. From then on it starts on the list of its sections:
+↑↓ pick one and Enter starts it, on a new game played up to there, the steps
+before it done for you in a moment. Esc starts at the beginning. During
+that tour, shift-Tab lists the sections again, to go to any of them.
+
+Apart from that setting, it writes nothing on disk: its database and its
+repository are kept in memory, and its patches are applied there as `git
+apply` would apply them. Anything that would write on disk (`$EDITOR`,
+apply, trim) or reach Phabricator says that it is not in the demo.
 
 ## In a browser
 
@@ -453,6 +472,9 @@ file's form, with what is wrong with the file:
   `page_up`, `page_down`, `home`, `end`, `enter`, `menu`, `help`, `back`,
   `view`, `read`, `quit`), its keys: `down = ["down", "j"]`, `menu = "m"`.
   The comment editor reads what is typed, whatever the keys.
+- `[demo]`: `seen`, written by `stacked demo` the first time it is opened:
+  the tour then starts on the list of its sections. `seen = false` shows
+  the first tour again.
 
 A file stacked cannot read, or with a setting it does not know, is not
 used at all: the editor's bar says why, as every command does. A setting

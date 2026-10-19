@@ -1556,6 +1556,12 @@ impl App {
         self.pressed(k)
     }
 
+    /// What `key` does, whatever keys the settings give it: for what is
+    /// done for you, as the tour does.
+    pub fn press(&mut self, key: crate::keys::Key) -> Effect {
+        self.pressed(key.event())
+    }
+
     /// Key `k`, as the settings map it: done.
     fn pressed(&mut self, k: KeyEvent) -> Effect {
         // ctrl-c is the terminal's, as in every program: out.
@@ -1797,13 +1803,19 @@ impl App {
             ));
             return;
         }
-        self.layout = next;
-        if next == Layout::Compact {
+        self.set_layout(next);
+        self.status = format!("{} view", next.label());
+    }
+
+    /// The code drawn as `l` from now on; two sides once the middle has room
+    /// for them.
+    pub fn set_layout(&mut self, l: Layout) {
+        self.layout = l;
+        if l == Layout::Compact {
             self.compact.scroll = Scroll::Both;
             self.compact.cursor = None;
         }
         self.built = None;
-        self.status = format!("{} view", next.label());
     }
 
     /// 2: reading, or commenting.
@@ -2076,8 +2088,8 @@ impl App {
                     None => {}
                 }
                 let here = match self.focus {
-                    Focus::List if self.on_stack => "the stack: its comments, sending them, and the stack's own menu",
-                    Focus::Notes if self.notes_head => "the comments listed: sending them all, and what is listed",
+                    Focus::List if self.on_stack => "on the stack: its comments, sending them, and the stack's own menu",
+                    Focus::Notes if self.notes_head => "on the comments listed: sending them all, and what is listed",
                     _ => "here",
                 };
                 out.push(format!("Press Space for all that can be done {here}."));
@@ -2182,6 +2194,7 @@ impl App {
             ("space:", format!("{}:", lower(Key::Menu))),
             ("esc:", format!("{}:", lower(Key::Back))),
             ("?:", format!("{}:", l(Key::Help))),
+            ("Press ?", format!("Press {}", l(Key::Help))),
             ("Press 1 ", format!("Press {} ", l(Key::View))),
             ("; 1 for", format!("; {} for", l(Key::View))),
             ("Press 2 ", format!("Press {} ", l(Key::Read))),

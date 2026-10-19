@@ -104,6 +104,13 @@ impl Default for View {
     }
 }
 
+/// The tour, `stacked demo`.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Demo {
+    /// It was opened before: it starts on the list of its sections.
+    pub seen: bool,
+}
+
 /// Every setting, defaults filled in.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Config {
@@ -115,6 +122,7 @@ pub struct Config {
     pub reviews: Reviews,
     pub view: View,
     pub keys: Keymap,
+    pub demo: Demo,
 }
 
 impl Default for Config {
@@ -132,6 +140,7 @@ impl Default for Config {
             },
             view: View::default(),
             keys: Keymap::default(),
+            demo: Demo::default(),
         }
     }
 }
@@ -147,6 +156,13 @@ struct Written {
     reviews: WrittenReviews,
     view: WrittenView,
     keys: BTreeMap<String, OneOrMore>,
+    demo: WrittenDemo,
+}
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(default, deny_unknown_fields)]
+struct WrittenDemo {
+    seen: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -265,6 +281,7 @@ impl Config {
         let (keys, bad) = Keymap::from_names(&named);
         c.keys = keys;
         wrong.extend(bad);
+        c.demo.seen = w.demo.seen.unwrap_or(false);
         Ok((c, wrong))
     }
 
@@ -429,8 +446,64 @@ impl Config {
         for k in Key::ALL {
             out.push_str(&format!("{} = {}\n", k.name(), list(&self.keys.names(k))));
         }
+        out.push_str("\n[demo]\n# The tour, `stacked demo`, was opened before: it starts on the list of its sections.\n");
+        out.push_str(&format!("seen = {}\n", self.demo.seen));
         out
     }
+}
+
+/// Writes in the settings' file at `path` that the tour was opened: `seen =
+/// true` under `[demo]`, the rest of the file as it was. A file that is not
+/// there is made; one stacked cannot read is left as it is, and said.
+/// Whether it wrote: not when the file said so already.
+pub fn remember_demo(path: &Path) -> Result<bool, String> {
+    let at = |e: &dyn std::fmt::Display| format!("{}: {e}", path.display());
+    let text = match std::fs::read_to_string(path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(at(&e)),
+    };
+    let (c, _) = Config::parse(&text).map_err(|e| at(&e))?;
+    if c.demo.seen {
+        return Ok(false);
+    }
+    let new = with_demo_seen(&text);
+    match Config::parse(&new) {
+        Ok((c, _)) if c.demo.seen => {}
+        _ => return Err(at(&"[demo] seen = true cannot be written in it as it is")),
+    }
+    std::fs::write(path, new).map_err(|e| at(&e))?;
+    Ok(true)
+}
+
+/// `text`, a settings' file, with `seen = true` in its `[demo]` table, which
+/// is made at its end if it has none; every other line as it was.
+fn with_demo_seen(text: &str) -> String {
+    let lines: Vec<&str> = text.lines().collect();
+    let table = |l: &str| l.trim_start().starts_with('[');
+    let demo = |l: &str| l.split('#').next().unwrap_or("").trim() == "[demo]";
+    let mut out: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
+    match lines.iter().position(|l| demo(l)) {
+        Some(at) => {
+            let end = lines[at + 1..].iter().position(|l| table(l)).map_or(lines.len(), |e| at + 1 + e);
+            let seen = (at + 1..end).find(|&i| {
+                let t = lines[i].trim_start();
+                t.strip_prefix("seen").is_some_and(|rest| rest.trim_start().starts_with('='))
+            });
+            match seen {
+                Some(i) => out[i] = "seen = true".into(),
+                None => out.insert(at + 1, "seen = true".into()),
+            }
+        }
+        None => {
+            if out.last().is_some_and(|l| !l.trim().is_empty()) {
+                out.push(String::new());
+            }
+            out.push("[demo]".into());
+            out.push("seen = true".into());
+        }
+    }
+    out.join("\n") + "\n"
 }
 
 /// The settings in use, read once, and what was wrong with their file.
@@ -520,6 +593,32 @@ mod tests {
         assert_eq!(with("ed").editing(Some(7)), "ed \"$1\"", "one not known is given the file alone");
         assert_eq!(with("vim").editing(None), "vim \"$1\"");
         assert_eq!(with("kak +{line}").editing(Some(3)), "kak +3 \"$1\"");
+    }
+
+    #[test]
+    fn the_tour_is_remembered_in_the_file_the_rest_as_it_was() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("settings.toml");
+        // No file: one is made, with that alone.
+        assert_eq!(remember_demo(&path), Ok(true));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "[demo]\nseen = true\n");
+        assert_eq!(remember_demo(&path), Ok(false), "said already");
+        // Settings of yours, comments among them: [demo] goes at the end.
+        let mine = "# mine\neditor = \"hx\"\n\n[view]\nlayout = \"compact\" # as I like it\n";
+        std::fs::write(&path, mine).unwrap();
+        assert_eq!(remember_demo(&path), Ok(true));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), format!("{mine}\n[demo]\nseen = true\n"));
+        let (c, wrong) = Config::load(&path);
+        assert!(wrong.is_empty(), "{wrong:?}");
+        assert!(c.demo.seen && c.view.layout == Layout::Compact && c.editor.as_deref() == Some("hx"));
+        // [demo] there already, seen = false: that line alone changes.
+        std::fs::write(&path, "[demo]\nseen = false # again\n[keys]\nmenu = \"m\"\n").unwrap();
+        assert_eq!(remember_demo(&path), Ok(true));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "[demo]\nseen = true\n[keys]\nmenu = \"m\"\n");
+        // A file stacked cannot read is left as it is.
+        std::fs::write(&path, "colour = \"red\"\n").unwrap();
+        assert!(remember_demo(&path).is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "colour = \"red\"\n");
     }
 
     #[test]
