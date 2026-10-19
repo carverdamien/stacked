@@ -571,6 +571,8 @@ pub enum Action {
     AskAbout(usize),
     /// The comments on the history's record `rev`.
     GoToAbout(usize),
+    /// Comment (change, id), from the banner's menu.
+    GoToComment(String, String),
     /// The history, at its record `rev`.
     GoToHistory(usize),
     Whole(bool),
@@ -683,6 +685,7 @@ fn about(action: &Action) -> String {
         Action::UseVersion(_) => "put this version back in the stack".into(),
         Action::AskAbout(rev) => format!("write a question on @{rev}, for the agent to answer: it may open comments, it changes nothing"),
         Action::GoToAbout(rev) => format!("go to the comments on @{rev}, among the stack's"),
+        Action::GoToComment(..) => "go to this comment".into(),
         Action::GoToHistory(rev) => format!("go to @{rev} in the stack's history"),
         Action::AskTrim(rev) | Action::Trim(rev) => {
             format!("write a new database, its history from @{rev} on, before it its start; this one is not changed")
@@ -2594,15 +2597,14 @@ impl App {
         match self.screen {
             Screen::Main if self.on_banner => {
                 out.push(
-                    "The banner says what the agent's work on this stack is, a line for each: what landed and waits for your review (the agent's work, the comments pulled from Phabricator: nothing of it is applied before you review it), what the agent works on, and the comments that wait their turn."
+                    "The banner says what waits on you on this stack, a line for each: on top, what landed and waits for your review (the agent's work, the comments pulled from Phabricator: nothing of it is applied before you review it); then every comment open, the most recently updated first, marked as the comments pane marks it, with where it stands."
                         .into(),
                 );
                 out.push(match self.banner_lines().get(self.banner_sel) {
                     Some(BannerLine::Landed(_)) => "Press Enter to review this one.".to_string(),
-                    Some(BannerLine::Going(_)) => "Press Enter to go to the comment the agent works on.".into(),
-                    _ => "Press Enter to go to the comment that waits.".into(),
+                    _ => "Press Enter to go to this comment.".into(),
                 });
-                out.push("Press ↑↓ for another line, and ↓ past the last for the stack; Space to pick one to review; Esc to go back where you were.".into());
+                out.push("Press ↑↓ for another line, and ↓ past the last for the stack; Space to pick one, to review or go to; Esc to go back where you were.".into());
             }
             Screen::Review => {
                 out.push(
@@ -3311,9 +3313,9 @@ impl App {
         let mut title = self.stack.clone();
         let mut items = Vec::new();
         match (self.screen, self.focus) {
-            // Each landed ask waiting for review, to review.
+            // What landed, to review; the comments open, to go to.
             (Screen::Main, _) if self.on_banner => {
-                title = "what waits for your review".into();
+                title = "what waits on you".into();
                 self.banner_items(&mut items);
             }
             (Screen::Review, _) => {
@@ -3947,6 +3949,10 @@ impl App {
                     let (change, id) = (n.change.clone(), n.id.clone());
                     self.go_to(&change, &id);
                 }
+            }
+            Action::GoToComment(change, id) => {
+                self.on_banner = false;
+                self.go_to(&change, &id);
             }
             Action::GoToHistory(rev) => {
                 // On it, or what changed the stack last before it.
@@ -4827,13 +4833,12 @@ impl App {
         most + 1
     }
 
-    /// What the comments pane says of comment `n`: its mark (with the agent,
-    /// waiting its turn, its reply waiting for review, failed, moved,
-    /// answered), who opened it and where it is; then the first line of
-    /// what was said last.
-    fn note_said(&self, n: &Note, busy: &Busy, held: &Held) -> (String, String) {
+    /// How comment `n` is marked where it is listed: with the agent (●),
+    /// waiting its turn (◌), its reply waiting for review (◆), failed (✗),
+    /// moved (↑), answered (✓), else not.
+    pub(super) fn note_mark(&self, n: &Note, busy: &Busy, held: &Held) -> &'static str {
         let key = (n.change.clone(), n.id.clone());
-        let mark = if busy.contains_key(&key) {
+        if busy.contains_key(&key) {
             "●"
         } else if n.queued.is_some() {
             "◌"
@@ -4847,7 +4852,15 @@ impl App {
             "✓"
         } else {
             " "
-        };
+        }
+    }
+
+    /// What the comments pane says of comment `n`: its mark (with the agent,
+    /// waiting its turn, its reply waiting for review, failed, moved,
+    /// answered), who opened it and where it is; then the first line of
+    /// what was said last.
+    fn note_said(&self, n: &Note, busy: &Busy, held: &Held) -> (String, String) {
+        let mark = self.note_mark(n, busy, held);
         let who = n.by.as_deref().unwrap_or("you");
         let at = match n.about {
             Some(rev) => format!("history @{rev}"),
@@ -4940,7 +4953,7 @@ impl App {
             Mode::Normal if self.screen == Screen::Main && self.on_banner => {
                 let enter = match self.banner_lines().get(self.banner_sel) {
                     Some(BannerLine::Landed(_)) => "review it",
-                    _ => "go to its comment",
+                    _ => "go to it",
                 };
                 format!("↑↓ choose · enter: {enter} · space: pick one · esc: back where you were · ?: what can I do here")
             }

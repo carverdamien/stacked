@@ -190,8 +190,9 @@ the help then names those:
   comment on this line.`, and where the arrows go. The next key closes it
   and does what it does, so the key it names can be pressed straight away.
 - Esc goes back: out of a menu, a list, a stream. In the panes, it goes to
-  the banner of the agent's work first, when there is one, from wherever
-  the cursor is; Esc there comes back where it was. Without a banner, it
+  the banner first, when there is one (while a comment is open, or work
+  waits), from wherever the cursor is; Esc there comes back where it was.
+  Without a banner, it
   goes up, from the comments to the middle, to the patches, to the stack's
   header. In the comment editor, Esc asks what to do with the comment.
 - Every pane keeps where its cursor was, while the editor is open: the
@@ -576,21 +577,24 @@ before you take its reply. Enter on it takes the reply into its thread at
 once, accepted, out of the review (its menu's `Accept the agent's reply`).
 A reply that goes with a change of the stack is reviewed with that change.
 
-In the editor, a banner under the top bar says what the agent's work on the
-stack is, in a line: what waits for your review (`⟳ 2 landed asks wait for
+In the editor, a banner under the top bar says what waits on you on the
+stack, in a line: what waits for your review (`⟳ 2 landed asks wait for
 your review · the next: a change of patch 2, 1 reply, asked "…"`), what
-the agent works on (`the agent works on 1 ask`), and the comments that
-wait their turn (`1 comment waits its turn`). Landing writes nothing on the
-bottom line. Esc goes to the banner from wherever the cursor is in the
-panes, and ↑ from the stack's header goes there too; a click on it as
+the agent works on (`the agent works on 1 ask`), the comments that wait
+their turn (`1 comment waits its turn`), and how many comments are open
+(`5 open comments`); it is there while any of it is. Landing writes nothing
+on the bottom line. Esc goes to the banner from wherever the cursor is in
+the panes, and ↑ from the stack's header goes there too; a click on it as
 well, but not the mouse going by. With the cursor on it, the banner opens,
-a line for each: `⟳ Review …` for what landed, the first landed first; `●
-With the agent (…)` for what the agent works on, its comment and the last
-line it wrote; `◌ Ready (…)` for a comment that waits, and what it waits
-for. ↑↓ pick one, and Enter reviews what landed, or goes to the comment of
-the rest; Space lists what landed, to review any of it; ↓ past the last
-line goes to the stack's header, and Esc goes back where the cursor was,
-the banner closed again.
+a line for each: on top, `⟳ Review …` for what landed, the first landed
+first; then every comment open on the stack, the most recently updated
+first, marked as the comments pane marks it (`●` with the agent, `◌`
+waiting its turn, `◆` its reply waiting for review, `✓` answered…), with
+where it is, how it starts, and where it stands (with the agent, the last
+line it wrote). ↑↓ pick one, and Enter reviews what landed, or goes to the
+comment; Space lists them too, to review or to go to; ↓ past the last line
+goes to the stack's header, and Esc goes back where the cursor was, the
+banner closed again. A comment you are done with, closed, leaves it.
 
 A review lists the parts on the left, in three sections: the stack
 operations of the change (a line for each patch: `noop`, `add`, `modify`,
