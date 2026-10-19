@@ -218,7 +218,13 @@ read again before it is saved. How the agent is asked is the choice of `Save it 
 ask agent`, `[x] change  [ ] the whole stack  [ ] answer only  [ ] build and
 test` (the whole stack for a patch's comment, build and test for the
 stack's or a patch's as a whole), as it is of a comment's `Ask agent`: one
-pick, kept for the stack. Esc with nothing written just closes it. Where a
+pick, kept for the stack. Esc asks even when nothing changed, so that what
+you wrote earlier can be saved and sent as it is. With nothing written (or,
+when you rewind a conversation, nothing but the lines stacked wrote), Esc
+just closes the editor, as nothing would be saved. Left as it was, the
+editor closes too when the agent cannot be asked from it: the stack is
+read-only, or the last word is not yours (the agent's reply, written
+again, is still the agent's word). Where a
 comment is written is a choice too, kept for the stack: `Comment on this
 line`, `Reply` and `Edit your reply` each have `[x] here  [ ] in $EDITOR`.
 Nothing is typed at the bottom: the bottom line only says things.

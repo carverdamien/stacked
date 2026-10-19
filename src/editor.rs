@@ -17,7 +17,8 @@ use crate::thread::{LineRole, thread_line_roles};
 #[derive(Debug, Clone, PartialEq)]
 pub enum Op {
     Stay,
-    /// Esc with nothing changed: close.
+    /// Esc with nothing changed: the app closes the editor, or asks what to
+    /// do with what it holds if that may be sent as it is.
     Close,
     /// Esc with the text changed: the app asks what to do with it.
     Done(String),

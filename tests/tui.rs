@@ -922,13 +922,19 @@ fn what_you_said_last_may_be_written_again() {
     choose(&mut app, "Save it");
     let n = notes_of(&db, "s", 0).remove(0);
     assert_eq!(n.text, "why so loud? really");
-    // Enter on its line opens it too; left as it was, it closes.
+    // Enter on its line opens it too. Left as it was, Esc still asks what to
+    // do with it: it may be sent as it is.
     keys(&mut app, &[KeyCode::Up]);
     assert!(app.rows[app.cursor].text.starts_with("+TWO"));
     keys(&mut app, &[KeyCode::Enter]);
     assert!(matches!(&app.mode, Mode::Edit(e) if e.ed.text() == "why so loud? really"), "{:?}", app.mode);
-    keys(&mut app, &[KeyCode::Esc, KeyCode::Down]);
+    keys(&mut app, &[KeyCode::Esc]);
+    let labels: Vec<String> = items(&app).into_iter().map(|(l, _)| l).collect();
+    assert_eq!(labels, ["Save it", "Save it and ask agent", "", "Throw it away", "Keep writing"]);
+    choose(&mut app, "Throw it away");
     assert_eq!(app.mode, Mode::Normal);
+    assert_eq!(notes_of(&db, "s", 0).remove(0).text, "why so loud? really");
+    keys(&mut app, &[KeyCode::Down]);
     // Or in $EDITOR.
     let target = stacked::tui::Target::Edit { change: n.change.clone(), id: n.id.clone() };
     assert_eq!(choose_as(&mut app, "Edit your comment", "in $EDITOR"), Effect::EditComment(target));
@@ -1017,6 +1023,65 @@ fn what_you_said_last_may_be_written_again() {
     choose(&mut app, "History of this comment…");
     let screen = draw(&mut app);
     assert!(screen.contains("· written") && screen.contains("· you edited it"), "the first edit, there:\n{screen}");
+}
+
+#[test]
+fn esc_asks_what_to_do_with_a_comment_unless_nothing_would_be_done() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "+TWO");
+    // With nothing written, Esc closes the editor: nothing would be saved.
+    // So too once what was written is cut away.
+    keys(&mut app, &[KeyCode::Enter, KeyCode::Esc]);
+    assert_eq!(app.mode, Mode::Normal);
+    keys(&mut app, &[KeyCode::Enter]);
+    typed(&mut app, "why");
+    ctrl(&mut app, KeyCode::Char('a'));
+    ctrl(&mut app, KeyCode::Char('k'));
+    keys(&mut app, &[KeyCode::Esc]);
+    assert_eq!(app.mode, Mode::Normal);
+    assert!(notes_of(&db, "s", 0).is_empty());
+    // Answered, the agent's reply written again is still the last word:
+    // nothing can be asked from it. Left as it was, Esc closes it; changed,
+    // Esc offers to save it, not to ask.
+    keys(&mut app, &[KeyCode::Enter]);
+    save(&mut app, "why so loud?");
+    let n = notes_of(&db, "s", 0).remove(0);
+    Db::edit(&db, |d| {
+        d.set_note(Note {
+            text: append_turn(&n.text, Role::Agent, "It is a shout.", Some("answer")),
+            ..n.clone()
+        })
+    })
+    .unwrap();
+    app.refresh();
+    down_to(&mut app, "     agent:");
+    choose_as(&mut app, "Edit the agent's reply", "here");
+    keys(&mut app, &[KeyCode::Esc]);
+    assert_eq!(app.mode, Mode::Normal);
+    keys(&mut app, &[KeyCode::Home]);
+    down_to(&mut app, "     agent:");
+    choose_as(&mut app, "Edit the agent's reply", "here");
+    typed(&mut app, " Loudly.");
+    keys(&mut app, &[KeyCode::Esc]);
+    let labels: Vec<String> = items(&app).into_iter().map(|(l, _)| l).collect();
+    assert_eq!(labels, ["Save it", "", "Throw it away", "Keep writing"]);
+    choose(&mut app, "Throw it away");
+    // Replied to, the last word is yours: opened again and left as it was,
+    // Esc still asks what to do with it, and it is asked as it is.
+    choose_as(&mut app, "Reply", "here");
+    save(&mut app, "louder");
+    keys(&mut app, &[KeyCode::Enter]);
+    assert!(matches!(&app.mode, Mode::Edit(e) if e.ed.text() == "louder"), "{:?}", app.mode);
+    keys(&mut app, &[KeyCode::Esc]);
+    assert_eq!(items(&app)[1], ("Save it and ask agent".to_string(), true));
+    choose_as(&mut app, "Save it and ask agent", "answer only");
+    assert!(app.status.contains("asked the agent about 1 comment (answer only)"), "{}", app.status);
+    let said: Vec<String> = stacked::thread::thread_turns(&notes_of(&db, "s", 0).remove(0).text).into_iter().map(|t| t.body).collect();
+    assert_eq!(said, ["why so loud?", "It is a shout.", "louder"]);
+    accept_landed(&mut app, &db);
+    wait_for(&mut app, "agent replied (answer only)");
 }
 
 /// The agent changing `scope` of stack `s`, asked by comment (change, id):
@@ -1405,7 +1470,16 @@ fn any_turn_is_written_again_and_the_conversation_rewound() {
     let screen = draw(&mut app);
     assert!(screen.contains("rewind from your comment: write what replaces it"), "{screen}");
     assert_eq!(screen.matches("why so loud?").count(), 1, "{screen}");
-    // Left with nothing written, the conversation is as it was.
+    // Left with nothing written, the conversation is as it was; so too with
+    // lines stacked wrote cut, and nothing else written.
+    keys(&mut app, &[KeyCode::Esc]);
+    assert_eq!(app.mode, Mode::Normal);
+    assert_eq!(notes_of(&db, "s", 0).remove(0).text, text);
+    choose_as(&mut app, "Rewind the conversation from your comment", "here");
+    for _ in 0..3 {
+        ctrl(&mut app, KeyCode::Char('k'));
+    }
+    assert!(matches!(&app.mode, Mode::Edit(e) if e.ed.text().starts_with("#   why so loud?")), "{:?}", app.mode);
     keys(&mut app, &[KeyCode::Esc]);
     assert_eq!(app.mode, Mode::Normal);
     assert_eq!(notes_of(&db, "s", 0).remove(0).text, text);
@@ -2281,6 +2355,11 @@ fn a_stack_that_cannot_be_checked_is_read_only() {
     assert!(items(&app).contains(&("Save it and ask agent".to_string(), false)));
     choose(&mut app, "Save it");
     assert!(draw(&mut app).contains("still fine"));
+    // Opened again and left as it was, Esc closes it: nothing can be asked.
+    keys(&mut app, &[KeyCode::Enter]);
+    assert!(matches!(&app.mode, Mode::Edit(e) if e.ed.text() == "still fine"), "{:?}", app.mode);
+    keys(&mut app, &[KeyCode::Esc]);
+    assert_eq!(app.mode, Mode::Normal);
 }
 
 #[test]

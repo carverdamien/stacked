@@ -2709,48 +2709,72 @@ impl App {
     }
 
     fn edit_key(&mut self, mut e: Edit, k: KeyEvent) -> Effect {
-        match e.ed.key(k) {
-            Op::Stay => self.mode = Mode::Edit(e),
-            Op::Close => self.settle_edit(&e, false),
-            Op::Done(_) if self.answer_only(&e.target) => {
-                let w = self.read_only().is_none();
-                let items = vec![
-                    Item::new("Save it and ask agent, answer only", Action::Save(Some(Way::Answer))).when(w),
-                    Item::new("Save it", Action::Save(None)),
-                    Item::line(),
-                    Item::new("Throw it away", Action::ThrowAway),
-                    Item::new("Keep writing", Action::KeepWriting),
-                ];
-                self.pending = Some(e);
-                self.mode = Mode::Menu(Menu::new("the question", items, self.read_only().map(String::from)));
+        let changed = match e.ed.key(k) {
+            Op::Stay => {
+                self.mode = Mode::Edit(e);
+                return Effect::None;
             }
-            Op::Done(_) => {
-                let send = self.can_send_target(&e.target);
-                let mut items = vec![Item::new("Save it", Action::Save(None))];
-                if send {
-                    let a_patch_s = match &e.target {
-                        Target::Patch(_) | Target::Line { .. } => true,
-                        Target::Reply { change, .. } | Target::Edit { change, .. } | Target::Turn { change, .. } | Target::Rewind { change, .. } => {
-                            *change != stack_change(&self.stack)
-                        }
-                        _ => false,
-                    };
-                    let test = matches!(e.target, Target::Stack | Target::Patch(_));
-                    let choices = self.ask_choices(a_patch_s, test, true);
-                    items.push(
-                        Item::new("Save it and ask agent", Action::Save(Some(Way::Change)))
-                            .when(self.read_only().is_none())
-                            .with(choices),
-                    );
-                }
-                items.push(Item::line());
-                items.push(Item::new("Throw it away", Action::ThrowAway));
-                items.push(Item::new("Keep writing", Action::KeepWriting));
-                self.pending = Some(e);
-                self.mode = Mode::Menu(Menu::new("the comment", items, self.read_only().map(String::from)));
-            }
+            Op::Close => false,
+            Op::Done(_) => true,
+        };
+        // Esc asks what to do with what is written, changed or not: it may
+        // be saved and sent as it is. Not with nothing written, as nothing
+        // would be saved; nor with nothing changed, if the agent cannot be
+        // asked from it.
+        let send = self.can_send_target(&e.target);
+        let w = self.read_only().is_none();
+        let ask = send && w;
+        if self.nothing_written(&e) || !(changed || ask) {
+            self.settle_edit(&e, false);
+            return Effect::None;
         }
+        if self.answer_only(&e.target) {
+            let mut items = vec![];
+            if send {
+                items.push(Item::new("Save it and ask agent, answer only", Action::Save(Some(Way::Answer))).when(w));
+            }
+            items.extend([
+                Item::new("Save it", Action::Save(None)),
+                Item::line(),
+                Item::new("Throw it away", Action::ThrowAway),
+                Item::new("Keep writing", Action::KeepWriting),
+            ]);
+            self.pending = Some(e);
+            self.mode = Mode::Menu(Menu::new("the question", items, self.read_only().map(String::from)));
+            return Effect::None;
+        }
+        let mut items = vec![Item::new("Save it", Action::Save(None))];
+        if send {
+            let a_patch_s = match &e.target {
+                Target::Patch(_) | Target::Line { .. } => true,
+                Target::Reply { change, .. } | Target::Edit { change, .. } | Target::Turn { change, .. } | Target::Rewind { change, .. } => {
+                    *change != stack_change(&self.stack)
+                }
+                _ => false,
+            };
+            let test = matches!(e.target, Target::Stack | Target::Patch(_));
+            let choices = self.ask_choices(a_patch_s, test, true);
+            items.push(Item::new("Save it and ask agent", Action::Save(Some(Way::Change))).when(w).with(choices));
+        }
+        items.push(Item::line());
+        items.push(Item::new("Throw it away", Action::ThrowAway));
+        items.push(Item::new("Keep writing", Action::KeepWriting));
+        self.pending = Some(e);
+        self.mode = Mode::Menu(Menu::new("the comment", items, self.read_only().map(String::from)));
         Effect::None
+    }
+
+    /// Whether the editor `e` holds nothing that saving it would keep: no
+    /// text, or, as the conversation is rewound, only the lines stacked
+    /// wrote.
+    fn nothing_written(&self, e: &Edit) -> bool {
+        let text = e.ed.text();
+        if let Target::Rewind { change, id, from } = &e.target
+            && let Some(n) = self.db.note(change, id)
+        {
+            return without_written(&text, &rewind_written(&n.text, *from)).is_empty();
+        }
+        text.trim().is_empty()
     }
 
     /// The turns of a comment that the editor writes again, so that its
