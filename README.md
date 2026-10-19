@@ -359,9 +359,12 @@ code meanwhile: the other panes still have theirs). A block is the
 innermost block of code around the line with lines not read yet, from a
 tree-sitter grammar (Rust, C, C++, Python, JavaScript, TypeScript, Java,
 Go) or else the file's braces: on a line whose block is read, the block
-around it, and once those are read, the hunk. Files with no blocks are read
-a hunk at a time; Space on a hunk's header reads the hunk, on a file's the
-file. Enter takes back the latest mark holding the line or its block. The
+around it, and once those are read, the hunk. A mark never reaches past the
+hunk the cursor is in: a block over several hunks, as a long function or a
+namespace is, is read in this hunk alone, the margin and the bar saying
+`in this hunk`. Files with no blocks are read a hunk at a time; Space on a
+hunk's header reads the hunk, on a file's the file. Enter takes back the
+latest mark holding the line or its block, in this hunk. The
 margin shows what Space would mark (`○→✓`), or else what Enter would unmark
 (`✓→○`), and `✓` beside each line read, drawn dim; hunks, files, the
 patches on the left and the top bar count what is read (`reading 5/11`).

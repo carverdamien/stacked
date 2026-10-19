@@ -90,6 +90,8 @@ impl Reading<'_> {
     /// What Space at row `i` marks read: the innermost block around its
     /// line with lines not read, else its hunk if it has some; on a hunk's
     /// header the hunk, on a file's the file. None when all there is read.
+    /// A mark on a line stays in its hunk: a block reaching past it, as a
+    /// long function does, is read there alone.
     pub fn to_mark(&self, i: usize) -> Option<Target> {
         let row = self.rows.get(i)?;
         let whole = |keys: HashSet<String>, what: String| {
@@ -103,13 +105,16 @@ impl Reading<'_> {
                 _ => None,
             };
         };
+        let hunk = self.hunk_keys(at);
         for b in self.chain(at).unwrap_or_default() {
-            if !b.changed.is_subset(self.read) {
+            let inside: HashSet<String> = b.changed.intersection(&hunk).cloned().collect();
+            if !inside.is_subset(self.read) {
                 let old = if b.side == Side::Old { " as they were" } else { "" };
-                return whole(b.changed.clone(), format!("the block of lines {}–{}{old}", b.start, b.end));
+                let part = if inside.len() < b.changed.len() { ", in this hunk" } else { "" };
+                return whole(inside, format!("the block of lines {}–{}{old}{part}", b.start, b.end));
             }
         }
-        whole(self.hunk_keys(at), "this hunk".into())
+        whole(hunk, "this hunk".into())
     }
 
     /// The mark Enter at row `i` takes back: the latest holding its line or
@@ -125,12 +130,18 @@ impl Reading<'_> {
                 _ => return None,
             },
             Some(at) => {
-                // Its file's blocks known: the innermost around it, or the
-                // line alone when it is in none, as self-review does; with
-                // none known, marks are a hunk's.
+                // Its file's blocks known: the innermost around it with
+                // changes in its hunk, those changes alone, as a mark holds
+                // them; or the line alone when it is in none, as self-review
+                // does. With none known, marks are a hunk's.
+                let hunk = self.hunk_keys(at);
                 let mut near = match self.chain(at) {
-                    Some(chain) => chain.first().map(|b| b.changed.clone()).unwrap_or_default(),
-                    None => self.hunk_keys(at),
+                    Some(chain) => chain
+                        .iter()
+                        .map(|b| b.changed.intersection(&hunk).cloned().collect::<HashSet<String>>())
+                        .find(|inside| !inside.is_empty())
+                        .unwrap_or_default(),
+                    None => hunk,
                 };
                 near.extend(self.rows[at].key.clone());
                 near
@@ -313,6 +324,44 @@ mod tests {
         let r = Reading { rows: &rows, blocks: &none, read: &unread, marks: &marks };
         assert_eq!(r.to_mark(two).map(|t| (t.what, t.new.len())), Some(("this hunk".into(), 4)));
         assert_eq!(r.next_unread(0, true), Some(row(&rows, "-  uno")));
+    }
+
+    #[test]
+    fn a_block_over_two_hunks_is_read_a_hunk_at_a_time() {
+        // A function changed near its top and near its end, far enough apart
+        // to make two hunks.
+        let body: Vec<String> = (1..=14).map(|n| format!("  line{n}\n")).collect();
+        let old = format!("fn a() {{\n  one\n  two\n{}  three\n  four\n}}\n", body.concat());
+        let new = old.replace("  two\n", "  TWO\n").replace("  three\n", "  THREE\n");
+        let d = similar::TextDiff::from_lines(&old, &new).unified_diff().context_radius(3).header("a/f.rs", "b/f.rs").to_string();
+        let diff = format!("diff --git a/f.rs b/f.rs\n{d}");
+        let p = Patch::new("c".into(), None, None, "t".into(), diff.clone());
+        let fd = &crate::diff::parse_diff(&diff, &crate::view::mode("c"))[0];
+        assert_eq!(fd.hunks.len(), 2, "{diff}");
+        let fb = crate::blocks::file_blocks(fd, Some(&lines(&new)), None).map(Arc::new);
+        let blocks = Blocks::from([("f.rs".to_string(), fb)]);
+        let rows = patch_rows(&p, &[], 80, &Deco::default());
+        let (top, end) = (row(&rows, "+  TWO"), row(&rows, "+  THREE"));
+        // Space in the first hunk reads the function there alone.
+        let mut read = HashSet::new();
+        let r = Reading { rows: &rows, blocks: &blocks, read: &read, marks: &[] };
+        let first = r.to_mark(top).unwrap();
+        assert_eq!((first.what.as_str(), first.new.len()), ("the block of lines 2–18, in this hunk", 2));
+        read.extend(first.keys.clone());
+        let r = Reading { rows: &rows, blocks: &blocks, read: &read, marks: &[] };
+        assert_eq!(r.progress(), (2, 4), "the other hunk is not read");
+        assert_eq!(r.to_mark(top), None, "its hunk is read");
+        let second = r.to_mark(end).unwrap();
+        assert_eq!(second.new.len(), 2);
+        // Enter in the first hunk takes back its own mark, not the one made
+        // after it in the other hunk.
+        read.extend(second.keys.clone());
+        let m1 = Mark { keys: first.keys.into_iter().collect(), ..Default::default() };
+        let m2 = Mark { keys: second.keys.into_iter().collect(), ..Default::default() };
+        let marks = vec![(3, &m1), (5, &m2)];
+        let r = Reading { rows: &rows, blocks: &blocks, read: &read, marks: &marks };
+        assert_eq!(r.to_unmark(top).map(|(rev, gone)| (rev, gone.len())), Some((3, 2)));
+        assert_eq!(r.to_unmark(end).map(|(rev, _)| rev), Some(5));
     }
 
     #[test]
