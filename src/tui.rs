@@ -454,6 +454,7 @@ pub enum Action {
     EditPatch,
     EditCode,
     EditAgain,
+    Resolve,
     ThrowEdit,
     AskDrop,
     Drop,
@@ -559,8 +560,9 @@ fn about(action: &Action) -> String {
         Action::MovePatch => "pick this patch up and put it elsewhere in the stack".into(),
         Action::EditPatch => "edit this patch in $EDITOR, as mail, opened where the cursor is".into(),
         Action::EditCode => "edit this file as the patch leaves it, in $EDITOR, opened at this line".into(),
-        Action::EditAgain => "edit it again, as you left it".into(),
-        Action::ThrowEdit => "throw your edit away".into(),
+        Action::EditAgain => "edit it again, as you left it; conflicts you resolved since are thrown away".into(),
+        Action::Resolve => "open the file of the patch that no longer applies in $EDITOR, as that patch would leave it on your edit: conflict markers show where the two disagree. Once it is resolved and saved without them, your edit and what you resolved go in the stack together".into(),
+        Action::ThrowEdit => "throw your edit away, and the conflicts you resolved since".into(),
         Action::AskDrop => "drop this patch from the stack (undo brings it back)".into(),
         Action::Drop => "drop it".into(),
         Action::CommentStack => "create a comment on the stack, for the agent to work on the whole stack".into(),
@@ -775,6 +777,9 @@ pub enum Effect {
     },
     EditTodo,
     EditComment(Target),
+    /// The conflict a later patch has with an edit not taken, resolved by
+    /// hand in $EDITOR.
+    Resolve,
 }
 
 /// Where the cursor is to go once the rows are built: to a comment, or to
@@ -876,6 +881,8 @@ pub struct App {
     /// An edit of a patch's code the stack did not take: its file, line and
     /// the edit as it was left, to edit again.
     refused: Option<(String, usize, ops::Kept)>,
+    /// The conflict a later patch has with it, to resolve by hand.
+    conflict: Option<Box<ops::Conflict>>,
     /// What the last key did, when that needs saying: gone with the next.
     pub status: String,
     body_h: usize,
@@ -1044,6 +1051,7 @@ impl App {
             show,
             pending: None,
             refused: None,
+            conflict: None,
             status,
             body_h: 20,
             body_w: 80,
@@ -3308,6 +3316,7 @@ impl App {
                 }
             }
             Action::EditAgain => {
+                self.conflict = None;
                 if let Some((file, line, kept)) = self.refused.take() {
                     return Effect::EditCode {
                         file,
@@ -3316,8 +3325,10 @@ impl App {
                     };
                 }
             }
+            Action::Resolve => return Effect::Resolve,
             Action::ThrowEdit => {
                 self.refused = None;
+                self.conflict = None;
                 self.status = "your edit is thrown away".into();
             }
             Action::AskDrop => {
@@ -3770,6 +3781,29 @@ impl App {
         Effect::None
     }
 
+    /// The menu of an edit by hand the stack did not take, `why` said:
+    /// resolve the conflict a later patch has with it, if there is one;
+    /// edit it again; or throw it away.
+    fn not_taken(&mut self, why: String) {
+        let mut items = Vec::new();
+        let mut note = why;
+        if let Some(c) = &self.conflict {
+            let n = c.at + 1;
+            if !c.left {
+                note.push_str(&format!(
+                    "\nPatch {n}'s change to {} can be merged with your edit by hand: the file opens as patch {n} would leave it, with conflict markers where the two disagree.",
+                    c.file
+                ));
+            }
+            items.push(Item::new(format!("Resolve the conflict in patch {n} by hand"), Action::Resolve));
+        }
+        items.push(Item::new("Edit it again", Action::EditAgain));
+        items.push(Item::new("Throw the edit away", Action::ThrowEdit));
+        let mut m = Menu::new("your edit is not taken", items, None);
+        m.note = Some(note);
+        self.mode = Mode::Menu(m);
+    }
+
     /// Opens the editor for `target`, in `pane`.
     fn write(&mut self, target: Target, pane: Focus, text: &str) {
         let mut held = None;
@@ -4104,19 +4138,39 @@ impl App {
                 match ops::edit_code(&self.path, &name, self.sel, &file, line, &place, again)? {
                     ops::Edited::Done(said) => self.status = said,
                     ops::Edited::Unchanged => self.status = "saved as it was: nothing changed".into(),
-                    ops::Edited::Refused { why, kept } => {
+                    ops::Edited::Refused { why, kept, conflict } => {
                         self.refused = Some((file, line, kept));
-                        let items = vec![
-                            Item::new("Edit it again", Action::EditAgain),
-                            Item::new("Throw the edit away", Action::ThrowEdit),
-                        ];
-                        let mut m = Menu::new("your edit is not taken", items, None);
-                        m.note = Some(why);
+                        self.conflict = conflict;
                         self.reload();
-                        self.mode = Mode::Menu(m);
+                        self.not_taken(why);
                         return Ok(());
                     }
                 }
+            }
+            Effect::Resolve => {
+                let (Some(c), Some((_, _, kept))) = (self.conflict.take(), self.refused.clone()) else {
+                    return Ok(());
+                };
+                let done = ops::resolve(&self.path, &name, &c, kept);
+                self.reload();
+                match done {
+                    Ok(ops::Edited::Done(said)) => {
+                        self.refused = None;
+                        self.status = said;
+                    }
+                    Ok(ops::Edited::Refused { why, conflict, .. }) => {
+                        self.conflict = conflict;
+                        self.not_taken(why);
+                    }
+                    Ok(ops::Edited::Unchanged) => {}
+                    // Not resolved (the editor failed, say): the conflict is
+                    // as it was, to resolve again.
+                    Err(e) => {
+                        self.conflict = Some(c);
+                        self.not_taken(e.0);
+                    }
+                }
+                return Ok(());
             }
             Effect::EditTodo => self.status = ops::edit_stack(&self.path, &name)?,
             Effect::EditComment(target @ (Target::Edit { .. } | Target::Turn { .. })) => {

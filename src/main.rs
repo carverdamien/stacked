@@ -164,6 +164,12 @@ enum Cmd {
         /// kept in (tmp), or the commit (pwd, worktree).
         #[arg(long, requires = "path")]
         from: Option<String>,
+        /// Should a later patch no longer apply on the edit, its file opens
+        /// next in $EDITOR, as that patch would leave it, with conflict
+        /// markers where the two disagree, to resolve by hand: one conflict
+        /// after another, until the stack applies with all of it.
+        #[arg(long, requires = "path")]
+        resolve: bool,
     },
     /// Move a patch to another position, counting from 1 at the bottom.
     Move { name: String, patch: String, to: usize },
@@ -655,7 +661,7 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
             let at = db.resolve(db.stack(&name)?, &p)?;
             eprintln!("stacked: {}", ops::edit_patch(path, &name, at, line)?);
         }
-        Cmd::Edit { name, patch: Some(p), line, path: Some(f), place, from } => {
+        Cmd::Edit { name, patch: Some(p), line, path: Some(f), place, from, resolve } => {
             let db = Db::load(path)?;
             let at = db.resolve(db.stack(&name)?, &p)?;
             let place = ops::Place::named(place.as_deref().or(db.choice(&name, "edit")).unwrap_or("tmp"));
@@ -669,21 +675,47 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
                     commit: commit.clone(),
                 }),
             };
-            match ops::edit_code(path, &name, at, &f, line.unwrap_or(1), &place, again)? {
-                ops::Edited::Done(said) => eprintln!("stacked: {said}"),
-                ops::Edited::Unchanged => eprintln!("stacked: saved as it was: nothing changed"),
-                ops::Edited::Refused { why, kept: ops::Kept::Text(text) } => {
+            let mut done = ops::edit_code(path, &name, at, &f, line.unwrap_or(1), &place, again)?;
+            // One conflict after another, until one is left unresolved.
+            while resolve
+                && let ops::Edited::Refused { kept, conflict: Some(c), .. } = &done
+                && !c.left
+            {
+                done = ops::resolve(path, &name, c, kept.clone())?;
+            }
+            let (why, kept, conflict) = match done {
+                ops::Edited::Done(said) => {
+                    eprintln!("stacked: {said}");
+                    return Ok(());
+                }
+                ops::Edited::Unchanged => {
+                    eprintln!("stacked: saved as it was: nothing changed");
+                    return Ok(());
+                }
+                ops::Edited::Refused { why, kept, conflict } => (why, kept, conflict),
+            };
+            let again = if resolve { " --resolve" } else { "" };
+            let then = match conflict {
+                Some(c) if !resolve => format!(
+                    "; with --resolve, {} of patch {} opens next, to resolve the conflict by hand",
+                    c.file,
+                    c.at + 1
+                ),
+                _ => String::new(),
+            };
+            match kept {
+                ops::Kept::Text(text) => {
                     let short = f.rsplit('/').next().unwrap_or(&f);
                     let keep = std::env::temp_dir().join(format!("stacked-edit-{}-{short}", std::process::id()));
                     std::fs::write(&keep, text).map_err(|e| Error(format!("{}: {e}", keep.display())))?;
                     return err(format!(
-                        "{why}; nothing changed. Your edit is kept in {k}: `stacked edit {name} {p} --path {f} --from {k}` takes it up again",
+                        "{why}; nothing changed. Your edit is kept in {k}: `stacked edit {name} {p} --path {f} --from {k}{again}` takes it up again{then}",
                         k = keep.display()
                     ));
                 }
-                ops::Edited::Refused { why, kept: ops::Kept::Commit { place, commit } } => {
+                ops::Kept::Commit { place, commit } => {
                     return err(format!(
-                        "{why}; nothing changed. Your edit is kept in commit {short}: `stacked edit {name} {p} --path {f} --in {w} --from {commit}` takes it up again",
+                        "{why}; nothing changed. Your edit is kept in commit {short}: `stacked edit {name} {p} --path {f} --in {w} --from {commit}{again}` takes it up again{then}",
                         short = &commit[..12.min(commit.len())],
                         w = place.name(),
                     ));

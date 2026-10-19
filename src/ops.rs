@@ -442,8 +442,34 @@ pub enum Edited {
     /// Saved as it was: nothing changed.
     Unchanged,
     /// The stack does not apply with it (why): the edit, kept to edit
-    /// again.
-    Refused { why: String, kept: Kept },
+    /// again; and, when a later patch no longer applies on it, the
+    /// conflict to resolve by hand.
+    Refused { why: String, kept: Kept, conflict: Option<Box<Conflict>> },
+}
+
+/// A later patch that no longer applies once patches below it are edited,
+/// and the file of it to resolve by hand.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Conflict {
+    /// The stack's patches when it was edited: nothing is written if they
+    /// changed since.
+    pub patches: Vec<String>,
+    /// The new versions of patches, by place from 0: the one edited by
+    /// hand first, then those resolved since.
+    pub edits: Vec<(usize, Draft)>,
+    /// The patch that no longer applies on them, by place from 0.
+    pub at: usize,
+    /// Its file to resolve, as the patch names it after, and before.
+    pub file: String,
+    pub from: String,
+    /// The file as the patches below leave it, with the edits.
+    pub ours: String,
+    /// What to resolve: the patch's change merged into `ours`, conflict
+    /// markers where the two disagree; or, `left`, what was left of it.
+    pub text: String,
+    pub left: bool,
+    /// What the edit by hand was, said.
+    pub said: String,
 }
 
 /// An edit not taken, kept to edit again.
@@ -534,11 +560,7 @@ fn edit_copy(
         return err(format!("{} does not change {file}", old.title()));
     };
     let fd = &files[k];
-    let from = fd
-        .header
-        .iter()
-        .find_map(|l| l.strip_prefix("rename from ").or_else(|| l.strip_prefix("copy from ")))
-        .map_or(file.to_string(), String::from);
+    let from = from_of(fd);
     let patches: Vec<&Patch> = s.patches[..=at].iter().map(|id| db.patch(id)).collect();
     let (before, after) = crate::check::texts(&repo, &base, &patches, &from, file)?;
     let Some(after) = after else {
@@ -556,34 +578,38 @@ fn edit_copy(
         return Ok(Edited::Refused {
             why: format!("{} would change nothing: drop it instead", old.title()),
             kept: Kept::Text(edited),
+            conflict: None,
         });
     }
-    let new = revise(
-        &old,
-        Draft {
-            diff,
-            ..Draft::from(&old)
-        },
-    );
+    let draft = Draft {
+        diff,
+        ..Draft::from(&old)
+    };
+    let new = revise(&old, draft.clone());
+    let said = format!("edited {file} in {}", old.title());
     let mut all: Vec<&Patch> = s.patches.iter().map(|id| db.patch(id)).collect();
     all[at] = &new;
     if let Err(e) = crate::check::stack(&s, &all) {
         return Ok(Edited::Refused {
             why: e.0.trim_end_matches("; nothing changed").to_string(),
             kept: Kept::Text(edited),
+            conflict: conflict_of(&db, &s, vec![(at, draft)], &said),
         });
     }
-    let draft = Draft::from(&new);
     Db::edit(path, |db| {
         // The agent took the stack meanwhile: yours is kept, to take up again.
         if let Err(e) = by_hand(db, name) {
-            return Ok(Edited::Refused { why: e.0, kept: Kept::Text(edited.clone()) });
+            return Ok(Edited::Refused {
+                why: e.0,
+                kept: Kept::Text(edited.clone()),
+                conflict: None,
+            });
         }
         if db.stack(name)?.patches.get(at) != Some(&old.id) {
             return err(format!("{name} changed while it was being edited; nothing changed"));
         }
         replace(db, name, at, draft, "edit")?;
-        Ok(Edited::Done(format!("edited {file} in {}", old.title())))
+        Ok(Edited::Done(said))
     })
 }
 
@@ -647,16 +673,25 @@ fn edit_in(
     let kept = |commit: String| Kept::Commit { place: place.clone(), commit };
     match taken? {
         Taken::Unchanged => Ok(Edited::Unchanged),
-        Taken::Refused { why, commit } => Ok(Edited::Refused { why, kept: kept(commit) }),
+        Taken::Refused { why, commit, conflict } => Ok(Edited::Refused {
+            why,
+            kept: kept(commit),
+            conflict,
+        }),
         Taken::Ready { draft, said, commit } => Db::edit(path, |db| {
             if let Err(e) = by_hand(db, name) {
-                return Ok(Edited::Refused { why: e.0, kept: kept(commit.clone()) });
+                return Ok(Edited::Refused {
+                    why: e.0,
+                    kept: kept(commit.clone()),
+                    conflict: None,
+                });
             }
             // Edited meanwhile: yours is kept, to take up again.
             if db.stack(name)?.patches.get(at) != Some(&old.id) {
                 return Ok(Edited::Refused {
                     why: format!("{name} changed while it was being edited"),
                     kept: kept(commit.clone()),
+                    conflict: None,
                 });
             }
             replace(db, name, at, draft.clone(), "edit")?;
@@ -668,8 +703,9 @@ fn edit_in(
 /// What an edit in a checkout came to, before anything is written.
 enum Taken {
     Unchanged,
-    /// Not taken (why); the commit holding it.
-    Refused { why: String, commit: String },
+    /// Not taken (why); the commit holding it; the conflict a later patch
+    /// has with it, to resolve by hand.
+    Refused { why: String, commit: String, conflict: Option<Box<Conflict>> },
     /// The patch's new version, what it changed said, and the commit
     /// holding it.
     Ready { draft: Draft, said: String, commit: String },
@@ -710,25 +746,24 @@ fn take_edit(
         return Ok(Taken::Refused {
             why: format!("{} would change nothing: drop it instead", old.title()),
             commit,
+            conflict: None,
         });
     }
     let new = revise(old, draft.clone());
     if new.id == old.id {
         return Ok(Taken::Unchanged);
     }
+    let said = format!("edited {} in {}", said_files(&changed), old.title());
     let mut all: Vec<&Patch> = s.patches.iter().map(|id| db.patch(id)).collect();
     all[at] = &new;
     if let Err(e) = crate::check::stack(s, &all) {
         return Ok(Taken::Refused {
             why: e.0.trim_end_matches("; nothing changed").to_string(),
             commit,
+            conflict: conflict_of(db, s, vec![(at, draft)], &said),
         });
     }
-    Ok(Taken::Ready {
-        draft,
-        said: format!("edited {} in {}", said_files(&changed), old.title()),
-        commit,
-    })
+    Ok(Taken::Ready { draft, said, commit })
 }
 
 /// `a.txt`, `a.txt and b.txt`, `a.txt, b.txt and c.txt`.
@@ -738,6 +773,235 @@ fn said_files(files: &[&str]) -> String {
         [one] => one.to_string(),
         [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
     }
+}
+
+/// `patch 3`, `patches 3 and 4`: the places of `edits`, from 1.
+fn said_places(edits: &[(usize, Draft)]) -> String {
+    let mut at: Vec<usize> = edits.iter().map(|(a, _)| a + 1).collect();
+    at.sort_unstable();
+    at.dedup();
+    let named: Vec<String> = at.iter().map(usize::to_string).collect();
+    let named: Vec<&str> = named.iter().map(String::as_str).collect();
+    format!("{} {}", if at.len() == 1 { "patch" } else { "patches" }, said_files(&named))
+}
+
+/// The path a file of a diff had before it: as its rename or copy says,
+/// else its own.
+fn from_of(fd: &crate::diff::FileDiff) -> String {
+    fd.header
+        .iter()
+        .find_map(|l| l.strip_prefix("rename from ").or_else(|| l.strip_prefix("copy from ")))
+        .map_or(fd.path.clone(), String::from)
+}
+
+/// The parts of `diff`, a file each, from its `diff --git` line on.
+fn parts_of(diff: &str) -> Vec<String> {
+    let mut parts: Vec<String> = Vec::new();
+    for line in diff.split_inclusive('\n') {
+        if line.starts_with("diff --git ") {
+            parts.push(String::new());
+        }
+        if let Some(p) = parts.last_mut() {
+            p.push_str(line);
+        }
+    }
+    parts
+}
+
+/// The patches `olds` with `edits` made: at each place, its new version.
+fn with_edits(olds: &[&Patch], edits: &[(usize, Draft)]) -> Vec<Patch> {
+    let mut news: Vec<Patch> = olds.iter().map(|p| (*p).clone()).collect();
+    for (at, d) in edits {
+        news[*at] = revise(olds[*at], d.clone());
+    }
+    news
+}
+
+/// How conflict markers name two sides of a conflict resolved by hand:
+/// what the edits leave, and what was there before them. The third is the
+/// later patch's, `patch N`.
+const OURS: &str = "your edit";
+const BASE: &str = "before your edit";
+
+/// What keeps stack `s` from applying with `edits` (the first of them the
+/// edit by hand), when it is a later patch that no longer applies on them,
+/// and a file of it that can be resolved by hand: one the patch changes,
+/// neither adds nor deletes, and that is text on every side. `said`, what
+/// the edit by hand was.
+fn conflict_of(db: &Db, s: &Stack, edits: Vec<(usize, Draft)>, said: &str) -> Option<Box<Conflict>> {
+    use crate::check::Pad;
+    let (repo, base) = base_of(s).ok()?;
+    let olds: Vec<&Patch> = s.patches.iter().map(|id| db.patch(id)).collect();
+    let news = with_edits(&olds, &edits);
+    let diffs: Vec<&str> = olds.iter().map(|p| p.diff.as_str()).chain(news.iter().map(|p| p.diff.as_str())).collect();
+    // The patches as edited, in turn, to the first that does not apply,
+    // and the first of its files that does not: as the edits leave it
+    // below the patch, the file is `ours`.
+    let pad = Pad::new(&repo, &base, &diffs).ok()?;
+    let at = news.iter().position(|p| !pad.apply(&p.diff))?;
+    if at <= edits.first()?.0 {
+        return None;
+    }
+    let k = parts_of(&news[at].diff).iter().position(|d| !pad.would_apply(d))?;
+    let fd = crate::diff::parse_diff(&news[at].diff, "").into_iter().nth(k)?;
+    if fd.header.iter().any(|l| l.starts_with("new file mode ") || l.starts_with("deleted file mode ")) {
+        return None;
+    }
+    let from = from_of(&fd);
+    let ours = pad.text(&from).ok()??;
+    // The patch as it was, on the patches below as they were.
+    let old = Pad::new(&repo, &base, &diffs).ok()?;
+    let below: String = olds[..at].iter().map(|p| p.diff.as_str()).collect();
+    if !old.apply(&below) {
+        return None;
+    }
+    let was = old.text(&from).ok()??;
+    if !old.apply(&olds[at].diff) {
+        return None;
+    }
+    let theirs = old.text(&fd.path).ok()??;
+    let text = merge(&repo, &ours, &was, &theirs, at)?;
+    Some(Box::new(Conflict {
+        patches: s.patches.clone(),
+        edits,
+        at,
+        file: fd.path,
+        from,
+        ours,
+        text,
+        left: false,
+        said: said.into(),
+    }))
+}
+
+/// `theirs`, the file as patch `at` leaves it, merged into `ours` from
+/// `was`, as `git merge-file` merges them: conflict markers where the two
+/// disagree, in the style the repository's git is set to
+/// (`merge.conflictStyle`). None if git could not merge them.
+fn merge(repo: &std::path::Path, ours: &str, was: &str, theirs: &str, at: usize) -> Option<String> {
+    use std::process::{Command, Stdio};
+    let dir = std::env::temp_dir().join(format!("stacked-merge-{}", crate::db::unique()));
+    std::fs::create_dir_all(&dir).ok()?;
+    let sides = [("ours", ours), ("was", was), ("theirs", theirs)];
+    let files: Vec<std::path::PathBuf> = sides.iter().map(|(n, _)| dir.join(n)).collect();
+    let written = sides.iter().zip(&files).all(|((_, text), f)| std::fs::write(f, text).is_ok());
+    let mut cmd = Command::new("git");
+    cmd.args(["merge-file", "-p"]);
+    match crate::git::git(repo, &["config", "--get", "merge.conflictStyle"]).unwrap_or_default().trim() {
+        "diff3" => {
+            cmd.arg("--diff3");
+        }
+        "zdiff3" => {
+            cmd.arg("--zdiff3");
+        }
+        _ => {}
+    }
+    let label = format!("patch {}", at + 1);
+    cmd.args(["-L", OURS, "-L", BASE, "-L", &label]).args(&files).current_dir(repo).stderr(Stdio::null());
+    let out = if written { cmd.output().ok() } else { None };
+    let _ = std::fs::remove_dir_all(&dir);
+    // The number of conflicts, 127 at most; else git could not merge.
+    let out = out.filter(|o| o.status.code().is_some_and(|c| (0..=127).contains(&c)))?;
+    String::from_utf8(out.stdout).ok()
+}
+
+/// Whether `text` still holds a conflict marker `merge` wrote for patch
+/// `at`.
+fn has_markers(text: &str, at: usize) -> bool {
+    let marks = [format!("<<<<<<< {OURS}"), format!("||||||| {BASE}"), format!(">>>>>>> patch {}", at + 1)];
+    text.lines().any(|l| marks.iter().any(|m| l.trim_end() == m))
+}
+
+/// Resolves conflict `c` by hand, in the editor: the file of the patch
+/// that no longer applies, as that patch would leave it on the edits,
+/// conflict markers where the two disagree. What is saved is the patch's
+/// new version of the file. Once the stack applies with every edit, they
+/// go in it at once, as one change; else the conflict comes back, to
+/// resolve again, or the next one does. `kept`, the edit by hand as it was
+/// kept, comes back with it.
+pub fn resolve(path: &std::path::Path, name: &str, c: &Conflict, kept: Kept) -> Result<Edited> {
+    let db = Db::load(path)?;
+    db.writable(name)?;
+    by_hand(&db, name)?;
+    let s = db.stack(name)?.clone();
+    if s.patches != c.patches {
+        return err(format!("{name} changed while it was being edited; nothing changed"));
+    }
+    let (repo, _) = base_of(&s)?;
+    let olds: Vec<&Patch> = s.patches.iter().map(|id| db.patch(id)).collect();
+    let patch = with_edits(&olds, &c.edits).swap_remove(c.at);
+    let line = c.text.lines().position(|l| l.starts_with("<<<<<<< ")).map_or(1, |i| i + 1);
+    let short = c.file.rsplit('/').next().unwrap_or(&c.file);
+    let edited = edit_file(&c.text, short, Some(line))?;
+    let again = |why: String| Edited::Refused {
+        why,
+        kept: kept.clone(),
+        conflict: Some(Box::new(Conflict {
+            text: edited.clone(),
+            left: true,
+            ..c.clone()
+        })),
+    };
+    if has_markers(&edited, c.at) {
+        return Ok(again(format!("{} still has conflict markers: take them out once you have resolved it", c.file)));
+    }
+    let files = crate::diff::parse_diff(&patch.diff, "");
+    let Some(k) = files.iter().position(|f| f.path == c.file) else {
+        return err(format!("patch {} no longer changes {}; nothing changed", c.at + 1, c.file));
+    };
+    let section = file_section(&repo, &files[k], &c.from, Some(&c.ours), &edited)?;
+    let diff = with_section(&patch.diff, k, section.as_deref());
+    if !diff.lines().any(|l| l.starts_with("diff --git ")) {
+        return Ok(again(format!("patch {} ({}) would change nothing: drop it instead", c.at + 1, patch.title())));
+    }
+    let draft = Draft {
+        diff,
+        ..Draft::from(&patch)
+    };
+    let mut edits = c.edits.clone();
+    match edits.iter_mut().find(|(at, _)| *at == c.at) {
+        Some((_, d)) => *d = draft,
+        None => edits.push((c.at, draft)),
+    }
+    let news = with_edits(&olds, &edits);
+    if let Err(e) = crate::check::stack(&s, &news.iter().collect::<Vec<_>>()) {
+        return Ok(Edited::Refused {
+            why: e.0.trim_end_matches("; nothing changed").to_string(),
+            kept: kept.clone(),
+            conflict: conflict_of(&db, &s, edits, &c.said),
+        });
+    }
+    let said = format!("{}, and resolved {} by hand", c.said, said_places(&edits[1..]));
+    Db::edit(path, |db| {
+        // The agent took the stack meanwhile: what you resolved is kept, to
+        // take up again.
+        if let Err(e) = by_hand(db, name) {
+            return Ok(again(e.0));
+        }
+        if db.stack(name)?.patches != c.patches {
+            return err(format!("{name} changed while it was being edited; nothing changed"));
+        }
+        put_edits(db, name, &edits)?;
+        Ok(Edited::Done(said))
+    })
+}
+
+/// Makes each of `edits` the new version of the patch at its place, in
+/// one change of stack `name`: the first edited by hand, the others
+/// resolved.
+fn put_edits(db: &mut Db, name: &str, edits: &[(usize, Draft)]) -> Result<usize> {
+    let mut patches = db.stack(name)?.patches.clone();
+    let mut verbs = Vec::new();
+    for (k, (at, d)) in edits.iter().enumerate() {
+        let old = db.patch(&patches[*at]).clone();
+        let id = db.add_patch(revise(&old, d.clone()))?;
+        if id != old.id {
+            let verb = if k == 0 { "edit" } else { "resolve" };
+            verbs.push(format!("{verb} {} as {}", &old.id[..8], &id[..8]));
+            patches[*at] = id;
+        }
+    }
+    db.set_stack(name, patches, &verbs.join(", "))
 }
 
 /// The part of a diff for one file, `fd` as it was, made again for `new`:

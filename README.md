@@ -305,6 +305,28 @@ tmp|pwd|worktree` saying where (else where the stack's menu last picked); an
 edit not taken is kept in a file (`tmp`) or a commit, and `--from FILE` or
 `--from COMMIT` takes it up again.
 
+When a patch above no longer applies on your edit, its conflict can be
+resolved by hand instead: `Resolve the conflict in patch 3 by hand` opens
+the file of patch 3 that no longer applies, in $EDITOR, as patch 3 would
+leave it on your edit, at its first conflict. `<<<<<<< your edit`,
+`=======` and `>>>>>>> patch 3` mark where the two disagree, as `git
+merge-file` marks them (with `||||||| before your edit` too when git's
+`merge.conflictStyle` is diff3 or zdiff3). It is a copy of the file alone,
+wherever your edit was made. Resolve it, take the markers out, and save:
+what you save is patch 3's new version of that file, its message and
+author as they were. Saved with the markers in, it comes back to resolve
+again. Should another file of patch 3, or a patch above it, then not apply,
+it is offered next, one conflict after another; a patch whose change merges
+with yours without a conflict opens with no markers, to look over and save.
+Once the stack applies, your edit and each patch resolved go in at once, as
+one change of the stack (`edit … as …, resolve … as …` in its history).
+`Throw the edit away` throws all of it away, and `Edit it again` goes back
+to your edit, what you resolved thrown away. A file the patch above adds or
+deletes, or one that is not text, is not offered: edit it again, or edit
+that patch as mail. On the command line, `--resolve` opens each conflict in
+turn after the edit; left unresolved, the edit is kept as above, and
+`--from … --resolve` takes it up again.
+
 `Edit this patch in $EDITOR`, there or on the patch, opens the patch as
 mail at the line the cursor is on: its message, its diff. It comes back
 with why at its top if it does not apply, as an edit by hand does.

@@ -1166,6 +1166,93 @@ fn a_patch_is_edited_where_the_cursor_is() {
 }
 
 #[test]
+fn a_later_patch_that_no_longer_applies_is_resolved_by_hand() {
+    let e = env();
+    e.ok(&["import", "s", "base"]);
+    // An editor named vim, told the line as +LINE, that takes a step of
+    // its own each time it runs: what it was shown, and where, are kept.
+    let bin = e.root.join("bin");
+    std::fs::create_dir(&bin).unwrap();
+    let vim = bin.join("vim");
+    let r = e.root.display().to_string();
+    std::fs::write(
+        &vim,
+        format!(
+            "#!/bin/sh\nn=$(( $(cat {r}/count 2>/dev/null || echo 0) + 1 ))\necho $n > {r}/count\necho \"$1\" > {r}/line$n\ncp \"$2\" {r}/shown$n\nsh {r}/step$n \"$2\"\n"
+        ),
+    )
+    .unwrap();
+    Command::new("chmod").arg("+x").arg(&vim).status().unwrap();
+    let steps = |steps: &[&str]| {
+        let _ = std::fs::remove_file(e.root.join("count"));
+        for (i, s) in steps.iter().enumerate() {
+            std::fs::write(e.root.join(format!("step{}", i + 1)), s).unwrap();
+        }
+    };
+    let shown = |n: usize| std::fs::read_to_string(e.root.join(format!("shown{n}"))).unwrap();
+    let line = |n: usize| std::fs::read_to_string(e.root.join(format!("line{n}"))).unwrap().trim().to_string();
+    let edit = |extra: &[&str]| {
+        let mut all = vec!["edit", "s"];
+        all.extend(extra);
+        stacked_in(&e.src, &e.db, &all, "", &[("EDITOR", &vim)])
+    };
+    // A step that writes `text` in the file.
+    let put = |n: usize, text: &str| {
+        let file = e.root.join(format!("text{n}"));
+        std::fs::write(&file, text).unwrap();
+        format!("cp {} \"$1\"", file.display())
+    };
+    let huit = "sed -i '' 's/^eight$/huit/' \"$1\"";
+
+    // Patch 3 changes nine, under eight: eight edited in patch 1, patch 3
+    // no longer applies, and the edit is not taken; the error says how to
+    // resolve it.
+    steps(&[huit]);
+    let (fine, _, err) = edit(&["1", "--path", "a.txt", "--line", "2"]);
+    assert!(!fine && err.contains("patch 3 (Bug 3 - café") && err.contains("does not apply"), "{err}");
+    assert!(err.contains("; with --resolve, a.txt of patch 3 opens next, to resolve the conflict by hand"), "{err}");
+    // With --resolve, it does: a.txt as patch 3 would leave it on the edit,
+    // opened at the conflict. Saved with its markers in, it is not
+    // resolved, and nothing changed.
+    steps(&[huit, "true"]);
+    let (fine, _, err) = edit(&["1", "--path", "a.txt", "--line", "2", "--resolve"]);
+    assert!(!fine && err.contains("a.txt still has conflict markers"), "{err}");
+    assert!(err.contains(" --resolve` takes it up again"), "{err}");
+    assert!(shown(2).ends_with("seven\n<<<<<<< your edit\nhuit\nnine\n=======\neight\n9\n>>>>>>> patch 3\nten\n"), "{}", shown(2));
+    assert_eq!(line(2), "+8");
+    assert_eq!(e.ok(&["versions", "s", "1"]).lines().count(), 1, "nothing changed");
+    // Resolved, both are new versions, in one change of the stack.
+    let both = put(2, &TEN.replace("two", "2").replace("eight", "huit").replace("nine", "9"));
+    steps(&[huit, &both]);
+    let (fine, _, err) = edit(&["1", "--path", "a.txt", "--line", "2", "--resolve"]);
+    assert!(fine && err.contains("edited a.txt in Bug 1 - change two, and resolved patch 3 by hand"), "{err}");
+    assert!(e.ok(&["show", "s", "1"]).contains("-eight\n+huit\n"));
+    let three = e.ok(&["show", "s", "3"]);
+    assert!(three.contains(" huit\n-nine\n+9\n"), "{three}");
+    assert!(three.contains("Subject: Bug 3 - café"), "its message as it was: {three}");
+    assert_eq!(e.ok(&["versions", "s", "3"]).lines().count(), 2);
+    assert!(e.ok(&["check"]).contains("s: applies"));
+    let log = e.ok(&["log", "s"]);
+    assert_eq!(log.matches(", resolve ").count(), 1, "one change: {log}");
+
+    // One conflict after another: patch 3 has one, then patch 4's change
+    // merges with the edit without one, and is only saved as it opens.
+    let ten = "diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -7,4 +7,4 @@\n seven\n huit\n 9\n-ten\n+10\n";
+    let (fine, _, err) = stacked_in(&e.src, &e.db, &["add", "s", "-m", "Bug 4 - ten"], ten, &[]);
+    assert!(fine, "{err}");
+    let loud = "sed -i '' 's/^huit$/HUIT/' \"$1\"";
+    let both = put(2, &TEN.replace("two", "2").replace("eight", "HUIT").replace("nine", "9"));
+    steps(&[loud, &both, "true"]);
+    let (fine, _, err) = edit(&["1", "--path", "a.txt", "--resolve"]);
+    assert!(fine && err.contains("edited a.txt in Bug 1 - change two, and resolved patches 3 and 4 by hand"), "{err}");
+    assert!(shown(2).contains("<<<<<<< your edit\nHUIT\nnine\n=======\nhuit\n9\n>>>>>>> patch 3\n"), "{}", shown(2));
+    assert_eq!(shown(3), TEN.replace("two", "2").replace("eight", "HUIT").replace("nine", "9").replace("ten", "10"));
+    assert_eq!(line(3), "+1", "no conflict to open at");
+    assert!(e.ok(&["show", "s", "4"]).contains(" HUIT\n 9\n-ten\n+10\n"));
+    assert!(e.ok(&["check"]).contains("s: applies"));
+}
+
+#[test]
 fn a_file_is_edited_in_the_stack_s_worktree_or_in_this_checkout() {
     let e = env();
     e.ok(&["import", "s", "base"]);

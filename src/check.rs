@@ -188,6 +188,11 @@ impl Index {
         git_env(repo, &["apply", "--cached", "--whitespace=nowarn"], Some(diff), &self.env())
     }
 
+    /// Whether `diff` would apply, nothing changed.
+    fn would_apply(&self, repo: &Path, diff: &str) -> bool {
+        git_env(repo, &["apply", "--cached", "--check", "--whitespace=nowarn"], Some(diff), &self.env()).is_ok()
+    }
+
     /// What the index holds at `paths`, as text lines: None where it holds
     /// nothing, or something not text.
     fn files(&self, repo: &Path, paths: &[String]) -> Result<Vec<Option<Vec<String>>>> {
@@ -294,6 +299,48 @@ fn try_apply(repo: &Path, base: &str, paths: Option<&BTreeSet<String>>, patches:
     Ok(())
 }
 
+/// An index of its own on a base, holding the files some diffs touch, as
+/// the check's: diffs applied to it in turn, and files read from it, the
+/// repository only read. What resolving a conflict by hand starts from is
+/// found there. A failure on it is not checked again against the whole
+/// base: what it finds is only offered, and what is then written is
+/// checked as anything is.
+pub struct Pad {
+    repo: PathBuf,
+    ix: Index,
+}
+
+impl Pad {
+    /// A pad on `base` in `repo`, holding the files `diffs` touch as the
+    /// base has them.
+    pub fn new(repo: &Path, base: &str, diffs: &[&str]) -> Result<Pad> {
+        #[cfg(feature = "demo")]
+        if crate::memory::tree(repo, base).is_some() {
+            return err("a repository kept in memory has no index to apply to");
+        }
+        reachable(repo, base)?;
+        let ix = Index::new(repo, base, Some(&touched_by(repo, diffs)))?;
+        Ok(Pad { repo: repo.to_path_buf(), ix })
+    }
+
+    /// Applies `diff`, all of it or, when it does not apply, none of it:
+    /// whether it did.
+    pub fn apply(&self, diff: &str) -> bool {
+        self.ix.apply(&self.repo, diff).is_ok()
+    }
+
+    /// Whether `diff` would apply, nothing changed.
+    pub fn would_apply(&self, diff: &str) -> bool {
+        self.ix.would_apply(&self.repo, diff)
+    }
+
+    /// The file at `path`: its text, None where it is not there or is not
+    /// text.
+    pub fn text(&self, path: &str) -> Result<Option<String>> {
+        Ok(self.ix.texts(&self.repo, &[path.to_string()])?.pop().flatten())
+    }
+}
+
 /// The file the last of `patches` changes, as it is before it (at
 /// `old_path`) and after it (at `path`): its text, None where it is not
 /// there or is not text. Read as `versions` reads them.
@@ -384,8 +431,13 @@ pub fn versions(repo: &Path, base: &str, patches: &[&Patch]) -> Result<HashMap<S
 /// Every path the patches name, before or after: as git reads them, and
 /// from their headers.
 fn touched(repo: &Path, patches: &[&Patch]) -> BTreeSet<String> {
+    touched_by(repo, &patches.iter().map(|p| p.diff.as_str()).collect::<Vec<_>>())
+}
+
+/// Every path the `diffs` name, as `touched` reads them.
+fn touched_by(repo: &Path, diffs: &[&str]) -> BTreeSet<String> {
     let mut paths = BTreeSet::new();
-    let all: String = patches.iter().map(|p| p.diff.as_str()).collect::<Vec<_>>().join("\n");
+    let all: String = diffs.join("\n");
     if let Ok(out) = crate::git::git_in(repo, &["apply", "--numstat", "-z"], Some(&all)) {
         for entry in out.split('\0') {
             if let Some(path) = entry.splitn(3, '\t').nth(2).filter(|p| !p.is_empty()) {
@@ -552,6 +604,22 @@ mod tests {
         let add = patch("diff --git a/z.txt b/z.txt\nnew file mode 100644\n--- /dev/null\n+++ b/z.txt\n@@ -0,0 +1 @@\n+z\n".into());
         let v = versions(&r, &base, &[&add]).unwrap();
         assert_eq!(v["z.txt"], Sides { old: None, new: lines(&["z"]) });
+    }
+
+    #[test]
+    fn a_pad_takes_diffs_in_turn_and_tells_which_do_not_apply() {
+        let (_tmp, r, base, p) = repo();
+        let two = "diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -1,2 +1,2 @@\n one\n-two\n+zwei\n";
+        let pad = Pad::new(&r, &base, &[&p.diff, two]).unwrap();
+        assert_eq!(pad.text("a.txt").unwrap().as_deref(), Some("one\ntwo\n"));
+        assert!(pad.would_apply(two) && pad.would_apply(&p.diff));
+        assert!(pad.apply(&p.diff));
+        assert_eq!(pad.text("a.txt").unwrap().as_deref(), Some("one\n2\n"));
+        assert_eq!(pad.text("n.txt").unwrap().as_deref(), Some("old\n"));
+        assert_eq!(pad.text("o.txt").unwrap(), None, "renamed");
+        // What no longer applies on it is not taken, nothing of it.
+        assert!(!pad.would_apply(two) && !pad.apply(&p.diff));
+        assert_eq!(pad.text("a.txt").unwrap().as_deref(), Some("one\n2\n"));
     }
 
     #[test]
