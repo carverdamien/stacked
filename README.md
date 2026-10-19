@@ -661,6 +661,11 @@ follows each patch by its change, a move told from a shift.
 
 ## Not done yet
 
+- A deleted comment cannot be seen again: the editor and `stacked comments`
+  skip it, and Undo is only for the stack. Its text is still in the file, as
+  the file only grows. To build: `deleted` in `Show…`, each as it was, with
+  `History of this comment…` and `Bring it back` in its menu, and `stacked
+  comments NAME --show deleted`.
 - When an ask lands, the screen changes on its own: the stack moves to the
   agent's edit if you have not edited since. self-review-rs now holds
   changes until `R`; should stacked do the same?
