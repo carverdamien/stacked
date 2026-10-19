@@ -154,7 +154,9 @@ lines they are on), or, on the header, the stack itself (its patches, then
 the comments on the stack). Scrolled past, a patch's title stays on the
 middle's first line, the rest under it, in every view of the code; a click
 on it goes back to it. The right pane lists the comments the middle
-shows, under a header of its own; with none, it is not there.
+shows, under a header of its own; with none, it is not there. The top bar
+names the file and the stack, and on its right says how far the stack's
+review is (Reading, below, says how).
 
 There are five keys, and two of self-review's (Copied from self-review-rs,
 below, says what it is); the settings can make any of them other keys, and
@@ -658,6 +660,25 @@ to read again. The blocks are found from the files as each patch leaves
 them, in an index of stacked's own (as the check does), in a thread: the
 screen does not wait.
 
+On the right of the top bar, how far the review of the stack is: the lines
+its patches change that are not read yet, the comments open on it, and how
+long the rest takes at your pace (`120 lines to review · 3 comments to
+close · ETA 1h 20m`). With less room, less of it (`120 lines · 3 comments ·
+ETA 1h 20m`, then `ETA 1h 20m`); with all read and no comment open,
+`nothing left to review`. Your pace is the lines you marked read and the
+comments you closed, in the time you spent: the time the file was written
+to, each hour or more with nothing written to it left out, as a pause. What
+comes to the stack slows it down: the lines new to it since its first
+patches went in (a patch added, what a new version of one changes) and the
+comments opened on it (yours, the agent's, reviewers'), in the time spent
+since. Its lines are done when you read them faster than they come, its
+comments when you close them faster than they open, and the rest when both
+are: the time it says is time spent, the pauses left out, not a time of
+day. A comment moved (a patch split, or the agent moving it to the stack and
+back) is neither closed nor opened. It says `ETA unknown` while lines are
+left and you never marked one read, or comments are left and you never
+closed one; `ETA never` while either comes as fast as you go.
+
 ## Searching
 
 `Search…`, in every menu, opens the search on a screen of its own. On the
@@ -1051,6 +1072,8 @@ the other.
   rows, line keys, comment threads.
 - `panes.rs`: the compact layout's two panes.
 - `reading.rs`, `blocks.rs`: the reading mode's marks, by blocks of code.
+- `progress.rs`: how far the review of a stack is, and how long the rest
+  takes at your pace.
 - `tree.rs`: the tree of edits as a graph, and the lanes the history draws.
 - `history.rs`: a stack's history, what changed it, and stack diffs: as the
   editor shows them and the agent is told them.

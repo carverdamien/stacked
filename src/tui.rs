@@ -921,7 +921,10 @@ pub struct App {
     /// The patches' code blocks, for reading.
     finder: Finder,
     /// Each patch's changed lines, by id: what is read of it, counted.
-    changed: HashMap<String, Arc<Vec<String>>>,
+    changed: crate::progress::Memo,
+    /// How far the review of the stack is, and what that was worked out
+    /// from: the stack's name, and how many changes the database had.
+    progress: Option<((String, usize), crate::progress::Progress)>,
     /// How wide the middle was last drawn.
     mid_w: usize,
     pub screen: Screen,
@@ -1130,6 +1133,7 @@ impl App {
             reading: cfg.view.reading,
             finder: Finder::default(),
             changed: HashMap::new(),
+            progress: None,
             mid_w: 0,
             screen: Screen::Main,
             mode: Mode::Normal,
@@ -2485,17 +2489,19 @@ impl App {
         if let Some(c) = self.changed.get(id) {
             return c.clone();
         }
-        let p = self.db.patch(id);
-        let keys: Vec<String> = crate::diff::parse_diff(&p.diff, &crate::view::mode(&p.change))
-            .iter()
-            .flat_map(|f| f.hunks.iter())
-            .flat_map(|h| h.lines.iter())
-            .filter(|l| l.origin != ' ')
-            .map(|l| l.key.clone())
-            .collect();
-        let keys = Arc::new(keys);
+        let keys = Arc::new(crate::progress::changed_keys(self.db.patch(id)));
         self.changed.insert(id.into(), keys.clone());
         keys
+    }
+
+    /// How far the review of the stack is, worked out again once the
+    /// database changed.
+    fn keep_progress(&mut self) {
+        let at = (self.stack.clone(), self.db.changes());
+        if self.progress.as_ref().is_none_or(|(was, _)| *was != at) {
+            let p = crate::progress::progress(&self.db, &self.stack, &mut self.changed);
+            self.progress = Some((at, p));
+        }
     }
 
     /// How many of patch `id`'s changed lines are read, of how many.
@@ -4636,6 +4642,7 @@ impl App {
         self.spots.borrow_mut().clear();
         // Where the cursor is in a list of its own screen, kept as it goes.
         self.keep_list();
+        self.keep_progress();
         // The agent's work on the stack, under the top bar, on the main
         // screen: open while the cursor is on it, a line for each, in as
         // much as half the screen; the panes under it.
@@ -4885,7 +4892,8 @@ impl App {
         let mut text = format!(" stacked · {file}");
         match self.db.head(&self.stack) {
             Some((rev, s)) => {
-                text += &format!(" · {} @{rev} · {} patches", self.stack, s.patches.len());
+                let n = s.patches.len();
+                text += &format!(" · {} @{rev} · {n} patch{}", self.stack, if n == 1 { "" } else { "es" });
                 if let Some(b) = &s.base {
                     text += &format!(" on {}", &b[..12.min(b.len())]);
                 }
@@ -4937,6 +4945,19 @@ impl App {
             st = color::warn();
         }
         put(buf, area, 0, 0, w, &fit(&text, w), st);
+        // On the right, how far the review of the stack is: as much of it
+        // as the rest leaves room for.
+        let used = text.chars().count();
+        let right = match (&self.progress, self.db.head(&self.stack)) {
+            (Some(((name, _), p)), Some(_)) if *name == self.stack => {
+                p.said().into_iter().find(|said| used + 3 + said.chars().count() < w)
+            }
+            _ => None,
+        };
+        if let Some(said) = right {
+            let n = said.chars().count();
+            put(buf, area, w - n - 1, 0, n, &said, st);
+        }
     }
 
     /// The keys there are, where the keys go now.

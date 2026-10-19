@@ -27,6 +27,7 @@ pub mod ops;
 pub mod paint;
 pub mod panes;
 pub mod phab;
+pub mod progress;
 pub mod reading;
 pub mod review;
 pub mod rows;
