@@ -42,6 +42,7 @@ use crate::view::{MSG_PATH, note_lines, title_key};
 
 pub mod banner;
 pub use banner::BannerLine;
+pub mod places;
 pub mod reviewing;
 pub use reviewing::Reviewing;
 pub mod searching;
@@ -883,6 +884,9 @@ pub struct App {
     pub on_banner: bool,
     pub banner_sel: usize,
     banner_top: usize,
+    /// Where the cursor was in each pane, by what it showed: to come back
+    /// to.
+    places: places::Places,
     /// The review of what the agent brought back, being made.
     pub reviewing: Option<Reviewing>,
     /// The search open, and the searches made before, newest first: kept
@@ -1099,6 +1103,7 @@ impl App {
             on_banner: false,
             banner_sel: 0,
             banner_top: 0,
+            places: places::Places::default(),
             reviewing: None,
             searching: None,
             searches: Vec::new(),
@@ -1536,6 +1541,10 @@ impl App {
             return;
         }
         let same = self.subject.as_deref() == Some(subject.as_str());
+        // Leaving what the panes showed: where their cursors were, kept.
+        if !same && let Some(was) = self.subject.clone() {
+            self.keep_panes(&was);
+        }
         let refs: Vec<&Note> = notes.iter().collect();
         let mut deco = self.deco(&notes);
         if self.reading && !self.on_stack {
@@ -1558,13 +1567,15 @@ impl App {
             }
         };
         self.built = Some(want);
-        self.subject = Some(subject);
+        self.subject = Some(subject.clone());
         self.panes = Arc::new(pane_streams(&self.rows));
         if !same {
             self.cursor = 0;
             self.top = 0;
             self.note_sel = 0;
             self.compact.reset();
+            // Back on what they showed before: where they were.
+            self.back_to_panes(&subject);
         }
         self.cursor = self.cursor.min(self.rows.len().saturating_sub(1));
         self.note_sel = self.note_sel.min(self.notes().len().saturating_sub(1));
@@ -2841,6 +2852,7 @@ impl App {
             KeyCode::Esc | KeyCode::Left => self.screen = Screen::Runs,
             _ => {}
         }
+        self.keep_transcript();
     }
 
     fn text_key(&mut self, k: KeyEvent) {
@@ -3959,8 +3971,8 @@ impl App {
                 });
             }
             Action::Transcript(id) => {
+                self.scroll = self.transcript_was(&id);
                 self.transcript = Some(id);
-                self.scroll = 0;
                 self.screen = Screen::Transcript;
             }
             Action::Save(way) => {
@@ -4254,11 +4266,12 @@ impl App {
         self.focus = Focus::Diff;
     }
 
-    /// Stack `name` the current one, on its first patch.
+    /// Stack `name` the current one: its patches pane where it was, else on
+    /// its first patch.
     fn switch_stack(&mut self, name: &str) {
+        self.keep_list_of_patches();
         self.stack = name.to_string();
-        self.sel = 0;
-        self.on_stack = self.patch_count() == 0;
+        self.back_to_list_of_patches();
         self.built = None;
         self.show = self.db.view(&self.stack).and_then(Show::parse).unwrap_or(Show::All);
         self.judge();
@@ -4298,6 +4311,7 @@ impl App {
         if screen == Screen::Stacks {
             self.pick = self.db.stacks().iter().position(|s| s.name == self.stack).unwrap_or(0);
         }
+        self.back_to_list();
     }
 
     fn open_text(&mut self, title: String, lines: Vec<(String, Style)>) {
@@ -4589,6 +4603,8 @@ impl App {
         }
         self.edit_box.set(None);
         self.spots.borrow_mut().clear();
+        // Where the cursor is in a list of its own screen, kept as it goes.
+        self.keep_list();
         // The agent's work on the stack, under the top bar, on the main
         // screen: open while the cursor is on it, a line for each, in as
         // much as half the screen; the panes under it.

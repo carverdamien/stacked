@@ -2535,7 +2535,9 @@ fn a_deleted_comment_is_shown_as_it_was_and_brought_back() {
     keys(&mut app, &[KeyCode::Down, KeyCode::Right]);
     let screen = draw(&mut app);
     assert!(screen.contains("why so loud?") && screen.contains("└ comment · deleted @"), "{screen}");
-    // Its menu, which Enter opens: to bring it back, or its history.
+    // Its menu, which Enter opens: to bring it back, or its history. (The
+    // cursor came back where it was in the patch, under the comment.)
+    keys(&mut app, &[KeyCode::Home]);
     down_to(&mut app, "   └ comment");
     assert_eq!(app.enter(), None);
     key(&mut app, KeyCode::Char(' '));
@@ -2864,4 +2866,68 @@ fn the_comment_editor_hides_nothing_what_it_would_cover_comes_after_it() {
         choose(&mut app, "Throw it away");
         keys(&mut app, &[KeyCode::Char('1')]);
     }
+}
+
+#[test]
+fn each_pane_keeps_where_its_cursor_was_to_come_back_to() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    // The middle of patch 1, on a line far down.
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "+LINE 39");
+    let (cursor, top) = (app.cursor, app.top);
+    // Patch 2 is read from its top; back on patch 1, the middle is where it
+    // was, and as it was scrolled.
+    keys(&mut app, &[KeyCode::Left, KeyCode::Down]);
+    draw(&mut app);
+    assert_eq!((app.sel, app.cursor), (1, 0));
+    keys(&mut app, &[KeyCode::Up]);
+    draw(&mut app);
+    assert_eq!((app.cursor, app.top), (cursor, top), "patch 1's middle where it was");
+    // The same from the stack's header, and from another stack.
+    keys(&mut app, &[KeyCode::Up]);
+    draw(&mut app);
+    assert!(app.on_stack);
+    choose(&mut app, "Switch stack…");
+    down_to_pick(&mut app, "t");
+    keys(&mut app, &[KeyCode::Enter]);
+    assert_eq!(app.stack, "t");
+    keys(&mut app, &[KeyCode::Home]);
+    choose(&mut app, "Switch stack…");
+    down_to_pick(&mut app, "s");
+    keys(&mut app, &[KeyCode::Enter]);
+    assert!(app.stack == "s" && app.on_stack, "the patches pane where it was: on the header");
+    keys(&mut app, &[KeyCode::Down]);
+    draw(&mut app);
+    assert!(app.rows[app.cursor].text.starts_with("+LINE 39"), "{:?}", app.rows[app.cursor].text);
+    // The history: where it was, on the same record when another is added.
+    keys(&mut app, &[KeyCode::Down]);
+    choose(&mut app, "Drop this patch");
+    choose(&mut app, "Drop it");
+    keys(&mut app, &[KeyCode::Home]);
+    choose(&mut app, "History…");
+    keys(&mut app, &[KeyCode::Down]);
+    let rev = app.history()[1].rev;
+    draw(&mut app);
+    keys(&mut app, &[KeyCode::Esc]);
+    choose(&mut app, "History…");
+    assert_eq!((app.pick, app.history()[app.pick].rev), (1, rev));
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Down]);
+    choose(&mut app, "Drop this patch");
+    choose(&mut app, "Drop it");
+    keys(&mut app, &[KeyCode::Home]);
+    choose(&mut app, "History…");
+    assert_eq!((app.pick, app.history()[app.pick].rev), (2, rev), "the same record, a newer one above it");
+}
+
+/// Down the list of stacks, from its top, to stack `name`.
+fn down_to_pick(app: &mut App, name: &str) {
+    key(app, KeyCode::Home);
+    for _ in 0..20 {
+        if app.db.stacks().get(app.pick).is_some_and(|s| s.name == name) {
+            return;
+        }
+        key(app, KeyCode::Down);
+    }
+    panic!("no stack {name:?}");
 }

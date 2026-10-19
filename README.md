@@ -186,6 +186,13 @@ the help then names those:
   the cursor is; Esc there comes back where it was. Without a banner, it
   goes up, from the comments to the middle, to the patches, to the stack's
   header. In the comment editor, Esc asks what to do with the comment.
+- Every pane keeps where its cursor was, while the editor is open: the
+  middle and the comments of each patch (whichever its version, so an edit
+  keeps the line) and of the stack, the patches of each stack, the history
+  of each stack, the runs, each transcript, each review. Coming back to
+  one, the cursor is where it was, on what it was on if that is still
+  there. The tree of edits, the stacks and the versions open on where the
+  stack is, as before.
 - `1` cycles the views of the code, as in self-review: unified, side by
   side, and compact, the two sides each a pane of its own with no gaps,
   scrolled together or one alone (← → turn which, and past the old side or
@@ -1033,7 +1040,9 @@ the other.
 - `paint.rs`: colours, and drawing text and boxes.
 - `tui.rs`: the editor, and the work it does away from the screen; what a
   click is on. `tui/reviewing.rs` and `tui/searching.rs`: its screens for
-  reviewing what the agent brought back, and for searching.
+  reviewing what the agent brought back, and for searching;
+  `tui/banner.rs`, the banner of the agent's work; `tui/places.rs`, where
+  each pane's cursor was.
 - `web.rs`, `web/client.rs`, `web/index.html`, `build.rs`: `stacked web`,
   its server, its wasm and its page; the build script compiles the wasm.
 - `demo.rs`, `memory.rs`: `stacked demo`, the tour; and the database and
@@ -1076,8 +1085,9 @@ Enter, a right click's menu, a menu's item), the comments pane's previews,
 moving a patch, searching (what is in sight first, the patches then the
 files they touch, the history), the agents' worktrees made ahead as the
 stack's checkout says, the banner of the agent's work (Esc to it and
-back, open a line for each, Enter on each), and the comment editor hiding
-nothing in each view of the code. With `--features web`, `tests/web.rs`
+back, open a line for each, Enter on each), the comment editor hiding
+nothing in each view of the code, and each pane keeping where its cursor
+was. With `--features web`, `tests/web.rs`
 serves the editor and asks it over HTTP as a browser would: the token
 needed, the page, the wasm, the rows as they change, a key and a click; and
 `web.rs` tests the rows and the lines both ways, with the client's own tests

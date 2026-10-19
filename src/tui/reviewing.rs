@@ -86,7 +86,8 @@ impl App {
     }
 
     /// Opens the review of what run `run` brought back, with its marks as
-    /// last saved; the cursor on `part`, else on the first not marked.
+    /// last saved; the cursor on `part`, else where it was when the review
+    /// was left, else on the first not marked.
     pub(super) fn open_review(&mut self, run: &str, part: Option<Part>) {
         let Some(_) = self.work(run) else { return };
         let marks = self.db.review(run).map(|v| v.marks.clone()).unwrap_or_default();
@@ -99,9 +100,10 @@ impl App {
         self.on_banner = false;
         let lines = self.review_lines();
         let marks = self.reviewing.as_ref().map(|r| r.marks.clone()).unwrap_or_default();
+        let was = self.review_was(run).filter(|&k| lines.get(k).is_some_and(|l| l.part.is_some()));
         let at = match part {
             Some(p) => lines.iter().position(|l| l.part == Some(p)),
-            None => lines.iter().position(|l| l.part.is_some_and(|p| !marks.contains_key(&p.key()))),
+            None => was.or_else(|| lines.iter().position(|l| l.part.is_some_and(|p| !marks.contains_key(&p.key())))),
         };
         let at = at.or_else(|| lines.iter().position(|l| l.part.is_some())).unwrap_or(0);
         if let Some(rv) = &mut self.reviewing {
@@ -490,6 +492,7 @@ impl App {
 
     /// Leaves the review, saved or not, for the main screen.
     pub(super) fn leave_review(&mut self) {
+        self.keep_review();
         self.reviewing = None;
         self.screen = Screen::Main;
     }
