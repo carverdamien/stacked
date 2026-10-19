@@ -284,7 +284,7 @@ impl Editor {
             vtop = cur_vrow + 1 - text_h;
         }
         self.vtop.set(vtop);
-        window(buf, area, x, y, w, h, title, color::comment());
+        window(buf, area, x, y, w, h, title, color::note());
         let foot = " enter: a new line · esc: save, send or throw away ";
         let room = inner.saturating_sub(2);
         put(buf, area, x + 2, y + h - 1, room, &foot.chars().take(room).collect::<String>(), color::meta());
@@ -297,8 +297,8 @@ impl Editor {
         for i in 0..text_h {
             let Some((seg, role)) = vis.get(vtop + i) else { break };
             let st = match role {
-                LineRole::You => color::comment(),
-                LineRole::Agent => color::add(),
+                LineRole::You => ratatui::style::Style::new(),
+                LineRole::Agent => color::agent(),
                 LineRole::Reviewer => color::reviewer(),
                 LineRole::Fence => color::meta(),
             };

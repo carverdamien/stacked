@@ -1026,6 +1026,47 @@ fn what_you_said_last_may_be_written_again() {
 }
 
 #[test]
+fn a_turn_is_drawn_in_its_author_s_colour_what_they_said_in_the_terminal_s() {
+    use ratatui::style::{Color, Modifier};
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Enter]);
+    save(&mut app, "why so loud?");
+    let n = notes_of(&db, "s", 0).remove(0);
+    Db::edit(&db, |d| {
+        d.set_note(Note {
+            text: append_turn(&n.text, Role::Agent, "It is a shout.", Some("answer")),
+            ..n.clone()
+        })
+    })
+    .unwrap();
+    app.refresh();
+    let mut buf = Buffer::empty(Rect::new(0, 0, 120, 30));
+    app.draw(&mut buf);
+    let screen = (0..buf.area.height)
+        .map(|y| (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect::<String>())
+        .collect::<Vec<_>>()
+        .join("\n");
+    // Each turn has a bar at its left and its author's name, in the
+    // author's colour, the name bold; what they said is in the terminal's
+    // own colour, as code never is.
+    for (who, said, colour) in [("you", "why so loud?", 172), ("agent", "It is a shout.", 134)] {
+        let (x, y) = at(&screen, &format!("▎ {who}:"));
+        assert_eq!(buf[(x, y)].fg, Color::Indexed(colour), "{who}'s bar:\n{screen}");
+        let name = &buf[(x + 2, y)];
+        assert!(name.fg == Color::Indexed(colour) && name.modifier.contains(Modifier::BOLD), "{who}'s name: {name:?}");
+        let (x, y) = at(&screen, &format!("▎   {said}"));
+        assert_eq!(buf[(x, y)].fg, Color::Indexed(colour), "the bar of what {who} said");
+        assert_eq!(buf[(x + 4, y)].fg, Color::Reset, "what {who} said");
+    }
+    // Lines a patch adds are green, as ever.
+    let (x, y) = at(&screen, "+TWO");
+    assert_eq!(buf[(x, y)].fg, Color::Green);
+}
+
+#[test]
 fn esc_asks_what_to_do_with_a_comment_unless_nothing_would_be_done() {
     let (_tmp, db, _src) = setup();
     let mut app = open(&db).unwrap();
@@ -1056,12 +1097,12 @@ fn esc_asks_what_to_do_with_a_comment_unless_nothing_would_be_done() {
     })
     .unwrap();
     app.refresh();
-    down_to(&mut app, "     agent:");
+    down_to(&mut app, "     ▎ agent:");
     choose_as(&mut app, "Edit the agent's reply", "here");
     keys(&mut app, &[KeyCode::Esc]);
     assert_eq!(app.mode, Mode::Normal);
     keys(&mut app, &[KeyCode::Home]);
-    down_to(&mut app, "     agent:");
+    down_to(&mut app, "     ▎ agent:");
     choose_as(&mut app, "Edit the agent's reply", "here");
     typed(&mut app, " Loudly.");
     keys(&mut app, &[KeyCode::Esc]);
@@ -1471,7 +1512,7 @@ fn any_turn_is_written_again_and_the_conversation_rewound() {
     app.refresh();
     // On the agent's turn, the menu writes it again, or rewinds the
     // conversation from your comment above it.
-    down_to(&mut app, "     agent:");
+    down_to(&mut app, "     ▎ agent:");
     keys(&mut app, &[KeyCode::Char(' ')]);
     let labels: Vec<String> = items(&app).into_iter().map(|(l, _)| l).collect();
     assert_eq!(labels[..3], ["Edit the agent's reply", "Reply", "Rewind the conversation from your comment"], "{labels:?}");
@@ -1537,7 +1578,7 @@ fn any_turn_is_written_again_and_the_conversation_rewound() {
     .unwrap();
     app.refresh();
     keys(&mut app, &[KeyCode::Home]);
-    down_to(&mut app, "       Because.");
+    down_to(&mut app, "     ▎   Because.");
     // In $EDITOR, from your reply above, the third turn.
     let rewind = stacked::tui::Target::Rewind { change: n.change.clone(), id: n.id.clone(), from: 2 };
     assert_eq!(choose_as(&mut app, "Rewind the conversation from your reply", "in $EDITOR"), Effect::EditComment(rewind));
@@ -1552,7 +1593,7 @@ fn any_turn_is_written_again_and_the_conversation_rewound() {
     assert_eq!(said, ["why so very loud?", "It shouts.", "# Why here?\nAnd not there?"]);
     // Your last word, written again, is Edit your reply's: no rewind there.
     keys(&mut app, &[KeyCode::Home]);
-    down_to(&mut app, "       And not there?");
+    down_to(&mut app, "     ▎   And not there?");
     keys(&mut app, &[KeyCode::Char(' ')]);
     assert!(!items(&app).iter().any(|(l, _)| l.starts_with("Rewind")), "{:?}", items(&app));
     keys(&mut app, &[KeyCode::Esc]);

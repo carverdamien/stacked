@@ -199,6 +199,13 @@ is done. While the agent writes, only what it writes is drawn again.
 
 ## Writing comments
 
+A comment shows under what it is on: `└ comment:` (or `└ agent's comment:`,
+`└ ann's comment:`), in the colour of who opened it, then each turn of its
+thread, a bar at its left and its author's name in the author's colour
+(yours amber, the agent's violet, a reviewer's blue), and what they said in
+the terminal's own colour, so that no comment reads as code. The colours
+are settings (`[colors]`, below).
+
 Comments are written where they will show, in an editor inline: a comment
 on the stack under the left pane's header, on a patch under its title in
 the left pane, on a line under the line, a reply under its comment, in the
@@ -689,6 +696,21 @@ settings:
   `reading`, to start reading; `patches` and `comments`, the panes shown at
   the start; `stream_lines`, the agent's lines under a comment; and
   `split_width`, the columns two sides need.
+- `[colors]`: what paints each part of the screen, as git writes a colour
+  (`git config color.diff.new "green bold"`): a foreground, then a
+  background, each a name (`black`, `red`, `green`, `yellow`, `blue`,
+  `magenta`, `cyan`, `white`, any of these after `bright`, `default`,
+  `normal`), a number from 0 to 255, or `#rrggbb`; and any of `bold`, `dim`,
+  `italic`, `ul`, `blink`, `reverse`, `strike`. `added` (`green`), `removed`
+  (`red`), `hunk` (`magenta`), `file` (`cyan bold`: a file's name, the
+  titles of boxes, the history's records), `meta` (`blue`: index lines,
+  borders), `header` (`cyan bold`: each pane's first row); `you` (`172`),
+  `agent` (`134`) and `reviewer` (`32`): the comments and turns of each,
+  their bar and name; `note` (`yellow`: what a menu says under its items, the
+  tour's box, the comment editor's frame, a run going); `bar` (`brightwhite
+  blue`), `warn` (`black yellow`: the top bar when the stack cannot change)
+  and `status` (`black brightwhite`: the bottom line). `stacked config
+  colors.you 208` sets one.
 - `[keys]`: for each thing a key does (`up`, `down`, `left`, `right`,
   `page_up`, `page_down`, `home`, `end`, `enter`, `menu`, `help`, `back`,
   `view`, `read`, `quit`), its keys: `down = ["down", "j"]`, `menu = "m"`.
@@ -728,7 +750,7 @@ or base commit is not there (the database copied to another machine, or
 the repository moved), cannot be checked, and so is read-only: comments can
 still be added, Phabricator pulled, the patches read and exported, but
 nothing changes the stack and the agent is asked nothing. The editor's bar
-says why, in yellow. `stacked base NAME REV`, from the repository, gives it
+says why, in yellow (`colors.warn`). `stacked base NAME REV`, from the repository, gives it
 a base it applies to, and it can change again. `stacked check` says, for
 each stack, whether it applies.
 

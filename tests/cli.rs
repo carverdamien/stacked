@@ -1376,6 +1376,12 @@ fn one_setting_is_read_written_and_taken_out() {
     // All of them, as before.
     let (fine, out, _) = config(&[]);
     assert!(fine && out.contains("editor = \"hx\"") && out.contains("down = [\"down\", \"j\"]"), "{out}");
+    assert!(out.contains("\n[colors]\n") && out.contains("\nyou = \"172\"\n"), "{out}");
+    // A colour, as git writes one; refused if it is not one.
+    assert!(config(&["colors.you", "208 bold"]).0);
+    assert_eq!(config(&["colors.you"]).1, "208 bold\n");
+    let (fine, _, err) = config(&["colors.agent", "orangeish"]);
+    assert!(!fine && err.contains("colors.agent: \"orangeish\" is not a colour"), "{err}");
 }
 
 #[test]

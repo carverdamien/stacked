@@ -51,9 +51,14 @@ pub struct Row {
     pub key: Option<String>,
     /// The comment's id, on its rows.
     pub note: Option<String>,
+    /// Who wrote it: its comment's opener on its head, the turn's author on
+    /// a turn's rows.
     pub by: Option<By>,
     /// The first row of a comment.
     pub head: bool,
+    /// The row naming who said a turn of a comment's thread, over what they
+    /// said.
+    pub who: bool,
     /// The turn of its comment's thread a row shows, of all its turns
     /// (those deleted too), from 0.
     pub turn: Option<usize>,
@@ -148,6 +153,11 @@ pub fn by_of(n: &Note) -> By {
     }
 }
 
+/// What a turn of a comment's thread has at its left, in its author's
+/// colour: what they said is in the terminal's own, so that no comment
+/// reads as code.
+pub const BAR: char = '▎';
+
 /// The rows of a comment, its turns folded to `width`, what `deco` says of
 /// it on its first line and under it.
 pub fn comment_rows(n: &Note, width: usize, deco: &Deco) -> Vec<Row> {
@@ -192,20 +202,29 @@ pub fn comment_rows(n: &Note, width: usize, deco: &Deco) -> Vec<Row> {
     }
     let hidden = deco.writing.get(&n.id).copied().unwrap_or((usize::MAX, usize::MAX));
     for (i, t) in all_turns(&n.text).into_iter().enumerate() {
-        let of = |r: Row| Row { turn: Some(i), ..r };
         // Deleted the first way: shown nowhere. Written in the editor: shown
         // there only.
         if t.deleted || (hidden.0..hidden.1).contains(&i) {
             continue;
         }
-        let who = match t.role {
-            Role::You => "you",
-            Role::Agent => "agent",
-            Role::Reviewer => t.tag.as_deref().unwrap_or("reviewer"),
+        let (name, author) = match t.role {
+            Role::You => ("you", By::You),
+            Role::Agent => ("agent", By::Agent),
+            Role::Reviewer => (t.tag.as_deref().unwrap_or("reviewer"), By::Reviewer),
         };
-        out.push(of(row(Kind::Comment, format!("     {who}:"), false)));
-        for line in wrap(&t.body, width.saturating_sub(7)) {
-            out.push(of(row(Kind::Comment, format!("       {line}"), false)));
+        // Each turn its author's: their name, then what they said, the bar
+        // left of both.
+        let of = |r: Row| Row {
+            turn: Some(i),
+            by: Some(author.clone()),
+            ..r
+        };
+        out.push(Row {
+            who: true,
+            ..of(row(Kind::Comment, format!("     {BAR} {name}:"), false))
+        });
+        for line in wrap(&t.body, width.saturating_sub(9)) {
+            out.push(of(row(Kind::Comment, format!("     {BAR}   {line}"), false)));
         }
     }
     for line in deco.streams.get(&n.id).into_iter().flatten() {

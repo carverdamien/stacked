@@ -28,11 +28,11 @@ use crate::ask::{self, Scope};
 use crate::db::{Db, Note, Patch, Result, RunState, Stack, Way, err, local_time, short_id, stack_change};
 use crate::editor::{Editor, Op};
 use crate::ops::{self, edit_text, strip_comments};
-use crate::paint::{color, fit, put, window, wrap};
+use crate::paint::{color, fit, put, put_parts, window, wrap};
 use crate::panes::{Compact, Panes, Scroll, pane_streams, spans};
 use crate::reading::{Blocks, Finder, Reading, Target as Block};
 use crate::review;
-use crate::rows::{By, Deco, Kind, Row, by_of, patch_rows, split_lines, split_row, stack_rows};
+use crate::rows::{BAR, By, Deco, Kind, Row, by_of, patch_rows, split_lines, split_row, stack_rows};
 use crate::thread::{
     REWIND_SAYS, Role, Turn, all_turns, append_turn, edit_turn, last_mine, last_mine_at, last_reply_way, last_role, replace_last_turn,
     rewind_from, rewound_lines, thread_turns, without_written,
@@ -45,10 +45,36 @@ pub use reviewing::Reviewing;
 
 fn by_style(by: Option<&By>) -> Style {
     match by {
-        Some(By::Agent) => color::add(),
+        Some(By::Agent) => color::agent(),
         Some(By::Reviewer) => color::reviewer(),
-        _ => color::comment(),
+        _ => color::you(),
     }
+}
+
+/// Row `row` as the parts it is drawn in, each in its style: a turn of a
+/// comment's thread has its bar in its author's colour, their name bold in
+/// it, and what they said in the terminal's own colour; any other row is
+/// one part.
+pub(crate) fn row_parts(row: &Row, selected: bool) -> Vec<(String, Style)> {
+    let st = row_style(row, selected);
+    let bar = row.text.find(BAR).filter(|_| row.kind == Kind::Comment && row.turn.is_some());
+    let Some(at) = bar else {
+        return vec![(row.text.clone(), st)];
+    };
+    let (left, said) = row.text.split_at(at + BAR.len_utf8());
+    let said_st = if row.who {
+        st.add_modifier(Modifier::BOLD)
+    } else {
+        let mut plain = Style::new();
+        if row.read {
+            plain = plain.add_modifier(Modifier::DIM);
+        }
+        if selected {
+            plain = plain.add_modifier(Modifier::REVERSED);
+        }
+        plain
+    };
+    vec![(left.to_string(), st), (said.to_string(), said_st)]
 }
 
 fn row_style(row: &Row, selected: bool) -> Style {
@@ -4641,7 +4667,7 @@ impl App {
             }
         }
         for (k, line) in note.iter().enumerate() {
-            put(buf, area, x + 2, y + 2 + rows + k, bw - 4, line, color::comment());
+            put(buf, area, x + 2, y + 2 + rows + k, bw - 4, line, color::note());
         }
     }
 
@@ -4991,7 +5017,7 @@ impl App {
             x0 += MARGIN_W;
         }
         let tw = w.saturating_sub(x0 - x);
-        put(buf, area, x0, y, tw, &fit(&row.text, tw), row_style(row, selected));
+        put_parts(buf, area, x0, y, tw, &row_parts(row, selected));
         self.spot(area, (x, y, w), Spot::Row(i));
     }
 
@@ -5072,7 +5098,7 @@ impl App {
         let (rule_y, rows_y) = if above { (y0 + rows.len(), y0) } else { (y0, y0 + 1) };
         put(buf, area, 0, rule_y, w, &rule, color::meta());
         for (k, row) in rows.iter().enumerate() {
-            put(buf, area, 0, rows_y + k, w, &fit(&row.text, w), row_style(row, false));
+            put_parts(buf, area, 0, rows_y + k, w, &row_parts(row, false));
         }
     }
 
@@ -5421,7 +5447,7 @@ impl App {
                 let st = match r.state {
                     RunState::Failed => color::del(),
                     RunState::Done => Style::new(),
-                    RunState::Started => color::comment(),
+                    RunState::Started => color::note(),
                 };
                 (
                     format!(

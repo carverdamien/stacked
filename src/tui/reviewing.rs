@@ -202,7 +202,7 @@ impl App {
     /// What the part the cursor is on would be, `w` wide: the stack diff of
     /// the change, or the comment in its place; and the line to show
     /// first.
-    fn review_view(&self, line: Option<&Line>, w: usize) -> (String, Vec<(String, Style)>, usize) {
+    fn review_view(&self, line: Option<&Line>, w: usize) -> (String, Vec<Vec<(String, Style)>>, usize) {
         let Some((rv, line)) = self.reviewing.as_ref().zip(line) else { return (String::new(), vec![], 0) };
         let Some((r, h)) = self.work(&rv.run) else { return (String::new(), vec![], 0) };
         match line.part {
@@ -217,7 +217,7 @@ impl App {
                     if line.entry == Some(k) {
                         first = lines.len();
                     }
-                    lines.extend(fold(&text, w.saturating_sub(1), 6).into_iter().map(|l| (l, st)));
+                    lines.extend(fold(&text, w.saturating_sub(1), 6).into_iter().map(|l| vec![(l, st)]));
                 }
                 let of = h.stack.as_ref().map_or(String::new(), |c| c.of.clone());
                 (format!(" the change of {of}: what accepting it does to the stack"), lines, first)
@@ -254,7 +254,7 @@ impl App {
                     patch_rows(p, &[&n], w, &deco)
                 };
                 let head = rows.iter().position(|row| row.head && row.note.as_deref() == Some(&n.id)).unwrap_or(0);
-                let lines = rows.iter().map(|row| (row.text.clone(), row_style(row, false))).collect();
+                let lines = rows.iter().map(|row| row_parts(row, false)).collect();
                 (said, lines, head)
             }
         }
@@ -311,8 +311,8 @@ impl App {
         if let Some(r) = &mut self.reviewing {
             r.scroll = scroll;
         }
-        for (y, (l, st)) in view.iter().skip(scroll).take(rows).enumerate() {
-            put(buf, main, 0, y + 1, main_w, &fit(l, main_w), *st);
+        for (y, parts) in view.iter().skip(scroll).take(rows).enumerate() {
+            put_parts(buf, main, 0, y + 1, main_w, parts);
         }
     }
 

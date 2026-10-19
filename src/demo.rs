@@ -1135,7 +1135,7 @@ impl Tour {
             cursor = app.draw(&mut screen);
             buf.merge(&screen);
         }
-        window(buf, area, 0, h - ph, w, ph, &title, color::comment());
+        window(buf, area, 0, h - ph, w, ph, &title, color::note());
         let room = ph.saturating_sub(2);
         // The picked section in sight.
         let skip = picked.map_or(0, |p| (p + 1).saturating_sub(room));

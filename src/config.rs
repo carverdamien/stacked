@@ -10,9 +10,11 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
+use ratatui::style::Style;
 use serde::Deserialize;
 
 use crate::keys::{Key, Keymap};
+use crate::paint::{Paint, parse_color};
 
 /// How the code is drawn at the start.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -104,6 +106,40 @@ impl Default for View {
     }
 }
 
+/// What paints each part of the screen: for each, the colour as git writes
+/// one, and the style it is.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Colors {
+    specs: Vec<String>,
+    styles: Vec<Style>,
+}
+
+impl Default for Colors {
+    fn default() -> Colors {
+        let specs: Vec<String> = Paint::ALL.iter().map(|p| p.default_spec().to_string()).collect();
+        let styles = specs.iter().map(|s| parse_color(s).unwrap_or_default()).collect();
+        Colors { specs, styles }
+    }
+}
+
+impl Colors {
+    pub fn style(&self, p: Paint) -> Style {
+        self.styles[p as usize]
+    }
+
+    /// As the settings write it.
+    pub fn spec(&self, p: Paint) -> &str {
+        &self.specs[p as usize]
+    }
+
+    /// `p` made `spec`, if it is a colour.
+    fn set(&mut self, p: Paint, spec: &str) -> Result<(), String> {
+        self.styles[p as usize] = parse_color(spec)?;
+        self.specs[p as usize] = spec.to_string();
+        Ok(())
+    }
+}
+
 /// The tour, `stacked demo`.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Demo {
@@ -121,6 +157,7 @@ pub struct Config {
     pub agent: Agent,
     pub reviews: Reviews,
     pub view: View,
+    pub colors: Colors,
     pub keys: Keymap,
     pub demo: Demo,
 }
@@ -139,6 +176,7 @@ impl Default for Config {
                 trailer: "Differential Revision".into(),
             },
             view: View::default(),
+            colors: Colors::default(),
             keys: Keymap::default(),
             demo: Demo::default(),
         }
@@ -155,6 +193,7 @@ struct Written {
     agent: WrittenAgent,
     reviews: WrittenReviews,
     view: WrittenView,
+    colors: BTreeMap<String, String>,
     keys: BTreeMap<String, OneOrMore>,
     demo: WrittenDemo,
 }
@@ -265,6 +304,17 @@ impl Config {
                 wrong.push(format!("view.split_width: {n} is too narrow for two sides"));
             } else {
                 c.view.split_width = n;
+            }
+        }
+        for (name, spec) in &w.colors {
+            // A colour there is not, as any setting there is not: the file
+            // is not used.
+            let Some(p) = Paint::named(name) else {
+                let all: Vec<&str> = Paint::ALL.iter().map(|p| p.name()).collect();
+                return Err(format!("unknown colour `{name}` in [colors]: the colours are {}", all.join(", ")));
+            };
+            if let Err(e) = c.colors.set(p, spec) {
+                wrong.push(format!("colors.{name}: {e}; it stays {:?}", p.default_spec()));
             }
         }
         let named: Vec<(String, Vec<String>)> = w
@@ -438,6 +488,15 @@ impl Config {
         out.push_str("# The columns the middle needs for two sides.\n");
         out.push_str(&format!("split_width = {}\n", v.split_width));
         out.push_str(
+            "\n[colors]\n# What paints each part of the screen, as git writes a colour: a foreground,\n\
+             # then a background, each a name (black, red, green, yellow, blue, magenta,\n\
+             # cyan, white, any of these after bright, default, normal), a number from 0 to\n\
+             # 255 or #rrggbb; and any of bold, dim, italic, ul, blink, reverse, strike.\n",
+        );
+        for p in Paint::ALL {
+            out.push_str(&format!("# {}\n{} = {}\n", p.what(), p.name(), q(self.colors.spec(p))));
+        }
+        out.push_str(
             "\n[keys]\n# The keys for each thing a key does, outside the comment editor (which reads\n\
              # what is typed): up, down, left, right, pageup, pagedown, home, end, enter,\n\
              # space, esc, tab, f1..f24, a character, any after ctrl- or alt-. Nothing else\n\
@@ -483,6 +542,8 @@ enum Kind {
     Flag,
     Count,
     List,
+    /// A colour, as git writes one.
+    Color,
 }
 
 /// Every setting there is, as the file names it, and what it holds; the
@@ -512,6 +573,9 @@ fn kind_of(key: &str) -> Result<Kind, String> {
     if let Some((_, k)) = SETTINGS.iter().find(|(name, _)| *name == key) {
         return Ok(*k);
     }
+    if key.strip_prefix("colors.").and_then(Paint::named).is_some() {
+        return Ok(Kind::Color);
+    }
     match key.strip_prefix("keys.") {
         Some(k) if Key::ALL.iter().any(|key| key.name() == k) => Ok(Kind::List),
         _ => Err(format!("{key} is not a setting: `stacked config` prints them all")),
@@ -535,6 +599,11 @@ fn literal(key: &str, kind: Kind, values: &[String]) -> Result<String, String> {
             Err(_) => return Err(format!("{key} is a number, not {:?}", values[0])),
         },
         Kind::List => toml::Value::Array(values.iter().map(|v| toml::Value::String(v.clone())).collect()).to_string(),
+        Kind::Color => {
+            let v = one()?;
+            parse_color(v).map_err(|e| format!("{key}: {e}"))?;
+            toml::Value::String(v.to_string()).to_string()
+        }
     })
 }
 
@@ -566,6 +635,10 @@ pub fn value_of(c: &Config, key: &str) -> Result<Vec<String>, String> {
         "view.stream_lines" => vec![c.view.stream_lines.to_string()],
         "view.split_width" => vec![c.view.split_width.to_string()],
         "demo.seen" => vec![c.demo.seen.to_string()],
+        k if k.starts_with("colors.") => match Paint::named(&k["colors.".len()..]) {
+            Some(p) => vec![c.colors.spec(p).to_string()],
+            None => vec![],
+        },
         _ => {
             let name = key.trim_start_matches("keys.");
             let k = Key::ALL.iter().find(|k| k.name() == name).copied().unwrap_or(Key::Quit);
@@ -879,9 +952,36 @@ mod tests {
     }
 
     #[test]
+    fn colours_are_set_as_git_writes_them() {
+        use ratatui::style::{Color, Modifier};
+        let (c, wrong) = Config::parse("[colors]\nyou = \"208 bold\"\nagent = \"purpleish\"\n").unwrap();
+        assert_eq!(c.colors.style(Paint::You), Style::new().fg(Color::Indexed(208)).add_modifier(Modifier::BOLD));
+        assert_eq!(c.colors.spec(Paint::Agent), "134", "what is wrong keeps its default");
+        assert_eq!(c.colors.spec(Paint::Added), "green", "what is not set too");
+        assert_eq!(wrong.len(), 1, "{wrong:?}");
+        assert!(wrong[0].starts_with("colors.agent: \"purpleish\" is not a colour") && wrong[0].ends_with("; it stays \"134\""), "{wrong:?}");
+        // A colour there is not, as any setting there is not: the file is
+        // not used.
+        let e = Config::parse("[colors]\ncomment = \"red\"\n").unwrap_err();
+        assert!(e.contains("unknown colour `comment`") && e.contains("you, agent, reviewer"), "{e}");
+        // Written, read and refused as any setting is.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("settings.toml");
+        let vals = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        set(&path, "colors.added", &vals(&["brightgreen"])).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "[colors]\nadded = \"brightgreen\"\n");
+        assert_eq!(value_of(&Config::load(&path).0, "colors.added"), Ok(vec!["brightgreen".to_string()]));
+        assert_eq!(value_of(&Config::default(), "colors.you"), Ok(vec!["172".to_string()]));
+        let e = set(&path, "colors.added", &vals(&["greenish"])).unwrap_err();
+        assert!(e.contains("colors.added: \"greenish\" is not a colour"), "{e}");
+        assert!(set(&path, "colors.comment", &vals(&["red"])).unwrap_err().contains("not a setting"));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "[colors]\nadded = \"brightgreen\"\n");
+    }
+
+    #[test]
     fn what_is_printed_reads_back_the_same() {
         let (c, wrong) = Config::parse(
-            "editor = \"vim\"\n[agent]\nargs = [\"--verbose\"]\n[view]\nsplit_width = 80\n[keys]\ndown = [\"down\", \"j\"]\n",
+            "editor = \"vim\"\n[agent]\nargs = [\"--verbose\"]\n[view]\nsplit_width = 80\n[colors]\nyou = \"208 bold\"\n[keys]\ndown = [\"down\", \"j\"]\n",
         )
         .unwrap();
         assert!(wrong.is_empty(), "{wrong:?}");
