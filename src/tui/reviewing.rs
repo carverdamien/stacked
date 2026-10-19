@@ -65,13 +65,13 @@ fn operation(d: &Diffed) -> Option<(String, Style)> {
 }
 
 /// A comment's first words.
-fn first_words(text: &str) -> String {
+pub(super) fn first_words(text: &str) -> String {
     thread_turns(text).first().map(|t| t.body.lines().next().unwrap_or("").to_string()).unwrap_or_default()
 }
 
 impl App {
     /// What run `run` brought back.
-    fn work(&self, run: &str) -> Option<(&Run, &Work)> {
+    pub(super) fn work(&self, run: &str) -> Option<(&Run, &Work)> {
         let r = self.db.run(run)?;
         Some((r, r.held.as_ref()?))
     }
@@ -519,25 +519,5 @@ impl App {
     /// first: their runs.
     pub(super) fn queue(&self) -> Vec<String> {
         crate::held::queue(&self.db, &self.stack).into_iter().map(|r| r.id.clone()).collect()
-    }
-
-    /// What the banner says: how much landed work waits for review, and
-    /// which the next is.
-    pub(super) fn banner(&self) -> Option<String> {
-        let q = self.queue();
-        let (r, h) = self.work(q.first()?)?;
-        let n = q.len();
-        let head = if n == 1 { "1 landed ask waits for your review".to_string() } else { format!("{n} landed asks wait for your review") };
-        let asked = if r.request.is_empty() { String::new() } else { format!(", asked \"{}\"", r.request) };
-        Some(format!(" ⟳ {head} · the next: {}{asked}", h.said()))
-    }
-
-    /// The banner's menu: each landed ask, to review.
-    pub(super) fn banner_items(&self, items: &mut Vec<Item>) {
-        for id in self.queue() {
-            let Some((r, h)) = self.work(&id) else { continue };
-            let asked = if r.request.is_empty() { String::new() } else { format!(", asked \"{}\"", short(&r.request, 40)) };
-            items.push(Item::new(format!("Review {}{asked}", h.said()), Action::Review(id.clone(), None)));
-        }
     }
 }

@@ -8,7 +8,7 @@ use stacked::db::{Db, Error, Note, Patch, Record, Result, Way, err, local_time a
 use stacked::mbox::{Draft, base_commit, format_mbox, parse_mail, parse_mbox};
 use stacked::ops;
 use stacked::thread::{Role, all_turns, append_turn, edit_turn, replace_last_turn, rewind_from};
-use stacked::tui::{Busy, Show, note_state, shows};
+use stacked::tui::{Busy, Show, note_state, shows, where_on};
 use stacked::view::{MSG_PATH, find_line, fold, note_lines, title_key};
 use stacked::{git, review, tree};
 
@@ -611,27 +611,6 @@ fn line_of(p: &Patch, spec: &str) -> Result<String> {
             .ok_or_else(|| Error(format!("{file} has no line {}{text:?} in this patch", side.to_string().trim())));
     }
     err(format!("{spec:?} names none of this patch's files: FILE:LINE, as a.txt:+TWO"))
-}
-
-/// Where comment `n` of stack `name` is, said.
-fn where_on(db: &Db, name: &str, n: &Note) -> String {
-    if n.about.is_some() {
-        return format!("the history, {}", n.preview);
-    }
-    if n.on_stack() {
-        return "the stack".into();
-    }
-    let at = db
-        .stack(name)
-        .ok()
-        .and_then(|s| s.patches.iter().position(|id| db.patch(id).change == n.change))
-        .map_or("a patch no longer in the stack".to_string(), |i| format!("patch {}", i + 1));
-    let p = db.versions(&n.change).last().map(|p| (*p).clone());
-    if n.file == MSG_PATH && p.is_some_and(|p| title_key(&p) == n.line) {
-        format!("{at}, as a whole")
-    } else {
-        format!("{at} · {}: {}", n.file, n.preview)
-    }
 }
 
 fn print_note(db: &Db, name: &str, n: &Note, busy: &Busy) {

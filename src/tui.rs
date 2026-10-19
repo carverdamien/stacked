@@ -40,6 +40,8 @@ use crate::thread::{
 use crate::tree;
 use crate::view::{MSG_PATH, note_lines, title_key};
 
+pub mod banner;
+pub use banner::BannerLine;
 pub mod reviewing;
 pub use reviewing::Reviewing;
 pub mod searching;
@@ -219,8 +221,10 @@ pub enum Spot {
     Pick(usize),
     HistRow(usize),
     Box,
-    /// The banner saying what landed work waits for review.
+    /// The banner saying what the agent's work on the stack is; line `i`
+    /// of it, open.
     Banner,
+    BannerLine(usize),
     /// Line `i` of a review's list.
     ReviewLine(usize),
     /// Match `i` of the search's; where it looks, its button.
@@ -872,9 +876,13 @@ pub struct App {
     pub sel: usize,
     /// The left pane's cursor is on its header, the stack's place.
     pub on_stack: bool,
-    /// The cursor is on the banner saying what landed work waits for
-    /// review, above the panes.
+    /// The cursor is on the banner saying what the agent's work on the
+    /// stack is, above the panes: open, a line for each, the line
+    /// `banner_sel` picked, from `banner_top` on shown. Where the cursor was
+    /// is as it was, to go back to.
     pub on_banner: bool,
+    pub banner_sel: usize,
+    banner_top: usize,
     /// The review of what the agent brought back, being made.
     pub reviewing: Option<Reviewing>,
     /// The search open, and the searches made before, newest first: kept
@@ -1089,6 +1097,8 @@ impl App {
             sel: 0,
             on_stack: false,
             on_banner: false,
+            banner_sel: 0,
+            banner_top: 0,
             reviewing: None,
             searching: None,
             searches: Vec::new(),
@@ -1682,15 +1692,19 @@ impl App {
 
     /// Whether the cursor is on `spot` already.
     fn on(&self, spot: Spot) -> bool {
+        // On the banner, the cursor is in none of the panes.
+        let panes = !self.on_banner;
         match spot {
-            Spot::Patch(None) => self.focus == Focus::List && self.on_stack,
-            Spot::Patch(Some(i)) => self.focus == Focus::List && !self.on_stack && self.sel == i,
-            Spot::Row(i) => self.focus == Focus::Diff && self.cursor == i,
-            Spot::NotesHead => self.focus == Focus::Notes && self.notes_head,
-            Spot::Note(i) => self.focus == Focus::Notes && !self.notes_head && self.note_sel == i,
+            Spot::Patch(None) => panes && self.focus == Focus::List && self.on_stack,
+            Spot::Patch(Some(i)) => panes && self.focus == Focus::List && !self.on_stack && self.sel == i,
+            Spot::Row(i) => panes && self.focus == Focus::Diff && self.cursor == i,
+            Spot::NotesHead => panes && self.focus == Focus::Notes && self.notes_head,
+            Spot::Note(i) => panes && self.focus == Focus::Notes && !self.notes_head && self.note_sel == i,
             Spot::Pick(i) => self.pick == i && (self.screen != Screen::History || self.hist_focus == HistFocus::List),
             Spot::HistRow(i) => self.hist_focus == HistFocus::Diff && self.hist_cursor == i,
-            Spot::Banner => self.on_banner,
+            // Its own line: what it does is its lines'.
+            Spot::Banner => false,
+            Spot::BannerLine(i) => self.on_banner && self.banner_sel == i,
             Spot::ReviewLine(i) => self.reviewing.as_ref().is_some_and(|r| r.sel == i && !r.in_main),
             Spot::Found(i) => self.searching.as_ref().is_some_and(|s| s.sel == i),
             Spot::Item(_) | Spot::Choice(..) | Spot::Box | Spot::SearchScope => false,
@@ -1792,7 +1806,10 @@ impl App {
                     *to = at;
                 }
             }
-            Mode::Normal => {
+            // Not onto the banner, nor off it: it opens and closes under a
+            // key or a click, not under the mouse going by, which would move
+            // what is under the mouse.
+            Mode::Normal if matches!(spot, Spot::Banner | Spot::BannerLine(_)) == self.on_banner => {
                 self.pick_spot(spot);
             }
             _ => {}
@@ -1802,10 +1819,15 @@ impl App {
     /// `spot` picked, as the arrows would: whether it is one to pick.
     fn pick_spot(&mut self, spot: Spot) -> bool {
         if !matches!(spot, Spot::Item(_) | Spot::Choice(..) | Spot::Box) {
-            self.on_banner = spot == Spot::Banner;
+            let banner = matches!(spot, Spot::Banner | Spot::BannerLine(_));
+            if banner && !self.on_banner {
+                self.open_banner(0);
+            }
+            self.on_banner = banner;
         }
         match spot {
             Spot::Banner => {}
+            Spot::BannerLine(i) => self.banner_sel = i,
             Spot::ReviewLine(i) => {
                 if let Some(r) = &mut self.reviewing {
                     r.sel = i;
@@ -2092,30 +2114,15 @@ impl App {
     }
 
     fn main_key(&mut self, k: KeyEvent) -> Effect {
+        // On the banner, open: its keys, whatever pane the cursor was in.
+        if self.on_banner {
+            return self.banner_key(k);
+        }
         if self.focus == Focus::Diff
             && self.compact_drawn()
             && let Some(e) = self.compact_key(k)
         {
             return e;
-        }
-        // On the banner: Enter reviews the first landed, ↓ goes back to the
-        // stack's header.
-        if self.on_banner {
-            match k.code {
-                KeyCode::Enter => {
-                    if let Some(id) = self.queue().first().cloned() {
-                        self.open_review(&id, None);
-                    }
-                }
-                KeyCode::Down => {
-                    self.on_banner = false;
-                    self.list = true;
-                    self.focus = Focus::List;
-                    self.on_stack = true;
-                }
-                _ => {}
-            }
-            return Effect::None;
         }
         let n = self.patch_count();
         let last = n.saturating_sub(1);
@@ -2129,10 +2136,17 @@ impl App {
                     }
                 };
             }
-            // Esc goes back up: from a patch to the stack's header, from there
-            // to the banner, if there is one.
+            // Esc goes to the banner first, from any pane, when there is one:
+            // the agent's work, open; Esc there comes back here. Without one,
+            // it goes back up: from the comments to the middle, from there to
+            // the patches, from a patch to the stack's header.
+            (_, KeyCode::Esc) if !self.banner_lines().is_empty() => self.open_banner(0),
             (Focus::List, KeyCode::Esc) if !self.on_stack => self.on_stack = true,
-            (Focus::List, KeyCode::Esc) | (Focus::List, KeyCode::Up) if self.on_stack && self.banner().is_some() => self.on_banner = true,
+            // Up from the stack's header, the banner's last line, just above.
+            (Focus::List, KeyCode::Up) if self.on_stack && !self.banner_lines().is_empty() => {
+                let last = self.banner_lines().len() - 1;
+                self.open_banner(last);
+            }
             (Focus::List, KeyCode::Down) if self.on_stack => {
                 if n > 0 {
                     self.on_stack = false;
@@ -2305,7 +2319,12 @@ impl App {
     /// Whether the reading mode has the middle's keys: a patch is there,
     /// and the cursor is in it.
     pub fn reading_here(&self) -> bool {
-        self.reading && self.screen == Screen::Main && self.focus == Focus::Diff && !self.on_stack && self.patch_id().is_some()
+        self.reading
+            && self.screen == Screen::Main
+            && self.focus == Focus::Diff
+            && !self.on_stack
+            && !self.on_banner
+            && self.patch_id().is_some()
     }
 
     /// The current patch's key for its blocks.
@@ -2542,10 +2561,15 @@ impl App {
         match self.screen {
             Screen::Main if self.on_banner => {
                 out.push(
-                    "The banner says how much of the agent's work has landed and waits for your review: nothing of it is applied before you review it."
+                    "The banner says what the agent's work on this stack is, a line for each: what landed and waits for your review (nothing of it is applied before you review it), what the agent works on, and the comments that wait their turn."
                         .into(),
                 );
-                out.push("Press Enter to review the next one, the first landed; Space to pick one; ↓ to go to the stack.".into());
+                out.push(match self.banner_lines().get(self.banner_sel) {
+                    Some(BannerLine::Landed(_)) => "Press Enter to review this one.".to_string(),
+                    Some(BannerLine::Going(_)) => "Press Enter to go to the comment the agent works on.".into(),
+                    _ => "Press Enter to go to the comment that waits.".into(),
+                });
+                out.push("Press ↑↓ for another line, and ↓ past the last for the stack; Space to pick one to review; Esc to go back where you were.".into());
             }
             Screen::Review => {
                 out.push(
@@ -2605,6 +2629,9 @@ impl App {
                     _ => "here",
                 };
                 out.push(format!("Press Space for all that can be done {here}."));
+                if !self.banner_lines().is_empty() {
+                    out.push("Press Esc for the banner, open: the agent's work on this stack; Esc there comes back here.".into());
+                }
                 match self.focus {
                     Focus::List => out.push(
                         "Press ↑↓ for another patch, or the stack at the top; → to read it; ← to hide the patches."
@@ -4562,20 +4589,21 @@ impl App {
         }
         self.edit_box.set(None);
         self.spots.borrow_mut().clear();
-        // What landed work waits for review, under the top bar, on the main
-        // screen.
+        // The agent's work on the stack, under the top bar, on the main
+        // screen: open while the cursor is on it, a line for each, in as
+        // much as half the screen; the panes under it.
         let banner = (self.screen == Screen::Main && h > 4).then(|| self.banner()).flatten();
         if banner.is_none() {
             self.on_banner = false;
         }
-        let top = 1 + banner.is_some() as usize;
+        let lines = if self.on_banner { self.banner_lines() } else { Vec::new() };
+        let room = lines.len().min((h.saturating_sub(4) / 2).max(1));
+        let top = 1 + banner.is_some() as usize + room;
         self.body_h = h - top - 1;
         self.body_w = w;
         let body = Rect::new(area.x, area.y + top as u16, area.width, (h - top - 1) as u16);
         if let Some(text) = &banner {
-            let st = if self.on_banner { color::header().add_modifier(Modifier::REVERSED) } else { color::header() };
-            put(buf, area, 0, 1, w, &fit(text, w), st);
-            spot_in(&self.spots, area, (0, 1, w, 1), Spot::Banner);
+            self.draw_banner(buf, area, text, &lines, room);
         }
         let mut cursor = None;
         match self.screen {
@@ -4740,7 +4768,11 @@ impl App {
             Mode::Help { .. } => "any key: back, and that key".into(),
             Mode::Stream { .. } => "↑↓: scroll · esc: fold it".into(),
             Mode::Normal if self.screen == Screen::Main && self.on_banner => {
-                "enter: review the next · space: pick one · ↓: the stack · ?: what can I do here".into()
+                let enter = match self.banner_lines().get(self.banner_sel) {
+                    Some(BannerLine::Landed(_)) => "review it",
+                    _ => "go to its comment",
+                };
+                format!("↑↓ choose · enter: {enter} · space: pick one · esc: back where you were · ?: what can I do here")
             }
             Mode::Normal if self.screen == Screen::Search => {
                 "type what to look for · ←→: where · tab: the search before · ↑↓: pick · enter: go there · esc: back".into()
@@ -5073,7 +5105,8 @@ impl App {
         // Where a comment being written here goes: under its line, or the
         // comment it answers, which then shows.
         let anchor = self.editor_anchor();
-        let lit = |i: usize, app: &App| i == app.cursor && app.focus != Focus::List;
+        // Not while the cursor is on the banner: it comes back there.
+        let lit = |i: usize, app: &App| i == app.cursor && app.focus != Focus::List && !app.on_banner;
         // Each row drawn: the line of the pane it is on, and where it starts.
         let mut drawn: Vec<(usize, usize, usize)> = Vec::new();
         match layout {
@@ -5144,7 +5177,7 @@ impl App {
                 }
                 let scroll = self.compact.scroll;
                 for (y, (l, r)) in self.compact.lines(&p, h).into_iter().enumerate() {
-                    let on = y == self.compact.y && self.focus != Focus::List && anchor.is_none();
+                    let on = y == self.compact.y && self.focus != Focus::List && !self.on_banner && anchor.is_none();
                     if l.is_none() && r.is_none() {
                         continue;
                     }
@@ -5248,7 +5281,7 @@ impl App {
     /// top or the bottom, as it is above or below what the middle shows.
     /// The middle itself does not move.
     fn draw_preview(&self, buf: &mut Buffer, area: Rect, drawn: &[(usize, usize, usize)]) {
-        if self.focus != Focus::Notes || self.notes_head {
+        if self.focus != Focus::Notes || self.notes_head || self.on_banner {
             return;
         }
         let (w, h) = (area.width as usize, area.height as usize);
@@ -5322,13 +5355,14 @@ impl App {
             header += &format!(" · {to_read} to read");
         }
         let mut st = color::header();
-        if self.focus == Focus::Notes && self.notes_head {
+        if self.focus == Focus::Notes && self.notes_head && !self.on_banner {
             st = st.add_modifier(Modifier::REVERSED);
         }
         put(buf, area, 0, 0, w, &fit(&header, w), st);
         self.spot(area, (0, 0, w), Spot::NotesHead);
         // The one the middle's cursor is in, when the cursor is there.
         let lit = match self.focus {
+            _ if self.on_banner => None,
             Focus::Notes if !self.notes_head => Some(self.note_sel),
             Focus::Notes => None,
             _ => self.note_at_cursor(),
@@ -5734,6 +5768,28 @@ pub fn where_was(db: &Db, name: &str, m: &crate::db::Moved) -> String {
         .and_then(|s| s.patches.iter().position(|id| db.patch(id).change == m.change))
         .map_or("a patch".to_string(), |i| format!("patch {}", i + 1));
     format!("{at} · {}: {}", m.file, m.preview)
+}
+
+/// Where comment `n` of stack `name` is, in a line: on the history, the
+/// stack, a patch as a whole, or a line of a file of it.
+pub fn where_on(db: &Db, name: &str, n: &Note) -> String {
+    if n.about.is_some() {
+        return format!("the history, {}", n.preview);
+    }
+    if n.on_stack() {
+        return "the stack".into();
+    }
+    let at = db
+        .stack(name)
+        .ok()
+        .and_then(|s| s.patches.iter().position(|id| db.patch(id).change == n.change))
+        .map_or("a patch no longer in the stack".to_string(), |i| format!("patch {}", i + 1));
+    let p = db.versions(&n.change).last().map(|p| (*p).clone());
+    if n.file == MSG_PATH && p.is_some_and(|p| title_key(&p) == n.line) {
+        format!("{at}, as a whole")
+    } else {
+        format!("{at} · {}: {}", n.file, n.preview)
+    }
 }
 
 /// What a comment's first line says of where it stands: with claude,

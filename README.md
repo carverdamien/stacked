@@ -88,7 +88,7 @@ has 14 sections, the most useful first, and takes about fifteen minutes:
    Asked about patch 4 alone, the stand-in says that the fix needs more
    than that patch; accepting that answer moves your comment to the stack.
 4. Review what the agent did: its work waits, the banner says so, and Esc
-   goes up to the banner; Enter there opens the review, its change of the
+   opens the banner; Enter there opens the review, its change of the
    stack patch by patch and its reply, each accepted with Enter, then
    closed.
 5. Reply to the agent with a question, asked answer only, its answer
@@ -181,9 +181,11 @@ the help then names those:
 - `?` says what can be done where the cursor is, as `Press Enter to create a
   comment on this line.`, and where the arrows go. The next key closes it
   and does what it does, so the key it names can be pressed straight away.
-- Esc goes back: out of a menu, a list, a stream; and up, from the
-  comments to the middle, to the patches, to the stack's header, to the
-  banner of the agent's work waiting for review, when there is some.
+- Esc goes back: out of a menu, a list, a stream. In the panes, it goes to
+  the banner of the agent's work first, when there is one, from wherever
+  the cursor is; Esc there comes back where it was. Without a banner, it
+  goes up, from the comments to the middle, to the patches, to the stack's
+  header. In the comment editor, Esc asks what to do with the comment.
 - `1` cycles the views of the code, as in self-review: unified, side by
   side, and compact, the two sides each a pane of its own with no gaps,
   scrolled together or one alone (← → turn which, and past the old side or
@@ -555,13 +557,21 @@ before you take its reply. Enter on it takes the reply into its thread at
 once, accepted, out of the review (its menu's `Accept the agent's reply`).
 A reply that goes with a change of the stack is reviewed with that change.
 
-In the editor, a banner under the top bar says what waits (`⟳ 2 landed
-asks wait for your review · the next: a change of patch 2, 1 reply, asked
-"…"`), and only that: landing writes nothing on the bottom line. Esc goes
-back up to the banner, from a comment to the middle, to the patches, to the
-stack's header, then the banner; ↑ from the stack's header goes there too.
-On the banner, Enter opens the review of the next landed ask, the first
-landed, and Space lists them all, to review any of them.
+In the editor, a banner under the top bar says what the agent's work on the
+stack is, in a line: what waits for your review (`⟳ 2 landed asks wait for
+your review · the next: a change of patch 2, 1 reply, asked "…"`), what
+the agent works on (`the agent works on 1 ask`), and the comments that
+wait their turn (`1 comment waits its turn`). Landing writes nothing on the
+bottom line. Esc goes to the banner from wherever the cursor is in the
+panes, and ↑ from the stack's header goes there too; a click on it as
+well, but not the mouse going by. With the cursor on it, the banner opens,
+a line for each: `⟳ Review …` for what landed, the first landed first; `●
+With the agent (…)` for what the agent works on, its comment and the last
+line it wrote; `◌ Ready (…)` for a comment that waits, and what it waits
+for. ↑↓ pick one, and Enter reviews what landed, or goes to the comment of
+the rest; Space lists what landed, to review any of it; ↓ past the last
+line goes to the stack's header, and Esc goes back where the cursor was,
+the banner closed again.
 
 A review lists the parts on the left, in three sections: the stack
 operations of the change (a line for each patch: `noop`, `add`, `modify`,
@@ -1062,8 +1072,9 @@ left as it was, asked as it is or left so), a comment moved to the stack
 taking the cursor with it, the mouse (the cursor following it, a click as
 Enter, a right click's menu, a menu's item), the comments pane's previews,
 moving a patch, searching (what is in sight first, the patches then the
-files they touch, the history), and the agents' worktrees made ahead as the
-stack's checkout says. With `--features web`, `tests/web.rs`
+files they touch, the history), the agents' worktrees made ahead as the
+stack's checkout says, and the banner of the agent's work (Esc to it and
+back, open a line for each, Enter on each). With `--features web`, `tests/web.rs`
 serves the editor and asks it over HTTP as a browser would: the token
 needed, the page, the wasm, the rows as they change, a key and a click; and
 `web.rs` tests the rows and the lines both ways, with the client's own tests

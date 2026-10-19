@@ -1395,17 +1395,26 @@ fn landed_work_is_reviewed_from_the_banner_part_by_part() {
     })
     .unwrap();
     app.refresh();
-    // The banner says what waits; Esc goes up to it, by the stack's header.
+    // The banner says what waits. Esc goes to it from the middle, open, a
+    // line for what landed; Esc again comes back where the cursor was.
     let screen = draw(&mut app);
     assert!(
         screen.contains("⟳ 1 landed ask waits for your review · the next: a change of the stack, 2 replies, 1 opened comment"),
         "{screen}"
     );
+    assert!(!screen.contains("   ⟳ Review"), "closed:\n{screen}");
+    let (focus, cursor) = (app.focus, app.cursor);
+    assert_eq!(focus, Focus::Diff);
     keys(&mut app, &[KeyCode::Esc]);
-    assert!(app.focus == Focus::List && !app.on_stack);
+    assert!(app.on_banner);
+    let screen = draw(&mut app);
+    assert!(screen.contains("\n   ⟳ Review a change of the stack, 2 replies, 1 opened comment, asked \"why so loud?\""), "{screen}");
+    assert!(app.hint().contains("enter: review it · space: pick one · esc: back where you were"), "{}", app.hint());
     keys(&mut app, &[KeyCode::Esc]);
-    assert!(app.on_stack && !app.on_banner);
-    keys(&mut app, &[KeyCode::Esc]);
+    assert!(!app.on_banner && app.focus == focus && app.cursor == cursor, "back where it was");
+    assert!(!draw(&mut app).contains("   ⟳ Review"), "closed again");
+    // ↑ from the stack's header goes there too.
+    keys(&mut app, &[KeyCode::Left, KeyCode::Home, KeyCode::Up]);
     assert!(app.on_banner);
     keys(&mut app, &[KeyCode::Char(' ')]);
     assert!(items(&app)[0].0.starts_with("Review a change of the stack, 2 replies"), "{:?}", items(&app));
@@ -2748,4 +2757,77 @@ fn the_agents_worktrees_are_made_ahead_as_the_stack_s_checkout_says() {
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
     assert!(!made.exists(), "removed");
+}
+
+#[test]
+fn the_banner_opens_on_the_agents_work_and_esc_goes_there_and_back() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Enter]);
+    save(&mut app, "why so loud?");
+    down_to(&mut app, "+LINE 39");
+    keys(&mut app, &[KeyCode::Enter]);
+    save(&mut app, "and this?");
+    let notes = notes_of(&db, "s", 0);
+    let said = |text: &str| notes.iter().find(|n| n.text == text).cloned().unwrap();
+    let (loud, this) = (said("why so loud?"), said("and this?"));
+    // Without work of the agent's, no banner: Esc goes back up a pane.
+    assert!(!draw(&mut app).contains("\n ● "));
+    keys(&mut app, &[KeyCode::Esc]);
+    assert!(app.focus == Focus::List && !app.on_banner);
+    keys(&mut app, &[KeyCode::Right]);
+    // The agent works on the first comment; the second, a change too, waits
+    // its turn.
+    changing(&db, &loud.change, &loud.id, serde_json::json!({"patch": loud.change}));
+    Db::edit(&db, |d| {
+        let n = d.note(&this.change, &this.id).cloned().unwrap();
+        d.set_note(Note {
+            queued: Some(stacked::db::Queued { way: stacked::db::Way::Change, batch: "b-waiting".into(), stack: false }),
+            ..n
+        })
+    })
+    .unwrap();
+    app.refresh();
+    let screen = draw(&mut app);
+    assert!(screen.contains("\n ● the agent works on 1 ask · 1 comment waits its turn"), "one line:\n{screen}");
+    // Esc goes to it, open: a line for each, the first picked.
+    down_to(&mut app, "+LINE 39");
+    let cursor = app.cursor;
+    keys(&mut app, &[KeyCode::Esc]);
+    assert!(app.on_banner && app.banner_sel == 0);
+    let screen = draw(&mut app);
+    assert!(screen.contains("\n   ● With the agent (may change the code): patch 1 · a.txt: TWO · \"why so loud?\""), "{screen}");
+    assert!(
+        screen.contains("\n   ◌ Ready (may change the code), once the agent's change on patch 1 lands: patch 1 · a.txt: LINE 39 · \"and this?\""),
+        "{screen}"
+    );
+    assert!(app.hint().contains("enter: go to its comment"), "{}", app.hint());
+    // The mouse going by does not close it, nor does it open it.
+    app.hover(10, 8);
+    assert!(app.on_banner, "the mouse over the panes leaves it open");
+    keys(&mut app, &[KeyCode::Esc]);
+    assert!(!app.on_banner && app.focus == Focus::Diff && app.cursor == cursor, "back where it was");
+    app.hover(10, 1);
+    assert!(!app.on_banner, "the mouse over it does not open it");
+    // Enter on a line goes to its comment: the one the agent works on, then
+    // the one that waits.
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Enter]);
+    assert!(!app.on_banner && app.focus == Focus::Diff);
+    draw(&mut app);
+    assert_eq!(app.rows[app.cursor].note.as_deref(), Some(loud.id.as_str()));
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Down, KeyCode::Enter]);
+    draw(&mut app);
+    assert_eq!(app.rows[app.cursor].note.as_deref(), Some(this.id.as_str()));
+    // ↓ past the last line, the stack's header; ↑ from there, the last line.
+    keys(&mut app, &[KeyCode::Esc, KeyCode::End, KeyCode::Down]);
+    assert!(!app.on_banner && app.focus == Focus::List && app.on_stack);
+    keys(&mut app, &[KeyCode::Up]);
+    assert!(app.on_banner && app.banner_sel == 1);
+    // A click opens it too.
+    keys(&mut app, &[KeyCode::Esc]);
+    draw(&mut app);
+    app.click(10, 1, false);
+    assert!(app.on_banner);
 }
