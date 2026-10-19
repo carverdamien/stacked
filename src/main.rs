@@ -296,8 +296,18 @@ enum Cmd {
     },
     /// The settings, as they are: every one, in the form of the file they
     /// are read from (~/.stacked.toml, or $STACKED_CONFIG), to start one
-    /// from: `stacked config > ~/.stacked.toml`.
-    Config,
+    /// from: `stacked config > ~/.stacked.toml`. With KEY, its value; with
+    /// VALUE too, KEY written in that file, the rest of it as it was.
+    Config {
+        /// A setting, as the file names it: `editor`, `view.layout`,
+        /// `keys.down`.
+        key: Option<String>,
+        /// Its value; for a list, each of its values (`keys.down down j`).
+        values: Vec<String>,
+        /// Takes KEY out of the file: it is then as it would be without.
+        #[arg(long, requires = "key", conflicts_with = "values")]
+        unset: bool,
+    },
     /// An ask's prompt (for the ask's wrapper).
     #[command(hide = true)]
     Prompt { id: String },
@@ -947,7 +957,7 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
             let from = from.as_deref().map(parse_rev).transpose()?;
             println!("{}", stacked::trim::trim(path, &new, from)?.said(&new));
         }
-        Cmd::Config => {
+        Cmd::Config { key: None, .. } => {
             let p = stacked::config::path();
             let state = if p.exists() { "read from" } else { "none in" };
             println!("# {state} {}", p.display());
@@ -955,6 +965,24 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
                 println!("# wrong: {w}");
             }
             print!("{}", stacked::config::get().render());
+        }
+        Cmd::Config { key: Some(key), values, unset } => {
+            let p = stacked::config::path();
+            if unset {
+                stacked::config::unset(&p, &key).map_err(Error)?;
+                eprintln!("stacked: {key} taken out of {}", p.display());
+            } else if values.is_empty() {
+                let now = stacked::config::value_of(stacked::config::get(), &key).map_err(Error)?;
+                if now.is_empty() {
+                    return err(format!("{key} is not set"));
+                }
+                for v in now {
+                    println!("{v}");
+                }
+            } else {
+                stacked::config::set(&p, &key, &values).map_err(Error)?;
+                eprintln!("stacked: {key} written in {}", p.display());
+            }
         }
         Cmd::Check => {
             let db = Db::load(path)?;
@@ -1014,7 +1042,7 @@ fn main() {
     // here for the commands, but those asks run by themselves.
     let quiet = matches!(
         cli.cmd,
-        Some(Cmd::Open { .. } | Cmd::Prompt { .. } | Cmd::Record { .. } | Cmd::Land { .. } | Cmd::Fits { .. } | Cmd::Config) | None
+        Some(Cmd::Open { .. } | Cmd::Prompt { .. } | Cmd::Record { .. } | Cmd::Land { .. } | Cmd::Fits { .. } | Cmd::Config { .. }) | None
     );
     if !quiet {
         for w in stacked::config::warnings() {

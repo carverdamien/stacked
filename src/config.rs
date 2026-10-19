@@ -467,7 +467,7 @@ pub fn remember_demo(path: &Path) -> Result<bool, String> {
     if c.demo.seen {
         return Ok(false);
     }
-    let new = with_demo_seen(&text);
+    let new = with_setting(&text, "demo.seen", Some("true"));
     match Config::parse(&new) {
         Ok((c, _)) if c.demo.seen => {}
         _ => return Err(at(&"[demo] seen = true cannot be written in it as it is")),
@@ -476,34 +476,248 @@ pub fn remember_demo(path: &Path) -> Result<bool, String> {
     Ok(true)
 }
 
-/// `text`, a settings' file, with `seen = true` in its `[demo]` table, which
-/// is made at its end if it has none; every other line as it was.
-fn with_demo_seen(text: &str) -> String {
-    let lines: Vec<&str> = text.lines().collect();
-    let table = |l: &str| l.trim_start().starts_with('[');
-    let demo = |l: &str| l.split('#').next().unwrap_or("").trim() == "[demo]";
-    let mut out: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
-    match lines.iter().position(|l| demo(l)) {
-        Some(at) => {
-            let end = lines[at + 1..].iter().position(|l| table(l)).map_or(lines.len(), |e| at + 1 + e);
-            let seen = (at + 1..end).find(|&i| {
-                let t = lines[i].trim_start();
-                t.strip_prefix("seen").is_some_and(|rest| rest.trim_start().starts_with('='))
-            });
-            match seen {
-                Some(i) => out[i] = "seen = true".into(),
-                None => out.insert(at + 1, "seen = true".into()),
-            }
+/// What a setting holds, as the file writes it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Kind {
+    Text,
+    Flag,
+    Count,
+    List,
+}
+
+/// Every setting there is, as the file names it, and what it holds; the
+/// keys', `keys.NAME`, are lists.
+const SETTINGS: [(&str, Kind); 18] = [
+    ("file", Kind::Text),
+    ("editor", Kind::Text),
+    ("agent.command", Kind::Text),
+    ("agent.args", Kind::List),
+    ("agent.model", Kind::Text),
+    ("agent.worktrees", Kind::Text),
+    ("reviews.source", Kind::Text),
+    ("reviews.url", Kind::Text),
+    ("reviews.arcrc", Kind::Text),
+    ("reviews.token", Kind::Text),
+    ("reviews.trailer", Kind::Text),
+    ("view.layout", Kind::Text),
+    ("view.reading", Kind::Flag),
+    ("view.patches", Kind::Flag),
+    ("view.comments", Kind::Flag),
+    ("view.stream_lines", Kind::Count),
+    ("view.split_width", Kind::Count),
+    ("demo.seen", Kind::Flag),
+];
+
+fn kind_of(key: &str) -> Result<Kind, String> {
+    if let Some((_, k)) = SETTINGS.iter().find(|(name, _)| *name == key) {
+        return Ok(*k);
+    }
+    match key.strip_prefix("keys.") {
+        Some(k) if Key::ALL.iter().any(|key| key.name() == k) => Ok(Kind::List),
+        _ => Err(format!("{key} is not a setting: `stacked config` prints them all")),
+    }
+}
+
+/// The value of `key` as `values` say it, in the file's form.
+fn literal(key: &str, kind: Kind, values: &[String]) -> Result<String, String> {
+    let one = || match values {
+        [v] => Ok(v.as_str()),
+        _ => Err(format!("{key} takes one value, not {}", values.len())),
+    };
+    Ok(match kind {
+        Kind::Text => toml::Value::String(one()?.to_string()).to_string(),
+        Kind::Flag => match one()? {
+            v @ ("true" | "false") => v.to_string(),
+            v => return Err(format!("{key} is true or false, not {v:?}")),
+        },
+        Kind::Count => match one()?.parse::<usize>() {
+            Ok(n) => n.to_string(),
+            Err(_) => return Err(format!("{key} is a number, not {:?}", values[0])),
+        },
+        Kind::List => toml::Value::Array(values.iter().map(|v| toml::Value::String(v.clone())).collect()).to_string(),
+    })
+}
+
+/// The value `c` has for `key`, as the file would write it: one string per
+/// value, none for a setting not set.
+pub fn value_of(c: &Config, key: &str) -> Result<Vec<String>, String> {
+    kind_of(key)?;
+    let opt = |v: &Option<String>| v.iter().cloned().collect();
+    let path = |p: &Option<PathBuf>| p.iter().map(|p| p.display().to_string()).collect();
+    Ok(match key {
+        "file" => path(&c.file),
+        "editor" => opt(&c.editor),
+        "agent.command" => opt(&c.agent.command),
+        "agent.args" => c.agent.args.clone(),
+        "agent.model" => opt(&c.agent.model),
+        "agent.worktrees" => path(&c.agent.worktrees),
+        "reviews.source" => vec![match c.reviews.source {
+            Source::Phabricator => "phabricator".into(),
+            Source::None => "none".into(),
+        }],
+        "reviews.url" => opt(&c.reviews.url),
+        "reviews.arcrc" => vec![c.reviews.arcrc.display().to_string()],
+        "reviews.token" => opt(&c.reviews.token),
+        "reviews.trailer" => vec![c.reviews.trailer.clone()],
+        "view.layout" => vec![c.view.layout.name().into()],
+        "view.reading" => vec![c.view.reading.to_string()],
+        "view.patches" => vec![c.view.patches.to_string()],
+        "view.comments" => vec![c.view.comments.to_string()],
+        "view.stream_lines" => vec![c.view.stream_lines.to_string()],
+        "view.split_width" => vec![c.view.split_width.to_string()],
+        "demo.seen" => vec![c.demo.seen.to_string()],
+        _ => {
+            let name = key.trim_start_matches("keys.");
+            let k = Key::ALL.iter().find(|k| k.name() == name).copied().unwrap_or(Key::Quit);
+            c.keys.names(k)
         }
-        None => {
+    })
+}
+
+/// Writes `key` = `values` in the settings' file at `path`, every other
+/// line as it was; a file there is not, made. Refused, with why, for a
+/// setting there is not, a value of the wrong kind, or one stacked would
+/// not take; a file stacked cannot read is left as it is.
+pub fn set(path: &Path, key: &str, values: &[String]) -> Result<(), String> {
+    let lit = literal(key, kind_of(key)?, values)?;
+    edit_settings(path, |text| with_setting(text, key, Some(&lit)))
+}
+
+/// Takes `key` out of the settings' file at `path`: it is then as it would
+/// be with no file.
+pub fn unset(path: &Path, key: &str) -> Result<(), String> {
+    kind_of(key)?;
+    edit_settings(path, |text| with_setting(text, key, None))
+}
+
+/// The settings' file at `path` made what `edit` makes of it, once what it
+/// makes is seen to read back with nothing more wrong than before.
+fn edit_settings(path: &Path, edit: impl FnOnce(&str) -> String) -> Result<(), String> {
+    let at = |e: &dyn std::fmt::Display| format!("{}: {e}", path.display());
+    let text = match std::fs::read_to_string(path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(at(&e)),
+    };
+    let (_, was) = Config::parse(&text).map_err(|e| at(&format!("{e}; nothing written in it")))?;
+    let new = edit(&text);
+    if new == text {
+        return Ok(());
+    }
+    let (_, wrong) = Config::parse(&new).map_err(|e| at(&format!("{e}; nothing written")))?;
+    let more: Vec<&String> = wrong.iter().filter(|w| !was.contains(w)).collect();
+    if !more.is_empty() {
+        return Err(more.iter().map(|w| w.to_string()).collect::<Vec<_>>().join("; ") + "; nothing written");
+    }
+    std::fs::write(path, new).map_err(|e| at(&e))
+}
+
+/// `text`, a settings' file, with `key` (`table.name`, or `name` at the
+/// top) given the value `value`, in the file's form, or taken out if None;
+/// every other line as it was. A line of it already there is replaced (all
+/// of it, a list over several lines too); else a top-level one goes before
+/// the first table, and one of a table after its header, the table made at
+/// the end if there is none.
+fn with_setting(text: &str, key: &str, value: Option<&str>) -> String {
+    let (table, name) = match key.split_once('.') {
+        Some((t, n)) => (Some(t), n),
+        None => (None, key),
+    };
+    let lines: Vec<&str> = text.lines().collect();
+    let header = |l: &str| l.trim_start().starts_with('[');
+    let is = |l: &str, t: &str| l.split('#').next().unwrap_or("").trim() == format!("[{t}]");
+    // Where the table's lines are: after its header (or the top), to the
+    // next header; and whether it is there at all.
+    let first_header = lines.iter().position(|l| header(l)).unwrap_or(lines.len());
+    let (start, end, there) = match table {
+        None => (0, first_header, true),
+        Some(t) => match lines.iter().position(|l| is(l, t)) {
+            Some(at) => (at + 1, lines[at + 1..].iter().position(|l| header(l)).map_or(lines.len(), |e| at + 1 + e), true),
+            None => (lines.len(), lines.len(), false),
+        },
+    };
+    let assigns = |l: &str| l.trim_start().strip_prefix(name).is_some_and(|rest| rest.trim_start().starts_with('='));
+    let found = (start..end).find(|&i| assigns(lines[i]));
+    let mut out: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
+    let line = value.map(|v| format!("{name} = {v}"));
+    match (found, line) {
+        (Some(i), line) => {
+            let span = value_lines(&lines[i..end]);
+            out.splice(i..i + span, line);
+        }
+        (None, None) => {}
+        // A table's last, after its last line; at the top, after the last
+        // setting there, before any comment heading the first table.
+        (None, Some(line)) if there => {
+            let at = match table {
+                Some(_) => (start..end).rev().find(|&i| !lines[i].trim().is_empty()).map_or(start, |i| i + 1),
+                None => (0..end)
+                    .rev()
+                    .find(|&i| {
+                        let t = lines[i].trim();
+                        !t.is_empty() && !t.starts_with('#')
+                    })
+                    .map_or(0, |i| i + 1),
+            };
+            out.insert(at, line);
+        }
+        (None, Some(line)) => {
             if out.last().is_some_and(|l| !l.trim().is_empty()) {
                 out.push(String::new());
             }
-            out.push("[demo]".into());
-            out.push("seen = true".into());
+            out.push(format!("[{}]", table.unwrap_or_default()));
+            out.push(line);
         }
     }
+    if out.is_empty() {
+        return String::new();
+    }
     out.join("\n") + "\n"
+}
+
+/// How many of `lines` the setting on the first holds: one, or a list or a
+/// string in triple quotes that goes on to later lines.
+fn value_lines(lines: &[&str]) -> usize {
+    let mut depth = 0i32;
+    let mut triple = false;
+    for (k, line) in lines.iter().enumerate() {
+        let mut quote: Option<char> = None;
+        let chars: Vec<char> = line.chars().collect();
+        let mut i = 0;
+        while i < chars.len() {
+            let c = chars[i];
+            if triple {
+                if line[line.char_indices().nth(i).map_or(0, |(b, _)| b)..].starts_with("\"\"\"") {
+                    triple = false;
+                    i += 3;
+                    continue;
+                }
+            } else if let Some(q) = quote {
+                if c == '\\' && q == '"' {
+                    i += 1;
+                } else if c == q {
+                    quote = None;
+                }
+            } else if line[line.char_indices().nth(i).map_or(0, |(b, _)| b)..].starts_with("\"\"\"") {
+                triple = true;
+                i += 3;
+                continue;
+            } else {
+                match c {
+                    '"' | '\'' => quote = Some(c),
+                    '[' => depth += 1,
+                    ']' => depth -= 1,
+                    '#' => break,
+                    _ => {}
+                }
+            }
+            i += 1;
+        }
+        if depth <= 0 && !triple {
+            return k + 1;
+        }
+    }
+    lines.len().max(1)
 }
 
 /// The settings in use, read once, and what was wrong with their file.
@@ -619,6 +833,49 @@ mod tests {
         std::fs::write(&path, "colour = \"red\"\n").unwrap();
         assert!(remember_demo(&path).is_err());
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "colour = \"red\"\n");
+    }
+
+    #[test]
+    fn one_setting_is_written_or_taken_out_the_rest_as_it_was() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("settings.toml");
+        let mine = "# mine\nfile = \"stacks.jsonl\"\n\n# how it looks\n[view]\nlayout = \"compact\" # as I like it\n\n[agent]\nargs = [\n  \"--verbose\",\n]\n";
+        std::fs::write(&path, mine).unwrap();
+        let read = || std::fs::read_to_string(&path).unwrap();
+        let vals = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let (c, _) = Config::load(&path);
+        assert_eq!(value_of(&c, "view.layout"), Ok(vec!["compact".to_string()]));
+        assert_eq!(value_of(&c, "editor"), Ok(vec![]), "not set");
+        // At the top, after the last setting there.
+        set(&path, "editor", &vals(&["hx {file}:{line}"])).unwrap();
+        assert_eq!(read(), mine.replace("file = \"stacks.jsonl\"\n", "file = \"stacks.jsonl\"\neditor = \"hx {file}:{line}\"\n"));
+        // A setting there, replaced: a list over several lines whole.
+        set(&path, "agent.args", &vals(&["--model", "opus"])).unwrap();
+        assert!(read().ends_with("[agent]\nargs = [\"--model\", \"opus\"]\n"), "{}", read());
+        set(&path, "view.layout", &vals(&["side-by-side"])).unwrap();
+        assert!(read().contains("[view]\nlayout = \"side-by-side\"\n\n[agent]"), "{}", read());
+        // A table not there, made at the end.
+        set(&path, "keys.down", &vals(&["down", "j"])).unwrap();
+        assert!(read().ends_with("\n\n[keys]\ndown = [\"down\", \"j\"]\n"), "{}", read());
+        let (c, wrong) = Config::load(&path);
+        assert!(wrong.is_empty(), "{wrong:?}");
+        assert_eq!(value_of(&c, "keys.down"), Ok(vec!["down".to_string(), "j".to_string()]));
+        assert_eq!(c.editor.as_deref(), Some("hx {file}:{line}"));
+        // Taken out: as without it.
+        unset(&path, "view.layout").unwrap();
+        assert!(read().contains("[view]\n\n[agent]"), "{}", read());
+        assert_eq!(value_of(&Config::load(&path).0, "view.layout"), Ok(vec!["unified".to_string()]));
+        // Refused, the file as it was: no such setting, a value of the
+        // wrong kind, one stacked would not take.
+        let before = read();
+        assert!(set(&path, "colour", &vals(&["red"])).unwrap_err().contains("not a setting"));
+        assert!(set(&path, "view.reading", &vals(&["maybe"])).unwrap_err().contains("true or false"));
+        assert!(set(&path, "view.split_width", &vals(&["wide"])).unwrap_err().contains("a number"));
+        assert!(set(&path, "editor", &vals(&["a", "b"])).unwrap_err().contains("one value"));
+        let e = set(&path, "view.layout", &vals(&["sideways"])).unwrap_err();
+        assert!(e.contains("view.layout") && e.contains("nothing written"), "{e}");
+        assert!(set(&path, "keys.menu", &vals(&["ctrl-nothing-at-all"])).unwrap_err().contains("keys.menu"));
+        assert_eq!(read(), before);
     }
 
     #[test]

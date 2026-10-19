@@ -53,6 +53,8 @@ stacked apply bug123 --branch bug123   # only now does the worktree change
 stacked export bug123 | git am     # or put it anywhere by hand
 stacked trim new.jsonl --from @40  # a new database, the history before @40 left out
 stacked config > ~/.stacked.toml   # every setting, to start a settings file from
+stacked config editor hx           # one written in the settings file; KEY alone reads it
+stacked config --unset editor      # ... taken out of it
 ```
 
 `-f FILE` points any command at a database. A first argument that is not a
@@ -492,7 +494,15 @@ nothing is written.
 
 `~/.stacked.toml` (or the file `$STACKED_CONFIG` names) holds the settings;
 each is optional, and `stacked config` prints them all as they are, in the
-file's form, with what is wrong with the file:
+file's form, with what is wrong with the file. As `git config` does,
+`stacked config KEY` prints one (`view.layout`, `keys.down`: each value on a
+line of its own), `stacked config KEY VALUE…` writes it in the file (several
+values for a list: `stacked config keys.down down j`), and `stacked config
+--unset KEY` takes it out. The rest of the file stays as it was, comments
+too. What is written is checked first: a setting there is not, a value of
+the wrong kind, or one stacked would not take is refused, with why, and
+nothing is written; nor anything in a file stacked cannot read. The
+settings:
 
 - `file`: the database opened when none is named, nor `$STACKED_FILE`.
 - `editor`: the editor, for comments, patches, the stack as a list and the
@@ -701,10 +711,6 @@ follows each patch by its change, a move told from a shift.
 
 ## Not done yet
 
-- `stacked config` only prints every setting. To build, as `git config`
-  does: `stacked config KEY` prints one (`view.layout`), `stacked config KEY
-  VALUE` writes it in the settings file, the rest of the file as it was and
-  the value checked first, and `--unset KEY` takes it out.
 - When an ask lands, the screen changes on its own: the stack moves to the
   agent's edit if you have not edited since. self-review-rs now holds
   changes until `R`; should stacked do the same?

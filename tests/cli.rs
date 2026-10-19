@@ -1184,6 +1184,42 @@ fn a_file_is_edited_in_the_stack_s_worktree_or_in_this_checkout() {
 }
 
 #[test]
+fn one_setting_is_read_written_and_taken_out() {
+    let e = env();
+    let settings = e.root.join("settings.toml");
+    std::fs::write(&settings, "# mine\n[view]\nlayout = \"compact\"\n").unwrap();
+    let config = |args: &[&str]| {
+        let mut all = vec!["config"];
+        all.extend(args);
+        stacked_in(&e.src, &e.db, &all, "", &[("STACKED_CONFIG", &settings)])
+    };
+    let (fine, out, _) = config(&["view.layout"]);
+    assert!(fine && out == "compact\n", "{out}");
+    let (fine, _, err) = config(&["editor"]);
+    assert!(!fine && err.contains("editor is not set"), "{err}");
+    let (fine, _, err) = config(&["editor", "hx"]);
+    assert!(fine && err.contains("editor written in"), "{err}");
+    assert_eq!(config(&["editor"]).1, "hx\n");
+    assert!(config(&["keys.down", "down", "j"]).0);
+    assert_eq!(config(&["keys.down"]).1, "down\nj\n");
+    let (fine, _, err) = config(&["--unset", "view.layout"]);
+    assert!(fine && err.contains("view.layout taken out"), "{err}");
+    assert_eq!(config(&["view.layout"]).1, "unified\n");
+    assert_eq!(
+        std::fs::read_to_string(&settings).unwrap(),
+        "editor = \"hx\"\n# mine\n[view]\n\n[keys]\ndown = [\"down\", \"j\"]\n"
+    );
+    // Refused: the file as it was.
+    let (fine, _, err) = config(&["view.layout", "sideways"]);
+    assert!(!fine && err.contains("nothing written"), "{err}");
+    let (fine, _, err) = config(&["colour", "red"]);
+    assert!(!fine && err.contains("not a setting"), "{err}");
+    // All of them, as before.
+    let (fine, out, _) = config(&[]);
+    assert!(fine && out.contains("editor = \"hx\"") && out.contains("down = [\"down\", \"j\"]"), "{out}");
+}
+
+#[test]
 fn deleted_comments_are_listed_as_they_were() {
     let e = env();
     e.ok(&["import", "s", "base"]);
