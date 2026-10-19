@@ -1808,6 +1808,45 @@ fn how_the_agent_is_asked_is_one_pick_kept_for_the_stack() {
     assert_eq!(Db::load(&db).unwrap().choice("s", "write"), None);
 }
 
+#[test]
+fn a_deleted_comment_is_shown_as_it_was_and_brought_back() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Enter]);
+    typed(&mut app, "why so loud?");
+    keys(&mut app, &[KeyCode::Esc]);
+    choose(&mut app, "Save it");
+    // Deleted from its menu, after stacked asks, which says it can be
+    // brought back.
+    keys(&mut app, &[KeyCode::Down]);
+    choose(&mut app, "Delete this comment…");
+    assert!(draw(&mut app).contains("delete this comment? Show…, deleted, can bring it back"));
+    choose(&mut app, "Delete it");
+    assert!(app.status.contains("Show…, deleted"), "{}", app.status);
+    assert!(!draw(&mut app).contains("why so loud?"));
+    // Show…, deleted, from the stack's header: on the patch, it is there as
+    // it was, saying when it was deleted.
+    keys(&mut app, &[KeyCode::Left, KeyCode::Up]);
+    choose(&mut app, "Show…");
+    choose(&mut app, "  deleted");
+    keys(&mut app, &[KeyCode::Down, KeyCode::Right]);
+    let screen = draw(&mut app);
+    assert!(screen.contains("why so loud?") && screen.contains("└ comment · deleted @"), "{screen}");
+    // Its menu, which Enter opens: to bring it back, or its history.
+    down_to(&mut app, "   └ comment");
+    assert_eq!(app.enter(), None);
+    key(&mut app, KeyCode::Char(' '));
+    assert_eq!(items(&app)[..2], [("Bring it back".to_string(), true), ("History of this comment…".to_string(), true)]);
+    choose(&mut app, "Bring it back");
+    assert!(app.status.contains("brought back"), "{}", app.status);
+    let d = Db::load(&db).unwrap();
+    let change = d.patch(&d.stack("s").unwrap().patches[0]).change.clone();
+    assert_eq!(d.notes(&change).iter().map(|n| n.text.as_str()).collect::<Vec<_>>(), ["why so loud?"]);
+    assert!(d.deleted_notes("s", &change).is_empty());
+}
+
 /// The column, in characters, where `needle` starts in `line`.
 fn column(line: &str, needle: &str) -> usize {
     line[..line.find(needle).unwrap()].chars().count()

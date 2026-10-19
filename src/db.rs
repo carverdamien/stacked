@@ -1367,6 +1367,39 @@ impl Db {
         self.push_head(name, rev, op)
     }
 
+    /// The comments of stack `name` on `change` that were deleted, oldest
+    /// first: each as it was last, with the rev of the record that deleted
+    /// it. A comment the agent moved to the stack is not one of them, nor
+    /// one moved back to where it came from.
+    pub fn deleted_notes(&self, name: &str, change: &str) -> Vec<(usize, Note)> {
+        // Where the comments on the stack were moved from.
+        let origins: std::collections::HashSet<(String, String)> = self
+            .stack_notes(name)
+            .iter()
+            .filter_map(|n| n.moved.as_ref().map(|m| (m.change.clone(), m.id.clone())))
+            .collect();
+        let mut out = Vec::new();
+        for ((c, id), &at) in self.notes.range((change.to_string(), String::new())..).take_while(|((c, _), _)| c == change) {
+            match &self.records[at] {
+                Record::Comment(n) if n.text.is_empty() => {}
+                _ => continue,
+            }
+            if origins.contains(&(c.clone(), id.clone())) {
+                continue;
+            }
+            let Some((_, was)) = self.note_history(c, id).into_iter().rev().find(|(_, n)| !n.text.is_empty()) else {
+                continue;
+            };
+            // Moved back: where it came from has it again.
+            if was.moved.as_ref().is_some_and(|m| self.note(&m.change, &m.id).is_some()) {
+                continue;
+            }
+            out.push((at + 1, was.clone()));
+        }
+        out.sort_by_key(|(rev, _)| *rev);
+        out
+    }
+
     /// The comment `id` on `change`, if it is not deleted.
     pub fn note(&self, change: &str, id: &str) -> Option<&Note> {
         match &self.records[*self.notes.get(&(change.to_string(), id.to_string()))?] {
@@ -1412,6 +1445,47 @@ mod tests {
             .collect();
         let distinct: std::collections::HashSet<&String> = all.iter().collect();
         assert_eq!(distinct.len(), all.len());
+    }
+
+    #[test]
+    fn a_deleted_comment_is_kept_as_it_was_and_a_moved_one_is_not_one() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("db.jsonl");
+        let note = |id: &str, text: &str| Note {
+            change: "c".into(),
+            id: id.into(),
+            line: id.into(),
+            text: text.into(),
+            ..Default::default()
+        };
+        Db::edit(&path, |db| {
+            db.set_note(note("a", "first"))?;
+            db.set_note(note("a", "first, then more"))?;
+            db.set_note(note("a", ""))?;
+            db.set_note(note("b", "kept"))?;
+            // Moved to the stack, as the agent moves one: not deleted.
+            db.set_note(note("m", "needs the stack"))?;
+            crate::ask::promote(db, "s", &note("m", "needs the stack"), "it needs more")
+        })
+        .unwrap();
+        let db = Db::load(&path).unwrap();
+        let deleted = db.deleted_notes("s", "c");
+        assert_eq!(deleted.len(), 1, "{deleted:?}");
+        let (rev, was) = deleted[0].clone();
+        assert_eq!((was.id.as_str(), was.text.as_str()), ("a", "first, then more"));
+        assert_eq!(db.note_history("c", "a").last().map(|(r, _)| *r), Some(rev), "the rev that deleted it");
+        // Moved back: neither it nor the stack's copy of it is deleted.
+        Db::edit(&path, |db| {
+            let moved = db.stack_notes("s").into_iter().find(|n| n.moved.is_some()).cloned().unwrap();
+            crate::ask::move_back(db, &moved)
+        })
+        .unwrap();
+        let db = Db::load(&path).unwrap();
+        assert_eq!(db.deleted_notes("s", "c").len(), 1);
+        assert!(db.deleted_notes("s", &stack_change("s")).is_empty());
+        // Brought back: not deleted.
+        Db::edit(&path, |db| db.set_note(was.clone())).unwrap();
+        assert!(Db::load(&path).unwrap().deleted_notes("s", "c").is_empty());
     }
 
     #[test]

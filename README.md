@@ -44,6 +44,7 @@ stacked comment bug123 rebase onto origin/main        # a comment on the stack
 stacked comment bug123 --patch 2 split this in two    # on a patch as a whole
 stacked comment bug123 --patch 2 --line a.txt:+TWO why?   # on one of its lines
 stacked comments bug123            # every comment: short id, where, state, thread
+stacked comments bug123 --show deleted   # the deleted ones, as each was
 stacked send bug123 4f1c2a --wait  # the agent works on it; its answer lands in the thread
 stacked send bug123 --all --answer-only   # every comment that can be sent
 stacked reply bug123 4f1c2a and keep the title
@@ -332,8 +333,12 @@ ready, `✓` replied, `✗` failed, `↑` moved), its header counts them (`4
 comments · 1 with the agent · 2 to read`), and the top bar too (`agent ●2 ·
 ready:1`). `Show…`, on either header, picks what both panes show, each with
 its count: all, to send, to read (any, from an answer, from a change), in
-progress, failed or moved, gone (on a line the patch no longer has), none.
-It is kept per stack, in the file.
+progress, failed or moved, gone (on a line the patch no longer has),
+deleted, none. It is kept per stack, in the file. A comment deleted is not
+lost, as the file only grows: `deleted` shows each as it was, `deleted @12`
+on its first line, its menu (which Enter opens) to `Bring it back` or to
+read its history. The agent's comments moved to the stack are not deleted,
+nor what is moved back.
 
 The commits made in the agent's worktree, stacked's and the agent's, are
 not signed, whatever git's `commit.gpgsign` says: they are only read back
@@ -442,7 +447,7 @@ every comment and every run; the editor shows them where they belong:
   before, or the version whole. `Put this version back in the stack` is an
   edit like any.
 - `History of this comment…`, on a comment: every state it was in, with the
-  rev and time of each.
+  rev and time of each; a deleted one's too, from `Show…`, `deleted`.
 
 `stacked log`, `tree`, `versions`, `interdiff` and `runs` say the same on
 the command line.
@@ -696,11 +701,6 @@ follows each patch by its change, a move told from a shift.
 
 ## Not done yet
 
-- A deleted comment cannot be seen again: the editor and `stacked comments`
-  skip it, and Undo is only for the stack. Its text is still in the file, as
-  the file only grows. To build: `deleted` in `Show…`, each as it was, with
-  `History of this comment…` and `Bring it back` in its menu, and `stacked
-  comments NAME --show deleted`.
 - `stacked config` only prints every setting. To build, as `git config`
   does: `stacked config KEY` prints one (`view.layout`), `stacked config KEY
   VALUE` writes it in the settings file, the rest of the file as it was and

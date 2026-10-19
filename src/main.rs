@@ -44,6 +44,8 @@ enum ShowArg {
     Failed,
     /// On a line their patch no longer has.
     Gone,
+    /// Deleted, each as it was.
+    Deleted,
 }
 
 impl ShowArg {
@@ -57,6 +59,7 @@ impl ShowArg {
             ShowArg::InProgress => Show::InProgress,
             ShowArg::Failed => Show::Failed,
             ShowArg::Gone => Show::Gone,
+            ShowArg::Deleted => Show::Deleted,
         }
     }
 }
@@ -393,7 +396,11 @@ fn where_on(db: &Db, name: &str, n: &Note) -> String {
 }
 
 fn print_note(db: &Db, name: &str, n: &Note, busy: &Busy) {
-    let state = note_state(db, name, n, busy);
+    print_thread(db, name, n, &note_state(db, name, n, busy));
+}
+
+/// `n`'s short id, where it is and, if any, `state`; then its thread.
+fn print_thread(db: &Db, name: &str, n: &Note, state: &str) {
     let state = if state.is_empty() { String::new() } else { format!("\t{state}") };
     println!("{}\t{}{state}", short_id(&n.change, &n.id), where_on(db, name, n));
     for t in thread_turns(&n.text) {
@@ -410,6 +417,17 @@ fn print_note(db: &Db, name: &str, n: &Note, busy: &Busy) {
             }
         }
     }
+}
+
+/// The deleted comments of stack `name`, its own then each patch's, or
+/// patch `spec`'s: each as it was, with the rev that deleted it.
+fn deleted_of(db: &Db, name: &str, spec: Option<&str>) -> Result<Vec<(usize, Note)>> {
+    let s = db.stack(name)?;
+    let changes: Vec<String> = match spec {
+        Some(spec) => vec![patch_of(db, name, spec)?.change.clone()],
+        None => std::iter::once(stack_change(name)).chain(s.patches.iter().map(|id| db.patch(id).change.clone())).collect(),
+    };
+    Ok(changes.iter().flat_map(|c| db.deleted_notes(name, c)).collect())
 }
 
 /// The comments of stack `name`, its own then each patch's, or patch
@@ -775,6 +793,12 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
             let short = short_id(&note.change, &note.id);
             Db::edit(path, |db| db.set_note(note))?;
             println!("{short}");
+        }
+        Cmd::Comments { name, patch, show: Some(ShowArg::Deleted) } => {
+            let db = Db::load(path)?;
+            for (rev, n) in deleted_of(&db, &name, patch.as_deref())? {
+                print_thread(&db, &name, &n, &format!("deleted @{rev}"));
+            }
         }
         Cmd::Comments { name, patch, show } => {
             let db = Db::load(path)?;

@@ -257,11 +257,13 @@ pub enum Show {
     InProgress,
     Failed,
     Gone,
+    /// The comments deleted, each as it was: none of the others.
+    Deleted,
     Nothing,
 }
 
 impl Show {
-    pub const ALL: [Show; 9] = [
+    pub const ALL: [Show; 10] = [
         Show::All,
         Show::ToSend,
         Show::ToRead,
@@ -270,6 +272,7 @@ impl Show {
         Show::InProgress,
         Show::Failed,
         Show::Gone,
+        Show::Deleted,
         Show::Nothing,
     ];
 
@@ -283,6 +286,7 @@ impl Show {
             Show::InProgress => "in progress",
             Show::Failed => "failed or moved",
             Show::Gone => "gone",
+            Show::Deleted => "deleted",
             Show::Nothing => "none",
         }
     }
@@ -455,6 +459,8 @@ pub enum Action {
     NoteHistory,
     AskDeleteComment,
     DeleteComment,
+    /// A deleted comment back, as it was.
+    Restore,
     ShowMenu,
     SetShow(Show),
     Undo,
@@ -532,7 +538,8 @@ fn about(action: &Action) -> String {
         Action::GoToOrigin => "go to where it was before it moved to the stack".into(),
         Action::MoveBack => "move it back where it came from".into(),
         Action::NoteHistory => "read every state this comment has been in".into(),
-        Action::AskDeleteComment | Action::DeleteComment => "delete this comment".into(),
+        Action::AskDeleteComment | Action::DeleteComment => "delete this comment (Show…, deleted, brings it back)".into(),
+        Action::Restore => "bring this comment back, as it was when it was deleted".into(),
         Action::ShowMenu => "pick which comments the panes show".into(),
         Action::SetShow(s) => format!("show the comments {}", s.name()),
         Action::Undo => "go back to the stack before this edit".into(),
@@ -1159,14 +1166,24 @@ impl App {
         shows(show, n, busy, gone)
     }
 
-    /// The comments the filter lets the middle pane show.
+    /// The comments the filter lets the middle pane show: the deleted ones,
+    /// each as it was, when the filter is those.
     fn shown_notes(&self) -> Vec<Note> {
+        if self.show == Show::Deleted {
+            return self.deleted().into_iter().map(|(_, n)| n).collect();
+        }
         let busy = self.busy();
         let lines = self.line_keys();
         self.subject_notes()
             .into_iter()
             .filter(|n| self.shows(self.show, n, &busy, self.gone(n, &lines)))
             .collect()
+    }
+
+    /// The comments the middle pane would show that were deleted: each as it
+    /// was last, with the rev that deleted it.
+    fn deleted(&self) -> Vec<(usize, Note)> {
+        self.subject_change().map(|c| self.db.deleted_notes(&self.stack, &c)).unwrap_or_default()
     }
 
     /// How many of the middle pane's comments each filter would show.
@@ -1176,7 +1193,10 @@ impl App {
         let notes = self.subject_notes();
         Show::ALL
             .into_iter()
-            .map(|s| (s, notes.iter().filter(|n| self.shows(s, n, &busy, self.gone(n, &lines))).count()))
+            .map(|s| match s {
+                Show::Deleted => (s, self.deleted().len()),
+                _ => (s, notes.iter().filter(|n| self.shows(s, n, &busy, self.gone(n, &lines))).count()),
+            })
             .collect()
     }
 
@@ -1192,8 +1212,16 @@ impl App {
     fn deco(&self, notes: &[Note]) -> Deco {
         let busy = self.busy();
         let mut deco = Deco::default();
+        // A deleted comment says when it was, on its first line.
+        let deleted: HashMap<String, usize> = match self.show {
+            Show::Deleted => self.deleted().into_iter().map(|(rev, n)| (n.id, rev)).collect(),
+            _ => HashMap::new(),
+        };
         for n in notes {
-            let tag = self.tag(n, &busy);
+            let tag = match deleted.get(&n.id) {
+                Some(rev) => format!("deleted @{rev}"),
+                None => self.tag(n, &busy),
+            };
             if !tag.is_empty() {
                 deco.tags.insert(n.id.clone(), tag);
             }
@@ -1306,7 +1334,11 @@ impl App {
     /// Whether the comments pane is there: there are comments shown, and the
     /// pane was not put away.
     pub fn notes_shown(&self) -> bool {
-        self.screen == Screen::Main && self.comments && !self.subject_notes().is_empty()
+        let any = match self.show {
+            Show::Deleted => !self.deleted().is_empty(),
+            _ => !self.subject_notes().is_empty(),
+        };
+        self.screen == Screen::Main && self.comments && any
     }
 
     /// The comments the middle pane shows, in its order: each its first row
@@ -1352,7 +1384,16 @@ impl App {
         }
         let change = self.subject_change()?;
         let id = self.rows.get(self.target_row())?.note.clone()?;
-        self.db.note(&change, &id).cloned()
+        self.db.note(&change, &id).cloned().or_else(|| match self.show {
+            // Deleted, as it was, shown so.
+            Show::Deleted => self.deleted().into_iter().map(|(_, n)| n).find(|n| n.id == id),
+            _ => None,
+        })
+    }
+
+    /// Whether `n` is deleted: shown as it was, only to bring back.
+    fn is_deleted(&self, n: &Note) -> bool {
+        self.db.note(&n.change, &n.id).is_none()
     }
 
     /// That `spot` is drawn on line `y` of `area`, from `x`, `w` wide.
@@ -2121,6 +2162,10 @@ impl App {
             Focus::Diff if self.reading_here() => Some(Action::MarkUnread),
             Focus::Diff => {
                 if let Some(n) = self.picked() {
+                    // Deleted: its menu, to bring it back.
+                    if self.is_deleted(&n) {
+                        return None;
+                    }
                     let busy = self.busy();
                     return Some(if busy.contains_key(&(n.change.clone(), n.id.clone())) {
                         Action::OpenStream
@@ -2792,6 +2837,9 @@ impl App {
                         By::Agent => "agent's comment".into(),
                         By::Reviewer => format!("{}'s comment", c.by.clone().unwrap_or_default()),
                     };
+                    if self.is_deleted(&c) {
+                        title = format!("{title}, deleted");
+                    }
                     self.comment_items(&c, &mut items, w);
                 } else {
                     if self.commentable().is_some() {
@@ -2868,6 +2916,12 @@ impl App {
     }
 
     fn comment_items(&self, c: &Note, items: &mut Vec<Item>, w: bool) {
+        // Deleted: to bring back as it was, or to see what it went through.
+        if self.is_deleted(c) {
+            items.push(Item::new("Bring it back", Action::Restore));
+            items.push(Item::new("History of this comment…", Action::NoteHistory));
+            return;
+        }
         let busy = self.busy();
         let with = busy.get(&(c.change.clone(), c.id.clone()));
         // The last word yours, it may be written again, or added to, as
@@ -3096,15 +3150,25 @@ impl App {
             }
             Action::AskDeleteComment => {
                 self.mode = Mode::Menu(Menu::ask(
-                    "delete this comment? it cannot be undone",
+                    "delete this comment? Show…, deleted, can bring it back",
                     Item::new("Delete it", Action::DeleteComment),
                     "Keep it",
                     true,
                 ));
             }
             Action::DeleteComment => {
-                if let Some(c) = self.picked() {
-                    self.edit(|db| db.set_note(Note { text: String::new(), ..c }));
+                if let Some(c) = self.picked()
+                    && self.edit(|db| db.set_note(Note { text: String::new(), ..c })).is_some()
+                {
+                    self.status = "deleted: Show…, deleted, on a header, lists it to bring back".into();
+                }
+            }
+            Action::Restore => {
+                // Not asked again, as it may have been when deleted.
+                if let Some(c) = self.picked().filter(|c| self.is_deleted(c))
+                    && self.edit(|db| db.set_note(Note { queued: None, ..c })).is_some()
+                {
+                    self.status = "brought back, as it was".into();
                 }
             }
             Action::ShowMenu => {
@@ -4775,6 +4839,8 @@ pub fn shows(show: Show, n: &Note, busy: &Busy, gone: bool) -> bool {
         Show::InProgress => with || n.queued.is_some(),
         Show::Failed => n.failed.is_some() || n.moved.is_some(),
         Show::Gone => gone,
+        // The comments there are are not deleted: those are shown apart.
+        Show::Deleted => false,
     }
 }
 

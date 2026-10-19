@@ -1184,6 +1184,25 @@ fn a_file_is_edited_in_the_stack_s_worktree_or_in_this_checkout() {
 }
 
 #[test]
+fn deleted_comments_are_listed_as_they_were() {
+    let e = env();
+    e.ok(&["import", "s", "base"]);
+    let id = comment(&e, &["--patch", "1", "Why", "2?"]);
+    assert_eq!(e.ok(&["comments", "s", "--show", "deleted"]), "");
+    // Deleted as the editor deletes one: its text emptied.
+    Db::edit(&e.db, |db| {
+        let n = db.stack_notes("s").into_iter().next().cloned().unwrap();
+        db.set_note(stacked::db::Note { text: String::new(), ..n })
+    })
+    .unwrap();
+    assert!(!e.ok(&["comments", "s"]).contains("Why 2?"));
+    let out = e.ok(&["comments", "s", "--show", "deleted"]);
+    assert!(out.starts_with(&id) && out.contains("\tdeleted @") && out.contains("  you: Why 2?"), "{out}");
+    assert_eq!(e.ok(&["comments", "s", "--patch", "1", "--show", "deleted"]), out);
+    assert_eq!(e.ok(&["comments", "s", "--patch", "2", "--show", "deleted"]), "");
+}
+
+#[test]
 fn what_you_said_last_may_be_written_again() {
     let e = env();
     e.ok(&["import", "s", "base"]);
