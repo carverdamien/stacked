@@ -333,18 +333,38 @@ pub fn format_event(event: &Value) -> Vec<String> {
             message_lines(event.get("message").unwrap_or(&Value::Null))
         }
         Some("result") => {
-            if event
+            let mut out = vec![if event
                 .get("is_error")
                 .and_then(Value::as_bool)
                 .unwrap_or(false)
             {
-                vec!["✗ the agent reported an error".into()]
+                "✗ the agent reported an error".to_string()
             } else {
-                vec!["✓ the agent finished".into()]
-            }
+                "✓ the agent finished".to_string()
+            }];
+            out.extend(denials(event).into_iter().map(|d| format!("⛔ not allowed: {d}")));
+            out
         }
         _ => Vec::new(),
     }
+}
+
+/// What the agent was not let use, as its result says (`permission_denials`):
+/// each tool, with what it was given, short.
+pub fn denials(result: &Value) -> Vec<String> {
+    result
+        .get("permission_denials")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .map(|d| {
+            let name = d.get("tool_name").and_then(Value::as_str).unwrap_or("a tool");
+            match tool_summary(d.get("tool_input")) {
+                what if what.is_empty() => name.to_string(),
+                what => format!("{name}: {what}"),
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -392,6 +412,18 @@ mod tests {
         assert_eq!(
             format_event(&serde_json::json!({"type": "result", "is_error": true})),
             ["✗ the agent reported an error"]
+        );
+        // What it was not let use, each said.
+        let refused = serde_json::json!({"type": "result", "permission_denials": [
+            {"tool_name": "mcp__moz__get_bug", "tool_input": {"id": 123}},
+            {"tool_name": "Bash", "tool_input": {"command": "curl -s https://bugzilla.mozilla.org/rest/bug/123 | jq ."}}]});
+        assert_eq!(
+            format_event(&refused),
+            [
+                "✓ the agent finished",
+                "⛔ not allowed: mcp__moz__get_bug: {\"id\": 123}",
+                "⛔ not allowed: Bash: curl -s https://bugzilla.mozilla.org/rest/bug/123 | jq ."
+            ]
         );
     }
 

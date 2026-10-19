@@ -61,6 +61,9 @@ pub struct Agent {
     pub args: Vec<String>,
     /// `--model` for every run.
     pub model: Option<String>,
+    /// Tools every ask may use besides its own, as claude names them for
+    /// `--allowedTools`: an MCP server's, a command.
+    pub tools: Vec<String>,
     /// Where the worktrees made for asks go; else the system's temp dir.
     pub worktrees: Option<PathBuf>,
 }
@@ -210,6 +213,7 @@ struct WrittenAgent {
     command: Option<String>,
     args: Vec<String>,
     model: Option<String>,
+    tools: Vec<String>,
     worktrees: Option<String>,
 }
 
@@ -267,6 +271,7 @@ impl Config {
             command: w.agent.command.filter(|e| !e.trim().is_empty()),
             args: w.agent.args,
             model: w.agent.model,
+            tools: w.agent.tools,
             worktrees: w.agent.worktrees.as_deref().map(expand),
         };
         if let Some(s) = w.reviews.source {
@@ -452,6 +457,12 @@ impl Config {
         out.push_str("# Arguments added to every run.\n");
         out.push_str(&format!("args = {}\n", list(&self.agent.args)));
         out.push_str(&opt("model", &self.agent.model, "claude's own"));
+        out.push_str(
+            "# Tools every ask may use besides its own, as claude names them for --allowedTools:\n\
+             # an MCP server's (\"mcp__bugzilla__*\"), one of its tools (\"mcp__bugzilla__get_bug\"),\n\
+             # a command (\"Bash(jq *)\"). An answer may use them too: give only tools that read.\n",
+        );
+        out.push_str(&format!("tools = {}\n", list(&self.agent.tools)));
         out.push_str("# Where the git worktrees made for asks go.\n");
         out.push_str(&match &self.agent.worktrees {
             Some(w) => format!("worktrees = {}\n", path(w)),
@@ -548,12 +559,13 @@ enum Kind {
 
 /// Every setting there is, as the file names it, and what it holds; the
 /// keys', `keys.NAME`, are lists.
-const SETTINGS: [(&str, Kind); 18] = [
+const SETTINGS: [(&str, Kind); 19] = [
     ("file", Kind::Text),
     ("editor", Kind::Text),
     ("agent.command", Kind::Text),
     ("agent.args", Kind::List),
     ("agent.model", Kind::Text),
+    ("agent.tools", Kind::List),
     ("agent.worktrees", Kind::Text),
     ("reviews.source", Kind::Text),
     ("reviews.url", Kind::Text),
@@ -619,6 +631,7 @@ pub fn value_of(c: &Config, key: &str) -> Result<Vec<String>, String> {
         "agent.command" => opt(&c.agent.command),
         "agent.args" => c.agent.args.clone(),
         "agent.model" => opt(&c.agent.model),
+        "agent.tools" => c.agent.tools.clone(),
         "agent.worktrees" => path(&c.agent.worktrees),
         "reviews.source" => vec![match c.reviews.source {
             Source::Phabricator => "phabricator".into(),
@@ -842,6 +855,7 @@ mod tests {
             [agent]
             command = "my-claude"
             model = "opus"
+            tools = ["mcp__bugzilla__*"]
             [reviews]
             source = "nowhere"
             url = "https://phab.example.com/"
@@ -856,6 +870,7 @@ mod tests {
         .unwrap();
         assert_eq!(c.file, Some(home().join("stacks.jsonl")));
         assert_eq!(c.agent_args(), ["--model", "opus"]);
+        assert_eq!(c.agent.tools, ["mcp__bugzilla__*"]);
         assert_eq!(c.reviews.url.as_deref(), Some("https://phab.example.com"));
         assert_eq!(c.reviews.source, Source::Phabricator, "what is wrong keeps its default");
         assert_eq!(wrong, ["reviews.source: \"nowhere\" is neither \"phabricator\" nor \"none\""]);

@@ -1174,6 +1174,42 @@ fn a_patch_is_edited_where_the_cursor_is() {
 }
 
 #[test]
+fn every_ask_may_use_the_tools_the_settings_add() {
+    let e = env();
+    e.ok(&["import", "s", "base"]);
+    let settings = e.root.join("settings.toml");
+    std::fs::write(&settings, "[agent]\ntools = [\"mcp__bugzilla__*\", \"Bash(jq *)\"]\n").unwrap();
+    let args = e.root.join("args");
+    let claude = fake_claude(&e, "claude-tools.sh", &format!("echo \"$*\" > {}", args.display()), r#"{"replies": {"c1": "Read it."}}"#);
+    let id = comment(&e, &["What", "does", "bug", "1", "say?"]);
+    let (fine, _, err) = send(&e, &claude, &[&id, "--answer-only"], &[("STACKED_CONFIG", &settings)]);
+    assert!(fine, "{err}");
+    // An answer's tools, then the settings' own.
+    let said = std::fs::read_to_string(&args).unwrap();
+    let tools = said.split("--allowedTools ").nth(1).unwrap().split(" --").next().unwrap().trim_end();
+    assert!(tools.contains("Read,") && tools.ends_with(",mcp__bugzilla__*,Bash(jq *)"), "{tools}");
+    assert!(!tools.contains("Edit") && !tools.contains("Write"), "{tools}");
+    // What it was not let use is said, in its stream and in its run, with
+    // how to allow it.
+    let result = serde_json::json!({"type": "result", "result": "{\"replies\": {\"c1\": \"I could not read it.\"}}",
+        "permission_denials": [{"tool_name": "mcp__moz__get_bug", "tool_input": {"id": 1}},
+            {"tool_name": "Bash", "tool_input": {"command": "curl -s https://bugzilla.mozilla.org/rest/bug/1 | python3 -m json.tool"}}]});
+    let refused = e.script(
+        "claude-refused.sh",
+        &format!("echo '{{\"type\":\"system\",\"subtype\":\"init\",\"model\":\"fake\"}}'\ncat <<'EOF'\n{result}\nEOF\n"),
+    );
+    let id = comment(&e, &["And", "bug", "2?"]);
+    let (fine, _, err) = stacked_in(&e.src, &e.db, &["send", "s", &id, "--answer-only", "--wait"], "", &[("STACKED_CLAUDE", &refused)]);
+    assert!(fine, "{err}");
+    let runs = e.ok(&["runs"]);
+    let said = "the agent was not allowed to use mcp__moz__get_bug, Bash(curl …): your claude settings, or stacked's agent.tools, allow more";
+    assert!(runs.contains(said), "{runs}");
+    let run = runs.lines().last().unwrap().split('\t').next().unwrap().to_string();
+    let transcript = e.ok(&["transcript", &run]);
+    assert!(transcript.contains("⛔ not allowed: mcp__moz__get_bug") && transcript.contains("⛔ not allowed: Bash: curl -s"), "{transcript}");
+}
+
+#[test]
 fn a_file_is_shown_as_a_patch_leaves_it() {
     let e = env();
     e.ok(&["import", "s", "base"]);

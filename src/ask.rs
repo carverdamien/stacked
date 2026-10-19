@@ -599,19 +599,21 @@ fn history_part(db: &Db, i: &Info, s: &Stack, cmd: &str) -> String {
 
 /// What an ask to answer only may run, `cmd` being stacked on its
 /// database: it reads the code and the stack, changes nothing, and may read
-/// the web with curl (a bug, a revision, a page of documentation).
+/// the web with curl (a bug, a revision, a page of documentation), what it
+/// reads through jq: each command of a pipe must be let run.
 fn answer_tools(cmd: &str) -> String {
     format!(
         "Read,Grep,Glob,LS,Bash(git show *),Bash(git log *),Bash(git diff *),Bash({cmd} export *),\
          Bash({cmd} log *),Bash({cmd} tree *),Bash({cmd} versions *),Bash({cmd} interdiff *),\
-         Bash({cmd} show *),Bash({cmd} comments *),Bash(curl *)"
+         Bash({cmd} show *),Bash({cmd} comments *),Bash(curl *),Bash(jq *)"
     )
 }
 
 /// What an ask to answer only is told of the web.
 const READ_THE_WEB: &str = "You may read the web with `curl` to answer (a bug on Bugzilla, a \
-revision on Phabricator, a page of documentation): only to read, never to send anything of this \
-repository anywhere.";
+revision on Phabricator, a page of documentation), what it reads through `jq` if need be, and use \
+the tools of MCP servers you are let use: only to read, never to send anything of this repository \
+anywhere.";
 
 /// A thread as a conversation, for claude.
 fn transcript(text: &str) -> String {
@@ -844,12 +846,17 @@ fn start(db_path: &Path, id: &str) -> Result<()> {
     let cmd = format!("{} -f {}", exe.display(), db_abs.display());
     i.prompt = prompt(&db, &i, &s, &cmd, id);
     let cwd = i.worktree.clone().map_or(repo.clone(), PathBuf::from);
-    let tools = match i.way {
+    let mut tools = match i.way {
         Way::Change => format!("{},Bash({cmd} fits *),Bash({cmd} export *)", allowed_tools()),
         Way::Answer => answer_tools(&cmd),
         // Building and testing runs what the project needs: Bash at large.
         Way::Test => format!("Bash,{}", allowed_tools()),
     };
+    // The settings' own, for every ask: an MCP server's tools, a command.
+    for t in &crate::config::get().agent.tools {
+        tools.push(',');
+        tools.push_str(t);
+    }
     let permission = match i.way {
         Way::Answer => "default",
         _ => "acceptEdits",
@@ -941,6 +948,24 @@ fn result_text(events: &[&Value]) -> String {
         .filter(|v| v.get("type").and_then(Value::as_str) == Some("result"))
         .find_map(|v| v.get("result").and_then(Value::as_str).map(String::from))
         .unwrap_or_default()
+}
+
+/// The tools the agent was not let use, as its result says
+/// (`permission_denials`): each once, a command by its program.
+fn refused(events: &[&Value]) -> Vec<String> {
+    let result = events.iter().rev().find(|v| v.get("type").and_then(Value::as_str) == Some("result"));
+    let mut out: Vec<String> = Vec::new();
+    for d in result.and_then(|r| r.get("permission_denials")).and_then(Value::as_array).into_iter().flatten() {
+        let name = d.get("tool_name").and_then(Value::as_str).unwrap_or("a tool");
+        let said = match d.get("tool_input").and_then(|i| i.get("command")).and_then(Value::as_str) {
+            Some(c) if name == "Bash" => format!("Bash({} …)", c.split_whitespace().next().unwrap_or("")),
+            _ => name.to_string(),
+        };
+        if !out.contains(&said) {
+            out.push(said);
+        }
+    }
+    out
 }
 
 fn str_of(v: Option<&Value>) -> String {
@@ -1037,7 +1062,9 @@ pub fn land(db_path: &Path, id: &str, exit: Option<&str>) -> Result<Run> {
         let events = db.events(id);
         let code = exit_code(db, id, exit);
         let output = result_text(&events);
-        let landed = if code != "0" {
+        // What it was not let use, said, so that it may be allowed.
+        let refused = refused(&events);
+        let mut landed = if code != "0" {
             let said: Vec<String> = events
                 .iter()
                 .filter(|e| e.get("type").and_then(Value::as_str) == Some("text"))
@@ -1060,6 +1087,12 @@ pub fn land(db_path: &Path, id: &str, exit: Option<&str>) -> Result<Run> {
                 Landed::failed(format!("could not file what the agent did: {}{at}", e.0), true)
             })
         };
+        if !refused.is_empty() {
+            landed.summary += &format!(
+                "; the agent was not allowed to use {}: your claude settings, or stacked's agent.tools, allow more",
+                refused.join(", ")
+            );
+        }
         if !landed.ok {
             mark_failed(db, &i, &landed.summary)?;
         }

@@ -374,7 +374,12 @@ ask agent`'s:
   --whole-stack`.
 - `answer only`: read-only, enforced by its tools: it reads the code and
   the stack, and it may read the web with `curl` (a bug on Bugzilla, a
-  revision on Phabricator, a page of documentation). No worktree is made for
+  revision on Phabricator, a page of documentation), through `jq` if need
+  be. It may also use what your own claude settings allow, and the tools
+  stacked's `agent.tools` names, your MCP servers' among them: running in
+  the repository, it has the servers you added there. What it was not let
+  use is said in its stream (`⛔ not allowed: mcp__moz__get_bug: …`) and in
+  its run's summary, to allow it if it should be. No worktree is made for
   it, which in a big repository takes a while: as self-review's answers do,
   it runs in the stack's repository as it is checked out, and is told that
   this need not be the stack. It reads the stack through stacked: `stacked
@@ -695,7 +700,12 @@ settings:
   code, with `{file}` and `{line}` where they go (`hx {file}:{line}`); else
   `$VISUAL`, `$EDITOR`, vi, told the line as each takes it.
 - `[agent]`: `command`, the program run as the agent; `args`, added to
-  every run; `model`; `worktrees`, where the asks' worktrees go.
+  every run; `model`; `tools`, tools every ask may use besides its own, as
+  claude names them for `--allowedTools`: all of an MCP server's
+  (`mcp__bugzilla__*`; there is no way to name every server's at once), one
+  of its tools (`mcp__bugzilla__get_bug`), a command (`Bash(jq *)`, each
+  command of a pipe needing its own). An answer may use them too, so give
+  only tools that read. `worktrees`, where the asks' worktrees go.
 - `[reviews]`: `source`, `"phabricator"` or `"none"` (no pulling); `url`,
   the Phabricator a bare `D123` trailer is on; `arcrc`, where the tokens
   are; `token`, one for `url` instead; `trailer`, the trailer naming a
