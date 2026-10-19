@@ -2719,3 +2719,33 @@ fn a_search_of_the_history_goes_to_its_record() {
     assert_eq!(app.screen, Screen::History);
     assert_eq!(app.history()[app.pick].rev, rev);
 }
+
+#[test]
+fn the_agents_worktrees_are_made_ahead_as_the_stack_s_checkout_says() {
+    let (_tmp, db, src) = setup();
+    // The checkout's own settings, over those in use: an answer's worktree
+    // made ahead; a change's setting wrong, so it keeps its own (ondemand).
+    std::fs::create_dir_all(src.join(".stacked")).unwrap();
+    std::fs::write(src.join(".stacked/local.toml"), "[agent]\nanswer_only_worktree = \"precreate\"\nworktree = \"sometimes\"\n").unwrap();
+    let mut app = open(&db).unwrap();
+    let made = src.join(".stacked/s/answer-only-agent");
+    for _ in 0..300 {
+        app.refresh();
+        if made.join(".git").exists() && !app.status.is_empty() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    assert!(made.join(".git").exists(), "made ahead");
+    assert!(!src.join(".stacked/s/agent").exists(), "a change's is made when one is asked");
+    assert!(app.status.ends_with(".stacked/local.toml: agent.worktree: \"sometimes\" is not pwd, ondemand or precreate"), "{}", app.status);
+    // Removed once the editor exits.
+    app.leave();
+    for _ in 0..300 {
+        if !made.exists() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    assert!(!made.exists(), "removed");
+}

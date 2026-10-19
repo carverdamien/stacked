@@ -756,7 +756,7 @@ fn the_agents_worktrees_are_made_ahead_and_removed_away_from_the_editor() {
     // Removed away from the editor, once it exits: but one holding anything
     // uncommitted, as git refuses to.
     std::fs::write(answering.join("mine.txt"), "x\n").unwrap();
-    forget(&e.db, &[(repo, dir.clone())], &[AGENT, ANSWERING]);
+    forget(&e.db, &[(repo, dir.clone(), vec![AGENT, ANSWERING])]);
     for _ in 0..100 {
         if !agent.exists() {
             break;
@@ -1340,8 +1340,104 @@ fn the_tools_every_ask_may_use_are_set_up_with_the_agent() {
     assert_eq!(std::fs::read_to_string(&pwd).unwrap().trim(), e.src.display().to_string(), "in the stack's repository");
     assert!(err.contains("The MCP server moz: get_bug, get_revision."), "{err}");
     assert!(err.contains("Let every ask use Edit? It changes things: an answer could too. [y/N]"), "{err}");
+    // Written in the checkout's own settings, which it said first; the
+    // settings' file as it was.
+    let local = e.src.join(".stacked/local.toml");
+    assert!(err.contains(&format!("Now, agent.tools in {}: mcp__notes__write.", settings.display())), "{err}");
+    assert!(err.contains(&format!("What you let every ask use is written in {}.", local.display())), "{err}");
     let (_, out, _) = stacked_in(&e.src, &e.db, &["config", "agent.tools"], "", &[("STACKED_CONFIG", &settings)]);
     assert_eq!(out, "mcp__moz__*\nmcp__notes__read\nWebFetch\n", "the write of notes taken out");
+    assert_eq!(std::fs::read_to_string(&local).unwrap(), "[agent]\ntools = [\"mcp__moz__*\", \"mcp__notes__read\", \"WebFetch\"]\n");
+    assert_eq!(std::fs::read_to_string(&settings).unwrap(), "[agent]\ntools = [\"mcp__notes__write\"]\n");
+    // With --global, in the settings' file, starting from its own; the
+    // checkout's still the one used there, as said.
+    let (fine, _, err) = stacked_in(
+        &e.src,
+        &e.db,
+        &["setup", "agent", "s", "--global"],
+        "n\ne\ny\ny\nn\nn\nn\nn\n",
+        &[("STACKED_CLAUDE", &claude), ("STACKED_CONFIG", &settings)],
+    );
+    assert!(fine, "{err}");
+    assert!(err.contains(&format!("What you let every ask use is written in {}.", settings.display())), "{err}");
+    assert!(err.contains("sets agent.tools too, and is the one used in its checkout"), "{err}");
+    assert_eq!(std::fs::read_to_string(&settings).unwrap(), "[agent]\ntools = [\"mcp__notes__read\", \"mcp__notes__write\"]\n");
+    // Outside a checkout, refused before the agent is asked.
+    std::fs::remove_file(&pwd).unwrap();
+    let (fine, _, err) = stacked_in(&e.root, &e.db, &["setup", "agent"], "", &[("STACKED_CLAUDE", &claude), ("STACKED_CONFIG", &settings)]);
+    assert!(!fine && err.contains("is not in a git checkout"), "{err}");
+    assert!(!pwd.exists(), "the agent was not started");
+}
+
+#[test]
+fn a_checkout_s_own_settings_override_the_others_there() {
+    let e = env();
+    e.ok(&["import", "s", "base"]);
+    let settings = e.root.join("settings.toml");
+    std::fs::write(&settings, "[agent]\ntools = [\"mcp__bugzilla__*\"]\n[view]\nlayout = \"compact\"\n").unwrap();
+    let config = |dir: &Path, args: &[&str]| {
+        let mut all = vec!["config"];
+        all.extend(args);
+        stacked_in(dir, &e.db, &all, "", &[("STACKED_CONFIG", &settings)])
+    };
+    let local = e.src.join(".stacked/local.toml");
+    // Written in the checkout's own, kept out of git's sight.
+    let (fine, _, err) = config(&e.src, &["--local", "agent.tools", "mcp__moz__*", "Bash(jq *)"]);
+    assert!(fine && err.contains(&format!("agent.tools written in {}", local.display())), "{err}");
+    assert_eq!(git(&e.src, &["status", "--porcelain"]), "");
+    // There, it is used over the settings' file, which has the rest; not
+    // elsewhere.
+    assert_eq!(config(&e.src, &["agent.tools"]).1, "mcp__moz__*\nBash(jq *)\n");
+    assert_eq!(config(&e.src, &["view.layout"]).1, "compact\n");
+    assert_eq!(config(&e.root, &["agent.tools"]).1, "mcp__bugzilla__*\n");
+    assert_eq!(config(&e.src, &["--local", "agent.tools"]).1, "mcp__moz__*\nBash(jq *)\n");
+    let (fine, _, err) = config(&e.src, &["--local", "view.layout"]);
+    assert!(!fine && err.contains(&format!("view.layout is not set in {}", local.display())), "{err}");
+    // `config` says both files, and which settings are the checkout's;
+    // `config --local`, that file alone.
+    let (_, out, _) = config(&e.src, &[]);
+    assert!(out.contains(&format!("# then from {}, this checkout's own, over it\n", local.display())), "{out}");
+    assert!(out.contains("\ntools = [\"mcp__moz__*\", \"Bash(jq *)\"]   # .stacked/local.toml\n"), "{out}");
+    assert!(out.contains("\nlayout = \"compact\"\n"), "{out}");
+    let (_, out, _) = config(&e.src, &["--local"]);
+    assert!(out.ends_with("\n[agent]\ntools = [\"mcp__moz__*\", \"Bash(jq *)\"]\n"), "{out}");
+    // Written in the settings' file, what the checkout sets is said to win
+    // there.
+    let (fine, _, err) = config(&e.src, &["agent.tools", "WebFetch"]);
+    assert!(fine && err.contains(&format!("{} sets agent.tools too, and is the one used in its checkout", local.display())), "{err}");
+    // An ask on the stack has its checkout's, wherever stacked runs.
+    let args = e.root.join("args");
+    let claude = fake_claude(&e, "claude-tools.sh", &format!("echo \"$*\" > {}", args.display()), r#"{"replies": {"c1": "Read it."}}"#);
+    let id = comment(&e, &["What", "does", "bug", "1", "say?"]);
+    let (fine, _, err) = stacked_in(
+        &e.root,
+        &e.db,
+        &["send", "s", &id, "--answer-only", "--wait", "--accept"],
+        "",
+        &[("STACKED_CLAUDE", &claude), ("STACKED_CONFIG", &settings)],
+    );
+    assert!(fine, "{err}");
+    let said = std::fs::read_to_string(&args).unwrap();
+    let tools = said.split("--allowedTools ").nth(1).unwrap().split(" --").next().unwrap().trim_end();
+    assert!(tools.ends_with(",mcp__moz__*,Bash(jq *)") && !tools.contains("WebFetch") && !tools.contains("bugzilla"), "{tools}");
+    // Taken out: the settings' file's again.
+    let (fine, _, err) = config(&e.src, &["--local", "--unset", "agent.tools"]);
+    assert!(fine && err.contains(&format!("agent.tools taken out of {}", local.display())), "{err}");
+    assert_eq!(config(&e.src, &["agent.tools"]).1, "WebFetch\n");
+    // One git tracks came with the repository, as any setting in it would:
+    // not read, said, and not written.
+    assert!(config(&e.src, &["--local", "editor", "hx"]).0);
+    assert_eq!(config(&e.src, &["editor"]).1, "hx\n");
+    git(&e.src, &["add", "-f", ".stacked/local.toml"]);
+    let (fine, _, err) = config(&e.src, &["editor"]);
+    assert!(!fine && err.contains("editor is not set"), "{err}");
+    let (_, out, _) = config(&e.src, &[]);
+    assert!(out.contains("git tracks it, and a checkout's own settings are yours, not the repository's; it is not read"), "{out}");
+    let (fine, _, err) = config(&e.src, &["--local", "editor", "vim"]);
+    assert!(!fine && err.contains("; nothing written"), "{err}");
+    // Outside a checkout, there is none.
+    let (fine, _, err) = config(&e.root, &["--local", "editor", "vim"]);
+    assert!(!fine && err.contains("is not in a git checkout"), "{err}");
 }
 
 #[test]

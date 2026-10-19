@@ -5,6 +5,12 @@
 //! is as it would be with no file. A file that cannot be read is said, and
 //! not used: the defaults are. `stacked config` prints every setting as it
 //! is, in the file's form.
+//!
+//! A checkout's own settings, `.stacked/local.toml` at its top, override
+//! those there: those of the checkout stacked runs in, and for a stack's
+//! agent those of the stack's checkout (`of`). One that git tracks is not
+//! read: it would be the repository's, and a setting can name a program to
+//! run.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -263,9 +269,9 @@ struct WrittenDemo {
 #[serde(default, deny_unknown_fields)]
 struct WrittenAgent {
     command: Option<String>,
-    args: Vec<String>,
+    args: Option<Vec<String>>,
     model: Option<String>,
-    tools: Vec<String>,
+    tools: Option<Vec<String>>,
     worktree: Option<String>,
     answer_only_worktree: Option<String>,
     worktrees: Option<String>,
@@ -316,22 +322,44 @@ impl Config {
     /// The settings `text` says, and what it got wrong: settings it got
     /// wrong keep their defaults. Unreadable as a whole, an error.
     pub fn parse(text: &str) -> Result<(Config, Vec<String>), String> {
+        Config::default().over(text)
+    }
+
+    /// These settings with those `text` says over them, and what it got
+    /// wrong: a setting it does not set, or sets wrong, stays as it is
+    /// here; a list it sets is its own, a table's settings each its own.
+    /// Unreadable as a whole, an error.
+    pub fn over(&self, text: &str) -> Result<(Config, Vec<String>), String> {
         let w: Written = toml::from_str(text).map_err(|e| e.to_string().trim().to_string())?;
-        let mut c = Config::default();
+        let mut c = self.clone();
         let mut wrong = Vec::new();
-        c.file = w.file.as_deref().map(expand);
-        c.editor = w.editor.filter(|e| !e.trim().is_empty());
-        c.agent = Agent {
-            command: w.agent.command.filter(|e| !e.trim().is_empty()),
-            args: w.agent.args,
-            model: w.agent.model,
-            tools: w.agent.tools,
-            worktrees: w.agent.worktrees.as_deref().map(expand),
-            ..Agent::default()
-        };
+        if let Some(f) = w.file {
+            c.file = Some(expand(&f));
+        }
+        // An empty one is none: the editor of $VISUAL, the agent of
+        // $STACKED_CLAUDE, as they would be without.
+        if let Some(e) = w.editor {
+            c.editor = Some(e).filter(|e| !e.trim().is_empty());
+        }
+        let a = w.agent;
+        if let Some(command) = a.command {
+            c.agent.command = Some(command).filter(|e| !e.trim().is_empty());
+        }
+        if let Some(args) = a.args {
+            c.agent.args = args;
+        }
+        if let Some(m) = a.model {
+            c.agent.model = Some(m);
+        }
+        if let Some(tools) = a.tools {
+            c.agent.tools = tools;
+        }
+        if let Some(d) = a.worktrees {
+            c.agent.worktrees = Some(expand(&d));
+        }
         for (key, written, at) in [
-            ("agent.worktree", &w.agent.worktree, &mut c.agent.worktree),
-            ("agent.answer_only_worktree", &w.agent.answer_only_worktree, &mut c.agent.answer_only_worktree),
+            ("agent.worktree", &a.worktree, &mut c.agent.worktree),
+            ("agent.answer_only_worktree", &a.answer_only_worktree, &mut c.agent.answer_only_worktree),
         ] {
             if let Some(s) = written {
                 match Workspace::parse(s) {
@@ -347,11 +375,15 @@ impl Config {
                 _ => wrong.push(format!("reviews.source: {s:?} is neither \"phabricator\" nor \"none\"")),
             }
         }
-        c.reviews.url = w.reviews.url.map(|u| u.trim_end_matches('/').to_string());
+        if let Some(u) = w.reviews.url {
+            c.reviews.url = Some(u.trim_end_matches('/').to_string());
+        }
         if let Some(a) = w.reviews.arcrc {
             c.reviews.arcrc = expand(&a);
         }
-        c.reviews.token = w.reviews.token;
+        if let Some(t) = w.reviews.token {
+            c.reviews.token = Some(t);
+        }
         if c.reviews.token.is_some() && c.reviews.url.is_none() {
             wrong.push("reviews.token: it needs reviews.url, the Phabricator it is for".into());
             c.reviews.token = None;
@@ -384,8 +416,9 @@ impl Config {
                 let all: Vec<&str> = Paint::ALL.iter().map(|p| p.name()).collect();
                 return Err(format!("unknown colour `{name}` in [colors]: the colours are {}", all.join(", ")));
             };
+            let was = c.colors.spec(p).to_string();
             if let Err(e) = c.colors.set(p, spec) {
-                wrong.push(format!("colors.{name}: {e}; it stays {:?}", p.default_spec()));
+                wrong.push(format!("colors.{name}: {e}; it stays {was:?}"));
             }
         }
         let named: Vec<(String, Vec<String>)> = w
@@ -399,27 +432,33 @@ impl Config {
                 (k, v)
             })
             .collect();
-        let (keys, bad) = Keymap::from_names(&named);
+        let (keys, bad) = c.keys.with_names(&named);
         c.keys = keys;
         wrong.extend(bad);
-        c.demo.seen = w.demo.seen.unwrap_or(false);
+        if let Some(seen) = w.demo.seen {
+            c.demo.seen = seen;
+        }
         Ok((c, wrong))
     }
 
     /// The settings in the file at `path`, if there is one; and what was
     /// wrong with it, each said with where.
     pub fn load(path: &Path) -> (Config, Vec<String>) {
+        Config::default().load_over(path)
+    }
+
+    /// These settings with those of the file at `path` over them, if there
+    /// is one; and what was wrong with it, each said with where. A file
+    /// that cannot be read leaves them as they are.
+    pub fn load_over(&self, path: &Path) -> (Config, Vec<String>) {
         let text = match std::fs::read_to_string(path) {
             Ok(t) => t,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return (Config::default(), vec![]),
-            Err(e) => return (Config::default(), vec![format!("{}: {e}", path.display())]),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return (self.clone(), vec![]),
+            Err(e) => return (self.clone(), vec![format!("{}: {e}", path.display())]),
         };
-        match Config::parse(&text) {
+        match self.over(&text) {
             Ok((c, wrong)) => (c, wrong.into_iter().map(|w| format!("{}: {w}", path.display())).collect()),
-            Err(e) => (
-                Config::default(),
-                vec![format!("{}: {e}; none of it is used", path.display())],
-            ),
+            Err(e) => (self.clone(), vec![format!("{}: {e}; none of it is used", path.display())]),
         }
     }
 
@@ -880,8 +919,17 @@ fn value_lines(lines: &[&str]) -> usize {
     lines.len().max(1)
 }
 
-/// The settings in use, read once, and what was wrong with their file.
-static LOADED: OnceLock<(Config, Vec<String>, Option<PathBuf>)> = OnceLock::new();
+/// The settings in use, read once: the settings' file's (or `init`'s), with
+/// the local file of the checkout stacked runs in over them; and what was
+/// wrong with either file.
+struct Loaded {
+    config: Config,
+    wrong: Vec<String>,
+    /// `init`'s: no file was read for them.
+    given: bool,
+}
+
+static LOADED: OnceLock<Loaded> = OnceLock::new();
 
 /// Where the settings are read from: `$STACKED_CONFIG`, else
 /// `~/.stacked.toml`.
@@ -892,28 +940,229 @@ pub fn path() -> PathBuf {
     }
 }
 
-fn loaded() -> &'static (Config, Vec<String>, Option<PathBuf>) {
+fn loaded() -> &'static Loaded {
     LOADED.get_or_init(|| {
-        let p = path();
-        let (c, wrong) = Config::load(&p);
-        (c, wrong, Some(p))
+        let (global, mut wrong) = Config::load(&path());
+        let here = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let (config, more) = with_local(&global, &here);
+        wrong.extend(more);
+        Loaded { config, wrong, given: false }
     })
 }
 
-/// The settings in use.
+/// The settings in use: the settings' file's, with the local file of the
+/// checkout stacked runs in over them.
 pub fn get() -> &'static Config {
-    &loaded().0
+    &loaded().config
 }
 
-/// What was wrong with the settings' file, if anything.
+/// What was wrong with the settings' file, or the local file, if anything.
 pub fn warnings() -> &'static [String] {
-    &loaded().1
+    &loaded().wrong
 }
 
 /// Uses `c` rather than any file, unless the settings are read already:
-/// for the tests, which share one process.
+/// for the tests, which share one process. A stack's checkout's own local
+/// file is still read over it, by `of`.
 pub fn init(c: Config) {
-    let _ = LOADED.set((c, vec![], None));
+    let _ = LOADED.set(Loaded { config: c, wrong: vec![], given: true });
+}
+
+/// The settings of the checkout `dir` is in, as the files say them now:
+/// the settings' file's (or `init`'s), with that checkout's local file
+/// over them; and what was wrong with either. What a stack's agent does is
+/// read so, from the stack's checkout, whichever directory stacked runs in:
+/// a change to either file counts from the next ask.
+pub fn of(dir: &Path) -> (Config, Vec<String>) {
+    let l = loaded();
+    let (global, mut wrong) = if l.given { (l.config.clone(), vec![]) } else { Config::load(&path()) };
+    let (config, more) = with_local(&global, dir);
+    wrong.extend(more);
+    (config, wrong)
+}
+
+// -- a checkout's own settings ------------------------------------------- //
+
+/// Where the checkout `dir` is in keeps its own settings, which override
+/// the settings' file there: `.stacked/local.toml` at its top, beside the
+/// stacks' worktrees. None outside a checkout.
+pub fn local_path(dir: &Path) -> Option<PathBuf> {
+    let top = crate::git::toplevel(dir).ok()?;
+    Some(Path::new(&top).join(".stacked").join("local.toml"))
+}
+
+fn not_in_checkout(dir: &Path) -> String {
+    format!(
+        "{} is not in a git checkout: a checkout's own settings are in .stacked/local.toml at its top",
+        dir.display()
+    )
+}
+
+/// As `local_path`, outside a checkout said.
+pub fn local_file(dir: &Path) -> Result<PathBuf, String> {
+    local_path(dir).ok_or_else(|| not_in_checkout(dir))
+}
+
+/// Why the local file at `path` is not to be read or written, if it is not:
+/// git tracks it, so it came with the repository, as a command it would
+/// have stacked run could; or git cannot tell whether it does (`.stacked` a
+/// link of the repository's).
+fn not_yours(path: &Path) -> Option<String> {
+    let top = path.parent().and_then(Path::parent)?;
+    match crate::git::git(top, &["ls-files", "--", ".stacked/local.toml"]) {
+        Ok(out) if out.trim().is_empty() => None,
+        Ok(_) => Some(format!(
+            "{}: git tracks it, and a checkout's own settings are yours, not the repository's",
+            path.display()
+        )),
+        Err(e) => Some(format!("{}: git cannot tell whether it tracks it ({})", path.display(), e.0.trim())),
+    }
+}
+
+/// `base` with the local file of the checkout `dir` is in over it, if there
+/// is one and it is yours; and what was wrong with it.
+fn with_local(base: &Config, dir: &Path) -> (Config, Vec<String>) {
+    match local_path(dir) {
+        Some(p) if p.exists() => match not_yours(&p) {
+            Some(why) => (base.clone(), vec![format!("{why}; it is not read")]),
+            None => base.load_over(&p),
+        },
+        _ => (base.clone(), vec![]),
+    }
+}
+
+/// Whether there is a local file at `path` that is read: yours.
+pub fn read_local(path: &Path) -> bool {
+    path.exists() && not_yours(path).is_none()
+}
+
+/// The local file of the checkout `dir` is in, read: what it says, if there
+/// is one, it is yours, and stacked can read it.
+fn local_text(dir: &Path) -> Option<(PathBuf, String)> {
+    let p = local_path(dir).filter(|p| p.exists() && not_yours(p).is_none())?;
+    let text = std::fs::read_to_string(&p).ok().filter(|t| Config::parse(t).is_ok())?;
+    Some((p, text))
+}
+
+/// Whether the settings' file `text` sets `key`.
+fn sets(text: &str, key: &str) -> bool {
+    let Ok(t) = toml::from_str::<toml::Table>(text) else {
+        return false;
+    };
+    match key.split_once('.') {
+        Some((table, name)) => t.get(table).and_then(|v| v.as_table()).is_some_and(|t| t.contains_key(name)),
+        None => t.contains_key(key),
+    }
+}
+
+/// The settings the local file of the checkout `dir` is in sets, as
+/// `stacked config` names them, if it is read.
+pub fn local_keys(dir: &Path) -> Vec<String> {
+    let Some(t) = local_text(dir).and_then(|(_, text)| toml::from_str::<toml::Table>(&text).ok()) else {
+        return vec![];
+    };
+    let mut out = Vec::new();
+    for (k, v) in &t {
+        match v.as_table() {
+            Some(inner) => out.extend(inner.keys().map(|n| format!("{k}.{n}"))),
+            None => out.push(k.clone()),
+        }
+    }
+    out
+}
+
+/// The file whose `key` is the one in use in the checkout `dir` is in: its
+/// local file, if it is read and sets it; else the settings' file, if that
+/// does. None if neither does.
+pub fn set_in(dir: &Path, key: &str) -> Option<PathBuf> {
+    if let Some((p, text)) = local_text(dir)
+        && sets(&text, key)
+    {
+        return Some(p);
+    }
+    let p = path();
+    file_sets(&p, key).then_some(p)
+}
+
+/// Whether the settings' file at `path` sets `key`, and stacked reads it.
+pub fn file_sets(path: &Path, key: &str) -> bool {
+    std::fs::read_to_string(path).is_ok_and(|text| Config::parse(&text).is_ok() && sets(&text, key))
+}
+
+/// What the local file of the checkout `dir` is in gives `key`, as
+/// `value_of` says it; None if it does not give it any.
+pub fn local_value(dir: &Path, key: &str) -> Result<Option<Vec<String>>, String> {
+    kind_of(key)?;
+    let p = local_file(dir)?;
+    let text = match std::fs::read_to_string(&p) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(format!("{}: {e}", p.display())),
+    };
+    if !sets(&text, key) {
+        return Ok(None);
+    }
+    let (c, _) = Config::parse(&text).map_err(|e| format!("{}: {e}", p.display()))?;
+    value_of(&c, key).map(Some)
+}
+
+/// The local file of the checkout `dir` is in, to write: refused outside a
+/// checkout, and when it is not yours.
+pub fn local_to_write(dir: &Path) -> Result<PathBuf, String> {
+    let p = local_file(dir)?;
+    match not_yours(&p) {
+        Some(why) => Err(format!("{why}; nothing written")),
+        None => Ok(p),
+    }
+}
+
+/// Writes `key` = `values` in the local file of the checkout `dir` is in,
+/// as `set` writes the settings' file: `.stacked/` made if it is not
+/// there, and kept out of git's sight. Where it wrote.
+pub fn set_local(dir: &Path, key: &str, values: &[String]) -> Result<PathBuf, String> {
+    let lit = literal(key, kind_of(key)?, values)?;
+    let p = local_to_write(dir)?;
+    let folder = p.parent().unwrap_or(Path::new("."));
+    if let Some(top) = folder.parent() {
+        crate::git::exclude(top, "/.stacked/").map_err(|e| e.0)?;
+    }
+    std::fs::create_dir_all(folder).map_err(|e| format!("{}: {e}", folder.display()))?;
+    edit_settings(&p, |text| with_setting(text, key, Some(&lit)))?;
+    Ok(p)
+}
+
+/// Takes `key` out of the local file of the checkout `dir` is in: there, it
+/// is then as the settings' file has it. Where it was.
+pub fn unset_local(dir: &Path, key: &str) -> Result<PathBuf, String> {
+    kind_of(key)?;
+    let p = local_to_write(dir)?;
+    edit_settings(&p, |text| with_setting(text, key, None))?;
+    Ok(p)
+}
+
+/// `text`, the settings as `render` writes them, with each line of a
+/// setting in `local` said to be the local file's.
+pub fn mark_local(text: &str, local: &[String]) -> String {
+    let mut table = String::new();
+    let mut out = String::new();
+    for line in text.lines() {
+        let t = line.trim();
+        if let Some(name) = t.strip_prefix('[').and_then(|t| t.strip_suffix(']')) {
+            table = name.to_string();
+        }
+        out.push_str(line);
+        if let Some((name, _)) = t.split_once('=')
+            && !t.starts_with('#')
+        {
+            let name = name.trim();
+            let key = if table.is_empty() { name.to_string() } else { format!("{table}.{name}") };
+            if local.contains(&key) {
+                out.push_str("   # .stacked/local.toml");
+            }
+        }
+        out.push('\n');
+    }
+    out
 }
 
 #[cfg(test)]
@@ -1065,6 +1314,87 @@ mod tests {
         assert!(e.contains("colors.added: \"greenish\" is not a colour"), "{e}");
         assert!(set(&path, "colors.comment", &vals(&["red"])).unwrap_err().contains("not a setting"));
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "[colors]\nadded = \"brightgreen\"\n");
+    }
+
+    #[test]
+    fn a_file_over_another_sets_only_what_it_says() {
+        let (global, wrong) = Config::parse(
+            "editor = \"vim\"\n[agent]\ntools = [\"mcp__bugzilla__*\"]\nargs = [\"--verbose\"]\n[view]\nlayout = \"compact\"\n[colors]\nyou = \"208\"\n[keys]\nmenu = \"m\"\nup = [\"up\", \"k\"]\n",
+        )
+        .unwrap();
+        assert!(wrong.is_empty(), "{wrong:?}");
+        let (c, wrong) = global
+            .over("[agent]\ntools = [\"mcp__moz__*\"]\n[view]\nlayout = \"sideways\"\nreading = true\n[colors]\nagent = \"99\"\nyou = \"purpleish\"\n[keys]\ndown = [\"down\", \"j\"]\n")
+            .unwrap();
+        // What it sets is its own: a list whole, a table's settings each.
+        assert_eq!(c.agent.tools, ["mcp__moz__*"]);
+        assert!(c.view.reading);
+        assert_eq!(c.colors.spec(Paint::Agent), "99");
+        assert_eq!(c.keys.names(Key::Down), ["down", "j"]);
+        // What it does not set, or sets wrong, is as it was.
+        assert_eq!((c.editor.as_deref(), c.agent.args.as_slice()), (Some("vim"), &["--verbose".to_string()][..]));
+        assert_eq!(c.view.layout, Layout::Compact);
+        assert_eq!(c.colors.spec(Paint::You), "208");
+        assert_eq!((c.keys.label(Key::Menu), c.keys.names(Key::Up)), ("m".to_string(), vec!["up".to_string(), "k".to_string()]));
+        assert_eq!(wrong.len(), 2, "{wrong:?}");
+        assert!(wrong[0].starts_with("view.layout: \"sideways\"") && wrong[1].ends_with("; it stays \"208\""), "{wrong:?}");
+        // An empty list is none; an empty editor, the one of $VISUAL.
+        let (c, _) = global.over("editor = \"\"\n[agent]\ntools = []\n").unwrap();
+        assert!(c.agent.tools.is_empty() && c.editor.is_none());
+        // A key for two things is said by the file that gives it so.
+        let (_, wrong) = global.over("[keys]\ndown = [\"k\"]\n").unwrap();
+        assert_eq!(wrong, ["keys: k is up and down; it does the first"]);
+        let (twice, _) = Config::parse("[keys]\nup = [\"k\"]\ndown = [\"k\"]\n").unwrap();
+        assert_eq!(twice.over("[keys]\nmenu = \"m\"\n").unwrap().1, Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_checkout_s_own_settings_are_read_unless_git_tracks_them() {
+        let tmp = tempfile::tempdir().unwrap();
+        let top = tmp.path().canonicalize().unwrap().join("repo");
+        std::fs::create_dir_all(top.join("sub")).unwrap();
+        let git = |args: &[&str]| crate::git::git(&top, args).unwrap();
+        git(&["init", "-q"]);
+        let vals = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let (base, _) = Config::parse("editor = \"vim\"\n[agent]\ntools = [\"mcp__bugzilla__*\"]\n").unwrap();
+        // None yet: the settings as they are.
+        assert_eq!(with_local(&base, &top.join("sub")), (base.clone(), vec![]));
+        // Written from anywhere in the checkout, at its top, out of git's
+        // sight; read from anywhere in it.
+        let local = set_local(&top.join("sub"), "agent.tools", &vals(&["mcp__moz__*"])).unwrap();
+        assert_eq!(local, top.join(".stacked/local.toml"));
+        assert_eq!(git(&["status", "--porcelain", "--untracked-files=all"]), "");
+        let (c, wrong) = with_local(&base, &top.join("sub"));
+        assert!(wrong.is_empty(), "{wrong:?}");
+        assert_eq!((c.agent.tools.clone(), c.editor.as_deref()), (vals(&["mcp__moz__*"]), Some("vim")));
+        assert_eq!(local_value(&top, "agent.tools"), Ok(Some(vals(&["mcp__moz__*"]))));
+        assert_eq!(local_value(&top, "editor"), Ok(None));
+        assert_eq!(local_keys(&top), ["agent.tools"]);
+        assert!(file_sets(&local, "agent.tools") && !file_sets(&local, "editor"));
+        // As `stacked config` prints them, the checkout's said so.
+        let shown = mark_local(&c.render(), &local_keys(&top));
+        assert!(shown.contains("\ntools = [\"mcp__moz__*\"]   # .stacked/local.toml\n"), "{shown}");
+        assert!(shown.contains("\neditor = \"vim\"\n"), "{shown}");
+        // Taken out: the settings' own again.
+        unset_local(&top, "agent.tools").unwrap();
+        assert_eq!(with_local(&base, &top).0.agent.tools, ["mcp__bugzilla__*"]);
+        // One git tracks came with the repository: not read, nor written.
+        set_local(&top, "editor", &vals(&["hx"])).unwrap();
+        assert_eq!(with_local(&base, &top).0.editor.as_deref(), Some("hx"));
+        git(&["add", "-f", ".stacked/local.toml"]);
+        let (c, wrong) = with_local(&base, &top);
+        assert_eq!(c.editor.as_deref(), Some("vim"));
+        assert_eq!(wrong.len(), 1, "{wrong:?}");
+        assert!(
+            wrong[0].ends_with("local.toml: git tracks it, and a checkout's own settings are yours, not the repository's; it is not read"),
+            "{wrong:?}"
+        );
+        let e = set_local(&top, "editor", &vals(&["nano"])).unwrap_err();
+        assert!(e.ends_with("; nothing written"), "{e}");
+        // Outside a checkout, there is none.
+        let out = tmp.path().canonicalize().unwrap();
+        assert_eq!(local_path(&out), None);
+        assert!(set_local(&out, "editor", &vals(&["hx"])).unwrap_err().contains("is not in a git checkout"));
     }
 
     #[test]

@@ -1,6 +1,7 @@
 //! `stacked setup agent --tui`: the tools the agent has, on a screen of
 //! their own, a box each to let every ask use it or not; then what is let is
-//! written in the settings, as agent.tools.
+//! written in the settings, as agent.tools: the checkout's own, or with
+//! `--global` the settings' file.
 
 use std::collections::HashSet;
 
@@ -28,13 +29,15 @@ enum Row {
 }
 
 /// The screen: its rows, the one picked, and the settings' tools as they
-/// are now, and where the settings are.
+/// are now; the file they are in, if one sets them, and the one they are
+/// written in.
 pub struct Setup {
     rows: Vec<Row>,
     pub sel: usize,
     top: usize,
     was: Vec<String>,
-    settings: String,
+    from: Option<String>,
+    to: String,
 }
 
 /// What a key comes to.
@@ -54,10 +57,11 @@ fn server_of(t: &str) -> Option<String> {
 
 impl Setup {
     /// The screen for the agent's `tools` and MCP `servers`, each box as
-    /// the settings' tools `was` say, the settings in the file `settings`.
-    /// What the settings let that the agent does not say it has (a command,
-    /// a server not there now) has a row of its own, to keep or take out.
-    pub fn new(tools: &[String], servers: &[String], was: &[String], settings: &str) -> Setup {
+    /// the settings' tools `was` say, the file `from` setting them (if one
+    /// does), to be written in the file `to`. What the settings let that
+    /// the agent does not say it has (a command, a server not there now)
+    /// has a row of its own, to keep or take out.
+    pub fn new(tools: &[String], servers: &[String], was: &[String], from: Option<&str>, to: &str) -> Setup {
         let mut names: Vec<String> = servers.to_vec();
         for t in tools {
             if let Some(s) = server_of(t)
@@ -116,7 +120,8 @@ impl Setup {
             sel,
             top: 0,
             was: was.to_vec(),
-            settings: settings.to_string(),
+            from: from.map(String::from),
+            to: to.to_string(),
         }
     }
 
@@ -222,13 +227,16 @@ impl Setup {
         let list = |v: &[String]| if v.is_empty() { "none".to_string() } else { v.join(", ") };
         let head = format!(" The tools every ask may use, besides {} (stacked's own): {said}", GIVEN.join(", "));
         put(buf, area, 0, 0, w, &fit(&head, w), color::header());
-        let now = format!(" Now, agent.tools in {}: {}", self.settings, list(&self.was));
+        let now = match &self.from {
+            Some(f) => format!(" Now, agent.tools in {f}: {}", list(&self.was)),
+            None => format!(" Now, agent.tools: {}", list(&self.was)),
+        };
         put(buf, area, 0, 1, w, &fit(&now, w), color::dim());
         let next = self.chosen();
         let (to_be, st) = if next == self.was {
-            (" To be: as it is".to_string(), color::dim())
+            (format!(" To be, in {}: as it is", self.to), color::dim())
         } else {
-            (format!(" To be: {}", list(&next)), color::note())
+            (format!(" To be, in {}: {}", self.to, list(&next)), color::note())
         };
         put(buf, area, 0, h - 2, w, &fit(&to_be, w), st);
         let room = h - 4;
@@ -264,7 +272,7 @@ impl Setup {
             }
             put(buf, area, 0, y + 2, w, &fit(&text, w), st);
         }
-        let keys = " ↑↓: pick · space: let it or not · s: save in the settings · esc: leave, nothing written";
+        let keys = " ↑↓: pick · space: let it or not · s: save · esc: leave, nothing written";
         put(buf, area, 0, h - 1, w, &fit(keys, w), color::status());
     }
 }
@@ -320,10 +328,10 @@ mod tests {
         let servers = strings(&["moz", "notes"]);
         // As the settings were: notes' write let, and a tool of another
         // agent's, kept as it is.
-        let mut s = Setup::new(&tools, &servers, &strings(&["mcp__notes__write", "Bash(jq *)"]), "settings.toml");
+        let mut s = Setup::new(&tools, &servers, &strings(&["mcp__notes__write", "Bash(jq *)"]), Some("settings.toml"), "local.toml");
         let shown = screen(&mut s);
         assert!(shown.contains(" Now, agent.tools in settings.toml: mcp__notes__write, Bash(jq *)"), "{shown}");
-        assert!(shown.contains(" To be: as it is"), "{shown}");
+        assert!(shown.contains(" To be, in local.toml: as it is"), "{shown}");
         assert!(shown.contains(" In the settings, not among the agent's tools\n   [x] Bash(jq *)"), "{shown}");
         assert!(shown.contains(" [ ] all of MCP server moz's tools, those to come too (mcp__moz__*)"), "{shown}");
         assert!(shown.contains("     [ ] get_bug") && shown.contains("     [x] write"), "{shown}");
@@ -343,7 +351,7 @@ mod tests {
         press(&mut s, KeyCode::Down);
         press(&mut s, KeyCode::Down);
         press(&mut s, KeyCode::Char(' '));
-        assert!(screen(&mut s).contains(" To be: mcp__moz__get_revision, WebFetch, Bash(jq *)"), "{}", screen(&mut s));
+        assert!(screen(&mut s).contains(" To be, in local.toml: mcp__moz__get_revision, WebFetch, Bash(jq *)"), "{}", screen(&mut s));
         // Bash(jq *), of the settings, taken out too.
         press(&mut s, KeyCode::End);
         press(&mut s, KeyCode::Char(' '));
@@ -354,8 +362,11 @@ mod tests {
     #[test]
     fn a_server_let_whole_is_said_so() {
         let tools = strings(&["mcp__moz__get_bug"]);
-        let mut s = Setup::new(&tools, &[], &strings(&["mcp__moz__*"]), "settings.toml");
+        let mut s = Setup::new(&tools, &[], &strings(&["mcp__moz__*"]), Some("settings.toml"), "settings.toml");
         assert!(screen(&mut s).contains(" [x] all of MCP server moz's tools"));
         assert_eq!(s.chosen(), ["mcp__moz__*"]);
+        // No file sets them: none.
+        let mut s = Setup::new(&tools, &[], &[], None, "local.toml");
+        assert!(screen(&mut s).contains(" Now, agent.tools: none\n"), "{}", screen(&mut s));
     }
 }

@@ -63,7 +63,8 @@ stacked trim new.jsonl --from @40  # a new database, the history before @40 left
 stacked config > ~/.stacked.toml   # every setting, to start a settings file from
 stacked config editor hx           # one written in the settings file; KEY alone reads it
 stacked config --unset editor      # ... taken out of it
-stacked setup agent bug123         # which of the agent's tools every ask may use, asked one by one
+stacked config --local editor vim  # ... in this checkout's own settings, over the file's here
+stacked setup agent bug123         # which of the agent's tools every ask may use, asked one by one, for its checkout
 stacked setup agent bug123 --tui   # ... on a screen, a box for each
 ```
 
@@ -392,7 +393,8 @@ ask agent`'s:
   the stack, and it may read the web with `curl` (a bug on Bugzilla, a
   revision on Phabricator, a page of documentation), through `jq` if need
   be. It may also use what your own claude settings allow, and the tools
-  stacked's `agent.tools` names, your MCP servers' among them: running in
+  stacked's `agent.tools` names (the stack's checkout's own, if it sets
+  them: Settings, below), your MCP servers' among them: running in
   the repository, it has the servers you added there. What it was not let
   use is said in its stream (`⛔ not allowed: mcp__moz__get_bug: …`) and in
   its run's summary, to allow it if it should be. No worktree is made for
@@ -422,9 +424,9 @@ ask to take: only what differs is written. One busy, the next ask takes
 `agent-2`, `agent-3`. One an agent left work unfinished in is left as it
 is, for you to look at; the ask says so when it fails (`it is left in
 …/.stacked/NAME/agent`), and the next takes another. Where each kind of ask
-works is a setting of `[agent]`: `worktree` for a change, and
-`answer_only_worktree` for an answer, each `pwd`, `ondemand` or
-`precreate`:
+works is a setting of `[agent]` (the stack's checkout's own, if it sets
+it): `worktree` for a change, and `answer_only_worktree` for an answer,
+each `pwd`, `ondemand` or `precreate`:
 
 - `ondemand`, a change's unless set: the stack's own worktree, made the
   first time an ask needs it, and kept until you remove it (`git worktree
@@ -761,7 +763,8 @@ nothing is written.
 
 ## Settings
 
-`~/.stacked.toml` (or the file `$STACKED_CONFIG` names) holds the settings;
+`~/.stacked.toml` (or the file `$STACKED_CONFIG` names) holds the settings,
+which a checkout's own, `.stacked/local.toml`, overrides there (below);
 each is optional, and `stacked config` prints them all as they are, in the
 file's form, with what is wrong with the file. As `git config` does,
 `stacked config KEY` prints one (`view.layout`, `keys.down`: each value on a
@@ -793,14 +796,19 @@ settings:
   stacked does not give every ask, whether it may, saying of those that
   change things (`Bash`, `Edit`, `Write`…) that an answer could change
   things too. No answer is no. What you let it is added to `tools`, what
-  you did not taken out, the rest of the file as it was. With `--tui`, on a
-  screen of its own: `tools` as the settings have it now, at the top; a box
-  for each MCP server (all its tools, those to come too) and for each of
-  its tools, then for each other tool, and for what the settings let that
-  the agent does not say it has (`Bash(jq *)`, a server not there now), to
-  keep or take out; and what `tools` is to be, at the bottom. Space lets a
-  tool or not, `s` saves, esc leaves with nothing written. `worktrees`, where the agents' worktrees go, else
-  `.stacked/` at the top of the stack's repository.
+  you did not taken out, in that checkout's own settings (below; with
+  `--global`, in `~/.stacked.toml`, for the checkouts without their own),
+  the rest of the file as it was; it says first which file `tools` is in
+  now, and which it writes. Outside a checkout, only `--global` can be
+  written. With `--tui`, on a screen of its own: `tools` as the settings
+  have it now, and the file it is in, at the top; a box for each MCP server
+  (all its tools, those to come too) and for each of its tools, then for
+  each other tool, and for what the settings let that the agent does not
+  say it has (`Bash(jq *)`, a server not there now), to keep or take out;
+  and what `tools` is to be, in the file it writes, at the bottom. Space
+  lets a tool or not, `s` saves, esc leaves with nothing written.
+  `worktrees`, where the agents' worktrees go, else `.stacked/` at the top
+  of the stack's repository.
 - `[reviews]`: `source`, `"phabricator"` or `"none"` (no pulling); `url`,
   the Phabricator a bare `D123` trailer is on; `arcrc`, where the tokens
   are; `token`, one for `url` instead; `trailer`, the trailer naming a
@@ -835,6 +843,24 @@ settings:
 A file stacked cannot read, or with a setting it does not know, is not
 used at all: the editor's bar says why, as every command does. A setting
 with a wrong value keeps its default, and that is said too.
+
+A checkout's own settings, `.stacked/local.toml` at its top (beside the
+stacks' worktrees, out of git's sight), override `~/.stacked.toml` there:
+what it sets is its own, a list whole and a table's settings each (`[keys]
+down` alone, the other keys as they were); what it does not set, or sets
+wrong, is the other file's. The settings used are those of the checkout
+stacked runs in, but for what a stack's agent does (`[agent]`: its tools,
+where it works, the program run): those are of the stack's checkout,
+wherever stacked runs, and read when an ask starts, so that a change
+counts from the next ask, even with the editor open. `stacked config --local KEY
+VALUE…` writes one there, `stacked config --local --unset KEY` takes it
+out, `stacked config --local KEY` reads it, and `stacked config --local`
+prints the file. `stacked config` names both files and marks each setting
+the checkout's own sets (`# .stacked/local.toml`); one written in
+`~/.stacked.toml` that the checkout's own sets too is said to be the
+checkout's there. A `.stacked/local.toml` that git tracks is neither read
+nor written, and that is said: it came with the repository, and a setting
+can name a program to run (`agent.command`, `editor`).
 
 ## Only patches that apply go in
 
@@ -988,7 +1014,8 @@ the other.
 - `trim.rs`: a new database, the start of the history left out.
 - `todo.rs`: the `git rebase -i` style list.
 - `search.rs`: searching what stacked holds, in a thread of its own.
-- `config.rs`, `keys.rs`: the settings, and the keys they map.
+- `config.rs`, `keys.rs`: the settings (`~/.stacked.toml`, and a
+  checkout's own over it), and the keys they map.
 - `setup.rs`: `stacked setup agent --tui`, the agent's tools on a screen.
 - `editor.rs`: the inline comment editor.
 - `paint.rs`: colours, and drawing text and boxes.
@@ -1015,8 +1042,11 @@ moved to the stack, a patch's comment asked of the whole stack adding a
 patch on top, a reply written again, asks waiting their turn, a rebase, the stack not
 edited by hand while the agent changes it, failures kept to look at, comments staying on their line
 across versions, a patch edited by hand (as mail and as code, at a line,
-refused and taken up again), trimming, the settings (and the tools every
-ask may use, set up with the agent), filing Phabricator threads, apply, and
+refused and taken up again), trimming, the settings (a checkout's own over
+them, an ask on a stack having its checkout's wherever stacked runs, one
+git tracks not read; and the tools every ask may use, set up with the
+agent, in the checkout's own or with `--global`), filing Phabricator
+threads, apply, and
 what does not apply being refused, edited again, or read-only. `tests/tui.rs` draws the editor into a buffer and presses keys:
 that no letter but 1 and 2 does anything, keys mapped by the settings, the
 menus by place, what `?` says where, writing in every pane, a comment asked
@@ -1031,8 +1061,9 @@ whole stack, what you said last written again (off the queue meanwhile;
 left as it was, asked as it is or left so), a comment moved to the stack
 taking the cursor with it, the mouse (the cursor following it, a click as
 Enter, a right click's menu, a menu's item), the comments pane's previews,
-moving a patch, and searching (what is in sight first, the patches then the
-files they touch, the history). With `--features web`, `tests/web.rs`
+moving a patch, searching (what is in sight first, the patches then the
+files they touch, the history), and the agents' worktrees made ahead as the
+stack's checkout says. With `--features web`, `tests/web.rs`
 serves the editor and asks it over HTTP as a browser would: the token
 needed, the page, the wasm, the rows as they change, a key and a click; and
 `web.rs` tests the rows and the lines both ways, with the client's own tests
@@ -1047,7 +1078,8 @@ to where the stack is, a branch put straight back) and how a stack diff
 follows each patch by its change, a move told from a shift. Those in
 `setup.rs` show the setup screen's boxes, a server's tools let all at once
 or one by one; those in `search.rs`, which lines of a file a hunk shows
-already.
+already; those in `config.rs`, a file of settings over another, and a
+checkout's own read and written unless git tracks it.
 
 ## Not done yet
 

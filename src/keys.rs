@@ -239,7 +239,14 @@ impl Keymap {
     /// The keymap of `named` (an action's name to its keys), the defaults
     /// for the actions it does not name; and what it got wrong.
     pub fn from_names(named: &[(String, Vec<String>)]) -> (Keymap, Vec<String>) {
-        let mut map = Keymap::default();
+        Keymap::default().with_names(named)
+    }
+
+    /// This keymap with `named` over it, the actions it does not name as
+    /// they are; and what it got wrong: a key for two things, if `named`
+    /// gives it to one of them.
+    pub fn with_names(&self, named: &[(String, Vec<String>)]) -> (Keymap, Vec<String>) {
+        let mut map = self.clone();
         let mut wrong = Vec::new();
         for (action, names) in named {
             let Some(key) = Key::ALL.iter().find(|k| k.name() == action) else {
@@ -262,11 +269,14 @@ impl Keymap {
             }
         }
         // A key for two things does the first.
+        let named_here = |k: &Key| named.iter().any(|(action, _)| action == k.name());
         let mut seen: Vec<(Chord, Key)> = Vec::new();
         for (key, chords) in &map.keys {
             for c in chords {
                 if let Some((_, other)) = seen.iter().find(|(s, _)| s == c) {
-                    wrong.push(format!("keys: {} is {} and {}; it does the first", c.label(), other.name(), key.name()));
+                    if named_here(key) || named_here(other) {
+                        wrong.push(format!("keys: {} is {} and {}; it does the first", c.label(), other.name(), key.name()));
+                    }
                 } else {
                     seen.push((*c, *key));
                 }

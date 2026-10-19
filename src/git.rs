@@ -169,7 +169,7 @@ pub fn ready(repo: &Path, at: &Path, base: &str, mbox: &str, n: usize, step: &dy
 }
 
 /// `pattern` in the repository's `info/exclude`, unless it is there.
-fn exclude(repo: &Path, pattern: &str) -> Result<()> {
+pub fn exclude(repo: &Path, pattern: &str) -> Result<()> {
     let common = git(repo, &["rev-parse", "--path-format=absolute", "--git-common-dir"])?;
     let file = PathBuf::from(common.trim()).join("info").join("exclude");
     let mut text = std::fs::read_to_string(&file).unwrap_or_default();

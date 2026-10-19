@@ -834,17 +834,18 @@ cd "$cwd" || exit 1
 "$exe" -f "$db" land "$id" > /dev/null 2>&1
 "#;
 
-/// What the agent has, as it says when it starts in `dir`, in its first
-/// event (`system/init`): its tools, and its MCP servers by name. It is
-/// stopped then, before it is asked anything.
-pub fn agent_tools(dir: &Path) -> Result<(Vec<String>, Vec<String>)> {
+/// What the agent has, as it says when it starts in `dir`, run as `cfg`
+/// says (the settings there), in its first event (`system/init`): its
+/// tools, and its MCP servers by name. It is stopped then, before it is
+/// asked anything.
+pub fn agent_tools(dir: &Path, cfg: &crate::config::Config) -> Result<(Vec<String>, Vec<String>)> {
     let claude = match CLAUDE.lock().unwrap().clone() {
         Some((claude, _)) => claude.to_string_lossy().into_owned(),
-        None => crate::config::get().agent_command(),
+        None => cfg.agent_command(),
     };
     let mut c = Command::new(&claude);
     c.args(["-p", "Say OK.", "--output-format", "stream-json", "--verbose"]);
-    c.args(crate::config::get().agent_args());
+    c.args(cfg.agent_args());
     c.current_dir(dir).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
     let mut child = c.spawn().map_err(|e| Error(format!("{claude}: {e}")))?;
     let out = child.stdout.take().ok_or_else(|| Error(format!("{claude}: no output")))?;
@@ -983,11 +984,14 @@ pub fn precreate(db_path: &Path, name: &str, kinds: &[&str], under: Option<&Path
     Ok((repo, dir))
 }
 
-/// The worktrees of `kinds` in each of `dirs` (a repository, and a stack's
-/// agents' folder in it) removed, away from the caller, which need not
-/// wait: but those an ask is working in, and, as git refuses to remove
-/// them, those with anything uncommitted.
-pub fn forget(db_path: &Path, dirs: &[(PathBuf, PathBuf)], kinds: &[&str]) {
+/// A stack's agents' worktrees made ahead: its repository, their folder,
+/// and their kinds.
+pub type Ahead = (PathBuf, PathBuf, Vec<&'static str>);
+
+/// The worktrees made ahead, `made`, removed, away from the caller, which
+/// need not wait: but those an ask is working in, and, as git refuses to
+/// remove them, those with anything uncommitted.
+pub fn forget(db_path: &Path, made: &[Ahead]) {
     let busy: HashSet<String> = Db::load(db_path)
         .map(|db| {
             db.runs()
@@ -997,7 +1001,7 @@ pub fn forget(db_path: &Path, dirs: &[(PathBuf, PathBuf)], kinds: &[&str]) {
                 .collect()
         })
         .unwrap_or_default();
-    for (repo, dir) in dirs {
+    for (repo, dir, kinds) in made {
         let mut gone: Vec<PathBuf> = Vec::new();
         for kind in kinds {
             for k in 1.. {
@@ -1061,11 +1065,13 @@ fn start(db_path: &Path, id: &str) -> Result<()> {
             k + 1
         }
     };
-    // Where it works, as the settings say: an answer in the repository as it
-    // is (pwd), else in a worktree of the stack's own, the stack up to its
-    // place applied; a change in one, or in the user's checkout moved to the
-    // stack (pwd); a build and test in the repository, where it likes.
-    let agent = &crate::config::get().agent;
+    // Where it works, as the settings say (those of the stack's checkout,
+    // read now): an answer in the repository as it is (pwd), else in a
+    // worktree of the stack's own, the stack up to its place applied; a
+    // change in one, or in the user's checkout moved to the stack (pwd); a
+    // build and test in the repository, where it likes.
+    let (cfg, _) = crate::config::of(&repo);
+    let agent = &cfg.agent;
     let patches: Vec<&Patch> = s.patches[..upto].iter().map(|p| db.patch(p)).collect();
     let mbox = format_mbox(&patches);
     match (i.way, agent.worktree, agent.answer_only_worktree) {
@@ -1128,7 +1134,7 @@ fn start(db_path: &Path, id: &str) -> Result<()> {
         Way::Test => format!("Bash,{}", allowed_tools()),
     };
     // The settings' own, for every ask: an MCP server's tools, a command.
-    for t in &crate::config::get().agent.tools {
+    for t in &agent.tools {
         tools.push(',');
         tools.push_str(t);
     }
@@ -1158,15 +1164,15 @@ fn start(db_path: &Path, id: &str) -> Result<()> {
     c.args(["--output-format", "stream-json", "--verbose"]);
     c.args(["--permission-mode", permission, "--allowedTools", &tools]);
     // What the settings add: a model, arguments of the user's.
-    c.args(crate::config::get().agent_args());
+    c.args(cfg.agent_args());
     c.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
     // The program run as claude: the tests' stand-in, else $STACKED_CLAUDE,
     // the settings' or claude.
     let claude = match CLAUDE.lock().unwrap().clone() {
         Some((claude, _)) => claude.to_string_lossy().into_owned(),
-        None => crate::config::get().agent_command(),
+        None => cfg.agent_command(),
     };
-    let extra: String = crate::config::get().agent_args().iter().map(|a| format!(" {a}")).collect();
+    let extra: String = cfg.agent_args().iter().map(|a| format!(" {a}")).collect();
     step(format!("{claude} -p … --permission-mode {permission}{extra}, in {}", cwd.display()));
     c.env("STACKED_CLAUDE", claude);
     // The agent's commits are read back as patches, then gone: not signed,

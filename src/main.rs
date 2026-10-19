@@ -346,8 +346,10 @@ enum Cmd {
     },
     /// The settings, as they are: every one, in the form of the file they
     /// are read from (~/.stacked.toml, or $STACKED_CONFIG), to start one
-    /// from: `stacked config > ~/.stacked.toml`. With KEY, its value; with
-    /// VALUE too, KEY written in that file, the rest of it as it was.
+    /// from: `stacked config > ~/.stacked.toml`; those the checkout's own
+    /// settings set (.stacked/local.toml at its top) are said so. With KEY,
+    /// its value; with VALUE too, KEY written in that file, the rest of it
+    /// as it was.
     Config {
         /// A setting, as the file names it: `editor`, `view.layout`,
         /// `keys.down`.
@@ -357,6 +359,11 @@ enum Cmd {
         /// Takes KEY out of the file: it is then as it would be without.
         #[arg(long, requires = "key", conflicts_with = "values")]
         unset: bool,
+        /// The checkout's own settings alone, in .stacked/local.toml at its
+        /// top, which override the others there: printed, or KEY read,
+        /// written or taken out there.
+        #[arg(long)]
+        local: bool,
     },
     /// Sets something of stacked up, asking you: `agent`, the tools every
     /// ask may use.
@@ -400,43 +407,79 @@ enum SetupWhat {
     /// The tools every ask may use besides stacked's own: the agent is
     /// started (and stopped at once) in the stack's repository, else here,
     /// where it has your MCP servers, and says what it has; you let every
-    /// ask use each, or not, and what you let it is written in the
-    /// settings, as agent.tools.
+    /// ask use each, or not, and what you let it is written as agent.tools
+    /// in that checkout's own settings, .stacked/local.toml at its top,
+    /// which override the others there.
     Agent {
         name: Option<String>,
         /// On a screen of its own, a box for each tool, rather than a
         /// question each.
         #[arg(long)]
         tui: bool,
+        /// Written in the settings' file (~/.stacked.toml, or
+        /// $STACKED_CONFIG), for every checkout without its own, rather
+        /// than in the checkout's own.
+        #[arg(long)]
+        global: bool,
     },
+}
+
+/// What `stacked setup agent` works with: the directory the agent is asked
+/// in, as the settings there have it run; the settings' tools now, and the
+/// file they are in, if one sets them; the file they are written in, and
+/// how.
+struct SetUp<'a> {
+    dir: &'a Path,
+    cfg: &'a stacked::config::Config,
+    was: Vec<String>,
+    from: Option<PathBuf>,
+    to: PathBuf,
+    save: &'a dyn Fn(&[String]) -> std::result::Result<(), String>,
+}
+
+/// Says so when `key`, written in (or taken out of) the settings' file
+/// `written`, is not the one used in the checkout `dir` is in: that
+/// checkout's own settings set it.
+fn overridden(dir: &Path, key: &str, written: &Path) {
+    if let Some(l) = stacked::config::set_in(dir, key).filter(|f| f != written) {
+        eprintln!(
+            "stacked: {} sets {key} too, and is the one used in its checkout (`stacked config --local --unset {key}` there takes it out)",
+            l.display()
+        );
+    }
+}
+
+/// What `tools` are said as: each, or none.
+fn listed(tools: &[String]) -> String {
+    if tools.is_empty() { "none".to_string() } else { tools.join(", ") }
 }
 
 /// As `setup_agent`, on a screen of its own: a box for each tool, the
 /// settings' value now and as it is to be.
-fn setup_agent_tui(dir: &Path, settings: &Path) -> Result<()> {
-    eprintln!("stacked: asking the agent, in {}, what tools it has…", dir.display());
-    let (tools, servers) = stacked::ask::agent_tools(dir)?;
-    let was = stacked::config::get().agent.tools.clone();
-    let s = stacked::setup::Setup::new(&tools, &servers, &was, &settings.display().to_string());
-    match stacked::setup::run(s, &format!("the agent's, in {}", dir.display()))? {
+fn setup_agent_tui(up: SetUp) -> Result<()> {
+    eprintln!("stacked: asking the agent, in {}, what tools it has…", up.dir.display());
+    let (tools, servers) = stacked::ask::agent_tools(up.dir, up.cfg)?;
+    let from = up.from.as_ref().map(|f| f.display().to_string());
+    let s = stacked::setup::Setup::new(&tools, &servers, &up.was, from.as_deref(), &up.to.display().to_string());
+    match stacked::setup::run(s, &format!("the agent's, in {}", up.dir.display()))? {
         Some(chosen) => {
-            stacked::config::set(settings, "agent.tools", &chosen).map_err(Error)?;
-            let said = if chosen.is_empty() { "none".to_string() } else { chosen.join(", ") };
-            eprintln!("stacked: agent.tools written in {}: {said}", settings.display());
+            (up.save)(&chosen).map_err(Error)?;
+            eprintln!("stacked: agent.tools written in {}: {}", up.to.display(), listed(&chosen));
         }
         None => eprintln!("stacked: left; nothing written"),
     }
     Ok(())
 }
 
-/// Asks the agent what tools it has in `dir`, then you, on stdin, which
-/// every ask may use: an MCP server's all at once or one by one, then each
-/// other tool stacked does not give. What you let it is written in the
-/// settings' file at `settings`, as agent.tools, what you did not taken out.
-fn setup_agent(dir: &Path, settings: &Path) -> Result<()> {
+/// Asks the agent what tools it has in its directory, then you, on stdin,
+/// which every ask may use: an MCP server's all at once or one by one,
+/// then each other tool stacked does not give. What you let it is written
+/// as agent.tools, what you did not taken out.
+fn setup_agent(up: SetUp) -> Result<()> {
     use std::io::BufRead;
-    let (tools, servers) = stacked::ask::agent_tools(dir)?;
-    let mut chosen: Vec<String> = stacked::config::get().agent.tools.clone();
+    let dir = up.dir;
+    let (tools, servers) = stacked::ask::agent_tools(dir, up.cfg)?;
+    let mut chosen: Vec<String> = up.was.clone();
     let mut lines = std::io::stdin().lock().lines();
     let mut answer = |q: &str| -> String {
         eprint!("{q} ");
@@ -454,11 +497,11 @@ fn setup_agent(dir: &Path, settings: &Path) -> Result<()> {
         tools.len(),
         stacked::ask::GIVEN.join(", ")
     );
-    eprintln!(
-        "Now, agent.tools in {}: {}.",
-        settings.display(),
-        if chosen.is_empty() { "none".to_string() } else { chosen.join(", ") }
-    );
+    match &up.from {
+        Some(f) => eprintln!("Now, agent.tools in {}: {}.", f.display(), listed(&chosen)),
+        None => eprintln!("Now, agent.tools: {}.", listed(&chosen)),
+    }
+    eprintln!("What you let every ask use is written in {}.", up.to.display());
     // An MCP server's tools, all at once or one by one.
     let mut names: Vec<String> = servers.clone();
     for t in &tools {
@@ -499,12 +542,8 @@ fn setup_agent(dir: &Path, settings: &Path) -> Result<()> {
         let yes = matches!(answer(&format!("Let every ask use {t}?{warn} [y/N]")).as_str(), "y" | "yes");
         keep(&mut chosen, t, yes);
     }
-    stacked::config::set(settings, "agent.tools", &chosen).map_err(Error)?;
-    eprintln!(
-        "stacked: agent.tools written in {}: {}",
-        settings.display(),
-        if chosen.is_empty() { "none".to_string() } else { chosen.join(", ") }
-    );
+    (up.save)(&chosen).map_err(Error)?;
+    eprintln!("stacked: agent.tools written in {}: {}", up.to.display(), listed(&chosen));
     Ok(())
 }
 
@@ -1324,20 +1363,63 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
             let from = from.as_deref().map(parse_rev).transpose()?;
             println!("{}", stacked::trim::trim(path, &new, from)?.said(&new));
         }
-        Cmd::Config { key: None, .. } => {
+        Cmd::Config { key: None, local: false, .. } => {
             let p = stacked::config::path();
             let state = if p.exists() { "read from" } else { "none in" };
             println!("# {state} {}", p.display());
+            // One that is there and not read: what is wrong says why.
+            if let Some(l) = stacked::config::local_path(&here()) {
+                if stacked::config::read_local(&l) {
+                    println!("# then from {}, this checkout's own, over it", l.display());
+                } else if !l.exists() {
+                    println!("# none in {}, where this checkout's own would be", l.display());
+                }
+            }
             for w in stacked::config::warnings() {
                 println!("# wrong: {w}");
             }
-            print!("{}", stacked::config::get().render());
+            let local = stacked::config::local_keys(&here());
+            print!("{}", stacked::config::mark_local(&stacked::config::get().render(), &local));
         }
-        Cmd::Config { key: Some(key), values, unset } => {
+        Cmd::Config { key: None, local: true, .. } => {
+            let l = stacked::config::local_file(&here()).map_err(Error)?;
+            match std::fs::read_to_string(&l) {
+                Ok(text) => {
+                    println!("# {}, this checkout's own settings, over {}", l.display(), stacked::config::path().display());
+                    let at = format!("{}:", l.display());
+                    for w in stacked::config::warnings().iter().filter(|w| w.starts_with(&at)) {
+                        println!("# wrong: {w}");
+                    }
+                    print!("{text}");
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => println!("# none in {}", l.display()),
+                Err(e) => return err(format!("{}: {e}", l.display())),
+            }
+        }
+        Cmd::Config { key: Some(key), values, unset, local: true } => {
+            let dir = here();
+            if unset {
+                let l = stacked::config::unset_local(&dir, &key).map_err(Error)?;
+                eprintln!("stacked: {key} taken out of {}", l.display());
+            } else if values.is_empty() {
+                let Some(now) = stacked::config::local_value(&dir, &key).map_err(Error)? else {
+                    let l = stacked::config::local_file(&dir).map_err(Error)?;
+                    return err(format!("{key} is not set in {}", l.display()));
+                };
+                for v in now {
+                    println!("{v}");
+                }
+            } else {
+                let l = stacked::config::set_local(&dir, &key, &values).map_err(Error)?;
+                eprintln!("stacked: {key} written in {}", l.display());
+            }
+        }
+        Cmd::Config { key: Some(key), values, unset, local: false } => {
             let p = stacked::config::path();
             if unset {
                 stacked::config::unset(&p, &key).map_err(Error)?;
                 eprintln!("stacked: {key} taken out of {}", p.display());
+                overridden(&here(), &key, &p);
             } else if values.is_empty() {
                 let now = stacked::config::value_of(stacked::config::get(), &key).map_err(Error)?;
                 if now.is_empty() {
@@ -1349,17 +1431,44 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
             } else {
                 stacked::config::set(&p, &key, &values).map_err(Error)?;
                 eprintln!("stacked: {key} written in {}", p.display());
+                overridden(&here(), &key, &p);
             }
         }
-        Cmd::Setup { what: SetupWhat::Agent { name, tui } } => {
+        Cmd::Setup { what: SetupWhat::Agent { name, tui, global } } => {
             let dir = match name {
                 Some(n) => ops::base_of(Db::load(path)?.stack(&n)?)?.0,
                 None => here(),
             };
+            // Where what you let it is written: refused before the agent is
+            // asked, if it cannot be.
+            let to = match global {
+                true => stacked::config::path(),
+                false => stacked::config::local_to_write(&dir).map_err(Error)?,
+            };
+            let (cfg, wrong) = stacked::config::of(&dir);
+            for w in wrong.iter().filter(|w| !stacked::config::warnings().contains(w)) {
+                eprintln!("stacked: {w}");
+            }
+            // The tools now: those used there; or the settings' file's own.
+            let (was, from) = match global {
+                true => {
+                    let set = stacked::config::file_sets(&to, "agent.tools");
+                    (stacked::config::Config::load(&to).0.agent.tools, set.then(|| to.clone()))
+                }
+                false => (cfg.agent.tools.clone(), stacked::config::set_in(&dir, "agent.tools")),
+            };
+            let save = |chosen: &[String]| match global {
+                true => stacked::config::set(&to, "agent.tools", chosen),
+                false => stacked::config::set_local(&dir, "agent.tools", chosen).map(|_| ()),
+            };
+            let up = SetUp { dir: &dir, cfg: &cfg, was, from, to: to.clone(), save: &save };
             if tui {
-                setup_agent_tui(&dir, &stacked::config::path())?;
+                setup_agent_tui(up)?;
             } else {
-                setup_agent(&dir, &stacked::config::path())?;
+                setup_agent(up)?;
+            }
+            if global {
+                overridden(&dir, "agent.tools", &to);
             }
         }
         Cmd::Check => {

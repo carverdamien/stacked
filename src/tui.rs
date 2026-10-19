@@ -989,9 +989,10 @@ enum Done {
         rev: Option<usize>,
         why: Option<String>,
     },
-    /// A stack's agents' worktrees made ahead: its repository and their
-    /// folder; or why they could not be.
-    Precreated(std::result::Result<(PathBuf, PathBuf), String>),
+    /// A stack's agents' worktrees made ahead, if its checkout's settings
+    /// say so, or why they could not be; and what was wrong with those
+    /// settings.
+    Precreated(std::result::Result<Option<ask::Ahead>, String>, Vec<String>),
 }
 
 /// The work done away from the screen, each in a thread of its own, so the
@@ -1009,9 +1010,9 @@ struct Background {
     /// The stack being checked, and its rev.
     judging: Option<(String, Option<usize>)>,
     /// The stacks whose agents' worktrees were made ahead, and where: their
-    /// repository and folder, to remove them once the editor exits.
+    /// repository, folder and kinds, to remove them once the editor exits.
     precreating: Vec<String>,
-    precreated: Vec<(PathBuf, PathBuf)>,
+    precreated: Vec<ask::Ahead>,
 }
 
 impl Background {
@@ -1151,25 +1152,39 @@ impl App {
     }
 
     /// The current stack's agents' worktrees made ahead, away from the
-    /// screen, as the settings say (`precreate`): once per stack.
+    /// screen, as the settings of its checkout say (`precreate`): once per
+    /// stack. Those settings are read there too, and what is wrong with them
+    /// said.
     fn precreate(&mut self) {
-        let kinds = ask::precreated(&self.cfg.agent);
-        if kinds.is_empty() || self.bg.precreating.contains(&self.stack) || self.db.stack(&self.stack).is_err() {
+        if self.bg.precreating.contains(&self.stack) {
             return;
         }
+        let Some(repo) = self.db.stack(&self.stack).ok().and_then(|s| s.repo.clone()) else {
+            return;
+        };
         #[cfg(feature = "demo")]
         if crate::memory::is_file(&self.path) {
             return;
         }
         self.bg.precreating.push(self.stack.clone());
-        let (path, name, under) = (self.path.clone(), self.stack.clone(), self.cfg.agent.worktrees.clone());
-        self.spawn(move || Done::Precreated(ask::precreate(&path, &name, &kinds, under.as_deref()).map_err(|e| e.0)));
+        let (path, name) = (self.path.clone(), self.stack.clone());
+        self.spawn(move || {
+            let (cfg, wrong) = crate::config::of(Path::new(&repo));
+            let kinds = ask::precreated(&cfg.agent);
+            let made = match kinds.is_empty() {
+                true => Ok(None),
+                false => ask::precreate(&path, &name, &kinds, cfg.agent.worktrees.as_deref())
+                    .map(|(repo, dir)| Some((repo, dir, kinds)))
+                    .map_err(|e| e.0),
+            };
+            Done::Precreated(made, wrong)
+        });
     }
 
     /// Once the editor exits: the agents' worktrees it made ahead removed,
     /// away from it, but those an agent works in or left work in.
     pub fn leave(&self) {
-        ask::forget(&self.path, &self.bg.precreated, &ask::precreated(&self.cfg.agent));
+        ask::forget(&self.path, &self.bg.precreated);
     }
 
     /// Checks the stack the current name is on, once per stack: why it
@@ -1263,12 +1278,18 @@ impl App {
                 }
                 self.judged = Some(Judged { name, rev, why });
             }
-            Done::Precreated(Ok(made)) => {
-                if !self.bg.precreated.contains(&made) {
-                    self.bg.precreated.push(made);
+            Done::Precreated(made, wrong) => {
+                // Unless the bar said it at the start: the stack's checkout
+                // is the one stacked runs in.
+                if let Some(w) = wrong.iter().find(|w| !crate::config::warnings().contains(w)) {
+                    self.status = w.clone();
+                }
+                match made {
+                    Ok(Some(made)) if !self.bg.precreated.contains(&made) => self.bg.precreated.push(made),
+                    Ok(_) => {}
+                    Err(e) => self.status = format!("the agents' worktrees could not be made ahead: {e}"),
                 }
             }
-            Done::Precreated(Err(e)) => self.status = format!("the agents' worktrees could not be made ahead: {e}"),
         }
     }
 
