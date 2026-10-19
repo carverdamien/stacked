@@ -2600,3 +2600,108 @@ fn where_a_file_is_edited_is_a_choice_of_its_item_kept_per_stack() {
     assert!(draw(&mut app).contains("[ ] tmp/file  [x] pwd  [ ] .stacked/s"));
     assert_eq!(choose(&mut app, "Edit a.txt here in $EDITOR"), Effect::EditCode { file: "a.txt".into(), line: 2, again: None });
 }
+
+/// Draws until the search has looked everywhere it looks: what it found,
+/// each where and its line.
+fn searched(app: &mut App) -> Vec<String> {
+    for _ in 0..300 {
+        app.refresh();
+        draw(app);
+        if app.searching.as_ref().is_some_and(|s| s.done) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let s = app.searching.as_ref().expect("a search open");
+    assert!(s.done, "it never ended");
+    s.found.iter().map(|f| format!("{} · {}", f.at, f.line)).collect()
+}
+
+#[test]
+fn a_search_from_the_comments_finds_those_in_sight_first_and_goes_there() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Enter]);
+    save(&mut app, "why so loud?");
+    // One on patch 2 too, out of sight from patch 1.
+    keys(&mut app, &[KeyCode::Left, KeyCode::Down, KeyCode::Right]);
+    down_to(&mut app, "+bee");
+    keys(&mut app, &[KeyCode::Enter]);
+    save(&mut app, "loud bees?");
+    keys(&mut app, &[KeyCode::Left, KeyCode::Up]);
+    // From the comments pane, it looks in the comments: patch 1's first.
+    app.focus = Focus::Notes;
+    choose(&mut app, "Search…");
+    assert_eq!(app.screen, Screen::Search);
+    assert!(draw(&mut app).contains(" ‹ comment › "), "{}", draw(&mut app));
+    typed(&mut app, "loud");
+    assert_eq!(searched(&mut app), ["patch 1 · you · why so loud?", "patch 2 · you · loud bees?"]);
+    // Beside them, the match picked in its context: the line it is on.
+    let screen = draw(&mut app);
+    assert!(screen.contains("+TWO") && screen.contains("2 found"), "{screen}");
+    // Enter goes there.
+    keys(&mut app, &[KeyCode::Down, KeyCode::Enter]);
+    assert_eq!(app.screen, Screen::Main);
+    let row = &app.rows[app.cursor];
+    assert!(row.head && app.sel == 1, "on patch 2's comment: {row:?}");
+    // Searched again, the search before is suggested: Tab takes it.
+    choose(&mut app, "Search…");
+    typed(&mut app, "l");
+    assert!(draw(&mut app).contains(" l") && app.suggestion().as_deref() == Some("loud"));
+    keys(&mut app, &[KeyCode::Tab]);
+    assert_eq!(app.searching.as_ref().unwrap().text, "loud");
+    // Esc goes back where it was opened.
+    keys(&mut app, &[KeyCode::Esc]);
+    assert!(app.screen == Screen::Main && app.searching.is_none());
+}
+
+#[test]
+fn a_search_from_the_middle_looks_in_the_patches_then_in_their_files() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Right]);
+    choose(&mut app, "Search…");
+    assert!(draw(&mut app).contains(" ‹ patch › "));
+    // A patch's message, then where it goes.
+    typed(&mut app, "shout");
+    assert_eq!(searched(&mut app), ["patch 1 · message · Bug 1 - shout two"]);
+    keys(&mut app, &[KeyCode::Enter]);
+    assert!(app.screen == Screen::Main && app.rows[app.cursor].msg_at == Some(0), "{:?}", app.rows[app.cursor]);
+    // A line of a.txt as patch 1 leaves it, one its diff does not show,
+    // with the lines around it; Enter goes to the patch's nearest line of
+    // that file.
+    choose(&mut app, "Search…");
+    typed(&mut app, "line 20");
+    assert_eq!(searched(&mut app), ["patch 1 · a.txt:23 · line 20"]);
+    let screen = draw(&mut app);
+    assert!(screen.contains("   23 line 20") && screen.contains("   22 line 19"), "{screen}");
+    keys(&mut app, &[KeyCode::Enter]);
+    assert_eq!(app.rows[app.cursor].path.as_deref(), Some("a.txt"));
+}
+
+#[test]
+fn a_search_of_the_history_goes_to_its_record() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    draw(&mut app);
+    choose(&mut app, "Drop this patch");
+    choose(&mut app, "Drop it");
+    keys(&mut app, &[KeyCode::Home]);
+    choose(&mut app, "History…");
+    let rev = app.history()[0].rev;
+    choose(&mut app, "Search…");
+    assert!(draw(&mut app).contains(" ‹ history › "));
+    typed(&mut app, "drop");
+    let found = searched(&mut app);
+    assert!(found[0].starts_with(&format!("@{rev} · ")) && found[0].contains("drop"), "{found:?}");
+    // ← → change where it looks, round.
+    keys(&mut app, &[KeyCode::Left, KeyCode::Left, KeyCode::Left]);
+    assert!(draw(&mut app).contains(" ‹ all › "));
+    keys(&mut app, &[KeyCode::Right, KeyCode::Right, KeyCode::Right]);
+    searched(&mut app);
+    keys(&mut app, &[KeyCode::Enter]);
+    assert_eq!(app.screen, Screen::History);
+    assert_eq!(app.history()[app.pick].rev, rev);
+}

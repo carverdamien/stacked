@@ -42,6 +42,8 @@ use crate::view::{MSG_PATH, note_lines, title_key};
 
 pub mod reviewing;
 pub use reviewing::Reviewing;
+pub mod searching;
+pub use searching::Searching;
 
 fn by_style(by: Option<&By>) -> Style {
     match by {
@@ -221,6 +223,9 @@ pub enum Spot {
     Banner,
     /// Line `i` of a review's list.
     ReviewLine(usize),
+    /// Match `i` of the search's; where it looks, its button.
+    Found(usize),
+    SearchScope,
 }
 
 /// That `spot` is drawn at `(x, y)` of `area`, `w` by `h`: what a click
@@ -282,6 +287,8 @@ pub enum Screen {
     Text,
     /// The review of what the agent brought back.
     Review,
+    /// The search: what it looks for, and what it finds.
+    Search,
 }
 
 /// What the comments pane shows, as self-review's filter.
@@ -564,6 +571,7 @@ pub enum Action {
     AskApply,
     Apply,
     Runs,
+    Search,
     Stacks,
     AskDeleteStack,
     DeleteStack,
@@ -660,6 +668,7 @@ fn about(action: &Action) -> String {
         Action::Pull => "pull the reviewers' comments from Phabricator".into(),
         Action::AskApply | Action::Apply => "commit the stack's patches in the worktree, on top of its base".into(),
         Action::Runs => "see the agent's asks, the applies and the pulls, and what came of them".into(),
+        Action::Search => "search the comments, the patches and the files they touch, and the history: what is found is listed as it is found, and enter goes to it".into(),
         Action::Stacks => "switch to another stack".into(),
         Action::AskDeleteStack | Action::DeleteStack => "delete this stack (undo brings it back)".into(),
         Action::Transcript(_) => "see what the agent wrote".into(),
@@ -814,6 +823,11 @@ pub enum Effect {
 enum Want {
     Note(String),
     Line(String),
+    /// A line of the patch's message, of its diff, from 0.
+    Msg(usize),
+    Diff(usize),
+    /// The row of file `path` nearest its line, from 1.
+    Near(String, usize),
 }
 
 /// A text to read, on a screen of its own.
@@ -842,6 +856,10 @@ pub struct App {
     pub on_banner: bool,
     /// The review of what the agent brought back, being made.
     pub reviewing: Option<Reviewing>,
+    /// The search open, and the searches made before, newest first: kept
+    /// for as long as the editor runs.
+    pub searching: Option<Searching>,
+    pub searches: Vec<String>,
     pub focus: Focus,
     /// The patches are shown, on the left.
     pub list: bool,
@@ -1050,6 +1068,8 @@ impl App {
             on_stack: false,
             on_banner: false,
             reviewing: None,
+            searching: None,
+            searches: Vec::new(),
             focus: Focus::List,
             list: cfg.view.patches,
             comments: cfg.view.comments,
@@ -1500,6 +1520,15 @@ impl App {
             let at = match &w {
                 Want::Note(id) => self.rows.iter().position(|r| r.head && r.note.as_deref() == Some(id)),
                 Want::Line(key) => self.rows.iter().position(|r| r.key.as_deref() == Some(key) && r.note.is_none()),
+                Want::Msg(k) => self.rows.iter().position(|r| r.msg_at == Some(*k) && r.note.is_none()),
+                Want::Diff(k) => self.rows.iter().position(|r| r.diff_at == Some(*k) && r.note.is_none()),
+                Want::Near(path, line) => self
+                    .rows
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, r)| r.note.is_none() && r.path.as_deref() == Some(path.as_str()))
+                    .min_by_key(|(_, r)| r.new_no.map_or(usize::MAX, |n| n.abs_diff(*line)))
+                    .map(|(i, _)| i),
             };
             match at {
                 Some(i) => {
@@ -1621,7 +1650,8 @@ impl App {
             Spot::HistRow(i) => self.hist_focus == HistFocus::Diff && self.hist_cursor == i,
             Spot::Banner => self.on_banner,
             Spot::ReviewLine(i) => self.reviewing.as_ref().is_some_and(|r| r.sel == i && !r.in_main),
-            Spot::Item(_) | Spot::Choice(..) | Spot::Box => false,
+            Spot::Found(i) => self.searching.as_ref().is_some_and(|s| s.sel == i),
+            Spot::Item(_) | Spot::Choice(..) | Spot::Box | Spot::SearchScope => false,
         }
     }
 
@@ -1740,6 +1770,12 @@ impl App {
                     r.in_main = false;
                 }
             }
+            Spot::Found(i) => {
+                if let Some(s) = &mut self.searching {
+                    s.sel = i;
+                }
+            }
+            Spot::SearchScope => self.step_scope(),
             Spot::Patch(None) => {
                 self.focus = Focus::List;
                 self.on_stack = true;
@@ -1800,6 +1836,7 @@ impl App {
     /// Reads what someone appended to the database, if anything, and what
     /// the work away from the screen came to.
     pub fn refresh(&mut self) {
+        self.poll_search();
         let polled = self.poll();
         let len = Db::file_len(&self.path);
         if len != self.db.bytes_read() || polled {
@@ -1903,7 +1940,9 @@ impl App {
         // The keys as the settings map them, but in the comment editor,
         // which reads what is typed. A key that does nothing still closes
         // what `?` said.
-        let k = if matches!(self.mode, Mode::Edit(_)) {
+        // The search reads what is typed too.
+        let typed = self.screen == Screen::Search && matches!(self.mode, Mode::Normal);
+        let k = if matches!(self.mode, Mode::Edit(_)) || typed {
             k
         } else {
             match self.cfg.keys.translate(&k) {
@@ -1930,6 +1969,11 @@ impl App {
         // ctrl-c is the terminal's, as in every program: out.
         if k.code == KeyCode::Char('c') && k.modifiers.contains(KeyModifiers::CONTROL) {
             return Effect::Quit;
+        }
+        // The search reads every key: ? and space are typed.
+        if self.screen == Screen::Search && matches!(self.mode, Mode::Normal) {
+            self.status.clear();
+            return self.search_key(k);
         }
         // What can be done here, said: the next key goes back, and does
         // what it does there.
@@ -2468,6 +2512,13 @@ impl App {
                 );
                 out.push("Press Enter to accept or reject the part the cursor is on, Space for its menu, → to scroll what it looks like and ← to come back.".into());
                 out.push("Press Esc to save your marks, to throw them away, or to close the review: what you accepted is applied then.".into());
+            }
+            Screen::Search => {
+                out.push(
+                    "The search: on the left, where it looks (all, patch, comment, history) and what it looks for, then what it finds, as it finds it; on the right, the match picked, in its context."
+                        .into(),
+                );
+                out.push("Type what to look for; ← → change where it looks; Tab takes the search before that is suggested; ↑↓ pick a match; Enter goes there; Esc goes back.".into());
             }
             Screen::Main if self.reading_here() => {
                 match self.reading_at() {
@@ -3032,6 +3083,9 @@ impl App {
             if let Some((_, op)) = self.db.redo_target(&self.stack) {
                 items.push(Item::new(format!("Redo: {op}"), Action::Redo).when(h));
             }
+        }
+        if self.current().is_some() && self.screen != Screen::Search {
+            items.push(Item::new("Search…", Action::Search));
         }
         if !self.db.runs().is_empty() {
             let label = match self.running() {
@@ -3788,6 +3842,7 @@ impl App {
                 }
             }
             Action::Runs => self.open_list(Screen::Runs),
+            Action::Search => self.open_search(),
             Action::Stacks => self.open_list(Screen::Stacks),
             Action::AskDeleteStack => {
                 let title = format!("delete stack {name}? undo brings it back");
@@ -4070,6 +4125,11 @@ impl App {
 
     /// Goes to the line `key` of the patch of `change`.
     fn go_to_patch_line(&mut self, change: &str, key: &str) {
+        self.go_to_patch_want(change, Want::Line(key.into()));
+    }
+
+    /// Goes to the patch of `change`, the cursor where `want` says.
+    fn go_to_patch_want(&mut self, change: &str, want: Want) {
         let Some(at) = self.current().and_then(|s| s.patches.iter().position(|p| self.db.patch(p).change == change)) else {
             self.status = "its patch is no longer in the stack".into();
             return;
@@ -4078,8 +4138,19 @@ impl App {
         self.on_stack = false;
         self.sel = at;
         self.built = None;
-        self.want = Some(Want::Line(key.into()));
+        self.want = Some(want);
         self.focus = Focus::Diff;
+    }
+
+    /// Stack `name` the current one, on its first patch.
+    fn switch_stack(&mut self, name: &str) {
+        self.stack = name.to_string();
+        self.sel = 0;
+        self.on_stack = self.patch_count() == 0;
+        self.built = None;
+        self.show = self.db.view(&self.stack).and_then(Show::parse).unwrap_or(Show::All);
+        self.judge();
+        self.precreate();
     }
 
     /// Where a database trimmed from `rev` on is written: by this one, a
@@ -4154,14 +4225,8 @@ impl App {
                 }
             }
             Screen::Stacks => {
-                if let Some(s) = self.db.stacks().get(self.pick) {
-                    self.stack = s.name.clone();
-                    self.sel = 0;
-                    self.on_stack = self.patch_count() == 0;
-                    self.built = None;
-                    self.show = self.db.view(&self.stack).and_then(Show::parse).unwrap_or(Show::All);
-                    self.judge();
-                    self.precreate();
+                if let Some(name) = self.db.stacks().get(self.pick).map(|s| s.name.clone()) {
+                    self.switch_stack(&name);
                 }
                 self.screen = Screen::Main;
             }
@@ -4451,6 +4516,7 @@ impl App {
             }
             Screen::Text => self.draw_text(buf, body),
             Screen::Review => self.draw_review(buf, body),
+            Screen::Search => cursor = self.draw_search(buf, body),
             Screen::Tree | Screen::Stacks | Screen::Versions => {
                 let (left, (right, _)) = self.columns(buf, body, true, false, None);
                 let left = left.unwrap();
@@ -4590,6 +4656,9 @@ impl App {
             Mode::Stream { .. } => "↑↓: scroll · esc: fold it".into(),
             Mode::Normal if self.screen == Screen::Main && self.on_banner => {
                 "enter: review the next · space: pick one · ↓: the stack · ?: what can I do here".into()
+            }
+            Mode::Normal if self.screen == Screen::Search => {
+                "type what to look for · ←→: where · tab: the search before · ↑↓: pick · enter: go there · esc: back".into()
             }
             Mode::Normal if self.screen == Screen::Review => {
                 "↑↓ choose · enter: accept or reject · →: look closer · space: menu · esc: save, discard or close".into()
