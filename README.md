@@ -414,8 +414,14 @@ too long: ready (and on what), with the agent (and the last lines of its
 stream under it: what it says and runs, and while it thinks, one line
 counting it, `✻ thinking · ~688 tokens`, with the words of it when claude
 gives them), agent replied (changed, answered, tested), failed (and why),
-moved. Enter on a comment the agent is working on opens its stream in
-place; esc folds it. The comments pane marks each (`●` with the agent, `◌`
+moved. Until the agent writes its first line, one line says what is being
+run to start it, as it runs: `starting: git worktree add --detach … BASE`
+(its worktree, which takes a while in a big repository), `starting: git am
+--keep-non-patch, 3 patches` (the stack, up to what it is asked about),
+then `starting: claude -p … --permission-mode …, in WORKTREE`. They stay
+at the top of its stream, as `$ git worktree add …`, in the stream, in
+`Runs…` and in `stacked transcript RUN`. Enter on a comment the agent is
+working on opens its stream in place; esc folds it. The comments pane marks each (`●` with the agent, `◌`
 ready, `◆` its reply waits for your review, `✓` replied, `✗` failed, `↑`
 moved), its header counts them (`4 comments · 1 with the agent · 1 to
 review · 2 to read`), and the top bar too (`agent ●2 · ready:1`).

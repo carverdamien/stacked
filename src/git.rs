@@ -90,13 +90,17 @@ pub fn dirty(dir: &Path) -> Result<bool> {
     Ok(!git(dir, &["status", "--porcelain", "--untracked-files=no"])?.trim().is_empty())
 }
 
-/// A worktree of its own at `at`, detached at `base`, with `mbox` applied;
-/// none if the patches do not apply.
-pub fn scratch(repo: &Path, at: &Path, base: &str, mbox: &str) -> Result<()> {
+/// A worktree of its own at `at`, detached at `base`, with `mbox` applied,
+/// `n` patches; none if the patches do not apply. `step` is told each git
+/// command before it runs, as one line.
+pub fn scratch(repo: &Path, at: &Path, base: &str, mbox: &str, n: usize, step: &dyn Fn(String)) -> Result<()> {
+    step(format!("git worktree add --detach {} {}", at.display(), &base[..12.min(base.len())]));
     git(repo, &["worktree", "add", "--quiet", "--detach", &at.to_string_lossy(), base])?;
-    if !mbox.is_empty()
-        && let Err(e) = git_in(at, &["-c", "commit.gpgsign=false", "am", "--quiet", "--keep-non-patch"], Some(mbox))
-    {
+    if mbox.is_empty() {
+        return Ok(());
+    }
+    step(format!("git am --keep-non-patch, {n} patch{}", if n == 1 { "" } else { "es" }));
+    if let Err(e) = git_in(at, &["-c", "commit.gpgsign=false", "am", "--quiet", "--keep-non-patch"], Some(mbox)) {
         remove_scratch(repo, at);
         return err(format!("the stack does not apply to its base: {}", e.0));
     }

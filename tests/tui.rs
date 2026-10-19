@@ -1106,6 +1106,39 @@ fn changing(db: &Path, change: &str, id: &str, scope: serde_json::Value) {
 }
 
 #[test]
+fn while_the_agent_starts_one_line_says_what_it_runs() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Enter]);
+    save(&mut app, "why so loud?");
+    let n = notes_of(&db, "s", 0).remove(0);
+    changing(&db, &n.change, &n.id, serde_json::json!({"patch": n.change}));
+    app.refresh();
+    assert!(draw(&mut app).contains("⋯ the agent is starting…"));
+    // Each command run to start it, as it runs: one line, the last.
+    let event = |e: serde_json::Value| {
+        Db::append(&db, &[stacked::db::Record::Event { run: "run-changing".into(), event: e }]).unwrap();
+    };
+    let step = |text: &str| event(serde_json::json!({"type": "stacked", "text": text}));
+    step("git worktree add --detach /tmp/stacked-run-changing 1234567890ab");
+    app.refresh();
+    let screen = draw(&mut app);
+    assert!(screen.contains("⋯ starting: git worktree add --detach /tmp/stacked-r │"), "cut where the line ends:\n{screen}");
+    step("git am --keep-non-patch, 1 patch");
+    app.refresh();
+    let screen = draw(&mut app);
+    assert!(screen.contains("⋯ starting: git am --keep-non-patch, 1 patch"), "{screen}");
+    assert_eq!(screen.matches("⋯ ").count(), 1, "one line:\n{screen}");
+    // Once the agent writes, what it writes.
+    event(serde_json::json!({"type": "system", "subtype": "init", "model": "m"}));
+    app.refresh();
+    let screen = draw(&mut app);
+    assert!(screen.contains("⋯ ● session started · m") && !screen.contains("is starting"), "{screen}");
+}
+
+#[test]
 fn while_the_agent_changes_the_stack_it_is_not_edited_by_hand_nor_its_comment_written_on() {
     let (_tmp, db, _src) = setup();
     let mut app = open(&db).unwrap();

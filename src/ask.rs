@@ -789,6 +789,12 @@ fn start(db_path: &Path, id: &str) -> Result<()> {
     }
     i.base = base.clone();
     i.repo = repo.to_string_lossy().into_owned();
+    // Each command it runs to start, in its stream as it goes: what the
+    // comment says while the agent has not written yet.
+    let step = |text: String| {
+        let event = serde_json::json!({"type": STARTING, "text": text});
+        let _ = Db::append(db_path, &[Record::Event { run: id.into(), event }]);
+    };
     let upto = match &i.scope {
         Scope::Stack => s.patches.len(),
         Scope::Patch(c) => {
@@ -804,7 +810,7 @@ fn start(db_path: &Path, id: &str) -> Result<()> {
     if i.way != Way::Test {
         let wt = crate::config::get().worktree(id);
         let patches: Vec<&Patch> = s.patches[..upto].iter().map(|p| db.patch(p)).collect();
-        git::scratch(&repo, &wt, &base, &format_mbox(&patches))?;
+        git::scratch(&repo, &wt, &base, &format_mbox(&patches), upto, &step)?;
         let shas: Vec<String> = git::git(&wt, &["rev-list", "--reverse", &format!("{base}..HEAD")])?
             .lines()
             .map(String::from)
@@ -866,6 +872,8 @@ fn start(db_path: &Path, id: &str) -> Result<()> {
         Some((claude, _)) => claude.to_string_lossy().into_owned(),
         None => crate::config::get().agent_command(),
     };
+    let extra: String = crate::config::get().agent_args().iter().map(|a| format!(" {a}")).collect();
+    step(format!("{claude} -p … --permission-mode {permission}{extra}, in {}", cwd.display()));
     c.env("STACKED_CLAUDE", claude);
     // The agent's commits are read back as patches, then gone: not signed,
     // which would want the user's key for each.
@@ -1481,8 +1489,20 @@ pub fn land_orphans(db_path: &Path, db: &Db) -> usize {
         .count()
 }
 
+/// The type of the events a run's stream starts with: the commands run to
+/// start it, before its agent writes.
+const STARTING: &str = "stacked";
+
+/// What run `id` is doing as it starts, while its agent has written
+/// nothing yet: the command it runs, as one line.
+pub fn starting(db: &Db, id: &str) -> Option<String> {
+    let last = db.events(id).pop()?;
+    (last.get("type").and_then(Value::as_str) == Some(STARTING)).then(|| str_of(last.get("text")))
+}
+
 /// The last `n` lines of what run `id`'s agent wrote, as a transcript:
-/// read from the end, as it is on every redraw while the agent writes.
+/// read from the end, as it is on every redraw while the agent writes. The
+/// commands run to start it come first, as `$ command`.
 pub fn tail(db: &Db, id: &str, n: usize) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     // Its thinking counted as it goes: of the counts in a row, the last.
@@ -1498,6 +1518,7 @@ pub fn tail(db: &Db, id: &str, n: usize) -> Vec<String> {
         }
         let lines = match v.get("type").and_then(Value::as_str) {
             Some("text") => vec![str_of(v.get("text"))],
+            Some(STARTING) => vec![format!("$ {}", str_of(v.get("text")))],
             Some("exit") => vec![format!("exit {}", str_of(v.get("code")))],
             _ => format_event(v),
         };
@@ -1531,6 +1552,27 @@ mod tests {
             bytes.push('\n');
         }
         Db::from_bytes(Path::new("t.jsonl"), bytes.as_bytes()).unwrap()
+    }
+
+    #[test]
+    fn the_stream_starts_with_the_commands_run_to_start_the_agent() {
+        let step = |t: &str| serde_json::json!({"type": STARTING, "text": t});
+        let mut events = vec![step("git worktree add --detach /tmp/stacked-r 750b26ffa4ae")];
+        // While the agent has written nothing, what it is doing is the last
+        // command, as one line.
+        assert_eq!(starting(&streamed(&events), "r").as_deref(), Some("git worktree add --detach /tmp/stacked-r 750b26ffa4ae"));
+        events.push(step("git am --keep-non-patch, 3 patches"));
+        assert_eq!(starting(&streamed(&events), "r").as_deref(), Some("git am --keep-non-patch, 3 patches"));
+        // Once it writes, it is started; the commands stay at the top of
+        // what it wrote.
+        events.push(serde_json::json!({"type": "system", "subtype": "init", "model": "m"}));
+        let db = streamed(&events);
+        assert_eq!(starting(&db, "r"), None);
+        assert_eq!(
+            tail(&db, "r", usize::MAX),
+            ["$ git worktree add --detach /tmp/stacked-r 750b26ffa4ae", "$ git am --keep-non-patch, 3 patches", "● session started · m"]
+        );
+        assert_eq!(starting(&streamed(&[]), "r"), None);
     }
 
     #[test]

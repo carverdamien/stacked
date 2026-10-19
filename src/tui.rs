@@ -1352,10 +1352,15 @@ impl App {
                         let end = all.len().saturating_sub(*up);
                         all[end.saturating_sub(room)..end].to_vec()
                     }
-                    _ => {
-                        let lines = ask::tail(&self.db, run, self.cfg.view.stream_lines);
-                        if lines.is_empty() { vec!["the agent is starting…".into()] } else { lines }
-                    }
+                    // Starting, one line says what it runs: the command
+                    // first, cut where the line ends.
+                    _ => match ask::starting(&self.db, run) {
+                        Some(doing) => vec![format!("starting: {doing}")],
+                        None => {
+                            let lines = ask::tail(&self.db, run, self.cfg.view.stream_lines);
+                            if lines.is_empty() { vec!["the agent is starting…".into()] } else { lines }
+                        }
+                    },
                 };
                 deco.streams.insert(n.id.clone(), lines);
             }
