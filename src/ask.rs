@@ -14,13 +14,17 @@
 //! `launch` starts what can go; it runs when a comment is sent and when an
 //! ask lands, so what waits goes on its own.
 //!
-//! A change or an answer gets a git worktree of its own. For the stack, all
-//! its patches as commits; for a patch, the stack up to it: the patches below
-//! as commits and the patch on top, the patches above to read only. A patch
-//! change checks, with `stacked fits`, that the patches above still apply on
-//! it; if they would not, claude changes nothing and the comment is promoted
-//! to the stack. A build and test runs in the repository, given the stack by
-//! `stacked export`, in a workspace of claude's choosing.
+//! A change gets a git worktree of its own. For the stack, all its patches
+//! as commits; for a patch, the stack up to it: the patches below as commits
+//! and the patch on top, the patches above to read only. A patch change
+//! checks, with `stacked fits`, that the patches above still apply on it; if
+//! they would not, claude changes nothing and the comment is promoted to the
+//! stack. An answer runs in the repository as it is checked out, as
+//! self-review's do: a worktree of a big repository takes long to make. It
+//! reads the stack through stacked (`export`, `show`, and a file as a patch
+//! leaves it, `show --path`), and is let run nothing that changes anything.
+//! A build and test runs in the repository too, given the stack by `stacked
+//! export`, in a workspace of claude's choosing.
 //!
 //! When claude exits, `stacked land` files what it did: a patch change slots
 //! into the stack as it is by then, the comments on lines a split moved
@@ -625,6 +629,11 @@ fn transcript(text: &str) -> String {
         .join("\n")
 }
 
+/// Where an ask to answer only is, told it: the repository as the user has
+/// it, which need not be the stack.
+const HERE: &str = "The current directory is the user's repository, as it is checked out now: \
+its files need not be as the stack leaves them, so read the stack through stacked, as below.";
+
 const KEEP_TITLES: &str = "Keep each commit's title unless asked to change it: a patch is \
 followed across its versions by its title. When you are done, everything must be committed \
 and HEAD must be the top. You cannot build the project or run its tests here; reason from the \
@@ -636,6 +645,7 @@ fn prompt(db: &Db, i: &Info, s: &Stack, cmd: &str, run: &str) -> String {
     let n = s.patches.len();
     let k = i.patch.as_ref().map(|(_, k)| *k);
     let export = format!("{cmd} export {} --rev {}", s.name, i.from);
+    let show = format!("{cmd} show {} --rev {}", s.name, i.from);
     let mut p = match (i.way, &i.scope) {
         (Way::Change, Scope::Stack) => format!(
             "You are changing a stack of patches, as the comments below ask. The current \
@@ -667,22 +677,24 @@ fn prompt(db: &Db, i: &Info, s: &Stack, cmd: &str, run: &str) -> String {
             orig = i.commits.last().map_or("HEAD", |c| c.0.as_str())
         ),
         (Way::Answer, Scope::Stack) => format!(
-            "You are answering comments on a stack of patches. The current directory is a git \
-             worktree made for you: the stack is the commits {base}..HEAD, each commit a \
-             patch, listed below bottom first; `git show` each to read it. Do NOT modify \
-             anything. You cannot build the project or run its tests; reason from the code. \
+            "You are answering comments on a stack of patches, listed below bottom first; they \
+             apply to commit {base}. {HERE} `{export}` prints the stack's patches as mail, \
+             `{show} N` patch N, and `{show} N --path FILE` a file as patch N leaves it, \
+             whether the stack changes it or not. Do NOT modify anything: no file, no commit, \
+             no branch. You cannot build the project or run its tests; reason from the code. \
              {READ_THE_WEB} Besides your answers, you may open comments of your own on lines \
              of any patch, as a careful reviewer would, without repeating what is already said.",
             base = i.base
         ),
         (Way::Answer, Scope::Patch(_)) => format!(
-            "You are answering comments on one patch of a stack, patch {k} of {n}. The current \
-             directory is a git worktree made for you: the commits {base}..HEAD are the stack \
-             up to that patch, the patch itself at HEAD; `git show` to read them; `{export}` \
-             prints the whole stack, the patches above included. Do NOT modify anything. You \
-             cannot build the project or run its tests; reason from the code. {READ_THE_WEB} \
-             Besides your answers, you may open comments of your own on lines of this patch, as \
-             a careful reviewer would, without repeating what is already said.",
+            "You are answering comments on one patch of a stack, patch {k} of {n}, listed below \
+             with the others, bottom first; they apply to commit {base}. {HERE} `{show} {k}` \
+             prints patch {k}, `{show} {k} --path FILE` a file as it leaves it, whether the \
+             stack changes it or not, and `{export}` the whole stack, the patches above \
+             included. Do NOT modify anything: no file, no commit, no branch. You cannot build \
+             the project or run its tests; reason from the code. {READ_THE_WEB} Besides your \
+             answers, you may open comments of your own on lines of this patch, as a careful \
+             reviewer would, without repeating what is already said.",
             k = k.map_or(0, |k| k + 1),
             base = i.base
         ),
@@ -807,7 +819,9 @@ fn start(db_path: &Path, id: &str) -> Result<()> {
             k + 1
         }
     };
-    if i.way != Way::Test {
+    // Only a change has a worktree: an answer reads the stack through
+    // stacked, in the repository as it is, as a build and test does.
+    if i.way == Way::Change {
         let wt = crate::config::get().worktree(id);
         let patches: Vec<&Patch> = s.patches[..upto].iter().map(|p| db.patch(p)).collect();
         git::scratch(&repo, &wt, &base, &format_mbox(&patches), upto, &step)?;

@@ -183,6 +183,19 @@ pub fn previous<'a>(db: &'a Db, p: &Patch) -> Option<&'a Patch> {
     i.checked_sub(1).map(|i| versions[i])
 }
 
+/// File `path` as the patch at `at` of stack `s` leaves it, whether the
+/// stack changes it or not: read from an index of the check's own, no
+/// checkout made. Its text; None where it is not there, or is not text.
+pub fn file_at(db: &Db, s: &Stack, at: usize, path: &str) -> Result<Option<String>> {
+    let (repo, base) = base_of(s)?;
+    let diffs: Vec<&str> = s.patches[..=at].iter().map(|id| db.patch(id).diff.as_str()).collect();
+    let pad = crate::check::Pad::new(&repo, &base, &diffs, &[path])?;
+    if !pad.apply(&diffs.concat()) {
+        return err(format!("{} does not apply to its base", s.name));
+    }
+    pad.text(path)
+}
+
 /// The repository and base a stack applies to, or why it has none.
 pub fn base_of(s: &Stack) -> Result<(std::path::PathBuf, String)> {
     match (&s.repo, &s.base) {
@@ -837,7 +850,7 @@ fn conflict_of(db: &Db, s: &Stack, edits: Vec<(usize, Draft)>, said: &str) -> Op
     // The patches as edited, in turn, to the first that does not apply,
     // and the first of its files that does not: as the edits leave it
     // below the patch, the file is `ours`.
-    let pad = Pad::new(&repo, &base, &diffs).ok()?;
+    let pad = Pad::new(&repo, &base, &diffs, &[]).ok()?;
     let at = news.iter().position(|p| !pad.apply(&p.diff))?;
     if at <= edits.first()?.0 {
         return None;
@@ -850,7 +863,7 @@ fn conflict_of(db: &Db, s: &Stack, edits: Vec<(usize, Draft)>, said: &str) -> Op
     let from = from_of(&fd);
     let ours = pad.text(&from).ok()??;
     // The patch as it was, on the patches below as they were.
-    let old = Pad::new(&repo, &base, &diffs).ok()?;
+    let old = Pad::new(&repo, &base, &diffs, &[]).ok()?;
     let below: String = olds[..at].iter().map(|p| p.diff.as_str()).collect();
     if !old.apply(&below) {
         return None;

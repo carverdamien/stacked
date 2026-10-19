@@ -311,15 +311,17 @@ pub struct Pad {
 }
 
 impl Pad {
-    /// A pad on `base` in `repo`, holding the files `diffs` touch as the
-    /// base has them.
-    pub fn new(repo: &Path, base: &str, diffs: &[&str]) -> Result<Pad> {
+    /// A pad on `base` in `repo`, holding the files `diffs` touch, and the
+    /// files at `also`, as the base has them.
+    pub fn new(repo: &Path, base: &str, diffs: &[&str], also: &[&str]) -> Result<Pad> {
         #[cfg(feature = "demo")]
         if crate::memory::tree(repo, base).is_some() {
             return err("a repository kept in memory has no index to apply to");
         }
         reachable(repo, base)?;
-        let ix = Index::new(repo, base, Some(&touched_by(repo, diffs)))?;
+        let mut paths = touched_by(repo, diffs);
+        paths.extend(also.iter().map(|p| p.to_string()));
+        let ix = Index::new(repo, base, Some(&paths))?;
         Ok(Pad { repo: repo.to_path_buf(), ix })
     }
 
@@ -610,7 +612,7 @@ mod tests {
     fn a_pad_takes_diffs_in_turn_and_tells_which_do_not_apply() {
         let (_tmp, r, base, p) = repo();
         let two = "diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -1,2 +1,2 @@\n one\n-two\n+zwei\n";
-        let pad = Pad::new(&r, &base, &[&p.diff, two]).unwrap();
+        let pad = Pad::new(&r, &base, &[&p.diff, two], &[]).unwrap();
         assert_eq!(pad.text("a.txt").unwrap().as_deref(), Some("one\ntwo\n"));
         assert!(pad.would_apply(two) && pad.would_apply(&p.diff));
         assert!(pad.apply(&p.diff));

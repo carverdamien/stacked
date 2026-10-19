@@ -905,17 +905,25 @@ fn the_agent_rebases_reviews_and_tests() {
     assert!(e.ok(&["log", "s"]).contains(&format!("agent: rebase onto {}", &onto[..12])));
     assert!(e.ok(&["stacks"]).contains("3 patches"));
 
-    // A review is an answer that opens comments of its own.
+    // A review is an answer that opens comments of its own. As any answer,
+    // it runs in the repository as it is, no worktree made for it, and is
+    // told to read the stack through stacked.
     let review = fake_claude(
         &e,
         "claude-review.sh",
-        "",
+        r#"test "$PWD" = "$STACKED_SRC" || exit 3"#,
         r#"{"replies": {"c1": "Two things."}, "comments": [{"patch": 2, "file": "b.txt", "side": "+", "line": "new", "text": "Say what b is for."},
             {"patch": 1, "file": "nowhere", "side": "+", "line": "?", "text": "On the whole patch."}]}"#,
     );
     let id = comment(&e, &["Review", "it."]);
-    let (fine, out, err) = send(&e, &review, &[&id, "--answer-only"], &[]);
+    let (fine, out, err) = send(&e, &review, &[&id, "--answer-only"], &[("STACKED_SRC", &e.src)]);
     assert!(fine, "{err}");
+    let db = Db::load(&e.db).unwrap();
+    let info = stacked::ask::info(db.runs().last().unwrap()).unwrap();
+    assert!(info.worktree.is_none(), "no worktree: {:?}", info.worktree);
+    assert!(info.prompt.contains("the user's repository, as it is checked out now"), "{}", info.prompt);
+    assert!(info.prompt.contains("show s --rev") && info.prompt.contains("N --path FILE"), "{}", info.prompt);
+    drop(db);
     assert!(out.contains("agent replied (answer only) · opened 2 comments"), "{out}");
     let c = e.ok(&["comments", "s", "--patch", "2"]);
     assert!(c.contains("b.txt: new") && c.contains("agent: Say what b is for."), "{c}");
@@ -1163,6 +1171,25 @@ fn a_patch_is_edited_where_the_cursor_is() {
     assert!(fine && err.contains("saved as it was"), "back as it was: {err}");
     let (fine, _, err) = edit(&["1", "--path", "b.txt"]);
     assert!(!fine && err.contains("does not change b.txt"), "{err}");
+}
+
+#[test]
+fn a_file_is_shown_as_a_patch_leaves_it() {
+    let e = env();
+    e.ok(&["import", "s", "base"]);
+    // As each patch leaves it, the patches below with it, no checkout made.
+    assert_eq!(e.ok(&["show", "s", "1", "--path", "a.txt"]), TEN.replace("two", "2"));
+    assert_eq!(e.ok(&["show", "s", "3", "--path", "a.txt"]), TEN.replace("two", "2").replace("nine", "9"));
+    assert_eq!(e.ok(&["show", "s", "2", "--path", "b.txt"]), "new\n");
+    let (fine, _, err) = e.run(&["show", "s", "1", "--path", "b.txt"]);
+    assert!(!fine && err.contains("as patch 1 leaves it, b.txt is not there"), "{err}");
+    // As the stack was at a rev; a file no patch changes, as the base has
+    // it.
+    let rev = e.ok(&["log", "s"]).split('\t').next().unwrap().to_string();
+    e.ok(&["drop", "s", "1"]);
+    assert_eq!(e.ok(&["show", "s", "1", "--path", "a.txt"]), TEN, "no patch below changes it now");
+    assert_eq!(e.ok(&["show", "s", "1", "--path", "a.txt", "--rev", &rev]), TEN.replace("two", "2"));
+    assert_eq!(e.ok(&["show", "s", "--rev", &rev]).lines().count(), 3);
 }
 
 #[test]

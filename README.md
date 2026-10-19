@@ -36,6 +36,7 @@ stacked new bug124 --base main     # an empty stack, to add patches to
 stacked stacks.jsonl               # open the editor on that database
 stacked                            # ... on $STACKED_FILE, the settings' file, else ./stacked.jsonl
 stacked show bug123                # its patches, bottom first
+stacked show bug123 2 --path a.txt # a file as patch 2 leaves it, no checkout made
 stacked edit bug123                # as `git rebase -i`: reorder, drop, reword, edit
 stacked edit bug123 2 --path a.txt --line 12   # a file as patch 2 leaves it, at line 12
 stacked edit bug123 2 --path a.txt --in worktree   # ... in the stack's own worktree, .stacked/bug123
@@ -373,7 +374,13 @@ ask agent`'s:
   --whole-stack`.
 - `answer only`: read-only, enforced by its tools: it reads the code and
   the stack, and it may read the web with `curl` (a bug on Bugzilla, a
-  revision on Phabricator, a page of documentation). Only the reply comes back. An
+  revision on Phabricator, a page of documentation). No worktree is made for
+  it, which in a big repository takes a while: as self-review's answers do,
+  it runs in the stack's repository as it is checked out, and is told that
+  this need not be the stack. It reads the stack through stacked: `stacked
+  export`, `stacked show NAME N`, and `stacked show NAME N --path FILE`, a
+  file as patch N leaves it, whether the stack changes it or not, read
+  without a checkout. Only the reply comes back. An
   answer may open comments of its own on lines within the place, as a
   review does: the asking comment then says `opened 4 comments, 1 with your
   replies`, and its menu goes to them, or deletes it and them.
@@ -422,10 +429,11 @@ stream under it: what it says and runs, and while it thinks, one line
 counting it, `✻ thinking · ~688 tokens`, with the words of it when claude
 gives them), agent replied (changed, answered, tested), failed (and why),
 moved. Until the agent writes its first line, one line says what is being
-run to start it, as it runs: `starting: git worktree add --detach … BASE`
-(its worktree, which takes a while in a big repository), `starting: git am
---keep-non-patch, 3 patches` (the stack, up to what it is asked about),
-then `starting: claude -p … --permission-mode …, in WORKTREE`. They stay
+run to start it, as it runs: for a change, `starting: git worktree add
+--detach … BASE` (its worktree, which takes a while in a big repository),
+`starting: git am --keep-non-patch, 3 patches` (the stack, up to what it is
+asked about); then `starting: claude -p … --permission-mode …, in WORKTREE`
+(or the repository, for an answer or a build and test). They stay
 at the top of its stream, as `$ git worktree add …`, in the stream, in
 `Runs…` and in `stacked transcript RUN`. Enter on a comment the agent is
 working on opens its stream in place; esc folds it. The comments pane marks each (`●` with the agent, `◌`

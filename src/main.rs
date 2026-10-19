@@ -132,8 +132,18 @@ enum Cmd {
         #[arg(long)]
         base: Option<String>,
     },
-    /// A stack's patches, bottom first; or one patch as mail.
-    Show { name: String, patch: Option<String> },
+    /// A stack's patches, bottom first; or one patch as mail; or a file as
+    /// the patch leaves it (--path), whether the stack changes it or not.
+    Show {
+        name: String,
+        patch: Option<String>,
+        /// A file, as the patch leaves it.
+        #[arg(long, requires = "patch")]
+        path: Option<String>,
+        /// The stack as it was at this rev, rather than now.
+        #[arg(long)]
+        rev: Option<String>,
+    },
     /// A stack's patches, or some of them, as mail for `git am`.
     Export {
         name: String,
@@ -385,6 +395,16 @@ fn parse_rev(s: &str) -> Result<usize> {
         .map_err(|_| Error(format!("{s:?} is not a rev (as @12)")))
 }
 
+/// Stack `name` as it was at `rev`, else as it is.
+fn stack_at<'a>(db: &'a Db, name: &str, rev: Option<&str>) -> Result<&'a stacked::db::Stack> {
+    let Some(r) = rev else { return db.stack(name) };
+    let s = db.node(parse_rev(r)?)?;
+    if s.name != name {
+        return err(format!("@{} is a stack of {}, not {name}", r.trim_start_matches('@'), s.name));
+    }
+    Ok(s)
+}
+
 fn here() -> PathBuf {
     std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
 }
@@ -622,31 +642,31 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
                 ops::add(db, &name, draft, at.map(|n| n.saturating_sub(1)))
             })?;
         }
-        Cmd::Show { name, patch: None } => {
+        Cmd::Show { name, patch: None, rev, .. } => {
             let db = Db::load(path)?;
-            let s = db.stack(&name)?;
+            let s = stack_at(&db, &name, rev.as_deref())?;
             for (i, id) in s.patches.iter().enumerate() {
                 let p = db.patch(id);
                 println!("{}\t{}\t{}\t{}", i + 1, &p.change[..8], &id[..8], p.title());
             }
         }
-        Cmd::Show { name, patch: Some(spec) } => {
+        Cmd::Show { name, patch: Some(spec), path: None, rev } => {
             let db = Db::load(path)?;
-            let s = db.stack(&name)?;
+            let s = stack_at(&db, &name, rev.as_deref())?;
             print!("{}", ops::render(db.patch(&s.patches[db.resolve(s, &spec)?])));
+        }
+        Cmd::Show { name, patch: Some(spec), path: Some(f), rev } => {
+            let db = Db::load(path)?;
+            let s = stack_at(&db, &name, rev.as_deref())?;
+            let at = db.resolve(s, &spec)?;
+            match ops::file_at(&db, s, at, &f)? {
+                Some(text) => print!("{text}"),
+                None => return err(format!("as patch {} leaves it, {f} is not there, or is not text", at + 1)),
+            }
         }
         Cmd::Export { name, patches, rev } => {
             let db = Db::load(path)?;
-            let s = match rev {
-                Some(r) => {
-                    let s = db.node(parse_rev(&r)?)?;
-                    if s.name != name {
-                        return err(format!("@{r} is a stack of {}, not {name}", s.name));
-                    }
-                    s
-                }
-                None => db.stack(&name)?,
-            };
+            let s = stack_at(&db, &name, rev.as_deref())?;
             let mut at: Vec<usize> = (0..s.patches.len()).collect();
             if !patches.is_empty() {
                 at = patches.iter().map(|p| db.resolve(s, p)).collect::<Result<_>>()?;
