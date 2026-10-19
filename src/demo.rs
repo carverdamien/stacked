@@ -1,5 +1,5 @@
 //! `stacked demo`: a tour of the editor, on a game of tic-tac-toe played in
-//! a file, board.txt, a move a patch: thirteen sections, the most useful
+//! a file, board.txt, a move a patch: fourteen sections, the most useful
 //! first. Its database and its repository are kept in memory (memory.rs):
 //! nothing is written on disk but `[demo] seen` in the settings, so that the
 //! next tour starts on the list of its sections, to start at any of them.
@@ -232,17 +232,44 @@ fn agent(path: &Path, id: &str) -> Result<()> {
     Db::edit(path, |db| {
         let s = db.stack(STACK)?.clone();
         let has = |db: &Db, title: &str| s.patches.iter().any(|p| db.patch(p).title() == title);
+        // Its reply to each comment it was asked about, held for review, as
+        // a real landing holds it.
+        let asked: Vec<(String, String)> = info
+            .notes
+            .iter()
+            .filter(|sh| db.note(&sh.change, &sh.id).is_some())
+            .map(|sh| (sh.change.clone(), sh.id.clone()))
+            .collect();
+        let replies = |text: &str, promote: Option<&str>| -> Vec<crate::held::Reply> {
+            asked
+                .iter()
+                .map(|(change, id)| crate::held::Reply {
+                    change: change.clone(),
+                    id: id.clone(),
+                    text: text.into(),
+                    tag: info.way.name().into(),
+                    promote: promote.map(String::from),
+                })
+                .collect()
+        };
+        let change = |patches: Vec<String>| crate::held::Change {
+            patches,
+            base: s.base.clone(),
+            op: "agent: the stack".into(),
+            of: "the stack".into(),
+        };
         // As the game is now: it may have gone on meanwhile.
-        let (reply, summary, rev) = match plan(db, &info) {
+        let (reply, stack) = match plan(db, &info) {
             Plan::More => {
-                for sh in &info.notes {
-                    if let Some(n) = db.note(&sh.change, &sh.id).cloned() {
-                        ask::promote(db, STACK, &n, MORE)?;
-                    }
-                }
+                let held = crate::held::Held {
+                    at: crate::db::now(),
+                    replies: replies("", Some(MORE)),
+                    ..Default::default()
+                };
                 db.add_run(Run {
                     state: RunState::Done,
-                    summary: format!("moved 1 comment to the stack: {MORE}"),
+                    summary: format!("its work waits for your review: {}", held.said()),
+                    held: Some(held),
                     pid: None,
                     ..run
                 })?;
@@ -261,11 +288,9 @@ fn agent(path: &Path, id: &str) -> Result<()> {
                 let mut patches = s.patches.clone();
                 patches[m] = db.add_patch(fourth)?;
                 patches[w] = db.add_patch(fifth)?;
-                let rev = db.set_stack(STACK, patches, "agent: the stack")?;
                 (
                     "Patch 4: O takes the bottom left corner, which blocks X's diagonal. Patch 5 changes with it, because X can no longer win at the bottom left: now X takes the middle of the left side, which blocks O's left column.".to_string(),
-                    format!("the agent changed the stack, @{rev}; 1 comment answered"),
-                    Some(rev),
+                    Some(change(patches)),
                 )
             }
             Plan::Next => {
@@ -275,11 +300,9 @@ fn agent(path: &Path, id: &str) -> Result<()> {
                 let after = mark(&before, cell, o);
                 let mut patches = s.patches.clone();
                 patches.push(db.add_patch(crate::ops::new_patch(draft(o, title, why, diff(&before, &after), n + 1)))?);
-                let rev = db.set_stack(STACK, patches, "agent: the stack")?;
                 (
                     "Patch 6, on top: O takes the middle of the right side, which blocks X's middle row. No one has won yet, and X plays next.".to_string(),
-                    format!("the agent changed the stack, @{rev}; 1 comment answered"),
-                    Some(rev),
+                    Some(change(patches)),
                 )
             }
             Plan::Answer => {
@@ -290,33 +313,28 @@ fn agent(path: &Path, id: &str) -> Result<()> {
                 } else {
                     "X is winning: X wins at the bottom left corner in patch 5, as O did not block it in patch 4. You asked me to answer only, so I changed nothing: to fix O's mistake, ask the agent about the whole stack."
                 };
-                (reply.to_string(), "the agent answered".to_string(), None)
+                (reply.to_string(), None)
             }
             Plan::Test => (
                 "In the tour I cannot build or run anything. In your own stacks, claude builds and tests the stack in a workspace of its own, and says on each patch what it found.".to_string(),
-                "the agent answered".to_string(),
                 None,
             ),
             Plan::Other => (
                 "I am the tour's stand-in for the agent, and I only know the game's next moves. In your own stacks, claude reads your comment and the code around it, changes what you asked in a worktree of its own, and answers here.".to_string(),
-                "the agent answered".to_string(),
                 None,
             ),
         };
-        for sh in &info.notes {
-            if let Some(n) = db.note(&sh.change, &sh.id).cloned() {
-                db.set_note(Note {
-                    text: append_turn(&n.text, Role::Agent, &reply, Some(info.way.name())),
-                    failed: None,
-                    ..n
-                })?;
-            }
-        }
+        let held = crate::held::Held {
+            at: crate::db::now(),
+            stack,
+            replies: replies(&reply, None),
+            ..Default::default()
+        };
         db.add_run(Run {
             state: RunState::Done,
-            summary,
+            summary: format!("its work waits for your review: {}", held.said()),
             output: reply.clone(),
-            rev,
+            held: Some(held),
             pid: None,
             ..run
         })?;
@@ -339,6 +357,8 @@ pub enum Step {
     Comment,
     /// The agent asked to fix it, and watched at work.
     Ask,
+    /// What the agent brought back reviewed, from the banner, and accepted.
+    Review,
     /// A question, asked answer only.
     Question,
     /// Patch 1 marked read.
@@ -372,13 +392,14 @@ pub enum Step {
 }
 
 /// The tour's steps, in their order.
-pub const TOUR: [Step; 21] = [
+pub const TOUR: [Step; 22] = [
     Step::Welcome,
     Step::Played,
     Step::Pick,
     Step::Read,
     Step::Comment,
     Step::Ask,
+    Step::Review,
     Step::Question,
     Step::Reading,
     Step::Commenting,
@@ -407,10 +428,11 @@ pub struct Section {
 }
 
 /// The tour's sections, the most useful first.
-pub const SECTIONS: [Section; 13] = [
+pub const SECTIONS: [Section; 14] = [
     Section { title: "Learn how to read a stack and its patches", first: Step::Welcome },
     Section { title: "Learn how to comment on a line", first: Step::Comment },
     Section { title: "Learn how to ask the agent to change the code", first: Step::Ask },
+    Section { title: "Learn how to review what the agent did", first: Step::Review },
     Section { title: "Learn how to reply to the agent, and ask it a question", first: Step::Question },
     Section { title: "Learn how to keep track of what you have read", first: Step::Reading },
     Section { title: "Learn how to switch how the code is drawn", first: Step::Views },
@@ -580,6 +602,30 @@ impl Tour {
         notes.into_iter().next().cloned()
     }
 
+    /// The landed ask whose work waits for review on the tour's stack, the
+    /// first landed, and whether it changes the stack.
+    fn landed(app: &App) -> Option<(String, bool)> {
+        let r = crate::held::queue(&app.db, STACK).into_iter().next()?;
+        Some((r.id.clone(), r.held.as_ref().is_some_and(|h| h.stack.is_some())))
+    }
+
+    /// What waits for review accepted, whole, as a review accepting all of
+    /// it does; a review opened left first.
+    fn accept_landed(&self, app: &mut App) {
+        if app.screen == Screen::Review {
+            app.reviewing = None;
+            app.screen = Screen::Main;
+        }
+        while let Some((id, _)) = Tour::landed(app) {
+            if let Err(e) = Db::edit(&self.path, |db| crate::held::close(db, &id, &Default::default(), Some(true))) {
+                app.status = e.0;
+                break;
+            }
+            app.refresh();
+        }
+        app.launch();
+    }
+
     /// Whether the agent works on something, or a comment waits for it.
     fn working(app: &App) -> bool {
         !ask::with_agent(&app.db).is_empty() || app.db.stack_notes(STACK).iter().any(|n| n.queued.is_some())
@@ -617,7 +663,9 @@ impl Tour {
                 let s = app.db.stack(STACK).unwrap();
                 !app.db.notes(&app.db.patch(&s.patches[at]).change).is_empty()
             }),
-            Step::Ask => Tour::has(app, FIXES[0].2),
+            // Landed, its change waiting for review; or accepted already.
+            Step::Ask => Tour::has(app, FIXES[0].2) || Tour::landed(app).is_some_and(|(_, change)| change),
+            Step::Review => Tour::has(app, FIXES[0].2) && app.screen == Screen::Main,
             // The agent's answer, the thread's last turn.
             Step::Question => self.thread(app).is_some_and(|n| {
                 thread_turns(&n.text).last().is_some_and(|t| t.role == Role::Agent && t.tag.as_deref() == Some(Way::Answer.name()))
@@ -632,7 +680,7 @@ impl Tour {
             Step::Move => (self.refused || Tour::last_op(app).starts_with("move")) && !matches!(app.mode, Mode::Moving { .. }),
             Step::Drop => n + 1 == MOVES.len() && Tour::last_op(app).starts_with("drop"),
             Step::Undo => n == MOVES.len() && Tour::last_op(app).starts_with("undo"),
-            Step::StackComment => Tour::has(app, NEXT.2),
+            Step::StackComment => Tour::has(app, NEXT.2) && app.screen == Screen::Main,
             Step::Help => self.seen && !matches!(app.mode, Mode::Help { .. }),
         }
     }
@@ -647,15 +695,20 @@ impl Tour {
     pub fn say(&self, app: &App) -> (String, Option<String>) {
         let working = Tour::working(app);
         let text: String = match self.step() {
-            Step::Welcome if self.sections => "Welcome to stacked, an editor of stacks of patches. In stacked you read patches, comment on their lines, ask an agent about them and reorder them, and stacked keeps every edit, so you can undo it. This tour plays tic-tac-toe in a file, board.txt, with one patch per move, in 13 sections, the most useful first. Each step waits for you to do what it says; Tab does the step for you, shift-Tab lists the sections, to go to any of them, and ctrl-c leaves the tour. Press Enter to go on.".into(),
-            Step::Welcome => "Welcome to stacked, an editor of stacks of patches. In stacked you read patches, comment on their lines, ask an agent about them and reorder them, and stacked keeps every edit, so you can undo it. This tour plays tic-tac-toe in a file, board.txt, with one patch per move. It has 13 sections, the most useful first, and takes about fifteen minutes. Each step waits for you to do what it says; Tab does the step for you, and ctrl-c leaves the tour. The tour writes nothing on disk but one setting, [demo] seen, in stacked's settings file: the next tour starts on the list of its sections, to start at any of them. Press Enter to go on.".into(),
+            Step::Welcome if self.sections => "Welcome to stacked, an editor of stacks of patches. In stacked you read patches, comment on their lines, ask an agent about them and reorder them, and stacked keeps every edit, so you can undo it. This tour plays tic-tac-toe in a file, board.txt, with one patch per move, in 14 sections, the most useful first. Each step waits for you to do what it says; Tab does the step for you, shift-Tab lists the sections, to go to any of them, and ctrl-c leaves the tour. Press Enter to go on.".into(),
+            Step::Welcome => "Welcome to stacked, an editor of stacks of patches. In stacked you read patches, comment on their lines, ask an agent about them and reorder them, and stacked keeps every edit, so you can undo it. This tour plays tic-tac-toe in a file, board.txt, with one patch per move. It has 14 sections, the most useful first, and takes about fifteen minutes. Each step waits for you to do what it says; Tab does the step for you, and ctrl-c leaves the tour. The tour writes nothing on disk but one setting, [demo] seen, in stacked's settings file: the next tour starts on the list of its sections, to start at any of them. Press Enter to go on.".into(),
             Step::Played => "The project has one file, board.txt, with an empty board, and one stack, game, with no patches yet. (`stacked new game --base main` makes an empty stack, and `stacked import game main..HEAD` makes a stack of the commits on top of main.) Press Enter, and the tour plays five moves, one patch for each.".into(),
             Step::Pick => "On the left is the stack, game: one patch per move, in the order the moves were played, from patch 1, X takes the center. Press ↑↓ to pick a patch: pick patch 3, X takes the top right corner.".into(),
             Step::Read => "Press → to read patch 3, X takes the top right corner. The middle shows the whole board: the moves before patch 3 as they are, and the row that patch 3 changes, as it was (−) and as it is (+). (git's patches show 3 lines around a change; the tour's patches show the whole board.) ↑↓ go through patch 3's lines, and ← goes back to the patches.".into(),
             Step::Comment => "Patch 4 is a mistake: O takes the bottom right corner, which lets X win at the bottom left in patch 5. Comment on patch 4, as in a review: press ← to go to the patches, ↓ to pick patch 4, → to read it, and ↓ to go to its + line. Then press Enter, write why it is a mistake, press Esc, and choose Save it.".into(),
+            Step::Ask if Tour::landed(app).is_some() => "The agent answered that fixing O's mistake needs more than patch 4, as patch 5 has to change too. Its answer waits for your review: your comment's first line says so, and so does the banner at the top. Nothing the agent brings back is applied before you review it. Accepting this answer moves your comment to the stack's own comments, where the agent may change any patch: press Enter on your comment to accept it.".into(),
             Step::Ask if working => "The agent is working on your comment: the comment's first line says with the agent, and the last lines the agent writes show under it. Press Enter on your comment to open all it writes, as it writes, and Esc to fold it again. (In the tour, a stand-in for the agent answers, in memory. In your own stacks, claude answers, and makes its changes in a worktree of its own.)".into(),
             Step::Ask if !self.asking(app).1 && !self.asking(app).0.is_empty() => "You asked the agent about patch 4 alone, and the agent says that fixing O's mistake needs more than patch 4: patch 5, X's win, has to change too. So your comment moved from patch 4 to the stack's own comments, and the cursor moved with it. Ask the agent from there, where it may change any patch: press Space, go to Ask agent, pick change with ← →, and press Enter.".into(),
             Step::Ask => "Ask the agent to fix O's mistake in patch 4. The fix changes patch 5 too, because X can no longer win where O blocks. So with the cursor on your comment on patch 4, press Space and go to Ask agent: its choices follow it, and → moves the [x] to the whole stack. Then press Enter.".into(),
+            Step::Review if app.screen == Screen::Review => "This is the review of the agent's work. On the left are its parts: the stack operations of its change, a line for each patch (patches 4 and 5 are modified), and its reply to your comment. On the right is what the part the cursor is on would be: the stack diff of the change, or the reply as the last turn of its thread. Press ↓ to go through the parts and Enter on each to accept it (Enter again would reject it). Then press Esc and choose Close review: what you accepted is applied then.".into(),
+            Step::Review if Tour::landed(app).is_some() => "The agent's work has landed, and nothing changed under you: it waits for your review, and the banner at the top says so. Nothing of it is applied before you review it, and the stack is not edited by hand meanwhile. Press Esc until the banner is picked: Esc goes up from the middle to the patches, then to the stack's header, then to the banner. Then press Enter on the banner to review the agent's work.".into(),
+            Step::Review => "You rejected the agent's change, so the stack is as it was. Ask the agent again: on your comment, press Space, go to Ask agent, pick the whole stack with ← →, and press Enter.".into(),
+            Step::Question if Tour::landed(app).is_some() => "The agent's answer has landed, and waits for your review: your comment's first line says so, and the comments pane marks the comment ◆. An answer changes nothing in the stack, so it can be accepted at once, without the review: press Enter on your comment to accept the answer.".into(),
             Step::Question if working => "The agent is answering your question. Asked that way, it reads the code and answers, and changes nothing.".into(),
             Step::Question => {
                 let moved = self.thread(app).is_some_and(|n| n.moved.is_some());
@@ -676,6 +729,8 @@ impl Tour {
             Step::Drop => "A patch can be dropped. Pick patch 5, X blocks O's left column, press Space and choose Drop this patch…. stacked asks first: choose Drop it. The board then loses X's last move. (Dropping a patch with others above it is refused here, as they were made on the board it leaves.)".into(),
             Step::Undo => "Every edit can be undone and redone, the agent's too. Press Space and choose Undo, near the end of the menu: each Undo is named after the edit it takes back, here Undo: drop. Patch 5 comes back. Redo, under it, would drop it again.".into(),
             Step::Tree => "Every state the stack was in is kept, as a tree of edits. On the stack's header (≡ game), press Space and choose Tree of edits…: ● marks the state you are on, and the stack without patch 5 is there too, as a branch to go back to. Press Esc to come back.".into(),
+            Step::StackComment if app.screen == Screen::Review => "Accept the agent's change, which adds patch 6, and its reply: press Enter on each part, then press Esc and choose Close review.".into(),
+            Step::StackComment if Tour::landed(app).is_some() => "The agent's work has landed: its change adds patch 6, O's next move, and it waits for your review. Review it as before: press Esc until the banner is picked, press Enter, accept each part with Enter, then press Esc and choose Close review.".into(),
             Step::StackComment if working => "The agent is working on the stack's comment. The stack's own comments show in the middle while the stack's header (≡ game) is picked, and this one says with the agent there.".into(),
             Step::StackComment => "A comment on the stack is asked about the whole stack: there the agent may change any patch, and add new ones, as for a rebase. On the stack's header (≡ game), press Space and choose Comment on the stack…, write \"Play O's next move.\", press Esc, go to Save it and ask agent, pick change with ← →, and press Enter.".into(),
             Step::Runs => "The agent added patch 6: O blocks X's middle row. Runs… lists everything the agent was asked, newest first, and what came of each: press Space and choose Runs…, near the end of any menu. Enter on a run shows all the agent wrote, Esc goes back to the list, and Esc again comes back to the stack.".into(),
@@ -732,7 +787,9 @@ impl Tour {
                 app.sel = at;
                 app.focus = Focus::Diff;
             }
-            Step::Ask => {
+            // The answer that moves the comment to the stack, accepted.
+            Step::Ask if Tour::landed(app).is_some() => self.accept_landed(app),
+            Step::Ask | Step::Review if Tour::landed(app).is_none() && !Tour::has(app, FIXES[0].2) => {
                 // Of the whole stack: from the patch, or from the stack the
                 // comment went to.
                 let (notes, on_patch) = self.asking(app);
@@ -744,6 +801,11 @@ impl Tour {
                     Err(e) => fail(app, e),
                 }
             }
+            Step::Ask => {}
+            Step::Review | Step::Question | Step::StackComment if Tour::landed(app).is_some() || app.screen == Screen::Review => {
+                self.accept_landed(app)
+            }
+            Step::Review => {}
             Step::Question => {
                 let Some(n) = self.thread(app) else { return };
                 if Tour::working(app) {

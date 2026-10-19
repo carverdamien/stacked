@@ -1146,6 +1146,9 @@ fn the_agent_s_reply_waits_for_review_and_enter_takes_it() {
     keys(&mut app, &[KeyCode::Down]);
     let screen = draw(&mut app);
     assert!(screen.contains("the agent's reply waits for your review") && !screen.contains("It is a shout."), "{screen}");
+    // The comments pane marks it, and counts it; Show… lists it apart.
+    assert!(screen.contains("◆ you · a.txt: TWO") && screen.contains("1 comment · 1 to review"), "{screen}");
+    assert!(app.show_counts().contains(&(Show::ToReview, 1)) && app.show_counts().contains(&(Show::ToSend, 0)));
     keys(&mut app, &[KeyCode::Char(' ')]);
     let all = items(&app);
     for (l, ok) in [("Accept the agent's reply", true), ("Reply", false), ("Edit your comment", false)] {
@@ -1565,7 +1568,7 @@ fn a_comment_is_sent_from_its_menu_and_answered_in_place() {
     keys(&mut app, &[KeyCode::Right, KeyCode::Home]);
     choose(&mut app, "Show…");
     let all: Vec<String> = items(&app).into_iter().map(|(l, _)| l).collect();
-    assert_eq!(all[..4], ["● all (1)", "  to send (0)", "  to read (1)", "  to read: read-only (1)"], "{all:?}");
+    assert_eq!(all[..5], ["● all (1)", "  to send (0)", "  to review (0)", "  to read (1)", "  to read: read-only (1)"], "{all:?}");
     choose(&mut app, "  to send");
     assert_eq!(app.show, Show::ToSend);
     let screen = draw(&mut app);

@@ -32,6 +32,8 @@ enum ShowArg {
     All,
     /// Not sent, and not answered.
     ToSend,
+    /// The agent's reply to them waits for your review.
+    ToReview,
     /// The agent's answer is their last word.
     ToRead,
     /// ... from an ask that could only answer.
@@ -53,6 +55,7 @@ impl ShowArg {
         match self {
             ShowArg::All => Show::All,
             ShowArg::ToSend => Show::ToSend,
+            ShowArg::ToReview => Show::ToReview,
             ShowArg::ToRead => Show::ToRead,
             ShowArg::ToReadOnly => Show::ToReadAnswer,
             ShowArg::ToReadWrite => Show::ToReadChange,
@@ -880,9 +883,10 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
         Cmd::Comments { name, patch, show } => {
             let db = Db::load(path)?;
             let busy = ask::with_agent(&db);
+            let held = stacked::held::replies_waiting(&db);
             let show = show.map_or(Show::All, ShowArg::show);
             for (n, gone) in comments_of(&db, &name, patch.as_deref())? {
-                if shows(show, &n, &busy, gone) {
+                if shows(show, &n, &busy, &held, gone) {
                     print_note(&db, &name, &n, &busy);
                 }
             }

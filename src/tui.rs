@@ -263,6 +263,8 @@ pub enum Screen {
 pub enum Show {
     All,
     ToSend,
+    /// Their reply from the agent waits for your review.
+    ToReview,
     ToRead,
     ToReadAnswer,
     ToReadChange,
@@ -275,9 +277,10 @@ pub enum Show {
 }
 
 impl Show {
-    pub const ALL: [Show; 10] = [
+    pub const ALL: [Show; 11] = [
         Show::All,
         Show::ToSend,
+        Show::ToReview,
         Show::ToRead,
         Show::ToReadAnswer,
         Show::ToReadChange,
@@ -292,6 +295,7 @@ impl Show {
         match self {
             Show::All => "all",
             Show::ToSend => "to send",
+            Show::ToReview => "to review",
             Show::ToRead => "to read",
             Show::ToReadAnswer => "to read: read-only",
             Show::ToReadChange => "to read: write",
@@ -1258,7 +1262,7 @@ impl App {
 
     /// Whether the filter `show` lets `n` be shown.
     fn shows(&self, show: Show, n: &Note, busy: &Busy, gone: bool) -> bool {
-        shows(show, n, busy, gone)
+        shows(show, n, busy, &self.held_replies(), gone)
     }
 
     /// The comments the filter lets the middle pane show: the deleted ones,
@@ -1282,7 +1286,7 @@ impl App {
     }
 
     /// How many of the middle pane's comments each filter would show.
-    fn show_counts(&self) -> Vec<(Show, usize)> {
+    pub fn show_counts(&self) -> Vec<(Show, usize)> {
         let busy = self.busy();
         let lines = self.line_keys();
         let notes = self.subject_notes();
@@ -2869,10 +2873,12 @@ impl App {
     /// patch's: what Send all sends, the sendable ones.
     fn listed_sendable(&self, way: Way) -> Vec<(String, String)> {
         let busy = self.busy();
+        let held = self.held_replies();
         self.notes()
             .iter()
             .filter_map(|(_, id)| self.db.note(&self.subject_change()?, id))
             .filter(|n| ask::sendable(n) && !busy.contains_key(&(n.change.clone(), n.id.clone())))
+            .filter(|n| !held.contains_key(&(n.change.clone(), n.id.clone())))
             .filter(|n| way != Way::Test || ask::can_test(&self.db, n))
             // On the history: asked about to answer only.
             .filter(|n| way == Way::Answer || n.about.is_none())
@@ -4916,6 +4922,7 @@ impl App {
         let all: Vec<Note> = notes.iter().filter_map(|(_, id)| self.db.note(&change, id).cloned()).collect();
         let with = all.iter().filter(|n| busy.contains_key(&(n.change.clone(), n.id.clone()))).count();
         let to_read = all.iter().filter(|n| self.shows(Show::ToRead, n, &busy, false)).count();
+        let to_review = all.iter().filter(|n| self.shows(Show::ToReview, n, &busy, false)).count();
         let total = self.subject_notes().len();
         let mut header = if self.show == Show::All {
             format!(" {} comment{}", all.len(), plural(all.len()))
@@ -4924,6 +4931,9 @@ impl App {
         };
         if with > 0 {
             header += &format!(" · {with} with the agent");
+        }
+        if to_review > 0 {
+            header += &format!(" · {to_review} to review");
         }
         if to_read > 0 {
             header += &format!(" · {to_read} to read");
@@ -4946,6 +4956,7 @@ impl App {
         let fits = ((h.saturating_sub(1 + edit_h)) / per).max(1);
         let on = lit.unwrap_or(0);
         let first = on.saturating_sub(fits.saturating_sub(1));
+        let held = self.held_replies();
         let mut cursor = None;
         let mut y = 1;
         for (i, n) in all.iter().enumerate().skip(first) {
@@ -4957,6 +4968,8 @@ impl App {
                 "●"
             } else if n.queued.is_some() {
                 "◌"
+            } else if held.contains_key(&(n.change.clone(), n.id.clone())) {
+                "◆"
             } else if n.failed.is_some() {
                 "✗"
             } else if n.moved.is_some() {
@@ -5301,14 +5314,16 @@ pub type Held = HashMap<(String, String), (String, usize)>;
 
 /// Whether the filter `show` lets `n` be shown: `gone` when its line is
 /// not in its patch's version in the stack.
-pub fn shows(show: Show, n: &Note, busy: &Busy, gone: bool) -> bool {
+pub fn shows(show: Show, n: &Note, busy: &Busy, held: &Held, gone: bool) -> bool {
     let with = busy.contains_key(&(n.change.clone(), n.id.clone()));
+    let waits = held.contains_key(&(n.change.clone(), n.id.clone()));
     let last = last_role(&n.text);
     let to_read = last == Some(Role::Agent) && !with && n.moved.is_none() && n.queued.is_none();
     match show {
         Show::All => true,
         Show::Nothing => false,
-        Show::ToSend => !with && ask::sendable(n),
+        Show::ToSend => !with && !waits && ask::sendable(n),
+        Show::ToReview => waits,
         Show::ToRead => to_read,
         Show::ToReadAnswer => to_read && last_reply_way(&n.text).as_deref() == Some("answer"),
         Show::ToReadChange => to_read && last_reply_way(&n.text).as_deref() == Some("change"),

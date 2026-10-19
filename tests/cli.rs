@@ -814,6 +814,9 @@ fn what_the_agent_brings_back_waits_for_review_and_may_be_rejected() {
     let queue = e.ok(&["landed", "s"]);
     assert!(queue.contains("a change of the stack, 1 reply") && queue.contains("  change\tagent: the stack"), "{queue}");
     assert!(queue.contains(&format!("  reply\t{id}\tAmended.")), "{queue}");
+    let review = e.ok(&["comments", "s", "--show", "to-review"]);
+    assert!(review.contains(&format!("{id}\tthe stack\tthe agent's reply waits for your review")), "{review}");
+    assert!(!e.ok(&["comments", "s", "--show", "to-send"]).contains(&id), "not to send again before");
     // The next change goes from the stack as the review leaves it.
     let (fine, out, err) = stacked_in(&e.src, &e.db, &["send", "s", &next], "", &env);
     assert!(fine, "{err}");

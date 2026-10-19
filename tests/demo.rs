@@ -191,7 +191,8 @@ fn each_section_starts_with_the_game_the_sections_before_it_leave() {
         let fixed = titles(&app).iter().any(|t| t == "O blocks the diagonal at the bottom left");
         match s.first {
             Step::Welcome => assert_eq!(n, 0),
-            Step::Comment | Step::Ask => assert!(n == 5 && !fixed, "{}", s.title),
+            // Before its review, the fix is not in the stack.
+            Step::Comment | Step::Ask | Step::Review => assert!(n == 5 && !fixed, "{}", s.title),
             Step::Runs | Step::Help | Step::End => assert_eq!(n, 6, "{}", s.title),
             _ => assert!(n == 5 && fixed, "{}: {:?}", s.title, titles(&app)),
         }
@@ -235,7 +236,10 @@ fn the_tour_says_the_agent_works_while_it_does() {
     tour.show(&mut app);
     until(&mut app, &mut tour, "with the agent", |app, tour| tour.say(app).0.starts_with("The agent is working on your comment"));
     assert_eq!(tour.step(), Step::Ask);
-    until(&mut app, &mut tour, "fixed", |_, tour| tour.step() == Step::Question);
+    // Landed, the fix waits for review, the banner saying so.
+    until(&mut app, &mut tour, "landed", |_, tour| tour.step() == Step::Review);
+    assert!(tour.say(&app).0.starts_with("The agent's work has landed, and nothing changed under you"), "{}", tour.say(&app).0);
+    assert!(screen(&mut app, &tour).contains("⟳ 1 landed ask waits for your review"));
 }
 
 #[test]
@@ -252,6 +256,12 @@ fn asked_about_patch_4_alone_the_agent_sends_the_comment_to_the_stack() {
     // too; the comment goes to the stack, nothing changed.
     stacked::ask::queue(&app.path, "game", &[(note.change.clone(), note.id.clone())], stacked::db::Way::Change, false).unwrap();
     app.launch();
+    // Its answer waits for review; accepted, the comment moves.
+    until(&mut app, &mut tour, "an answer to review", |app, _| !stacked::held::queue(&app.db, "game").is_empty());
+    assert!(tour.say(&app).0.contains("press Enter on your comment to accept it"), "{}", tour.say(&app).0);
+    assert!(app.db.notes(&change).len() == 1, "still on patch 4 before");
+    let landed = stacked::held::queue(&app.db, "game")[0].id.clone();
+    stacked::db::Db::edit(&app.path, |db| stacked::held::close(db, &landed, &Default::default(), Some(true))).unwrap();
     until(&mut app, &mut tour, "moved to the stack", |app, _| {
         app.db.stack_notes("game").into_iter().any(|n| n.moved.is_some() && last_role(&n.text) == Some(Role::Agent))
     });
@@ -261,8 +271,10 @@ fn asked_about_patch_4_alone_the_agent_sends_the_comment_to_the_stack() {
     assert_eq!(app.db.stack("game").unwrap().patches[3], mistake, "nothing changed");
     assert_eq!(tour.step(), Step::Ask, "still to ask");
     assert!(screen(&mut app, &tour).contains("You asked the agent about patch 4 alone"));
-    // Asked again there, on the stack: patches 4 and 5 made again; and the
-    // question is asked in that thread.
+    // Asked again there, on the stack: patches 4 and 5 made again, once its
+    // review accepts them; and the question is asked in that thread.
+    tab(&mut app, &mut tour);
+    assert_eq!(tour.step(), Step::Review);
     tab(&mut app, &mut tour);
     at(&app, "O blocks the diagonal at the bottom left");
     at(&app, "X blocks O's left column");

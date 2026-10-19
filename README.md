@@ -67,7 +67,7 @@ of tic-tac-toe played in a file, board.txt, one patch per move. It starts
 from an empty board and an empty stack, and plays five moves as patches.
 Each patch shows the whole board, so the moves before it can be seen. O's
 fourth move is a mistake, and X's fifth move wins because of it. The tour
-has 13 sections, the most useful first, and takes about fifteen minutes:
+has 14 sections, the most useful first, and takes about fifteen minutes:
 
 1. Read a stack and its patches.
 2. Comment on a line: O's mistake.
@@ -75,19 +75,24 @@ has 13 sections, the most useful first, and takes about fifteen minutes:
    the fix changes X's winning move too, a stand-in for the agent rewrites
    both moves (O blocks X, then X blocks O), and you can watch it write.
    Asked about patch 4 alone, the stand-in says that the fix needs more
-   than that patch, and your comment moves to the stack.
-4. Reply to the agent with a question, asked answer only.
-5. Keep track of what you have read, in reading.
-6. Switch how the code is drawn: unified, side by side, compact.
-7. The history of the stack, and the versions of a patch.
-8. Move a patch: stacked refuses, because each patch only applies to the
+   than that patch; accepting that answer moves your comment to the stack.
+4. Review what the agent did: its work waits, the banner says so, and Esc
+   goes up to the banner; Enter there opens the review, its change of the
+   stack patch by patch and its reply, each accepted with Enter, then
+   closed.
+5. Reply to the agent with a question, asked answer only, its answer
+   accepted at once with Enter on the comment.
+6. Keep track of what you have read, in reading.
+7. Switch how the code is drawn: unified, side by side, compact.
+8. The history of the stack, and the versions of a patch.
+9. Move a patch: stacked refuses, because each patch only applies to the
    board that the patches before it leave; Esc stops moving it.
-9. Drop a patch, undo the drop, and see the tree of edits.
-10. Ask the agent to add a patch: a comment on the stack asks for O's next
-    move, and the stand-in adds it as patch 6.
-11. See what the agent did, in Runs….
-12. Where help is (`?`), and how to change the keys.
-13. Start on a project of yours. At the end, the tour shows the board as
+10. Drop a patch, undo the drop, and see the tree of edits.
+11. Ask the agent to add a patch: a comment on the stack asks for O's next
+    move, and the stand-in adds it as patch 6, once its review accepts it.
+12. See what the agent did, in Runs….
+13. Where help is (`?`), and how to change the keys.
+14. Start on a project of yours. At the end, the tour shows the board as
     the stack's patches leave it.
 
 Each step says what to press, and why, and waits for you to do it: Tab does
@@ -372,10 +377,11 @@ counting it, `✻ thinking · ~688 tokens`, with the words of it when claude
 gives them), agent replied (changed, answered, tested), failed (and why),
 moved. Enter on a comment the agent is working on opens its stream in
 place; esc folds it. The comments pane marks each (`●` with the agent, `◌`
-ready, `✓` replied, `✗` failed, `↑` moved), its header counts them (`4
-comments · 1 with the agent · 2 to read`), and the top bar too (`agent ●2 ·
-ready:1`). `Show…`, on either header, picks what both panes show, each with
-its count: all, to send, to read (any, from an answer, from a change), in
+ready, `◆` its reply waits for your review, `✓` replied, `✗` failed, `↑`
+moved), its header counts them (`4 comments · 1 with the agent · 1 to
+review · 2 to read`), and the top bar too (`agent ●2 · ready:1`).
+`Show…`, on either header, picks what both panes show, each with its
+count: all, to send, to review, to read (any, from an answer, from a change), in
 progress, failed or moved, gone (on a line the patch no longer has),
 deleted, none. It is kept per stack, in the file. A comment deleted is not
 lost, as the file only grows: `deleted` shows each as it was, `deleted @12`
