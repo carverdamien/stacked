@@ -57,6 +57,7 @@ stacked config > ~/.stacked.toml   # every setting, to start a settings file fro
 stacked config editor hx           # one written in the settings file; KEY alone reads it
 stacked config --unset editor      # ... taken out of it
 stacked setup agent bug123         # which of the agent's tools every ask may use, asked one by one
+stacked setup agent bug123 --tui   # ... on a screen, a box for each
 ```
 
 `-f FILE` points any command at a database. A first argument that is not a
@@ -751,7 +752,13 @@ settings:
   stacked does not give every ask, whether it may, saying of those that
   change things (`Bash`, `Edit`, `Write`…) that an answer could change
   things too. No answer is no. What you let it is added to `tools`, what
-  you did not taken out, the rest of the file as it was. `worktrees`, where the agents' worktrees go, else
+  you did not taken out, the rest of the file as it was. With `--tui`, on a
+  screen of its own: `tools` as the settings have it now, at the top; a box
+  for each MCP server (all its tools, those to come too) and for each of
+  its tools, then for each other tool, and for what the settings let that
+  the agent does not say it has (`Bash(jq *)`, a server not there now), to
+  keep or take out; and what `tools` is to be, at the bottom. Space lets a
+  tool or not, `s` saves, esc leaves with nothing written. `worktrees`, where the agents' worktrees go, else
   `.stacked/` at the top of the stack's repository.
 - `[reviews]`: `source`, `"phabricator"` or `"none"` (no pulling); `url`,
   the Phabricator a bare `D123` trailer is on; `arcrc`, where the tokens

@@ -30,6 +30,7 @@ pub mod phab;
 pub mod reading;
 pub mod review;
 pub mod rows;
+pub mod setup;
 pub mod thread;
 pub mod todo;
 pub mod tree;

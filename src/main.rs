@@ -402,7 +402,31 @@ enum SetupWhat {
     /// where it has your MCP servers, and says what it has; you let every
     /// ask use each, or not, and what you let it is written in the
     /// settings, as agent.tools.
-    Agent { name: Option<String> },
+    Agent {
+        name: Option<String>,
+        /// On a screen of its own, a box for each tool, rather than a
+        /// question each.
+        #[arg(long)]
+        tui: bool,
+    },
+}
+
+/// As `setup_agent`, on a screen of its own: a box for each tool, the
+/// settings' value now and as it is to be.
+fn setup_agent_tui(dir: &Path, settings: &Path) -> Result<()> {
+    eprintln!("stacked: asking the agent, in {}, what tools it has…", dir.display());
+    let (tools, servers) = stacked::ask::agent_tools(dir)?;
+    let was = stacked::config::get().agent.tools.clone();
+    let s = stacked::setup::Setup::new(&tools, &servers, &was, &settings.display().to_string());
+    match stacked::setup::run(s, &format!("the agent's, in {}", dir.display()))? {
+        Some(chosen) => {
+            stacked::config::set(settings, "agent.tools", &chosen).map_err(Error)?;
+            let said = if chosen.is_empty() { "none".to_string() } else { chosen.join(", ") };
+            eprintln!("stacked: agent.tools written in {}: {said}", settings.display());
+        }
+        None => eprintln!("stacked: left; nothing written"),
+    }
+    Ok(())
 }
 
 /// Asks the agent what tools it has in `dir`, then you, on stdin, which
@@ -429,6 +453,11 @@ fn setup_agent(dir: &Path, settings: &Path) -> Result<()> {
         dir.display(),
         tools.len(),
         stacked::ask::GIVEN.join(", ")
+    );
+    eprintln!(
+        "Now, agent.tools in {}: {}.",
+        settings.display(),
+        if chosen.is_empty() { "none".to_string() } else { chosen.join(", ") }
     );
     // An MCP server's tools, all at once or one by one.
     let mut names: Vec<String> = servers.clone();
@@ -1297,12 +1326,16 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
                 eprintln!("stacked: {key} written in {}", p.display());
             }
         }
-        Cmd::Setup { what: SetupWhat::Agent { name } } => {
+        Cmd::Setup { what: SetupWhat::Agent { name, tui } } => {
             let dir = match name {
                 Some(n) => ops::base_of(Db::load(path)?.stack(&n)?)?.0,
                 None => here(),
             };
-            setup_agent(&dir, &stacked::config::path())?;
+            if tui {
+                setup_agent_tui(&dir, &stacked::config::path())?;
+            } else {
+                setup_agent(&dir, &stacked::config::path())?;
+            }
         }
         Cmd::Check => {
             let db = Db::load(path)?;
