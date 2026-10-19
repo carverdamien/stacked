@@ -238,6 +238,17 @@ pub fn trim(src: &Path, dst: &Path, from: Option<usize>) -> Result<Trimmed> {
     notes.sort_by_key(|n| before.note_history(&n.change, &n.id).last().map_or(0, |(r, _)| *r));
     for n in notes {
         new.push(Record::Comment(n.clone()), None);
+        // Collapsed, it stays so.
+        if before.collapsed(&n.change, &n.id) {
+            new.push(
+                Record::Collapse {
+                    change: n.change.clone(),
+                    id: n.id.clone(),
+                    collapsed: true,
+                },
+                None,
+            );
+        }
     }
     // Each stack's filter and choices; the read marks standing.
     for name in heads.keys() {

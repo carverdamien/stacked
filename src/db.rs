@@ -19,7 +19,7 @@
 //! newline rather than cutting it off, and every rev after stays the same.
 //! And a reader need only read what was appended since it last read.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::File;
 use std::io::{Read, Write};
 use std::os::fd::AsRawFd;
@@ -61,6 +61,9 @@ pub enum Record {
     /// names it (`edit`: where a file is edited by hand), `pick` the one
     /// picked.
     Choice { stack: String, of: String, pick: String },
+    /// A comment collapsed by hand, in the middle pane: one quiet line for
+    /// it, until it is expanded.
+    Collapse { change: String, id: String, collapsed: bool },
     /// Lines of a patch marked read, in the reading mode; or a mark taken
     /// back.
     Read(Mark),
@@ -401,6 +404,8 @@ pub struct Db {
     /// (stack name, what the choice is of) to the index of its latest
     /// choice record.
     choices: BTreeMap<(String, String), usize>,
+    /// The comments collapsed: (change, comment id).
+    collapsed: HashSet<(String, String)>,
     /// Change to the indices of its read marks not taken back, oldest
     /// first.
     marks: HashMap<String, Vec<usize>>,
@@ -523,6 +528,7 @@ impl Db {
             note_records: HashMap::new(),
             views: HashMap::new(),
             choices: BTreeMap::new(),
+            collapsed: HashSet::new(),
             marks: HashMap::new(),
             runs: BTreeMap::new(),
             run_order: Vec::new(),
@@ -712,6 +718,14 @@ impl Db {
             }
             Record::Choice { stack, of, .. } => {
                 self.choices.insert((stack.clone(), of.clone()), at);
+            }
+            Record::Collapse { change, id, collapsed } => {
+                let key = (change.clone(), id.clone());
+                if *collapsed {
+                    self.collapsed.insert(key);
+                } else {
+                    self.collapsed.remove(&key);
+                }
             }
             Record::Read(m) => {
                 let marks = self.marks.entry(m.change.clone()).or_default();
@@ -1254,6 +1268,22 @@ impl Db {
                 stack: name.into(),
                 of: of.into(),
                 pick: pick.into(),
+            })?;
+        }
+        Ok(())
+    }
+
+    /// Whether comment (change, id) is collapsed, in the middle pane.
+    pub fn collapsed(&self, change: &str, id: &str) -> bool {
+        self.collapsed.contains(&(change.to_string(), id.to_string()))
+    }
+
+    pub fn set_collapsed(&mut self, change: &str, id: &str, collapsed: bool) -> Result<()> {
+        if self.collapsed(change, id) != collapsed {
+            self.push(Record::Collapse {
+                change: change.into(),
+                id: id.into(),
+                collapsed,
             })?;
         }
         Ok(())

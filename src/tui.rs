@@ -454,6 +454,9 @@ pub enum Action {
     EditTurnInEditor(usize),
     DeleteTurn(usize),
     BringBackTurn(usize),
+    /// The comment shown as one quiet line in the middle, or whole again.
+    Collapse,
+    Expand,
     Send(Way),
     /// A patch's comment sent to the whole stack: the agent may change any
     /// patch.
@@ -539,6 +542,8 @@ fn about(action: &Action) -> String {
             "delete the turn of the thread the cursor is on: a line says that it was deleted, the agent is no longer told it, and its menu can bring it back".into()
         }
         Action::BringBackTurn(_) => "bring back the deleted turn the cursor is on, as it was".into(),
+        Action::Collapse => "show this comment in the middle as one quiet line, until you expand it".into(),
+        Action::Expand => "show this comment whole again".into(),
         Action::Send(Way::Change) => "ask the agent, which may change the code within this comment's place".into(),
         Action::Send(Way::Answer) => "ask the agent, to answer only: nothing changes".into(),
         Action::Send(Way::Test) => "ask the agent to build and test, in a workspace of its choosing".into(),
@@ -1246,6 +1251,9 @@ impl App {
             };
             if !tag.is_empty() {
                 deco.tags.insert(n.id.clone(), tag);
+            }
+            if self.show != Show::Deleted && self.db.collapsed(&n.change, &n.id) {
+                deco.collapsed.insert(n.id.clone());
             }
             if let Some((_, run)) = busy.get(&(n.change.clone(), n.id.clone())) {
                 let lines = match &self.mode {
@@ -2196,6 +2204,9 @@ impl App {
                     if self.is_deleted(&n) {
                         return None;
                     }
+                    if self.db.collapsed(&n.change, &n.id) {
+                        return Some(Action::Expand);
+                    }
                     let busy = self.busy();
                     return Some(if busy.contains_key(&(n.change.clone(), n.id.clone())) {
                         Action::OpenStream
@@ -2972,6 +2983,11 @@ impl App {
         }
         let busy = self.busy();
         let with = busy.get(&(c.change.clone(), c.id.clone()));
+        // Collapsed: expanded first, as enter does.
+        let collapsed = self.db.collapsed(&c.change, &c.id);
+        if collapsed {
+            items.push(Item::new("Expand this comment", Action::Expand));
+        }
         // The turn the cursor is on, in the middle, may be written again,
         // whoever said it, deleted, or brought back; elsewhere on the
         // comment, what you said last, if the last word is yours, as enter
@@ -3033,6 +3049,9 @@ impl App {
             items.push(Item::new("Go to where it came from", Action::GoToOrigin));
             let back = self.where_was(m).split(" · ").next().unwrap_or("its patch").to_string();
             items.push(Item::new(format!("Move it back to {back}"), Action::MoveBack));
+        }
+        if !collapsed {
+            items.push(Item::new("Collapse this comment", Action::Collapse));
         }
         items.push(Item::new("History of this comment…", Action::NoteHistory));
         items.push(Item::new("Delete this comment…", Action::AskDeleteComment));
@@ -3151,6 +3170,18 @@ impl App {
                         } else {
                             format!("{what} is back, as it was")
                         };
+                    }
+                }
+            }
+            Action::Collapse | Action::Expand => {
+                let collapse = matches!(action, Action::Collapse);
+                if let Some(c) = self.picked()
+                    && self.edit(|db| db.set_collapsed(&c.change, &c.id, collapse)).is_some()
+                {
+                    // The cursor stays on it, shorter or longer.
+                    self.want = Some(Want::Note(c.id));
+                    if collapse {
+                        self.status = "the comment is collapsed: press Enter on its line to expand it".into();
                     }
                 }
             }
@@ -3470,6 +3501,14 @@ impl App {
 
     /// Opens the editor for `target`, in `pane`.
     fn write(&mut self, target: Target, pane: Focus, text: &str) {
+        // A comment collapsed is expanded to be written on: what it says is
+        // in sight.
+        if let Target::Reply { change, id } | Target::Edit { change, id } | Target::Turn { change, id, .. } = &target
+            && self.db.collapsed(change, id)
+        {
+            let (change, id) = (change.clone(), id.clone());
+            self.edit(|db| db.set_collapsed(&change, &id, false));
+        }
         self.mode = Mode::Edit(Edit {
             ed: Editor::new(text),
             target,
@@ -4046,6 +4085,7 @@ impl App {
                     (Screen::Main, Some(Action::Reply)) => "enter: reply · ",
                     (Screen::Main, Some(Action::EditMine)) => "enter: edit it · ",
                     (Screen::Main, Some(Action::OpenStream)) => "enter: what the agent writes · ",
+                    (Screen::Main, Some(Action::Expand)) => "enter: expand it · ",
                     (Screen::Main, Some(_)) => "enter: comment · ",
                     (Screen::Main, None) => "enter or ",
                     (Screen::Transcript | Screen::Text, _) => "↑↓: scroll · ",

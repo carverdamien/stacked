@@ -1317,6 +1317,8 @@ fn a_trim_writes_a_new_database_from_a_rev_on() {
         .collect::<Vec<_>>();
     Db::edit(&e.db, |db| {
         db.set_view("s", "to read")?;
+        let n = db.find_note("s", &id)?.clone();
+        db.set_collapsed(&n.change, &n.id, true)?;
         db.mark_read(&p.change, keys.clone()).map(|_| ())
     })
     .unwrap();
@@ -1334,12 +1336,15 @@ fn a_trim_writes_a_new_database_from_a_rev_on() {
         assert!(fine, "stacked {args:?} on the new file: {err}");
         out
     };
-    // The same stack, the same comments, filter and read marks.
+    // The same stack, the same comments, filter and read marks, the comment
+    // collapsed still.
     assert_eq!(on(&["show", "s"]), e.ok(&["show", "s"]));
     assert_eq!(on(&["comments", "s"]), e.ok(&["comments", "s"]));
     let made = Db::load(&new).unwrap();
     assert_eq!(made.view("s"), Some("to read"));
     assert_eq!(made.read_keys(&p.change), keys.into_iter().collect());
+    let n = made.find_note("s", &id).unwrap();
+    assert!(made.collapsed(&n.change, &n.id));
     assert!(made.warnings.is_empty() && on(&["check"]).contains("s: applies"));
     // The history kept: its start, then the drop and the undo; the ask that
     // landed before is left out.

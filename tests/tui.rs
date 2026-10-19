@@ -1078,6 +1078,54 @@ fn any_turn_of_a_thread_is_written_again_deleted_and_brought_back() {
 }
 
 #[test]
+fn a_comment_is_collapsed_by_hand_to_one_quiet_line() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Enter]);
+    save(&mut app, "why so loud?");
+    let n = notes_of(&db, "s", 0).remove(0);
+    Db::edit(&db, |d| {
+        d.set_note(Note {
+            text: append_turn(&n.text, Role::Agent, "It is a shout.", Some("answer")),
+            ..n.clone()
+        })
+    })
+    .unwrap();
+    app.refresh();
+    keys(&mut app, &[KeyCode::Down]);
+    draw(&mut app);
+    let rows = app.rows.len();
+    choose(&mut app, "Collapse this comment");
+    // One quiet line, the cursor still on it: how it starts, and its turns.
+    let row = &app.rows[app.cursor];
+    assert!(row.head && row.text == "   ▸ comment: why so loud? · 2 turns", "{row:?}");
+    assert!(app.rows.len() < rows);
+    assert!(app.status.contains("press Enter on its line to expand it"), "{}", app.status);
+    // The middle shows no more of it; the comments pane still lists it.
+    let screen = draw(&mut app);
+    assert!(!app.rows.iter().any(|r| r.text.contains("It is a shout.")), "{screen}");
+    assert!(screen.contains("✓ you · a.txt: TWO"), "{screen}");
+    assert!(app.hint().starts_with("enter: expand it"), "{}", app.hint());
+    assert!(Db::load(&db).unwrap().collapsed(&n.change, &n.id), "kept");
+    // Its menu expands it first, as enter does.
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    assert_eq!(items(&app)[0].0, "Expand this comment");
+    assert!(!items(&app).iter().any(|(l, _)| l == "Collapse this comment"), "{:?}", items(&app));
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Enter]);
+    assert_eq!(app.rows.len(), rows);
+    assert!(app.rows.iter().any(|r| r.text.contains("It is a shout.")));
+    assert!(!Db::load(&db).unwrap().collapsed(&n.change, &n.id));
+    // Collapsed again, it is expanded to be replied to.
+    choose(&mut app, "Collapse this comment");
+    choose_as(&mut app, "Reply", "here");
+    assert!(matches!(app.mode, Mode::Edit(_)), "{:?}", app.mode);
+    draw(&mut app);
+    assert!(app.rows.iter().any(|r| r.text.contains("It is a shout.")));
+}
+
+#[test]
 fn a_comment_on_a_patch_may_be_sent_to_the_whole_stack() {
     let (_tmp, db, _src) = setup();
     fake_claude();

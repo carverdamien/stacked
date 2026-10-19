@@ -368,6 +368,15 @@ on its first line, its menu (which Enter opens) to `Bring it back` or to
 read its history. The agent's comments moved to the stack are not deleted,
 nor what is moved back.
 
+A comment you no longer need to read can be collapsed by hand: its menu's
+`Collapse this comment` shows it in the middle as one quiet line, which
+says how the comment starts and how many turns it has (`▸ comment: why so
+loud? · 3 turns`). The cursor still goes on that line, and the comments
+pane lists the comment as before. Press Enter on the line, or choose
+`Expand this comment` in its menu, to show the comment whole again; writing
+on it (a reply, an edit) expands it too. A comment stays collapsed until it
+is expanded, opened again or not.
+
 The commits made in the agent's worktree, stacked's and the agent's, are
 not signed, whatever git's `commit.gpgsign` says: they are only read back
 as patches. `stacked apply`'s commits are yours, signed as git says.
@@ -612,8 +621,10 @@ by its line number, its rev: `@12`.
   are its history. The agent's turns are fenced ```` ```agent ````
   (```` ```claude ````, as the first files have them, reads the same). A
   turn you deleted is fenced ```` ```deleted ```` with whose it was, what
-  it said kept in it, each line quoted with `>`, to bring it back. A read
-  mark holds the lines it read; taking it back is a record naming it.
+  it said kept in it, each line quoted with `>`, to bring it back. A
+  comment collapsed, or expanded, is a record naming it, apart from its
+  history. A read mark holds the lines it read; taking it back is a record
+  naming it.
 - A crash can only cut the last line short. A line that cannot be read is
   passed over with a warning (`stacked check` lists them) and keeps its line
   number, so every rev after it stays the same. The next write ends a cut

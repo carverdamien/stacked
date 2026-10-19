@@ -7,7 +7,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::db::{Note, Patch};
 use crate::diff::parse_diff;
-use crate::thread::{Role, all_turns};
+use crate::thread::{Role, all_turns, thread_turns};
 use crate::view::{MSG_PATH, message_keys, mode};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -92,6 +92,8 @@ pub struct Deco {
     pub tags: HashMap<String, String>,
     pub streams: HashMap<String, Vec<String>>,
     pub read: Option<HashSet<String>>,
+    /// The comments collapsed by hand, by id: a quiet line each.
+    pub collapsed: HashSet<String>,
 }
 
 /// `3/10`: how many of `keys` are read, of how many.
@@ -158,6 +160,20 @@ pub fn comment_rows(n: &Note, width: usize, deco: &Deco) -> Vec<Row> {
         head,
         ..Row::new(kind, text)
     };
+    // Collapsed: one quiet line, how it starts and how many turns it has.
+    if deco.collapsed.contains(&n.id) {
+        let turns = thread_turns(&n.text);
+        let first = turns.first().and_then(|t| t.body.lines().next()).unwrap_or("");
+        let more = if turns.len() > 1 { format!(" · {} turns", turns.len()) } else { String::new() };
+        let head = format!("   ▸ {who}: ");
+        let room = width.saturating_sub(head.chars().count() + more.chars().count()).max(10);
+        let first = if first.chars().count() > room {
+            first.chars().take(room - 1).chain(['…']).collect()
+        } else {
+            first.to_string()
+        };
+        return vec![row(Kind::Stream, format!("{head}{first}{more}"), true)];
+    }
     // Where it stands, on its first line; under it when that is too long.
     let tag = deco.tags.get(&n.id).map_or(String::new(), |t| format!(" · {t}"));
     let head = format!("   └ {who}{tag}:");
