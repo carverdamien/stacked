@@ -2831,3 +2831,37 @@ fn the_banner_opens_on_the_agents_work_and_esc_goes_there_and_back() {
     app.click(10, 1, false);
     assert!(app.on_banner);
 }
+
+#[test]
+fn the_comment_editor_hides_nothing_what_it_would_cover_comes_after_it() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    // Wide enough for two sides in the half of it the middle takes while a
+    // comment is written there.
+    let wide = |app: &mut App| {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 160, 30));
+        app.draw(&mut buf);
+        (0..30).map(|y| (0..160).map(|x| buf[(x, y)].symbol()).collect::<String>()).collect::<Vec<_>>()
+    };
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "+TWO");
+    // In each view of the code: the line, the box under it, and after the
+    // box the line it would have covered, ` three`.
+    for view in ["unified", "side by side", "compact"] {
+        keys(&mut app, &[KeyCode::Enter]);
+        typed(&mut app, "why so loud?");
+        let lines = wide(&mut app);
+        let screen = lines.join("\n");
+        let line = lines.iter().position(|l| l.contains("TWO") && !l.contains("a comment on")).unwrap();
+        let foot = lines.iter().position(|l| l.contains("enter: a new line · esc:")).unwrap_or_else(|| panic!("{view}: no box:\n{screen}"));
+        assert!(lines[line + 1].contains("a comment on: TWO"), "{view}: the box under the line:\n{screen}");
+        assert!(lines[foot + 1].contains("three"), "{view}: what the box would hide, after it:\n{screen}");
+        assert!(!lines[line + 1..foot].iter().any(|l| l.contains("three")), "{view}:\n{screen}");
+        if view == "side by side" {
+            assert!(lines[foot + 1].matches("three").count() == 2, "both sides:\n{screen}");
+        }
+        keys(&mut app, &[KeyCode::Esc]);
+        choose(&mut app, "Throw it away");
+        keys(&mut app, &[KeyCode::Char('1')]);
+    }
+}

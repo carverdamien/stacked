@@ -5103,18 +5103,22 @@ impl App {
         });
         let ticks = ticks.as_ref();
         // Where a comment being written here goes: under its line, or the
-        // comment it answers, which then shows.
+        // comment it answers, which then shows. Its box takes `gap` lines
+        // there, and what it would hide comes after it.
         let anchor = self.editor_anchor();
+        let gap = if anchor.is_some() { self.editor_height(area, Focus::Diff) } else { 0 };
+        let mut editor_y: Option<usize> = None;
         // Not while the cursor is on the banner: it comes back there.
         let lit = |i: usize, app: &App| i == app.cursor && app.focus != Focus::List && !app.on_banner;
         // Each row drawn: the line of the pane it is on, and where it starts.
         let mut drawn: Vec<(usize, usize, usize)> = Vec::new();
         match layout {
             Layout::Unified => {
+                // The anchor, a third down, and the box under it, in sight.
                 if let Some(a) = anchor
-                    && (a < self.top || a + 1 >= self.top + h)
+                    && (a < self.top || a + 1 + gap > self.top + h)
                 {
-                    self.top = a.saturating_sub(h / 3);
+                    self.top = a.saturating_sub(h / 3).max((a + 1 + gap).saturating_sub(h)).min(a);
                 }
                 if anchor.is_none() {
                     if self.cursor < self.top {
@@ -5123,50 +5127,65 @@ impl App {
                         self.top = self.cursor + 1 - h;
                     }
                 }
-                for y in 0..h {
-                    let i = self.top + y;
-                    if i >= self.rows.len() {
+                let mut y = 0;
+                for i in self.top..self.rows.len() {
+                    if y >= h {
                         break;
                     }
                     self.draw_row(buf, area, (0, y, w), i, lit(i, self), ticks);
                     drawn.push((i, y, 0));
+                    y += 1;
+                    if Some(i) == anchor {
+                        editor_y = Some(y);
+                        y += gap;
+                    }
                 }
             }
             Layout::Split => {
                 let (lines, index) = split_lines(&self.rows);
                 let cur = *index.get(&anchor.unwrap_or(self.cursor)).unwrap_or(&0);
+                let at = anchor.and_then(|a| index.get(&a).copied());
                 let mut top = *index.get(&self.top).unwrap_or(&0);
                 if cur < top {
                     top = cur;
-                } else if cur >= top + h {
-                    top = cur + 1 - h;
+                } else if cur + 1 + gap > top + h {
+                    top = (cur + 1 + gap).saturating_sub(h).min(cur);
                 }
                 self.top = lines.get(top).map_or(0, split_row);
-                for y in 0..h {
-                    let Some(line) = lines.get(top + y) else { break };
+                let mut y = 0;
+                for (k, line) in lines.iter().enumerate().skip(top) {
+                    if y >= h {
+                        break;
+                    }
                     if let Some(i) = line.span {
                         self.draw_row(buf, area, (0, y, w), i, lit(i, self), ticks);
                         drawn.push((i, y, 0));
-                        continue;
-                    }
-                    put(buf, area, half + 1, y, 1, "│", color::meta());
-                    for (x, idx) in [(0, line.left), (half + 2, line.right)] {
-                        match idx {
-                            None => put(buf, area, x, y, half, &fit("~", half), color::dim()),
-                            Some(i) => {
-                                self.draw_row(buf, area, (x, y, half), i, lit(i, self), ticks);
-                                drawn.push((i, y, x));
+                    } else {
+                        put(buf, area, half + 1, y, 1, "│", color::meta());
+                        for (x, idx) in [(0, line.left), (half + 2, line.right)] {
+                            match idx {
+                                None => put(buf, area, x, y, half, &fit("~", half), color::dim()),
+                                Some(i) => {
+                                    self.draw_row(buf, area, (x, y, half), i, lit(i, self), ticks);
+                                    drawn.push((i, y, x));
+                                }
                             }
                         }
+                    }
+                    y += 1;
+                    if Some(k) == at {
+                        editor_y = Some(y);
+                        y += gap;
                     }
                 }
             }
             Layout::Compact => {
                 let p = self.panes.clone();
                 // Moved by row (to a comment, to a comment being written):
-                // the panes go there.
+                // the panes go there; with a box, in what it leaves of them.
+                let lines_h = h.saturating_sub(gap).max(1);
                 if let Some(a) = anchor {
-                    self.compact.resync(&p, a, h);
+                    self.compact.resync(&p, a, lines_h);
                 } else {
                     self.compact.resync(&p, self.cursor, h);
                 }
@@ -5176,8 +5195,18 @@ impl App {
                     self.cursor = row;
                 }
                 let scroll = self.compact.scroll;
-                for (y, (l, r)) in self.compact.lines(&p, h).into_iter().enumerate() {
-                    let on = y == self.compact.y && self.focus != Focus::List && !self.on_banner && anchor.is_none();
+                // The lines after the anchor's, under the box.
+                let mut shift = 0;
+                for (k, (l, r)) in self.compact.lines(&p, lines_h).into_iter().enumerate() {
+                    let y = k + shift;
+                    if anchor.is_some() && editor_y.is_none() && (l == anchor || r == anchor) {
+                        editor_y = Some(y + 1);
+                        shift = gap;
+                    }
+                    if y >= h {
+                        break;
+                    }
+                    let on = k == self.compact.y && self.focus != Focus::List && !self.on_banner && anchor.is_none();
                     if l.is_none() && r.is_none() {
                         continue;
                     }
@@ -5208,9 +5237,8 @@ impl App {
                 }
             }
         }
-        if let Some(a) = anchor {
-            let y = drawn.iter().find(|d| d.0 == a).map_or(h / 3, |d| d.1);
-            return self.draw_editor(buf, area, y + 1, Focus::Diff);
+        if anchor.is_some() {
+            return self.draw_editor(buf, area, editor_y.unwrap_or(h / 3), Focus::Diff);
         }
         self.draw_preview(buf, area, &drawn);
         None

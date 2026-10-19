@@ -223,8 +223,10 @@ are settings (`[colors]`, below).
 Comments are written where they will show, in an editor inline: a comment
 on the stack under the left pane's header, on a patch under its title in
 the left pane, on a line under the line, a reply under its comment, in the
-middle or in the comments pane. The pane being written in takes half the
-width meanwhile. Typing and the arrows edit, and enter breaks the line.
+middle or in the comments pane. The editor's box hides nothing: what was
+under the line goes on after the box, in every view of the code. The pane
+being written in takes half the width meanwhile. Typing and the arrows
+edit, and enter breaks the line.
 ctrl-a and ctrl-e go to the start and the end of the line. ctrl-k cuts the
 rest of the line, or at its end the line break, and ctrl-k again adds what
 it cuts to that; ctrl-y puts what was cut last where the cursor is, in this
@@ -1073,8 +1075,9 @@ taking the cursor with it, the mouse (the cursor following it, a click as
 Enter, a right click's menu, a menu's item), the comments pane's previews,
 moving a patch, searching (what is in sight first, the patches then the
 files they touch, the history), the agents' worktrees made ahead as the
-stack's checkout says, and the banner of the agent's work (Esc to it and
-back, open a line for each, Enter on each). With `--features web`, `tests/web.rs`
+stack's checkout says, the banner of the agent's work (Esc to it and
+back, open a line for each, Enter on each), and the comment editor hiding
+nothing in each view of the code. With `--features web`, `tests/web.rs`
 serves the editor and asks it over HTTP as a browser would: the token
 needed, the page, the wasm, the rows as they change, a key and a click; and
 `web.rs` tests the rows and the lines both ways, with the client's own tests
