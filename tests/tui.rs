@@ -1847,6 +1847,32 @@ fn a_deleted_comment_is_shown_as_it_was_and_brought_back() {
     assert!(d.deleted_notes("s", &change).is_empty());
 }
 
+#[test]
+fn the_comment_stays_in_sight_while_its_menu_says_what_to_do_with_it() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Enter]);
+    typed(&mut app, "why so loud?");
+    keys(&mut app, &[KeyCode::Esc]);
+    assert!(matches!(app.mode, Mode::Menu(_)));
+    // The comment where it is written, to read again; the menu beside it,
+    // not over it; the terminal's cursor nowhere.
+    let (screen, cursor) = draw_at(&mut app);
+    assert!(screen.contains("a comment on: TWO") && screen.contains("why so loud?"), "{screen}");
+    assert!(screen.contains("Save it and ask agent"), "{screen}");
+    let text = screen.lines().position(|l| l.contains("why so loud?")).unwrap();
+    let menu = screen.lines().position(|l| l.contains("Save it and ask agent")).unwrap();
+    assert!(menu > text, "under it:\n{screen}");
+    assert_eq!(cursor, None);
+    // Kept writing: the editor again, as it was.
+    choose(&mut app, "Keep writing");
+    assert!(matches!(app.mode, Mode::Edit(_)));
+    let (screen, cursor) = draw_at(&mut app);
+    assert!(screen.contains("why so loud?") && cursor.is_some(), "{screen}");
+}
+
 /// The column, in characters, where `needle` starts in `line`.
 fn column(line: &str, needle: &str) -> usize {
     line[..line.find(needle).unwrap()].chars().count()

@@ -819,6 +819,9 @@ pub struct App {
     /// What each part of the screen showed when it was last drawn, for a
     /// click: drawn later, on top.
     spots: std::cell::RefCell<Vec<(Rect, Spot)>>,
+    /// Where the editor box was last drawn, on the screen: the menu Esc
+    /// opens goes beside it, not over it.
+    edit_box: std::cell::Cell<Option<Rect>>,
 }
 
 /// The stack's history, as last made: of which stack, at how many records
@@ -970,6 +973,7 @@ impl App {
             busy_memo: std::cell::RefCell::new(None),
             hist_memo: std::cell::RefCell::new(None),
             spots: std::cell::RefCell::new(Vec::new()),
+            edit_box: std::cell::Cell::new(None),
             db,
             cfg,
         };
@@ -3766,6 +3770,7 @@ impl App {
             return None;
         }
         self.body_h = h - 2;
+        self.edit_box.set(None);
         self.spots.borrow_mut().clear();
         let body = Rect::new(area.x, area.y + 1, area.width, area.height - 2);
         let mut cursor = None;
@@ -3806,10 +3811,7 @@ impl App {
             }
             Screen::Main => {
                 let notes = self.notes_shown();
-                let wide = match &self.mode {
-                    Mode::Edit(e) => Some(e.pane),
-                    _ => None,
-                };
+                let wide = self.writing().map(|e| e.pane);
                 let (left, (middle, right)) = self.columns(buf, body, self.list, notes, wide);
                 // The middle first: the comments pane lists its rows.
                 cursor = self.draw_patch(buf, middle).or(cursor);
@@ -3998,7 +4000,24 @@ impl App {
             m.top = m.sel + 1 - rows;
         }
         let bh = rows + 2 + below;
-        let (x, y) = (w.saturating_sub(bw) / 2, h.saturating_sub(bh) / 2);
+        // Beside the comment being written, not over it: under it where
+        // there is room, else above it.
+        let centered = h.saturating_sub(bh) / 2;
+        let y = match (self.pending.is_some(), self.edit_box.get()) {
+            (true, Some(b)) => {
+                let top = (b.y as usize).saturating_sub(area.y as usize);
+                let bottom = top + b.height as usize;
+                if bottom + bh <= h {
+                    bottom
+                } else if top >= bh {
+                    top - bh
+                } else {
+                    centered
+                }
+            }
+            _ => centered,
+        };
+        let x = w.saturating_sub(bw) / 2;
         window(buf, area, x, y, bw, bh, &m.title, color::meta());
         spot_in(&self.spots, area, (x, y, bw, bh), Spot::Box);
         for (r, (i, item)) in m.items.iter().enumerate().skip(m.top).take(rows).enumerate() {
@@ -4044,11 +4063,22 @@ impl App {
         }
     }
 
+    /// The comment being written: in the editor, or waiting on what the
+    /// menu Esc opened says to do with it, still where it is, to be read
+    /// again before choosing.
+    fn writing(&self) -> Option<&Edit> {
+        match &self.mode {
+            Mode::Edit(e) => Some(e),
+            Mode::Menu(_) => self.pending.as_ref(),
+            _ => None,
+        }
+    }
+
     /// How many lines the editor box takes in `area`, if a comment is
     /// being written in `pane`.
     fn editor_height(&self, area: Rect, pane: Focus) -> usize {
-        match &self.mode {
-            Mode::Edit(e) if e.pane == pane => {
+        match self.writing() {
+            Some(e) if e.pane == pane => {
                 let (w, h) = (area.width as usize, area.height as usize);
                 (e.ed.height(w.saturating_sub(2)) + 2).clamp(4, (h / 2).max(4))
             }
@@ -4057,9 +4087,10 @@ impl App {
     }
 
     /// The editor box for the comment being written in `pane`, if one is,
-    /// at `y` of `area`: drawn, and where the terminal's cursor goes.
+    /// at `y` of `area`: drawn, and where the terminal's cursor goes, but
+    /// while a menu says what to do with it.
     fn draw_editor(&self, buf: &mut Buffer, area: Rect, y: usize, pane: Focus) -> Option<(u16, u16)> {
-        let Mode::Edit(e) = &self.mode else { return None };
+        let e = self.writing()?;
         if e.pane != pane {
             return None;
         }
@@ -4078,7 +4109,9 @@ impl App {
             Target::About(rev) => format!("a question on @{rev}, for the agent to answer"),
         };
         spot_in(&self.spots, area, (0, y, w, bh), Spot::Box);
-        Some(e.ed.draw(buf, area, 0, y, w, bh, &title))
+        self.edit_box.set(Some(Rect::new(area.x, area.y + y as u16, w as u16, bh as u16)));
+        let cursor = e.ed.draw(buf, area, 0, y, w, bh, &title);
+        matches!(self.mode, Mode::Edit(_)).then_some(cursor)
     }
 
     fn draw_list(&mut self, buf: &mut Buffer, area: Rect) -> Option<(u16, u16)> {
@@ -4112,10 +4145,7 @@ impl App {
             }
             return None;
         };
-        let editing = match &self.mode {
-            Mode::Edit(e) if e.pane == Focus::List => Some(e.target.clone()),
-            _ => None,
-        };
+        let editing = self.writing().filter(|e| e.pane == Focus::List).map(|e| e.target.clone());
         // A comment being written goes under what it is on, the patches
         // below it further down.
         let edit_h = self.editor_height(area, Focus::List);
@@ -4355,7 +4385,7 @@ impl App {
     /// The last row of what a comment being written in the middle goes
     /// under: its line and the comments on it, or the comment it answers.
     fn editor_anchor(&self) -> Option<usize> {
-        let Mode::Edit(e) = &self.mode else { return None };
+        let e = self.writing()?;
         if e.pane != Focus::Diff {
             return None;
         }
@@ -4462,10 +4492,7 @@ impl App {
             Focus::Notes => None,
             _ => self.note_at_cursor(),
         };
-        let editing = match &self.mode {
-            Mode::Edit(e) if e.pane == Focus::Notes => Some(e.target.clone()),
-            _ => None,
-        };
+        let editing = self.writing().filter(|e| e.pane == Focus::Notes).map(|e| e.target.clone());
         let per = 2;
         let edit_h = self.editor_height(area, Focus::Notes);
         let fits = ((h.saturating_sub(1 + edit_h)) / per).max(1);
@@ -4667,10 +4694,7 @@ impl App {
                 lines.push((None, format!(" {}   └ {last}{state}", e.under), by_style(Some(&by_of(&n)))));
             }
         }
-        let editing = match &self.mode {
-            Mode::Edit(e) => matches!(e.target, Target::About(_)),
-            _ => false,
-        };
+        let editing = self.writing().is_some_and(|e| matches!(e.target, Target::About(_)));
         let edit_h = if editing { self.editor_height(area, Focus::Diff) } else { 0 };
         // The picked record in sight, with what is written under it.
         let h = h.saturating_sub(1);

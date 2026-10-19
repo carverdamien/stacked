@@ -198,7 +198,9 @@ the left pane, on a line under the line, a reply under its comment, in the
 middle or in the comments pane. The pane being written in takes half the
 width meanwhile. Typing and the arrows edit, enter breaks the line, and esc
 asks what to do with it: `Save it`, `Save it and ask agent`, `Throw it
-away`, `Keep writing`. How the agent is asked is the choice of `Save it and
+away`, `Keep writing`. The menu opens under the comment (above it when
+there is no room under), and the comment stays where it was written, to
+read again before it is saved. How the agent is asked is the choice of `Save it and
 ask agent`, `[x] change  [ ] the whole stack  [ ] answer only  [ ] build and
 test` (the whole stack for a patch's comment, build and test for the
 stack's or a patch's as a whole), as it is of a comment's `Ask agent`: one
