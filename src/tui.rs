@@ -457,6 +457,9 @@ pub enum Action {
     /// The comment shown as one quiet line in the middle, or whole again.
     Collapse,
     Expand,
+    /// The agent's reply that waits for review taken into its thread at
+    /// once: of run `0`, its reply `1`.
+    TakeReply(String, usize),
     Send(Way),
     /// A patch's comment sent to the whole stack: the agent may change any
     /// patch.
@@ -544,6 +547,7 @@ fn about(action: &Action) -> String {
         Action::BringBackTurn(_) => "bring back the deleted turn the cursor is on, as it was".into(),
         Action::Collapse => "show this comment in the middle as one quiet line, until you expand it".into(),
         Action::Expand => "show this comment whole again".into(),
+        Action::TakeReply(..) => "accept the agent's reply: it goes into the thread now, out of the review of the agent's work".into(),
         Action::Send(Way::Change) => "ask the agent, which may change the code within this comment's place".into(),
         Action::Send(Way::Answer) => "ask the agent, to answer only: nothing changes".into(),
         Action::Send(Way::Test) => "ask the agent to build and test, in a workspace of its choosing".into(),
@@ -838,6 +842,9 @@ pub struct App {
     /// The comments the agent works on, as last read, and how many records
     /// the database had then.
     busy_memo: std::cell::RefCell<Option<(usize, std::rc::Rc<Busy>)>>,
+    /// The comments whose reply waits for review, as last read, and how
+    /// many changes the database had then.
+    held_memo: std::cell::RefCell<Option<(usize, std::rc::Rc<Held>)>>,
     hist_memo: std::cell::RefCell<HistMemo>,
     /// What each part of the screen showed when it was last drawn, for a
     /// click: drawn later, on top.
@@ -994,6 +1001,7 @@ impl App {
             judged: None,
             bg: Background::new(),
             busy_memo: std::cell::RefCell::new(None),
+            held_memo: std::cell::RefCell::new(None),
             hist_memo: std::cell::RefCell::new(None),
             spots: std::cell::RefCell::new(Vec::new()),
             edit_box: std::cell::Cell::new(None),
@@ -1141,6 +1149,20 @@ impl App {
         let b = std::rc::Rc::new(ask::with_agent(&self.db));
         *self.busy_memo.borrow_mut() = Some((key, b.clone()));
         b
+    }
+
+    /// The comments whose reply from the agent waits for review: to its
+    /// run, and the reply's place in what the run holds.
+    fn held_replies(&self) -> std::rc::Rc<Held> {
+        let key = self.db.changes();
+        if let Some((k, h)) = &*self.held_memo.borrow()
+            && *k == key
+        {
+            return h.clone();
+        }
+        let h = std::rc::Rc::new(crate::held::replies_waiting(&self.db));
+        *self.held_memo.borrow_mut() = Some((key, h.clone()));
+        h
     }
 
     pub fn current(&self) -> Option<&Stack> {
@@ -2214,8 +2236,12 @@ impl App {
                         return Some(Action::Expand);
                     }
                     let busy = self.busy();
+                    let held = self.held_replies().get(&(n.change.clone(), n.id.clone())).cloned();
                     return Some(if busy.contains_key(&(n.change.clone(), n.id.clone())) {
                         Action::OpenStream
+                    } else if let Some((run, k)) = held {
+                        // Its reply waiting for review: taken at once.
+                        Action::TakeReply(run, k)
                     } else if last_mine(&n.text).is_some() {
                         // The last word yours: a reply would only add to it.
                         Action::EditMine
@@ -2990,6 +3016,10 @@ impl App {
         }
         let busy = self.busy();
         let with = busy.get(&(c.change.clone(), c.id.clone()));
+        // Its reply from the agent waiting for review: nothing is written on
+        // it before.
+        let held = self.held_replies().get(&(c.change.clone(), c.id.clone())).cloned();
+        let open = with.is_none() && held.is_none();
         // Collapsed: expanded first, as enter does.
         let collapsed = self.db.collapsed(&c.change, &c.id);
         if collapsed {
@@ -2998,27 +3028,27 @@ impl App {
         // The turn the cursor is on, in the middle, may be written again,
         // whoever said it, deleted, or brought back; elsewhere on the
         // comment, what you said last, if the last word is yours, as enter
-        // does. Not while the agent works on it.
+        // does. Not while the agent works on it, or its reply waits.
         let here = self.turn_here(c);
         let last = last_mine_at(&c.text);
         match &here {
             Some((i, t)) if t.deleted => {
-                items.push(Item::new(format!("Bring back {}", t.name(*i)), Action::BringBackTurn(*i)).when(with.is_none()));
+                items.push(Item::new(format!("Bring back {}", t.name(*i)), Action::BringBackTurn(*i)).when(open));
             }
             Some((i, t)) if Some(*i) != last => {
                 let choices = self.write_choices(Action::EditTurn(*i), Action::EditTurnInEditor(*i));
-                items.push(Item::new(format!("Edit {}", t.name(*i)), Action::EditTurn(*i)).when(with.is_none()).with(choices));
+                items.push(Item::new(format!("Edit {}", t.name(*i)), Action::EditTurn(*i)).when(open).with(choices));
             }
             _ if last.is_some() => {
                 let what = if thread_turns(&c.text).len() > 1 { "reply" } else { "comment" };
                 let choices = self.write_choices(Action::EditMine, Action::EditMineInEditor);
-                items.push(Item::new(format!("Edit your {what}"), Action::EditMine).when(with.is_none()).with(choices));
+                items.push(Item::new(format!("Edit your {what}"), Action::EditMine).when(open).with(choices));
             }
             _ => {}
         }
         items.push(
             Item::new("Reply", Action::Reply)
-                .when(with.is_none())
+                .when(open)
                 .with(self.write_choices(Action::Reply, Action::CommentInEditor)),
         );
         // A reply, not the comment itself: that is deleted whole.
@@ -3026,13 +3056,20 @@ impl App {
             && !t.deleted
             && *i > 0
         {
-            items.push(Item::new(format!("Delete {}", t.name(*i)), Action::DeleteTurn(*i)).when(with.is_none()));
+            items.push(Item::new(format!("Delete {}", t.name(*i)), Action::DeleteTurn(*i)).when(open));
         }
         items.push(Item::line());
         match with {
             Some((_, run)) => {
                 items.push(Item::new("Read what the agent is writing", Action::OpenStream));
                 items.push(Item::new("Stop the agent…", Action::AskStop(run.clone())));
+            }
+            // Taken at once into the thread, as enter does; not a reply going
+            // with a change of the stack, reviewed with it.
+            None if held.is_some() => {
+                let (run, k) = held.clone().unwrap();
+                let alone = self.db.run(&run).and_then(|r| r.held.as_ref()).is_some_and(|h| h.stack.is_none());
+                items.push(Item::new("Accept the agent's reply", Action::TakeReply(run, k)).when(alone));
             }
             None if c.queued.is_some() => items.push(Item::new("Take it back from the agent's queue", Action::Unsend)),
             None if c.about.is_some() => {
@@ -3054,18 +3091,18 @@ impl App {
         }
         if !self.db.opened_from(&self.stack, &c.change, &c.id).is_empty() {
             items.push(Item::new("Go to the comments it opened", Action::GoToOpened));
-            items.push(Item::new("Delete it and the comments it opened…", Action::AskDeleteOpened));
+            items.push(Item::new("Delete it and the comments it opened…", Action::AskDeleteOpened).when(open));
         }
         if let Some(m) = &c.moved {
             items.push(Item::new("Go to where it came from", Action::GoToOrigin));
             let back = self.where_was(m).split(" · ").next().unwrap_or("its patch").to_string();
-            items.push(Item::new(format!("Move it back to {back}"), Action::MoveBack));
+            items.push(Item::new(format!("Move it back to {back}"), Action::MoveBack).when(open));
         }
         if !collapsed {
             items.push(Item::new("Collapse this comment", Action::Collapse));
         }
         items.push(Item::new("History of this comment…", Action::NoteHistory));
-        items.push(Item::new("Delete this comment…", Action::AskDeleteComment));
+        items.push(Item::new("Delete this comment…", Action::AskDeleteComment).when(open));
     }
 
     fn perform(&mut self, action: Action) -> Effect {
@@ -3188,6 +3225,12 @@ impl App {
                             format!("{what} is back, as it was")
                         };
                     }
+                }
+            }
+            Action::TakeReply(run, k) => {
+                if self.edit(|db| crate::held::take(db, &run, k)).is_some() {
+                    self.status = "you accepted the agent's reply: it is in the thread now".into();
+                    self.launch();
                 }
             }
             Action::Collapse | Action::Expand => {
@@ -3580,9 +3623,13 @@ impl App {
     /// Why comment (change, id) cannot be written on now, if it cannot:
     /// the agent is working on it, and its reply is to what it was asked.
     fn locked(&self, change: &str, id: &str) -> Option<String> {
-        self.busy()
-            .contains_key(&(change.to_string(), id.to_string()))
-            .then(|| "the agent is working on this comment: wait for its reply to land".to_string())
+        let key = (change.to_string(), id.to_string());
+        if self.busy().contains_key(&key) {
+            return Some("the agent is working on this comment: wait for its reply to land".into());
+        }
+        self.held_replies()
+            .contains_key(&key)
+            .then(|| "the agent's reply to this comment waits for your review: review it first".to_string())
     }
 
     /// Why what is written for `t` cannot be saved now, if it cannot.
@@ -4189,6 +4236,7 @@ impl App {
                     (Screen::Main, Some(Action::EditMine)) => "enter: edit it · ",
                     (Screen::Main, Some(Action::OpenStream)) => "enter: what the agent writes · ",
                     (Screen::Main, Some(Action::Expand)) => "enter: expand it · ",
+                    (Screen::Main, Some(Action::TakeReply(..))) => "enter: accept the agent's reply · ",
                     (Screen::Main, Some(_)) => "enter: comment · ",
                     (Screen::Main, None) => "enter or ",
                     (Screen::Transcript | Screen::Text, _) => "↑↓: scroll · ",
@@ -5099,6 +5147,10 @@ impl App {
 /// The comments claude is working on, and the way it was asked and the run.
 pub type Busy = HashMap<(String, String), (Way, String)>;
 
+/// The comments whose reply waits for review: (change, id) to the run, and
+/// the reply's place in what it holds.
+pub type Held = HashMap<(String, String), (String, usize)>;
+
 /// Whether the filter `show` lets `n` be shown: `gone` when its line is
 /// not in its patch's version in the stack.
 pub fn shows(show: Show, n: &Note, busy: &Busy, gone: bool) -> bool {
@@ -5141,6 +5193,8 @@ pub fn note_state(db: &Db, name: &str, n: &Note, busy: &Busy) -> String {
     } else if let Some(q) = &n.queued {
         let on = ask::waits_on(db, name, q.way).unwrap_or_else(|| "next".into());
         parts.push(format!("ready ({}), {on}", q.said()));
+    } else if crate::held::reply_waiting(db, &n.change, &n.id).is_some() {
+        parts.push("the agent's reply waits for your review".into());
     } else if let Some(f) = &n.failed {
         parts.push(format!("ask failed: {}", f.split_whitespace().collect::<Vec<_>>().join(" ")));
     } else if last_role(&n.text) == Some(Role::Agent) && n.moved.is_none() {

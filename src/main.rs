@@ -278,6 +278,27 @@ enum Cmd {
         /// Wait for them to be answered, and print the threads.
         #[arg(long)]
         wait: bool,
+        /// With --wait, accept what the agent brings back as soon as it
+        /// lands, as `review --accept-all` does: its change of the stack,
+        /// its replies, the comments it opens.
+        #[arg(long, requires = "wait")]
+        accept: bool,
+    },
+    /// What the agent brought back that waits for your review, on a stack:
+    /// each landed ask, the first landed first, and what it holds.
+    Landed { name: String },
+    /// Close the review of what an ask brought back (by its run, as
+    /// `landed` lists it, else the first landed): accept all of it that is
+    /// not marked yet, or reject it. What is accepted is applied; what is
+    /// rejected is dropped for good. Rejecting a change of the stack
+    /// rejects its replies too.
+    Review {
+        name: String,
+        run: Option<String>,
+        #[arg(long, conflicts_with = "reject_all", required_unless_present = "reject_all")]
+        accept_all: bool,
+        #[arg(long)]
+        reject_all: bool,
     },
     /// The runs, oldest first: asks, applies and pulls, and what came of
     /// them.
@@ -823,6 +844,9 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
                         Some(n) if ask::with_agent(&db).contains_key(&(n.change.clone(), n.id.clone())) => {
                             return err("the agent is working on the comment on that line: wait for it to land");
                         }
+                        Some(n) if stacked::held::reply_waiting(&db, &n.change, &n.id).is_some() => {
+                            return err("the agent's reply to the comment on that line waits for your review: review it first");
+                        }
                         Some(n) => Note {
                             text: append_turn(&n.text, Role::You, &text, None),
                             failed: None,
@@ -871,6 +895,9 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
                 // was asked.
                 if ask::with_agent(db).contains_key(&(n.change.clone(), n.id.clone())) {
                     return err("the agent is working on it: wait for it to land");
+                }
+                if stacked::held::reply_waiting(db, &n.change, &n.id).is_some() {
+                    return err("the agent's reply to it waits for your review: review it first");
                 }
                 // Which turn, from 1, of how many.
                 let at = |k: usize| {
@@ -928,7 +955,7 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
                 println!("{short}\tedited: off the agent's queue, until it is sent again");
             }
         }
-        Cmd::Send { name, ids, all, patch, answer_only, build_and_test, whole_stack, wait } => {
+        Cmd::Send { name, ids, all, patch, answer_only, build_and_test, whole_stack, wait, accept } => {
             let way = match (answer_only, build_and_test) {
                 (_, true) => Way::Test,
                 (true, _) => Way::Answer,
@@ -942,6 +969,7 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
                     .into_iter()
                     .map(|(n, _)| n)
                     .filter(|n| ask::sendable(n) && !busy.contains_key(&(n.change.clone(), n.id.clone())))
+                    .filter(|n| stacked::held::reply_waiting(&db, &n.change, &n.id).is_none())
                     .filter(|n| way != Way::Test || ask::can_test(&db, n))
                     .collect()
             } else if ids.is_empty() {
@@ -975,17 +1003,40 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
             }
             if wait {
                 let sent: Vec<(String, String)> = picked.iter().map(|n| (n.change.clone(), n.id.clone())).collect();
+                // The runs asking about what was sent.
+                let ours = |r: &stacked::db::Run| {
+                    ask::info(r).is_some_and(|i| i.notes.iter().any(|sh| sent.contains(&(sh.change.clone(), sh.id.clone()))))
+                };
                 loop {
                     std::thread::sleep(std::time::Duration::from_millis(200));
                     let db = Db::load(path)?;
                     ask::land_orphans(path, &db);
+                    // Accepted as soon as landed: what waited on its review
+                    // goes.
+                    if accept {
+                        let landed: Vec<String> = stacked::held::queue(&db, &name).into_iter().filter(|r| ours(r)).map(|r| r.id.clone()).collect();
+                        for id in &landed {
+                            Db::edit(path, |db| stacked::held::close(db, id, &Default::default(), Some(true)))?;
+                        }
+                        if !landed.is_empty() {
+                            ask::launch(path)?;
+                        }
+                    }
                     let db = Db::load(path)?;
                     let busy = ask::with_agent(&db);
-                    let going = sent
-                        .iter()
-                        .any(|k| busy.contains_key(k) || db.note(&k.0, &k.1).is_some_and(|n| n.queued.is_some()));
+                    // A change waiting for the review of the one before it
+                    // goes once you have reviewed that: nothing to wait for.
+                    let reviewing = stacked::held::change_waiting(&db, &name).is_some();
+                    let going = sent.iter().any(|k| {
+                        busy.contains_key(k)
+                            || db.note(&k.0, &k.1).is_some_and(|n| n.queued.as_ref().is_some_and(|q| !(reviewing && q.way == Way::Change)))
+                    });
                     if going {
                         continue;
+                    }
+                    for r in stacked::held::queue(&db, &name).into_iter().filter(|r| ours(r)) {
+                        let said = r.held.as_ref().map(|h| h.said()).unwrap_or_default();
+                        println!("{}\twaits for your review: {said}", r.id);
                     }
                     // What came of it: every comment written since, the
                     // sent ones where they are now (a split moves them with
@@ -1003,6 +1054,57 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
                     break;
                 }
             }
+        }
+        Cmd::Landed { name } => {
+            let db = Db::load(path)?;
+            db.stack(&name)?;
+            for r in stacked::held::queue(&db, &name) {
+                let Some(h) = &r.held else { continue };
+                let review = db.review(&r.id).cloned().unwrap_or_default();
+                println!("{}\t{}\t{}", r.id, time(h.at), h.said());
+                for p in h.parts() {
+                    if matches!(p, stacked::held::Part::Reply(k) if review.taken.contains(&k)) {
+                        continue;
+                    }
+                    let mark = match review.marks.get(&p.key()) {
+                        Some(true) => "\taccepted",
+                        Some(false) => "\trejected",
+                        None => "",
+                    };
+                    let what = match p {
+                        stacked::held::Part::Stack => h.stack.as_ref().map_or(String::new(), |c| format!("change\t{}", c.op)),
+                        stacked::held::Part::Reply(k) => {
+                            let rp = &h.replies[k];
+                            format!("reply\t{}\t{}", short_id(&rp.change, &rp.id), rp.text.lines().next().unwrap_or(""))
+                        }
+                        stacked::held::Part::Opened(k) => {
+                            let n = &h.opened[k];
+                            let first = stacked::thread::thread_turns(&n.text).first().map(|t| t.body.lines().next().unwrap_or("").to_string());
+                            format!("opened\t{}: {}\t{}", n.file, n.preview, first.unwrap_or_default())
+                        }
+                    };
+                    println!("  {what}{mark}");
+                }
+            }
+        }
+        Cmd::Review { name, run, accept_all, .. } => {
+            let said = Db::edit(path, |db| {
+                let queue: Vec<String> = stacked::held::queue(db, &name).into_iter().map(|r| r.id.clone()).collect();
+                let id = match &run {
+                    Some(run) => match queue.iter().filter(|id| id.starts_with(run.as_str())).collect::<Vec<_>>().as_slice() {
+                        [id] => (*id).clone(),
+                        [] => return err(format!("no work on {name} waits for review as {run}: `stacked landed {name}` lists what does")),
+                        _ => return err(format!("{run} names more than one run: give more of it")),
+                    },
+                    None => queue.first().cloned().ok_or_else(|| Error(format!("nothing on {name} waits for your review")))?,
+                };
+                let marks = db.review(&id).map(|v| v.marks.clone()).unwrap_or_default();
+                let said = stacked::held::close(db, &id, &marks, Some(accept_all))?;
+                Ok(format!("{id}\treviewed: {said}"))
+            })?;
+            // What waited on the review may go.
+            ask::launch(path)?;
+            println!("{said}");
         }
         Cmd::Runs { name } => {
             let db = Db::load(path)?;

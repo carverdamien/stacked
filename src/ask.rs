@@ -43,6 +43,7 @@ use crate::db::{
     stack_change,
 };
 use crate::git;
+use crate::held::Held;
 use crate::mbox::{format_mbox, parse_mbox};
 use crate::ops::{base_of, plan_drafts};
 use crate::thread::{AGENT_OPEN, FENCE_CLOSE, Role, append_turn, last_reply_way, last_role, thread_turns};
@@ -205,6 +206,13 @@ pub fn waits_on(db: &Db, name: &str, way: Way) -> Option<String> {
         };
         return Some(format!("once the agent's change on {on} lands"));
     }
+    // A change goes from the stack as it is once the change before it is
+    // reviewed.
+    if way == Way::Change
+        && let Some(c) = crate::held::change_waiting(db, name).and_then(|r| r.held.as_ref()?.stack.as_ref())
+    {
+        return Some(format!("once you have reviewed the agent's change of {}", c.of));
+    }
     match way {
         Way::Change if going.iter().any(|(_, i)| i.way == Way::Answer) => {
             Some("once the running answers land".into())
@@ -220,12 +228,17 @@ pub fn waits_on(db: &Db, name: &str, way: Way) -> Option<String> {
 /// is changing it, from the stack as it took it, so nothing else may
 /// change the stack meanwhile.
 pub fn blocked(db: &Db, name: &str) -> Option<String> {
-    let (_, i) = asks_going(db, name).into_iter().find(|(_, i)| i.way == Way::Change)?;
-    let on = match &i.scope {
-        Scope::Stack => "the stack".to_string(),
-        Scope::Patch(c) => format!("patch {}", position(db, name, c).map_or("?".into(), |p| (p + 1).to_string())),
-    };
-    Some(format!("the agent is changing {on}: the stack can be edited by hand again once the agent's work lands"))
+    if let Some((_, i)) = asks_going(db, name).into_iter().find(|(_, i)| i.way == Way::Change) {
+        let on = match &i.scope {
+            Scope::Stack => "the stack".to_string(),
+            Scope::Patch(c) => format!("patch {}", position(db, name, c).map_or("?".into(), |p| (p + 1).to_string())),
+        };
+        return Some(format!(
+            "the agent is changing {on}: the stack can be edited by hand again once you have reviewed the agent's work"
+        ));
+    }
+    let of = crate::held::change_waiting(db, name)?.held.as_ref()?.stack.as_ref()?.of.clone();
+    Some(format!("the agent's change of {of} waits for your review: the stack can be edited by hand again once you have reviewed it"))
 }
 
 /// Where the patch of `change` is in stack `name`, from 0.
@@ -289,6 +302,9 @@ pub fn queue(db_path: &Path, name: &str, notes: &[(String, String)], way: Way, w
             };
             if busy.contains_key(&(change.clone(), id.clone())) {
                 return err("the agent is already working on it");
+            }
+            if crate::held::reply_waiting(db, change, id).is_some() {
+                return err("the agent's reply to it waits for your review: review it first");
             }
             if way == Way::Test && !can_test(db, &n) {
                 return err("only a comment on the stack or on a patch as a whole can be sent to build and test");
@@ -373,8 +389,9 @@ fn claim(db: &mut Db) -> Result<Vec<String>> {
     }
     order.sort();
     let mut started = Vec::new();
-    // Per stack: what is going, as the batches are started.
-    let mut state: HashMap<String, (bool, usize, bool, bool)> = HashMap::new();
+    // Per stack: what is going, as the batches are started; and whether a
+    // change waits for its review.
+    let mut state: HashMap<String, (bool, usize, bool, bool, bool)> = HashMap::new();
     for b in &order {
         let (name, way, scope, notes) = batches[b].clone();
         let st = state.entry(name.clone()).or_insert_with(|| {
@@ -384,18 +401,20 @@ fn claim(db: &mut Db) -> Result<Vec<String>> {
                 going.iter().filter(|(_, i)| i.way == Way::Answer).count(),
                 going.iter().any(|(_, i)| i.way == Way::Test),
                 false,
+                crate::held::change_waiting(db, &name).is_some(),
             )
         });
-        let (change, answers, test, change_waits) = st;
+        let (change, answers, test, change_waits, reviewing) = st;
         let go = match way {
-            // A change has the stack to itself; one waiting holds back the
-            // answers behind it, so it goes next.
+            // A change has the stack to itself, from the stack as the change
+            // before it left it, reviewed; one waiting for what runs holds
+            // back the answers behind it, so it goes next.
             Way::Change => {
-                if !*change && *answers == 0 {
+                if !*change && !*reviewing && *answers == 0 {
                     *change = true;
                     true
                 } else {
-                    *change_waits = true;
+                    *change_waits |= !*reviewing;
                     false
                 }
             }
@@ -931,18 +950,25 @@ fn replies_of(text: &str) -> Map<String, Value> {
 struct Landed {
     ok: bool,
     summary: String,
-    rev: Option<usize>,
     /// Leave the worktree made for it: it holds work not filed.
     keep: bool,
+    /// What it brought back, held for review.
+    held: Held,
 }
 
 impl Landed {
-    fn done(summary: impl Into<String>, rev: Option<usize>) -> Landed {
+    /// What claude brought back, held for review.
+    fn held(held: Held) -> Landed {
+        let summary = if held.is_empty() {
+            "the agent brought nothing back".to_string()
+        } else {
+            format!("its work waits for your review: {}", held.said())
+        };
         Landed {
             ok: true,
-            summary: summary.into(),
-            rev,
+            summary,
             keep: false,
+            held,
         }
     }
 
@@ -950,8 +976,8 @@ impl Landed {
         Landed {
             ok: false,
             summary: summary.into(),
-            rev: None,
             keep,
+            held: Held::default(),
         }
     }
 }
@@ -1018,12 +1044,14 @@ pub fn land(db_path: &Path, id: &str, exit: Option<&str>) -> Result<Run> {
         if landed.keep {
             wt = None;
         }
+        // Held for review: in the queue, unless it brought nothing back.
+        let held = (landed.ok && !landed.held.is_empty()).then(|| Held { at: now(), ..landed.held });
         let run = Run {
             state: if landed.ok { RunState::Done } else { RunState::Failed },
             summary: landed.summary,
             output,
-            rev: landed.rev,
             pid: None,
+            held,
             ..started
         };
         db.add_run(run.clone())?;
@@ -1036,75 +1064,67 @@ pub fn land(db_path: &Path, id: &str, exit: Option<&str>) -> Result<Run> {
     Ok(run)
 }
 
-/// Adds claude's replies to the comments it was sent, as turns `way` names.
-fn reply(db: &mut Db, i: &Info, replies: &Map<String, Value>) -> Result<usize> {
-    let mut answered = 0;
-    for sh in &i.notes {
-        let Some(text) = replies.get(&sh.label).map(|v| str_of(Some(v))) else {
-            continue;
-        };
-        let Some(n) = db.note(&sh.change, &sh.id).cloned() else { continue };
-        db.set_note(Note {
-            text: append_turn(&n.text, Role::Agent, &text, Some(i.way.name())),
-            failed: None,
-            ..n
-        })?;
-        answered += 1;
-    }
-    Ok(answered)
+/// Claude's replies to the comments it was sent, held: turns `way` names.
+fn held_replies(db: &Db, i: &Info, replies: &Map<String, Value>) -> Vec<crate::held::Reply> {
+    i.notes
+        .iter()
+        .filter(|sh| db.note(&sh.change, &sh.id).is_some())
+        .filter_map(|sh| {
+            Some(crate::held::Reply {
+                change: sh.change.clone(),
+                id: sh.id.clone(),
+                text: replies.get(&sh.label).map(|v| str_of(Some(v)))?,
+                tag: i.way.name().into(),
+                promote: None,
+            })
+        })
+        .collect()
 }
 
+/// What claude brought back, held for review; nothing of it is applied.
 fn file(db: &mut Db, run: &Run, i: &Info, result: &str) -> Result<Landed> {
     let replies = replies_of(result);
     match (i.way, &i.scope) {
-        (Way::Change, Scope::Patch(change)) => land_patch(db, run, i, change, result, &replies),
+        (Way::Change, Scope::Patch(_)) => land_patch(db, run, i, result, &replies),
         (Way::Change, Scope::Stack) => land_stack(db, run, i, result, &replies),
-        (Way::Answer, _) => {
-            let opened = open_comments(db, run, i, result)?;
-            let answered = reply(db, i, &replies)?;
-            let mut said = format!("the agent answered {answered} comment{}", plural(answered));
-            if opened > 0 {
-                said += &format!(" and opened {opened}");
-            }
-            Ok(Landed::done(said, None))
-        }
-        (Way::Test, _) => {
-            let tested = file_tests(db, run, i, result)?;
-            reply(db, i, &replies)?;
-            Ok(Landed::done(format!("the agent tested @{}: {tested} patch{}", i.from, if tested == 1 { "" } else { "es" }), None))
-        }
+        (Way::Answer, _) => Ok(Landed::held(Held {
+            replies: held_replies(db, i, &replies),
+            opened: opened_notes(db, run, i, result)?,
+            ..Default::default()
+        })),
+        (Way::Test, _) => Ok(Landed::held(Held {
+            replies: held_replies(db, i, &replies),
+            opened: test_notes(db, run, i, result)?,
+            ..Default::default()
+        })),
     }
 }
 
-fn plural(n: usize) -> &'static str {
-    if n == 1 { "" } else { "s" }
-}
-
-/// A patch change landing: the patch's new version, or the pieces of it,
-/// in its place in the stack as it is now; or, when claude said it needs
-/// more than the patch, the comments promoted to the stack.
-fn land_patch(
-    db: &mut Db,
-    run: &Run,
-    i: &Info,
-    change: &str,
-    result: &str,
-    replies: &Map<String, Value>,
-) -> Result<Landed> {
+/// A patch change landing, held: the patch's new version, or the pieces of
+/// it, in its place in the stack; or, when claude said it needs more than
+/// the patch, the comments to move to the stack's comments.
+fn land_patch(db: &mut Db, run: &Run, i: &Info, result: &str, replies: &Map<String, Value>) -> Result<Landed> {
     let (old_id, k) = i.patch.clone().ok_or_else(|| Error("no patch".into()))?;
     if let Some(why) = last_object(result).and_then(|o| o.get("promote").map(|v| str_of(Some(v)))).filter(|w| !w.is_empty()) {
-        reply(db, i, replies)?;
-        let mut moved = 0;
+        let mut held = held_replies(db, i, replies);
+        // Each comment moves with its reply, or alone.
         for sh in &i.notes {
-            if let Some(n) = db.note(&sh.change, &sh.id).cloned() {
-                promote(db, &run.stack, &n, &why)?;
-                moved += 1;
+            match held.iter_mut().find(|r| r.change == sh.change && r.id == sh.id) {
+                Some(r) => r.promote = Some(why.clone()),
+                None if db.note(&sh.change, &sh.id).is_some() => held.push(crate::held::Reply {
+                    change: sh.change.clone(),
+                    id: sh.id.clone(),
+                    text: String::new(),
+                    tag: i.way.name().into(),
+                    promote: Some(why.clone()),
+                }),
+                None => {}
             }
         }
-        return Ok(Landed::done(
-            format!("moved {moved} comment{} to the stack: {why}", plural(moved)),
-            None,
-        ));
+        return Ok(Landed::held(Held {
+            replies: held,
+            ..Default::default()
+        }));
     }
     let wt = PathBuf::from(i.worktree.as_deref().unwrap_or_default());
     if git::unfinished(&wt)? {
@@ -1131,32 +1151,38 @@ fn land_patch(
         ));
     };
     let ids: Vec<String> = pieces.iter().map(|p| p.id.clone()).collect();
+    let replies = held_replies(db, i, replies);
     if ids == [old_id.clone()] {
-        let answered = reply(db, i, replies)?;
-        return Ok(Landed::done(
-            format!("the agent changed nothing; it answered {answered} comment{}", plural(answered)),
-            None,
-        ));
+        return Ok(Landed::held(Held {
+            replies,
+            ..Default::default()
+        }));
     }
     let mut patches = s.patches.clone();
     patches.splice(at..=at, ids.iter().cloned());
     for p in &pieces {
         db.add_patch(p.clone())?;
     }
-    let what = match pieces.len() {
+    // Checked now, as it would be when accepted: nothing else changes the
+    // stack until then.
+    db.verify(&Stack {
+        patches: patches.clone(),
+        ..s.clone()
+    })?;
+    let op = match pieces.len() {
         1 => format!("agent: patch {}", at + 1),
         n => format!("agent: patch {} split in {n}", at + 1),
     };
-    let rev = db.set_stack(&run.stack, patches, &what)?;
-    // Replied to where they are, then the comments go with their lines.
-    let answered = reply(db, i, replies)?;
-    let olds = [db.patch(&old_id).clone()];
-    follow_lines(db, &olds, &ids)?;
-    let _ = change;
-    Ok(Landed::done(
-        format!("{what}, @{rev}; {answered} comment{} answered", plural(answered)),
-        Some(rev),
-    ))
+    Ok(Landed::held(Held {
+        stack: Some(crate::held::Change {
+            patches,
+            base: s.base.clone(),
+            op,
+            of: format!("patch {}", at + 1),
+        }),
+        replies,
+        ..Default::default()
+    }))
 }
 
 /// The patches the commits after `parent` in `wt` are: the first, or the
@@ -1171,9 +1197,9 @@ fn pieces_since(db: &Db, wt: &Path, parent: &str, old_id: &str, i: &Info) -> Res
     Ok(plan_drafts(&[db.patch(old_id).clone()], drafts, &by_commit))
 }
 
-/// A stack change landing: the commits read back as a stack made from the
-/// one the ask started from. If the stack moved on meanwhile, it is a branch
-/// of the tree, and the stack stays where it was taken.
+/// A stack change landing, held: the commits read back as a stack made from
+/// the one the ask started from, which nothing else changes until the
+/// review closes.
 fn land_stack(db: &mut Db, run: &Run, i: &Info, result: &str, replies: &Map<String, Value>) -> Result<Landed> {
     let wt = PathBuf::from(i.worktree.as_deref().unwrap_or_default());
     if git::unfinished(&wt)? {
@@ -1182,7 +1208,7 @@ fn land_stack(db: &mut Db, run: &Run, i: &Info, result: &str, replies: &Map<Stri
             true,
         ));
     }
-    let head = db.head(&run.stack).map(|(r, _)| r);
+    let _ = run;
     let from = db.node(i.from)?.clone();
     // Rebased, the stack is on the commit claude says; else on its base,
     // which must still be under it.
@@ -1209,13 +1235,12 @@ fn land_stack(db: &mut Db, run: &Run, i: &Info, result: &str, replies: &Map<Stri
     let by_commit: HashMap<String, String> = i.commits.iter().cloned().collect();
     let planned = plan_drafts(&olds, drafts, &by_commit);
     let ids: Vec<String> = planned.iter().map(|p| p.id.clone()).collect();
-    let answered;
+    let replies = held_replies(db, i, replies);
     if ids == from.patches && base == i.base {
-        answered = reply(db, i, replies)?;
-        return Ok(Landed::done(
-            format!("the agent changed nothing; it answered {answered} comment{}", plural(answered)),
-            None,
-        ));
+        return Ok(Landed::held(Held {
+            replies,
+            ..Default::default()
+        }));
     }
     let next = Stack {
         patches: ids.clone(),
@@ -1233,24 +1258,22 @@ fn land_stack(db: &mut Db, run: &Run, i: &Info, result: &str, replies: &Map<Stri
     for p in &planned {
         db.add_patch(p.clone())?;
     }
-    let rev = db.add_node(next)?;
-    let branch = head != Some(i.from);
-    if branch {
-        db.restore_head(&run.stack, head, format!("the agent's edit @{rev} is a branch"))?;
-    }
-    answered = reply(db, i, replies)?;
-    follow_lines(db, &olds, &ids)?;
-    let mut said = format!("the agent changed the stack, @{rev}; {answered} comment{} answered", plural(answered));
-    if branch {
-        said += "; the stack had moved on, so it is a branch: the tree of edits has both";
-    }
-    Ok(Landed::done(said, Some(rev)))
+    Ok(Landed::held(Held {
+        stack: Some(crate::held::Change {
+            patches: ids,
+            base: Some(base),
+            op: next.op,
+            of: "the stack".into(),
+        }),
+        replies,
+        ..Default::default()
+    }))
 }
 
 /// The comments on lines that their own change's version in `now` no
 /// longer has go to the patch of `now` that has their line, as after a
 /// split or a merge. How many moved.
-fn follow_lines(db: &mut Db, olds: &[Patch], now: &[String]) -> Result<usize> {
+pub(crate) fn follow_lines(db: &mut Db, olds: &[Patch], now: &[String]) -> Result<usize> {
     let patches: Vec<Patch> = now.iter().map(|id| db.patch(id).clone()).collect();
     let keys: Vec<(String, HashSet<String>)> = patches
         .iter()
@@ -1340,13 +1363,13 @@ pub fn move_back(db: &mut Db, n: &Note) -> Result<()> {
     })
 }
 
-/// The comments an answer opened, filed: on the lines they quote, within
-/// the ask's scope, each opened by the comment that asked. How many.
-fn open_comments(db: &mut Db, run: &Run, i: &Info, result: &str) -> Result<usize> {
+/// The comments an answer opened, to file: on the lines they quote, within
+/// the ask's scope, each opened by the comment that asked.
+fn opened_notes(db: &Db, run: &Run, i: &Info, result: &str) -> Result<Vec<Note>> {
     let notes = parse_review_notes(result).unwrap_or_default();
     let from = db.node(i.from)?.clone();
     let asked = i.notes.first().map(|n| (n.change.clone(), n.id.clone()));
-    let mut filed = 0;
+    let mut out = Vec::new();
     for (n, note) in notes.iter().enumerate() {
         let at = note
             .get("patch")
@@ -1368,7 +1391,7 @@ fn open_comments(db: &mut Db, run: &Run, i: &Info, result: &str) -> Result<usize
             Some(k) => (k, file),
             None => (title_key(&p), MSG_PATH.to_string()),
         };
-        db.set_note(Note {
+        out.push(Note {
             change: p.change.clone(),
             id: format!("agent:{}:{n}", run.id),
             line,
@@ -1379,21 +1402,20 @@ fn open_comments(db: &mut Db, run: &Run, i: &Info, result: &str) -> Result<usize
             opened_by: asked.clone(),
             time: now(),
             ..Default::default()
-        })?;
-        filed += 1;
+        });
     }
-    Ok(filed)
+    Ok(out)
 }
 
-/// A build and test's findings, filed on each patch's title, opened by the
-/// comment that asked. How many patches.
-fn file_tests(db: &mut Db, run: &Run, i: &Info, result: &str) -> Result<usize> {
+/// A build and test's findings, to file on each patch's title, opened by
+/// the comment that asked.
+fn test_notes(db: &Db, run: &Run, i: &Info, result: &str) -> Result<Vec<Note>> {
     let found = last_object(result)
         .and_then(|o| o.get("patches").and_then(Value::as_object).cloned())
         .unwrap_or_default();
     let from = db.node(i.from)?.clone();
     let asked = i.notes.first().map(|n| (n.change.clone(), n.id.clone()));
-    let mut tested = 0;
+    let mut out = Vec::new();
     for (at, id) in from.patches.iter().enumerate() {
         let Some(v) = found.get(&(at + 1).to_string()) else { continue };
         let p = db.patch(id).clone();
@@ -1402,7 +1424,7 @@ fn file_tests(db: &mut Db, run: &Run, i: &Info, result: &str) -> Result<usize> {
         {
             continue;
         }
-        db.set_note(Note {
+        out.push(Note {
             change: p.change.clone(),
             id: format!("agent:{}:test:{}", run.id, at + 1),
             line: title_key(&p),
@@ -1413,10 +1435,9 @@ fn file_tests(db: &mut Db, run: &Run, i: &Info, result: &str) -> Result<usize> {
             opened_by: asked.clone(),
             time: now(),
             ..Default::default()
-        })?;
-        tested += 1;
+        });
     }
-    Ok(tested)
+    Ok(out)
 }
 
 /// For claude, while it changes a patch: whether the patches above still

@@ -62,6 +62,8 @@ fn setup() -> (tempfile::TempDir, PathBuf, PathBuf) {
 /// process, and a developer's own settings must not change them.
 fn open(db: &Path) -> stacked::db::Result<App> {
     stacked::config::init(stacked::config::Config::default());
+    // No agent of the user's is ever asked: the tests' stand-in is.
+    fake_claude();
     App::with_config(db, stacked::config::Config::default())
 }
 
@@ -164,6 +166,29 @@ fn wait_for(app: &mut App, what: &str) -> String {
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
     panic!("never shown: {what:?}\n{}", draw(app));
+}
+
+/// Waits for what the agent brings back to land, then accepts all of it,
+/// as a review accepting everything does.
+fn accept_landed(app: &mut App, db: &Path) {
+    for _ in 0..300 {
+        app.refresh();
+        let d = Db::load(db).unwrap();
+        let going = d.runs().iter().any(|r| r.state == stacked::db::RunState::Started);
+        if !going && !stacked::held::queue(&d, "s").is_empty() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    Db::edit(db, |d| {
+        let ids: Vec<String> = stacked::held::queue(d, "s").into_iter().map(|r| r.id.clone()).collect();
+        for id in ids {
+            stacked::held::close(d, &id, &Default::default(), Some(true))?;
+        }
+        Ok(())
+    })
+    .unwrap();
+    app.refresh();
 }
 
 /// What History…'s first pane, the history, shows: two fifths of the
@@ -976,6 +1001,7 @@ fn what_you_said_last_may_be_written_again() {
     keys(&mut app, &[KeyCode::Char(' ')]);
     assert!(items(&app).contains(&("Edit your reply".to_string(), false)), "{:?}", items(&app));
     keys(&mut app, &[KeyCode::Esc]);
+    accept_landed(&mut app, &db);
     wait_for(&mut app, "agent replied (answer only)");
     // Its history says which were edits.
     let d = Db::load(&db).unwrap();
@@ -1034,7 +1060,7 @@ fn while_the_agent_changes_the_stack_it_is_not_edited_by_hand_nor_its_comment_wr
     // are commented on as ever.
     down_to(&mut app, " three");
     keys(&mut app, &[KeyCode::Char(' ')]);
-    let why = "the agent is changing patch 1: the stack can be edited by hand again once the agent's work lands";
+    let why = "the agent is changing patch 1: the stack can be edited by hand again once you have reviewed the agent's work";
     let Mode::Menu(m) = &app.mode else { panic!("{:?}", app.mode) };
     assert_eq!(m.note.as_deref(), Some(why));
     let all = items(&app);
@@ -1063,6 +1089,91 @@ fn while_the_agent_changes_the_stack_it_is_not_edited_by_hand_nor_its_comment_wr
     app.refresh();
     keys(&mut app, &[KeyCode::Char(' ')]);
     assert!(items(&app).contains(&("Drop this patch…".into(), true)), "{:?}", items(&app));
+}
+
+/// What the agent brought back, landed and held for review: its reply
+/// `text` to comment (change, id), with a change of the stack if `change`
+/// (the stack as it is, made again).
+fn held(db: &Path, run: &str, change: &str, id: &str, text: &str, with_change: bool) {
+    Db::edit(db, |d| {
+        let (from, s) = d.head("s").map(|(r, s)| (r, s.clone())).unwrap();
+        let way = if with_change { "change" } else { "answer" };
+        let ask = serde_json::json!({"way": way, "scope": {"patch": change}, "from": from, "notes": [{"label": "c1", "change": change, "id": id}]});
+        let stack = with_change.then(|| stacked::held::Change {
+            patches: s.patches.clone(),
+            base: s.base.clone(),
+            op: "agent: patch 1".into(),
+            of: "patch 1".into(),
+        });
+        let reply = stacked::held::Reply {
+            change: change.into(),
+            id: id.into(),
+            text: text.into(),
+            tag: way.into(),
+            promote: None,
+        };
+        d.add_run(stacked::db::Run {
+            id: run.into(),
+            what: way.into(),
+            stack: "s".into(),
+            state: stacked::db::RunState::Done,
+            ask: Some(ask),
+            held: Some(stacked::held::Held {
+                at: stacked::db::now(),
+                stack,
+                replies: vec![reply],
+                opened: vec![],
+            }),
+            ..Default::default()
+        })
+        .map(|_| ())
+    })
+    .unwrap();
+}
+
+#[test]
+fn the_agent_s_reply_waits_for_review_and_enter_takes_it() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Enter]);
+    save(&mut app, "why so loud?");
+    let n = notes_of(&db, "s", 0).remove(0);
+    held(&db, "run-answer", &n.change, &n.id, "It is a shout.", false);
+    app.refresh();
+    // Its line says so, and nothing is written on it before it is taken.
+    keys(&mut app, &[KeyCode::Down]);
+    let screen = draw(&mut app);
+    assert!(screen.contains("the agent's reply waits for your review") && !screen.contains("It is a shout."), "{screen}");
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    let all = items(&app);
+    for (l, ok) in [("Accept the agent's reply", true), ("Reply", false), ("Edit your comment", false)] {
+        assert!(all.contains(&(l.into(), ok)), "{l}: {all:?}");
+    }
+    assert!(!all.iter().any(|(l, _)| l == "Ask agent"), "{all:?}");
+    keys(&mut app, &[KeyCode::Esc]);
+    // Enter takes it into the thread, at once: out of the review.
+    assert!(app.hint().starts_with("enter: accept the agent's reply"), "{}", app.hint());
+    keys(&mut app, &[KeyCode::Enter]);
+    assert!(app.status.contains("you accepted the agent's reply"), "{}", app.status);
+    assert!(draw(&mut app).contains("It is a shout."));
+    assert!(stacked::held::queue(&Db::load(&db).unwrap(), "s").is_empty(), "nothing left of it to review");
+    // A reply going with a change of the stack is reviewed with it; the
+    // stack is not edited by hand meanwhile.
+    held(&db, "run-change", &n.change, &n.id, "Changed it.", true);
+    app.refresh();
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    assert!(items(&app).contains(&("Accept the agent's reply".into(), false)), "{:?}", items(&app));
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Enter]);
+    assert!(app.status.contains("this reply goes with the agent's change of the stack"), "{}", app.status);
+    keys(&mut app, &[KeyCode::Up, KeyCode::Char(' ')]);
+    let Mode::Menu(m) = &app.mode else { panic!("{:?}", app.mode) };
+    assert_eq!(
+        m.note.as_deref(),
+        Some("the agent's change of patch 1 waits for your review: the stack can be edited by hand again once you have reviewed it")
+    );
+    assert!(items(&app).contains(&("Edit this patch in $EDITOR".into(), false)), "{:?}", items(&app));
 }
 
 fn ctrl(app: &mut App, code: KeyCode) {
@@ -1229,6 +1340,7 @@ fn a_comment_on_a_patch_may_be_sent_to_the_whole_stack() {
     let run = d.runs().last().unwrap().id.clone();
     assert_eq!(stacked::ask::run_scope(&d, &run), Some(stacked::ask::Scope::Stack));
     drop(d);
+    accept_landed(&mut app, &db);
     let screen = wait_for(&mut app, "agent replied (change)");
     assert!(screen.contains("Seen.") && screen.contains("you · a.txt: TWO"), "{screen}");
     // A comment on the stack has the whole stack already.
@@ -1270,6 +1382,7 @@ fn a_comment_is_sent_from_its_menu_and_answered_in_place() {
     keys(&mut app, &[KeyCode::Esc]);
     assert_eq!(app.mode, Mode::Normal);
     // Its answer lands as a turn of the thread.
+    accept_landed(&mut app, &db);
     let screen = wait_for(&mut app, "agent replied (answer only)");
     assert!(screen.contains("Seen.") && screen.contains("✓ you · a.txt: TWO"), "{screen}");
     assert!(screen.contains("1 to read"), "{screen}");
@@ -1316,6 +1429,7 @@ fn the_screen_never_waits_on_the_agent() {
     assert!(draw(&mut app).contains("· checking…"));
     app.settle();
     assert!(!draw(&mut app).contains("checking…"));
+    accept_landed(&mut app, &db);
     wait_for(&mut app, "agent replied");
 }
 
@@ -1656,6 +1770,7 @@ fn the_agent_is_asked_about_the_history_to_answer_only() {
     assert_eq!(n.text, "why drop it?");
     drop(d);
     // Its answer shows under the record.
+    accept_landed(&mut app, &db);
     let screen = wait_for(&mut app, "└ agent: Seen.");
     assert!(screen.contains(" │    └ agent: Seen. · agent replied"), "under the record, the lanes beside it:\n{screen}");
     // Among the stack's comments it says what it is about, and is asked

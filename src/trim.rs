@@ -98,8 +98,9 @@ fn named(rec: &Record) -> Vec<usize> {
 
 /// The patches a run's ask names: the one it changes, the commits it made.
 fn run_patches(r: &Run) -> Vec<String> {
-    let Some(a) = &r.ask else { return vec![] };
-    let mut out = Vec::new();
+    // Those of its change waiting for review.
+    let mut out: Vec<String> = r.held.iter().flat_map(|h| h.stack.iter()).flat_map(|c| c.patches.clone()).collect();
+    let Some(a) = &r.ask else { return out };
     if let Some(id) = a.get("patch").and_then(|p| p.get(0)).and_then(|p| p.as_str()) {
         out.push(id.to_string());
     }
@@ -158,7 +159,7 @@ pub fn trim(src: &Path, dst: &Path, from: Option<usize>) -> Result<Trimmed> {
         })
         .collect();
     for r in before.runs() {
-        if r.state == RunState::Started {
+        if r.state == RunState::Started || crate::held::waiting(&before, r) {
             kept_runs.insert(r.id.clone());
         }
     }
@@ -282,6 +283,16 @@ pub fn trim(src: &Path, dst: &Path, from: Option<usize>) -> Result<Trimmed> {
         let Some(r) = before.run(id) else { continue };
         new.patches(&before, &run_patches(r));
         new.push(Record::Run(run_now(r, &new)), None);
+        // Its review as saved, what it holds waiting.
+        if let Some(review) = before.review(id) {
+            new.push(
+                Record::Review {
+                    run: id.clone(),
+                    review: review.clone(),
+                },
+                None,
+            );
+        }
         for e in before.events(id) {
             new.push(
                 Record::Event {

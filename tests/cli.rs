@@ -95,6 +95,8 @@ fn stacked_in(
         .args(args)
         .env_remove("VISUAL")
         .env("EDITOR", "false")
+        // No agent of the user's is ever asked: a test asks its stand-in.
+        .env("STACKED_CLAUDE", "/usr/bin/false")
         .env("STACKED_CONFIG", "/nonexistent/stacked.toml")
         .env("GIT_AUTHOR_NAME", "A U Thor")
         .env("GIT_AUTHOR_EMAIL", "author@example.com")
@@ -568,11 +570,11 @@ fn a_stack_from_before_the_check_is_not_gone_back_to() {
 }
 
 /// Sends comments of stack s to `claude`, standing in for claude, and
-/// waits for them to be answered.
+/// waits for them to be answered, what it brings back accepted.
 fn send(e: &Env, claude: &Path, args: &[&str], env: &[(&str, &Path)]) -> (bool, String, String) {
     let mut all = vec!["send", "s"];
     all.extend(args);
-    all.push("--wait");
+    all.extend(["--wait", "--accept"]);
     let mut envs = vec![("STACKED_CLAUDE", claude)];
     envs.extend(env);
     stacked_in(&e.src, &e.db, &all, "", &envs)
@@ -648,7 +650,10 @@ echo extra > c.txt && git add c.txt && git -c user.name=C -c user.email=c@x comm
     assert_eq!(git(&e.src, &["worktree", "list"]).lines().count(), 1);
     // All of it is in the database: the run and what claude wrote.
     let runs = e.ok(&["runs"]);
-    assert!(runs.contains("change s \"Squash the top into the bottom, and add c.\"\tdone\tthe agent changed the stack"), "{runs}");
+    assert!(
+        runs.contains("change s \"Squash the top into the bottom, and add c.\"\tdone\treviewed: its change accepted; 1 reply accepted"),
+        "{runs}"
+    );
     let run = runs.split('\t').next().unwrap();
     let transcript = e.ok(&["transcript", run]);
     assert!(transcript.contains("● session started · fake") && transcript.contains("exit 0"), "{transcript}");
@@ -761,7 +766,7 @@ fn the_stack_is_not_edited_by_hand_while_the_agent_changes_it() {
     assert!(fine, "{err}");
     // Its edit is made from the stack as it took it: nothing else changes
     // the stack meanwhile, nor is its comment written on.
-    let why = "the agent is changing the stack: the stack can be edited by hand again once the agent's work lands";
+    let why = "the agent is changing the stack: the stack can be edited by hand again once you have reviewed the agent's work";
     for args in [&["drop", "s", "1"][..], &["move", "s", "1", "2"], &["undo", "s"], &["delete", "s"]] {
         let (fine, _, err) = e.run(args);
         assert!(!fine && err.contains(why), "{args:?}: {err}");
@@ -770,10 +775,61 @@ fn the_stack_is_not_edited_by_hand_while_the_agent_changes_it() {
     assert!(!fine && err.contains("the agent is working on it"), "{err}");
     // Comments, others than its own, are written on as ever.
     e.ok(&["reply", "s", &line, "Really?"]);
+    // Landed, its change waits for your review, and the stack with it.
     landed(&e, 1);
+    let (fine, _, err) = e.run(&["drop", "s", "1"]);
+    let why = "the agent's change of the stack waits for your review: the stack can be edited by hand again once you have reviewed it";
+    assert!(!fine && err.contains(why), "{err}");
+    let (fine, _, err) = e.run(&["reply", "s", &id, "Also", "this."]);
+    assert!(!fine && err.contains("the agent's reply to it waits for your review"), "{err}");
+    assert!(!e.ok(&["comments", "s"]).contains("agent: Amended."));
+    let reviewed = e.ok(&["review", "s", "--accept-all"]);
+    assert!(reviewed.contains("reviewed: its change accepted; 1 reply accepted"), "{reviewed}");
     assert!(e.ok(&["comments", "s"]).contains("agent: Amended."));
+    assert!(e.column(3)[2].starts_with("Bug 3 - café"), "the agent's change is the stack's");
     e.ok(&["drop", "s", "1"]);
-    assert_eq!(e.column(3).len(), 2, "landed, the stack is the user's again");
+    assert_eq!(e.column(3).len(), 2, "reviewed, the stack is the user's again");
+}
+
+#[test]
+fn what_the_agent_brings_back_waits_for_review_and_may_be_rejected() {
+    let e = env();
+    e.ok(&["import", "s", "base"]);
+    let before = e.column(2);
+    let id = comment(&e, &["Amend", "the", "top."]);
+    let next = comment(&e, &["Then", "this."]);
+    let claude = fake_claude(
+        &e,
+        "claude-amend.sh",
+        r#"echo x >> a.txt; git -c user.name=C -c user.email=c@x commit -qam "Bug 3 - amended" --amend"#,
+        r#"{"replies": {"c1": "Amended."}}"#,
+    );
+    let env = [("STACKED_CLAUDE", claude.as_path())];
+    let (fine, out, err) = stacked_in(&e.src, &e.db, &["send", "s", &id, "--wait"], "", &env);
+    assert!(fine, "{err}");
+    // Landed, nothing of it is applied: it waits for review, said so.
+    assert!(out.contains("waits for your review: a change of the stack, 1 reply"), "{out}");
+    assert_eq!(e.column(2), before, "the stack is as it was");
+    assert!(!e.ok(&["comments", "s"]).contains("Amended."));
+    let queue = e.ok(&["landed", "s"]);
+    assert!(queue.contains("a change of the stack, 1 reply") && queue.contains("  change\tagent: the stack"), "{queue}");
+    assert!(queue.contains(&format!("  reply\t{id}\tAmended.")), "{queue}");
+    // The next change goes from the stack as the review leaves it.
+    let (fine, out, err) = stacked_in(&e.src, &e.db, &["send", "s", &next], "", &env);
+    assert!(fine, "{err}");
+    assert!(out.contains("it goes once you have reviewed the agent's change of the stack"), "{out}");
+    // Rejected, it is dropped for good, its reply with it; the comment may be
+    // asked again. Then the next change goes.
+    let (fine, out, err) = stacked_in(&e.src, &e.db, &["review", "s", "--reject-all"], "", &env);
+    assert!(fine && out.contains("reviewed: its change rejected; 1 reply rejected"), "{out}{err}");
+    assert_eq!(e.column(2), before);
+    assert!(!e.ok(&["comments", "s"]).contains("Amended."));
+    assert!(e.ok(&["comments", "s", "--show", "to-send"]).contains(&id));
+    landed(&e, 2);
+    let queue = e.ok(&["landed", "s"]);
+    assert!(queue.contains(&format!("  reply\t{next}\tAmended.")), "the next one, landed: {queue}");
+    let (fine, _, err) = e.run(&["review", "s", "nope", "--accept-all"]);
+    assert!(!fine && err.contains("no work on s waits for review as nope"), "{err}");
 }
 
 #[test]
@@ -796,10 +852,17 @@ fn several_asks_wait_their_turn() {
     assert!(out.contains("ready (answer only)"), "{out}");
     let waiting = e.ok(&["comments", "s", "--show", "in-progress"]);
     assert_eq!(waiting.lines().filter(|l| !l.starts_with(' ')).count(), 3, "{waiting}");
-    // Each goes in turn, on its own.
+    // Each goes in turn, on its own; what each brings back waits for review,
+    // the first landed first.
     landed(&e, 3);
     let runs = e.ok(&["runs"]);
     assert_eq!(runs.lines().filter(|l| l.contains("\tdone\t")).count(), 3, "{runs}");
+    let queue = e.ok(&["landed", "s"]);
+    assert_eq!(queue.lines().filter(|l| !l.starts_with(' ')).count(), 3, "{queue}");
+    for _ in 0..3 {
+        e.ok(&["review", "s", "--accept-all"]);
+    }
+    assert_eq!(e.ok(&["landed", "s"]), "");
     let read = e.ok(&["comments", "s", "--show", "to-read"]);
     assert_eq!(read.matches("agent: Seen.").count(), 3, "{read}");
     assert!(e.ok(&["comments", "s", "--show", "to-read-only"]).contains(&three));
@@ -855,7 +918,7 @@ fn the_agent_rebases_reviews_and_tests() {
     assert!(c.contains("b.txt: new") && c.contains("agent: Say what b is for."), "{c}");
     let c = e.ok(&["comments", "s", "--patch", "1"]);
     assert!(c.contains("patch 1, as a whole") && c.contains("On the whole patch."), "{c}");
-    assert!(e.ok(&["runs"]).contains("the agent answered 1 comment and opened 2"));
+    assert!(e.ok(&["runs"]).contains("reviewed: 2 opened comments accepted; 1 reply accepted"));
 
     // A build and test runs where claude likes, here the repo, and reads
     // the stack with the command it is given.
@@ -868,7 +931,8 @@ fn the_agent_rebases_reviews_and_tests() {
     let id = comment(&e, &["Build", "and", "test."]);
     let (fine, _, err) = send(&e, &test, &[&id, "--build-and-test"], &[("STACKED_SRC", &e.src)]);
     assert!(fine, "{err}");
-    assert!(e.ok(&["runs"]).contains(": 2 patches"));
+    let runs = e.ok(&["runs"]);
+    assert!(runs.lines().last().is_some_and(|l| l.ends_with("reviewed: 2 opened comments accepted; 1 reply accepted")), "{runs}");
     assert!(e.ok(&["comments", "s", "--patch", "3"]).contains("fails: a.txt (tested @"));
     let db = Db::load(&e.db).unwrap();
     let info = stacked::ask::info(db.runs().last().unwrap()).unwrap();
@@ -1324,6 +1388,34 @@ fn a_trim_writes_a_new_database_from_a_rev_on() {
         db.set_view("s", "to read")?;
         let n = db.find_note("s", &id)?.clone();
         db.set_collapsed(&n.change, &n.id, true)?;
+        // What the agent brought back, waiting for review, half marked.
+        let from = db.head("s").unwrap().0;
+        db.add_run(stacked::db::Run {
+            id: "run-held".into(),
+            what: "answer".into(),
+            stack: "s".into(),
+            state: RunState::Done,
+            ask: Some(serde_json::json!({"way": "answer", "scope": "stack", "from": from, "notes": []})),
+            held: Some(stacked::held::Held {
+                at: 1,
+                replies: vec![stacked::held::Reply {
+                    change: n.change.clone(),
+                    id: n.id.clone(),
+                    text: "Kept.".into(),
+                    tag: "answer".into(),
+                    promote: None,
+                }],
+                ..Default::default()
+            }),
+            ..Default::default()
+        })?;
+        db.set_review(
+            "run-held",
+            stacked::held::Review {
+                marks: [("reply 0".to_string(), false)].into(),
+                ..Default::default()
+            },
+        )?;
         db.mark_read(&p.change, keys.clone()).map(|_| ())
     })
     .unwrap();
@@ -1350,6 +1442,9 @@ fn a_trim_writes_a_new_database_from_a_rev_on() {
     assert_eq!(made.read_keys(&p.change), keys.into_iter().collect());
     let n = made.find_note("s", &id).unwrap();
     assert!(made.collapsed(&n.change, &n.id));
+    let queue = stacked::held::queue(&made, "s");
+    assert_eq!(queue.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(), ["run-held"], "what waits for review, kept");
+    assert_eq!(made.review("run-held").unwrap().marks.get("reply 0"), Some(&false), "its marks too");
     assert!(made.warnings.is_empty() && on(&["check"]).contains("s: applies"));
     // The history kept: its start, then the drop and the undo; the ask that
     // landed before is left out.
@@ -1357,7 +1452,10 @@ fn a_trim_writes_a_new_database_from_a_rev_on() {
     let lines: Vec<&str> = log.lines().collect();
     assert!(lines[0].contains("(the start of a trimmed history)"), "{log}");
     assert!(log.contains("drop ") && log.contains("undo"), "{log}");
-    assert!(on(&["runs"]).is_empty(), "the ask had landed before the cut");
+    // The ask had landed before the cut, and was reviewed: only what waits
+    // for review is kept.
+    let runs = on(&["runs"]);
+    assert!(runs.lines().count() == 1 && runs.starts_with("run-held"), "{runs}");
     // It undoes as the old one does: back before the drop is its start.
     let (fine, _, err) = stacked_in(&e.src, &new, &["undo", "s"], "", &[]);
     assert!(!fine && err.contains("nothing to undo"), "{err}");

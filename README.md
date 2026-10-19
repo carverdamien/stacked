@@ -316,18 +316,18 @@ ask agent`'s:
 - `the whole stack`, on a patch's comment: a change, with the whole stack in
   its worktree, as for the stack's own comments: it may change any patch,
   add patches anywhere, reorder them. The comment stays on its line, and
-  its reply lands in its thread. On the command line, `stacked send NAME ID
+  its reply goes in its thread. On the command line, `stacked send NAME ID
   --whole-stack`.
 - `answer only`: read-only, enforced by its tools: it reads the code and
   the stack, and it may read the web with `curl` (a bug on Bugzilla, a
-  revision on Phabricator, a page of documentation). Only the reply lands. An
+  revision on Phabricator, a page of documentation). Only the reply comes back. An
   answer may open comments of its own on lines within the place, as a
   review does: the asking comment then says `opened 4 comments, 1 with your
   replies`, and its menu goes to them, or deletes it and them.
 - `build and test`, on the stack's comments and a patch's as a whole: it may
   run any command, in a workspace of its choosing by its own rules
   (CLAUDE.md), never the user's worktree; it changes nothing in the stack.
-  What it found lands in the reply and on each patch's title, saying which
+  What it found comes back in the reply and on each patch's title, saying which
   stack it tested.
 
 Several go at once, by self-review's rule: one changing ask at a time on a
@@ -404,6 +404,40 @@ ask, apply and pull, and shows what the agent wrote.
 `agent.command`. The tests use it. Whatever it is, it is given claude's
 arguments (`-p PROMPT --output-format stream-json …`) and must answer as
 claude does.
+
+## What the agent brings back waits for your review
+
+When an ask lands, nothing changes under you while you read or write.
+What the agent brought back is held, in a queue of work to review, the
+first landed first. One landed ask may hold three kinds of parts: its
+change of the stack, if it changed it; its replies to the comments it was
+asked about; and the comments it opened (an answer's, or a build and
+test's findings on each patch's title). You accept or reject each part. A
+comment is one part, and the change of the stack is one part, taken whole
+or not at all. Rejecting the change of the stack rejects the replies that
+go with it too, since each says what the agent changed. Once every part is
+accepted or rejected, the review closes. What was accepted is applied
+then; what was rejected is dropped for good, though `Runs…` still shows
+what the agent said and did.
+
+Until its review closes, a change of the stack keeps the stack as the
+agent took it: the stack is not edited by hand, as while the agent works,
+and the next ask that may change the code waits for that review
+(`ready (may change the code), it goes once you have reviewed the agent's
+change of patch 2`). Asks to answer only, or to build and test, do not
+wait. A comment whose reply waits says so on its first line (`the agent's
+reply waits for your review`), and is not written on, nor asked again,
+before you take its reply. Enter on it takes the reply into its thread at
+once, accepted, out of the review (its menu's `Accept the agent's reply`).
+A reply that goes with a change of the stack is reviewed with that change.
+
+On the command line, `stacked landed NAME` lists the queue: each landed ask
+by its run, what it holds, and each part of it. `stacked review NAME [RUN]
+--accept-all` (or `--reject-all`) closes the review of that ask, the first
+landed if no run is given: the parts not marked yet are accepted (or
+rejected), and what is accepted is applied. `stacked send NAME ID --wait`
+says what waits for your review once it lands; `--wait --accept` accepts
+all of it as soon as it lands, for a script.
 
 ## Reading
 
@@ -637,6 +671,12 @@ by its line number, its rev: `@12`.
   comment collapsed, or expanded, is a record naming it, apart from its
   history. A read mark holds the lines it read; taking it back is a record
   naming it.
+- An ask's run, once landed, holds what it brought back for review: the
+  stack its change makes (its patches stored already, by their content),
+  each reply, each comment it opened. Nothing of it is applied before its
+  review closes. A review record holds the marks saved for a run's review,
+  the replies taken already, and whether it is closed; the last one is
+  what stands.
 - A crash can only cut the last line short. A line that cannot be read is
   passed over with a warning (`stacked check` lists them) and keeps its line
   number, so every rev after it stays the same. The next write ends a cut
@@ -768,9 +808,6 @@ follows each patch by its change, a move told from a shift.
 
 ## Not done yet
 
-- When an ask lands, the screen changes on its own: the stack moves to the
-  agent's edit if you have not edited since. self-review-rs now holds
-  changes until `R`; should stacked do the same?
 - How apply picks a branch, which belongs to publishing: the editor applies
   on no branch, `stacked apply --branch` on one.
 - A stack-wide review runs one agent; one per patch is not done.

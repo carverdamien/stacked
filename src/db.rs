@@ -64,6 +64,8 @@ pub enum Record {
     /// A comment collapsed by hand, in the middle pane: one quiet line for
     /// it, until it is expanded.
     Collapse { change: String, id: String, collapsed: bool },
+    /// The review of what run `run` brought back, as saved, until changed.
+    Review { run: String, review: crate::held::Review },
     /// Lines of a patch marked read, in the reading mode; or a mark taken
     /// back.
     Read(Mark),
@@ -333,6 +335,9 @@ pub struct Run {
     /// known: while it lives, the run is not left behind.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub starter: Option<u32>,
+    /// For an ask landed: what it brought back, held until it is reviewed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub held: Option<crate::held::Held>,
     pub time: i64,
 }
 
@@ -406,6 +411,8 @@ pub struct Db {
     choices: BTreeMap<(String, String), usize>,
     /// The comments collapsed: (change, comment id).
     collapsed: HashSet<(String, String)>,
+    /// Run id to the index of its latest review record.
+    reviews: HashMap<String, usize>,
     /// Change to the indices of its read marks not taken back, oldest
     /// first.
     marks: HashMap<String, Vec<usize>>,
@@ -529,6 +536,7 @@ impl Db {
             views: HashMap::new(),
             choices: BTreeMap::new(),
             collapsed: HashSet::new(),
+            reviews: HashMap::new(),
             marks: HashMap::new(),
             runs: BTreeMap::new(),
             run_order: Vec::new(),
@@ -726,6 +734,9 @@ impl Db {
                 } else {
                     self.collapsed.remove(&key);
                 }
+            }
+            Record::Review { run, .. } => {
+                self.reviews.insert(run.clone(), at);
             }
             Record::Read(m) => {
                 let marks = self.marks.entry(m.change.clone()).or_default();
@@ -1379,6 +1390,18 @@ impl Db {
     /// Appends where run `r.id` stands now.
     pub fn add_run(&mut self, r: Run) -> Result<usize> {
         self.push(Record::Run(Run { time: now(), ..r }))
+    }
+
+    /// The review of what run `id` brought back, as last saved.
+    pub fn review(&self, id: &str) -> Option<&crate::held::Review> {
+        match &self.records[*self.reviews.get(id)?] {
+            Record::Review { review, .. } => Some(review),
+            _ => None,
+        }
+    }
+
+    pub fn set_review(&mut self, id: &str, review: crate::held::Review) -> Result<usize> {
+        self.push(Record::Review { run: id.into(), review })
     }
 
     /// Appends a stack made from somewhere else than its name's head (a
