@@ -673,10 +673,10 @@ fn about(action: &Action) -> String {
             "pick HEAD of your checkout up: ↑↓ place it, Enter moves the checkout there, detached; your branch as it is".into()
         }
         Action::MessagesToStack(_) => {
-            "keep your workspace's message: a new version of the patch with it, its diff as it is, to review".into()
+            "keep your workspace's message and write it over the patch's: a new version of the patch, its diff as it is, for your review".into()
         }
         Action::MessagesToCheckout(_) => {
-            "keep the stack's message: your workspace's commit made again with it, and the commits above it on the same files; the branch moves to them".into()
+            "keep the stack's message and write it over your workspace's commit's: that commit and the ones above it are made again, their files as they are, and the branch moves to them".into()
         }
         Action::EditPatch => "edit this patch in $EDITOR, as mail, opened where the cursor is".into(),
         Action::EditCode => "edit this file as the patch leaves it, in $EDITOR, opened at this line".into(),
@@ -3584,18 +3584,50 @@ impl App {
         let list = vec![
             Choice::new(
                 "stacked",
-                "stacked",
-                "the stack's message, put on your workspace's commit, made again with it",
+                "stacked → workspace",
+                "the stack's message is kept, and written over your workspace's commit's",
                 Some(Action::MessagesToCheckout(at)),
             ),
             Choice::new(
                 "workspace",
-                "workspace",
-                "your workspace's message, taken into the stack: a new version of the patch, to review",
+                "workspace → stacked",
+                "your workspace's message is kept, and written over the patch's in the stack, for your review",
                 Some(Action::MessagesToStack(at)),
             ),
         ];
-        Choices::new("sync", "keep the message from", list, self.db.choice(&self.stack, "sync"))
+        Choices::new("sync", "which way the message goes", list, self.db.choice(&self.stack, "sync"))
+    }
+
+    /// What the menu says of syncing commit messages, where it has the item
+    /// to: on a patch whose message is not its commit's in the workspace,
+    /// both, from the first line they differ by, and what each way does; on
+    /// the stack's header, which patches differ.
+    fn sync_said(&self) -> Option<String> {
+        if self.screen != Screen::Main || self.focus != Focus::List || self.on_banner {
+            return None;
+        }
+        let h = self.head_here()?;
+        let crate::head::At::Stack(on) = &h.at else { return None };
+        let ways = "The message on the left of the arrow is kept, and it is written over the one on the right. \
+                    stacked → workspace makes your workspace's commit again with the stack's message. \
+                    workspace → stacked makes a new version of the patch with your workspace's message, for you to review.";
+        if self.on_stack {
+            let differ = h.differ();
+            return (!differ.is_empty()).then(|| {
+                format!("The commit messages of {} are not the same in the stack and in your workspace.\n{ways}", crate::head::patches_said(&differ))
+            });
+        }
+        let (_, theirs) = on.messages.iter().find(|(k, _)| *k == self.sel)?;
+        let ours = self.db.patch(self.current()?.patches.get(self.sel)?).message.clone();
+        let (a, b): (Vec<&str>, Vec<&str>) = (ours.lines().collect(), theirs.lines().collect());
+        let k = (0..a.len().max(b.len())).find(|&k| a.get(k).map(|l| l.trim_end()) != b.get(k).map(|l| l.trim_end())).unwrap_or(0);
+        let from = if k == 0 { String::new() } else { format!(", from its line {}", k + 1) };
+        let line = |l: Option<&&str>| l.map_or("(no such line)".to_string(), |l| l.trim_end().to_string());
+        Some(format!(
+            "Its commit message is not the same in the stack and in your workspace{from}.\nstacked: {}\nworkspace: {}\n{ways}",
+            line(a.get(k)),
+            line(b.get(k))
+        ))
     }
 
     /// Where a file of a patch is edited by hand, as radio buttons: a copy
@@ -3823,7 +3855,15 @@ impl App {
         self.common(&mut items);
         // In a review, what waits is what is reviewed, and edited by hand
         // from there: nothing it holds back is said.
-        Menu::new(title, items, hands.filter(|_| self.screen != Screen::Review))
+        let mut m = Menu::new(title, items, hands.filter(|_| self.screen != Screen::Review));
+        // Its commit message to sync: both said, and which way does what.
+        if let Some(said) = self.sync_said() {
+            m.note = Some(match m.note.take() {
+                Some(n) => format!("{n}\n{said}"),
+                None => said,
+            });
+        }
+        m
     }
 
     /// The Send all items of a header: the comments listed that can be sent.

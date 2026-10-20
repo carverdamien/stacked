@@ -1413,8 +1413,15 @@ fn a_patch_whose_message_differs_in_the_checkout_is_marked_and_made_the_same_eit
     assert!(marked(&mut app), "{}", draw(&mut app));
     // HEAD's line says how many are to sync.
     assert!(draw(&mut app).contains("▶ HEAD main · 1 to sync"), "{}", draw(&mut app));
-    // Its menu syncs it, keeping one or the other, the stack's first.
-    keys(&mut app, &[KeyCode::Down]);
+    // Its menu syncs it one way or the other, the stack's first; it says
+    // both messages, and that the one on the arrow's left is kept.
+    keys(&mut app, &[KeyCode::Down, KeyCode::Char(' ')]);
+    let Mode::Menu(m) = &app.mode else { panic!("{:?}", app.mode) };
+    let note = m.note.clone().unwrap_or_default();
+    assert!(note.contains("\nstacked: Bug 2 - add b\nworkspace: Bug 2 - add a bee\n"), "{note}");
+    assert!(note.contains("The message on the left of the arrow is kept, and it is written over the one on the right."), "{note}");
+    let screen = draw(&mut app);
+    assert!(screen.contains("[x] stacked → workspace  [ ] workspace → stacked"), "{screen}");
     choose(&mut app, "Sync commit message");
     app.settle();
     assert!(app.status.starts_with("main has the stack's message of patch 2"), "{}", app.status);
@@ -1432,7 +1439,7 @@ fn a_patch_whose_message_differs_in_the_checkout_is_marked_and_made_the_same_eit
         }
         key(&mut app, KeyCode::Down);
     }
-    assert_eq!(app.hint(), "↑↓ choose · ←→: keep the message from · enter: do it · esc: close · ?: what it does");
+    assert_eq!(app.hint(), "↑↓ choose · ←→: which way the message goes · enter: do it · esc: close · ?: what it does");
     keys(&mut app, &[KeyCode::Right, KeyCode::Enter]);
     assert_eq!(app.screen, Screen::Review);
     assert_eq!(app.status, "took the message of patch 2 from your checkout: it waits for your review");
