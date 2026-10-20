@@ -1469,8 +1469,10 @@ fn landed_work_is_reviewed_from_the_banner_part_by_part() {
     let m = marks(&app);
     assert_eq!((m["stack"], m["opened 0"], m["reply 0"]), (true, true, false));
     // The change rejected rejects every comment with it; accepted again,
-    // each is as it was.
+    // each is as it was. (On top, the comments that asked.)
     keys(&mut app, &[KeyCode::Home]);
+    assert!(selected_line(&mut app).unwrap().starts_with("   keep "));
+    down_to_review(&mut app, "stack operations");
     choose(&mut app, "Mark as rejected");
     assert!(marks(&app).values().all(|m| !m), "{:?}", marks(&app));
     choose(&mut app, "Mark as accepted");
@@ -1480,7 +1482,7 @@ fn landed_work_is_reviewed_from_the_banner_part_by_part() {
     let Mode::Menu(m) = &app.mode else { panic!("{:?}", app.mode) };
     assert_eq!(
         m.note.as_deref(),
-        Some("the change of the stack: accepted\ncomments opened: 1 accepted\nreplies: 1 rejected, 1 to review")
+        Some("asking comments: 2 kept\nthe change of the stack: accepted\ncomments opened: 1 accepted\nreplies: 1 rejected, 1 to review")
     );
     assert!(items(&app).contains(&("Close review".into(), false)), "{:?}", items(&app));
     // Saved, the marks are there when it is opened again.
@@ -3255,46 +3257,58 @@ fn landed_work_is_edited_by_hand_from_its_review_in_its_place() {
 }
 
 #[test]
-fn closing_the_agent_s_review_may_close_the_asking_comment_too() {
+fn the_comments_that_asked_are_kept_or_closed_from_the_top_of_the_review() {
     let (_tmp, db, _src) = setup();
     let mut app = open(&db).unwrap();
-    let ask = |app: &mut App, line: &str, text: &str, reply: &str, run: &str| {
-        keys(app, &[KeyCode::Home]);
-        down_to(app, line);
-        keys(app, &[KeyCode::Enter]);
-        save(app, text);
-        let n = notes_of(&db, "s", 0).into_iter().find(|n| n.text == text).unwrap();
-        held(&db, run, &n.change, &n.id, reply, false);
-        app.refresh();
-        n
-    };
     keys(&mut app, &[KeyCode::Right]);
-    let n = ask(&mut app, "+TWO", "why so loud?", "It is a shout.", "run-1");
+    down_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Enter]);
+    save(&mut app, "why so loud?");
+    down_to(&mut app, "+LINE 39");
+    keys(&mut app, &[KeyCode::Enter]);
+    save(&mut app, "and this?");
+    let notes = notes_of(&db, "s", 0);
+    answered(&db, "run-1", &notes);
+    app.refresh();
     keys(&mut app, &[KeyCode::Esc, KeyCode::Enter]);
     assert_eq!(app.screen, Screen::Review);
-    // Closing it, the box is there, not checked.
+    // On top, the comments that asked, each kept.
+    let screen = draw(&mut app);
+    assert!(screen.contains(" asking comments"), "{screen}");
+    for n in &notes {
+        assert!(screen.contains(&format!("   keep  a.txt: {} · {}", n.preview, n.text)), "{screen}");
+    }
+    // Enter on one: closed with the review; its reply, which goes with it,
+    // accepted.
+    keys(&mut app, &[KeyCode::Home]);
+    assert!(selected_line(&mut app).unwrap().contains(&notes[0].text));
+    assert_eq!(app.hint(), "↑↓ choose · enter: close it with the review · →: look closer · space: menu · esc: save, discard or close");
+    assert!(draw(&mut app).contains("the comment that asked, as it is: kept open"));
+    keys(&mut app, &[KeyCode::Enter]);
+    let marks = |app: &App| app.reviewing.as_ref().unwrap().marks.clone();
+    assert_eq!(marks(&app), [("asking 0", true), ("reply 0", true)].map(|(k, m)| (k.to_string(), m)).into());
+    assert!(selected_line(&mut app).unwrap().starts_with("   close "));
+    assert_eq!(app.hint(), "↑↓ choose · enter: keep it open · →: look closer · space: menu · esc: save, discard or close");
+    // Kept again: the reply as it was.
+    keys(&mut app, &[KeyCode::Enter]);
+    assert!(marks(&app).is_empty(), "{:?}", marks(&app));
+    // Space has it too.
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    assert!(items(&app).contains(&("Keep it open".into(), false)), "{:?}", items(&app));
+    choose(&mut app, "Close it with the review");
+    assert_eq!(marks(&app).get("asking 0"), Some(&true));
+    // Esc says what is closed with it, and closing closes it, once its reply
+    // is in its thread; the other is kept.
     keys(&mut app, &[KeyCode::Esc]);
-    assert!(drawn_items(&app).contains(&"[ ] Close the asking comment".to_string()), "{:?}", drawn_items(&app));
-    // Checked, the dialog stays, on it.
-    choose(&mut app, "Close the asking comment");
-    assert!(drawn_items(&app).contains(&"[x] Close the asking comment".to_string()), "{:?}", drawn_items(&app));
-    assert!(matches!(&app.mode, Mode::Menu(m) if m.items[m.sel].label == "Close the asking comment"));
+    assert!(!items(&app).iter().any(|(l, _)| l.contains("asking")), "{:?}", items(&app));
+    assert!(matches!(&app.mode, Mode::Menu(m) if m.note.as_deref().is_some_and(|n| n.starts_with("asking comments: 1 to close, 1 kept"))), "{:?}", app.mode);
     choose(&mut app, "Accept all remaining and Close");
-    assert_eq!(app.status, "reviewed: 1 reply accepted; 1 asking comment closed");
+    assert_eq!(app.status, "reviewed: 1 opened comment accepted; 2 replies accepted; 1 asking comment closed");
     let d = Db::load(&db).unwrap();
-    assert!(d.note(&n.change, &n.id).is_none(), "closed");
-    let was = d.note_history(&n.change, &n.id).into_iter().rev().find(|(_, n)| !n.text.is_empty()).unwrap().1.text.clone();
-    assert!(was.contains("It is a shout."), "its reply in first: {was}");
-    drop(d);
-    // Not checked, as it is each time: the comment stays open.
-    let n = ask(&mut app, "-two", "and this?", "Gone.", "run-2");
-    keys(&mut app, &[KeyCode::Esc, KeyCode::Enter]);
-    assert_eq!(app.screen, Screen::Review);
-    keys(&mut app, &[KeyCode::Esc]);
-    assert!(drawn_items(&app).contains(&"[ ] Close the asking comment".to_string()), "{:?}", drawn_items(&app));
-    choose(&mut app, "Accept all remaining and Close");
-    assert_eq!(app.status, "reviewed: 1 reply accepted");
-    assert!(Db::load(&db).unwrap().note(&n.change, &n.id).is_some_and(|n| n.text.contains("Gone.")));
+    assert!(d.note(&notes[0].change, &notes[0].id).is_none(), "closed");
+    let was = d.note_history(&notes[0].change, &notes[0].id).into_iter().rev().find(|(_, n)| !n.text.is_empty()).unwrap().1.text.clone();
+    assert!(was.contains(&format!("Seen: {}", notes[0].text)), "its reply in first: {was}");
+    assert!(d.note(&notes[1].change, &notes[1].id).is_some_and(|n| n.text.contains("Seen: ")));
 }
 
 #[test]

@@ -373,6 +373,12 @@ pub fn save(db: &mut Db, id: &str, marks: &BTreeMap<String, bool>) -> Result<()>
     db.set_review(id, v).map(|_| ())
 }
 
+/// The mark, in a review, of the comment the ask was about at place `k`
+/// among them: true to close it with the review; else it is kept.
+pub fn asking_key(k: usize) -> String {
+    format!("asking {k}")
+}
+
 /// The comments the ask of run `r` was about, by (change, id): an agent's
 /// work's; none for a pull's, or an edit by hand's.
 pub fn asking_of(r: &Run) -> Vec<(String, String)> {
@@ -389,8 +395,9 @@ pub fn close(db: &mut Db, id: &str, marks: &BTreeMap<String, bool>, rest: Option
     close_with(db, id, marks, rest, false)
 }
 
-/// As `close`; with `asking`, the comments the ask was about are closed
-/// too, done with, once their replies are in their threads.
+/// As `close`, the comments the ask was about that `marks` marks to close
+/// closed too, done with, once their replies are in their threads; with
+/// `asking`, every one of them.
 pub fn close_with(db: &mut Db, id: &str, marks: &BTreeMap<String, bool>, rest: Option<bool>, asking: bool) -> Result<String> {
     let (r, h, mut v) = under_review(db, id)?;
     let mut all = BTreeMap::new();
@@ -427,12 +434,13 @@ pub fn close_with(db: &mut Db, id: &str, marks: &BTreeMap<String, bool>, rest: O
     // Done with, the comments that asked are closed: a closed comment does
     // not follow the lines of the change.
     let mut closed = 0;
-    if asking {
-        for (c, i) in asking_of(&r) {
-            if let Some(n) = db.note(&c, &i).cloned() {
-                db.set_note(Note { text: String::new(), ..n })?;
-                closed += 1;
-            }
+    for (k, (c, i)) in asking_of(&r).into_iter().enumerate() {
+        if !asking && marks.get(&asking_key(k)) != Some(&true) {
+            continue;
+        }
+        if let Some(n) = db.note(&c, &i).cloned() {
+            db.set_note(Note { text: String::new(), ..n })?;
+            closed += 1;
         }
     }
     let mut rev = r.rev;
@@ -449,6 +457,7 @@ pub fn close_with(db: &mut Db, id: &str, marks: &BTreeMap<String, bool>, rest: O
         }
     }
     v.marks.extend(all);
+    v.marks.extend(marks.iter().filter(|(k, _)| k.starts_with("asking ")).map(|(k, m)| (k.clone(), *m)));
     v.closed = true;
     db.set_review(id, v.clone())?;
     let mut said = said(&h, &v.marks);

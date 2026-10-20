@@ -649,7 +649,14 @@ the batch as it was last asked, else as the stack's asks are) or unchecks
 to the stack's header, and Esc goes back where the cursor was, the banner
 closed again. A comment you are done with, closed, leaves it.
 
-A review lists the parts on the left, in three sections: the stack
+A review lists the parts on the left, in three sections, under the
+comments the agent was asked about, for its work, on top (`asking
+comments`): each is `keep`, as it is when the review opens, or `close`,
+done with: Enter turns one to the other, as Space's `Close it with the
+review` and `Keep it open` do, and the review closes those to close as it
+closes, once their replies are in their threads (`Show…`, closed, lists
+them, to reopen). Marked to close, a comment's replies, which go with it,
+are accepted; kept again, they are as they were. The sections are the stack
 operations of the change (a line for each patch: `noop`, `add`, `modify`,
 `move`, `remove`, and the base when it is rebased), the comments it opened,
 and its replies. On the right is the part the cursor is on, as it would be:
@@ -670,11 +677,7 @@ the marks in the file, for the review to go on from them when you open it
 again; `Discard` throws away the marks made since the review was opened;
 `Close review`, once every part is marked, applies what is accepted;
 `Accept all remaining and Close` and `Reject all remaining and Close`
-mark what is left and close. For the agent's work, under them, `[ ] Close
-the asking comment`, not checked each time a review opens: Enter checks it,
-and closing then closes the comments the agent was asked about too, once
-their replies are in their threads, done with them (`Show…`, closed, lists
-them, to reopen). A reply that goes with a change of the stack
+mark what is left and close. A reply that goes with a change of the stack
 opens that review, on the reply, from its comment (Enter, or `Review the
 agent's work…` in its menu).
 

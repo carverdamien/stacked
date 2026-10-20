@@ -29,9 +29,9 @@ pub struct Reviewing {
     /// Whether the cursor is in the other pane, to scroll it, and how far.
     pub in_main: bool,
     scroll: usize,
-    /// Whether closing the review closes the comments that asked too, as
-    /// its dialog's box is checked: not, until it is.
-    pub close_asking: bool,
+    /// The replies' marks when the comment they answer was marked to close,
+    /// accepting them with it: they come back if it is kept again.
+    asked_before: BTreeMap<String, Option<bool>>,
 }
 
 /// A line of the review's list: what it says, how, and the part it is of
@@ -41,6 +41,9 @@ pub(super) struct Line {
     style: Style,
     part: Option<Part>,
     entry: Option<usize>,
+    /// The comment the ask was about it is, by its place among them: kept,
+    /// or closed with the review.
+    asking: Option<usize>,
 }
 
 /// What a part's mark says, as the list shows it.
@@ -129,12 +132,48 @@ impl App {
         Some((now, next))
     }
 
-    /// The review's list: its three sections, each part a line, the change
-    /// of the stack a line for each patch.
+    /// The comments the ask of what is reviewed was about, still open, each
+    /// with its place among them.
+    fn asking_open(&self) -> Vec<(usize, Note)> {
+        let Some((r, _)) = self.reviewing.as_ref().and_then(|rv| self.work(&rv.run)) else { return vec![] };
+        crate::held::asking_of(r)
+            .into_iter()
+            .enumerate()
+            .filter_map(|(k, (c, i))| Some((k, self.db.note(&c, &i)?.clone())))
+            .collect()
+    }
+
+    /// The review's list: on top, the comments that asked, each kept or
+    /// closed with the review; then its three sections, each part a line,
+    /// the change of the stack a line for each patch.
     pub(super) fn review_lines(&self) -> Vec<Line> {
         let mut out = Vec::new();
         let Some(rv) = &self.reviewing else { return out };
         let Some((_, h)) = self.work(&rv.run) else { return out };
+        let asking = self.asking_open();
+        if !asking.is_empty() {
+            out.push(Line {
+                text: (if asking.len() == 1 { " asking comment" } else { " asking comments" }).into(),
+                style: color::file(),
+                part: None,
+                entry: None,
+                asking: None,
+            });
+            for (k, n) in asking {
+                let at = if n.on_stack() { "the stack".to_string() } else { format!("{}: {}", n.file, n.preview) };
+                let (m, st) = match rv.marks.get(&crate::held::asking_key(k)) {
+                    Some(true) => ("close", color::del()),
+                    _ => ("keep ", Style::new()),
+                };
+                out.push(Line {
+                    text: format!("   {m} {at} · {}", first_words(&n.text)),
+                    style: st,
+                    part: None,
+                    entry: None,
+                    asking: Some(k),
+                });
+            }
+        }
         let parts = self.review_parts();
         let mark = |p: Part| rv.marks.get(&p.key()).copied();
         let title = |text: &str| Line {
@@ -142,6 +181,7 @@ impl App {
             style: color::file(),
             part: None,
             entry: None,
+            asking: None,
         };
         if let Some((now, next)) = self.review_stacks() {
             let said = match mark(Part::Stack) {
@@ -154,6 +194,7 @@ impl App {
                 style: color::file(),
                 part: Some(Part::Stack),
                 entry: None,
+                asking: None,
             });
             let diff = crate::history::stacks_diff(&self.db, Some(&now), Some(&next), false);
             for (k, d) in diff.iter().enumerate() {
@@ -163,6 +204,7 @@ impl App {
                         style,
                         part: Some(Part::Stack),
                         entry: Some(k),
+                        asking: None,
                     });
                 }
             }
@@ -179,6 +221,7 @@ impl App {
                     style: st,
                     part: Some(p),
                     entry: None,
+                    asking: None,
                 });
             }
         }
@@ -199,6 +242,7 @@ impl App {
                     style: st,
                     part: Some(p),
                     entry: None,
+                    asking: None,
                 });
             }
         }
@@ -211,6 +255,16 @@ impl App {
     fn review_view(&self, line: Option<&Line>, w: usize) -> (String, Vec<Vec<(String, Style)>>, usize) {
         let Some((rv, line)) = self.reviewing.as_ref().zip(line) else { return (String::new(), vec![], 0) };
         let Some((r, h)) = self.work(&rv.run) else { return (String::new(), vec![], 0) };
+        // A comment that asked: as it is now.
+        if let Some(k) = line.asking
+            && let Some((_, n)) = self.asking_open().into_iter().find(|(j, _)| *j == k)
+        {
+            let said = match rv.marks.get(&crate::held::asking_key(k)) {
+                Some(true) => " the comment that asked, as it is: closed with the review",
+                _ => " the comment that asked, as it is: kept open",
+            };
+            return self.comment_view(r, &n, said.into(), w);
+        }
         match line.part {
             Some(Part::Stack) | None => {
                 let Some((now, next)) = self.review_stacks() else {
@@ -246,25 +300,31 @@ impl App {
                     Part::Opened(k) => (h.opened[k].clone(), " a comment it opened, where it would be".to_string()),
                     Part::Stack => unreachable!(),
                 };
-                let deco = Deco::default();
-                let rows = if n.on_stack() {
-                    let Ok(s) = self.db.stack(&r.stack) else { return (said, vec![], 0) };
-                    let titles: Vec<String> = s.patches.iter().map(|id| self.db.patch(id).title().to_string()).collect();
-                    stack_rows(&format!("the stack {}", r.stack), &titles, &[&n], w, &deco)
-                } else {
-                    let p = self
-                        .db
-                        .stack(&r.stack)
-                        .ok()
-                        .and_then(|s| s.patches.iter().map(|id| self.db.patch(id)).find(|p| p.change == n.change));
-                    let Some(p) = p else { return (said, vec![], 0) };
-                    patch_rows(p, &[&n], w, &deco)
-                };
-                let head = rows.iter().position(|row| row.head && row.note.as_deref() == Some(&n.id)).unwrap_or(0);
-                let lines = rows.iter().map(|row| row_parts(row, false)).collect();
-                (said, lines, head)
+                self.comment_view(r, &n, said, w)
             }
         }
+    }
+
+    /// Comment `n` of the work of run `r` where it is, `w` wide, `said`
+    /// above it; and the line to show first, its own.
+    fn comment_view(&self, r: &Run, n: &Note, said: String, w: usize) -> (String, Vec<Vec<(String, Style)>>, usize) {
+        let deco = Deco::default();
+        let rows = if n.on_stack() {
+            let Ok(s) = self.db.stack(&r.stack) else { return (said, vec![], 0) };
+            let titles: Vec<String> = s.patches.iter().map(|id| self.db.patch(id).title().to_string()).collect();
+            stack_rows(&format!("the stack {}", r.stack), &titles, &[n], w, &deco)
+        } else {
+            let p = self
+                .db
+                .stack(&r.stack)
+                .ok()
+                .and_then(|s| s.patches.iter().map(|id| self.db.patch(id)).find(|p| p.change == n.change));
+            let Some(p) = p else { return (said, vec![], 0) };
+            patch_rows(p, &[n], w, &deco)
+        };
+        let head = rows.iter().position(|row| row.head && row.note.as_deref() == Some(&n.id)).unwrap_or(0);
+        let lines = rows.iter().map(|row| row_parts(row, false)).collect();
+        (said, lines, head)
     }
 
     /// The review: its list on the left, what the cursor's part would be on
@@ -340,7 +400,7 @@ impl App {
             self.screen = Screen::Main;
             return Effect::None;
         };
-        let parts: Vec<usize> = lines.iter().enumerate().filter(|(_, l)| l.part.is_some()).map(|(i, _)| i).collect();
+        let parts: Vec<usize> = lines.iter().enumerate().filter(|(_, l)| l.part.is_some() || l.asking.is_some()).map(|(i, _)| i).collect();
         let step = |from: usize, down: bool, n: usize| -> usize {
             let mut at = parts.iter().position(|&i| i == from).unwrap_or(0);
             for _ in 0..n {
@@ -353,7 +413,11 @@ impl App {
                 self.mode = Mode::Menu(self.review_dialog());
             }
             (_, KeyCode::Enter) => {
-                if let Some(p) = lines.get(rv.sel).and_then(|l| l.part) {
+                // A comment that asked: closed with the review, or kept.
+                if let Some(k) = lines.get(rv.sel).and_then(|l| l.asking) {
+                    let close = rv.marks.get(&crate::held::asking_key(k)) != Some(&true);
+                    self.mark_asking(k, close);
+                } else if let Some(p) = lines.get(rv.sel).and_then(|l| l.part) {
                     match rv.marks.get(&p.key()) {
                         Some(true) => {
                             rv.marks.remove(&p.key());
@@ -420,6 +484,64 @@ impl App {
         rv.marks.insert(p.key(), accept);
     }
 
+    /// The comment the ask was about at place `k` marked to close with the
+    /// review (`close`), or to keep. Closed, its replies go with it: they
+    /// are accepted (while the change they go with is not rejected), and
+    /// are as they were once it is kept again.
+    pub(super) fn mark_asking(&mut self, k: usize, close: bool) {
+        let Some((c, i)) = self.reviewing.as_ref().and_then(|rv| self.db.run(&rv.run)).and_then(|r| crate::held::asking_of(r).get(k).cloned()) else {
+            return;
+        };
+        let parts = self.review_parts();
+        let Some((_, h)) = self.reviewing.as_ref().and_then(|rv| self.work(&rv.run)) else { return };
+        let replies: Vec<Part> = h
+            .replies
+            .iter()
+            .enumerate()
+            .filter(|(_, rp)| rp.change == c && rp.id == i)
+            .map(|(j, _)| Part::Reply(j))
+            .filter(|p| parts.contains(p))
+            .collect();
+        let Some(rv) = self.reviewing.as_mut() else { return };
+        let rejected = rv.marks.get(&Part::Stack.key()) == Some(&false);
+        if close {
+            rv.marks.insert(crate::held::asking_key(k), true);
+            if !rejected {
+                for p in &replies {
+                    let was = rv.marks.get(&p.key()).copied();
+                    rv.asked_before.entry(p.key()).or_insert(was);
+                    rv.marks.insert(p.key(), true);
+                }
+            }
+        } else {
+            rv.marks.remove(&crate::held::asking_key(k));
+            for p in &replies {
+                match rv.asked_before.remove(&p.key()) {
+                    Some(Some(m)) => {
+                        rv.marks.insert(p.key(), m);
+                    }
+                    Some(None) => {
+                        rv.marks.remove(&p.key());
+                    }
+                    None => {}
+                }
+            }
+        }
+    }
+
+    /// What Enter does on the review's line the cursor is on, said.
+    pub(super) fn review_enter(&self) -> &'static str {
+        let Some(rv) = &self.reviewing else { return "enter: accept" };
+        let lines = self.review_lines();
+        let Some(line) = lines.get(rv.sel) else { return "enter: accept" };
+        match (line.asking, line.part) {
+            (Some(k), _) if rv.marks.get(&crate::held::asking_key(k)) == Some(&true) => "enter: keep it open",
+            (Some(_), _) => "enter: close it with the review",
+            (None, Some(p)) if rv.marks.get(&p.key()) == Some(&true) => "enter: to review again",
+            _ => "enter: accept",
+        }
+    }
+
     /// Every reply of the review marked accepted, or rejected; or, not
     /// `replies`, every comment the work opened.
     pub(super) fn mark_all(&mut self, replies: bool, accept: bool) {
@@ -443,6 +565,17 @@ impl App {
         let parts = self.review_parts();
         let mark = |p: &Part| rv.marks.get(&p.key()).copied();
         let mut out = Vec::new();
+        let asking = self.asking_open();
+        if !asking.is_empty() {
+            let closing = asking.iter().filter(|(k, _)| rv.marks.get(&crate::held::asking_key(*k)) == Some(&true)).count();
+            let mut said = Vec::new();
+            for (n, word) in [(closing, "to close"), (asking.len() - closing, "kept")] {
+                if n > 0 {
+                    said.push(format!("{n} {word}"));
+                }
+            }
+            out.push(format!("{}: {}", if asking.len() == 1 { "asking comment" } else { "asking comments" }, said.join(", ")));
+        }
         if parts.contains(&Part::Stack) {
             out.push(format!(
                 "the change of the stack: {}",
@@ -482,15 +615,6 @@ impl App {
             Item::new("Accept all remaining and Close", Action::ReviewClose(Some(true))),
             Item::new("Reject all remaining and Close", Action::ReviewClose(Some(false))),
         ];
-        // The agent's: the comments that asked, closed with the review if
-        // checked.
-        let asking = self.reviewing.as_ref().and_then(|rv| self.db.run(&rv.run)).map(crate::held::asking_of).unwrap_or_default();
-        let open = asking.iter().filter(|(c, i)| self.db.note(c, i).is_some()).count();
-        if open > 0 {
-            let label = if open == 1 { "Close the asking comment".to_string() } else { format!("Close the {open} asking comments") };
-            let on = self.reviewing.as_ref().is_some_and(|rv| rv.close_asking);
-            items.push(Item::new(label, Action::CloseAsking).checked(on));
-        }
         items.extend([Item::line(), Item::new("Keep reviewing", Action::Cancel)]);
         let run = self.reviewing.as_ref().and_then(|rv| self.db.run(&rv.run));
         let of = match run {
@@ -508,6 +632,12 @@ impl App {
         let lines = self.review_lines();
         let Some(rv) = &self.reviewing else { return };
         let rejected = rv.marks.get(&Part::Stack.key()) == Some(&false);
+        // A comment that asked: closed with the review, or kept.
+        if let Some(k) = lines.get(rv.sel).and_then(|l| l.asking) {
+            let closing = rv.marks.get(&crate::held::asking_key(k)) == Some(&true);
+            items.push(Item::new("Close it with the review", Action::CloseAsking(k, true)).when(!closing));
+            items.push(Item::new("Keep it open", Action::CloseAsking(k, false)).when(closing));
+        }
         if let Some(p) = lines.get(rv.sel).and_then(|l| l.part) {
             let may_accept = p == Part::Stack || !rejected;
             match rv.marks.get(&p.key()) {
@@ -621,7 +751,7 @@ impl App {
     /// parts not marked accepted or rejected as `rest` says.
     pub(super) fn review_close(&mut self, rest: Option<bool>) {
         let Some(rv) = self.reviewing.clone() else { return };
-        if let Some(said) = self.edit(|db| crate::held::close_with(db, &rv.run, &rv.marks, rest, rv.close_asking)) {
+        if let Some(said) = self.edit(|db| crate::held::close(db, &rv.run, &rv.marks, rest)) {
             self.status = format!("reviewed: {said}");
             self.leave_review();
             // What waited on the review may go.

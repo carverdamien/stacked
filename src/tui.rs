@@ -540,9 +540,9 @@ pub enum Action {
     ReviewSave,
     ReviewDiscard,
     ReviewClose(Option<bool>),
-    /// Whether closing the review closes the comments that asked too:
-    /// checked, or not.
-    CloseAsking,
+    /// In the review: the comment the ask was about at place `0` marked to
+    /// close with the review (`1`), or to keep.
+    CloseAsking(usize, bool),
     Send(Way),
     /// A patch's comment sent to the whole stack: the agent may change any
     /// patch.
@@ -682,9 +682,10 @@ fn about(action: &Action) -> String {
         Action::ReviewClose(None) => "close the review: what you accepted is applied, what you rejected is dropped for good".into(),
         Action::ReviewClose(Some(true)) => "accept every part not marked yet, then close the review".into(),
         Action::ReviewClose(Some(false)) => "reject every part not marked yet, then close the review".into(),
-        Action::CloseAsking => {
-            "close the comments the agent was asked about too, as the review closes, done with them (Show…, closed, lists them, to reopen); or keep them open".into()
+        Action::CloseAsking(_, true) => {
+            "close this comment as the review closes, done with: its replies, which go with it, are accepted (Show…, closed, lists it, to reopen)".into()
         }
+        Action::CloseAsking(_, false) => "keep this comment open when the review closes; its replies as they were".into(),
         Action::Send(Way::Change) => "ask the agent, which may change the code within this comment's place".into(),
         Action::Send(Way::Answer) => "ask the agent, to answer only: nothing changes".into(),
         Action::Send(Way::Test) => "ask the agent to build and test, in a workspace of its choosing".into(),
@@ -3878,16 +3879,7 @@ impl App {
                 self.status = "the marks you made since you opened the review are thrown away".into();
             }
             Action::ReviewClose(rest) => self.review_close(rest),
-            Action::CloseAsking => {
-                if let Some(rv) = self.reviewing.as_mut() {
-                    rv.close_asking = !rv.close_asking;
-                }
-                let mut m = self.review_dialog();
-                if let Some(k) = m.items.iter().position(|i| i.action == Action::CloseAsking) {
-                    m.sel = k;
-                }
-                self.mode = Mode::Menu(m);
-            }
+            Action::CloseAsking(k, close) => self.mark_asking(k, close),
             Action::Collapse | Action::Expand => {
                 let collapse = matches!(action, Action::Collapse);
                 if let Some(c) = self.picked()
@@ -5361,9 +5353,7 @@ impl App {
                 "type what to look for · ←→: where · tab: the search before · ↑↓: pick · enter: go there · esc: back".into()
             }
             Mode::Normal if self.screen == Screen::Review => {
-                let accepted = self.review_part().is_some_and(|p| self.reviewing.as_ref().is_some_and(|rv| rv.marks.get(&p.key()) == Some(&true)));
-                let enter = if accepted { "enter: to review again" } else { "enter: accept" };
-                format!("↑↓ choose · {enter} · →: look closer · space: menu · esc: save, discard or close")
+                format!("↑↓ choose · {} · →: look closer · space: menu · esc: save, discard or close", self.review_enter())
             }
             Mode::Normal if self.reading_here() => {
                 "space: mark this block read · enter: unread · 1: view · 2: comment · ?: what can I do here".into()
