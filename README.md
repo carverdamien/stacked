@@ -247,7 +247,12 @@ the left pane, on a line under the line, a reply under its comment, in the
 middle or in the comments pane. The editor's box hides nothing: what was
 under the line goes on after the box, in every view of the code. The pane
 being written in takes half the width meanwhile. Typing and the arrows
-edit, and enter breaks the line.
+edit, and enter breaks the line. On a line where no comment is open but one
+was closed (or a patch's title), the box opens on the one closed last there,
+dimmed, its thread as it was (`you: why so loud?`, `agent: It is a shout.`),
+to read before you write: ↑↓ (pgup, pgdn) scroll it, and the first thing you
+type takes its place. What you write is the comment; the closed one stays
+as it was.
 ctrl-a and ctrl-e go to the start and the end of the line. ctrl-k cuts the
 rest of the line, or at its end the line break, and ctrl-k again adds what
 it cuts to that; ctrl-y puts what was cut last where the cursor is, in this

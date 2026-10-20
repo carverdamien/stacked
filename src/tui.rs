@@ -4360,12 +4360,32 @@ impl App {
                 self.reload();
             }
         }
-        self.mode = Mode::Edit(Edit {
-            ed: Editor::new(text),
-            target,
-            pane,
-            held,
-        });
+        let mut ed = Editor::new(text);
+        // Nothing open on the line, and nothing written yet: the comment
+        // last closed there shows, dimmed, until you write.
+        if text.is_empty()
+            && let Some(n) = self.closed_here(&target)
+        {
+            ed = ed.with_ghost(crate::thread::said_lines(&n.text));
+        }
+        self.mode = Mode::Edit(Edit { ed, target, pane, held });
+    }
+
+    /// The comment last closed on the line a new comment goes on (a line,
+    /// or a patch's title), as it was, when none is open there.
+    fn closed_here(&self, target: &Target) -> Option<Note> {
+        let (change, line) = match target {
+            Target::Line { change, key, .. } => (change.clone(), key.clone()),
+            Target::Patch(change) => {
+                let p = self.current()?.patches.iter().map(|id| self.db.patch(id)).find(|p| p.change == *change)?;
+                (change.clone(), title_key(p))
+            }
+            _ => return None,
+        };
+        if self.db.notes(&change).iter().any(|n| n.line == line) {
+            return None;
+        }
+        self.db.deleted_notes(&self.stack, &change).into_iter().filter(|(_, n)| n.line == line).max_by_key(|(rev, _)| *rev).map(|(_, n)| n)
     }
 
     /// Why comment (change, id) cannot be written on now, if it cannot:
@@ -5321,6 +5341,7 @@ impl App {
                 _ => "↑↓ choose · enter: do it · esc: close · ?: what it does".into(),
             },
             Mode::Moving { .. } => "↑↓ to place it · enter: put it there · esc: leave it where it was".into(),
+            Mode::Edit(e) if e.ed.ghosted() => format!("↑↓: read the last comment closed here · enter: a new line · {}", self.esc_does(e)),
             Mode::Edit(e) => format!("enter: a new line · {}", self.esc_does(e)),
             Mode::Help { .. } => "any key: back, and that key".into(),
             Mode::Stream { .. } => "↑↓: scroll · esc: fold it".into(),

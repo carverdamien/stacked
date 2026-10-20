@@ -149,6 +149,23 @@ pub fn all_turns(text: &str) -> Vec<Turn> {
     turns
 }
 
+/// A thread as lines to read: who said each turn, then what, its lines
+/// after the first indented; a turn deleted the first way left out.
+pub fn said_lines(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for t in all_turns(text).into_iter().filter(|t| !t.deleted) {
+        let who = match t.role {
+            Role::You => "you",
+            Role::Agent => "agent",
+            Role::Reviewer => t.tag.as_deref().unwrap_or("reviewer"),
+        };
+        for (k, line) in t.body.lines().enumerate() {
+            out.push(if k == 0 { format!("{who}: {line}") } else { format!("  {line}") });
+        }
+    }
+    out
+}
+
 /// The turns of a stored comment that stand, those deleted left out: what
 /// the agent is told, and whose the last word is.
 pub fn thread_turns(text: &str) -> Vec<Turn> {

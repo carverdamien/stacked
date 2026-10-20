@@ -3298,6 +3298,56 @@ fn closing_the_agent_s_review_may_close_the_asking_comment_too() {
 }
 
 #[test]
+fn a_comment_where_one_was_closed_shows_it_dimmed_until_you_write() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Enter]);
+    save(&mut app, "why so loud?");
+    // Answered, then closed.
+    Db::edit(&db, |d| {
+        let n = d.notes(&d.patch(&d.stack("s")?.patches[0]).change.clone()).into_iter().next().cloned().unwrap();
+        d.set_note(Note {
+            text: append_turn(&n.text, Role::Agent, "It is a shout.", Some("answer")),
+            ..n
+        })
+    })
+    .unwrap();
+    app.refresh();
+    keys(&mut app, &[KeyCode::Down]);
+    assert!(app.rows[app.cursor].head);
+    choose(&mut app, "Close this comment");
+    choose(&mut app, "Close it");
+    assert!(notes_of(&db, "s", 0).is_empty());
+    // On its line again: the editor shows it, dimmed, until you write.
+    keys(&mut app, &[KeyCode::Home]);
+    down_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Enter]);
+    assert!(matches!(&app.mode, Mode::Edit(e) if e.ed.ghosted()), "{:?}", app.mode);
+    let screen = draw(&mut app);
+    assert!(screen.contains("you: why so loud?") && screen.contains("agent: It is a shout."), "{screen}");
+    assert!(screen.contains("↑↓: read the last one closed here"), "{screen}");
+    assert_eq!(app.hint(), "↑↓: read the last comment closed here · enter: a new line · esc: close");
+    let mut buf = Buffer::empty(Rect::new(0, 0, 120, 30));
+    app.draw(&mut buf);
+    let (x, y) = at(&screen, "you: why so loud?");
+    assert!(buf[(x, y)].modifier.contains(ratatui::style::Modifier::DIM));
+    // Written on, it is gone; saved, the comment is what you wrote.
+    typed(&mut app, "louder?");
+    let screen = draw(&mut app);
+    assert!(!screen.contains("agent: It is a shout."), "{screen}");
+    keys(&mut app, &[KeyCode::Esc]);
+    choose(&mut app, "Save it");
+    assert_eq!(notes_of(&db, "s", 0).into_iter().map(|n| n.text).collect::<Vec<_>>(), ["louder?"]);
+    // With one open on the line, it is that one that is written on.
+    keys(&mut app, &[KeyCode::Home]);
+    down_to(&mut app, "-two");
+    keys(&mut app, &[KeyCode::Enter]);
+    assert!(matches!(&app.mode, Mode::Edit(e) if !e.ed.ghosted()), "nothing was closed on that line: {:?}", app.mode);
+}
+
+#[test]
 fn the_banner_tracks_the_open_comments_and_esc_goes_there_and_back() {
     let (_tmp, db, _src) = setup();
     let mut app = open(&db).unwrap();

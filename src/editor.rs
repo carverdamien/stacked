@@ -74,6 +74,13 @@ pub struct Editor {
     initial: String,
     /// The last key was ctrl-k: the next one adds to what it cut.
     cutting: bool,
+    /// What shows, dimmed, while nothing is written yet, to read (↑↓
+    /// scroll it): the comment last closed where this one goes. Gone once
+    /// you write.
+    ghost: Vec<String>,
+    /// How far down it is scrolled, and how many lines the box last held.
+    ghost_top: Cell<usize>,
+    ghost_page: Cell<usize>,
 }
 
 impl Editor {
@@ -88,7 +95,21 @@ impl Editor {
             vtop: Cell::new(0),
             initial: text.into(),
             cutting: false,
+            ghost: Vec::new(),
+            ghost_top: Cell::new(0),
+            ghost_page: Cell::new(1),
         }
+    }
+
+    /// With `lines` shown dimmed until you write: what was closed here.
+    pub fn with_ghost(mut self, lines: Vec<String>) -> Editor {
+        self.ghost = lines;
+        self
+    }
+
+    /// Whether what was closed here shows: nothing is written yet.
+    pub fn ghosted(&self) -> bool {
+        !self.ghost.is_empty()
     }
 
     /// The cursor at the start of the text: to write above what is there.
@@ -119,6 +140,21 @@ impl Editor {
             KeyCode::Char(c) if ctrl || alt => KeyCode::Char(c.to_ascii_lowercase()),
             c => c,
         };
+        // While what was closed here shows, ↑↓ and the page keys scroll it.
+        if self.ghosted() {
+            let (top, page) = (self.ghost_top.get(), self.ghost_page.get().max(1));
+            let to = match code {
+                KeyCode::Up => Some(top.saturating_sub(1)),
+                KeyCode::Down => Some(top + 1),
+                KeyCode::PageUp => Some(top.saturating_sub(page)),
+                KeyCode::PageDown => Some(top + page),
+                _ => None,
+            };
+            if let Some(to) = to {
+                self.ghost_top.set(to);
+                return Op::Stay;
+            }
+        }
         // ctrl-k after ctrl-k adds to what it cut; any other key ends that.
         let more = std::mem::take(&mut self.cutting);
         let (row, col) = (self.row, self.col);
@@ -181,6 +217,10 @@ impl Editor {
     /// `text` written where the cursor is, a line broken at each `\n`, the
     /// cursor after it.
     fn put(&mut self, text: &str) {
+        // Written on: what was closed here is gone.
+        if !text.is_empty() {
+            self.ghost.clear();
+        }
         for c in text.chars() {
             if c == '\n' {
                 let rest = self.lines[self.row].split_off(self.col);
@@ -262,9 +302,29 @@ impl Editor {
         (vis, cur_vrow, cur_vcol)
     }
 
+    /// What was closed here as the screen lines it takes at `wrap_w`
+    /// columns.
+    fn ghost_lines(&self, wrap_w: usize) -> Vec<String> {
+        let wrap_w = wrap_w.max(1);
+        self.ghost
+            .iter()
+            .flat_map(|l| {
+                let chars: Vec<char> = l.chars().collect();
+                if chars.is_empty() {
+                    vec![String::new()]
+                } else {
+                    chars.chunks(wrap_w).map(|c| c.iter().collect()).collect()
+                }
+            })
+            .collect()
+    }
+
     /// How many lines the box needs inside, `inner` columns wide: it grows
-    /// with the text.
+    /// with the text, or with what was closed here while it shows.
     pub fn height(&self, inner: usize) -> usize {
+        if self.ghosted() {
+            return self.ghost_lines(inner).len().max(1);
+        }
         self.visual(inner).0.len().max(1)
     }
 
@@ -276,16 +336,38 @@ impl Editor {
         let (w, h) = (w.max(8), h.max(3));
         let inner = w - 2;
         let text_h = h - 2;
-        let (vis, cur_vrow, cur_vcol) = self.visual(inner);
-        let mut vtop = self.vtop.get().min(vis.len().saturating_sub(text_h));
-        if cur_vrow < vtop {
-            vtop = cur_vrow;
-        } else if cur_vrow >= vtop + text_h {
-            vtop = cur_vrow + 1 - text_h;
-        }
-        self.vtop.set(vtop);
+        // Nothing written yet: what was closed here, dimmed, scrolled by
+        // ↑↓, the cursor at its start. Else the text, scrolled to the cursor.
+        let (vis, vtop, (cur_row, cur_vcol), foot) = if self.ghosted() {
+            let vis: Vec<(String, ratatui::style::Style)> = self.ghost_lines(inner).into_iter().map(|l| (l, color::dim())).collect();
+            let top = self.ghost_top.get().min(vis.len().saturating_sub(text_h));
+            self.ghost_top.set(top);
+            self.ghost_page.set(text_h);
+            (vis, top, (0, 0), format!(" ↑↓: read the last one closed here · enter: a new line · {esc} "))
+        } else {
+            let (vis, cur_vrow, cur_vcol) = self.visual(inner);
+            let mut vtop = self.vtop.get().min(vis.len().saturating_sub(text_h));
+            if cur_vrow < vtop {
+                vtop = cur_vrow;
+            } else if cur_vrow >= vtop + text_h {
+                vtop = cur_vrow + 1 - text_h;
+            }
+            self.vtop.set(vtop);
+            let vis = vis
+                .into_iter()
+                .map(|(seg, role)| {
+                    let st = match role {
+                        LineRole::You => ratatui::style::Style::new(),
+                        LineRole::Agent => color::agent(),
+                        LineRole::Reviewer => color::reviewer(),
+                        LineRole::Fence => color::meta(),
+                    };
+                    (seg, st)
+                })
+                .collect();
+            (vis, vtop, (cur_vrow - vtop, cur_vcol), format!(" enter: a new line · {esc} "))
+        };
         window(buf, area, x, y, w, h, title, color::note());
-        let foot = format!(" enter: a new line · {esc} ");
         let room = inner.saturating_sub(2);
         put(buf, area, x + 2, y + h - 1, room, &foot.chars().take(room).collect::<String>(), color::meta());
         if vtop > 0 {
@@ -295,18 +377,12 @@ impl Editor {
             put(buf, area, x + w - 4, y + h - 1, 1, "▼", color::meta());
         }
         for i in 0..text_h {
-            let Some((seg, role)) = vis.get(vtop + i) else { break };
-            let st = match role {
-                LineRole::You => ratatui::style::Style::new(),
-                LineRole::Agent => color::agent(),
-                LineRole::Reviewer => color::reviewer(),
-                LineRole::Fence => color::meta(),
-            };
-            put(buf, area, x + 1, y + 1 + i, inner, seg, st);
+            let Some((seg, st)) = vis.get(vtop + i) else { break };
+            put(buf, area, x + 1, y + 1 + i, inner, seg, *st);
         }
         (
             area.x + (x + 1 + cur_vcol.min(inner.saturating_sub(1))) as u16,
-            area.y + (y + 1 + cur_vrow - vtop) as u16,
+            area.y + (y + 1 + cur_row) as u16,
         )
     }
 }
@@ -331,6 +407,53 @@ mod tests {
         for c in text.chars() {
             press(e, KeyCode::Char(c));
         }
+    }
+
+    /// What the box at `buf`'s top shows on its inside row `y`.
+    fn inside(buf: &Buffer, y: u16) -> String {
+        (1..buf.area.width - 1).map(|x| buf[(x, y)].symbol()).collect::<String>().trim_end().to_string()
+    }
+
+    #[test]
+    fn what_was_closed_here_shows_dimmed_until_you_write_and_scrolls() {
+        let mut e = Editor::new("").with_ghost((1..=10).map(|n| format!("line {n}")).collect());
+        assert!(e.ghosted());
+        assert_eq!(e.height(20), 10, "the box grows to it");
+        // In a box of 3 lines inside: dimmed, from its first line, the
+        // cursor at its start.
+        let draw = |e: &Editor| {
+            let mut buf = Buffer::empty(Rect::new(0, 0, 70, 5));
+            let area = buf.area;
+            let at = e.draw(&mut buf, area, 0, 0, 70, 5, "t", "esc: close");
+            (buf, at)
+        };
+        let (buf, at) = draw(&e);
+        assert_eq!(inside(&buf, 1), "line 1");
+        assert!(buf[(1, 1)].modifier.contains(ratatui::style::Modifier::DIM));
+        assert_eq!(at, (1, 1));
+        let foot: String = (0..70).map(|x| buf[(x, 4)].symbol()).collect();
+        assert!(foot.contains("↑↓: read the last one closed here"), "{foot}");
+        // ↓ scrolls it a line, a page key a box's worth; no further than its
+        // end.
+        press(&mut e, KeyCode::Down);
+        press(&mut e, KeyCode::PageDown);
+        assert_eq!(inside(&draw(&e).0, 1), "line 5");
+        for _ in 0..20 {
+            press(&mut e, KeyCode::Down);
+        }
+        assert_eq!(inside(&draw(&e).0, 1), "line 8");
+        press(&mut e, KeyCode::PageUp);
+        assert_eq!(inside(&draw(&e).0, 1), "line 5");
+        // Written on, it is gone: the text is what is written; taken back, it
+        // stays gone.
+        typed(&mut e, "x");
+        assert!(!e.ghosted());
+        assert_eq!((e.text().as_str(), e.height(20)), ("x", 1));
+        press(&mut e, KeyCode::Backspace);
+        assert!(!e.ghosted() && e.text().is_empty());
+        // Nothing written, Esc closes.
+        let mut e = Editor::new("").with_ghost(vec!["a".into()]);
+        assert_eq!(press(&mut e, KeyCode::Esc), Op::Close);
     }
 
     #[test]

@@ -655,20 +655,8 @@ fn print_note(db: &Db, name: &str, n: &Note, busy: &Busy) {
 fn print_thread(db: &Db, name: &str, n: &Note, state: &str) {
     let state = if state.is_empty() { String::new() } else { format!("\t{state}") };
     println!("{}\t{}{state}", short_id(&n.change, &n.id), where_on(db, name, n));
-    // A turn deleted the first way: left out.
-    for t in all_turns(&n.text).into_iter().filter(|t| !t.deleted) {
-        let who = match t.role {
-            Role::You => "you",
-            Role::Agent => "agent",
-            Role::Reviewer => t.tag.as_deref().unwrap_or("reviewer"),
-        };
-        for (k, line) in t.body.lines().enumerate() {
-            if k == 0 {
-                println!("  {who}: {line}");
-            } else {
-                println!("    {line}");
-            }
-        }
+    for line in stacked::thread::said_lines(&n.text) {
+        println!("  {line}");
     }
 }
 
