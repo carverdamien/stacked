@@ -244,6 +244,11 @@ enum Cmd {
         /// @12: a question on it, for the agent to answer only.
         #[arg(long, conflicts_with = "patch")]
         about: Option<String>,
+        /// In the review of the agent's landed work RUN (as `landed` lists
+        /// it): on the patch as that work leaves it. The work then goes
+        /// back to the agent with it (`review --send-back`), not accepted.
+        #[arg(long, value_name = "RUN", requires = "patch")]
+        work: Option<String>,
         #[arg(required = true)]
         text: Vec<String>,
     },
@@ -276,6 +281,11 @@ enum Cmd {
         /// every turn after it.
         #[arg(long, value_name = "N")]
         rewind: Option<usize>,
+        /// Answer the agent's reply to it that waits for your review, in that
+        /// review: the work goes back to the agent with your answer after
+        /// its reply (`review --send-back`), not accepted.
+        #[arg(long, conflicts_with_all = ["edit", "rewind"])]
+        answer: bool,
         #[arg(required = true)]
         text: Vec<String>,
     },
@@ -340,10 +350,16 @@ enum Cmd {
     Review {
         name: String,
         run: Option<String>,
-        #[arg(long, conflicts_with = "reject_all", required_unless_present = "reject_all")]
+        #[arg(long, conflicts_with_all = ["reject_all", "send_back"], required_unless_present_any = ["reject_all", "send_back"])]
         accept_all: bool,
-        #[arg(long)]
+        #[arg(long, conflicts_with = "send_back")]
         reject_all: bool,
+        /// With what you wrote in its review (`comment --work`, `reply
+        /// --answer`), the agent's work goes back to it: rejected, and asked
+        /// again, from the stack that work makes, its new work landing to
+        /// review in its place.
+        #[arg(long)]
+        send_back: bool,
         /// Close the comments the agent was asked about too, done with,
         /// once their replies are in their threads.
         #[arg(long)]
@@ -1038,7 +1054,7 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
             };
             print!("{}", ops::interdiff(old, new));
         }
-        Cmd::Comment { name, patch, line, about: Some(rev), text } => {
+        Cmd::Comment { name, patch, line, about: Some(rev), text, .. } => {
             let _ = (patch, line);
             let rev = parse_rev(&rev)?;
             let db = Db::load(path)?;
@@ -1060,10 +1076,16 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
             Db::edit(path, |db| db.set_note(note))?;
             println!("{short}");
         }
-        Cmd::Comment { name, patch, line, about: None, text } => {
+        Cmd::Comment { name, patch, line, about: None, text, work } => {
             let text = text.join(" ");
             let db = Db::load(path)?;
             db.stack(&name)?;
+            let work = work_of(&db, &name, work.as_deref())?;
+            // In a review, the patch as the work leaves it.
+            let patch_of = |db: &Db, name: &str, spec: &str| -> Result<Patch> {
+                let s = ops::edited_from(db, name, work.as_deref())?;
+                Ok(db.patch(&s.patches[db.resolve(&s, spec)?]).clone())
+            };
             let note = match (&patch, &line) {
                 (None, _) => Note {
                     change: stack_change(&name),
@@ -1115,6 +1137,7 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
                     }
                 }
             };
+            let note = Note { review: work.or(note.review), ..note };
             let short = short_id(&note.change, &note.id);
             Db::edit(path, |db| db.set_note(note))?;
             println!("{short}");
@@ -1136,7 +1159,18 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
                 }
             }
         }
-        Cmd::Reply { name, id, edit, turn, rewind, text } => {
+        Cmd::Reply { name, id, answer: true, text, .. } => {
+            let text = text.join(" ");
+            Db::edit(path, |db| {
+                let n = db.find_note(&name, &id)?.clone();
+                let Some((run, k)) = stacked::held::reply_waiting(db, &n.change, &n.id) else {
+                    return err("no reply of the agent's to it waits for your review: reply to it instead");
+                };
+                stacked::held::answer(db, &run, k, &text)
+            })?;
+            eprintln!("stacked: your answer is in its review: the work goes back to the agent with it (`stacked review {name} --send-back`)");
+        }
+        Cmd::Reply { name, id, edit, turn, rewind, text, .. } => {
             let text = text.join(" ");
             let off = Db::edit(path, |db| {
                 let n = db.find_note(&name, &id)?.clone();
@@ -1387,6 +1421,17 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
                     println!("  {what}{mark}");
                 }
             }
+        }
+        Cmd::Review { name, run, send_back: true, .. } => {
+            let db = Db::load(path)?;
+            let id = match work_of(&db, &name, run.as_deref())? {
+                Some(id) => id,
+                None => stacked::held::queue(&db, &name).first().map(|r| r.id.clone()).ok_or_else(|| Error(format!("nothing on {name} waits for your review")))?,
+            };
+            let marks = db.review(&id).map(|v| v.marks.clone()).unwrap_or_default();
+            let said = ask::send_back(path, &name, &id, &marks)?;
+            ask::launch(path)?;
+            println!("{id}\t{said}");
         }
         Cmd::Review { name, run, accept_all, close_asking, .. } => {
             let said = Db::edit(path, |db| {

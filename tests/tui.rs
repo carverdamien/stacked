@@ -1009,6 +1009,7 @@ fn what_you_said_last_may_be_written_again() {
                     batch: "b-waiting".into(),
                     stack: false,
                     stage: stacked::db::Stage::Ready,
+                    on: None,
                 }),
                 ..n
             })
@@ -3537,6 +3538,7 @@ fn the_banner_tracks_the_open_comments_and_esc_goes_there_and_back() {
                 batch: "b-waiting".into(),
                 stack: false,
                 stage: stacked::db::Stage::Ready,
+                on: None,
             }),
             ..n
         })

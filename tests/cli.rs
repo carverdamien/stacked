@@ -1094,6 +1094,56 @@ fn an_answer_opens_a_comment_for_each_issue_several_on_a_line() {
 }
 
 #[test]
+fn landed_work_with_what_you_wrote_in_its_review_goes_back_to_the_agent_from_it() {
+    let e = env();
+    e.ok(&["import", "s", "base"]);
+    let id = comment(&e, &["--patch", "1", "Spell", "it", "out."]);
+    let prompts = e.root.join("prompts.txt");
+    // A first round makes 2 `deux`; a second, finding `deux` where the first
+    // left it, makes it `2 spelled`.
+    let claude = fake_claude(
+        &e,
+        "claude-rounds.sh",
+        &format!(
+            "set -e\nif grep -qx deux a.txt; then sed -i '' 's/^deux$/2 spelled/' a.txt; else sed -i '' 's/^2$/deux/' a.txt; fi\n\
+             git -c user.name=C -c user.email=c@x commit -q --amend --no-edit -a\nprintf '%s\\n=====\\n' \"$2\" >> {}",
+            prompts.display()
+        ),
+        r#"{"replies": {"c1": "Done."}}"#,
+    );
+    let env = [("STACKED_CLAUDE", claude.as_path())];
+    let (fine, out, err) = stacked_in(&e.src, &e.db, &["send", "s", &id, "--wait"], "", &env);
+    assert!(fine, "{out}{err}");
+    let work = e.ok(&["landed", "s"]).split('\t').next().unwrap().to_string();
+    // In its review: a comment on its new line, an answer to its reply.
+    let mine = comment(&e, &["--patch", "1", "--line", "a.txt:+deux", "--work", &work[..8], "Not", "French."]);
+    let (fine, _, err) = stacked_in(&e.src, &e.db, &["reply", "s", &id, "--answer", "Not", "like", "this."], "", &env);
+    assert!(fine, "{err}");
+    // Not accepted, nor rejected: it goes back to the agent.
+    let (fine, _, err) = e.run(&["review", "s", "--accept-all"]);
+    assert!(!fine && err.contains("sent back to the agent"), "{err}");
+    let (fine, out, err) = stacked_in(&e.src, &e.db, &["review", "s", "--send-back"], "", &env);
+    assert!(fine && out.contains("sent back to the agent (may change the code): 2 comments to ask again"), "{out}{err}");
+    landed(&e, 2);
+    // The second round went on from the first one's work, told so; its work
+    // lands in place of the first's.
+    let told = std::fs::read_to_string(&prompts).unwrap();
+    let second = told.split("=====").nth(1).unwrap();
+    assert!(second.contains("This is another round") && second.contains("Not French.") && second.contains("Not like this."), "{second}");
+    let landed_now = e.ok(&["landed", "s"]);
+    assert_eq!(landed_now.lines().filter(|l| !l.starts_with(' ')).count(), 1, "{landed_now}");
+    assert!(!landed_now.starts_with(&work), "{landed_now}");
+    assert!(e.ok(&["runs", "s"]).contains("reviewed: sent back to the agent, 2 comments to ask again"));
+    // Accepted: the change of both rounds, and the thread as it went.
+    e.ok(&["review", "s", "--accept-all"]);
+    assert!(e.ok(&["show", "s", "1"]).contains("+2 spelled\n"));
+    let shown = e.ok(&["comments", "s"]);
+    let thread: Vec<&str> = shown.lines().skip_while(|l| !l.starts_with(&id)).skip(1).take_while(|l| l.starts_with(' ')).collect();
+    assert_eq!(thread, ["  you: Spell it out.", "  agent: Done.", "  you: Not like this.", "  agent: Done."], "{shown}");
+    assert!(shown.contains(&mine), "{shown}");
+}
+
+#[test]
 fn the_agent_rebases_reviews_and_tests() {
     let e = env();
     // A commit on main for the stack to go onto.

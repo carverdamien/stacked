@@ -204,6 +204,10 @@ pub struct Note {
     /// about: the agent is asked about it to answer only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub about: Option<usize>,
+    /// Written in the review of landed work, by its run: that work goes
+    /// back to the agent with it, not accepted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review: Option<String>,
     pub time: i64,
 }
 
@@ -260,6 +264,10 @@ pub struct Queued {
     /// Batched, it waits for you to send the batch; ready, its turn.
     #[serde(default, skip_serializing_if = "Stage::is_ready")]
     pub stage: Stage,
+    /// The landed work, by its run, whose stack the ask starts from: a
+    /// round sent back from that work's review.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on: Option<String>,
 }
 
 impl Queued {

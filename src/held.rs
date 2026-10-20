@@ -78,15 +78,23 @@ pub struct Reply {
     pub reviewer: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub remote: Option<String>,
+    /// Your answer to it, written in its review: it follows it in its
+    /// thread, and the work goes back to the agent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answer: Option<String>,
 }
 
 impl Reply {
     /// Thread `text` with this reply as its last turn: the reviewer's who
-    /// wrote it, or the agent's.
+    /// wrote it, or the agent's; your answer to it after, if you wrote one.
     pub fn after(&self, text: &str) -> String {
-        match &self.reviewer {
+        let text = match &self.reviewer {
             Some(who) => append_turn(text, Role::Reviewer, &self.text, Some(who)),
             None => append_turn(text, Role::Agent, &self.text, Some(&self.tag)),
+        };
+        match &self.answer {
+            Some(a) => append_turn(&text, Role::You, a, None),
+            None => text,
         }
     }
 
@@ -373,6 +381,88 @@ pub fn save(db: &mut Db, id: &str, marks: &BTreeMap<String, bool>) -> Result<()>
     db.set_review(id, v).map(|_| ())
 }
 
+/// What you wrote in the review of work `r`: the comments you opened
+/// there, still open, and your answers to its replies. With any, the work
+/// is not accepted: it goes back to the agent.
+pub fn yours_in(db: &Db, r: &Run) -> (Vec<(String, String)>, usize) {
+    let opened = db
+        .stack_notes(&r.stack)
+        .into_iter()
+        .filter(|n| n.review.as_deref() == Some(r.id.as_str()) && n.by.is_none())
+        .map(|n| (n.change.clone(), n.id.clone()))
+        .collect();
+    let answers = r.held.as_ref().map_or(0, |h| h.replies.iter().filter(|rp| rp.answer.is_some()).count());
+    (opened, answers)
+}
+
+/// Writes `text`, your answer to reply `k` of the work run `id` holds, in
+/// its review: empty, it takes it back.
+pub fn answer(db: &mut Db, id: &str, k: usize, text: &str) -> Result<()> {
+    let (r, mut h, _) = under_review(db, id)?;
+    let rp = h.replies.get_mut(k).ok_or_else(|| Error(format!("run {id} holds no reply {k}")))?;
+    rp.answer = Some(text.trim().to_string()).filter(|t| !t.is_empty());
+    db.add_run(Run { held: Some(h), ..r }).map(|_| ())
+}
+
+/// What goes back to the agent from a review: the comments to ask again,
+/// how, and whether of the whole stack.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Round {
+    pub notes: Vec<(String, String)>,
+    pub way: crate::db::Way,
+    pub whole: bool,
+}
+
+/// Rejects the work run `id` holds, to send it back to the agent as what
+/// you wrote in its review asks: its change is not applied, but the next
+/// round goes on from it; its replies go in their threads, your answers
+/// after them; the comments it opened, as `marks` says (those not marked,
+/// kept). What to ask again: the comments of its ask whose last word is
+/// yours now, and those you opened in its review.
+pub fn send_back(db: &mut Db, id: &str, marks: &BTreeMap<String, bool>) -> Result<Round> {
+    let (r, h, mut v) = under_review(db, id)?;
+    let i = crate::ask::info(&r).ok_or_else(|| Error(format!("run {id} is not the agent's work: there is no one to send it back to")))?;
+    let (opened, answers) = yours_in(db, &r);
+    if opened.is_empty() && answers == 0 {
+        return err("you wrote nothing in its review to send back: accept or reject it");
+    }
+    for (k, rp) in h.replies.iter().enumerate() {
+        if !v.taken.contains(&k) {
+            apply_reply(db, &r.stack, rp)?;
+        }
+    }
+    for (k, n) in h.opened.iter().enumerate() {
+        if marks.get(&Part::Opened(k).key()) != Some(&false) {
+            db.set_note(Note { time: now(), ..n.clone() })?;
+        }
+    }
+    let mut notes: Vec<(String, String)> = Vec::new();
+    for at in i.notes.iter().map(|sh| (sh.change.clone(), sh.id.clone())).chain(opened) {
+        if !notes.contains(&at) && db.note(&at.0, &at.1).is_some_and(crate::ask::sendable) {
+            notes.push(at);
+        }
+    }
+    if notes.is_empty() {
+        return err("none of what you wrote in its review is open to send back");
+    }
+    // Asked together, as they were, unless they reach past the place the
+    // ask was about.
+    let places: std::collections::HashSet<crate::ask::Scope> = notes.iter().filter_map(|(c, i)| db.note(c, i)).map(crate::ask::scope_of).collect();
+    let whole = match &i.scope {
+        crate::ask::Scope::Stack => notes.iter().any(|(c, _)| !c.starts_with("stack:")),
+        place => places.len() > 1 || places.iter().any(|p| p != place),
+    };
+    v.marks.insert(Part::Stack.key(), false);
+    v.closed = true;
+    db.set_review(id, v)?;
+    let n = notes.len();
+    db.add_run(Run {
+        summary: format!("reviewed: sent back to the agent, {}", count(n, "comment to ask again", "comments to ask again")),
+        ..r
+    })?;
+    Ok(Round { notes, way: i.way, whole })
+}
+
 /// The mark, in a review, of the comment the ask was about at place `k`
 /// among them: true to close it with the review; else it is kept.
 pub fn asking_key(k: usize) -> String {
@@ -400,6 +490,11 @@ pub fn close(db: &mut Db, id: &str, marks: &BTreeMap<String, bool>, rest: Option
 /// `asking`, every one of them.
 pub fn close_with(db: &mut Db, id: &str, marks: &BTreeMap<String, bool>, rest: Option<bool>, asking: bool) -> Result<String> {
     let (r, h, mut v) = under_review(db, id)?;
+    // What you wrote in its review is for the agent: it goes back to it.
+    let (opened, answers) = yours_in(db, &r);
+    if !opened.is_empty() || answers > 0 {
+        return err("you wrote in its review: it is not accepted nor rejected, but sent back to the agent");
+    }
     let mut all = BTreeMap::new();
     for p in h.parts() {
         if matches!(p, Part::Reply(k) if v.taken.contains(&k)) {

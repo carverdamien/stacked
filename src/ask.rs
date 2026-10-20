@@ -135,6 +135,24 @@ pub struct Info {
     pub commits: Vec<(String, String)>,
     #[serde(default)]
     pub prompt: String,
+    /// A round sent back from the review of landed work: that work's run,
+    /// whose stack it starts from rather than the stack at `from`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on: Option<String>,
+}
+
+/// The stack ask `i` works on: the stack at `i.from`; or, a round sent
+/// back from the review of landed work, the stack that work makes.
+fn started_from(db: &Db, i: &Info) -> Result<Stack> {
+    let s = db.node(i.from)?.clone();
+    let Some(c) = i.on.as_deref().and_then(|on| db.run(on)?.held.as_ref()?.stack.clone()) else {
+        return Ok(s);
+    };
+    Ok(Stack {
+        patches: c.patches,
+        base: c.base.or(s.base.clone()),
+        ..s
+    })
 }
 
 pub fn info(r: &Run) -> Option<Info> {
@@ -315,7 +333,23 @@ pub fn queue(db_path: &Path, name: &str, notes: &[(String, String)], way: Way, w
     check_ahead(db_path, name);
     Db::edit(db_path, |db| {
         applies(db, name)?;
-        enqueue(db, notes, way, whole, Stage::Ready)
+        enqueue(db, notes, way, whole, Stage::Ready, None)
+    })
+}
+
+/// Sends the work run `id` holds back to the agent, as what you wrote in
+/// its review asks (`held::send_back`): another round, from that work's
+/// stack, whose own work lands to review in its place. What was sent,
+/// said. `launch` starts it.
+pub fn send_back(db_path: &Path, name: &str, id: &str, marks: &std::collections::BTreeMap<String, bool>) -> Result<String> {
+    check_ahead(db_path, name);
+    Db::edit(db_path, |db| {
+        applies(db, name)?;
+        let round = crate::held::send_back(db, id, marks)?;
+        enqueue(db, &round.notes, round.way, round.whole, Stage::Ready, Some(id))?;
+        let n = round.notes.len();
+        let said = if round.whole && round.way == Way::Change { crate::db::WHOLE } else { round.way.said() };
+        Ok(format!("sent back to the agent ({said}): {n} comment{} to ask again", if n == 1 { "" } else { "s" }))
     })
 }
 
@@ -338,8 +372,9 @@ fn applies(db: &Db, name: &str) -> Result<()> {
 }
 
 /// Under the lock: `notes` on the agent's queue, at `stage`, in `way`,
-/// together, in a batch of their own.
-fn enqueue(db: &mut Db, notes: &[(String, String)], way: Way, whole: bool, stage: Stage) -> Result<()> {
+/// together, in a batch of their own; from the stack of landed work `on`,
+/// if a round sent back from it.
+fn enqueue(db: &mut Db, notes: &[(String, String)], way: Way, whole: bool, stage: Stage, on: Option<&str>) -> Result<()> {
     if notes.is_empty() {
         return err("no comment to send");
     }
@@ -377,6 +412,7 @@ fn enqueue(db: &mut Db, notes: &[(String, String)], way: Way, whole: bool, stage
                 batch: batch.clone(),
                 stack: whole && !n.on_stack(),
                 stage,
+                on: on.map(String::from),
             }),
             failed: None,
             ..n
@@ -398,7 +434,7 @@ pub fn batch(db_path: &Path, name: &str, notes: &[(String, String)], way: Way, w
             if !db.stack_notes(name).iter().any(|n| (&n.change, &n.id) == (&at.0, &at.1)) {
                 return err(format!("that comment is not on {name}"));
             }
-            enqueue(db, std::slice::from_ref(at), way, whole, Stage::Batch)?;
+            enqueue(db, std::slice::from_ref(at), way, whole, Stage::Batch, None)?;
         }
         Ok(())
     })
@@ -431,13 +467,13 @@ pub fn release_batch(db_path: &Path, name: &str, way: Way, fan: bool) -> Result<
         applies(db, name)?;
         if fan || way == Way::Test {
             for (at, whole) in &all {
-                enqueue(db, std::slice::from_ref(at), way, *whole, Stage::Ready)?;
+                enqueue(db, std::slice::from_ref(at), way, *whole, Stage::Ready, None)?;
             }
         } else {
             let places: HashSet<Scope> = all.iter().filter_map(|((c, i), _)| db.note(c, i)).map(scope_of).collect();
             let whole = places.len() > 1 || all.iter().any(|(_, whole)| *whole);
             let notes: Vec<(String, String)> = all.iter().map(|(at, _)| at.clone()).collect();
-            enqueue(db, &notes, way, whole, Stage::Ready)?;
+            enqueue(db, &notes, way, whole, Stage::Ready, None)?;
         }
         Ok(all.len())
     })
@@ -485,15 +521,17 @@ pub fn launch(db_path: &Path) -> Result<Vec<String>> {
 /// Under the lock: the ready batches that may go now, each a run begun,
 /// its comments taken off the queue. Their run ids.
 fn claim(db: &mut Db) -> Result<Vec<String>> {
-    // The ready batches, oldest first: stack, way, scope, comments.
+    // The ready batches, oldest first: stack, way, scope, comments, and the
+    // landed work a round sent back starts from.
     let mut order: Vec<String> = Vec::new();
-    let mut batches: HashMap<String, (String, Way, Scope, Vec<Note>)> = HashMap::new();
+    type Batch = (String, Way, Scope, Vec<Note>, Option<String>);
+    let mut batches: HashMap<String, Batch> = HashMap::new();
     for s in db.stacks() {
         for n in db.stack_notes(&s.name) {
             let Some(q) = n.queued.as_ref().filter(|q| !q.batched()) else { continue };
             let entry = batches.entry(q.batch.clone()).or_insert_with(|| {
                 order.push(q.batch.clone());
-                (s.name.clone(), q.way, asked_scope(n), Vec::new())
+                (s.name.clone(), q.way, asked_scope(n), Vec::new(), q.on.clone())
             });
             entry.3.push(n.clone());
         }
@@ -504,7 +542,7 @@ fn claim(db: &mut Db) -> Result<Vec<String>> {
     // change waits for its review.
     let mut state: HashMap<String, (bool, usize, bool, bool, bool)> = HashMap::new();
     for b in &order {
-        let (name, way, scope, notes) = batches[b].clone();
+        let (name, way, scope, notes, on) = batches[b].clone();
         let st = state.entry(name.clone()).or_insert_with(|| {
             let going = asks_going(db, &name);
             (
@@ -572,6 +610,7 @@ fn claim(db: &mut Db) -> Result<Vec<String>> {
             patch: None,
             commits: vec![],
             prompt: String::new(),
+            on,
         };
         db.add_run(Run {
             id: id.clone(),
@@ -858,6 +897,17 @@ fn prompt(db: &Db, i: &Info, s: &Stack, cmd: &str, run: &str) -> String {
             )
         }
     };
+    // Another round: what it brought back was sent back.
+    if i.on.is_some() {
+        p.push_str(match i.way {
+            Way::Change => {
+                " This is another round: the user reviewed the change you made, which the worktree holds \
+                 as you left it, and sent it back with the comments below: change it as they ask, from \
+                 there."
+            }
+            _ => " This is another round: the user read what you answered, and asks again in the comments below.",
+        });
+    }
     p.push_str("\n\nThe stack, bottom first:\n");
     for (at, id) in s.patches.iter().enumerate() {
         let mark = if Some(at) == k { " ← this patch" } else { "" };
@@ -1132,7 +1182,7 @@ fn start(db_path: &Path, id: &str) -> Result<()> {
     let db = Db::load(db_path)?;
     let run = db.run(id).cloned().ok_or_else(|| Error(format!("no run {id}")))?;
     let mut i = info(&run).ok_or_else(|| Error(format!("run {id} is not an ask")))?;
-    let s = db.node(i.from)?.clone();
+    let s = started_from(&db, &i)?;
     let (repo, base) = base_of(&s)?;
     // A repository kept in memory, as the demo's: answered there, by the
     // stand-in it names, not by claude in a worktree on disk.
@@ -1616,7 +1666,10 @@ fn land_patch(db: &mut Db, run: &Run, i: &Info, result: &str, replies: &Map<Stri
     if pieces.is_empty() {
         return Ok(Landed::failed(format!("nothing is left of patch {}", k + 1), true));
     }
-    let s = db.stack(&run.stack)?.clone();
+    // A round sent back slots into the stack the work it goes on from
+    // makes; any other, into the stack as it is.
+    let now = db.stack(&run.stack)?.clone();
+    let s = if i.on.is_some() { started_from(db, i)? } else { now.clone() };
     let Some(at) = s.patches.iter().position(|p| *p == old_id) else {
         return Ok(Landed::failed(
             format!("patch {} changed while the agent worked on it", k + 1),
@@ -1625,14 +1678,15 @@ fn land_patch(db: &mut Db, run: &Run, i: &Info, result: &str, replies: &Map<Stri
     };
     let ids: Vec<String> = pieces.iter().map(|p| p.id.clone()).collect();
     let replies = held_replies(db, i, replies);
-    if ids == [old_id.clone()] {
+    let mut patches = s.patches.clone();
+    patches.splice(at..=at, ids.iter().cloned());
+    // Nothing that accepting it would change of the stack as it is.
+    if patches == now.patches {
         return Ok(Landed::held(Held {
             replies,
             ..Default::default()
         }));
     }
-    let mut patches = s.patches.clone();
-    patches.splice(at..=at, ids.iter().cloned());
     for p in &pieces {
         db.add_patch(p.clone())?;
     }
@@ -1684,6 +1738,9 @@ fn land_stack(db: &mut Db, run: &Run, i: &Info, result: &str, replies: &Map<Stri
     }
     let _ = run;
     let from = db.node(i.from)?.clone();
+    // A round sent back goes on from the stack the work it was sent back
+    // from makes: its patches the ones the commits are new versions of.
+    let start = started_from(db, i)?;
     // Rebased, the stack is on the commit claude says; else on its base,
     // which must still be under it.
     let said = last_object(result).and_then(|o| o.get("base").map(|v| str_of(Some(v)))).filter(|b| !b.is_empty());
@@ -1705,12 +1762,13 @@ fn land_stack(db: &mut Db, run: &Run, i: &Info, result: &str, replies: &Map<Stri
         &["format-patch", "--stdout", "--no-signature", "--keep-subject", &format!("{base}..HEAD")],
     )?;
     let drafts = parse_mbox(&mail)?;
-    let olds: Vec<Patch> = from.patches.iter().map(|id| db.patch(id).clone()).collect();
+    let olds: Vec<Patch> = start.patches.iter().map(|id| db.patch(id).clone()).collect();
     let by_commit: HashMap<String, String> = i.commits.iter().cloned().collect();
     let planned = plan_drafts(&olds, drafts, &by_commit);
     let ids: Vec<String> = planned.iter().map(|p| p.id.clone()).collect();
     let replies = held_replies(db, i, replies);
-    if ids == from.patches && base == i.base {
+    let head_base = from.base.clone().unwrap_or_else(|| i.base.clone());
+    if ids == from.patches && base == head_base {
         return Ok(Landed::held(Held {
             replies,
             ..Default::default()
@@ -1720,7 +1778,7 @@ fn land_stack(db: &mut Db, run: &Run, i: &Info, result: &str, replies: &Map<Stri
         patches: ids.clone(),
         base: Some(base.clone()),
         parent: Some(i.from),
-        op: if base == i.base {
+        op: if base == head_base {
             "agent: the stack".into()
         } else {
             format!("agent: rebase onto {}", &base[..12])
