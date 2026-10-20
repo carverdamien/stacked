@@ -76,6 +76,9 @@ pub struct Row {
     pub new_no: Option<usize>,
     /// A changed line marked read, in the reading mode: drawn dim.
     pub read: bool,
+    /// A line of a turn of a comment, as markdown reads it: what it says
+    /// after the bar's indent, piece by piece, each with what it is.
+    pub pieces: crate::markdown::Line,
 }
 
 impl Row {
@@ -115,35 +118,6 @@ fn read_of<'a>(keys: impl IntoIterator<Item = &'a String>, read: &HashSet<String
     format!("{n}/{all}")
 }
 
-/// `text` cut into lines of at most `width` characters, between words
-/// where it can be.
-fn wrap(text: &str, width: usize) -> Vec<String> {
-    let width = width.max(10);
-    let mut out = Vec::new();
-    for line in text.lines() {
-        let mut rest: Vec<char> = line.chars().collect();
-        if rest.is_empty() {
-            out.push(String::new());
-        }
-        while !rest.is_empty() {
-            if rest.len() <= width {
-                out.push(rest.iter().collect());
-                break;
-            }
-            // The last space that leaves something on the line.
-            let cut = match rest[..=width].iter().rposition(|c| *c == ' ') {
-                Some(at) if at > 0 => at,
-                _ => width,
-            };
-            out.push(rest[..cut].iter().collect::<String>().trim_end().to_string());
-            rest.drain(..cut);
-            while rest.first() == Some(&' ') {
-                rest.remove(0);
-            }
-        }
-    }
-    out
-}
 
 pub fn by_of(n: &Note) -> By {
     match n.by.as_deref() {
@@ -177,14 +151,14 @@ pub fn comment_rows(n: &Note, width: usize, deco: &Deco) -> Vec<Row> {
     // Collapsed: one quiet line, how it starts and how many turns it has.
     if deco.collapsed.contains(&n.id) {
         let turns = thread_turns(&n.text);
-        let first = turns.first().and_then(|t| t.body.lines().next()).unwrap_or("");
+        let first = turns.first().map(|t| crate::markdown::first_line(&t.body)).unwrap_or_default();
         let more = if turns.len() > 1 { format!(" · {} turns", turns.len()) } else { String::new() };
         let head = format!("   ▸ {who}: ");
         let room = width.saturating_sub(head.chars().count() + more.chars().count()).max(10);
         let first = if first.chars().count() > room {
             first.chars().take(room - 1).chain(['…']).collect()
         } else {
-            first.to_string()
+            first
         };
         return vec![row(Kind::Stream, format!("{head}{first}{more}"), true)];
     }
@@ -223,8 +197,13 @@ pub fn comment_rows(n: &Note, width: usize, deco: &Deco) -> Vec<Row> {
             who: true,
             ..of(row(Kind::Comment, format!("     {BAR} {name}:"), false))
         });
-        for line in wrap(&t.body, width.saturating_sub(9)) {
-            out.push(of(row(Kind::Comment, format!("     {BAR}   {line}"), false)));
+        // What they said, read as markdown.
+        for pieces in crate::markdown::render(&t.body, width.saturating_sub(9)) {
+            let line: String = pieces.iter().map(|(s, _)| s.as_str()).collect();
+            out.push(Row {
+                pieces,
+                ..of(row(Kind::Comment, format!("     {BAR}   {line}"), false))
+            });
         }
     }
     for line in deco.streams.get(&n.id).into_iter().flatten() {
@@ -385,11 +364,13 @@ pub fn stack_rows(about: &str, titles: &[String], notes: &[&Note], width: usize,
 #[cfg(test)]
 mod tests {
     #[test]
-    fn wraps_between_words() {
-        let w = super::wrap("This needs more than the patch: patch 2 says two too", 20);
-        assert_eq!(w, ["This needs more than", "the patch: patch 2", "says two too"]);
-        assert_eq!(super::wrap("averyveryverylongwordindeed", 10), ["averyveryv", "erylongwor", "dindeed"]);
-        assert_eq!(super::wrap("a\n\nb", 10), ["a", "", "b"]);
+    fn a_turn_wraps_between_words() {
+        let said = |text: &str, w: usize| -> Vec<String> {
+            crate::markdown::render(text, w).iter().map(|l| l.iter().map(|(s, _)| s.as_str()).collect()).collect()
+        };
+        assert_eq!(said("This needs more than the patch: patch 2 says two too", 20), ["This needs more than", "the patch: patch 2", "says two too"]);
+        assert_eq!(said("averyveryverylongwordindeed", 10), ["averyveryv", "erylongwor", "dindeed"]);
+        assert_eq!(said("a\n\nb", 10), ["a", "", "b"]);
     }
 }
 

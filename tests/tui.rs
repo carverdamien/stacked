@@ -1308,6 +1308,40 @@ fn held(db: &Path, run: &str, change: &str, id: &str, text: &str, with_change: b
 }
 
 #[test]
+fn a_comment_is_read_as_markdown() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Enter]);
+    save(&mut app, "why so loud?");
+    let n = notes_of(&db, "s", 0).remove(0);
+    let reply = "It is **on purpose**:\n- `TWO` stands out\n- see [bug 1](https://b/1)\n```\n  let x = 1;\n```";
+    let text = append_turn(&n.text, Role::Agent, reply, Some("answer"));
+    Db::edit(&db, |d| d.set_note(Note { text, ..n.clone() })).unwrap();
+    app.refresh();
+    let mut buf = Buffer::empty(Rect::new(0, 0, 120, 30));
+    app.draw(&mut buf);
+    let screen = (0..30).map(|y| (0..120).map(|x| buf[(x, y)].symbol()).collect::<String>()).collect::<Vec<_>>().join("\n");
+    // Its markup gone; its list bulleted; its code block as it is, fences
+    // left out.
+    for line in ["▎   It is on purpose:", "▎   • TWO stands out", "▎   • see bug 1 (https://b/1)", "▎     let x = 1;"] {
+        assert!(screen.contains(line), "{line:?}:\n{screen}");
+    }
+    assert!(!screen.contains("**") && !screen.contains("```") && !screen.contains("`TWO`"), "{screen}");
+    // Bold where it says so, the link underlined, in the terminal's own colour.
+    use ratatui::style::Modifier;
+    let (x, y) = at(&screen, "▎   It is on purpose");
+    let cell = &buf[(x + 10, y)];
+    assert!(cell.symbol() == "o" && cell.modifier.contains(Modifier::BOLD), "{cell:?}");
+    let (x, y) = at(&screen, "▎   • see bug 1 (");
+    let cell = &buf[(x + 10, y)];
+    assert!(cell.symbol() == "b" && cell.modifier.contains(Modifier::UNDERLINED), "{cell:?}");
+    // Listed, it says its first line, its markup left out.
+    assert!(screen.contains("   It is on purpose:"), "{screen}");
+}
+
+#[test]
 fn the_patches_pane_says_where_head_is_in_the_checkout() {
     let (_tmp, db, src) = setup();
     let mut app = open(&db).unwrap();

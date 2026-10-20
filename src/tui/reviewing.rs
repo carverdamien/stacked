@@ -85,7 +85,7 @@ fn operation(d: &Diffed) -> Option<(String, Style)> {
 
 /// A comment's first words.
 pub(super) fn first_words(text: &str) -> String {
-    thread_turns(text).first().map(|t| t.body.lines().next().unwrap_or("").to_string()).unwrap_or_default()
+    thread_turns(text).first().map(|t| crate::markdown::first_line(&t.body)).unwrap_or_default()
 }
 
 impl App {
@@ -353,7 +353,7 @@ impl App {
                 };
                 let (m, st) = mark_of(mark(p));
                 out.push(Line {
-                    text: format!("   {m} {at} · {}", rp.text.lines().next().unwrap_or("")),
+                    text: format!("   {m} {at} · {}", crate::markdown::first_line(&rp.text)),
                     style: st,
                     part: Some(p),
                     entry: None,
@@ -368,12 +368,12 @@ impl App {
             // What you said last there: the comment, or your reply to it.
             for n in opened.iter().filter_map(|(c, i)| self.db.note(c, i)) {
                 let said = last_mine(&n.text).unwrap_or_default();
-                yours.push(format!("   ✎ {}: {} · {}", n.file, n.preview, said.lines().next().unwrap_or("")));
+                yours.push(format!("   ✎ {}: {} · {}", n.file, n.preview, crate::markdown::first_line(&said)));
             }
         }
         for rp in h.replies.iter().filter(|rp| rp.answer.is_some()) {
             let at = self.db.note(&rp.change, &rp.id).map_or("a comment".to_string(), |n| format!("{}: {}", n.file, n.preview));
-            yours.push(format!("   ✎ your answer on {at} · {}", rp.answer.as_deref().unwrap_or("").lines().next().unwrap_or("")));
+            yours.push(format!("   ✎ your answer on {at} · {}", crate::markdown::first_line(rp.answer.as_deref().unwrap_or(""))));
         }
         if !yours.is_empty() {
             out.push(title(" what you wrote, to send back"));

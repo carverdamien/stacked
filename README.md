@@ -272,6 +272,17 @@ thread, a bar at its left and its author's name in the author's colour
 the terminal's own colour, so that no comment reads as code. The colours
 are settings (`[colors]`, below).
 
+What was said is read as markdown, as comments write it: `**bold**` is
+bold, `*italics*` italic, `# headings` bold, a `[link](to)` underlined with
+where it goes after it, dimmed; `-`, `*` and `+` items are bulleted (`•`),
+numbered ones keep their number, each item's lines under its text; a `>`
+quote has a bar at its left; a code block between fences shows its lines as
+they are, its fences left out; `` `code` `` loses its backticks; a `---`
+line is a rule. A line breaks where the text breaks it, as comments are
+written, and again where it is too wide. Where a comment is said in a line
+(listed, folded), its markup is left out. The editor shows what was written
+as it was written.
+
 Comments are written where they will show, in an editor inline: a comment
 on the stack under the left pane's header, on a patch under its title in
 the left pane, on a line under the line, a reply under its comment, in the

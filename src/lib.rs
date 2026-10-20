@@ -21,6 +21,7 @@ pub mod head;
 pub mod held;
 pub mod history;
 pub mod keys;
+pub mod markdown;
 pub mod mbox;
 #[cfg(feature = "demo")]
 pub mod memory;

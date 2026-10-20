@@ -79,7 +79,28 @@ pub(crate) fn row_parts(row: &Row, selected: bool) -> Vec<(String, Style)> {
         }
         plain
     };
+    // Read as markdown: the bar's indent, then each piece as it looks.
+    if !row.who && !row.pieces.is_empty() {
+        let indent = said.len().saturating_sub(row.pieces.iter().map(|(s, _)| s.len()).sum());
+        let mut parts = vec![(left.to_string(), st), (said[..indent].to_string(), said_st)];
+        parts.extend(row.pieces.iter().map(|(s, m)| (s.clone(), mark_style(*m, said_st))));
+        return parts;
+    }
     vec![(left.to_string(), st), (said.to_string(), said_st)]
+}
+
+/// How a piece of a comment's markdown looks, given how what was said
+/// looks: emphasis by the terminal's own means, as what was said is in its
+/// own colour, so that no comment reads as code.
+fn mark_style(m: crate::markdown::Mark, plain: Style) -> Style {
+    use crate::markdown::Mark;
+    match m {
+        Mark::Plain | Mark::Bullet | Mark::Code | Mark::Block => plain,
+        Mark::Strong | Mark::Heading => plain.add_modifier(Modifier::BOLD),
+        Mark::Emph => plain.add_modifier(Modifier::ITALIC),
+        Mark::Link => plain.add_modifier(Modifier::UNDERLINED),
+        Mark::Url | Mark::Quote | Mark::Rule => plain.add_modifier(Modifier::DIM),
+    }
 }
 
 fn row_style(row: &Row, selected: bool) -> Style {
@@ -5564,7 +5585,7 @@ impl App {
             None if n.on_stack() => "the stack".to_string(),
             None => format!("{}: {}", n.file, n.preview),
         };
-        let last = thread_turns(&n.text).last().map(|t| t.body.lines().next().unwrap_or("").to_string()).unwrap_or_default();
+        let last = thread_turns(&n.text).last().map(|t| crate::markdown::first_line(&t.body)).unwrap_or_default();
         (format!("{mark} {who} · {at}"), format!("   {last}"))
     }
 
@@ -6592,7 +6613,7 @@ impl App {
                             Role::Agent => "agent",
                             Role::Reviewer => "reviewer",
                         };
-                        format!("{who}: {}", t.body.lines().next().unwrap_or(""))
+                        format!("{who}: {}", crate::markdown::first_line(&t.body))
                     })
                     .unwrap_or_default();
                 let state = self.tag(&n, &busy);
