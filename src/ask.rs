@@ -302,8 +302,9 @@ fn testing(db: &Db) -> Option<&Run> {
 }
 
 /// Why stack `name` cannot be edited by hand now, if it cannot: the agent
-/// is changing it, from the stack as it took it, so nothing else may
-/// change the stack meanwhile.
+/// is changing it, from the stack as it took it, or is about to go on from
+/// work you sent back, from the stack as that work left it; so nothing else
+/// may change the stack meanwhile.
 pub fn blocked(db: &Db, name: &str) -> Option<String> {
     if let Some((_, i)) = asks_going(db, name).into_iter().find(|(_, i)| i.way == Way::Change) {
         let on = match &i.scope {
@@ -314,12 +315,24 @@ pub fn blocked(db: &Db, name: &str) -> Option<String> {
             "the agent is changing {on}: the stack can be edited by hand again once you have reviewed the agent's work"
         ));
     }
+    if round_waiting(db, name) {
+        return Some(
+            "the work you sent back waits to go back to the agent: the stack can be edited by hand again once you have reviewed the agent's new work"
+                .into(),
+        );
+    }
     let r = crate::held::change_waiting(db, name)?;
     let of = r.held.as_ref()?.stack.as_ref()?.of.clone();
     Some(format!(
         "{} of {of} waits for your review: the stack can be edited by hand again once you have reviewed it",
         whose_change(r)
     ))
+}
+
+/// Whether a round sent back from the review of stack `name`'s landed work,
+/// one that may change the code, waits its turn.
+fn round_waiting(db: &Db, name: &str) -> bool {
+    db.stack_notes(name).iter().any(|n| n.queued.as_ref().is_some_and(|q| q.on.is_some() && q.way == Way::Change && !q.batched()))
 }
 
 /// Whose change of the stack run `r` holds, said: `your edit by hand`,
@@ -555,8 +568,8 @@ pub fn launch(db_path: &Path) -> Result<Vec<String>> {
 /// Under the lock: the ready batches that may go now, each a run begun,
 /// its comments taken off the queue. Their run ids.
 fn claim(db: &mut Db) -> Result<Vec<String>> {
-    // The ready batches, oldest first: stack, way, scope, comments, and the
-    // landed work a round sent back starts from.
+    // The ready batches: stack, way, scope, comments, and the landed work a
+    // round sent back starts from.
     let mut order: Vec<String> = Vec::new();
     type Batch = (String, Way, Scope, Vec<Note>, Option<String>);
     let mut batches: HashMap<String, Batch> = HashMap::new();
@@ -570,7 +583,9 @@ fn claim(db: &mut Db) -> Result<Vec<String>> {
             entry.3.push(n.clone());
         }
     }
-    order.sort();
+    // A round sent back first, as it goes on from the work just reviewed,
+    // the stack still that work's; then the rest, oldest first.
+    order.sort_by(|a, b| (batches[a].4.is_none(), a).cmp(&(batches[b].4.is_none(), b)));
     let mut started = Vec::new();
     // Per stack: what is going, as the batches are started; and whether a
     // change waits for its review. Of every stack: whether a build and test

@@ -1345,6 +1345,53 @@ fn landed_work_with_what_you_wrote_in_its_review_goes_back_to_the_agent_from_it(
 }
 
 #[test]
+fn a_round_sent_back_goes_first_and_the_stack_waits_for_it() {
+    let e = env();
+    e.ok(&["import", "s", "base"]);
+    let id = comment(&e, &["--patch", "1", "Spell", "it", "out."]);
+    let (prompts, gate) = (e.root.join("prompts.txt"), e.root.join("gate"));
+    // A change makes 2 `deux`, then `2 spelled`; the answer waits for the
+    // gate. Each says what it was asked.
+    let claude = fake_claude(
+        &e,
+        "claude-first.sh",
+        &format!(
+            "set -e\nprintf '%s\\n=====\\n' \"$2\" >> {p}\ncase \"$2\" in\n  *'Why b?'*) until test -e {g}; do sleep 0.1; done ;;\n  \
+             *) if grep -qx deux a.txt; then sed -i '' 's/^deux$/2 spelled/' a.txt; else sed -i '' 's/^2$/deux/' a.txt; fi\n     \
+             git -c user.name=C -c user.email=c@x commit -q --amend --no-edit -a ;;\nesac",
+            p = prompts.display(),
+            g = gate.display()
+        ),
+        r#"{"replies": {"c1": "Done."}}"#,
+    );
+    let env = [("STACKED_CLAUDE", claude.as_path())];
+    let (fine, out, err) = stacked_in(&e.src, &e.db, &["send", "s", &id, "--wait"], "", &env);
+    assert!(fine, "{out}{err}");
+    // While its work waits for review, another change waits its turn, and an
+    // answer goes.
+    let other = comment(&e, &["--patch", "3", "And", "this."]);
+    let (fine, out, err) = stacked_in(&e.src, &e.db, &["send", "s", &other], "", &env);
+    assert!(fine && out.contains("it goes once you have reviewed the agent's change of patch 1"), "{out}{err}");
+    let why = comment(&e, &["--patch", "2", "Why", "b?"]);
+    let (fine, out, err) = stacked_in(&e.src, &e.db, &["send", "s", &why, "--answer-only"], "", &env);
+    assert!(fine, "{out}{err}");
+    // Sent back: the round waits for the answer, and the stack for the round.
+    let (fine, _, err) = stacked_in(&e.src, &e.db, &["reply", "s", &id, "--answer", "Not", "like", "this."], "", &env);
+    assert!(fine, "{err}");
+    let (fine, out, err) = stacked_in(&e.src, &e.db, &["review", "s", "--send-back"], "", &env);
+    assert!(fine, "{out}{err}");
+    let (fine, _, err) = e.run(&["drop", "s", "3"]);
+    assert!(!fine && err.contains("the work you sent back waits to go back to the agent"), "{err}");
+    // The answer lands: the round goes next, before the change sent before it.
+    std::fs::write(&gate, "").unwrap();
+    landed(&e, 3);
+    let told = std::fs::read_to_string(&prompts).unwrap();
+    let asked: Vec<&str> = told.split("=====").collect();
+    assert!(asked.len() == 4 && asked[2].contains("This is another round"), "{told}");
+    assert!(!told.contains("And this."), "the change sent before it waits:\n{told}");
+}
+
+#[test]
 fn the_agent_rebases_reviews_and_tests() {
     let e = env();
     // A commit on main for the stack to go onto.

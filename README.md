@@ -772,7 +772,9 @@ Then the comments it was asked about whose last word is yours, and what you
 wrote in its review, are asked again, in a round that starts from the stack
 this work makes: the agent's worktree holds the change it made, and the
 agent is told it is another round. That round's work lands for review in
-place of the one sent back.
+place of the one sent back. The round goes before anything else waiting
+for the agent, and the stack is not edited by hand until you have reviewed
+its work: nothing changes the stack it goes on from.
 
 The change of the stack is edited by hand from its review, as the work
 leaves the stack: on a line of the stack operations, Space has `Edit this
