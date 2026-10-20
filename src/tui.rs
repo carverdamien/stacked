@@ -5644,7 +5644,7 @@ impl App {
                 st = if self.focus == Focus::List || moving {
                     st.add_modifier(Modifier::REVERSED)
                 } else {
-                    st.add_modifier(Modifier::BOLD)
+                    st.patch(color::picked())
                 };
             }
             for line in its {
@@ -6046,9 +6046,12 @@ impl App {
             let mut head = by_style(Some(&by_of(n)));
             let mut tail = color::dim();
             if lit == Some(i) {
-                let m = if self.focus == Focus::Notes { Modifier::REVERSED } else { Modifier::BOLD };
-                head = head.add_modifier(m);
-                tail = Style::new().add_modifier(m);
+                (head, tail) = if self.focus == Focus::Notes {
+                    (head.add_modifier(Modifier::REVERSED), Style::new().add_modifier(Modifier::REVERSED))
+                } else {
+                    // Its author's colour, on what the cursor's pane is not.
+                    (head.patch(color::picked()), color::picked())
+                };
             }
             put(buf, area, 0, y, w, &fit(&said, w), head);
             if per == 2 {

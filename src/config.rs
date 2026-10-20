@@ -1368,6 +1368,10 @@ mod tests {
         assert_eq!(c.colors.style(Paint::You), Style::new().fg(Color::Indexed(208)).add_modifier(Modifier::BOLD));
         assert_eq!(c.colors.spec(Paint::Agent), "134", "what is wrong keeps its default");
         assert_eq!(c.colors.spec(Paint::Added), "green", "what is not set too");
+        // A pane's pick while the cursor is elsewhere: on a grey background,
+        // its text as it is.
+        assert_eq!(c.colors.spec(Paint::Picked), "normal 238");
+        assert_eq!(c.colors.style(Paint::Picked), Style::new().bg(Color::Indexed(238)));
         assert_eq!(wrong.len(), 1, "{wrong:?}");
         assert!(wrong[0].starts_with("colors.agent: \"purpleish\" is not a colour") && wrong[0].ends_with("; it stays \"134\""), "{wrong:?}");
         // A colour there is not, as any setting there is not: the file is

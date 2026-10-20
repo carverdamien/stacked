@@ -362,7 +362,7 @@ impl App {
             for (y, (i, l)) in lines.iter().enumerate().skip(top).take(rows).enumerate() {
                 let mut st = l.style;
                 if i == rv.sel {
-                    st = st.add_modifier(if rv.in_main { Modifier::BOLD } else { Modifier::REVERSED });
+                    st = if rv.in_main { st.patch(color::picked()) } else { st.add_modifier(Modifier::REVERSED) };
                 }
                 put(buf, list, 0, y + 1, list_w, &fit(&l.text, list_w), st);
                 spot_in(&self.spots, list, (0, y + 1, list_w, 1), Spot::ReviewLine(i));

@@ -23,10 +23,11 @@ pub enum Paint {
     Bar,
     Warn,
     Status,
+    Picked,
 }
 
 impl Paint {
-    pub const ALL: [Paint; 13] = [
+    pub const ALL: [Paint; 14] = [
         Paint::Added,
         Paint::Removed,
         Paint::Hunk,
@@ -40,6 +41,7 @@ impl Paint {
         Paint::Bar,
         Paint::Warn,
         Paint::Status,
+        Paint::Picked,
     ];
 
     pub fn name(self) -> &'static str {
@@ -57,6 +59,7 @@ impl Paint {
             Paint::Bar => "bar",
             Paint::Warn => "warn",
             Paint::Status => "status",
+            Paint::Picked => "picked",
         }
     }
 
@@ -80,6 +83,7 @@ impl Paint {
             Paint::Bar => "The top bar.",
             Paint::Warn => "The top bar when the stack cannot change.",
             Paint::Status => "The bottom line: what was just done, or the keys to press.",
+            Paint::Picked => "What a pane has picked while the cursor is in another: its patch, its comment, the review's part; the cursor's own pane reverses its pick.",
         }
     }
 
@@ -99,6 +103,7 @@ impl Paint {
             Paint::Bar => "brightwhite blue",
             Paint::Warn => "black yellow",
             Paint::Status => "black brightwhite",
+            Paint::Picked => "normal 238",
         }
     }
 }
@@ -241,6 +246,10 @@ pub mod color {
     }
     pub fn status() -> Style {
         of(Paint::Status)
+    }
+    /// What a pane has picked, while the cursor is in another.
+    pub fn picked() -> Style {
+        of(Paint::Picked)
     }
     pub fn dim() -> Style {
         Style::new().add_modifier(Modifier::DIM)

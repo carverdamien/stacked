@@ -962,8 +962,10 @@ settings:
   `agent` (`134`) and `reviewer` (`32`): the comments and turns of each,
   their bar and name; `note` (`yellow`: what a menu says under its items, the
   tour's box, the comment editor's frame, a run going); `bar` (`brightwhite
-  blue`), `warn` (`black yellow`: the top bar when the stack cannot change)
-  and `status` (`black brightwhite`: the bottom line). `stacked config
+  blue`), `warn` (`black yellow`: the top bar when the stack cannot change),
+  `status` (`black brightwhite`: the bottom line) and `picked` (`normal
+  238`: what a pane has picked while the cursor is in another, on a grey
+  background, the cursor's own pane reversing its pick). `stacked config
   colors.you 208` sets one.
 - `[keys]`: for each thing a key does (`up`, `down`, `left`, `right`,
   `page_up`, `page_down`, `home`, `end`, `enter`, `menu`, `help`, `back`,

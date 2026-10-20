@@ -3474,6 +3474,38 @@ fn right_in_a_review_goes_into_its_right_pane_then_makes_it_wide() {
 }
 
 #[test]
+fn what_a_pane_has_picked_shows_while_the_cursor_is_elsewhere() {
+    use ratatui::style::{Color, Modifier};
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    let cell = |app: &mut App, text: &str| {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 120, 30));
+        app.draw(&mut buf);
+        let (x, y) = at(&draw(app), text);
+        buf[(x, y)].clone()
+    };
+    // The cursor's own pane reverses its pick.
+    let c = cell(&mut app, " 1 Bug 1 - shout two");
+    assert!(c.modifier.contains(Modifier::REVERSED), "{c:?}");
+    // Elsewhere, a pane's pick is on a grey background, as `picked` paints.
+    keys(&mut app, &[KeyCode::Right]);
+    let c = cell(&mut app, " 1 Bug 1 - shout two");
+    assert!(!c.modifier.contains(Modifier::REVERSED) && c.bg == Color::Indexed(238), "{c:?}");
+    // So is the review's part, while the cursor is in the pane on its
+    // right.
+    down_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Enter]);
+    save(&mut app, "why so loud?");
+    let n = notes_of(&db, "s", 0).into_iter().next().unwrap();
+    held(&db, "run-1", &n.change, &n.id, "It is a shout.", false);
+    app.refresh();
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Enter, KeyCode::Right]);
+    assert_eq!(app.screen, Screen::Review);
+    let c = cell(&mut app, "· a.txt: TWO · It is a shout.");
+    assert!(!c.modifier.contains(Modifier::REVERSED) && c.bg == Color::Indexed(238), "{c:?}");
+}
+
+#[test]
 fn the_banner_tracks_the_open_comments_and_esc_goes_there_and_back() {
     let (_tmp, db, _src) = setup();
     let mut app = open(&db).unwrap();

@@ -109,9 +109,10 @@ fn a_browser_sees_the_editor_and_drives_it() {
     ask(port, &host, &format!("POST /input?t={token}"), "m 5 2 l\n");
     until(&mut events, "the first patch", |l| l.contains("+TWO"));
     // The mouse over the second picks it; a click on it then is Enter: read,
-    // the cursor in the middle, the patch in the list bold, not reversed.
+    // the cursor in the middle, the patch in the list on grey (colour 238,
+    // the settings' `picked`), not reversed.
     ask(port, &host, &format!("POST /input?t={token}"), "v 5 3\n");
     until(&mut events, "the second patch, hovered", |l| l.contains("+bee"));
     ask(port, &host, &format!("POST /input?t={token}"), "m 5 3 l\n");
-    until(&mut events, "the second patch read", |l| l.starts_with("data: r 3 ") && l.contains(",,1\u{1f}  2 Bug 2 - add b"));
+    until(&mut events, "the second patch read", |l| l.starts_with("data: r 3 ") && l.contains(",#444444,0\u{1f}  2 Bug 2 - add b"));
 }
