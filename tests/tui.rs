@@ -1411,22 +1411,29 @@ fn a_patch_whose_message_differs_in_the_checkout_is_marked_and_made_the_same_eit
     app.settle();
     let marked = |app: &mut App| draw(app).lines().any(|l| l.contains("  2 Bug 2") && l.contains("✉"));
     assert!(marked(&mut app), "{}", draw(&mut app));
-    // Its menu has either way; the stack's, for every one.
-    keys(&mut app, &[KeyCode::Down, KeyCode::Char(' ')]);
-    let all: Vec<String> = items(&app).into_iter().map(|(l, _)| l).collect();
-    assert!(all.contains(&"Take your checkout's message".into()) && all.contains(&"Put this message on your checkout".into()), "{all:?}");
-    keys(&mut app, &[KeyCode::Esc]);
-    // Put on the checkout: its commit made again, the mark gone.
-    choose(&mut app, "Put this message on your checkout");
+    // HEAD's line says how many are to sync.
+    assert!(draw(&mut app).contains("▶ HEAD main · 1 to sync"), "{}", draw(&mut app));
+    // Its menu syncs it, keeping one or the other, the stack's first.
+    keys(&mut app, &[KeyCode::Down]);
+    choose(&mut app, "Sync commit message");
     app.settle();
     assert!(app.status.starts_with("main has the stack's message of patch 2"), "{}", app.status);
     assert_eq!(subject(), "Bug 2 - add b");
-    assert!(!marked(&mut app));
-    // Taken into the stack: an edit by hand, its review open at once.
+    assert!(!marked(&mut app) && !draw(&mut app).contains("to sync"));
+    // The workspace's kept, picked with →: an edit by hand, its review open
+    // at once.
     git(&src, &["commit", "-q", "--amend", "-m", "Bug 2 - add a bee"]);
     app.look_at_head();
     app.settle();
-    choose(&mut app, "Take your checkout's message");
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    for _ in 0..20 {
+        if matches!(&app.mode, Mode::Menu(m) if m.items[m.sel].label == "Sync commit message") {
+            break;
+        }
+        key(&mut app, KeyCode::Down);
+    }
+    assert_eq!(app.hint(), "↑↓ choose · ←→: keep the message from · enter: do it · esc: close · ?: what it does");
+    keys(&mut app, &[KeyCode::Right, KeyCode::Enter]);
     assert_eq!(app.screen, Screen::Review);
     assert_eq!(app.status, "took the message of patch 2 from your checkout: it waits for your review");
 }

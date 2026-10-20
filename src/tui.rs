@@ -673,10 +673,10 @@ fn about(action: &Action) -> String {
             "pick HEAD of your checkout up: ↑↓ place it, Enter moves the checkout there, detached; your branch as it is".into()
         }
         Action::MessagesToStack(_) => {
-            "take the message of your checkout's commit as the patch's: a new version of the patch, its diff as it is, to review".into()
+            "keep your workspace's message: a new version of the patch with it, its diff as it is, to review".into()
         }
         Action::MessagesToCheckout(_) => {
-            "put the patch's message on your checkout's commit: it and the commits above it made again, their files as they are; the branch moves to them".into()
+            "keep the stack's message: your workspace's commit made again with it, and the commits above it on the same files; the branch moves to them".into()
         }
         Action::EditPatch => "edit this patch in $EDITOR, as mail, opened where the cursor is".into(),
         Action::EditCode => "edit this file as the patch leaves it, in $EDITOR, opened at this line".into(),
@@ -3576,6 +3576,28 @@ impl App {
         items.push(Item::new("Quit", Action::Quit));
     }
 
+    /// Whose message a patch keeps when its commit in the workspace says
+    /// another, as radio buttons: the stack's, put on the commit; or the
+    /// workspace's, taken into the stack. Of the patch at `at`, else of
+    /// every one whose message differs.
+    fn sync_choices(&self, at: Option<usize>) -> Choices {
+        let list = vec![
+            Choice::new(
+                "stacked",
+                "stacked",
+                "the stack's message, put on your workspace's commit, made again with it",
+                Some(Action::MessagesToCheckout(at)),
+            ),
+            Choice::new(
+                "workspace",
+                "workspace",
+                "your workspace's message, taken into the stack: a new version of the patch, to review",
+                Some(Action::MessagesToStack(at)),
+            ),
+        ];
+        Choices::new("sync", "keep the message from", list, self.db.choice(&self.stack, "sync"))
+    }
+
     /// Where a file of a patch is edited by hand, as radio buttons: a copy
     /// of it alone, this checkout, or the stack's own worktree.
     fn edit_choices(&self) -> Choices {
@@ -3704,11 +3726,8 @@ impl App {
                         items.push(Item::new("Move HEAD…", Action::MoveHead(None)));
                     }
                     // The patches whose message differs from their commit's.
-                    let differ = self.head_here().map(|h| h.differ()).unwrap_or_default();
-                    if !differ.is_empty() {
-                        let of = crate::head::patches_said(&differ);
-                        items.push(Item::new(format!("Take your checkout's messages of {of}"), Action::MessagesToStack(None)).when(h));
-                        items.push(Item::new(format!("Put the messages of {of} on your checkout"), Action::MessagesToCheckout(None)));
+                    if self.head_here().is_some_and(|hd| !hd.differ().is_empty()) {
+                        items.push(Item::new("Sync commit messages", Action::MessagesToCheckout(None)).with(self.sync_choices(None)));
                     }
                     items.push(Item::line());
                 }
@@ -3729,8 +3748,8 @@ impl App {
                 }
                 // Its message differs from its commit's in the checkout.
                 if self.head_here().is_some_and(|hd| hd.differ().contains(&self.sel)) {
-                    items.push(Item::new("Take your checkout's message", Action::MessagesToStack(Some(self.sel))).when(h));
-                    items.push(Item::new("Put this message on your checkout", Action::MessagesToCheckout(Some(self.sel))));
+                    let at = Some(self.sel);
+                    items.push(Item::new("Sync commit message", Action::MessagesToCheckout(at)).with(self.sync_choices(at)));
                 }
                 items.push(Item::new("Edit this patch in $EDITOR", Action::EditPatch).when(h));
                 items.push(Item::new("Drop this patch…", Action::AskDrop).when(h));
@@ -5968,9 +5987,13 @@ impl App {
         if let Mode::MovingHead { to } = self.mode {
             return Some((to, format!(" ↕ HEAD {}", h.on())));
         }
+        let sync = match h.differ().len() {
+            0 => String::new(),
+            n => format!(" · {n} to sync"),
+        };
         Some(match &h.at {
-            At::Stack(on) if !on.above.is_empty() => (on.commits.len(), format!(" ▶ HEAD {} +{}", h.on(), on.above.len())),
-            At::Stack(on) => (on.commits.len(), format!(" ▶ HEAD {}", h.on())),
+            At::Stack(on) if !on.above.is_empty() => (on.commits.len(), format!(" ▶ HEAD {} +{}{sync}", h.on(), on.above.len())),
+            At::Stack(on) => (on.commits.len(), format!(" ▶ HEAD {}{sync}", h.on())),
             At::Elsewhere => (0, format!(" ▶ HEAD {}: off the stack", h.on())),
         })
     }
