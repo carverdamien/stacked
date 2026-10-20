@@ -1072,6 +1072,28 @@ fn the_asking_comment_is_closed_with_its_review_if_said() {
 }
 
 #[test]
+fn an_answer_opens_a_comment_for_each_issue_several_on_a_line() {
+    let e = env();
+    e.ok(&["import", "s", "base"]);
+    let id = comment(&e, &["--patch", "1", "Why", "2?"]);
+    let prompt = e.root.join("prompt.txt");
+    let claude = fake_claude(
+        &e,
+        "claude-two.sh",
+        &format!("printf '%s' \"$2\" > {}", prompt.display()),
+        r#"{"replies": {"c1": "Because."}, "comments": [{"patch": 1, "file": "a.txt", "side": "+", "line": "2", "text": "Say two."}, {"patch": 1, "file": "a.txt", "side": "+", "line": "2", "text": "And test it."}]}"#,
+    );
+    let (fine, out, err) = stacked_in(&e.src, &e.db, &["send", "s", &id, "--answer-only", "--wait", "--accept"], "", &[("STACKED_CLAUDE", &claude)]);
+    assert!(fine, "{out}{err}");
+    // Told one issue a comment, it opens two on one line: both there, apart.
+    let told = std::fs::read_to_string(&prompt).unwrap();
+    assert!(told.contains("Each comment you open is about one issue: a line with two issues gets two comments"), "{told}");
+    let shown = e.ok(&["comments", "s", "--patch", "1"]);
+    assert_eq!(shown.lines().filter(|l| l.contains("\tpatch 1 · a.txt: 2")).count(), 2, "{shown}");
+    assert!(shown.contains("agent: Say two.") && shown.contains("agent: And test it."), "{shown}");
+}
+
+#[test]
 fn the_agent_rebases_reviews_and_tests() {
     let e = env();
     // A commit on main for the stack to go onto.

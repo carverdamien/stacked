@@ -453,7 +453,8 @@ ask agent`'s:
   file as patch N leaves it, whether the stack changes it or not, read
   without a checkout. Only the reply comes back. An
   answer may open comments of its own on lines within the place, as a
-  review does: the asking comment then says `opened 4 comments, 1 with your
+  review does, each about one issue (a line with two issues gets two
+  comments, both on it): the asking comment then says `opened 4 comments, 1 with your
   replies`, and its menu goes to them, or closes it and them.
 - `build and test`, on the stack's comments and a patch's as a whole: it may
   run any command, in a workspace of its choosing by its own rules

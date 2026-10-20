@@ -746,6 +746,11 @@ fn transcript(text: &str) -> String {
 const HERE: &str = "The current directory is the user's repository, as it is checked out now: \
 its files need not be as the stack leaves them, so read the stack through stacked, as below.";
 
+/// What the agent is told of the comments it opens: one issue each, as
+/// many on one line as it has issues there.
+const ONE_ISSUE: &str = "Each comment you open is about one issue: a line with two issues gets two \
+comments, each on that line.";
+
 const KEEP_TITLES: &str = "Keep each commit's title unless asked to change it: a patch is \
 followed across its versions by its title. When you are done, everything must be committed \
 and HEAD must be the top. You cannot build the project or run its tests here; reason from the \
@@ -801,7 +806,7 @@ fn prompt(db: &Db, i: &Info, s: &Stack, cmd: &str, run: &str) -> String {
              patch, listed below bottom first; `git show` each to read it. Do NOT modify \
              anything. You cannot build the project or run its tests; reason from the code. \
              {READ_THE_WEB} Besides your answers, you may open comments of your own on lines \
-             of any patch, as a careful reviewer would, without repeating what is already said.",
+             of any patch, as a careful reviewer would, without repeating what is already said. {ONE_ISSUE}",
             base = i.base
         ),
         (Way::Answer, Scope::Patch(_)) if i.worktree.is_some() => format!(
@@ -811,7 +816,7 @@ fn prompt(db: &Db, i: &Info, s: &Stack, cmd: &str, run: &str) -> String {
              prints the whole stack, the patches above included. Do NOT modify anything. You \
              cannot build the project or run its tests; reason from the code. {READ_THE_WEB} \
              Besides your answers, you may open comments of your own on lines of this patch, as \
-             a careful reviewer would, without repeating what is already said.",
+             a careful reviewer would, without repeating what is already said. {ONE_ISSUE}",
             k = k.map_or(0, |k| k + 1),
             base = i.base
         ),
@@ -822,7 +827,7 @@ fn prompt(db: &Db, i: &Info, s: &Stack, cmd: &str, run: &str) -> String {
              whether the stack changes it or not. Do NOT modify anything: no file, no commit, \
              no branch. You cannot build the project or run its tests; reason from the code. \
              {READ_THE_WEB} Besides your answers, you may open comments of your own on lines \
-             of any patch, as a careful reviewer would, without repeating what is already said.",
+             of any patch, as a careful reviewer would, without repeating what is already said. {ONE_ISSUE}",
             base = i.base
         ),
         (Way::Answer, Scope::Patch(_)) => format!(
@@ -833,7 +838,7 @@ fn prompt(db: &Db, i: &Info, s: &Stack, cmd: &str, run: &str) -> String {
              included. Do NOT modify anything: no file, no commit, no branch. You cannot build \
              the project or run its tests; reason from the code. {READ_THE_WEB} Besides your \
              answers, you may open comments of your own on lines of this patch, as a careful \
-             reviewer would, without repeating what is already said.",
+             reviewer would, without repeating what is already said. {ONE_ISSUE}",
             k = k.map_or(0, |k| k + 1),
             base = i.base
         ),
@@ -881,8 +886,8 @@ fn prompt(db: &Db, i: &Info, s: &Stack, cmd: &str, run: &str) -> String {
             "\nOutput ONLY a JSON object: {\"replies\": {label: your answer}, \"comments\": \
              [{\"patch\": its number, \"file\": the path as the diff names it, \"side\": \"+\" \
              for an added line, \"-\" for a removed one, \" \" for context, \"line\": that \
-             line's exact text without its leading +/-/space, \"text\": your comment}]}, the \
-             comments optional."
+             line's exact text without its leading +/-/space, \"text\": your comment, one \
+             issue}]}, the comments optional, as many on one line as it has issues."
         }
         Way::Test => {
             "\nEnd your reply with a JSON object: {\"replies\": {label: what you found, with \
