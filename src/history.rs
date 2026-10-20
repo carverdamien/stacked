@@ -183,13 +183,14 @@ pub enum Diffed {
     Same,
     /// Its base, or its repository (`what`), changed: from, to.
     Base { what: &'static str, was: String, is: String },
-    /// Patch `at` (from 1) of the stack after: added, a new version, moved
-    /// from `was`, or as it was.
+    /// Patch `at` (from 1) of the stack after: added, a new version (its
+    /// message alone changed, `reworded`), moved from `was`, or as it was.
     Patch {
         at: usize,
         title: String,
         added: bool,
         changed: bool,
+        reworded: bool,
         was: Option<usize>,
     },
     /// Patch `was` (from 1) of the stack before, not in the one after.
@@ -216,6 +217,7 @@ impl Diffed {
                 added,
                 changed,
                 was,
+                ..
             } => {
                 let mark = if *added {
                     '+'
@@ -325,11 +327,14 @@ pub fn stacks_diff(db: &Db, before: Option<&Stack>, after: Option<&Stack>, code:
 /// what changed in it.
 fn put(out: &mut Vec<Diffed>, j: usize, p: &Patch, old: Option<&Patch>, was: Option<usize>, code: bool) {
     let changed = old.is_some_and(|o| o.id != p.id);
+    // Its message alone changed: reworded.
+    let reworded = changed && old.is_some_and(|o| o.message != p.message && crate::ops::same_diff(&o.diff, &p.diff));
     out.push(Diffed::Patch {
         at: j + 1,
         title: p.title().to_string(),
         added: old.is_none(),
         changed,
+        reworded,
         was: was.map(|i| i + 1),
     });
     if let (true, true, Some(o)) = (code, changed, old) {
@@ -499,6 +504,29 @@ mod tests {
 
     fn texts(diff: &[Diffed]) -> Vec<String> {
         diff.iter().filter(|d| !matches!(d, Diffed::Code(_))).map(Diffed::text).collect()
+    }
+
+    #[test]
+    fn a_new_version_whose_message_alone_changed_is_reworded() {
+        let a1 = patch("a", "A", "a1");
+        // Its message other, and an index line its diff did not have.
+        let diff = a1.diff.replace("--- a/f", "index 1..2 100644\n--- a/f");
+        let a2 = Patch::new("a".into(), None, None, "A, said otherwise".into(), diff);
+        let a3 = patch("a", "A", "a3");
+        let d = db(vec![Record::Patch(a1.clone()), Record::Patch(a2.clone()), Record::Patch(a3.clone())]);
+        let s = |p: &Patch| Stack {
+            name: "s".into(),
+            patches: vec![p.id.clone()],
+            base: None,
+            repo: None,
+            parent: None,
+            op: String::new(),
+            time: 0,
+        };
+        let diff = stacks_diff(&d, Some(&s(&a1)), Some(&s(&a2)), false);
+        assert!(matches!(diff[..], [Diffed::Patch { changed: true, reworded: true, .. }]), "{diff:?}");
+        let diff = stacks_diff(&d, Some(&s(&a1)), Some(&s(&a3)), false);
+        assert!(matches!(diff[..], [Diffed::Patch { changed: true, reworded: false, .. }]), "{diff:?}");
     }
 
     #[test]

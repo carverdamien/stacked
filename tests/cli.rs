@@ -1088,6 +1088,32 @@ fn a_file_is_shown_as_a_patch_leaves_it_after_a_rename_of_one_changed_twice() {
 }
 
 #[test]
+fn a_commit_the_agent_rewords_is_a_new_version_of_its_patch() {
+    let e = env();
+    e.ok(&["import", "s", "base"]);
+    let d = Db::load(&e.db).unwrap();
+    let old = d.patch(&d.stack("s").unwrap().patches[2]).clone();
+    drop(d);
+    // The agent amends the top commit's message: the patch's new version,
+    // not a patch of its own.
+    let id = comment(&e, &["Say", "what", "bug", "3", "is."]);
+    let claude = fake_claude(
+        &e,
+        "claude-reword.sh",
+        "git -c user.name=C -c user.email=c@x commit -q --amend -m 'Bug 3 - say what it is'",
+        r#"{"replies": {"c1": "Reworded."}}"#,
+    );
+    let (fine, _, err) = stacked_in(&e.src, &e.db, &["send", "s", &id, "--wait"], "", &[("STACKED_CLAUDE", claude.as_path())]);
+    assert!(fine, "{err}");
+    let d = Db::load(&e.db).unwrap();
+    let r = stacked::held::queue(&d, "s").into_iter().next().unwrap().clone();
+    let c = r.held.as_ref().unwrap().stack.clone().unwrap();
+    let new = d.patch(&c.patches[2]);
+    assert_eq!((new.change.as_str(), new.title()), (old.change.as_str(), "Bug 3 - say what it is"));
+    assert_eq!(c.patches.len(), 3);
+}
+
+#[test]
 fn several_asks_wait_their_turn() {
     let e = env();
     e.ok(&["import", "s", "base"]);

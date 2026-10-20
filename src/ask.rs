@@ -1766,8 +1766,9 @@ fn land_patch(db: &mut Db, run: &Run, i: &Info, result: &str, replies: &Map<Stri
     }))
 }
 
-/// The patches the commits after `parent` in `wt` are: the first, or the
-/// one keeping its title, a new version of `old_id`; the rest new.
+/// The patches the commits after `parent` in `wt` are: the one keeping its
+/// commit, its diff or its title, else the first, a new version of
+/// `old_id`; the rest new.
 fn pieces_since(db: &Db, wt: &Path, parent: &str, old_id: &str, i: &Info) -> Result<Vec<Patch>> {
     let mail = git::git(
         wt,
@@ -1775,7 +1776,16 @@ fn pieces_since(db: &Db, wt: &Path, parent: &str, old_id: &str, i: &Info) -> Res
     )?;
     let drafts = parse_mbox(&mail)?;
     let by_commit: HashMap<String, String> = i.commits.iter().cloned().collect();
-    Ok(plan_drafts(&[db.patch(old_id).clone()], drafts, &by_commit))
+    let old = db.patch(old_id).clone();
+    let mut pieces = plan_drafts(std::slice::from_ref(&old), drafts, &by_commit);
+    // Neither its commit, its diff nor its title kept: the first commit is
+    // the patch's new version all the same, the ask being on that patch.
+    if !pieces.iter().any(|p| p.change == old.change)
+        && let Some(first) = pieces.first_mut()
+    {
+        *first = crate::ops::revise(&old, crate::mbox::Draft::from(&*first));
+    }
+    Ok(pieces)
 }
 
 /// A stack change landing, held: the commits read back as a stack made from

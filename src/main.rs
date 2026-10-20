@@ -107,8 +107,8 @@ enum Cmd {
     Import {
         name: String,
         range: Option<String>,
-        /// Make them the whole stack. A patch with the title of one the
-        /// stack held is a new version of it.
+        /// Make them the whole stack. A patch with the diff or the title of
+        /// one the stack held is a new version of it.
         #[arg(long)]
         replace: bool,
         /// The commit mail on stdin applies to, when it does not say

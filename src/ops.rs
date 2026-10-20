@@ -30,8 +30,10 @@ pub fn revise(old: &Patch, d: Draft) -> Patch {
 
 /// The patches `drafts` are, given the ones they replace: a draft from a
 /// commit in `by_commit` is that patch unless it changed; else one with the
-/// title of a patch it replaces is a new version of it; else it is new.
-/// Nothing is stored.
+/// diff of a patch it replaces is a new version of it, its message alone
+/// changed if any (of several with that diff, the one with its title);
+/// else one with its title; else it is new. A diff of nothing is no
+/// patch's own. Nothing is stored.
 pub fn plan_drafts(olds: &[Patch], drafts: Vec<Draft>, by_commit: &HashMap<String, String>) -> Vec<Patch> {
     let mut left: Vec<&Patch> = olds.iter().collect();
     let mut out = Vec::new();
@@ -41,7 +43,12 @@ pub fn plan_drafts(olds: &[Patch], drafts: Vec<Draft>, by_commit: &HashMap<Strin
             .as_ref()
             .and_then(|c| by_commit.get(c))
             .and_then(|id| left.iter().position(|o| &o.id == id));
-        let at = from_commit.or_else(|| left.iter().position(|o| o.title() == d.title()));
+        // Its code as it was, whatever its commit: reworded, or rebased.
+        let code = |o: &Patch| !d.diff.trim().is_empty() && same_diff(&o.diff, &d.diff);
+        let at = from_commit
+            .or_else(|| left.iter().position(|o| code(o) && o.title() == d.title()))
+            .or_else(|| left.iter().position(|o| code(o)))
+            .or_else(|| left.iter().position(|o| o.title() == d.title()));
         out.push(match at {
             Some(i) => {
                 let old = left.remove(i);
@@ -55,6 +62,15 @@ pub fn plan_drafts(olds: &[Patch], drafts: Vec<Draft>, by_commit: &HashMap<Strin
         });
     }
     out
+}
+
+/// Whether diffs `a` and `b` make the same change, whatever blobs their
+/// `index` lines name: a commit reworded, or rebased as it was.
+pub fn same_diff(a: &str, b: &str) -> bool {
+    fn change(d: &str) -> impl Iterator<Item = &str> {
+        d.lines().filter(|l| !l.starts_with("index "))
+    }
+    change(a).eq(change(b))
 }
 
 /// As `plan_drafts`, the patches stored: their ids.
@@ -71,9 +87,10 @@ pub fn match_drafts(
 }
 
 /// Puts `drafts` on top of `name`, making it if need be. With `replace`,
-/// they are the whole stack instead, and a draft with the title of a patch
-/// it held is a new version of that patch: so importing a stack again after
-/// rebasing it keeps each patch's history.
+/// they are the whole stack instead, and a draft with the diff or the title
+/// of a patch it held is a new version of that patch: so importing a stack
+/// again after rebasing it, or rewording its commits, keeps each patch's
+/// history.
 pub fn import(
     db: &mut Db,
     name: &str,
@@ -1269,4 +1286,46 @@ pub fn strip_comments(text: &str) -> String {
         .join("\n")
         .trim()
         .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn draft(title: &str, diff: &str) -> Draft {
+        Draft {
+            commit: None,
+            author: Some("T <t@x>".into()),
+            date: None,
+            message: format!("{title}\n"),
+            diff: diff.into(),
+        }
+    }
+
+    fn adds(line: &str) -> String {
+        format!("diff --git a/f b/f\nindex 1..2 100644\n--- a/f\n+++ b/f\n@@ -0,0 +1 @@\n+{line}\n")
+    }
+
+    #[test]
+    fn a_draft_with_the_diff_of_a_patch_is_its_new_version_reworded() {
+        let old = |change: &str, title: &str, diff: &str| {
+            Patch::new(change.into(), Some("T <t@x>".into()), None, format!("{title}\n"), diff.into())
+        };
+        let olds = [old("a", "A", &adds("x")), old("b", "B", &adds("y")), old("c", "C", &adds("x")), old("e", "E", "")];
+        let drafts = vec![
+            // Of A and C, the same diff: the one with its title.
+            draft("C", &adds("x")),
+            // Its message other, its blobs too: A, reworded.
+            draft("A, said otherwise", &adds("x").replace("index 1..2", "index 3..4")),
+            // Its code other, its title kept: B.
+            draft("B", &adds("z")),
+            // A diff of nothing, its title other: not E.
+            draft("F", ""),
+        ];
+        let planned = plan_drafts(&olds, drafts, &HashMap::new());
+        let changes: Vec<&str> = planned.iter().map(|p| p.change.as_str()).collect();
+        assert_eq!(changes[..3], ["c", "a", "b"]);
+        assert!(!["a", "b", "c", "e"].contains(&changes[3]), "{changes:?}");
+        assert_eq!(planned[0].id, olds[2].id);
+    }
 }

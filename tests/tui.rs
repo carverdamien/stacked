@@ -3325,6 +3325,27 @@ fn hand_edit(db: &Path, work: Option<&str>) -> String {
 }
 
 #[test]
+fn a_patch_whose_message_alone_changed_is_reworded_in_the_stack_operations() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    let run = Db::edit(&db, |d| {
+        let s = d.stack("s")?.patches.clone();
+        let old = d.patch(&s[0]).clone();
+        let draft = stacked::mbox::Draft {
+            message: "Bug 1 - shout two, louder\n\nBecause.".into(),
+            ..stacked::mbox::Draft::from(&old)
+        };
+        let mut patches = s.clone();
+        patches[0] = d.add_patch(stacked::ops::revise(&old, draft))?;
+        stacked::held::hold_by_hand(d, "s", patches, "reword", "patch 1", "reworded Bug 1", None)
+    })
+    .unwrap();
+    app.edited(stacked::ops::Edited::Landed { said: "reworded Bug 1".into(), run }, None, None);
+    let screen = draw(&mut app);
+    assert!(screen.contains("reword  1 Bug 1 - shout two, louder") && !screen.contains("modify  1"), "{screen}");
+}
+
+#[test]
 fn an_edit_by_hand_lands_and_its_review_opens_at_once() {
     let (_tmp, db, _src) = setup();
     let mut app = open(&db).unwrap();

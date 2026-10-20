@@ -718,8 +718,9 @@ closes, once their replies are in their threads (`Show…`, closed, lists
 them, to reopen). Marked to close, a comment's replies, which go with it,
 are accepted; kept again, they are as they were. The sections are the stack
 operations of the change (a line for each patch: `noop`, `add`, `modify`,
-`move`, `remove`, and the base when it is rebased), the comments it opened,
-and its replies. On the right is the part the cursor is on, as it would be:
+`reword` when its message alone changed, `move`, `remove`, and the base
+when it is rebased), the comments it opened, and its replies. On the right
+is the part the cursor is on, as it would be:
 the stack diff of the change, from the stack as it is, each new version's
 interdiff under it; or the comment where it would be, the reply as the
 last turn of its thread. → goes into it to scroll, → again makes it wide,

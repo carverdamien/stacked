@@ -74,6 +74,9 @@ fn operation(d: &Diffed) -> Option<(String, Style)> {
         Diffed::Base { what, was, is } => (format!("{what}  {was} → {is}"), color::hunk()),
         Diffed::Patch { at, title, added: true, .. } => (format!("add     {at} {title}"), color::add()),
         Diffed::Patch {
+            at, title, reworded: true, was, ..
+        } => (format!("reword  {at} {title}{}", was.map_or(String::new(), |w| format!(", from {w}"))), color::hunk()),
+        Diffed::Patch {
             at, title, changed: true, was, ..
         } => (format!("modify  {at} {title}{}", was.map_or(String::new(), |w| format!(", from {w}"))), color::hunk()),
         Diffed::Patch { at, title, was: Some(w), .. } => (format!("move    {at} {title}, from {w}"), Style::new()),
