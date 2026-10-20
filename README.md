@@ -277,8 +277,9 @@ bold, `*italics*` italic, `# headings` bold, a `[link](to)` underlined with
 where it goes after it, dimmed; `-`, `*` and `+` items are bulleted (`•`),
 numbered ones keep their number, each item's lines under its text; a `>`
 quote has a bar at its left; a code block between fences shows its lines as
-they are, its fences left out; `` `code` `` loses its backticks; a `---`
-line is a rule. A line breaks where the text breaks it, as comments are
+they are, its fences left out, as one block; `` `code` `` loses its
+backticks; both are in the colour of the settings for code, `code`
+(`[colors]`, below), light grey on a dark grey; a `---` line is a rule. A line breaks where the text breaks it, as comments are
 written, and again where it is too wide. Where a comment is said in a line
 (listed, folded), its markup is left out. The editor shows what was written
 as it was written.
@@ -1044,10 +1045,11 @@ settings:
   their bar and name; `note` (`yellow`: what a menu says under its items, the
   tour's box, the comment editor's frame, a run going); `bar` (`brightwhite
   blue`), `warn` (`black yellow`: the top bar when the stack cannot change),
-  `status` (`black brightwhite`: the bottom line) and `picked` (`normal
+  `status` (`black brightwhite`: the bottom line), `picked` (`normal
   238`: what a pane has picked while the cursor is in another, on a grey
-  background, the cursor's own pane reversing its pick). `stacked config
-  colors.you 208` sets one.
+  background, the cursor's own pane reversing its pick) and `code` (`252
+  236`: code in what a comment says, `code` in a line and code blocks, light
+  grey on a dark grey). `stacked config colors.you 208` sets one.
 - `[keys]`: for each thing a key does (`up`, `down`, `left`, `right`,
   `page_up`, `page_down`, `home`, `end`, `enter`, `menu`, `help`, `back`,
   `view`, `read`, `quit`), its keys: `down = ["down", "j"]`, `menu = "m"`.

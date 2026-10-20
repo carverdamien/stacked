@@ -1372,6 +1372,8 @@ mod tests {
         // its text as it is.
         assert_eq!(c.colors.spec(Paint::Picked), "normal 238");
         assert_eq!(c.colors.style(Paint::Picked), Style::new().bg(Color::Indexed(238)));
+        // Code in a comment's markdown: light grey on a dark grey.
+        assert_eq!(c.colors.style(Paint::Code), Style::new().fg(Color::Indexed(252)).bg(Color::Indexed(236)));
         assert_eq!(wrong.len(), 1, "{wrong:?}");
         assert!(wrong[0].starts_with("colors.agent: \"purpleish\" is not a colour") && wrong[0].ends_with("; it stays \"134\""), "{wrong:?}");
         // A colour there is not, as any setting there is not: the file is

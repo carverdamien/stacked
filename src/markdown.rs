@@ -37,23 +37,18 @@ pub type Line = Vec<(String, Mark)>;
 /// `text`, a turn of a comment, as lines `width` wide.
 pub fn render(text: &str, width: usize) -> Vec<Line> {
     let width = width.max(10);
+    let lines: Vec<&str> = text.lines().collect();
     let mut out: Vec<Line> = Vec::new();
-    // A code block open: its fence's character, and how many.
-    let mut fence: Option<(char, usize)> = None;
-    for line in text.lines() {
+    let mut i = 0;
+    while i < lines.len() {
+        let line = lines[i];
         let t = line.trim_start();
-        if let Some((c, n)) = fence {
-            if closes(t, c, n) {
-                fence = None;
-            } else if line.is_empty() {
-                out.push(vec![(String::new(), Mark::Block)]);
-            } else {
-                out.extend(cut(line, width).into_iter().map(|l| vec![(l, Mark::Block)]));
-            }
-            continue;
-        }
-        if let Some(open) = opens(t) {
-            fence = Some(open);
+        i += 1;
+        // A code block: its lines to its fence, or to the end, as they are.
+        if let Some((c, n)) = opens(t) {
+            let end = (i..lines.len()).find(|&k| closes(lines[k].trim_start(), c, n)).unwrap_or(lines.len());
+            out.extend(block(&lines[i..end], width));
+            i = end + 1;
             continue;
         }
         if t.is_empty() {
@@ -312,6 +307,17 @@ fn link(cs: &[char], i: usize) -> Option<(usize, usize)> {
     Some((text_end, url_end))
 }
 
+/// A code block's `lines` as they are, a space at either side, each as
+/// wide as the widest, so that they read as one block; cut where too wide.
+fn block(lines: &[&str], width: usize) -> Vec<Line> {
+    let parts: Vec<String> = lines
+        .iter()
+        .flat_map(|l| if l.is_empty() { vec![String::new()] } else { cut(l, width.saturating_sub(2).max(1)) })
+        .collect();
+    let wide = parts.iter().map(|l| l.chars().count()).max().unwrap_or(0);
+    parts.into_iter().map(|l| vec![(format!(" {l}{} ", " ".repeat(wide - l.chars().count())), Mark::Block)]).collect()
+}
+
 /// `line` cut every `width` characters, its spaces as they are.
 fn cut(line: &str, width: usize) -> Vec<String> {
     let cs: Vec<char> = line.chars().collect();
@@ -429,16 +435,17 @@ mod tests {
                 "  1. nested",
                 "▏ quoted",
                 "────────────────────────",
-                "fn  main() {}",
+                " fn  main() {} ",
                 "end",
             ]
         );
         assert_eq!(lines[0], [("Title".to_string(), Mark::Heading)]);
         assert_eq!(lines[3][1], ("•".to_string(), Mark::Bullet));
-        assert_eq!(lines[9], [("fn  main() {}".to_string(), Mark::Block)]);
-        // A code block's line too wide is cut, its spaces kept; an open one
-        // goes to the end.
-        assert_eq!(said(&render("```\n  0123456789abc\n", 10)), ["  01234567", "89abc"]);
+        assert_eq!(lines[9], [(" fn  main() {} ".to_string(), Mark::Block)]);
+        // A code block's lines as wide as its widest, a space either side; a
+        // line too wide cut, its spaces kept; an open block goes to the end.
+        assert_eq!(said(&render("```\na\nbcd\n```", 20)), [" a   ", " bcd "]);
+        assert_eq!(said(&render("```\n  0123456789abc\n", 10)), ["   012345 ", " 6789abc  "]);
         // A word wider than a line is cut where the line ends.
         assert_eq!(said(&render("0123456789abcdef", 10)), ["0123456789", "abcdef"]);
     }

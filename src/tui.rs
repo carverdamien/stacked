@@ -91,11 +91,13 @@ pub(crate) fn row_parts(row: &Row, selected: bool) -> Vec<(String, Style)> {
 
 /// How a piece of a comment's markdown looks, given how what was said
 /// looks: emphasis by the terminal's own means, as what was said is in its
-/// own colour, so that no comment reads as code.
+/// own colour, so that no comment reads as code; but code itself, in the
+/// colour of the settings for it.
 fn mark_style(m: crate::markdown::Mark, plain: Style) -> Style {
     use crate::markdown::Mark;
     match m {
-        Mark::Plain | Mark::Bullet | Mark::Code | Mark::Block => plain,
+        Mark::Code | Mark::Block => plain.patch(color::code()),
+        Mark::Plain | Mark::Bullet => plain,
         Mark::Strong | Mark::Heading => plain.add_modifier(Modifier::BOLD),
         Mark::Emph => plain.add_modifier(Modifier::ITALIC),
         Mark::Link => plain.add_modifier(Modifier::UNDERLINED),

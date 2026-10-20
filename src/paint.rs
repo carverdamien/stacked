@@ -24,10 +24,11 @@ pub enum Paint {
     Warn,
     Status,
     Picked,
+    Code,
 }
 
 impl Paint {
-    pub const ALL: [Paint; 14] = [
+    pub const ALL: [Paint; 15] = [
         Paint::Added,
         Paint::Removed,
         Paint::Hunk,
@@ -42,6 +43,7 @@ impl Paint {
         Paint::Warn,
         Paint::Status,
         Paint::Picked,
+        Paint::Code,
     ];
 
     pub fn name(self) -> &'static str {
@@ -60,6 +62,7 @@ impl Paint {
             Paint::Warn => "warn",
             Paint::Status => "status",
             Paint::Picked => "picked",
+            Paint::Code => "code",
         }
     }
 
@@ -84,6 +87,7 @@ impl Paint {
             Paint::Warn => "The top bar when the stack cannot change.",
             Paint::Status => "The bottom line: what was just done, or the keys to press.",
             Paint::Picked => "What a pane has picked while the cursor is in another: its patch, its comment, the review's part; the cursor's own pane reverses its pick.",
+            Paint::Code => "Code in what a comment says, as its markdown has it: `code` in a line, and code blocks.",
         }
     }
 
@@ -104,6 +108,7 @@ impl Paint {
             Paint::Warn => "black yellow",
             Paint::Status => "black brightwhite",
             Paint::Picked => "normal 238",
+            Paint::Code => "252 236",
         }
     }
 }
@@ -250,6 +255,10 @@ pub mod color {
     /// What a pane has picked, while the cursor is in another.
     pub fn picked() -> Style {
         of(Paint::Picked)
+    }
+    /// Code in a comment's markdown.
+    pub fn code() -> Style {
+        of(Paint::Code)
     }
     pub fn dim() -> Style {
         Style::new().add_modifier(Modifier::DIM)

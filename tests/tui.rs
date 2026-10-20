@@ -1325,7 +1325,7 @@ fn a_comment_is_read_as_markdown() {
     let screen = (0..30).map(|y| (0..120).map(|x| buf[(x, y)].symbol()).collect::<String>()).collect::<Vec<_>>().join("\n");
     // Its markup gone; its list bulleted; its code block as it is, fences
     // left out.
-    for line in ["▎   It is on purpose:", "▎   • TWO stands out", "▎   • see bug 1 (https://b/1)", "▎     let x = 1;"] {
+    for line in ["▎   It is on purpose:", "▎   • TWO stands out", "▎   • see bug 1 (https://b/1)", "▎      let x = 1; "] {
         assert!(screen.contains(line), "{line:?}:\n{screen}");
     }
     assert!(!screen.contains("**") && !screen.contains("```") && !screen.contains("`TWO`"), "{screen}");
@@ -1337,6 +1337,13 @@ fn a_comment_is_read_as_markdown() {
     let (x, y) = at(&screen, "▎   • see bug 1 (");
     let cell = &buf[(x + 10, y)];
     assert!(cell.symbol() == "b" && cell.modifier.contains(Modifier::UNDERLINED), "{cell:?}");
+    // Code in the colour of the settings for it: light grey on dark grey.
+    use ratatui::style::Color;
+    let (x, y) = at(&screen, "▎   • TWO stands");
+    let cell = &buf[(x + 6, y)];
+    assert!(cell.symbol() == "T" && cell.bg == Color::Indexed(236) && cell.fg == Color::Indexed(252), "{cell:?}");
+    let (x, y) = at(&screen, "▎      let x = 1;");
+    assert_eq!(buf[(x + 4, y)].bg, Color::Indexed(236), "the block's left edge");
     // Listed, it says its first line, its markup left out.
     assert!(screen.contains("   It is on purpose:"), "{screen}");
 }
