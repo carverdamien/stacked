@@ -1,10 +1,11 @@
 //! Markdown in comments, as the editor shows it: what each piece of a turn's
 //! text is (code, bold, a list's bullet…), the editor choosing how each
 //! looks. The markdown comments use: paragraphs, `#` headings, `-`, `*`,
-//! `+` and `1.` lists, `>` quotes, code blocks between fences, rules; and in
-//! a line, `code`, **bold**, *italics* and [links](to). A line breaks where
-//! the text breaks it, as comments are written, and again where it is too
-//! wide; a code block's lines keep their spaces, cut only where too wide.
+//! `+` and `1.` lists, `>` quotes, code blocks between fences, tables,
+//! rules; and in a line, `code`, **bold**, *italics* and [links](to). A line
+//! breaks where the text breaks it, as comments are written, and again
+//! where it is too wide; a code block's lines keep their spaces, cut only
+//! where too wide; a table's cells fold within their columns.
 
 /// What a piece of text is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -49,6 +50,17 @@ pub fn render(text: &str, width: usize) -> Vec<Line> {
             let end = (i..lines.len()).find(|&k| closes(lines[k].trim_start(), c, n)).unwrap_or(lines.len());
             out.extend(block(&lines[i..end], width));
             i = end + 1;
+            continue;
+        }
+        // A table: a header, a row of dashes, then rows, as long as they
+        // have pipes.
+        if let Some((rows, aligns, used)) = table(&lines[i - 1..]) {
+            match draw_table(&rows, &aligns, width) {
+                Some(drawn) => out.extend(drawn),
+                // Too narrow even folded: as it is written.
+                None => out.extend(lines[i - 1..i - 1 + used].iter().flat_map(|l| fold(&inline(l), width, &[], &[]))),
+            }
+            i += used - 1;
             continue;
         }
         if t.is_empty() {
@@ -307,6 +319,158 @@ fn link(cs: &[char], i: usize) -> Option<(usize, usize)> {
     Some((text_end, url_end))
 }
 
+/// How a table's column is aligned, as the colons of its row of dashes say.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Align {
+    Left,
+    Center,
+    Right,
+}
+
+/// The cells of a table's row: between its pipes, trimmed. A pipe escaped,
+/// or in code, is the cell's own.
+fn cells(line: &str) -> Vec<String> {
+    let t = line.trim();
+    let t = t.strip_prefix('|').unwrap_or(t);
+    let t = if t.ends_with('|') && !t.ends_with("\\|") { &t[..t.len() - 1] } else { t };
+    let mut out = Vec::new();
+    let (mut cur, mut code, mut escaped) = (String::new(), false, false);
+    for c in t.chars() {
+        match c {
+            '|' if escaped => {
+                cur.pop();
+                cur.push('|');
+            }
+            '|' if !code => out.push(std::mem::take(&mut cur).trim().to_string()),
+            _ => {
+                if c == '`' {
+                    code = !code;
+                }
+                cur.push(c);
+            }
+        }
+        escaped = c == '\\';
+    }
+    out.push(cur.trim().to_string());
+    out
+}
+
+/// How a cell of a table's row of dashes aligns its column, if it is one:
+/// dashes, a colon at either end or both.
+fn align_of(cell: &str) -> Option<Align> {
+    let inner = cell.trim_start_matches(':').trim_end_matches(':');
+    if inner.is_empty() || !inner.chars().all(|c| c == '-') {
+        return None;
+    }
+    Some(match (cell.starts_with(':'), cell.ends_with(':')) {
+        (true, true) => Align::Center,
+        (false, true) => Align::Right,
+        _ => Align::Left,
+    })
+}
+
+/// The table `lines` start with, if they start with one: its rows of cells,
+/// the header first; how its columns align; and how many lines it takes.
+fn table(lines: &[&str]) -> Option<(Vec<Vec<String>>, Vec<Align>, usize)> {
+    let head = lines.first()?;
+    if !head.contains('|') {
+        return None;
+    }
+    let aligns: Vec<Align> = cells(lines.get(1)?).iter().map(|c| align_of(c)).collect::<Option<_>>()?;
+    let header = cells(head);
+    if header.len() != aligns.len() {
+        return None;
+    }
+    let mut rows = vec![header];
+    let mut used = 2;
+    while let Some(l) = lines.get(used).filter(|l| !l.trim().is_empty() && l.contains('|')) {
+        rows.push(cells(l));
+        used += 1;
+    }
+    Some((rows, aligns, used))
+}
+
+/// Columns as wide as `natural` asks, shrunk to `room` when it is less: the
+/// narrow ones as they are, the room left shared by the others. None when
+/// each cannot have three characters.
+fn fit_columns(natural: &[usize], room: usize) -> Option<Vec<usize>> {
+    if natural.iter().sum::<usize>() <= room {
+        return Some(natural.to_vec());
+    }
+    if room < 3 * natural.len() {
+        return None;
+    }
+    let mut widths = natural.to_vec();
+    let (mut left, mut open): (usize, Vec<usize>) = (room, (0..natural.len()).collect());
+    loop {
+        let share = left / open.len();
+        let (fit, wide): (Vec<usize>, Vec<usize>) = open.iter().partition(|&&c| natural[c] <= share);
+        if fit.is_empty() {
+            for (k, &c) in wide.iter().enumerate() {
+                widths[c] = share + usize::from(k < left % wide.len());
+            }
+            return Some(widths);
+        }
+        left -= fit.iter().map(|&c| natural[c]).sum::<usize>();
+        open = wide;
+    }
+}
+
+/// Table `rows` drawn `width` wide: its columns aligned as `aligns` says,
+/// `│` between them, its header bold with a rule under it; each cell folded
+/// within its column when the table is wider than that. None when it
+/// cannot fit even so.
+fn draw_table(rows: &[Vec<String>], aligns: &[Align], width: usize) -> Option<Vec<Line>> {
+    let n = aligns.len();
+    let wide = |l: &[(String, Mark)]| l.iter().map(|(s, _)| s.chars().count()).sum::<usize>();
+    let pieces: Vec<Vec<Line>> = rows
+        .iter()
+        .enumerate()
+        .map(|(r, row)| {
+            (0..n)
+                .map(|c| {
+                    let cell = inline(row.get(c).map_or("", String::as_str));
+                    if r == 0 { marked(cell, Mark::Strong) } else { cell }
+                })
+                .collect()
+        })
+        .collect();
+    let natural: Vec<usize> = (0..n).map(|c| pieces.iter().map(|row| wide(&row[c])).max().unwrap_or(0).max(1)).collect();
+    let widths = fit_columns(&natural, width.checked_sub(3 * (n - 1))?)?;
+    let mut out = Vec::new();
+    for (r, row) in pieces.iter().enumerate() {
+        let folded: Vec<Vec<Line>> = (0..n).map(|c| fold(&row[c], widths[c], &[], &[])).collect();
+        for k in 0..folded.iter().map(Vec::len).max().unwrap_or(1) {
+            let mut line: Line = Vec::new();
+            for c in 0..n {
+                if c > 0 {
+                    push(&mut line, " │ ", Mark::Rule);
+                }
+                let cell = folded[c].get(k).cloned().unwrap_or_default();
+                let pad = widths[c].saturating_sub(wide(&cell));
+                let (before, after) = match aligns[c] {
+                    Align::Left => (0, pad),
+                    Align::Right => (pad, 0),
+                    Align::Center => (pad / 2, pad - pad / 2),
+                };
+                push(&mut line, &" ".repeat(before), Mark::Plain);
+                for (s, m) in cell {
+                    push(&mut line, &s, m);
+                }
+                if c + 1 < n {
+                    push(&mut line, &" ".repeat(after), Mark::Plain);
+                }
+            }
+            out.push(line);
+        }
+        if r == 0 {
+            let rule: Vec<String> = widths.iter().map(|w| "─".repeat(*w)).collect();
+            out.push(vec![(rule.join("─┼─"), Mark::Rule)]);
+        }
+    }
+    Some(out)
+}
+
 /// A code block's `lines` as they are, a space at either side, each as
 /// wide as the widest, so that they read as one block; cut where too wide.
 fn block(lines: &[&str], width: usize) -> Vec<Line> {
@@ -417,6 +581,32 @@ mod tests {
         assert_eq!(inline("**open"), [("**open".to_string(), Plain)]);
         assert_eq!(plain("- **Bold** `x` and [y](z)"), "Bold x and y");
         assert_eq!(first_line("\n```rust\nlet `a` = 1;\n```"), "let a = 1;");
+    }
+
+    #[test]
+    fn a_table_s_columns_are_aligned_and_fold_where_too_wide() {
+        let text = "| Name | Level | Note |\n|:---|---:|:---:|\n| `nsHttp` | 5 | on |\n| Login crypto | 12 | a \\| b |\nafter";
+        let lines = render(text, 60);
+        assert_eq!(
+            said(&lines),
+            [
+                "Name         │ Level │ Note",
+                "─────────────┼───────┼──────",
+                "nsHttp       │     5 │  on",
+                "Login crypto │    12 │ a | b",
+                "after",
+            ]
+        );
+        assert_eq!(lines[0][0], ("Name".to_string(), Mark::Strong));
+        assert_eq!(lines[2][0], ("nsHttp".to_string(), Mark::Code));
+        // Too wide: each cell folded within its column, the narrow ones as
+        // they are.
+        let wide = "| a | b |\n|---|---|\n| x | one two three four five six |";
+        assert_eq!(said(&render(wide, 16)), ["a │ b", "──┼─────────────", "x │ one two", "  │ three four", "  │ five six"]);
+        // Too narrow even so: as it is written.
+        assert_eq!(said(&render("|a|b|c|d|\n|-|-|-|-|", 10)), ["|a|b|c|d|", "|-|-|-|-|"]);
+        // Pipes, but no row of dashes: no table.
+        assert_eq!(said(&render("a | b\nc | d", 20)), ["a | b", "c | d"]);
     }
 
     #[test]

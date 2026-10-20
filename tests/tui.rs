@@ -1316,7 +1316,7 @@ fn a_comment_is_read_as_markdown() {
     keys(&mut app, &[KeyCode::Enter]);
     save(&mut app, "why so loud?");
     let n = notes_of(&db, "s", 0).remove(0);
-    let reply = "It is **on purpose**:\n- `TWO` stands out\n- see [bug 1](https://b/1)\n```\n  let x = 1;\n```";
+    let reply = "It is **on purpose**:\n- `TWO` stands out\n- see [bug 1](https://b/1)\n```\n  let x = 1;\n```\n| a | b |\n|---|---|\n| 1 | `2` |";
     let text = append_turn(&n.text, Role::Agent, reply, Some("answer"));
     Db::edit(&db, |d| d.set_note(Note { text, ..n.clone() })).unwrap();
     app.refresh();
@@ -1325,7 +1325,7 @@ fn a_comment_is_read_as_markdown() {
     let screen = (0..30).map(|y| (0..120).map(|x| buf[(x, y)].symbol()).collect::<String>()).collect::<Vec<_>>().join("\n");
     // Its markup gone; its list bulleted; its code block as it is, fences
     // left out.
-    for line in ["▎   It is on purpose:", "▎   • TWO stands out", "▎   • see bug 1 (https://b/1)", "▎      let x = 1; "] {
+    for line in ["▎   It is on purpose:", "▎   • TWO stands out", "▎   • see bug 1 (https://b/1)", "▎      let x = 1; ", "▎   a │ b", "▎   1 │ 2"] {
         assert!(screen.contains(line), "{line:?}:\n{screen}");
     }
     assert!(!screen.contains("**") && !screen.contains("```") && !screen.contains("`TWO`"), "{screen}");

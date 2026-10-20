@@ -279,7 +279,11 @@ numbered ones keep their number, each item's lines under its text; a `>`
 quote has a bar at its left; a code block between fences shows its lines as
 they are, its fences left out, as one block; `` `code` `` loses its
 backticks; both are in the colour of the settings for code, `code`
-(`[colors]`, below), light grey on a dark grey; a `---` line is a rule. A line breaks where the text breaks it, as comments are
+(`[colors]`, below), light grey on a dark grey; a `---` line is a rule. A
+table (a header of cells between pipes, a row of dashes under it, `:` for
+how a column aligns, then its rows) has its columns aligned, `│` between
+them, its header bold with a rule under it; wider than the pane, its cells
+fold within their columns, and too narrow even so, it shows as written. A line breaks where the text breaks it, as comments are
 written, and again where it is too wide. Where a comment is said in a line
 (listed, folded), its markup is left out. The editor shows what was written
 as it was written.
