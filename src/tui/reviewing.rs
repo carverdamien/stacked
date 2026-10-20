@@ -328,8 +328,8 @@ impl App {
     }
 
     /// A key in the review: ↑↓ through its parts (or the other pane, → in
-    /// it, ← out), Enter to accept or reject, Esc to save, throw away or
-    /// close it.
+    /// it, ← out), Enter to accept, or put back to review what is accepted
+    /// (Space's menu rejects), Esc to save, throw away or close it.
     pub(super) fn review_key(&mut self, k: KeyEvent) -> Effect {
         let lines = self.review_lines();
         let page = self.page();
@@ -351,8 +351,12 @@ impl App {
             }
             (_, KeyCode::Enter) => {
                 if let Some(p) = lines.get(rv.sel).and_then(|l| l.part) {
-                    let accept = rv.marks.get(&p.key()) != Some(&true);
-                    self.mark(p, accept);
+                    match rv.marks.get(&p.key()) {
+                        Some(true) => {
+                            rv.marks.remove(&p.key());
+                        }
+                        _ => self.mark(p, true),
+                    }
                 }
             }
             (false, KeyCode::Right) if self.body_w >= 60 => rv.in_main = true,

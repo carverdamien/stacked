@@ -1451,16 +1451,21 @@ fn landed_work_is_reviewed_from_the_banner_part_by_part() {
         assert!(screen.contains(l), "{l}:\n{screen}");
     }
     assert!(screen.contains("what accepting it does to the stack"), "{screen}");
-    // Enter accepts, then rejects; each comment is shown where it would be.
+    // Enter accepts; each comment is shown where it would be.
+    assert_eq!(app.hint(), "↑↓ choose · enter: accept · →: look closer · space: menu · esc: save, discard or close");
     keys(&mut app, &[KeyCode::Enter]);
     assert!(draw(&mut app).contains("stack operations · accepted"));
+    assert_eq!(app.hint(), "↑↓ choose · enter: to review again · →: look closer · space: menu · esc: save, discard or close");
     down_to_review(&mut app, "Patch 2 is");
     assert!(draw(&mut app).contains("a comment it opened, where it would be"));
     keys(&mut app, &[KeyCode::Enter]);
     down_to_review(&mut app, "It shouts less now.");
+    // Again, it is to review again, not rejected: that is the menu's.
     keys(&mut app, &[KeyCode::Enter, KeyCode::Enter]);
     assert!(draw(&mut app).contains("its reply, as it would be in its thread"));
     let marks = |app: &App| app.reviewing.as_ref().unwrap().marks.clone();
+    assert!(!marks(&app).contains_key("reply 0"), "{:?}", marks(&app));
+    choose(&mut app, "Mark as rejected");
     let m = marks(&app);
     assert_eq!((m["stack"], m["opened 0"], m["reply 0"]), (true, true, false));
     // The change rejected rejects every comment with it; accepted again,
