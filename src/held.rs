@@ -373,6 +373,12 @@ pub fn save(db: &mut Db, id: &str, marks: &BTreeMap<String, bool>) -> Result<()>
     db.set_review(id, v).map(|_| ())
 }
 
+/// The comments the ask of run `r` was about, by (change, id): an agent's
+/// work's; none for a pull's, or an edit by hand's.
+pub fn asking_of(r: &Run) -> Vec<(String, String)> {
+    crate::ask::info(r).map(|i| i.notes.into_iter().map(|sh| (sh.change, sh.id)).collect()).unwrap_or_default()
+}
+
 /// Closes run `id`'s review: each part as marked in `marks`, those left
 /// unmarked accepted or rejected as `rest` says (with none, every part must
 /// be marked). Rejecting the change of the stack rejects its replies and
@@ -380,6 +386,12 @@ pub fn save(db: &mut Db, id: &str, marks: &BTreeMap<String, bool>) -> Result<()>
 /// if the stack is still the one the agent took; the rest is dropped. What
 /// came of it, said.
 pub fn close(db: &mut Db, id: &str, marks: &BTreeMap<String, bool>, rest: Option<bool>) -> Result<String> {
+    close_with(db, id, marks, rest, false)
+}
+
+/// As `close`; with `asking`, the comments the ask was about are closed
+/// too, done with, once their replies are in their threads.
+pub fn close_with(db: &mut Db, id: &str, marks: &BTreeMap<String, bool>, rest: Option<bool>, asking: bool) -> Result<String> {
     let (r, h, mut v) = under_review(db, id)?;
     let mut all = BTreeMap::new();
     for p in h.parts() {
@@ -412,6 +424,17 @@ pub fn close(db: &mut Db, id: &str, marks: &BTreeMap<String, bool>, rest: Option
             apply_reply(db, &r.stack, rp)?;
         }
     }
+    // Done with, the comments that asked are closed: a closed comment does
+    // not follow the lines of the change.
+    let mut closed = 0;
+    if asking {
+        for (c, i) in asking_of(&r) {
+            if let Some(n) = db.note(&c, &i).cloned() {
+                db.set_note(Note { text: String::new(), ..n })?;
+                closed += 1;
+            }
+        }
+    }
     let mut rev = r.rev;
     if let Some((c, true)) = change {
         let s = db.stack(&r.stack)?.clone();
@@ -428,7 +451,10 @@ pub fn close(db: &mut Db, id: &str, marks: &BTreeMap<String, bool>, rest: Option
     v.marks.extend(all);
     v.closed = true;
     db.set_review(id, v.clone())?;
-    let said = said(&h, &v.marks);
+    let mut said = said(&h, &v.marks);
+    if closed > 0 {
+        said += &format!("; {}", count(closed, "asking comment closed", "asking comments closed"));
+    }
     db.add_run(Run {
         summary: format!("reviewed: {said}"),
         rev,

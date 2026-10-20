@@ -29,6 +29,9 @@ pub struct Reviewing {
     /// Whether the cursor is in the other pane, to scroll it, and how far.
     pub in_main: bool,
     scroll: usize,
+    /// Whether closing the review closes the comments that asked too, as
+    /// its dialog's box is checked: not, until it is.
+    pub close_asking: bool,
 }
 
 /// A line of the review's list: what it says, how, and the part it is of
@@ -462,15 +465,23 @@ impl App {
     pub(super) fn review_dialog(&self) -> Menu {
         let parts = self.review_parts();
         let done = self.reviewing.as_ref().is_some_and(|rv| parts.iter().all(|p| rv.marks.contains_key(&p.key())));
-        let items = vec![
+        let mut items = vec![
             Item::new("Save", Action::ReviewSave),
             Item::new("Discard", Action::ReviewDiscard),
             Item::new("Close review", Action::ReviewClose(None)).when(done),
             Item::new("Accept all remaining and Close", Action::ReviewClose(Some(true))),
             Item::new("Reject all remaining and Close", Action::ReviewClose(Some(false))),
-            Item::line(),
-            Item::new("Keep reviewing", Action::Cancel),
         ];
+        // The agent's: the comments that asked, closed with the review if
+        // checked.
+        let asking = self.reviewing.as_ref().and_then(|rv| self.db.run(&rv.run)).map(crate::held::asking_of).unwrap_or_default();
+        let open = asking.iter().filter(|(c, i)| self.db.note(c, i).is_some()).count();
+        if open > 0 {
+            let label = if open == 1 { "Close the asking comment".to_string() } else { format!("Close the {open} asking comments") };
+            let on = self.reviewing.as_ref().is_some_and(|rv| rv.close_asking);
+            items.push(Item::new(label, Action::CloseAsking).checked(on));
+        }
+        items.extend([Item::line(), Item::new("Keep reviewing", Action::Cancel)]);
         let run = self.reviewing.as_ref().and_then(|rv| self.db.run(&rv.run));
         let of = match run {
             Some(r) if crate::held::pulled(r) => "the comments pulled",
@@ -593,7 +604,7 @@ impl App {
     /// parts not marked accepted or rejected as `rest` says.
     pub(super) fn review_close(&mut self, rest: Option<bool>) {
         let Some(rv) = self.reviewing.clone() else { return };
-        if let Some(said) = self.edit(|db| crate::held::close(db, &rv.run, &rv.marks, rest)) {
+        if let Some(said) = self.edit(|db| crate::held::close_with(db, &rv.run, &rv.marks, rest, rv.close_asking)) {
             self.status = format!("reviewed: {said}");
             self.leave_review();
             // What waited on the review may go.

@@ -539,6 +539,9 @@ pub enum Action {
     ReviewSave,
     ReviewDiscard,
     ReviewClose(Option<bool>),
+    /// Whether closing the review closes the comments that asked too:
+    /// checked, or not.
+    CloseAsking,
     Send(Way),
     /// A patch's comment sent to the whole stack: the agent may change any
     /// patch.
@@ -676,6 +679,9 @@ fn about(action: &Action) -> String {
         Action::ReviewClose(None) => "close the review: what you accepted is applied, what you rejected is dropped for good".into(),
         Action::ReviewClose(Some(true)) => "accept every part not marked yet, then close the review".into(),
         Action::ReviewClose(Some(false)) => "reject every part not marked yet, then close the review".into(),
+        Action::CloseAsking => {
+            "close the comments the agent was asked about too, as the review closes, done with them (Show…, closed, lists them, to reopen); or keep them open".into()
+        }
         Action::Send(Way::Change) => "ask the agent, which may change the code within this comment's place".into(),
         Action::Send(Way::Answer) => "ask the agent, to answer only: nothing changes".into(),
         Action::Send(Way::Test) => "ask the agent to build and test, in a workspace of its choosing".into(),
@@ -3572,7 +3578,9 @@ impl App {
             _ => {}
         }
         self.common(&mut items);
-        Menu::new(title, items, hands)
+        // In a review, what waits is what is reviewed, and edited by hand
+        // from there: nothing it holds back is said.
+        Menu::new(title, items, hands.filter(|_| self.screen != Screen::Review))
     }
 
     /// The Send all items of a header: the comments listed that can be sent.
@@ -3866,6 +3874,16 @@ impl App {
                 self.status = "the marks you made since you opened the review are thrown away".into();
             }
             Action::ReviewClose(rest) => self.review_close(rest),
+            Action::CloseAsking => {
+                if let Some(rv) = self.reviewing.as_mut() {
+                    rv.close_asking = !rv.close_asking;
+                }
+                let mut m = self.review_dialog();
+                if let Some(k) = m.items.iter().position(|i| i.action == Action::CloseAsking) {
+                    m.sel = k;
+                }
+                self.mode = Mode::Menu(m);
+            }
             Action::Collapse | Action::Expand => {
                 let collapse = matches!(action, Action::Collapse);
                 if let Some(c) = self.picked()

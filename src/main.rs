@@ -344,6 +344,10 @@ enum Cmd {
         accept_all: bool,
         #[arg(long)]
         reject_all: bool,
+        /// Close the comments the agent was asked about too, done with,
+        /// once their replies are in their threads.
+        #[arg(long)]
+        close_asking: bool,
     },
     /// The runs, oldest first: asks, applies and pulls, and what came of
     /// them.
@@ -1396,7 +1400,7 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
                 }
             }
         }
-        Cmd::Review { name, run, accept_all, .. } => {
+        Cmd::Review { name, run, accept_all, close_asking, .. } => {
             let said = Db::edit(path, |db| {
                 let queue: Vec<String> = stacked::held::queue(db, &name).into_iter().map(|r| r.id.clone()).collect();
                 let id = match &run {
@@ -1408,7 +1412,7 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
                     None => queue.first().cloned().ok_or_else(|| Error(format!("nothing on {name} waits for your review")))?,
                 };
                 let marks = db.review(&id).map(|v| v.marks.clone()).unwrap_or_default();
-                let said = stacked::held::close(db, &id, &marks, Some(accept_all))?;
+                let said = stacked::held::close_with(db, &id, &marks, Some(accept_all), close_asking)?;
                 Ok(format!("{id}\treviewed: {said}"))
             })?;
             // What waited on the review may go.

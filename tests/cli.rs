@@ -1058,6 +1058,20 @@ fn landed_work_is_edited_by_hand_in_its_place() {
 }
 
 #[test]
+fn the_asking_comment_is_closed_with_its_review_if_said() {
+    let e = env();
+    e.ok(&["import", "s", "base"]);
+    let id = comment(&e, &["--patch", "1", "Why", "2?"]);
+    let claude = fake_claude(&e, "claude-answer.sh", "", r#"{"replies": {"c1": "Because."}}"#);
+    let (fine, out, err) = stacked_in(&e.src, &e.db, &["send", "s", &id, "--answer-only", "--wait"], "", &[("STACKED_CLAUDE", &claude)]);
+    assert!(fine, "{out}{err}");
+    let out = e.ok(&["review", "s", "--accept-all", "--close-asking"]);
+    assert!(out.contains("reviewed: 1 reply accepted; 1 asking comment closed"), "{out}");
+    assert_eq!(e.ok(&["comments", "s"]), "");
+    assert!(e.ok(&["comments", "s", "--show", "closed"]).contains("agent: Because."));
+}
+
+#[test]
 fn the_agent_rebases_reviews_and_tests() {
     let e = env();
     // A commit on main for the stack to go onto.

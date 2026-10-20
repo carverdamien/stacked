@@ -3216,6 +3216,7 @@ fn landed_work_is_edited_by_hand_from_its_review_in_its_place() {
     for l in ["Edit this patch in $EDITOR", "Edit a.txt in $EDITOR", "Edit the stack as a list in $EDITOR"] {
         assert!(all.contains(&l.to_string()), "{l:?} in {all:?}");
     }
+    assert!(matches!(&app.mode, Mode::Menu(m) if m.note.is_none()), "nothing said to hold the edits back: {:?}", app.mode);
     let run = "run-agent".to_string();
     assert_eq!(choose(&mut app, "Edit this patch in $EDITOR"), Effect::EditWork { run: run.clone(), edit: WorkEdit::Mail(0) });
     let edit = WorkEdit::Code {
@@ -3251,6 +3252,49 @@ fn landed_work_is_edited_by_hand_from_its_review_in_its_place() {
     let d = Db::load(&db).unwrap();
     assert!(d.patch(&d.stack("s").unwrap().patches[0]).diff.contains("+Two"));
     assert!(d.note(&n.change, &n.id).unwrap().text.contains("Quieter now."));
+}
+
+#[test]
+fn closing_the_agent_s_review_may_close_the_asking_comment_too() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    let ask = |app: &mut App, line: &str, text: &str, reply: &str, run: &str| {
+        keys(app, &[KeyCode::Home]);
+        down_to(app, line);
+        keys(app, &[KeyCode::Enter]);
+        save(app, text);
+        let n = notes_of(&db, "s", 0).into_iter().find(|n| n.text == text).unwrap();
+        held(&db, run, &n.change, &n.id, reply, false);
+        app.refresh();
+        n
+    };
+    keys(&mut app, &[KeyCode::Right]);
+    let n = ask(&mut app, "+TWO", "why so loud?", "It is a shout.", "run-1");
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Enter]);
+    assert_eq!(app.screen, Screen::Review);
+    // Closing it, the box is there, not checked.
+    keys(&mut app, &[KeyCode::Esc]);
+    assert!(drawn_items(&app).contains(&"[ ] Close the asking comment".to_string()), "{:?}", drawn_items(&app));
+    // Checked, the dialog stays, on it.
+    choose(&mut app, "Close the asking comment");
+    assert!(drawn_items(&app).contains(&"[x] Close the asking comment".to_string()), "{:?}", drawn_items(&app));
+    assert!(matches!(&app.mode, Mode::Menu(m) if m.items[m.sel].label == "Close the asking comment"));
+    choose(&mut app, "Accept all remaining and Close");
+    assert_eq!(app.status, "reviewed: 1 reply accepted; 1 asking comment closed");
+    let d = Db::load(&db).unwrap();
+    assert!(d.note(&n.change, &n.id).is_none(), "closed");
+    let was = d.note_history(&n.change, &n.id).into_iter().rev().find(|(_, n)| !n.text.is_empty()).unwrap().1.text.clone();
+    assert!(was.contains("It is a shout."), "its reply in first: {was}");
+    drop(d);
+    // Not checked, as it is each time: the comment stays open.
+    let n = ask(&mut app, "-two", "and this?", "Gone.", "run-2");
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Enter]);
+    assert_eq!(app.screen, Screen::Review);
+    keys(&mut app, &[KeyCode::Esc]);
+    assert!(drawn_items(&app).contains(&"[ ] Close the asking comment".to_string()), "{:?}", drawn_items(&app));
+    choose(&mut app, "Accept all remaining and Close");
+    assert_eq!(app.status, "reviewed: 1 reply accepted");
+    assert!(Db::load(&db).unwrap().note(&n.change, &n.id).is_some_and(|n| n.text.contains("Gone.")));
 }
 
 #[test]

@@ -663,7 +663,11 @@ the marks in the file, for the review to go on from them when you open it
 again; `Discard` throws away the marks made since the review was opened;
 `Close review`, once every part is marked, applies what is accepted;
 `Accept all remaining and Close` and `Reject all remaining and Close`
-mark what is left and close. A reply that goes with a change of the stack
+mark what is left and close. For the agent's work, under them, `[ ] Close
+the asking comment`, not checked each time a review opens: Enter checks it,
+and closing then closes the comments the agent was asked about too, once
+their replies are in their threads, done with them (`Show…`, closed, lists
+them, to reopen). A reply that goes with a change of the stack
 opens that review, on the reply, from its comment (Enter, or `Review the
 agent's work…` in its menu).
 
@@ -684,7 +688,8 @@ On the command line, `stacked landed NAME` lists the queue: each landed ask
 by its run, what it holds, and each part of it. `stacked review NAME [RUN]
 --accept-all` (or `--reject-all`) closes the review of that ask, the first
 landed if no run is given: the parts not marked yet are accepted (or
-rejected), and what is accepted is applied. `stacked send NAME ID --wait`
+rejected), and what is accepted is applied; `--close-asking` closes the
+comments the agent was asked about too. `stacked send NAME ID --wait`
 says what waits for your review once it lands; `--wait --accept` accepts
 all of it as soon as it lands, for a script.
 
