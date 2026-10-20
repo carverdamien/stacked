@@ -586,10 +586,12 @@ with `stacked export NAME --work RUN` and `stacked show NAME --work RUN`,
 the stack a landed work makes. An answer-only ask runs at once, alongside
 the changes, on the stack as it is: accepting a change asks again the
 answers made on the stack before it, still running or waiting for your
-review. A build and test is not asked again: it goes on, of the stack as it
-was, unless you stop it as you close the review. Closing a review, or
-sending the work back, says first what that asks again, and offers to stop
-a build and test going.
+review. Asked again, an ask whose work had landed is shown that work, to
+reuse what still holds: its replies, the comments it opened, and, for a
+change, what it changed. A build and test is not asked again: it goes on,
+of the stack as it was, unless you stop it as you close the review.
+Closing a review, or sending the work back, says first what that asks
+again, and offers to stop a build and test going.
 
 While the agent changes a stack, the stack is not edited by hand: the
 agent's change is made from the stack as it took it. The menus' edits of

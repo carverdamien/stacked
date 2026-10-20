@@ -268,6 +268,10 @@ pub struct Queued {
     /// round sent back from that work's review.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on: Option<String>,
+    /// Asked again: the run before, whose landed work, dropped, the new
+    /// agent is shown, to reuse what still holds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub was: Option<String>,
 }
 
 impl Queued {

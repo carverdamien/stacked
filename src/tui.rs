@@ -428,7 +428,7 @@ pub enum Mode {
     /// All that can be done: ↑↓ to choose, enter to do it.
     Menu(Menu),
     /// A comment being written, inline.
-    Edit(Edit),
+    Edit(Box<Edit>),
     /// The patch at `from` being moved, now at `to`: ↑↓ to place it.
     Moving { from: usize, to: usize },
     /// HEAD of the checkout stacked runs in being moved, shown with `to` of
@@ -2379,7 +2379,7 @@ impl App {
         match std::mem::replace(&mut self.mode, Mode::Normal) {
             Mode::Normal | Mode::Help { .. } => {}
             Mode::Menu(m) => return self.menu_key(m, k),
-            Mode::Edit(e) => return self.edit_key(e, k),
+            Mode::Edit(e) => return self.edit_key(*e, k),
             Mode::Moving { from, to } => {
                 self.moving_key(from, to, k);
                 return Effect::None;
@@ -3262,7 +3262,7 @@ impl App {
             KeyCode::Esc | KeyCode::Char(' ') => {
                 // A comment written stays being written.
                 if let Some(e) = self.pending.take() {
-                    self.mode = Mode::Edit(e);
+                    self.mode = Mode::Edit(Box::new(e));
                 }
                 return Effect::None;
             }
@@ -3286,7 +3286,7 @@ impl App {
     fn edit_key(&mut self, mut e: Edit, k: KeyEvent) -> Effect {
         let changed = match e.ed.key(k) {
             Op::Stay => {
-                self.mode = Mode::Edit(e);
+                self.mode = Mode::Edit(Box::new(e));
                 return Effect::None;
             }
             Op::Close => false,
@@ -4597,7 +4597,7 @@ impl App {
                     // the editor.
                     if let Some(why) = self.locked_target(&e.target) {
                         self.status = why;
-                        self.mode = Mode::Edit(e);
+                        self.mode = Mode::Edit(Box::new(e));
                         return Effect::None;
                     }
                     let text = e.ed.text();
@@ -4612,7 +4612,7 @@ impl App {
                 if let Some(e) = self.pending.take() {
                     if let Some(why) = self.locked_target(&e.target) {
                         self.status = why;
-                        self.mode = Mode::Edit(e);
+                        self.mode = Mode::Edit(Box::new(e));
                         return Effect::None;
                     }
                     let text = e.ed.text();
@@ -4637,7 +4637,7 @@ impl App {
             }
             Action::KeepWriting => {
                 if let Some(e) = self.pending.take() {
-                    self.mode = Mode::Edit(e);
+                    self.mode = Mode::Edit(Box::new(e));
                 }
             }
             Action::Quit => return Effect::Quit,
@@ -4742,7 +4742,7 @@ impl App {
         {
             ed = ed.with_ghost(crate::thread::said_lines(&n.text));
         }
-        self.mode = Mode::Edit(Edit { ed, target, pane, held });
+        self.mode = Mode::Edit(Box::new(Edit { ed, target, pane, held }));
     }
 
     /// The comment last closed on the line a new comment goes on (a line,

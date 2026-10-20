@@ -1502,6 +1502,8 @@ fn what_went_on_from_a_change_rejected_is_dropped_its_agent_stopped_and_asked_ag
     drop(d);
     assert!(dropped.state == RunState::Failed && dropped.summary == "dropped: the work it went on from was rejected; asked again", "{dropped:?}");
     assert_eq!(landed_ids(&e).len(), 1);
+    let told = std::fs::read_to_string(&prompts).unwrap();
+    assert!(!told.contains("This was asked before"), "nothing of it landed:\n{told}");
     e.ok(&["review", "s", "--accept-all"]);
     let shown = e.ok(&["show", "s", "1"]);
     assert!(shown.contains("+deux\n") && !shown.contains("spelled"), "{shown}");
@@ -1541,6 +1543,7 @@ fn an_answer_runs_on_the_stack_as_it_is_and_accepting_an_edit_asks_it_again() {
     let asked: Vec<&str> = told.split("=====").collect();
     assert!(asked.len() == 4 && asked[2].contains("Why b?"), "{told}");
     assert_ne!(rev_in(asked[1]), rev_in(asked[2]), "{told}");
+    assert!(asked[2].contains("This was asked before") && asked[2].contains("What was answered then to c1:\nDone."), "{told}");
     assert!(e.ok(&["runs", "s"]).contains("dropped: an edit of the stack was accepted meanwhile; asked again"));
     assert_eq!(landed_ids(&e).len(), 1);
 }
@@ -1609,7 +1612,11 @@ fn what_went_on_from_a_change_sent_back_starts_again_from_its_round() {
     let ids = landed_ids(&e);
     assert_eq!(ids.len(), 2, "the round's work, and the second's on it");
     assert!(asked[3].contains("Spell it more.") && asked[3].contains(&format!("--work {}", ids[0])), "{told}");
-    assert!(e.ok(&["runs", "s"]).contains("dropped: the work it went on from was sent back; asked again"));
+    let runs = e.ok(&["runs", "s"]);
+    let dropped = runs.lines().find(|l| l.contains("dropped: the work it went on from was sent back; asked again")).unwrap();
+    let dropped = dropped.split('\t').next().unwrap();
+    assert!(asked[3].contains("This was asked before, going on from an edit that was then dropped"), "{told}");
+    assert!(asked[3].contains(&format!("export s --work {dropped}")) && asked[3].contains("++2 spelled"), "{told}");
 }
 
 #[test]

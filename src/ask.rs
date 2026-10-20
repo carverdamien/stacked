@@ -153,6 +153,10 @@ pub struct Info {
     /// Dropped, its guess wrong: its worktree is free to be taken again.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub dropped: bool,
+    /// Asked again: the run before it, whose landed work was dropped, shown
+    /// to the agent to reuse what still holds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub was: Option<String>,
 }
 
 /// The stack ask `i` works on: the stack at `i.from`; or, a round sent
@@ -380,7 +384,9 @@ fn drop_run(db: &mut Db, r: &Run, mut i: Info, why: String) -> Result<()> {
         let v = db.review(&r.id).cloned().unwrap_or_default();
         db.set_review(&r.id, crate::held::Review { closed: true, ..v })?;
     }
-    ask_again(db, &i)
+    // Landed, what it brought back is shown to the agent asked again.
+    let landed = (!running && r.held.is_some()).then(|| r.id.clone());
+    ask_again(db, &i, landed)
 }
 
 /// Landed work `id` rejected, sent back or edited by hand (`why`): what
@@ -458,8 +464,9 @@ pub fn builds_going(db: &Db, name: &str) -> Vec<Run> {
 }
 
 /// The comments ask `i` was about back in the queue, ready, in the batch
-/// they were sent in: they go again as they were asked.
-fn ask_again(db: &mut Db, i: &Info) -> Result<()> {
+/// they were sent in: they go again as they were asked, the agent shown
+/// what run `was` brought back, if it landed.
+fn ask_again(db: &mut Db, i: &Info, was: Option<String>) -> Result<()> {
     let batch = if i.batch.is_empty() { format!("b{}", crate::db::unique()) } else { i.batch.clone() };
     for sh in &i.notes {
         let Some(n) = db.note(&sh.change, &sh.id).cloned() else { continue };
@@ -471,6 +478,7 @@ fn ask_again(db: &mut Db, i: &Info) -> Result<()> {
                 stack,
                 stage: Stage::Ready,
                 on: i.on.clone(),
+                was: was.clone(),
             }),
             failed: None,
             ..n
@@ -679,6 +687,7 @@ fn enqueue(db: &mut Db, notes: &[(String, String)], way: Way, whole: bool, stage
                 stack: whole && !n.on_stack(),
                 stage,
                 on: on.map(String::from),
+                was: None,
             }),
             failed: None,
             ..n
@@ -790,14 +799,14 @@ fn claim(db: &mut Db) -> Result<Vec<String>> {
     // The ready batches: stack, way, scope, comments, and the landed work a
     // round sent back starts from.
     let mut order: Vec<String> = Vec::new();
-    type Batch = (String, Way, Scope, Vec<Note>, Option<String>);
+    type Batch = (String, Way, Scope, Vec<Note>, Option<String>, Option<String>);
     let mut batches: HashMap<String, Batch> = HashMap::new();
     for s in db.stacks() {
         for n in db.stack_notes(&s.name) {
             let Some(q) = n.queued.as_ref().filter(|q| !q.batched()) else { continue };
             let entry = batches.entry(q.batch.clone()).or_insert_with(|| {
                 order.push(q.batch.clone());
-                (s.name.clone(), q.way, asked_scope(n), Vec::new(), q.on.clone())
+                (s.name.clone(), q.way, asked_scope(n), Vec::new(), q.on.clone(), q.was.clone())
             });
             entry.3.push(n.clone());
         }
@@ -812,7 +821,7 @@ fn claim(db: &mut Db) -> Result<Vec<String>> {
     let mut state: HashMap<String, Going> = HashMap::new();
     let mut test = testing(db).is_some();
     for b in &order {
-        let (name, way, scope, notes, on) = batches[b].clone();
+        let (name, way, scope, notes, on, was) = batches[b].clone();
         let st = state.entry(name.clone()).or_insert_with(|| {
             let going = asks_going(db, &name);
             Going {
@@ -891,6 +900,7 @@ fn claim(db: &mut Db) -> Result<Vec<String>> {
             after,
             batch: b.clone(),
             dropped: false,
+            was,
         };
         db.add_run(Run {
             id: id.clone(),
@@ -1075,6 +1085,48 @@ followed across its versions by its title. When you are done, everything must be
 and HEAD must be the top. You cannot build the project or run its tests here; reason from the \
 code. Do not push or fetch, nor stash.";
 
+/// The most lines of a dropped change's stack diff a prompt shows.
+const BEFORE_LINES: usize = 300;
+
+/// What ask `i`, asked again, is told of what run `was` brought back before
+/// it was dropped, the stack having changed: its replies and the comments it
+/// opened; for a change, what it changed, its stack diff from the stack it
+/// went on from, and how to read the stack it made.
+fn before(db: &Db, i: &Info, was: &str, name: &str, cmd: &str) -> String {
+    let Some((r, h)) = db.run(was).and_then(|r| Some((r, r.held.as_ref()?))) else { return String::new() };
+    let mut out = match i.way {
+        Way::Answer => " This was asked before, on the stack as it was before an edit of it was \
+                        accepted; what was answered then is below. Answer again on the stack as it is \
+                        now: keep what still holds, and say what the edit changes."
+            .to_string(),
+        _ => format!(
+            " This was asked before, going on from an edit that was then dropped; what was \
+             made then is below, and `{cmd} export {name} --work {was}` prints the stack it \
+             made. Make it again on the stack as it is now, keeping what still applies."
+        ),
+    };
+    for sh in &i.notes {
+        if let Some(rp) = h.replies.iter().find(|rp| rp.change == sh.change && rp.id == sh.id) {
+            out += &format!("\n\nWhat was answered then to {}:\n{}", sh.label, rp.text.trim_end());
+        }
+    }
+    for n in &h.opened {
+        out += &format!("\n\nA comment opened then, on {}: {}", n.preview, crate::thread::thread_turns(&n.text).last().map_or("", |t| t.body.as_str()));
+    }
+    // A change: what it changed, from the stack it went on from.
+    if let (Some(_), Some(old)) = (&h.stack, info(r))
+        && let (Ok(start), Ok(made)) = (started_from(db, &old), work_stack(db, was))
+    {
+        let lines: Vec<String> = crate::history::stacks_diff(db, Some(&start), Some(&made), true).iter().map(crate::history::Diffed::text).collect();
+        out += "\n\nWhat was changed then, as a stack diff:\n";
+        out += &lines.iter().take(BEFORE_LINES).cloned().collect::<Vec<_>>().join("\n");
+        if lines.len() > BEFORE_LINES {
+            out += &format!("\n… and {} lines more: `{cmd} export {name} --work {was}` has it all", lines.len() - BEFORE_LINES);
+        }
+    }
+    out
+}
+
 /// The prompt for an ask: what it may do, the stack, the comments, and
 /// what to answer with.
 fn prompt(db: &Db, i: &Info, s: &Stack, cmd: &str, run: &str) -> String {
@@ -1195,6 +1247,10 @@ fn prompt(db: &Db, i: &Info, s: &Stack, cmd: &str, run: &str) -> String {
             }
             _ => " This is another round: the user read what you answered, and asks again in the comments below.",
         });
+    }
+    // Asked again, the work landed before dropped: shown, to reuse.
+    if let Some(was) = &i.was {
+        p.push_str(&before(db, i, was, &s.name, cmd));
     }
     p.push_str("\n\nThe stack, bottom first:\n");
     for (at, id) in s.patches.iter().enumerate() {
