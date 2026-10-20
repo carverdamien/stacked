@@ -658,8 +658,10 @@ interdiff under it; or the comment where it would be, the reply as the
 last turn of its thread. That side is only to look at: → goes into it to
 scroll, and ← comes back. Enter accepts the part the cursor is on, or puts
 it back to review if accepted (rejecting is Space's); every line of the
-stack operations is the one part of the change. Space has `Mark as accepted` or `Mark as rejected`, `Mark all
-comments accepted` and `Mark all comments rejected`. Marking the change
+stack operations is the one part of the change. Space has `Mark as
+accepted` or `Mark as rejected`; and, each kind apart, `Mark all opened
+comments accepted` and `… rejected` for the comments the work opened,
+`Mark all replies accepted` and `… rejected` for its replies. Marking the change
 rejected marks the comments rejected too, and marking it accepted again
 puts their marks back as they were; a comment cannot be accepted while
 the change is rejected. Esc says what is marked, by kind of part

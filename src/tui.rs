@@ -530,9 +530,10 @@ pub enum Action {
     /// The review of what run `0` brought back opened, on part `1`.
     Review(String, Option<crate::held::Part>),
     /// In the review: the part the cursor is on marked accepted (true) or
-    /// rejected; every comment so.
+    /// rejected; every comment the work opened so, or every reply.
     MarkPart(bool),
-    MarkComments(bool),
+    MarkOpened(bool),
+    MarkReplies(bool),
     /// The review's marks saved; those made since it opened thrown away;
     /// the review closed, the parts not marked yet accepted or rejected
     /// if said.
@@ -672,8 +673,10 @@ fn about(action: &Action) -> String {
         Action::Review(..) => "review what landed, the agent's work or the comments pulled from Phabricator: accept or reject each part of it".into(),
         Action::MarkPart(true) => "mark this part accepted: it is applied when the review closes".into(),
         Action::MarkPart(false) => "mark this part rejected: it is dropped when the review closes".into(),
-        Action::MarkComments(true) => "mark every comment of this work accepted".into(),
-        Action::MarkComments(false) => "mark every comment of this work rejected".into(),
+        Action::MarkOpened(true) => "mark every comment this work opened accepted".into(),
+        Action::MarkOpened(false) => "mark every comment this work opened rejected".into(),
+        Action::MarkReplies(true) => "mark every reply of this work accepted".into(),
+        Action::MarkReplies(false) => "mark every reply of this work rejected".into(),
         Action::ReviewSave => "save your marks and leave: the review goes on from them when you open it again".into(),
         Action::ReviewDiscard => "leave, throwing away the marks you made since you opened the review".into(),
         Action::ReviewClose(None) => "close the review: what you accepted is applied, what you rejected is dropped for good".into(),
@@ -3867,7 +3870,8 @@ impl App {
                     self.mark(p, accept);
                 }
             }
-            Action::MarkComments(accept) => self.mark_comments(accept),
+            Action::MarkOpened(accept) => self.mark_all(false, accept),
+            Action::MarkReplies(accept) => self.mark_all(true, accept),
             Action::ReviewSave => self.review_save(),
             Action::ReviewDiscard => {
                 self.leave_review();

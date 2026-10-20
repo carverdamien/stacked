@@ -3347,6 +3347,86 @@ fn a_comment_where_one_was_closed_shows_it_dimmed_until_you_write() {
     assert!(matches!(&app.mode, Mode::Edit(e) if !e.ed.ghosted()), "nothing was closed on that line: {:?}", app.mode);
 }
 
+/// What the agent brought back of an ask, to answer, about `notes` of
+/// patch 1: a reply to each, and a comment of its own on patch 1's title;
+/// landed as run `run`.
+fn answered(db: &Path, run: &str, notes: &[Note]) {
+    Db::edit(db, |d| {
+        let (from, s) = d.head("s").map(|(r, s)| (r, s.clone())).unwrap();
+        let p1 = d.patch(&s.patches[0]).clone();
+        let shown: Vec<serde_json::Value> = notes
+            .iter()
+            .enumerate()
+            .map(|(k, n)| serde_json::json!({"label": format!("c{}", k + 1), "change": n.change, "id": n.id}))
+            .collect();
+        let replies = notes
+            .iter()
+            .map(|n| stacked::held::Reply {
+                change: n.change.clone(),
+                id: n.id.clone(),
+                text: format!("Seen: {}", n.text),
+                tag: "answer".into(),
+                ..Default::default()
+            })
+            .collect();
+        d.add_run(stacked::db::Run {
+            id: run.into(),
+            what: "answer".into(),
+            stack: "s".into(),
+            state: stacked::db::RunState::Done,
+            request: notes[0].text.clone(),
+            ask: Some(serde_json::json!({"way": "answer", "scope": {"patch": p1.change}, "from": from, "notes": shown})),
+            held: Some(stacked::held::Held {
+                at: stacked::db::now(),
+                replies,
+                opened: vec![Note {
+                    change: p1.change.clone(),
+                    id: format!("agent:{run}:0"),
+                    line: stacked::view::title_key(&p1),
+                    text: "```agent answer\nAnd the title?\n```".into(),
+                    file: stacked::view::MSG_PATH.into(),
+                    preview: p1.title().into(),
+                    by: Some("agent".into()),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }),
+            ..Default::default()
+        })
+        .map(|_| ())
+    })
+    .unwrap();
+}
+
+#[test]
+fn the_review_marks_its_opened_comments_and_its_replies_apart() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Enter]);
+    save(&mut app, "why so loud?");
+    down_to(&mut app, "+LINE 39");
+    keys(&mut app, &[KeyCode::Enter]);
+    save(&mut app, "and this?");
+    answered(&db, "run-1", &notes_of(&db, "s", 0));
+    app.refresh();
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Enter]);
+    assert_eq!(app.screen, Screen::Review);
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    let all: Vec<String> = items(&app).into_iter().map(|(l, _)| l).collect();
+    for l in ["Mark all opened comments accepted", "Mark all opened comments rejected", "Mark all replies accepted", "Mark all replies rejected"] {
+        assert!(all.contains(&l.to_string()), "{l:?} in {all:?}");
+    }
+    assert!(!all.iter().any(|l| l.starts_with("Mark all comments")), "{all:?}");
+    let marks = |app: &App| app.reviewing.as_ref().unwrap().marks.clone();
+    choose(&mut app, "Mark all replies rejected");
+    assert_eq!(marks(&app), [("reply 0", false), ("reply 1", false)].map(|(k, m)| (k.to_string(), m)).into());
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    choose(&mut app, "Mark all opened comments accepted");
+    assert_eq!(marks(&app), [("opened 0", true), ("reply 0", false), ("reply 1", false)].map(|(k, m)| (k.to_string(), m)).into());
+}
+
 #[test]
 fn the_banner_tracks_the_open_comments_and_esc_goes_there_and_back() {
     let (_tmp, db, _src) = setup();

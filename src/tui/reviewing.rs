@@ -420,9 +420,19 @@ impl App {
         rv.marks.insert(p.key(), accept);
     }
 
-    /// Every comment of the review marked accepted, or rejected.
-    pub(super) fn mark_comments(&mut self, accept: bool) {
-        for p in self.review_parts().into_iter().filter(|p| *p != Part::Stack) {
+    /// Every reply of the review marked accepted, or rejected; or, not
+    /// `replies`, every comment the work opened.
+    pub(super) fn mark_all(&mut self, replies: bool, accept: bool) {
+        let these: Vec<Part> = self
+            .review_parts()
+            .into_iter()
+            .filter(|p| match p {
+                Part::Reply(_) => replies,
+                Part::Opened(_) => !replies,
+                Part::Stack => false,
+            })
+            .collect();
+        for p in these {
             self.mark(p, accept);
         }
     }
@@ -509,9 +519,16 @@ impl App {
                 }
             }
         }
-        let comments = self.review_parts().iter().any(|p| *p != Part::Stack);
-        items.push(Item::new("Mark all comments accepted", Action::MarkComments(true)).when(comments && !rejected));
-        items.push(Item::new("Mark all comments rejected", Action::MarkComments(false)).when(comments));
+        // The comments it opened, and its replies, each kind apart.
+        let parts = self.review_parts();
+        if parts.iter().any(|p| matches!(p, Part::Opened(_))) {
+            items.push(Item::new("Mark all opened comments accepted", Action::MarkOpened(true)).when(!rejected));
+            items.push(Item::new("Mark all opened comments rejected", Action::MarkOpened(false)));
+        }
+        if parts.iter().any(|p| matches!(p, Part::Reply(_))) {
+            items.push(Item::new("Mark all replies accepted", Action::MarkReplies(true)).when(!rejected));
+            items.push(Item::new("Mark all replies rejected", Action::MarkReplies(false)));
+        }
         // Edited by hand from here, the stack the work makes: the patch the
         // cursor is on, as mail or a file of it; the stack as a list.
         if self.read_only().is_none()
