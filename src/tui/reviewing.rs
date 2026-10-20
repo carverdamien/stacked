@@ -8,11 +8,16 @@
 //! on later, thrown away, or closed, what was accepted applied.
 
 use std::collections::BTreeMap;
+use std::ops::Range;
 
 use super::*;
 use crate::db::Run;
 use crate::held::{Held as Work, Part};
 use crate::history::Diffed;
+
+/// What the review's right pane shows of a part: what it is, said; its
+/// lines; and the lines that are the part, the first to show first.
+type View = (String, Vec<Vec<(String, Style)>>, Range<usize>);
 
 /// A review being made: of what run `run` brought back.
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -34,6 +39,11 @@ pub struct Reviewing {
     /// The replies' marks when the comment they answer was marked to close,
     /// accepting them with it: they come back if it is kept again.
     asked_before: BTreeMap<String, Option<bool>>,
+    /// On a patch of the stack the work makes, looked at closer: the row
+    /// the cursor is on, the first row shown, and how wide they were drawn.
+    row: usize,
+    row_top: usize,
+    main_w: usize,
 }
 
 /// A line of the review's list: what it says, how, and the part it is of
@@ -145,6 +155,109 @@ impl App {
             .collect()
     }
 
+    /// Whether the work reviewed is the agent's, to send back to it with
+    /// what you write in its review: not a pull's, nor an edit by hand's.
+    pub(super) fn review_writable(&self) -> bool {
+        self.reviewing.as_ref().and_then(|rv| self.db.run(&rv.run)).is_some_and(|r| crate::ask::info(r).is_some() && !crate::held::pulled(r))
+    }
+
+    /// The patch of the stack the work makes that the list's line the cursor
+    /// is on is about, with its place, if it is one of its patches.
+    pub(super) fn review_patch(&self) -> Option<(usize, Patch)> {
+        let rv = self.reviewing.as_ref()?;
+        let lines = self.review_lines();
+        let entry = lines.get(rv.sel)?.entry?;
+        let (now, next) = self.review_stacks()?;
+        match crate::history::stacks_diff(&self.db, Some(&now), Some(&next), false).get(entry)? {
+            Diffed::Patch { at, .. } => Some((at - 1, self.db.patch(next.patches.get(at - 1)?).clone())),
+            _ => None,
+        }
+    }
+
+    /// Patch `p` as the work leaves it, a row at a time, `w` wide, the
+    /// comments on its lines under them: those the work replied to with
+    /// its reply, and your answer to it, as their threads would be; the
+    /// turn written again in the editor in the editor alone.
+    fn review_rows(&self, p: &Patch, w: usize) -> Vec<Row> {
+        let replies = self.reviewing.as_ref().and_then(|rv| self.work(&rv.run)).map_or(&[][..], |(_, h)| &h.replies[..]);
+        let notes: Vec<Note> = self
+            .db
+            .notes(&p.change)
+            .into_iter()
+            .map(|n| match replies.iter().find(|rp| rp.change == n.change && rp.id == n.id) {
+                Some(rp) => Note { text: rp.after(&n.text), ..n.clone() },
+                None => n.clone(),
+            })
+            .collect();
+        let mut deco = Deco::default();
+        if let Some((id, turns)) = self.written_turns() {
+            deco.writing.insert(id, turns);
+        }
+        patch_rows(p, &notes.iter().collect::<Vec<_>>(), w, &deco)
+    }
+
+    /// What you wrote in the review, counted: the comments written there,
+    /// and your answers to the work's replies.
+    pub(super) fn review_yours(&self) -> (usize, usize) {
+        let Some((r, _)) = self.reviewing.as_ref().and_then(|rv| self.work(&rv.run)) else { return (0, 0) };
+        let (opened, answers) = crate::held::yours_in(&self.db, r);
+        (opened.len(), answers)
+    }
+
+    /// Enter on the row the cursor is on, a patch looked at closer, as on a
+    /// line of the main view: a comment on its line; on a comment, what you
+    /// said last written again if the last word is yours, else a reply; on
+    /// one the work replied to, your answer to its reply.
+    fn review_comment(&mut self) {
+        if !self.review_writable() {
+            self.status = "only the agent's work goes back to the agent with your comments: this work is not the agent's".into();
+            return;
+        }
+        let Some((_, p)) = self.review_patch() else { return };
+        let Some(rv) = self.reviewing.clone() else { return };
+        let Some(row) = self.review_rows(&p, rv.main_w).get(rv.row).cloned() else { return };
+        let line = row.key.clone().filter(|_| row.note.is_none() && row.kind.commentable());
+        // The comment on the row, or yours on its line.
+        let Some(id) = row.note.clone().or_else(|| line.clone().filter(|k| self.db.note(&p.change, k).is_some())) else {
+            if let Some(key) = line {
+                let (file, preview) = (row.path.clone().unwrap_or_default(), row.preview.clone().unwrap_or_default());
+                self.write(Target::Line { change: p.change, key, file, preview }, Focus::Diff, "");
+            }
+            return;
+        };
+        let replied = self.work(&rv.run).and_then(|(_, h)| h.replies.iter().position(|rp| rp.change == p.change && rp.id == id));
+        match (replied, self.db.note(&p.change, &id).map(|n| last_mine(&n.text).is_some())) {
+            (Some(k), _) => self.review_answer(k),
+            (None, Some(true)) => self.edit_mine(p.change, id, Focus::Diff),
+            (None, Some(false)) => self.write(Target::Reply { change: p.change, id }, Focus::Diff, ""),
+            (None, None) => {}
+        }
+    }
+
+    /// Your answer to reply `k` of the work, written in the review: again,
+    /// if you wrote one.
+    pub(super) fn review_answer(&mut self, k: usize) {
+        let Some(run) = self.reviewing.as_ref().map(|rv| rv.run.clone()) else { return };
+        let was = self.work(&run).and_then(|(_, h)| h.replies.get(k)?.answer.clone()).unwrap_or_default();
+        self.write(Target::Answer { run, k }, Focus::Diff, &was);
+    }
+
+    /// The work sent back to the agent, with what you wrote in its review:
+    /// another round, from it; the review left.
+    pub(super) fn review_send_back(&mut self) {
+        let Some(rv) = self.reviewing.clone() else { return };
+        let sent = ask::send_back(&self.path, &self.stack, &rv.run, &rv.marks);
+        self.reload();
+        match sent {
+            Ok(said) => {
+                self.status = said;
+                self.leave_review();
+                self.launch();
+            }
+            Err(e) => self.status = e.0,
+        }
+    }
+
     /// The review's list: on top, the comments that asked, each kept or
     /// closed with the review; then its three sections, each part a line,
     /// the change of the stack a line for each patch.
@@ -248,15 +361,41 @@ impl App {
                 });
             }
         }
+        // What you wrote in it, which sends it back to the agent.
+        let mut yours: Vec<String> = Vec::new();
+        if let Some((r, _)) = self.work(&rv.run) {
+            let (opened, _) = crate::held::yours_in(&self.db, r);
+            // What you said last there: the comment, or your reply to it.
+            for n in opened.iter().filter_map(|(c, i)| self.db.note(c, i)) {
+                let said = last_mine(&n.text).unwrap_or_default();
+                yours.push(format!("   ✎ {}: {} · {}", n.file, n.preview, said.lines().next().unwrap_or("")));
+            }
+        }
+        for rp in h.replies.iter().filter(|rp| rp.answer.is_some()) {
+            let at = self.db.note(&rp.change, &rp.id).map_or("a comment".to_string(), |n| format!("{}: {}", n.file, n.preview));
+            yours.push(format!("   ✎ your answer on {at} · {}", rp.answer.as_deref().unwrap_or("").lines().next().unwrap_or("")));
+        }
+        if !yours.is_empty() {
+            out.push(title(" what you wrote, to send back"));
+            for text in yours {
+                out.push(Line {
+                    text,
+                    style: color::you(),
+                    part: None,
+                    entry: None,
+                    asking: None,
+                });
+            }
+        }
         out
     }
 
     /// What the part the cursor is on would be, `w` wide: the stack diff of
-    /// the change, or the comment in its place; and the line to show
-    /// first.
-    fn review_view(&self, line: Option<&Line>, w: usize) -> (String, Vec<Vec<(String, Style)>>, usize) {
-        let Some((rv, line)) = self.reviewing.as_ref().zip(line) else { return (String::new(), vec![], 0) };
-        let Some((r, h)) = self.work(&rv.run) else { return (String::new(), vec![], 0) };
+    /// the change, or the comment in its place; and the lines that are the
+    /// part, the first to show first.
+    fn review_view(&self, line: Option<&Line>, w: usize) -> View {
+        let Some((rv, line)) = self.reviewing.as_ref().zip(line) else { return (String::new(), vec![], 0..0) };
+        let Some((r, h)) = self.work(&rv.run) else { return (String::new(), vec![], 0..0) };
         // A comment that asked: as it is now.
         if let Some(k) = line.asking
             && let Some((_, n)) = self.asking_open().into_iter().find(|(j, _)| *j == k)
@@ -270,7 +409,7 @@ impl App {
         match line.part {
             Some(Part::Stack) | None => {
                 let Some((now, next)) = self.review_stacks() else {
-                    return ("the agent changed nothing of the stack".into(), vec![], 0);
+                    return ("the agent changed nothing of the stack".into(), vec![], 0..0);
                 };
                 let diff = crate::history::stacks_diff(&self.db, Some(&now), Some(&next), true);
                 let mut lines = Vec::new();
@@ -282,14 +421,14 @@ impl App {
                     lines.extend(fold(&text, w.saturating_sub(1), 6).into_iter().map(|l| vec![(l, st)]));
                 }
                 let of = h.stack.as_ref().map_or(String::new(), |c| c.of.clone());
-                (format!(" the change of {of}: what accepting it does to the stack"), lines, first)
+                (format!(" the change of {of}: what accepting it does to the stack"), lines, first..first)
             }
             Some(p) => {
                 let (n, said) = match p {
                     Part::Reply(k) => {
                         let rp = &h.replies[k];
                         let Some(n) = self.db.note(&rp.change, &rp.id) else {
-                            return ("its comment was deleted: nothing to answer".into(), vec![], 0);
+                            return ("its comment was deleted: nothing to answer".into(), vec![], 0..0);
                         };
                         let text = rp.after(&n.text);
                         let said = match &rp.promote {
@@ -308,11 +447,11 @@ impl App {
     }
 
     /// Comment `n` of the work of run `r` where it is, `w` wide, `said`
-    /// above it; and the line to show first, its own.
-    fn comment_view(&self, r: &Run, n: &Note, said: String, w: usize) -> (String, Vec<Vec<(String, Style)>>, usize) {
+    /// above it; and the lines that are its own.
+    fn comment_view(&self, r: &Run, n: &Note, said: String, w: usize) -> View {
         let deco = Deco::default();
         let rows = if n.on_stack() {
-            let Ok(s) = self.db.stack(&r.stack) else { return (said, vec![], 0) };
+            let Ok(s) = self.db.stack(&r.stack) else { return (said, vec![], 0..0) };
             let titles: Vec<String> = s.patches.iter().map(|id| self.db.patch(id).title().to_string()).collect();
             stack_rows(&format!("the stack {}", r.stack), &titles, &[n], w, &deco)
         } else {
@@ -321,20 +460,21 @@ impl App {
                 .stack(&r.stack)
                 .ok()
                 .and_then(|s| s.patches.iter().map(|id| self.db.patch(id)).find(|p| p.change == n.change));
-            let Some(p) = p else { return (said, vec![], 0) };
+            let Some(p) = p else { return (said, vec![], 0..0) };
             patch_rows(p, &[n], w, &deco)
         };
         let head = rows.iter().position(|row| row.head && row.note.as_deref() == Some(&n.id)).unwrap_or(0);
+        let end = rows.iter().rposition(|row| row.note.as_deref() == Some(&n.id)).map_or(head, |i| i + 1);
         let lines = rows.iter().map(|row| row_parts(row, false)).collect();
-        (said, lines, head)
+        (said, lines, head..end)
     }
 
     /// The review: its list on the left, what the cursor's part would be on
     /// the right.
-    pub(super) fn draw_review(&mut self, buf: &mut Buffer, body: Rect) {
+    pub(super) fn draw_review(&mut self, buf: &mut Buffer, body: Rect) -> Option<(u16, u16)> {
         let (w, h) = (body.width as usize, body.height as usize);
         let lines = self.review_lines();
-        let Some(rv) = self.reviewing.clone() else { return };
+        let rv = self.reviewing.clone()?;
         let list_w = if w < 60 { w } else { (w * 2 / 5).max(30) };
         let list = Rect::new(body.x, body.y, list_w as u16, body.height);
         // Wide, the part the cursor is on has it all, the list out of sight.
@@ -371,7 +511,7 @@ impl App {
                 r.top = top;
             }
             if w < 60 {
-                return;
+                return None;
             }
             for y in 0..body.height {
                 buf.set_string(body.x + list_w as u16, body.y + y, "│", color::meta());
@@ -379,21 +519,73 @@ impl App {
         }
         let (main_x, main_w) = if wide { (0, w) } else { (list_w + 1, w - list_w - 1) };
         let main = Rect::new(body.x + main_x as u16, body.y, main_w as u16, body.height);
-        let (said, view, first) = self.review_view(lines.get(rv.sel), main_w.saturating_sub(1));
         let mut head = color::header();
         if rv.in_main {
             head = head.add_modifier(Modifier::UNDERLINED);
         }
+        // A patch of the stack the work makes, looked at closer: as the work
+        // leaves it, a row at a time, the cursor on one, what is written on
+        // it under it.
+        if rv.in_main
+            && let Some((at, p)) = self.review_patch()
+        {
+            let pw = main_w.saturating_sub(1);
+            let all = self.review_rows(&p, pw);
+            let editing = self.writing().is_some_and(|e| e.pane == Focus::Diff);
+            let edit_h = if editing { self.editor_height(main, Focus::Diff) } else { 0 };
+            let cur = rv.row.min(all.len().saturating_sub(1));
+            // Written on, the box goes under the line or the comment, as in
+            // the main view, in sight.
+            let under = editing.then(|| self.editor_anchor_in(&all).unwrap_or(cur));
+            let shown = under.unwrap_or(cur);
+            let room = rows.saturating_sub(edit_h).max(1);
+            let mut top = rv.row_top.min(shown);
+            if shown >= top + room {
+                top = shown + 1 - room;
+            }
+            if let Some(r) = &mut self.reviewing {
+                (r.row, r.row_top, r.main_w) = (cur, top, pw);
+            }
+            put(buf, main, 0, 0, main_w, &fit(&format!(" patch {} as the work leaves it: {}", at + 1, p.title()), main_w), head);
+            let (mut y, mut cursor) = (1, None);
+            for (i, row) in all.iter().enumerate().skip(top) {
+                if y > rows {
+                    break;
+                }
+                put_parts(buf, main, 0, y, main_w, &row_parts(row, i == cur && !editing));
+                y += 1;
+                if Some(i) == under {
+                    cursor = self.draw_editor(buf, main, y, Focus::Diff);
+                    y += edit_h;
+                }
+            }
+            return cursor;
+        }
+        let (said, view, at) = self.review_view(lines.get(rv.sel), main_w.saturating_sub(1));
         put(buf, main, 0, 0, main_w, &fit(&said, main_w), head);
-        // Where the part is, unless scrolled by hand.
-        let scroll = if rv.in_main { rv.scroll } else { first.saturating_sub(rows / 3) };
+        // Where the part is, unless scrolled by hand. Your answer to its reply
+        // being written: the box under the thread, in sight, what follows the
+        // thread below it.
+        let edit_h = self.editor_height(main, Focus::Diff);
+        let mut scroll = if rv.in_main { rv.scroll } else { at.start.saturating_sub(rows / 3) };
+        if edit_h > 0 {
+            scroll = scroll.max((at.end + edit_h).saturating_sub(rows)).min(at.start);
+        }
         let scroll = scroll.min(view.len().saturating_sub(1));
         if let Some(r) = &mut self.reviewing {
             r.scroll = scroll;
         }
-        for (y, parts) in view.iter().skip(scroll).take(rows).enumerate() {
-            put_parts(buf, main, 0, y + 1, main_w, parts);
+        for (i, parts) in view.iter().enumerate().skip(scroll) {
+            let y = 1 + i - scroll + if i >= at.end { edit_h } else { 0 };
+            if y > rows {
+                break;
+            }
+            put_parts(buf, main, 0, y, main_w, parts);
         }
+        if edit_h == 0 {
+            return None;
+        }
+        self.draw_editor(buf, main, 1 + at.end.saturating_sub(scroll), Focus::Diff)
     }
 
     /// A key in the review: ↑↓ through its parts (or the other pane, → in
@@ -402,6 +594,12 @@ impl App {
     pub(super) fn review_key(&mut self, k: KeyEvent) -> Effect {
         let lines = self.review_lines();
         let page = self.page();
+        // A patch looked at closer: how many rows it has.
+        let looked = self.reviewing.as_ref().is_some_and(|rv| rv.in_main);
+        let patch_rows = self
+            .review_patch()
+            .filter(|_| looked)
+            .map(|(_, p)| self.review_rows(&p, self.reviewing.as_ref().map_or(80, |rv| rv.main_w)).len());
         let Some(rv) = self.reviewing.as_mut() else {
             self.screen = Screen::Main;
             return Effect::None;
@@ -417,6 +615,22 @@ impl App {
         match (rv.in_main, k.code) {
             (_, KeyCode::Esc) => {
                 self.mode = Mode::Menu(self.review_dialog());
+            }
+            // On a patch looked at closer, Enter writes on the line, and ↑↓
+            // go from row to row.
+            (true, KeyCode::Enter) if patch_rows.is_some() => self.review_comment(),
+            (true, code @ (KeyCode::Up | KeyCode::Down | KeyCode::PageUp | KeyCode::PageDown | KeyCode::Home | KeyCode::End))
+                if patch_rows.is_some() =>
+            {
+                let last = patch_rows.unwrap_or(1).saturating_sub(1);
+                rv.row = match code {
+                    KeyCode::Down => (rv.row + 1).min(last),
+                    KeyCode::Up => rv.row.saturating_sub(1),
+                    KeyCode::PageDown => (rv.row + page).min(last),
+                    KeyCode::PageUp => rv.row.saturating_sub(page),
+                    KeyCode::Home => 0,
+                    _ => last,
+                };
             }
             (_, KeyCode::Enter) => {
                 // A comment that asked: closed with the review, or kept.
@@ -438,6 +652,7 @@ impl App {
             (false, KeyCode::Right) => {
                 rv.in_main = true;
                 rv.wide = self.body_w < 60;
+                (rv.row, rv.row_top) = (0, 0);
             }
             (true, KeyCode::Right) => rv.wide = true,
             (true, KeyCode::Left) if rv.wide && self.body_w >= 60 => rv.wide = false,
@@ -550,10 +765,17 @@ impl App {
     /// right, wide or not.
     pub(super) fn review_hint(&self) -> String {
         let enter = self.review_enter();
+        // With what you wrote in it, the work goes back to the agent.
+        let esc = if self.review_yours() > (0, 0) { "esc: send back, save or discard" } else { "esc: save, discard or close" };
         match &self.reviewing {
-            Some(rv) if rv.in_main && rv.wide => format!("↑↓: scroll · {enter} · ←: narrower · esc: save, discard or close"),
-            Some(rv) if rv.in_main => format!("↑↓: scroll · {enter} · →: wider · ←: back to the list · esc: save, discard or close"),
-            _ => format!("↑↓ choose · {enter} · →: look closer · space: menu · esc: save, discard or close"),
+            Some(rv) if rv.in_main && self.review_patch().is_some() => {
+                let enter = if self.review_writable() { "enter: comment · " } else { "" };
+                let side = if rv.wide { "←: narrower" } else { "→: wider · ←: back to the list" };
+                format!("↑↓: a line · {enter}{side} · {esc}")
+            }
+            Some(rv) if rv.in_main && rv.wide => format!("↑↓: scroll · {enter} · ←: narrower · {esc}"),
+            Some(rv) if rv.in_main => format!("↑↓: scroll · {enter} · →: wider · ←: back to the list · {esc}"),
+            _ => format!("↑↓ choose · {enter} · →: look closer · space: menu · {esc}"),
         }
     }
 
@@ -634,6 +856,33 @@ impl App {
     /// What Esc asks in the review: what is marked, said; then save the
     /// marks, throw away those made since it was opened, or close it.
     pub(super) fn review_dialog(&self) -> Menu {
+        // What you wrote in it: it goes back to the agent, neither accepted
+        // nor rejected.
+        let (comments, answers) = self.review_yours();
+        if comments + answers > 0 {
+            let items = vec![
+                Item::new("Send it back to the agent", Action::SendBack),
+                Item::new("Save", Action::ReviewSave),
+                Item::new("Discard", Action::ReviewDiscard),
+                Item::line(),
+                Item::new("Keep reviewing", Action::Cancel),
+            ];
+            let mut m = Menu::new("your review of the agent's work", items, None);
+            let mut what = Vec::new();
+            for (n, one, many) in [(comments, "1 comment", "comments"), (answers, "1 answer to the agent's replies", "answers to the agent's replies")] {
+                match n {
+                    0 => {}
+                    1 => what.push(one.to_string()),
+                    n => what.push(format!("{n} {many}")),
+                }
+            }
+            m.note = Some(format!(
+                "You wrote {} in this review, so the work is not accepted: it goes back to the agent, which is asked again, starting from this work.\n{}",
+                what.join(" and "),
+                self.review_summary()
+            ));
+            return m;
+        }
         let parts = self.review_parts();
         let done = self.reviewing.as_ref().is_some_and(|rv| parts.iter().all(|p| rv.marks.contains_key(&p.key())));
         let mut items = vec![
@@ -660,6 +909,13 @@ impl App {
         let lines = self.review_lines();
         let Some(rv) = &self.reviewing else { return };
         let rejected = rv.marks.get(&Part::Stack.key()) == Some(&false);
+        // A reply of the agent's: answered, the work goes back to it.
+        if self.review_writable()
+            && let Some(Part::Reply(k)) = lines.get(rv.sel).and_then(|l| l.part)
+        {
+            let answered = self.work(&rv.run).is_some_and(|(_, h)| h.replies.get(k).is_some_and(|rp| rp.answer.is_some()));
+            items.push(Item::new(if answered { "Edit your answer to it" } else { "Reply to it" }, Action::Answer(k)));
+        }
         // A comment that asked: closed with the review, or kept.
         if let Some(k) = lines.get(rv.sel).and_then(|l| l.asking) {
             let closing = rv.marks.get(&crate::held::asking_key(k)) == Some(&true);

@@ -381,6 +381,9 @@ pub enum Target {
     Rewind { change: String, id: String, from: usize },
     /// A comment on the stack's history: on its record `rev`.
     About(usize),
+    /// Your answer to reply `k` of the work run `run` holds, in its review:
+    /// it goes back to the agent with it.
+    Answer { run: String, k: usize },
 }
 
 /// A comment being written, in the pane it is written in.
@@ -543,6 +546,10 @@ pub enum Action {
     /// In the review: the comment the ask was about at place `0` marked to
     /// close with the review (`1`), or to keep.
     CloseAsking(usize, bool),
+    /// In the review: the work sent back to the agent, with what you wrote
+    /// in it; your answer to its reply `0` written.
+    SendBack,
+    Answer(usize),
     Send(Way),
     /// A patch's comment sent to the whole stack: the agent may change any
     /// patch.
@@ -686,6 +693,10 @@ fn about(action: &Action) -> String {
             "close this comment as the review closes, done with: its replies, which go with it, are accepted (Show…, closed, lists it, to reopen)".into()
         }
         Action::CloseAsking(_, false) => "keep this comment open when the review closes; its replies as they were".into(),
+        Action::SendBack => {
+            "send the work back to the agent with what you wrote in this review: the work is not accepted, and the agent is asked again, starting from this work; the agent's new work lands for review in place of this one".into()
+        }
+        Action::Answer(_) => "answer the agent's reply: the work goes back to the agent with your answer after the reply".into(),
         Action::Send(Way::Change) => "ask the agent, which may change the code within this comment's place".into(),
         Action::Send(Way::Answer) => "ask the agent, to answer only: nothing changes".into(),
         Action::Send(Way::Test) => "ask the agent to build and test, in a workspace of its choosing".into(),
@@ -2734,8 +2745,17 @@ impl App {
                     "The review of what landed, the agent's work or the comments pulled from Phabricator: the stack operations of a change, the comments opened, the replies. Each is accepted or rejected; a change of the stack is one part, and rejecting it rejects the comments too."
                         .into(),
                 );
-                out.push("Press Enter to accept the part the cursor is on, or, accepted, to put it back to review; Space for its menu, to reject it; → to scroll what it looks like, → again to see it wide, the list out of sight, and ← to come back.".into());
-                out.push("Press Esc to save your marks, to throw them away, or to close the review: what you accepted is applied then.".into());
+                if self.reviewing.as_ref().is_some_and(|rv| rv.in_main) && self.review_patch().is_some() {
+                    out.push("This is the patch as the work leaves it. Press ↑↓ for a line, and Enter to write a comment on it, or on the comment under it.".into());
+                } else {
+                    out.push("Press Enter to accept the part the cursor is on, or, accepted, to put it back to review; Space for its menu, to reject it, or to reply to the agent's reply; → to scroll what it looks like, → again to see it wide, the list out of sight, and ← to come back. On a line of the stack operations, → shows that patch as the work leaves it, to comment on its lines.".into());
+                }
+                out.push("What you write in the review of the agent's work sends that work back to the agent: the work is not accepted, and the agent is asked again, starting from this work.".into());
+                out.push(if self.review_yours() > (0, 0) {
+                    "Press Esc to send the work back to the agent with what you wrote, to save your marks, or to throw them away.".into()
+                } else {
+                    "Press Esc to save your marks, to throw them away, or to close the review: what you accepted is applied then.".into()
+                });
             }
             Screen::Search => {
                 out.push(
@@ -3198,8 +3218,12 @@ impl App {
 
     /// Whether a comment written for `t` can be sent once saved: not while
     /// claude works on the thread; a turn written again, if the last word
-    /// is yours, as it is for asking.
+    /// is yours, as it is for asking. Not in a review, as what is written
+    /// there goes back to the agent with the work.
     fn can_send_target(&self, t: &Target) -> bool {
+        if self.screen == Screen::Review {
+            return false;
+        }
         match t {
             // Rewound, the last word is yours.
             Target::Reply { change, id } | Target::Edit { change, id } | Target::Rewind { change, id, .. } => {
@@ -3880,6 +3904,8 @@ impl App {
             }
             Action::ReviewClose(rest) => self.review_close(rest),
             Action::CloseAsking(k, close) => self.mark_asking(k, close),
+            Action::SendBack => self.review_send_back(),
+            Action::Answer(k) => self.review_answer(k),
             Action::Collapse | Action::Expand => {
                 let collapse = matches!(action, Action::Collapse);
                 if let Some(c) = self.picked()
@@ -4415,7 +4441,10 @@ impl App {
         let name = self.stack.clone();
         let text = text.trim().to_string();
         let stamp = crate::db::unique();
-        self.edit(|db| {
+        // Written in the review of landed work: it goes back to the agent
+        // with that work.
+        let review = (self.screen == Screen::Review).then(|| self.reviewing.as_ref().map(|rv| rv.run.clone())).flatten();
+        let saved = self.edit(|db| {
             let note = match target {
                 Target::Stack => Note {
                     change: stack_change(&name),
@@ -4501,11 +4530,25 @@ impl App {
                     about: Some(*rev),
                     ..Default::default()
                 },
+                // Your answer to a reply, in its review: held with the reply.
+                Target::Answer { run, k } => {
+                    crate::held::answer(db, run, *k, &text)?;
+                    let rp = db.run(run).and_then(|r| r.held.as_ref()?.replies.get(*k).cloned());
+                    return rp.map(|rp| (rp.change, rp.id)).ok_or_else(|| crate::db::Error("the reply is gone".into()));
+                }
+            };
+            let note = Note {
+                review: review.clone().or(note.review),
+                ..note
             };
             let at = (note.change.clone(), note.id.clone());
             db.set_note(note)?;
             Ok(at)
-        })
+        });
+        if saved.is_some() && review.is_some() {
+            self.status = "saved in the review: Esc sends the work back to the agent with what you wrote".into();
+        }
+        saved
     }
 
     /// Asks the agent about `notes`, to the whole stack if `whole`: now, or
@@ -5044,7 +5087,7 @@ impl App {
                 }
             }
             Screen::Text => self.draw_text(buf, body),
-            Screen::Review => self.draw_review(buf, body),
+            Screen::Review => cursor = self.draw_review(buf, body),
             Screen::Search => cursor = self.draw_search(buf, body),
             Screen::Tree | Screen::Stacks | Screen::Versions => {
                 let (left, (right, _)) = self.columns(buf, body, (body.width as usize / 4).clamp(20, 40), 0);
@@ -5542,6 +5585,7 @@ impl App {
                 format!("rewind from {}: write what replaces it", t.map_or("your turn".into(), |t| t.name(*from)))
             }
             Target::About(rev) => format!("a question on @{rev}, for the agent to answer"),
+            Target::Answer { .. } => "your answer to the agent's reply".to_string(),
         };
         spot_in(&self.spots, area, (0, y, w, bh), Spot::Box);
         self.edit_box.set(Some(Rect::new(area.x, area.y + y as u16, w as u16, bh as u16)));
@@ -5910,24 +5954,35 @@ impl App {
     /// The last row of what a comment being written in the middle goes
     /// under: its line and the comments on it, or the comment it answers.
     fn editor_anchor(&self) -> Option<usize> {
+        self.editor_anchor_in(&self.rows)
+    }
+
+    /// The last of `rows` that a comment being written in the middle goes
+    /// under, as `editor_anchor` says.
+    fn editor_anchor_in(&self, rows: &[Row]) -> Option<usize> {
         let e = self.writing()?;
         if e.pane != Focus::Diff {
             return None;
         }
         let first = match &e.target {
-            Target::Line { key, .. } => self.rows.iter().position(|r| r.key.as_deref() == Some(key) && r.note.is_none())?,
-            Target::Reply { id, .. } | Target::Edit { id, .. } => self.rows.iter().position(|r| r.note.as_deref() == Some(id))?,
+            Target::Line { key, .. } => rows.iter().position(|r| r.key.as_deref() == Some(key) && r.note.is_none())?,
+            Target::Reply { id, .. } | Target::Edit { id, .. } => rows.iter().position(|r| r.note.as_deref() == Some(id))?,
             // Where the turn written again was, or the turns rewound: under
             // what comes before it, over what comes after.
             Target::Turn { id, turn, .. } | Target::Rewind { id, from: turn, .. } => {
-                return self.rows.iter().rposition(|r| r.note.as_deref() == Some(id) && r.turn.is_none_or(|t| t < *turn));
+                return rows.iter().rposition(|r| r.note.as_deref() == Some(id) && r.turn.is_none_or(|t| t < *turn));
+            }
+            // Your answer to a reply, in its review: under the thread.
+            Target::Answer { run, k } => {
+                let id = &self.db.run(run)?.held.as_ref()?.replies.get(*k)?.id;
+                return rows.iter().rposition(|r| r.note.as_deref() == Some(id));
             }
             _ => return None,
         };
         let mut last = first;
-        while self.rows.get(last + 1).is_some_and(|r| matches!(r.kind, Kind::Comment | Kind::Stream)) {
+        while rows.get(last + 1).is_some_and(|r| matches!(r.kind, Kind::Comment | Kind::Stream)) {
             if let Target::Reply { id, .. } | Target::Edit { id, .. } = &e.target
-                && self.rows[last + 1].note.as_deref() != Some(id)
+                && rows[last + 1].note.as_deref() != Some(id)
             {
                 break;
             }

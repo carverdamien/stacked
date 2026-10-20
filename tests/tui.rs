@@ -3257,6 +3257,174 @@ fn landed_work_is_edited_by_hand_from_its_review_in_its_place() {
     assert!(d.note(&n.change, &n.id).unwrap().text.contains("Quieter now."));
 }
 
+/// What the agent brought back for comment `n` on patch 1, landed: `TWO`
+/// made `Two`, and its reply.
+fn agent_changed(db: &Path, run: &str, n: &Note) {
+    Db::edit(db, |d| {
+        let (from, s) = d.head("s").map(|(r, s)| (r, s.clone())).unwrap();
+        let old = d.patch(&s.patches[0]).clone();
+        let draft = stacked::mbox::Draft {
+            diff: old.diff.replace("+TWO", "+Two"),
+            ..stacked::mbox::Draft::from(&old)
+        };
+        let mut patches = s.patches.clone();
+        patches[0] = d.add_patch(stacked::ops::revise(&old, draft))?;
+        let ask = serde_json::json!({"way": "change", "scope": {"patch": n.change}, "from": from, "notes": [{"label": "c1", "change": n.change, "id": n.id}]});
+        d.add_run(stacked::db::Run {
+            id: run.into(),
+            what: "change".into(),
+            stack: "s".into(),
+            state: stacked::db::RunState::Done,
+            request: n.text.clone(),
+            ask: Some(ask),
+            held: Some(stacked::held::Held {
+                at: stacked::db::now(),
+                stack: Some(stacked::held::Change {
+                    patches,
+                    base: s.base.clone(),
+                    op: "agent: patch 1".into(),
+                    of: "patch 1".into(),
+                    from: None,
+                }),
+                replies: vec![stacked::held::Reply {
+                    change: n.change.clone(),
+                    id: n.id.clone(),
+                    text: "Quieter now.".into(),
+                    tag: "change".into(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }),
+            ..Default::default()
+        })
+        .map(|_| ())
+    })
+    .unwrap();
+}
+
+/// Down the patch the review's right pane shows until its cursor is on the
+/// row starting with `text`.
+fn down_to_work_row(app: &mut App, text: &str) {
+    for _ in 0..80 {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 120, 30));
+        app.draw(&mut buf);
+        let row = (1..30).find_map(|y| {
+            let on = buf[(49, y)].modifier.contains(ratatui::style::Modifier::REVERSED);
+            on.then(|| (49..120).map(|x| buf[(x, y)].symbol()).collect::<String>())
+        });
+        if row.is_some_and(|r| r.starts_with(text)) {
+            return;
+        }
+        key(app, KeyCode::Down);
+    }
+    panic!("no row {text:?} in the patch:\n{}", draw(app));
+}
+
+#[test]
+fn what_you_write_in_the_review_of_the_agent_s_work_sends_it_back_to_the_agent() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Enter]);
+    save(&mut app, "why so loud?");
+    let n = notes_of(&db, "s", 0).remove(0);
+    agent_changed(&db, "run-agent", &n);
+    app.refresh();
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Enter]);
+    assert_eq!(app.screen, Screen::Review);
+    // → on a line of the stack operations: that patch as the work leaves it,
+    // a line at a time.
+    keys(&mut app, &[KeyCode::Home]);
+    down_to_review(&mut app, "modify  1 Bug 1");
+    keys(&mut app, &[KeyCode::Right]);
+    let screen = draw(&mut app);
+    assert!(screen.contains(" patch 1 as the work leaves it: Bug 1 - shout two"), "{screen}");
+    assert_eq!(app.hint(), "↑↓: a line · enter: comment · →: wider · ←: back to the list · esc: save, discard or close");
+    // At its end, the comment on a line it no longer has, its reply in the
+    // thread.
+    keys(&mut app, &[KeyCode::End]);
+    let screen = draw(&mut app);
+    let (_, asked) = at_from(&screen, "why so loud?", 49);
+    let (_, replied) = at_from(&screen, "Quieter now.", 49);
+    assert!(replied > asked, "its reply in the thread, as the work leaves it:\n{screen}");
+    keys(&mut app, &[KeyCode::Home]);
+    // Enter on its new line: a comment there, saved in the review, not asked.
+    down_to_work_row(&mut app, "+Two");
+    keys(&mut app, &[KeyCode::Enter]);
+    assert!(matches!(&app.mode, Mode::Edit(_)), "{:?}", app.mode);
+    typed(&mut app, "Not like this either.");
+    keys(&mut app, &[KeyCode::Esc]);
+    let all = items(&app);
+    assert!(all.contains(&("Save it".into(), true)) && !all.iter().any(|(l, _)| l.contains("ask agent")), "{all:?}");
+    choose(&mut app, "Save it");
+    assert_eq!(app.status, "saved in the review: Esc sends the work back to the agent with what you wrote");
+    let mine = notes_of(&db, "s", 0).into_iter().find(|m| m.text == "Not like this either.").unwrap();
+    assert_eq!(mine.review.as_deref(), Some("run-agent"));
+    let screen = draw(&mut app);
+    let (_, line) = at_from(&screen, "+Two", 49);
+    let (_, comment) = at_from(&screen, "Not like this either.", 49);
+    assert!(comment > line, "under its line:\n{screen}");
+    assert_eq!(app.hint(), "↑↓: a line · enter: comment · →: wider · ←: back to the list · esc: send back, save or discard");
+    // On its reply, Space answers it.
+    keys(&mut app, &[KeyCode::Left]);
+    down_to_review(&mut app, "Quieter now.");
+    choose(&mut app, "Reply to it");
+    save(&mut app, "Still too loud.");
+    let d = Db::load(&db).unwrap();
+    assert_eq!(d.run("run-agent").unwrap().held.as_ref().unwrap().replies[0].answer.as_deref(), Some("Still too loud."));
+    drop(d);
+    let screen = draw(&mut app);
+    assert!(screen.contains(" what you wrote, to send back") && screen.contains("✎ your answer on a.txt: TWO · Still too loud."), "{screen}");
+    let (_, reply) = at(&screen, "Quieter now.");
+    let (_, answer) = at_from(&screen, "Still too loud.", 49);
+    assert!(answer > reply, "after its reply, in its thread:\n{screen}");
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    assert!(items(&app).contains(&("Edit your answer to it".into(), true)), "{:?}", items(&app));
+    keys(&mut app, &[KeyCode::Esc]);
+    // Not accepted, nor rejected: it goes back to the agent.
+    keys(&mut app, &[KeyCode::Esc]);
+    let labels: Vec<String> = items(&app).into_iter().map(|(l, _)| l).collect();
+    assert_eq!(labels[0], "Send it back to the agent");
+    assert!(!labels.iter().any(|l| l.contains("Close")), "{labels:?}");
+    let Mode::Menu(m) = &app.mode else { panic!("{:?}", app.mode) };
+    assert!(
+        m.note.as_deref().unwrap().starts_with(
+            "You wrote 1 comment and 1 answer to the agent's replies in this review, so the work is not accepted: it goes back to the agent, which is asked again, starting from this work.\n"
+        ),
+        "{:?}",
+        m.note
+    );
+    choose(&mut app, "Send it back to the agent");
+    assert_eq!(app.screen, Screen::Main);
+    assert_eq!(app.status, "sent back to the agent (may change the code): 2 comments to ask again");
+    let d = Db::load(&db).unwrap();
+    assert!(d.review("run-agent").unwrap().closed);
+    assert_eq!(d.run("run-agent").unwrap().summary, "reviewed: sent back to the agent, 2 comments to ask again");
+    let thread: Vec<String> = stacked::thread::thread_turns(&d.note(&n.change, &n.id).unwrap().text).into_iter().map(|t| t.body).collect();
+    assert_eq!(thread, ["why so loud?", "Quieter now.", "Still too loud."]);
+    drop(d);
+    // The next round goes on from that work, told so: its work lands in
+    // place of the one sent back, the change carried.
+    let mut next = None;
+    for _ in 0..300 {
+        let d = Db::load(&db).unwrap();
+        let going = d.runs().iter().any(|r| r.state == stacked::db::RunState::Started);
+        if let Some(r) = stacked::held::queue(&d, "s").first().filter(|_| !going) {
+            next = Some(r.id.clone());
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    let d = Db::load(&db).unwrap();
+    let next = next.unwrap_or_else(|| panic!("never landed: {:?}", d.runs().iter().map(|r| (&r.id, &r.state, &r.summary)).collect::<Vec<_>>()));
+    assert_ne!(next, "run-agent");
+    let r = d.run(&next).unwrap();
+    assert!(stacked::ask::info(r).unwrap().prompt.contains("This is another round"));
+    let c = r.held.as_ref().unwrap().stack.as_ref().unwrap();
+    assert!(d.patch(&c.patches[0]).diff.contains("+Two"), "the change of the work sent back");
+}
+
 #[test]
 fn the_comments_that_asked_are_kept_or_closed_from_the_top_of_the_review() {
     let (_tmp, db, _src) = setup();

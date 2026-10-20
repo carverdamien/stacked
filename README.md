@@ -663,12 +663,14 @@ operations of the change (a line for each patch: `noop`, `add`, `modify`,
 and its replies. On the right is the part the cursor is on, as it would be:
 the stack diff of the change, from the stack as it is, each new version's
 interdiff under it; or the comment where it would be, the reply as the
-last turn of its thread. That side is only to look at: → goes into it to
-scroll, → again makes it wide, the list out of sight, and ← narrows it,
-then comes back to the list (too narrow for both side by side, → shows it
-wide at once). Enter accepts the part the cursor is on, or puts
-it back to review if accepted (rejecting is Space's); every line of the
-stack operations is the one part of the change. Space has `Mark as
+last turn of its thread. → goes into it to scroll, → again makes it wide,
+the list out of sight, and ← narrows it, then comes back to the list (too
+narrow for both side by side, → shows it wide at once). On a line of the
+stack operations, → shows that patch as the work leaves it instead, a line
+at a time, the comments under their lines, the work's replies in their
+threads. Enter accepts the part the cursor is on, or puts it back to
+review if accepted (rejecting is Space's); every line of the stack
+operations is the one part of the change. Space has `Mark as
 accepted` or `Mark as rejected`; and, each kind apart, `Mark all opened
 comments accepted` and `… rejected` for the comments the work opened,
 `Mark all replies accepted` and `… rejected` for its replies. Marking the change
@@ -683,6 +685,24 @@ again; `Discard` throws away the marks made since the review was opened;
 mark what is left and close. A reply that goes with a change of the stack
 opens that review, on the reply, from its comment (Enter, or `Review the
 agent's work…` in its menu).
+
+What you write in the review of the agent's work sends that work back to
+the agent. In the patch as the work leaves it, ↑↓ move from line to line,
+and Enter writes a comment on the line in the inline editor, as in the
+main view: on a comment, what you said last written again if the last word
+is yours, a reply if not, and your answer to the agent's reply if this work
+replied to it. On a reply in the list, Space has `Reply to it`, your answer
+to follow the reply in its thread (`Edit your answer to it` once written).
+Nothing written there asks the agent at once, and the list shows it under
+`what you wrote, to send back`. With any of it, the work is not accepted:
+Esc has `Send it back to the agent` in place of closing the review. The
+work is rejected, its change not applied; its replies go in their threads,
+your answers after them, and the comments it opened go as you marked them.
+Then the comments it was asked about whose last word is yours, and what you
+wrote in its review, are asked again, in a round that starts from the stack
+this work makes: the agent's worktree holds the change it made, and the
+agent is told it is another round. That round's work lands for review in
+place of the one sent back.
 
 The change of the stack is edited by hand from its review, as the work
 leaves the stack: on a line of the stack operations, Space has `Edit this
@@ -702,7 +722,12 @@ by its run, what it holds, and each part of it. `stacked review NAME [RUN]
 --accept-all` (or `--reject-all`) closes the review of that ask, the first
 landed if no run is given: the parts not marked yet are accepted (or
 rejected), and what is accepted is applied; `--close-asking` closes the
-comments the agent was asked about too. `stacked send NAME ID --wait`
+comments the agent was asked about too. In the review of landed work RUN,
+`stacked comment NAME --patch N --line … --work RUN TEXT` writes a comment
+on the patch as that work leaves it, and `stacked reply NAME ID --answer
+TEXT` answers the agent's reply to comment ID; then `stacked review NAME
+--send-back` sends the work back to the agent with them (`--accept-all`
+refuses while you wrote in it). `stacked send NAME ID --wait`
 says what waits for your review once it lands; `--wait --accept` accepts
 all of it as soon as it lands, for a script.
 
