@@ -222,8 +222,8 @@ pub enum Way {
     Change,
     /// Answer only: read-only.
     Answer,
-    /// Build and test, in a workspace of claude's choosing; changes
-    /// nothing in the stack.
+    /// Build and test, in the stack's build worktree; changes nothing in
+    /// the stack.
     Test,
 }
 

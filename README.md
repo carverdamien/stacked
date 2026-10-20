@@ -457,7 +457,7 @@ ask agent`'s:
   comments, both on it): the asking comment then says `opened 4 comments, 1 with your
   replies`, and its menu goes to them, or closes it and them.
 - `build and test`, on the stack's comments and a patch's as a whole: it may
-  run any command, in a workspace of its choosing by its own rules
+  run any command, in the stack's build worktree (below), by its own rules
   (CLAUDE.md), never the user's worktree; it changes nothing in the stack.
   What it found comes back in the reply and on each patch's title, saying which
   stack it tested.
@@ -480,8 +480,9 @@ each build and test on its own. On the command line, `stacked send NAME ID
 
 Where an agent works costs time and space: a worktree is a checkout of
 every file. So the stack has worktrees of its own, `.stacked/NAME/agent`
-for changes and `.stacked/NAME/answer-only-agent` for answers, beside
-yours (`.stacked/NAME/user`), out of git's sight. An ask takes the first
+for changes, `.stacked/NAME/answer-only-agent` for answers and
+`.stacked/NAME/build` for builds and tests, beside yours
+(`.stacked/NAME/user`), out of git's sight. An ask takes the first
 that no running ask is in and that holds nothing uncommitted, moves it to
 what it is asked about, and leaves it there when it lands, for the next
 ask to take: only what differs is written. One busy, the next ask takes
@@ -505,14 +506,23 @@ each `pwd`, `ondemand` or `precreate`:
   it has changes to files git tracks. While it works, leave the checkout to
   it.
 
+A build and test always works in `.stacked/NAME/build`, made the first
+time and kept until you remove it (`git worktree remove --force
+.stacked/NAME/build`), with what each build made in it, for the next build
+to build on: only changes to the files git tracks, which a build should not
+leave, keep it from the next build, which then takes `build-2`.
+
 `agent.worktrees` puts the agents' worktrees elsewhere than `.stacked/`: in
 that folder, under one of each repository's own.
 
 Several go at once, by self-review's rule: one changing ask at a time on a
-stack, answer-only asks together, a build and test once no change runs, one
-at a time; a change waiting holds back the answers asked after it. An asked
-comment that cannot go yet waits as ready, says what it waits on, and goes
-on its own when that lands. Nothing is asked on a stack that does not apply.
+stack, answer-only asks together, a build and test once no change runs on
+its stack, one at a time of every stack, as builds take the machine (a
+build asked on another stack meanwhile says it goes `once the running build
+and test of s lands`); a change waiting holds back the answers asked after
+it. An asked comment that cannot go yet waits as ready, says what it waits
+on, and goes on its own when that lands. Nothing is asked on a stack that
+does not apply.
 
 While the agent changes a stack, the stack is not edited by hand: the
 agent's change is made from the stack as it took it. The menus' edits of

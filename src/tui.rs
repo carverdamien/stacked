@@ -688,7 +688,7 @@ fn about(action: &Action) -> String {
         Action::CloseAsking(_, false) => "keep this comment open when the review closes; its replies as they were".into(),
         Action::Send(Way::Change) => "ask the agent, which may change the code within this comment's place".into(),
         Action::Send(Way::Answer) => "ask the agent, to answer only: nothing changes".into(),
-        Action::Send(Way::Test) => "ask the agent to build and test, in a workspace of its choosing".into(),
+        Action::Send(Way::Test) => "ask the agent to build and test, in the stack's build worktree, .stacked/NAME/build".into(),
         Action::SendWhole => {
             "ask the agent, which may change the whole stack, as for the stack's own comments: any patch, new patches anywhere, their order".into()
         }
@@ -3411,7 +3411,7 @@ impl App {
             list.push(Choice::new(
                 "test",
                 "build and test",
-                "it builds and tests in a workspace of its own, and changes nothing",
+                "it builds and tests in the stack's build worktree, and changes nothing",
                 act(Way::Test),
             ));
         }

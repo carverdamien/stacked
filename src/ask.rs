@@ -10,8 +10,9 @@
 //!
 //! A sent comment waits as ready, and goes as soon as nothing stands in its
 //! way, as in self-review: one changing ask at a time on a stack, answer-only
-//! asks together, a build and test once no change is running, one at a time.
-//! `launch` starts what can go; it runs when a comment is sent and when an
+//! asks together, a build and test once no change is running on its stack,
+//! one at a time of every stack, as builds take the machine. `launch` starts
+//! what can go; it runs when a comment is sent and when an
 //! ask lands, so what waits goes on its own. A comment may be batched
 //! instead, as in self-review too: it waits for you to send the batch, and
 //! then goes with the rest asked the same way, in one ask (the changes, and
@@ -32,8 +33,9 @@
 //! takes long to make. It
 //! reads the stack through stacked (`export`, `show`, and a file as a patch
 //! leaves it, `show --path`), and is let run nothing that changes anything.
-//! A build and test runs in the repository too, given the stack by `stacked
-//! export`, in a workspace of claude's choosing.
+//! A build and test works in a worktree of the stack's own too,
+//! `.stacked/NAME/build`, the stack up to its place applied: kept for the
+//! next build to build on, what a build made there left as it is.
 //!
 //! When claude exits, `stacked land` files what it did: a patch change slots
 //! into the stack as it is by then, the comments on lines a split moved
@@ -242,11 +244,19 @@ pub fn waits_on(db: &Db, name: &str, way: Way) -> Option<String> {
         Way::Change if going.iter().any(|(_, i)| i.way == Way::Answer) => {
             Some("once the running answers land".into())
         }
-        Way::Test if going.iter().any(|(_, i)| i.way == Way::Test) => {
-            Some("once the running build and test lands".into())
-        }
+        // One build and test at a time, of every stack.
+        Way::Test => testing(db).map(|r| match r.stack == name {
+            true => "once the running build and test lands".to_string(),
+            false => format!("once the running build and test of {} lands", r.stack),
+        }),
         _ => None,
     }
+}
+
+/// The build and test in flight, of whichever stack: one at a time, as
+/// builds take the machine.
+fn testing(db: &Db) -> Option<&Run> {
+    db.runs().into_iter().find(|r| busy(r) && light(r).is_some_and(|i| i.way == Way::Test))
 }
 
 /// Why stack `name` cannot be edited by hand now, if it cannot: the agent
@@ -501,8 +511,10 @@ fn claim(db: &mut Db) -> Result<Vec<String>> {
     order.sort();
     let mut started = Vec::new();
     // Per stack: what is going, as the batches are started; and whether a
-    // change waits for its review.
-    let mut state: HashMap<String, (bool, usize, bool, bool, bool)> = HashMap::new();
+    // change waits for its review. Of every stack: whether a build and test
+    // is going.
+    let mut state: HashMap<String, (bool, usize, bool, bool)> = HashMap::new();
+    let mut test = testing(db).is_some();
     for b in &order {
         let (name, way, scope, notes) = batches[b].clone();
         let st = state.entry(name.clone()).or_insert_with(|| {
@@ -510,12 +522,11 @@ fn claim(db: &mut Db) -> Result<Vec<String>> {
             (
                 going.iter().any(|(_, i)| i.way == Way::Change),
                 going.iter().filter(|(_, i)| i.way == Way::Answer).count(),
-                going.iter().any(|(_, i)| i.way == Way::Test),
                 false,
                 crate::held::change_waiting(db, &name).is_some(),
             )
         });
-        let (change, answers, test, change_waits, reviewing) = st;
+        let (change, answers, change_waits, reviewing) = st;
         let go = match way {
             // A change has the stack to itself, from the stack as the change
             // before it left it, reviewed; one waiting for what runs holds
@@ -536,10 +547,12 @@ fn claim(db: &mut Db) -> Result<Vec<String>> {
                 }
                 go
             }
+            // A build and test, while no change runs on its stack, and no
+            // other build and test anywhere.
             Way::Test => {
-                let go = !*change && !*test;
+                let go = !*change && !test;
                 if go {
-                    *test = true;
+                    test = true;
                 }
                 go
             }
@@ -844,17 +857,22 @@ fn prompt(db: &Db, i: &Info, s: &Stack, cmd: &str, run: &str) -> String {
         ),
         (Way::Test, scope) => {
             let what = match scope {
-                Scope::Stack => "the stack's patches".to_string(),
-                Scope::Patch(_) => format!("patch {} (with the patches below it)", k.map_or(0, |k| k + 1)),
+                Scope::Stack => format!("the stack's patches: the commits {}..HEAD, each commit a patch", i.base),
+                Scope::Patch(_) => format!(
+                    "patch {} with the patches below it: the commits {}..HEAD, the patch at HEAD; `{export}` \
+                     prints the whole stack, the patches above included",
+                    k.map_or(0, |k| k + 1),
+                    i.base
+                ),
             };
             format!(
-                "You are building and testing {what}. `{export}` prints the patches as mail for \
-                 `git am`, bottom first as listed below; they apply to commit {base}. Build them \
-                 and run the tests that matter for what they change. Where to do it is your \
-                 call, by your own rules for this repository: make a workspace or reuse one. \
-                 Never use the user's current worktree, nor change a branch of the user's. Do \
-                 not push. You change nothing in the stack: what you find is your answer.",
-                base = i.base
+                "You are building and testing {what}. The current directory is a git worktree of \
+                 the stack's own, for its builds: build there, by your own rules for this \
+                 repository, and run the tests that matter for what the patches change. It is \
+                 kept for the next build, with what you build in it: build on what is already \
+                 there. Do not change the files git tracks, nor commit: you change nothing in the stack, \
+                 and what you find is your answer. Never use the user's current worktree, nor \
+                 change a branch of the user's. Do not push."
             )
         }
     };
@@ -982,10 +1000,12 @@ pub const GIVEN: [&str; 4] = ["Read", "Grep", "Glob", "LS"];
 /// change things too.
 pub const CHANGING: [&str; 7] = ["Bash", "Edit", "MultiEdit", "Write", "NotebookEdit", "Task", "KillShell"];
 
-/// The worktrees of a stack's own that changes, and answers, work in:
-/// `agent`, `agent-2`…, `answer-only-agent`… under `.stacked/NAME`.
+/// The worktrees of a stack's own that changes, answers, and builds and
+/// tests work in: `agent`, `agent-2`…, `answer-only-agent`…, `build` under
+/// `.stacked/NAME`.
 pub const AGENT: &str = "agent";
 pub const ANSWERING: &str = "answer-only-agent";
+pub const BUILD: &str = "build";
 
 /// Where stack `name`'s agents' worktrees are: `.stacked/NAME` in its
 /// repository, else under `under` (the settings' `agent.worktrees`), in a
@@ -1012,12 +1032,14 @@ fn slot(dir: &Path, kind: &str, k: usize) -> PathBuf {
 /// written as its worktree in the database, so that no other takes it. One
 /// not there yet is made by `git::ready`.
 fn take_slot(db_path: &Path, id: &str, dir: &Path, kind: &str) -> Result<PathBuf> {
+    // What an agent left unfinished stays as it is, to look at; what a
+    // build made, untracked, is the next build's to build on.
+    let left = |at: &Path| if kind == BUILD { git::unfinished_tracked(at) } else { git::unfinished(at) };
     let mut k = 1;
     loop {
         let at = slot(dir, kind, k);
         k += 1;
-        // What an agent left unfinished stays as it is, to look at.
-        if at.join(".git").exists() && git::unfinished(&at).unwrap_or(true) {
+        if at.join(".git").exists() && left(&at).unwrap_or(true) {
             continue;
         }
         let path = at.to_string_lossy().into_owned();
@@ -1164,13 +1186,13 @@ fn start(db_path: &Path, id: &str) -> Result<()> {
     // read now): an answer in the repository as it is (pwd), else in a
     // worktree of the stack's own, the stack up to its place applied; a
     // change in one, or in the user's checkout moved to the stack (pwd); a
-    // build and test in the repository, where it likes.
+    // build and test in the stack's build worktree, always.
     let (cfg, _) = crate::config::of(&repo);
     let agent = &cfg.agent;
     let patches: Vec<&Patch> = s.patches[..upto].iter().map(|p| db.patch(p)).collect();
     let mbox = format_mbox(&patches);
     match (i.way, agent.worktree, agent.answer_only_worktree) {
-        (Way::Test, _, _) | (Way::Answer, _, Workspace::Pwd) => {}
+        (Way::Answer, _, Workspace::Pwd) => {}
         (Way::Change, Workspace::Pwd, _) => {
             if git::unfinished_tracked(&repo)? {
                 return err(format!(
@@ -1188,7 +1210,11 @@ fn start(db_path: &Path, id: &str) -> Result<()> {
             i.worktree = Some(repo.to_string_lossy().into_owned());
         }
         (way, _, _) => {
-            let kind = if way == Way::Change { AGENT } else { ANSWERING };
+            let kind = match way {
+                Way::Change => AGENT,
+                Way::Answer => ANSWERING,
+                Way::Test => BUILD,
+            };
             let dir = agents_dir(&repo, &s.name, agent.worktrees.as_deref())?;
             let slot = take_slot(db_path, id, &dir, kind)?;
             git::ready(&repo, &slot, &base, &mbox, upto, &step)?;
@@ -1501,6 +1527,9 @@ fn left_work(i: &Info) -> bool {
     if i.back.is_some() {
         git::unfinished_tracked(w).unwrap_or(true)
             || git::untracked(w).map_or(true, |now| now.iter().any(|f| !i.untracked.contains(f)))
+    } else if i.way == Way::Test {
+        // What a build made, untracked, is not work: the next build's.
+        git::unfinished_tracked(w).unwrap_or(false)
     } else {
         git::unfinished(w).unwrap_or(false)
     }

@@ -318,7 +318,7 @@ fn agent(path: &Path, id: &str) -> Result<()> {
                 (reply.to_string(), None)
             }
             Plan::Test => (
-                "In the tour I cannot build or run anything. In your own stacks, claude builds and tests the stack in a workspace of its own, and says on each patch what it found.".to_string(),
+                "In the tour I cannot build or run anything. In your own stacks, claude builds and tests the stack in the stack's build worktree, and says on each patch what it found.".to_string(),
                 None,
             ),
             Plan::Other => (

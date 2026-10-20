@@ -983,6 +983,39 @@ fn several_asks_wait_their_turn() {
 }
 
 #[test]
+fn one_build_and_test_goes_at_a_time_of_every_stack() {
+    let e = env();
+    e.ok(&["import", "s", "base"]);
+    e.ok(&["import", "t", "base"]);
+    let on_s = comment(&e, &["Build", "it."]);
+    let on_t = e.ok(&["comment", "t", "Build", "it", "too."]).trim().to_string();
+    // A build fails if another is going.
+    let going = e.root.join("building");
+    let claude = fake_claude(
+        &e,
+        "claude-build.sh",
+        &format!("test -e {g} && exit 9; touch {g}; sleep 1; rm {g}", g = going.display()),
+        r#"{"replies": {"c1": "Built."}}"#,
+    );
+    let env = [("STACKED_CLAUDE", claude.as_path())];
+    let (fine, out, err) = stacked_in(&e.src, &e.db, &["send", "s", &on_s, "--build-and-test"], "", &env);
+    assert!(fine && out.contains("sent"), "{out}{err}");
+    // Another stack's waits for it, ready.
+    let (fine, out, err) = stacked_in(&e.src, &e.db, &["send", "t", &on_t, "--build-and-test"], "", &env);
+    assert!(fine, "{err}");
+    assert!(out.contains("ready (build and test), it goes once the running build and test of s lands"), "{out}");
+    // Each goes in turn, in its stack's build worktree.
+    landed(&e, 2);
+    let db = Db::load(&e.db).unwrap();
+    for name in ["s", "t"] {
+        let r = db.runs().into_iter().find(|r| r.stack == name).unwrap();
+        assert_eq!(r.state, RunState::Done, "{}", r.summary);
+        let w = stacked::ask::info(r).and_then(|i| i.worktree).unwrap_or_default();
+        assert!(w.ends_with(&format!("/.stacked/{name}/build")), "{w}");
+    }
+}
+
+#[test]
 fn comments_batched_wait_until_the_batch_is_sent() {
     use stacked::ask::{Scope, info};
     use stacked::db::Way;
@@ -1153,12 +1186,12 @@ fn the_agent_rebases_reviews_and_tests() {
     assert!(c.contains("patch 1, as a whole") && c.contains("On the whole patch."), "{c}");
     assert!(e.ok(&["runs"]).contains("reviewed: 2 opened comments accepted; 1 reply accepted"));
 
-    // A build and test runs where claude likes, here the repo, and reads
-    // the stack with the command it is given.
+    // A build and test runs in the stack's build worktree, the stack applied
+    // in it: there it builds, leaving what it made.
     let test = fake_claude(
         &e,
         "claude-test.sh",
-        r#"test "$PWD" = "$STACKED_SRC" || exit 3"#,
+        r#"case "$PWD" in */.stacked/s/build) ;; *) exit 3;; esac; test "$(git rev-list --count HEAD ^upstream)" = 3 || exit 4; echo o > built.o"#,
         r#"{"replies": {"c1": "Built them."}, "patches": {"1": "builds; 3 tests pass", "3": "fails: a.txt"}}"#,
     );
     let id = comment(&e, &["Build", "and", "test."]);
@@ -1169,7 +1202,19 @@ fn the_agent_rebases_reviews_and_tests() {
     assert!(e.ok(&["comments", "s", "--patch", "3"]).contains("fails: a.txt (tested @"));
     let db = Db::load(&e.db).unwrap();
     let info = stacked::ask::info(db.runs().last().unwrap()).unwrap();
-    assert!(info.prompt.contains("export s --rev"), "{}", info.prompt);
+    assert!(info.worktree.as_deref().is_some_and(|w| w.ends_with("/.stacked/s/build")), "{:?}", info.worktree);
+    assert!(info.prompt.contains("a git worktree of the stack's own, for its builds"), "{}", info.prompt);
+    drop(db);
+    // The next build takes it again, and builds on what is there.
+    let again = fake_claude(
+        &e,
+        "claude-test-again.sh",
+        r#"case "$PWD" in */.stacked/s/build) ;; *) exit 3;; esac; test -e built.o || exit 5"#,
+        r#"{"replies": {"c1": "Built again."}}"#,
+    );
+    let id = comment(&e, &["Build", "again."]);
+    let (fine, _, err) = send(&e, &again, &[&id, "--build-and-test"], &[]);
+    assert!(fine, "{err}");
     // A line's comment is not for building and testing.
     let line = comment(&e, &["--patch", "2", "--line", "b.txt:+new", "Test", "this."]);
     let (fine, _, err) = e.run(&["send", "s", &line, "--build-and-test"]);

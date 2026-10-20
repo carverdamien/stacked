@@ -296,8 +296,9 @@ enum Cmd {
         /// The agent only answers: nothing changes.
         #[arg(long, conflicts_with = "build_and_test")]
         answer_only: bool,
-        /// The agent builds and tests, in a workspace of its choosing: on the
-        /// stack's comments and patches' as a whole.
+        /// The agent builds and tests, in the stack's build worktree,
+        /// .stacked/NAME/build: on the stack's comments and patches' as a
+        /// whole.
         #[arg(long)]
         build_and_test: bool,
         /// A patch's comments, sent to the whole stack: the agent may change
