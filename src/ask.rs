@@ -186,6 +186,30 @@ pub fn alive(pid: u32) -> bool {
     unsafe { libc::kill(pid as i32, 0) == 0 }
 }
 
+/// What leaving the editor says of the asks still running: a line for
+/// each, as `stacked runs` says it, and where its agent works: its
+/// worktree, or the repository as it is checked out.
+pub fn still_running(db: &Db) -> Vec<String> {
+    db.runs()
+        .iter()
+        .filter(|r| running(r))
+        .map(|r| {
+            let words = r.request.split_whitespace().collect::<Vec<_>>().join(" ");
+            let asked = match words.chars().count() {
+                0 => String::new(),
+                n if n > 60 => format!(" \"{}…\"", words.chars().take(59).collect::<String>()),
+                _ => format!(" \"{words}\""),
+            };
+            let at = match info(r) {
+                Some(Info { worktree: Some(w), .. }) => format!("works in {w}"),
+                Some(i) if r.pid.is_some() && !i.repo.is_empty() => format!("works in {}", i.repo),
+                _ => "is being started, its worktree being made".to_string(),
+            };
+            format!("{} {} {}{asked} {at}", r.id, r.what, r.stack)
+        })
+        .collect()
+}
+
 /// Is run `r` running: started, and its process there.
 pub fn running(r: &Run) -> bool {
     r.state == RunState::Started
@@ -2019,6 +2043,45 @@ mod tests {
             bytes.push('\n');
         }
         Db::from_bytes(Path::new("t.jsonl"), bytes.as_bytes()).unwrap()
+    }
+
+    #[test]
+    fn leaving_says_where_each_agent_still_running_works() {
+        let run = |id: &str, what: &str, pid: Option<u32>, state: RunState, ask: Value| Run {
+            id: id.into(),
+            what: what.into(),
+            stack: "s".into(),
+            state,
+            pid,
+            request: format!("why\n{id}?"),
+            ask: Some(ask),
+            ..Default::default()
+        };
+        let ask = |worktree: Option<&str>| serde_json::json!({"way": "change", "scope": "stack", "from": 0, "notes": [], "repo": "/repo", "worktree": worktree});
+        let me = Some(std::process::id());
+        let runs = [
+            run("r1", "change", me, RunState::Started, ask(Some("/repo/.stacked/s/agent"))),
+            // An answer, in the repository as it is.
+            run("r2", "answer", me, RunState::Started, ask(None)),
+            // Its process gone, or landed: not running.
+            run("r3", "change", Some(i32::MAX as u32), RunState::Started, ask(Some("/w"))),
+            run("r4", "change", me, RunState::Done, ask(Some("/w"))),
+            // Being started, where it works not known yet.
+            Run { starter: me, ..run("r5", "change", None, RunState::Started, ask(None)) },
+        ];
+        let mut bytes = serde_json::to_string(&Record::Stacked { version: VERSION }).unwrap() + "\n";
+        for r in runs {
+            bytes += &(serde_json::to_string(&Record::Run(r)).unwrap() + "\n");
+        }
+        let db = Db::from_bytes(Path::new("t.jsonl"), bytes.as_bytes()).unwrap();
+        assert_eq!(
+            still_running(&db),
+            [
+                "r1 change s \"why r1?\" works in /repo/.stacked/s/agent",
+                "r2 answer s \"why r2?\" works in /repo",
+                "r5 change s \"why r5?\" is being started, its worktree being made",
+            ]
+        );
     }
 
     #[test]

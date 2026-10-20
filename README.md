@@ -585,7 +585,9 @@ not signed, whatever git's `commit.gpgsign` says: they are only read back
 as patches. `stacked apply`'s commits are yours, signed as git says.
 
 The agent runs in a process group of its own. Quitting the editor leaves it
-running, and what it does lands on its own. A worktree with work the agent
+running, and what it does lands on its own; leaving (ctrl-c, or `Quit`)
+lists the asks still running, each as `stacked runs` says it and where its
+agent works: its worktree, or the repository. A worktree with work the agent
 did not commit, or that could not be filed, is left in place, and the run's
 summary says where; others are removed once landed. `Runs…` lists every
 ask, apply and pull, and shows what the agent wrote.

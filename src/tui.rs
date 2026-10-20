@@ -6490,9 +6490,15 @@ pub fn run(path: &Path) -> Result<()> {
     let mut terminal = ratatui::init();
     let res = event_loop(&mut terminal, &mut app);
     ratatui::restore();
-    let running = app.running();
-    if running > 0 {
-        eprintln!("stacked: {running} of the agent's asks still running; what they do lands on its own");
+    // The asks still running, each where its agent works: read again, for
+    // one started a moment ago.
+    let now = Db::load(path);
+    let running = ask::still_running(now.as_ref().unwrap_or(&app.db));
+    if !running.is_empty() {
+        eprintln!("stacked: {} of the agent's asks still running; what they do lands on its own:", running.len());
+        for l in running {
+            eprintln!("  {l}");
+        }
     }
     res
 }
