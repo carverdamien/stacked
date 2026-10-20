@@ -282,25 +282,38 @@ impl App {
     }
 
     /// Patch `p` as the work leaves it, a row at a time, `w` wide, the
-    /// comments on its lines under them: those the work replied to with
-    /// its reply, and your answer to it, as their threads would be; the
-    /// turn written again in the editor in the editor alone.
+    /// comments of the work on its lines under them, and no other comment of
+    /// the patch: those the ask was about, with the work's reply and your
+    /// answer to it, as their threads would be; those the work opened, where
+    /// they would be; those you wrote in its review. The turn written again
+    /// in the editor in the editor alone.
     fn review_rows(&self, p: &Patch, w: usize) -> Vec<Row> {
-        let replies = self.reviewing.as_ref().and_then(|rv| self.work(&rv.run)).map_or(&[][..], |(_, h)| &h.replies[..]);
-        let notes: Vec<Note> = self
-            .db
-            .notes(&p.change)
-            .into_iter()
-            .map(|n| match replies.iter().find(|rp| rp.change == n.change && rp.id == n.id) {
-                Some(rp) => Note { text: rp.after(&n.text), ..n.clone() },
-                None => n.clone(),
-            })
-            .collect();
+        let mut notes: Vec<Note> = Vec::new();
+        if let Some((_, h)) = self.reviewing.as_ref().and_then(|rv| self.work(&rv.run)) {
+            notes = self
+                .db
+                .notes(&p.change)
+                .into_iter()
+                .filter(|n| self.review_shows(n))
+                .map(|n| match h.replies.iter().find(|rp| rp.change == n.change && rp.id == n.id) {
+                    Some(rp) => Note { text: rp.after(&n.text), ..n.clone() },
+                    None => n.clone(),
+                })
+                .collect();
+            notes.extend(h.opened.iter().filter(|n| n.change == p.change).cloned());
+        }
         let mut deco = Deco::default();
         if let Some((id, turns)) = self.written_turns() {
             deco.writing.insert(id, turns);
         }
         patch_rows(p, &notes.iter().collect::<Vec<_>>(), w, &deco)
+    }
+
+    /// Whether comment `n` is one of the work reviewed: one its ask was
+    /// about, or one you wrote in its review.
+    pub(super) fn review_shows(&self, n: &Note) -> bool {
+        let Some((r, _)) = self.reviewing.as_ref().and_then(|rv| self.work(&rv.run)) else { return false };
+        crate::held::asking_of(r).iter().any(|(c, i)| *c == n.change && *i == n.id) || (n.review.as_deref() == Some(r.id.as_str()) && n.by.is_none())
     }
 
     /// What you wrote in the review, counted: the comments written there,
@@ -324,8 +337,9 @@ impl App {
         let Some(rv) = self.reviewing.clone() else { return };
         let Some(row) = self.review_rows(&p, rv.main_w).get(rv.row).cloned() else { return };
         let line = row.key.clone().filter(|_| row.note.is_none() && row.kind.commentable());
-        // The comment on the row, or yours on its line.
-        let Some(id) = row.note.clone().or_else(|| line.clone().filter(|k| self.db.note(&p.change, k).is_some())) else {
+        // The comment on the row, or yours on its line if it is one of the
+        // work's; else a comment of its own there.
+        let Some(id) = row.note.clone().or_else(|| line.clone().filter(|k| self.db.note(&p.change, k).is_some_and(|n| self.review_shows(n)))) else {
             if let Some(key) = line {
                 let (file, preview) = (row.path.clone().unwrap_or_default(), row.preview.clone().unwrap_or_default());
                 self.write(Target::Line { change: p.change, key, file, preview }, Focus::Diff, "");
@@ -337,7 +351,10 @@ impl App {
             (Some(k), _) => self.review_answer(k),
             (None, Some(true)) => self.edit_mine(p.change, id, Focus::Diff),
             (None, Some(false)) => self.write(Target::Reply { change: p.change, id }, Focus::Diff, ""),
-            (None, None) => {}
+            // Not written yet: one the work opened.
+            (None, None) => {
+                self.status = "the work opened this comment: it is accepted or rejected in the list, with the comments the work opened".into();
+            }
         }
     }
 

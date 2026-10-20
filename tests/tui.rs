@@ -3579,6 +3579,74 @@ fn down_to_work_row(app: &mut App, text: &str) {
 }
 
 #[test]
+fn the_patch_in_a_review_has_the_comments_of_the_work_and_no_other() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    // On patch 1, a comment the agent is asked about, and one it is not.
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Enter]);
+    save(&mut app, "why so loud?");
+    down_to(&mut app, "+LINE 39");
+    keys(&mut app, &[KeyCode::Enter]);
+    save(&mut app, "Not asked about.");
+    let n = notes_of(&db, "s", 0).into_iter().find(|n| n.text.contains("why so loud?")).unwrap();
+    agent_changed(&db, "run-agent", &n);
+    // The work opens one of its own, on the patch's title.
+    Db::edit(&db, |d| {
+        let mut r = d.run("run-agent").unwrap().clone();
+        let h = r.held.as_mut().unwrap();
+        let p1 = d.patch(&h.stack.as_ref().unwrap().patches[0]).clone();
+        h.opened.push(Note {
+            change: p1.change.clone(),
+            id: "agent:run-agent:0".into(),
+            line: stacked::view::title_key(&p1),
+            text: "```agent change\nThe title says two.\n```".into(),
+            file: stacked::view::MSG_PATH.into(),
+            preview: p1.title().into(),
+            by: Some("agent".into()),
+            ..Default::default()
+        });
+        d.add_run(r).map(|_| ())
+    })
+    .unwrap();
+    app.refresh();
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Enter]);
+    assert_eq!(app.screen, Screen::Review);
+    keys(&mut app, &[KeyCode::Home]);
+    down_to_review(&mut app, "modify  1 Bug 1");
+    keys(&mut app, &[KeyCode::Right, KeyCode::Enter]);
+    let mut buf = Buffer::empty(Rect::new(0, 0, 120, 80));
+    app.draw(&mut buf);
+    let screen: String = (0..80).map(|y| (0..120).map(|x| buf[(x, y)].symbol()).collect::<String>() + "\n").collect();
+    assert!(screen.contains(" patch 1 as the work leaves it"), "{screen}");
+    // The comment asked about, its reply; the one the work opened; and not
+    // the other.
+    for said in ["why so loud?", "Quieter now.", "The title says two."] {
+        assert!(screen.contains(said), "{said:?}:\n{screen}");
+    }
+    assert!(!screen.contains("Not asked about."), "{screen}");
+    // A comment written in the review is there too.
+    keys(&mut app, &[KeyCode::Home]);
+    down_to_work_row(&mut app, "+LINE 39");
+    keys(&mut app, &[KeyCode::Enter]);
+    typed(&mut app, "Written in the review.");
+    keys(&mut app, &[KeyCode::Esc]);
+    choose(&mut app, "Save it");
+    let mut buf = Buffer::empty(Rect::new(0, 0, 120, 80));
+    app.draw(&mut buf);
+    let screen: String = (0..80).map(|y| (0..120).map(|x| buf[(x, y)].symbol()).collect::<String>() + "\n").collect();
+    assert!(screen.contains("Written in the review.") && !screen.contains("Not asked about."), "{screen}");
+    // A comment of its own on that line: the other one as it was, not the
+    // review's.
+    let notes = notes_of(&db, "s", 0);
+    let other = notes.iter().find(|m| m.text.contains("Not asked about.")).unwrap();
+    assert_eq!((other.text.as_str(), other.review.as_deref()), ("Not asked about.", None));
+    let mine = notes.iter().find(|m| m.text == "Written in the review.").unwrap();
+    assert_eq!((mine.line.as_str(), mine.review.as_deref()), (other.line.as_str(), Some("run-agent")));
+}
+
+#[test]
 fn enter_on_a_line_of_the_interdiff_goes_to_that_line_of_the_patch() {
     let (_tmp, db, _src) = setup();
     let mut app = open(&db).unwrap();

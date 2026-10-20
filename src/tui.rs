@@ -4752,6 +4752,12 @@ impl App {
         // Written in the review of landed work: it goes back to the agent
         // with that work.
         let review = (self.screen == Screen::Review).then(|| self.reviewing.as_ref().map(|rv| rv.run.clone())).flatten();
+        // There, a comment of yours on the line that is not of the work is
+        // not written on: what you write is a comment of its own.
+        let apart = match target {
+            Target::Line { change, key, .. } if review.is_some() => self.db.note(change, key).is_some_and(|n| !self.review_shows(n)),
+            _ => false,
+        };
         let saved = self.edit(|db| {
             let note = match target {
                 Target::Stack => Note {
@@ -4779,7 +4785,7 @@ impl App {
                         ..Default::default()
                     }
                 }
-                Target::Line { change, key, file, preview } => match db.note(change, key).cloned() {
+                Target::Line { change, key, file, preview } => match db.note(change, key).cloned().filter(|_| !apart) {
                     Some(n) => Note {
                         text: append_turn(&n.text, Role::You, &text, None),
                         failed: None,
@@ -4787,7 +4793,7 @@ impl App {
                     },
                     None => Note {
                         change: change.clone(),
-                        id: key.clone(),
+                        id: if apart { format!("l{stamp}") } else { key.clone() },
                         line: key.clone(),
                         text,
                         file: file.clone(),
