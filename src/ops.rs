@@ -256,6 +256,65 @@ pub fn interdiff(old: &Patch, new: &Patch) -> String {
         .to_string()
 }
 
+/// A line of a patch's mail, as what it is of the patch: a line of its
+/// message, or of its diff; from 0.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum MailLine {
+    Message(usize),
+    Diff(usize),
+}
+
+/// What line `m` (from 0) of `p`'s mail, as `render` writes it, is of `p`,
+/// as `mail_line` has it the other way: its headers and `Subject:` its
+/// title, the message's first line; its body the rest of the message; the
+/// `---` before the diff, and the diff's lines, the diff's.
+pub fn line_of_mail(p: &Patch, m: usize) -> MailLine {
+    let mail = render(p);
+    let lines: Vec<&str> = mail.lines().collect();
+    let diff_at = lines.len().saturating_sub(p.diff.lines().count());
+    if m + 1 >= diff_at {
+        return MailLine::Diff(m.saturating_sub(diff_at));
+    }
+    let subject = lines.iter().position(|l| l.starts_with("Subject: ")).unwrap_or(0);
+    if m <= subject {
+        return MailLine::Message(0);
+    }
+    // The body after a blank line, the blank lines it started with gone.
+    let rest = p.message.split_once('\n').map_or("", |(_, b)| b);
+    let lead = rest.len() - rest.trim_start_matches('\n').len();
+    let at = if m == subject + 1 { 1 } else { 1 + lead + (m - subject - 2) };
+    MailLine::Message(at.min(p.message.split('\n').count().saturating_sub(1)))
+}
+
+/// Where each line of an interdiff is in the new version's mail, from 0,
+/// `lines` as a stack diff has them (`interdiff`'s, its two first lines
+/// gone): a line kept or added, the line it is; one taken out, the line of
+/// the new mail where it was; a hunk's header, its first line.
+pub fn interdiff_places(lines: &[&str]) -> Vec<usize> {
+    let mut at = 0;
+    lines
+        .iter()
+        .map(|l| {
+            if let Some(head) = l.strip_prefix("@@ ") {
+                // `@@ -a,b +c,d @@`: d lines of the new mail from line c.
+                let new = head.split(' ').find_map(|w| w.strip_prefix('+')).unwrap_or("1");
+                let (start, n) = new.split_once(',').unwrap_or((new, "1"));
+                let start: usize = start.parse().unwrap_or(1);
+                at = if n == "0" { start } else { start.saturating_sub(1) };
+                return at;
+            }
+            match l.chars().next() {
+                Some(' ' | '+') => {
+                    at += 1;
+                    at - 1
+                }
+                Some('\\') => at.saturating_sub(1),
+                _ => at,
+            }
+        })
+        .collect()
+}
+
 /// The previous version of `p`, if it has one.
 pub fn previous<'a>(db: &'a Db, p: &Patch) -> Option<&'a Patch> {
     let versions = db.versions(&p.change);
@@ -1327,5 +1386,42 @@ mod tests {
         assert_eq!(changes[..3], ["c", "a", "b"]);
         assert!(!["a", "b", "c", "e"].contains(&changes[3]), "{changes:?}");
         assert_eq!(planned[0].id, olds[2].id);
+    }
+
+    #[test]
+    fn a_line_of_an_interdiff_is_where_it_is_in_the_new_version() {
+        let patch = |message: &str, line: &str| Patch::new("a".into(), Some("T <t@x>".into()), None, message.into(), adds(line));
+        let (old, new) = (patch("A\n\nBody.\n", "x"), patch("A, said otherwise\n\nBody.\n", "y"));
+        let text = interdiff(&old, &new);
+        let lines: Vec<&str> = text.lines().skip_while(|l| l.starts_with("--- ") || l.starts_with("+++ ")).collect();
+        let places = interdiff_places(&lines);
+        let mail: Vec<String> = render(&new).lines().map(String::from).collect();
+        // A line kept, or added, is that line of the new mail.
+        for (l, at) in lines.iter().zip(&places) {
+            if let Some(s) = l.strip_prefix(' ').or_else(|| l.strip_prefix('+')) {
+                assert_eq!(mail[*at], s, "{l:?} in {lines:?}");
+            }
+        }
+        // Each is a line of the patch: of its message, of its diff; one
+        // taken out, the line in its place.
+        let of = |s: &str| lines.iter().zip(&places).find(|(l, _)| **l == s).map(|(_, at)| line_of_mail(&new, *at));
+        // As `mail_line` has it the other way, for the patch's own lines:
+        // not the mail's headers, nor the `---` before the diff.
+        let own = |at: usize| !(mail[at].starts_with("From: ") || mail[at].starts_with("Date: ") || mail[at] == "---");
+        for (l, at) in lines.iter().zip(&places).filter(|(l, at)| (l.starts_with(' ') || l.starts_with('+')) && own(**at)) {
+            let rows = crate::rows::patch_rows(&new, &[], 80, &crate::rows::Deco::default());
+            let row = match line_of_mail(&new, *at) {
+                MailLine::Message(i) => rows.iter().find(|r| r.msg_at == Some(i)),
+                MailLine::Diff(j) => rows.iter().find(|r| r.diff_at == Some(j)),
+            };
+            if let Some(row) = row {
+                assert_eq!(mail_line(&new, row), at + 1, "{l:?}");
+            }
+        }
+        assert_eq!(of("-Subject: A"), Some(MailLine::Message(0)));
+        assert_eq!(of("+Subject: A, said otherwise"), Some(MailLine::Message(0)));
+        assert_eq!(of(" Body."), Some(MailLine::Message(2)));
+        assert_eq!(of("-+x"), Some(MailLine::Diff(5)));
+        assert_eq!(of("++y"), Some(MailLine::Diff(5)));
     }
 }

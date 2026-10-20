@@ -725,10 +725,13 @@ the stack diff of the change, from the stack as it is, each new version's
 interdiff under it; or the comment where it would be, the reply as the
 last turn of its thread. → goes into it to scroll, → again makes it wide,
 the list out of sight, and ← narrows it, then comes back to the list (too
-narrow for both side by side, → shows it wide at once). On a line of the
-stack operations, → shows that patch as the work leaves it instead, a line
-at a time, the comments under their lines, the work's replies in their
-threads. Enter accepts the part the cursor is on, or puts it back to
+narrow for both side by side, → shows it wide at once). On the stack
+operations, → goes into the stack diff, the cursor on the first line that
+changed of the patch the cursor was on: ↑↓ move it from line to line, and
+Enter on a line of a patch, or of what changed in it, shows that patch as
+the work leaves it, a line at a time, the cursor on that line, the comments
+under their lines, the work's replies in their threads; ← goes back to the
+stack diff. Enter accepts the part the cursor is on, or puts it back to
 review if accepted (rejecting is Space's); every line of the stack
 operations is the one part of the change. Space has `Mark as
 accepted` or `Mark as rejected`; and, each kind apart, `Mark all opened

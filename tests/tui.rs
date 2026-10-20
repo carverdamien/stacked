@@ -3507,11 +3507,17 @@ fn landed_work_is_edited_by_hand_from_its_review_in_its_place() {
 /// What the agent brought back for comment `n` on patch 1, landed: `TWO`
 /// made `Two`, and its reply.
 fn agent_changed(db: &Path, run: &str, n: &Note) {
+    agent_changed_to(db, run, n, None)
+}
+
+/// As `agent_changed`, patch 1's message made `message` too, if given.
+fn agent_changed_to(db: &Path, run: &str, n: &Note, message: Option<&str>) {
     Db::edit(db, |d| {
         let (from, s) = d.head("s").map(|(r, s)| (r, s.clone())).unwrap();
         let old = d.patch(&s.patches[0]).clone();
         let draft = stacked::mbox::Draft {
             diff: old.diff.replace("+TWO", "+Two"),
+            message: message.map_or(old.message.clone(), String::from),
             ..stacked::mbox::Draft::from(&old)
         };
         let mut patches = s.patches.clone();
@@ -3549,22 +3555,65 @@ fn agent_changed(db: &Path, run: &str, n: &Note) {
     .unwrap();
 }
 
-/// Down the patch the review's right pane shows until its cursor is on the
-/// row starting with `text`.
+/// The row the cursor is on in the review's right pane, as drawn: of the
+/// patch, or of the stack diff; the spaces around it gone.
+fn work_row(app: &mut App) -> Option<String> {
+    let mut buf = Buffer::empty(Rect::new(0, 0, 120, 30));
+    app.draw(&mut buf);
+    (1..30).find_map(|y| {
+        let on = buf[(49, y)].modifier.contains(ratatui::style::Modifier::REVERSED);
+        on.then(|| (49..120).map(|x| buf[(x, y)].symbol()).collect::<String>().trim().to_string())
+    })
+}
+
+/// Down the patch, or the stack diff, the review's right pane shows until
+/// its cursor is on the row starting with `text`.
 fn down_to_work_row(app: &mut App, text: &str) {
     for _ in 0..80 {
-        let mut buf = Buffer::empty(Rect::new(0, 0, 120, 30));
-        app.draw(&mut buf);
-        let row = (1..30).find_map(|y| {
-            let on = buf[(49, y)].modifier.contains(ratatui::style::Modifier::REVERSED);
-            on.then(|| (49..120).map(|x| buf[(x, y)].symbol()).collect::<String>())
-        });
-        if row.is_some_and(|r| r.starts_with(text)) {
+        if work_row(app).is_some_and(|r| r.starts_with(text)) {
             return;
         }
         key(app, KeyCode::Down);
     }
     panic!("no row {text:?} in the patch:\n{}", draw(app));
+}
+
+#[test]
+fn enter_on_a_line_of_the_interdiff_goes_to_that_line_of_the_patch() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Enter]);
+    save(&mut app, "why so loud?");
+    let n = notes_of(&db, "s", 0).remove(0);
+    agent_changed_to(&db, "run-agent", &n, Some("Bug 1 - say two\n"));
+    app.refresh();
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Enter]);
+    assert_eq!(app.screen, Screen::Review);
+    // → on the patch's line: the stack diff, the cursor on the first line
+    // that changed in that patch, its subject.
+    keys(&mut app, &[KeyCode::Home]);
+    down_to_review(&mut app, "modify  1 Bug 1 - say two");
+    keys(&mut app, &[KeyCode::Right]);
+    assert_eq!(work_row(&mut app).as_deref(), Some("-Subject: Bug 1 - shout two"));
+    assert_eq!(app.hint(), "↑↓: a line · enter: go to it in the patch · →: wider · ←: back to the list · esc: save, discard or close");
+    // Enter: the patch as the work leaves it, the cursor on its title.
+    keys(&mut app, &[KeyCode::Enter]);
+    let screen = draw(&mut app);
+    assert!(screen.contains(" patch 1 as the work leaves it: Bug 1 - say two"), "{screen}");
+    assert_eq!(work_row(&mut app).as_deref(), Some("Bug 1 - say two"));
+    assert_eq!(app.hint(), "↑↓: a line · enter: comment · →: wider · ←: back to the stack diff · esc: save, discard or close");
+    // ← back to the stack diff, the cursor where it was; on the line of code
+    // that took the place of another, Enter goes to it in the patch.
+    keys(&mut app, &[KeyCode::Left]);
+    assert_eq!(work_row(&mut app).as_deref(), Some("-Subject: Bug 1 - shout two"));
+    down_to_work_row(&mut app, "++Two");
+    keys(&mut app, &[KeyCode::Enter]);
+    assert_eq!(work_row(&mut app).as_deref(), Some("+Two"));
+    // There, Enter writes a comment on it.
+    keys(&mut app, &[KeyCode::Enter]);
+    assert!(matches!(&app.mode, Mode::Edit(_)), "{:?}", app.mode);
 }
 
 #[test]
@@ -3580,14 +3629,18 @@ fn what_you_write_in_the_review_of_the_agent_s_work_sends_it_back_to_the_agent()
     app.refresh();
     keys(&mut app, &[KeyCode::Esc, KeyCode::Enter]);
     assert_eq!(app.screen, Screen::Review);
-    // → on a line of the stack operations: that patch as the work leaves it,
-    // a line at a time.
+    // → on a line of the stack operations: the stack diff, the cursor on the
+    // line that changed; Enter, that patch as the work leaves it, a line at
+    // a time, the cursor on the line in its place.
     keys(&mut app, &[KeyCode::Home]);
     down_to_review(&mut app, "modify  1 Bug 1");
     keys(&mut app, &[KeyCode::Right]);
+    assert_eq!(work_row(&mut app).as_deref(), Some("-+TWO"));
+    keys(&mut app, &[KeyCode::Enter]);
     let screen = draw(&mut app);
     assert!(screen.contains(" patch 1 as the work leaves it: Bug 1 - shout two"), "{screen}");
-    assert_eq!(app.hint(), "↑↓: a line · enter: comment · →: wider · ←: back to the list · esc: save, discard or close");
+    assert_eq!(work_row(&mut app).as_deref(), Some("+Two"));
+    assert_eq!(app.hint(), "↑↓: a line · enter: comment · →: wider · ←: back to the stack diff · esc: save, discard or close");
     // At its end, the comment on a line it no longer has, its reply in the
     // thread.
     keys(&mut app, &[KeyCode::End]);
@@ -3612,9 +3665,9 @@ fn what_you_write_in_the_review_of_the_agent_s_work_sends_it_back_to_the_agent()
     let (_, line) = at_from(&screen, "+Two", 49);
     let (_, comment) = at_from(&screen, "Not like this either.", 49);
     assert!(comment > line, "under its line:\n{screen}");
-    assert_eq!(app.hint(), "↑↓: a line · enter: comment · →: wider · ←: back to the list · esc: send back, save or discard");
+    assert_eq!(app.hint(), "↑↓: a line · enter: comment · →: wider · ←: back to the stack diff · esc: send back, save or discard");
     // On its reply, Space answers it.
-    keys(&mut app, &[KeyCode::Left]);
+    keys(&mut app, &[KeyCode::Left, KeyCode::Left]);
     down_to_review(&mut app, "Quieter now.");
     choose(&mut app, "Reply to it");
     save(&mut app, "Still too loud.");
@@ -3873,14 +3926,14 @@ fn right_in_a_review_goes_into_its_right_pane_then_makes_it_wide() {
     assert_eq!(app.screen, Screen::Review);
     // Into the pane on the right: the list beside it still.
     keys(&mut app, &[KeyCode::Right]);
-    assert_eq!(app.hint(), "↑↓: scroll · enter: accept · →: wider · ←: back to the list · esc: save, discard or close");
+    assert_eq!(app.hint(), "↑↓: a line · enter: go to it in the patch · →: wider · ←: back to the list · esc: save, discard or close");
     assert!(draw(&mut app).contains(" stack operations"));
     // Wide: the list out of sight.
     keys(&mut app, &[KeyCode::Right]);
     let screen = draw(&mut app);
     assert!(!screen.contains(" stack operations"), "{screen}");
     assert!(screen.lines().nth(1).unwrap().starts_with(" the change of patch 1: what accepting it does to the stack"), "{screen}");
-    assert_eq!(app.hint(), "↑↓: scroll · enter: accept · ←: narrower · esc: save, discard or close");
+    assert_eq!(app.hint(), "↑↓: a line · enter: go to it in the patch · ←: narrower · esc: save, discard or close");
     // ← narrower, then back to the list.
     keys(&mut app, &[KeyCode::Left]);
     assert!(draw(&mut app).contains(" stack operations"));

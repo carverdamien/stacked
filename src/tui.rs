@@ -2916,10 +2916,12 @@ impl App {
                     "The review of what landed, the agent's work or the comments pulled from Phabricator: the stack operations of a change, the comments opened, the replies. Each is accepted or rejected; a change of the stack is one part, and rejecting it rejects the comments too."
                         .into(),
                 );
-                if self.reviewing.as_ref().is_some_and(|rv| rv.in_main) && self.review_patch().is_some() {
-                    out.push("This is the patch as the work leaves it. Press ↑↓ for a line, and Enter to write a comment on it, or on the comment under it.".into());
+                if self.reviewing.as_ref().is_some_and(|rv| rv.in_main && rv.in_patch) && self.review_patch().is_some() {
+                    out.push("This is the patch as the work leaves it. Press ↑↓ for a line, and Enter to write a comment on it, or on the comment under it; ← to go back to the stack diff.".into());
+                } else if self.reviewing.as_ref().is_some_and(|rv| rv.in_main) && self.review_on_diff() {
+                    out.push("This is the stack diff of the change, each new version's interdiff under it. Press ↑↓ for a line, and Enter to go to that line in its patch as the work leaves it, to write a comment there.".into());
                 } else {
-                    out.push("Press Enter to accept the part the cursor is on, or, accepted, to put it back to review; Space for its menu, to reject it, or to reply to the agent's reply; → to scroll what it looks like, → again to see it wide, the list out of sight, and ← to come back. On a line of the stack operations, → shows that patch as the work leaves it, to comment on its lines.".into());
+                    out.push("Press Enter to accept the part the cursor is on, or, accepted, to put it back to review; Space for its menu, to reject it, or to reply to the agent's reply; → to scroll what it looks like, → again to see it wide, the list out of sight, and ← to come back. On the stack operations, → goes into the stack diff, where Enter on a line goes to it in its patch as the work leaves it, to comment on it.".into());
                 }
                 out.push("What you write in the review of the agent's work sends that work back to the agent: the work is not accepted, and the agent is asked again, starting from this work.".into());
                 out.push(if self.review_yours() > (0, 0) {
