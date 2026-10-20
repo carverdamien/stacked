@@ -761,7 +761,10 @@ is yours, a reply if not, and your answer to the agent's reply if this work
 replied to it. On a reply in the list, Space has `Reply to it`, your answer
 to follow the reply in its thread (`Edit your answer to it` once written).
 Nothing written there asks the agent at once, and the list shows it under
-`what you wrote, to send back`. With any of it, the work is not accepted:
+`what you wrote, to send back`: on one of its lines, the right pane shows
+it where it would be, Enter writes it again, and Space has `Take it back`
+(`Take your answer back`), for it not to go back with the work. With any
+of it, the work is not accepted:
 Esc has `Send it back to the agent` in place of closing the review. The
 work is rejected, its change not applied; its replies go in their threads,
 your answers after them, and the comments it opened go as you marked them.

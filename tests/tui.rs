@@ -3579,6 +3579,68 @@ fn down_to_work_row(app: &mut App, text: &str) {
 }
 
 #[test]
+fn what_you_wrote_in_a_review_is_in_its_list_to_see_write_again_or_take_back() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Enter]);
+    save(&mut app, "why so loud?");
+    let n = notes_of(&db, "s", 0).remove(0);
+    agent_changed(&db, "run-agent", &n);
+    app.refresh();
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Enter]);
+    assert_eq!(app.screen, Screen::Review);
+    // A comment written in the review, on the line the work changed; and an
+    // answer to its reply.
+    keys(&mut app, &[KeyCode::Home]);
+    down_to_review(&mut app, "modify  1 Bug 1");
+    keys(&mut app, &[KeyCode::Right, KeyCode::Enter, KeyCode::Enter]);
+    save(&mut app, "Not like this either.");
+    keys(&mut app, &[KeyCode::Left, KeyCode::Left]);
+    down_to_review(&mut app, "Quieter now.");
+    choose(&mut app, "Reply to it");
+    save(&mut app, "Still too loud.");
+    // The cursor goes on the comment: the right pane shows it where it is,
+    // under its line of the patch as the work leaves it.
+    down_to_review(&mut app, "Not like this either.");
+    let screen = draw(&mut app);
+    assert!(screen.contains(" your comment, where it is on the patch as the work leaves it"), "{screen}");
+    let (_, line) = at_from(&screen, "+Two", 49);
+    let (_, comment) = at_from(&screen, "Not like this either.", 49);
+    assert!(comment > line, "under its line:\n{screen}");
+    assert_eq!(app.hint(), "↑↓ choose · enter: edit it · →: look closer · space: menu · esc: send back, save or discard");
+    // Enter writes it again.
+    keys(&mut app, &[KeyCode::Enter]);
+    assert!(matches!(&app.mode, Mode::Edit(e) if e.ed.text() == "Not like this either."), "{:?}", app.mode);
+    save(&mut app, " Really.");
+    assert!(notes_of(&db, "s", 0).iter().any(|m| m.text == "Not like this either. Really."));
+    // Space takes it back: closed, it no longer goes back with the work.
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    let all = items(&app);
+    assert!(all.contains(&("Edit it".into(), true)) && all.contains(&("Take it back".into(), true)), "{all:?}");
+    choose(&mut app, "Take it back");
+    assert!(!notes_of(&db, "s", 0).iter().any(|m| m.text.contains("Not like this either.")));
+    assert!(!draw(&mut app).contains("Not like this either."));
+    // The cursor on what is left: the answer, after the reply in its thread.
+    assert!(selected_line(&mut app).is_some_and(|l| l.contains("your answer on")), "{:?}", selected_line(&mut app));
+    let screen = draw(&mut app);
+    assert!(screen.contains(" your answer, after the work's reply, as it would be in its thread"), "{screen}");
+    let (_, reply) = at_from(&screen, "Quieter now.", 49);
+    let (_, answer) = at_from(&screen, "Still too loud.", 49);
+    assert!(answer > reply, "{screen}");
+    choose(&mut app, "Take your answer back");
+    let d = Db::load(&db).unwrap();
+    assert_eq!(d.run("run-agent").unwrap().held.as_ref().unwrap().replies[0].answer, None);
+    drop(d);
+    // Nothing written: the review closes again, not sent back.
+    assert!(!draw(&mut app).contains(" what you wrote, to send back"));
+    keys(&mut app, &[KeyCode::Esc]);
+    let labels: Vec<String> = items(&app).into_iter().map(|(l, _)| l).collect();
+    assert!(!labels.iter().any(|l| l == "Send it back to the agent"), "{labels:?}");
+}
+
+#[test]
 fn the_patch_in_a_review_has_the_comments_of_the_work_and_no_other() {
     let (_tmp, db, _src) = setup();
     let mut app = open(&db).unwrap();

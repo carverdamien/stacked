@@ -588,6 +588,10 @@ pub enum Action {
     /// in it; your answer to its reply `0` written.
     SendBack,
     Answer(usize),
+    /// In the review: what you wrote there, on the list's line the cursor
+    /// is on, written again, or taken back.
+    EditYours,
+    TakeYoursBack,
     Send(Way),
     /// A patch's comment sent to the whole stack: the agent may change any
     /// patch.
@@ -746,6 +750,8 @@ fn about(action: &Action) -> String {
             "send the work back to the agent with what you wrote in this review: the work is not accepted, and the agent is asked again, starting from this work; the agent's new work lands for review in place of this one".into()
         }
         Action::Answer(_) => "answer the agent's reply: the work goes back to the agent with your answer after the reply".into(),
+        Action::EditYours => "write it again: what you said last in your comment, or your answer to the agent's reply".into(),
+        Action::TakeYoursBack => "take it back: it does not go back to the agent with the work".into(),
         Action::Send(Way::Change) => "ask the agent, which may change the code within this comment's place".into(),
         Action::Send(Way::Answer) => "ask the agent, to answer only: nothing changes".into(),
         Action::Send(Way::Test) => "ask the agent to build and test, in the stack's build worktree, .stacked/NAME/build".into(),
@@ -2924,6 +2930,9 @@ impl App {
                     out.push("Press Enter to accept the part the cursor is on, or, accepted, to put it back to review; Space for its menu, to reject it, or to reply to the agent's reply; → to scroll what it looks like, → again to see it wide, the list out of sight, and ← to come back. On the stack operations, → goes into the stack diff, where Enter on a line goes to it in its patch as the work leaves it, to comment on it.".into());
                 }
                 out.push("What you write in the review of the agent's work sends that work back to the agent: the work is not accepted, and the agent is asked again, starting from this work.".into());
+                if self.review_yours() > (0, 0) {
+                    out.push("On a line of what you wrote, under \"what you wrote, to send back\", press Enter to write it again, and Space to take it back.".into());
+                }
                 out.push(if self.review_yours() > (0, 0) {
                     "Press Esc to send the work back to the agent with what you wrote, to save your marks, or to throw them away.".into()
                 } else {
@@ -4214,6 +4223,16 @@ impl App {
             Action::CloseAsking(k, close) => self.mark_asking(k, close),
             Action::SendBack => self.review_send_back(),
             Action::Answer(k) => self.review_answer(k),
+            Action::EditYours => {
+                if let Some(y) = self.review_yours_line() {
+                    self.review_write_yours(y);
+                }
+            }
+            Action::TakeYoursBack => {
+                if let Some(y) = self.review_yours_line() {
+                    self.review_take_back(y);
+                }
+            }
             Action::Collapse | Action::Expand => {
                 let collapse = matches!(action, Action::Collapse);
                 if let Some(c) = self.picked()

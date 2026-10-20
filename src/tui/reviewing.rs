@@ -95,6 +95,14 @@ pub struct Reviewing {
     goto: Option<usize>,
 }
 
+/// What you wrote in the review a line of its list is: a comment you opened
+/// there, by (change, id); or your answer to the work's reply `0`.
+#[derive(Debug, Clone, PartialEq)]
+pub(super) enum Yours {
+    Comment(String, String),
+    Answer(usize),
+}
+
 /// A line of the review's list: what it says, how, and the part it is of
 /// (none, a section's title); for the change's, its place in the diff.
 pub(super) struct Line {
@@ -105,6 +113,17 @@ pub(super) struct Line {
     /// The comment the ask was about it is, by its place among them: kept,
     /// or closed with the review.
     asking: Option<usize>,
+    /// What you wrote in the review it is: to see where it would be, to
+    /// write again, or to take back.
+    yours: Option<Yours>,
+}
+
+impl Line {
+    /// Whether the cursor goes on it: a part, a comment that asked, or what
+    /// you wrote; not a section's title.
+    fn selectable(&self) -> bool {
+        self.part.is_some() || self.asking.is_some() || self.yours.is_some()
+    }
 }
 
 /// What a part's mark says, as the list shows it.
@@ -217,7 +236,7 @@ impl App {
     /// list's cursor on the stack operations.
     pub(super) fn review_on_diff(&self) -> bool {
         let Some(rv) = &self.reviewing else { return false };
-        self.review_lines().get(rv.sel).is_some_and(|l| l.asking.is_none() && matches!(l.part, Some(Part::Stack) | None))
+        self.review_lines().get(rv.sel).is_some_and(|l| l.asking.is_none() && l.yours.is_none() && matches!(l.part, Some(Part::Stack) | None))
             && self.review_stacks().is_some()
     }
 
@@ -366,6 +385,47 @@ impl App {
         self.write(Target::Answer { run, k }, Focus::Diff, &was);
     }
 
+    /// What you wrote in the review on the list's line the cursor is on, if
+    /// it is.
+    pub(super) fn review_yours_line(&self) -> Option<Yours> {
+        let rv = self.reviewing.as_ref()?;
+        self.review_lines().get(rv.sel)?.yours.clone()
+    }
+
+    /// What you wrote in the review, `y`, written again: what you said last
+    /// in your comment, or your answer to the work's reply.
+    pub(super) fn review_write_yours(&mut self, y: Yours) {
+        match y {
+            Yours::Comment(change, id) => self.edit_mine(change, id, Focus::Diff),
+            Yours::Answer(k) => self.review_answer(k),
+        }
+    }
+
+    /// What you wrote in the review, `y`, taken back: your comment closed, or
+    /// your answer to the work's reply gone. It does not go back to the agent
+    /// with the work; the cursor stays on a line still there.
+    pub(super) fn review_take_back(&mut self, y: Yours) {
+        let Some(run) = self.reviewing.as_ref().map(|rv| rv.run.clone()) else { return };
+        let done = match y {
+            Yours::Comment(change, id) => self.edit(|db| {
+                let n = db.note(&change, &id).cloned().ok_or_else(|| crate::db::Error("the comment is gone".into()))?;
+                db.set_note(Note { text: String::new(), ..n }).map(|_| ())
+            }),
+            Yours::Answer(k) => self.edit(|db| crate::held::answer(db, &run, k, "")),
+        };
+        if done.is_none() {
+            return;
+        }
+        self.status = "taken back: it does not go back to the agent with the work".into();
+        let lines = self.review_lines();
+        if let Some(rv) = self.reviewing.as_mut()
+            && !lines.get(rv.sel).is_some_and(Line::selectable)
+        {
+            let before = lines.iter().enumerate().take(rv.sel + 1).rev().find(|(_, l)| l.selectable()).map(|(i, _)| i);
+            rv.sel = before.or_else(|| lines.iter().position(Line::selectable)).unwrap_or(0);
+        }
+    }
+
     /// The work sent back to the agent, with what you wrote in its review:
     /// another round, from it; the review left.
     pub(super) fn review_send_back(&mut self) {
@@ -397,6 +457,7 @@ impl App {
                 part: None,
                 entry: None,
                 asking: None,
+                yours: None,
             });
             for (k, n) in asking {
                 let at = if n.on_stack() { "the stack".to_string() } else { format!("{}: {}", n.file, n.preview) };
@@ -410,6 +471,7 @@ impl App {
                     part: None,
                     entry: None,
                     asking: Some(k),
+                    yours: None,
                 });
             }
         }
@@ -421,6 +483,7 @@ impl App {
             part: None,
             entry: None,
             asking: None,
+            yours: None,
         };
         if let Some((now, next)) = self.review_stacks() {
             let said = match mark(Part::Stack) {
@@ -434,6 +497,7 @@ impl App {
                 part: Some(Part::Stack),
                 entry: None,
                 asking: None,
+                yours: None,
             });
             let diff = crate::history::stacks_diff(&self.db, Some(&now), Some(&next), false);
             for (k, d) in diff.iter().enumerate() {
@@ -444,6 +508,7 @@ impl App {
                         part: Some(Part::Stack),
                         entry: Some(k),
                         asking: None,
+                        yours: None,
                     });
                 }
             }
@@ -461,6 +526,7 @@ impl App {
                     part: Some(p),
                     entry: None,
                     asking: None,
+                    yours: None,
                 });
             }
         }
@@ -482,32 +548,37 @@ impl App {
                     part: Some(p),
                     entry: None,
                     asking: None,
+                    yours: None,
                 });
             }
         }
-        // What you wrote in it, which sends it back to the agent.
-        let mut yours: Vec<String> = Vec::new();
+        // What you wrote in it, which sends it back to the agent: each line
+        // to see where it would be, write again, or take back.
+        let mut yours: Vec<(String, Yours)> = Vec::new();
         if let Some((r, _)) = self.work(&rv.run) {
             let (opened, _) = crate::held::yours_in(&self.db, r);
             // What you said last there: the comment, or your reply to it.
             for n in opened.iter().filter_map(|(c, i)| self.db.note(c, i)) {
                 let said = last_mine(&n.text).unwrap_or_default();
-                yours.push(format!("   ✎ {}: {} · {}", n.file, n.preview, crate::markdown::first_line(&said)));
+                let text = format!("   ✎ {}: {} · {}", n.file, n.preview, crate::markdown::first_line(&said));
+                yours.push((text, Yours::Comment(n.change.clone(), n.id.clone())));
             }
         }
-        for rp in h.replies.iter().filter(|rp| rp.answer.is_some()) {
+        for (k, rp) in h.replies.iter().enumerate().filter(|(_, rp)| rp.answer.is_some()) {
             let at = self.db.note(&rp.change, &rp.id).map_or("a comment".to_string(), |n| format!("{}: {}", n.file, n.preview));
-            yours.push(format!("   ✎ your answer on {at} · {}", crate::markdown::first_line(rp.answer.as_deref().unwrap_or(""))));
+            let text = format!("   ✎ your answer on {at} · {}", crate::markdown::first_line(rp.answer.as_deref().unwrap_or("")));
+            yours.push((text, Yours::Answer(k)));
         }
         if !yours.is_empty() {
             out.push(title(" what you wrote, to send back"));
-            for text in yours {
+            for (text, y) in yours {
                 out.push(Line {
                     text,
                     style: color::you(),
                     part: None,
                     entry: None,
                     asking: None,
+                    yours: Some(y),
                 });
             }
         }
@@ -529,6 +600,10 @@ impl App {
                 _ => " the comment that asked, as it is: kept open",
             };
             return self.comment_view(r, &n, said.into(), w);
+        }
+        // What you wrote: where it would be.
+        if let Some(y) = &line.yours {
+            return self.yours_view(r, h, y, w);
         }
         match line.part {
             Some(Part::Stack) | None => {
@@ -583,6 +658,38 @@ impl App {
         let end = rows.iter().rposition(|row| row.note.as_deref() == Some(&n.id)).map_or(head, |i| i + 1);
         let lines = rows.iter().map(|row| row_parts(row, false)).collect();
         (said, lines, head..end)
+    }
+
+    /// What you wrote in the review, `y`, where it would be, `w` wide: your
+    /// comment on its patch as the work leaves it, the work's comments with
+    /// it; your answer after the reply, in its thread. And the lines that
+    /// are its own.
+    fn yours_view(&self, r: &Run, h: &Work, y: &Yours, w: usize) -> View {
+        match y {
+            Yours::Comment(change, id) => {
+                let said = " your comment, where it is on the patch as the work leaves it".to_string();
+                let on_work = self
+                    .review_stacks()
+                    .and_then(|(_, next)| next.patches.iter().map(|p| self.db.patch(p)).find(|p| p.change == *change).cloned());
+                let Some(p) = on_work else {
+                    // Not on a patch the work leaves: as it is.
+                    let Some(n) = self.db.note(change, id).cloned() else { return (said, vec![], 0..0) };
+                    return self.comment_view(r, &n, said, w);
+                };
+                let rows = self.review_rows(&p, w);
+                let head = rows.iter().position(|row| row.head && row.note.as_deref() == Some(id.as_str())).unwrap_or(0);
+                let end = rows.iter().rposition(|row| row.note.as_deref() == Some(id.as_str())).map_or(head, |i| i + 1);
+                (said, rows.iter().map(|row| row_parts(row, false)).collect(), head..end)
+            }
+            Yours::Answer(k) => {
+                let Some(rp) = h.replies.get(*k) else { return (String::new(), vec![], 0..0) };
+                let Some(n) = self.db.note(&rp.change, &rp.id) else {
+                    return ("its comment was deleted: nothing to answer".into(), vec![], 0..0);
+                };
+                let n = Note { text: rp.after(&n.text), ..n.clone() };
+                self.comment_view(r, &n, " your answer, after the work's reply, as it would be in its thread".into(), w)
+            }
+        }
     }
 
     /// The review: its list on the left, what the cursor's part would be on
@@ -753,7 +860,7 @@ impl App {
             self.screen = Screen::Main;
             return Effect::None;
         };
-        let parts: Vec<usize> = lines.iter().enumerate().filter(|(_, l)| l.part.is_some() || l.asking.is_some()).map(|(i, _)| i).collect();
+        let parts: Vec<usize> = lines.iter().enumerate().filter(|(_, l)| l.selectable()).map(|(i, _)| i).collect();
         let step = |from: usize, down: bool, n: usize| -> usize {
             let mut at = parts.iter().position(|&i| i == from).unwrap_or(0);
             for _ in 0..n {
@@ -809,8 +916,11 @@ impl App {
                 };
             }
             (_, KeyCode::Enter) => {
-                // A comment that asked: closed with the review, or kept.
-                if let Some(k) = lines.get(rv.sel).and_then(|l| l.asking) {
+                if let Some(y) = lines.get(rv.sel).and_then(|l| l.yours.clone()) {
+                    // What you wrote: written again.
+                    self.review_write_yours(y);
+                } else if let Some(k) = lines.get(rv.sel).and_then(|l| l.asking) {
+                    // A comment that asked: closed with the review, or kept.
                     let close = rv.marks.get(&crate::held::asking_key(k)) != Some(&true);
                     self.mark_asking(k, close);
                 } else if let Some(p) = lines.get(rv.sel).and_then(|l| l.part) {
@@ -968,6 +1078,9 @@ impl App {
         let Some(rv) = &self.reviewing else { return "enter: accept" };
         let lines = self.review_lines();
         let Some(line) = lines.get(rv.sel) else { return "enter: accept" };
+        if line.yours.is_some() {
+            return "enter: edit it";
+        }
         match (line.asking, line.part) {
             (Some(k), _) if rv.marks.get(&crate::held::asking_key(k)) == Some(&true) => "enter: keep it open",
             (Some(_), _) => "enter: close it with the review",
@@ -1132,6 +1245,15 @@ impl App {
         let lines = self.review_lines();
         let Some(rv) = &self.reviewing else { return };
         let rejected = rv.marks.get(&Part::Stack.key()) == Some(&false);
+        // What you wrote: written again, or taken back.
+        if let Some(y) = lines.get(rv.sel).and_then(|l| l.yours.as_ref()) {
+            let (edit, back) = match y {
+                Yours::Comment(..) => ("Edit it", "Take it back"),
+                Yours::Answer(_) => ("Edit your answer to it", "Take your answer back"),
+            };
+            items.push(Item::new(edit, Action::EditYours));
+            items.push(Item::new(back, Action::TakeYoursBack));
+        }
         // A reply of the agent's: answered, the work goes back to it.
         if self.review_writable()
             && let Some(Part::Reply(k)) = lines.get(rv.sel).and_then(|l| l.part)
