@@ -253,8 +253,8 @@ pub fn file_at(db: &Db, s: &Stack, at: usize, path: &str) -> Result<Option<Strin
     let (repo, base) = base_of(s)?;
     let diffs: Vec<&str> = s.patches[..=at].iter().map(|id| db.patch(id).diff.as_str()).collect();
     let pad = crate::check::Pad::new(&repo, &base, &diffs, &[path])?;
-    if !pad.apply(&diffs.concat()) {
-        return err(format!("{} does not apply to its base", s.name));
+    if let Err(k) = pad.apply_each(&diffs) {
+        return err(format!("patch {} of {} does not apply on the patches below it", k + 1, s.name));
     }
     pad.text(path)
 }
@@ -945,8 +945,7 @@ fn conflict_of(db: &Db, s: &Stack, edits: Vec<(usize, Draft)>, said: &str) -> Op
     let ours = pad.text(&from).ok()??;
     // The patch as it was, on the patches below as they were.
     let old = Pad::new(&repo, &base, &diffs, &[]).ok()?;
-    let below: String = olds[..at].iter().map(|p| p.diff.as_str()).collect();
-    if !old.apply(&below) {
+    if old.apply_each(&olds[..at].iter().map(|p| p.diff.as_str()).collect::<Vec<_>>()).is_err() {
         return None;
     }
     let was = old.text(&from).ok()??;

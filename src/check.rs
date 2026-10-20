@@ -188,6 +188,17 @@ impl Index {
         git_env(repo, &["apply", "--cached", "--whitespace=nowarn"], Some(diff), &self.env())
     }
 
+    /// Applies `diffs` in turn, each in a `git apply` of its own: given as
+    /// one input, a file two of them change and a later one renames with a
+    /// change, git refuses (`patch failed`), though each applies on the ones
+    /// before it. The first that does not apply, by place, and git's word.
+    fn apply_each(&self, repo: &Path, diffs: &[&str]) -> std::result::Result<(), (usize, Error)> {
+        for (k, d) in diffs.iter().enumerate() {
+            self.apply(repo, d).map_err(|e| (k, e))?;
+        }
+        Ok(())
+    }
+
     /// Whether `diff` would apply, nothing changed.
     fn would_apply(&self, repo: &Path, diff: &str) -> bool {
         git_env(repo, &["apply", "--cached", "--check", "--whitespace=nowarn"], Some(diff), &self.env()).is_ok()
@@ -331,6 +342,12 @@ impl Pad {
         self.ix.apply(&self.repo, diff).is_ok()
     }
 
+    /// Applies `diffs` in turn, each on its own, as a series is: the first
+    /// that does not apply, by place, if one does not.
+    pub fn apply_each(&self, diffs: &[&str]) -> std::result::Result<(), usize> {
+        self.ix.apply_each(&self.repo, diffs).map_err(|(k, _)| k)
+    }
+
     /// Whether `diff` would apply, nothing changed.
     pub fn would_apply(&self, diff: &str) -> bool {
         self.ix.would_apply(&self.repo, diff)
@@ -362,10 +379,7 @@ pub fn texts(repo: &Path, base: &str, patches: &[&Patch], old_path: &str, path: 
     }
     reachable(repo, base)?;
     let ix = Index::new(repo, base, Some(&touched(repo, patches)))?;
-    if !below.is_empty() {
-        let series: String = below.iter().map(|p| p.diff.as_str()).collect();
-        ix.apply(repo, &series)?;
-    }
+    ix.apply_each(repo, &below.iter().map(|p| p.diff.as_str()).collect::<Vec<_>>()).map_err(|(_, e)| e)?;
     let before = ix.texts(repo, &[old_path.to_string()])?.pop().flatten();
     ix.apply(repo, &last.diff)?;
     let after = ix.texts(repo, &[path.to_string()])?.pop().flatten();
@@ -405,10 +419,7 @@ pub fn versions(repo: &Path, base: &str, patches: &[&Patch]) -> Result<HashMap<S
     }
     reachable(repo, base)?;
     let ix = Index::new(repo, base, Some(&touched(repo, patches)))?;
-    if !below.is_empty() {
-        let series: String = below.iter().map(|p| p.diff.as_str()).collect();
-        ix.apply(repo, &series)?;
-    }
+    ix.apply_each(repo, &below.iter().map(|p| p.diff.as_str()).collect::<Vec<_>>()).map_err(|(_, e)| e)?;
     let files = crate::diff::parse_diff(&last.diff, "");
     let new: Vec<String> = files.iter().map(|f| f.path.clone()).collect();
     let old: Vec<String> = files

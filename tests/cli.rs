@@ -1059,6 +1059,35 @@ fn a_message_that_differs_in_the_checkout_goes_either_way() {
 }
 
 #[test]
+fn a_file_is_shown_as_a_patch_leaves_it_after_a_rename_of_one_changed_twice() {
+    // Two patches change x.txt, the third renames it with a change: as one
+    // input, `git apply` refuses the three, though each applies in turn.
+    let e = env();
+    let lines: String = (1..=100).map(|n| format!("{n}\n")).collect();
+    std::fs::write(e.src.join("x.txt"), &lines).unwrap();
+    git(&e.src, &["add", "x.txt"]);
+    git(&e.src, &["commit", "-qm", "x"]);
+    git(&e.src, &["tag", "x-base"]);
+    let edit = |path: &str, from: &str, to: &str| {
+        let text = std::fs::read_to_string(e.src.join(path)).unwrap();
+        std::fs::write(e.src.join(path), text.replace(from, to)).unwrap();
+    };
+    edit("x.txt", "\n3\n4\n", "\nthree\nfour\n");
+    git(&e.src, &["commit", "-qam", "Bug 4 - change x"]);
+    edit("x.txt", "\n50\n", "\nfifty\n");
+    git(&e.src, &["commit", "-qam", "Bug 5 - change x again"]);
+    git(&e.src, &["mv", "x.txt", "y.txt"]);
+    edit("y.txt", "\n52\n", "\nfifty-two\n");
+    git(&e.src, &["commit", "-qam", "Bug 6 - rename x to y"]);
+    e.ok(&["import", "r", "x-base"]);
+    assert!(e.ok(&["show", "r", "3"]).contains("rename from x.txt"), "a rename, as git writes it");
+    let shown = e.ok(&["show", "r", "3", "--path", "y.txt"]);
+    assert!(shown.contains("\nthree\nfour\n") && shown.contains("\nfifty\n51\nfifty-two\n"), "{shown}");
+    // A file the stack does not change, as its base has it.
+    assert!(e.ok(&["show", "r", "3", "--path", "b.txt"]).contains("new"));
+}
+
+#[test]
 fn several_asks_wait_their_turn() {
     let e = env();
     e.ok(&["import", "s", "base"]);
