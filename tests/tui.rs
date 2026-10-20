@@ -3143,7 +3143,7 @@ fn an_edit_by_hand_lands_and_its_review_opens_at_once() {
     let before = Db::load(&db).unwrap().stack("s").unwrap().patches.clone();
     // Saved in $EDITOR, it lands; the review opens on it.
     let run = hand_edit(&db, None);
-    app.edited(stacked::ops::Edited::Landed { said: "edited a.txt in Bug 1 - shout two".into(), run: run.clone() }, None);
+    app.edited(stacked::ops::Edited::Landed { said: "edited a.txt in Bug 1 - shout two".into(), run: run.clone() }, None, None);
     assert_eq!(app.screen, Screen::Review);
     assert_eq!(app.status, "edited a.txt in Bug 1 - shout two: it waits for your review");
     let screen = draw(&mut app);
@@ -3183,6 +3183,69 @@ fn an_edit_by_hand_lands_and_its_review_opens_at_once() {
     assert_ne!(s.patches[0], before[0]);
     assert!(d.patch(&s.patches[0]).diff.contains("+Two"));
     assert_eq!(s.op, d.run(&run).unwrap().held.as_ref().unwrap().stack.as_ref().unwrap().op);
+}
+
+#[test]
+fn landed_work_is_edited_by_hand_from_its_review_in_its_place() {
+    use stacked::tui::WorkEdit;
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Enter]);
+    save(&mut app, "why so loud?");
+    let n = notes_of(&db, "s", 0).into_iter().find(|n| n.text == "why so loud?").unwrap();
+    // The agent's change of the stack, and its reply, landed.
+    held(&db, "run-agent", &n.change, &n.id, "Quieter now.", true);
+    app.refresh();
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Enter]);
+    assert_eq!(app.screen, Screen::Review);
+    down_to_review(&mut app, "Quieter now.");
+    keys(&mut app, &[KeyCode::Enter]);
+    // On a patch of the stack it makes: that patch edited by hand, as mail
+    // or a file of it; and the stack as a list.
+    keys(&mut app, &[KeyCode::Home]);
+    down_to_review(&mut app, "noop    1 Bug 1");
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    let all: Vec<String> = items(&app).into_iter().map(|(l, _)| l).collect();
+    for l in ["Edit this patch in $EDITOR", "Edit a.txt in $EDITOR", "Edit the stack as a list in $EDITOR"] {
+        assert!(all.contains(&l.to_string()), "{l:?} in {all:?}");
+    }
+    let run = "run-agent".to_string();
+    assert_eq!(choose(&mut app, "Edit this patch in $EDITOR"), Effect::EditWork { run: run.clone(), edit: WorkEdit::Mail(0) });
+    let edit = WorkEdit::Code {
+        at: 0,
+        file: "a.txt".into(),
+        line: 2,
+        again: None,
+    };
+    assert_eq!(choose(&mut app, "Edit a.txt in $EDITOR"), Effect::EditWork { run: run.clone(), edit });
+    // Saved, it lands in its place: that work is rejected, the new holds its
+    // reply as it was marked, and the review goes on there.
+    let new = hand_edit(&db, Some(&run));
+    app.edited(stacked::ops::Edited::Landed { said: "edited a.txt in Bug 1 - shout two".into(), run: new.clone() }, None, Some(run.clone()));
+    assert_eq!(app.screen, Screen::Review);
+    assert_eq!(app.reviewing.as_ref().unwrap().run, new);
+    assert_eq!(app.status, "edited a.txt in Bug 1 - shout two: it lands in place of the work you were reviewing, which is rejected");
+    let screen = draw(&mut app);
+    assert!(screen.contains(" the agent's work: a change of patch 1, 1 reply"), "{screen}");
+    assert!(screen.contains(" stack operations · to review") && screen.contains("modify  1 Bug 1 - shout two"), "{screen}");
+    assert!(screen.contains("✓ a.txt: TWO · Quieter now."), "its mark kept:\n{screen}");
+    let d = Db::load(&db).unwrap();
+    assert!(d.review(&run).unwrap().closed);
+    assert_eq!(d.run(&run).unwrap().summary, format!("reviewed: rejected for your edit of it by hand, run {new}"));
+    let queue: Vec<String> = stacked::held::queue(&d, "s").into_iter().map(|r| r.id.clone()).collect();
+    assert_eq!(queue, std::slice::from_ref(&new));
+    let h = d.run(&new).unwrap().held.clone().unwrap();
+    assert_eq!(h.edits, ["edited a.txt in Bug 1 - shout two"]);
+    assert!(h.stack.unwrap().op.starts_with("agent: patch 1; edit "));
+    drop(d);
+    // Accepted: the agent's change with your edit in it, and its reply.
+    keys(&mut app, &[KeyCode::Esc]);
+    choose(&mut app, "Accept all remaining and Close");
+    let d = Db::load(&db).unwrap();
+    assert!(d.patch(&d.stack("s").unwrap().patches[0]).diff.contains("+Two"));
+    assert!(d.note(&n.change, &n.id).unwrap().text.contains("Quieter now."));
 }
 
 #[test]

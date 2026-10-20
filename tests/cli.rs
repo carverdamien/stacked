@@ -1022,6 +1022,42 @@ fn comments_batched_wait_until_the_batch_is_sent() {
 }
 
 #[test]
+fn landed_work_is_edited_by_hand_in_its_place() {
+    let e = env();
+    e.ok(&["import", "s", "base"]);
+    let id = comment(&e, &["--patch", "1", "Spell", "it", "out."]);
+    let claude = fake_claude(
+        &e,
+        "claude-spell.sh",
+        "set -e\nsed -i '' 's/^2$/deux/' a.txt\ngit -c user.name=C -c user.email=c@x commit -q --amend --no-edit -a",
+        r#"{"replies": {"c1": "Spelled it deux."}}"#,
+    );
+    let (fine, out, err) = stacked_in(&e.src, &e.db, &["send", "s", &id, "--wait"], "", &[("STACKED_CLAUDE", &claude)]);
+    assert!(fine, "{out}{err}");
+    let landed = e.ok(&["landed", "s"]);
+    let run = landed.split('\t').next().unwrap().to_string();
+    assert!(landed.contains("Spelled it deux."), "{landed}");
+    // Edited by hand from its review: patch 1 as the work leaves it.
+    let editor = e.script("editor.sh", "sed -i '' 's/^+deux$/+two, spelled/' \"$1\"\n");
+    let (fine, _, err) = stacked_in(&e.src, &e.db, &["edit", "s", "1", "--work", &run[..8]], "", &[("EDITOR", &editor)]);
+    assert!(fine && err.contains("it waits for your review"), "{err}");
+    // That work is rejected; in its place, the agent's with your edit in it,
+    // its reply with it.
+    let landed = e.ok(&["landed", "s"]);
+    assert_eq!(landed.lines().filter(|l| !l.starts_with(' ')).count(), 1, "{landed}");
+    assert!(!landed.starts_with(&run) && landed.contains("Spelled it deux."), "{landed}");
+    assert!(landed.contains("\tagent: patch 1; edit "), "{landed}");
+    let runs = e.ok(&["runs", "s"]);
+    assert!(runs.contains("reviewed: rejected for your edit of it by hand"), "{runs}");
+    e.ok(&["review", "s", "--accept-all"]);
+    assert!(e.ok(&["show", "s", "1"]).contains("+two, spelled\n"));
+    assert!(e.ok(&["comments", "s"]).contains("agent: Spelled it deux."));
+    // Nothing waits for review: none to edit.
+    let (fine, _, err) = e.run(&["edit", "s", "1", "--work", &run[..8]]);
+    assert!(!fine && err.contains("no work on s waits for review"), "{err}");
+}
+
+#[test]
 fn the_agent_rebases_reviews_and_tests() {
     let e = env();
     // A commit on main for the stack to go onto.

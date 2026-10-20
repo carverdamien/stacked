@@ -667,6 +667,19 @@ mark what is left and close. A reply that goes with a change of the stack
 opens that review, on the reply, from its comment (Enter, or `Review the
 agent's work…` in its menu).
 
+The change of the stack is edited by hand from its review, as the work
+leaves the stack: on a line of the stack operations, Space has `Edit this
+patch in $EDITOR` (the patch of that line, as mail), `Edit a.txt in
+$EDITOR` for each of its files (where it is edited is the item's choice, as
+for `Edit … here in $EDITOR`), and `Edit the stack as a list in $EDITOR`.
+Saved, that work is rejected, and the work with your edit in it lands in
+its place: its replies and the comments it opened go with it, as you had
+marked them, and its change is to review again. The review goes on there,
+its title saying what you edited (`then you edited a.txt in Bug 1`). The
+review of an edit by hand has the same, to edit it again. On the command
+line, `stacked edit NAME PATCH --work RUN` edits the patch as that landed
+work leaves it.
+
 On the command line, `stacked landed NAME` lists the queue: each landed ask
 by its run, what it holds, and each part of it. `stacked review NAME [RUN]
 --accept-all` (or `--reject-all`) closes the review of that ask, the first

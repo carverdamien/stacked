@@ -187,6 +187,12 @@ enum Cmd {
         /// in the stack.
         #[arg(long)]
         accept: bool,
+        /// Edit what landed work RUN (as `landed` lists it), under review,
+        /// makes of the stack, rather than the stack: that work is
+        /// rejected, and the edit lands in its place, with its replies and
+        /// the comments it opened.
+        #[arg(long, value_name = "RUN")]
+        work: Option<String>,
     },
     /// Move a patch to another position, counting from 1 at the bottom.
     Move { name: String, patch: String, to: usize },
@@ -713,6 +719,18 @@ fn print_run(r: &stacked::db::Run) {
     println!("{}\t{}\t{} {}{req}\t{state}\t{}", r.id, time(r.time), r.what, r.stack, r.summary);
 }
 
+/// The run of the landed work on stack `name` that `run` starts, waiting
+/// for review, if one is named.
+fn work_of(db: &Db, name: &str, run: Option<&str>) -> Result<Option<String>> {
+    let Some(run) = run else { return Ok(None) };
+    let queue: Vec<String> = stacked::held::queue(db, name).into_iter().map(|r| r.id.clone()).collect();
+    match queue.iter().filter(|id| id.starts_with(run)).collect::<Vec<_>>().as_slice() {
+        [id] => Ok(Some((*id).clone())),
+        [] => err(format!("no work on {name} waits for review as {run}: `stacked landed {name}` lists what does")),
+        _ => err(format!("{run} names more than one run: give more of it")),
+    }
+}
+
 /// Says what an edit by hand of stack `name` came to: landed, waiting for
 /// your review, or with `accept` accepted at once; or nothing changed.
 fn edited(path: &Path, name: &str, done: ops::Edited, accept: bool) -> Result<()> {
@@ -866,15 +884,20 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
             let ps: Vec<_> = at.iter().map(|&i| db.patch(&s.patches[i])).collect();
             print!("{}", format_mbox(&ps));
         }
-        Cmd::Edit { name, patch: None, accept, .. } => edited(path, &name, ops::edit_stack(path, &name, None)?, accept)?,
-        Cmd::Edit { name, patch: Some(p), line, path: None, accept, .. } => {
-            let db = Db::load(path)?;
-            let at = db.resolve(db.stack(&name)?, &p)?;
-            edited(path, &name, ops::edit_patch(path, &name, at, line, None)?, accept)?;
+        Cmd::Edit { name, patch: None, accept, work, .. } => {
+            let work = work_of(&Db::load(path)?, &name, work.as_deref())?;
+            edited(path, &name, ops::edit_stack(path, &name, work.as_deref())?, accept)?
         }
-        Cmd::Edit { name, patch: Some(p), line, path: Some(f), place, from, resolve, accept } => {
+        Cmd::Edit { name, patch: Some(p), line, path: None, accept, work, .. } => {
             let db = Db::load(path)?;
-            let at = db.resolve(db.stack(&name)?, &p)?;
+            let work = work_of(&db, &name, work.as_deref())?;
+            let at = db.resolve(&ops::edited_from(&db, &name, work.as_deref())?, &p)?;
+            edited(path, &name, ops::edit_patch(path, &name, at, line, work.as_deref())?, accept)?;
+        }
+        Cmd::Edit { name, patch: Some(p), line, path: Some(f), place, from, resolve, accept, work } => {
+            let db = Db::load(path)?;
+            let work = work_of(&db, &name, work.as_deref())?;
+            let at = db.resolve(&ops::edited_from(&db, &name, work.as_deref())?, &p)?;
             let place = ops::Place::named(place.as_deref().or(db.choice(&name, "edit")).unwrap_or("tmp"));
             let again = match (&from, &place) {
                 (None, _) => None,
@@ -886,7 +909,7 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
                     commit: commit.clone(),
                 }),
             };
-            let mut done = ops::edit_code(path, &name, at, &f, line.unwrap_or(1), &place, again, None)?;
+            let mut done = ops::edit_code(path, &name, at, &f, line.unwrap_or(1), &place, again, work.as_deref())?;
             // One conflict after another, until one is left unresolved.
             while resolve
                 && let ops::Edited::Refused { kept, conflict: Some(c), .. } = &done

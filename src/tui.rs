@@ -548,6 +548,11 @@ pub enum Action {
     /// The row above an ask, picking when it asks: now, or later, in the
     /// batch. Enter on it does the ask.
     When,
+    /// In the review of landed work, an edit by hand of the stack it makes:
+    /// as a list, the patch at a place as mail, or a file of it.
+    EditWorkList,
+    EditWorkPatch(usize),
+    EditWorkFile(usize, String),
     /// A batched comment asked now, as it was batched; or taken out of the
     /// batch.
     SendNow,
@@ -684,6 +689,17 @@ fn about(action: &Action) -> String {
         Action::When => {
             "pick when the agent is asked: now, or later, the comment waiting in the batch, which the banner sends with the rest; enter asks".into()
         }
+        Action::EditWorkList => {
+            "edit the stack this work makes as a list, as `git rebase -i` does, in $EDITOR: saved, it lands in place of this work, which is rejected, its replies and comments going with it".into()
+        }
+        Action::EditWorkPatch(at) => format!(
+            "edit patch {} as this work leaves it, as mail in $EDITOR: saved, it lands in place of this work, which is rejected, its replies and comments going with it",
+            at + 1
+        ),
+        Action::EditWorkFile(at, file) => format!(
+            "edit {file} as patch {} of this work leaves it, in $EDITOR, where the item picks: saved, it lands in place of this work, which is rejected, its replies and comments going with it",
+            at + 1
+        ),
         Action::SendNow => "ask the agent about it now, as it was batched, without waiting for the rest of the batch".into(),
         Action::Unbatch => "take it out of the batch: it is not sent".into(),
         Action::SendBatch(Way::Change, _) => {
@@ -902,6 +918,19 @@ pub enum Effect {
     /// The conflict a later patch has with an edit not taken, resolved by
     /// hand in $EDITOR.
     Resolve,
+    /// An edit by hand of what landed work `run` makes of the stack, from
+    /// its review: `edit` says what of it.
+    EditWork { run: String, edit: WorkEdit },
+}
+
+/// What an edit by hand in the review of landed work edits, of the stack
+/// the work makes: the stack as a list, the patch at a place as mail, or
+/// a file of it at a line (from `again`, an edit not taken before).
+#[derive(Debug, Clone, PartialEq)]
+pub enum WorkEdit {
+    List,
+    Mail(usize),
+    Code { at: usize, file: String, line: usize, again: Option<ops::Kept> },
 }
 
 /// Where the cursor is to go once the rows are built: to a comment, or to
@@ -1024,6 +1053,9 @@ pub struct App {
     /// An edit of a patch's code the stack did not take: its file, line and
     /// the edit as it was left, to edit again.
     refused: Option<(String, usize, ops::Kept)>,
+    /// When that edit was of landed work, in its review: the work's run,
+    /// and the patch's place in the stack it makes.
+    refused_work: Option<(String, usize)>,
     /// The conflict a later patch has with it, to resolve by hand.
     conflict: Option<Box<ops::Conflict>>,
     /// What the last key did, when that needs saying: gone with the next.
@@ -1213,6 +1245,7 @@ impl App {
             show,
             pending: None,
             refused: None,
+            refused_work: None,
             conflict: None,
             status,
             body_h: 20,
@@ -3710,6 +3743,14 @@ impl App {
             Action::EditAgain => {
                 self.conflict = None;
                 if let Some((file, line, kept)) = self.refused.take() {
+                    // Of landed work, in its review: there again.
+                    if let Some((run, at)) = self.refused_work.take() {
+                        let again = Some(kept);
+                        return Effect::EditWork {
+                            run,
+                            edit: WorkEdit::Code { at, file, line, again },
+                        };
+                    }
                     return Effect::EditCode {
                         file,
                         line,
@@ -3717,9 +3758,15 @@ impl App {
                     };
                 }
             }
+            Action::EditWorkList | Action::EditWorkPatch(_) | Action::EditWorkFile(..) => {
+                if let Some(e) = self.work_edit(&action) {
+                    return e;
+                }
+            }
             Action::Resolve => return Effect::Resolve,
             Action::ThrowEdit => {
                 self.refused = None;
+                self.refused_work = None;
                 self.conflict = None;
                 self.status = "your edit is thrown away".into();
             }
@@ -4210,21 +4257,37 @@ impl App {
     /// resolve the conflict a later patch has with it, if there is one;
     /// edit it again; or throw it away.
     /// What an edit by hand came to: landed, its review opens at once, to
-    /// accept or reject it; nothing changed, said; refused, the edit kept to
-    /// take up again (`file`, the file and line of a code edit's).
-    pub fn edited(&mut self, done: ops::Edited, file: Option<(String, usize)>) {
+    /// accept or reject it (of landed work `work`, in its place: the marks
+    /// made of that work go with it); nothing changed, said; refused, the
+    /// edit kept to take up again (`file`, the file and line of a code
+    /// edit's).
+    pub fn edited(&mut self, done: ops::Edited, file: Option<(String, usize)>, work: Option<String>) {
+        let marks = work.as_deref().map(|w| self.carried_marks(w));
         self.reload();
         match done {
             ops::Edited::Landed { said, run } => {
                 self.refused = None;
+                self.refused_work = None;
                 self.conflict = None;
-                self.status = format!("{said}: it waits for your review");
-                self.open_review(&run, None);
+                match marks {
+                    Some(marks) => {
+                        if !marks.is_empty() {
+                            self.edit(|db| crate::held::save(db, &run, &marks));
+                        }
+                        self.status = format!("{said}: it lands in place of the work you were reviewing, which is rejected");
+                        self.open_review(&run, Some(crate::held::Part::Stack));
+                    }
+                    None => {
+                        self.status = format!("{said}: it waits for your review");
+                        self.open_review(&run, None);
+                    }
+                }
             }
             ops::Edited::Unchanged(why) => self.status = why,
             ops::Edited::Refused { why, kept, conflict } => {
-                if let Some((file, line)) = file {
-                    self.refused = Some((file, line, kept));
+                match file {
+                    Some((file, line)) => self.refused = Some((file, line, kept)),
+                    None => self.refused_work = None,
                 }
                 self.conflict = conflict;
                 self.not_taken(why);
@@ -4691,13 +4754,28 @@ impl App {
         match e {
             Effect::EditPatch { line } if self.patch_id().is_some() => {
                 let done = ops::edit_patch(&self.path, &name, self.sel, line, None)?;
-                self.edited(done, None);
+                self.edited(done, None, None);
                 return Ok(());
             }
             Effect::EditCode { file, line, again } if self.patch_id().is_some() => {
                 let place = self.edit_place();
                 let done = ops::edit_code(&self.path, &name, self.sel, &file, line, &place, again, None)?;
-                self.edited(done, Some((file, line)));
+                self.refused_work = None;
+                self.edited(done, Some((file, line)), None);
+                return Ok(());
+            }
+            Effect::EditWork { run, edit } => {
+                let place = self.edit_place();
+                let (done, file) = match edit {
+                    WorkEdit::List => (ops::edit_stack(&self.path, &name, Some(&run))?, None),
+                    WorkEdit::Mail(at) => (ops::edit_patch(&self.path, &name, at, None, Some(&run))?, None),
+                    WorkEdit::Code { at, file, line, again } => {
+                        let done = ops::edit_code(&self.path, &name, at, &file, line, &place, again, Some(&run))?;
+                        self.refused_work = Some((run.clone(), at));
+                        (done, Some((file, line)))
+                    }
+                };
+                self.edited(done, file, Some(run));
                 return Ok(());
             }
             Effect::Resolve => {
@@ -4705,7 +4783,7 @@ impl App {
                     return Ok(());
                 };
                 match ops::resolve(&self.path, &name, &c, kept) {
-                    Ok(done) => self.edited(done, None),
+                    Ok(done) => self.edited(done, None, c.work.clone()),
                     // Not resolved (the editor failed, say): the conflict is
                     // as it was, to resolve again.
                     Err(e) => {
@@ -4718,7 +4796,7 @@ impl App {
             }
             Effect::EditTodo => {
                 let done = ops::edit_stack(&self.path, &name, None)?;
-                self.edited(done, None);
+                self.edited(done, None, None);
                 return Ok(());
             }
             Effect::EditComment(target @ (Target::Edit { .. } | Target::Turn { .. })) => {

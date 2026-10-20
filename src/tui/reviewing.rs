@@ -497,6 +497,70 @@ impl App {
         let comments = self.review_parts().iter().any(|p| *p != Part::Stack);
         items.push(Item::new("Mark all comments accepted", Action::MarkComments(true)).when(comments && !rejected));
         items.push(Item::new("Mark all comments rejected", Action::MarkComments(false)).when(comments));
+        // Edited by hand from here, the stack the work makes: the patch the
+        // cursor is on, as mail or a file of it; the stack as a list.
+        if self.read_only().is_none()
+            && let Some((now, next)) = self.review_stacks()
+        {
+            items.push(Item::line());
+            let diff = crate::history::stacks_diff(&self.db, Some(&now), Some(&next), false);
+            let at = lines.get(rv.sel).and_then(|l| l.entry).and_then(|k| match diff.get(k)? {
+                Diffed::Patch { at, .. } => Some(at - 1),
+                _ => None,
+            });
+            if let Some(at) = at
+                && let Some(id) = next.patches.get(at)
+            {
+                items.push(Item::new("Edit this patch in $EDITOR", Action::EditWorkPatch(at)));
+                for f in crate::diff::parse_diff(&self.db.patch(id).diff, "") {
+                    let short = f.path.rsplit('/').next().unwrap_or(&f.path).to_string();
+                    items.push(Item::new(format!("Edit {short} in $EDITOR"), Action::EditWorkFile(at, f.path.clone())).with(self.edit_choices()));
+                }
+            }
+            items.push(Item::new("Edit the stack as a list in $EDITOR", Action::EditWorkList));
+        }
+    }
+
+    /// The edit by hand `action` asks for in the review, of the stack the
+    /// work makes; a file opened at its first change.
+    pub(super) fn work_edit(&self, action: &Action) -> Option<Effect> {
+        let run = self.reviewing.as_ref()?.run.clone();
+        let edit = match action {
+            Action::EditWorkList => WorkEdit::List,
+            Action::EditWorkPatch(at) => WorkEdit::Mail(*at),
+            Action::EditWorkFile(at, file) => {
+                let (_, next) = self.review_stacks()?;
+                let p = self.db.patch(next.patches.get(*at)?);
+                let line = crate::diff::parse_diff(&p.diff, "")
+                    .into_iter()
+                    .find(|f| f.path == *file)
+                    .and_then(|f| f.hunks.iter().flat_map(|h| h.lines.iter()).find(|l| l.origin != ' ').map(|l| l.new_no))
+                    .unwrap_or(1)
+                    .max(1);
+                WorkEdit::Code {
+                    at: *at,
+                    file: file.clone(),
+                    line,
+                    again: None,
+                }
+            }
+            _ => return None,
+        };
+        Some(Effect::EditWork { run, edit })
+    }
+
+    /// The marks made so far in the review of `run`, for the work that takes
+    /// its place: all but its change of the stack's, which is new; the
+    /// comments as they were before that change was rejected, if it was.
+    pub(super) fn carried_marks(&self, run: &str) -> BTreeMap<String, bool> {
+        let (mut marks, before) = match &self.reviewing {
+            Some(rv) if rv.run == run => (rv.marks.clone(), rv.before.clone()),
+            _ => (self.db.review(run).map(|v| v.marks.clone()).unwrap_or_default(), None),
+        };
+        if marks.remove(&Part::Stack.key()) == Some(false) {
+            marks = before.unwrap_or_default();
+        }
+        marks
     }
 
     /// The part the cursor is on, in the review.
