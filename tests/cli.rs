@@ -963,6 +963,39 @@ fn a_reply_with_a_code_block_of_its_own_stays_the_agent_s_once_accepted() {
 }
 
 #[test]
+fn head_is_said_against_the_stack() {
+    let e = env();
+    e.ok(&["import", "s", "base"]);
+    let sha = |rev: &str| git(&e.src, &["rev-parse", rev]).trim().to_string();
+    let short = |rev: &str| sha(rev)[..12].to_string();
+    // The branch the stack was imported from: its commits are its patches.
+    assert_eq!(e.ok(&["head", "s"]), format!("HEAD, on main at {}, is at patch 3 of s\n", short("main")));
+    git(&e.src, &["checkout", "-q", "--detach", "main~1"]);
+    assert_eq!(e.ok(&["head", "s"]), format!("HEAD, detached at {}, is at patch 2 of s\n", short("main~1")));
+    git(&e.src, &["checkout", "-q", "base"]);
+    assert!(e.ok(&["head", "s"]).ends_with("is at the base of s\n"));
+    // A commit on top that is not the stack's.
+    git(&e.src, &["checkout", "-q", "main"]);
+    std::fs::write(e.src.join("c.txt"), "c\n").unwrap();
+    git(&e.src, &["add", "c.txt"]);
+    git(&e.src, &["commit", "-qm", "Mine"]);
+    assert!(e.ok(&["head", "s"]).ends_with("is at patch 3 of s, then 1 commit not in the stack\n"));
+    // The same patch, its message other: still the stack's, by its diff.
+    git(&e.src, &["checkout", "-q", "--detach", "main~1"]);
+    git(&e.src, &["commit", "-q", "--amend", "-m", "Bug 3 - other words"]);
+    assert!(e.ok(&["head", "s"]).ends_with("is at patch 3 of s\n"));
+    // Not on the stack's base.
+    git(&e.src, &["checkout", "-q", "-b", "other", "base"]);
+    std::fs::write(e.src.join("d.txt"), "d\n").unwrap();
+    git(&e.src, &["add", "d.txt"]);
+    git(&e.src, &["commit", "-qm", "Other"]);
+    assert!(e.ok(&["head", "s"]).contains("is not on s"));
+    // Not a checkout of its repository.
+    let (fine, _, err) = stacked_in(&e.root, &e.db, &["head", "s"], "", &[]);
+    assert!(!fine && err.contains("is not a checkout of s's repository"), "{err}");
+}
+
+#[test]
 fn several_asks_wait_their_turn() {
     let e = env();
     e.ok(&["import", "s", "base"]);

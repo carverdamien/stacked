@@ -17,6 +17,7 @@ pub mod demo;
 pub mod diff;
 pub mod editor;
 pub mod git;
+pub mod head;
 pub mod held;
 pub mod history;
 pub mod keys;

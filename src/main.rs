@@ -382,6 +382,10 @@ enum Cmd {
         #[arg(long)]
         branch: Option<String>,
     },
+    /// Where HEAD of the checkout stacked runs in is, against stack NAME: at
+    /// its base, at one of its patches (its commits since the base being the
+    /// stack's patches, by their diff), or elsewhere.
+    Head { name: String },
     /// The lines of the database passed over, if any; and whether each
     /// stack applies.
     Check,
@@ -1587,6 +1591,14 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
             if global {
                 overridden(&dir, "agent.tools", &to);
             }
+        }
+        Cmd::Head { name } => {
+            let db = Db::load(path)?;
+            ops::base_of(db.stack(&name)?)?;
+            let Some(h) = stacked::head::find(&db, &name, &here())? else {
+                return err(format!("{} is not a checkout of {name}'s repository", here().display()));
+            };
+            println!("HEAD, {}, is {}", h.git_said(), h.said(&name));
         }
         Cmd::Check => {
             let db = Db::load(path)?;

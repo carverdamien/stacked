@@ -1092,6 +1092,10 @@ pub struct App {
     /// lands, the status line says what came of it.
     going: Vec<String>,
     judged: Option<Judged>,
+    /// The checkout stacked runs in, whose HEAD the patches pane shows.
+    pub checkout: PathBuf,
+    /// Where its HEAD was against a stack, when last looked at.
+    head: Option<HeadSeen>,
     /// The work done away from the screen.
     bg: Background,
     /// The comments the agent works on, as last read, and how many records
@@ -1116,6 +1120,10 @@ pub struct App {
 /// (an agent's stream aside).
 type HistMemo = Option<((String, usize), std::rc::Rc<Vec<Entry>>)>;
 
+/// What the patches pane shows, its lines: a patch, by its place shown and
+/// in the stack; or, none, HEAD.
+type ListEntry = (Option<(usize, usize)>, Vec<String>);
+
 /// What work done away from the screen came to.
 enum Done {
     /// Asks started, and asks whose agent is gone landed: what went wrong.
@@ -1132,6 +1140,23 @@ enum Done {
     /// say so, or why they could not be; and what was wrong with those
     /// settings.
     Precreated(std::result::Result<Option<ask::Ahead>, String>, Vec<String>),
+    /// Where HEAD of the checkout stacked runs in is, against stack `name`
+    /// at `rev`: none if the checkout is not of its repository.
+    Head {
+        name: String,
+        rev: Option<usize>,
+        head: Option<crate::head::Head>,
+    },
+}
+
+/// Where HEAD of the checkout stacked runs in was, against stack `name` at
+/// `rev`, when it was last looked at; whether to look again at once.
+struct HeadSeen {
+    name: String,
+    rev: Option<usize>,
+    head: Option<crate::head::Head>,
+    when: Instant,
+    stale: bool,
 }
 
 /// The work done away from the screen, each in a thread of its own, so the
@@ -1152,6 +1177,8 @@ struct Background {
     /// repository, folder and kinds, to remove them once the editor exits.
     precreating: Vec<String>,
     precreated: Vec<ask::Ahead>,
+    /// Where HEAD is is being looked at.
+    heading: bool,
 }
 
 impl Background {
@@ -1166,6 +1193,7 @@ impl Background {
             judging: None,
             precreating: vec![],
             precreated: vec![],
+            heading: false,
         }
     }
 }
@@ -1278,6 +1306,8 @@ impl App {
             body_w: 80,
             going: going(&db),
             judged: None,
+            checkout: std::env::current_dir().unwrap_or_default(),
+            head: None,
             bg: Background::new(),
             busy_memo: std::cell::RefCell::new(None),
             stats_memo: std::cell::RefCell::new(HashMap::new()),
@@ -1375,6 +1405,48 @@ impl App {
         self.read_only().map(String::from).or_else(|| ask::blocked(&self.db, &self.stack))
     }
 
+    /// Where HEAD of the checkout stacked runs in is, against the current
+    /// stack: looked at away from the screen, again as the stack changes,
+    /// and every few seconds, as HEAD moves outside stacked too.
+    fn check_head(&mut self) {
+        let rev = self.db.head(&self.stack).map(|(r, _)| r);
+        let seen = self
+            .head
+            .as_ref()
+            .is_some_and(|h| h.name == self.stack && h.rev == rev && !h.stale && h.when.elapsed() < Duration::from_secs(3));
+        if self.bg.heading || seen {
+            return;
+        }
+        #[cfg(feature = "demo")]
+        if crate::memory::is_file(&self.path) {
+            return;
+        }
+        let Some((_, s)) = self.db.head(&self.stack) else { return };
+        let s = s.clone();
+        let patches: Vec<Patch> = s.patches.iter().map(|id| self.db.patch(id).clone()).collect();
+        let (name, here) = (self.stack.clone(), self.checkout.clone());
+        self.bg.heading = true;
+        self.spawn(move || {
+            let head = crate::head::of_stack(&s, &patches.iter().collect::<Vec<_>>(), &here).ok().flatten();
+            Done::Head { name, rev, head }
+        });
+    }
+
+    /// HEAD looked at again, at once: it may have moved. Where it was is
+    /// shown meanwhile.
+    pub fn look_at_head(&mut self) {
+        if let Some(h) = &mut self.head {
+            h.stale = true;
+        }
+        self.check_head();
+    }
+
+    /// Where HEAD of the checkout stacked runs in is against the current
+    /// stack, as last looked at: if it is a checkout of its repository.
+    pub fn head_here(&self) -> Option<&crate::head::Head> {
+        self.head.as_ref().filter(|h| h.name == self.stack).and_then(|h| h.head.as_ref())
+    }
+
     /// Runs `work` in a thread of its own; what it comes to is read when
     /// the screen is next drawn.
     fn spawn(&self, work: impl FnOnce() -> Done + Send + 'static) {
@@ -1435,6 +1507,16 @@ impl App {
                     Err(e) => self.status = format!("the agents' worktrees could not be made ahead: {e}"),
                 }
             }
+            Done::Head { name, rev, head } => {
+                self.bg.heading = false;
+                self.head = Some(HeadSeen {
+                    name,
+                    rev,
+                    head,
+                    when: Instant::now(),
+                    stale: false,
+                });
+            }
         }
     }
 
@@ -1457,7 +1539,7 @@ impl App {
 
     /// Waits for the work away from the screen to be done.
     pub fn settle(&mut self) {
-        while self.bg.launching || !self.bg.doing.is_empty() || self.bg.judging.is_some() {
+        while self.bg.launching || !self.bg.doing.is_empty() || self.bg.judging.is_some() || self.bg.heading {
             match self.bg.rx.recv_timeout(Duration::from_secs(60)) {
                 Ok(d) => self.done(d),
                 Err(_) => break,
@@ -2052,6 +2134,7 @@ impl App {
         if len != self.db.bytes_read() || polled {
             self.reload();
         }
+        self.check_head();
     }
 
     /// Reads what was appended: what an edit just wrote, or another
@@ -5636,6 +5719,7 @@ impl App {
         }
         if s.patches.is_empty() {
             put(buf, area, 1, y, w, "an empty stack", color::dim());
+            y += 1;
         }
         // Being moved, the patch shows where it would go.
         let mut order: Vec<usize> = (0..s.patches.len()).collect();
@@ -5675,20 +5759,33 @@ impl App {
                     .collect()
             })
             .collect();
-        // The first patch shown: the one the cursor is on in sight, all its
-        // lines.
+        // HEAD of the checkout stacked runs in: after the patches it has as
+        // commits, under the header at the base or elsewhere.
+        let head = self.head_line();
+        let mut entries: Vec<ListEntry> =
+            order.iter().zip(lines).enumerate().map(|(at, (&i, its))| (Some((at, i)), its)).collect();
+        if let Some((n, line)) = &head {
+            entries.insert((*n).min(entries.len()), (None, vec![line.clone()]));
+        }
+        let on_entry = entries.iter().position(|(e, _)| e.is_some_and(|(at, _)| at == on)).unwrap_or(0);
+        // The first shown: the one the cursor is on in sight, all its lines.
         let h = area.height as usize;
         let room = h.saturating_sub(1 + edit_h);
-        let mut top = on.min(lines.len().saturating_sub(1));
-        let mut used = lines.get(top).map_or(1, Vec::len);
-        while top > 0 && used + lines[top - 1].len() <= room {
+        let mut top = on_entry.min(entries.len().saturating_sub(1));
+        let mut used = entries.get(top).map_or(1, |(_, its)| its.len());
+        while top > 0 && used + entries[top - 1].1.len() <= room {
             top -= 1;
-            used += lines[top].len();
+            used += entries[top].1.len();
         }
-        for (at, (&i, its)) in order.iter().zip(&lines).enumerate().skip(top) {
+        for (entry, its) in entries.iter().skip(top) {
             if y >= h {
                 break;
             }
+            let Some((at, i)) = *entry else {
+                put(buf, area, 0, y, w, &fit(&its[0], w), color::meta());
+                y += 1;
+                continue;
+            };
             let mut st = Style::new();
             if at == on && !self.on_stack {
                 st = if self.focus == Focus::List || moving {
@@ -5712,6 +5809,20 @@ impl App {
             }
         }
         cursor
+    }
+
+    /// HEAD's line in the patches pane, and how many patches go above it:
+    /// where HEAD of the checkout stacked runs in is, if it is a checkout of
+    /// the stack's repository; `+2`, the commits above them that are not
+    /// the stack's.
+    fn head_line(&self) -> Option<(usize, String)> {
+        use crate::head::At;
+        let h = self.head_here()?;
+        Some(match &h.at {
+            At::Stack(on) if !on.above.is_empty() => (on.commits.len(), format!(" ▶ HEAD {} +{}", h.on(), on.above.len())),
+            At::Stack(on) => (on.commits.len(), format!(" ▶ HEAD {}", h.on())),
+            At::Elsewhere => (0, format!(" ▶ HEAD {}: off the stack", h.on())),
+        })
     }
 
     fn draw_patch(&mut self, buf: &mut Buffer, area: Rect) -> Option<(u16, u16)> {

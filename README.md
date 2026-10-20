@@ -151,8 +151,15 @@ the server), carried by fifty lines of JS (`web/index.html`).
 
 The left pane is the current stack: its header (`≡ bug123 · 3 patches`),
 which is the stack's own place, then the patches' titles, bottom first, with
-how many comments wait on an answer. The middle shows what the left pane's
-cursor is on: a patch (its message, then its diff, the comments under the
+how many comments wait on an answer. When stacked runs in a checkout of the
+stack's repository, a line among them says where its HEAD is: `▶ HEAD main`
+after the patches its commits since the stack's base are (a commit is a
+patch when its diff is, whatever its message), `+2` when two commits above
+them are not the stack's; under the header at the base, or when it is not
+on the stack (`▶ HEAD main: off the stack`). It is looked at again as the
+stack changes, and every few seconds. `stacked head NAME` says the same.
+The middle shows what the left pane's cursor is on: a patch (its message,
+then its diff, the comments under the
 lines they are on), or, on the header, the stack itself (its patches, then
 the comments on the stack). Scrolled past, a patch's title stays on the
 middle's first line, the rest under it, in every view of the code; a click

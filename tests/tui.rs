@@ -1308,6 +1308,50 @@ fn held(db: &Path, run: &str, change: &str, id: &str, text: &str, with_change: b
 }
 
 #[test]
+fn the_patches_pane_says_where_head_is_in_the_checkout() {
+    let (_tmp, db, src) = setup();
+    let mut app = open(&db).unwrap();
+    // Run elsewhere than a checkout of the stack's repository: no HEAD.
+    app.refresh();
+    app.settle();
+    assert!(!draw(&mut app).contains("▶ HEAD"));
+    // On the branch the stack was imported from: after its top.
+    app.checkout = src.clone();
+    app.look_at_head();
+    app.settle();
+    let screen = draw(&mut app);
+    let row = |screen: &str, text: &str| at(screen, text).1;
+    assert_eq!(row(&screen, "▶ HEAD main"), row(&screen, "  2 Bug 2") + 1, "{screen}");
+    // Moved outside stacked, to patch 1: under it.
+    git(&src, &["checkout", "-q", "--detach", "HEAD~1"]);
+    let short = |rev: &str| {
+        let out = Command::new("git").args(["rev-parse", rev]).current_dir(&src).output().unwrap();
+        String::from_utf8_lossy(&out.stdout)[..8].to_string()
+    };
+    app.look_at_head();
+    app.settle();
+    let screen = draw(&mut app);
+    assert_eq!(row(&screen, &format!("▶ HEAD {}", short("HEAD"))), row(&screen, "  1 Bug 1") + 1, "{screen}");
+    // A commit of its own on top: said so.
+    std::fs::write(src.join("c.txt"), "c\n").unwrap();
+    git(&src, &["add", "c.txt"]);
+    git(&src, &["commit", "-qm", "Mine"]);
+    app.look_at_head();
+    app.settle();
+    let screen = draw(&mut app);
+    assert_eq!(row(&screen, &format!("▶ HEAD {} +1", short("HEAD"))), row(&screen, "  1 Bug 1") + 1, "{screen}");
+    // Not on the stack: under the header, said so.
+    git(&src, &["checkout", "-q", "-b", "other", "HEAD~2"]);
+    std::fs::write(src.join("d.txt"), "d\n").unwrap();
+    git(&src, &["add", "d.txt"]);
+    git(&src, &["commit", "-qm", "Other"]);
+    app.look_at_head();
+    app.settle();
+    let screen = draw(&mut app);
+    assert_eq!(row(&screen, "▶ HEAD other: off the stack"), row(&screen, "≡ s") + 1, "{screen}");
+}
+
+#[test]
 fn the_agent_s_reply_waits_for_review_and_enter_takes_it() {
     let (_tmp, db, _src) = setup();
     let mut app = open(&db).unwrap();
