@@ -641,8 +641,8 @@ impl App {
             Item::new("Save", Action::ReviewSave),
             Item::new("Discard", Action::ReviewDiscard),
             Item::new("Close review", Action::ReviewClose(None)).when(done),
-            Item::new("Accept all remaining and Close", Action::ReviewClose(Some(true))).when(!done),
-            Item::new("Reject all remaining and Close", Action::ReviewClose(Some(false))).when(!done),
+            Item::new("Accept all remaining and Close", Action::AskReviewClose(true)).when(!done),
+            Item::new("Reject all remaining and Close", Action::AskReviewClose(false)).when(!done),
         ];
         items.extend([Item::line(), Item::new("Keep reviewing", Action::Cancel)]);
         let run = self.reviewing.as_ref().and_then(|rv| self.db.run(&rv.run));
@@ -654,6 +654,44 @@ impl App {
         let mut m = Menu::new(format!("your review of {of}"), items, None);
         m.note = Some(self.review_summary());
         m
+    }
+
+    /// What closing the review with every part not marked yet accepted, or
+    /// rejected, asks first: those parts, said, and what closing does; the
+    /// menu on Keep reviewing.
+    pub(super) fn review_close_ask(&self, accept: bool) -> Menu {
+        let (title, yes, then) = match accept {
+            true => ("accept every part not marked yet?", "Accept them and close", "what you accepted is applied"),
+            false => (
+                "reject every part not marked yet?",
+                "Reject them and close",
+                "what you rejected is dropped for good, and what you accepted is applied",
+            ),
+        };
+        let mut m = Menu::ask(title, Item::new(yes, Action::ReviewClose(Some(accept))), "Keep reviewing", true);
+        m.note = Some(format!("Not marked yet: {}. The review closes then: {then}.", self.review_left().join(", ")));
+        m
+    }
+
+    /// The parts not marked yet, said by kind: the change of the stack,
+    /// `2 opened comments`, `1 reply`.
+    fn review_left(&self) -> Vec<String> {
+        let Some(rv) = &self.reviewing else { return vec![] };
+        let left: Vec<Part> = self.review_parts().into_iter().filter(|p| !rv.marks.contains_key(&p.key())).collect();
+        let mut out = Vec::new();
+        if left.contains(&Part::Stack) {
+            out.push("the change of the stack".to_string());
+        }
+        let opened = left.iter().filter(|p| matches!(p, Part::Opened(_))).count();
+        let replies = left.iter().filter(|p| matches!(p, Part::Reply(_))).count();
+        for (n, one, many) in [(opened, "opened comment", "opened comments"), (replies, "reply", "replies")] {
+            match n {
+                0 => {}
+                1 => out.push(format!("1 {one}")),
+                n => out.push(format!("{n} {many}")),
+            }
+        }
+        out
     }
 
     /// The menu of the part the cursor is on, in the review.

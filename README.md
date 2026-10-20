@@ -680,8 +680,9 @@ the marks in the file, for the review to go on from them when you open it
 again; `Discard` throws away the marks made since the review was opened;
 `Close review`, once every part is marked, applies what is accepted;
 `Accept all remaining and Close` and `Reject all remaining and Close`
-mark what is left and close while something is left: once every part is
-marked, they are grayed. A reply that goes with a change of the stack
+mark what is left and close once you say so (the question says what is
+left, the menu on `Keep reviewing`), while something is left: once every
+part is marked, they are grayed. A reply that goes with a change of the stack
 opens that review, on the reply, from its comment (Enter, or `Review the
 agent's work…` in its menu).
 
