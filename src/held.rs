@@ -20,7 +20,7 @@ use std::collections::{BTreeMap, HashMap};
 use serde::{Deserialize, Serialize};
 
 use crate::db::{Db, Error, Note, Patch, Result, Run, err, now};
-use crate::thread::{Role, append_turn, fenced};
+use crate::thread::{Role, append_turn};
 
 /// What an ask brought back, held until it is reviewed.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
@@ -102,63 +102,6 @@ impl Reply {
     pub fn who(&self) -> &str {
         self.reviewer.as_deref().unwrap_or("the agent")
     }
-}
-
-/// The threads written before a turn holding fences of its own (a code
-/// block) was fenced longer than they are, so that its own fence ended it
-/// there, the rest of it read as yours: a reply of the agent's or of a
-/// reviewer's, or a comment either opened. Each is found as it was written,
-/// by the run that held it, and written again fenced as it is now. What
-/// was written again: each comment, (change, id).
-pub fn repair_fences(db: &mut Db) -> Result<Vec<(String, String)>> {
-    // Each turn held, as it was written and as it is written now.
-    let mut held: Vec<(String, String, String, String)> = Vec::new();
-    for r in db.runs() {
-        let Some(h) = &r.held else { continue };
-        for rp in &h.replies {
-            let open = match (&rp.reviewer, rp.tag.as_str()) {
-                (Some(who), _) => format!("reviewer {who}"),
-                (None, "") => "agent".to_string(),
-                (None, tag) => format!("agent {tag}"),
-            };
-            let body = rp.text.trim();
-            held.push((rp.change.clone(), rp.id.clone(), format!("```{open}\n{body}\n```"), fenced(&open, body)));
-        }
-        // Opened, a comment is one turn, fenced with three.
-        for n in &h.opened {
-            let lines: Vec<&str> = n.text.lines().collect();
-            if let [first, body @ .., "```"] = lines.as_slice()
-                && let Some(open) = first.strip_prefix("```")
-            {
-                held.push((n.change.clone(), n.id.clone(), n.text.clone(), fenced(open, &body.join("\n"))));
-            }
-        }
-    }
-    let mut fixed = Vec::new();
-    for (change, id, then, now) in held {
-        if then == now {
-            continue;
-        }
-        let Some(n) = db.note(&change, &id).cloned() else { continue };
-        let Some(text) = with_lines(&n.text, &then, &now) else { continue };
-        db.set_note(Note { text, ..n })?;
-        if !fixed.contains(&(change.clone(), id.clone())) {
-            fixed.push((change, id));
-        }
-    }
-    Ok(fixed)
-}
-
-/// `text` with the first of its runs of whole lines that are `then`'s as
-/// `now`'s, if it has one: never a part of a line, as of a longer fence.
-fn with_lines(text: &str, then: &str, now: &str) -> Option<String> {
-    let lines: Vec<&str> = text.lines().collect();
-    let want: Vec<&str> = then.lines().collect();
-    let at = (0..lines.len()).find(|&i| lines[i..].starts_with(&want))?;
-    let mut out = lines[..at].to_vec();
-    out.extend(now.lines());
-    out.extend(&lines[at + want.len()..]);
-    Some(out.join("\n"))
 }
 
 /// Whether run `r` is a pull of reviews from Phabricator: the work it
