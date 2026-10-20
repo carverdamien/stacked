@@ -279,7 +279,9 @@ pub fn with_agent(db: &Db) -> HashMap<(String, String), (Way, String)> {
 /// What a comment sent on stack `name` in `way` would wait on, if anything.
 pub fn waits_on(db: &Db, name: &str, way: Way) -> Option<String> {
     let going = asks_going(db, name);
-    let change = going.iter().find(|(_, i)| i.way == Way::Change);
+    let chain = chains(&agent_of(db, name));
+    // Chained, an answer runs alongside a change, on the stack as it is.
+    let change = going.iter().find(|(_, i)| i.way == Way::Change).filter(|_| !(chain && way == Way::Answer));
     if let Some((_, i)) = change {
         let on = match &i.scope {
             Scope::Stack => "the stack".to_string(),
@@ -289,7 +291,6 @@ pub fn waits_on(db: &Db, name: &str, way: Way) -> Option<String> {
     }
     // A change goes from the stack as it is once the change before it is
     // reviewed; chained, at once, from the stack that change makes.
-    let chain = chains(&agent_of(db, name));
     if way == Way::Change
         && !chain
         && let Some(r) = crate::held::change_waiting(db, name)
@@ -361,32 +362,99 @@ pub fn guessed_right(db: &mut Db, id: &str, rev: usize) -> Result<()> {
     Ok(())
 }
 
-/// Landed work `id` rejected, sent back or edited by hand (`why`): what
-/// went on from it guessed wrong. Each is dropped: its agent stopped if it
-/// still works, what it brought back thrown away unseen, its comments back
-/// in the queue as they were sent, to start again; and so with what went on
-/// from it.
-pub fn guessed_wrong(db: &mut Db, id: &str, why: &str) -> Result<()> {
-    for r in guesses_on(db, id) {
-        let Some(mut i) = info(&r) else { continue };
-        i.dropped = true;
-        let running = r.state == RunState::Started;
-        db.add_run(Run {
-            state: if running { RunState::Failed } else { r.state },
-            summary: format!("dropped: the work it went on from was {why}; asked again"),
-            ask: Some(serde_json::to_value(&i).unwrap()),
-            ..r.clone()
-        })?;
-        if running {
-            stop(&r);
-        } else {
-            let v = db.review(&r.id).cloned().unwrap_or_default();
-            db.set_review(&r.id, crate::held::Review { closed: true, ..v })?;
-        }
-        ask_again(db, &i)?;
-        guessed_wrong(db, &r.id, "dropped")?;
+/// Run `r`, of ask `i`, dropped (`why`): its agent stopped if it still
+/// works, what it brought back thrown away unseen, its comments back in the
+/// queue as they were sent, to be asked again.
+fn drop_run(db: &mut Db, r: &Run, mut i: Info, why: String) -> Result<()> {
+    i.dropped = true;
+    let running = r.state == RunState::Started;
+    db.add_run(Run {
+        state: if running { RunState::Failed } else { r.state },
+        summary: why,
+        ask: Some(serde_json::to_value(&i).unwrap()),
+        ..r.clone()
+    })?;
+    if running {
+        stop(r);
+    } else {
+        let v = db.review(&r.id).cloned().unwrap_or_default();
+        db.set_review(&r.id, crate::held::Review { closed: true, ..v })?;
     }
-    Ok(())
+    ask_again(db, &i)
+}
+
+/// Landed work `id` rejected, sent back or edited by hand (`why`): what
+/// went on from it guessed wrong. Each is dropped, and asked again; and so
+/// with what went on from it. How many.
+pub fn guessed_wrong(db: &mut Db, id: &str, why: &str) -> Result<usize> {
+    let mut n = 0;
+    for r in guesses_on(db, id) {
+        let Some(i) = info(&r) else { continue };
+        drop_run(db, &r, i, format!("dropped: the work it went on from was {why}; asked again"))?;
+        n += 1 + guessed_wrong(db, &r.id, "dropped")?;
+    }
+    Ok(n)
+}
+
+/// What rejecting landed work `id`, or sending it back, drops: what went on
+/// from it, and from that; still working, and waiting for your review.
+pub fn guesses_after(db: &Db, id: &str) -> (usize, usize) {
+    let mut out = (0, 0);
+    for r in guesses_on(db, id) {
+        let (running, waiting) = guesses_after(db, &r.id);
+        let own = usize::from(r.state == RunState::Started);
+        out = (out.0 + own + running, out.1 + (1 - own) + waiting);
+    }
+    out
+}
+
+/// The answer-only asks of stack `name`, but run `but`, still running or
+/// waiting for your review: made on the stack as it was.
+fn answers_in_flight(db: &Db, name: &str, but: &str) -> Vec<Run> {
+    db.runs()
+        .into_iter()
+        .filter(|r| r.stack == name && r.id != but && info(r).is_some_and(|i| i.way == Way::Answer && !i.dropped))
+        .filter(|r| r.state == RunState::Started || crate::held::waiting(db, r))
+        .cloned()
+        .collect()
+}
+
+/// A change of stack `name` accepted, in the review of run `id`: chained,
+/// the answer-only asks made on the stack before it, running or waiting for
+/// your review, are dropped and asked again, on the stack as it is now. How
+/// many.
+pub fn reask_answers(db: &mut Db, name: &str, id: &str) -> Result<usize> {
+    if !chains(&agent_of(db, name)) {
+        return Ok(0);
+    }
+    let runs = answers_in_flight(db, name, id);
+    for r in &runs {
+        let Some(i) = info(r) else { continue };
+        drop_run(db, r, i, "dropped: an edit of the stack was accepted meanwhile; asked again".into())?;
+    }
+    Ok(runs.len())
+}
+
+/// What accepting a change of stack `name`, in the review of run `id`, asks
+/// again, chained: the answer-only asks running, and waiting for your
+/// review.
+pub fn answers_reasked(db: &Db, name: &str, id: &str) -> (usize, usize) {
+    if !chains(&agent_of(db, name)) {
+        return (0, 0);
+    }
+    let runs = answers_in_flight(db, name, id);
+    let running = runs.iter().filter(|r| r.state == RunState::Started).count();
+    (running, runs.len() - running)
+}
+
+/// The builds and tests of stack `name` going: of the stack as it is, which
+/// accepting a change leaves behind. Not asked again; you may stop them.
+pub fn builds_going(db: &Db, name: &str) -> Vec<Run> {
+    db.runs()
+        .into_iter()
+        .filter(|r| r.stack == name && busy(r) && info(r).is_some_and(|i| i.way == Way::Test))
+        .cloned()
+        .collect()
 }
 
 /// The comments ask `i` was about back in the queue, ready, in the batch
@@ -402,7 +470,7 @@ fn ask_again(db: &mut Db, i: &Info) -> Result<()> {
                 batch: batch.clone(),
                 stack,
                 stage: Stage::Ready,
-                on: None,
+                on: i.on.clone(),
             }),
             failed: None,
             ..n
@@ -433,7 +501,8 @@ struct Going {
     change_waits: bool,
     /// A change waits for your review.
     reviewing: bool,
-    /// Changes and answers go on from the change under review, guessing.
+    /// Changes go on from the change under review, guessing; answers run
+    /// alongside them, on the stack as it is.
     chain: bool,
     /// The work under review they go on from: the last landed.
     tail: Option<String>,
@@ -540,7 +609,13 @@ pub fn send_back(db_path: &Path, name: &str, id: &str, marks: &std::collections:
         enqueue(db, &round.notes, round.way, round.whole, Stage::Ready, Some(id))?;
         let n = round.notes.len();
         let said = if round.whole && round.way == Way::Change { crate::db::WHOLE } else { round.way.said() };
-        Ok(format!("sent back to the agent ({said}): {n} comment{} to ask again", if n == 1 { "" } else { "s" }))
+        let mut out = format!("sent back to the agent ({said}): {n} comment{} to ask again", if n == 1 { "" } else { "s" });
+        match round.dropped {
+            0 => {}
+            1 => out += "; 1 edit that went on from it asked again",
+            k => out += &format!("; {k} edits that went on from it asked again"),
+        }
+        Ok(out)
     })
 }
 
@@ -763,8 +838,10 @@ fn claim(db: &mut Db) -> Result<Vec<String>> {
                     false
                 }
             }
+            // Chained, an answer runs alongside the changes, on the stack as
+            // it is: accepting a change asks it again.
             Way::Answer => {
-                let go = !st.change && !st.change_waits;
+                let go = st.chain || (!st.change && !st.change_waits);
                 if go {
                     st.answers += 1;
                 }
@@ -783,8 +860,8 @@ fn claim(db: &mut Db) -> Result<Vec<String>> {
         if !go {
             continue;
         }
-        // Chained, a change or an answer goes on from the work under review.
-        let after = if st.chain && on.is_none() && way != Way::Test { st.tail.clone() } else { None };
+        // Chained, a change goes on from the work under review.
+        let after = if st.chain && on.is_none() && way == Way::Change { st.tail.clone() } else { None };
         let Some((from, _)) = db.head(&name) else { continue };
         let id = crate::db::unique();
         let shown = notes

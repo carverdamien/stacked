@@ -592,6 +592,12 @@ pub enum Action {
     /// is on, written again, or taken back.
     EditYours,
     TakeYoursBack,
+    /// In the review: closing it, or sending the work back, asked first when
+    /// it asks something again; closing it and stopping the build and test of
+    /// the stack as it was.
+    AskClose,
+    AskSendBack,
+    ReviewCloseStop(Option<bool>),
     Send(Way),
     /// A patch's comment sent to the whole stack: the agent may change any
     /// patch.
@@ -752,6 +758,9 @@ fn about(action: &Action) -> String {
         Action::Answer(_) => "answer the agent's reply: the work goes back to the agent with your answer after the reply".into(),
         Action::EditYours => "write it again: what you said last in your comment, or your answer to the agent's reply".into(),
         Action::TakeYoursBack => "take it back: it does not go back to the agent with the work".into(),
+        Action::AskClose => "close the review, once you say so: what you accepted is applied, and what that asks again is said first".into(),
+        Action::AskSendBack => "send the work back to the agent, once you say so: what went on from it is asked again".into(),
+        Action::ReviewCloseStop(_) => "close the review, and stop the build and test of the stack as it was".into(),
         Action::Send(Way::Change) => "ask the agent, which may change the code within this comment's place".into(),
         Action::Send(Way::Answer) => "ask the agent, to answer only: nothing changes".into(),
         Action::Send(Way::Test) => "ask the agent to build and test, in the stack's build worktree, .stacked/NAME/build".into(),
@@ -4222,6 +4231,22 @@ impl App {
             Action::ReviewClose(rest) => self.review_close(rest),
             Action::CloseAsking(k, close) => self.mark_asking(k, close),
             Action::SendBack => self.review_send_back(),
+            Action::AskClose => {
+                if let Some(m) = self.review_close_menu() {
+                    self.mode = Mode::Menu(m);
+                }
+            }
+            Action::AskSendBack => self.mode = Mode::Menu(self.review_send_back_ask()),
+            Action::ReviewCloseStop(rest) => {
+                let builds = ask::builds_going(&self.db, &self.stack);
+                self.review_close(rest);
+                if self.reviewing.is_none() && !builds.is_empty() {
+                    for r in &builds {
+                        ask::stop(r);
+                    }
+                    self.status += "; the build and test of the stack as it was is stopped";
+                }
+            }
             Action::Answer(k) => self.review_answer(k),
             Action::EditYours => {
                 if let Some(y) = self.review_yours_line() {

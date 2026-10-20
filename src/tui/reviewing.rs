@@ -126,6 +126,14 @@ impl Line {
     }
 }
 
+/// How a review closes, for what that asks again.
+#[derive(Clone, Copy, PartialEq)]
+enum Closing {
+    Accepting,
+    Rejecting,
+    SendingBack,
+}
+
 /// What a part's mark says, as the list shows it.
 fn mark_of(m: Option<bool>) -> (&'static str, Style) {
     match m {
@@ -1162,8 +1170,9 @@ impl App {
         // nor rejected.
         let (comments, answers) = self.review_yours();
         if comments + answers > 0 {
+            let back = if self.review_again(Closing::SendingBack).is_some() { Action::AskSendBack } else { Action::SendBack };
             let items = vec![
-                Item::new("Send it back to the agent", Action::SendBack),
+                Item::new("Send it back to the agent", back),
                 Item::new("Save", Action::ReviewSave),
                 Item::new("Discard", Action::ReviewDiscard),
                 Item::line(),
@@ -1191,7 +1200,7 @@ impl App {
         let mut items = vec![
             Item::new("Save", Action::ReviewSave),
             Item::new("Discard", Action::ReviewDiscard),
-            Item::new("Close review", Action::ReviewClose(None)).when(done),
+            Item::new("Close review", if self.review_close_menu().is_some() { Action::AskClose } else { Action::ReviewClose(None) }).when(done),
             Item::new("Accept all remaining and Close", Action::AskReviewClose(true)).when(!done),
             Item::new("Reject all remaining and Close", Action::AskReviewClose(false)).when(!done),
         ];
@@ -1219,9 +1228,98 @@ impl App {
                 "what you rejected is dropped for good, and what you accepted is applied",
             ),
         };
-        let mut m = Menu::ask(title, Item::new(yes, Action::ReviewClose(Some(accept))), "Keep reviewing", true);
-        m.note = Some(format!("Not marked yet: {}. The review closes then: {then}.", self.review_left().join(", ")));
+        let mut said = vec![format!("Not marked yet: {}. The review closes then: {then}.", self.review_left().join(", "))];
+        // Its change, accepted or rejected as marked, else as the rest.
+        let accepting = self.reviewing.as_ref().and_then(|rv| rv.marks.get(&Part::Stack.key()).copied()).unwrap_or(accept);
+        said.extend(self.review_again(if accepting { Closing::Accepting } else { Closing::Rejecting }));
+        let builds = accepting.then(|| self.review_builds()).flatten();
+        let stop = builds.is_some();
+        said.extend(builds);
+        self.close_choices(title, yes, Some(accept), said, stop)
+    }
+
+    /// What closing the review with every part marked asks first, if it asks
+    /// something again or leaves a build and test behind; the menu on Keep
+    /// reviewing.
+    pub(super) fn review_close_menu(&self) -> Option<Menu> {
+        let rv = self.reviewing.as_ref()?;
+        let accepting = rv.marks.get(&Part::Stack.key()) == Some(&true);
+        let mut said: Vec<String> = self.review_again(if accepting { Closing::Accepting } else { Closing::Rejecting }).into_iter().collect();
+        let builds = accepting.then(|| self.review_builds()).flatten();
+        let stop = builds.is_some();
+        said.extend(builds);
+        (!said.is_empty()).then(|| self.close_choices("close the review?", "Close it", None, said, stop))
+    }
+
+    /// What sending the work back asks first: what went on from it, asked
+    /// again; the menu on Keep reviewing.
+    pub(super) fn review_send_back_ask(&self) -> Menu {
+        let mut m = Menu::ask("send the work back to the agent?", Item::new("Send it back", Action::SendBack), "Keep reviewing", true);
+        m.note = self.review_again(Closing::SendingBack);
         m
+    }
+
+    /// A question before closing the review, the parts not marked as `rest`
+    /// says: `yes`; when `stop`, `yes` also stopping the build and test of the
+    /// stack as it was; or keep reviewing, picked. `said`, its note.
+    fn close_choices(&self, title: &str, yes: &str, rest: Option<bool>, said: Vec<String>, stop: bool) -> Menu {
+        let mut items = vec![Item::new(yes, Action::ReviewClose(rest))];
+        if stop {
+            items.push(Item::new(format!("{yes}, and stop the build"), Action::ReviewCloseStop(rest)));
+        }
+        items.push(Item::new("Keep reviewing", Action::Cancel));
+        let mut m = Menu::new(title, items, None);
+        m.sel = m.items.len() - 1;
+        m.note = Some(said.join("\n"));
+        m
+    }
+
+    /// What closing the review as `how` asks again, said: its change
+    /// accepted, the answer-only asks made on the stack before it; rejected,
+    /// or the work sent back, the edits that went on from it. None for
+    /// nothing, or for work with no change of the stack.
+    fn review_again(&self, how: Closing) -> Option<String> {
+        let rv = self.reviewing.as_ref()?;
+        self.work(&rv.run).filter(|(_, h)| h.stack.is_some())?;
+        let (running, waiting) = match how {
+            Closing::Accepting => ask::answers_reasked(&self.db, &self.stack, &rv.run),
+            _ => ask::guesses_after(&self.db, &rv.run),
+        };
+        let n = running + waiting;
+        if n == 0 {
+            return None;
+        }
+        let is = |k: usize| if k == 1 { "is" } else { "are" };
+        let mut how_each = Vec::new();
+        if running > 0 {
+            how_each.push(format!("{running} running {} stopped", is(running)));
+        }
+        if waiting > 0 {
+            how_each.push(format!("{waiting} waiting for your review {} thrown away", is(waiting)));
+        }
+        let each = how_each.join(", and ");
+        let they = if n == 1 { "It is" } else { "They are" };
+        let edits = if n == 1 { "1 edit".to_string() } else { format!("{n} edits") };
+        Some(match how {
+            Closing::Accepting => format!(
+                "Closing this review applies its change. The {} made on the stack before it {} asked again: {each}.",
+                if n == 1 { "1 answer-only ask".to_string() } else { format!("{n} answer-only asks") },
+                is(n)
+            ),
+            Closing::Rejecting => format!(
+                "Rejecting this change throws away the {edits} that went on from it, as if you accepted it: {each}. {they} asked again from the stack as it is."
+            ),
+            Closing::SendingBack => format!(
+                "Sending this work back throws away the {edits} that went on from it: {each}. {they} asked again once the agent's new work lands."
+            ),
+        })
+    }
+
+    /// The build and test of the stack as it was, going, that accepting a
+    /// change leaves behind, said.
+    fn review_builds(&self) -> Option<String> {
+        (!ask::builds_going(&self.db, &self.stack).is_empty())
+            .then(|| "A build and test of the stack as it was is going: it is not asked again, and you may stop it.".to_string())
     }
 
     /// The parts not marked yet, said by kind: the change of the stack,

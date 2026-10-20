@@ -572,19 +572,24 @@ on, and goes on its own when that lands. Nothing is asked on a stack that
 does not apply.
 
 Chained (`agent.chain`, on unless changes work in your checkout), a change
-or an answer does not wait for the review of the change before it: it goes
-at once, from the stack that change makes, as if you accept it, one change
-running at a time, and an answer asked after a change that runs goes once
-that change lands. What it brings back is reviewed after the work it went
-on from: the banner lists it after that work, `◌ … after the edit under
-review`, and its review does not open before (`stacked review NAME RUN`
-refuses too). Accepted, that work makes it an ask of the stack as any
-other. Rejected, sent back or edited by hand, what went on from it is
-dropped: its agent is stopped if it still works, what it brought back is
-thrown away unseen, and its comments go back to their turn, to start again
-from the stack as it then is (a round sent back goes first). An answer
-reads the stack it went on from with `stacked show NAME --work RUN` and
-`stacked export NAME --work RUN`, the stack a landed work makes.
+does not wait for the review of the change before it: it goes at once, from
+the stack that change makes, as if you accept it, one change running at a
+time. What it brings back is reviewed after the work it went on from: the
+banner lists it after that work, `◌ … after the edit under review`, and its
+review does not open before (`stacked review NAME RUN` refuses too).
+Accepted, that work makes it an ask of the stack as any other. Rejected,
+sent back or edited by hand, what went on from it is dropped: its agent is
+stopped if it still works, what it brought back is thrown away unseen, and
+its comments go back to their turn, to start again from the stack as it
+then is (a round sent back goes first). It reads the stack it went on from
+with `stacked export NAME --work RUN` and `stacked show NAME --work RUN`,
+the stack a landed work makes. An answer-only ask runs at once, alongside
+the changes, on the stack as it is: accepting a change asks again the
+answers made on the stack before it, still running or waiting for your
+review. A build and test is not asked again: it goes on, of the stack as it
+was, unless you stop it as you close the review. Closing a review, or
+sending the work back, says first what that asks again, and offers to stop
+a build and test going.
 
 While the agent changes a stack, the stack is not edited by hand: the
 agent's change is made from the stack as it took it. The menus' edits of

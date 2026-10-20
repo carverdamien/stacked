@@ -1124,7 +1124,10 @@ fn several_asks_wait_their_turn() {
     let two = comment(&e, &["Second."]);
     let three = comment(&e, &["--patch", "2", "Why b?"]);
     let claude = fake_claude(&e, "claude-wait.sh", "sleep 1", r#"{"replies": {"c1": "Seen."}}"#);
-    let env = [("STACKED_CLAUDE", claude.as_path())];
+    // Unchained: each waits for what goes before it, as self-review's do.
+    let unchained = e.root.join("unchained.toml");
+    std::fs::write(&unchained, "[agent]\nchain = false\n").unwrap();
+    let env = [("STACKED_CLAUDE", claude.as_path()), ("STACKED_CONFIG", unchained.as_path())];
     let (fine, out, err) = stacked_in(&e.src, &e.db, &["send", "s", &one], "", &env);
     assert!(fine && out.contains("sent"), "{out}{err}");
     // A change has the stack to itself: what comes after waits, ready.
@@ -1144,7 +1147,8 @@ fn several_asks_wait_their_turn() {
     let queue = e.ok(&["landed", "s"]);
     assert_eq!(queue.lines().filter(|l| !l.starts_with(' ')).count(), 3, "{queue}");
     for _ in 0..3 {
-        e.ok(&["review", "s", "--accept-all"]);
+        let (fine, out, err) = stacked_in(&e.src, &e.db, &["review", "s", "--accept-all"], "", &env);
+        assert!(fine, "{out}{err}");
     }
     assert_eq!(e.ok(&["landed", "s"]), "");
     let read = e.ok(&["comments", "s", "--show", "to-read"]);
@@ -1504,8 +1508,13 @@ fn what_went_on_from_a_change_rejected_is_dropped_its_agent_stopped_and_asked_ag
     std::fs::write(&gate, "").unwrap();
 }
 
+/// The rev a prompt reads the stack at: its `--rev N`.
+fn rev_in(prompt: &str) -> String {
+    prompt.split("--rev ").nth(1).map(|r| r.chars().take_while(char::is_ascii_digit).collect()).unwrap_or_default()
+}
+
 #[test]
-fn an_answer_goes_on_from_the_change_under_review_and_is_reviewed_after_it() {
+fn an_answer_runs_on_the_stack_as_it_is_and_accepting_an_edit_asks_it_again() {
     let e = env();
     e.ok(&["import", "s", "base"]);
     let first = comment(&e, &["--patch", "1", "Spell", "it", "out."]);
@@ -1516,20 +1525,62 @@ fn an_answer_goes_on_from_the_change_under_review_and_is_reviewed_after_it() {
     let (fine, out, err) = stacked_in(&e.src, &e.db, &["send", "s", &first, "--wait"], "", &env);
     assert!(fine, "{out}{err}");
     let one = landed_ids(&e).remove(0);
-    // The answer goes at once, reading the stack the change makes.
+    // The answer goes at once, on the stack as it is, not the change's.
     let (fine, out, err) = stacked_in(&e.src, &e.db, &["send", "s", &why, "--answer-only", "--wait"], "", &env);
     assert!(fine, "{out}{err}");
     let told = std::fs::read_to_string(&prompts).unwrap();
-    assert!(told.split("=====").nth(1).unwrap().contains(&format!("show s --work {one}")), "{told}");
+    let asked = told.split("=====").nth(1).unwrap();
+    assert!(asked.contains("show s --rev ") && !asked.contains("--work"), "{told}");
     assert!(e.ok(&["show", "s", "1", "--work", &one]).contains("+deux\n"));
-    assert!(!e.ok(&["show", "s", "1"]).contains("+deux\n"));
-    // Reviewed after the change.
-    let ids = landed_ids(&e);
-    let (fine, _, err) = e.run(&["review", "s", &ids[1], "--accept-all"]);
-    assert!(!fine && err.contains("review that one first"), "{err}");
-    e.ok(&["review", "s", "--accept-all"]);
-    e.ok(&["review", "s", "--accept-all"]);
-    assert!(landed_ids(&e).is_empty());
+    assert!(!e.ok(&["landed", "s"]).contains("goes on from"));
+    // The change accepted, the answer is asked again, on the stack it makes.
+    let (fine, out, err) = stacked_in(&e.src, &e.db, &["review", "s", &one, "--accept-all"], "", &env);
+    assert!(fine && out.contains("; 1 answer-only ask asked again"), "{out}{err}");
+    landed(&e, 3);
+    let told = std::fs::read_to_string(&prompts).unwrap();
+    let asked: Vec<&str> = told.split("=====").collect();
+    assert!(asked.len() == 4 && asked[2].contains("Why b?"), "{told}");
+    assert_ne!(rev_in(asked[1]), rev_in(asked[2]), "{told}");
+    assert!(e.ok(&["runs", "s"]).contains("dropped: an edit of the stack was accepted meanwhile; asked again"));
+    assert_eq!(landed_ids(&e).len(), 1);
+}
+
+#[test]
+fn an_answer_runs_alongside_a_running_edit_and_rejecting_the_edit_keeps_it() {
+    let e = env();
+    e.ok(&["import", "s", "base"]);
+    let first = comment(&e, &["--patch", "1", "Spell", "it", "out."]);
+    let why = comment(&e, &["--patch", "2", "Why", "b?"]);
+    let (prompts, gate) = (e.root.join("prompts.txt"), e.root.join("gate"));
+    // The change waits for the gate; the answer does not.
+    let claude = fake_claude(
+        &e,
+        "claude-alongside.sh",
+        &format!(
+            "set -e\nprintf '%s\\n=====\\n' \"$2\" >> {p}\ncase \"$2\" in\n  *'Why b?'*) ;;\n  \
+             *) until test -e {g}; do sleep 0.1; done; sed -i '' 's/^2$/deux/' a.txt\n     \
+             git -c user.name=C -c user.email=c@x commit -q --amend --no-edit -a ;;\nesac",
+            p = prompts.display(),
+            g = gate.display()
+        ),
+        r#"{"replies": {"c1": "Done."}}"#,
+    );
+    let env = [("STACKED_CLAUDE", claude.as_path())];
+    let (fine, out, err) = stacked_in(&e.src, &e.db, &["send", "s", &first], "", &env);
+    assert!(fine, "{out}{err}");
+    // While the change works, the answer goes, and lands.
+    let (fine, out, err) = stacked_in(&e.src, &e.db, &["send", "s", &why, "--answer-only", "--wait"], "", &env);
+    assert!(fine && !out.contains("once the agent's change"), "{out}{err}");
+    let answer = landed_ids(&e);
+    assert_eq!(answer.len(), 1);
+    // The change lands; rejected, the stack is as it was, and the answer
+    // stays.
+    std::fs::write(&gate, "").unwrap();
+    landed(&e, 2);
+    let change = landed_ids(&e).into_iter().find(|id| *id != answer[0]).unwrap();
+    let (fine, out, err) = stacked_in(&e.src, &e.db, &["review", "s", &change, "--reject-all"], "", &env);
+    assert!(fine && !out.contains("asked again"), "{out}{err}");
+    assert_eq!(landed_ids(&e), answer);
 }
 
 #[test]

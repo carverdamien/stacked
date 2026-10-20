@@ -4052,32 +4052,27 @@ fn the_banner_has_read_only_then_edits_then_comments_each_the_one_to_review_firs
     keys(&mut app, &[KeyCode::Enter]);
     save(&mut app, "why so loud?");
     let n = notes_of(&db, "s", 0).remove(0);
-    // An edit, an answer, and an edit and an answer going on from the edit.
+    // An edit, an answer, and an edit going on from the edit.
     held(&db, "run-1", &n.change, &n.id, "Quieter now.", true);
     held(&db, "run-2", &n.change, &n.id, "It shouts.", false);
     held(&db, "run-3", &n.change, &n.id, "Quieter still.", true);
-    held(&db, "run-4", &n.change, &n.id, "It shouts less.", false);
     Db::edit(&db, |d| {
-        for id in ["run-3", "run-4"] {
-            let mut r = d.run(id).unwrap().clone();
-            let mut ask = r.ask.clone().unwrap();
-            ask["after"] = serde_json::json!("run-1");
-            r.ask = Some(ask);
-            d.add_run(r)?;
-        }
-        Ok(())
+        let mut r = d.run("run-3").unwrap().clone();
+        let mut ask = r.ask.clone().unwrap();
+        ask["after"] = serde_json::json!("run-1");
+        r.ask = Some(ask);
+        d.add_run(r).map(|_| ())
     })
     .unwrap();
     app.refresh();
     let screen = draw(&mut app);
-    assert!(screen.contains("4 landed asks wait for your review, 2 of them after an edit under review · the next: 1 reply"), "{screen}");
+    assert!(screen.contains("3 landed asks wait for your review, 1 of them after an edit under review · the next: 1 reply"), "{screen}");
     keys(&mut app, &[KeyCode::Esc]);
     let screen = draw(&mut app);
-    let rows: Vec<&str> = screen.lines().skip(2).take(9).map(str::trim_end).collect();
+    let rows: Vec<&str> = screen.lines().skip(2).take(8).map(str::trim_end).collect();
     let starts = [
         " read only, to review",
         "   ⟳ Review 1 reply",
-        "   ◌ 1 reply",
         " edits, to review",
         "   ⟳ Review a change of patch 1, 1 reply",
         "   ◌ a change of patch 1, 1 reply",
@@ -4086,12 +4081,12 @@ fn the_banner_has_read_only_then_edits_then_comments_each_the_one_to_review_firs
     for (row, want) in rows.iter().zip(starts) {
         assert!(row.starts_with(want), "{want:?}:\n{screen}");
     }
-    assert!(rows[2].ends_with("after the edit under review, which you review first") && rows[5].ends_with("which you review first"), "{screen}");
+    assert!(rows[4].ends_with("after the edit under review, which you review first"), "{screen}");
     // The cursor goes from line to line, past the titles; on a work going on
     // from the edit, Enter says to review that one first.
     assert!(app.on_banner && app.banner_sel == 0);
-    keys(&mut app, &[KeyCode::Down, KeyCode::Down]);
-    assert!(app.banner_sel == 2 && selected_banner(&mut app).starts_with("   ⟳ Review a change of patch 1"), "{}", draw(&mut app));
+    keys(&mut app, &[KeyCode::Down]);
+    assert!(app.banner_sel == 1 && selected_banner(&mut app).starts_with("   ⟳ Review a change of patch 1"), "{}", draw(&mut app));
     keys(&mut app, &[KeyCode::Down, KeyCode::Enter]);
     assert_eq!(app.screen, Screen::Main);
     assert!(app.status.ends_with("review that one first"), "{}", app.status);
@@ -4107,6 +4102,104 @@ fn selected_banner(app: &mut App) -> String {
         .find(|&y| buf[(3, y)].modifier.contains(ratatui::style::Modifier::REVERSED))
         .map(|y| (0..120).map(|x| buf[(x, y)].symbol()).collect::<String>())
         .unwrap_or_default()
+}
+
+/// Patch 1 commented on, and the work runs `kinds` name landed for it: an
+/// edit (`edit`), an answer (`answer`), an edit going on from `run-1`
+/// (`guess`); and a build and test going, with `build`.
+fn landed_kinds(kinds: &[(&str, &str)], build: bool) -> (tempfile::TempDir, PathBuf, App) {
+    let (tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Enter]);
+    save(&mut app, "why so loud?");
+    let n = notes_of(&db, "s", 0).remove(0);
+    for (id, kind) in kinds {
+        held(&db, id, &n.change, &n.id, &format!("{kind} {id}."), *kind != "answer");
+    }
+    Db::edit(&db, |d| {
+        for (id, _) in kinds.iter().filter(|(_, k)| *k == "guess") {
+            let mut r = d.run(id).unwrap().clone();
+            let mut ask = r.ask.clone().unwrap();
+            ask["after"] = serde_json::json!("run-1");
+            r.ask = Some(ask);
+            d.add_run(r)?;
+        }
+        if build {
+            d.add_run(stacked::db::Run {
+                id: "run-build".into(),
+                what: "test".into(),
+                stack: "s".into(),
+                state: stacked::db::RunState::Started,
+                ask: Some(serde_json::json!({"way": "test", "scope": {"patch": n.change}, "from": 1, "notes": []})),
+                ..Default::default()
+            })?;
+        }
+        Ok(())
+    })
+    .unwrap();
+    app.refresh();
+    (tmp, db, app)
+}
+
+#[test]
+fn accepting_an_edit_says_first_the_answers_it_asks_again_and_offers_to_stop_a_build() {
+    let (_tmp, db, mut app) = landed_kinds(&[("run-1", "edit"), ("run-2", "answer")], true);
+    // The edit's review, below the answer's in the banner.
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Down, KeyCode::Enter]);
+    assert_eq!(app.reviewing.as_ref().map(|rv| rv.run.as_str()), Some("run-1"));
+    keys(&mut app, &[KeyCode::Esc]);
+    choose(&mut app, "Accept all remaining and Close");
+    let Mode::Menu(m) = &app.mode else { panic!("{:?}", app.mode) };
+    let note = m.note.clone().unwrap();
+    assert!(
+        note.contains("Closing this review applies its change. The 1 answer-only ask made on the stack before it is asked again: 1 waiting for your review is thrown away."),
+        "{note}"
+    );
+    assert!(note.contains("A build and test of the stack as it was is going: it is not asked again, and you may stop it."), "{note}");
+    let labels: Vec<String> = items(&app).into_iter().map(|(l, _)| l).collect();
+    assert_eq!(labels, ["Accept them and close", "Accept them and close, and stop the build", "Keep reviewing"]);
+    assert_eq!(m.sel, 2, "on Keep reviewing");
+    choose(&mut app, "Accept them and close");
+    assert!(app.status.ends_with("; 1 answer-only ask asked again"), "{}", app.status);
+    let d = Db::load(&db).unwrap();
+    assert!(d.review("run-2").is_some_and(|v| v.closed));
+    assert_eq!(d.run("run-build").unwrap().state, stacked::db::RunState::Started, "the build goes on");
+}
+
+#[test]
+fn rejecting_or_sending_back_says_first_the_edits_it_asks_again() {
+    let (_tmp, _db, mut app) = landed_kinds(&[("run-1", "edit"), ("run-3", "guess")], true);
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Enter]);
+    assert_eq!(app.reviewing.as_ref().map(|rv| rv.run.as_str()), Some("run-1"));
+    // Rejected: what went on from it is asked again; the build, of the stack
+    // as it is, is no matter.
+    keys(&mut app, &[KeyCode::Esc]);
+    choose(&mut app, "Reject all remaining and Close");
+    let Mode::Menu(m) = &app.mode else { panic!("{:?}", app.mode) };
+    let note = m.note.clone().unwrap();
+    assert!(
+        note.contains("Rejecting this change throws away the 1 edit that went on from it, as if you accepted it: 1 waiting for your review is thrown away. It is asked again from the stack as it is."),
+        "{note}"
+    );
+    let labels: Vec<String> = items(&app).into_iter().map(|(l, _)| l).collect();
+    assert_eq!(labels, ["Reject them and close", "Keep reviewing"]);
+    choose(&mut app, "Keep reviewing");
+    // Sent back, the same.
+    down_to_review(&mut app, "edit run-1.");
+    choose(&mut app, "Reply to it");
+    save(&mut app, "Not quiet enough.");
+    keys(&mut app, &[KeyCode::Esc]);
+    choose(&mut app, "Send it back to the agent");
+    let Mode::Menu(m) = &app.mode else { panic!("{:?}", app.mode) };
+    let note = m.note.clone().unwrap_or_default();
+    assert!(
+        note.contains("Sending this work back throws away the 1 edit that went on from it: 1 waiting for your review is thrown away. It is asked again once the agent's new work lands."),
+        "{note}"
+    );
+    choose(&mut app, "Send it back");
+    assert!(app.status.ends_with("; 1 edit that went on from it asked again"), "{}", app.status);
 }
 
 #[test]

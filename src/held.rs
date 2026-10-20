@@ -415,6 +415,8 @@ pub struct Round {
     pub notes: Vec<(String, String)>,
     pub way: crate::db::Way,
     pub whole: bool,
+    /// How many edits that went on from it are asked again.
+    pub dropped: usize,
 }
 
 /// Rejects the work run `id` holds, to send it back to the agent as what
@@ -462,13 +464,18 @@ pub fn send_back(db: &mut Db, id: &str, marks: &BTreeMap<String, bool>) -> Resul
     v.marks.insert(Part::Stack.key(), false);
     v.closed = true;
     db.set_review(id, v)?;
-    crate::ask::guessed_wrong(db, id, "sent back")?;
+    let dropped = crate::ask::guessed_wrong(db, id, "sent back")?;
     let n = notes.len();
     db.add_run(Run {
         summary: format!("reviewed: sent back to the agent, {}", count(n, "comment to ask again", "comments to ask again")),
         ..r
     })?;
-    Ok(Round { notes, way: i.way, whole })
+    Ok(Round {
+        notes,
+        way: i.way,
+        whole,
+        dropped,
+    })
 }
 
 /// The mark, in a review, of the comment the ask was about at place `k`
@@ -559,9 +566,23 @@ pub fn close_with(db: &mut Db, id: &str, marks: &BTreeMap<String, bool>, rest: O
         crate::ask::follow_lines(db, &olds, &c.patches)?;
     }
     // What went on from it, guessing it would be accepted: right, or wrong.
+    // Its change accepted, the answers made on the stack before it are asked
+    // again, on the stack as it is now.
+    let mut again = Vec::new();
     match (change, rev) {
-        (Some((_, true)), Some(at)) => crate::ask::guessed_right(db, id, at)?,
-        (Some((_, false)), _) => crate::ask::guessed_wrong(db, id, "rejected")?,
+        (Some((_, true)), Some(at)) => {
+            crate::ask::guessed_right(db, id, at)?;
+            let n = crate::ask::reask_answers(db, &r.stack, id)?;
+            if n > 0 {
+                again.push(count(n, "answer-only ask asked again", "answer-only asks asked again"));
+            }
+        }
+        (Some((_, false)), _) => {
+            let n = crate::ask::guessed_wrong(db, id, "rejected")?;
+            if n > 0 {
+                again.push(count(n, "edit that went on from it asked again", "edits that went on from it asked again"));
+            }
+        }
         _ => {}
     }
     for (k, n) in h.opened.iter().enumerate() {
@@ -576,6 +597,9 @@ pub fn close_with(db: &mut Db, id: &str, marks: &BTreeMap<String, bool>, rest: O
     let mut said = said(&h, &v.marks);
     if closed > 0 {
         said += &format!("; {}", count(closed, "asking comment closed", "asking comments closed"));
+    }
+    for a in again {
+        said += &format!("; {a}");
     }
     db.add_run(Run {
         summary: format!("reviewed: {said}"),
