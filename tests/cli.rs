@@ -1101,12 +1101,12 @@ fn one_build_and_test_goes_at_a_time_of_every_stack() {
     e.ok(&["import", "t", "base"]);
     let on_s = comment(&e, &["Build", "it."]);
     let on_t = e.ok(&["comment", "t", "Build", "it", "too."]).trim().to_string();
-    // A build fails if another is going.
-    let going = e.root.join("building");
+    // A build fails if another is going; one goes on once the test says so.
+    let (going, gate) = (e.root.join("building"), e.root.join("gate"));
     let claude = fake_claude(
         &e,
         "claude-build.sh",
-        &format!("test -e {g} && exit 9; touch {g}; sleep 1; rm {g}", g = going.display()),
+        &format!("test -e {g} && exit 9; touch {g}; until test -e {o}; do sleep 0.1; done; rm {g}", g = going.display(), o = gate.display()),
         r#"{"replies": {"c1": "Built."}}"#,
     );
     let env = [("STACKED_CLAUDE", claude.as_path())];
@@ -1117,6 +1117,7 @@ fn one_build_and_test_goes_at_a_time_of_every_stack() {
     assert!(fine, "{err}");
     assert!(out.contains("ready (build and test), it goes once the running build and test of s lands"), "{out}");
     // Each goes in turn, in its stack's build worktree.
+    std::fs::write(&gate, "").unwrap();
     landed(&e, 2);
     let db = Db::load(&e.db).unwrap();
     for name in ["s", "t"] {
