@@ -3442,6 +3442,38 @@ fn the_review_marks_its_opened_comments_and_its_replies_apart() {
 }
 
 #[test]
+fn right_in_a_review_goes_into_its_right_pane_then_makes_it_wide() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Enter]);
+    save(&mut app, "why so loud?");
+    let n = notes_of(&db, "s", 0).into_iter().next().unwrap();
+    held(&db, "run-1", &n.change, &n.id, "It is a shout.", true);
+    app.refresh();
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Enter]);
+    assert_eq!(app.screen, Screen::Review);
+    // Into the pane on the right: the list beside it still.
+    keys(&mut app, &[KeyCode::Right]);
+    assert_eq!(app.hint(), "↑↓: scroll · enter: accept · →: wider · ←: back to the list · esc: save, discard or close");
+    assert!(draw(&mut app).contains(" stack operations"));
+    // Wide: the list out of sight.
+    keys(&mut app, &[KeyCode::Right]);
+    let screen = draw(&mut app);
+    assert!(!screen.contains(" stack operations"), "{screen}");
+    assert!(screen.lines().nth(1).unwrap().starts_with(" the change of patch 1: what accepting it does to the stack"), "{screen}");
+    assert_eq!(app.hint(), "↑↓: scroll · enter: accept · ←: narrower · esc: save, discard or close");
+    // ← narrower, then back to the list.
+    keys(&mut app, &[KeyCode::Left]);
+    assert!(draw(&mut app).contains(" stack operations"));
+    assert!(app.reviewing.as_ref().unwrap().in_main);
+    keys(&mut app, &[KeyCode::Left]);
+    assert!(!app.reviewing.as_ref().unwrap().in_main);
+    assert_eq!(app.hint(), "↑↓ choose · enter: accept · →: look closer · space: menu · esc: save, discard or close");
+}
+
+#[test]
 fn the_banner_tracks_the_open_comments_and_esc_goes_there_and_back() {
     let (_tmp, db, _src) = setup();
     let mut app = open(&db).unwrap();

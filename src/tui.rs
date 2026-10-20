@@ -2734,7 +2734,7 @@ impl App {
                     "The review of what landed, the agent's work or the comments pulled from Phabricator: the stack operations of a change, the comments opened, the replies. Each is accepted or rejected; a change of the stack is one part, and rejecting it rejects the comments too."
                         .into(),
                 );
-                out.push("Press Enter to accept the part the cursor is on, or, accepted, to put it back to review; Space for its menu, to reject it; → to scroll what it looks like and ← to come back.".into());
+                out.push("Press Enter to accept the part the cursor is on, or, accepted, to put it back to review; Space for its menu, to reject it; → to scroll what it looks like, → again to see it wide, the list out of sight, and ← to come back.".into());
                 out.push("Press Esc to save your marks, to throw them away, or to close the review: what you accepted is applied then.".into());
             }
             Screen::Search => {
@@ -5353,7 +5353,7 @@ impl App {
                 "type what to look for · ←→: where · tab: the search before · ↑↓: pick · enter: go there · esc: back".into()
             }
             Mode::Normal if self.screen == Screen::Review => {
-                format!("↑↓ choose · {} · →: look closer · space: menu · esc: save, discard or close", self.review_enter())
+                self.review_hint()
             }
             Mode::Normal if self.reading_here() => {
                 "space: mark this block read · enter: unread · 1: view · 2: comment · ?: what can I do here".into()

@@ -26,9 +26,11 @@ pub struct Reviewing {
     /// The line of the list the cursor is on, and the first one shown.
     pub sel: usize,
     top: usize,
-    /// Whether the cursor is in the other pane, to scroll it, and how far.
+    /// Whether the cursor is in the other pane, to scroll it, and how far;
+    /// and whether that pane is wide, the list out of sight.
     pub in_main: bool,
     scroll: usize,
+    pub wide: bool,
     /// The replies' marks when the comment they answer was marked to close,
     /// accepting them with it: they come back if it is kept again.
     asked_before: BTreeMap<String, Option<bool>>,
@@ -335,44 +337,48 @@ impl App {
         let Some(rv) = self.reviewing.clone() else { return };
         let list_w = if w < 60 { w } else { (w * 2 / 5).max(30) };
         let list = Rect::new(body.x, body.y, list_w as u16, body.height);
-        let title = self.work(&rv.run).map_or(String::new(), |(r, h)| {
-            if crate::held::pulled(r) {
-                return format!(" pulled from Phabricator: {}", h.said());
-            }
-            if crate::held::by_hand(r) {
-                return format!(" your edit by hand: {} · {}", h.said(), h.edits.join(", then "));
-            }
-            let asked = if r.request.is_empty() { String::new() } else { format!(" · asked \"{}\"", r.request) };
-            let edited = if h.edits.is_empty() { String::new() } else { format!(" · then you {}", h.edits.join(", then ")) };
-            format!(" the agent's work: {}{asked}{edited}", h.said())
-        });
-        put(buf, list, 0, 0, list_w, &fit(&title, list_w), color::header());
+        // Wide, the part the cursor is on has it all, the list out of sight.
+        let wide = rv.in_main && rv.wide;
         let rows = h.saturating_sub(1);
-        let mut top = rv.top;
-        if rv.sel < top {
-            top = rv.sel;
-        } else if rv.sel >= top + rows {
-            top = rv.sel + 1 - rows;
-        }
-        for (y, (i, l)) in lines.iter().enumerate().skip(top).take(rows).enumerate() {
-            let mut st = l.style;
-            if i == rv.sel {
-                st = st.add_modifier(if rv.in_main { Modifier::BOLD } else { Modifier::REVERSED });
+        if !wide {
+            let title = self.work(&rv.run).map_or(String::new(), |(r, h)| {
+                if crate::held::pulled(r) {
+                    return format!(" pulled from Phabricator: {}", h.said());
+                }
+                if crate::held::by_hand(r) {
+                    return format!(" your edit by hand: {} · {}", h.said(), h.edits.join(", then "));
+                }
+                let asked = if r.request.is_empty() { String::new() } else { format!(" · asked \"{}\"", r.request) };
+                let edited = if h.edits.is_empty() { String::new() } else { format!(" · then you {}", h.edits.join(", then ")) };
+                format!(" the agent's work: {}{asked}{edited}", h.said())
+            });
+            put(buf, list, 0, 0, list_w, &fit(&title, list_w), color::header());
+            let mut top = rv.top;
+            if rv.sel < top {
+                top = rv.sel;
+            } else if rv.sel >= top + rows {
+                top = rv.sel + 1 - rows;
             }
-            put(buf, list, 0, y + 1, list_w, &fit(&l.text, list_w), st);
-            spot_in(&self.spots, list, (0, y + 1, list_w, 1), Spot::ReviewLine(i));
+            for (y, (i, l)) in lines.iter().enumerate().skip(top).take(rows).enumerate() {
+                let mut st = l.style;
+                if i == rv.sel {
+                    st = st.add_modifier(if rv.in_main { Modifier::BOLD } else { Modifier::REVERSED });
+                }
+                put(buf, list, 0, y + 1, list_w, &fit(&l.text, list_w), st);
+                spot_in(&self.spots, list, (0, y + 1, list_w, 1), Spot::ReviewLine(i));
+            }
+            if let Some(r) = &mut self.reviewing {
+                r.top = top;
+            }
+            if w < 60 {
+                return;
+            }
+            for y in 0..body.height {
+                buf.set_string(body.x + list_w as u16, body.y + y, "│", color::meta());
+            }
         }
-        if let Some(r) = &mut self.reviewing {
-            r.top = top;
-        }
-        if w < 60 {
-            return;
-        }
-        for y in 0..body.height {
-            buf.set_string(body.x + list_w as u16, body.y + y, "│", color::meta());
-        }
-        let main_w = w - list_w - 1;
-        let main = Rect::new(body.x + (list_w + 1) as u16, body.y, main_w as u16, body.height);
+        let (main_x, main_w) = if wide { (0, w) } else { (list_w + 1, w - list_w - 1) };
+        let main = Rect::new(body.x + main_x as u16, body.y, main_w as u16, body.height);
         let (said, view, first) = self.review_view(lines.get(rv.sel), main_w.saturating_sub(1));
         let mut head = color::header();
         if rv.in_main {
@@ -426,8 +432,19 @@ impl App {
                     }
                 }
             }
-            (false, KeyCode::Right) if self.body_w >= 60 => rv.in_main = true,
-            (true, KeyCode::Left) => rv.in_main = false,
+            // → into the pane on the right, to scroll it; → again, wide, the
+            // list out of sight; ← back. Too narrow for both side by side,
+            // it is wide at once.
+            (false, KeyCode::Right) => {
+                rv.in_main = true;
+                rv.wide = self.body_w < 60;
+            }
+            (true, KeyCode::Right) => rv.wide = true,
+            (true, KeyCode::Left) if rv.wide && self.body_w >= 60 => rv.wide = false,
+            (true, KeyCode::Left) => {
+                rv.in_main = false;
+                rv.wide = false;
+            }
             (false, code) => {
                 rv.sel = match code {
                     KeyCode::Down => step(rv.sel, true, 1),
@@ -526,6 +543,17 @@ impl App {
                     None => {}
                 }
             }
+        }
+    }
+
+    /// The review's keys, where the cursor is: the list, or the pane on its
+    /// right, wide or not.
+    pub(super) fn review_hint(&self) -> String {
+        let enter = self.review_enter();
+        match &self.reviewing {
+            Some(rv) if rv.in_main && rv.wide => format!("↑↓: scroll · {enter} · ←: narrower · esc: save, discard or close"),
+            Some(rv) if rv.in_main => format!("↑↓: scroll · {enter} · →: wider · ←: back to the list · esc: save, discard or close"),
+            _ => format!("↑↓ choose · {enter} · →: look closer · space: menu · esc: save, discard or close"),
         }
     }
 

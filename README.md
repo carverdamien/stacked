@@ -663,7 +663,9 @@ and its replies. On the right is the part the cursor is on, as it would be:
 the stack diff of the change, from the stack as it is, each new version's
 interdiff under it; or the comment where it would be, the reply as the
 last turn of its thread. That side is only to look at: → goes into it to
-scroll, and ← comes back. Enter accepts the part the cursor is on, or puts
+scroll, → again makes it wide, the list out of sight, and ← narrows it,
+then comes back to the list (too narrow for both side by side, → shows it
+wide at once). Enter accepts the part the cursor is on, or puts
 it back to review if accepted (rejecting is Space's); every line of the
 stack operations is the one part of the change. Space has `Mark as
 accepted` or `Mark as rejected`; and, each kind apart, `Mark all opened
