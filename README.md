@@ -158,6 +158,14 @@ patch when its diff is, whatever its message), `+2` when two commits above
 them are not the stack's; under the header at the base, or when it is not
 on the stack (`▶ HEAD main: off the stack`). It is looked at again as the
 stack changes, and every few seconds. `stacked head NAME` says the same.
+`Move HEAD…`, in the stack's menu and each patch's, moves that checkout
+along the stack: ↑↓ place HEAD's line (`↕ HEAD`), the checkout as it is
+meanwhile, and Enter moves it there, Esc leaving it where it was. HEAD is
+then detached at the stack's base with the patches up to there applied as
+commits, those the checkout has already, message too, taken as they are;
+the branch it was on stays where it was. Not while files git tracks have
+changes, nor while the agent works in the checkout. `stacked head NAME
+--to N` moves it to N patches (0, the base).
 The middle shows what the left pane's cursor is on: a patch (its message,
 then its diff, the comments under the
 lines they are on), or, on the header, the stack itself (its patches, then

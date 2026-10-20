@@ -408,6 +408,10 @@ pub enum Mode {
     Edit(Edit),
     /// The patch at `from` being moved, now at `to`: ↑↓ to place it.
     Moving { from: usize, to: usize },
+    /// HEAD of the checkout stacked runs in being moved, shown with `to` of
+    /// the stack's patches: ↑↓ to place it, the checkout moved once Enter
+    /// leaves the mode.
+    MovingHead { to: usize },
     /// What can be done where the cursor is, said. The next key goes back
     /// to `back`, and does there what it does.
     Help { lines: Vec<String>, back: Box<Mode> },
@@ -501,6 +505,9 @@ pub enum Action {
     Open,
     GoToNote,
     MovePatch,
+    /// HEAD of the checkout stacked runs in picked up to move, shown after
+    /// the patch at `0`, else where it is.
+    MoveHead(Option<usize>),
     EditPatch,
     EditCode,
     EditAgain,
@@ -657,6 +664,9 @@ fn about(action: &Action) -> String {
         Action::Open => "read this patch".into(),
         Action::GoToNote => "go to this comment".into(),
         Action::MovePatch => "pick this patch up and put it elsewhere in the stack".into(),
+        Action::MoveHead(_) => {
+            "pick HEAD of your checkout up: ↑↓ place it, Enter moves the checkout there, detached; your branch as it is".into()
+        }
         Action::EditPatch => "edit this patch in $EDITOR, as mail, opened where the cursor is".into(),
         Action::EditCode => "edit this file as the patch leaves it, in $EDITOR, opened at this line".into(),
         Action::EditAgain => "edit it again, as you left it; conflicts you resolved since are thrown away".into(),
@@ -1198,6 +1208,9 @@ impl Background {
     }
 }
 
+/// What the bar says while HEAD of the checkout is being moved.
+const MOVING_HEAD: &str = "moving HEAD";
+
 /// Why stack checking said no, as the bar says it.
 fn why_not(e: crate::db::Error) -> String {
     let why = e.0.trim_end_matches("; nothing changed").to_string();
@@ -1488,6 +1501,10 @@ impl App {
             Done::Said(what, said) => {
                 self.bg.doing.retain(|d| *d != what);
                 self.status = said;
+                // Moved: where HEAD is, looked at again.
+                if what == MOVING_HEAD {
+                    self.look_at_head();
+                }
             }
             Done::Judged { name, rev, why } => {
                 if self.bg.judging.as_ref().is_some_and(|(n, r)| *n == name && *r == rev) {
@@ -2000,6 +2017,18 @@ impl App {
                 }
                 return Effect::None;
             }
+            // HEAD being moved goes under the patch clicked (under the
+            // header, at the base), and is put down there with a click on it.
+            Mode::MovingHead { to } => {
+                if let Some(Spot::Patch(at)) = spot {
+                    let there = at.map_or(0, |at| at + 1);
+                    if *to == there {
+                        return press(self, KeyCode::Enter);
+                    }
+                    *to = there;
+                }
+                return Effect::None;
+            }
             Mode::Edit(_) => return Effect::None,
             Mode::Normal => {}
         }
@@ -2032,6 +2061,11 @@ impl App {
             Mode::Moving { to, .. } => {
                 if let Spot::Patch(Some(at)) = spot {
                     *to = at;
+                }
+            }
+            Mode::MovingHead { to } => {
+                if let Spot::Patch(at) = spot {
+                    *to = at.map_or(0, |at| at + 1);
                 }
             }
             // Not onto the banner, nor off it: it opens and closes under a
@@ -2296,6 +2330,10 @@ impl App {
             Mode::Edit(e) => return self.edit_key(e, k),
             Mode::Moving { from, to } => {
                 self.moving_key(from, to, k);
+                return Effect::None;
+            }
+            Mode::MovingHead { to } => {
+                self.head_key(to, k);
                 return Effect::None;
             }
             Mode::Stream { change, id, up } => {
@@ -2804,6 +2842,14 @@ impl App {
             }
             Mode::Moving { to, .. } => {
                 out.push(format!("Press Enter to put {} there, at {}.", self.patch_title(), to + 1));
+                out.push("Press ↑↓ to place it elsewhere, Esc to leave it where it was.".into());
+                return out;
+            }
+            Mode::MovingHead { to } => {
+                out.push(format!(
+                    "Press Enter to move HEAD of your checkout to {}: detached there, your branch as it is. The checkout does not change before.",
+                    crate::head::place(&self.stack, *to)
+                ));
                 out.push("Press ↑↓ to place it elsewhere, Esc to leave it where it was.".into());
                 return out;
             }
@@ -3387,6 +3433,36 @@ impl App {
         self.launch();
     }
 
+    /// A key while HEAD is being moved: ↑↓ place it, and only Enter moves
+    /// the checkout, once the mode is left; Esc leaves it where it was.
+    fn head_key(&mut self, to: usize, k: KeyEvent) {
+        let last = self.patch_count();
+        let to = match k.code {
+            KeyCode::Down => (to + 1).min(last),
+            KeyCode::Up => to.saturating_sub(1),
+            KeyCode::Home => 0,
+            KeyCode::End => last,
+            KeyCode::Esc => return,
+            KeyCode::Enter => return self.move_head(to),
+            _ => to,
+        };
+        self.mode = Mode::MovingHead { to };
+    }
+
+    /// HEAD of the checkout stacked runs in moved to the current stack with
+    /// its first `n` patches, away from the screen: detached there, the
+    /// status line saying what came of it.
+    fn move_head(&mut self, n: usize) {
+        if self.bg.doing.contains(&MOVING_HEAD) {
+            self.status = "HEAD is being moved already".into();
+            return;
+        }
+        self.bg.doing.push(MOVING_HEAD);
+        self.status = format!("moving HEAD to {}…", crate::head::place(&self.stack, n));
+        let (path, name, here) = (self.path.clone(), self.stack.clone(), self.checkout.clone());
+        self.spawn(move || Done::Said(MOVING_HEAD, crate::head::move_to(&path, &name, &here, n).unwrap_or_else(|e| e.0)));
+    }
+
     fn moving_key(&mut self, from: usize, mut to: usize, k: KeyEvent) {
         let last = self.patch_count().saturating_sub(1);
         match k.code {
@@ -3610,6 +3686,9 @@ impl App {
                         items.push(Item::new("Pull reviews from Phabricator", Action::Pull));
                     }
                     items.push(Item::new("Apply the stack to the worktree…", Action::AskApply).when(w));
+                    if self.head_here().is_some() {
+                        items.push(Item::new("Move HEAD…", Action::MoveHead(None)));
+                    }
                     items.push(Item::line());
                 }
                 if self.db.stacks().iter().any(|s| s.name != self.stack) {
@@ -3624,6 +3703,9 @@ impl App {
                 items.push(Item::new("Read this patch", Action::Open));
                 items.push(Item::new("Comment on this patch…", Action::CommentPatch));
                 items.push(Item::new("Move this patch…", Action::MovePatch).when(h && n > 1));
+                if self.head_here().is_some() {
+                    items.push(Item::new("Move HEAD…", Action::MoveHead(Some(self.sel))));
+                }
                 items.push(Item::new("Edit this patch in $EDITOR", Action::EditPatch).when(h));
                 items.push(Item::new("Drop this patch…", Action::AskDrop).when(h));
                 items.push(Item::new("Versions of this patch…", Action::Versions));
@@ -3849,6 +3931,12 @@ impl App {
                 self.focus = Focus::Diff;
             }
             Action::GoToNote => self.go_to_note(),
+            Action::MoveHead(at) => {
+                let to = at.map(|at| at + 1).or_else(|| self.head_here().and_then(|h| h.patches()));
+                self.mode = Mode::MovingHead {
+                    to: to.unwrap_or(self.patch_count()),
+                };
+            }
             Action::MovePatch => match self.by_hand() {
                 Some(why) => self.status = why,
                 None => {
@@ -5469,6 +5557,7 @@ impl App {
                 _ => "↑↓ choose · enter: do it · esc: close · ?: what it does".into(),
             },
             Mode::Moving { .. } => "↑↓ to place it · enter: put it there · esc: leave it where it was".into(),
+            Mode::MovingHead { .. } => "↑↓ to place HEAD · enter: move your checkout there · esc: leave it where it was".into(),
             Mode::Edit(e) if e.ed.ghosted() => format!("↑↓: read the last comment closed here · enter: a new line · {}", self.esc_does(e)),
             Mode::Edit(e) => format!("enter: a new line · {}", self.esc_does(e)),
             Mode::Help { .. } => "any key: back, and that key".into(),
@@ -5761,13 +5850,18 @@ impl App {
             .collect();
         // HEAD of the checkout stacked runs in: after the patches it has as
         // commits, under the header at the base or elsewhere.
+        let moving_head = matches!(self.mode, Mode::MovingHead { .. });
         let head = self.head_line();
         let mut entries: Vec<ListEntry> =
             order.iter().zip(lines).enumerate().map(|(at, (&i, its))| (Some((at, i)), its)).collect();
         if let Some((n, line)) = &head {
             entries.insert((*n).min(entries.len()), (None, vec![line.clone()]));
         }
-        let on_entry = entries.iter().position(|(e, _)| e.is_some_and(|(at, _)| at == on)).unwrap_or(0);
+        let on_entry = match moving_head {
+            true => entries.iter().position(|(e, _)| e.is_none()),
+            false => entries.iter().position(|(e, _)| e.is_some_and(|(at, _)| at == on)),
+        }
+        .unwrap_or(0);
         // The first shown: the one the cursor is on in sight, all its lines.
         let h = area.height as usize;
         let room = h.saturating_sub(1 + edit_h);
@@ -5782,12 +5876,13 @@ impl App {
                 break;
             }
             let Some((at, i)) = *entry else {
-                put(buf, area, 0, y, w, &fit(&its[0], w), color::meta());
+                let st = if moving_head { color::meta().add_modifier(Modifier::REVERSED) } else { color::meta() };
+                put(buf, area, 0, y, w, &fit(&its[0], w), st);
                 y += 1;
                 continue;
             };
             let mut st = Style::new();
-            if at == on && !self.on_stack {
+            if at == on && !self.on_stack && !moving_head {
                 st = if self.focus == Focus::List || moving {
                     st.add_modifier(Modifier::REVERSED)
                 } else {
@@ -5818,6 +5913,9 @@ impl App {
     fn head_line(&self) -> Option<(usize, String)> {
         use crate::head::At;
         let h = self.head_here()?;
+        if let Mode::MovingHead { to } = self.mode {
+            return Some((to, format!(" ↕ HEAD {}", h.on())));
+        }
         Some(match &h.at {
             At::Stack(on) if !on.above.is_empty() => (on.commits.len(), format!(" ▶ HEAD {} +{}", h.on(), on.above.len())),
             At::Stack(on) => (on.commits.len(), format!(" ▶ HEAD {}", h.on())),

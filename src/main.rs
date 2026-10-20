@@ -385,7 +385,15 @@ enum Cmd {
     /// Where HEAD of the checkout stacked runs in is, against stack NAME: at
     /// its base, at one of its patches (its commits since the base being the
     /// stack's patches, by their diff), or elsewhere.
-    Head { name: String },
+    Head {
+        name: String,
+        /// HEAD moved there: detached at the stack's base with its first N
+        /// patches applied (0, the base), the commits the checkout has that
+        /// are those patches taken as they are; the branch it was on as it
+        /// was. Not while files git tracks have changes.
+        #[arg(long, value_name = "N")]
+        to: Option<usize>,
+    },
     /// The lines of the database passed over, if any; and whether each
     /// stack applies.
     Check,
@@ -1592,7 +1600,8 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
                 overridden(&dir, "agent.tools", &to);
             }
         }
-        Cmd::Head { name } => {
+        Cmd::Head { name, to: Some(n) } => println!("{}", stacked::head::move_to(path, &name, &here(), n)?),
+        Cmd::Head { name, to: None } => {
             let db = Db::load(path)?;
             ops::base_of(db.stack(&name)?)?;
             let Some(h) = stacked::head::find(&db, &name, &here())? else {

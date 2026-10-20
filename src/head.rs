@@ -1,12 +1,15 @@
 //! Where HEAD is, in the checkout stacked runs in, against a stack: on its
 //! base with some of its patches as commits, a commit each, then maybe
 //! commits that are not the stack's; or elsewhere. A commit is a patch when
-//! its diff is, by `git patch-id`; its message may still differ.
+//! its diff is, by `git patch-id`; its message may still differ. And HEAD
+//! moved to a place on the stack: detached there, the commits the checkout
+//! has that are the stack's taken as they are, the rest applied; the branch
+//! it was on as it was.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use crate::db::{Db, Patch, Result, Stack};
+use crate::db::{Db, Patch, Result, Stack, err};
 use crate::git::{self, git, git_in};
 use crate::ops;
 
@@ -223,6 +226,71 @@ fn norm(m: &str) -> String {
     let start = lines.iter().position(|l| !l.is_empty()).unwrap_or(lines.len());
     let end = lines.iter().rposition(|l| !l.is_empty()).map_or(start, |e| e + 1);
     lines[start..end].join("\n")
+}
+
+/// The checkout at `here`, a checkout of stack `s`'s repository, made sure
+/// of before HEAD is moved or its commits made again: nothing of yours
+/// uncommitted to carry along, and no agent working there.
+fn ready(db: &Db, s: &Stack, here: &Path, nothing: &str) -> Result<(PathBuf, String)> {
+    let (repo, base) = ops::base_of(s)?;
+    let dir = git::checkout_of(&repo, here)?;
+    if git::unfinished_tracked(&dir)? {
+        return err(format!("{} has uncommitted changes: commit or stash them first; {nothing}", dir.display()));
+    }
+    let agent = db
+        .runs()
+        .into_iter()
+        .filter(|r| crate::ask::running(r))
+        .filter_map(crate::ask::info)
+        .any(|i| i.back.is_some() && i.worktree.as_deref().map(Path::new) == Some(dir.as_path()));
+    if agent {
+        return err(format!("the agent is working in {}, your checkout: {nothing} until its ask lands", dir.display()));
+    }
+    Ok((dir, base))
+}
+
+/// HEAD of the checkout at `here` moved to stack `name` with its first `n`
+/// patches applied: detached there, the commits the checkout has that are
+/// those patches, messages too, taken as they are, the rest applied as
+/// commits (unsigned); the branch it was on as it was. What came of it,
+/// said.
+pub fn move_to(path: &Path, name: &str, here: &Path, n: usize) -> Result<String> {
+    let db = Db::load(path)?;
+    let s = db.stack(name)?.clone();
+    if n > s.patches.len() {
+        return err(format!("{name} has {} patches", s.patches.len()));
+    }
+    let (dir, base) = ready(&db, &s, here, "HEAD did not move")?;
+    let patches: Vec<&Patch> = s.patches.iter().map(|id| db.patch(id)).collect();
+    let head = locate(&dir, &base, &patches)?;
+    // What it has of the stack, as the stack has it, up to the place.
+    let kept: Vec<String> = match &head.at {
+        At::Stack(on) => {
+            let same = on.messages.first().map_or(on.commits.len(), |(k, _)| *k);
+            on.commits[..same.min(n)].to_vec()
+        }
+        At::Elsewhere => vec![],
+    };
+    let start = match kept.last() {
+        Some(c) => c.clone(),
+        None => git::rev_parse(&dir, &base)?,
+    };
+    let there = place(name, n);
+    if kept.len() == n && start == head.commit {
+        return Ok(format!("HEAD is at {there} already, on {}", head.on()));
+    }
+    let back = git::head_of(&dir)?;
+    git(&dir, &["switch", "--quiet", "--detach", &start])?;
+    if n > kept.len()
+        && let Err(e) = git::am(&dir, &crate::mbox::format_mbox(&patches[kept.len()..n]))
+    {
+        let _ = git::back_to(&dir, &back);
+        return err(format!("{}; HEAD is back where it was", e.0));
+    }
+    Ok(match &head.branch {
+        Some(b) => format!("HEAD is at {there}, detached: {b} is as it was"),
+        None => format!("HEAD is at {there}, detached"),
+    })
 }
 
 #[cfg(test)]

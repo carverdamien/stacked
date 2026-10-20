@@ -996,6 +996,39 @@ fn head_is_said_against_the_stack() {
 }
 
 #[test]
+fn head_moves_along_the_stack_detached_its_branch_as_it_was() {
+    let e = env();
+    e.ok(&["import", "s", "base"]);
+    let sha = |rev: &str| git(&e.src, &["rev-parse", rev]).trim().to_string();
+    let top = sha("main");
+    // Down the stack: the checkout's own commit, taken as it is.
+    assert_eq!(e.ok(&["head", "s", "--to", "2"]), "HEAD is at patch 2 of s, detached: main is as it was\n");
+    assert_eq!((sha("HEAD"), sha("main")), (sha("main~1"), top.clone()));
+    // Up again: what HEAD has not, applied; the files as the stack leaves
+    // them.
+    assert_eq!(e.ok(&["head", "s", "--to", "3"]), "HEAD is at patch 3 of s, detached\n");
+    assert_eq!(sha("HEAD^{tree}"), sha("main^{tree}"));
+    assert!(e.ok(&["head", "s"]).ends_with("is at patch 3 of s\n"));
+    // To the base; and there again, nothing to do.
+    e.ok(&["head", "s", "--to", "0"]);
+    assert_eq!(sha("HEAD"), sha("base"));
+    assert_eq!(e.ok(&["head", "s", "--to", "0"]), format!("HEAD is at the base of s already, on {}\n", &sha("base")[..8]));
+    let (fine, _, err) = e.run(&["head", "s", "--to", "4"]);
+    assert!(!fine && err.contains("s has 3 patches"), "{err}");
+    // Not with changes of yours to carry along.
+    std::fs::write(e.src.join("a.txt"), "mine\n").unwrap();
+    let (fine, _, err) = e.run(&["head", "s", "--to", "1"]);
+    assert!(!fine && err.contains("has uncommitted changes: commit or stash them first; HEAD did not move"), "{err}");
+    assert_eq!(sha("HEAD"), sha("base"));
+    git(&e.src, &["checkout", "-q", "--", "a.txt"]);
+    // A commit whose message is not the patch's is not taken: the patch is.
+    git(&e.src, &["checkout", "-q", "--detach", "main~2"]);
+    git(&e.src, &["commit", "-q", "--amend", "-m", "Bug 1 - other words"]);
+    e.ok(&["head", "s", "--to", "1"]);
+    assert_eq!(git(&e.src, &["log", "-1", "--format=%s"]).trim(), "Bug 1 - change two");
+}
+
+#[test]
 fn several_asks_wait_their_turn() {
     let e = env();
     e.ok(&["import", "s", "base"]);

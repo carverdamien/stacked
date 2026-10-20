@@ -1352,6 +1352,51 @@ fn the_patches_pane_says_where_head_is_in_the_checkout() {
 }
 
 #[test]
+fn head_is_moved_along_the_stack_only_once_enter_leaves_the_mode() {
+    let (_tmp, db, src) = setup();
+    let mut app = open(&db).unwrap();
+    let rev = |rev: &str| {
+        let out = Command::new("git").args(["rev-parse", rev]).current_dir(&src).output().unwrap();
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    };
+    let row = |screen: &str, text: &str| at(screen, text).1;
+    // Not a checkout of the stack's repository: nothing to move.
+    app.refresh();
+    app.settle();
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    assert!(!items(&app).iter().any(|(l, _)| l == "Move HEAD…"), "{:?}", items(&app));
+    keys(&mut app, &[KeyCode::Esc]);
+    app.checkout = src.clone();
+    app.look_at_head();
+    app.settle();
+    let was = rev("HEAD");
+    // From patch 1's menu: HEAD shown under it, to place.
+    choose(&mut app, "Move HEAD…");
+    assert!(matches!(app.mode, Mode::MovingHead { to: 1 }), "{:?}", app.mode);
+    let screen = draw(&mut app);
+    assert_eq!(row(&screen, "↕ HEAD main"), row(&screen, "  1 Bug 1") + 1, "{screen}");
+    assert_eq!(app.hint(), "↑↓ to place HEAD · enter: move your checkout there · esc: leave it where it was");
+    // ↑↓ place it; the checkout does not change meanwhile, nor on Esc.
+    keys(&mut app, &[KeyCode::Up]);
+    assert_eq!(row(&draw(&mut app), "↕ HEAD main"), row(&screen, "≡ s") + 1);
+    keys(&mut app, &[KeyCode::Down, KeyCode::Down, KeyCode::Down]);
+    assert!(matches!(app.mode, Mode::MovingHead { to: 2 }), "{:?}", app.mode);
+    assert_eq!(rev("HEAD"), was);
+    keys(&mut app, &[KeyCode::Esc]);
+    app.settle();
+    assert!(matches!(app.mode, Mode::Normal));
+    assert_eq!(rev("HEAD"), was);
+    // Enter moves it there, once the mode is left: detached, main as it was.
+    choose(&mut app, "Move HEAD…");
+    keys(&mut app, &[KeyCode::Enter]);
+    app.settle();
+    assert_eq!(app.status, "HEAD is at patch 1 of s, detached: main is as it was");
+    assert_eq!((rev("HEAD"), rev("main")), (rev("main~1"), was));
+    let screen = draw(&mut app);
+    assert_eq!(row(&screen, &format!("▶ HEAD {}", &rev("HEAD")[..8])), row(&screen, "  1 Bug 1") + 1, "{screen}");
+}
+
+#[test]
 fn the_agent_s_reply_waits_for_review_and_enter_takes_it() {
     let (_tmp, db, _src) = setup();
     let mut app = open(&db).unwrap();
