@@ -249,20 +249,45 @@ impl Way {
 /// A comment sent and waiting: how, and the batch it goes in. Comments
 /// sent together go in one ask. A patch's comment may be sent to the whole
 /// stack (`stack`): the agent may then change any patch, as for the
-/// stack's own comments, not only its patch.
+/// stack's own comments, not only its patch; asked to answer only, it
+/// answers with the whole stack in view.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct Queued {
     pub way: Way,
     pub batch: String,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub stack: bool,
+    /// Batched, it waits for you to send the batch; ready, its turn.
+    #[serde(default, skip_serializing_if = "Stage::is_ready")]
+    pub stage: Stage,
 }
 
 impl Queued {
     /// How it is said to the user: `answer only`, `may change the whole
     /// stack`.
     pub fn said(&self) -> &'static str {
-        if self.stack { WHOLE } else { self.way.said() }
+        if self.stack && self.way == Way::Change { WHOLE } else { self.way.said() }
+    }
+
+    /// Batched: it waits for you to send the batch, not for its turn.
+    pub fn batched(&self) -> bool {
+        self.stage == Stage::Batch
+    }
+}
+
+/// Where a comment sent stands, as in self-review: batched, until you send
+/// the batch; or ready, to go as soon as nothing stands in its way.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum Stage {
+    Batch,
+    #[default]
+    Ready,
+}
+
+impl Stage {
+    fn is_ready(&self) -> bool {
+        *self == Stage::Ready
     }
 }
 

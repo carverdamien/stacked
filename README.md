@@ -55,6 +55,8 @@ stacked comments bug123            # every comment: short id, where, state, thre
 stacked comments bug123 --show closed    # the closed ones, as each was
 stacked send bug123 4f1c2a --wait  # the agent works on it; its answer lands in the thread
 stacked send bug123 --all --answer-only   # every comment that can be sent
+stacked send bug123 4f1c2a --later   # in the stack's batch, to go with the rest
+stacked send bug123 --batch --fan-out   # the batch: edits to one agent, answers an agent each
 stacked reply bug123 4f1c2a and keep the title
 stacked pull bug123                # reviewers' comments from Phabricator, held for your review
 stacked apply bug123 --branch bug123   # only now does the worktree change
@@ -253,7 +255,9 @@ as alt-← and alt-→ (alt-b and alt-f) do; a word is what is between blanks.
 On a Mac, ctrl-← and ctrl-→ switch desktops unless that is turned off in
 the keyboard settings, so use alt (option) there. Esc
 asks what to do with the comment: `Save it`, `Save it and ask agent`, `Throw it
-away`, `Keep writing`. The menu opens under the comment (above it when
+away`, `Keep writing`; above the ask, `Send it`, `[x] now  [ ] later`, picks
+when it asks (later, the comment waits in the stack's batch: Asking the
+agent, below). The menu opens under the comment (above it when
 there is no room under), and the comment stays where it was written, to
 read again before it is saved. How the agent is asked is the choice of `Save it and
 ask agent`, `[x] change  [ ] the whole stack  [ ] answer only  [ ] build and
@@ -436,6 +440,22 @@ ask agent`'s:
   What it found comes back in the reply and on each patch's title, saying which
   stack it tested.
 
+An ask goes now, or later, as in self-review's batch: above `Ask agent`
+(and `Save it and ask agent`), `Send it`, `[x] now  [ ] later`, picks when,
+kept for the stack, and Enter on it asks as the ask under it does, which
+then says so (`Ask agent later`). Asked later, a comment waits in the
+stack's batch, marked `◇` and said `batched (may change the code)`; nothing
+is started. Its menu has `Send it now (…)`, alone, as it was batched, and
+`Remove it from the batch`; written again, it stays in the batch, to go as
+it is then. The banner sends the batch (below), as you pick: its edits to a
+single agent, in one ask, of the whole stack when they are on more than one
+patch or one was batched so; its answers to a single agent too, in one ask
+with the whole stack in view, or fanned out, an agent each, all at once;
+each build and test on its own. On the command line, `stacked send NAME ID
+--later` batches (how, as `send` says it: `--answer-only` and the rest), and
+`stacked send NAME --batch` sends the batch, the answers an agent each with
+`--fan-out`.
+
 Where an agent works costs time and space: a worktree is a checkout of
 every file. So the stack has worktrees of its own, `.stacked/NAME/agent`
 for changes and `.stacked/NAME/answer-only-agent` for answers, beside
@@ -514,10 +534,11 @@ to what it is asked about); then `starting: claude -p … --permission-mode
 build and test). They stay
 at the top of its stream, as `$ git worktree add …`, in the stream, in
 `Runs…` and in `stacked transcript RUN`. Enter on a comment the agent is
-working on opens its stream in place; esc folds it. The comments pane marks each (`●` with the agent, `◌`
-ready, `◆` its reply waits for your review, `✓` replied, `✗` failed, `↑`
-moved), its header counts them (`4 comments · 1 with the agent · 1 to
-review · 2 to read`), and the top bar too (`agent ●2 · ready:1`).
+working on opens its stream in place; esc folds it. The comments pane marks each (`●` with the agent, `◇`
+batched, `◌` ready, `◆` its reply waits for your review, `✓` replied, `✗`
+failed, `↑` moved), its header counts them (`4 comments · 1 with the agent ·
+1 to review · 2 to read`), and the top bar too (`agent ●2 · batch:3 ·
+ready:1`).
 `Show…`, on either header, picks what both panes show, each with its
 count: all, to send, to review, to read (any, from an answer, from a change), in
 progress, failed or moved, gone (on a line the patch no longer has),
@@ -582,21 +603,30 @@ A reply that goes with a change of the stack is reviewed with that change.
 In the editor, a banner under the top bar says what waits on you on the
 stack, in a line: what waits for your review (`⟳ 2 landed asks wait for
 your review · the next: a change of patch 2, 1 reply, asked "…"`), what
-the agent works on (`the agent works on 1 ask`), the comments that wait
-their turn (`1 comment waits its turn`), and how many comments are open
-(`5 open comments`); it is there while any of it is. Landing writes nothing
+the asks batched (`3 batched asks`), what the agent works on (`the agent
+works on 1 ask`), the comments that wait their turn (`1 comment waits its
+turn`), and how many comments are open (`5 open comments`); it is there
+while any of it is. Landing writes nothing
 on the bottom line. Esc goes to the banner from wherever the cursor is in
 the panes, and ↑ from the stack's header goes there too; a click on it as
 well, but not the mouse going by. With the cursor on it, the banner opens,
 a line for each: on top, `⟳ Review …` for what landed, the first landed
-first; then every comment open on the stack, the most recently updated
-first, marked as the comments pane marks it (`●` with the agent, `◌`
-waiting its turn, `◆` its reply waiting for review, `✓` answered…), with
-where it is, how it starts, and where it stands (with the agent, the last
-line it wrote). ↑↓ pick one, and Enter reviews what landed, or goes to the
-comment; Space lists them too, to review or to go to; ↓ past the last line
-goes to the stack's header, and Esc goes back where the cursor was, the
-banner closed again. A comment you are done with, closed, leaves it.
+first; under it, while there is a batch, `◇ Send the batch… 2 edits, 1
+answer only`; then every comment open on the stack, the most recently
+updated first, marked as the comments pane marks it (`●` with the agent,
+`◇` batched, `◌` waiting its turn, `◆` its reply waiting for review, `✓`
+answered…), with where it is, how it starts, and where it stands (with the
+agent, the last line it wrote). ↑↓ pick one, and Enter reviews what landed,
+or goes to the comment; on the batch, it opens the banner's menu, all of
+it, which Space opens from any line: what landed, to review; the batch, to
+send (`Send 2 edits to a single agent`, `Send 1 answer only to  [x] a single
+agent  [ ] fan out`, `Send 1 build and test, each on its own`); every
+comment the agent can be asked about, in the order they were written, a
+box checked for those in the batch, which Enter checks (the comment goes in
+the batch as it was last asked, else as the stack's asks are) or unchecks
+(it is taken out); then the comments, to go to. ↓ past the last line goes
+to the stack's header, and Esc goes back where the cursor was, the banner
+closed again. A comment you are done with, closed, leaves it.
 
 A review lists the parts on the left, in three sections: the stack
 operations of the change (a line for each patch: `noop`, `add`, `modify`,

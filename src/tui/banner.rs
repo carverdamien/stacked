@@ -1,11 +1,12 @@
 //! The banner, under the top bar of the main screen: what waits on you on
 //! the stack. What landed and waits for your review (an ask's work, a
-//! pull's comments from Phabricator), and every comment open, with what the
-//! agent works on and what waits its turn: said in one line; while the
-//! cursor is on it, open, a line for each, what landed on top, then the
-//! comments, the most recently updated first, to review what landed or go
-//! to a comment. Esc goes to it from the panes, and from it back where the
-//! cursor was.
+//! pull's comments from Phabricator), the batch (the comments asked about
+//! later, to send together), and every comment open, with what the agent
+//! works on and what waits its turn: said in one line; while the cursor is
+//! on it, open, a line for each, what landed on top, the batch under it,
+//! then the comments, the most recently updated first, to review what
+//! landed, send the batch or go to a comment. Esc goes to it from the
+//! panes, and from it back where the cursor was.
 
 use super::reviewing::first_words;
 use super::*;
@@ -27,15 +28,21 @@ pub(super) fn landed_how(r: &crate::db::Run, room: usize) -> String {
 pub enum BannerLine {
     /// Landed, and waiting for your review: its run.
     Landed(String),
+    /// The batch: the comments asked about later, to send.
+    Batch,
     /// A comment open on the stack: (change, id).
     Comment(String, String),
 }
 
 impl App {
-    /// What the banner lists: what landed, the first landed first; then
-    /// every comment open on the stack, the most recently updated first.
+    /// What the banner lists: what landed, the first landed first; the
+    /// batch, if there is one; then every comment open on the stack, the
+    /// most recently updated first.
     pub fn banner_lines(&self) -> Vec<BannerLine> {
         let mut out: Vec<BannerLine> = self.queue().into_iter().map(BannerLine::Landed).collect();
+        if self.batched_count() > 0 {
+            out.push(BannerLine::Batch);
+        }
         let mut open: Vec<(usize, BannerLine)> = self
             .db
             .stack_notes(&self.stack)
@@ -51,15 +58,16 @@ impl App {
     }
 
     /// What the banner says in its line: how much landed work waits for
-    /// review, and which the next is; how much the agent works on; how many
-    /// comments wait their turn; how many are open. None when there is
-    /// none of it.
+    /// review, and which the next is; how many asks are batched; how much
+    /// the agent works on; how many comments wait their turn; how many are
+    /// open. None when there is none of it.
     pub(super) fn banner(&self) -> Option<String> {
         let lines = self.banner_lines();
         let landed = lines.iter().filter(|l| matches!(l, BannerLine::Landed(_))).count();
-        let open = lines.len() - landed;
+        let open = lines.iter().filter(|l| matches!(l, BannerLine::Comment(..))).count();
+        let batched = self.batched_count();
         let going = self.db.runs().into_iter().filter(|r| r.stack == self.stack && r.ask.is_some() && ask::busy(r)).count();
-        let ready = self.db.stack_notes(&self.stack).into_iter().filter(|n| n.queued.is_some()).count();
+        let ready = self.ready();
         let of = |n: usize, one: &str, many: &str| if n == 1 { format!("1 {one}") } else { format!("{n} {many}") };
         let mut said = Vec::new();
         if landed > 0 {
@@ -78,6 +86,9 @@ impl App {
             }
             said.push(head);
         }
+        if batched > 0 {
+            said.push(of(batched, "batched ask", "batched asks"));
+        }
         if going > 0 {
             said.push(format!("the agent works on {}", of(going, "ask", "asks")));
         }
@@ -91,29 +102,36 @@ impl App {
             return None;
         }
         // As its lines mark them, and the top bar the agents going (●).
-        let mark = match (landed, going, ready) {
-            (0, 0, 0) => "○",
-            (0, 0, _) => "◌",
-            (0, _, _) => "●",
+        let mark = match (landed, going, ready, batched) {
+            (0, 0, 0, 0) => "○",
+            (0, 0, 0, _) => "◇",
+            (0, 0, _, _) => "◌",
+            (0, _, _, _) => "●",
             _ => "⟳",
         };
         Some(format!(" {mark} {}", said.join(" · ")))
     }
 
-    /// The banner's menu, to pick from: each landed ask and each pull, to
-    /// review; then each comment open, the most recently updated first, to
-    /// go to.
+    /// The banner's menu, to pick from, all of it: each landed ask and each
+    /// pull, to review; the batch, to send; every comment the agent can be
+    /// asked about, checked if it is in the batch; then each comment open,
+    /// the most recently updated first, to go to.
     pub(super) fn banner_items(&self, items: &mut Vec<Item>) {
         for id in self.queue() {
             let Some((r, h)) = self.work(&id) else { continue };
             items.push(Item::new(format!("Review {}{}", h.said(), landed_how(r, 40)), Action::Review(id.clone(), None)));
         }
+        let batch = self.batch_items();
+        if !items.is_empty() && !batch.is_empty() {
+            items.push(Item::line());
+        }
+        items.extend(batch);
         let comments: Vec<(String, String)> = self
             .banner_lines()
             .into_iter()
             .filter_map(|l| match l {
                 BannerLine::Comment(change, id) => Some((change, id)),
-                BannerLine::Landed(_) => None,
+                _ => None,
             })
             .collect();
         if !items.is_empty() && !comments.is_empty() {
@@ -123,6 +141,79 @@ impl App {
             let Some(n) = self.db.note(&change, &id) else { continue };
             items.push(Item::new(format!("Go to {}", self.comment_said(n)), Action::GoToComment(change, id)));
         }
+    }
+
+    /// The batch's items: what it holds sent, each way (the edits to a
+    /// single agent; the answers to a single agent, or fanned out, an agent
+    /// each; each build and test on its own); then every comment the agent
+    /// can be asked about, checked if it is in the batch, as it is asked.
+    fn batch_items(&self) -> Vec<Item> {
+        let w = self.read_only().is_none();
+        let mut out = Vec::new();
+        let count = |way: Way| ask::batched(&self.db, &self.stack, way).len();
+        let (edits, answers, tests) = (count(Way::Change), count(Way::Answer), count(Way::Test));
+        if edits > 0 {
+            out.push(Item::new(format!("Send {edits} edit{} to a single agent", plural(edits)), Action::SendBatch(Way::Change, false)).when(w));
+        }
+        if answers > 0 {
+            let list = vec![
+                Choice::new("single", "a single agent", "one agent answers them all, in one ask", Some(Action::SendBatch(Way::Answer, false))),
+                Choice::new("fan", "fan out", "each goes to an agent of its own, all at once", Some(Action::SendBatch(Way::Answer, true))),
+            ];
+            let choices = Choices::new("answers", "to whom", list, self.db.choice(&self.stack, "answers"));
+            let label = format!("Send {answers} answer{} only to", plural(answers));
+            out.push(Item::new(label, Action::SendBatch(Way::Answer, false)).when(w).with(choices));
+        }
+        if tests > 0 {
+            let label = format!("Send {tests} build{} and test{}, each on its own", plural(tests), plural(tests));
+            out.push(Item::new(label, Action::SendBatch(Way::Test, true)).when(w));
+        }
+        let asks = self.asks_list();
+        if !out.is_empty() && !asks.is_empty() {
+            out.push(Item::line());
+        }
+        for n in asks {
+            let batched = n.queued.as_ref().filter(|q| q.batched());
+            let how = batched.map_or(String::new(), |q| format!(" · {}", q.said()));
+            let item = Item::new(format!("{}{how}", self.comment_said(n)), Action::Toggle(n.change.clone(), n.id.clone()));
+            out.push(item.when(w).checked(batched.is_some()));
+        }
+        out
+    }
+
+    /// Every comment of the stack the agent can be asked about now, or
+    /// batched, in the order they were written: the batch's list, which
+    /// checking one does not reorder.
+    fn asks_list(&self) -> Vec<&Note> {
+        let (busy, held) = (self.busy(), self.held_replies());
+        let mut out: Vec<(usize, &Note)> = self
+            .db
+            .stack_notes(&self.stack)
+            .into_iter()
+            .filter(|n| {
+                let key = (n.change.clone(), n.id.clone());
+                n.queued.as_ref().is_some_and(|q| q.batched()) || (ask::sendable(n) && !busy.contains_key(&key) && !held.contains_key(&key))
+            })
+            .map(|n| (self.db.note_history(&n.change, &n.id).first().map_or(0, |(rev, _)| *rev), n))
+            .collect();
+        out.sort_by_key(|(written, _)| *written);
+        out.into_iter().map(|(_, n)| n).collect()
+    }
+
+    /// What the batch holds, in a few words: `2 edits, 1 answer only`.
+    fn batch_said(&self) -> String {
+        let count = |way: Way| ask::batched(&self.db, &self.stack, way).len();
+        let mut parts = Vec::new();
+        for (n, one, many) in [
+            (count(Way::Change), "edit", "edits"),
+            (count(Way::Answer), "answer only", "answers only"),
+            (count(Way::Test), "build and test", "builds and tests"),
+        ] {
+            if n > 0 {
+                parts.push(format!("{n} {}", if n == 1 { one } else { many }));
+            }
+        }
+        parts.join(", ")
     }
 
     /// A comment in a line: where it is, and its first words.
@@ -139,6 +230,7 @@ impl App {
                 Some((r, h)) => format!("   ⟳ Review {}{}", h.said(), landed_how(r, 40)),
                 None => format!("   ⟳ Review {run}"),
             },
+            BannerLine::Batch => format!("   ◇ Send the batch… {}", self.batch_said()),
             BannerLine::Comment(change, id) => {
                 let Some(n) = self.db.note(change, id) else { return String::new() };
                 let (busy, held) = (self.busy(), self.held_replies());
@@ -167,8 +259,8 @@ impl App {
     }
 
     /// A key on the banner, open: ↑↓ another line, past the last the
-    /// stack's header; Enter reviews what landed, or goes to the comment;
-    /// Esc goes back where the cursor was.
+    /// stack's header; Enter reviews what landed, opens the menu on the
+    /// batch, or goes to the comment; Esc goes back where the cursor was.
     pub(super) fn banner_key(&mut self, k: KeyEvent) -> Effect {
         let lines = self.banner_lines();
         let last = lines.len().saturating_sub(1);
@@ -176,6 +268,14 @@ impl App {
         match k.code {
             KeyCode::Enter => match lines.get(self.banner_sel).cloned() {
                 Some(BannerLine::Landed(run)) => self.open_review(&run, None),
+                // The whole menu, on what sends the batch.
+                Some(BannerLine::Batch) => {
+                    let mut m = self.main_menu();
+                    if let Some(k) = m.items.iter().position(|i| matches!(i.action, Action::SendBatch(..))) {
+                        m.sel = k;
+                    }
+                    self.mode = Mode::Menu(m);
+                }
                 Some(BannerLine::Comment(change, id)) => {
                     self.on_banner = false;
                     self.go_to(&change, &id);

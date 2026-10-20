@@ -12,7 +12,10 @@
 //! way, as in self-review: one changing ask at a time on a stack, answer-only
 //! asks together, a build and test once no change is running, one at a time.
 //! `launch` starts what can go; it runs when a comment is sent and when an
-//! ask lands, so what waits goes on its own.
+//! ask lands, so what waits goes on its own. A comment may be batched
+//! instead, as in self-review too: it waits for you to send the batch, and
+//! then goes with the rest asked the same way, in one ask (the changes, and
+//! the answers unless they fan out, an ask each).
 //!
 //! A change works in a git worktree of the stack's own, `.stacked/NAME/agent`
 //! (`agent-2`… when it is busy, or holds what an agent left unfinished),
@@ -50,8 +53,8 @@ use serde_json::{Map, Value};
 use crate::claude::{allowed_tools, format_event, parse_claude_replies, parse_review_notes};
 use crate::config::Workspace;
 use crate::db::{
-    Db, Error, Moved, Note, Patch, Queued, Record, Result, Run, RunState, Stack, Way, err, now,
-    stack_change,
+    Db, Error, Moved, Note, Patch, Queued, Record, Result, Run, RunState, Stack, Stage, Way, err,
+    now, stack_change,
 };
 use crate::git;
 use crate::held::Held;
@@ -281,7 +284,7 @@ pub fn send(db_path: &Path, name: &str, notes: &[(String, String)], way: Way, wh
     let db = Db::load(db_path)?;
     let waiting = notes
         .iter()
-        .any(|(c, i)| db.note(c, i).is_some_and(|n| n.queued.is_some()));
+        .any(|(c, i)| db.note(c, i).and_then(|n| n.queued.as_ref()).is_some_and(|q| !q.batched()));
     Ok(if waiting {
         Some(waits_on(&db, name, way).unwrap_or_else(|| "its turn".into()))
     } else {
@@ -298,58 +301,134 @@ pub fn queue(db_path: &Path, name: &str, notes: &[(String, String)], way: Way, w
     if notes.is_empty() {
         return err("no comment to send");
     }
-    if whole && way != Way::Change {
-        return err("only a change is asked of the whole stack");
-    }
-    let batch = format!("b{}", crate::db::unique());
-    // Checked first with no lock held (it takes a moment on a big
-    // repository); under it, the check is remembered.
+    check_ahead(db_path, name);
+    Db::edit(db_path, |db| {
+        applies(db, name)?;
+        enqueue(db, notes, way, whole, Stage::Ready)
+    })
+}
+
+/// Whether stack `name` applies, checked with no lock held (it takes a
+/// moment on a big repository): under it, the check is remembered.
+fn check_ahead(db_path: &Path, name: &str) {
     if let Ok(db) = Db::load(db_path)
         && let Ok(s) = db.stack(name)
     {
         let _ = db.verify(s);
     }
+}
+
+/// Claude works on the stack as it applies: one that does not, or cannot
+/// be checked, cannot be sent anything.
+fn applies(db: &Db, name: &str) -> Result<()> {
+    let s = db.stack(name)?.clone();
+    db.verify(&s)
+        .map_err(|e| Error(format!("cannot send: {}", e.0.trim_end_matches("; nothing changed"))))
+}
+
+/// Under the lock: `notes` on the agent's queue, at `stage`, in `way`,
+/// together, in a batch of their own.
+fn enqueue(db: &mut Db, notes: &[(String, String)], way: Way, whole: bool, stage: Stage) -> Result<()> {
+    if notes.is_empty() {
+        return err("no comment to send");
+    }
+    if whole && way == Way::Test {
+        return err("a build and test is not asked of the whole stack");
+    }
+    let batch = format!("b{}", crate::db::unique());
+    let busy = with_agent(db);
+    let mut scope = None;
+    for (change, id) in notes {
+        let Some(n) = db.note(change, id).cloned() else {
+            return err("no such comment");
+        };
+        if busy.contains_key(&(change.clone(), id.clone())) {
+            return err("the agent is already working on it");
+        }
+        if crate::held::reply_waiting(db, change, id).is_some() {
+            return err("the agent's reply to it waits for your review: review it first");
+        }
+        if way == Way::Test && !can_test(db, &n) {
+            return err("only a comment on the stack or on a patch as a whole can be sent to build and test");
+        }
+        if way != Way::Answer && n.about.is_some() {
+            return err("a comment on the history is asked about to answer only: it changes nothing");
+        }
+        let reach = if whole { Scope::Stack } else { scope_of(&n) };
+        match &scope {
+            None => scope = Some(reach),
+            Some(s) if *s != reach => return err("comments sent together must be on one patch, or all on the stack"),
+            _ => {}
+        }
+        db.set_note(Note {
+            queued: Some(Queued {
+                way,
+                batch: batch.clone(),
+                stack: whole && !n.on_stack(),
+                stage,
+            }),
+            failed: None,
+            ..n
+        })?;
+    }
+    Ok(())
+}
+
+/// Puts `notes` of stack `name` in its batch, to be asked later in `way`
+/// (to the whole stack if `whole`): each waits there until you send the
+/// batch. Nothing is started.
+pub fn batch(db_path: &Path, name: &str, notes: &[(String, String)], way: Way, whole: bool) -> Result<()> {
+    if notes.is_empty() {
+        return err("no comment to batch");
+    }
     Db::edit(db_path, |db| {
-        // Claude works on the stack as it applies: one that does not, or
-        // cannot be checked, cannot be sent anything.
-        let s = db.stack(name)?.clone();
-        db.verify(&s)
-            .map_err(|e| Error(format!("cannot send: {}", e.0.trim_end_matches("; nothing changed"))))?;
-        let busy = with_agent(db);
-        let mut scope = None;
-        for (change, id) in notes {
-            let Some(n) = db.note(change, id).cloned() else {
-                return err("no such comment");
-            };
-            if busy.contains_key(&(change.clone(), id.clone())) {
-                return err("the agent is already working on it");
+        for at in notes {
+            // Sent with the stack's batch: one of its comments.
+            if !db.stack_notes(name).iter().any(|n| (&n.change, &n.id) == (&at.0, &at.1)) {
+                return err(format!("that comment is not on {name}"));
             }
-            if crate::held::reply_waiting(db, change, id).is_some() {
-                return err("the agent's reply to it waits for your review: review it first");
-            }
-            if way == Way::Test && !can_test(db, &n) {
-                return err("only a comment on the stack or on a patch as a whole can be sent to build and test");
-            }
-            if way != Way::Answer && n.about.is_some() {
-                return err("a comment on the history is asked about to answer only: it changes nothing");
-            }
-            let reach = if whole { Scope::Stack } else { scope_of(&n) };
-            match &scope {
-                None => scope = Some(reach),
-                Some(s) if *s != reach => return err("comments sent together must be on one patch, or all on the stack"),
-                _ => {}
-            }
-            db.set_note(Note {
-                queued: Some(Queued {
-                    way,
-                    batch: batch.clone(),
-                    stack: whole && !n.on_stack(),
-                }),
-                failed: None,
-                ..n
-            })?;
+            enqueue(db, std::slice::from_ref(at), way, whole, Stage::Batch)?;
         }
         Ok(())
+    })
+}
+
+/// Stack `name`'s batched comments asked in `way`, in the order of the
+/// stack's comments: each with whether it goes to the whole stack.
+pub fn batched(db: &Db, name: &str, way: Way) -> Vec<((String, String), bool)> {
+    db.stack_notes(name)
+        .into_iter()
+        .filter_map(|n| {
+            let q = n.queued.as_ref().filter(|q| q.batched() && q.way == way)?;
+            Some(((n.change.clone(), n.id.clone()), q.stack))
+        })
+        .collect()
+}
+
+/// Sends stack `name`'s batch of what is asked in `way`: its comments turn
+/// ready together, as one ask, or with `fan` (as builds and tests always
+/// do) each as an ask of its own. Together, comments from more than one
+/// place (the stack, or a patch) go to the whole stack, as do those
+/// batched so. `launch` starts them. How many were sent.
+pub fn release_batch(db_path: &Path, name: &str, way: Way, fan: bool) -> Result<usize> {
+    check_ahead(db_path, name);
+    Db::edit(db_path, |db| {
+        let all = batched(db, name, way);
+        if all.is_empty() {
+            return Ok(0);
+        }
+        applies(db, name)?;
+        if fan || way == Way::Test {
+            for (at, whole) in &all {
+                enqueue(db, std::slice::from_ref(at), way, *whole, Stage::Ready)?;
+            }
+        } else {
+            let places: HashSet<Scope> = all.iter().filter_map(|((c, i), _)| db.note(c, i)).map(scope_of).collect();
+            let whole = places.len() > 1 || all.iter().any(|(_, whole)| *whole);
+            let notes: Vec<(String, String)> = all.iter().map(|(at, _)| at.clone()).collect();
+            enqueue(db, &notes, way, whole, Stage::Ready)?;
+        }
+        Ok(all.len())
     })
 }
 
@@ -400,7 +479,7 @@ fn claim(db: &mut Db) -> Result<Vec<String>> {
     let mut batches: HashMap<String, (String, Way, Scope, Vec<Note>)> = HashMap::new();
     for s in db.stacks() {
         for n in db.stack_notes(&s.name) {
-            let Some(q) = &n.queued else { continue };
+            let Some(q) = n.queued.as_ref().filter(|q| !q.batched()) else { continue };
             let entry = batches.entry(q.batch.clone()).or_insert_with(|| {
                 order.push(q.batch.clone());
                 (s.name.clone(), q.way, asked_scope(n), Vec::new())

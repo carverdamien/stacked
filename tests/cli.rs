@@ -974,6 +974,45 @@ fn several_asks_wait_their_turn() {
 }
 
 #[test]
+fn comments_batched_wait_until_the_batch_is_sent() {
+    use stacked::ask::{Scope, info};
+    use stacked::db::Way;
+    let e = env();
+    e.ok(&["import", "s", "base"]);
+    let one = comment(&e, &["First."]);
+    let two = comment(&e, &["--patch", "2", "Why b?"]);
+    let three = comment(&e, &["--patch", "1", "Why 2?"]);
+    let claude = fake_claude(&e, "claude-batch.sh", "", r#"{"replies": {"c1": "Seen.", "c2": "Seen too."}}"#);
+    let env = [("STACKED_CLAUDE", claude.as_path())];
+    // Batched, they wait: nothing is started.
+    let (fine, out, err) = stacked_in(&e.src, &e.db, &["send", "s", &one, &two, "--later"], "", &env);
+    assert!(fine, "{err}");
+    assert_eq!(out, format!("{one}\tbatched (may change the code)\n{two}\tbatched (may change the code)\n"));
+    let (fine, out, err) = stacked_in(&e.src, &e.db, &["send", "s", &three, "--later", "--answer-only"], "", &env);
+    assert!(fine && out == format!("{three}\tbatched (answer only)\n"), "{out}{err}");
+    assert_eq!(e.ok(&["runs"]), "");
+    let shown = e.ok(&["comments", "s"]);
+    assert_eq!(shown.matches("batched (may change the code)").count(), 2, "{shown}");
+    assert!(shown.contains("batched (answer only)"), "{shown}");
+    // In progress, as self-review has them.
+    let waiting = e.ok(&["comments", "s", "--show", "in-progress"]);
+    assert_eq!(waiting.lines().filter(|l| !l.starts_with(' ')).count(), 3, "{waiting}");
+    // Sent: the changes together, to one agent, of the whole stack as they
+    // are on the stack and on a patch; the answer on its own.
+    let (fine, out, err) = stacked_in(&e.src, &e.db, &["send", "s", "--batch", "--wait", "--accept"], "", &env);
+    assert!(fine, "{out}{err}");
+    let db = Db::load(&e.db).unwrap();
+    let mut asks: Vec<(Way, bool, usize)> = db.runs().into_iter().filter_map(info).map(|i| (i.way, i.scope == Scope::Stack, i.notes.len())).collect();
+    asks.sort_by_key(|(w, ..)| *w == Way::Answer);
+    assert_eq!(asks, [(Way::Change, true, 2), (Way::Answer, false, 1)]);
+    let read = e.ok(&["comments", "s", "--show", "to-read"]);
+    assert_eq!(read.matches("agent: Seen.").count(), 2, "{read}");
+    // Nothing left to send.
+    let (fine, _, err) = e.run(&["send", "s", "--batch"]);
+    assert!(!fine && err.contains("the batch is empty"), "{err}");
+}
+
+#[test]
 fn the_agent_rebases_reviews_and_tests() {
     let e = env();
     // A commit on main for the stack to go onto.

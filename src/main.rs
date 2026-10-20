@@ -270,7 +270,8 @@ enum Cmd {
     /// Ask the agent about comments, by their short ids, or --all that can
     /// be sent. It may change the code where they are, unless told to
     /// answer only, or to build and test. It runs on its own: its answer
-    /// lands as a turn of each thread.
+    /// lands as a turn of each thread. With --later, they wait in the
+    /// stack's batch instead, until --batch sends it.
     Send {
         name: String,
         ids: Vec<String>,
@@ -292,6 +293,19 @@ enum Cmd {
         /// own comments, not only the patch they are on.
         #[arg(long, conflicts_with_all = ["answer_only", "build_and_test"])]
         whole_stack: bool,
+        /// Batched, not sent: they wait in the stack's batch until it is
+        /// sent, by --batch or from the editor's banner.
+        #[arg(long, conflicts_with_all = ["wait", "batch"])]
+        later: bool,
+        /// The stack's batch sent: its changes to one agent, in one ask (to
+        /// the whole stack when they are on more than one patch); its
+        /// answers to one agent too, unless --fan-out; each build and test
+        /// on its own.
+        #[arg(long, conflicts_with_all = ["ids", "all", "answer_only", "build_and_test", "whole_stack"])]
+        batch: bool,
+        /// With --batch, each answer to an agent of its own, all at once.
+        #[arg(long, requires = "batch")]
+        fan_out: bool,
         /// Wait for them to be answered, and print the threads.
         #[arg(long)]
         wait: bool,
@@ -1141,11 +1155,13 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
                 if again == n.text {
                     return Ok(None);
                 }
-                let off = n.queued.is_some().then(|| short_id(&n.change, &n.id));
+                // Off the agent's queue, until it is sent again; in the
+                // batch, it stays there, to go as it is now.
+                let off = n.queued.as_ref().is_some_and(|q| !q.batched()).then(|| short_id(&n.change, &n.id));
                 db.set_note(Note {
                     text: again,
                     failed: None,
-                    queued: None,
+                    queued: n.queued.clone().filter(|q| q.batched()),
                     ..n
                 })?;
                 Ok(off)
@@ -1154,7 +1170,7 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
                 println!("{short}\tedited: off the agent's queue, until it is sent again");
             }
         }
-        Cmd::Send { name, ids, all, patch, answer_only, build_and_test, whole_stack, wait, accept } => {
+        Cmd::Send { name, ids, all, patch, answer_only, build_and_test, whole_stack, later, batch, fan_out, wait, accept } => {
             let way = match (answer_only, build_and_test) {
                 (_, true) => Way::Test,
                 (true, _) => Way::Answer,
@@ -1163,7 +1179,10 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
             let db = Db::load(path)?;
             let since = db.records.len();
             let busy = ask::with_agent(&db);
-            let picked: Vec<Note> = if all {
+            let picked: Vec<Note> = if batch {
+                db.stack(&name)?;
+                db.stack_notes(&name).into_iter().filter(|n| n.queued.as_ref().is_some_and(|q| q.batched())).cloned().collect()
+            } else if all {
                 comments_of(&db, &name, patch.as_deref())?
                     .into_iter()
                     .map(|(n, _)| n)
@@ -1177,7 +1196,41 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
                 ids.iter().map(|id| db.find_note(&name, id).cloned()).collect::<Result<_>>()?
             };
             if picked.is_empty() {
-                return err("no comment to send");
+                return err(if batch { "the batch is empty: `send --later` puts comments in it" } else { "no comment to send" });
+            }
+            let ats: Vec<(String, String)> = picked.iter().map(|n| (n.change.clone(), n.id.clone())).collect();
+            if later {
+                ask::batch(path, &name, &ats, way, whole_stack)?;
+                let said = if whole_stack { stacked::db::WHOLE } else { way.said() };
+                for (c, i) in &ats {
+                    println!("{}\tbatched ({said})", short_id(c, i));
+                }
+                return Ok(());
+            }
+            if batch {
+                for way in [Way::Change, Way::Answer, Way::Test] {
+                    let sent = ask::batched(&db, &name, way);
+                    if ask::release_batch(path, &name, way, fan_out)? == 0 {
+                        continue;
+                    }
+                    ask::launch(path)?;
+                    let db = Db::load(path)?;
+                    let busy = ask::with_agent(&db);
+                    for ((c, i), _) in &sent {
+                        let Some(n) = db.note(c, i) else { continue };
+                        match (&n.queued, busy.get(&(c.clone(), i.clone()))) {
+                            (Some(q), _) => {
+                                let w = ask::waits_on(&db, &name, q.way).unwrap_or_else(|| "its turn".into());
+                                println!("{}\tready ({}), it goes {w}", short_id(c, i), q.said());
+                            }
+                            (None, Some((way, run))) => {
+                                let whole = *way == Way::Change && !n.on_stack() && ask::run_scope(&db, run) == Some(ask::Scope::Stack);
+                                println!("{}\tsent ({})", short_id(c, i), if whole { stacked::db::WHOLE } else { way.said() });
+                            }
+                            (None, None) => println!("{}\tsent ({})", short_id(c, i), way.said()),
+                        }
+                    }
+                }
             }
             // Comments go together only from one place: the stack, or one
             // patch; to the whole stack, all together.
@@ -1191,9 +1244,9 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
                 }
             }
             let said = if whole_stack { stacked::db::WHOLE } else { way.said() };
-            for (_, batch) in &batches {
-                let waits = ask::send(path, &name, batch, way, whole_stack)?;
-                for (c, i) in batch {
+            for (_, these) in batches.iter().filter(|_| !batch) {
+                let waits = ask::send(path, &name, these, way, whole_stack)?;
+                for (c, i) in these {
                     match &waits {
                         None => println!("{}\tsent ({said})", short_id(c, i)),
                         Some(w) => println!("{}\tready ({said}), it goes {w}", short_id(c, i)),
@@ -1201,7 +1254,7 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
                 }
             }
             if wait {
-                let sent: Vec<(String, String)> = picked.iter().map(|n| (n.change.clone(), n.id.clone())).collect();
+                let sent = ats;
                 // The runs asking about what was sent.
                 let ours = |r: &stacked::db::Run| {
                     ask::info(r).is_some_and(|i| i.notes.iter().any(|sh| sent.contains(&(sh.change.clone(), sh.id.clone()))))
@@ -1229,7 +1282,9 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
                     let reviewing = stacked::held::change_waiting(&db, &name).is_some();
                     let going = sent.iter().any(|k| {
                         busy.contains_key(k)
-                            || db.note(&k.0, &k.1).is_some_and(|n| n.queued.as_ref().is_some_and(|q| !(reviewing && q.way == Way::Change)))
+                            || db
+                                .note(&k.0, &k.1)
+                                .is_some_and(|n| n.queued.as_ref().is_some_and(|q| !(q.batched() || reviewing && q.way == Way::Change)))
                     });
                     // Accepted as soon as landed: what waited on its review
                     // goes.

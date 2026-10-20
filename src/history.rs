@@ -393,11 +393,14 @@ pub fn note_change(before: Option<&Note>, n: &Note) -> String {
     if n.change != b.change || n.id != b.id {
         return "moved".into();
     }
-    if n.queued.is_some() && b.queued.is_none() {
-        return format!("sent to the agent ({})", n.queued.as_ref().unwrap().said());
-    }
-    if n.queued.is_none() && b.queued.is_some() && n.text == b.text {
-        return "taken by the agent".into();
+    match (&n.queued, &b.queued) {
+        (Some(q), was) if q.batched() && was.as_ref().is_none_or(|w| !w.batched()) => return format!("batched ({})", q.said()),
+        (Some(q), was) if !q.batched() && was.as_ref().is_none_or(|w| w.batched()) => {
+            return format!("sent to the agent ({})", q.said());
+        }
+        (None, Some(was)) if was.batched() && n.text == b.text => return "taken out of the batch".into(),
+        (None, Some(_)) if n.text == b.text => return "taken by the agent".into(),
+        _ => {}
     }
     if n.failed.is_some() && b.failed.is_none() {
         return "ask failed".into();

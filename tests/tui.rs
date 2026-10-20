@@ -710,8 +710,10 @@ fn comments_are_written_where_they_will_show() {
     let all: Vec<String> = items(&app).into_iter().map(|(l, _)| l).collect();
     assert_eq!(
         all,
-        ["Save it", "Save it and ask agent", "", "Throw it away", "Keep writing"]
+        ["Save it", "Send it", "Save it and ask agent", "", "Throw it away", "Keep writing"]
     );
+    // When, a choice of the row above the ask: now, or later, in the batch.
+    assert_eq!(choices_named(&app, "Send it"), ["now", "later"]);
     // How it is asked, a choice of its item; a line's comment, of a patch,
     // may be asked of the whole stack.
     assert_eq!(choices_named(&app, "Save it and ask agent"), ["change", "the whole stack", "answer only"]);
@@ -955,7 +957,7 @@ fn what_you_said_last_may_be_written_again() {
     key(&mut app, KeyCode::Backspace);
     keys(&mut app, &[KeyCode::Esc]);
     let labels: Vec<String> = items(&app).into_iter().map(|(l, _)| l).collect();
-    assert_eq!(labels, ["Ask agent", "", "Leave it as it is", "Keep writing"]);
+    assert_eq!(labels, ["Send it", "Ask agent", "", "Leave it as it is", "Keep writing"]);
     assert_eq!(choices_named(&app, "Ask agent"), ["change", "the whole stack", "answer only"]);
     assert_eq!(app.help()[0], "Press Enter to ask the agent about the comment as it is (may change the code).");
     choose(&mut app, "Leave it as it is");
@@ -1006,6 +1008,7 @@ fn what_you_said_last_may_be_written_again() {
                     way: stacked::db::Way::Answer,
                     batch: "b-waiting".into(),
                     stack: false,
+                    stage: stacked::db::Stage::Ready,
                 }),
                 ..n
             })
@@ -1146,7 +1149,7 @@ fn esc_asks_what_to_do_with_a_comment_unless_nothing_would_be_done() {
     keys(&mut app, &[KeyCode::Enter]);
     assert!(matches!(&app.mode, Mode::Edit(e) if e.ed.text() == "louder"), "{:?}", app.mode);
     keys(&mut app, &[KeyCode::Esc]);
-    assert_eq!(items(&app)[0], ("Ask agent".to_string(), true));
+    assert_eq!(items(&app)[1], ("Ask agent".to_string(), true));
     let before = notes_of(&db, "s", 0).remove(0).text;
     choose_as(&mut app, "Ask agent", "answer only");
     assert_eq!(notes_of(&db, "s", 0).remove(0).text, before, "nothing written: asked as it is");
@@ -1712,7 +1715,7 @@ fn a_comment_on_a_patch_may_be_sent_to_the_whole_stack() {
     keys(&mut app, &[KeyCode::Esc]);
     // Written on a patch, it may be saved and sent past its patch.
     let all: Vec<String> = items(&app).into_iter().map(|(l, _)| l).collect();
-    assert_eq!(all[1], "Save it and ask agent", "{all:?}");
+    assert_eq!(all[2], "Save it and ask agent", "{all:?}");
     assert_eq!(choices_named(&app, "Save it and ask agent")[..2], ["change", "the whole stack"]);
     choose(&mut app, "Save it");
     // Its menu has it too, beside asking about its patch alone.
@@ -2157,7 +2160,7 @@ fn the_agent_is_asked_about_the_history_to_answer_only() {
     assert!(screen.lines().nth(at + 1).unwrap().contains(&format!("a question on @{rev}")), "under it:\n{screen}");
     typed(&mut app, "why drop it?");
     keys(&mut app, &[KeyCode::Esc]);
-    assert_eq!(items(&app)[0].0, "Save it and ask agent, answer only");
+    assert_eq!(items(&app)[1].0, "Save it and ask agent, answer only");
     assert!(!items(&app).iter().any(|(l, _)| l == "Save it and ask agent"), "it changes nothing");
     choose(&mut app, "Save it and ask agent, answer only");
     assert_eq!(app.screen, Screen::History);
@@ -2836,6 +2839,278 @@ fn the_top_bar_says_what_is_left_to_review_and_when_it_is_done() {
     assert!(bar.ends_with("   nothing left to review "), "{bar}");
 }
 
+/// Goes to the open menu's item `label`, and picks its choice drawn as
+/// `pick` (or starting so), with →: the item is not done.
+fn pick(app: &mut App, label: &str, pick: &str) {
+    let all = items(app);
+    let want = all.iter().position(|(l, _)| l.starts_with(label)).unwrap_or_else(|| panic!("no {label:?} in {all:?}"));
+    for _ in 0..all.len() * 2 {
+        match &app.mode {
+            Mode::Menu(m) if m.sel == want => break,
+            _ => {
+                key(app, KeyCode::Down);
+            }
+        }
+    }
+    for _ in 0..choices_of(app, want).len() {
+        let shown = match &app.mode {
+            Mode::Menu(m) => m.items[want].choices.as_ref().map(|c| c.list[c.picked].shown.clone()),
+            _ => None,
+        };
+        if shown.is_some_and(|s| s.starts_with(pick)) {
+            return;
+        }
+        key(app, KeyCode::Right);
+    }
+    panic!("no {pick:?} among {label:?}'s choices {:?}", choices_of(app, want));
+}
+
+/// The open menu's items as drawn, a checked box before the label of those
+/// that have one.
+fn drawn_items(app: &App) -> Vec<String> {
+    match &app.mode {
+        Mode::Menu(m) => m
+            .items
+            .iter()
+            .map(|i| match i.check {
+                Some(on) => format!("{} {}", if on { "[x]" } else { "[ ]" }, i.label),
+                None => i.label.clone(),
+            })
+            .collect(),
+        _ => vec![],
+    }
+}
+
+/// Stack `s`'s batched comments: each one's first line, and how it is to be
+/// asked.
+fn batched(db: &Path) -> Vec<(String, stacked::db::Way, bool)> {
+    let d = Db::load(db).unwrap();
+    d.stack_notes("s")
+        .into_iter()
+        .filter_map(|n| {
+            let q = n.queued.as_ref().filter(|q| q.batched())?;
+            Some((n.text.lines().next().unwrap_or("").to_string(), q.way, q.stack))
+        })
+        .collect()
+}
+
+#[test]
+fn a_comment_asked_later_waits_in_the_batch() {
+    use stacked::db::Way;
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Enter]);
+    typed(&mut app, "why so loud?");
+    keys(&mut app, &[KeyCode::Esc]);
+    // Later, picked on the row above the ask: the ask says so.
+    pick(&mut app, "Send it", "later");
+    let all: Vec<String> = items(&app).into_iter().map(|(l, _)| l).collect();
+    assert_eq!(all, ["Save it", "Send it", "Save it and ask agent later", "", "Throw it away", "Keep writing"]);
+    assert_eq!(
+        app.help()[0],
+        "Press Enter to save the comment and ask the agent (may change the code), later: it waits in the batch, which the banner sends."
+    );
+    choose_as(&mut app, "Save it and ask agent later", "answer only");
+    assert_eq!(batched(&db), [("why so loud?".to_string(), Way::Answer, false)]);
+    assert_eq!(app.status, "batched (answer only): 1 ask in the batch, which the banner sends");
+    // Nothing is started: it waits for the batch to be sent.
+    assert!(Db::load(&db).unwrap().runs().is_empty());
+    // Kept for the stack: the next is asked later too, Enter on the row
+    // above the ask asking as the ask does.
+    down_to(&mut app, "+LINE 39");
+    keys(&mut app, &[KeyCode::Enter]);
+    typed(&mut app, "and this?");
+    keys(&mut app, &[KeyCode::Esc]);
+    assert!(items(&app).iter().any(|(l, _)| l == "Save it and ask agent later"), "{:?}", items(&app));
+    pick(&mut app, "Save it and ask agent later", "change");
+    choose(&mut app, "Send it");
+    assert_eq!(batched(&db).len(), 2, "{:?}", batched(&db));
+    assert!(batched(&db).contains(&("and this?".to_string(), Way::Change, false)));
+    // Marked, said, and counted on the top bar.
+    let screen = draw(&mut app);
+    assert!(screen.lines().next().unwrap().contains(" · batch:2"), "{screen}");
+    assert!(screen.contains("batched (may change the code)"), "{screen}");
+    assert!(screen.contains("◇ you · a.txt: LINE 39"), "{screen}");
+    // Its menu: sent now, alone, or taken out of the batch.
+    keys(&mut app, &[KeyCode::Down]);
+    assert!(app.rows[app.cursor].head);
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    let all: Vec<String> = items(&app).into_iter().map(|(l, _)| l).collect();
+    assert!(all.contains(&"Send it now (may change the code)".to_string()) && all.contains(&"Remove it from the batch".to_string()), "{all:?}");
+    assert!(!all.iter().any(|l| l.starts_with("Ask agent")), "{all:?}");
+    choose(&mut app, "Remove it from the batch");
+    assert_eq!(app.status, "taken out of the batch: it is not sent");
+    assert_eq!(batched(&db), [("why so loud?".to_string(), Way::Answer, false)]);
+    // Asked now, as it may be once more: ready, or with the agent.
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    pick(&mut app, "Send it", "now");
+    assert!(items(&app).iter().any(|(l, _)| l == "Ask agent"), "{:?}", items(&app));
+    key(&mut app, KeyCode::Esc);
+    // Written again, a batched comment stays in the batch, as it is now.
+    keys(&mut app, &[KeyCode::Home]);
+    down_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Down]);
+    assert!(app.rows[app.cursor].head);
+    choose_as(&mut app, "Edit your comment", "here");
+    typed(&mut app, " Really?");
+    keys(&mut app, &[KeyCode::Esc]);
+    choose(&mut app, "Save it");
+    assert_eq!(batched(&db), [("why so loud? Really?".to_string(), Way::Answer, false)]);
+    // Sent now, on its own: out of the batch.
+    fake_claude();
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    choose(&mut app, "Send it now (answer only)");
+    assert!(app.status.contains("asked the agent about 1 comment (answer only)"), "{}", app.status);
+    assert!(batched(&db).is_empty());
+    assert!(!draw(&mut app).lines().next().unwrap().contains("batch:"));
+}
+
+/// What each ask of stack `s` was started with: how, where, and how many
+/// comments; once `n` are.
+fn asks_made(db: &Path, n: usize) -> Vec<(stacked::db::Way, stacked::ask::Scope, usize)> {
+    for _ in 0..300 {
+        let d = Db::load(db).unwrap();
+        let all: Vec<_> = d.runs().into_iter().filter_map(stacked::ask::info).map(|i| (i.way, i.scope, i.notes.len())).collect();
+        if all.len() >= n {
+            return all;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    panic!("not {n} asks made");
+}
+
+#[test]
+fn the_banner_sends_the_batch_its_edits_to_one_agent_its_answers_to_one_or_each_its_own() {
+    use stacked::ask::Scope;
+    use stacked::db::Way;
+    let (_tmp, db, _src) = setup();
+    fake_claude();
+    let mut app = open(&db).unwrap();
+    let later = |app: &mut App, line: &str, text: &str, how: &str| {
+        keys(app, &[KeyCode::Home]);
+        down_to(app, line);
+        keys(app, &[KeyCode::Enter]);
+        typed(app, text);
+        keys(app, &[KeyCode::Esc]);
+        pick(app, "Send it", "later");
+        choose_as(app, "Save it and ask agent later", how);
+    };
+    // Batched: an edit on each patch, two questions on the first; and one
+    // not asked yet.
+    keys(&mut app, &[KeyCode::Right]);
+    later(&mut app, "+TWO", "shout less", "change");
+    later(&mut app, "-two", "why so loud?", "answer only");
+    later(&mut app, "+LINE 39", "and here?", "answer only");
+    keys(&mut app, &[KeyCode::Home]);
+    down_to(&mut app, "-line 39");
+    keys(&mut app, &[KeyCode::Enter]);
+    save(&mut app, "hmm");
+    keys(&mut app, &[KeyCode::Left, KeyCode::Down, KeyCode::Right]);
+    later(&mut app, "+bee", "a bee?", "change");
+    // The banner says it, and lists it under what landed.
+    let screen = draw(&mut app);
+    assert!(screen.lines().nth(1).unwrap().starts_with(" ◇ 4 batched asks · 5 open comments"), "{screen}");
+    keys(&mut app, &[KeyCode::Esc]);
+    assert!(app.on_banner && app.banner_sel == 0);
+    let screen = draw(&mut app);
+    assert!(screen.lines().nth(2).unwrap().starts_with("   ◇ Send the batch… 2 edits, 2 answers only"), "{screen}");
+    assert!(app.hint().contains("enter: pick what to send"), "{}", app.hint());
+    // Enter on it: the whole menu, on what sends the edits; then every ask,
+    // checked if batched, in the order they were written.
+    keys(&mut app, &[KeyCode::Enter]);
+    let all = drawn_items(&app);
+    assert_eq!(
+        all[..9],
+        [
+            "Send 2 edits to a single agent",
+            "Send 2 answers only to",
+            "",
+            "[x] patch 1 · a.txt: TWO · \"shout less\" · may change the code",
+            "[x] patch 1 · a.txt: two · \"why so loud?\" · answer only",
+            "[x] patch 1 · a.txt: LINE 39 · \"and here?\" · answer only",
+            "[ ] patch 1 · a.txt: line 39 · \"hmm\"",
+            "[x] patch 2 · b.txt: bee · \"a bee?\" · may change the code",
+            "",
+        ],
+        "{all:?}"
+    );
+    assert!(all[9..14].iter().all(|l| l.starts_with("Go to ")) && all[14].is_empty(), "{all:?}");
+    assert!(matches!(&app.mode, Mode::Menu(m) if m.sel == 0));
+    assert_eq!(choices_named(&app, "Send 2 answers only to"), ["a single agent", "fan out"]);
+    assert_eq!(app.hint(), "↑↓ choose · enter: do it · esc: close · ?: what it does");
+    // Unchecked, out of the batch; checked again, back as it was. The menu
+    // stays, on it.
+    keys(&mut app, &[KeyCode::Down, KeyCode::Down, KeyCode::Down]);
+    assert_eq!(app.hint(), "↑↓ choose · enter: check or uncheck it · esc: close · ?: what it does");
+    keys(&mut app, &[KeyCode::Enter]);
+    let all = drawn_items(&app);
+    assert_eq!(all[1], "Send 1 answer only to", "{all:?}");
+    assert_eq!(all[4], "[ ] patch 1 · a.txt: two · \"why so loud?\"", "{all:?}");
+    assert!(matches!(&app.mode, Mode::Menu(m) if m.sel == 4));
+    keys(&mut app, &[KeyCode::Enter]);
+    assert_eq!(drawn_items(&app)[4], "[x] patch 1 · a.txt: two · \"why so loud?\" · answer only");
+    // Checked, one not asked yet goes in as the stack's asks are made.
+    keys(&mut app, &[KeyCode::Down, KeyCode::Down]);
+    keys(&mut app, &[KeyCode::Enter]);
+    assert_eq!(drawn_items(&app)[6], "[x] patch 1 · a.txt: line 39 · \"hmm\" · may change the code");
+    keys(&mut app, &[KeyCode::Enter]);
+    // The edits to a single agent: one ask, of the whole stack, as they are
+    // on two patches.
+    choose(&mut app, "Send 2 edits to a single agent");
+    assert_eq!(app.status, "sent the batch (may change the whole stack): 2 comments to a single agent");
+    assert_eq!(asks_made(&db, 1), [(Way::Change, Scope::Stack, 2)]);
+    assert_eq!(batched(&db).len(), 2, "the answers wait in the batch");
+    // The answers fanned out, from the banner still: an ask each.
+    assert!(app.on_banner && app.mode == Mode::Normal);
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    pick(&mut app, "Send 2 answers only to", "fan out");
+    keys(&mut app, &[KeyCode::Enter]);
+    assert!(app.status.starts_with("sent the batch (answer only): 2 questions, an agent each"), "{}", app.status);
+    assert!(batched(&db).is_empty());
+    let mut all = asks_made(&db, 3);
+    all.sort_by_key(|(w, _, n)| (*w == Way::Change, *n));
+    let one = (Way::Answer, Scope::Patch(notes_of(&db, "s", 0)[0].change.clone()), 1);
+    assert_eq!(all[..2], [one.clone(), one]);
+}
+
+#[test]
+fn with_work_landed_and_a_batch_the_banner_s_menu_has_all_of_it() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "-two");
+    keys(&mut app, &[KeyCode::Enter]);
+    save(&mut app, "why so loud?");
+    down_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Enter]);
+    typed(&mut app, "shout less");
+    keys(&mut app, &[KeyCode::Esc]);
+    pick(&mut app, "Send it", "later");
+    choose_as(&mut app, "Save it and ask agent later", "change");
+    // The agent's answer to the first, landed.
+    let n = notes_of(&db, "s", 0).into_iter().find(|n| n.text == "why so loud?").unwrap();
+    held(&db, "run-answer", &n.change, &n.id, "It is a shout.", false);
+    app.refresh();
+    // On the banner: what landed on top, the batch under it.
+    keys(&mut app, &[KeyCode::Esc]);
+    let screen = draw(&mut app);
+    let lines: Vec<&str> = screen.lines().collect();
+    assert!(lines[1].starts_with(" ⟳ 1 landed ask waits for your review") && lines[1].contains(" · 1 batched ask · "), "{screen}");
+    assert!(lines[2].starts_with("   ⟳ Review 1 reply") && lines[3].starts_with("   ◇ Send the batch… 1 edit"), "{screen}");
+    // Enter on the batch, or Space anywhere: the whole menu, what landed and
+    // the batch.
+    keys(&mut app, &[KeyCode::Down, KeyCode::Enter]);
+    let all = drawn_items(&app);
+    assert!(all[0].starts_with("Review 1 reply"), "{all:?}");
+    assert_eq!(all[1..5], ["", "Send 1 edit to a single agent", "", "[x] patch 1 · a.txt: TWO · \"shout less\" · may change the code"], "{all:?}");
+    assert!(matches!(&app.mode, Mode::Menu(m) if m.sel == 2), "on what sends the batch");
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Up, KeyCode::Char(' ')]);
+    assert_eq!(drawn_items(&app), all);
+    assert!(matches!(&app.mode, Mode::Menu(m) if m.sel == 0));
+}
+
 #[test]
 fn the_banner_tracks_the_open_comments_and_esc_goes_there_and_back() {
     let (_tmp, db, _src) = setup();
@@ -2863,7 +3138,12 @@ fn the_banner_tracks_the_open_comments_and_esc_goes_there_and_back() {
     Db::edit(&db, |d| {
         let n = d.note(&this.change, &this.id).cloned().unwrap();
         d.set_note(Note {
-            queued: Some(stacked::db::Queued { way: stacked::db::Way::Change, batch: "b-waiting".into(), stack: false }),
+            queued: Some(stacked::db::Queued {
+                way: stacked::db::Way::Change,
+                batch: "b-waiting".into(),
+                stack: false,
+                stage: stacked::db::Stage::Ready,
+            }),
             ..n
         })
     })

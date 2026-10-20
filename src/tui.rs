@@ -431,6 +431,11 @@ pub struct Item {
     /// Its choices, as radio buttons, one of them picked: ← → pick
     /// another, and Enter does the item with it.
     pub choices: Option<Choices>,
+    /// Its label when the agent is asked now, and when later: an ask,
+    /// under the row that picks when.
+    pub labels: Option<(String, String)>,
+    /// A box before its label, checked or not: Enter checks or unchecks it.
+    pub check: Option<bool>,
 }
 
 /// An item's choices, drawn as radio buttons after its label, `[x]` on the
@@ -540,6 +545,19 @@ pub enum Action {
     SendWhole,
     SendAll(Way),
     Unsend,
+    /// The row above an ask, picking when it asks: now, or later, in the
+    /// batch. Enter on it does the ask.
+    When,
+    /// A batched comment asked now, as it was batched; or taken out of the
+    /// batch.
+    SendNow,
+    Unbatch,
+    /// The batch sent: what is asked in way `0`, together, in one ask; or,
+    /// `1`, each in an ask of its own.
+    SendBatch(Way, bool),
+    /// Comment (change, id) put in the batch, or taken out, from the
+    /// banner's menu.
+    Toggle(String, String),
     OpenStream,
     AskStop(String),
     Stop(String),
@@ -663,6 +681,18 @@ fn about(action: &Action) -> String {
         Action::SendAll(Way::Answer) => "ask the agent about every comment listed, to answer only".into(),
         Action::SendAll(Way::Test) => "ask the agent to build and test, for every comment listed".into(),
         Action::Unsend => "take it back from the agent's queue".into(),
+        Action::When => {
+            "pick when the agent is asked: now, or later, the comment waiting in the batch, which the banner sends with the rest; enter asks".into()
+        }
+        Action::SendNow => "ask the agent about it now, as it was batched, without waiting for the rest of the batch".into(),
+        Action::Unbatch => "take it out of the batch: it is not sent".into(),
+        Action::SendBatch(Way::Change, _) => {
+            "send the batched edits to a single agent, in one ask: from more than one patch, it may change the whole stack".into()
+        }
+        Action::SendBatch(Way::Answer, false) => "send the batched questions to a single agent, in one ask, to answer only".into(),
+        Action::SendBatch(Way::Answer, true) => "send each batched question to an agent of its own, all at once, to answer only".into(),
+        Action::SendBatch(Way::Test, _) => "send each batched build and test, each an ask of its own, one after the other".into(),
+        Action::Toggle(..) => "put this comment in the batch, to be sent with it, or take it out".into(),
         Action::OpenStream => "read what the agent is writing".into(),
         Action::AskStop(_) | Action::Stop(_) => "stop the agent: the ask lands as failed".into(),
         Action::GoToOpened => "go to the comments its answer opened".into(),
@@ -721,7 +751,15 @@ impl Item {
             action,
             enabled: true,
             choices: None,
+            labels: None,
+            check: None,
         }
+    }
+
+    /// With a box before its label, checked if `on`.
+    fn checked(mut self, on: bool) -> Item {
+        self.check = Some(on);
+        self
     }
 
     /// Offered, but only to be chosen if `ok`.
@@ -742,6 +780,8 @@ impl Item {
             action: Action::Line,
             enabled: false,
             choices: None,
+            labels: None,
+            check: None,
         }
     }
 
@@ -749,7 +789,10 @@ impl Item {
     /// `pad` columns (the menu's choices in one column); and each choice,
     /// where it starts in the row and how wide it is.
     pub fn row(&self, pad: usize) -> (String, Vec<(usize, usize)>) {
-        let mut text = self.label.clone();
+        let mut text = match self.check {
+            Some(on) => format!("{} {}", if on { "[x]" } else { "[ ]" }, self.label),
+            None => self.label.clone(),
+        };
         let mut at = Vec::new();
         if let Some(c) = &self.choices {
             let width = text.chars().count();
@@ -790,9 +833,11 @@ impl Menu {
             out.pop();
         }
         let blocked = out.iter().any(|i| !i.enabled && i.action != Action::Line);
+        // Not on the row picking when an ask goes: on the ask.
+        let first = out.iter().position(|i| i.enabled && i.action != Action::When);
         Menu {
             title: title.into(),
-            sel: out.iter().position(|i| i.enabled).unwrap_or(0),
+            sel: first.or_else(|| out.iter().position(|i| i.enabled)).unwrap_or(0),
             items: out,
             note: note.filter(|_| blocked),
             top: 0,
@@ -823,6 +868,15 @@ impl Menu {
 
     pub fn chosen(&self) -> Option<&Item> {
         self.items.get(self.sel).filter(|i| i.enabled)
+    }
+
+    /// Its asks labelled as they ask: `later`, or now.
+    fn relabel(&mut self, later: bool) {
+        for i in &mut self.items {
+            if let Some((now, then)) = &i.labels {
+                i.label = if later { then } else { now }.clone();
+            }
+        }
     }
 }
 
@@ -1770,6 +1824,11 @@ impl App {
                             });
                         if let Some((of, pick)) = picked {
                             self.pick_choice(of, pick);
+                            if of == "when"
+                                && let Mode::Menu(m) = &mut self.mode
+                            {
+                                m.relabel(pick == "later");
+                            }
                         }
                         Effect::None
                     }
@@ -2021,7 +2080,12 @@ impl App {
     }
 
     fn ready(&self) -> usize {
-        self.db.stack_notes(&self.stack).iter().filter(|n| n.queued.is_some()).count()
+        self.db.stack_notes(&self.stack).iter().filter(|n| n.queued.as_ref().is_some_and(|q| !q.batched())).count()
+    }
+
+    /// How many of the stack's comments are batched.
+    fn batched_count(&self) -> usize {
+        self.db.stack_notes(&self.stack).iter().filter(|n| n.queued.as_ref().is_some_and(|q| q.batched())).count()
     }
 
     // -- keys ------------------------------------------------------------- //
@@ -2580,7 +2644,14 @@ impl App {
         match &self.mode {
             Mode::Menu(m) => {
                 if let Some(item) = m.chosen() {
-                    out.push(format!("Press Enter to {}.", about(&item.doing())));
+                    // On the row picking when an ask goes, Enter does the ask
+                    // under it; later, in the batch.
+                    let (ask, does) = match (&item.action, m.items.get(m.sel + 1)) {
+                        (Action::When, Some(next)) => (next, next.doing()),
+                        _ => (item, item.doing()),
+                    };
+                    let later = if ask.labels.is_some() && self.later() { ", later: it waits in the batch, which the banner sends" } else { "" };
+                    out.push(format!("Press Enter to {}{later}.", about(&does)));
                     if let Some(c) = &item.choices {
                         let each: Vec<String> = c.list.iter().map(|ch| format!("{}, {}", ch.shown, ch.said)).collect();
                         out.push(format!("Press ← → to pick {}: {}. What is picked is kept for this stack.", c.what, each.join("; ")));
@@ -2603,14 +2674,17 @@ impl App {
         match self.screen {
             Screen::Main if self.on_banner => {
                 out.push(
-                    "The banner says what waits on you on this stack, a line for each: on top, what landed and waits for your review (the agent's work, the comments pulled from Phabricator: nothing of it is applied before you review it); then every comment open, the most recently updated first, marked as the comments pane marks it, with where it stands."
+                    "The banner says what waits on you on this stack, a line for each: on top, what landed and waits for your review (the agent's work, the comments pulled from Phabricator: nothing of it is applied before you review it); under it, the batch, the comments you asked the agent about later, to send together; then every comment open, the most recently updated first, marked as the comments pane marks it, with where it stands."
                         .into(),
                 );
                 out.push(match self.banner_lines().get(self.banner_sel) {
                     Some(BannerLine::Landed(_)) => "Press Enter to review this one.".to_string(),
+                    Some(BannerLine::Batch) => {
+                        "Press Enter to pick what to send: the batch's edits to a single agent, its answers to a single agent or fanned out, an agent each; and which comments are in it.".into()
+                    }
                     _ => "Press Enter to go to this comment.".into(),
                 });
-                out.push("Press ↑↓ for another line, and ↓ past the last for the stack; Space to pick one, to review or go to; Esc to go back where you were.".into());
+                out.push("Press ↑↓ for another line, and ↓ past the last for the stack; Space to pick one, to review, send or go to; Esc to go back where you were.".into());
             }
             Screen::Review => {
                 out.push(
@@ -2926,6 +3000,9 @@ impl App {
                 });
                 if let Some((of, pick)) = picked {
                     self.pick_choice(of, pick);
+                    if of == "when" {
+                        m.relabel(pick == "later");
+                    }
                 }
             }
             KeyCode::Esc | KeyCode::Char(' ') => {
@@ -2936,7 +3013,12 @@ impl App {
                 return Effect::None;
             }
             KeyCode::Enter => {
-                return match m.chosen() {
+                // On the row picking when an ask goes, the ask.
+                let item = match m.chosen() {
+                    Some(i) if i.action == Action::When => m.items.get(m.sel + 1).filter(|i| i.enabled),
+                    chosen => chosen,
+                };
+                return match item {
                     Some(item) => self.perform(item.doing()),
                     None => Effect::None,
                 };
@@ -2983,10 +3065,14 @@ impl App {
         if self.answer_only(&e.target) {
             let mut items = vec![];
             if send {
-                items.push(match changed {
-                    true => Item::new("Save it and ask agent, answer only", Action::Save(Some(Way::Answer))).when(w),
-                    false => Item::new("Ask agent, answer only", Action::SendAsItIs(Way::Answer)),
-                });
+                let (ask, later) = match changed {
+                    true => (
+                        Item::new("Save it and ask agent, answer only", Action::Save(Some(Way::Answer))).when(w),
+                        "Save it and ask agent later, answer only",
+                    ),
+                    false => (Item::new("Ask agent, answer only", Action::SendAsItIs(Way::Answer)), "Ask agent later, answer only"),
+                };
+                self.push_ask(&mut items, ask, later);
             }
             if changed {
                 items.push(Item::new("Save it", Action::Save(None)));
@@ -3011,12 +3097,13 @@ impl App {
             let test = matches!(e.target, Target::Stack | Target::Patch(_));
             let mut choices = self.ask_choices(a_patch_s, test, true);
             if changed {
-                items.push(Item::new("Save it and ask agent", Action::Save(Some(Way::Change))).when(w).with(choices));
+                let ask = Item::new("Save it and ask agent", Action::Save(Some(Way::Change))).when(w).with(choices);
+                self.push_ask(&mut items, ask, "Save it and ask agent later");
             } else {
                 for c in &mut choices.list {
                     c.action = c.action.take().map(as_it_is);
                 }
-                items.push(Item::new("Ask agent", Action::SendAsItIs(Way::Change)).with(choices));
+                self.push_ask(&mut items, Item::new("Ask agent", Action::SendAsItIs(Way::Change)).with(choices), "Ask agent later");
             }
         }
         items.extend(rest);
@@ -3288,6 +3375,32 @@ impl App {
         Choices::new("ask", "how", list, self.db.choice(&self.stack, "ask"))
     }
 
+    /// When the agent is asked, as radio buttons: now, or later, the comment
+    /// waiting in the stack's batch until the banner sends it.
+    fn when_choices(&self) -> Choices {
+        let list = vec![
+            Choice::new("now", "now", "the agent is asked at once", None),
+            Choice::new("later", "later", "the comment waits in the batch, which the banner sends with the rest", None),
+        ];
+        Choices::new("when", "when", list, self.db.choice(&self.stack, "when"))
+    }
+
+    /// Whether the stack's asks are made later, in its batch, as its menus
+    /// picked.
+    fn later(&self) -> bool {
+        self.db.choice(&self.stack, "when") == Some("later")
+    }
+
+    /// Ask `ask`, under the row that picks when it asks, labelled `later`
+    /// while it asks later.
+    fn push_ask(&self, items: &mut Vec<Item>, mut ask: Item, later: &str) {
+        items.push(Item::new("Send it", Action::When).when(ask.enabled).with(self.when_choices()));
+        let now = std::mem::take(&mut ask.label);
+        ask.label = if self.later() { later.to_string() } else { now.clone() };
+        ask.labels = Some((now, later.to_string()));
+        items.push(ask);
+    }
+
     /// Where a comment is written, as radio buttons: here, in an editor in
     /// place (`here`), or in $EDITOR (`editor`).
     fn write_choices(&self, here: Action, editor: Action) -> Choices {
@@ -3520,14 +3633,21 @@ impl App {
                 let review = if r.is_some_and(crate::held::pulled) { "Review the comments pulled…" } else { "Review the agent's work…" };
                 items.push(Item::new(review, Action::Review(run, Some(crate::held::Part::Reply(k)))));
             }
+            // In the batch: sent now, on its own, or taken out.
+            None if c.queued.as_ref().is_some_and(|q| q.batched()) => {
+                let said = c.queued.as_ref().map_or("", |q| q.said());
+                items.push(Item::new(format!("Send it now ({said})"), Action::SendNow).when(w));
+                items.push(Item::new("Remove it from the batch", Action::Unbatch));
+            }
             None if c.queued.is_some() => items.push(Item::new("Take it back from the agent's queue", Action::Unsend)),
             None if c.about.is_some() => {
-                items.push(Item::new("Ask agent, answer only", Action::Send(Way::Answer)).when(w && ask::sendable(c)));
+                let ask = Item::new("Ask agent, answer only", Action::Send(Way::Answer)).when(w && ask::sendable(c));
+                self.push_ask(items, ask, "Ask agent later, answer only");
             }
             None => {
                 let s = ask::sendable(c);
                 let choices = self.ask_choices(!c.on_stack(), ask::can_test(&self.db, c), false);
-                items.push(Item::new("Ask agent", Action::Send(Way::Change)).when(w && s).with(choices));
+                self.push_ask(items, Item::new("Ask agent", Action::Send(Way::Change)).when(w && s).with(choices), "Ask agent later");
             }
         }
         if let Some(rev) = c.about {
@@ -3723,14 +3843,34 @@ impl App {
             }
             Action::Send(way) => {
                 if let Some(c) = self.picked() {
-                    self.send(vec![(c.change, c.id)], way, false);
+                    self.ask_agent(vec![(c.change, c.id)], way, false);
                 }
             }
             Action::SendWhole => {
                 if let Some(c) = self.picked() {
-                    self.send(vec![(c.change, c.id)], Way::Change, true);
+                    self.ask_agent(vec![(c.change, c.id)], Way::Change, true);
                 }
             }
+            // Done by the ask under it.
+            Action::When => {}
+            Action::SendNow => {
+                if let Some(c) = self.picked()
+                    && let Some(q) = c.queued.clone()
+                {
+                    self.send(vec![(c.change, c.id)], q.way, q.stack);
+                }
+            }
+            Action::Unbatch => {
+                if let Some(c) = self.picked() {
+                    self.status = match ask::unsend(&self.path, &[(c.change, c.id)]) {
+                        Ok(()) => "taken out of the batch: it is not sent".into(),
+                        Err(e) => e.0,
+                    };
+                    self.reload();
+                }
+            }
+            Action::SendBatch(way, fan) => self.send_batch(way, fan),
+            Action::Toggle(change, id) => self.toggle_batched(&change, &id),
             Action::SendAll(way) => {
                 let notes = self.listed_sendable(way);
                 self.send(notes, way, false);
@@ -4024,7 +4164,7 @@ impl App {
                     let text = e.ed.text();
                     let was = self.mine_of(&e.target);
                     match (self.save(&e.target, &text), way) {
-                        (Some(saved), Some(way)) => self.send(vec![saved], way, false),
+                        (Some(saved), Some(way)) => self.ask_agent(vec![saved], way, false),
                         (saved, _) => self.settle_edit(&e, saved.is_some() && was.as_deref() != Some(text.trim())),
                     }
                 }
@@ -4038,7 +4178,7 @@ impl App {
                     }
                     let text = e.ed.text();
                     if let Some(saved) = self.save(&e.target, &text) {
-                        self.send(vec![saved], Way::Change, true);
+                        self.ask_agent(vec![saved], Way::Change, true);
                     }
                 }
             }
@@ -4107,7 +4247,7 @@ impl App {
             }
             // Off the agent's queue meanwhile, so that the agent does not
             // take it as it was.
-            held = self.db.note(&change, &id).and_then(|c| c.queued.clone());
+            held = self.db.note(&change, &id).and_then(|c| c.queued.clone()).filter(|q| !q.batched());
             if held.is_some() {
                 if let Err(e) = ask::unsend(&self.path, &[(change, id)]) {
                     self.status = e.0;
@@ -4246,6 +4386,104 @@ impl App {
             db.set_note(note)?;
             Ok(at)
         })
+    }
+
+    /// Asks the agent about `notes`, to the whole stack if `whole`: now, or
+    /// later, in the batch, as the stack's menus picked.
+    fn ask_agent(&mut self, notes: Vec<(String, String)>, way: Way, whole: bool) {
+        if self.later() {
+            self.batch(notes, way, whole);
+        } else {
+            self.send(notes, way, whole);
+        }
+    }
+
+    /// Puts `notes` in the stack's batch, to the whole stack if `whole`:
+    /// they wait there until the banner sends the batch.
+    fn batch(&mut self, notes: Vec<(String, String)>, way: Way, whole: bool) {
+        let done = ask::batch(&self.path, &self.stack, &notes, way, whole);
+        self.reload();
+        if let Err(e) = done {
+            self.status = e.0;
+            return;
+        }
+        let said = if whole { crate::db::WHOLE } else { way.said() };
+        let n = self.batched_count();
+        self.status = format!("batched ({said}): {n} ask{} in the batch, which the banner sends", plural(n));
+    }
+
+    /// Sends the batch of what is asked in `way`: together, or with `fan`
+    /// each on its own. They are started away from the screen.
+    fn send_batch(&mut self, way: Way, fan: bool) {
+        let sent = ask::batched(&self.db, &self.stack, way);
+        let done = ask::release_batch(&self.path, &self.stack, way, fan);
+        self.reload();
+        let n = match done {
+            Ok(n) => n,
+            Err(e) => {
+                self.status = e.0;
+                return;
+            }
+        };
+        // As they went: the whole stack, if any of them did.
+        let whole = sent.iter().any(|((c, i), _)| self.db.note(c, i).and_then(|n| n.queued.as_ref()).is_some_and(|q| q.stack));
+        let said = if whole && way == Way::Change { crate::db::WHOLE } else { way.said() };
+        let how = match (way, fan) {
+            (Way::Test, _) => format!("{n} build{} and test{}, each on its own", plural(n), plural(n)),
+            (_, true) => format!("{n} question{}, an agent each", plural(n)),
+            _ => format!("{n} comment{} to a single agent", plural(n)),
+        };
+        self.status = match ask::waits_on(&self.db, &self.stack, way) {
+            None => format!("sent the batch ({said}): {how}"),
+            Some(w) => format!("sent the batch ({said}): {how}, ready, it goes {w}"),
+        };
+        self.launch();
+    }
+
+    /// From the banner's menu: comment (change, id) put in the batch, as the
+    /// stack's asks are made, or taken out; the menu open again on it.
+    fn toggle_batched(&mut self, change: &str, id: &str) {
+        let Some(n) = self.db.note(change, id).cloned() else { return };
+        let at = [(change.to_string(), id.to_string())];
+        let done = match &n.queued {
+            Some(q) if q.batched() => ask::unsend(&self.path, &at),
+            _ => {
+                let (way, whole) = self.way_for(&n);
+                ask::batch(&self.path, &self.stack, &at, way, whole)
+            }
+        };
+        self.reload();
+        if let Err(e) = done {
+            self.status = e.0;
+        }
+        let mut m = self.main_menu();
+        if let Some(k) = m.items.iter().position(|i| i.action == Action::Toggle(change.to_string(), id.to_string())) {
+            m.sel = k;
+        }
+        self.mode = Mode::Menu(m);
+    }
+
+    /// How comment `n` is asked once checked in the banner's menu: as it was
+    /// last batched or asked, if it was; else as the stack's menus last
+    /// asked, if that fits it (the whole stack, for a patch's; build and
+    /// test, for the stack's or a patch's as a whole), else to change the
+    /// code; on the history, to answer only.
+    fn way_for(&self, n: &Note) -> (Way, bool) {
+        if n.about.is_some() {
+            return (Way::Answer, false);
+        }
+        let fits = |way: Way, whole: bool| (way != Way::Test || ask::can_test(&self.db, n)) && !(whole && n.on_stack());
+        if let Some(q) = self.db.note_history(&n.change, &n.id).into_iter().rev().find_map(|(_, h)| h.queued.clone())
+            && fits(q.way, q.stack)
+        {
+            return (q.way, q.stack);
+        }
+        match self.db.choice(&self.stack, "ask") {
+            Some("whole") if !n.on_stack() => (Way::Change, true),
+            Some("answer") => (Way::Answer, false),
+            Some("test") if ask::can_test(&self.db, n) => (Way::Test, false),
+            _ => (Way::Change, false),
+        }
     }
 
     /// Puts `notes` on the agent's queue, to the whole stack if `whole`;
@@ -4481,14 +4719,14 @@ impl App {
                 let Some(mine) = self.mine_of(&target) else { return Ok(()) };
                 // Off the agent's queue meanwhile; nothing is dropped from
                 // what you wrote, a line starting with # as any.
-                if n.queued.is_some() {
+                if n.queued.as_ref().is_some_and(|q| !q.batched()) {
                     ask::unsend(&self.path, &[(change.clone(), id.clone())])?;
                 }
                 let e = Edit {
                     ed: Editor::new(""),
                     target,
                     pane: self.focus,
-                    held: n.queued.clone(),
+                    held: n.queued.clone().filter(|q| !q.batched()),
                 };
                 let text = match edit_text(&format!("{mine}\n"), ".txt") {
                     Ok(t) => t.trim().to_string(),
@@ -4509,14 +4747,14 @@ impl App {
                     return Ok(());
                 }
                 let Some(n) = self.db.note(&change, &id).cloned() else { return Ok(()) };
-                if n.queued.is_some() {
+                if n.queued.as_ref().is_some_and(|q| !q.batched()) {
                     ask::unsend(&self.path, &[(change.clone(), id.clone())])?;
                 }
                 let e = Edit {
                     ed: Editor::new(""),
                     target: Target::Rewind { change, id, from },
                     pane: self.focus,
-                    held: n.queued.clone(),
+                    held: n.queued.clone().filter(|q| !q.batched()),
                 };
                 let wrote = rewind_written(&n.text, from);
                 let text = match ops::edit_file(&format!("\n{}\n", wrote.join("\n")), "rewind.txt", Some(1)) {
@@ -4543,7 +4781,7 @@ impl App {
                         self.status = why;
                         return Ok(());
                     }
-                    held = self.db.note(change, id).and_then(|n| n.queued.clone());
+                    held = self.db.note(change, id).and_then(|n| n.queued.clone()).filter(|q| !q.batched());
                     if held.is_some() {
                         ask::unsend(&self.path, &[(change.clone(), id.clone())])?;
                     }
@@ -4841,12 +5079,14 @@ impl App {
     }
 
     /// How comment `n` is marked where it is listed: with the agent (●),
-    /// waiting its turn (◌), its reply waiting for review (◆), failed (✗),
-    /// moved (↑), answered (✓), else not.
+    /// batched (◇), waiting its turn (◌), its reply waiting for review (◆),
+    /// failed (✗), moved (↑), answered (✓), else not.
     pub(super) fn note_mark(&self, n: &Note, busy: &Busy, held: &Held) -> &'static str {
         let key = (n.change.clone(), n.id.clone());
         if busy.contains_key(&key) {
             "●"
+        } else if n.queued.as_ref().is_some_and(|q| q.batched()) {
+            "◇"
         } else if n.queued.is_some() {
             "◌"
         } else if held.contains_key(&key) {
@@ -4929,6 +5169,10 @@ impl App {
         if running > 0 {
             text += &format!(" · agent ●{running}");
         }
+        let batched = self.batched_count();
+        if batched > 0 {
+            text += &format!(" · batch:{batched}");
+        }
         let ready = self.ready();
         if ready > 0 {
             text += &format!(" · ready:{ready}");
@@ -4963,9 +5207,10 @@ impl App {
     /// The keys there are, where the keys go now.
     pub fn hint(&self) -> String {
         match &self.mode {
-            Mode::Menu(m) => match m.chosen().and_then(|i| i.choices.as_ref()) {
-                Some(c) => format!("↑↓ choose · ←→: {} · enter: do it · esc: close · ?: what it does", c.what),
-                None => "↑↓ choose · enter: do it · esc: close · ?: what it does".into(),
+            Mode::Menu(m) => match m.chosen() {
+                Some(i) if i.check.is_some() => "↑↓ choose · enter: check or uncheck it · esc: close · ?: what it does".into(),
+                Some(Item { choices: Some(c), .. }) => format!("↑↓ choose · ←→: {} · enter: do it · esc: close · ?: what it does", c.what),
+                _ => "↑↓ choose · enter: do it · esc: close · ?: what it does".into(),
             },
             Mode::Moving { .. } => "↑↓ to place it · enter: put it there · esc: leave it where it was".into(),
             Mode::Edit(e) => format!("enter: a new line · {}", self.esc_does(e)),
@@ -4974,6 +5219,7 @@ impl App {
             Mode::Normal if self.screen == Screen::Main && self.on_banner => {
                 let enter = match self.banner_lines().get(self.banner_sel) {
                     Some(BannerLine::Landed(_)) => "review it",
+                    Some(BannerLine::Batch) => "pick what to send",
                     _ => "go to it",
                 };
                 format!("↑↓ choose · enter: {enter} · space: pick one · esc: back where you were · ?: what can I do here")
@@ -6069,6 +6315,8 @@ pub fn note_state(db: &Db, name: &str, n: &Note, busy: &Busy) -> String {
         // A patch's comment, asked of the whole stack.
         let whole = *way == Way::Change && !n.on_stack() && ask::run_scope(db, run) == Some(Scope::Stack);
         parts.push(format!("with the agent ({})", if whole { crate::db::WHOLE } else { way.said() }));
+    } else if let Some(q) = n.queued.as_ref().filter(|q| q.batched()) {
+        parts.push(format!("batched ({})", q.said()));
     } else if let Some(q) = &n.queued {
         let on = ask::waits_on(db, name, q.way).unwrap_or_else(|| "next".into());
         parts.push(format!("ready ({}), {on}", q.said()));

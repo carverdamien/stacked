@@ -629,7 +629,7 @@ impl Tour {
 
     /// Whether the agent works on something, or a comment waits for it.
     fn working(app: &App) -> bool {
-        !ask::with_agent(&app.db).is_empty() || app.db.stack_notes(STACK).iter().any(|n| n.queued.is_some())
+        !ask::with_agent(&app.db).is_empty() || app.db.stack_notes(STACK).iter().any(|n| n.queued.as_ref().is_some_and(|q| !q.batched()))
     }
 
     /// Whether every changed line of patch `i` (from 0) is marked read.
