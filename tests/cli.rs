@@ -915,7 +915,10 @@ fn what_the_agent_brings_back_waits_for_review_and_may_be_rejected() {
         r#"echo x >> a.txt; git -c user.name=C -c user.email=c@x commit -qam "Bug 3 - amended" --amend"#,
         r#"{"replies": {"c1": "Amended."}}"#,
     );
-    let env = [("STACKED_CLAUDE", claude.as_path())];
+    // Unchained: a change waits for the review of the one before it.
+    let unchained = e.root.join("unchained.toml");
+    std::fs::write(&unchained, "[agent]\nchain = false\n").unwrap();
+    let env = [("STACKED_CLAUDE", claude.as_path()), ("STACKED_CONFIG", unchained.as_path())];
     let (fine, out, err) = stacked_in(&e.src, &e.db, &["send", "s", &id, "--wait"], "", &env);
     assert!(fine, "{err}");
     // Landed, nothing of it is applied: it waits for review, said so.
@@ -1364,7 +1367,10 @@ fn a_round_sent_back_goes_first_and_the_stack_waits_for_it() {
         ),
         r#"{"replies": {"c1": "Done."}}"#,
     );
-    let env = [("STACKED_CLAUDE", claude.as_path())];
+    // Unchained: a change waits for the review of the one before it.
+    let unchained = e.root.join("unchained.toml");
+    std::fs::write(&unchained, "[agent]\nchain = false\n").unwrap();
+    let env = [("STACKED_CLAUDE", claude.as_path()), ("STACKED_CONFIG", unchained.as_path())];
     let (fine, out, err) = stacked_in(&e.src, &e.db, &["send", "s", &id, "--wait"], "", &env);
     assert!(fine, "{out}{err}");
     // While its work waits for review, another change waits its turn, and an
@@ -1389,6 +1395,170 @@ fn a_round_sent_back_goes_first_and_the_stack_waits_for_it() {
     let asked: Vec<&str> = told.split("=====").collect();
     assert!(asked.len() == 4 && asked[2].contains("This is another round"), "{told}");
     assert!(!told.contains("And this."), "the change sent before it waits:\n{told}");
+}
+
+/// A claude for the chain: a change makes 2 `deux`, then `2 spelled` (once
+/// `gate` is there, if given); an answer, `Why b?`, changes nothing. Each
+/// writes what it was asked in `prompts`.
+fn chain_claude(e: &Env, prompts: &Path, gate: Option<&Path>) -> PathBuf {
+    let wait = gate.map_or(String::new(), |g| format!("until test -e {}; do sleep 0.1; done; ", g.display()));
+    fake_claude(
+        e,
+        "claude-chain.sh",
+        &format!(
+            "set -e\nprintf '%s\\n=====\\n' \"$2\" >> {p}\ncase \"$2\" in\n  *'Why b?'*) ;;\n  \
+             *) if grep -qx deux a.txt; then {wait}sed -i '' 's/^deux$/2 spelled/' a.txt; else sed -i '' 's/^2$/deux/' a.txt; fi\n     \
+             git -c user.name=C -c user.email=c@x commit -q --amend --no-edit -a ;;\nesac",
+            p = prompts.display()
+        ),
+        r#"{"replies": {"c1": "Done."}}"#,
+    )
+}
+
+/// The runs waiting for review on `s`, by id, the first landed first.
+fn landed_ids(e: &Env) -> Vec<String> {
+    e.ok(&["landed", "s"]).lines().filter(|l| !l.starts_with(' ')).map(|l| l.split('\t').next().unwrap().to_string()).collect()
+}
+
+/// Whether process `pid` is still there, a moment given to go.
+fn still_there(pid: u32) -> bool {
+    for _ in 0..40 {
+        let there = std::process::Command::new("kill").args(["-0", &pid.to_string()]).stderr(std::process::Stdio::null()).status().is_ok_and(|s| s.success());
+        if !there {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    true
+}
+
+#[test]
+fn a_change_goes_on_from_the_change_under_review_and_is_reviewed_after_it() {
+    let e = env();
+    e.ok(&["import", "s", "base"]);
+    let first = comment(&e, &["--patch", "1", "Spell", "it", "out."]);
+    let second = comment(&e, &["--patch", "1", "Spell", "it", "more."]);
+    let prompts = e.root.join("prompts.txt");
+    let claude = chain_claude(&e, &prompts, None);
+    let env = [("STACKED_CLAUDE", claude.as_path())];
+    let (fine, out, err) = stacked_in(&e.src, &e.db, &["send", "s", &first, "--wait"], "", &env);
+    assert!(fine, "{out}{err}");
+    let one = landed_ids(&e).remove(0);
+    // While it waits for review, the next change goes at once, from the stack
+    // it makes: it finds `deux` where the first left it.
+    let (fine, out, err) = stacked_in(&e.src, &e.db, &["send", "s", &second, "--wait"], "", &env);
+    assert!(fine, "{out}{err}");
+    let told = std::fs::read_to_string(&prompts).unwrap();
+    assert!(told.split("=====").nth(1).unwrap().contains(&format!("export s --work {one}")), "{told}");
+    // Reviewed after it, not before, said so.
+    let ids = landed_ids(&e);
+    assert_eq!(ids.len(), 2);
+    assert!(e.ok(&["landed", "s"]).contains(&format!("goes on from {one}, which waits for your review")));
+    let (fine, _, err) = e.run(&["review", "s", &ids[1], "--accept-all"]);
+    assert!(!fine && err.contains("review that one first"), "{err}");
+    // The first accepted, the second is a change of the stack as any.
+    e.ok(&["review", "s", "--accept-all"]);
+    assert!(!e.ok(&["landed", "s"]).contains("goes on from"));
+    e.ok(&["review", "s", "--accept-all"]);
+    assert!(e.ok(&["show", "s", "1"]).contains("+2 spelled\n"));
+}
+
+#[test]
+fn what_went_on_from_a_change_rejected_is_dropped_its_agent_stopped_and_asked_again() {
+    let e = env();
+    e.ok(&["import", "s", "base"]);
+    let first = comment(&e, &["--patch", "1", "Spell", "it", "out."]);
+    let second = comment(&e, &["--patch", "1", "Spell", "it", "more."]);
+    let (prompts, gate) = (e.root.join("prompts.txt"), e.root.join("gate"));
+    let claude = chain_claude(&e, &prompts, Some(&gate));
+    let env = [("STACKED_CLAUDE", claude.as_path())];
+    let (fine, out, err) = stacked_in(&e.src, &e.db, &["send", "s", &first, "--wait"], "", &env);
+    assert!(fine, "{out}{err}");
+    // The next goes on from it, and works on, waiting for the gate.
+    let (fine, out, err) = stacked_in(&e.src, &e.db, &["send", "s", &second], "", &env);
+    assert!(fine, "{out}{err}");
+    let mut going = None;
+    for _ in 0..200 {
+        let d = Db::load(&e.db).unwrap();
+        going = d.runs().into_iter().find(|r| r.state == RunState::Started).and_then(|r| Some((r.id.clone(), r.pid?)));
+        if going.is_some() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let (guess, pid) = going.expect("the guess works");
+    // Rejected: what went on from it is dropped, its agent stopped, and it
+    // is asked again, from the stack as it is.
+    let (fine, out, err) = stacked_in(&e.src, &e.db, &["review", "s", "--reject-all"], "", &env);
+    assert!(fine, "{out}{err}");
+    landed(&e, 3);
+    assert!(!still_there(pid), "its agent is stopped");
+    let d = Db::load(&e.db).unwrap();
+    let dropped = d.run(&guess).unwrap().clone();
+    drop(d);
+    assert!(dropped.state == RunState::Failed && dropped.summary == "dropped: the work it went on from was rejected; asked again", "{dropped:?}");
+    assert_eq!(landed_ids(&e).len(), 1);
+    e.ok(&["review", "s", "--accept-all"]);
+    let shown = e.ok(&["show", "s", "1"]);
+    assert!(shown.contains("+deux\n") && !shown.contains("spelled"), "{shown}");
+    std::fs::write(&gate, "").unwrap();
+}
+
+#[test]
+fn an_answer_goes_on_from_the_change_under_review_and_is_reviewed_after_it() {
+    let e = env();
+    e.ok(&["import", "s", "base"]);
+    let first = comment(&e, &["--patch", "1", "Spell", "it", "out."]);
+    let why = comment(&e, &["--patch", "2", "Why", "b?"]);
+    let prompts = e.root.join("prompts.txt");
+    let claude = chain_claude(&e, &prompts, None);
+    let env = [("STACKED_CLAUDE", claude.as_path())];
+    let (fine, out, err) = stacked_in(&e.src, &e.db, &["send", "s", &first, "--wait"], "", &env);
+    assert!(fine, "{out}{err}");
+    let one = landed_ids(&e).remove(0);
+    // The answer goes at once, reading the stack the change makes.
+    let (fine, out, err) = stacked_in(&e.src, &e.db, &["send", "s", &why, "--answer-only", "--wait"], "", &env);
+    assert!(fine, "{out}{err}");
+    let told = std::fs::read_to_string(&prompts).unwrap();
+    assert!(told.split("=====").nth(1).unwrap().contains(&format!("show s --work {one}")), "{told}");
+    assert!(e.ok(&["show", "s", "1", "--work", &one]).contains("+deux\n"));
+    assert!(!e.ok(&["show", "s", "1"]).contains("+deux\n"));
+    // Reviewed after the change.
+    let ids = landed_ids(&e);
+    let (fine, _, err) = e.run(&["review", "s", &ids[1], "--accept-all"]);
+    assert!(!fine && err.contains("review that one first"), "{err}");
+    e.ok(&["review", "s", "--accept-all"]);
+    e.ok(&["review", "s", "--accept-all"]);
+    assert!(landed_ids(&e).is_empty());
+}
+
+#[test]
+fn what_went_on_from_a_change_sent_back_starts_again_from_its_round() {
+    let e = env();
+    e.ok(&["import", "s", "base"]);
+    let first = comment(&e, &["--patch", "1", "Spell", "it", "out."]);
+    let second = comment(&e, &["--patch", "1", "Spell", "it", "more."]);
+    let prompts = e.root.join("prompts.txt");
+    let claude = chain_claude(&e, &prompts, None);
+    let env = [("STACKED_CLAUDE", claude.as_path())];
+    let (fine, out, err) = stacked_in(&e.src, &e.db, &["send", "s", &first, "--wait"], "", &env);
+    assert!(fine, "{out}{err}");
+    let (fine, out, err) = stacked_in(&e.src, &e.db, &["send", "s", &second, "--wait"], "", &env);
+    assert!(fine, "{out}{err}");
+    // Sent back: what went on from it is dropped; the round goes first, and
+    // the second again after it, going on from the round's work.
+    let (fine, _, err) = stacked_in(&e.src, &e.db, &["reply", "s", &first, "--answer", "Not", "like", "this."], "", &env);
+    assert!(fine, "{err}");
+    let (fine, out, err) = stacked_in(&e.src, &e.db, &["review", "s", "--send-back"], "", &env);
+    assert!(fine, "{out}{err}");
+    landed(&e, 4);
+    let told = std::fs::read_to_string(&prompts).unwrap();
+    let asked: Vec<&str> = told.split("=====").collect();
+    assert!(asked.len() == 5 && asked[2].contains("This is another round"), "{told}");
+    let ids = landed_ids(&e);
+    assert_eq!(ids.len(), 2, "the round's work, and the second's on it");
+    assert!(asked[3].contains("Spell it more.") && asked[3].contains(&format!("--work {}", ids[0])), "{told}");
+    assert!(e.ok(&["runs", "s"]).contains("dropped: the work it went on from was sent back; asked again"));
 }
 
 #[test]

@@ -154,6 +154,11 @@ pub struct Agent {
     /// Where the agents' worktrees go; else `.stacked/` at the top of the
     /// stack's repository.
     pub worktrees: Option<PathBuf>,
+    /// Whether a change or an answer starts while the change before it waits
+    /// for your review, from the stack that change makes, as if accepted:
+    /// rejected, sent back or edited by hand, what went on from it starts
+    /// again.
+    pub chain: bool,
 }
 
 impl Default for Agent {
@@ -166,6 +171,7 @@ impl Default for Agent {
             worktree: Workspace::OnDemand,
             answer_only_worktree: Workspace::Pwd,
             worktrees: None,
+            chain: true,
         }
     }
 }
@@ -319,6 +325,7 @@ struct WrittenAgent {
     worktree: Option<String>,
     answer_only_worktree: Option<String>,
     worktrees: Option<String>,
+    chain: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -410,6 +417,7 @@ impl Config {
         if let Some(d) = a.worktrees {
             c.agent.worktrees = Some(expand(&d));
         }
+        c.agent.chain = a.chain.unwrap_or(c.agent.chain);
         for (key, written, at) in [
             ("agent.worktree", &a.worktree, &mut c.agent.worktree),
             ("agent.answer_only_worktree", &a.answer_only_worktree, &mut c.agent.answer_only_worktree),
@@ -638,6 +646,13 @@ impl Config {
             Some(w) => format!("worktrees = {}\n", path(w)),
             None => "# worktrees = ...   (.stacked/ at the top of the stack's repository)\n".into(),
         });
+        out.push_str(
+            "# Whether a change or an answer starts while the change before it waits for your\n\
+             # review, from the stack that change makes, as if you accept it: rejected, sent\n\
+             # back or edited by hand, what went on from it is dropped and starts again. Not\n\
+             # while changes work in your checkout (worktree = \"pwd\").\n",
+        );
+        out.push_str(&format!("chain = {}\n", self.agent.chain));
         out.push_str("\n[reviews]\n# Where `pull` reads reviews from: \"phabricator\", or \"none\".\n");
         out.push_str(&format!(
             "source = {}\n",
@@ -735,7 +750,7 @@ enum Kind {
 
 /// Every setting there is, as the file names it, and what it holds; the
 /// keys', `keys.NAME`, are lists.
-const SETTINGS: [(&str, Kind); 21] = [
+const SETTINGS: [(&str, Kind); 22] = [
     ("file", Kind::Text),
     ("editor", Kind::Text),
     ("agent.command", Kind::Text),
@@ -745,6 +760,7 @@ const SETTINGS: [(&str, Kind); 21] = [
     ("agent.worktree", Kind::Text),
     ("agent.answer_only_worktree", Kind::Text),
     ("agent.worktrees", Kind::Text),
+    ("agent.chain", Kind::Flag),
     ("reviews.source", Kind::Text),
     ("reviews.url", Kind::Text),
     ("reviews.arcrc", Kind::Text),
@@ -818,6 +834,7 @@ pub fn value_of(c: &Config, key: &str) -> Result<Vec<String>, String> {
         "agent.worktree" => vec![c.agent.worktree.name().into()],
         "agent.answer_only_worktree" => vec![c.agent.answer_only_worktree.name().into()],
         "agent.worktrees" => path(&c.agent.worktrees),
+        "agent.chain" => vec![c.agent.chain.to_string()],
         "reviews.source" => vec![match c.reviews.source {
             Source::Phabricator => "phabricator".into(),
             Source::None => "none".into(),

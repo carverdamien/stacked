@@ -144,6 +144,10 @@ enum Cmd {
         /// The stack as it was at this rev, rather than now.
         #[arg(long)]
         rev: Option<String>,
+        /// The stack as landed work RUN makes it, waiting for your review or
+        /// not (`landed` lists what waits).
+        #[arg(long, conflicts_with = "rev")]
+        work: Option<String>,
     },
     /// A stack's patches, or some of them, as mail for `git am`.
     Export {
@@ -152,6 +156,10 @@ enum Cmd {
         /// The stack as it was at this rev, rather than now.
         #[arg(long)]
         rev: Option<String>,
+        /// The stack as landed work RUN makes it, waiting for your review or
+        /// not.
+        #[arg(long, conflicts_with = "rev")]
+        work: Option<String>,
     },
     /// Edit a stack as `git rebase -i` would; or one patch, in $EDITOR: as
     /// mail, or one of its files as the patch leaves it (--path), the patch
@@ -648,6 +656,18 @@ fn stack_at<'a>(db: &'a Db, name: &str, rev: Option<&str>) -> Result<&'a stacked
     Ok(s)
 }
 
+/// Stack `name` at `rev`, or as landed work `work` (a run, or the start of
+/// its id) makes it; else as it is.
+fn stack_of(db: &Db, name: &str, rev: Option<&str>, work: Option<&str>) -> Result<stacked::db::Stack> {
+    let Some(w) = work else { return Ok(stack_at(db, name, rev)?.clone()) };
+    let runs: Vec<String> = db.runs().into_iter().filter(|r| r.stack == name && r.id.starts_with(w)).map(|r| r.id.clone()).collect();
+    match runs.as_slice() {
+        [id] => ask::work_stack(db, id),
+        [] => err(format!("no run {w} on {name}")),
+        _ => err(format!("{w} names more than one run: give more of it")),
+    }
+}
+
 fn here() -> PathBuf {
     std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
 }
@@ -891,34 +911,34 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
                 ops::add(db, &name, draft, at.map(|n| n.saturating_sub(1)))
             })?;
         }
-        Cmd::Show { name, patch: None, rev, .. } => {
+        Cmd::Show { name, patch: None, rev, work, .. } => {
             let db = Db::load(path)?;
-            let s = stack_at(&db, &name, rev.as_deref())?;
+            let s = stack_of(&db, &name, rev.as_deref(), work.as_deref())?;
             for (i, id) in s.patches.iter().enumerate() {
                 let p = db.patch(id);
                 println!("{}\t{}\t{}\t{}", i + 1, &p.change[..8], &id[..8], p.title());
             }
         }
-        Cmd::Show { name, patch: Some(spec), path: None, rev } => {
+        Cmd::Show { name, patch: Some(spec), path: None, rev, work } => {
             let db = Db::load(path)?;
-            let s = stack_at(&db, &name, rev.as_deref())?;
-            print!("{}", ops::render(db.patch(&s.patches[db.resolve(s, &spec)?])));
+            let s = stack_of(&db, &name, rev.as_deref(), work.as_deref())?;
+            print!("{}", ops::render(db.patch(&s.patches[db.resolve(&s, &spec)?])));
         }
-        Cmd::Show { name, patch: Some(spec), path: Some(f), rev } => {
+        Cmd::Show { name, patch: Some(spec), path: Some(f), rev, work } => {
             let db = Db::load(path)?;
-            let s = stack_at(&db, &name, rev.as_deref())?;
-            let at = db.resolve(s, &spec)?;
-            match ops::file_at(&db, s, at, &f)? {
+            let s = stack_of(&db, &name, rev.as_deref(), work.as_deref())?;
+            let at = db.resolve(&s, &spec)?;
+            match ops::file_at(&db, &s, at, &f)? {
                 Some(text) => print!("{text}"),
                 None => return err(format!("as patch {} leaves it, {f} is not there, or is not text", at + 1)),
             }
         }
-        Cmd::Export { name, patches, rev } => {
+        Cmd::Export { name, patches, rev, work } => {
             let db = Db::load(path)?;
-            let s = stack_at(&db, &name, rev.as_deref())?;
+            let s = stack_of(&db, &name, rev.as_deref(), work.as_deref())?;
             let mut at: Vec<usize> = (0..s.patches.len()).collect();
             if !patches.is_empty() {
-                at = patches.iter().map(|p| db.resolve(s, p)).collect::<Result<_>>()?;
+                at = patches.iter().map(|p| db.resolve(&s, p)).collect::<Result<_>>()?;
                 at.sort();
             }
             let ps: Vec<_> = at.iter().map(|&i| db.patch(&s.patches[i])).collect();
@@ -1428,7 +1448,9 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
             for r in stacked::held::queue(&db, &name) {
                 let Some(h) = &r.held else { continue };
                 let review = db.review(&r.id).cloned().unwrap_or_default();
-                println!("{}\t{}\t{}", r.id, time(h.at), h.said());
+                // Gone on from the work before it, guessing: reviewed after it.
+                let after = ask::guessing(&db, r).map_or(String::new(), |on| format!("\tgoes on from {on}, which waits for your review"));
+                println!("{}\t{}\t{}{after}", r.id, time(h.at), h.said());
                 for p in h.parts() {
                     if matches!(p, stacked::held::Part::Reply(k) if review.taken.contains(&k)) {
                         continue;

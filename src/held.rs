@@ -182,6 +182,7 @@ pub fn hold_by_hand(db: &mut Db, name: &str, patches: Vec<String>, op: &str, of:
         summary: format!("reviewed: rejected for your edit of it by hand, run {id}"),
         ..r
     })?;
+    crate::ask::guessed_wrong(db, work, "edited by hand")?;
     Ok(id)
 }
 
@@ -354,6 +355,9 @@ pub fn take(db: &mut Db, id: &str, k: usize) -> Result<()> {
     if h.stack.is_some() {
         return err("this reply goes with the agent's change of the stack: review them together");
     }
+    if crate::ask::guessing(db, &r).is_some() {
+        return err("this reply goes on from the work landed before it, which waits for your review: review that one first");
+    }
     let rp = h.replies.get(k).ok_or_else(|| Error(format!("run {id} holds no reply {k}")))?;
     if v.taken.contains(&k) {
         return Ok(());
@@ -421,6 +425,9 @@ pub struct Round {
 /// yours now, and those you opened in its review.
 pub fn send_back(db: &mut Db, id: &str, marks: &BTreeMap<String, bool>) -> Result<Round> {
     let (r, h, mut v) = under_review(db, id)?;
+    if crate::ask::guessing(db, &r).is_some() {
+        return err("this work goes on from the work landed before it, which waits for your review: review that one first");
+    }
     let i = crate::ask::info(&r).ok_or_else(|| Error(format!("run {id} is not the agent's work: there is no one to send it back to")))?;
     let (opened, answers) = yours_in(db, &r);
     if opened.is_empty() && answers == 0 {
@@ -455,6 +462,7 @@ pub fn send_back(db: &mut Db, id: &str, marks: &BTreeMap<String, bool>) -> Resul
     v.marks.insert(Part::Stack.key(), false);
     v.closed = true;
     db.set_review(id, v)?;
+    crate::ask::guessed_wrong(db, id, "sent back")?;
     let n = notes.len();
     db.add_run(Run {
         summary: format!("reviewed: sent back to the agent, {}", count(n, "comment to ask again", "comments to ask again")),
@@ -490,6 +498,10 @@ pub fn close(db: &mut Db, id: &str, marks: &BTreeMap<String, bool>, rest: Option
 /// `asking`, every one of them.
 pub fn close_with(db: &mut Db, id: &str, marks: &BTreeMap<String, bool>, rest: Option<bool>, asking: bool) -> Result<String> {
     let (r, h, mut v) = under_review(db, id)?;
+    // Gone on from work under review, guessing: that one is reviewed first.
+    if crate::ask::guessing(db, &r).is_some() {
+        return err("this work goes on from the work landed before it, which waits for your review: review that one first");
+    }
     // What you wrote in its review is for the agent: it goes back to it.
     let (opened, answers) = yours_in(db, &r);
     if !opened.is_empty() || answers > 0 {
@@ -545,6 +557,12 @@ pub fn close_with(db: &mut Db, id: &str, marks: &BTreeMap<String, bool>, rest: O
         let base = c.base.clone().or(s.base.clone());
         rev = Some(db.set_stack_on(&r.stack, c.patches.clone(), base, s.repo.clone(), &c.op)?);
         crate::ask::follow_lines(db, &olds, &c.patches)?;
+    }
+    // What went on from it, guessing it would be accepted: right, or wrong.
+    match (change, rev) {
+        (Some((_, true)), Some(at)) => crate::ask::guessed_right(db, id, at)?,
+        (Some((_, false)), _) => crate::ask::guessed_wrong(db, id, "rejected")?,
+        _ => {}
     }
     for (k, n) in h.opened.iter().enumerate() {
         if all.get(&Part::Opened(k).key()) == Some(&true) {

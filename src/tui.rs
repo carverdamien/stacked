@@ -2905,7 +2905,7 @@ impl App {
         match self.screen {
             Screen::Main if self.on_banner => {
                 out.push(
-                    "The banner says what waits on you on this stack, a line for each: on top, what landed and waits for your review (the agent's work, the comments pulled from Phabricator: nothing of it is applied before you review it); under it, the batch, the comments you asked the agent about later, to send together; then every comment open, the most recently updated first, marked as the comments pane marks it, with where it stands."
+                    "The banner says what waits on you on this stack, a line for each, in three sections. Read only: what landed and changes nothing, the agent's answers and the comments pulled from Phabricator. Edits: what changes the stack, the one you review now first, then those going on from it, as if you accept it, which you review after it. Nothing of it is applied before you review it. Then the batch, the comments you asked the agent about later, to send together, and every comment open, the most recently updated first, marked as the comments pane marks it, with where it stands."
                         .into(),
                 );
                 out.push(match self.banner_lines().get(self.banner_sel) {
@@ -5389,7 +5389,7 @@ impl App {
             self.on_banner = false;
         }
         let lines = if self.on_banner { self.banner_lines() } else { Vec::new() };
-        let room = lines.len().min((h.saturating_sub(4) / 2).max(1));
+        let room = self.banner_rows(&lines).len().min((h.saturating_sub(4) / 2).max(1));
         let top = 1 + banner.is_some() as usize + room;
         self.body_h = h - top - 1;
         self.body_w = w;

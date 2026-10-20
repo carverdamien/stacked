@@ -141,13 +141,26 @@ pub struct Info {
     /// whose stack it starts from rather than the stack at `from`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on: Option<String>,
+    /// A guess: the landed work, by its run, whose change waits for your
+    /// review and which it goes on from, as if you accept it. Accepted, it
+    /// guessed right and goes on from the stack as any ask; rejected, sent
+    /// back or edited by hand, it is dropped and starts again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after: Option<String>,
+    /// The batch it was sent in, where it goes back in the queue if dropped.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub batch: String,
+    /// Dropped, its guess wrong: its worktree is free to be taken again.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub dropped: bool,
 }
 
 /// The stack ask `i` works on: the stack at `i.from`; or, a round sent
-/// back from the review of landed work, the stack that work makes.
+/// back from the review of landed work, or a guess going on from landed
+/// work that waits for review, the stack that work makes.
 fn started_from(db: &Db, i: &Info) -> Result<Stack> {
     let s = db.node(i.from)?.clone();
-    let Some(c) = i.on.as_deref().and_then(|on| db.run(on)?.held.as_ref()?.stack.clone()) else {
+    let Some(c) = i.on.as_deref().or(i.after.as_deref()).and_then(|on| db.run(on)?.held.as_ref()?.stack.clone()) else {
         return Ok(s);
     };
     Ok(Stack {
@@ -275,15 +288,17 @@ pub fn waits_on(db: &Db, name: &str, way: Way) -> Option<String> {
         return Some(format!("once the agent's change on {on} lands"));
     }
     // A change goes from the stack as it is once the change before it is
-    // reviewed.
+    // reviewed; chained, at once, from the stack that change makes.
+    let chain = chains(&agent_of(db, name));
     if way == Way::Change
+        && !chain
         && let Some(r) = crate::held::change_waiting(db, name)
         && let Some(c) = r.held.as_ref().and_then(|h| h.stack.as_ref())
     {
         return Some(format!("once you have reviewed {} of {}", whose_change(r), c.of));
     }
     match way {
-        Way::Change if going.iter().any(|(_, i)| i.way == Way::Answer) => {
+        Way::Change if !chain && going.iter().any(|(_, i)| i.way == Way::Answer) => {
             Some("once the running answers land".into())
         }
         // One build and test at a time, of every stack.
@@ -293,6 +308,135 @@ pub fn waits_on(db: &Db, name: &str, way: Way) -> Option<String> {
         }),
         _ => None,
     }
+}
+
+/// The agent's settings for stack `name`: its repository's checkout's, as
+/// an ask of it starts with.
+fn agent_of(db: &Db, name: &str) -> crate::config::Agent {
+    let dir = db.stack(name).ok().and_then(|s| s.repo.clone()).map_or_else(|| PathBuf::from("."), PathBuf::from);
+    crate::config::of(&dir).0.agent
+}
+
+/// Whether, with `agent`'s settings, a change or an answer goes on from the
+/// change waiting for your review, guessing you accept it: unless the
+/// setting says not, or changes work in your checkout, one at a time.
+fn chains(agent: &crate::config::Agent) -> bool {
+    agent.chain && agent.worktree != Workspace::Pwd
+}
+
+/// What the next change or answer of stack `name` goes on from, chained:
+/// the last landed work whose change of the stack waits for your review.
+fn guessed_from(db: &Db, name: &str) -> Option<String> {
+    crate::held::queue(db, name).into_iter().rev().find(|r| r.held.as_ref().is_some_and(|h| h.stack.is_some())).map(|r| r.id.clone())
+}
+
+/// The work run `r` goes on from, guessing you accept it, while that work
+/// waits for your review: it is reviewed first.
+pub fn guessing(db: &Db, r: &Run) -> Option<String> {
+    info(r)?.after.filter(|a| db.run(a).is_some_and(|w| crate::held::waiting(db, w)))
+}
+
+/// The runs going on from landed work `id`, guessing it is accepted, that
+/// still work or wait for your review.
+fn guesses_on(db: &Db, id: &str) -> Vec<Run> {
+    db.runs()
+        .into_iter()
+        .filter(|r| info(r).is_some_and(|i| i.after.as_deref() == Some(id) && !i.dropped))
+        .filter(|r| r.state == RunState::Started || crate::held::waiting(db, r))
+        .cloned()
+        .collect()
+}
+
+/// Landed work `id` accepted, its change now the stack at `rev`: what went
+/// on from it guessed right, and goes on from that stack as any ask does.
+pub fn guessed_right(db: &mut Db, id: &str, rev: usize) -> Result<()> {
+    for r in guesses_on(db, id) {
+        let Some(mut i) = info(&r) else { continue };
+        (i.from, i.after) = (rev, None);
+        db.add_run(Run {
+            ask: Some(serde_json::to_value(&i).unwrap()),
+            ..r
+        })?;
+    }
+    Ok(())
+}
+
+/// Landed work `id` rejected, sent back or edited by hand (`why`): what
+/// went on from it guessed wrong. Each is dropped: its agent stopped if it
+/// still works, what it brought back thrown away unseen, its comments back
+/// in the queue as they were sent, to start again; and so with what went on
+/// from it.
+pub fn guessed_wrong(db: &mut Db, id: &str, why: &str) -> Result<()> {
+    for r in guesses_on(db, id) {
+        let Some(mut i) = info(&r) else { continue };
+        i.dropped = true;
+        let running = r.state == RunState::Started;
+        db.add_run(Run {
+            state: if running { RunState::Failed } else { r.state },
+            summary: format!("dropped: the work it went on from was {why}; asked again"),
+            ask: Some(serde_json::to_value(&i).unwrap()),
+            ..r.clone()
+        })?;
+        if running {
+            stop(&r);
+        } else {
+            let v = db.review(&r.id).cloned().unwrap_or_default();
+            db.set_review(&r.id, crate::held::Review { closed: true, ..v })?;
+        }
+        ask_again(db, &i)?;
+        guessed_wrong(db, &r.id, "dropped")?;
+    }
+    Ok(())
+}
+
+/// The comments ask `i` was about back in the queue, ready, in the batch
+/// they were sent in: they go again as they were asked.
+fn ask_again(db: &mut Db, i: &Info) -> Result<()> {
+    let batch = if i.batch.is_empty() { format!("b{}", crate::db::unique()) } else { i.batch.clone() };
+    for sh in &i.notes {
+        let Some(n) = db.note(&sh.change, &sh.id).cloned() else { continue };
+        let stack = i.scope == Scope::Stack && !n.on_stack();
+        db.set_note(Note {
+            queued: Some(Queued {
+                way: i.way,
+                batch: batch.clone(),
+                stack,
+                stage: Stage::Ready,
+                on: None,
+            }),
+            failed: None,
+            ..n
+        })?;
+    }
+    Ok(())
+}
+
+/// The stack landed work run `id` makes: its change of the stack on the
+/// stack it is of, whether it still waits for review or not.
+pub fn work_stack(db: &Db, id: &str) -> Result<Stack> {
+    let r = db.run(id).ok_or_else(|| Error(format!("no run {id}")))?;
+    let c = r.held.as_ref().and_then(|h| h.stack.clone()).ok_or_else(|| Error(format!("run {id} holds no change of the stack")))?;
+    let s = db.stack(&r.stack)?.clone();
+    Ok(Stack {
+        patches: c.patches,
+        base: c.base.or(s.base.clone()),
+        ..s
+    })
+}
+
+/// What goes on a stack as `claim` starts batches.
+struct Going {
+    /// A change is going; and how many answers.
+    change: bool,
+    answers: usize,
+    /// A change waits for what is going, before the answers behind it.
+    change_waits: bool,
+    /// A change waits for your review.
+    reviewing: bool,
+    /// Changes and answers go on from the change under review, guessing.
+    chain: bool,
+    /// The work under review they go on from: the last landed.
+    tail: Option<String>,
 }
 
 /// The build and test in flight, of whichever stack: one at a time, as
@@ -587,47 +731,49 @@ fn claim(db: &mut Db) -> Result<Vec<String>> {
     // the stack still that work's; then the rest, oldest first.
     order.sort_by(|a, b| (batches[a].4.is_none(), a).cmp(&(batches[b].4.is_none(), b)));
     let mut started = Vec::new();
-    // Per stack: what is going, as the batches are started; and whether a
-    // change waits for its review. Of every stack: whether a build and test
-    // is going.
-    let mut state: HashMap<String, (bool, usize, bool, bool)> = HashMap::new();
+    // Per stack: what is going, as the batches are started; whether a change
+    // waits for its review; and, chained, what the next goes on from. Of
+    // every stack: whether a build and test is going.
+    let mut state: HashMap<String, Going> = HashMap::new();
     let mut test = testing(db).is_some();
     for b in &order {
         let (name, way, scope, notes, on) = batches[b].clone();
         let st = state.entry(name.clone()).or_insert_with(|| {
             let going = asks_going(db, &name);
-            (
-                going.iter().any(|(_, i)| i.way == Way::Change),
-                going.iter().filter(|(_, i)| i.way == Way::Answer).count(),
-                false,
-                crate::held::change_waiting(db, &name).is_some(),
-            )
+            Going {
+                change: going.iter().any(|(_, i)| i.way == Way::Change),
+                answers: going.iter().filter(|(_, i)| i.way == Way::Answer).count(),
+                change_waits: false,
+                reviewing: crate::held::change_waiting(db, &name).is_some(),
+                chain: chains(&agent_of(db, &name)),
+                tail: guessed_from(db, &name),
+            }
         });
-        let (change, answers, change_waits, reviewing) = st;
         let go = match way {
             // A change has the stack to itself, from the stack as the change
-            // before it left it, reviewed; one waiting for what runs holds
-            // back the answers behind it, so it goes next.
+            // before it left it, reviewed; chained, while that change waits
+            // for review, from the stack it makes, as if accepted. One waiting
+            // for what runs holds back the answers behind it, so it goes next.
             Way::Change => {
-                if !*change && !*reviewing && *answers == 0 {
-                    *change = true;
+                if !st.change && (st.chain || (!st.reviewing && st.answers == 0)) {
+                    st.change = true;
                     true
                 } else {
-                    *change_waits |= !*reviewing;
+                    st.change_waits |= st.chain || !st.reviewing;
                     false
                 }
             }
             Way::Answer => {
-                let go = !*change && !*change_waits;
+                let go = !st.change && !st.change_waits;
                 if go {
-                    *answers += 1;
+                    st.answers += 1;
                 }
                 go
             }
             // A build and test, while no change runs on its stack, and no
-            // other build and test anywhere.
+            // other build and test anywhere: of the stack as it is.
             Way::Test => {
-                let go = !*change && !test;
+                let go = !st.change && !test;
                 if go {
                     test = true;
                 }
@@ -637,6 +783,8 @@ fn claim(db: &mut Db) -> Result<Vec<String>> {
         if !go {
             continue;
         }
+        // Chained, a change or an answer goes on from the work under review.
+        let after = if st.chain && on.is_none() && way != Way::Test { st.tail.clone() } else { None };
         let Some((from, _)) = db.head(&name) else { continue };
         let id = crate::db::unique();
         let shown = notes
@@ -663,6 +811,9 @@ fn claim(db: &mut Db) -> Result<Vec<String>> {
             commits: vec![],
             prompt: String::new(),
             on,
+            after,
+            batch: b.clone(),
+            dropped: false,
         };
         db.add_run(Run {
             id: id.clone(),
@@ -852,8 +1003,11 @@ code. Do not push or fetch, nor stash.";
 fn prompt(db: &Db, i: &Info, s: &Stack, cmd: &str, run: &str) -> String {
     let n = s.patches.len();
     let k = i.patch.as_ref().map(|(_, k)| *k);
-    let export = format!("{cmd} export {} --rev {}", s.name, i.from);
-    let show = format!("{cmd} show {} --rev {}", s.name, i.from);
+    // The stack it started from: at its rev; a guess's, as the work it goes
+    // on from makes it.
+    let at = i.after.as_ref().map_or(format!("--rev {}", i.from), |w| format!("--work {w}"));
+    let export = format!("{cmd} export {} {at}", s.name);
+    let show = format!("{cmd} show {} {at}", s.name);
     // Where it works, told it.
     let here = if i.back.is_some() {
         "The current directory is the user's own checkout, put at the stack for you: it goes \
@@ -1128,7 +1282,7 @@ fn take_slot(db_path: &Path, id: &str, dir: &Path, kind: &str) -> Result<PathBuf
     loop {
         let at = slot(dir, kind, k);
         k += 1;
-        if at.join(".git").exists() && left(&at).unwrap_or(true) {
+        if at.join(".git").exists() && left(&at).unwrap_or(true) && !scrub_dropped(db_path, &at) {
             continue;
         }
         let path = at.to_string_lossy().into_owned();
@@ -1155,6 +1309,19 @@ fn take_slot(db_path: &Path, id: &str, dir: &Path, kind: &str) -> Result<PathBuf
             return Ok(at);
         }
     }
+}
+
+/// Whether worktree `at` holds only what a dropped guess left there, its
+/// agent gone: then that is thrown away, and the worktree is free again.
+fn scrub_dropped(db_path: &Path, at: &Path) -> bool {
+    let path = at.to_string_lossy().into_owned();
+    let Ok(db) = Db::load(db_path) else { return false };
+    let last = db
+        .runs()
+        .into_iter()
+        .filter(|r| info(r).and_then(|i| i.worktree).as_deref() == Some(path.as_str()))
+        .max_by_key(|r| r.time);
+    last.is_some_and(|r| info(r).is_some_and(|i| i.dropped) && !r.pid.is_some_and(alive)) && git::scrub(at).is_ok()
 }
 
 /// The kinds of worktree the agent's settings have made when the editor
@@ -1737,7 +1904,7 @@ fn land_patch(db: &mut Db, run: &Run, i: &Info, result: &str, replies: &Map<Stri
     // A round sent back slots into the stack the work it goes on from
     // makes; any other, into the stack as it is.
     let now = db.stack(&run.stack)?.clone();
-    let s = if i.on.is_some() { started_from(db, i)? } else { now.clone() };
+    let s = if i.on.is_some() || i.after.is_some() { started_from(db, i)? } else { now.clone() };
     let Some(at) = s.patches.iter().position(|p| *p == old_id) else {
         return Ok(Landed::failed(
             format!("patch {} changed while the agent worked on it", k + 1),
@@ -1845,8 +2012,12 @@ fn land_stack(db: &mut Db, run: &Run, i: &Info, result: &str, replies: &Map<Stri
     let planned = plan_drafts(&olds, drafts, &by_commit);
     let ids: Vec<String> = planned.iter().map(|p| p.id.clone()).collect();
     let replies = held_replies(db, i, replies);
-    let head_base = from.base.clone().unwrap_or_else(|| i.base.clone());
-    if ids == from.patches && base == head_base {
+    // Nothing changed of the stack it went on from: a guess's, the stack the
+    // work under review makes; else the stack at `from`, which the change a
+    // round carries is not.
+    let was = if i.after.is_some() { &start } else { &from };
+    let head_base = was.base.clone().unwrap_or_else(|| i.base.clone());
+    if ids == was.patches && base == head_base {
         return Ok(Landed::held(Held {
             replies,
             ..Default::default()
@@ -2063,11 +2234,11 @@ pub fn fits(db_path: &Path, id: &str) -> Result<String> {
     let wt = PathBuf::from(wt);
     let parent = i.commits[..k].last().map_or(i.base.clone(), |c| c.0.clone());
     let pieces = pieces_since(&db, &wt, &parent, &old_id, &i)?;
-    let from = db.node(i.from)?;
+    let from = started_from(&db, &i)?;
     let mut patches: Vec<Patch> = from.patches[..k].iter().map(|p| db.patch(p).clone()).collect();
     patches.extend(pieces);
     patches.extend(from.patches[k + 1..].iter().map(|p| db.patch(p).clone()));
-    crate::check::stack(from, &patches.iter().collect::<Vec<_>>())
+    crate::check::stack(&from, &patches.iter().collect::<Vec<_>>())
         .map(|_| "fits: the patches above still apply on this change".into())
         .map_err(|e| Error(format!("does not fit: {}", e.0.trim_end_matches("; nothing changed"))))
 }

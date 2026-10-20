@@ -571,6 +571,21 @@ it. An asked comment that cannot go yet waits as ready, says what it waits
 on, and goes on its own when that lands. Nothing is asked on a stack that
 does not apply.
 
+Chained (`agent.chain`, on unless changes work in your checkout), a change
+or an answer does not wait for the review of the change before it: it goes
+at once, from the stack that change makes, as if you accept it, one change
+running at a time, and an answer asked after a change that runs goes once
+that change lands. What it brings back is reviewed after the work it went
+on from: the banner lists it after that work, `◌ … after the edit under
+review`, and its review does not open before (`stacked review NAME RUN`
+refuses too). Accepted, that work makes it an ask of the stack as any
+other. Rejected, sent back or edited by hand, what went on from it is
+dropped: its agent is stopped if it still works, what it brought back is
+thrown away unseen, and its comments go back to their turn, to start again
+from the stack as it then is (a round sent back goes first). An answer
+reads the stack it went on from with `stacked show NAME --work RUN` and
+`stacked export NAME --work RUN`, the stack a landed work makes.
+
 While the agent changes a stack, the stack is not edited by hand: the
 agent's change is made from the stack as it took it. The menus' edits of
 the stack and its patches are off meanwhile, and the menu says why:
@@ -691,10 +706,14 @@ while any of it is. Landing writes nothing
 on the bottom line. Esc goes to the banner from wherever the cursor is in
 the panes, and ↑ from the stack's header goes there too; a click on it as
 well, but not the mouse going by. With the cursor on it, the banner opens,
-a line for each: on top, `⟳ Review …` for what landed, the first landed
-first; under it, while there is a batch, `◇ Send the batch… 2 edits, 1
-answer only`; then every comment open on the stack, the most recently
-updated first, marked as the comments pane marks it (`●` with the agent,
+a line for each, in three sections under their titles. `read only, to
+review`: `⟳ Review …` for what landed and changes nothing (an answer, the
+comments pulled from Phabricator), the first landed first, then `◌ … after
+the edit under review` for those going on from it. `edits, to review`: the
+change of the stack you review now, then those going on from it, which you
+review after it. `open comments`: while there is a batch, `◇ Send the
+batch… 2 edits, 1 answer only`; then every comment open on the stack, the
+most recently updated first, marked as the comments pane marks it (`●` with the agent,
 `◇` batched, `◌` waiting its turn, `◆` its reply waiting for review, `✓`
 answered…), with where it is, how it starts, and where it stands (with the
 agent, the last line it wrote). ↑↓ pick one, and Enter reviews what landed,

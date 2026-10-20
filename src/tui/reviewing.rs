@@ -179,7 +179,12 @@ impl App {
     /// last saved; the cursor on `part`, else where it was when the review
     /// was left, else on the first not marked.
     pub(super) fn open_review(&mut self, run: &str, part: Option<Part>) {
-        let Some(_) = self.work(run) else { return };
+        let Some((r, _)) = self.work(run) else { return };
+        // Gone on from work under review, guessing: that one is reviewed first.
+        if ask::guessing(&self.db, r).is_some() {
+            self.status = "this work goes on from the work landed before it, which waits for your review: review that one first".into();
+            return;
+        }
         let marks = self.db.review(run).map(|v| v.marks.clone()).unwrap_or_default();
         self.reviewing = Some(Reviewing {
             run: run.into(),

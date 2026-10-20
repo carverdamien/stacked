@@ -144,6 +144,18 @@ pub fn kept_worktree(repo: &Path, name: &str, base: &str) -> Result<PathBuf> {
     Ok(dir)
 }
 
+/// What worktree `at` holds thrown away: a rebase, `git am` or merge half
+/// done, changes, files git does not track. Only for a worktree of
+/// stacked's own whose work is dropped.
+pub fn scrub(at: &Path) -> Result<()> {
+    for op in ["rebase", "am", "merge", "cherry-pick"] {
+        let _ = git(at, &[op, "--abort"]);
+    }
+    git(at, &["reset", "--hard", "-q"])?;
+    git(at, &["clean", "-fdq"])?;
+    Ok(())
+}
+
 /// The worktree at `at` put at `base` with `mbox` applied, `n` patches: made
 /// if it is not there, else moved there (it holds nothing unfinished, so
 /// nothing is lost, and only what differs is written). Not applied, it is

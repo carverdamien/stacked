@@ -3,10 +3,13 @@
 //! pull's comments from Phabricator), the batch (the comments asked about
 //! later, to send together), and every comment open, with what the agent
 //! works on and what waits its turn: said in one line; while the cursor is
-//! on it, open, a line for each, what landed on top, the batch under it,
-//! then the comments, the most recently updated first, to review what
-//! landed, send the batch or go to a comment. Esc goes to it from the
-//! panes, and from it back where the cursor was.
+//! on it, open, a line for each, in three sections under their titles:
+//! what landed and changes nothing (read only), then what changes the
+//! stack (edits), each the one you review now first, then those going on
+//! from an edit under review; then the batch and the comments, the most
+//! recently updated first. Enter reviews what landed, sends the batch or
+//! goes to a comment. Esc goes to it from the panes, and from it back where
+//! the cursor was.
 
 use super::reviewing::first_words;
 use super::*;
@@ -49,11 +52,25 @@ pub enum BannerLine {
 }
 
 impl App {
-    /// What the banner lists: what landed, the first landed first; the
-    /// batch, if there is one; then every comment open on the stack, the
-    /// most recently updated first.
+    /// What the banner lists, section by section: what landed and changes
+    /// nothing, then what changes the stack, each the first landed first,
+    /// the one you review now before those going on from an edit under
+    /// review; the batch, if there is one; then every comment open on the
+    /// stack, the most recently updated first.
     pub fn banner_lines(&self) -> Vec<BannerLine> {
-        let mut out: Vec<BannerLine> = self.queue().into_iter().map(BannerLine::Landed).collect();
+        let landed = self.queue();
+        let mut out: Vec<BannerLine> = Vec::new();
+        for edits in [false, true] {
+            for later in [false, true] {
+                out.extend(
+                    landed
+                        .iter()
+                        .filter(|id| self.banner_section(&BannerLine::Landed((*id).clone())) == usize::from(edits))
+                        .filter(|id| self.db.run(id).is_some_and(|r| ask::guessing(&self.db, r).is_some()) == later)
+                        .map(|id| BannerLine::Landed(id.clone())),
+                );
+            }
+        }
         if self.batched_count() > 0 {
             out.push(BannerLine::Batch);
         }
@@ -69,6 +86,30 @@ impl App {
         open.sort_by(|a, b| b.0.cmp(&a.0));
         out.extend(open.into_iter().map(|(_, l)| l));
         out
+    }
+
+    /// The section of the banner line `l` is in: 0, read only, what landed
+    /// and changes nothing; 1, edits, what changes the stack; 2, the batch
+    /// and the comments.
+    fn banner_section(&self, l: &BannerLine) -> usize {
+        match l {
+            BannerLine::Landed(id) => usize::from(self.work(id).is_some_and(|(_, h)| h.stack.is_some())),
+            _ => 2,
+        }
+    }
+
+    /// The rows of the banner, open, for `lines`: each line, by its place,
+    /// under its section's title where a section starts.
+    pub(super) fn banner_rows(&self, lines: &[BannerLine]) -> Vec<(Option<usize>, usize)> {
+        let mut rows: Vec<(Option<usize>, usize)> = Vec::new();
+        for (i, l) in lines.iter().enumerate() {
+            let k = self.banner_section(l);
+            if rows.last().is_none_or(|&(_, last)| last != k) {
+                rows.push((None, k));
+            }
+            rows.push((Some(i), k));
+        }
+        rows
     }
 
     /// What the banner says in its line: how much landed work waits for
@@ -103,9 +144,19 @@ impl App {
             }
             let what = and(&kinds);
             let mut head = format!("{what} {} for your review", if landed == 1 { "waits" } else { "wait" });
-            if let Some(BannerLine::Landed(run)) = lines.first()
-                && let Some((r, h)) = self.work(run)
-            {
+            // Gone on from an edit under review, guessing: reviewed after it.
+            let later = lines
+                .iter()
+                .filter(|l| matches!(l, BannerLine::Landed(run) if self.db.run(run).is_some_and(|r| ask::guessing(&self.db, r).is_some())))
+                .count();
+            if later > 0 {
+                head += &format!(", {later} of {} after an edit under review", if landed == 1 { "it" } else { "them" });
+            }
+            let next = lines.iter().find_map(|l| match l {
+                BannerLine::Landed(run) => self.work(run).filter(|(r, _)| ask::guessing(&self.db, r).is_none()),
+                _ => None,
+            });
+            if let Some((r, h)) = next {
                 head += &format!(" · the next: {}{}", h.said(), landed_how(r, usize::MAX));
             }
             said.push(head);
@@ -143,7 +194,8 @@ impl App {
     pub(super) fn banner_items(&self, items: &mut Vec<Item>) {
         for id in self.queue() {
             let Some((r, h)) = self.work(&id) else { continue };
-            items.push(Item::new(format!("Review {}{}", h.said(), landed_how(r, 40)), Action::Review(id.clone(), None)));
+            let first = ask::guessing(&self.db, r).is_none();
+            items.push(Item::new(format!("Review {}{}", h.said(), landed_how(r, 40)), Action::Review(id.clone(), None)).when(first));
         }
         let batch = self.batch_items();
         if !items.is_empty() && !batch.is_empty() {
@@ -251,6 +303,10 @@ impl App {
     fn banner_line(&self, l: &BannerLine) -> String {
         match l {
             BannerLine::Landed(run) => match self.work(run) {
+                // Gone on from the work above it, guessing: reviewed after it.
+                Some((r, h)) if ask::guessing(&self.db, r).is_some() => {
+                    format!("   ◌ {}{} · after the edit under review, which you review first", h.said(), landed_how(r, 40))
+                }
                 Some((r, h)) => format!("   ⟳ Review {}{}", h.said(), landed_how(r, 40)),
                 None => format!("   ⟳ Review {run}"),
             },
@@ -327,8 +383,9 @@ impl App {
     }
 
     /// The banner under the top bar: `text` on its line; open, under it, a
-    /// line for each of `lines`, as many as `room` holds, the one picked
-    /// marked and in sight.
+    /// row for each of `lines` under its section's title, as many as `room`
+    /// holds, the one picked marked and in sight, its title too where it
+    /// can be.
     pub(super) fn draw_banner(&mut self, buf: &mut Buffer, area: Rect, text: &str, lines: &[BannerLine], room: usize) {
         let w = area.width as usize;
         put(buf, area, 0, 1, w, &fit(text, w), color::header());
@@ -337,14 +394,26 @@ impl App {
             return;
         }
         self.banner_sel = self.banner_sel.min(lines.len() - 1);
-        if self.banner_sel < self.banner_top {
-            self.banner_top = self.banner_sel;
-        } else if self.banner_sel >= self.banner_top + room {
-            self.banner_top = self.banner_sel + 1 - room;
+        let rows = self.banner_rows(lines);
+        let at = rows.iter().position(|&(i, _)| i == Some(self.banner_sel)).unwrap_or(0);
+        let titled = if at > 0 && rows[at - 1].0.is_none() { at - 1 } else { at };
+        if titled < self.banner_top {
+            self.banner_top = titled;
+        } else if at >= self.banner_top + room {
+            self.banner_top = at + 1 - room;
         }
-        for (y, (i, l)) in lines.iter().enumerate().skip(self.banner_top).take(room).enumerate() {
+        for (y, &(i, k)) in rows.iter().skip(self.banner_top).take(room).enumerate() {
+            let Some(i) = i else {
+                let title = match k {
+                    0 => " read only, to review",
+                    1 => " edits, to review",
+                    _ => " open comments",
+                };
+                put(buf, area, 0, 2 + y, w, &fit(title, w), color::file());
+                continue;
+            };
             let st = if i == self.banner_sel { Style::new().add_modifier(Modifier::REVERSED) } else { Style::new() };
-            put(buf, area, 0, 2 + y, w, &fit(&self.banner_line(l), w), st);
+            put(buf, area, 0, 2 + y, w, &fit(&self.banner_line(&lines[i]), w), st);
             spot_in(&self.spots, area, (0, 2 + y, w, 1), Spot::BannerLine(i));
         }
     }

@@ -3206,7 +3206,8 @@ fn the_banner_sends_the_batch_its_edits_to_one_agent_its_answers_to_one_or_each_
     keys(&mut app, &[KeyCode::Esc]);
     assert!(app.on_banner && app.banner_sel == 0);
     let screen = draw(&mut app);
-    assert!(screen.lines().nth(2).unwrap().starts_with("   ◇ Send the batch… 2 edits, 2 answers only"), "{screen}");
+    assert!(screen.lines().nth(2).unwrap().starts_with(" open comments"), "{screen}");
+    assert!(screen.lines().nth(3).unwrap().starts_with("   ◇ Send the batch… 2 edits, 2 answers only"), "{screen}");
     assert!(app.hint().contains("enter: pick what to send"), "{}", app.hint());
     // Enter on it: the whole menu, on what sends the edits; then every ask,
     // checked if batched, in the order they were written.
@@ -3289,7 +3290,8 @@ fn with_work_landed_and_a_batch_the_banner_s_menu_has_all_of_it() {
     let screen = draw(&mut app);
     let lines: Vec<&str> = screen.lines().collect();
     assert!(lines[1].starts_with(" ⟳ 1 landed ask waits for your review") && lines[1].contains(" · 1 batched ask · "), "{screen}");
-    assert!(lines[2].starts_with("   ⟳ Review 1 reply") && lines[3].starts_with("   ◇ Send the batch… 1 edit"), "{screen}");
+    assert!(lines[2].starts_with(" read only, to review") && lines[3].starts_with("   ⟳ Review 1 reply"), "{screen}");
+    assert!(lines[4].starts_with(" open comments") && lines[5].starts_with("   ◇ Send the batch… 1 edit"), "{screen}");
     // Enter on the batch, or Space anywhere: the whole menu, what landed and
     // the batch.
     keys(&mut app, &[KeyCode::Down, KeyCode::Enter]);
@@ -4042,6 +4044,72 @@ fn the_review_marks_its_opened_comments_and_its_replies_apart() {
 }
 
 #[test]
+fn the_banner_has_read_only_then_edits_then_comments_each_the_one_to_review_first() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Enter]);
+    save(&mut app, "why so loud?");
+    let n = notes_of(&db, "s", 0).remove(0);
+    // An edit, an answer, and an edit and an answer going on from the edit.
+    held(&db, "run-1", &n.change, &n.id, "Quieter now.", true);
+    held(&db, "run-2", &n.change, &n.id, "It shouts.", false);
+    held(&db, "run-3", &n.change, &n.id, "Quieter still.", true);
+    held(&db, "run-4", &n.change, &n.id, "It shouts less.", false);
+    Db::edit(&db, |d| {
+        for id in ["run-3", "run-4"] {
+            let mut r = d.run(id).unwrap().clone();
+            let mut ask = r.ask.clone().unwrap();
+            ask["after"] = serde_json::json!("run-1");
+            r.ask = Some(ask);
+            d.add_run(r)?;
+        }
+        Ok(())
+    })
+    .unwrap();
+    app.refresh();
+    let screen = draw(&mut app);
+    assert!(screen.contains("4 landed asks wait for your review, 2 of them after an edit under review · the next: 1 reply"), "{screen}");
+    keys(&mut app, &[KeyCode::Esc]);
+    let screen = draw(&mut app);
+    let rows: Vec<&str> = screen.lines().skip(2).take(9).map(str::trim_end).collect();
+    let starts = [
+        " read only, to review",
+        "   ⟳ Review 1 reply",
+        "   ◌ 1 reply",
+        " edits, to review",
+        "   ⟳ Review a change of patch 1, 1 reply",
+        "   ◌ a change of patch 1, 1 reply",
+        " open comments",
+    ];
+    for (row, want) in rows.iter().zip(starts) {
+        assert!(row.starts_with(want), "{want:?}:\n{screen}");
+    }
+    assert!(rows[2].ends_with("after the edit under review, which you review first") && rows[5].ends_with("which you review first"), "{screen}");
+    // The cursor goes from line to line, past the titles; on a work going on
+    // from the edit, Enter says to review that one first.
+    assert!(app.on_banner && app.banner_sel == 0);
+    keys(&mut app, &[KeyCode::Down, KeyCode::Down]);
+    assert!(app.banner_sel == 2 && selected_banner(&mut app).starts_with("   ⟳ Review a change of patch 1"), "{}", draw(&mut app));
+    keys(&mut app, &[KeyCode::Down, KeyCode::Enter]);
+    assert_eq!(app.screen, Screen::Main);
+    assert!(app.status.ends_with("review that one first"), "{}", app.status);
+    keys(&mut app, &[KeyCode::Up, KeyCode::Enter]);
+    assert_eq!(app.screen, Screen::Review);
+}
+
+/// The banner's line the cursor is on, as drawn.
+fn selected_banner(app: &mut App) -> String {
+    let mut buf = Buffer::empty(Rect::new(0, 0, 120, 30));
+    app.draw(&mut buf);
+    (2..30)
+        .find(|&y| buf[(3, y)].modifier.contains(ratatui::style::Modifier::REVERSED))
+        .map(|y| (0..120).map(|x| buf[(x, y)].symbol()).collect::<String>())
+        .unwrap_or_default()
+}
+
+#[test]
 fn right_in_a_review_goes_into_its_right_pane_then_makes_it_wide() {
     let (_tmp, db, _src) = setup();
     let mut app = open(&db).unwrap();
@@ -4154,11 +4222,12 @@ fn the_banner_tracks_the_open_comments_and_esc_goes_there_and_back() {
     assert!(app.on_banner && app.banner_sel == 0);
     let screen = draw(&mut app);
     let lines: Vec<&str> = screen.lines().collect();
+    assert!(lines[2].starts_with(" open comments"), "{screen}");
     assert!(
-        lines[2].starts_with("   ◌ patch 1 · a.txt: LINE 39 · \"and this?\" · ready (may change the code), once the agent's change on patch 1 lands"),
+        lines[3].starts_with("   ◌ patch 1 · a.txt: LINE 39 · \"and this?\" · ready (may change the code), once the agent's change on patch 1 lands"),
         "{screen}"
     );
-    assert!(lines[3].starts_with("   ● patch 1 · a.txt: TWO · \"why so loud?\" · with the agent (may change the code)"), "{screen}");
+    assert!(lines[4].starts_with("   ● patch 1 · a.txt: TWO · \"why so loud?\" · with the agent (may change the code)"), "{screen}");
     assert!(app.hint().contains("enter: go to it"), "{}", app.hint());
     // Updated, a comment goes first.
     Db::edit(&db, |d| {
@@ -4167,7 +4236,7 @@ fn the_banner_tracks_the_open_comments_and_esc_goes_there_and_back() {
     })
     .unwrap();
     app.refresh();
-    assert!(draw(&mut app).lines().nth(2).unwrap().contains("\"why so loud?\""));
+    assert!(draw(&mut app).lines().nth(3).unwrap().contains("\"why so loud?\""));
     // The mouse going by does not close it, nor does it open it.
     app.hover(10, 8);
     assert!(app.on_banner, "the mouse over the panes leaves it open");
