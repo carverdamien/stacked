@@ -2081,10 +2081,19 @@ pub fn starting(db: &Db, id: &str) -> Option<String> {
 /// The last `n` lines of what run `id`'s agent wrote, as a transcript:
 /// read from the end, as it is on every redraw while the agent writes. The
 /// commands run to start it come first, as `$ command`.
+///
+/// A turn of the agent's ends with a result, but the ask only with its
+/// exit: the agent may end a turn to wait on what it started (a build in
+/// the background) and go on once it is done. A result is the agent's
+/// finishing only when its exit follows; one it went on after, it waited
+/// there; and one that is the last, while it runs, it waits.
 pub fn tail(db: &Db, id: &str, n: usize) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     // Its thinking counted as it goes: of the counts in a row, the last.
     let mut counted = false;
+    // What came after, read from the end: its exit, or more of its work.
+    let (mut exit, mut more) = (false, false);
+    let going = db.run(id).is_some_and(running);
     for v in db.events(id).into_iter().rev() {
         if out.len() >= n {
             break;
@@ -2098,8 +2107,23 @@ pub fn tail(db: &Db, id: &str, n: usize) -> Vec<String> {
             Some("text") => vec![str_of(v.get("text"))],
             Some(STARTING) => vec![format!("$ {}", str_of(v.get("text")))],
             Some("exit") => vec![format!("exit {}", str_of(v.get("code")))],
+            Some("result") if more || (!exit && going) => {
+                let said = if more { "◷ the agent waited" } else { "◷ the agent waits" };
+                let words = str_of(v.get("result"));
+                let mut lines = vec![match words.lines().map(str::trim).find(|l| !l.is_empty()) {
+                    Some(first) => format!("{said}: {first}"),
+                    None => said.to_string(),
+                }];
+                lines.extend(crate::claude::denials(v).into_iter().map(|d| format!("⛔ not allowed: {d}")));
+                lines
+            }
             _ => format_event(v),
         };
+        if v.get("type").and_then(Value::as_str) == Some("exit") {
+            exit = true;
+        } else if works(v) {
+            more = true;
+        }
         if !lines.is_empty() {
             counted = count;
         }
@@ -2108,6 +2132,17 @@ pub fn tail(db: &Db, id: &str, n: usize) -> Vec<String> {
     out.truncate(n);
     out.reverse();
     out
+}
+
+/// Whether stream event `v` is of the agent's work: what it says or does,
+/// thinks, or the end of one of its turns; not its exit, nor what its
+/// session, or stacked, says of it.
+fn works(v: &Value) -> bool {
+    match v.get("type").and_then(Value::as_str) {
+        Some("assistant" | "user" | "result") => true,
+        Some("system") => v.get("subtype").and_then(Value::as_str) == Some("thinking_tokens"),
+        _ => false,
+    }
 }
 
 /// Stops a running ask: its process group, claude and all.
@@ -2231,6 +2266,39 @@ mod tests {
             ]
         );
         assert_eq!(tail(&db, "r", 3), ["Nothing changed.", "✓ the agent finished", "exit 0"]);
+    }
+
+    #[test]
+    fn a_turn_ended_while_the_agent_runs_on_waits_and_only_its_exit_finishes() {
+        let say = |text: &str| serde_json::json!({"type": "assistant", "message": {"content": [{"type": "text", "text": text}]}});
+        let result = |text: &str| serde_json::json!({"type": "result", "result": text});
+        // As `streamed`, its run still going: its process there.
+        let going = |events: &[Value]| {
+            let run = Run {
+                id: "r".into(),
+                state: RunState::Started,
+                pid: Some(std::process::id()),
+                ..Default::default()
+            };
+            let mut bytes = serde_json::to_string(&Record::Stacked { version: VERSION }).unwrap() + "\n";
+            bytes += &(serde_json::to_string(&Record::Run(run)).unwrap() + "\n");
+            for e in events {
+                bytes += &(serde_json::to_string(&Record::Event { run: "r".into(), event: e.clone() }).unwrap() + "\n");
+            }
+            Db::from_bytes(Path::new("t.jsonl"), bytes.as_bytes()).unwrap()
+        };
+        // Its build started in the background, its turn over: it waits, its
+        // process running on.
+        let mut events = vec![say("Building."), result("\nThe build is still running.\nI will test once it ends.")];
+        assert_eq!(tail(&going(&events), "r", 2), ["Building.", "◷ the agent waits: The build is still running."]);
+        // Gone, nothing after it: it finished there.
+        assert_eq!(tail(&streamed(&events), "r", 1), ["✓ the agent finished"]);
+        // Woken by the build's end, it went on, then finished.
+        events.extend([say("Built; 3 tests pass."), result("{}"), serde_json::json!({"type": "exit", "code": 0})]);
+        assert_eq!(
+            tail(&going(&events), "r", 5),
+            ["Building.", "◷ the agent waited: The build is still running.", "Built; 3 tests pass.", "✓ the agent finished", "exit 0"]
+        );
     }
 
     #[test]
