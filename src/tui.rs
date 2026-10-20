@@ -543,6 +543,9 @@ pub enum Action {
     ReviewSave,
     ReviewDiscard,
     ReviewClose(Option<bool>),
+    /// Asked first: the review closed, the parts not marked yet accepted
+    /// (true), or rejected.
+    AskReviewClose(bool),
     /// In the review: the comment the ask was about at place `0` marked to
     /// close with the review (`1`), or to keep.
     CloseAsking(usize, bool),
@@ -689,6 +692,8 @@ fn about(action: &Action) -> String {
         Action::ReviewClose(None) => "close the review: what you accepted is applied, what you rejected is dropped for good".into(),
         Action::ReviewClose(Some(true)) => "accept every part not marked yet, then close the review".into(),
         Action::ReviewClose(Some(false)) => "reject every part not marked yet, then close the review".into(),
+        Action::AskReviewClose(true) => "accept every part not marked yet, then close the review, once you say so".into(),
+        Action::AskReviewClose(false) => "reject every part not marked yet, then close the review, once you say so".into(),
         Action::CloseAsking(_, true) => {
             "close this comment as the review closes, done with: its replies, which go with it, are accepted (Show…, closed, lists it, to reopen)".into()
         }
@@ -699,7 +704,7 @@ fn about(action: &Action) -> String {
         Action::Answer(_) => "answer the agent's reply: the work goes back to the agent with your answer after the reply".into(),
         Action::Send(Way::Change) => "ask the agent, which may change the code within this comment's place".into(),
         Action::Send(Way::Answer) => "ask the agent, to answer only: nothing changes".into(),
-        Action::Send(Way::Test) => "ask the agent to build and test, in a workspace of its choosing".into(),
+        Action::Send(Way::Test) => "ask the agent to build and test, in the stack's build worktree, .stacked/NAME/build".into(),
         Action::SendWhole => {
             "ask the agent, which may change the whole stack, as for the stack's own comments: any patch, new patches anywhere, their order".into()
         }
@@ -3435,7 +3440,7 @@ impl App {
             list.push(Choice::new(
                 "test",
                 "build and test",
-                "it builds and tests in a workspace of its own, and changes nothing",
+                "it builds and tests in the stack's build worktree, and changes nothing",
                 act(Way::Test),
             ));
         }
@@ -3902,6 +3907,7 @@ impl App {
                 self.leave_review();
                 self.status = "the marks you made since you opened the review are thrown away".into();
             }
+            Action::AskReviewClose(accept) => self.mode = Mode::Menu(self.review_close_ask(accept)),
             Action::ReviewClose(rest) => self.review_close(rest),
             Action::CloseAsking(k, close) => self.mark_asking(k, close),
             Action::SendBack => self.review_send_back(),
@@ -6545,9 +6551,15 @@ pub fn run(path: &Path) -> Result<()> {
     let mut terminal = ratatui::init();
     let res = event_loop(&mut terminal, &mut app);
     ratatui::restore();
-    let running = app.running();
-    if running > 0 {
-        eprintln!("stacked: {running} of the agent's asks still running; what they do lands on its own");
+    // The asks still running, each where its agent works: read again, for
+    // one started a moment ago.
+    let now = Db::load(path);
+    let running = ask::still_running(now.as_ref().unwrap_or(&app.db));
+    if !running.is_empty() {
+        eprintln!("stacked: {} of the agent's asks still running; what they do lands on its own:", running.len());
+        for l in running {
+            eprintln!("  {l}");
+        }
     }
     res
 }

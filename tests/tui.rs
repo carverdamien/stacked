@@ -1504,6 +1504,7 @@ fn landed_work_is_reviewed_from_the_banner_part_by_part() {
     app.on_banner = true;
     keys(&mut app, &[KeyCode::Enter, KeyCode::Esc]);
     choose(&mut app, "Accept all remaining and Close");
+    choose(&mut app, "Accept them and close");
     assert!(
         app.status.contains("reviewed: its change accepted; 1 opened comment accepted; 1 reply accepted, 1 rejected"),
         "{}",
@@ -3185,12 +3186,57 @@ fn an_edit_by_hand_lands_and_its_review_opens_at_once() {
     assert_eq!(app.screen, Screen::Review);
     keys(&mut app, &[KeyCode::Esc]);
     choose(&mut app, "Accept all remaining and Close");
+    choose(&mut app, "Accept them and close");
     assert_eq!(app.status, "reviewed: its change accepted");
     let d = Db::load(&db).unwrap();
     let s = d.stack("s").unwrap();
     assert_ne!(s.patches[0], before[0]);
     assert!(d.patch(&s.patches[0]).diff.contains("+Two"));
     assert_eq!(s.op, d.run(&run).unwrap().held.as_ref().unwrap().stack.as_ref().unwrap().op);
+}
+
+#[test]
+fn the_review_closes_with_what_remains_marked_only_while_something_remains() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    let run = hand_edit(&db, None);
+    app.edited(stacked::ops::Edited::Landed { said: "edited a.txt in Bug 1 - shout two".into(), run }, None, None);
+    assert_eq!(app.screen, Screen::Review);
+    let closing = |app: &App| items(app).into_iter().filter(|(l, _)| l.contains("Close")).collect::<Vec<_>>();
+    // Its change not marked yet: closed with it accepted, or rejected.
+    keys(&mut app, &[KeyCode::Esc]);
+    assert_eq!(
+        closing(&app),
+        [("Close review", false), ("Accept all remaining and Close", true), ("Reject all remaining and Close", true)].map(|(l, ok)| (l.to_string(), ok))
+    );
+    // Asked first, what is left said; the menu on Keep reviewing, which
+    // goes back to the review, nothing closed.
+    choose(&mut app, "Reject all remaining and Close");
+    let Mode::Menu(m) = &app.mode else { panic!("{:?}", app.mode) };
+    assert_eq!(m.title, "reject every part not marked yet?");
+    assert_eq!(items(&app), [("Reject them and close".to_string(), true), ("Keep reviewing".to_string(), true)]);
+    assert_eq!(m.sel, 1);
+    assert_eq!(
+        m.note.as_deref(),
+        Some("Not marked yet: the change of the stack. The review closes then: what you rejected is dropped for good, and what you accepted is applied.")
+    );
+    keys(&mut app, &[KeyCode::Enter]);
+    assert!(matches!(app.mode, Mode::Normal) && app.screen == Screen::Review, "{:?}", app.mode);
+    keys(&mut app, &[KeyCode::Esc]);
+    choose(&mut app, "Accept all remaining");
+    assert!(matches!(&app.mode, Mode::Menu(m) if m.title == "accept every part not marked yet?"), "{:?}", app.mode);
+    choose(&mut app, "Keep reviewing");
+    assert_eq!(stacked::held::queue(&Db::load(&db).unwrap(), "s").len(), 1, "not closed");
+    keys(&mut app, &[KeyCode::Esc]);
+    // Marked, it is closed as it is marked; nothing remains for the others.
+    choose(&mut app, "Keep reviewing");
+    keys(&mut app, &[KeyCode::Enter, KeyCode::Esc]);
+    assert_eq!(
+        closing(&app),
+        [("Close review", true), ("Accept all remaining and Close", false), ("Reject all remaining and Close", false)].map(|(l, ok)| (l.to_string(), ok))
+    );
+    choose(&mut app, "Close review");
+    assert_eq!(app.status, "reviewed: its change accepted");
 }
 
 #[test]
@@ -3252,6 +3298,7 @@ fn landed_work_is_edited_by_hand_from_its_review_in_its_place() {
     // Accepted: the agent's change with your edit in it, and its reply.
     keys(&mut app, &[KeyCode::Esc]);
     choose(&mut app, "Accept all remaining and Close");
+    choose(&mut app, "Accept them and close");
     let d = Db::load(&db).unwrap();
     assert!(d.patch(&d.stack("s").unwrap().patches[0]).diff.contains("+Two"));
     assert!(d.note(&n.change, &n.id).unwrap().text.contains("Quieter now."));
@@ -3472,6 +3519,7 @@ fn the_comments_that_asked_are_kept_or_closed_from_the_top_of_the_review() {
     assert!(!items(&app).iter().any(|(l, _)| l.contains("asking")), "{:?}", items(&app));
     assert!(matches!(&app.mode, Mode::Menu(m) if m.note.as_deref().is_some_and(|n| n.starts_with("asking comments: 1 to close, 1 kept"))), "{:?}", app.mode);
     choose(&mut app, "Accept all remaining and Close");
+    choose(&mut app, "Accept them and close");
     assert_eq!(app.status, "reviewed: 1 opened comment accepted; 2 replies accepted; 1 asking comment closed");
     let d = Db::load(&db).unwrap();
     assert!(d.note(&notes[0].change, &notes[0].id).is_none(), "closed");
@@ -3985,6 +4033,7 @@ fn reviews_pulled_wait_in_the_banner_as_the_agent_s_work_does() {
     keys(&mut app, &[KeyCode::Esc]);
     assert!(draw(&mut app).contains("your review of the comments pulled"));
     choose(&mut app, "Accept all remaining and Close");
+    choose(&mut app, "Accept them and close");
     let notes = notes_of(&db, "s", 0);
     assert_eq!((notes.len(), notes[0].by.as_deref()), (1, Some("ann")));
     // Pulled later, ann's reply to it waits, said on the comment; taken at
