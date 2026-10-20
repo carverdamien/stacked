@@ -62,7 +62,7 @@ use crate::git;
 use crate::held::Held;
 use crate::mbox::{format_mbox, parse_mbox};
 use crate::ops::{base_of, plan_drafts};
-use crate::thread::{AGENT_OPEN, FENCE_CLOSE, Role, append_turn, last_reply_way, last_role, thread_turns};
+use crate::thread::{Role, append_turn, fenced, last_reply_way, last_role, thread_turns};
 use crate::view::{MSG_PATH, find_line, mode, note_lines, title_key};
 
 /// What an ask may change: the whole stack, or the patch of this change.
@@ -1981,7 +1981,7 @@ fn opened_notes(db: &Db, run: &Run, i: &Info, result: &str) -> Result<Vec<Note>>
             change: p.change.clone(),
             id: format!("agent:{}:{n}", run.id),
             line,
-            text: format!("{AGENT_OPEN} answer\n{}\n{FENCE_CLOSE}", str_of(note.get("text")).trim()),
+            text: fenced("agent answer", str_of(note.get("text")).trim()),
             file,
             preview: text.chars().take(80).collect(),
             by: Some("agent".into()),
@@ -2014,7 +2014,7 @@ fn test_notes(db: &Db, run: &Run, i: &Info, result: &str) -> Result<Vec<Note>> {
             change: p.change.clone(),
             id: format!("agent:{}:test:{}", run.id, at + 1),
             line: title_key(&p),
-            text: format!("{AGENT_OPEN} test\n{} (tested @{})\n{FENCE_CLOSE}", str_of(Some(v)).trim(), i.from),
+            text: fenced("agent test", &format!("{} (tested @{})", str_of(Some(v)).trim(), i.from)),
             file: MSG_PATH.into(),
             preview: p.title().chars().take(80).collect(),
             by: Some("agent".into()),

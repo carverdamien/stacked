@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use crate::db::{Db, Note, Result, Run, RunState, now};
 use crate::held::{Held, Reply};
 use crate::phab::{self, Remote};
-use crate::thread::{FENCE_CLOSE, REVIEWER_OPEN, Role, append_turn};
+use crate::thread::{Role, append_turn, fenced};
 use crate::view::{MSG_PATH, note_lines, title_key};
 
 /// The revisions of `name`'s patches: (change, D123, link).
@@ -106,7 +106,7 @@ fn new_thread(p: &crate::db::Patch, lines: &[crate::view::NoteLine], c: &Remote)
         change: p.change.clone(),
         id: format!("phab:{}", c.phid),
         line,
-        text: format!("{REVIEWER_OPEN} {}\n{}\n{FENCE_CLOSE}", c.author, c.text.trim()),
+        text: fenced(&format!("reviewer {}", c.author), c.text.trim()),
         file,
         preview: preview.trim().chars().take(80).collect(),
         by: Some(c.author.clone()),

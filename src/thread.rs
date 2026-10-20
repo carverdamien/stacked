@@ -2,7 +2,9 @@
 //! blocks naming what it was asked to do (```claude, as self-review and
 //! stacked's first files have them, is read the same), a reviewer's
 //! comments pulled from Phabricator are fenced ```reviewer blocks naming
-//! who wrote them, and every other line is yours. A conversation is
+//! who wrote them, and every other line is yours. A turn that holds fences
+//! of its own (a code block) is fenced with more backticks than they have,
+//! ````agent, and only a line of as many backticks ends it. A conversation is
 //! rewound from one of your turns: your new text takes the place of that
 //! turn and of every turn after it.
 //!
@@ -53,11 +55,23 @@ impl Turn {
     }
 }
 
-/// Who an opening fence line starts a turn for, its tag, and whether the
-/// turn was deleted.
-pub fn fence(line: &str) -> Option<(Role, String, bool)> {
+/// How many backticks start `line`, past its indentation.
+fn ticks(line: &str) -> usize {
+    line.trim_start().chars().take_while(|&c| c == '`').count()
+}
+
+/// Who an opening fence line starts a turn for, its tag, whether the turn
+/// was deleted, and how many backticks the fence has: three, or more when
+/// the turn holds fences of its own.
+pub fn fence(line: &str) -> Option<(Role, String, bool, usize)> {
     let s = line.trim();
-    if let Some(rest) = s.strip_prefix(DELETED_OPEN).and_then(|r| r.strip_prefix(' ')) {
+    let n = ticks(s);
+    if n < 3 {
+        return None;
+    }
+    // What follows the backticks, as the fences of three name it.
+    let s = &s[n..];
+    if let Some(rest) = s.strip_prefix(word(DELETED_OPEN)).and_then(|r| r.strip_prefix(' ')) {
         let (who, tag) = rest.trim().split_once(' ').unwrap_or((rest.trim(), ""));
         let role = match who {
             "you" => Role::You,
@@ -65,17 +79,44 @@ pub fn fence(line: &str) -> Option<(Role, String, bool)> {
             "reviewer" => Role::Reviewer,
             _ => return None,
         };
-        return Some((role, tag.trim().to_string(), true));
+        return Some((role, tag.trim().to_string(), true, n));
     }
     for (open, role) in [(AGENT_OPEN, Role::Agent), (AGENT_WAS, Role::Agent), (REVIEWER_OPEN, Role::Reviewer)] {
+        let open = word(open);
         if s == open {
-            return Some((role, String::new(), false));
+            return Some((role, String::new(), false, n));
         }
         if let Some(rest) = s.strip_prefix(open).and_then(|r| r.strip_prefix(' ')) {
-            return Some((role, rest.trim().to_string(), false));
+            return Some((role, rest.trim().to_string(), false, n));
         }
     }
     None
+}
+
+/// What a fence of three backticks says after them: `agent`, `reviewer`.
+fn word(open: &str) -> &str {
+    &open[FENCE_CLOSE.len()..]
+}
+
+/// Whether `st`, a line trimmed, ends a turn fenced with `n` backticks: of
+/// three, as every turn was fenced at first, a fence alone, unless one of
+/// the turn's own is open (`inner`); of more, a line of as many backticks
+/// at least, and nothing else.
+fn ends(st: &str, n: usize, inner: bool) -> bool {
+    match n {
+        3 => st == FENCE_CLOSE && !inner,
+        n => st.len() >= n && st.chars().all(|c| c == '`'),
+    }
+}
+
+/// A turn fenced: `open`'s words (`agent answer`, `reviewer ann`) after the
+/// fence on its first line, then `body`, between fences of three backticks,
+/// or of one more than the most that start a line of `body`, so that none
+/// of its own fences ends it.
+pub fn fenced(open: &str, body: &str) -> String {
+    let most = body.lines().map(ticks).max().unwrap_or(0);
+    let fence = "`".repeat(if most >= 3 { most + 1 } else { 3 });
+    format!("{fence}{open}\n{body}\n{fence}")
 }
 
 /// A fenced turn, closed: what its fence held. A deleted turn's lines are
@@ -100,7 +141,7 @@ fn closed(role: Role, tag: &str, deleted: bool, body: &[&str]) -> Turn {
 pub fn all_turns(text: &str) -> Vec<Turn> {
     let mut turns = Vec::new();
     let mut mine: Vec<&str> = Vec::new();
-    let mut open: Option<(Role, String, bool, Vec<&str>)> = None;
+    let mut open: Option<(Role, String, bool, usize, Vec<&str>)> = None;
     let mut inner = false;
 
     let flush = |turns: &mut Vec<Turn>, mine: &mut Vec<&str>| {
@@ -120,20 +161,20 @@ pub fn all_turns(text: &str) -> Vec<Turn> {
         let st = line.trim();
         match &mut open {
             None => {
-                if let Some((role, tag, deleted)) = fence(line) {
+                if let Some((role, tag, deleted, n)) = fence(line) {
                     flush(&mut turns, &mut mine);
-                    open = Some((role, tag, deleted, Vec::new()));
+                    open = Some((role, tag, deleted, n, Vec::new()));
                     inner = false;
                 } else {
                     mine.push(line);
                 }
             }
-            Some((role, tag, deleted, body)) => {
-                if st == FENCE_CLOSE && !inner {
+            Some((role, tag, deleted, n, body)) => {
+                if ends(st, *n, inner) {
                     turns.push(closed(*role, tag, *deleted, body));
                     open = None;
                 } else {
-                    if st.starts_with(FENCE_CLOSE) {
+                    if *n == 3 && st.starts_with(FENCE_CLOSE) {
                         inner = !inner;
                     }
                     body.push(line);
@@ -142,7 +183,7 @@ pub fn all_turns(text: &str) -> Vec<Turn> {
         }
     }
     match open {
-        Some((role, tag, deleted, body)) => turns.push(closed(role, &tag, deleted, &body)),
+        Some((role, tag, deleted, _, body)) => turns.push(closed(role, &tag, deleted, &body)),
         None => flush(&mut turns, &mut mine),
     }
     turns.retain(|t| !t.body.is_empty());
@@ -192,16 +233,13 @@ pub fn render_thread(turns: &[Turn]) -> String {
             }
             let open = match t.role {
                 Role::You => return t.body.clone(),
-                Role::Agent => AGENT_OPEN,
-                Role::Reviewer => REVIEWER_OPEN,
+                Role::Agent => word(AGENT_OPEN),
+                Role::Reviewer => word(REVIEWER_OPEN),
             };
-            let tag = t.tag.as_deref().unwrap_or("");
-            let open = if tag.is_empty() {
-                open.to_string()
-            } else {
-                format!("{open} {tag}")
-            };
-            format!("{open}\n{}\n{FENCE_CLOSE}", t.body)
+            match t.tag.as_deref().unwrap_or("") {
+                "" => fenced(open, &t.body),
+                tag => fenced(&format!("{open} {tag}"), &t.body),
+            }
         })
         .collect::<Vec<_>>()
         .join("\n")
@@ -351,26 +389,26 @@ pub enum LineRole {
 /// What each of `lines` is: yours, claude's or a reviewer's, or a fence.
 pub fn thread_line_roles(lines: &[String]) -> Vec<LineRole> {
     let mut roles = Vec::new();
-    let mut open: Option<Role> = None;
+    let mut open: Option<(Role, usize)> = None;
     let mut inner = false;
     for line in lines {
         let st = line.trim();
         match open {
             None => {
-                if let Some((role, _, _)) = fence(line) {
+                if let Some((role, _, _, n)) = fence(line) {
                     roles.push(LineRole::Fence);
-                    open = Some(role);
+                    open = Some((role, n));
                     inner = false;
                 } else {
                     roles.push(LineRole::You);
                 }
             }
-            Some(role) => {
-                if st == FENCE_CLOSE && !inner {
+            Some((role, n)) => {
+                if ends(st, n, inner) {
                     roles.push(LineRole::Fence);
                     open = None;
                 } else {
-                    if st.starts_with(FENCE_CLOSE) {
+                    if n == 3 && st.starts_with(FENCE_CLOSE) {
                         inner = !inner;
                     }
                     roles.push(if role == Role::Agent {
@@ -439,6 +477,31 @@ mod tests {
         assert_eq!(rewind(&text, 2, &without_written(&lines.join("\n"), &lines)), None);
         // From the comment itself, the whole thread is written again.
         assert_eq!(all_turns(&rewind(&text, 0, "bye").unwrap()).len(), 1);
+    }
+
+    #[test]
+    fn a_reply_with_fences_of_its_own_is_fenced_longer_and_read_whole() {
+        // A code block whose fence names no language, as an agent writes one.
+        let reply = "Shorter:\n\n```\n  returns the list.\n```\n\nThat is all.";
+        let text = append_turn("Rewrite it.", Role::Agent, reply, Some("answer"));
+        assert!(text.contains("\n````agent answer\n") && text.ends_with("\n````"), "{text}");
+        let text = append_turn(&text, Role::You, "Thanks.", None);
+        let said: Vec<(Role, String)> = all_turns(&text).into_iter().map(|t| (t.role, t.body)).collect();
+        assert_eq!(said, [(Role::You, "Rewrite it.".into()), (Role::Agent, reply.into()), (Role::You, "Thanks.".into())]);
+        // Fences longer still in it: one more backtick than they have.
+        let text = fenced("reviewer ann", "````\nx\n````");
+        assert!(text.starts_with("`````reviewer ann\n") && text.ends_with("\n`````"), "{text}");
+        let t = &thread_turns(&text)[0];
+        assert_eq!((t.role, t.body.as_str(), t.tag.as_deref()), (Role::Reviewer, "````\nx\n````", Some("ann")));
+        // None in it: three, as ever.
+        assert_eq!(fenced("agent answer", "Seen."), "```agent answer\nSeen.\n```");
+        // The editor colours its lines as the thread reads them.
+        let lines: Vec<String> = append_turn("hi", Role::Agent, reply, Some("answer")).lines().map(String::from).collect();
+        let roles = thread_line_roles(&lines);
+        assert_eq!(roles[0], LineRole::You);
+        assert_eq!(roles[1], LineRole::Fence);
+        assert!(roles[2..roles.len() - 1].iter().all(|r| *r == LineRole::Agent), "{roles:?}");
+        assert_eq!(roles.last(), Some(&LineRole::Fence));
     }
 
     #[test]

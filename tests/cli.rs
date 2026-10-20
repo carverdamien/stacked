@@ -947,6 +947,65 @@ fn what_the_agent_brings_back_waits_for_review_and_may_be_rejected() {
 }
 
 #[test]
+fn a_reply_with_a_code_block_of_its_own_stays_the_agent_s_once_accepted() {
+    use stacked::thread::{Role, thread_turns};
+    let e = env();
+    e.ok(&["import", "s", "base"]);
+    let id = comment(&e, &["Rewrite", "it."]);
+    // Its block's fence names no language, as the agent writes it.
+    let reply = "Shorter:\n\n```\n  returns the list.\n```\n\nThat is all.";
+    let claude = fake_claude(&e, "claude-code.sh", "", &serde_json::json!({"replies": {"c1": reply}}).to_string());
+    let (fine, _, err) = send(&e, &claude, &[&id, "--answer-only"], &[]);
+    assert!(fine, "{err}");
+    let text = Db::load(&e.db).unwrap().find_note("s", &id).unwrap().text.clone();
+    let turns: Vec<(Role, String)> = thread_turns(&text).into_iter().map(|t| (t.role, t.body)).collect();
+    assert_eq!(turns, [(Role::You, "Rewrite it.".to_string()), (Role::Agent, reply.to_string())], "{text}");
+}
+
+#[test]
+fn a_reply_ended_by_its_own_fence_is_repaired_whole() {
+    use stacked::thread::thread_turns;
+    let e = env();
+    e.ok(&["import", "s", "base"]);
+    let id = comment(&e, &["Rewrite", "it."]);
+    // A reply with a code block of its own, written into its thread as it
+    // was before such replies were fenced longer: its block's fence ends it.
+    let reply = "Shorter:\n\n```\n  returns the list.\n```\n\nThat is all.";
+    Db::edit(&e.db, |d| {
+        let n = d.find_note("s", &id)?.clone();
+        d.add_run(stacked::db::Run {
+            id: "r1".into(),
+            what: "answer".into(),
+            stack: "s".into(),
+            state: RunState::Done,
+            held: Some(stacked::held::Held {
+                replies: vec![stacked::held::Reply {
+                    change: n.change.clone(),
+                    id: n.id.clone(),
+                    text: reply.into(),
+                    tag: "answer".into(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }),
+            ..Default::default()
+        })?;
+        let text = format!("{}\n```agent answer\n{reply}\n```", n.text);
+        d.set_note(stacked::db::Note { text, ..n })
+    })
+    .unwrap();
+    let text = |e: &Env| Db::load(&e.db).unwrap().find_note("s", &id).unwrap().text.clone();
+    assert_eq!(thread_turns(&text(&e)).len(), 3, "the reply's tail read as yours");
+    let out = e.ok(&["repair"]);
+    assert!(out.contains("its replies' own fences no longer end them"), "{out}");
+    let turns = thread_turns(&text(&e));
+    assert_eq!(turns.len(), 2, "{turns:?}");
+    assert_eq!((turns[1].role, turns[1].body.as_str()), (stacked::thread::Role::Agent, reply));
+    // Once is enough.
+    assert_eq!(e.ok(&["repair"]), "nothing to repair\n");
+}
+
+#[test]
 fn several_asks_wait_their_turn() {
     let e = env();
     e.ok(&["import", "s", "base"]);

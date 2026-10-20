@@ -1084,7 +1084,13 @@ by its line number, its rev: `@12`.
   undo, redo, a stack picked from the tree, a delete.
 - A comment record is the whole comment as it is now; its earlier records
   are its history. The agent's turns are fenced ```` ```agent ````
-  (```` ```claude ````, as the first files have them, reads the same). A
+  (```` ```claude ````, as the first files have them, reads the same), and
+  a reviewer's ```` ```reviewer ````; a turn holding fences of its own (a
+  code block) is fenced with one backtick more than they have, and only a
+  line of as many backticks ends it. Written before that, such a turn
+  ended at its own code block's fence, the rest of it read as yours:
+  `stacked repair` writes those again whole, found by the runs that held
+  them. A
   turn deleted by stacked's first way of deleting one is fenced ````
   ```deleted ````, each line of it quoted with `>`: it is read only to be
   left out, and nothing writes one any more. A

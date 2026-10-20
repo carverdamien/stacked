@@ -385,6 +385,11 @@ enum Cmd {
     /// The lines of the database passed over, if any; and whether each
     /// stack applies.
     Check,
+    /// The threads where a reply's own code block, its fence written before
+    /// stacked fenced such replies longer, ended the reply, the rest of it
+    /// read as yours: each such reply, found by the run that held it, and
+    /// each comment opened so, written again whole.
+    Repair,
     /// Write a new database: this one, the start of its history left out.
     /// What there was before --from is the new one's start, and everything
     /// from it on follows; without --from, only what there is now. This one
@@ -1586,6 +1591,15 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
             }
             if global {
                 overridden(&dir, "agent.tools", &to);
+            }
+        }
+        Cmd::Repair => {
+            let fixed = Db::edit(path, stacked::held::repair_fences)?;
+            if fixed.is_empty() {
+                println!("nothing to repair");
+            }
+            for (c, i) in &fixed {
+                println!("{}\tits replies' own fences no longer end them", short_id(c, i));
             }
         }
         Cmd::Check => {
