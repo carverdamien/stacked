@@ -3193,6 +3193,31 @@ fn an_edit_by_hand_lands_and_its_review_opens_at_once() {
 }
 
 #[test]
+fn the_review_closes_with_what_remains_marked_only_while_something_remains() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    let run = hand_edit(&db, None);
+    app.edited(stacked::ops::Edited::Landed { said: "edited a.txt in Bug 1 - shout two".into(), run }, None, None);
+    assert_eq!(app.screen, Screen::Review);
+    let closing = |app: &App| items(app).into_iter().filter(|(l, _)| l.contains("Close")).collect::<Vec<_>>();
+    // Its change not marked yet: closed with it accepted, or rejected.
+    keys(&mut app, &[KeyCode::Esc]);
+    assert_eq!(
+        closing(&app),
+        [("Close review", false), ("Accept all remaining and Close", true), ("Reject all remaining and Close", true)].map(|(l, ok)| (l.to_string(), ok))
+    );
+    // Marked, it is closed as it is marked; nothing remains for the others.
+    choose(&mut app, "Keep reviewing");
+    keys(&mut app, &[KeyCode::Enter, KeyCode::Esc]);
+    assert_eq!(
+        closing(&app),
+        [("Close review", true), ("Accept all remaining and Close", false), ("Reject all remaining and Close", false)].map(|(l, ok)| (l.to_string(), ok))
+    );
+    choose(&mut app, "Close review");
+    assert_eq!(app.status, "reviewed: its change accepted");
+}
+
+#[test]
 fn landed_work_is_edited_by_hand_from_its_review_in_its_place() {
     use stacked::tui::WorkEdit;
     let (_tmp, db, _src) = setup();

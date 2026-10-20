@@ -636,12 +636,13 @@ impl App {
     pub(super) fn review_dialog(&self) -> Menu {
         let parts = self.review_parts();
         let done = self.reviewing.as_ref().is_some_and(|rv| parts.iter().all(|p| rv.marks.contains_key(&p.key())));
+        // Every part marked, nothing remains for the others to mark.
         let mut items = vec![
             Item::new("Save", Action::ReviewSave),
             Item::new("Discard", Action::ReviewDiscard),
             Item::new("Close review", Action::ReviewClose(None)).when(done),
-            Item::new("Accept all remaining and Close", Action::ReviewClose(Some(true))),
-            Item::new("Reject all remaining and Close", Action::ReviewClose(Some(false))),
+            Item::new("Accept all remaining and Close", Action::ReviewClose(Some(true))).when(!done),
+            Item::new("Reject all remaining and Close", Action::ReviewClose(Some(false))).when(!done),
         ];
         items.extend([Item::line(), Item::new("Keep reviewing", Action::Cancel)]);
         let run = self.reviewing.as_ref().and_then(|rv| self.db.run(&rv.run));
