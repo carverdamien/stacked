@@ -1,17 +1,20 @@
 //! Where HEAD is, in the checkout stacked runs in, against a stack: on its
 //! base with some of its patches as commits, a commit each, then maybe
 //! commits that are not the stack's; or elsewhere. A commit is a patch when
-//! its diff is, by `git patch-id`; its message may still differ. And HEAD
-//! moved to a place on the stack: detached there, the commits the checkout
-//! has that are the stack's taken as they are, the rest applied; the branch
-//! it was on as it was.
+//! its diff is, by `git patch-id`; its message may still differ, and is made
+//! the same either way: the patch's taken from the commit (an edit by hand,
+//! for your review), or the commit's from the patch (the commits from it on
+//! made again, their files as they were). And HEAD moved to a place on the
+//! stack: detached there, the commits the checkout has that are the stack's
+//! taken as they are, the rest applied; the branch it was on as it was.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::db::{Db, Patch, Result, Stack, err};
-use crate::git::{self, git, git_in};
-use crate::ops;
+use crate::git::{self, git, git_env, git_in};
+use crate::mbox::Draft;
+use crate::ops::{self, Edited};
 
 /// Where HEAD is.
 #[derive(Debug, Clone, PartialEq)]
@@ -291,6 +294,110 @@ pub fn move_to(path: &Path, name: &str, here: &Path, n: usize) -> Result<String>
         Some(b) => format!("HEAD is at {there}, detached: {b} is as it was"),
         None => format!("HEAD is at {there}, detached"),
     })
+}
+
+/// The places (from 0) of `head`'s commits whose message differs that
+/// `places` names, all of them if it names none.
+fn picked(head: &Head, places: &[usize]) -> Vec<(usize, String)> {
+    match &head.at {
+        At::Stack(on) => on.messages.iter().filter(|(k, _)| places.is_empty() || places.contains(k)).cloned().collect(),
+        At::Elsewhere => vec![],
+    }
+}
+
+/// The messages of the commits of the checkout at `here` that are stack
+/// `name`'s patches at `places` (from 0; all of those whose message differs
+/// if none), taken as those patches' own: an edit by hand, landing for your
+/// review.
+pub fn messages_to_stack(path: &Path, name: &str, here: &Path, places: &[usize]) -> Result<Edited> {
+    let db = Db::load(path)?;
+    let Some(head) = find(&db, name, here)? else {
+        return err(format!("{} is not a checkout of {name}'s repository", here.display()));
+    };
+    let taken = picked(&head, places);
+    if taken.is_empty() {
+        return Ok(Edited::Unchanged("no message differs from your checkout's: nothing changed".into()));
+    }
+    let was = db.stack(name)?.patches.clone();
+    drop(db);
+    Db::edit(path, |db| {
+        ops::may_edit(db, name, None)?;
+        if db.stack(name)?.patches != was {
+            return err(format!("{name} changed meanwhile; nothing changed"));
+        }
+        let mut patches = was.clone();
+        let mut done = Vec::new();
+        for (k, message) in &taken {
+            let old = db.patch(&patches[*k]).clone();
+            let d = Draft {
+                message: message.clone(),
+                ..Draft::from(&old)
+            };
+            if let Some((p, op)) = ops::revised(db, &patches, *k, d)? {
+                patches = p;
+                done.push(op);
+            }
+        }
+        let of = patches_said(&taken.iter().map(|(k, _)| *k).collect::<Vec<_>>());
+        let said = format!("took the message of {of} from your checkout");
+        ops::land(db, name, &was, patches, &done.join("; "), &of, &said, None)
+    })
+}
+
+/// The messages of the commits of the checkout at `here` that are stack
+/// `name`'s patches at `places` (from 0; all of those whose message differs
+/// if none) made those patches' own: those commits, and every one above
+/// them to HEAD, made again on the same files (`git commit-tree`, signed as
+/// git says), the branch HEAD is on, else HEAD, moved to them. What came of
+/// it, said.
+pub fn messages_to_checkout(path: &Path, name: &str, here: &Path, places: &[usize]) -> Result<String> {
+    let db = Db::load(path)?;
+    let s = db.stack(name)?.clone();
+    let (dir, base) = ready(&db, &s, here, "nothing changed")?;
+    let patches: Vec<&Patch> = s.patches.iter().map(|id| db.patch(id)).collect();
+    let head = locate(&dir, &base, &patches)?;
+    let put: Vec<usize> = picked(&head, places).into_iter().map(|(k, _)| k).collect();
+    let (At::Stack(on), Some(&first)) = (&head.at, put.first()) else {
+        return Ok("no message differs from the stack's: nothing changed".into());
+    };
+    // From the first to HEAD, each made again on the one before.
+    let chain: Vec<&String> = on.commits[first..].iter().chain(&on.above).collect();
+    let mut parent = match first {
+        0 => git::rev_parse(&dir, &base)?,
+        k => on.commits[k - 1].clone(),
+    };
+    for (i, c) in chain.iter().enumerate() {
+        let shown = git(&dir, &["log", "-1", "--format=%P%x00%T%x00%an%x00%ae%x00%ad%x00%B", "--date=raw", c])?;
+        let f: Vec<&str> = shown.splitn(6, '\0').collect();
+        let [parents, tree, an, ae, ad, message] = f.as_slice() else {
+            return err(format!("git log said nothing of {c}"));
+        };
+        if parents.split_whitespace().count() != 1 {
+            return err(format!("{} is a merge: its commits are not made again; nothing changed", &c[..12.min(c.len())]));
+        }
+        let message = match put.contains(&(first + i)) {
+            true => format!("{}\n", patches[first + i].message.trim_end()),
+            false => message.to_string(),
+        };
+        let env = [
+            ("GIT_AUTHOR_NAME", Path::new(an)),
+            ("GIT_AUTHOR_EMAIL", Path::new(ae)),
+            ("GIT_AUTHOR_DATE", Path::new(ad)),
+        ];
+        parent = git_env(&dir, &["commit-tree", tree, "-p", &parent, "-F", "-"], Some(&message), &env)?.trim().to_string();
+    }
+    let why = format!("stacked: the messages of {} from {name}", patches_said(&put));
+    match &head.branch {
+        Some(b) => git(&dir, &["update-ref", "-m", &why, &format!("refs/heads/{b}"), &parent, &head.commit])?,
+        None => git(&dir, &["update-ref", "--no-deref", "-m", &why, "HEAD", &parent, &head.commit])?,
+    };
+    let n = chain.len();
+    Ok(format!(
+        "{} has the stack's message of {}: {n} commit{} made again, the files as they were",
+        head.on(),
+        patches_said(&put),
+        if n == 1 { "" } else { "s" }
+    ))
 }
 
 #[cfg(test)]

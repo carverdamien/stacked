@@ -983,7 +983,8 @@ fn head_is_said_against_the_stack() {
     // The same patch, its message other: still the stack's, by its diff.
     git(&e.src, &["checkout", "-q", "--detach", "main~1"]);
     git(&e.src, &["commit", "-q", "--amend", "-m", "Bug 3 - other words"]);
-    assert!(e.ok(&["head", "s"]).ends_with("is at patch 3 of s\n"));
+    let out = e.ok(&["head", "s"]);
+    assert!(out.ends_with("is at patch 3 of s\nthe message of patch 3 differs here: \"Bug 3 - other words\"\n"), "{out}");
     // Not on the stack's base.
     git(&e.src, &["checkout", "-q", "-b", "other", "base"]);
     std::fs::write(e.src.join("d.txt"), "d\n").unwrap();
@@ -1026,6 +1027,35 @@ fn head_moves_along_the_stack_detached_its_branch_as_it_was() {
     git(&e.src, &["commit", "-q", "--amend", "-m", "Bug 1 - other words"]);
     e.ok(&["head", "s", "--to", "1"]);
     assert_eq!(git(&e.src, &["log", "-1", "--format=%s"]).trim(), "Bug 1 - change two");
+}
+
+#[test]
+fn a_message_that_differs_in_the_checkout_goes_either_way() {
+    let e = env();
+    e.ok(&["import", "s", "base"]);
+    let subject = |rev: &str| git(&e.src, &["log", "-1", "--format=%s", rev]).trim().to_string();
+    let title = "Bug 3 - café, a very long title that format-patch will fold over more than one line";
+    // A branch's top: patch 3 by its diff, its message other.
+    git(&e.src, &["checkout", "-q", "-b", "mine", "main"]);
+    git(&e.src, &["commit", "-q", "--amend", "-m", "Bug 3 - other words"]);
+    let out = e.ok(&["head", "s"]);
+    assert!(out.ends_with("is at patch 3 of s\nthe message of patch 3 differs here: \"Bug 3 - other words\"\n"), "{out}");
+    // Into the checkout: the commit made again on the same files, the
+    // branch moved to it.
+    let tree = git(&e.src, &["rev-parse", "mine^{tree}"]);
+    let out = e.ok(&["head", "s", "--messages-to-checkout"]);
+    assert!(out.starts_with("mine has the stack's message of patch 3: 1 commit made again"), "{out}");
+    assert_eq!((subject("mine"), git(&e.src, &["rev-parse", "mine^{tree}"])), (title.to_string(), tree));
+    assert!(!e.ok(&["head", "s"]).contains("differs"));
+    // Into the stack: an edit by hand, to review; accepted, the patch has it.
+    git(&e.src, &["commit", "-q", "--amend", "-m", "Bug 3 - other words"]);
+    let (fine, _, err) = e.run(&["head", "s", "--messages-to-stack", "3"]);
+    assert!(fine && err.contains("took the message of patch 3 from your checkout: it waits for your review"), "{err}");
+    e.ok(&["review", "s", "--accept-all"]);
+    assert!(e.ok(&["show", "s", "3"]).contains("Bug 3 - other words"));
+    assert!(!e.ok(&["head", "s"]).contains("differs"));
+    let (fine, _, err) = e.run(&["head", "s", "--messages-to-stack"]);
+    assert!(fine && err.contains("no message differs"), "{err}");
 }
 
 #[test]

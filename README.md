@@ -166,6 +166,17 @@ commits, those the checkout has already, message too, taken as they are;
 the branch it was on stays where it was. Not while files git tracks have
 changes, nor while the agent works in the checkout. `stacked head NAME
 --to N` moves it to N patches (0, the base).
+
+A commit of the checkout is a patch of the stack when its diff is, but its
+message may say otherwise: then `✉` follows the patch's title, and its menu
+has `Take your checkout's message`, a new version of the patch with that
+message, which lands as an edit by hand for your review, the review opening
+at once; and `Put this message on your checkout`, the commit made again with
+the patch's message, and the commits above it to HEAD on the same files,
+the branch HEAD is on moved to them (its commits are signed as git says).
+The stack's menu has both for every patch whose message differs. `stacked
+head NAME` lists them, and `--messages-to-stack [PATCH…]` and
+`--messages-to-checkout [PATCH…]` do the same, every one if none is named.
 The middle shows what the left pane's cursor is on: a patch (its message,
 then its diff, the comments under the
 lines they are on), or, on the header, the stack itself (its patches, then

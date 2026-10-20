@@ -391,8 +391,19 @@ enum Cmd {
         /// patches applied (0, the base), the commits the checkout has that
         /// are those patches taken as they are; the branch it was on as it
         /// was. Not while files git tracks have changes.
-        #[arg(long, value_name = "N")]
+        #[arg(long, value_name = "N", conflicts_with_all = ["messages_to_stack", "messages_to_checkout"])]
         to: Option<usize>,
+        /// The messages of HEAD's commits that are the stack's patches by
+        /// their diff, but not by their message, taken as those patches' own
+        /// (PATCH as `show` names it; every one whose message differs if
+        /// none): an edit by hand, landing for your review.
+        #[arg(long, num_args = 0.., value_name = "PATCH", conflicts_with = "messages_to_checkout")]
+        messages_to_stack: Option<Vec<String>>,
+        /// The other way: those commits made again with the stack's
+        /// messages, and every one above them to HEAD, their files as they
+        /// were; the branch HEAD is on moved to them.
+        #[arg(long, num_args = 0.., value_name = "PATCH")]
+        messages_to_checkout: Option<Vec<String>>,
     },
     /// The lines of the database passed over, if any; and whether each
     /// stack applies.
@@ -738,6 +749,14 @@ fn print_run(r: &stacked::db::Run) {
         format!(" \"{}\"", r.request.split_whitespace().collect::<Vec<_>>().join(" "))
     };
     println!("{}\t{}\t{} {}{req}\t{state}\t{}", r.id, time(r.time), r.what, r.stack, r.summary);
+}
+
+/// The places (from 0) of stack `name`'s patches `specs` names, as `show`
+/// takes them.
+fn places_of(path: &Path, name: &str, specs: &[String]) -> Result<Vec<usize>> {
+    let db = Db::load(path)?;
+    let s = db.stack(name)?;
+    specs.iter().map(|spec| db.resolve(s, spec)).collect()
 }
 
 /// The run of the landed work on stack `name` that `run` starts, waiting
@@ -1600,14 +1619,28 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
                 overridden(&dir, "agent.tools", &to);
             }
         }
-        Cmd::Head { name, to: Some(n) } => println!("{}", stacked::head::move_to(path, &name, &here(), n)?),
-        Cmd::Head { name, to: None } => {
+        Cmd::Head { name, messages_to_stack: Some(specs), .. } => {
+            let places = places_of(path, &name, &specs)?;
+            let done = stacked::head::messages_to_stack(path, &name, &here(), &places)?;
+            edited(path, &name, done, false)?;
+        }
+        Cmd::Head { name, messages_to_checkout: Some(specs), .. } => {
+            let places = places_of(path, &name, &specs)?;
+            println!("{}", stacked::head::messages_to_checkout(path, &name, &here(), &places)?);
+        }
+        Cmd::Head { name, to: Some(n), .. } => println!("{}", stacked::head::move_to(path, &name, &here(), n)?),
+        Cmd::Head { name, .. } => {
             let db = Db::load(path)?;
             ops::base_of(db.stack(&name)?)?;
             let Some(h) = stacked::head::find(&db, &name, &here())? else {
                 return err(format!("{} is not a checkout of {name}'s repository", here().display()));
             };
             println!("HEAD, {}, is {}", h.git_said(), h.said(&name));
+            if let stacked::head::At::Stack(on) = &h.at {
+                for (k, m) in &on.messages {
+                    println!("the message of patch {} differs here: \"{}\"", k + 1, m.lines().next().unwrap_or(""));
+                }
+            }
         }
         Cmd::Check => {
             let db = Db::load(path)?;

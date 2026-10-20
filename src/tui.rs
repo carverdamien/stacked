@@ -508,6 +508,11 @@ pub enum Action {
     /// HEAD of the checkout stacked runs in picked up to move, shown after
     /// the patch at `0`, else where it is.
     MoveHead(Option<usize>),
+    /// The message of the checkout's commit that is the patch at `0` (each
+    /// one that differs, if none) taken as the patch's own; or the patch's
+    /// put on the commit.
+    MessagesToStack(Option<usize>),
+    MessagesToCheckout(Option<usize>),
     EditPatch,
     EditCode,
     EditAgain,
@@ -666,6 +671,12 @@ fn about(action: &Action) -> String {
         Action::MovePatch => "pick this patch up and put it elsewhere in the stack".into(),
         Action::MoveHead(_) => {
             "pick HEAD of your checkout up: ↑↓ place it, Enter moves the checkout there, detached; your branch as it is".into()
+        }
+        Action::MessagesToStack(_) => {
+            "take the message of your checkout's commit as the patch's: a new version of the patch, its diff as it is, to review".into()
+        }
+        Action::MessagesToCheckout(_) => {
+            "put the patch's message on your checkout's commit: it and the commits above it made again, their files as they are; the branch moves to them".into()
         }
         Action::EditPatch => "edit this patch in $EDITOR, as mail, opened where the cursor is".into(),
         Action::EditCode => "edit this file as the patch leaves it, in $EDITOR, opened at this line".into(),
@@ -1208,8 +1219,10 @@ impl Background {
     }
 }
 
-/// What the bar says while HEAD of the checkout is being moved.
+/// What the bar says while HEAD of the checkout is being moved, or its
+/// commits made again with the stack's messages.
 const MOVING_HEAD: &str = "moving HEAD";
+const REWORDING: &str = "rewording";
 
 /// Why stack checking said no, as the bar says it.
 fn why_not(e: crate::db::Error) -> String {
@@ -1501,8 +1514,9 @@ impl App {
             Done::Said(what, said) => {
                 self.bg.doing.retain(|d| *d != what);
                 self.status = said;
-                // Moved: where HEAD is, looked at again.
-                if what == MOVING_HEAD {
+                // Moved, or its commits made again: where HEAD is, looked at
+                // again.
+                if what == MOVING_HEAD || what == REWORDING {
                     self.look_at_head();
                 }
             }
@@ -3689,6 +3703,13 @@ impl App {
                     if self.head_here().is_some() {
                         items.push(Item::new("Move HEAD…", Action::MoveHead(None)));
                     }
+                    // The patches whose message differs from their commit's.
+                    let differ = self.head_here().map(|h| h.differ()).unwrap_or_default();
+                    if !differ.is_empty() {
+                        let of = crate::head::patches_said(&differ);
+                        items.push(Item::new(format!("Take your checkout's messages of {of}"), Action::MessagesToStack(None)).when(h));
+                        items.push(Item::new(format!("Put the messages of {of} on your checkout"), Action::MessagesToCheckout(None)));
+                    }
                     items.push(Item::line());
                 }
                 if self.db.stacks().iter().any(|s| s.name != self.stack) {
@@ -3705,6 +3726,11 @@ impl App {
                 items.push(Item::new("Move this patch…", Action::MovePatch).when(h && n > 1));
                 if self.head_here().is_some() {
                     items.push(Item::new("Move HEAD…", Action::MoveHead(Some(self.sel))));
+                }
+                // Its message differs from its commit's in the checkout.
+                if self.head_here().is_some_and(|hd| hd.differ().contains(&self.sel)) {
+                    items.push(Item::new("Take your checkout's message", Action::MessagesToStack(Some(self.sel))).when(h));
+                    items.push(Item::new("Put this message on your checkout", Action::MessagesToCheckout(Some(self.sel))));
                 }
                 items.push(Item::new("Edit this patch in $EDITOR", Action::EditPatch).when(h));
                 items.push(Item::new("Drop this patch…", Action::AskDrop).when(h));
@@ -3931,6 +3957,27 @@ impl App {
                 self.focus = Focus::Diff;
             }
             Action::GoToNote => self.go_to_note(),
+            Action::MessagesToStack(at) => {
+                let places: Vec<usize> = at.into_iter().collect();
+                match crate::head::messages_to_stack(&self.path, &self.stack, &self.checkout, &places) {
+                    Ok(done) => self.edited(done, None, None),
+                    Err(e) => self.status = e.0,
+                }
+                self.look_at_head();
+            }
+            Action::MessagesToCheckout(at) => {
+                if self.bg.doing.contains(&REWORDING) {
+                    self.status = "the checkout's commits are being made again already".into();
+                } else {
+                    let places: Vec<usize> = at.into_iter().collect();
+                    self.bg.doing.push(REWORDING);
+                    self.status = "putting the stack's messages on your checkout…".into();
+                    let (path, name, here) = (self.path.clone(), self.stack.clone(), self.checkout.clone());
+                    self.spawn(move || {
+                        Done::Said(REWORDING, crate::head::messages_to_checkout(&path, &name, &here, &places).unwrap_or_else(|e| e.0))
+                    });
+                }
+            }
             Action::MoveHead(at) => {
                 let to = at.map(|at| at + 1).or_else(|| self.head_here().and_then(|h| h.patches()));
                 self.mode = Mode::MovingHead {
@@ -5823,11 +5870,16 @@ impl App {
         // Each patch's lines: its number and, compact, its stats; expanded,
         // its title whole, folded under itself where the pane is narrower;
         // its tags at the end of its first.
+        // ✉: its message differs from its commit's in the checkout.
+        let differ = self.head_here().map(|h| h.differ()).unwrap_or_default();
         let lines: Vec<Vec<String>> = order
             .iter()
             .enumerate()
             .map(|(at, &i)| {
-                let (said, tag) = self.patch_said(&s.patches[i], self.list);
+                let (said, mut tag) = self.patch_said(&s.patches[i], self.list);
+                if differ.contains(&i) {
+                    tag += " ✉";
+                }
                 let mark = if moving && at == on { " ↕".to_string() } else { format!("{:>2}", at + 1) };
                 let head = format!(" {mark} ");
                 let (head_w, tag_w) = (head.chars().count(), tag.chars().count());

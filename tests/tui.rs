@@ -1397,6 +1397,41 @@ fn head_is_moved_along_the_stack_only_once_enter_leaves_the_mode() {
 }
 
 #[test]
+fn a_patch_whose_message_differs_in_the_checkout_is_marked_and_made_the_same_either_way() {
+    let (_tmp, db, src) = setup();
+    let mut app = open(&db).unwrap();
+    let subject = || {
+        let out = Command::new("git").args(["log", "-1", "--format=%s"]).current_dir(&src).output().unwrap();
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    };
+    // The branch's top: patch 2 by its diff, its message other.
+    git(&src, &["commit", "-q", "--amend", "-m", "Bug 2 - add a bee"]);
+    app.checkout = src.clone();
+    app.look_at_head();
+    app.settle();
+    let marked = |app: &mut App| draw(app).lines().any(|l| l.contains("  2 Bug 2") && l.contains("✉"));
+    assert!(marked(&mut app), "{}", draw(&mut app));
+    // Its menu has either way; the stack's, for every one.
+    keys(&mut app, &[KeyCode::Down, KeyCode::Char(' ')]);
+    let all: Vec<String> = items(&app).into_iter().map(|(l, _)| l).collect();
+    assert!(all.contains(&"Take your checkout's message".into()) && all.contains(&"Put this message on your checkout".into()), "{all:?}");
+    keys(&mut app, &[KeyCode::Esc]);
+    // Put on the checkout: its commit made again, the mark gone.
+    choose(&mut app, "Put this message on your checkout");
+    app.settle();
+    assert!(app.status.starts_with("main has the stack's message of patch 2"), "{}", app.status);
+    assert_eq!(subject(), "Bug 2 - add b");
+    assert!(!marked(&mut app));
+    // Taken into the stack: an edit by hand, its review open at once.
+    git(&src, &["commit", "-q", "--amend", "-m", "Bug 2 - add a bee"]);
+    app.look_at_head();
+    app.settle();
+    choose(&mut app, "Take your checkout's message");
+    assert_eq!(app.screen, Screen::Review);
+    assert_eq!(app.status, "took the message of patch 2 from your checkout: it waits for your review");
+}
+
+#[test]
 fn the_agent_s_reply_waits_for_review_and_enter_takes_it() {
     let (_tmp, db, _src) = setup();
     let mut app = open(&db).unwrap();

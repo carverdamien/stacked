@@ -144,7 +144,7 @@ pub fn edited_from(db: &Db, name: &str, work: Option<&str>) -> Result<Stack> {
 /// it changes), for your review: in place of `work`, if it edits it. What
 /// came of it: nothing, if they are the patches it started from, `was`.
 #[allow(clippy::too_many_arguments)]
-fn land(db: &mut Db, name: &str, was: &[String], patches: Vec<String>, op: &str, of: &str, said: &str, work: Option<&str>) -> Result<Edited> {
+pub(crate) fn land(db: &mut Db, name: &str, was: &[String], patches: Vec<String>, op: &str, of: &str, said: &str, work: Option<&str>) -> Result<Edited> {
     if patches == was {
         return Ok(Edited::Unchanged("nothing changed".into()));
     }
@@ -154,7 +154,7 @@ fn land(db: &mut Db, name: &str, was: &[String], patches: Vec<String>, op: &str,
 
 /// `patches` with `d` the new version of the one at `at`, stored, and the
 /// edit as the history says it; none when it is the same.
-fn revised(db: &mut Db, patches: &[String], at: usize, d: Draft) -> Result<Option<(Vec<String>, String)>> {
+pub(crate) fn revised(db: &mut Db, patches: &[String], at: usize, d: Draft) -> Result<Option<(Vec<String>, String)>> {
     let old = db.patch(&patches[at]).clone();
     let id = db.add_patch(revise(&old, d))?;
     if id == old.id {
