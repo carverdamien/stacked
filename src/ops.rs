@@ -113,6 +113,68 @@ pub fn by_hand(db: &Db, name: &str) -> Result<()> {
     }
 }
 
+/// That stack `name` may be edited by hand in $EDITOR now: as `by_hand`
+/// says, unless the edit is of `work`, the landed work whose change waits
+/// for your review.
+pub fn may_edit(db: &Db, name: &str, work: Option<&str>) -> Result<()> {
+    if work.is_some_and(|w| crate::held::change_waiting(db, name).is_some_and(|r| r.id == w)) {
+        return Ok(());
+    }
+    by_hand(db, name)
+}
+
+/// What an edit by hand of stack `name` starts from: the stack as it is,
+/// or, with `work`, as the landed work run `work` holds would make it.
+pub fn edited_from(db: &Db, name: &str, work: Option<&str>) -> Result<Stack> {
+    let s = db.stack(name)?.clone();
+    let Some(id) = work else { return Ok(s) };
+    let c = db
+        .run(id)
+        .filter(|r| r.stack == name && crate::held::waiting(db, r))
+        .and_then(|r| r.held.as_ref()?.stack.clone())
+        .ok_or_else(|| Error(format!("run {id} holds no change of {name} that waits for review")))?;
+    Ok(Stack {
+        patches: c.patches,
+        base: c.base.or(s.base.clone()),
+        ..s
+    })
+}
+
+/// Lands `patches`, what an edit by hand made of stack `name` (`of`, what
+/// it changes), for your review: in place of `work`, if it edits it. What
+/// came of it: nothing, if they are the patches it started from, `was`.
+#[allow(clippy::too_many_arguments)]
+fn land(db: &mut Db, name: &str, was: &[String], patches: Vec<String>, op: &str, of: &str, said: &str, work: Option<&str>) -> Result<Edited> {
+    if patches == was {
+        return Ok(Edited::Unchanged("nothing changed".into()));
+    }
+    let run = crate::held::hold_by_hand(db, name, patches, op, of, said, work)?;
+    Ok(Edited::Landed { said: said.into(), run })
+}
+
+/// `patches` with `d` the new version of the one at `at`, stored, and the
+/// edit as the history says it; none when it is the same.
+fn revised(db: &mut Db, patches: &[String], at: usize, d: Draft) -> Result<Option<(Vec<String>, String)>> {
+    let old = db.patch(&patches[at]).clone();
+    let id = db.add_patch(revise(&old, d))?;
+    if id == old.id {
+        return Ok(None);
+    }
+    let mut out = patches.to_vec();
+    out[at] = id.clone();
+    Ok(Some((out, format!("edit {} as {}", &old.id[..8], &id[..8]))))
+}
+
+/// `c`, the conflict an edit of `work` has, if it is of landed work.
+fn of_work(c: Option<Box<Conflict>>, work: Option<&str>) -> Option<Box<Conflict>> {
+    c.map(|c| {
+        Box::new(Conflict {
+            work: work.map(String::from),
+            ..*c
+        })
+    })
+}
+
 /// Puts `d` into `name` at `at` (0 is the bottom), or on top.
 pub fn add(db: &mut Db, name: &str, d: Draft, at: Option<usize>) -> Result<String> {
     let mut patches = db.stack(name)?.patches.clone();
@@ -149,7 +211,8 @@ pub fn drop_patches(db: &mut Db, name: &str, at: &[usize]) -> Result<usize> {
     db.set_stack(name, patches, &op)
 }
 
-/// Makes `d` the new version of the patch at `at`.
+/// Makes `d` the new version of the patch at `at`, at once: not an edit
+/// by hand, which lands for review.
 pub fn replace(db: &mut Db, name: &str, at: usize, d: Draft, verb: &str) -> Result<usize> {
     let mut patches = db.stack(name)?.patches.clone();
     let old = db.patch(&patches[at]).clone();
@@ -266,17 +329,18 @@ fn strip_errors(text: &str) -> String {
 }
 
 /// Edits stack `name` as `git rebase -i` would, in $EDITOR: its todo list,
-/// then each message or patch it says to. What it comes to is checked to
+/// then each message or patch it says to; or, with `work`, the stack the
+/// landed work run `work` would make. What it comes to is checked to
 /// apply; if it does not, the list comes back with why at its top, and a
 /// patch edited before comes back as it was left. The editor runs with no
 /// lock held, so the stack is checked to be as it was before anything is
-/// written. What came of it.
-pub fn edit_stack(path: &std::path::Path, name: &str) -> Result<String> {
+/// written. It lands for your review. What came of it.
+pub fn edit_stack(path: &std::path::Path, name: &str, work: Option<&str>) -> Result<Edited> {
     use crate::todo::{self, Action};
     let db = Db::load(path)?;
     db.writable(name)?;
-    by_hand(&db, name)?;
-    let s = db.stack(name)?.clone();
+    may_edit(&db, name, work)?;
+    let s = edited_from(&db, name, work)?;
     let (rev, _) = db.head(name).unwrap();
     // What was last made of each message or patch edited.
     let mut texts: HashMap<String, String> = HashMap::new();
@@ -286,10 +350,10 @@ pub fn edit_stack(path: &std::path::Path, name: &str) -> Result<String> {
     let (lines, drafts) = loop {
         let edited = edit_text(&list, ".todo")?;
         let Some(lines) = todo::parse(&strip_errors(&edited))? else {
-            return Ok("the list was emptied; nothing changed".into());
+            return Ok(Edited::Unchanged("the list was emptied; nothing changed".into()));
         };
         // The agent took the stack meanwhile: the list waits in the editor.
-        if let Err(e) = Db::load(path).and_then(|now| by_hand(&now, name)) {
+        if let Err(e) = Db::load(path).and_then(|now| may_edit(&now, name, work)) {
             list = with_error(&e.0, &edited, "save again once the agent's work has landed, or empty the list to give up");
             continue;
         }
@@ -338,8 +402,8 @@ pub fn edit_stack(path: &std::path::Path, name: &str) -> Result<String> {
         }
     };
     Db::edit(path, |db| {
-        by_hand(db, name)?;
-        if db.head(name).map(|(r, _)| r) != Some(rev) {
+        may_edit(db, name, work)?;
+        if db.head(name).map(|(r, _)| r) != Some(rev) || edited_from(db, name, work)?.patches != s.patches {
             return err(format!("{name} changed while it was being edited; nothing changed"));
         }
         let mut patches = Vec::new();
@@ -364,11 +428,8 @@ pub fn edit_stack(path: &std::path::Path, name: &str) -> Result<String> {
         } else {
             verbs.join(", ")
         };
-        Ok(if db.set_stack(name, patches, &op)? == rev {
-            "nothing changed".to_string()
-        } else {
-            op
-        })
+        let said = format!("the stack edited as a list: {op}");
+        land(db, name, &s.patches, patches, &op, "the stack", &said, work)
     })
 }
 
@@ -398,23 +459,26 @@ pub fn mail_line(p: &Patch, row: &crate::rows::Row) -> usize {
 }
 
 /// Edits the patch at `at` of stack `name` in the editor, as mail, opened
-/// at `line` if one is given. If it no longer applies, or cannot be read,
-/// it comes back with why at its top. What came of it.
-pub fn edit_patch(path: &std::path::Path, name: &str, at: usize, line: Option<usize>) -> Result<String> {
+/// at `line` if one is given; with `work`, as the landed work run `work`
+/// would make it. If it no longer applies, or cannot be read, it comes
+/// back with why at its top. It lands for your review. What came of it.
+pub fn edit_patch(path: &std::path::Path, name: &str, at: usize, line: Option<usize>, work: Option<&str>) -> Result<Edited> {
     let db = Db::load(path)?;
     db.writable(name)?;
-    by_hand(&db, name)?;
-    let s = db.stack(name)?.clone();
-    let old = db.patch(&s.patches[at]).clone();
+    may_edit(&db, name, work)?;
+    let s = edited_from(&db, name, work)?;
+    let Some(old) = s.patches.get(at).map(|id| db.patch(id).clone()) else {
+        return err(format!("{name} has {} patches", s.patches.len()));
+    };
     let mut text = render(&old);
     let mut line = line;
     let draft = loop {
         let edited = strip_errors(&edit_file(&text, "edit.patch", line)?);
         if edited.trim().is_empty() {
-            return Ok("the patch was emptied; nothing changed".into());
+            return Ok(Edited::Unchanged("the patch was emptied; nothing changed".into()));
         }
         // The agent took the stack meanwhile: the edit waits in the editor.
-        if let Err(e) = Db::load(path).and_then(|now| by_hand(&now, name)) {
+        if let Err(e) = Db::load(path).and_then(|now| may_edit(&now, name, work)) {
             text = with_error(&e.0, &edited, "save again once the agent's work has landed, or empty the file to give up");
             continue;
         }
@@ -434,26 +498,25 @@ pub fn edit_patch(path: &std::path::Path, name: &str, at: usize, line: Option<us
         }
     };
     Db::edit(path, |db| {
-        by_hand(db, name)?;
-        if db.stack(name)?.patches.get(at) != Some(&old.id) {
+        may_edit(db, name, work)?;
+        let now = edited_from(db, name, work)?;
+        if now.patches.get(at) != Some(&old.id) {
             return err(format!("{name} changed while it was being edited; nothing changed"));
         }
-        let before = db.head(name).unwrap().0;
-        Ok(if replace(db, name, at, draft, "edit")? == before {
-            "nothing changed".to_string()
-        } else {
-            format!("edited {}", old.title())
-        })
+        match revised(db, &now.patches, at, draft)? {
+            None => Ok(Edited::Unchanged("nothing changed".into())),
+            Some((patches, op)) => land(db, name, &now.patches, patches, &op, &format!("patch {}", at + 1), &format!("edited {}", old.title()), work),
+        }
     })
 }
 
-/// What came of editing a patch's code.
+/// What came of an edit by hand.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Edited {
-    /// The new version is in the stack: what it was, said.
-    Done(String),
-    /// Saved as it was: nothing changed.
-    Unchanged,
+    /// It landed, held for your review in run `run`: what it was, said.
+    Landed { said: String, run: String },
+    /// Nothing changed: why, said.
+    Unchanged(String),
     /// The stack does not apply with it (why): the edit, kept to edit
     /// again; and, when a later patch no longer applies on it, the
     /// conflict to resolve by hand.
@@ -483,6 +546,8 @@ pub struct Conflict {
     pub left: bool,
     /// What the edit by hand was, said.
     pub said: String,
+    /// The landed work it edits, under review, if it edits one.
+    pub work: Option<String>,
 }
 
 /// An edit not taken, kept to edit again.
@@ -531,8 +596,10 @@ impl Place {
 /// editor at `line`, where `place` says: a copy of the file alone, or a
 /// checkout of the stack up to the patch. `again`, an edit not taken
 /// before, is where it starts from (and a commit, where it was made).
-/// What the edit makes of the patch goes in the stack once the stack is
-/// seen to apply with it.
+/// What the edit makes of the patch lands for your review once the stack
+/// is seen to apply with it. With `work`, the patch is as the landed work
+/// run `work` would make it.
+#[allow(clippy::too_many_arguments)]
 pub fn edit_code(
     path: &std::path::Path,
     name: &str,
@@ -541,12 +608,13 @@ pub fn edit_code(
     line: usize,
     place: &Place,
     again: Option<Kept>,
+    work: Option<&str>,
 ) -> Result<Edited> {
     match (place, again) {
-        (_, Some(Kept::Commit { place, commit })) => edit_in(path, name, at, file, line, &place, Some(commit)),
-        (Place::Copy, Some(Kept::Text(text))) => edit_copy(path, name, at, file, line, Some(text)),
-        (Place::Copy, None) => edit_copy(path, name, at, file, line, None),
-        (place, _) => edit_in(path, name, at, file, line, place, None),
+        (_, Some(Kept::Commit { place, commit })) => edit_in(path, name, at, file, line, &place, Some(commit), work),
+        (Place::Copy, Some(Kept::Text(text))) => edit_copy(path, name, at, file, line, Some(text), work),
+        (Place::Copy, None) => edit_copy(path, name, at, file, line, None, work),
+        (place, _) => edit_in(path, name, at, file, line, place, None, work),
     }
 }
 
@@ -561,13 +629,16 @@ fn edit_copy(
     file: &str,
     line: usize,
     text: Option<String>,
+    work: Option<&str>,
 ) -> Result<Edited> {
     let db = Db::load(path)?;
     db.writable(name)?;
-    by_hand(&db, name)?;
-    let s = db.stack(name)?.clone();
+    may_edit(&db, name, work)?;
+    let s = edited_from(&db, name, work)?;
     let (repo, base) = base_of(&s)?;
-    let old = db.patch(&s.patches[at]).clone();
+    let Some(old) = s.patches.get(at).map(|id| db.patch(id).clone()) else {
+        return err(format!("{name} has {} patches", s.patches.len()));
+    };
     let files = crate::diff::parse_diff(&old.diff, "");
     let Some(k) = files.iter().position(|f| f.path == file) else {
         return err(format!("{} does not change {file}", old.title()));
@@ -583,7 +654,7 @@ fn edit_copy(
     let short = file.rsplit('/').next().unwrap_or(file);
     let edited = edit_file(&start, short, Some(line))?;
     if edited == after {
-        return Ok(Edited::Unchanged);
+        return Ok(Edited::Unchanged("saved as it was: nothing changed".into()));
     }
     let section = file_section(&repo, fd, &from, before.as_deref(), &edited)?;
     let diff = with_section(&old.diff, k, section.as_deref());
@@ -606,23 +677,26 @@ fn edit_copy(
         return Ok(Edited::Refused {
             why: e.0.trim_end_matches("; nothing changed").to_string(),
             kept: Kept::Text(edited),
-            conflict: conflict_of(&db, &s, vec![(at, draft)], &said),
+            conflict: of_work(conflict_of(&db, &s, vec![(at, draft)], &said), work),
         });
     }
     Db::edit(path, |db| {
         // The agent took the stack meanwhile: yours is kept, to take up again.
-        if let Err(e) = by_hand(db, name) {
+        if let Err(e) = may_edit(db, name, work) {
             return Ok(Edited::Refused {
                 why: e.0,
                 kept: Kept::Text(edited.clone()),
                 conflict: None,
             });
         }
-        if db.stack(name)?.patches.get(at) != Some(&old.id) {
+        let now = edited_from(db, name, work)?;
+        if now.patches.get(at) != Some(&old.id) {
             return err(format!("{name} changed while it was being edited; nothing changed"));
         }
-        replace(db, name, at, draft, "edit")?;
-        Ok(Edited::Done(said))
+        match revised(db, &now.patches, at, draft)? {
+            None => Ok(Edited::Unchanged("nothing changed".into())),
+            Some((patches, op)) => land(db, name, &now.patches, patches, &op, &format!("patch {}", at + 1), &said, work),
+        }
     })
 }
 
@@ -633,6 +707,7 @@ fn edit_copy(
 /// or at `again`, the commit an edit not taken left. What the edit changes
 /// there (the files it tracks, and the files new since it started) is the
 /// patch's new version, its message and author as they were.
+#[allow(clippy::too_many_arguments)]
 fn edit_in(
     path: &std::path::Path,
     name: &str,
@@ -641,14 +716,17 @@ fn edit_in(
     line: usize,
     place: &Place,
     again: Option<String>,
+    work: Option<&str>,
 ) -> Result<Edited> {
     use crate::git::git;
     let db = Db::load(path)?;
     db.writable(name)?;
-    by_hand(&db, name)?;
-    let s = db.stack(name)?.clone();
+    may_edit(&db, name, work)?;
+    let s = edited_from(&db, name, work)?;
     let (repo, base) = base_of(&s)?;
-    let old = db.patch(&s.patches[at]).clone();
+    let Some(old) = s.patches.get(at).map(|id| db.patch(id).clone()) else {
+        return err(format!("{name} has {} patches", s.patches.len()));
+    };
     let dir = match place {
         Place::Checkout(d) => crate::git::checkout_of(&repo, d)?,
         Place::Worktree => crate::git::kept_worktree(&repo, name, &base)?,
@@ -685,14 +763,14 @@ fn edit_in(
     }
     let kept = |commit: String| Kept::Commit { place: place.clone(), commit };
     match taken? {
-        Taken::Unchanged => Ok(Edited::Unchanged),
+        Taken::Unchanged => Ok(Edited::Unchanged("saved as it was: nothing changed".into())),
         Taken::Refused { why, commit, conflict } => Ok(Edited::Refused {
             why,
             kept: kept(commit),
-            conflict,
+            conflict: of_work(conflict, work),
         }),
         Taken::Ready { draft, said, commit } => Db::edit(path, |db| {
-            if let Err(e) = by_hand(db, name) {
+            if let Err(e) = may_edit(db, name, work) {
                 return Ok(Edited::Refused {
                     why: e.0,
                     kept: kept(commit.clone()),
@@ -700,15 +778,18 @@ fn edit_in(
                 });
             }
             // Edited meanwhile: yours is kept, to take up again.
-            if db.stack(name)?.patches.get(at) != Some(&old.id) {
+            let now = edited_from(db, name, work);
+            let Some(now) = now.ok().filter(|now| now.patches.get(at) == Some(&old.id)) else {
                 return Ok(Edited::Refused {
                     why: format!("{name} changed while it was being edited"),
                     kept: kept(commit.clone()),
                     conflict: None,
                 });
+            };
+            match revised(db, &now.patches, at, draft.clone())? {
+                None => Ok(Edited::Unchanged("nothing changed".into())),
+                Some((patches, op)) => land(db, name, &now.patches, patches, &op, &format!("patch {}", at + 1), &said, work),
             }
-            replace(db, name, at, draft.clone(), "edit")?;
-            Ok(Edited::Done(said.clone()))
         }),
     }
 }
@@ -884,6 +965,7 @@ fn conflict_of(db: &Db, s: &Stack, edits: Vec<(usize, Draft)>, said: &str) -> Op
         text,
         left: false,
         said: said.into(),
+        work: None,
     }))
 }
 
@@ -933,10 +1015,11 @@ fn has_markers(text: &str, at: usize) -> bool {
 /// resolve again, or the next one does. `kept`, the edit by hand as it was
 /// kept, comes back with it.
 pub fn resolve(path: &std::path::Path, name: &str, c: &Conflict, kept: Kept) -> Result<Edited> {
+    let work = c.work.as_deref();
     let db = Db::load(path)?;
     db.writable(name)?;
-    by_hand(&db, name)?;
-    let s = db.stack(name)?.clone();
+    may_edit(&db, name, work)?;
+    let s = edited_from(&db, name, work)?;
     if s.patches != c.patches {
         return err(format!("{name} changed while it was being edited; nothing changed"));
     }
@@ -981,29 +1064,29 @@ pub fn resolve(path: &std::path::Path, name: &str, c: &Conflict, kept: Kept) -> 
         return Ok(Edited::Refused {
             why: e.0.trim_end_matches("; nothing changed").to_string(),
             kept: kept.clone(),
-            conflict: conflict_of(&db, &s, edits, &c.said),
+            conflict: of_work(conflict_of(&db, &s, edits, &c.said), work),
         });
     }
     let said = format!("{}, and resolved {} by hand", c.said, said_places(&edits[1..]));
     Db::edit(path, |db| {
         // The agent took the stack meanwhile: what you resolved is kept, to
         // take up again.
-        if let Err(e) = by_hand(db, name) {
+        if let Err(e) = may_edit(db, name, work) {
             return Ok(again(e.0));
         }
-        if db.stack(name)?.patches != c.patches {
+        if edited_from(db, name, work)?.patches != c.patches {
             return err(format!("{name} changed while it was being edited; nothing changed"));
         }
-        put_edits(db, name, &edits)?;
-        Ok(Edited::Done(said))
+        let (patches, op) = put_edits(db, &c.patches, &edits)?;
+        land(db, name, &c.patches, patches, &op, &said_places(&edits), &said, work)
     })
 }
 
-/// Makes each of `edits` the new version of the patch at its place, in
-/// one change of stack `name`: the first edited by hand, the others
-/// resolved.
-fn put_edits(db: &mut Db, name: &str, edits: &[(usize, Draft)]) -> Result<usize> {
-    let mut patches = db.stack(name)?.patches.clone();
+/// `patches` with each of `edits` the new version of the patch at its
+/// place, stored, as one change: the first edited by hand, the others
+/// resolved. The edit as the history says it.
+fn put_edits(db: &mut Db, patches: &[String], edits: &[(usize, Draft)]) -> Result<(Vec<String>, String)> {
+    let mut patches = patches.to_vec();
     let mut verbs = Vec::new();
     for (k, (at, d)) in edits.iter().enumerate() {
         let old = db.patch(&patches[*at]).clone();
@@ -1014,7 +1097,7 @@ fn put_edits(db: &mut Db, name: &str, edits: &[(usize, Draft)]) -> Result<usize>
             patches[*at] = id;
         }
     }
-    db.set_stack(name, patches, &verbs.join(", "))
+    Ok((patches, verbs.join(", ")))
 }
 
 /// The part of a diff for one file, `fd` as it was, made again for `new`:

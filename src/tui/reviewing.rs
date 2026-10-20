@@ -276,8 +276,12 @@ impl App {
             if crate::held::pulled(r) {
                 return format!(" pulled from Phabricator: {}", h.said());
             }
+            if crate::held::by_hand(r) {
+                return format!(" your edit by hand: {} · {}", h.said(), h.edits.join(", then "));
+            }
             let asked = if r.request.is_empty() { String::new() } else { format!(" · asked \"{}\"", r.request) };
-            format!(" the agent's work: {}{asked}", h.said())
+            let edited = if h.edits.is_empty() { String::new() } else { format!(" · then you {}", h.edits.join(", then ")) };
+            format!(" the agent's work: {}{asked}{edited}", h.said())
         });
         put(buf, list, 0, 0, list_w, &fit(&title, list_w), color::header());
         let rows = h.saturating_sub(1);
@@ -463,8 +467,12 @@ impl App {
             Item::line(),
             Item::new("Keep reviewing", Action::Cancel),
         ];
-        let pulled = self.reviewing.as_ref().and_then(|rv| self.db.run(&rv.run)).is_some_and(crate::held::pulled);
-        let of = if pulled { "the comments pulled" } else { "the agent's work" };
+        let run = self.reviewing.as_ref().and_then(|rv| self.db.run(&rv.run));
+        let of = match run {
+            Some(r) if crate::held::pulled(r) => "the comments pulled",
+            Some(r) if crate::held::by_hand(r) => "your edit by hand",
+            _ => "the agent's work",
+        };
         let mut m = Menu::new(format!("your review of {of}"), items, None);
         m.note = Some(self.review_summary());
         m

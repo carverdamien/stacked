@@ -4209,6 +4209,29 @@ impl App {
     /// The menu of an edit by hand the stack did not take, `why` said:
     /// resolve the conflict a later patch has with it, if there is one;
     /// edit it again; or throw it away.
+    /// What an edit by hand came to: landed, its review opens at once, to
+    /// accept or reject it; nothing changed, said; refused, the edit kept to
+    /// take up again (`file`, the file and line of a code edit's).
+    pub fn edited(&mut self, done: ops::Edited, file: Option<(String, usize)>) {
+        self.reload();
+        match done {
+            ops::Edited::Landed { said, run } => {
+                self.refused = None;
+                self.conflict = None;
+                self.status = format!("{said}: it waits for your review");
+                self.open_review(&run, None);
+            }
+            ops::Edited::Unchanged(why) => self.status = why,
+            ops::Edited::Refused { why, kept, conflict } => {
+                if let Some((file, line)) = file {
+                    self.refused = Some((file, line, kept));
+                }
+                self.conflict = conflict;
+                self.not_taken(why);
+            }
+        }
+    }
+
     fn not_taken(&mut self, why: String) {
         let mut items = Vec::new();
         let mut note = why;
@@ -4667,48 +4690,37 @@ impl App {
         }
         match e {
             Effect::EditPatch { line } if self.patch_id().is_some() => {
-                self.status = ops::edit_patch(&self.path, &name, self.sel, line)?
+                let done = ops::edit_patch(&self.path, &name, self.sel, line, None)?;
+                self.edited(done, None);
+                return Ok(());
             }
             Effect::EditCode { file, line, again } if self.patch_id().is_some() => {
                 let place = self.edit_place();
-                match ops::edit_code(&self.path, &name, self.sel, &file, line, &place, again)? {
-                    ops::Edited::Done(said) => self.status = said,
-                    ops::Edited::Unchanged => self.status = "saved as it was: nothing changed".into(),
-                    ops::Edited::Refused { why, kept, conflict } => {
-                        self.refused = Some((file, line, kept));
-                        self.conflict = conflict;
-                        self.reload();
-                        self.not_taken(why);
-                        return Ok(());
-                    }
-                }
+                let done = ops::edit_code(&self.path, &name, self.sel, &file, line, &place, again, None)?;
+                self.edited(done, Some((file, line)));
+                return Ok(());
             }
             Effect::Resolve => {
                 let (Some(c), Some((_, _, kept))) = (self.conflict.take(), self.refused.clone()) else {
                     return Ok(());
                 };
-                let done = ops::resolve(&self.path, &name, &c, kept);
-                self.reload();
-                match done {
-                    Ok(ops::Edited::Done(said)) => {
-                        self.refused = None;
-                        self.status = said;
-                    }
-                    Ok(ops::Edited::Refused { why, conflict, .. }) => {
-                        self.conflict = conflict;
-                        self.not_taken(why);
-                    }
-                    Ok(ops::Edited::Unchanged) => {}
+                match ops::resolve(&self.path, &name, &c, kept) {
+                    Ok(done) => self.edited(done, None),
                     // Not resolved (the editor failed, say): the conflict is
                     // as it was, to resolve again.
                     Err(e) => {
+                        self.reload();
                         self.conflict = Some(c);
                         self.not_taken(e.0);
                     }
                 }
                 return Ok(());
             }
-            Effect::EditTodo => self.status = ops::edit_stack(&self.path, &name)?,
+            Effect::EditTodo => {
+                let done = ops::edit_stack(&self.path, &name, None)?;
+                self.edited(done, None);
+                return Ok(());
+            }
             Effect::EditComment(target @ (Target::Edit { .. } | Target::Turn { .. })) => {
                 let (Target::Edit { change, id } | Target::Turn { change, id, .. }) = &target else { return Ok(()) };
                 if let Some(why) = self.locked(change, id) {

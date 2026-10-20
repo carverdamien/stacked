@@ -8,6 +8,12 @@
 //! part is, the review closes: what was accepted is applied, and the rest
 //! is dropped for good. Until then, the stack is not edited by hand if the
 //! agent changed it, and the comments it answered are not written on.
+//!
+//! Your own edits by hand land the same way, in a run of their own
+//! (`hand`), to review before they change anything. An edit made in the
+//! review of landed work replaces it: that work is rejected, and the work
+//! with your edit in it lands in its place, its replies and comments as
+//! they were.
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -30,6 +36,10 @@ pub struct Held {
     /// The comments it opened: an answer's, a build and test's findings.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub opened: Vec<Note>,
+    /// What was edited of it by hand before its review closed, each said:
+    /// an edit by hand's own, and yours of the agent's work.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub edits: Vec<String>,
 }
 
 /// A change of the stack held: the stack it makes from the one the ask
@@ -42,6 +52,10 @@ pub struct Change {
     pub op: String,
     /// What it changes, said: `patch 2`, `the stack`.
     pub of: String,
+    /// The stack it was made from, when the ask's is not it: an edit by
+    /// hand's. Only that stack takes it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<usize>,
 }
 
 /// A reply held, to comment (change, id): the agent's, or, pulled from
@@ -86,6 +100,81 @@ impl Reply {
 /// holds, the reviewers'.
 pub fn pulled(r: &Run) -> bool {
     r.what == "pull"
+}
+
+/// Whether run `r` holds an edit by hand: yours, for your review.
+pub fn by_hand(r: &Run) -> bool {
+    r.what == "hand"
+}
+
+/// The stack the change of work `r` was made from, which alone takes it.
+fn made_from(r: &Run, h: &Held) -> Option<usize> {
+    h.stack.as_ref().and_then(|c| c.from).or_else(|| crate::ask::info(r).map(|i| i.from))
+}
+
+/// Holds `patches`, what an edit by hand makes of stack `name`, for your
+/// review: nothing changes before it is accepted. `op` is what the history
+/// calls it, `of` what it changes, and `said` what the edit was. Made from
+/// the stack as it is; or, editing the work run `work` holds, from the
+/// stack that work makes, in its place: that work is rejected, and the new
+/// holds its replies and comments as they were. The new run.
+pub fn hold_by_hand(db: &mut Db, name: &str, patches: Vec<String>, op: &str, of: &str, said: &str, work: Option<&str>) -> Result<String> {
+    let id = crate::db::unique();
+    let Some(work) = work else {
+        let (from, s) = db.head(name).map(|(rev, s)| (rev, s.clone())).ok_or_else(|| Error(format!("no stack {name}")))?;
+        let held = Held {
+            at: now(),
+            stack: Some(Change {
+                patches,
+                base: s.base.clone(),
+                op: op.into(),
+                of: of.into(),
+                from: Some(from),
+            }),
+            edits: vec![said.into()],
+            ..Default::default()
+        };
+        db.add_run(Run {
+            id: id.clone(),
+            what: "hand".into(),
+            stack: name.into(),
+            state: crate::db::RunState::Done,
+            request: said.into(),
+            held: Some(held),
+            ..Default::default()
+        })?;
+        return Ok(id);
+    };
+    let (r, h, mut v) = under_review(db, work)?;
+    let c = h.stack.clone().ok_or_else(|| Error(format!("run {work} holds no change of the stack to edit")))?;
+    let mut edits = h.edits.clone();
+    edits.push(said.into());
+    let held = Held {
+        stack: Some(Change {
+            patches,
+            op: format!("{}; {op}", c.op),
+            of: if c.of == of { c.of.clone() } else { "the stack".into() },
+            from: made_from(&r, &h),
+            ..c
+        }),
+        edits,
+        ..h.clone()
+    };
+    db.add_run(Run {
+        id: id.clone(),
+        held: Some(held),
+        summary: String::new(),
+        rev: None,
+        ..r.clone()
+    })?;
+    v.closed = true;
+    v.marks.insert(Part::Stack.key(), false);
+    db.set_review(work, v)?;
+    db.add_run(Run {
+        summary: format!("reviewed: rejected for your edit of it by hand, run {id}"),
+        ..r
+    })?;
+    Ok(id)
 }
 
 /// A part of the work held, to accept or reject.
@@ -310,11 +399,11 @@ pub fn close(db: &mut Db, id: &str, marks: &BTreeMap<String, bool>, rest: Option
             }
         }
     }
-    let from = crate::ask::info(&r).map(|i| i.from);
+    let from = made_from(&r, &h);
     if let Some((_, true)) = change
         && db.head(&r.stack).map(|(rev, _)| rev) != from
     {
-        return err("the stack changed since the agent took it: its change can only be rejected");
+        return err("the stack changed since this change was made from it: it can only be rejected");
     }
     // The replies where their comments are, then the change, the comments
     // on its lines following them, then the comments opened.

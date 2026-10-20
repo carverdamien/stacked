@@ -155,7 +155,9 @@ enum Cmd {
     },
     /// Edit a stack as `git rebase -i` would; or one patch, in $EDITOR: as
     /// mail, or one of its files as the patch leaves it (--path), the patch
-    /// made again from what is saved.
+    /// made again from what is saved. The edit lands for your review, as
+    /// the agent's work does (`landed`, `review`), unless --accept takes it
+    /// at once.
     Edit {
         name: String,
         patch: Option<String>,
@@ -181,6 +183,10 @@ enum Cmd {
         /// after another, until the stack applies with all of it.
         #[arg(long, requires = "path")]
         resolve: bool,
+        /// Accept the edit at once, as `review --accept-all` would: it goes
+        /// in the stack.
+        #[arg(long)]
+        accept: bool,
     },
     /// Move a patch to another position, counting from 1 at the bottom.
     Move { name: String, patch: String, to: usize },
@@ -707,6 +713,25 @@ fn print_run(r: &stacked::db::Run) {
     println!("{}\t{}\t{} {}{req}\t{state}\t{}", r.id, time(r.time), r.what, r.stack, r.summary);
 }
 
+/// Says what an edit by hand of stack `name` came to: landed, waiting for
+/// your review, or with `accept` accepted at once; or nothing changed.
+fn edited(path: &Path, name: &str, done: ops::Edited, accept: bool) -> Result<()> {
+    match done {
+        ops::Edited::Landed { said, run } if accept => {
+            let reviewed = Db::edit(path, |db| stacked::held::close(db, &run, &Default::default(), Some(true)))?;
+            // What waited on the review may go.
+            ask::launch(path)?;
+            eprintln!("stacked: {said}: {reviewed}");
+        }
+        ops::Edited::Landed { said, run } => eprintln!(
+            "stacked: {said}: it waits for your review, as run {run}: `stacked review {name} {run} --accept-all` takes it, `stacked landed {name}` says what it holds"
+        ),
+        ops::Edited::Unchanged(why) => eprintln!("stacked: {why}"),
+        ops::Edited::Refused { why, .. } => return err(why),
+    }
+    Ok(())
+}
+
 fn run(path: &Path, cmd: Cmd) -> Result<()> {
     match cmd {
         Cmd::Open { .. } => unreachable!(),
@@ -841,13 +866,13 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
             let ps: Vec<_> = at.iter().map(|&i| db.patch(&s.patches[i])).collect();
             print!("{}", format_mbox(&ps));
         }
-        Cmd::Edit { name, patch: None, .. } => eprintln!("stacked: {}", ops::edit_stack(path, &name)?),
-        Cmd::Edit { name, patch: Some(p), line, path: None, .. } => {
+        Cmd::Edit { name, patch: None, accept, .. } => edited(path, &name, ops::edit_stack(path, &name, None)?, accept)?,
+        Cmd::Edit { name, patch: Some(p), line, path: None, accept, .. } => {
             let db = Db::load(path)?;
             let at = db.resolve(db.stack(&name)?, &p)?;
-            eprintln!("stacked: {}", ops::edit_patch(path, &name, at, line)?);
+            edited(path, &name, ops::edit_patch(path, &name, at, line, None)?, accept)?;
         }
-        Cmd::Edit { name, patch: Some(p), line, path: Some(f), place, from, resolve } => {
+        Cmd::Edit { name, patch: Some(p), line, path: Some(f), place, from, resolve, accept } => {
             let db = Db::load(path)?;
             let at = db.resolve(db.stack(&name)?, &p)?;
             let place = ops::Place::named(place.as_deref().or(db.choice(&name, "edit")).unwrap_or("tmp"));
@@ -861,7 +886,7 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
                     commit: commit.clone(),
                 }),
             };
-            let mut done = ops::edit_code(path, &name, at, &f, line.unwrap_or(1), &place, again)?;
+            let mut done = ops::edit_code(path, &name, at, &f, line.unwrap_or(1), &place, again, None)?;
             // One conflict after another, until one is left unresolved.
             while resolve
                 && let ops::Edited::Refused { kept, conflict: Some(c), .. } = &done
@@ -870,15 +895,8 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
                 done = ops::resolve(path, &name, c, kept.clone())?;
             }
             let (why, kept, conflict) = match done {
-                ops::Edited::Done(said) => {
-                    eprintln!("stacked: {said}");
-                    return Ok(());
-                }
-                ops::Edited::Unchanged => {
-                    eprintln!("stacked: saved as it was: nothing changed");
-                    return Ok(());
-                }
                 ops::Edited::Refused { why, kept, conflict } => (why, kept, conflict),
+                done => return edited(path, &name, done, accept),
             };
             let again = if resolve { " --resolve" } else { "" };
             let then = match conflict {

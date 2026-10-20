@@ -1278,6 +1278,7 @@ fn held(db: &Path, run: &str, change: &str, id: &str, text: &str, with_change: b
             base: s.base.clone(),
             op: "agent: patch 1".into(),
             of: "patch 1".into(),
+            from: None,
         });
         let reply = stacked::held::Reply {
             change: change.into(),
@@ -1296,7 +1297,7 @@ fn held(db: &Path, run: &str, change: &str, id: &str, text: &str, with_change: b
                 at: stacked::db::now(),
                 stack,
                 replies: vec![reply],
-                opened: vec![],
+                ..Default::default()
             }),
             ..Default::default()
         })
@@ -1397,6 +1398,7 @@ fn landed_work_is_reviewed_from_the_banner_part_by_part() {
                     base: s.base.clone(),
                     op: "agent: the stack".into(),
                     of: "the stack".into(),
+                    from: None,
                 }),
                 replies: vec![reply(&notes[0], "It shouts less now."), reply(&notes[1], "Left as it was.")],
                 opened: vec![Note {
@@ -1409,6 +1411,7 @@ fn landed_work_is_reviewed_from_the_banner_part_by_part() {
                     by: Some("agent".into()),
                     ..Default::default()
                 }],
+                ..Default::default()
             }),
             ..Default::default()
         })
@@ -3109,6 +3112,77 @@ fn with_work_landed_and_a_batch_the_banner_s_menu_has_all_of_it() {
     keys(&mut app, &[KeyCode::Esc, KeyCode::Up, KeyCode::Char(' ')]);
     assert_eq!(drawn_items(&app), all);
     assert!(matches!(&app.mode, Mode::Menu(m) if m.sel == 0));
+}
+
+/// What an edit by hand of patch 1 of stack `s` lands, as $EDITOR would
+/// have it: `TWO` made `Two`; in place of landed work `work`, if given.
+fn hand_edit(db: &Path, work: Option<&str>) -> String {
+    Db::edit(db, |d| {
+        let s = match work {
+            Some(w) => d.run(w).and_then(|r| r.held.as_ref()?.stack.as_ref()).map(|c| c.patches.clone()).unwrap(),
+            None => d.stack("s")?.patches.clone(),
+        };
+        let old = d.patch(&s[0]).clone();
+        let draft = stacked::mbox::Draft {
+            diff: old.diff.replace("+TWO", "+Two"),
+            ..stacked::mbox::Draft::from(&old)
+        };
+        let id = d.add_patch(stacked::ops::revise(&old, draft))?;
+        let mut patches = s.clone();
+        patches[0] = id.clone();
+        let op = format!("edit {} as {}", &old.id[..8], &id[..8]);
+        stacked::held::hold_by_hand(d, "s", patches, &op, "patch 1", "edited a.txt in Bug 1 - shout two", work)
+    })
+    .unwrap()
+}
+
+#[test]
+fn an_edit_by_hand_lands_and_its_review_opens_at_once() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    let before = Db::load(&db).unwrap().stack("s").unwrap().patches.clone();
+    // Saved in $EDITOR, it lands; the review opens on it.
+    let run = hand_edit(&db, None);
+    app.edited(stacked::ops::Edited::Landed { said: "edited a.txt in Bug 1 - shout two".into(), run: run.clone() }, None);
+    assert_eq!(app.screen, Screen::Review);
+    assert_eq!(app.status, "edited a.txt in Bug 1 - shout two: it waits for your review");
+    let screen = draw(&mut app);
+    assert!(screen.contains(" your edit by hand: a change of patch 1 · edited"), "{screen}");
+    assert!(screen.contains(" stack operations · to review") && screen.contains("modify  1 Bug 1 - shout two"), "{screen}");
+    assert!(screen.contains("+Two"), "what it does to the stack:\n{screen}");
+    assert_eq!(Db::load(&db).unwrap().stack("s").unwrap().patches, before, "nothing changed yet");
+    // Left for later: the banner says it, and the stack is not edited by
+    // hand meanwhile.
+    keys(&mut app, &[KeyCode::Esc]);
+    choose(&mut app, "Save");
+    assert_eq!(app.screen, Screen::Main);
+    let screen = draw(&mut app);
+    assert!(
+        screen.contains(" ⟳ 1 edit by hand waits for your review · the next: a change of patch 1, by hand: edited a.txt in Bug 1 - shout two"),
+        "{screen}"
+    );
+    keys(&mut app, &[KeyCode::Right]);
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    assert!(items(&app).contains(&("Edit this patch in $EDITOR".into(), false)), "{:?}", items(&app));
+    assert!(
+        matches!(&app.mode, Mode::Menu(m) if m.note.as_deref().is_some_and(|n| n.starts_with("your edit by hand of patch 1 waits for your review"))),
+        "{:?}",
+        app.mode
+    );
+    key(&mut app, KeyCode::Esc);
+    // Accepted, it is in the stack.
+    keys(&mut app, &[KeyCode::Esc]);
+    assert!(app.on_banner);
+    keys(&mut app, &[KeyCode::Enter]);
+    assert_eq!(app.screen, Screen::Review);
+    keys(&mut app, &[KeyCode::Esc]);
+    choose(&mut app, "Accept all remaining and Close");
+    assert_eq!(app.status, "reviewed: its change accepted");
+    let d = Db::load(&db).unwrap();
+    let s = d.stack("s").unwrap();
+    assert_ne!(s.patches[0], before[0]);
+    assert!(d.patch(&s.patches[0]).diff.contains("+Two"));
+    assert_eq!(s.op, d.run(&run).unwrap().held.as_ref().unwrap().stack.as_ref().unwrap().op);
 }
 
 #[test]

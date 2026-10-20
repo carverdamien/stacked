@@ -12,14 +12,28 @@ use super::reviewing::first_words;
 use super::*;
 
 /// How the work run `r` holds landed, said after what it holds: pulled
-/// from Phabricator, or what the agent was asked (cut to `room`).
+/// from Phabricator, your edit by hand, or what the agent was asked (cut
+/// to `room`), and whether you edited it by hand since.
 pub(super) fn landed_how(r: &crate::db::Run, room: usize) -> String {
     if crate::held::pulled(r) {
-        ", pulled from Phabricator".into()
-    } else if r.request.is_empty() {
-        String::new()
-    } else {
-        format!(", asked \"{}\"", short(&r.request, room))
+        return ", pulled from Phabricator".into();
+    }
+    if crate::held::by_hand(r) {
+        return format!(", by hand: {}", short(&r.request, room));
+    }
+    let mut out = if r.request.is_empty() { String::new() } else { format!(", asked \"{}\"", short(&r.request, room)) };
+    if r.held.as_ref().is_some_and(|h| !h.edits.is_empty()) {
+        out.push_str(", edited by hand");
+    }
+    out
+}
+
+/// `a`, `a and b`, `a, b and c`.
+fn and(parts: &[String]) -> String {
+    match parts {
+        [] => String::new(),
+        [one] => one.clone(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
     }
 }
 
@@ -71,13 +85,23 @@ impl App {
         let of = |n: usize, one: &str, many: &str| if n == 1 { format!("1 {one}") } else { format!("{n} {many}") };
         let mut said = Vec::new();
         if landed > 0 {
-            // The asks' work, and the reviews pulled, each counted.
-            let pulls = lines.iter().filter(|l| matches!(l, BannerLine::Landed(run) if self.db.run(run).is_some_and(crate::held::pulled))).count();
-            let what = match (landed - pulls, pulls) {
-                (asks, 0) => of(asks, "landed ask", "landed asks"),
-                (0, pulls) => of(pulls, "pull from Phabricator", "pulls from Phabricator"),
-                (asks, pulls) => format!("{} and {}", of(asks, "landed ask", "landed asks"), of(pulls, "pull from Phabricator", "pulls from Phabricator")),
+            // The asks' work, your edits by hand and the reviews pulled,
+            // each counted.
+            let kind = |is: fn(&crate::db::Run) -> bool| {
+                lines.iter().filter(|l| matches!(l, BannerLine::Landed(run) if self.db.run(run).is_some_and(is))).count()
             };
+            let (pulls, hands) = (kind(crate::held::pulled), kind(crate::held::by_hand));
+            let mut kinds = Vec::new();
+            for (n, one, many) in [
+                (landed - pulls - hands, "landed ask", "landed asks"),
+                (hands, "edit by hand", "edits by hand"),
+                (pulls, "pull from Phabricator", "pulls from Phabricator"),
+            ] {
+                if n > 0 {
+                    kinds.push(of(n, one, many));
+                }
+            }
+            let what = and(&kinds);
             let mut head = format!("{what} {} for your review", if landed == 1 { "waits" } else { "wait" });
             if let Some(BannerLine::Landed(run)) = lines.first()
                 && let Some((r, h)) = self.work(run)

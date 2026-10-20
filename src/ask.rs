@@ -233,9 +233,10 @@ pub fn waits_on(db: &Db, name: &str, way: Way) -> Option<String> {
     // A change goes from the stack as it is once the change before it is
     // reviewed.
     if way == Way::Change
-        && let Some(c) = crate::held::change_waiting(db, name).and_then(|r| r.held.as_ref()?.stack.as_ref())
+        && let Some(r) = crate::held::change_waiting(db, name)
+        && let Some(c) = r.held.as_ref().and_then(|h| h.stack.as_ref())
     {
-        return Some(format!("once you have reviewed the agent's change of {}", c.of));
+        return Some(format!("once you have reviewed {} of {}", whose_change(r), c.of));
     }
     match way {
         Way::Change if going.iter().any(|(_, i)| i.way == Way::Answer) => {
@@ -261,8 +262,18 @@ pub fn blocked(db: &Db, name: &str) -> Option<String> {
             "the agent is changing {on}: the stack can be edited by hand again once you have reviewed the agent's work"
         ));
     }
-    let of = crate::held::change_waiting(db, name)?.held.as_ref()?.stack.as_ref()?.of.clone();
-    Some(format!("the agent's change of {of} waits for your review: the stack can be edited by hand again once you have reviewed it"))
+    let r = crate::held::change_waiting(db, name)?;
+    let of = r.held.as_ref()?.stack.as_ref()?.of.clone();
+    Some(format!(
+        "{} of {of} waits for your review: the stack can be edited by hand again once you have reviewed it",
+        whose_change(r)
+    ))
+}
+
+/// Whose change of the stack run `r` holds, said: `your edit by hand`,
+/// `the agent's change`.
+pub fn whose_change(r: &Run) -> &'static str {
+    if crate::held::by_hand(r) { "your edit by hand" } else { "the agent's change" }
 }
 
 /// Where the patch of `change` is in stack `name`, from 0.
@@ -1636,6 +1647,7 @@ fn land_patch(db: &mut Db, run: &Run, i: &Info, result: &str, replies: &Map<Stri
             base: s.base.clone(),
             op,
             of: format!("patch {}", at + 1),
+            from: None,
         }),
         replies,
         ..Default::default()
@@ -1721,6 +1733,7 @@ fn land_stack(db: &mut Db, run: &Run, i: &Info, result: &str, replies: &Map<Stri
             base: Some(base),
             op: next.op,
             of: "the stack".into(),
+            from: None,
         }),
         replies,
         ..Default::default()

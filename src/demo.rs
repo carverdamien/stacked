@@ -258,6 +258,7 @@ fn agent(path: &Path, id: &str) -> Result<()> {
             base: s.base.clone(),
             op: "agent: the stack".into(),
             of: "the stack".into(),
+            from: None,
         };
         // As the game is now: it may have gone on meanwhile.
         let (reply, stack) = match plan(db, &info) {

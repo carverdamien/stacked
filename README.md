@@ -48,6 +48,7 @@ stacked edit bug123                # as `git rebase -i`: reorder, drop, reword, 
 stacked edit bug123 2 --path a.txt --line 12   # a file as patch 2 leaves it, at line 12
 stacked edit bug123 2 --path a.txt --in worktree   # ... in the stack's own worktree, .stacked/bug123/user
 stacked edit bug123 2 --line 30    # patch 2 as mail, at line 30
+stacked review bug123 --accept-all # an edit lands for review first: accepted, it goes in
 stacked comment bug123 rebase onto origin/main        # a comment on the stack
 stacked comment bug123 --patch 2 split this in two    # on a patch as a whole
 stacked comment bug123 --patch 2 --line a.txt:+TWO why?   # on one of its lines
@@ -348,7 +349,8 @@ In a checkout, what the edit changes there is the patch's new version: the
 files git tracks, and the files new since the edit started (files git
 ignores, and the ones that were there before, are left out). Its message
 and author stay as they were. Closed without saving, nothing changes. The
-new version goes in once the stack is seen to apply with it. If the patches
+new version lands for your review (below) once the stack is seen to apply
+with it. If the patches
 above no longer apply on it, it is not taken, and nothing is lost: `Edit it
 again` opens it as you left it, or `Throw the edit away`. On the command
 line, `stacked edit NAME PATCH --path FILE --line N` does the same, `--in
@@ -369,7 +371,7 @@ author as they were. Saved with the markers in, it comes back to resolve
 again. Should another file of patch 3, or a patch above it, then not apply,
 it is offered next, one conflict after another; a patch whose change merges
 with yours without a conflict opens with no markers, to look over and save.
-Once the stack applies, your edit and each patch resolved go in at once, as
+Once the stack applies, your edit and each patch resolved land together, as
 one change of the stack (`edit … as …, resolve … as …` in its history).
 `Throw the edit away` throws all of it away, and `Edit it again` goes back
 to your edit, what you resolved thrown away. A file the patch above adds or
@@ -381,6 +383,20 @@ turn after the edit; left unresolved, the edit is kept as above, and
 `Edit this patch in $EDITOR`, there or on the patch, opens the patch as
 mail at the line the cursor is on: its message, its diff. It comes back
 with why at its top if it does not apply, as an edit by hand does.
+
+An edit by hand does not go in the stack at once: it lands, as the agent's
+work does (What the agent brings back waits for your review, below), and
+its review opens as soon as it is saved: the stack operations it makes
+(`modify  1 …`), and beside them what it does to the stack, to accept or
+reject. Accepted, it goes in, as the edit of the stack it is (`edit … as …`
+in the history); rejected, nothing changes. Left for later, the banner says
+so (`⟳ 1 edit by hand waits for your review`), and as with the agent's
+change, the stack is not edited by hand again before it is reviewed. So it
+is of `Edit … here in $EDITOR`, `Edit this patch in $EDITOR`, `Edit the
+stack as a list in $EDITOR` and the conflicts resolved after them; moving, dropping,
+undo and redo change the stack at once. On the command line, `stacked edit`
+says the run the edit landed as: `stacked review NAME RUN --accept-all`
+takes it, and `stacked edit … --accept` takes it at once.
 
 The editor is told the line: `+LINE` for vi, vim, nvim, nano, emacs or kak,
 `FILE:LINE` for hx, zed or subl, `--goto FILE:LINE` for code; any other is

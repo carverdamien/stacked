@@ -251,6 +251,15 @@ esac
     );
     let (fine, _, err) = stacked_in(&e.src, &e.db, &["edit", "s"], "", &[("EDITOR", &editor)]);
     assert!(fine, "{err}");
+    // It lands for your review, as the agent's work does: the stack is as
+    // it was until it is accepted.
+    assert!(err.contains("the stack edited as a list: reword") && err.contains("it waits for your review"), "{err}");
+    assert_eq!(e.column(3).len(), 3);
+    let landed = e.ok(&["landed", "s"]);
+    assert!(landed.contains("a change of the stack") && landed.contains("change\treword"), "{landed}");
+    let (fine, _, err) = e.run(&["edit", "s", "1"]);
+    assert!(!fine && err.contains("your edit by hand of the stack waits for your review"), "one at a time: {err}");
+    e.ok(&["review", "s", "--accept-all"]);
     assert_eq!(e.column(3), ["Bug 3 - reworded", "Bug 2 - add b"]);
     let log = e.ok(&["log", "s"]);
     assert!(log.lines().last().unwrap().contains("reword"), "{log}");
@@ -443,7 +452,7 @@ fi
             why = e.root.join("why").display()
         ),
     );
-    let (fine, _, err) = stacked_in(&e.src, &e.db, &["edit", "s", "1"], "", &[("EDITOR", &editor)]);
+    let (fine, _, err) = stacked_in(&e.src, &e.db, &["edit", "s", "1", "--accept"], "", &[("EDITOR", &editor)]);
     assert!(fine, "{err}");
     let why = std::fs::read_to_string(e.root.join("why")).unwrap();
     assert!(why.contains("patch 1 (Bug 1 - change two) does not apply to its base"), "{why}");
@@ -1306,7 +1315,7 @@ fn a_patch_is_edited_where_the_cursor_is() {
         Command::new("chmod").arg("+x").arg(&vim).status().unwrap();
     };
     let edit = |extra: &[&str]| {
-        let mut all = vec!["edit", "s"];
+        let mut all = vec!["edit", "s", "--accept"];
         all.extend(extra);
         stacked_in(&e.src, &e.db, &all, "", &[("EDITOR", &vim)])
     };
@@ -1556,7 +1565,7 @@ fn a_later_patch_that_no_longer_applies_is_resolved_by_hand() {
     let shown = |n: usize| std::fs::read_to_string(e.root.join(format!("shown{n}"))).unwrap();
     let line = |n: usize| std::fs::read_to_string(e.root.join(format!("line{n}"))).unwrap().trim().to_string();
     let edit = |extra: &[&str]| {
-        let mut all = vec!["edit", "s"];
+        let mut all = vec!["edit", "s", "--accept"];
         all.extend(extra);
         stacked_in(&e.src, &e.db, &all, "", &[("EDITOR", &vim)])
     };
@@ -1632,7 +1641,7 @@ fn a_file_is_edited_in_the_stack_s_worktree_or_in_this_checkout() {
         Command::new("chmod").arg("+x").arg(&vim).status().unwrap();
     };
     let edit = |extra: &[&str]| {
-        let mut all = vec!["edit", "s"];
+        let mut all = vec!["edit", "s", "--accept"];
         all.extend(extra);
         stacked_in(&e.src, &e.db, &all, "", &[("EDITOR", &vim)])
     };
