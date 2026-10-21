@@ -295,17 +295,50 @@ pub fn fetch(conduit: &Conduit, revision: &str, source: &str) -> Result<Revision
     })
 }
 
+/// What reads one revision's comments, from `(source key, D123, link)`.
+pub type Fetch = fn(&str, &str, &str) -> Result<RevisionComments, String>;
+
+/// What reads the revisions in place of Conduit, when one is set: the
+/// tests', which never reach Phabricator, as `ask::stand_in` is for the
+/// agent.
+static STAND_IN: std::sync::Mutex<Option<Fetch>> = std::sync::Mutex::new(None);
+
+/// Reads the revisions with `fetch` rather than over Conduit; with none,
+/// over Conduit again.
+pub fn stand_in(fetch: Option<Fetch>) {
+    *STAND_IN.lock().unwrap() = fetch;
+}
+
 /// Reads the comments of every commit's revision: `revisions` is
-/// `(source key, D123, link)`.
-pub fn pull(revisions: &[(String, String, String)]) -> Result<Pulled, String> {
-    let mut out = Pulled::default();
+/// `(source key, D123, link)`. `progress` is told of each, by its place
+/// from 0, as it starts reading it.
+pub fn pull(revisions: &[(String, String, String)], progress: &mut dyn FnMut(usize)) -> Result<Pulled, String> {
+    let fake = *STAND_IN.lock().unwrap();
+    if let Some(fetch) = fake {
+        return read_each(revisions, progress, fetch);
+    }
     let mut conduits: HashMap<String, Conduit> = HashMap::new();
-    for (source, rev, url) in revisions {
+    read_each(revisions, progress, |source, rev, url| {
         let host = url.split('/').take(3).collect::<Vec<_>>().join("/");
         if !conduits.contains_key(&host) {
             conduits.insert(host.clone(), Conduit::for_url(Some(url))?);
         }
-        out.revisions.push(fetch(&conduits[&host], rev, source)?);
+        fetch(&conduits[&host], rev, source)
+    })
+}
+
+/// Reads each of `revisions` with `fetch`, `progress` told of each, by its
+/// place from 0, as it starts reading it: up to the first that fails, and
+/// what is wrong with it.
+fn read_each(
+    revisions: &[(String, String, String)],
+    progress: &mut dyn FnMut(usize),
+    mut fetch: impl FnMut(&str, &str, &str) -> Result<RevisionComments, String>,
+) -> Result<Pulled, String> {
+    let mut out = Pulled::default();
+    for (k, (source, rev, url)) in revisions.iter().enumerate() {
+        progress(k);
+        out.revisions.push(fetch(source, rev, url)?);
     }
     Ok(out)
 }
@@ -353,4 +386,36 @@ pub fn revision_of(message: &str) -> Option<(String, String)> {
         };
         Some((last.to_string(), link))
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn revisions() -> Vec<(String, String, String)> {
+        ["D1", "D2", "D3"].iter().map(|d| (format!("c{d}"), d.to_string(), format!("https://p.example/{d}"))).collect()
+    }
+
+    fn none_said(source: &str, rev: &str) -> Result<RevisionComments, String> {
+        Ok(RevisionComments {
+            revision: rev.into(),
+            source: source.into(),
+            comments: vec![],
+        })
+    }
+
+    #[test]
+    fn each_revision_is_told_as_it_starts_being_read_up_to_one_that_fails() {
+        let mut told = Vec::new();
+        let pulled = read_each(&revisions(), &mut |k| told.push(k), |source, rev, _| none_said(source, rev)).unwrap();
+        assert_eq!(told, [0, 1, 2]);
+        assert_eq!(pulled.revisions.iter().map(|r| r.revision.as_str()).collect::<Vec<_>>(), ["D1", "D2", "D3"]);
+        // One fails: none is read after it, and what is wrong is said.
+        let mut told = Vec::new();
+        let pulled = read_each(&revisions(), &mut |k| told.push(k), |source, rev, _| {
+            if rev == "D2" { Err("transaction.search: D2 is gone".into()) } else { none_said(source, rev) }
+        });
+        assert_eq!(told, [0, 1]);
+        assert_eq!(pulled, Err("transaction.search: D2 is gone".to_string()));
+    }
 }

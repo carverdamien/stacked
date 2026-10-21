@@ -146,9 +146,35 @@ pub fn file(db: &mut Db, name: &str, id: &str, revisions: usize, fetched: &std::
     Ok(run)
 }
 
+/// Where a pull is, as the banner says it while it goes.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Pulling {
+    /// Finding the revisions of the stack's patches.
+    Starting,
+    /// Reading revision `rev`, the `at`th of `of`, from 1.
+    Reading { rev: String, at: usize, of: usize },
+}
+
+impl Pulling {
+    /// What the pull is doing, said: `pulling the reviews from Phabricator:
+    /// D12, revision 2 of 3`.
+    pub fn said(&self) -> String {
+        match self {
+            Pulling::Starting => "pulling the reviews from Phabricator".into(),
+            Pulling::Reading { rev, at, of } => format!("pulling the reviews from Phabricator: {rev}, revision {at} of {of}"),
+        }
+    }
+}
+
 /// Pulls the reviews of `name`'s patches, the result a run of its own,
 /// holding what is new for review.
 pub fn pull(db_path: &std::path::Path, name: &str) -> Result<Run> {
+    pull_saying(db_path, name, &mut |_| {})
+}
+
+/// As `pull`, `say` told where it is as it goes: each revision as it starts
+/// reading it.
+pub fn pull_saying(db_path: &std::path::Path, name: &str, say: &mut dyn FnMut(Pulling)) -> Result<Run> {
     if crate::config::get().reviews.source == crate::config::Source::None {
         return crate::db::err(format!(
             "reviews come from nowhere: reviews.source is \"none\" in {}",
@@ -160,7 +186,30 @@ pub fn pull(db_path: &std::path::Path, name: &str) -> Result<Run> {
     let fetched = if revs.is_empty() {
         Err("no patch of the stack has a Differential Revision".to_string())
     } else {
-        phab::pull(&revs)
+        let of = revs.len();
+        phab::pull(&revs, &mut |k| {
+            say(Pulling::Reading {
+                rev: revs[k].1.clone(),
+                at: k + 1,
+                of,
+            })
+        })
     };
     Db::edit(db_path, |db| file(db, name, &id, revs.len(), &fetched))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn where_a_pull_is_is_said_whole() {
+        assert_eq!(Pulling::Starting.said(), "pulling the reviews from Phabricator");
+        let reading = Pulling::Reading {
+            rev: "D12".into(),
+            at: 2,
+            of: 3,
+        };
+        assert_eq!(reading.said(), "pulling the reviews from Phabricator: D12, revision 2 of 3");
+    }
 }

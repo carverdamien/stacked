@@ -1222,6 +1222,8 @@ enum Done {
     Launched(Option<String>),
     /// A pull or an apply (`what` it was): what came of it, said.
     Said(&'static str, String),
+    /// Where the pull under way is.
+    Pulling(review::Pulling),
     /// Whether stack `name` at `rev` applies: why not, if not.
     Judged {
         name: String,
@@ -1269,6 +1271,9 @@ struct Background {
     again: bool,
     /// What is being done that the bar says: pulling, applying.
     doing: Vec<&'static str>,
+    /// The pull under way: its stack, and where it is, which the banner
+    /// says.
+    pull: Option<(String, review::Pulling)>,
     /// The stack being checked, and its rev.
     judging: Option<(String, Option<usize>)>,
     /// The stacks whose agents' worktrees were made ahead, and where: their
@@ -1288,6 +1293,7 @@ impl Background {
             launching: false,
             again: false,
             doing: vec![],
+            pull: None,
             judging: None,
             precreating: vec![],
             precreated: vec![],
@@ -1599,8 +1605,16 @@ impl App {
                     self.launch();
                 }
             }
+            Done::Pulling(p) => {
+                if let Some((_, at)) = &mut self.bg.pull {
+                    *at = p;
+                }
+            }
             Done::Said(what, said) => {
                 self.bg.doing.retain(|d| *d != what);
+                if what == "pulling" {
+                    self.bg.pull = None;
+                }
                 self.status = said;
                 // Moved, or its commits made again: where HEAD is, looked at
                 // again.
@@ -2991,11 +3005,12 @@ impl App {
         match self.screen {
             Screen::Main if self.on_banner => {
                 out.push(
-                    "The banner says what waits on you on this stack, a line for each, in three sections. Read only: what landed and changes nothing, the agent's answers and the comments pulled from Phabricator. Edits: what changes the stack, the one you review now first, then those going on from it, as if you accept it, which you review after it. Nothing of it is applied before you review it. Then the batch, the comments you asked the agent about later, to send together, and every comment open, the most recently updated first, marked as the comments pane marks it, with where it stands."
+                    "The banner says what waits on you on this stack, a line for each, in three sections. Read only: what landed and changes nothing, the agent's answers and the comments pulled from Phabricator, then a pull from Phabricator under way, with the revision it reads. Edits: what changes the stack, the one you review now first, then those going on from it, as if you accept it, which you review after it. Nothing of it is applied before you review it. Then the batch, the comments you asked the agent about later, to send together, and every comment open, the most recently updated first, marked as the comments pane marks it, with where it stands."
                         .into(),
                 );
                 out.push(match self.banner_lines().get(self.banner_sel) {
                     Some(BannerLine::Landed(_)) => "Press Enter to review this one.".to_string(),
+                    Some(BannerLine::Pulling) => format!("The pull is under way: {}.", banner::PULL_BRINGS),
                     Some(BannerLine::Batch) => {
                         "Press Enter to pick what to send: the batch's edits to a single agent, its answers to a single agent or fanned out, an agent each; and which comments are in it.".into()
                     }
@@ -4595,12 +4610,17 @@ impl App {
                     self.status = "already pulling the reviews".into();
                 } else {
                     self.bg.doing.push("pulling");
+                    self.bg.pull = Some((name.clone(), review::Pulling::Starting));
                     self.status = "pulling the reviews from Phabricator…".into();
-                    let path = self.path.clone();
+                    let (path, tx) = (self.path.clone(), self.bg.tx.clone());
                     self.spawn(move || {
+                        // Where it is, as it goes: the banner says.
+                        let mut say = |p| {
+                            let _ = tx.send(Done::Pulling(p));
+                        };
                         Done::Said(
                             "pulling",
-                            match review::pull(&path, &name) {
+                            match review::pull_saying(&path, &name, &mut say) {
                                 Ok(r) => r.summary,
                                 Err(e) => e.0,
                             },
@@ -5983,6 +6003,7 @@ impl App {
             Mode::Normal if self.screen == Screen::Main && self.on_banner => {
                 let enter = match self.banner_lines().get(self.banner_sel) {
                     Some(BannerLine::Landed(_)) => "review it",
+                    Some(BannerLine::Pulling) => "say what the pull brings",
                     Some(BannerLine::Batch) => "pick what to send",
                     _ => "go to it",
                 };

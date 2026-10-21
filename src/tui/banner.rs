@@ -1,15 +1,16 @@
 //! The banner, under the top bar of the main screen: what waits on you on
 //! the stack. What landed and waits for your review (an ask's work, a
-//! pull's comments from Phabricator), the batch (the comments asked about
-//! later, to send together), and every comment open, with what the agent
-//! works on and what waits its turn: said in one line; while the cursor is
-//! on it, open, a line for each, in three sections under their titles:
-//! what landed and changes nothing (read only), then what changes the
-//! stack (edits), each the one you review now first, then those going on
-//! from an edit under review; then the batch and the comments, the most
-//! recently updated first. Enter reviews what landed, sends the batch or
-//! goes to a comment. Esc goes to it from the panes, and from it back where
-//! the cursor was.
+//! pull's comments from Phabricator), a pull from Phabricator under way and
+//! where it is, the batch (the comments asked about later, to send
+//! together), and every comment open, with what the agent works on and
+//! what waits its turn: said in one line; while the cursor is on it, open,
+//! a line for each, in three sections under their titles: what landed and
+//! changes nothing (read only), the pull under way last; then what changes
+//! the stack (edits), each the one you review now first, then those going
+//! on from an edit under review; then the batch and the comments, the most
+//! recently updated first. Enter reviews what landed, sends the batch, goes
+//! to a comment, or, on the pull under way, says what it brings. Esc goes
+//! to it from the panes, and from it back where the cursor was.
 
 use super::reviewing::first_words;
 use super::*;
@@ -31,6 +32,9 @@ pub(super) fn landed_how(r: &crate::db::Run, room: usize) -> String {
     out
 }
 
+/// What a pull under way brings, said on its banner line.
+pub(super) const PULL_BRINGS: &str = "what is new from Phabricator will wait here for your review once the pull is done";
+
 /// `a`, `a and b`, `a, b and c`.
 fn and(parts: &[String]) -> String {
     match parts {
@@ -45,6 +49,9 @@ fn and(parts: &[String]) -> String {
 pub enum BannerLine {
     /// Landed, and waiting for your review: its run.
     Landed(String),
+    /// A pull from Phabricator under way: what it brings is read only, to
+    /// review.
+    Pulling,
     /// The batch: the comments asked about later, to send.
     Batch,
     /// A comment open on the stack: (change, id).
@@ -52,11 +59,17 @@ pub enum BannerLine {
 }
 
 impl App {
+    /// The pull from Phabricator under way on the stack shown, if one is:
+    /// where it is.
+    pub(super) fn pulling(&self) -> Option<&crate::review::Pulling> {
+        self.bg.pull.as_ref().filter(|(name, _)| *name == self.stack).map(|(_, p)| p)
+    }
+
     /// What the banner lists, section by section: what landed and changes
-    /// nothing, then what changes the stack, each the first landed first,
-    /// the one you review now before those going on from an edit under
-    /// review; the batch, if there is one; then every comment open on the
-    /// stack, the most recently updated first.
+    /// nothing, then the pull under way; what changes the stack, each the
+    /// first landed first, the one you review now before those going on
+    /// from an edit under review; the batch, if there is one; then every
+    /// comment open on the stack, the most recently updated first.
     pub fn banner_lines(&self) -> Vec<BannerLine> {
         let landed = self.queue();
         let mut out: Vec<BannerLine> = Vec::new();
@@ -69,6 +82,9 @@ impl App {
                         .filter(|id| self.db.run(id).is_some_and(|r| ask::guessing(&self.db, r).is_some()) == later)
                         .map(|id| BannerLine::Landed(id.clone())),
                 );
+            }
+            if !edits && self.pulling().is_some() {
+                out.push(BannerLine::Pulling);
             }
         }
         if self.batched_count() > 0 {
@@ -94,6 +110,7 @@ impl App {
     fn banner_section(&self, l: &BannerLine) -> usize {
         match l {
             BannerLine::Landed(id) => usize::from(self.work(id).is_some_and(|(_, h)| h.stack.is_some())),
+            BannerLine::Pulling => 0,
             _ => 2,
         }
     }
@@ -113,9 +130,10 @@ impl App {
     }
 
     /// What the banner says in its line: how much landed work waits for
-    /// review, and which the next is; how many asks are batched; how much
-    /// the agent works on; how many comments wait their turn; how many are
-    /// open. None when there is none of it.
+    /// review, and which the next is; where a pull from Phabricator under
+    /// way is; how many asks are batched; how much the agent works on; how
+    /// many comments wait their turn; how many are open. None when there is
+    /// none of it.
     pub(super) fn banner(&self) -> Option<String> {
         let lines = self.banner_lines();
         let landed = lines.iter().filter(|l| matches!(l, BannerLine::Landed(_))).count();
@@ -161,6 +179,10 @@ impl App {
             }
             said.push(head);
         }
+        let pulling = self.pulling();
+        if let Some(p) = pulling {
+            said.push(format!("{}…", p.said()));
+        }
         if batched > 0 {
             said.push(of(batched, "batched ask", "batched asks"));
         }
@@ -177,11 +199,12 @@ impl App {
             return None;
         }
         // As its lines mark them, and the top bar the agents going (●).
-        let mark = match (landed, going, ready, batched) {
-            (0, 0, 0, 0) => "○",
-            (0, 0, 0, _) => "◇",
-            (0, 0, _, _) => "◌",
-            (0, _, _, _) => "●",
+        let mark = match (landed, going, pulling.is_some(), ready, batched) {
+            (0, 0, false, 0, 0) => "○",
+            (0, 0, false, 0, _) => "◇",
+            (0, 0, false, _, _) => "◌",
+            (0, 0, true, _, _) => "⇣",
+            (0, _, _, _, _) => "●",
             _ => "⟳",
         };
         Some(format!(" {mark} {}", said.join(" · ")))
@@ -310,6 +333,12 @@ impl App {
                 Some((r, h)) => format!("   ⟳ Review {}{}", h.said(), landed_how(r, 40)),
                 None => format!("   ⟳ Review {run}"),
             },
+            BannerLine::Pulling => {
+                let said = self.pulling().map(crate::review::Pulling::said).unwrap_or_default();
+                let mut c = said.chars();
+                let said = c.next().map_or(String::new(), |f| f.to_uppercase().chain(c).collect());
+                format!("   ⇣ {said}…")
+            }
             BannerLine::Batch => format!("   ◇ Send the batch… {}", self.batch_said()),
             BannerLine::Comment(change, id) => {
                 let Some(n) = self.db.note(change, id) else { return String::new() };
@@ -348,6 +377,7 @@ impl App {
         match k.code {
             KeyCode::Enter => match lines.get(self.banner_sel).cloned() {
                 Some(BannerLine::Landed(run)) => self.open_review(&run, None),
+                Some(BannerLine::Pulling) => self.status = PULL_BRINGS.into(),
                 // The whole menu, on what sends the batch.
                 Some(BannerLine::Batch) => {
                     let mut m = self.main_menu();

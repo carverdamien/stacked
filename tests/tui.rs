@@ -4820,6 +4820,104 @@ fn expanded_the_patches_say_their_titles_whole() {
     assert_eq!(pane(&mut app), ["  1 +1 −1"]);
 }
 
+/// The stand-in for Phabricator, in the test of a pull: D11 holds ann's
+/// comment; D12 none, and waits to be let go, then fails if it is told to.
+static LET_GO: std::sync::Mutex<bool> = std::sync::Mutex::new(false);
+static GONE_ON: std::sync::Condvar = std::sync::Condvar::new();
+static FAIL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn phabricator(source: &str, rev: &str, _url: &str) -> Result<stacked::phab::RevisionComments, String> {
+    if rev == "D12" {
+        let mut go = LET_GO.lock().unwrap();
+        while !*go {
+            go = GONE_ON.wait(go).unwrap();
+        }
+        if FAIL.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err("transaction.search: D12 is not there".into());
+        }
+    }
+    let ann = stacked::phab::Remote {
+        phid: "c1".into(),
+        author: "ann".into(),
+        text: "Why shout?".into(),
+        created: 1,
+        path: None,
+        line: 0,
+        line_text: None,
+        reply_to: None,
+    };
+    Ok(stacked::phab::RevisionComments {
+        revision: rev.into(),
+        source: source.into(),
+        comments: if rev == "D11" { vec![ann] } else { vec![] },
+    })
+}
+
+#[test]
+fn a_pull_from_phabricator_says_in_the_banner_where_it_is_until_it_is_done() {
+    // A stack of two patches, each on its revision.
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("src");
+    std::fs::create_dir(&src).unwrap();
+    git(&src, &["init", "-q", "-b", "main"]);
+    git(&src, &["config", "commit.gpgsign", "false"]);
+    std::fs::write(src.join("a.txt"), "one\ntwo\n").unwrap();
+    git(&src, &["add", "."]);
+    git(&src, &["commit", "-qm", "base"]);
+    std::fs::write(src.join("a.txt"), "one\nTWO\n").unwrap();
+    git(&src, &["commit", "-qam", "Bug 1 - shout two\n\nDifferential Revision: https://phabricator.example.com/D11"]);
+    std::fs::write(src.join("b.txt"), "bee\n").unwrap();
+    git(&src, &["add", "."]);
+    git(&src, &["commit", "-qm", "Bug 2 - add b\n\nDifferential Revision: https://phabricator.example.com/D12"]);
+    let db = tmp.path().join("db.jsonl");
+    stacked(&src, &db, &["import", "s", "HEAD~2"]);
+    stacked::phab::stand_in(Some(phabricator));
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Left, KeyCode::Home]);
+    choose(&mut app, "Pull reviews from Phabricator");
+    // Under way at once, before a revision is read.
+    let banner = |app: &mut App| draw(app).lines().nth(1).unwrap_or("").to_string();
+    assert!(banner(&mut app).starts_with(" ⇣ pulling the reviews from Phabricator…"), "{}", banner(&mut app));
+    assert_eq!(app.banner_lines(), [stacked::tui::BannerLine::Pulling]);
+    // D11 read, D12 being read: the banner says which.
+    let reading = " ⇣ pulling the reviews from Phabricator: D12, revision 2 of 2…";
+    for _ in 0..500 {
+        app.refresh();
+        if banner(&mut app).starts_with(reading) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(banner(&mut app).starts_with(reading), "{}", banner(&mut app));
+    // Open, its line is the read only section's.
+    keys(&mut app, &[KeyCode::Esc]);
+    let screen = draw(&mut app);
+    let rows: Vec<&str> = screen.lines().map(str::trim_end).collect();
+    assert_eq!(rows[2..4], [" read only, to review", "   ⇣ Pulling the reviews from Phabricator: D12, revision 2 of 2…"], "{screen}");
+    assert_eq!(app.hint(), "↑↓ choose · enter: say what the pull brings · space: pick one · esc: back where you were · ?: what can I do here");
+    keys(&mut app, &[KeyCode::Enter]);
+    assert_eq!(app.status, "what is new from Phabricator will wait here for your review once the pull is done");
+    // Done: its line gone, what came of it said, and what it brought waits
+    // for review.
+    *LET_GO.lock().unwrap() = true;
+    GONE_ON.notify_all();
+    app.settle();
+    assert_eq!(app.status, "1 new comment from 2 revisions: it waits for your review");
+    assert!(!app.banner_lines().contains(&stacked::tui::BannerLine::Pulling));
+    let screen = draw(&mut app);
+    assert!(!screen.contains("pulling the reviews") && screen.contains("⟳ 1 pull from Phabricator waits for your review"), "{screen}");
+    // A pull that fails: its line goes, and why is said.
+    FAIL.store(true, std::sync::atomic::Ordering::SeqCst);
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Home]);
+    choose(&mut app, "Pull reviews from Phabricator");
+    assert!(app.banner_lines().contains(&stacked::tui::BannerLine::Pulling));
+    app.settle();
+    assert_eq!(app.status, "transaction.search: D12 is not there");
+    assert!(!app.banner_lines().contains(&stacked::tui::BannerLine::Pulling));
+    assert!(!draw(&mut app).contains("pulling the reviews"));
+    stacked::phab::stand_in(None);
+}
+
 #[test]
 fn reviews_pulled_wait_in_the_banner_as_the_agent_s_work_does() {
     use stacked::phab::{Pulled, Remote, RevisionComments};

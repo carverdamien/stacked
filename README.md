@@ -717,18 +717,22 @@ A reply that goes with a change of the stack is reviewed with that change.
 
 In the editor, a banner under the top bar says what waits on you on the
 stack, in a line: what waits for your review (`⟳ 2 landed asks wait for
-your review · the next: a change of patch 2, 1 reply, asked "…"`), what
-the asks batched (`3 batched asks`), what the agent works on (`the agent
-works on 1 ask`), the comments that wait their turn (`1 comment waits its
-turn`), and how many comments are open (`5 open comments`); it is there
-while any of it is. Landing writes nothing
+your review · the next: a change of patch 2, 1 reply, asked "…"`), a pull
+from Phabricator under way and the revision it reads (`pulling the reviews
+from Phabricator: D12, revision 2 of 3…`), what the asks batched (`3
+batched asks`), what the agent works on (`the agent works on 1 ask`), the
+comments that wait their turn (`1 comment waits its turn`), and how many
+comments are open (`5 open comments`); it is there while any of it is. Landing writes nothing
 on the bottom line. Esc goes to the banner from wherever the cursor is in
 the panes, and ↑ from the stack's header goes there too; a click on it as
 well, but not the mouse going by. With the cursor on it, the banner opens,
 a line for each, in three sections under their titles. `read only, to
 review`: `⟳ Review …` for what landed and changes nothing (an answer, the
 comments pulled from Phabricator), the first landed first, then `◌ … after
-the edit under review` for those going on from it. `edits, to review`: the
+the edit under review` for those going on from it, then, while a pull from
+Phabricator is under way, `⇣ Pulling the reviews from Phabricator: D12,
+revision 2 of 3…`: what it brings waits there once it is done. `edits, to
+review`: the
 change of the stack you review now, then those going on from it, which you
 review after it. `open comments`: while there is a batch, `◇ Send the
 batch… 2 edits, 1 answer only`; then every comment open on the stack, the
@@ -1241,8 +1245,12 @@ brings it back.
 `pull`, or the menu's `Pull reviews from Phabricator`, reads the revision in
 each patch's `Differential Revision:` trailer (the settings can name
 another) over Conduit, with the token moz-phab keeps in `~/.arcrc`, or the
-settings'. What is new waits for your review, in the queue of work the
-agent's asks land in (below): nothing is filed before you accept it. Each
+settings'. While it reads them, the banner says which revision it reads
+(`⇣ pulling the reviews from Phabricator: D12, revision 2 of 3…`), and the
+top bar `pulling…`; once it is done, the bottom line says what came of it
+(`1 new comment from 3 revisions: it waits for your review`), or what went
+wrong. What is new waits for your review, in the queue of work the agent's
+asks land in (below): nothing is filed before you accept it. Each
 new thread is a comment opened, on its line, or on the patch's title for
 one on the whole revision, its replies pulled with it turns of it; a reply
 to a thread there already is a reply to it, the reviewer's turn (`ann's
