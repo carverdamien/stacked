@@ -79,6 +79,9 @@ pub struct Row {
     /// A line of a turn of a comment, as markdown reads it: what it says
     /// after the bar's indent, piece by piece, each with what it is.
     pub pieces: crate::markdown::Line,
+    /// A reference a turn of the comment attached, under the comment:
+    /// Enter previews its lines.
+    pub reference: Option<crate::refs::Ref>,
 }
 
 impl Row {
@@ -175,6 +178,8 @@ pub fn comment_rows(n: &Note, width: usize, deco: &Deco) -> Vec<Row> {
         }
     }
     let hidden = deco.writing.get(&n.id).copied().unwrap_or((usize::MAX, usize::MAX));
+    // The references the turns attach, each once, by the turn and its author.
+    let mut refs: Vec<(usize, By, crate::refs::Ref)> = Vec::new();
     for (i, t) in all_turns(&n.text).into_iter().enumerate() {
         // Deleted the first way: shown nowhere. Written in the editor: shown
         // there only.
@@ -197,14 +202,32 @@ pub fn comment_rows(n: &Note, width: usize, deco: &Deco) -> Vec<Row> {
             who: true,
             ..of(row(Kind::Comment, format!("     {BAR} {name}:"), false))
         });
-        // What they said, read as markdown.
-        for pieces in crate::markdown::render(&t.body, width.saturating_sub(9)) {
+        // What they said, read as markdown, the references it attaches kept
+        // for under the comment.
+        let (body, attached) = crate::refs::split(&t.body);
+        for r in attached {
+            if !refs.iter().any(|(_, _, had)| *had == r) {
+                refs.push((i, author.clone(), r));
+            }
+        }
+        for pieces in crate::markdown::render(&body, width.saturating_sub(9)) {
             let line: String = pieces.iter().map(|(s, _)| s.as_str()).collect();
             out.push(Row {
                 pieces,
                 ..of(row(Kind::Comment, format!("     {BAR}   {line}"), false))
             });
         }
+    }
+    // Under the comment, a line for each reference: Enter previews it.
+    for (i, author, r) in refs {
+        let said = format!("⇢ {}", r.said());
+        out.push(Row {
+            turn: Some(i),
+            by: Some(author),
+            pieces: vec![(said.clone(), crate::markdown::Mark::Link)],
+            reference: Some(r),
+            ..row(Kind::Comment, format!("     {BAR}   {said}"), false)
+        });
     }
     for line in deco.streams.get(&n.id).into_iter().flatten() {
         let line: String = line.chars().take(width.saturating_sub(7)).collect();

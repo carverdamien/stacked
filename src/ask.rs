@@ -1288,8 +1288,16 @@ fn prompt(db: &Db, i: &Info, s: &Stack, cmd: &str, run: &str) -> String {
              the commands run}, \"patches\": {its number: what building and testing it found}}."
         }
     });
+    p.push_str(REFS);
     p
 }
+
+/// What an ask is told of the references it may attach to what it writes.
+const REFS: &str = " To point at the code you mean, in the stack or out of it, anything you write \
+there may be an object instead of a string, {\"text\": what you write, \"refs\": [...]}, and a \
+comment you open may have \"refs\" too: each {\"file\": its path, \"lines\": \"120-140,200-210\", \
+\"patch\": a patch's number, for the file as that patch leaves it; 0, as the stack's base has it; \
+none, as the whole stack leaves it}. The user reads each under what you wrote, and goes there.";
 
 /// The program run as claude, when not `$STACKED_CLAUDE`'s or `claude`,
 /// and the stacked an ask calls back (`prompt`, `record`, `land`), when not
@@ -1963,7 +1971,7 @@ fn held_replies(db: &Db, i: &Info, replies: &Map<String, Value>) -> Vec<crate::h
             Some(crate::held::Reply {
                 change: sh.change.clone(),
                 id: sh.id.clone(),
-                text: replies.get(&sh.label).map(|v| str_of(Some(v)))?,
+                text: replies.get(&sh.label).map(crate::refs::written)?,
                 tag: i.way.name().into(),
                 ..Default::default()
             })
@@ -2310,7 +2318,7 @@ fn opened_notes(db: &Db, run: &Run, i: &Info, result: &str) -> Result<Vec<Note>>
             change: p.change.clone(),
             id: format!("agent:{}:{n}", run.id),
             line,
-            text: fenced("agent answer", str_of(note.get("text")).trim()),
+            text: fenced("agent answer", &crate::refs::attach(str_of(note.get("text")).trim(), &crate::refs::of_json(note.get("refs")))),
             file,
             preview: text.chars().take(80).collect(),
             by: Some("agent".into()),
@@ -2343,7 +2351,10 @@ fn test_notes(db: &Db, run: &Run, i: &Info, result: &str) -> Result<Vec<Note>> {
             change: p.change.clone(),
             id: format!("agent:{}:test:{}", run.id, at + 1),
             line: title_key(&p),
-            text: fenced("agent test", &format!("{} (tested @{})", str_of(Some(v)).trim(), i.from)),
+            text: {
+                let (found, refs) = crate::refs::text_and_refs(v);
+                fenced("agent test", &crate::refs::attach(&format!("{} (tested @{})", found.trim(), i.from), &refs))
+            },
             file: MSG_PATH.into(),
             preview: p.title().chars().take(80).collect(),
             by: Some("agent".into()),

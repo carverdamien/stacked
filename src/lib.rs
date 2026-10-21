@@ -31,6 +31,7 @@ pub mod panes;
 pub mod phab;
 pub mod progress;
 pub mod reading;
+pub mod refs;
 pub mod review;
 pub mod rows;
 pub mod search;

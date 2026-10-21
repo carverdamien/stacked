@@ -509,6 +509,18 @@ ask agent`'s:
   What it found comes back in the reply and on each patch's title, saying which
   stack it tested.
 
+Whatever it writes, a reply or a comment it opens, the agent may attach
+references to it: lines of a file, a union of ranges (`120-140,200-210`),
+as a patch leaves the file, as the stack's base has it, or as the whole
+stack leaves it, which reaches the files the stack does not touch too.
+Under the comment, a line for each: `⇢ a.txt:2-3, 10 · as patch 1 leaves
+it`. Enter on it previews those lines in a box, numbered, `⋯` between the
+ranges; Enter again goes there: to the line in its patch, when the patch's
+diff has it, else to the file whole, at that line, as it reads (Esc comes
+back). They are kept in the agent's turn as a `refs` block, a reference a
+line (`a.txt:2-3,10 @1`; `@0` the base, no `@` the whole stack), which
+`stacked comments` shows and the agent reads back in its thread.
+
 An ask goes now, or later, as in self-review's batch: above `Ask agent`
 (and `Save it and ask agent`), `Send it`, `[x] now  [ ] later`, picks when,
 kept for the stack, and Enter on it asks as the ask under it does, which

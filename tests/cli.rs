@@ -1117,6 +1117,26 @@ fn a_commit_the_agent_rewords_is_a_new_version_of_its_patch() {
 }
 
 #[test]
+fn an_agent_attaches_references_to_its_reply_and_to_the_comments_it_opens() {
+    let e = env();
+    e.ok(&["import", "s", "base"]);
+    let id = comment(&e, &["--patch", "1", "Why", "2?"]);
+    let prompts = e.root.join("prompts.txt");
+    let result = r#"{"replies": {"c1": {"text": "See there.", "refs": [{"file": "a.txt", "lines": "3,1-2", "patch": 1}, {"file": "b.txt", "lines": "1"}]}}, "comments": [{"patch": 1, "file": "a.txt", "side": "+", "line": "2", "text": "And here.", "refs": [{"file": "a.txt", "lines": "2", "patch": 0}]}]}"#;
+    let claude = fake_claude(&e, "claude-refs.sh", &format!("printf '%s' \"$2\" > {}", prompts.display()), result);
+    let (fine, out, err) = stacked_in(&e.src, &e.db, &["send", "s", &id, "--answer-only", "--wait"], "", &[("STACKED_CLAUDE", claude.as_path())]);
+    assert!(fine, "{out}{err}");
+    // Told how to attach them.
+    assert!(std::fs::read_to_string(&prompts).unwrap().contains("{\"text\": what you write, \"refs\": [...]}"));
+    // Kept in what it wrote, a refs block each, the ranges merged.
+    let d = Db::load(&e.db).unwrap();
+    let r = stacked::held::queue(&d, "s")[0].clone();
+    let h = r.held.as_ref().unwrap();
+    assert_eq!(h.replies[0].text, "See there.\n\n```refs\na.txt:1-3 @1\nb.txt:1\n```");
+    assert!(h.opened[0].text.contains("And here.\n\n```refs\na.txt:2 @0\n```"), "{}", h.opened[0].text);
+}
+
+#[test]
 fn several_asks_wait_their_turn() {
     let e = env();
     e.ok(&["import", "s", "base"]);

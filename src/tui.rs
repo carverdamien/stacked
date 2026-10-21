@@ -441,6 +441,26 @@ pub enum Mode {
     /// The stream of the comment claude is working on, opened in place;
     /// `up` lines up from its end.
     Stream { change: String, id: String, up: usize },
+    /// The lines a reference points at, previewed: Enter goes there.
+    Preview(Box<Preview>),
+}
+
+/// A reference's lines, previewed: `title` says which; `lines` are the
+/// lines, numbered, `top` the first shown; `jump`, where Enter goes.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Preview {
+    pub title: String,
+    pub lines: Vec<(String, Style)>,
+    pub top: usize,
+    pub jump: Jump,
+}
+
+/// Where a reference's preview goes: the line in its patch, when the
+/// patch's diff has it; else the file whole, at the line, as it reads.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Jump {
+    Line { change: String, key: String },
+    File { title: String, lines: Vec<(String, Style)>, at: usize },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -601,6 +621,8 @@ pub enum Action {
     /// In the review's menu: the row picking whether the comments that
     /// asked are kept open or closed when the review closes.
     AskingAll,
+    /// A reference a comment attached: its lines previewed.
+    ShowRef(Box<crate::refs::Ref>),
     Send(Way),
     /// A patch's comment sent to the whole stack: the agent may change any
     /// patch.
@@ -765,6 +787,7 @@ fn about(action: &Action) -> String {
         Action::AskSendBack => "send the work back to the agent, once you say so: what went on from it is asked again".into(),
         Action::ReviewCloseStop(_) => "close the review, and stop the build and test of the stack as it was".into(),
         Action::AskingAll => "pick whether the comments that asked are kept open or closed when the review closes: ← → or Enter".into(),
+        Action::ShowRef(_) => "preview the lines the agent points at: Enter there goes to them".into(),
         Action::Send(Way::Change) => "ask the agent, which may change the code within this comment's place".into(),
         Action::Send(Way::Answer) => "ask the agent, to answer only: nothing changes".into(),
         Action::Send(Way::Test) => "ask the agent to build and test, in the stack's build worktree, .stacked/NAME/build".into(),
@@ -2037,7 +2060,12 @@ impl App {
                                 (c.of, c.pick())
                             });
                         if let Some((of, pick)) = picked {
-                            self.pick_choice(of, pick);
+                            // The comments that asked: marked so in the review.
+                            if of == "asking" {
+                                self.mark_all_asking(pick == "close");
+                            } else {
+                                self.pick_choice(of, pick);
+                            }
                             if of == "when"
                                 && let Mode::Menu(m) = &mut self.mode
                             {
@@ -2055,6 +2083,15 @@ impl App {
             }
             Mode::Help { back, .. } => {
                 self.mode = (**back).clone();
+                return Effect::None;
+            }
+            // A reference's preview: a click in it goes there, out of it
+            // closes it.
+            Mode::Preview(_) => {
+                if matches!(spot, Some(Spot::Box)) {
+                    return press(self, KeyCode::Enter);
+                }
+                self.mode = Mode::Normal;
                 return Effect::None;
             }
             // What the agent writes, read in place: folded.
@@ -2383,6 +2420,7 @@ impl App {
         match std::mem::replace(&mut self.mode, Mode::Normal) {
             Mode::Normal | Mode::Help { .. } => {}
             Mode::Menu(m) => return self.menu_key(m, k),
+            Mode::Preview(p) => return self.preview_key(*p, k),
             Mode::Edit(e) => return self.edit_key(*e, k),
             Mode::Moving { from, to } => {
                 self.moving_key(from, to, k);
@@ -2844,6 +2882,10 @@ impl App {
             Focus::Notes => (!self.notes().is_empty()).then_some(Action::GoToNote),
             Focus::Diff if self.reading_here() => Some(Action::MarkUnread),
             Focus::Diff => {
+                // A reference a comment attached: its lines, previewed.
+                if let Some(r) = self.rows.get(self.target_row()).and_then(|row| row.reference.clone()) {
+                    return Some(Action::ShowRef(Box::new(r)));
+                }
                 if let Some(n) = self.picked() {
                     // Closed: its menu, to reopen it.
                     if self.is_closed(&n) {
@@ -2911,6 +2953,11 @@ impl App {
             }
             Mode::Stream { .. } => {
                 out.push("Press ↑↓ (pgup pgdn home end) to scroll what the agent wrote, Esc to fold it.".into());
+                return out;
+            }
+            Mode::Preview(_) => {
+                out.push("These are the lines the agent points at, numbered.".into());
+                out.push("Press Enter to go there: to the line in its patch when the patch's diff has it, else to the file whole, at that line; ↑↓ to scroll; Esc to go back.".into());
                 return out;
             }
             _ => {}
@@ -4258,6 +4305,7 @@ impl App {
             Action::AskSendBack => self.mode = Mode::Menu(self.review_send_back_ask()),
             // Its row picks in the menu itself.
             Action::AskingAll => {}
+            Action::ShowRef(r) => self.show_ref(&r),
             Action::ReviewCloseStop(rest) => {
                 let builds = ask::builds_going(&self.db, &self.stack);
                 self.review_close(rest);
@@ -5131,6 +5179,134 @@ impl App {
         self.back_to_list();
     }
 
+    /// Reference `r`, previewed: its lines numbered, `⋯` between its
+    /// ranges; Enter there goes to them.
+    fn show_ref(&mut self, r: &crate::refs::Ref) {
+        let Some(s) = self.current().cloned() else { return };
+        let text = match self.ref_file(&s, r) {
+            Ok(Some(text)) => text,
+            Ok(None) => {
+                self.status = format!("{} is not there, or is not text, {}", r.file, r.at_said());
+                return;
+            }
+            Err(e) => {
+                self.status = e.0;
+                return;
+            }
+        };
+        let all: Vec<&str> = text.lines().collect();
+        let mut lines = Vec::new();
+        for &(a, b) in &r.ranges {
+            if !lines.is_empty() {
+                lines.push(("      ⋯".to_string(), color::dim()));
+            }
+            for n in a..=b.min(all.len()) {
+                lines.push((format!("{n:>5} │ {}", all[n - 1]), Style::new()));
+            }
+        }
+        if lines.is_empty() {
+            self.status = format!("{} has {} lines, {}: none of those", r.file, all.len(), r.at_said());
+            return;
+        }
+        let jump = self.ref_jump(&s, r, &all);
+        self.mode = Mode::Preview(Box::new(Preview {
+            title: r.said(),
+            lines,
+            top: 0,
+            jump,
+        }));
+    }
+
+    /// The file reference `r` is of, as it says: as a patch of stack `s`
+    /// leaves it, as the stack's base has it, or as the whole stack leaves it.
+    fn ref_file(&self, s: &crate::db::Stack, r: &crate::refs::Ref) -> crate::db::Result<Option<String>> {
+        use crate::refs::At;
+        match r.at {
+            At::Patch(n) if (1..=s.patches.len()).contains(&n) => ops::file_at(&self.db, s, n - 1, &r.file),
+            At::Patch(n) => crate::db::err(format!("{} has no patch {n}", s.name)),
+            At::Top if !s.patches.is_empty() => ops::file_at(&self.db, s, s.patches.len() - 1, &r.file),
+            _ => {
+                let (repo, base) = ops::base_of(s)?;
+                Ok(crate::git::git(&repo, &["show", &format!("{base}:{}", r.file)]).ok())
+            }
+        }
+    }
+
+    /// Where Enter in reference `r`'s preview goes: its first line in the
+    /// patch whose diff has it, as that patch leaves the file (for the whole
+    /// stack, the last patch that touches it); else the file whole, `all`.
+    fn ref_jump(&self, s: &crate::db::Stack, r: &crate::refs::Ref, all: &[&str]) -> Jump {
+        use crate::refs::At;
+        let first = r.ranges[0].0;
+        let touches = |id: &String| {
+            let d = &self.db.patch(id).diff;
+            d.lines().any(|l| l.strip_prefix("+++ b/").or_else(|| l.strip_prefix("--- a/")) == Some(r.file.as_str()))
+        };
+        let at = match r.at {
+            At::Patch(n) => n.checked_sub(1),
+            At::Top => s.patches.iter().rposition(touches),
+            At::Base => None,
+        };
+        if let Some(p) = at.and_then(|k| s.patches.get(k)).map(|id| self.db.patch(id)) {
+            let row = patch_rows(p, &[], 80, &Deco::default()).into_iter().find(|row| {
+                row.path.as_deref() == Some(r.file.as_str()) && row.new_no == Some(first) && matches!(row.kind, Kind::Add | Kind::Ctx)
+            });
+            if let Some(key) = row.and_then(|row| row.key) {
+                return Jump::Line { change: p.change.clone(), key };
+            }
+        }
+        let lines = all.iter().enumerate().map(|(i, l)| (format!("{:>5} │ {l}", i + 1), Style::new())).collect();
+        Jump::File {
+            title: format!("{}, {}", r.file, r.at_said()),
+            lines,
+            at: first,
+        }
+    }
+
+    /// A key in a reference's preview: Enter goes there, ↑↓ scroll, Esc
+    /// goes back.
+    fn preview_key(&mut self, mut p: Preview, k: KeyEvent) -> Effect {
+        let page = (self.body_h / 2).max(1);
+        let last = p.lines.len().saturating_sub(1);
+        match k.code {
+            KeyCode::Esc => return Effect::None,
+            KeyCode::Enter => {
+                match p.jump {
+                    Jump::Line { change, key } => self.go_to_patch_line(&change, &key),
+                    Jump::File { title, lines, at } => {
+                        self.open_text(title, lines);
+                        if let Some(t) = &mut self.text {
+                            t.scroll = at.saturating_sub(4);
+                        }
+                    }
+                }
+                return Effect::None;
+            }
+            KeyCode::Down => p.top = (p.top + 1).min(last),
+            KeyCode::Up => p.top = p.top.saturating_sub(1),
+            KeyCode::PageDown => p.top = (p.top + page).min(last),
+            KeyCode::PageUp => p.top = p.top.saturating_sub(page),
+            _ => {}
+        }
+        self.mode = Mode::Preview(Box::new(p));
+        Effect::None
+    }
+
+    /// A reference's preview, in a box over the screen: its lines from the
+    /// one shown first, as many as it holds.
+    fn draw_ref_preview(&self, buf: &mut Buffer, area: Rect) {
+        let Mode::Preview(p) = &self.mode else { return };
+        let (w, h) = (area.width as usize, area.height as usize);
+        let bw = (w * 9 / 10).clamp(30.min(w), 120.min(w));
+        let bh = (p.lines.len() + 2).min((h * 2 / 3).max(5)).min(h);
+        let (x, y) = (w.saturating_sub(bw) / 2, h.saturating_sub(bh) / 2);
+        window(buf, area, x, y, bw, bh, &p.title, color::meta());
+        spot_in(&self.spots, area, (x, y, bw, bh), Spot::Box);
+        for (k, (l, st)) in p.lines.iter().skip(p.top).take(bh.saturating_sub(2)).enumerate() {
+            put(buf, area, x + 2, y + 1 + k, bw.saturating_sub(4), &fit(l, bw.saturating_sub(4)), *st);
+        }
+    }
+
     fn open_text(&mut self, title: String, lines: Vec<(String, Style)>) {
         self.text = Some(TextView {
             title,
@@ -5499,6 +5675,7 @@ impl App {
         self.draw_bar(buf, area);
         self.draw_menu(buf, body);
         self.draw_help(buf, body);
+        self.draw_ref_preview(buf, body);
         self.draw_status(buf, area);
         cursor
     }
@@ -5763,6 +5940,7 @@ impl App {
             Mode::Edit(e) if e.ed.ghosted() => format!("↑↓: read the last comment closed here · enter: a new line · {}", self.esc_does(e)),
             Mode::Edit(e) => format!("enter: a new line · {}", self.esc_does(e)),
             Mode::Help { .. } => "any key: back, and that key".into(),
+            Mode::Preview(_) => "↑↓: scroll · enter: go there · esc: back".into(),
             Mode::Stream { .. } => "↑↓: scroll · esc: fold it".into(),
             Mode::Normal if self.screen == Screen::Main && self.on_banner => {
                 let enter = match self.banner_lines().get(self.banner_sel) {

@@ -3399,6 +3399,58 @@ fn an_edit_by_hand_lands_and_its_review_opens_at_once() {
 }
 
 #[test]
+fn a_reference_the_agent_attached_is_a_line_under_the_comment_previewed_then_gone_to() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Enter]);
+    save(&mut app, "why so loud?");
+    let n = notes_of(&db, "s", 0).remove(0);
+    // The agent answers, pointing at a.txt as patch 1 leaves it: a line its
+    // diff has, and lines it has not.
+    Db::edit(&db, |d| {
+        let n = d.note(&n.change, &n.id).cloned().unwrap();
+        let said = "It shouts there.\n\n```refs\na.txt:2 @1\na.txt:20-21 @1\n```";
+        d.set_note(Note {
+            text: append_turn(&n.text, Role::Agent, said, Some("answer")),
+            ..n
+        })
+    })
+    .unwrap();
+    app.refresh();
+    let screen = draw(&mut app);
+    assert!(screen.contains("⇢ a.txt:2 · as patch 1 leaves it") && screen.contains("⇢ a.txt:20-21 · as patch 1 leaves it"), "{screen}");
+    assert!(screen.contains("It shouts there.") && !screen.contains("```refs") && !screen.contains("a.txt:2 @1"), "{screen}");
+    // Enter on the first: its line, previewed.
+    down_to(&mut app, "     ▎   ⇢ a.txt:2 ");
+    keys(&mut app, &[KeyCode::Enter]);
+    let Mode::Preview(p) = &app.mode else { panic!("{:?}", app.mode) };
+    assert_eq!(p.title, "a.txt:2 · as patch 1 leaves it");
+    assert_eq!(p.lines.iter().map(|(l, _)| l.as_str()).collect::<Vec<_>>(), ["    2 │ TWO"]);
+    assert!(draw(&mut app).contains("    2 │ TWO"));
+    assert_eq!(app.hint(), "↑↓: scroll · enter: go there · esc: back");
+    // Enter again: there, its line in patch 1's diff.
+    keys(&mut app, &[KeyCode::Enter]);
+    assert!(matches!(app.mode, Mode::Normal), "{:?}", app.mode);
+    assert!(app.rows[app.cursor].text.starts_with("+TWO"), "{}", app.rows[app.cursor].text);
+    // The other: lines patch 1's diff has not; Esc, back; Enter again, the
+    // file whole, there.
+    down_to(&mut app, "     ▎   ⇢ a.txt:20-21");
+    keys(&mut app, &[KeyCode::Enter]);
+    let Mode::Preview(p) = &app.mode else { panic!("{:?}", app.mode) };
+    assert_eq!(p.lines.iter().map(|(l, _)| l.as_str()).collect::<Vec<_>>(), ["   20 │ line 17", "   21 │ line 18"]);
+    keys(&mut app, &[KeyCode::Esc]);
+    assert!(matches!(app.mode, Mode::Normal), "{:?}", app.mode);
+    keys(&mut app, &[KeyCode::Enter, KeyCode::Enter]);
+    assert_eq!(app.screen, Screen::Text);
+    let t = app.text.as_ref().unwrap();
+    assert_eq!(t.title, "a.txt, as patch 1 leaves it");
+    assert_eq!(t.lines[19].0, "   20 │ line 17");
+    assert_eq!(t.scroll, 16);
+}
+
+#[test]
 fn leaving_a_review_picks_whether_the_asking_comment_closes_above_accept_and_reject_all() {
     let (_tmp, db, _src) = setup();
     let mut app = open(&db).unwrap();
