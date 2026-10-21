@@ -1186,7 +1186,9 @@ written is never changed: patches, every state of every stack, which state
 each stack is on, comments and their replies, every run (an ask, an apply,
 a pull) with what came of it, every line the agent wrote while it worked,
 what each stack's comments pane shows, and what is read. A record is named
-by its line number, its rev: `@12`.
+by its place among the records, its rev: `@12`. The first line, the
+header, is `@1`: it says the file's format, and is 128 bytes long, padded
+with spaces.
 
 - A patch is stored once, by the sha1 of its content. An edited patch is a
   new patch with the same change, so `versions` and `interdiff` can follow a
@@ -1213,11 +1215,19 @@ by its line number, its rev: `@12`.
   the replies taken already, and whether it is closed; the last one is
   what stands.
 - A crash can only cut the last line short. A line that cannot be read is
-  passed over with a warning (`stacked check` lists them) and keeps its line
-  number, so every rev after it stays the same. The next write ends a cut
-  line with a newline; nothing is ever cut off the file.
+  passed over with a warning (`stacked check` lists them, by line) and
+  keeps its rev, so every rev after it stays the same. The next write ends
+  a cut line with a newline; nothing is ever cut off the file.
 - Every write holds the file's lock (flock), so two editors, the CLI and
   landing asks can share it.
+- A file an older stacked wrote, its header shorter, is written again once,
+  the first time something is written to it: the same lines under the new
+  header, renamed over the old file, every rev the same. Not while an ask
+  is going, as its process could be an older stacked's, which reads no
+  file of a newer format; then the next write does it. An editor with the
+  old file open reads the new one whole, and a process waiting for the
+  lock opens the new file once it has the old one's lock. An older stacked
+  does not read the new file.
 
 The file only grows; `stacked trim` makes a new, shorter one. An ask's
 events include the agent's tool output, so a long ask can add a few

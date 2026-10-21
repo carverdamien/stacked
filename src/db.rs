@@ -1,6 +1,9 @@
-//! The database: one file of JSON lines, appended to and never rewritten.
+//! The database: one file of JSON lines, appended to, only its header ever
+//! written over.
 //!
-//! A line is a record, named by its line number, its rev (`@12`).
+//! A line is a record, named by its place among the records, its rev
+//! (`@12`): the header, the first line, is @1. A checkpoint's line is no
+//! record, and takes no rev.
 //!
 //! - A patch is stored once and never changes. An edited patch is a new
 //!   patch sharing its `change`.
@@ -13,22 +16,55 @@
 //! - A comment is on a line of a change, kept as the change gets new
 //!   versions; the latest record for a line is the comment.
 //!
-//! The file is only ever appended to, so a crash can only leave a last line
-//! cut short. Such a line, or any line that cannot be read, is passed over
-//! with a warning, and keeps its number: the next write ends it with a
+//! The records are only ever appended, so a crash can only leave a last
+//! line cut short. Such a line, or any line that cannot be read, is passed
+//! over with a warning, and keeps its rev: the next write ends it with a
 //! newline rather than cutting it off, and every rev after stays the same.
 //! And a reader need only read what was appended since it last read.
+//!
+//! The header is 128 bytes long, its JSON padded with spaces, so that it
+//! can be written over in place. A file an older stacked wrote is written
+//! again once, the same lines under the new header, and renamed over the
+//! old: so a process takes the lock, then sees that the file it locked is
+//! still the one there, else opens it again.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::File;
 use std::io::{Read, Write};
 use std::os::fd::AsRawFd;
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
 /// 2: the agent's turns are fenced ```agent, its comments `by` "agent".
-pub const VERSION: u32 = 2;
+/// 3: the header is 128 bytes long, and checkpoints' lines take no rev.
+pub const VERSION: u32 = 3;
+
+/// How long the header is, its newline in.
+const HEADER: usize = 128;
+
+/// How a checkpoint's line starts: in a file of format 3 on, a line that
+/// does is one, whether it reads or not, and takes no rev.
+const CHECKPOINT: &[u8] = b"{\"t\":\"checkpoint\",";
+
+/// The header of a new file: of the fixed length, its newline left out.
+pub(crate) fn header_line() -> String {
+    format!("{:<width$}", format!(r#"{{"t":"stacked","version":{VERSION},"checkpoint":null}}"#), width = HEADER - 1)
+}
+
+/// Where a record's line is in the file: its offset, and its length, the
+/// newline left out.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Pos {
+    at: u64,
+    len: u64,
+}
+
+impl Pos {
+    /// Not known: a record not yet written.
+    const NONE: Pos = Pos { at: u64::MAX, len: 0 };
+}
 
 #[derive(Debug)]
 pub struct Error(pub String);
@@ -475,14 +511,28 @@ pub struct Db {
     changes: usize,
     /// Run id to the indices of its events.
     events: HashMap<String, Vec<usize>>,
+    /// Where each record's line is: `pos[i]` rev `i + 1`'s.
+    pos: Vec<Pos>,
     /// The bytes read.
     len: u64,
+    /// The lines read, records or not.
+    lines: usize,
     /// The last line read has no newline: the next write starts with one.
     torn: bool,
+    /// Whether that line holds a record's place: a checkpoint's holds none.
+    torn_slot: bool,
     /// Where that line starts.
     tail: u64,
     /// Records from here on are not yet on disk.
     saved: usize,
+    /// The format the header says.
+    version: u32,
+    /// Whether the header is of the fixed length: else an older stacked
+    /// wrote the file, and it is written again once, under a new one.
+    fixed: bool,
+    /// The file read, by device and inode: another renamed over it, it is
+    /// read again whole.
+    ino: Option<(u64, u64)>,
     /// The lines passed over, and why.
     pub warnings: Vec<String>,
 }
@@ -522,6 +572,25 @@ fn take_lock(f: &File, path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Opens the file at `path`, made if it is not there, and takes its lock;
+/// then sees that it is still the file at `path`, else (another renamed
+/// over it meanwhile, an older file written again) opens that one.
+fn open_locked(path: &Path) -> Result<Lock> {
+    let io = |e: std::io::Error| Error(format!("{}: {e}", path.display()));
+    for _ in 0..1000 {
+        let f = File::options().create(true).append(true).read(true).open(path).map_err(io)?;
+        take_lock(&f, path)?;
+        let held = f.metadata();
+        // Dropped unless kept: the lock given back.
+        let lock = Lock(Held::File(f));
+        let held = held.map_err(io)?;
+        if std::fs::metadata(path).is_ok_and(|m| (m.dev(), m.ino()) == (held.dev(), held.ino())) {
+            return Ok(lock);
+        }
+    }
+    err(format!("{}: renamed over again and again while it was locked", path.display()))
+}
+
 /// Gives the lock on `f` back, then: not when the last copy of its file is
 /// closed, which a child forked meanwhile could hold.
 fn give_lock(f: &File) {
@@ -559,15 +628,19 @@ impl Db {
             return Db::parse(path, &bytes);
         }
         let mut bytes = Vec::new();
+        let mut ino = None;
         match File::open(path) {
             Ok(mut f) => {
+                ino = f.metadata().ok().map(|m| (m.dev(), m.ino()));
                 f.read_to_end(&mut bytes)
                     .map_err(|e| Error(format!("{}: {e}", path.display())))?;
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => return err(format!("{}: {e}", path.display())),
         }
-        Db::parse(path, &bytes)
+        let mut db = Db::parse(path, &bytes)?;
+        db.ino = ino;
+        Ok(db)
     }
 
     /// The database `bytes` hold, as if read from `path`.
@@ -598,10 +671,16 @@ impl Db {
             run_order: Vec::new(),
             changes: 0,
             events: HashMap::new(),
+            pos: Vec::new(),
             len: 0,
+            lines: 0,
             torn: false,
+            torn_slot: false,
             tail: 0,
             saved: 0,
+            version: 0,
+            fixed: false,
+            ino: None,
             warnings: Vec::new(),
         };
         db.read(bytes)?;
@@ -618,18 +697,31 @@ impl Db {
             if last && line.is_empty() {
                 break;
             }
-            let no = self.records.len() + 1;
+            self.lines += 1;
+            let no = self.lines;
             let at = |e: &str| format!("{path}:{no}: {e}");
+            let pos = Pos {
+                at: offset,
+                len: line.len() as u64,
+            };
+            // A checkpoint's line: no record.
+            let checkpoint = self.version >= 3 && line.starts_with(CHECKPOINT);
             // A last line with no newline is not read: a write in progress,
-            // or one a crash cut short. It holds its line's number.
+            // or one a crash cut short. It holds its record's place.
             if last {
-                self.warnings.push(at("cut short, passed over"));
-                self.records.push(Record::Broken);
                 self.torn = true;
+                self.torn_slot = !checkpoint;
                 self.tail = offset;
+                if !checkpoint {
+                    self.warnings.push(at("cut short, passed over"));
+                    self.push_broken(pos);
+                }
                 break;
             }
             offset += line.len() as u64 + 1;
+            if checkpoint {
+                continue;
+            }
             let rec = std::str::from_utf8(line)
                 .map_err(|e| e.to_string())
                 .and_then(|l| serde_json::from_str::<Record>(l).map_err(|e| e.to_string()));
@@ -637,28 +729,31 @@ impl Db {
                 Ok(r) => r,
                 Err(e) => {
                     self.warnings.push(at(&format!("passed over: {e}")));
-                    self.records.push(Record::Broken);
+                    self.push_broken(pos);
                     continue;
                 }
             };
-            match (&rec, no) {
-                (Record::Stacked { version }, 1) if *version > VERSION => {
+            match (&rec, self.records.len()) {
+                (Record::Stacked { version }, 0) if *version > VERSION => {
                     return err(at(&format!(
                         "written by a newer stacked (format {version}, this one reads {VERSION})"
                     )));
                 }
-                (Record::Stacked { .. }, 1) => {}
-                (_, 1) => return err(format!("{}: not a stacked database", self.path.display())),
+                (Record::Stacked { version }, 0) => {
+                    self.version = *version;
+                    self.fixed = *version >= 3 && line.len() == HEADER - 1;
+                }
+                (_, 0) => return err(format!("{}: not a stacked database", self.path.display())),
                 (Record::Stacked { .. }, _) => {
                     self.warnings.push(at("a second header, passed over"));
-                    self.records.push(Record::Broken);
+                    self.push_broken(pos);
                     continue;
                 }
                 _ => {}
             }
-            if let Err(e) = self.index(rec) {
+            if let Err(e) = self.index(rec, pos) {
                 self.warnings.push(at(&format!("passed over: {e}")));
-                self.records.push(Record::Broken);
+                self.push_broken(pos);
             }
         }
         self.len += bytes.len() as u64;
@@ -666,36 +761,77 @@ impl Db {
         Ok(())
     }
 
+    fn push_broken(&mut self, pos: Pos) {
+        self.records.push(Record::Broken);
+        self.pos.push(pos);
+    }
+
+    /// Forgets the line cut short, to read it again once it is whole.
+    fn untear(&mut self) {
+        if self.torn_slot {
+            self.records.pop();
+            self.pos.pop();
+            self.warnings.pop();
+        }
+        self.lines -= 1;
+        self.len = self.tail;
+        self.torn = false;
+        self.torn_slot = false;
+    }
+
     /// Reads what was appended since: the file only grows, so only the new
     /// bytes, and the line that was cut short again. Whether there was any.
     pub fn catch_up(&mut self) -> Result<bool> {
-        let size = Db::file_len(&self.path);
-        if size == self.len {
-            return Ok(false);
-        }
-        if size < self.len {
-            // Not ours to shrink: someone cut the file. Read it whole.
-            *self = Db::load(&self.path)?;
-            return Ok(true);
-        }
-        if self.torn {
-            self.records.pop();
-            self.warnings.pop();
-            self.len = self.tail;
-            self.torn = false;
-        }
+        let path = self.path.clone();
+        let io = |e: std::io::Error| Error(format!("{}: {e}", path.display()));
         #[cfg(feature = "demo")]
         if let Some(m) = crate::memory::file(&self.path) {
+            let size = m.lock().unwrap().len() as u64;
+            if size == self.len {
+                return Ok(false);
+            }
+            if size < self.len {
+                *self = Db::load(&self.path)?;
+                return Ok(true);
+            }
+            if self.torn {
+                self.untear();
+            }
             let bytes = m.lock().unwrap()[self.len as usize..].to_vec();
             self.read(&bytes)?;
             return Ok(true);
         }
-        let mut f = File::open(&self.path).map_err(|e| Error(format!("{}: {e}", self.path.display())))?;
+        let mut f = match File::open(&self.path) {
+            Ok(f) => f,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                // Gone: an empty database.
+                if self.len == 0 {
+                    return Ok(false);
+                }
+                *self = Db::load(&self.path)?;
+                return Ok(true);
+            }
+            Err(e) => return Err(io(e)),
+        };
+        let meta = f.metadata().map_err(io)?;
+        let ino = (meta.dev(), meta.ino());
+        // Another file renamed over it (an older one written again), or
+        // the file cut, which is not ours to do: read it whole.
+        if self.ino.is_some_and(|i| i != ino) || meta.len() < self.len {
+            *self = Db::load(&self.path)?;
+            return Ok(true);
+        }
+        self.ino = Some(ino);
+        if meta.len() == self.len {
+            return Ok(false);
+        }
+        if self.torn {
+            self.untear();
+        }
         use std::io::Seek;
-        f.seek(std::io::SeekFrom::Start(self.len))
-            .map_err(|e| Error(e.to_string()))?;
+        f.seek(std::io::SeekFrom::Start(self.len)).map_err(io)?;
         let mut bytes = Vec::new();
-        f.read_to_end(&mut bytes).map_err(|e| Error(e.to_string()))?;
+        f.read_to_end(&mut bytes).map_err(io)?;
         self.read(&bytes)?;
         Ok(true)
     }
@@ -713,14 +849,12 @@ impl Db {
             return db.save(&mut lock);
         }
         let io = |e: std::io::Error| Error(format!("{}: {e}", path.display()));
-        let f = File::options().create(true).append(true).read(true).open(path).map_err(io)?;
-        take_lock(&f, path)?;
-        let mut lock = Lock(Held::File(f));
+        let mut lock = open_locked(path)?;
         let f = lock.file();
         let size = f.metadata().map_err(io)?.len();
         let mut out = String::new();
         if size == 0 {
-            out.push_str(&serde_json::to_string(&Record::Stacked { version: VERSION }).unwrap());
+            out.push_str(&header_line());
             out.push('\n');
         } else {
             use std::io::{Seek, SeekFrom};
@@ -739,7 +873,7 @@ impl Db {
         f.sync_data().map_err(io)
     }
 
-    fn index(&mut self, rec: Record) -> Result<()> {
+    fn index(&mut self, rec: Record, pos: Pos) -> Result<()> {
         let at = self.records.len();
         if !matches!(rec, Record::Event { .. }) {
             self.changes += 1;
@@ -820,6 +954,7 @@ impl Db {
             }
         }
         self.records.push(rec);
+        self.pos.push(pos);
         Ok(())
     }
 
@@ -841,20 +976,69 @@ impl Db {
             let lock = Lock(Held::Memory { _held: guard, bytes: m });
             return Ok((Db::parse(path, &bytes)?, lock));
         }
-        let f = File::options()
-            .create(true)
-            .append(true)
-            .read(true)
-            .open(path)
-            .map_err(|e| Error(format!("{}: {e}", path.display())))?;
-        take_lock(&f, path)?;
         // Given back if reading fails: the lock first.
-        let mut lock = Lock(Held::File(f));
+        let mut lock = open_locked(path)?;
         let mut bytes = Vec::new();
         lock.file()
             .read_to_end(&mut bytes)
             .map_err(|e| Error(format!("{}: {e}", path.display())))?;
-        Ok((Db::parse(path, &bytes)?, lock))
+        let mut db = Db::parse(path, &bytes)?;
+        db.ino = lock.file().metadata().ok().map(|m| (m.dev(), m.ino()));
+        if db.needs_upgrade() {
+            match db.upgrade(&bytes, &mut lock) {
+                Ok(Some(new)) => db = new,
+                Ok(None) => {}
+                Err(e) => db.warnings.push(format!("{}: not written again under a new header: {}", path.display(), e.0)),
+            }
+        }
+        Ok((db, lock))
+    }
+
+    /// Whether an older stacked wrote the file, its header not of the
+    /// fixed length: it is written again under a new one.
+    fn needs_upgrade(&self) -> bool {
+        !self.fixed && matches!(self.records.first(), Some(Record::Stacked { .. }))
+    }
+
+    /// Writes the file again, the same lines under the fixed header, and
+    /// renames it over the old one, `lock` then holding the new one's lock;
+    /// the database read from it. Not while an ask is going: its process
+    /// could be an older stacked's, which reads no file of a newer format.
+    fn upgrade(&self, bytes: &[u8], lock: &mut Lock) -> Result<Option<Db>> {
+        if self.live_runs().iter().any(|r| crate::ask::busy(r)) {
+            return Ok(None);
+        }
+        let Some(nl) = bytes.iter().position(|&b| b == b'\n') else { return Ok(None) };
+        let path = &self.path;
+        let io = |e: std::io::Error| Error(format!("{}: {e}", path.display()));
+        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let tmp = path.with_file_name(format!("{name}.upgrade-{}", std::process::id()));
+        let _ = std::fs::remove_file(&tmp);
+        let mut f = File::options().create_new(true).read(true).append(true).open(&tmp).map_err(io)?;
+        // Locked before it is there to open: whoever opens it next waits.
+        if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX) } != 0 {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(io(std::io::Error::last_os_error()));
+        }
+        let mut new = header_line().into_bytes();
+        new.push(b'\n');
+        new.extend_from_slice(&bytes[nl + 1..]);
+        if let Err(e) = f.write_all(&new).and_then(|_| f.sync_all()).and_then(|_| std::fs::rename(&tmp, path)) {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(io(e));
+        }
+        let dir = path.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new("."));
+        if let Ok(d) = File::open(dir) {
+            let _ = d.sync_all();
+        }
+        // The old file's lock given back: whoever waits on it sees it is
+        // not the file there, and opens this one.
+        if let Held::File(old) = std::mem::replace(&mut lock.0, Held::File(f)) {
+            unsafe { libc::flock(old.as_raw_fd(), libc::LOCK_UN) };
+        }
+        let mut db = Db::parse(path, &new)?;
+        db.ino = lock.file().metadata().ok().map(|m| (m.dev(), m.ino()));
+        Ok(Some(db))
     }
 
     /// Runs `edit` on the database as it is on disk, under its lock, and
@@ -875,8 +1059,17 @@ impl Db {
         if self.torn {
             out.push('\n');
         }
-        for rec in &self.records[self.saved..] {
-            out.push_str(&serde_json::to_string(rec).unwrap());
+        for i in self.saved..self.records.len() {
+            let line = match &self.records[i] {
+                // A new file's header: of the fixed length.
+                Record::Stacked { .. } if i == 0 => header_line(),
+                rec => serde_json::to_string(rec).unwrap(),
+            };
+            self.pos[i] = Pos {
+                at: self.len + out.len() as u64,
+                len: line.len() as u64,
+            };
+            out.push_str(&line);
             out.push('\n');
         }
         let io = |e: std::io::Error| Error(format!("{}: {e}", self.path.display()));
@@ -889,7 +1082,9 @@ impl Db {
             Held::Memory { bytes, .. } => bytes.lock().unwrap().extend_from_slice(out.as_bytes()),
         }
         self.len += out.len() as u64;
+        self.lines += self.records.len() - self.saved;
         self.torn = false;
+        self.torn_slot = false;
         self.saved = self.records.len();
         Ok(())
     }
@@ -919,10 +1114,18 @@ impl Db {
 
     fn push(&mut self, rec: Record) -> Result<usize> {
         if self.records.is_empty() {
-            self.records.push(Record::Stacked { version: VERSION });
+            self.index(Record::Stacked { version: VERSION }, Pos::NONE)?;
+            (self.version, self.fixed) = (VERSION, true);
         }
-        self.index(rec)?;
+        self.index(rec, Pos::NONE)?;
         Ok(self.records.len())
+    }
+
+    /// Where the line of the record at `rev` ends, its newline in: what a
+    /// file holding the records up to `rev` would be cut at.
+    pub fn end_of(&self, rev: usize) -> Option<u64> {
+        let p = self.pos.get(rev.checked_sub(1)?).filter(|p| **p != Pos::NONE)?;
+        Some(p.at + p.len + 1)
     }
 
     /// The last rev: how many records there are.
@@ -1656,6 +1859,168 @@ mod tests {
         // Brought back: not deleted.
         Db::edit(&path, |db| db.set_note(was.clone())).unwrap();
         assert!(Db::load(&path).unwrap().deleted_notes("s", "c").is_empty());
+    }
+
+    #[test]
+    fn the_header_is_of_the_fixed_length() {
+        assert_eq!(header_line().len(), HEADER - 1);
+        let db = Db::from_bytes(Path::new("db.jsonl"), format!("{}\n", header_line()).as_bytes()).unwrap();
+        assert!(db.fixed && db.version == VERSION && db.warnings.is_empty(), "{:?}", db.warnings);
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("db.jsonl");
+        Db::edit(&path, |db| db.set_view("s", "all")).unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        assert_eq!(&bytes[..HEADER], format!("{}\n", header_line()).as_bytes());
+    }
+
+    #[test]
+    fn a_checkpoints_line_takes_no_rev() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("db.jsonl");
+        let add = |bytes: &[u8]| File::options().append(true).open(&path).unwrap().write_all(bytes).unwrap();
+        Db::edit(&path, |db| db.set_view("s", "all")).unwrap();
+        // A checkpoint's line, whatever it holds; a record; another cut
+        // short.
+        add(b"{\"t\":\"checkpoint\",\"state\":99}\n");
+        Db::edit(&path, |db| db.set_view("s", "none")).unwrap();
+        add(b"{\"t\":\"checkpoint\",\"sta");
+        let db = Db::load(&path).unwrap();
+        assert!(db.warnings.is_empty(), "{:?}", db.warnings);
+        assert_eq!(db.last_rev(), 3, "the header and two views");
+        assert!(matches!(db.rev(3), Some(Record::View { show, .. }) if show == "none"));
+        // The next write ends the line cut short; its record is the next
+        // rev.
+        let rev = Db::edit(&path, |db| {
+            db.set_view("s", "all")?;
+            Ok(db.last_rev())
+        })
+        .unwrap();
+        assert_eq!(rev, 4);
+        let db = Db::load(&path).unwrap();
+        assert_eq!((db.last_rev(), db.view("s")), (4, Some("all")));
+        assert!(db.warnings.is_empty(), "{:?}", db.warnings);
+        // A line that does not read keeps its rev, and is said by its line.
+        add(b"garbage\n");
+        let db = Db::load(&path).unwrap();
+        assert_eq!(db.last_rev(), 5);
+        assert!(db.warnings[0].contains(":7: passed over"), "{:?}", db.warnings);
+    }
+
+    /// The file as stacked 2 wrote it, of `lines` after its header.
+    fn old_file(path: &Path, lines: &[String]) -> String {
+        let text = format!("{{\"t\":\"stacked\",\"version\":2}}\n{}\n", lines.join("\n"));
+        std::fs::write(path, &text).unwrap();
+        text
+    }
+
+    fn view(show: &str) -> String {
+        serde_json::to_string(&Record::View {
+            stack: "s".into(),
+            show: show.into(),
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn an_older_file_is_written_again_under_the_fixed_header_its_revs_kept() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("db.jsonl");
+        let old = old_file(&path, &[view("all"), "garbage".into(), view("none")]);
+        let ino = |p: &Path| std::fs::metadata(p).unwrap().ino();
+        let was = ino(&path);
+        let mut reader = Db::load(&path).unwrap();
+        assert!(!reader.fixed);
+        Db::edit(&path, |db| db.set_view("s", "all")).unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        assert_eq!(&bytes[..HEADER], format!("{}\n", header_line()).as_bytes());
+        assert!(bytes[HEADER..].starts_with(&old.as_bytes()[old.find('\n').unwrap() + 1..]), "every line after it as it was");
+        assert_ne!(ino(&path), was, "a new file, renamed over the old");
+        let db = Db::load(&path).unwrap();
+        assert_eq!(db.last_rev(), 5);
+        assert!(matches!(db.rev(3), Some(Record::Broken)));
+        assert_eq!(db.view("s"), Some("all"));
+        assert_eq!(db.warnings.len(), 1, "{:?}", db.warnings);
+        // A reader of the old file reads the new one whole.
+        assert!(reader.catch_up().unwrap());
+        assert_eq!(reader.records(), db.records());
+        assert!(reader.fixed);
+        // Once only, and nothing left behind.
+        let now = ino(&path);
+        Db::edit(&path, |db| db.set_view("s", "none")).unwrap();
+        assert_eq!(ino(&path), now);
+        assert_eq!(std::fs::read_dir(tmp.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn an_older_file_is_written_again_only_once_no_ask_is_going() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("db.jsonl");
+        // An ask going: its process could be an older stacked's.
+        let run = Run {
+            id: "r".into(),
+            what: "edit".into(),
+            stack: "s".into(),
+            state: RunState::Started,
+            pid: Some(std::process::id()),
+            time: 1,
+            ..Default::default()
+        };
+        let old = old_file(&path, &[serde_json::to_string(&Record::Run(run.clone())).unwrap()]);
+        Db::edit(&path, |db| db.set_view("s", "all")).unwrap();
+        assert!(std::fs::read(&path).unwrap().starts_with(old.as_bytes()), "not written again");
+        Db::edit(&path, |db| {
+            db.add_run(Run {
+                state: RunState::Done,
+                pid: None,
+                ..run
+            })
+            .map(|_| ())
+        })
+        .unwrap();
+        Db::edit(&path, |db| db.set_view("s", "none")).unwrap();
+        let db = Db::load(&path).unwrap();
+        assert!(db.fixed);
+        assert_eq!((db.last_rev(), db.view("s")), (5, Some("none")));
+    }
+
+    #[test]
+    fn a_process_waiting_on_the_lock_follows_the_file_renamed_over_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("db.jsonl");
+        Db::edit(&path, |db| db.set_view("s", "all")).unwrap();
+        // Another process holds the lock...
+        let held = File::open(&path).unwrap();
+        assert_eq!(unsafe { libc::flock(held.as_raw_fd(), libc::LOCK_EX) }, 0);
+        let edit = {
+            let path = path.clone();
+            std::thread::spawn(move || Db::edit(&path, |db| db.set_view("s", "none")))
+        };
+        let append = {
+            let path = path.clone();
+            std::thread::spawn(move || {
+                Db::append(
+                    &path,
+                    &[Record::Event {
+                        run: "r".into(),
+                        event: serde_json::json!({"type": "x"}),
+                    }],
+                )
+            })
+        };
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        // ...renames another file over it, as one written again is, and
+        // gives the lock back.
+        let other = tmp.path().join("other");
+        std::fs::copy(&path, &other).unwrap();
+        std::fs::rename(&other, &path).unwrap();
+        drop(held);
+        edit.join().unwrap().unwrap();
+        append.join().unwrap().unwrap();
+        // What waited went in the file there.
+        let db = Db::load(&path).unwrap();
+        assert_eq!(db.view("s"), Some("none"));
+        assert_eq!(db.events("r").len(), 1);
+        assert!(db.warnings.is_empty(), "{:?}", db.warnings);
     }
 
     #[test]

@@ -139,14 +139,10 @@ pub fn trim(src: &Path, dst: &Path, from: Option<usize>) -> Result<Trimmed> {
     if from < 1 || from > len + 1 {
         return err(format!("@{from} is not a rev of {} (its last is @{len})", src.display()));
     }
-    // The state just before `from`: the first `from - 1` lines read.
-    let cut = bytes
-        .iter()
-        .enumerate()
-        .filter(|(_, b)| **b == b'\n')
-        .nth(from.saturating_sub(2))
-        .map_or(0, |(i, _)| i + 1);
-    let before = if from == 1 { Db::from_bytes(src, &[])? } else { Db::from_bytes(src, &bytes[..cut])? };
+    // The state just before `from`: the file read up to the end of the
+    // record before it (checkpoints' lines take no rev).
+    let cut = all.end_of(from - 1).map_or(0, |end| (end as usize).min(bytes.len()));
+    let before = Db::from_bytes(src, &bytes[..cut])?;
     let later = &all.records()[from - 1..];
 
     // The runs kept: going at the cut, or with records after it.
@@ -353,8 +349,12 @@ pub fn trim(src: &Path, dst: &Path, from: Option<usize>) -> Result<Trimmed> {
 
     // Written whole, then read back: every stack as it was, or no file.
     let mut text = String::new();
-    for r in &new.records {
-        text.push_str(&serde_json::to_string(r).map_err(|e| Error(e.to_string()))?);
+    for (i, r) in new.records.iter().enumerate() {
+        match r {
+            // The header: of the fixed length.
+            Record::Stacked { .. } if i == 0 => text.push_str(&crate::db::header_line()),
+            r => text.push_str(&serde_json::to_string(r).map_err(|e| Error(e.to_string()))?),
+        }
         text.push('\n');
     }
     let mut f = std::fs::File::options()

@@ -377,7 +377,7 @@ fn records_only_ever_append() {
     Db::edit(&path, |db| ops::move_patch(db, "s", 0, 2)).unwrap();
     Db::edit(&path, |db| db.undo("s")).unwrap();
     let db = Db::load(&path).unwrap();
-    assert!(matches!(db.records()[0], Record::Stacked { version: 2 }));
+    assert!(matches!(db.records()[0], Record::Stacked { version: 3 }));
     let s = db.stack("s").unwrap();
     let titles: Vec<&str> = s.patches.iter().map(|id| db.patch(id).title()).collect();
     assert_eq!(titles, ["one", "two", "three"]);
