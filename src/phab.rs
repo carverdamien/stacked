@@ -101,12 +101,14 @@ impl Conduit {
     }
 }
 
-/// A comment as Phabricator has it.
-#[derive(Debug, Clone, PartialEq)]
+/// A comment as Phabricator has it, as it was last edited: its id is that
+/// version's, each edit making one of its own.
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct Remote {
     pub phid: String,
     pub author: String,
     pub text: String,
+    /// When it was first written.
     pub created: i64,
     /// None for a comment on the revision as a whole.
     pub path: Option<String>,
@@ -114,6 +116,16 @@ pub struct Remote {
     /// The line's text in the diff it was made on, when that is known.
     pub line_text: Option<String>,
     pub reply_to: Option<String>,
+    /// What it was before its last edit, the version before it first: none
+    /// if it was never edited.
+    pub earlier: Vec<Version>,
+}
+
+/// A comment as it was before an edit: its id then, and what it said.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Version {
+    pub phid: String,
+    pub text: String,
 }
 
 /// One revision's comments, oldest first.
@@ -227,8 +239,24 @@ pub fn fetch(conduit: &Conduit, revision: &str, source: &str) -> Result<Revision
         }
     }
     let mut diffs: HashMap<u64, HashMap<(String, usize), String>> = HashMap::new();
+    let comments = comments_of(&txns, &names, |path, diff, line| {
+        diffs.entry(diff).or_insert_with(|| diff_lines(conduit, diff)).get(&(path.to_string(), line)).cloned()
+    });
+    Ok(RevisionComments {
+        revision: revision.into(),
+        source: source.into(),
+        comments,
+    })
+}
+
+/// The comments of a revision, oldest first, from its transactions as
+/// transaction.search gives them: each its author's name, from `names` by
+/// their PHID, and its line's text, as `read_line` reads it from (path,
+/// diff, line). Each is as it was last edited, what it was before kept with
+/// it; a comment removed is none.
+fn comments_of(txns: &[Value], names: &HashMap<String, String>, mut read_line: impl FnMut(&str, u64, usize) -> Option<String>) -> Vec<Remote> {
     let mut comments = Vec::new();
-    for t in &txns {
+    for t in txns {
         let kind = t.get("type").and_then(Value::as_str).unwrap_or("");
         if kind != "inline" && kind != "comment" {
             continue;
@@ -245,54 +273,45 @@ pub fn fetch(conduit: &Conduit, revision: &str, source: &str) -> Result<Revision
             .flatten();
         let line = fields.get("line").and_then(Value::as_u64).unwrap_or(0) as usize;
         let line_text = match (&path, fields.pointer("/diff/id").and_then(Value::as_u64)) {
-            (Some(p), Some(d)) => diffs
-                .entry(d)
-                .or_insert_with(|| diff_lines(conduit, d))
-                .get(&(p.clone(), line))
-                .cloned(),
+            (Some(p), Some(d)) => read_line(p, d, line),
             _ => None,
         };
         let reply_to = fields
             .get("replyToCommentPHID")
             .and_then(Value::as_str)
             .map(String::from);
-        for c in t
+        // Each of its versions, the latest first: an edit on Phabricator
+        // makes one, with an id of its own.
+        let mut versions: Vec<&Value> = t
             .get("comments")
             .and_then(Value::as_array)
             .into_iter()
             .flatten()
-        {
-            if c.get("removed").and_then(Value::as_bool).unwrap_or(false) {
-                continue;
-            }
-            let text = c
-                .pointer("/content/raw")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .trim()
-                .to_string();
-            if text.is_empty() {
-                continue;
-            }
-            comments.push(Remote {
-                phid: c.get("phid").and_then(Value::as_str).unwrap_or("").into(),
-                author: author.clone(),
-                text,
-                created: c.get("dateCreated").and_then(Value::as_i64).unwrap_or(0),
-                path: path.clone(),
-                line,
-                line_text: line_text.clone(),
-                reply_to: reply_to.clone(),
-            });
-            break;
-        }
+            .collect();
+        versions.sort_by_key(|c| std::cmp::Reverse(c.get("version").and_then(Value::as_i64).unwrap_or(0)));
+        let text = |c: &Value| c.pointer("/content/raw").and_then(Value::as_str).unwrap_or("").trim().to_string();
+        let phid = |c: &Value| c.get("phid").and_then(Value::as_str).unwrap_or("").to_string();
+        // Removed, it is gone: what every version of it said is hidden.
+        let Some(at) = versions
+            .iter()
+            .position(|c| !c.get("removed").and_then(Value::as_bool).unwrap_or(false) && !text(c).is_empty())
+        else {
+            continue;
+        };
+        comments.push(Remote {
+            phid: phid(versions[at]),
+            author,
+            text: text(versions[at]),
+            created: versions.last().and_then(|c| c.get("dateCreated")).and_then(Value::as_i64).unwrap_or(0),
+            path,
+            line,
+            line_text,
+            reply_to,
+            earlier: versions[at + 1..].iter().map(|c| Version { phid: phid(c), text: text(c) }).collect(),
+        });
     }
     comments.sort_by_key(|c| c.created);
-    Ok(RevisionComments {
-        revision: revision.into(),
-        source: source.into(),
-        comments,
-    })
+    comments
 }
 
 /// What reads one revision's comments, from `(source key, D123, link)`.
@@ -402,6 +421,42 @@ mod tests {
             source: source.into(),
             comments: vec![],
         })
+    }
+
+    #[test]
+    fn a_comment_is_read_as_it_was_last_edited_what_it_was_kept_with_it() {
+        let names: HashMap<String, String> = [("PHID-USER-ann".to_string(), "ann".to_string())].into();
+        let version = |phid: &str, n: i64, at: i64, text: &str, removed: bool| {
+            json!({"phid": phid, "version": n, "dateCreated": at, "removed": removed, "content": {"raw": text}})
+        };
+        let txns = vec![
+            // On a line, never edited, and a reply to it.
+            json!({"type": "inline", "authorPHID": "PHID-USER-bob", "fields": {"path": "a.txt", "line": 2, "diff": {"id": 7}}, "comments": [version("i1", 1, 150, " Why? ", false)]}),
+            json!({"type": "inline", "authorPHID": "PHID-USER-ann", "fields": {"path": "a.txt", "line": 2, "diff": {"id": 7}, "replyToCommentPHID": "i1"}, "comments": [version("i2", 1, 160, "Because.", false)]}),
+            // Edited twice, the last time after the reply: its versions,
+            // given the latest first.
+            json!({"type": "comment", "authorPHID": "PHID-USER-ann", "fields": {}, "comments": [
+                version("v3", 3, 300, "Fine, but the title.\r\nAnd the date.", false),
+                version("v2", 2, 200, "Fine, but the title.", false),
+                version("v1", 1, 100, "Fine.", false),
+            ]}),
+            // Removed: every version's text hidden, the latest removed.
+            json!({"type": "comment", "authorPHID": "PHID-USER-ann", "fields": {}, "comments": [version("r2", 2, 400, "", true), version("r1", 1, 120, "", false)]}),
+            json!({"type": "accept", "authorPHID": "PHID-USER-ann", "fields": {}}),
+        ];
+        let got = comments_of(&txns, &names, |path, diff, line| Some(format!("{path}@{diff}:{line}")));
+        let said: Vec<(&str, &str, &str, i64)> = got.iter().map(|c| (c.phid.as_str(), c.author.as_str(), c.text.as_str(), c.created)).collect();
+        // By when each was first written, edited later or not.
+        assert_eq!(said, [("v3", "ann", "Fine, but the title.\r\nAnd the date.", 100), ("i1", "someone", "Why?", 150), ("i2", "ann", "Because.", 160)]);
+        let v = |phid: &str, text: &str| Version { phid: phid.into(), text: text.into() };
+        assert_eq!(got[0].earlier, [v("v2", "Fine, but the title."), v("v1", "Fine.")]);
+        assert!(got[1].earlier.is_empty());
+        assert_eq!((got[1].path.as_deref(), got[1].line, got[1].line_text.as_deref()), (Some("a.txt"), 2, Some("a.txt@7:2")));
+        assert_eq!((got[2].reply_to.as_deref(), got[0].path.as_deref()), (Some("i1"), None));
+        // Its versions out of order, the latest is still the one read.
+        let txns = vec![json!({"type": "comment", "authorPHID": "PHID-USER-ann", "fields": {}, "comments": [version("v1", 1, 100, "Fine.", false), version("v2", 2, 200, "Fine!", false)]})];
+        let got = comments_of(&txns, &names, |_, _, _| None);
+        assert_eq!((got[0].phid.as_str(), got[0].text.as_str(), got[0].earlier.clone()), ("v2", "Fine!", vec![v("v1", "Fine.")]));
     }
 
     #[test]

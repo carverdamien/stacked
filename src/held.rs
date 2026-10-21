@@ -3,7 +3,8 @@
 //! run, in the queue of work to review, oldest first. It may hold a change
 //! of the stack, replies to the comments it was asked about, and comments
 //! it opened. Reviews pulled from Phabricator are held the same way, in
-//! their pull's run: the reviewers' new comments, and their replies. Each
+//! their pull's run: the reviewers' new comments, their replies, and their
+//! comments edited on Phabricator since they were filed. Each
 //! part is accepted or rejected, the change of the stack as one; once every
 //! part is, the review closes: what was accepted is applied, and the rest
 //! is dropped for good. Until then, the stack is not edited by hand if the
@@ -20,7 +21,7 @@ use std::collections::{BTreeMap, HashMap};
 use serde::{Deserialize, Serialize};
 
 use crate::db::{Db, Error, Note, Patch, Result, Run, err, now};
-use crate::thread::{Role, append_turn};
+use crate::thread::{Role, all_turns, append_turn, edit_turn};
 
 /// What an ask brought back, held until it is reviewed.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
@@ -78,6 +79,11 @@ pub struct Reply {
     pub reviewer: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub remote: Option<String>,
+    /// Pulled, a reviewer's comment edited on Phabricator since it was
+    /// filed: what it said, as its turn of the thread says it until the
+    /// edit is accepted. Accepted, the edit takes the place of that turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub was: Option<String>,
     /// Your answer to it, written in its review: it follows it in its
     /// thread, and the work goes back to the agent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -87,10 +93,12 @@ pub struct Reply {
 impl Reply {
     /// Thread `text` with this reply as its last turn: the reviewer's who
     /// wrote it, or the agent's; your answer to it after, if you wrote one.
+    /// A reviewer's edit is in the place of their turn as it was.
     pub fn after(&self, text: &str) -> String {
-        let text = match &self.reviewer {
-            Some(who) => append_turn(text, Role::Reviewer, &self.text, Some(who)),
-            None => append_turn(text, Role::Agent, &self.text, Some(&self.tag)),
+        let text = match (&self.reviewer, &self.was) {
+            (Some(who), Some(was)) => edited(text, who, was, &self.text),
+            (Some(who), None) => append_turn(text, Role::Reviewer, &self.text, Some(who)),
+            (None, _) => append_turn(text, Role::Agent, &self.text, Some(&self.tag)),
         };
         match &self.answer {
             Some(a) => append_turn(&text, Role::You, a, None),
@@ -101,6 +109,29 @@ impl Reply {
     /// Who wrote it, as a reply's owner is said: `the agent`, `ann`.
     pub fn who(&self) -> &str {
         self.reviewer.as_deref().unwrap_or("the agent")
+    }
+
+    /// It, said: `the agent's reply`, `ann's reply`, `ann's edit`.
+    pub fn said(&self) -> String {
+        let what = if self.was.is_some() { "edit" } else { "reply" };
+        format!("{}'s {what}", self.who())
+    }
+}
+
+/// Thread `text` with the turn of reviewer `who` that says `was` saying
+/// `now`, as Phabricator has their comment since they edited it; that turn
+/// gone (rewound, say), `now` is their last turn.
+fn edited(text: &str, who: &str, was: &str, now: &str) -> String {
+    // Each line as it ends aside: Phabricator's may end with a carriage
+    // return, a turn's lines do not.
+    let plain = |s: &str| s.lines().map(str::trim_end).collect::<Vec<_>>().join("\n").trim().to_string();
+    let was = plain(was);
+    let at = all_turns(text)
+        .iter()
+        .position(|t| t.role == Role::Reviewer && !t.deleted && t.tag.as_deref() == Some(who) && plain(&t.body) == was);
+    match at.and_then(|i| edit_turn(text, i, now)) {
+        Some(text) => text,
+        None => append_turn(text, Role::Reviewer, now, Some(who)),
     }
 }
 
@@ -251,8 +282,12 @@ impl Held {
         if let Some(c) = &self.stack {
             out.push(format!("a change of {}", c.of));
         }
-        if !self.replies.is_empty() {
-            out.push(count(self.replies.len(), "reply", "replies"));
+        let edits = self.replies.iter().filter(|rp| rp.was.is_some()).count();
+        if self.replies.len() > edits {
+            out.push(count(self.replies.len() - edits, "reply", "replies"));
+        }
+        if edits > 0 {
+            out.push(count(edits, "edited comment", "edited comments"));
         }
         if !self.opened.is_empty() {
             out.push(count(self.opened.len(), "opened comment", "opened comments"));
@@ -620,9 +655,11 @@ pub fn said(h: &Held, marks: &BTreeMap<String, bool>) -> String {
             _ => "its change rejected".to_string(),
         });
     }
+    let replies = |edits: bool| (0..h.replies.len()).filter(|&k| h.replies[k].was.is_some() == edits).map(Part::Reply).collect::<Vec<_>>();
     for (one, many, parts) in [
         ("opened comment", "opened comments", (0..h.opened.len()).map(Part::Opened).collect::<Vec<_>>()),
-        ("reply", "replies", (0..h.replies.len()).map(Part::Reply).collect()),
+        ("reply", "replies", replies(false)),
+        ("edited comment", "edited comments", replies(true)),
     ] {
         let yes = parts.iter().filter(|p| mark(**p) == Some(true)).count();
         let no = parts.len() - yes;
@@ -635,4 +672,43 @@ pub fn said(h: &Held, marks: &BTreeMap<String, bool>) -> String {
         }
     }
     out.join("; ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::thread::fenced;
+
+    #[test]
+    fn an_edit_on_phabricator_takes_the_place_of_its_turn_as_it_was() {
+        let edit = |was: &str, now: &str| Reply {
+            text: now.into(),
+            reviewer: Some("ann".into()),
+            was: Some(was.into()),
+            ..Default::default()
+        };
+        // ann's comment as filed, your answer, bob's reply saying the same:
+        // hers edited is in its place, the rest as it was. Phabricator's
+        // lines end with a carriage return, a turn's do not.
+        let text = [fenced("reviewer ann", "Fine.\nBut why?"), "Because.".to_string(), fenced("reviewer bob", "Fine.\nBut why?")].join("\n");
+        assert_eq!(
+            edit("Fine.\r\nBut why?", "Fine, but why?").after(&text),
+            "```reviewer ann\nFine, but why?\n```\nBecause.\n```reviewer bob\nFine.\nBut why?\n```"
+        );
+        // Its turn gone, rewound away say: the edit is ann's last turn.
+        assert_eq!(edit("Never said.", "Said now.").after(&text), format!("{text}\n```reviewer ann\nSaid now.\n```"));
+        // Said as what it is.
+        let reply = Reply {
+            reviewer: Some("ann".into()),
+            ..Default::default()
+        };
+        assert_eq!((edit("a", "b").said(), reply.said(), Reply::default().said()), ("ann's edit".into(), "ann's reply".into(), "the agent's reply".into()));
+        let h = Held {
+            replies: vec![edit("a", "b"), reply],
+            ..Default::default()
+        };
+        assert_eq!(h.said(), "1 reply, 1 edited comment");
+        let marks = [("reply 0".to_string(), true), ("reply 1".to_string(), false)].into();
+        assert_eq!(said(&h, &marks), "1 reply rejected; 1 edited comment accepted");
+    }
 }

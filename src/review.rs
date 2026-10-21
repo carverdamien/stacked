@@ -4,11 +4,14 @@
 //! turns of it; a reply to a thread there already, a reply to it. Accepted,
 //! they are filed in their threads; rejected, dropped. Every comment pulled
 //! is remembered, with its thread or in the work held, so pulling again
-//! holds only what is new.
+//! holds only what is new. A comment edited on Phabricator since it was
+//! filed is held as an edit of its turn: accepted, the turn says what the
+//! comment says now. Each version of a comment has an id of its own, so
+//! that one pulled before is known by any of them.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
-use crate::db::{Db, Note, Result, Run, RunState, now};
+use crate::db::{Db, Note, Result, Run, RunState, now, stack_change};
 use crate::held::{Held, Reply};
 use crate::phab::{self, Remote};
 use crate::thread::{Role, append_turn, fenced};
@@ -24,34 +27,59 @@ pub fn revisions(db: &Db, name: &str) -> Result<Vec<(String, String, String)>> {
         .collect())
 }
 
-/// The remote comments on the patch of `change` pulled before, each to the
-/// comment whose thread it is in: filed in a thread, or held by a pull,
-/// waiting for review or reviewed (rejected, it is not pulled again).
-fn pulled_before(db: &Db, change: &str) -> HashMap<String, String> {
-    let mut out = HashMap::new();
-    for n in db.notes(change) {
+/// The remote comments pulled before on the patch of `change`, of stack
+/// `name`, by the id of each version pulled; each to the comment whose
+/// thread it is in, (change, id).
+#[derive(Default)]
+struct Before {
+    /// Filed in a thread open: on the patch, or moved from it to the
+    /// stack's comments.
+    filed: HashMap<String, (String, String)>,
+    /// Held by a pull, and whether its review is still open: reviewed, and
+    /// rejected or its thread closed since, it is not pulled again.
+    held: HashMap<String, ((String, String), bool)>,
+}
+
+fn pulled_before(db: &Db, name: &str, change: &str) -> Before {
+    let mut before = Before::default();
+    let moved: Vec<&Note> = db
+        .notes(&stack_change(name))
+        .into_iter()
+        .filter(|n| n.moved.as_ref().is_some_and(|m| m.change == change))
+        .collect();
+    for n in db.notes(change).into_iter().chain(moved.iter().copied()) {
         for r in &n.remote {
-            out.insert(r.clone(), n.id.clone());
+            before.filed.insert(r.clone(), (n.change.clone(), n.id.clone()));
         }
     }
-    for h in db.runs().into_iter().filter(|r| crate::held::pulled(r)).filter_map(|r| r.held.as_ref()) {
+    let moved: HashSet<(&str, &str)> = moved.iter().map(|n| (n.change.as_str(), n.id.as_str())).collect();
+    for r in db.runs().into_iter().filter(|r| crate::held::pulled(r)) {
+        let Some(h) = r.held.as_ref() else { continue };
+        let open = crate::held::waiting(db, r);
+        let mut hold = |id: &String, at: (&String, &String)| {
+            let e = before.held.entry(id.clone()).or_insert(((at.0.clone(), at.1.clone()), false));
+            e.1 |= open;
+        };
         for n in h.opened.iter().filter(|n| n.change == change) {
-            for r in &n.remote {
-                out.entry(r.clone()).or_insert_with(|| n.id.clone());
+            for id in &n.remote {
+                hold(id, (&n.change, &n.id));
             }
         }
-        for rp in h.replies.iter().filter(|rp| rp.change == change) {
-            if let Some(r) = &rp.remote {
-                out.entry(r.clone()).or_insert_with(|| rp.id.clone());
+        for rp in h.replies.iter().filter(|rp| rp.change == change || moved.contains(&(rp.change.as_str(), rp.id.as_str()))) {
+            if let Some(id) = &rp.remote {
+                hold(id, (&rp.change, &rp.id));
             }
         }
     }
-    out
+    before
 }
 
 /// What `pulled` brings that is new on `name`'s patches, held: each remote
 /// thread new, a comment opened, the replies pulled with it turns of it;
-/// each reply to a thread there already, or held already, a reply to it.
+/// each reply to a thread there already, or held already, a reply to it;
+/// each comment filed and edited on Phabricator since, an edit of its turn.
+/// A comment some of which waits for review in a pull is held once that
+/// review closes.
 pub fn hold(db: &Db, name: &str, pulled: &phab::Pulled) -> Result<Held> {
     let s = db.stack(name)?;
     let mut held = Held::default();
@@ -60,12 +88,37 @@ pub fn hold(db: &Db, name: &str, pulled: &phab::Pulled) -> Result<Held> {
             continue;
         };
         let lines = note_lines(&p);
-        let mut thread_of = pulled_before(db, &p.change);
+        let before = pulled_before(db, name, &p.change);
+        // The thread each remote comment is in, or would be in, filed or
+        // held, by any of its versions.
+        let mut thread_of: HashMap<String, (String, String)> = before.held.iter().map(|(r, (at, _))| (r.clone(), at.clone())).collect();
+        thread_of.extend(before.filed.clone());
         // The threads this pull opens: by each remote comment in them, their
         // place in what it holds.
         let mut opened: HashMap<String, usize> = HashMap::new();
         for c in &rc.comments {
-            if thread_of.contains_key(&c.phid) || opened.contains_key(&c.phid) {
+            let versions: Vec<&String> = std::iter::once(&c.phid).chain(c.earlier.iter().map(|v| &v.phid)).collect();
+            let waits = versions.iter().any(|v| before.held.get(*v).is_some_and(|(_, open)| *open));
+            if waits || before.filed.contains_key(&c.phid) || before.held.contains_key(&c.phid) || opened.contains_key(&c.phid) {
+                continue;
+            }
+            let reply = |at: &(String, String), was: Option<&String>| Reply {
+                change: at.0.clone(),
+                id: at.1.clone(),
+                text: c.text.clone(),
+                reviewer: Some(c.author.clone()),
+                remote: Some(c.phid.clone()),
+                was: was.cloned(),
+                ..Default::default()
+            };
+            // Edited since it was filed: as it was last filed, its turn says.
+            if let Some((v, at)) = c.earlier.iter().find_map(|v| before.filed.get(&v.phid).map(|at| (v, at.clone()))) {
+                held.replies.push(reply(&at, Some(&v.text)));
+                thread_of.extend(versions.iter().map(|v| ((*v).clone(), at.clone())));
+                continue;
+            }
+            // Rejected as it was, or its thread closed since: not again.
+            if c.earlier.iter().any(|v| before.held.contains_key(&v.phid)) {
                 continue;
             }
             let parent = c.reply_to.as_ref();
@@ -73,20 +126,13 @@ pub fn hold(db: &Db, name: &str, pulled: &phab::Pulled) -> Result<Held> {
                 let n = &mut held.opened[k];
                 n.text = append_turn(&n.text, Role::Reviewer, &c.text, Some(&c.author));
                 n.remote.push(c.phid.clone());
-                opened.insert(c.phid.clone(), k);
-            } else if let Some(id) = parent.and_then(|r| thread_of.get(r)).cloned() {
-                held.replies.push(Reply {
-                    change: p.change.clone(),
-                    id: id.clone(),
-                    text: c.text.clone(),
-                    reviewer: Some(c.author.clone()),
-                    remote: Some(c.phid.clone()),
-                    ..Default::default()
-                });
-                thread_of.insert(c.phid.clone(), id);
+                opened.extend(versions.iter().map(|v| ((*v).clone(), k)));
+            } else if let Some(at) = parent.and_then(|r| thread_of.get(r)).cloned() {
+                held.replies.push(reply(&at, None));
+                thread_of.extend(versions.iter().map(|v| ((*v).clone(), at.clone())));
             } else {
                 held.opened.push(new_thread(&p, &lines, c));
-                opened.insert(c.phid.clone(), held.opened.len() - 1);
+                opened.extend(versions.iter().map(|v| ((*v).clone(), held.opened.len() - 1)));
             }
         }
     }
@@ -123,13 +169,20 @@ pub fn file(db: &mut Db, name: &str, id: &str, revisions: usize, fetched: &std::
     let (state, summary, held) = match fetched {
         Ok(pulled) => {
             let h = hold(db, name, pulled)?;
-            let n = h.opened.iter().map(|n| n.remote.len()).sum::<usize>() + h.replies.len();
-            let summary = match n {
-                0 => format!("nothing new from {of}"),
-                1 => format!("1 new comment from {of}: it waits for your review"),
-                _ => format!("{n} new comments from {of}: they wait for your review"),
+            let edited = h.replies.iter().filter(|rp| rp.was.is_some()).count();
+            let new = h.opened.iter().map(|n| n.remote.len()).sum::<usize>() + h.replies.len() - edited;
+            let count = |n: usize, one: &str| match n {
+                0 => None,
+                1 => Some(format!("1 {one} comment")),
+                n => Some(format!("{n} {one} comments")),
             };
-            (RunState::Done, summary, (n > 0).then(|| Held { at: now(), ..h }))
+            let what: Vec<String> = [count(new, "new"), count(edited, "edited")].into_iter().flatten().collect();
+            let summary = match new + edited {
+                0 => format!("nothing new from {of}"),
+                1 => format!("{} from {of}: it waits for your review", what.join(" and ")),
+                _ => format!("{} from {of}: they wait for your review", what.join(" and ")),
+            };
+            (RunState::Done, summary, (new + edited > 0).then(|| Held { at: now(), ..h }))
         }
         Err(e) => (RunState::Failed, e.clone(), None),
     };

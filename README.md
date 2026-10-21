@@ -1325,8 +1325,17 @@ reply waits for your review`, `Accept ann's reply`). The banner counts the
 pulls apart (`1 pull from Phabricator waits for your review`), and the
 review says what was pulled. Pulling again holds only what is new: what was
 pulled before, waiting, accepted or rejected, is passed over, so a comment
-you rejected does not come back. A reviewer's comment can be asked about
-like any.
+you rejected does not come back. A comment the reviewer edited on
+Phabricator since it was filed (each edit makes a version of it, with an id
+of its own) is held as an edit of their turn (`ann's edit waits for your
+review`, `Accept ann's edit`): accepted, the edit takes the place of that
+turn, wherever it is in the thread, or is the reviewer's last turn when
+that one is gone. An edit you rejected does not come back, though a later
+one does; a comment some of which still waits in a pull's review is pulled
+once that review closes, and the comments of a thread you closed are passed
+over. Replies and edits to a thread moved to the stack's comments go to it
+there. A comment removed on Phabricator stays in its thread as it was. A
+reviewer's comment can be asked about like any.
 
 ## Applying
 
@@ -1422,7 +1431,8 @@ refused and taken up again), trimming, the settings (a checkout's own over
 them, an ask on a stack having its checkout's wherever stacked runs, one
 git tracks not read; and the tools every ask may use, set up with the
 agent, in the checkout's own or with `--global`), Phabricator's comments
-held for review then filed (none twice, none rejected again), apply, and
+held for review then filed (none twice, none rejected again, an edit held
+as an edit of its turn), apply, and
 what does not apply being refused, edited again, or read-only. `tests/tui.rs` draws the editor into a buffer and presses keys:
 that no letter but 1 and 2 does anything, keys mapped by the settings, the
 menus by place, what `?` says where, writing in every pane, a comment asked

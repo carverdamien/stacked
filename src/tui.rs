@@ -3793,6 +3793,12 @@ impl App {
         self.mode = Mode::Stream { change, id, up };
     }
 
+    /// Reply `k` that run `run` holds, said: `the agent's reply`, `ann's
+    /// edit`.
+    fn reply_said(&self, run: &str, k: usize) -> String {
+        self.db.run(run).and_then(|r| r.held.as_ref()).and_then(|h| h.replies.get(k)).map_or("the agent's reply".into(), |rp| rp.said())
+    }
+
     /// The comments listed in the comments pane, of the stack's or the
     /// patch's: what Send all sends, the sendable ones.
     fn listed_sendable(&self, way: Way) -> Vec<(String, String)> {
@@ -4224,9 +4230,8 @@ impl App {
                 let (run, k) = held.clone().unwrap();
                 let r = self.db.run(&run);
                 let alone = r.and_then(|r| r.held.as_ref()).is_some_and(|h| h.stack.is_none());
-                let who = r.and_then(|r| r.held.as_ref()).and_then(|h| h.replies.get(k)).map_or("the agent", |rp| rp.who());
                 if alone {
-                    items.push(Item::new(format!("Accept {who}'s reply"), Action::TakeReply(run.clone(), k)));
+                    items.push(Item::new(format!("Accept {}", self.reply_said(&run, k)), Action::TakeReply(run.clone(), k)));
                 }
                 let review = if r.is_some_and(crate::held::pulled) { "Review the comments pulled…" } else { "Review the agent's work…" };
                 items.push(Item::new(review, Action::Review(run, Some(crate::held::Part::Reply(k)))));
@@ -4440,8 +4445,9 @@ impl App {
                 }
             }
             Action::TakeReply(run, k) => {
+                let said = self.reply_said(&run, k);
                 if self.edit(|db| crate::held::take(db, &run, k)).is_some() {
-                    self.status = "you accepted the agent's reply: it is in the thread now".into();
+                    self.status = format!("you accepted {said}: it is in the thread now");
                     self.launch();
                 }
             }
@@ -6486,14 +6492,19 @@ impl App {
                 "space: mark this block read · enter: unread · 1: view · 2: comment · ?: what can I do here".into()
             }
             Mode::Normal => {
-                let enter = match (self.screen, self.enter()) {
+                let action = self.enter();
+                let taking = match &action {
+                    Some(Action::TakeReply(run, k)) => format!("enter: accept {} · ", self.reply_said(run, *k)),
+                    _ => String::new(),
+                };
+                let enter = match (self.screen, action) {
                     (Screen::Main, Some(Action::Open)) => "enter: read it · ",
                     (Screen::Main, Some(Action::GoToNote)) => "enter: go to it · ",
                     (Screen::Main, Some(Action::Reply)) => "enter: reply · ",
                     (Screen::Main, Some(Action::EditMine)) => "enter: edit it · ",
                     (Screen::Main, Some(Action::OpenStream)) => "enter: what the agent writes · ",
                     (Screen::Main, Some(Action::Expand)) => "enter: expand it · ",
-                    (Screen::Main, Some(Action::TakeReply(..))) => "enter: accept the agent's reply · ",
+                    (Screen::Main, Some(Action::TakeReply(..))) => taking.as_str(),
                     (Screen::Main, Some(_)) => "enter: comment · ",
                     (Screen::Main, None) => "enter or ",
                     (Screen::Transcript | Screen::Text, _) => "↑↓: scroll · ",
@@ -7636,8 +7647,8 @@ pub fn note_state(db: &Db, name: &str, n: &Note, busy: &Busy) -> String {
         let on = ask::waits_on(db, name, q.way).unwrap_or_else(|| "next".into());
         parts.push(format!("ready ({}), {on}", q.said()));
     } else if let Some((run, k)) = crate::held::reply_waiting(db, &n.change, &n.id) {
-        let who = db.run(&run).and_then(|r| r.held.as_ref()).and_then(|h| h.replies.get(k)).map_or("the agent", |rp| rp.who());
-        parts.push(format!("{who}'s reply waits for your review"));
+        let said = db.run(&run).and_then(|r| r.held.as_ref()).and_then(|h| h.replies.get(k)).map_or("the agent's reply".into(), |rp| rp.said());
+        parts.push(format!("{said} waits for your review"));
     } else if let Some(f) = &n.failed {
         parts.push(format!("ask failed: {}", f.split_whitespace().collect::<Vec<_>>().join(" ")));
     } else if last_role(&n.text) == Some(Role::Agent) && n.moved.is_none() {

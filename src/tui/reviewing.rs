@@ -564,8 +564,9 @@ impl App {
                     None => "a comment deleted".to_string(),
                 };
                 let (m, st) = mark_of(mark(p));
+                let edit = if rp.was.is_some() { format!("{}: ", rp.said()) } else { String::new() };
                 out.push(Line {
-                    text: format!("   {m} {at} · {}", crate::markdown::first_line(&rp.text)),
+                    text: format!("   {m} {at} · {edit}{}", crate::markdown::first_line(&rp.text)),
                     style: st,
                     part: Some(p),
                     entry: None,
@@ -646,6 +647,7 @@ impl App {
                         let text = rp.after(&n.text);
                         let said = match &rp.promote {
                             Some(why) => format!(" its reply, as it would be in its thread; then it moves to the stack's comments: {why}"),
+                            None if rp.was.is_some() => format!(" {}'s comment, edited on Phabricator, as it would be in its thread", rp.who()),
                             None => " its reply, as it would be in its thread".to_string(),
                         };
                         (Note { text, ..n.clone() }, said)

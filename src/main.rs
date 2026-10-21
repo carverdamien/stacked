@@ -1487,7 +1487,8 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
                         stacked::held::Part::Stack => h.stack.as_ref().map_or(String::new(), |c| format!("change\t{}", c.op)),
                         stacked::held::Part::Reply(k) => {
                             let rp = &h.replies[k];
-                            format!("reply\t{}\t{}", short_id(&rp.change, &rp.id), rp.text.lines().next().unwrap_or(""))
+                            let what = if rp.was.is_some() { "edited" } else { "reply" };
+                            format!("{what}\t{}\t{}", short_id(&rp.change, &rp.id), rp.text.lines().next().unwrap_or(""))
                         }
                         stacked::held::Part::Opened(k) => {
                             let n = &h.opened[k];

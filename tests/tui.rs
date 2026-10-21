@@ -5092,6 +5092,7 @@ fn phabricator(source: &str, rev: &str, _url: &str) -> Result<stacked::phab::Rev
         line: 0,
         line_text: None,
         reply_to: None,
+        earlier: vec![],
     };
     Ok(stacked::phab::RevisionComments {
         revision: rev.into(),
@@ -5167,7 +5168,7 @@ fn a_pull_from_phabricator_says_in_the_banner_where_it_is_until_it_is_done() {
 
 #[test]
 fn reviews_pulled_wait_in_the_banner_as_the_agent_s_work_does() {
-    use stacked::phab::{Pulled, Remote, RevisionComments};
+    use stacked::phab::{Pulled, Remote, RevisionComments, Version};
     let (_tmp, db, _src) = setup();
     let mut app = open(&db).unwrap();
     let d = Db::load(&db).unwrap();
@@ -5185,6 +5186,7 @@ fn reviews_pulled_wait_in_the_banner_as_the_agent_s_work_does() {
         line: 0,
         line_text: None,
         reply_to: reply.map(String::from),
+        earlier: vec![],
     };
     // A pull: ann's comment waits for review, nothing filed yet.
     Db::edit(&db, |d| stacked::review::file(d, "s", "pull-1", 1, &pulled(vec![by_ann("c1", "Why shout?", None)]))).unwrap();
@@ -5218,4 +5220,38 @@ fn reviews_pulled_wait_in_the_banner_as_the_agent_s_work_does() {
     choose(&mut app, "Accept ann's reply");
     let text = notes_of(&db, "s", 0).remove(0).text;
     assert!(text.ends_with("```reviewer ann\nStill?\n```"), "{text}");
+    // ann edits her comment on Phabricator: pulled, her edit waits, said on
+    // the comment; taken at once, it is in the place of her turn.
+    let edited = |phid: &str, text: &str, was: &[(&str, &str)]| Remote {
+        earlier: was.iter().map(|(phid, text)| Version { phid: phid.to_string(), text: text.to_string() }).collect(),
+        ..by_ann(phid, text, None)
+    };
+    let still = by_ann("c2", "Still?", Some("c1"));
+    Db::edit(&db, |d| stacked::review::file(d, "s", "pull-3", 1, &pulled(vec![edited("c1v2", "Why shout so?", &[("c1", "Why shout?")]), still.clone()]))).unwrap();
+    app.refresh();
+    assert!(draw(&mut app).contains("ann's edit waits for your review"));
+    keys(&mut app, &[KeyCode::Home]);
+    down_to(&mut app, "   └ ann's comment");
+    assert!(app.hint().starts_with("enter: accept ann's edit · "), "{}", app.hint());
+    choose(&mut app, "Accept ann's edit");
+    assert_eq!(app.status, "you accepted ann's edit: it is in the thread now");
+    let text = notes_of(&db, "s", 0).remove(0).text;
+    assert_eq!(text, "```reviewer ann\nWhy shout so?\n```\n```reviewer ann\nStill?\n```");
+    // Edited again: in its review, the edit says whose it is, and shows the
+    // thread as it would be.
+    let again = edited("c1v3", "Why shout at all?", &[("c1v2", "Why shout so?"), ("c1", "Why shout?")]);
+    Db::edit(&db, |d| stacked::review::file(d, "s", "pull-4", 1, &pulled(vec![again, still]))).unwrap();
+    app.refresh();
+    keys(&mut app, &[KeyCode::Esc]);
+    assert!(draw(&mut app).contains("   ⟳ Review 1 edited comment, pulled from Phabricator"));
+    keys(&mut app, &[KeyCode::Enter]);
+    assert_eq!(app.screen, Screen::Review);
+    let screen = draw(&mut app);
+    assert!(screen.contains(" pulled from Phabricator: 1 edited comment") && screen.contains(" · ann's edit: "), "{screen}");
+    assert!(screen.contains("ann's comment, edited on Phabricator, as it would be in its thread"), "{screen}");
+    keys(&mut app, &[KeyCode::Esc]);
+    choose(&mut app, "Accept all remaining and Close");
+    choose(&mut app, "Accept them and close");
+    let text = notes_of(&db, "s", 0).remove(0).text;
+    assert_eq!(text, "```reviewer ann\nWhy shout at all?\n```\n```reviewer ann\nStill?\n```");
 }
