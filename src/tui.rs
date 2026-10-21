@@ -1326,7 +1326,7 @@ struct Judged {
 
 /// The runs not landed yet.
 fn going(db: &Db) -> Vec<String> {
-    db.runs()
+    db.live_runs()
         .iter()
         .filter(|r| r.state == RunState::Started)
         .map(|r| r.id.clone())
@@ -1685,7 +1685,7 @@ impl App {
     /// The comments the agent is working on: read again only when the
     /// database has.
     fn busy(&self) -> std::rc::Rc<Busy> {
-        let key = self.db.records.len();
+        let key = self.db.last_rev();
         if let Some((k, b)) = &*self.busy_memo.borrow()
             && *k == key
         {
@@ -1744,7 +1744,7 @@ impl App {
         let Some(change) = self.subject_change() else { return vec![] };
         let mut notes: Vec<Note> = self.db.notes(&change).into_iter().cloned().collect();
         if self.on_stack {
-            notes.sort_by_key(|n| self.db.note_history(&n.change, &n.id).first().map_or(0, |r| r.0));
+            notes.sort_by_key(|n| self.db.note_first(&n.change, &n.id).unwrap_or(0));
         }
         notes
     }
@@ -2379,7 +2379,7 @@ impl App {
     }
 
     fn running(&self) -> usize {
-        self.db.runs().iter().filter(|r| ask::running(r)).count()
+        self.db.live_runs().iter().filter(|r| ask::running(r)).count()
     }
 
     fn ready(&self) -> usize {
@@ -3715,7 +3715,7 @@ impl App {
         if self.current().is_some() && self.screen != Screen::Search {
             items.push(Item::new("Search…", Action::Search));
         }
-        if !self.db.runs().is_empty() {
+        if self.db.has_runs() {
             let label = match self.running() {
                 0 => "Runs…".to_string(),
                 n => format!("Runs… (agent ●{n})"),
@@ -4882,7 +4882,8 @@ impl App {
             }
             _ => return None,
         };
-        if self.db.notes(&change).iter().any(|n| n.line == line) {
+        // No comment was ever on the line: none was closed there.
+        if !self.db.ever_on(&change, &line) || self.db.notes(&change).iter().any(|n| n.line == line) {
             return None;
         }
         self.db.deleted_notes(&self.stack, &change).into_iter().filter(|(_, n)| n.line == line).max_by_key(|(rev, _)| *rev).map(|(_, n)| n)
@@ -5120,7 +5121,7 @@ impl App {
             return (Way::Answer, false);
         }
         let fits = |way: Way, whole: bool| (way != Way::Test || ask::can_test(&self.db, n)) && !(whole && n.on_stack());
-        if let Some(q) = self.db.note_history(&n.change, &n.id).into_iter().rev().find_map(|(_, h)| h.queued.clone())
+        if let Some(q) = self.db.last_queued(&n.change, &n.id).cloned()
             && fits(q.way, q.stack)
         {
             return (q.way, q.stack);
@@ -5641,7 +5642,7 @@ impl App {
             .filter(|n| n.about == Some(rev))
             .cloned()
             .collect();
-        out.sort_by_key(|n| self.db.note_history(&n.change, &n.id).first().map_or(0, |r| r.0));
+        out.sort_by_key(|n| self.db.note_first(&n.change, &n.id).unwrap_or(0));
         out
     }
 

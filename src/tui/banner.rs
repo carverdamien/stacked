@@ -95,7 +95,7 @@ impl App {
             .stack_notes(&self.stack)
             .into_iter()
             .map(|n| {
-                let updated = self.db.note_history(&n.change, &n.id).last().map_or(0, |(rev, _)| *rev);
+                let updated = self.db.note_rev(&n.change, &n.id).unwrap_or(0);
                 (updated, BannerLine::Comment(n.change.clone(), n.id.clone()))
             })
             .collect();
@@ -139,7 +139,7 @@ impl App {
         let landed = lines.iter().filter(|l| matches!(l, BannerLine::Landed(_))).count();
         let open = lines.iter().filter(|l| matches!(l, BannerLine::Comment(..))).count();
         let batched = self.batched_count();
-        let going = self.db.runs().into_iter().filter(|r| r.stack == self.stack && r.ask.is_some() && ask::busy(r)).count();
+        let going = self.db.live_runs().into_iter().filter(|r| r.stack == self.stack && r.ask.is_some() && ask::busy(r)).count();
         let ready = self.ready();
         let of = |n: usize, one: &str, many: &str| if n == 1 { format!("1 {one}") } else { format!("{n} {many}") };
         let mut said = Vec::new();
@@ -293,7 +293,7 @@ impl App {
                 let key = (n.change.clone(), n.id.clone());
                 n.queued.as_ref().is_some_and(|q| q.batched()) || (ask::sendable(n) && !busy.contains_key(&key) && !held.contains_key(&key))
             })
-            .map(|n| (self.db.note_history(&n.change, &n.id).first().map_or(0, |(rev, _)| *rev), n))
+            .map(|n| (self.db.note_first(&n.change, &n.id).unwrap_or(0), n))
             .collect();
         out.sort_by_key(|(written, _)| *written);
         out.into_iter().map(|(_, n)| n).collect()

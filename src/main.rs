@@ -660,7 +660,11 @@ fn stack_at<'a>(db: &'a Db, name: &str, rev: Option<&str>) -> Result<&'a stacked
 /// its id) makes it; else as it is.
 fn stack_of(db: &Db, name: &str, rev: Option<&str>, work: Option<&str>) -> Result<stacked::db::Stack> {
     let Some(w) = work else { return Ok(stack_at(db, name, rev)?.clone()) };
-    let runs: Vec<String> = db.runs().into_iter().filter(|r| r.stack == name && r.id.starts_with(w)).map(|r| r.id.clone()).collect();
+    let runs: Vec<String> = db
+        .run_ids()
+        .filter(|id| id.starts_with(w) && db.run(id).is_some_and(|r| r.stack == name))
+        .map(str::to_string)
+        .collect();
     match runs.as_slice() {
         [id] => ask::work_stack(db, id),
         [] => err(format!("no run {w} on {name}")),
@@ -1296,7 +1300,7 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
                 _ => Way::Change,
             };
             let db = Db::load(path)?;
-            let since = db.records.len();
+            let since = db.last_rev();
             let busy = ask::with_agent(&db);
             let picked: Vec<Note> = if batch {
                 db.stack(&name)?;
@@ -1390,7 +1394,7 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
                     // database sees them: an ask landing meanwhile is in
                     // neither, and is seen the next time.
                     let db = Db::load(path)?;
-                    for r in db.runs().into_iter().filter(|r| ours(r) && r.state == stacked::db::RunState::Started) {
+                    for r in db.live_runs().into_iter().filter(|r| ours(r) && r.state == stacked::db::RunState::Started) {
                         if let Some(pid) = r.pid.filter(|p| !pids.contains(p)) {
                             pids.push(pid);
                         }
@@ -1670,7 +1674,7 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
                 println!("{w}");
             }
             if db.warnings.is_empty() {
-                println!("{} records, none passed over", db.records.len());
+                println!("{} records, none passed over", db.last_rev());
             }
             for s in db.stacks() {
                 match db.verify(s) {

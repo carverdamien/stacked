@@ -208,10 +208,7 @@ pub fn sendable(n: &Note) -> bool {
 pub fn can_test(db: &Db, n: &Note) -> bool {
     n.on_stack()
         || (n.file == MSG_PATH
-            && db
-                .versions(&n.change)
-                .last()
-                .is_some_and(|p| title_key(p) == n.line))
+            && db.latest_version(&n.change).is_some_and(|p| title_key(p) == n.line))
 }
 
 /// Is run `r` still going: started, and its process there, or about to be?
@@ -227,7 +224,7 @@ pub fn alive(pid: u32) -> bool {
 /// each, as `stacked runs` says it, and where its agent works: its
 /// worktree, or the repository as it is checked out.
 pub fn still_running(db: &Db) -> Vec<String> {
-    db.runs()
+    db.live_runs()
         .iter()
         .filter(|r| running(r))
         .map(|r| {
@@ -259,7 +256,7 @@ pub fn running(r: &Run) -> bool {
 
 /// The asks of stack `name` still going, with what each was started with.
 fn asks_going<'a>(db: &'a Db, name: &str) -> Vec<(&'a Run, Light)> {
-    db.runs()
+    db.live_runs()
         .into_iter()
         .filter(|r| r.stack == name && busy(r))
         .filter_map(|r| Some((r, light(r)?)))
@@ -270,7 +267,7 @@ fn asks_going<'a>(db: &'a Db, name: &str) -> Vec<(&'a Run, Light)> {
 /// run.
 pub fn with_agent(db: &Db) -> HashMap<(String, String), (Way, String)> {
     let mut out = HashMap::new();
-    for r in db.runs().into_iter().filter(|r| busy(r)) {
+    for r in db.live_runs().into_iter().filter(|r| busy(r)) {
         if let Some(i) = light(r) {
             for n in &i.notes {
                 out.insert((n.change.clone(), n.id.clone()), (i.way, r.id.clone()));
@@ -350,7 +347,7 @@ pub fn guessing(db: &Db, r: &Run) -> Option<String> {
 /// The runs going on from landed work `id`, guessing it is accepted, that
 /// still work or wait for your review.
 fn guesses_on(db: &Db, id: &str) -> Vec<Run> {
-    db.runs()
+    db.live_runs()
         .into_iter()
         .filter(|r| info(r).is_some_and(|i| i.after.as_deref() == Some(id) && !i.dropped))
         .filter(|r| r.state == RunState::Started || crate::held::waiting(db, r))
@@ -423,7 +420,7 @@ pub fn guesses_after(db: &Db, id: &str) -> (usize, usize) {
 /// The answer-only asks of stack `name`, but run `but`, still running or
 /// waiting for your review: made on the stack as it was.
 fn answers_in_flight(db: &Db, name: &str, but: &str) -> Vec<Run> {
-    db.runs()
+    db.live_runs()
         .into_iter()
         .filter(|r| r.stack == name && r.id != but && info(r).is_some_and(|i| i.way == Way::Answer && !i.dropped))
         .filter(|r| r.state == RunState::Started || crate::held::waiting(db, r))
@@ -462,7 +459,7 @@ pub fn answers_reasked(db: &Db, name: &str, id: &str) -> (usize, usize) {
 /// The builds and tests of stack `name` going: of the stack as it is, which
 /// accepting a change leaves behind. Not asked again; you may stop them.
 pub fn builds_going(db: &Db, name: &str) -> Vec<Run> {
-    db.runs()
+    db.live_runs()
         .into_iter()
         .filter(|r| r.stack == name && busy(r) && info(r).is_some_and(|i| i.way == Way::Test))
         .cloned()
@@ -525,7 +522,7 @@ struct Going {
 /// The build and test in flight, of whichever stack: one at a time, as
 /// builds take the machine.
 fn testing(db: &Db) -> Option<&Run> {
-    db.runs().into_iter().find(|r| busy(r) && light(r).is_some_and(|i| i.way == Way::Test))
+    db.live_runs().into_iter().find(|r| busy(r) && light(r).is_some_and(|i| i.way == Way::Test))
 }
 
 /// Why stack `name` cannot be edited by hand now, if it cannot: the agent
@@ -1435,7 +1432,7 @@ fn take_slot(db_path: &Path, id: &str, dir: &Path, kind: &str) -> Result<PathBuf
         let path = at.to_string_lossy().into_owned();
         let taken = Db::edit(db_path, |db| {
             let busy = db
-                .runs()
+                .live_runs()
                 .iter()
                 .filter(|r| r.state == RunState::Started && r.id != id)
                 .any(|r| info(r).and_then(|i| i.worktree).as_deref() == Some(path.as_str()));
@@ -1514,7 +1511,7 @@ pub type Ahead = (PathBuf, PathBuf, Vec<&'static str>);
 pub fn forget(db_path: &Path, made: &[Ahead]) {
     let busy: HashSet<String> = Db::load(db_path)
         .map(|db| {
-            db.runs()
+            db.live_runs()
                 .iter()
                 .filter(|r| r.state == RunState::Started)
                 .filter_map(|r| info(r)?.worktree)
@@ -2397,7 +2394,7 @@ pub fn fits(db_path: &Path, id: &str) -> Result<String> {
 /// was killed), or that never started; how many.
 pub fn land_orphans(db_path: &Path, db: &Db) -> usize {
     let stale: Vec<String> = db
-        .runs()
+        .live_runs()
         .into_iter()
         .filter(|r| r.ask.is_some() && r.state == RunState::Started)
         .filter(|r| match (r.pid, r.starter) {

@@ -273,7 +273,7 @@ pub fn waiting(db: &Db, r: &Run) -> bool {
 /// The runs of stack `name` whose work waits for review, the first landed
 /// first.
 pub fn queue<'a>(db: &'a Db, name: &str) -> Vec<&'a Run> {
-    let mut out: Vec<&Run> = db.runs().into_iter().filter(|r| r.stack == name && waiting(db, r)).collect();
+    let mut out: Vec<&Run> = db.live_runs().into_iter().filter(|r| r.stack == name && waiting(db, r)).collect();
     out.sort_by_key(|r| r.held.as_ref().map_or(0, |h| h.at));
     out
 }
@@ -287,7 +287,7 @@ pub fn change_waiting<'a>(db: &'a Db, name: &str) -> Option<&'a Run> {
 /// reply is in what it holds.
 pub fn replies_waiting(db: &Db) -> HashMap<(String, String), (String, usize)> {
     let mut out = HashMap::new();
-    for r in db.runs() {
+    for r in db.live_runs() {
         let Some(h) = r.held.as_ref().filter(|_| waiting(db, r)) else { continue };
         let taken = db.review(&r.id).map(|v| v.taken.clone()).unwrap_or_default();
         for (k, rp) in h.replies.iter().enumerate() {
@@ -302,7 +302,7 @@ pub fn replies_waiting(db: &Db) -> HashMap<(String, String), (String, usize)> {
 /// The run holding a reply to comment (change, id) that waits for review,
 /// and where the reply is in what it holds.
 pub fn reply_waiting(db: &Db, change: &str, id: &str) -> Option<(String, usize)> {
-    db.runs().into_iter().find_map(|r| {
+    db.live_runs().into_iter().find_map(|r| {
         let h = r.held.as_ref().filter(|_| waiting(db, r))?;
         let taken = db.review(&r.id).map(|v| v.taken.clone()).unwrap_or_default();
         let k = h.replies.iter().enumerate().position(|(k, rp)| rp.change == change && rp.id == id && !taken.contains(&k))?;

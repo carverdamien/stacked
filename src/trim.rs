@@ -134,7 +134,7 @@ pub fn trim(src: &Path, dst: &Path, from: Option<usize>) -> Result<Trimmed> {
     }
     let bytes = std::fs::read(src).map_err(|e| Error(format!("{}: {e}", src.display())))?;
     let all = Db::from_bytes(src, &bytes)?;
-    let len = all.records.len();
+    let len = all.last_rev();
     let from = from.unwrap_or(len + 1);
     if from < 1 || from > len + 1 {
         return err(format!("@{from} is not a rev of {} (its last is @{len})", src.display()));
@@ -147,7 +147,7 @@ pub fn trim(src: &Path, dst: &Path, from: Option<usize>) -> Result<Trimmed> {
         .nth(from.saturating_sub(2))
         .map_or(0, |(i, _)| i + 1);
     let before = if from == 1 { Db::from_bytes(src, &[])? } else { Db::from_bytes(src, &bytes[..cut])? };
-    let later = &all.records[from - 1..];
+    let later = &all.records()[from - 1..];
 
     // The runs kept: going at the cut, or with records after it.
     let mut kept_runs: BTreeSet<String> = later

@@ -255,7 +255,7 @@ fn ready(db: &Db, s: &Stack, here: &Path, nothing: &str) -> Result<(PathBuf, Str
 /// Whether an agent works in the checkout at `dir`, moved to its stack for
 /// a change asked there (`agent.worktree = "pwd"`), its ask still running.
 pub fn agent_in(db: &Db, dir: &Path) -> bool {
-    db.runs()
+    db.live_runs()
         .into_iter()
         .filter(|r| crate::ask::running(r))
         .filter_map(crate::ask::info)

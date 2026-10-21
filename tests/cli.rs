@@ -350,7 +350,7 @@ fn a_reader_reads_only_what_was_appended() {
     Db::edit(&path, |db| db.undo("s")).unwrap();
     reader.catch_up().unwrap();
     let full = Db::load(&path).unwrap();
-    assert_eq!(reader.records, full.records);
+    assert_eq!(reader.records(), full.records());
     assert_eq!(reader.head("s").map(|(r, _)| r), full.head("s").map(|(r, _)| r));
     // The lines claude writes are appended without reading the file.
     Db::append(&path, &[Record::Event { run: "r".into(), event: serde_json::json!({"type": "x"}) }]).unwrap();
@@ -377,7 +377,7 @@ fn records_only_ever_append() {
     Db::edit(&path, |db| ops::move_patch(db, "s", 0, 2)).unwrap();
     Db::edit(&path, |db| db.undo("s")).unwrap();
     let db = Db::load(&path).unwrap();
-    assert!(matches!(db.records[0], Record::Stacked { version: 2 }));
+    assert!(matches!(db.records()[0], Record::Stacked { version: 2 }));
     let s = db.stack("s").unwrap();
     let titles: Vec<&str> = s.patches.iter().map(|id| db.patch(id).title()).collect();
     assert_eq!(titles, ["one", "two", "three"]);
@@ -1778,7 +1778,7 @@ fn what_the_agent_makes_is_checked_too() {
     let before = e.column(2);
     let patches = || {
         let db = Db::load(&e.db).unwrap();
-        db.records.iter().filter(|r| matches!(r, Record::Patch(_))).count()
+        db.records().iter().filter(|r| matches!(r, Record::Patch(_))).count()
     };
     let stored = patches();
     // An empty commit is a patch with no diff: it does not apply.
@@ -2540,7 +2540,7 @@ fn a_trim_writes_a_new_database_from_a_rev_on() {
     })
     .unwrap();
     // The cut: what there is now is the start; then a drop and an undo.
-    let cut = Db::load(&e.db).unwrap().records.len() + 1;
+    let cut = Db::load(&e.db).unwrap().last_rev() + 1;
     e.ok(&["drop", "s", "1"]);
     e.ok(&["undo", "s"]);
     let before = std::fs::read(&e.db).unwrap();

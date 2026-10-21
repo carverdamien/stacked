@@ -431,16 +431,29 @@ pub fn new_change(seed: &str) -> String {
 pub struct Db {
     pub path: PathBuf,
     /// `records[i]` is rev `i + 1`.
-    pub records: Vec<Record>,
+    records: Vec<Record>,
     patches: HashMap<String, usize>,
+    /// Change to the index of its latest version.
+    latest: HashMap<String, usize>,
     /// Every name ever used, to the index of the stack it is on, or none
     /// when it is deleted.
     heads: BTreeMap<String, Option<usize>>,
+    /// Every stack, by its index: its name and its parent.
+    stacks: BTreeMap<usize, (String, Option<usize>)>,
+    /// Name to the revs of the stacks it has been on, oldest first: each
+    /// made, each a head moved to.
+    on: HashMap<String, Vec<usize>>,
     /// (change, comment id) to the index of its latest comment record.
     notes: BTreeMap<(String, String), usize>,
     /// (change, comment id) to the index of each of its records, oldest
     /// first: its history.
     note_records: HashMap<(String, String), Vec<usize>>,
+    /// (change, comment id) to the index of its first record.
+    note_first: HashMap<(String, String), usize>,
+    /// (change, comment id) to how it was last sent, if it ever was.
+    last_queued: HashMap<(String, String), Queued>,
+    /// (change, comment id) to every line it was on.
+    note_lines: HashMap<(String, String), Vec<String>>,
     /// Stack name to the index of its latest view record.
     views: HashMap<String, usize>,
     /// (stack name, what the choice is of) to the index of its latest
@@ -567,9 +580,15 @@ impl Db {
             path: path.to_path_buf(),
             records: Vec::new(),
             patches: HashMap::new(),
+            latest: HashMap::new(),
             heads: BTreeMap::new(),
+            stacks: BTreeMap::new(),
+            on: HashMap::new(),
             notes: BTreeMap::new(),
             note_records: HashMap::new(),
+            note_first: HashMap::new(),
+            last_queued: HashMap::new(),
+            note_lines: HashMap::new(),
             views: HashMap::new(),
             choices: BTreeMap::new(),
             collapsed: HashSet::new(),
@@ -729,12 +748,15 @@ impl Db {
             Record::Stacked { .. } | Record::Broken => {}
             Record::Patch(p) => {
                 self.patches.entry(p.id.clone()).or_insert(at);
+                self.latest.insert(p.change.clone(), at);
             }
             Record::Stack(s) => {
                 if let Some(id) = s.patches.iter().find(|id| !self.patches.contains_key(*id)) {
                     return err(format!("stack {} names patch {id}, which is not stored", s.name));
                 }
                 self.heads.insert(s.name.clone(), Some(at));
+                self.stacks.insert(at, (s.name.clone(), s.parent));
+                self.on.entry(s.name.clone()).or_default().push(at + 1);
             }
             Record::Head(h) => {
                 if let Some(rev) = h.rev {
@@ -742,12 +764,21 @@ impl Db {
                         Some(Record::Stack(s)) if s.name == h.name => {}
                         _ => return err(format!("@{rev} is not a stack of {}", h.name)),
                     }
+                    self.on.entry(h.name.clone()).or_default().push(rev);
                 }
                 self.heads.insert(h.name.clone(), h.rev.map(|r| r - 1));
             }
             Record::Comment(n) => {
                 let key = (n.change.clone(), n.id.clone());
                 self.note_records.entry(key.clone()).or_default().push(at);
+                self.note_first.entry(key.clone()).or_insert(at);
+                if let Some(q) = &n.queued {
+                    self.last_queued.insert(key.clone(), q.clone());
+                }
+                let lines = self.note_lines.entry(key.clone()).or_default();
+                if !lines.contains(&n.line) {
+                    lines.push(n.line.clone());
+                }
                 self.notes.insert(key, at);
             }
             Record::Run(r) => {
@@ -894,6 +925,16 @@ impl Db {
         Ok(self.records.len())
     }
 
+    /// The last rev: how many records there are.
+    pub fn last_rev(&self) -> usize {
+        self.records.len()
+    }
+
+    /// Every record, `records()[i]` rev `i + 1`.
+    pub fn records(&self) -> &[Record] {
+        &self.records
+    }
+
     /// The record at `rev`.
     pub fn rev(&self, rev: usize) -> Option<&Record> {
         rev.checked_sub(1).and_then(|i| self.records.get(i))
@@ -930,6 +971,14 @@ impl Db {
             (Some(id), None) if !prefix.is_empty() => Ok(self.patch(id)),
             (Some(_), Some(_)) => err(format!("patch {prefix} is ambiguous")),
             _ => err(format!("no patch {prefix}")),
+        }
+    }
+
+    /// The latest version of `change`.
+    pub fn latest_version(&self, change: &str) -> Option<&Patch> {
+        match &self.records[*self.latest.get(change)?] {
+            Record::Patch(p) => Some(p),
+            _ => None,
         }
     }
 
@@ -1140,11 +1189,7 @@ impl Db {
 
     /// The stack `name` was on before it was deleted.
     fn last_head(&self, name: &str) -> Option<usize> {
-        self.records.iter().enumerate().rev().find_map(|(i, r)| match r {
-            Record::Stack(s) if s.name == name => Some(i + 1),
-            Record::Head(h) if h.name == name && h.rev.is_some() => h.rev,
-            _ => None,
-        })
+        self.on.get(name)?.last().copied()
     }
 
     /// Moves `name` to the stack edited from its own that it was last on:
@@ -1162,16 +1207,9 @@ impl Db {
     /// Where redo would take `name`, and the edit it would make again.
     pub fn redo_target(&self, name: &str) -> Option<(usize, String)> {
         let (rev, _) = self.head(name)?;
-        // The stacks it has been on, oldest first.
-        let mut on = Vec::new();
-        for (i, r) in self.records.iter().enumerate() {
-            match r {
-                Record::Stack(s) if s.name == name => on.push(i + 1),
-                Record::Head(h) if h.name == name => on.extend(h.rev),
-                _ => {}
-            }
-        }
-        on.iter()
+        self.on
+            .get(name)?
+            .iter()
             .rev()
             .find_map(|&later| self.child_towards(rev, later))
             .and_then(|child| Some((child, self.node(child).ok()?.op.clone())))
@@ -1181,7 +1219,7 @@ impl Db {
     fn child_towards(&self, from: usize, to: usize) -> Option<usize> {
         let mut at = to;
         loop {
-            let parent = self.node(at).ok()?.parent?;
+            let parent = self.stacks.get(&at.checked_sub(1)?)?.1?;
             if parent == from {
                 return Some(at);
             }
@@ -1262,6 +1300,32 @@ impl Db {
                 _ => None,
             })
             .collect()
+    }
+
+    /// The rev of comment `id` on `change`'s first record: when it was
+    /// opened.
+    pub fn note_first(&self, change: &str, id: &str) -> Option<usize> {
+        self.note_first.get(&(change.to_string(), id.to_string())).map(|&at| at + 1)
+    }
+
+    /// The rev of comment `id` on `change`'s latest record: when it was
+    /// last written.
+    pub fn note_rev(&self, change: &str, id: &str) -> Option<usize> {
+        self.notes.get(&(change.to_string(), id.to_string())).map(|&at| at + 1)
+    }
+
+    /// How comment `id` on `change` was last sent, if it ever was.
+    pub fn last_queued(&self, change: &str, id: &str) -> Option<&Queued> {
+        self.last_queued.get(&(change.to_string(), id.to_string()))
+    }
+
+    /// Whether a comment, open or closed, was ever on line `line` of
+    /// `change`.
+    pub fn ever_on(&self, change: &str, line: &str) -> bool {
+        self.notes
+            .range((change.to_string(), String::new())..)
+            .take_while(|((c, _), _)| c == change)
+            .any(|(key, _)| self.note_lines.get(key).is_some_and(|ls| ls.iter().any(|l| l == line)))
     }
 
     /// The comments an answer opened from comment `id` on `change`.
@@ -1391,6 +1455,22 @@ impl Db {
     pub fn runs(&self) -> Vec<&Run> {
         // By where each was first written: ids are not in time order.
         self.run_order.iter().filter_map(|id| self.run(id)).collect()
+    }
+
+    /// The runs whose agent is going, or whose work waits for your review,
+    /// oldest started first: those under way, not those done with.
+    pub fn live_runs(&self) -> Vec<&Run> {
+        self.runs().into_iter().filter(|r| r.state == RunState::Started || crate::held::waiting(self, r)).collect()
+    }
+
+    /// Whether a run was ever written.
+    pub fn has_runs(&self) -> bool {
+        !self.run_order.is_empty()
+    }
+
+    /// Every run's id, oldest started first.
+    pub fn run_ids(&self) -> impl Iterator<Item = &str> {
+        self.run_order.iter().map(String::as_str)
     }
 
     /// What run `id`'s claude wrote, in order.
