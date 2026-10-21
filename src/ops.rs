@@ -65,12 +65,29 @@ pub fn plan_drafts(olds: &[Patch], drafts: Vec<Draft>, by_commit: &HashMap<Strin
 }
 
 /// Whether diffs `a` and `b` make the same change, whatever blobs their
-/// `index` lines name: a commit reworded, or rebased as it was.
+/// `index` lines name and wherever their hunks start: a commit reworded,
+/// rebased as it was, or moved down its files by a change below it.
 pub fn same_diff(a: &str, b: &str) -> bool {
-    fn change(d: &str) -> impl Iterator<Item = &str> {
-        d.lines().filter(|l| !l.starts_with("index "))
+    fn change(d: &str) -> impl Iterator<Item = std::borrow::Cow<'_, str>> {
+        d.lines().filter(|l| !l.starts_with("index ")).map(unplaced)
     }
     change(a).eq(change(b))
+}
+
+/// Line `l` of a diff, a hunk's header without where the hunk starts:
+/// `@@ -336,6 +336,43 @@ f()` as `@@ -,6 +,43 @@ f()`.
+fn unplaced(l: &str) -> std::borrow::Cow<'_, str> {
+    let Some((ranges, rest)) = l.strip_prefix("@@ ").and_then(|r| r.split_once(" @@")) else {
+        return std::borrow::Cow::Borrowed(l);
+    };
+    let ranges: Vec<String> = ranges
+        .split(' ')
+        .map(|r| {
+            let (side, at) = r.split_at(r.len().min(1));
+            at.split_once(',').map_or(side.to_string(), |(_, n)| format!("{side},{n}"))
+        })
+        .collect();
+    std::borrow::Cow::Owned(format!("@@ {} @@{rest}", ranges.join(" ")))
 }
 
 /// As `plan_drafts`, the patches stored: their ids.
@@ -1363,6 +1380,24 @@ mod tests {
 
     fn adds(line: &str) -> String {
         format!("diff --git a/f b/f\nindex 1..2 100644\n--- a/f\n+++ b/f\n@@ -0,0 +1 @@\n+{line}\n")
+    }
+
+    #[test]
+    fn a_diff_moved_down_its_file_by_a_change_below_is_the_same_change() {
+        let at = |start: usize| {
+            format!("diff --git a/f b/f\nindex 1..2 100644\n--- a/f\n+++ b/f\n@@ -{start},6 +{start},7 @@ fn f()\n a\n b\n c\n+d\n e\n f\n g\n")
+        };
+        // A line more above it, from a patch below: the same change.
+        assert!(same_diff(&at(336), &at(337)));
+        assert!(same_diff(&at(336), &at(336).replace("index 1..2", "index 3..4")));
+        // Its lines, its sizes, or the function it is in, other: not.
+        assert!(!same_diff(&at(336), &at(336).replace("+d", "+D")));
+        assert!(!same_diff(&at(336), &at(336).replace(",7 @@", ",8 @@")));
+        assert!(!same_diff(&at(336), &at(336).replace("fn f()", "fn g()")));
+        // A draft so moved, its title other, is its patch's new version.
+        let old = Patch::new("a".into(), Some("T <t@x>".into()), None, "Bug XXXXXXX - A\n".into(), at(336));
+        let planned = plan_drafts(std::slice::from_ref(&old), vec![draft("Bug 2084269 - A", &at(337))], &HashMap::new());
+        assert_eq!(planned[0].change, "a");
     }
 
     #[test]

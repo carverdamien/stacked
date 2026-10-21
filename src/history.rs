@@ -507,6 +507,25 @@ mod tests {
     }
 
     #[test]
+    fn a_new_version_moved_down_its_file_its_message_other_is_reworded() {
+        let a1 = patch("a", "A", "a1");
+        let moved = a1.diff.replace("@@ -1 +1 @@", "@@ -2 +2 @@");
+        let a2 = Patch::new("a".into(), None, None, "A, said otherwise".into(), moved);
+        let d = db(vec![Record::Patch(a1.clone()), Record::Patch(a2.clone())]);
+        let s = |p: &Patch| Stack {
+            name: "s".into(),
+            patches: vec![p.id.clone()],
+            base: None,
+            repo: None,
+            parent: None,
+            op: String::new(),
+            time: 0,
+        };
+        let diff = stacks_diff(&d, Some(&s(&a1)), Some(&s(&a2)), false);
+        assert!(matches!(diff[..], [Diffed::Patch { changed: true, reworded: true, .. }]), "{diff:?}");
+    }
+
+    #[test]
     fn a_new_version_whose_message_alone_changed_is_reworded() {
         let a1 = patch("a", "A", "a1");
         // Its message other, and an index line its diff did not have.
