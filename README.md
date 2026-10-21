@@ -686,7 +686,8 @@ to what it is asked about); then `starting: claude -p … --permission-mode
 build and test). They stay
 at the top of its stream, as `$ git worktree add …`, in the stream, in
 `Runs…` and in `stacked transcript RUN`. Enter on a comment the agent is
-working on opens its stream in place; esc folds it. The comments pane marks each (`●` with the agent, `◇`
+working on opens its stream in place; esc folds it, and so does the agent
+being done, the bottom line saying so. The comments pane marks each (`●` with the agent, `◇`
 batched, `◌` ready, `◆` its reply waits for your review, `✓` replied, `✗`
 failed, `↑` moved), its header counts them (`4 comments · 1 with the agent ·
 1 to review · 2 to read`), and the top bar too (`agent ●2 · batch:3 ·

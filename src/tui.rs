@@ -2356,6 +2356,7 @@ impl App {
         if let Err(e) = self.db.catch_up() {
             self.status = e.0;
         }
+        self.fold_done();
         // What landed says so, but what waits for review: the banner says
         // that, not to interrupt.
         for id in std::mem::take(&mut self.going) {
@@ -3051,7 +3052,7 @@ impl App {
                 return out;
             }
             Mode::Stream { .. } => {
-                out.push("Press ↑↓ (pgup pgdn home end) to scroll what the agent wrote, Esc to fold it.".into());
+                out.push("Press ↑↓ (pgup pgdn home end) to scroll what the agent wrote, Esc to fold it. Once the agent is done, the stream folds on its own.".into());
                 return out;
             }
             Mode::Preview(_) => {
@@ -3736,6 +3737,40 @@ impl App {
             _ => {}
         }
         self.mode = Mode::Moving { from, to };
+    }
+
+    /// What the agent writes, read in place, folded once the agent is done
+    /// with its comment, for the keys to be the screen's again; and said,
+    /// what it brought too when that waits for your review (what landed
+    /// says so after). Read from the help, it is folded there, for the
+    /// help to go back to the screen.
+    fn fold_done(&mut self) {
+        let busy = self.busy();
+        let done = |m: &Mode| match m {
+            Mode::Stream { change, id, .. } if !busy.contains_key(&(change.clone(), id.clone())) => Some((change.clone(), id.clone())),
+            _ => None,
+        };
+        let at = match &mut self.mode {
+            Mode::Help { back, .. } => {
+                let at = done(back);
+                if at.is_some() {
+                    **back = Mode::Normal;
+                }
+                at
+            }
+            m => {
+                let at = done(m);
+                if at.is_some() {
+                    *m = Mode::Normal;
+                }
+                at
+            }
+        };
+        let Some((change, id)) = at else { return };
+        self.status = match crate::held::reply_waiting(&self.db, &change, &id) {
+            Some(_) => "the agent is done: what it brought waits for your review".into(),
+            None => "the agent is done: what it wrote is folded".into(),
+        };
     }
 
     fn stream_key(&mut self, change: String, id: String, mut up: usize, k: KeyEvent) {

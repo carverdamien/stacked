@@ -2188,6 +2188,59 @@ fn a_comment_is_sent_from_its_menu_and_answered_in_place() {
     draw(&mut again);
 }
 
+/// A comment asked about, its stream opened in place.
+fn asked_and_streamed(db: &Path) -> App {
+    fake_claude();
+    let mut app = open(db).unwrap();
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Enter]);
+    typed(&mut app, "why so loud?");
+    keys(&mut app, &[KeyCode::Esc]);
+    choose_as(&mut app, "Save it and ask agent", "answer only");
+    wait_for(&mut app, "⋯ Reading the patch.");
+    keys(&mut app, &[KeyCode::Down]);
+    keys(&mut app, &[KeyCode::Enter]);
+    assert!(matches!(app.mode, Mode::Stream { .. }), "{:?}", app.mode);
+    app
+}
+
+#[test]
+fn a_stream_read_in_place_folds_once_the_agent_is_done() {
+    let (_tmp, db, _src) = setup();
+    let mut app = asked_and_streamed(&db);
+    assert_eq!(app.hint(), "↑↓: scroll · esc: fold it");
+    // Its answer lands: the stream folds, the keys are the screen's again,
+    // and the bottom line says what waits.
+    let screen = wait_for(&mut app, "⟳ 1 landed ask waits for your review");
+    assert_eq!(app.mode, Mode::Normal);
+    assert_eq!(app.status, "the agent is done: what it brought waits for your review");
+    assert!(!screen.contains("● session started · fake"), "{screen}");
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    assert!(matches!(app.mode, Mode::Menu(_)), "{:?}", app.mode);
+}
+
+#[test]
+fn a_stream_read_from_the_help_folds_there() {
+    let (_tmp, db, _src) = setup();
+    let mut app = asked_and_streamed(&db);
+    keys(&mut app, &[KeyCode::Char('?')]);
+    assert!(draw(&mut app).contains("Once the agent is done, the stream folds on its own."));
+    // Its answer lands: the help goes back to the screen, not the stream.
+    for _ in 0..300 {
+        app.refresh();
+        if matches!(&app.mode, Mode::Help { back, .. } if **back == Mode::Normal) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    let Mode::Help { back, .. } = &app.mode else { panic!("{:?}", app.mode) };
+    assert_eq!(**back, Mode::Normal);
+    assert_eq!(app.status, "the agent is done: what it brought waits for your review");
+    keys(&mut app, &[KeyCode::Esc]);
+    assert_eq!(app.mode, Mode::Normal);
+}
+
 #[test]
 fn the_screen_never_waits_on_the_agent() {
     let (_tmp, db, _src) = setup();
