@@ -362,6 +362,14 @@ lines previewed; naming several, it asks which. (Enter on such a line no
 longer opens your comment to write in: Enter on its line, or its menu,
 does.)
 
+A reply written in $EDITOR (`Reply`, or `Comment on this line` on a line
+that has a comment) opens under the conversation it answers, each turn a
+line starting with `#` under who said it, the cursor on the line after the
+last, where you write: the editor is told the line as it takes it. Under it
+are the comment's references, a line each as the comment shows them, to
+name in what you write, then the rules. Lines starting with `#` are dropped
+when you save, and with nothing written, nothing is saved.
+
 When the last word of a comment is yours, enter on it opens what you said
 last, in place, to edit or add to (a reply would only add to it), the turns
 before it as they were; enter on its line does too. Its menu has the same
@@ -1444,7 +1452,8 @@ History… draws and the stack diff it shows beside each change, the agent
 asked about a record of the history, a new database started from it, a
 moved comment and an answer's comments, a patch's comment asked of the
 whole stack, what you said last written again (off the queue meanwhile;
-left as it was, asked as it is or left so), a comment moved to the stack
+left as it was, asked as it is or left so), a reply written in $EDITOR
+under its conversation, its references under it, a comment moved to the stack
 taking the cursor with it, the mouse (the cursor following it, a click as
 Enter, a right click's menu, a menu's item), the comments pane's previews,
 moving a patch, searching (what is in sight first, the patches then the

@@ -1004,6 +1004,98 @@ fn mentions_in_a_thread_are_links_to_what_they_name_the_agents_numbered_too() {
 }
 
 #[test]
+fn a_reply_in_editor_is_written_under_the_conversation_its_references_under_it() {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    use stacked::tui::Target;
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Enter]);
+    save(&mut app, "why so loud?");
+    down_to(&mut app, "+LINE 39");
+    keys(&mut app, &[KeyCode::Enter]);
+    save(&mut app, "Same as @r1?");
+    let a = notes_of(&db, "s", 0).into_iter().find(|n| n.text == "why so loud?").unwrap();
+    let b = notes_of(&db, "s", 0).into_iter().find(|n| n.text == "Same as @r1?").unwrap();
+    // r1 attached; the agent answers, attaching r2.
+    Db::edit(&db, |d| {
+        let said = "As @r2 shows.\n\n```refs\nr2 a.txt:2 @1\n```";
+        d.set_note(Note {
+            text: append_turn(&b.text, Role::Agent, said, Some("answer")),
+            attached: vec![stacked::refs::Attached {
+                n: 1,
+                to: stacked::refs::To::Comment {
+                    change: a.change.clone(),
+                    id: a.id.clone(),
+                },
+            }],
+            ..b.clone()
+        })
+    })
+    .unwrap();
+    app.refresh();
+    // $EDITOR as the tests have it: what it opens and where kept, and a
+    // line written where the cursor is.
+    let seen = Rc::new(RefCell::new(Vec::<(String, Option<usize>)>::new()));
+    let opened = seen.clone();
+    let write = |line: &'static str| -> stacked::ops::Editing {
+        let opened = opened.clone();
+        Box::new(move |file: &Path, at: Option<usize>| -> stacked::db::Result<()> {
+            let text = std::fs::read_to_string(file).unwrap();
+            opened.borrow_mut().push((text.clone(), at));
+            let mut lines: Vec<&str> = text.lines().collect();
+            lines[at.unwrap() - 1] = line;
+            std::fs::write(file, lines.join("\n")).unwrap();
+            Ok(())
+        })
+    };
+    stacked::ops::stand_in(Some(write("Then @r2 it is.")));
+    down_to(&mut app, "     ▎   As @r2 shows.");
+    let e = choose_as(&mut app, "Reply", "in $EDITOR");
+    assert_eq!(e, Effect::EditComment(Target::Reply { change: b.change.clone(), id: b.id.clone() }));
+    app.effect(e).unwrap();
+    // The conversation above, the cursor on the line after the last reply,
+    // the references below: all of it dropped but what you wrote.
+    let (text, at) = seen.borrow_mut().remove(0);
+    assert_eq!(
+        text.lines().collect::<Vec<_>>(),
+        [
+            "# you:",
+            "#   Same as @r1?",
+            "# agent:",
+            "#   As @r2 shows.",
+            "",
+            "",
+            "# The comment's references, which your reply names as @r1, @r{1,2},",
+            "# @r{2-4} or @r*:",
+            "#   r1 ↗ patch 1 · a.txt: TWO · \"why so loud?\"",
+            "#   r2 ⇢ a.txt:2 · as patch 1 leaves it (the agent's)",
+            "#",
+            "# Write your reply above these lines, under the conversation. Lines",
+            "# starting with # are dropped; with nothing written, nothing is saved.",
+        ]
+    );
+    assert_eq!(at, Some(5));
+    let b = notes_of(&db, "s", 0).into_iter().find(|n| n.id == b.id).unwrap();
+    assert!(b.text.ends_with("```\nThen @r2 it is."), "{}", b.text);
+    // On a line with a comment, a comment written there is one more turn of
+    // it: under it, the same way.
+    stacked::ops::stand_in(Some(write("Still loud.")));
+    keys(&mut app, &[KeyCode::Home]);
+    down_to(&mut app, "+TWO");
+    let e = choose_as(&mut app, "Comment on this line", "in $EDITOR");
+    assert!(matches!(&e, Effect::EditComment(Target::Line { key, .. }) if *key == a.id), "{e:?}");
+    app.effect(e).unwrap();
+    let (text, at) = seen.borrow_mut().remove(0);
+    assert!(text.starts_with("# you:\n#   why so loud?\n\n\n# Write your reply above these lines"), "{text}");
+    assert_eq!(at, Some(3));
+    assert_eq!(notes_of(&db, "s", 0).into_iter().find(|n| n.id == a.id).unwrap().text, "why so loud?\nStill loud.");
+    stacked::ops::stand_in(None);
+}
+
+#[test]
 fn deleting_a_comment_asks_first() {
     let (_tmp, db, _src) = setup();
     let mut app = open(&db).unwrap();

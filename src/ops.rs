@@ -1337,9 +1337,29 @@ pub fn edit_file(text: &str, name: &str, line: Option<usize>) -> Result<String> 
     out
 }
 
+/// What edits a file in place of the editor, told the file and the line it
+/// is opened at.
+pub type Editing = Box<dyn FnMut(&std::path::Path, Option<usize>) -> Result<()>>;
+
+thread_local! {
+    /// What edits files in place of the editor on this thread, when one is
+    /// set: the tests', which never run one, as `ask::stand_in` is for the
+    /// agent.
+    static STAND_IN: std::cell::RefCell<Option<Editing>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Edits the files this thread opens with `edit` rather than the editor;
+/// with none, with the editor again.
+pub fn stand_in(edit: Option<Editing>) {
+    STAND_IN.with(|s| *s.borrow_mut() = edit);
+}
+
 /// Runs the editor on `file`, at `line` if given, in `dir` if given (else
 /// where stacked runs): an error if it says it failed.
 fn run_editor(file: &std::path::Path, line: Option<usize>, dir: Option<&std::path::Path>) -> Result<()> {
+    if let Some(done) = STAND_IN.with(|s| s.borrow_mut().as_mut().map(|edit| edit(file, line))) {
+        return done;
+    }
     let cfg = crate::config::get();
     let editor = cfg.editor();
     let mut cmd = std::process::Command::new("sh");
