@@ -2976,7 +2976,7 @@ fn the_agents_worktrees_are_made_ahead_as_the_stack_s_checkout_says() {
 }
 
 #[test]
-fn the_top_bar_says_what_is_left_to_review_and_when_it_is_done() {
+fn the_top_bar_says_what_is_left_to_review() {
     let (_tmp, db, _src) = setup();
     let mut app = open(&db).unwrap();
     let first = |app: &mut App, w: u16| {
@@ -2984,10 +2984,9 @@ fn the_top_bar_says_what_is_left_to_review_and_when_it_is_done() {
         app.draw(&mut buf);
         (0..w).map(|x| buf[(x, 0)].symbol()).collect::<String>()
     };
-    // Nothing read yet: the 5 lines the patches change, and no pace to go
-    // by.
+    // Nothing read yet: the 5 lines the patches change.
     let bar = first(&mut app, 120);
-    assert!(bar.ends_with("   5 lines to review · ETA unknown "), "{bar}");
+    assert!(bar.ends_with("   5 lines to review "), "{bar}");
     let d = Db::load(&db).unwrap();
     let t0 = d.stack("t").unwrap().time;
     let s = d.stack("s").unwrap();
@@ -3000,30 +2999,30 @@ fn the_top_bar_says_what_is_left_to_review_and_when_it_is_done() {
             time,
         })
     };
-    // 2 lines read in 10 minutes: 3 left, 15 minutes more.
+    // 2 lines read: 3 left.
     Db::append(&db, &[read(&one, 2, t0 + 600)]).unwrap();
     app.refresh();
     let bar = first(&mut app, 120);
-    assert!(bar.ends_with("   3 lines to review · ETA 15m "), "{bar}");
-    // Back after two hours, a line more read: the pause is no time spent.
-    Db::append(&db, &[read(&two, 1, t0 + 600 + 7200)]).unwrap();
+    assert!(bar.ends_with("   3 lines to review "), "{bar}");
+    // A line more, of the other patch.
+    Db::append(&db, &[read(&two, 1, t0 + 1200)]).unwrap();
     app.refresh();
     let bar = first(&mut app, 120);
-    assert!(bar.ends_with("   2 lines to review · ETA 7m "), "{bar}");
-    // A comment open, and none ever closed: no pace for comments.
+    assert!(bar.ends_with("   2 lines to review "), "{bar}");
+    // A comment open.
     keys(&mut app, &[KeyCode::Right]);
     down_to(&mut app, "+TWO");
     keys(&mut app, &[KeyCode::Enter]);
     save(&mut app, "why so loud?");
     let bar = first(&mut app, 120);
-    assert!(bar.ends_with("   2 lines to review · 1 comment to close · ETA unknown "), "{bar}");
+    assert!(bar.ends_with("   2 lines to review · 1 comment to close "), "{bar}");
     // With less room, less of it; with none, none.
     let bar = first(&mut app, 80);
-    assert!(bar.ends_with("   ETA unknown ") && !bar.contains("to review"), "{bar}");
+    assert!(bar.ends_with("   2 lines · 1 comment ") && !bar.contains("to review"), "{bar}");
     let bar = first(&mut app, 50);
-    assert!(!bar.contains("ETA"), "{bar}");
+    assert!(!bar.contains("2 lines"), "{bar}");
     // All read, the comment closed: nothing left.
-    Db::append(&db, &[read(&one, 4, t0 + 7900)]).unwrap();
+    Db::append(&db, &[read(&one, 4, t0 + 1800)]).unwrap();
     let n = notes_of(&db, "s", 0).into_iter().find(|n| n.text == "why so loud?").unwrap();
     Db::edit(&db, |d| d.set_note(Note { text: String::new(), ..n })).unwrap();
     app.refresh();
