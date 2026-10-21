@@ -917,6 +917,93 @@ fn references_attached_to_a_comment_are_named_in_it_and_asking_waits_for_what_it
 }
 
 #[test]
+fn mentions_in_a_thread_are_links_to_what_they_name_the_agents_numbered_too() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Enter]);
+    save(&mut app, "why so loud?");
+    down_to(&mut app, "+LINE 39");
+    keys(&mut app, &[KeyCode::Enter]);
+    save(&mut app, "Same as @r1?");
+    let a = notes_of(&db, "s", 0).into_iter().find(|n| n.text == "why so loud?").unwrap();
+    let b = notes_of(&db, "s", 0).into_iter().find(|n| n.text == "Same as @r1?").unwrap();
+    // r1 attached; the agent answers, attaching r2, naming it and r9;
+    // you answer naming both.
+    Db::edit(&db, |d| {
+        let said = "As @r2 shows, not @r9.\n\n```refs\nr2 a.txt:2 @1\n```";
+        let text = append_turn(&append_turn(&b.text, Role::Agent, said, Some("answer")), Role::You, "Compare @r{1,2}.", None);
+        d.set_note(Note {
+            text,
+            attached: vec![stacked::refs::Attached {
+                n: 1,
+                to: stacked::refs::To::Comment {
+                    change: a.change.clone(),
+                    id: a.id.clone(),
+                },
+            }],
+            ..b.clone()
+        })
+    })
+    .unwrap();
+    app.refresh();
+    draw(&mut app);
+    let row = |app: &App, text: &str| app.rows.iter().find(|r| r.text.contains(text)).cloned().unwrap_or_else(|| panic!("no {text:?}"));
+    assert_eq!(row(&app, "Same as @r1?").names, [1]);
+    assert_eq!(row(&app, "As @r2 shows").names, [2], "r9 names nothing");
+    assert_eq!(row(&app, "Compare @r{1,2}.").names, [1, 2]);
+    let under: Vec<String> = app.rows.iter().filter(|r| r.text.contains(" ↗ ") || r.text.contains(" ⇢ ")).map(|r| r.text.trim().to_string()).collect();
+    assert_eq!(under, ["▎   r1 ↗ patch 1 · a.txt: TWO · \"why so loud?\"", "▎   r2 ⇢ a.txt:2 · as patch 1 leaves it"]);
+    // Drawn: what holds as a link, what does not as broken.
+    let mut buf = Buffer::empty(Rect::new(0, 0, 160, 60));
+    app.draw(&mut buf);
+    let cell = |text: &str| {
+        (0..60u16)
+            .find_map(|y| {
+                let line: String = (0..160u16).map(|x| buf[(x, y)].symbol()).collect();
+                line.find(text).map(|k| buf[(line[..k].chars().count() as u16, y)].style())
+            })
+            .unwrap_or_else(|| panic!("no {text:?}"))
+    };
+    let (named, broken) = (cell("@r2 shows"), cell("@r9."));
+    let underlined = ratatui::style::Modifier::UNDERLINED;
+    assert!(named.add_modifier.contains(underlined) && broken.add_modifier.contains(underlined), "{named:?} {broken:?}");
+    assert_ne!(named.fg, broken.fg, "{named:?} {broken:?}");
+    // Enter on a line naming one: there; the agent's lines, previewed.
+    down_to(&mut app, "     ▎   Same as @r1?");
+    keys(&mut app, &[KeyCode::Enter]);
+    draw(&mut app);
+    assert_eq!(app.rows[app.cursor].note.as_deref(), Some(a.id.as_str()), "{}", app.rows[app.cursor].text);
+    down_to(&mut app, "     ▎   As @r2 shows");
+    keys(&mut app, &[KeyCode::Enter]);
+    let Mode::Preview(p) = &app.mode else { panic!("{:?}", app.mode) };
+    assert_eq!(p.title, "a.txt:2 · as patch 1 leaves it");
+    keys(&mut app, &[KeyCode::Esc]);
+    // Naming two: which.
+    down_to(&mut app, "     ▎   Compare @r{1,2}.");
+    keys(&mut app, &[KeyCode::Enter]);
+    let Mode::Menu(m) = &app.mode else { panic!("{:?}", app.mode) };
+    assert_eq!(m.title, "the references it names");
+    assert_eq!(items(&app).into_iter().map(|(l, _)| l).collect::<Vec<_>>(), ["r1 ↗ patch 1 · a.txt: TWO · \"why so loud?\"", "r2 ⇢ a.txt:2 · as patch 1 leaves it"]);
+    keys(&mut app, &[KeyCode::Esc]);
+    // Written on again: the agent's is there to name, and the next attached
+    // is r3.
+    keys(&mut app, &[KeyCode::Home]);
+    down_to(&mut app, "+LINE 39");
+    keys(&mut app, &[KeyCode::Enter]);
+    let Mode::Edit(e) = &app.mode else { panic!("{:?}", app.mode) };
+    assert!(e.ed.broken().is_empty(), "{:?}", e.ed.broken());
+    assert!(draw(&mut app).contains("r2 ⇢ a.txt:2 · as patch 1 leaves it (the agent's)"));
+    keys(&mut app, &[KeyCode::Esc]);
+    choose(&mut app, "Attach a reference…");
+    choose(&mut app, "Lines of a file…");
+    typed(&mut app, "a.txt:3 @1");
+    keys(&mut app, &[KeyCode::Enter]);
+    assert_eq!(app.status, "attached as r3: write @r3 where you mean it");
+}
+
+#[test]
 fn deleting_a_comment_asks_first() {
     let (_tmp, db, _src) = setup();
     let mut app = open(&db).unwrap();

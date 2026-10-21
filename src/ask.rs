@@ -1078,9 +1078,12 @@ fn transcript(text: &str) -> String {
             let (body, pointers) = crate::refs::split(&t.body);
             let pointers: Vec<String> = pointers
                 .iter()
-                .map(|p| match p {
-                    crate::refs::Pointer::Lines(r) => r.said(),
-                    crate::refs::Pointer::Comment { change, id } => format!("the comment [{}]", crate::db::short_id(change, id)),
+                .map(|p| {
+                    let name = p.n.map_or(String::new(), |k| format!("r{k}, "));
+                    match &p.to {
+                        crate::refs::Pointer::Lines(r) => format!("{name}{}", r.said()),
+                        crate::refs::Pointer::Comment { change, id } => format!("{name}the comment [{}]", crate::db::short_id(change, id)),
+                    }
                 })
                 .collect();
             match pointers.is_empty() {
@@ -1345,6 +1348,7 @@ fn prompt(db: &Db, i: &Info, s: &Stack, cmd: &str, run: &str) -> String {
         let Some(n) = db.note(&sh.change, &sh.id) else { continue };
         p.push_str(&format!("\n[{}] {}:\n{}\n", sh.label, place(db, s, n), transcript(&n.text)));
         p.push_str(&attached_part(db, s, n));
+        p.push_str(&format!("(The references you attach to your reply to it are numbered from r{} on.)\n", crate::refs::next_of(n)));
     }
     p.push_str(&history_part(db, i, s, cmd));
     p.push_str(match i.way {
@@ -1383,8 +1387,10 @@ comment you open may have \"refs\" too: each {\"file\": its path, \"lines\": \"1
 \"patch\": a patch's number, for the file as that patch leaves it; 0, as the stack's base has it; \
 none, as the whole stack leaves it}; or, to point at a comment of the stack, {\"comment\": its label \
 above ([c1] is \"c1\"), or its id, as `stacked comments` lists it}. The user reads each under what \
-you wrote, and goes there. What is attached to a comment, you may name in what you write as the \
-user does: @r1, @r{1,2}, @r*.";
+you wrote, and goes there. Each takes a number, in the order you give them: in a reply, from the \
+one its comment above says; in a comment you open, from r1. In what you write, @r1 names \
+reference r1 of the comment you write on, @r{1,2} several, @r* all of them: those attached to \
+it, and those you attach.";
 
 /// The program run as claude, when not `$STACKED_CLAUDE`'s or `claude`,
 /// and the stacked an ask calls back (`prompt`, `record`, `land`), when not
@@ -2070,7 +2076,12 @@ fn held_replies(db: &Db, i: &Info, replies: &Map<String, Value>) -> Vec<crate::h
             Some(crate::held::Reply {
                 change: sh.change.clone(),
                 id: sh.id.clone(),
-                text: replies.get(&sh.label).map(|v| crate::refs::written_with(v, &|c| named_comment(db, i, &stack, c)))?,
+                text: replies.get(&sh.label).map(|v| {
+                    // Numbered after the comment's own references, as the
+                    // prompt said: nothing could be attached meanwhile.
+                    let first = db.note(&sh.change, &sh.id).map_or(1, crate::refs::next_of);
+                    crate::refs::written_with(v, first, &|c| named_comment(db, i, &stack, c))
+                })?,
                 tag: i.way.name().into(),
                 ..Default::default()
             })
@@ -2421,7 +2432,7 @@ fn opened_notes(db: &Db, run: &Run, i: &Info, result: &str) -> Result<Vec<Note>>
                 "agent answer",
                 &crate::refs::attach(
                     str_of(note.get("text")).trim(),
-                    &crate::refs::resolved(crate::refs::of_json(note.get("refs")), &|c| named_comment(db, i, &from.name, c)),
+                    &crate::refs::resolved(crate::refs::of_json(note.get("refs")), Some(1), &|c| named_comment(db, i, &from.name, c)),
                 ),
             ),
             file,
@@ -2458,7 +2469,7 @@ fn test_notes(db: &Db, run: &Run, i: &Info, result: &str) -> Result<Vec<Note>> {
             line: title_key(&p),
             text: {
                 let (found, refs) = crate::refs::text_and_refs(v);
-                let refs = crate::refs::resolved(refs, &|c| named_comment(db, i, &from.name, c));
+                let refs = crate::refs::resolved(refs, Some(1), &|c| named_comment(db, i, &from.name, c));
                 fenced("agent test", &crate::refs::attach(&format!("{} (tested @{})", found.trim(), i.from), &refs))
             },
             file: MSG_PATH.into(),

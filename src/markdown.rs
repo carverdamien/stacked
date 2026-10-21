@@ -30,6 +30,10 @@ pub enum Mark {
     Block,
     /// A rule.
     Rule,
+    /// A mention of references a comment has, `@r1`.
+    Mention,
+    /// A mention of references it does not have.
+    Broken,
 }
 
 /// A line as drawn: its pieces, each with what it is.

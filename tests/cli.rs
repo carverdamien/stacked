@@ -1122,7 +1122,7 @@ fn a_commit_the_agent_rewords_is_a_new_version_of_its_patch() {
 #[test]
 fn what_is_attached_to_a_comment_goes_with_it_to_the_agent_open_or_closed() {
     use stacked::db::Note;
-    use stacked::refs::{Attached, Pointer, To};
+    use stacked::refs::{Attached, Pointer, Pointing, To};
     let e = env();
     e.ok(&["import", "s", "base"]);
     let open = comment(&e, &["--patch", "1", "Use", "a", "map."]);
@@ -1169,6 +1169,7 @@ fn what_is_attached_to_a_comment_goes_with_it_to_the_agent_open_or_closed() {
         "  r3: a.txt:1-2 · as patch 1 leaves it:".into(),
         "        1 │ one\n        2 │ 2\n".into(),
         "{\"comment\": its label".into(),
+        "(The references you attach to your reply to it are numbered from r4 on.)".into(),
     ] {
         assert!(prompt.contains(&said), "{said:?} in:\n{prompt}");
     }
@@ -1178,16 +1179,24 @@ fn what_is_attached_to_a_comment_goes_with_it_to_the_agent_open_or_closed() {
     let r = stacked::held::queue(&d, "s")[0].clone();
     let (body, pointers) = stacked::refs::split(&r.held.as_ref().unwrap().replies[0].text);
     assert_eq!(body, "As @r1 says.");
+    // Numbered after the comment's own, the one that is none leaving its
+    // number out.
     assert_eq!(
         pointers,
         [
-            Pointer::Comment {
-                change: a.change.clone(),
-                id: a.id.clone()
+            Pointing {
+                n: Some(4),
+                to: Pointer::Comment {
+                    change: a.change.clone(),
+                    id: a.id.clone()
+                }
             },
-            Pointer::Comment {
-                change: o.change.clone(),
-                id: o.id.clone()
+            Pointing {
+                n: Some(5),
+                to: Pointer::Comment {
+                    change: o.change.clone(),
+                    id: o.id.clone()
+                }
             },
         ]
     );
@@ -1210,12 +1219,14 @@ fn an_agent_attaches_references_to_its_reply_and_to_the_comments_it_opens() {
     assert!(fine, "{out}{err}");
     // Told how to attach them.
     assert!(std::fs::read_to_string(&prompts).unwrap().contains("{\"text\": what you write, \"refs\": [...]}"));
-    // Kept in what it wrote, a refs block each, the ranges merged.
+    // Kept in what it wrote, a refs block each, the ranges merged, each
+    // numbered: after the comment's own (it has none), and from r1 in a
+    // comment it opens.
     let d = Db::load(&e.db).unwrap();
     let r = stacked::held::queue(&d, "s")[0].clone();
     let h = r.held.as_ref().unwrap();
-    assert_eq!(h.replies[0].text, "See there.\n\n```refs\na.txt:1-3 @1\nb.txt:1\n```");
-    assert!(h.opened[0].text.contains("And here.\n\n```refs\na.txt:2 @0\n```"), "{}", h.opened[0].text);
+    assert_eq!(h.replies[0].text, "See there.\n\n```refs\nr1 a.txt:1-3 @1\nr2 b.txt:1\n```");
+    assert!(h.opened[0].text.contains("And here.\n\n```refs\nr1 a.txt:2 @0\n```"), "{}", h.opened[0].text);
 }
 
 #[test]

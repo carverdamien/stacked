@@ -102,6 +102,8 @@ fn mark_style(m: crate::markdown::Mark, plain: Style) -> Style {
         Mark::Emph => plain.add_modifier(Modifier::ITALIC),
         Mark::Link => plain.add_modifier(Modifier::UNDERLINED),
         Mark::Url | Mark::Quote | Mark::Rule => plain.add_modifier(Modifier::DIM),
+        Mark::Mention => plain.add_modifier(Modifier::UNDERLINED),
+        Mark::Broken => plain.patch(color::warn()).add_modifier(Modifier::UNDERLINED),
     }
 }
 
@@ -642,6 +644,9 @@ pub enum Action {
     ShowRef(Box<crate::refs::Ref>),
     /// A comment a reference points at: there, or, closed, as it was.
     GoToPointed(String, String),
+    /// A line of a comment naming its references: the one it names, or a
+    /// menu of them.
+    Named,
     /// In the editor's menu: what may be attached to the comment, to pick.
     AttachRef,
     /// Comment (change, id) attached to the comment being written.
@@ -822,6 +827,7 @@ fn about(action: &Action) -> String {
         }
         Action::ShowRef(_) => "preview the lines the agent points at: Enter there goes to them".into(),
         Action::GoToPointed(..) => "go to the comment this points at; closed, read it as it was".into(),
+        Action::Named => "go to the reference this line names (@r1): a comment, or lines previewed; naming several, pick one".into(),
         Action::AttachRef => {
             "attach a reference to the comment: another comment of the stack, or lines of a file; what you write names it @r1, several @r{1,2}, all @r*".into()
         }
@@ -2975,6 +2981,10 @@ impl App {
                 if let Some((change, id)) = self.rows.get(self.target_row()).and_then(|row| row.points.clone()) {
                     return Some(Action::GoToPointed(change, id));
                 }
+                // A line naming references: the one it names, or which.
+                if self.rows.get(self.target_row()).is_some_and(|row| !row.names.is_empty()) {
+                    return Some(Action::Named);
+                }
                 if let Some(n) = self.picked() {
                     // Closed: its menu, to reopen it.
                     if self.is_closed(&n) {
@@ -4434,6 +4444,11 @@ impl App {
                 }
                 None => self.status = "that comment is gone".into(),
             },
+            Action::Named => {
+                if let Some(a) = self.named() {
+                    return self.perform(a);
+                }
+            }
             Action::AttachRef => self.attach_menu(),
             Action::DetachRef => self.detach_menu(),
             Action::AttachComment(change, id) => {
@@ -4981,7 +4996,65 @@ impl App {
     /// The number the next reference attached to the comment `e` writes
     /// takes: one past every number it has or had.
     fn next_number(&self, e: &Edit) -> usize {
-        crate::refs::next_n(&e.attached).max(crate::refs::next_n(&self.attached_of(&e.target)))
+        let mut used: Vec<usize> = self.editing_refs(e).into_iter().map(|(k, ..)| k).collect();
+        used.extend(self.attached_of(&e.target).iter().map(|a| a.n));
+        // Those of the agent's reply to it waiting for your review, which
+        // goes in once it is accepted.
+        if let Some((c, i)) = self.comment_of(&e.target)
+            && let Some((run, k)) = crate::held::reply_waiting(&self.db, &c, &i)
+            && let Some(rp) = self.db.run(&run).and_then(|r| r.held.as_ref()?.replies.get(k).cloned())
+        {
+            used.extend(crate::refs::split(&rp.text).1.into_iter().filter_map(|p| p.n));
+        }
+        used.into_iter().max().map_or(1, |k| k + 1)
+    }
+
+    /// The references of the comment `e` writes, as they will be: those
+    /// attached as `e` has them, and those its turns that stay attach (the
+    /// agent's); each by its number, with whether the agent attached it.
+    fn editing_refs(&self, e: &Edit) -> Vec<(usize, crate::refs::Pointer, bool)> {
+        let mut out: Vec<(usize, crate::refs::Pointer, bool)> = e.attached.iter().filter_map(|a| Some((a.n, a.pointer()?, false))).collect();
+        if let Some(note) = self.comment_of(&e.target).and_then(|(c, i)| self.db.note(&c, &i).cloned()) {
+            let upto = match &e.target {
+                Target::Rewind { from, .. } => *from,
+                _ => usize::MAX,
+            };
+            for t in all_turns(&note.text).into_iter().take(upto) {
+                for p in crate::refs::split(&t.body).1 {
+                    if let Some(k) = p.n {
+                        out.push((k, p.to, t.role != Role::You));
+                    }
+                }
+            }
+        }
+        out.sort_by_key(|(k, ..)| *k);
+        out
+    }
+
+    /// What Enter on a line naming references does: go to the one it
+    /// names; naming several, a menu of them, to pick one.
+    fn named(&mut self) -> Option<Action> {
+        let names = self.rows.get(self.target_row())?.names.clone();
+        let n = self.picked()?;
+        let go = |p: &crate::refs::Pointer| match p {
+            crate::refs::Pointer::Lines(r) => Action::ShowRef(Box::new(r.clone())),
+            crate::refs::Pointer::Comment { change, id } => Action::GoToPointed(change.clone(), id.clone()),
+        };
+        let named: Vec<(usize, crate::refs::Pointer)> = crate::refs::references(&n).into_iter().filter(|(k, ..)| names.contains(k)).map(|(k, p, _)| (k, p)).collect();
+        if let [(_, p)] = named.as_slice() {
+            return Some(go(p));
+        }
+        let items = named.iter().map(|(k, p)| Item::new(self.pointer_said(*k, p), go(p))).collect();
+        self.mode = Mode::Menu(Menu::new("the references it names", items, None));
+        None
+    }
+
+    /// Reference `r{k}` of a comment, pointing at `p`, as its line says it.
+    fn pointer_said(&self, k: usize, p: &crate::refs::Pointer) -> String {
+        match p {
+            crate::refs::Pointer::Comment { change, id } => format!("r{k} ↗ {}", self.pointed_said(change, id)),
+            crate::refs::Pointer::Lines(r) => format!("r{k} ⇢ {}", r.said()),
+        }
     }
 
     /// Comment (change, id), pointed at, as its line says it: where it is,
@@ -5024,8 +5097,15 @@ impl App {
     /// their numbers, which mentions name, and their lines under the text.
     fn show_attached(&self, e: &mut Edit) {
         if self.attachable(&e.target) {
-            let lines = e.attached.iter().map(|a| self.attached_said(a)).collect();
-            e.ed.set_attached(e.attached.iter().map(|a| a.n).collect(), lines);
+            let refs = self.editing_refs(e);
+            let lines = refs
+                .iter()
+                .map(|(k, p, agent)| match agent {
+                    true => format!("{} (the agent's)", self.pointer_said(*k, p)),
+                    false => self.pointer_said(*k, p),
+                })
+                .collect();
+            e.ed.set_attached(refs.iter().map(|(k, ..)| *k).collect(), lines);
         }
     }
 

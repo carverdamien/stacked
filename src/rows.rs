@@ -89,6 +89,50 @@ pub struct Row {
     /// A comment a reference points at, under the comment pointing:
     /// Enter goes to it.
     pub points: Option<(String, String)>,
+    /// The numbers of the comment's references its text names on this
+    /// line: Enter goes to the one, or picks among them.
+    pub names: Vec<usize>,
+}
+
+/// `pieces`, a line of a comment's text, its mentions marked as what the
+/// comment has (`nums`, its references' numbers) or not; and the numbers
+/// of those it names that are there.
+fn marked(pieces: crate::markdown::Line, nums: &[usize]) -> (crate::markdown::Line, Vec<usize>) {
+    use crate::markdown::Mark;
+    let (mut out, mut names) = (Vec::new(), Vec::new());
+    for (s, m) in pieces {
+        // Not in code, nor in a link: there, it is what it says.
+        let ms = match m {
+            Mark::Plain | Mark::Strong | Mark::Emph | Mark::Heading => crate::refs::mentions(&s),
+            _ => vec![],
+        };
+        if ms.is_empty() {
+            out.push((s, m));
+            continue;
+        }
+        let mut at = 0;
+        for mention in ms {
+            if mention.at.start > at {
+                out.push((s[at..mention.at.start].to_string(), m));
+            }
+            let holds = crate::refs::holds(&mention, nums);
+            out.push((s[mention.at.clone()].to_string(), if holds { Mark::Mention } else { Mark::Broken }));
+            if holds {
+                match &mention.names {
+                    crate::refs::Names::All => names.extend_from_slice(nums),
+                    crate::refs::Names::Some(ns) => names.extend(ns),
+                    crate::refs::Names::Bad => {}
+                }
+            }
+            at = mention.at.end;
+        }
+        if at < s.len() {
+            out.push((s[at..].to_string(), m));
+        }
+    }
+    names.sort_unstable();
+    names.dedup();
+    (out, names)
 }
 
 impl Row {
@@ -191,8 +235,10 @@ pub fn comment_rows(n: &Note, width: usize, deco: &Deco) -> Vec<Row> {
         }
     }
     let hidden = deco.writing.get(&n.id).copied().unwrap_or((usize::MAX, usize::MAX));
+    // The numbers of its references, which mentions in it name.
+    let nums = crate::refs::numbers(n);
     // The references the turns attach, each once, by the turn and its author.
-    let mut refs: Vec<(usize, By, crate::refs::Pointer)> = Vec::new();
+    let mut refs: Vec<(usize, By, crate::refs::Pointing)> = Vec::new();
     for (i, t) in all_turns(&n.text).into_iter().enumerate() {
         // Deleted the first way: shown nowhere. Written in the editor: shown
         // there only.
@@ -224,9 +270,11 @@ pub fn comment_rows(n: &Note, width: usize, deco: &Deco) -> Vec<Row> {
             }
         }
         for pieces in crate::markdown::render(&body, width.saturating_sub(9)) {
+            let (pieces, names) = marked(pieces, &nums);
             let line: String = pieces.iter().map(|(s, _)| s.as_str()).collect();
             out.push(Row {
                 pieces,
+                names,
                 ..of(row(Kind::Comment, format!("     {BAR}   {line}"), false))
             });
         }
@@ -244,7 +292,7 @@ pub fn comment_rows(n: &Note, width: usize, deco: &Deco) -> Vec<Row> {
         };
         Some((None, By::You, format!("{} ", a.name()), p))
     });
-    let pointed = refs.into_iter().map(|(i, author, p)| (Some(i), author, String::new(), p));
+    let pointed = refs.into_iter().map(|(i, author, p)| (Some(i), author, p.n.map_or(String::new(), |k| format!("r{k} ")), p.to));
     for (turn, author, name, p) in attached.collect::<Vec<_>>().into_iter().chain(pointed) {
         let (said, reference, points) = match p {
             crate::refs::Pointer::Lines(r) => (format!("{name}⇢ {}", r.said()), Some(r), None),

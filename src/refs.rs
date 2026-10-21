@@ -191,6 +191,36 @@ impl Pointer {
     }
 }
 
+/// A line of a `refs` block: what it points at, and its number, which
+/// `@r4` names; references written before they were numbered have none.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Pointing {
+    pub n: Option<usize>,
+    pub to: Pointer,
+}
+
+impl Pointing {
+    /// As a line of a `refs` block: its number first, `r4 a.txt:2 @1`.
+    pub fn line(&self) -> String {
+        match self.n {
+            Some(n) => format!("r{n} {}", self.to.line()),
+            None => self.to.line(),
+        }
+    }
+
+    /// A line of a `refs` block, if it is one.
+    pub fn parse(line: &str) -> Option<Pointing> {
+        let line = line.trim();
+        if let Some((name, rest)) = line.split_once(' ')
+            && let Some(n) = name.strip_prefix('r').and_then(|n| n.parse::<usize>().ok())
+            && let Some(to) = Pointer::parse(rest)
+        {
+            return Some(Pointing { n: Some(n), to });
+        }
+        Pointer::parse(line).map(|to| Pointing { n: None, to })
+    }
+}
+
 /// What the agent pointed at in a `refs` list: lines, as it gave them; a
 /// comment, by the name it gave it, a label of the ask's (`c1`) or an id
 /// as `stacked comments` lists it.
@@ -230,45 +260,52 @@ pub fn text_and_refs(v: &Value) -> (String, Vec<Given>) {
 /// The references the agent gave, the comments it named found by
 /// `comment` (their change and id): those it names that are none, left
 /// out.
-pub fn resolved(given: Vec<Given>, comment: &dyn Fn(&str) -> Option<(String, String)>) -> Vec<Pointer> {
-    let mut out: Vec<Pointer> = Vec::new();
-    for g in given {
-        let p = match g {
+pub fn resolved(given: Vec<Given>, first: Option<usize>, comment: &dyn Fn(&str) -> Option<(String, String)>) -> Vec<Pointing> {
+    let mut out: Vec<Pointing> = Vec::new();
+    for (k, g) in given.into_iter().enumerate() {
+        let to = match g {
             Given::Lines(r) => Some(Pointer::Lines(r)),
             Given::Comment(name) => comment(&name).map(|(change, id)| Pointer::Comment { change, id }),
         };
-        if let Some(p) = p.filter(|p| !out.contains(p)) {
-            out.push(p);
+        let Some(to) = to else { continue };
+        match first {
+            // Numbered by where it was given: one left out, its number with
+            // it, so that what names the others still does.
+            Some(f) => out.push(Pointing { n: Some(f + k), to }),
+            None if !out.iter().any(|p| p.to == to) => out.push(Pointing { n: None, to }),
+            None => {}
         }
     }
     out
 }
 
 /// What an agent wrote, `v`, its references in a `refs` block at its end,
-/// the comments it names found by `comment`.
-pub fn written_with(v: &Value, comment: &dyn Fn(&str) -> Option<(String, String)>) -> String {
+/// numbered from `first` in the order it gave them, the comments it names
+/// found by `comment`.
+pub fn written_with(v: &Value, first: usize, comment: &dyn Fn(&str) -> Option<(String, String)>) -> String {
     let (text, given) = text_and_refs(v);
-    attach(&text, &resolved(given, comment))
+    attach(&text, &resolved(given, Some(first), comment))
 }
 
-/// What an agent wrote, `v`, its references in a `refs` block at its end:
-/// lines only, as no comment can be found here.
+/// What an agent wrote, `v`, its references in a `refs` block at its end,
+/// not numbered: lines only, as no comment can be found here.
 pub fn written(v: &Value) -> String {
-    written_with(v, &|_| None)
+    let (text, given) = text_and_refs(v);
+    attach(&text, &resolved(given, None, &|_| None))
 }
 
 /// `text`, with `refs` in a `refs` block at its end; as it is without any.
-pub fn attach(text: &str, refs: &[Pointer]) -> String {
+pub fn attach(text: &str, refs: &[Pointing]) -> String {
     if refs.is_empty() {
         return text.to_string();
     }
-    let lines: Vec<String> = refs.iter().map(Pointer::line).collect();
+    let lines: Vec<String> = refs.iter().map(Pointing::line).collect();
     format!("{}\n\n```{TAG}\n{}\n```", text.trim_end(), lines.join("\n"))
 }
 
 /// `body`, a turn's text, without its `refs` blocks; and the references
 /// they hold, in order.
-pub fn split(body: &str) -> (String, Vec<Pointer>) {
+pub fn split(body: &str) -> (String, Vec<Pointing>) {
     let (mut kept, mut refs) = (Vec::new(), Vec::new());
     let mut lines = body.lines();
     while let Some(l) = lines.next() {
@@ -277,7 +314,7 @@ pub fn split(body: &str) -> (String, Vec<Pointer>) {
                 if r.trim() == "```" {
                     break;
                 }
-                refs.extend(Pointer::parse(r));
+                refs.extend(Pointing::parse(r));
             }
             continue;
         }
@@ -319,6 +356,17 @@ impl Attached {
         match &self.to {
             To::Lines(l) => Ref::parse(l),
             To::Comment { .. } => None,
+        }
+    }
+
+    /// What it points at, as a `refs` line says it.
+    pub fn pointer(&self) -> Option<Pointer> {
+        match &self.to {
+            To::Comment { change, id } => Some(Pointer::Comment {
+                change: change.clone(),
+                id: id.clone(),
+            }),
+            To::Lines(_) => self.lines().map(Pointer::Lines),
         }
     }
 }
@@ -440,7 +488,7 @@ pub fn broken<'a>(text: &'a str, ns: &[usize]) -> Vec<&'a str> {
 /// The mentions in what you wrote in comment `n` that name a reference not
 /// attached to it, as they are written.
 pub fn broken_in(n: &Note) -> Vec<String> {
-    let ns: Vec<usize> = n.attached.iter().map(|a| a.n).collect();
+    let ns = numbers(n);
     crate::thread::thread_turns(&n.text)
         .iter()
         .filter(|t| t.role == crate::thread::Role::You)
@@ -461,7 +509,7 @@ pub fn pointed(n: &Note) -> Vec<(String, String)> {
         .collect();
     for t in crate::thread::all_turns(&n.text) {
         for p in split(&t.body).1 {
-            if let Pointer::Comment { change, id } = p
+            if let Pointer::Comment { change, id } = p.to
                 && !out.contains(&(change.clone(), id.clone()))
             {
                 out.push((change, id));
@@ -469,6 +517,34 @@ pub fn pointed(n: &Note) -> Vec<(String, String)> {
         }
     }
     out
+}
+
+/// Comment `n`'s references by number: those attached to it, and those its
+/// turns attach (the agent's), each with whether the agent attached it.
+pub fn references(n: &Note) -> Vec<(usize, Pointer, bool)> {
+    let mut out: Vec<(usize, Pointer, bool)> = n.attached.iter().filter_map(|a| Some((a.n, a.pointer()?, false))).collect();
+    for t in crate::thread::all_turns(&n.text) {
+        for p in split(&t.body).1 {
+            if let Some(k) = p.n {
+                out.push((k, p.to, t.role != crate::thread::Role::You));
+            }
+        }
+    }
+    out.sort_by_key(|(k, ..)| *k);
+    out
+}
+
+/// The numbers of comment `n`'s references, which mentions name.
+pub fn numbers(n: &Note) -> Vec<usize> {
+    let mut out: Vec<usize> = references(n).into_iter().map(|(k, ..)| k).collect();
+    out.dedup();
+    out
+}
+
+/// The number comment `n`'s next reference takes: one past every one it
+/// has.
+pub fn next_of(n: &Note) -> usize {
+    numbers(n).last().map_or(1, |k| k + 1)
 }
 
 /// Comment (change, id) of stack `name` as it stands: open; open on the
@@ -523,7 +599,7 @@ mod tests {
         assert_eq!(text, "Look there.\n\n```refs\na.txt:1-2,5 @1\nb.txt:3,7-8\n```");
         let (body, refs) = split(&text);
         assert_eq!(body, "Look there.");
-        assert_eq!(refs.iter().map(Pointer::line).collect::<Vec<_>>(), ["a.txt:1-2,5 @1", "b.txt:3,7-8"]);
+        assert_eq!(refs.iter().map(Pointing::line).collect::<Vec<_>>(), ["a.txt:1-2,5 @1", "b.txt:3,7-8"]);
         assert_eq!(written(&serde_json::json!("Plain.")), "Plain.");
         assert_eq!(attach("Plain.", &[]), "Plain.");
     }
@@ -539,30 +615,72 @@ mod tests {
             "abc123" => Some(("stack:s".to_string(), "s1".to_string())),
             _ => None,
         };
-        let text = written_with(&v, &found);
+        // Numbered from r3, by where each was given: the one that is no
+        // comment leaves its number out.
+        let text = written_with(&v, 3, &found);
         let (body, refs) = split(&text);
         assert_eq!(body, "As said there.");
+        let numbered = |n: usize, to: Pointer| Pointing { n: Some(n), to };
+        let c1 = Pointer::Comment {
+            change: "c".into(),
+            id: "+x".into(),
+        };
         assert_eq!(
             refs,
             [
-                Pointer::Comment {
-                    change: "c".into(),
-                    id: "+x".into()
-                },
-                Pointer::Comment {
-                    change: "stack:s".into(),
-                    id: "s1".into()
-                },
-                Pointer::Lines(Ref::parse("a.txt:2").unwrap()),
+                numbered(3, c1.clone()),
+                numbered(
+                    4,
+                    Pointer::Comment {
+                        change: "stack:s".into(),
+                        id: "s1".into()
+                    }
+                ),
+                numbered(6, c1),
+                numbered(7, Pointer::Lines(Ref::parse("a.txt:2").unwrap())),
             ],
             "{text}"
         );
+        assert!(text.contains("\nr3 {\"change\":\"c\",\"id\":\"+x\"}\n") && text.contains("\nr7 a.txt:2\n"), "{text}");
         // A comment's line, back: its change and id, whatever they hold.
         let odd = Pointer::Comment {
             change: "c".into(),
             id: "+if (a: b) { \"x\" }".into(),
         };
         assert_eq!(Pointer::parse(&odd.line()), Some(odd));
+    }
+
+    #[test]
+    fn a_comments_references_are_numbered_those_attached_and_the_agents() {
+        let a = |n: usize, l: &str| Attached {
+            n,
+            to: To::Lines(l.into()),
+        };
+        let mut n = Note {
+            text: "Which one, @r1 or @r2?".into(),
+            attached: vec![a(1, "a.txt:1"), a(2, "a.txt:2")],
+            ..Default::default()
+        };
+        assert_eq!((numbers(&n), next_of(&n)), (vec![1, 2], 3));
+        // The agent's reply attaches r3; and an older one, not numbered.
+        n.text += "\n````agent answer\nAs @r3 shows.\n\n```refs\nr3 b.txt:4 @2\nc.txt:1\n```\n````";
+        assert_eq!((numbers(&n), next_of(&n)), (vec![1, 2, 3], 4));
+        let refs = references(&n);
+        assert_eq!(refs.iter().map(|(k, _, agent)| (*k, *agent)).collect::<Vec<_>>(), [(1, false), (2, false), (3, true)]);
+        assert_eq!(refs[2].1, Pointer::Lines(Ref::parse("b.txt:4 @2").unwrap()));
+        // A reply of yours naming the agent's is not broken.
+        n.text += "\nAnd @r3?";
+        assert!(broken_in(&n).is_empty(), "{:?}", broken_in(&n));
+        n.text += " Or @r4?";
+        assert_eq!(broken_in(&n), ["@r4"]);
+        // A refs line's number, back.
+        let p = Pointing {
+            n: Some(12),
+            to: Pointer::Lines(Ref::parse("a.txt:3-4 @1").unwrap()),
+        };
+        assert_eq!(p.line(), "r12 a.txt:3-4 @1");
+        assert_eq!(Pointing::parse(&p.line()), Some(p));
+        assert_eq!(Pointing::parse("a.txt:3").map(|p| p.n), Some(None));
     }
 
     #[test]

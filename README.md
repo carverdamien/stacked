@@ -355,6 +355,13 @@ last), each file's lines as the version says. The agent reads them for
 what they say; they are not asked of it, and they close only as any
 comment does. `stacked comments` lists them under the comment.
 
+In a comment's thread, a mention is drawn as a link, and one naming no
+reference the comment has in the warning colour, whoever wrote it. Enter
+on a line that names references goes to the one it names: a comment, or
+lines previewed; naming several, it asks which. (Enter on such a line no
+longer opens your comment to write in: Enter on its line, or its menu,
+does.)
+
 When the last word of a comment is yours, enter on it opens what you said
 last, in place, to edit or add to (a reply would only add to it), the turns
 before it as they were; enter on its line does too. Its menu has the same
@@ -546,8 +553,12 @@ line (`a.txt:2-3,10 @1`; `@0` the base, no `@` the whole stack), which
 `stacked comments` shows and the agent reads back in its thread. The agent
 may point at another comment of the stack too, by its label in the ask or
 its id as `stacked comments` lists it: under what it wrote, `↗` and where
-that comment is, Enter going there. It may name what is attached to a
-comment as you do, `@r1`.
+that comment is, Enter going there. The references it attaches take
+numbers too, after those of the comment it writes on, in the order it
+gives them (the prompt says the first free one; a comment it opens
+numbers its own from `r1`), and one it names that is no comment leaves
+its number out. In what it writes, and in what you write after, `@r4`
+names one of them as `@r1` names one you attached.
 
 An ask goes now, or later, as in self-review's batch: above `Ask agent`
 (and `Save it and ask agent`), `Send it`, `[x] now  [ ] later`, picks when,
