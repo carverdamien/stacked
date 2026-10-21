@@ -116,7 +116,7 @@ fn row_style(row: &Row, selected: bool) -> Style {
         Kind::Stream => color::dim(),
         _ => Style::new(),
     };
-    if row.read {
+    if row.read || row.free {
         st = st.add_modifier(Modifier::DIM);
     }
     if selected {
@@ -1881,6 +1881,7 @@ impl App {
         let mut deco = self.deco(&notes);
         if self.reading && !self.on_stack {
             deco.read = self.subject_change().map(|c| self.db.read_keys(&c));
+            deco.whitespace = self.cfg.view.whitespace_needs_review;
         }
         self.rows = if self.on_stack {
             match self.current() {
@@ -2768,6 +2769,7 @@ impl App {
             blocks: &blocks,
             read: &read,
             marks: &marks,
+            whitespace: self.cfg.view.whitespace_needs_review,
         };
         Some((r.to_mark(self.cursor), r.to_unmark(self.cursor)))
     }
@@ -2789,6 +2791,7 @@ impl App {
                 blocks: &blocks,
                 read: &read,
                 marks: &[],
+                whitespace: app.cfg.view.whitespace_needs_review,
             };
             r.next_unread(at, true)
         };
@@ -2841,12 +2844,13 @@ impl App {
         self.rebuild(w);
     }
 
-    /// The changed lines of patch `id`.
-    fn changed_lines(&mut self, id: &str) -> Arc<Vec<String>> {
+    /// The changed lines of patch `id`: each one's key, and whether it is
+    /// white space alone.
+    fn changed_lines(&mut self, id: &str) -> Arc<Vec<(String, bool)>> {
         if let Some(c) = self.changed.get(id) {
             return c.clone();
         }
-        let keys = Arc::new(crate::progress::changed_keys(self.db.patch(id)));
+        let keys = Arc::new(crate::progress::changed_lines(self.db.patch(id)));
         self.changed.insert(id.into(), keys.clone());
         keys
     }
@@ -2856,16 +2860,19 @@ impl App {
     fn keep_progress(&mut self) {
         let at = (self.stack.clone(), self.db.changes());
         if self.progress.as_ref().is_none_or(|(was, _)| *was != at) {
-            let p = crate::progress::progress(&self.db, &self.stack, &mut self.changed);
+            let p = crate::progress::progress(&self.db, &self.stack, &mut self.changed, self.cfg.view.whitespace_needs_review);
             self.progress = Some((at, p));
         }
     }
 
-    /// How many of patch `id`'s changed lines are read, of how many.
+    /// How many of patch `id`'s changed lines that need reading are read,
+    /// of how many.
     fn read_of(&mut self, id: &str) -> (usize, usize) {
-        let keys = self.changed_lines(id);
+        let whitespace = self.cfg.view.whitespace_needs_review;
+        let lines = self.changed_lines(id);
         let read = self.db.read_keys(&self.db.patch(id).change.clone());
-        (keys.iter().filter(|k| read.contains(*k)).count(), keys.len())
+        let keys: Vec<&String> = lines.iter().filter(|(_, blank)| whitespace || !blank).map(|(k, _)| k).collect();
+        (keys.iter().filter(|k| read.contains(**k)).count(), keys.len())
     }
 
     /// The file and line (from 1) of the code the middle's cursor is on, as
@@ -5902,9 +5909,10 @@ impl App {
                 if self.screen == Screen::Main {
                     if self.reading {
                         text += " · reading";
-                        let changed = self.rows.iter().filter(|r| matches!(r.kind, Kind::Add | Kind::Del)).count();
+                        // Of the changed lines that need reading.
+                        let changed = self.rows.iter().filter(|r| matches!(r.kind, Kind::Add | Kind::Del) && !r.free).count();
                         if !self.on_stack && changed > 0 {
-                            let read = self.rows.iter().filter(|r| r.read).count();
+                            let read = self.rows.iter().filter(|r| r.read && !r.free).count();
                             text += &format!(" {read}/{changed}");
                         }
                     }
@@ -6574,7 +6582,8 @@ impl App {
                     Tick::ToRead => ("○→✓ ", color::add().add_modifier(Modifier::BOLD)),
                     Tick::ToUnread => ("✓→○ ", color::del().add_modifier(Modifier::BOLD)),
                 },
-                _ if row.read => ("  ✓ ", color::add()),
+                // A line that needs no reading has no check, marked or not.
+                _ if row.read && !row.free => ("  ✓ ", color::add()),
                 _ => ("    ", Style::new()),
             };
             put(buf, area, x, y, MARGIN_W.min(w), text, st);

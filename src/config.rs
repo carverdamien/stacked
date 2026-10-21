@@ -194,6 +194,10 @@ pub struct View {
     pub layout: Layout,
     /// Reading rather than commenting, at the start.
     pub reading: bool,
+    /// Whether changed lines that are empty or white space alone need
+    /// review, in the reading mode: when not, they need no mark, and no
+    /// count of lines to read holds them.
+    pub whitespace_needs_review: bool,
     /// The patches on the left, at the start: expanded, compact or hidden.
     pub patches: Pane,
     /// The comments on the right, when there are any, at the start.
@@ -209,6 +213,7 @@ impl Default for View {
         View {
             layout: Layout::Unified,
             reading: false,
+            whitespace_needs_review: false,
             patches: Pane::Expanded,
             comments: Pane::Expanded,
             stream_lines: 3,
@@ -343,6 +348,7 @@ struct WrittenReviews {
 struct WrittenView {
     layout: Option<String>,
     reading: Option<bool>,
+    whitespace_needs_review: Option<bool>,
     patches: Option<WrittenPane>,
     comments: Option<WrittenPane>,
     stream_lines: Option<usize>,
@@ -460,6 +466,7 @@ impl Config {
             }
         }
         c.view.reading = v.reading.unwrap_or(c.view.reading);
+        c.view.whitespace_needs_review = v.whitespace_needs_review.unwrap_or(c.view.whitespace_needs_review);
         for (key, written, at) in [("view.patches", v.patches, &mut c.view.patches), ("view.comments", v.comments, &mut c.view.comments)] {
             match written {
                 Some(WrittenPane::Flag(shown)) => *at = if shown { Pane::Expanded } else { Pane::Hidden },
@@ -678,6 +685,11 @@ impl Config {
         out.push_str("# Reading rather than commenting, at the start (2 switches).\n");
         out.push_str(&format!("reading = {}\n", v.reading));
         out.push_str(
+            "# Whether changed lines that are empty or white space alone need review, in the\n\
+             # reading mode: when not, they need no mark, and no count of lines to read holds them.\n",
+        );
+        out.push_str(&format!("whitespace_needs_review = {}\n", v.whitespace_needs_review));
+        out.push_str(
             "# The patches on the left, and the comments on the right, at the start: \"expanded\" (the\n\
              # patches' titles whole), \"compact\" (their numbers and stats; a line for each comment) or\n\
              # \"hidden\". The arrow toward a pane's edge cycles them.\n",
@@ -750,7 +762,7 @@ enum Kind {
 
 /// Every setting there is, as the file names it, and what it holds; the
 /// keys', `keys.NAME`, are lists.
-const SETTINGS: [(&str, Kind); 22] = [
+const SETTINGS: [(&str, Kind); 23] = [
     ("file", Kind::Text),
     ("editor", Kind::Text),
     ("agent.command", Kind::Text),
@@ -768,6 +780,7 @@ const SETTINGS: [(&str, Kind); 22] = [
     ("reviews.trailer", Kind::Text),
     ("view.layout", Kind::Text),
     ("view.reading", Kind::Flag),
+    ("view.whitespace_needs_review", Kind::Flag),
     ("view.patches", Kind::Pane),
     ("view.comments", Kind::Pane),
     ("view.stream_lines", Kind::Count),
@@ -845,6 +858,7 @@ pub fn value_of(c: &Config, key: &str) -> Result<Vec<String>, String> {
         "reviews.trailer" => vec![c.reviews.trailer.clone()],
         "view.layout" => vec![c.view.layout.name().into()],
         "view.reading" => vec![c.view.reading.to_string()],
+        "view.whitespace_needs_review" => vec![c.view.whitespace_needs_review.to_string()],
         "view.patches" => vec![c.view.patches.name().into()],
         "view.comments" => vec![c.view.comments.name().into()],
         "view.stream_lines" => vec![c.view.stream_lines.to_string()],
@@ -1512,6 +1526,22 @@ mod tests {
         assert!(set(&path, "view.patches", &vals(&["wide"])).unwrap_err().contains("expanded, compact or hidden"));
         // The arrow toward a pane's edge cycles them.
         assert_eq!([Pane::Expanded.next(), Pane::Compact.next(), Pane::Hidden.next()], [Pane::Compact, Pane::Hidden, Pane::Expanded]);
+    }
+
+    #[test]
+    fn lines_of_white_space_alone_need_review_only_when_set_so() {
+        assert!(!Config::default().view.whitespace_needs_review);
+        assert!(Config::default().render().contains("\nwhitespace_needs_review = false\n"));
+        let (c, wrong) = Config::parse("[view]\nwhitespace_needs_review = true\n").unwrap();
+        assert!(wrong.is_empty(), "{wrong:?}");
+        assert!(c.view.whitespace_needs_review);
+        assert_eq!(value_of(&c, "view.whitespace_needs_review"), Ok(vec!["true".to_string()]));
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("settings.toml");
+        std::fs::write(&path, "").unwrap();
+        set(&path, "view.whitespace_needs_review", &["true".to_string()]).unwrap();
+        assert!(Config::load(&path).0.view.whitespace_needs_review);
+        assert!(set(&path, "view.whitespace_needs_review", &["yes".to_string()]).unwrap_err().contains("true or false"));
     }
 
     #[test]

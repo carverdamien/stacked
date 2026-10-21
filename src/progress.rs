@@ -6,9 +6,9 @@ use std::sync::Arc;
 
 use crate::db::{Db, Patch};
 
-/// Each patch's changed lines, by its id: a patch never changes, so they
-/// are kept.
-pub type Memo = HashMap<String, Arc<Vec<String>>>;
+/// Each patch's changed lines, by its id: each line's key, and whether it
+/// is white space alone. A patch never changes, so they are kept.
+pub type Memo = HashMap<String, Arc<Vec<(String, bool)>>>;
 
 /// Where the review of a stack is.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -46,29 +46,36 @@ fn plural(n: usize) -> &'static str {
 
 /// The changed lines of patch `p`, by key, as the reading mode marks them.
 pub fn changed_keys(p: &Patch) -> Vec<String> {
+    changed_lines(p).into_iter().map(|(k, _)| k).collect()
+}
+
+/// The changed lines of patch `p`: each one's key, and whether it is white
+/// space alone.
+pub fn changed_lines(p: &Patch) -> Vec<(String, bool)> {
     crate::diff::parse_diff(&p.diff, &crate::view::mode(&p.change))
         .iter()
         .flat_map(|f| f.hunks.iter())
         .flat_map(|h| h.lines.iter())
         .filter(|l| l.origin != ' ')
-        .map(|l| l.key.clone())
+        .map(|l| (l.key.clone(), crate::diff::white_space(&l.text)))
         .collect()
 }
 
-fn keys_of(db: &Db, memo: &mut Memo, id: &str) -> Arc<Vec<String>> {
-    memo.entry(id.to_string()).or_insert_with(|| Arc::new(changed_keys(db.patch(id)))).clone()
+fn keys_of(db: &Db, memo: &mut Memo, id: &str) -> Arc<Vec<(String, bool)>> {
+    memo.entry(id.to_string()).or_insert_with(|| Arc::new(changed_lines(db.patch(id)))).clone()
 }
 
 /// Where the review of stack `name` is; `memo` keeps the patches' changed
-/// lines.
-pub fn progress(db: &Db, name: &str, memo: &mut Memo) -> Progress {
+/// lines. Those of white space alone are left to review only when
+/// `whitespace` says they need it.
+pub fn progress(db: &Db, name: &str, memo: &mut Memo, whitespace: bool) -> Progress {
     let Some((_, stack)) = db.head(name) else {
         return Progress::default();
     };
     let mut lines = 0;
     for id in &stack.patches {
         let read = db.read_keys(&db.patch(id).change);
-        lines += keys_of(db, memo, id).iter().filter(|k| !read.contains(*k)).count();
+        lines += keys_of(db, memo, id).iter().filter(|(k, blank)| (whitespace || !blank) && !read.contains(k)).count();
     }
     Progress {
         lines,
@@ -134,7 +141,7 @@ mod tests {
     }
 
     fn of(recs: &[Record]) -> Progress {
-        progress(&db_of(recs), "s", &mut Memo::new())
+        progress(&db_of(recs), "s", &mut Memo::new(), false)
     }
 
     #[test]
@@ -161,5 +168,19 @@ mod tests {
         let a2 = patch("a", &["one", "TWO", "three", "four"]);
         let recs = [&recs[..], &[Record::Patch(a2.clone()), stack("s", &[&a2], 1900), note("a", "n", "", 2000)]].concat();
         assert_eq!(of(&recs), Progress { lines: 3, comments: 1 });
+    }
+
+    #[test]
+    fn lines_of_white_space_alone_are_left_to_review_only_when_the_settings_say_so() {
+        let a = patch("a", &["one", "", "  \t", "two"]);
+        let recs = [Record::Patch(a.clone()), stack("s", &[&a], 1000)];
+        let db = db_of(&recs);
+        assert_eq!(progress(&db, "s", &mut Memo::new(), false).lines, 2, "the empty line and the blank one need no review");
+        assert_eq!(progress(&db, "s", &mut Memo::new(), true).lines, 4);
+        // The same memo serves either setting.
+        let mut memo = Memo::new();
+        assert_eq!(progress(&db, "s", &mut memo, false).lines, 2);
+        assert_eq!(progress(&db, "s", &mut memo, true).lines, 4);
+        assert_eq!(changed_lines(&a).iter().filter(|(_, blank)| *blank).count(), 2);
     }
 }

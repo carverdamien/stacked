@@ -76,6 +76,10 @@ pub struct Row {
     pub new_no: Option<usize>,
     /// A changed line marked read, in the reading mode: drawn dim.
     pub read: bool,
+    /// A changed line that needs no reading, in the reading mode: empty or
+    /// white space alone, as the settings have it. Drawn dim, and counted
+    /// in nothing.
+    pub free: bool,
     /// A line of a turn of a comment, as markdown reads it: what it says
     /// after the bar's indent, piece by piece, each with what it is.
     pub pieces: crate::markdown::Line,
@@ -103,6 +107,9 @@ pub struct Deco {
     pub tags: HashMap<String, String>,
     pub streams: HashMap<String, Vec<String>>,
     pub read: Option<HashSet<String>>,
+    /// Whether, reading, changed lines that are empty or white space alone
+    /// need reading too.
+    pub whitespace: bool,
     /// The comments collapsed by hand, by id: a quiet line each.
     pub collapsed: HashSet<String>,
     /// The turns of a comment being written in the editor, by its id: from
@@ -284,11 +291,13 @@ pub fn patch_rows(p: &Patch, notes: &[&Note], width: usize, deco: &Deco) -> Vec<
         );
     }
     rows.push(Row::new(Kind::Blank, ""));
+    // A changed line that needs no reading: white space alone.
+    let free = |l: &crate::diff::Line| deco.read.is_some() && !deco.whitespace && crate::diff::white_space(&l.text);
     let changed = |hunks: &[crate::diff::Hunk]| -> Vec<String> {
         hunks
             .iter()
             .flat_map(|h| h.lines.iter())
-            .filter(|l| l.origin == '+' || l.origin == '-')
+            .filter(|l| (l.origin == '+' || l.origin == '-') && !free(l))
             .map(|l| l.key.clone())
             .collect()
     };
@@ -330,8 +339,8 @@ pub fn patch_rows(p: &Patch, notes: &[&Note], width: usize, deco: &Deco) -> Vec<
                     ' ' => Kind::Ctx,
                     _ => Kind::Meta,
                 };
-                let read = matches!(kind, Kind::Add | Kind::Del)
-                    && deco.read.as_ref().is_some_and(|r| r.contains(&l.key));
+                let changed_line = matches!(kind, Kind::Add | Kind::Del);
+                let read = changed_line && deco.read.as_ref().is_some_and(|r| r.contains(&l.key));
                 line(
                     &mut rows,
                     Row {
@@ -340,6 +349,7 @@ pub fn patch_rows(p: &Patch, notes: &[&Note], width: usize, deco: &Deco) -> Vec<
                         preview: Some(l.text.chars().skip(1).collect::<String>().trim().chars().take(80).collect()),
                         hunk: Some(hunk.hid.clone()),
                         read,
+                        free: changed_line && free(l),
                         diff_at: Some(l.at),
                         new_no: Some(l.new_no.max(1)),
                         ..Row::new(kind, l.text.clone())

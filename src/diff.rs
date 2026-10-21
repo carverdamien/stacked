@@ -65,6 +65,13 @@ impl FileDiff {
     }
 }
 
+/// Whether line `text`, its origin first, is white space alone, or
+/// nothing: a changed one of those needs no review, unless the settings
+/// say it does (`view.whitespace_needs_review`).
+pub fn white_space(text: &str) -> bool {
+    text.chars().skip(1).all(char::is_whitespace)
+}
+
 pub fn sha1_12(text: &str) -> String {
     let mut h = sha1_smol::Sha1::new();
     h.update(text.as_bytes());

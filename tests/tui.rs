@@ -2153,6 +2153,61 @@ fn reading_goes_by_the_blocks_of_the_code() {
 }
 
 #[test]
+fn lines_of_white_space_alone_need_no_reading_unless_the_settings_say_so() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("src");
+    std::fs::create_dir(&src).unwrap();
+    git(&src, &["init", "-q", "-b", "main"]);
+    git(&src, &["config", "commit.gpgsign", "false"]);
+    git(&src, &["config", "tag.gpgsign", "false"]);
+    std::fs::write(src.join("f.txt"), "one\n").unwrap();
+    git(&src, &["add", "."]);
+    git(&src, &["commit", "-qm", "base"]);
+    // Two lines of text, an empty line and a blank one between them.
+    std::fs::write(src.join("f.txt"), "one\ntwo\n\n  \nthree\n").unwrap();
+    git(&src, &["commit", "-qam", "Bug 1 - more"]);
+    let db = tmp.path().join("db.jsonl");
+    stacked(&src, &db, &["import", "s", "HEAD~1"]);
+    let mut app = open(&db).unwrap();
+    assert!(draw(&mut app).contains("2 lines to review"));
+    keys(&mut app, &[KeyCode::Char('2'), KeyCode::Enter]);
+    app.wait_blocks();
+    let screen = draw(&mut app);
+    assert!(screen.contains("reading 0/2") && screen.contains("read 0/2 lines") && screen.contains(" 0/2"), "{screen}");
+    // Space reads on to what is left, never stopping at the empty line or
+    // the blank one, until nothing is.
+    down_to(&mut app, "+two");
+    for _ in 0..4 {
+        keys(&mut app, &[KeyCode::Char(' ')]);
+        assert!(!["+", "+  "].contains(&app.rows[app.cursor].text.as_str()), "{}", app.status);
+        if app.status.contains("nothing left to read below") {
+            break;
+        }
+    }
+    assert!(app.status.contains("nothing left to read below"), "{}", app.status);
+    let screen = draw(&mut app);
+    assert!(screen.contains("reading 2/2") && screen.contains("nothing left to review"), "{screen}");
+    let line = screen.lines().find(|l| l.contains("1 Bug 1 - more")).unwrap();
+    assert!(line.contains(" ✓│"), "all read: {line}");
+    // Enter would take the mark back from the lines of code; the empty one
+    // and the blank one, which need no reading, show nothing.
+    assert!(screen.contains("│✓→○ +two") && screen.contains("│✓→○ +three"), "{screen}");
+    let bare = screen.lines().filter(|l| l.split('│').nth(1).is_some_and(|m| m.trim_end() == "    +")).count();
+    assert_eq!(bare, 2, "{screen}");
+    // Needing review, as the settings may say, they are lines to read as
+    // any other: those the marks made hold are read.
+    let mut cfg = stacked::config::Config::default();
+    cfg.view.whitespace_needs_review = true;
+    let mut all = App::with_config(&db, cfg).unwrap();
+    keys(&mut all, &[KeyCode::Char('2'), KeyCode::Enter]);
+    all.wait_blocks();
+    let screen = draw(&mut all);
+    let read = all.rows.iter().filter(|r| r.read).count();
+    assert!(screen.contains(&format!("reading {read}/4")), "{screen}");
+    assert!(!all.rows.iter().any(|r| r.free));
+}
+
+#[test]
 fn the_history_of_the_stack_its_patches_and_comments() {
     let (_tmp, db, _src) = setup();
     let mut app = open(&db).unwrap();

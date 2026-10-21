@@ -31,6 +31,10 @@ pub struct Reading<'a> {
     pub blocks: &'a Blocks,
     pub read: &'a HashSet<String>,
     pub marks: &'a [(usize, &'a Mark)],
+    /// Whether changed lines that are empty or white space alone need
+    /// reading too: when not, no mark is needed on them, and nothing
+    /// counts them; a mark of the block they are in still holds them.
+    pub whitespace: bool,
 }
 
 fn changed(r: &Row) -> bool {
@@ -38,6 +42,29 @@ fn changed(r: &Row) -> bool {
 }
 
 impl Reading<'_> {
+    /// Whether row `r` is a changed line that needs reading.
+    fn needs(&self, r: &Row) -> bool {
+        changed(r) && (self.whitespace || !crate::diff::white_space(&r.text))
+    }
+
+    /// The changed lines that need no reading, by key: white space alone,
+    /// unless they need it.
+    fn free(&self) -> HashSet<&str> {
+        if self.whitespace {
+            return HashSet::new();
+        }
+        self.rows
+            .iter()
+            .filter(|r| changed(r) && !self.needs(r))
+            .filter_map(|r| r.key.as_deref())
+            .collect()
+    }
+
+    /// Whether the line keyed `k` needs reading and is not read.
+    fn unread(&self, k: &str, free: &HashSet<&str>) -> bool {
+        !self.read.contains(k) && !free.contains(k)
+    }
+
     /// The diff line row `i` is, or the one the comment it is part of is
     /// on.
     pub fn line_at(&self, mut i: usize) -> Option<usize> {
@@ -94,8 +121,9 @@ impl Reading<'_> {
     /// long function does, is read there alone.
     pub fn to_mark(&self, i: usize) -> Option<Target> {
         let row = self.rows.get(i)?;
+        let free = self.free();
         let whole = |keys: HashSet<String>, what: String| {
-            let new: HashSet<String> = keys.difference(self.read).cloned().collect();
+            let new: HashSet<String> = keys.iter().filter(|k| self.unread(k, &free)).cloned().collect();
             (!new.is_empty()).then_some(Target { keys, new, what })
         };
         let Some(at) = self.line_at(i) else {
@@ -108,7 +136,7 @@ impl Reading<'_> {
         let hunk = self.hunk_keys(at);
         for b in self.chain(at).unwrap_or_default() {
             let inside: HashSet<String> = b.changed.intersection(&hunk).cloned().collect();
-            if !inside.is_subset(self.read) {
+            if inside.iter().any(|k| self.unread(k, &free)) {
                 let old = if b.side == Side::Old { " as they were" } else { "" };
                 let part = if inside.len() < b.changed.len() { ", in this hunk" } else { "" };
                 // A run of code between empty lines is lines, not a block.
@@ -162,14 +190,16 @@ impl Reading<'_> {
             .filter(|(n, _)| *n != k)
             .flat_map(|(_, (_, m))| m.keys.iter())
             .collect();
-        Some((*rev, mark.keys.iter().filter(|key| !others.contains(key)).cloned().collect()))
+        let free = self.free();
+        Some((*rev, mark.keys.iter().filter(|key| !others.contains(key) && !free.contains(key.as_str())).cloned().collect()))
     }
 
-    /// The first changed line not read after row `i`, or before it.
+    /// The first changed line not read after row `i`, or before it: of
+    /// those that need reading.
     pub fn next_unread(&self, i: usize, forward: bool) -> Option<usize> {
         let unread = |j: &usize| {
             let r = &self.rows[*j];
-            changed(r) && r.key.as_ref().is_some_and(|k| !self.read.contains(k))
+            self.needs(r) && r.key.as_ref().is_some_and(|k| !self.read.contains(k))
         };
         if forward {
             (i + 1..self.rows.len()).find(unread)
@@ -178,9 +208,9 @@ impl Reading<'_> {
         }
     }
 
-    /// How many changed lines are read, of how many.
+    /// How many changed lines that need reading are read, of how many.
     pub fn progress(&self) -> (usize, usize) {
-        let keys: Vec<&String> = self.rows.iter().filter(|r| changed(r)).filter_map(|r| r.key.as_ref()).collect();
+        let keys: Vec<&String> = self.rows.iter().filter(|r| self.needs(r)).filter_map(|r| r.key.as_ref()).collect();
         (keys.iter().filter(|k| self.read.contains(**k)).count(), keys.len())
     }
 }
@@ -309,21 +339,21 @@ mod tests {
         let two = row(&rows, "+    two");
         let mut read = HashSet::new();
         let marks: Vec<(usize, &Mark)> = vec![];
-        let r = Reading { rows: &rows, blocks: &blocks, read: &read, marks: &marks };
+        let r = Reading { rows: &rows, blocks: &blocks, read: &read, marks: &marks, whitespace: false };
         let t = r.to_mark(two).unwrap();
         assert_eq!((t.what.as_str(), t.new.len()), ("the block of lines 5–7", 2));
         read.extend(t.keys);
-        let r = Reading { rows: &rows, blocks: &blocks, read: &read, marks: &marks };
+        let r = Reading { rows: &rows, blocks: &blocks, read: &read, marks: &marks, whitespace: false };
         let t = r.to_mark(two).unwrap();
         assert_eq!((t.what.as_str(), t.keys.len(), t.new.len()), ("the block of lines 3–8", 4, 2));
         read.extend(t.keys);
-        let r = Reading { rows: &rows, blocks: &blocks, read: &read, marks: &marks };
+        let r = Reading { rows: &rows, blocks: &blocks, read: &read, marks: &marks, whitespace: false };
         assert_eq!(r.to_mark(two), None, "all read");
         assert_eq!(r.progress(), (4, 4));
         // With no blocks to go by, the hunk.
         let none = Blocks::from([("f.rs".to_string(), None)]);
         let unread = HashSet::new();
-        let r = Reading { rows: &rows, blocks: &none, read: &unread, marks: &marks };
+        let r = Reading { rows: &rows, blocks: &none, read: &unread, marks: &marks, whitespace: false };
         assert_eq!(r.to_mark(two).map(|t| (t.what, t.new.len())), Some(("this hunk".into(), 4)));
         assert_eq!(r.next_unread(0, true), Some(row(&rows, "-  uno")));
     }
@@ -342,16 +372,16 @@ mod tests {
         let mut read = HashSet::new();
         // On its first lines, their run first, then the function.
         let x = row(&rows, "     let x = 1;");
-        let r = Reading { rows: &rows, blocks: &blocks, read: &read, marks: &[] };
+        let r = Reading { rows: &rows, blocks: &blocks, read: &read, marks: &[], whitespace: false };
         let run = r.to_mark(x).unwrap();
         assert_eq!((run.what.as_str(), run.new.len()), ("the lines 2–3", 2));
         read.extend(run.keys);
-        let r = Reading { rows: &rows, blocks: &blocks, read: &read, marks: &[] };
+        let r = Reading { rows: &rows, blocks: &blocks, read: &read, marks: &[], whitespace: false };
         assert_eq!(r.to_mark(x).map(|t| (t.what, t.new.len())), Some(("the block of lines 1–6".into(), 2)));
         // On its header, the function whole, at once.
         let header = row(&rows, " fn a() {");
         let none = HashSet::new();
-        let r = Reading { rows: &rows, blocks: &blocks, read: &none, marks: &[] };
+        let r = Reading { rows: &rows, blocks: &blocks, read: &none, marks: &[], whitespace: false };
         assert_eq!(r.to_mark(header).map(|t| (t.what, t.new.len())), Some(("the block of lines 1–6".into(), 4)));
     }
 
@@ -373,11 +403,11 @@ mod tests {
         let (top, end) = (row(&rows, "+  TWO"), row(&rows, "+  THREE"));
         // Space in the first hunk reads the function there alone.
         let mut read = HashSet::new();
-        let r = Reading { rows: &rows, blocks: &blocks, read: &read, marks: &[] };
+        let r = Reading { rows: &rows, blocks: &blocks, read: &read, marks: &[], whitespace: false };
         let first = r.to_mark(top).unwrap();
         assert_eq!((first.what.as_str(), first.new.len()), ("the block of lines 2–18, in this hunk", 2));
         read.extend(first.keys.clone());
-        let r = Reading { rows: &rows, blocks: &blocks, read: &read, marks: &[] };
+        let r = Reading { rows: &rows, blocks: &blocks, read: &read, marks: &[], whitespace: false };
         assert_eq!(r.progress(), (2, 4), "the other hunk is not read");
         assert_eq!(r.to_mark(top), None, "its hunk is read");
         let second = r.to_mark(end).unwrap();
@@ -388,46 +418,91 @@ mod tests {
         let m1 = Mark { keys: first.keys.into_iter().collect(), ..Default::default() };
         let m2 = Mark { keys: second.keys.into_iter().collect(), ..Default::default() };
         let marks = vec![(3, &m1), (5, &m2)];
-        let r = Reading { rows: &rows, blocks: &blocks, read: &read, marks: &marks };
+        let r = Reading { rows: &rows, blocks: &blocks, read: &read, marks: &marks, whitespace: false };
         assert_eq!(r.to_unmark(top).map(|(rev, gone)| (rev, gone.len())), Some((3, 2)));
         assert_eq!(r.to_unmark(end).map(|(rev, _)| rev), Some(5));
+    }
+
+    #[test]
+    fn lines_of_white_space_alone_need_no_mark_unless_the_settings_say_so() {
+        // A function given a line of code, then an empty line and a blank one.
+        let old = "fn a() {\n  one\n}\n";
+        let new = "fn a() {\n  one\n  two\n\n  \n}\n";
+        let d = similar::TextDiff::from_lines(old, new).unified_diff().context_radius(20).header("a/f.rs", "b/f.rs").to_string();
+        let diff = format!("diff --git a/f.rs b/f.rs\n{d}");
+        let p = Patch::new("c".into(), None, None, "t".into(), diff);
+        let none = Blocks::from([("f.rs".to_string(), None)]);
+        let rows = patch_rows(&p, &[], 80, &Deco::default());
+        let two = row(&rows, "+  two");
+        let unread = HashSet::new();
+        let r = Reading { rows: &rows, blocks: &none, read: &unread, marks: &[], whitespace: false };
+        assert_eq!(r.progress(), (0, 1), "only the line of code needs reading");
+        let t = r.to_mark(two).unwrap();
+        assert_eq!((t.what.as_str(), t.keys.len(), t.new.len()), ("this hunk", 3, 1), "the mark holds the hunk's lines, one of them new to read");
+        // That line read: nothing is left there, nor below.
+        let read: HashSet<String> = rows[two].key.iter().cloned().collect();
+        let r = Reading { rows: &rows, blocks: &none, read: &read, marks: &[], whitespace: false };
+        assert_eq!(r.progress(), (1, 1));
+        assert_eq!(r.to_mark(two), None);
+        assert_eq!(r.next_unread(0, true), None, "the empty line and the blank one are passed over");
+        // Enter, the hunk marked: the line of code alone is left not read.
+        let m = Mark { keys: t.keys.iter().cloned().collect(), ..Default::default() };
+        let marks = vec![(4, &m)];
+        let all: HashSet<String> = t.keys.clone();
+        let r = Reading { rows: &rows, blocks: &none, read: &all, marks: &marks, whitespace: false };
+        assert_eq!(r.to_unmark(two).map(|(rev, gone)| (rev, gone.len())), Some((4, 1)));
+        // When they need reading, they are read as any other line.
+        let r = Reading { rows: &rows, blocks: &none, read: &read, marks: &[], whitespace: true };
+        assert_eq!(r.progress(), (1, 3));
+        assert_eq!(r.to_mark(two).map(|t| t.new.len()), Some(2));
+        assert_eq!(r.next_unread(0, true), Some(row(&rows, "+")));
+        // The hunk's and the file's counts, reading, leave them out too, and
+        // they are drawn as lines that need nothing.
+        let deco = Deco { read: Some(HashSet::new()), ..Default::default() };
+        let rows = patch_rows(&p, &[], 80, &deco);
+        assert_eq!(rows.iter().filter(|r| r.text.ends_with("   read 0/1 lines")).count(), 2, "{rows:#?}");
+        assert_eq!(rows.iter().filter(|r| r.free).map(|r| r.text.as_str()).collect::<Vec<_>>(), ["+", "+  "]);
+        let deco = Deco { read: Some(HashSet::new()), whitespace: true, ..Default::default() };
+        let rows = patch_rows(&p, &[], 80, &deco);
+        assert_eq!(rows.iter().filter(|r| r.text.ends_with("   read 0/3 lines")).count(), 2);
+        assert!(!rows.iter().any(|r| r.free));
     }
 
     #[test]
     fn enter_takes_back_the_latest_mark_around_the_line() {
         let (rows, blocks) = patch();
         let two = row(&rows, "+    two");
-        let r0 = Reading { rows: &rows, blocks: &blocks, read: &HashSet::new(), marks: &[] };
+        let r0 = Reading { rows: &rows, blocks: &blocks, read: &HashSet::new(), marks: &[], whitespace: false };
         let inner = r0.to_mark(two).unwrap();
         let read1: HashSet<String> = inner.keys.clone();
-        let r1 = Reading { rows: &rows, blocks: &blocks, read: &read1, marks: &[] };
+        let r1 = Reading { rows: &rows, blocks: &blocks, read: &read1, marks: &[], whitespace: false };
         let outer = r1.to_mark(two).unwrap();
         let m1 = Mark { keys: inner.keys.iter().cloned().collect(), ..Default::default() };
         let m2 = Mark { keys: outer.keys.iter().cloned().collect(), ..Default::default() };
         let marks = vec![(5, &m1), (9, &m2)];
         let read: HashSet<String> = m1.keys.iter().chain(&m2.keys).cloned().collect();
-        let r = Reading { rows: &rows, blocks: &blocks, read: &read, marks: &marks };
+        let r = Reading { rows: &rows, blocks: &blocks, read: &read, marks: &marks, whitespace: false };
         // The outer mark, the latest: the lines only it holds go unread.
         let (rev, gone) = r.to_unmark(two).unwrap();
         assert_eq!((rev, gone.len()), (9, 2));
         let marks = vec![(5, &m1)];
-        let r = Reading { rows: &rows, blocks: &blocks, read: &read1, marks: &marks };
+        let r = Reading { rows: &rows, blocks: &blocks, read: &read1, marks: &marks, whitespace: false };
         assert_eq!(r.to_unmark(two).map(|(rev, g)| (rev, g.len())), Some((5, 2)));
         // Nothing marked on the other line's block: the outer block's
         // innermost changed block is the function, which holds `one`.
         let one = row(&rows, "+  one");
         let only_if = vec![];
-        let r = Reading { rows: &rows, blocks: &blocks, read: &read1, marks: &only_if };
+        let r = Reading { rows: &rows, blocks: &blocks, read: &read1, marks: &only_if, whitespace: false };
         assert_eq!(r.to_unmark(one), None);
         // A line in no block with changes takes back only a mark that holds
         // it; with no blocks known, the hunk's.
         let top = row(&rows, " top");
         let hunk = Mark { keys: r0.hunk_keys(two).into_iter().collect(), ..Default::default() };
         let marks = vec![(3, &hunk)];
-        let r = Reading { rows: &rows, blocks: &blocks, read: &read, marks: &marks };
+        let r = Reading { rows: &rows, blocks: &blocks, read: &read, marks: &marks, whitespace: false };
         assert_eq!(r.to_unmark(top), None);
         let none = Blocks::from([("f.rs".to_string(), None)]);
-        let r = Reading { rows: &rows, blocks: &none, read: &read, marks: &marks };
+        let r = Reading { rows: &rows, blocks: &none, read: &read, marks: &marks, whitespace: false };
         assert_eq!(r.to_unmark(top).map(|(rev, _)| rev), Some(3));
     }
 }

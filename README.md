@@ -879,6 +879,14 @@ margin shows what Space would mark (`○→✓`), or else what Enter would unmar
 (`✓→○`), and `✓` beside each line read, drawn dim; hunks, files, the
 patches on the left and the top bar count what is read (`reading 5/11`).
 
+A changed line that is empty or white space alone needs no review, unless
+`whitespace_needs_review` (in `[view]`) is `true`: Space marks no such line
+as one to read, the cursor going on to the next line not read passes it
+over, no count of lines read or left to review holds it, and it is drawn
+dim, with no check beside it. A mark of the block it is in still holds it,
+so with the setting `true` it is read as the rest of its block is. A line
+whose code is re-indented is not one of them: it has code to read.
+
 Marks are records in the file, kept by the lines' content: a new version of
 the patch keeps them on the lines it did not change, and what it changed is
 to read again. The blocks are found from the files as each patch leaves
@@ -1080,7 +1088,10 @@ settings:
   are; `token`, one for `url` instead; `trailer`, the trailer naming a
   revision (`Differential Revision`).
 - `[view]`: `layout` at the start (`unified`, `side-by-side`, `compact`);
-  `reading`, to start reading; `patches` and `comments`, the side panes at
+  `reading`, to start reading; `whitespace_needs_review`, whether changed
+  lines that are empty or white space alone need review in the reading mode
+  (`false`: they need no mark, and no count holds them); `patches` and
+  `comments`, the side panes at
   the start, `"expanded"`, `"compact"` or `"hidden"` (`true` and `false`,
   as before, are expanded and hidden); `stream_lines`, the agent's lines
   under a comment; and
