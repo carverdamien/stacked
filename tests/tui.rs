@@ -3539,6 +3539,134 @@ fn the_review_closes_with_what_remains_marked_only_while_something_remains() {
     assert_eq!(app.status, "reviewed: its change accepted");
 }
 
+/// An edit by hand of patch 1 of `s` waiting for review, its review open,
+/// the editor run in the checkout the stack was imported from: on main,
+/// HEAD is in sync with `s`.
+fn reviewing_with_head(prepare: impl FnOnce(&Path)) -> (tempfile::TempDir, PathBuf, PathBuf, App) {
+    let (tmp, db, src) = setup();
+    prepare(&src);
+    let mut app = open(&db).unwrap();
+    app.checkout = src.clone();
+    app.look_at_head();
+    app.settle();
+    let run = hand_edit(&db, None);
+    app.edited(stacked::ops::Edited::Landed { said: "edited a.txt in Bug 1 - shout two".into(), run }, None, None);
+    assert_eq!(app.screen, Screen::Review);
+    app.settle();
+    (tmp, db, src, app)
+}
+
+/// The commit `rev` is in the checkout at `src`.
+fn rev_in(src: &Path, rev: &str) -> String {
+    let out = Command::new("git").args(["rev-parse", rev]).current_dir(src).output().unwrap();
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+#[test]
+fn closing_an_edit_review_moves_head_along_when_it_was_in_sync_with_the_stack() {
+    let (_tmp, db, src, mut app) = reviewing_with_head(|_| {});
+    let was = rev_in(&src, "HEAD");
+    keys(&mut app, &[KeyCode::Esc]);
+    let row = |app: &App| {
+        let Mode::Menu(m) = &app.mode else { panic!("{:?}", app.mode) };
+        let k = m.items.iter().position(|i| i.label == "HEAD").expect("the row");
+        (k, m.items[k].choices.as_ref().unwrap().pick(), m.items.iter().map(|i| i.label.clone()).collect::<Vec<_>>())
+    };
+    // HEAD is in sync with the stack: the row, sync picked, over Accept and
+    // Reject all.
+    let (k, picked, all) = row(&app);
+    assert_eq!(picked, "sync");
+    assert_eq!(all[k + 1], "Accept all remaining and Close");
+    let screen = draw(&mut app);
+    assert!(screen.contains("HEAD") && screen.contains("[x] sync  [ ] no sync"), "{screen}");
+    // ← → pick the other, kept for the review; Enter too, the menu staying.
+    pick(&mut app, "HEAD", "no sync");
+    assert!(app.reviewing.as_ref().unwrap().stay);
+    keys(&mut app, &[KeyCode::Enter]);
+    assert_eq!(row(&app).1, "sync");
+    assert!(!app.reviewing.as_ref().unwrap().stay);
+    assert!(matches!(app.mode, Mode::Menu(_)), "{:?}", app.mode);
+    // Not kept for the stack.
+    assert_eq!(Db::load(&db).unwrap().choice("s", "head"), None);
+    // Accepted: HEAD at the top of the stack as accepted, detached there, main
+    // as it was.
+    choose(&mut app, "Accept all remaining and Close");
+    choose(&mut app, "Accept them and close");
+    app.settle();
+    assert_eq!(app.status, "reviewed: its change accepted; HEAD is at patch 2 of s, detached: main is as it was");
+    assert_eq!(rev_in(&src, "main"), was);
+    assert!(std::fs::read_to_string(src.join("a.txt")).unwrap().starts_with("one\nTwo\nthree\n"));
+    // In sync with it again.
+    app.look_at_head();
+    app.settle();
+    let screen = draw(&mut app);
+    assert_eq!(at(&screen, &format!("▶ HEAD {}", &rev_in(&src, "HEAD")[..8])).1, at(&screen, "  2 Bug 2").1 + 1, "{screen}");
+}
+
+#[test]
+fn closing_an_edit_review_leaves_head_where_it_is_when_picked_so_or_when_it_cannot_move_safely() {
+    let labels = |app: &App| items(app).into_iter().map(|(l, _)| l).collect::<Vec<_>>();
+    // No sync picked: HEAD stays.
+    let (_tmp, _db, src, mut app) = reviewing_with_head(|_| {});
+    let was = rev_in(&src, "HEAD");
+    keys(&mut app, &[KeyCode::Esc]);
+    pick(&mut app, "HEAD", "no sync");
+    choose(&mut app, "Accept all remaining and Close");
+    choose(&mut app, "Accept them and close");
+    app.settle();
+    assert_eq!(app.status, "reviewed: its change accepted");
+    assert_eq!(rev_in(&src, "HEAD"), was);
+    // HEAD on patch 1 only: not in sync, no row.
+    let (_tmp, _db, src, mut app) = reviewing_with_head(|src| git(src, &["checkout", "-q", "--detach", "HEAD~1"]));
+    keys(&mut app, &[KeyCode::Esc]);
+    assert!(!labels(&app).contains(&"HEAD".to_string()), "{:?}", labels(&app));
+    keys(&mut app, &[KeyCode::Esc]);
+    // A commit of yours on top of the stack: not in sync either.
+    git(&src, &["checkout", "-q", "main"]);
+    std::fs::write(src.join("c.txt"), "c\n").unwrap();
+    git(&src, &["add", "c.txt"]);
+    git(&src, &["commit", "-qm", "Mine"]);
+    app.look_at_head();
+    app.settle();
+    keys(&mut app, &[KeyCode::Esc]);
+    assert!(!labels(&app).contains(&"HEAD".to_string()), "{:?}", labels(&app));
+    keys(&mut app, &[KeyCode::Esc]);
+    // In sync, but with a change of yours not committed: no row.
+    let (_tmp, _db, src, mut app) = reviewing_with_head(|_| {});
+    std::fs::write(src.join("b.txt"), "bee, edited\n").unwrap();
+    app.look_at_head();
+    app.settle();
+    keys(&mut app, &[KeyCode::Esc]);
+    assert!(!labels(&app).contains(&"HEAD".to_string()), "{:?}", labels(&app));
+    keys(&mut app, &[KeyCode::Esc]);
+    // Committed: the row is back; the change marked rejected, it is gone.
+    git(&src, &["checkout", "-q", "b.txt"]);
+    app.look_at_head();
+    app.settle();
+    keys(&mut app, &[KeyCode::Esc]);
+    assert!(labels(&app).contains(&"HEAD".to_string()), "{:?}", labels(&app));
+    keys(&mut app, &[KeyCode::Esc]);
+    choose(&mut app, "Mark as rejected");
+    keys(&mut app, &[KeyCode::Esc]);
+    assert!(!labels(&app).contains(&"HEAD".to_string()), "{:?}", labels(&app));
+    // The agent makes its changes in your checkout, which moves HEAD itself:
+    // no row.
+    let (_tmp, _db, _src, mut app) = reviewing_with_head(|src| {
+        std::fs::create_dir_all(src.join(".stacked")).unwrap();
+        std::fs::write(src.join(".stacked/local.toml"), "[agent]\nworktree = \"pwd\"\n").unwrap();
+    });
+    keys(&mut app, &[KeyCode::Esc]);
+    assert!(!labels(&app).contains(&"HEAD".to_string()), "{:?}", labels(&app));
+    // Not run in a checkout of the stack's repository: no HEAD, no row.
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    let run = hand_edit(&db, None);
+    app.edited(stacked::ops::Edited::Landed { said: "edited a.txt in Bug 1 - shout two".into(), run }, None, None);
+    app.settle();
+    keys(&mut app, &[KeyCode::Esc]);
+    assert!(!labels(&app).contains(&"HEAD".to_string()), "{:?}", labels(&app));
+}
+
 #[test]
 fn landed_work_is_edited_by_hand_from_its_review_in_its_place() {
     use stacked::tui::WorkEdit;

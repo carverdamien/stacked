@@ -329,6 +329,12 @@ fn chains(agent: &crate::config::Agent) -> bool {
     agent.chain && agent.worktree != Workspace::Pwd
 }
 
+/// Whether stack `name`'s agent makes its changes in your checkout, moved
+/// to the stack and back (`agent.worktree = "pwd"`).
+pub fn changes_in_checkout(db: &Db, name: &str) -> bool {
+    agent_of(db, name).worktree == Workspace::Pwd
+}
+
 /// What the next change or answer of stack `name` goes on from, chained:
 /// the last landed work whose change of the stack waits for your review.
 fn guessed_from(db: &Db, name: &str) -> Option<String> {

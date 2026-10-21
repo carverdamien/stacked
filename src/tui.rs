@@ -621,6 +621,9 @@ pub enum Action {
     /// In the review's menu: the row picking whether the comments that
     /// asked are kept open or closed when the review closes.
     AskingAll,
+    /// In the review's menu: the row picking whether HEAD of your checkout
+    /// follows the stack when the review closes, its change accepted.
+    HeadSync,
     /// A reference a comment attached: its lines previewed.
     ShowRef(Box<crate::refs::Ref>),
     Send(Way),
@@ -787,6 +790,9 @@ fn about(action: &Action) -> String {
         Action::AskSendBack => "send the work back to the agent, once you say so: what went on from it is asked again".into(),
         Action::ReviewCloseStop(_) => "close the review, and stop the build and test of the stack as it was".into(),
         Action::AskingAll => "pick whether the comments that asked are kept open or closed when the review closes: ← → or Enter".into(),
+        Action::HeadSync => {
+            "pick whether HEAD of your checkout moves to the top of the stack as the review leaves it, once its change is accepted: ← → or Enter".into()
+        }
         Action::ShowRef(_) => "preview the lines the agent points at: Enter there goes to them".into(),
         Action::Send(Way::Change) => "ask the agent, which may change the code within this comment's place".into(),
         Action::Send(Way::Answer) => "ask the agent, to answer only: nothing changes".into(),
@@ -1227,11 +1233,14 @@ enum Done {
     /// settings.
     Precreated(std::result::Result<Option<ask::Ahead>, String>, Vec<String>),
     /// Where HEAD of the checkout stacked runs in is, against stack `name`
-    /// at `rev`: none if the checkout is not of its repository.
+    /// at `rev`: none if the checkout is not of its repository. And, looked
+    /// at in a review with HEAD in sync with the stack, whether nothing is
+    /// uncommitted there.
     Head {
         name: String,
         rev: Option<usize>,
         head: Option<crate::head::Head>,
+        clean: Option<bool>,
     },
 }
 
@@ -1241,6 +1250,9 @@ struct HeadSeen {
     name: String,
     rev: Option<usize>,
     head: Option<crate::head::Head>,
+    /// Whether nothing is uncommitted in the checkout: looked at only in a
+    /// review, with HEAD in sync with the stack, for HEAD to follow it.
+    clean: Option<bool>,
     when: Instant,
     stale: bool,
 }
@@ -1501,10 +1513,13 @@ impl App {
     /// and every few seconds, as HEAD moves outside stacked too.
     fn check_head(&mut self) {
         let rev = self.db.head(&self.stack).map(|(r, _)| r);
+        // In a review, HEAD in sync with the stack seen without whether the
+        // checkout is clean is seen again.
+        let unsure = |h: &HeadSeen| self.reviewing.is_some() && h.clean.is_none() && h.head.as_ref().is_some_and(|hd| hd.in_sync(self.patch_count()));
         let seen = self
             .head
             .as_ref()
-            .is_some_and(|h| h.name == self.stack && h.rev == rev && !h.stale && h.when.elapsed() < Duration::from_secs(3));
+            .is_some_and(|h| h.name == self.stack && h.rev == rev && !h.stale && h.when.elapsed() < Duration::from_secs(3) && !unsure(h));
         if self.bg.heading || seen {
             return;
         }
@@ -1516,10 +1531,18 @@ impl App {
         let s = s.clone();
         let patches: Vec<Patch> = s.patches.iter().map(|id| self.db.patch(id).clone()).collect();
         let (name, here) = (self.stack.clone(), self.checkout.clone());
+        // In a review, whether the checkout is clean too: HEAD in sync with
+        // the stack may follow it as the review closes.
+        let (review, n) = (self.reviewing.is_some(), s.patches.len());
         self.bg.heading = true;
         self.spawn(move || {
             let head = crate::head::of_stack(&s, &patches.iter().collect::<Vec<_>>(), &here).ok().flatten();
-            Done::Head { name, rev, head }
+            // Not known to be clean, it is not.
+            let clean = head
+                .as_ref()
+                .filter(|h| review && h.in_sync(n))
+                .map(|h| !crate::git::unfinished_tracked(&h.dir).unwrap_or(true));
+            Done::Head { name, rev, head, clean }
         });
     }
 
@@ -1603,12 +1626,13 @@ impl App {
                     Err(e) => self.status = format!("the agents' worktrees could not be made ahead: {e}"),
                 }
             }
-            Done::Head { name, rev, head } => {
+            Done::Head { name, rev, head, clean } => {
                 self.bg.heading = false;
                 self.head = Some(HeadSeen {
                     name,
                     rev,
                     head,
+                    clean,
                     when: Instant::now(),
                     stale: false,
                 });
@@ -2060,12 +2084,7 @@ impl App {
                                 (c.of, c.pick())
                             });
                         if let Some((of, pick)) = picked {
-                            // The comments that asked: marked so in the review.
-                            if of == "asking" {
-                                self.mark_all_asking(pick == "close");
-                            } else {
-                                self.pick_choice(of, pick);
-                            }
+                            self.picked_choice(of, pick);
                             if of == "when"
                                 && let Mode::Menu(m) = &mut self.mode
                             {
@@ -3304,13 +3323,7 @@ impl App {
                     (c.of, c.pick())
                 });
                 if let Some((of, pick)) = picked {
-                    // The comments that asked: marked so in the review, not
-                    // kept for the stack.
-                    if of == "asking" {
-                        self.mark_all_asking(pick == "close");
-                    } else {
-                        self.pick_choice(of, pick);
-                    }
+                    self.picked_choice(of, pick);
                     if of == "when" {
                         m.relabel(pick == "later");
                     }
@@ -3323,13 +3336,14 @@ impl App {
                 }
                 return Effect::None;
             }
-            // On the row picking whether the comments that asked close: the
-            // other pick, the menu staying.
-            KeyCode::Enter if m.chosen().is_some_and(|i| i.action == Action::AskingAll) => {
+            // On the review's rows picking whether the comments that asked
+            // close, and whether HEAD follows the stack: the other pick, the
+            // menu staying.
+            KeyCode::Enter if m.chosen().is_some_and(|i| matches!(i.action, Action::AskingAll | Action::HeadSync)) => {
                 if let Some(c) = m.items.get_mut(m.sel).and_then(|i| i.choices.as_mut()) {
                     c.picked = (c.picked + 1) % c.list.len();
-                    let close = c.pick() == "close";
-                    self.mark_all_asking(close);
+                    let (of, pick) = (c.of, c.pick());
+                    self.picked_choice(of, pick);
                 }
             }
             KeyCode::Enter => {
@@ -3576,14 +3590,19 @@ impl App {
     /// its first `n` patches, away from the screen: detached there, the
     /// status line saying what came of it.
     fn move_head(&mut self, n: usize) {
+        self.move_head_after(n, String::new());
+    }
+
+    /// As `move_head`, the status line saying `said` first.
+    pub(super) fn move_head_after(&mut self, n: usize, said: String) {
         if self.bg.doing.contains(&MOVING_HEAD) {
-            self.status = "HEAD is being moved already".into();
+            self.status = format!("{said}HEAD is being moved already");
             return;
         }
         self.bg.doing.push(MOVING_HEAD);
-        self.status = format!("moving HEAD to {}…", crate::head::place(&self.stack, n));
+        self.status = format!("{said}moving HEAD to {}…", crate::head::place(&self.stack, n));
         let (path, name, here) = (self.path.clone(), self.stack.clone(), self.checkout.clone());
-        self.spawn(move || Done::Said(MOVING_HEAD, crate::head::move_to(&path, &name, &here, n).unwrap_or_else(|e| e.0)));
+        self.spawn(move || Done::Said(MOVING_HEAD, format!("{said}{}", crate::head::move_to(&path, &name, &here, n).unwrap_or_else(|e| e.0))));
     }
 
     fn moving_key(&mut self, from: usize, mut to: usize, k: KeyEvent) {
@@ -3828,6 +3847,17 @@ impl App {
     fn pick_choice(&mut self, of: &str, pick: &str) {
         let name = self.stack.clone();
         self.edit(|db| db.set_choice(&name, of, pick));
+    }
+
+    /// A choice picked in a menu: kept for the stack; but the review's own
+    /// rows, not kept for the stack: the comments that asked marked so in
+    /// the review, and whether HEAD follows the stack kept for the review.
+    fn picked_choice(&mut self, of: &str, pick: &str) {
+        match of {
+            "asking" => self.mark_all_asking(pick == "close"),
+            "head" => self.head_stays(pick == "stay"),
+            _ => self.pick_choice(of, pick),
+        }
     }
 
     /// All that can be done where the cursor is, then the menu's end.
@@ -4303,8 +4333,8 @@ impl App {
                 }
             }
             Action::AskSendBack => self.mode = Mode::Menu(self.review_send_back_ask()),
-            // Its row picks in the menu itself.
-            Action::AskingAll => {}
+            // Their rows pick in the menu itself.
+            Action::AskingAll | Action::HeadSync => {}
             Action::ShowRef(r) => self.show_ref(&r),
             Action::ReviewCloseStop(rest) => {
                 let builds = ask::builds_going(&self.db, &self.stack);

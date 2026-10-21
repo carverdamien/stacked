@@ -79,6 +79,12 @@ impl Head {
         }
     }
 
+    /// Whether it is in sync with a stack of `n` patches: on its top, each
+    /// patch a commit with the patch's message, and no commit above.
+    pub fn in_sync(&self, n: usize) -> bool {
+        matches!(&self.at, At::Stack(on) if on.commits.len() == n && on.messages.is_empty() && on.above.is_empty())
+    }
+
     /// Where it is on stack `name`, said: `at patch 2 of s, then 1 commit
     /// not in the stack`, `not on s`.
     pub fn said(&self, name: &str) -> String {
@@ -240,16 +246,20 @@ fn ready(db: &Db, s: &Stack, here: &Path, nothing: &str) -> Result<(PathBuf, Str
     if git::unfinished_tracked(&dir)? {
         return err(format!("{} has uncommitted changes: commit or stash them first; {nothing}", dir.display()));
     }
-    let agent = db
-        .runs()
-        .into_iter()
-        .filter(|r| crate::ask::running(r))
-        .filter_map(crate::ask::info)
-        .any(|i| i.back.is_some() && i.worktree.as_deref().map(Path::new) == Some(dir.as_path()));
-    if agent {
+    if agent_in(db, &dir) {
         return err(format!("the agent is working in {}, your checkout: {nothing} until its ask lands", dir.display()));
     }
     Ok((dir, base))
+}
+
+/// Whether an agent works in the checkout at `dir`, moved to its stack for
+/// a change asked there (`agent.worktree = "pwd"`), its ask still running.
+pub fn agent_in(db: &Db, dir: &Path) -> bool {
+    db.runs()
+        .into_iter()
+        .filter(|r| crate::ask::running(r))
+        .filter_map(crate::ask::info)
+        .any(|i| i.back.is_some() && i.worktree.as_deref().map(Path::new) == Some(dir))
 }
 
 /// HEAD of the checkout at `here` moved to stack `name` with its first `n`

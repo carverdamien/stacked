@@ -791,7 +791,16 @@ something is left: once every part is marked, they are grayed. Over them,
 `Asking comment  [x] keep  [ ] close` picks whether the comments the agent
 was asked about are kept open or closed as the review closes, every one,
 picked as the review has them: ← → or Enter pick the other, the menu
-staying. A reply that goes with a change of the stack
+staying. Under it, while HEAD of your checkout can move safely to the
+stack as the review leaves it, `HEAD  [x] sync  [ ] no sync` picks whether
+HEAD moves there once the change is accepted: detached at the stack's
+top, the branch it was on as it was, as `Move HEAD…` moves it, the status
+line saying where it went. HEAD can move safely when it was in sync with
+the stack (on its top, each patch a commit with the patch's message, no
+commit above), nothing is uncommitted in the checkout, and no agent works
+there or makes its changes there (`agent.worktree = "pwd"`). `sync` is
+picked unless you picked otherwise in this review, and the pick is not
+kept for the stack. A reply that goes with a change of the stack
 opens that review, on the reply, from its comment (Enter, or `Review the
 agent's work…` in its menu).
 

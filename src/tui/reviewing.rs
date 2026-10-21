@@ -88,6 +88,9 @@ pub struct Reviewing {
     main_w: usize,
     /// On the stack diff, looked at closer: the entry the cursor is on.
     entry: usize,
+    /// HEAD of your checkout picked to stay where it is as the review
+    /// closes, rather than follow the stack: it follows unless so.
+    pub stay: bool,
     /// Whether, from there, the cursor is in the patch of that entry, as the
     /// work leaves it, a row at a time; and the line of its mail to put the
     /// cursor on once it is drawn, the one Enter went to from the stack diff.
@@ -212,6 +215,9 @@ impl App {
         if let Some(rv) = &mut self.reviewing {
             rv.sel = at;
         }
+        // Where HEAD is, looked at again, and whether the checkout is clean:
+        // HEAD in sync with the stack may follow it as the review closes.
+        self.look_at_head();
     }
 
     /// The stack as it is, and as accepting the change would make it.
@@ -1202,10 +1208,12 @@ impl App {
             Item::new("Discard", Action::ReviewDiscard),
             Item::new("Close review", if self.review_close_menu().is_some() { Action::AskClose } else { Action::ReviewClose(None) }).when(done),
             // What remains, accepted or rejected together, a section of its
-            // own; over it, whether the comments that asked close with it.
+            // own; over it, whether the comments that asked close with it,
+            // and whether HEAD follows the stack.
             Item::line(),
         ];
         items.extend(self.asking_row());
+        items.extend(self.head_row());
         items.extend([
             Item::new("Accept all remaining and Close", Action::AskReviewClose(true)).when(!done),
             Item::new("Reject all remaining and Close", Action::AskReviewClose(false)).when(!done),
@@ -1246,6 +1254,55 @@ impl App {
         ];
         let choices = Choices::new("asking", "whether they close", list, Some(if close { "close" } else { "keep" }));
         Some(Item::new(label, Action::AskingAll).with(choices))
+    }
+
+    /// The row picking whether HEAD of your checkout moves to the top of
+    /// the stack as the review leaves it, once its change is accepted:
+    /// offered only when HEAD can move there safely; `sync` unless you
+    /// picked otherwise in this review.
+    fn head_row(&self) -> Option<Item> {
+        let rv = self.reviewing.as_ref()?;
+        if !self.head_can_follow() {
+            return None;
+        }
+        let list = vec![
+            Choice::new(
+                "sync",
+                "sync",
+                "HEAD moves to the top of the stack as the review leaves it, detached there; the branch it is on stays as it is",
+                None,
+            ),
+            Choice::new("stay", "no sync", "HEAD stays where it is", None),
+        ];
+        let choices = Choices::new("head", "whether HEAD follows the stack", list, Some(if rv.stay { "stay" } else { "sync" }));
+        Some(Item::new("HEAD", Action::HeadSync).with(choices))
+    }
+
+    /// Whether HEAD of your checkout can move safely to the stack as the
+    /// review leaves it: the work changes the stack, its change not
+    /// rejected; HEAD was in sync with the stack as it is, when last looked
+    /// at (on its top, each patch a commit with the patch's message, no
+    /// commit above), and nothing is uncommitted there; and no agent works
+    /// in your checkout, nor makes its changes there (`agent.worktree =
+    /// "pwd"`), which moves HEAD itself.
+    fn head_can_follow(&self) -> bool {
+        let Some(rv) = &self.reviewing else { return false };
+        let Some((now, _)) = self.review_stacks() else { return false };
+        if rv.marks.get(&Part::Stack.key()) == Some(&false) {
+            return false;
+        }
+        let rev = self.db.head(&self.stack).map(|(r, _)| r);
+        let Some(seen) = self.head.as_ref().filter(|h| h.name == self.stack && h.rev == rev) else { return false };
+        let Some(h) = &seen.head else { return false };
+        h.in_sync(now.patches.len()) && seen.clean == Some(true) && !crate::head::agent_in(&self.db, &h.dir) && !ask::changes_in_checkout(&self.db, &self.stack)
+    }
+
+    /// HEAD picked to stay where it is as the review closes (`stay`), or to
+    /// follow the stack, as the review's menu picks it.
+    pub(super) fn head_stays(&mut self, stay: bool) {
+        if let Some(rv) = &mut self.reviewing {
+            rv.stay = stay;
+        }
     }
 
     /// Every comment that asked marked to close with the review (`close`),
@@ -1521,12 +1578,20 @@ impl App {
     }
 
     /// The review closed: what is accepted applied, the rest dropped; the
-    /// parts not marked accepted or rejected as `rest` says.
+    /// parts not marked accepted or rejected as `rest` says. Its change
+    /// accepted, HEAD of your checkout follows the stack to its top, if it
+    /// can safely and you did not pick otherwise.
     pub(super) fn review_close(&mut self, rest: Option<bool>) {
         let Some(rv) = self.reviewing.clone() else { return };
+        let accepted = rv.marks.get(&Part::Stack.key()).copied().or(rest) == Some(true);
+        let follow = accepted && !rv.stay && self.head_can_follow();
         if let Some(said) = self.edit(|db| crate::held::close(db, &rv.run, &rv.marks, rest)) {
             self.status = format!("reviewed: {said}");
             self.leave_review();
+            if follow {
+                let n = self.patch_count();
+                self.move_head_after(n, format!("reviewed: {said}; "));
+            }
             // What waited on the review may go.
             self.launch();
         }
