@@ -94,6 +94,13 @@ pub struct Row {
     pub names: Vec<usize>,
 }
 
+impl Row {
+    /// Whether it is a line under a comment for one of its references.
+    pub fn is_reference(&self) -> bool {
+        self.reference.is_some() || self.points.is_some()
+    }
+}
+
 /// `pieces`, a line of a comment's text, its mentions marked as what the
 /// comment has (`nums`, its references' numbers) or not; and the numbers
 /// of those it names that are there.

@@ -292,7 +292,10 @@ as it was written.
 Comments are written where they will show, in an editor inline: a comment
 on the stack under the left pane's header, on a patch under its title in
 the left pane, on a line under the line, a reply under its comment, in the
-middle or in the comments pane. The editor's box hides nothing: what was
+middle or in the comments pane. In the middle, a reply goes under the last
+turn of the comment, its references under the box (a turn written again
+goes in its place, the turns after it under the box), so that the last
+reply and the references are in sight both. The editor's box hides nothing: what was
 under the line goes on after the box, in every view of the code. The pane
 being written in takes half the width meanwhile. Typing and the arrows
 edit, and enter breaks the line. On a line where no comment is open but one
@@ -341,8 +344,10 @@ them, `a.txt:120-140,200-210 @2` (`@0` the base; no `@`, the whole stack);
 for a comment on a line, they start with its file, as its patch leaves it.
 Each reference takes a number, never given twice in the comment, and what
 you write names it: `@r1`, several `@r{1,2,3}` (or `@r{2-4}`), all of them
-`@r*`. They show in the editor, under what you write, and under the comment
-once it is saved, a line each: `r1 ↗ patch 2 · a.txt: TWO · "why so
+`@r*`. They show under what you write (written in the middle on a comment
+there, as its lines under the editor, those attached meanwhile with them;
+else in the editor, under the text), and under the comment once it is
+saved, a line each: `r1 ↗ patch 2 · a.txt: TWO · "why so
 loud?"`, `r2 ⇢ a.txt:2-3 · as patch 1 leaves it`. Enter on a comment's goes
 to that comment (closed, it opens as it was); on lines, it previews them. A
 mention naming no reference attached is drawn in the warning colour, and
@@ -1458,7 +1463,8 @@ moved comment and an answer's comments, a patch's comment asked of the
 whole stack, what you said last written again (off the queue meanwhile;
 left as it was, asked as it is or left so), a reply written in $EDITOR
 under its conversation, its references under it, and a turn written again
-there in its place, a comment moved to the stack
+there in its place, the editor in the middle between the last reply and the
+references, a comment moved to the stack
 taking the cursor with it, the mouse (the cursor following it, a click as
 Enter, a right click's menu, a menu's item), the comments pane's previews,
 moving a patch, searching (what is in sight first, the patches then the

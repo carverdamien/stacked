@@ -994,7 +994,10 @@ fn mentions_in_a_thread_are_links_to_what_they_name_the_agents_numbered_too() {
     keys(&mut app, &[KeyCode::Enter]);
     let Mode::Edit(e) = &app.mode else { panic!("{:?}", app.mode) };
     assert!(e.ed.broken().is_empty(), "{:?}", e.ed.broken());
-    assert!(draw(&mut app).contains("r2 ⇢ a.txt:2 · as patch 1 leaves it (the agent's)"));
+    // Its references under the editor, as the comment's lines: the agent's
+    // among them.
+    let screen = draw(&mut app);
+    assert!(screen.contains("▎   r2 ⇢ a.txt:2 · as patch 1 leaves it") && !screen.contains("(the agent's)"), "{screen}");
     keys(&mut app, &[KeyCode::Esc]);
     choose(&mut app, "Attach a reference…");
     choose(&mut app, "Lines of a file…");
@@ -1128,6 +1131,76 @@ fn what_is_written_in_editor_is_in_its_place_in_the_conversation_its_references_
     assert_eq!(at, Some(4));
     assert_eq!(notes_of(&db, "s", 0).into_iter().find(|n| n.id == b.id).unwrap().text, b.text);
     stacked::ops::stand_in(None);
+}
+
+#[test]
+fn the_editor_in_the_middle_goes_between_the_last_reply_and_the_references() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Enter]);
+    save(&mut app, "why so loud?");
+    down_to(&mut app, "+LINE 39");
+    keys(&mut app, &[KeyCode::Enter]);
+    save(&mut app, "Same as @r1?");
+    let a = notes_of(&db, "s", 0).into_iter().find(|n| n.text == "why so loud?").unwrap();
+    let b = notes_of(&db, "s", 0).into_iter().find(|n| n.text == "Same as @r1?").unwrap();
+    // r1 attached; the agent answers, attaching r2.
+    Db::edit(&db, |d| {
+        let said = "As @r2 shows.\n\n```refs\nr2 a.txt:2 @1\n```";
+        d.set_note(Note {
+            text: append_turn(&b.text, Role::Agent, said, Some("answer")),
+            attached: vec![stacked::refs::Attached {
+                n: 1,
+                to: stacked::refs::To::Comment {
+                    change: a.change.clone(),
+                    id: a.id.clone(),
+                },
+            }],
+            ..b.clone()
+        })
+    })
+    .unwrap();
+    app.refresh();
+    // Where each is drawn in the middle, top to bottom: the last reply, the
+    // editor's top, the references, these once on the screen.
+    let order = |app: &mut App| {
+        let screen = draw(app);
+        for text in ["r1 ↗ patch 1 · a.txt: TWO", "r2 ⇢ a.txt:2"] {
+            assert_eq!(screen.matches(text).count(), 1, "{text:?} once:\n{screen}");
+        }
+        let y = |text: &str| at(&screen, text).1;
+        (y("▎   As @r2 shows."), y("┌─"), y("▎   r1 ↗ patch 1 · a.txt: TWO"), y("▎   r2 ⇢ a.txt:2"), screen)
+    };
+    down_to(&mut app, "     ▎   As @r2 shows.");
+    choose_as(&mut app, "Reply", "here");
+    assert!(matches!(&app.mode, Mode::Edit(e) if matches!(e.target, stacked::tui::Target::Reply { .. })), "{:?}", app.mode);
+    let (reply, top, r1, r2, screen) = order(&mut app);
+    assert!(reply < top && top < r1 && r1 < r2, "{screen}");
+    // A reference attached meanwhile is under it too, as the editor has it;
+    // thrown away, it is gone.
+    typed(&mut app, "Then?");
+    keys(&mut app, &[KeyCode::Esc]);
+    choose(&mut app, "Attach a reference…");
+    choose(&mut app, "Lines of a file…");
+    typed(&mut app, "a.txt:3 @1");
+    keys(&mut app, &[KeyCode::Enter]);
+    assert_eq!(app.status, "attached as r3: write @r3 where you mean it");
+    let (_, top, r1, _, screen) = order(&mut app);
+    let r3 = at(&screen, "▎   r3 ⇢ a.txt:3 · as patch 1 leaves it").1;
+    assert!(top < r1 && r1 < r3, "{screen}");
+    keys(&mut app, &[KeyCode::Esc]);
+    choose(&mut app, "Throw it away");
+    assert!(!draw(&mut app).contains("r3 ⇢"));
+    // Your comment written again: under what comes before it, the agent's
+    // reply under the editor, over the references.
+    keys(&mut app, &[KeyCode::Home]);
+    down_to(&mut app, "     ▎   Same as @r1?");
+    choose_as(&mut app, "Edit your comment", "here");
+    assert!(matches!(&app.mode, Mode::Edit(e) if matches!(e.target, stacked::tui::Target::Turn { turn: 0, .. })), "{:?}", app.mode);
+    let (reply, top, r1, _, screen) = order(&mut app);
+    assert!(top < reply && reply < r1, "{screen}");
 }
 
 #[test]

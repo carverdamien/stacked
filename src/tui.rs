@@ -1898,7 +1898,18 @@ impl App {
     }
 
     fn rebuild(&mut self, width: usize) {
-        let notes = self.shown_notes();
+        let mut notes = self.shown_notes();
+        // The comment written on in the middle: its references as the editor
+        // has them, under it.
+        let attaching = self
+            .writing()
+            .filter(|e| self.refs_in_rows(e) && self.attachable(&e.target))
+            .and_then(|e| Some((self.comment_of(&e.target)?, e.attached.clone())));
+        if let Some(((change, id), attached)) = &attaching
+            && let Some(n) = notes.iter_mut().find(|n| n.change == *change && n.id == *id)
+        {
+            n.attached = attached.clone();
+        }
         let stream = match &self.mode {
             Mode::Stream { id, up, .. } => format!("{id}:{up}"),
             _ => String::new(),
@@ -1918,12 +1929,13 @@ impl App {
             .map(|(_, run)| format!("{}.", self.db.event_count(run)))
             .collect();
         let want = format!(
-            "{subject}\0{width}\0{}\0{streams}\0{:?}\0{stream}\0{}\0{}\0{:?}",
+            "{subject}\0{width}\0{}\0{streams}\0{:?}\0{stream}\0{}\0{}\0{:?}\0{:?}",
             self.db.changes(),
             self.show,
             self.body_h,
             self.reading,
-            self.written_turns()
+            self.written_turns(),
+            attaching
         );
         if self.built.as_deref() == Some(&want) {
             return;
@@ -5154,9 +5166,22 @@ impl App {
     fn show_attached(&self, e: &mut Edit) {
         if self.attachable(&e.target) {
             let refs = self.editing_refs(e);
-            let lines = refs.iter().map(|(k, p, agent)| self.reference_said(*k, p, *agent)).collect();
+            // Written on a comment in the middle, they are its lines under
+            // the editor.
+            let lines = match self.refs_in_rows(e) {
+                true => vec![],
+                false => refs.iter().map(|(k, p, agent)| self.reference_said(*k, p, *agent)).collect(),
+            };
             e.ed.set_attached(refs.iter().map(|(k, ..)| *k).collect(), lines);
         }
+    }
+
+    /// Whether the references of the comment `e` writes on show under the
+    /// editor, as that comment's lines, rather than in it: written in the
+    /// middle on a comment there, the editor goes between its turns and
+    /// them, for the last reply and the references to be in sight both.
+    fn refs_in_rows(&self, e: &Edit) -> bool {
+        e.pane == Focus::Diff && matches!(e.target, Target::Reply { .. } | Target::Edit { .. } | Target::Turn { .. } | Target::Rewind { .. })
     }
 
     /// The menu of what may be attached to the comment being written: lines
@@ -7124,7 +7149,8 @@ impl App {
     }
 
     /// The last row of what a comment being written in the middle goes
-    /// under: its line and the comments on it, or the comment it answers.
+    /// under: its line and the comments on it, or the turns of the comment
+    /// it answers, its references under the editor.
     fn editor_anchor(&self) -> Option<usize> {
         self.editor_anchor_in(&self.rows)
     }
@@ -7142,7 +7168,7 @@ impl App {
             // Where the turn written again was, or the turns rewound: under
             // what comes before it, over what comes after.
             Target::Turn { id, turn, .. } | Target::Rewind { id, from: turn, .. } => {
-                return rows.iter().rposition(|r| r.note.as_deref() == Some(id) && r.turn.is_none_or(|t| t < *turn));
+                return rows.iter().rposition(|r| r.note.as_deref() == Some(id) && !r.is_reference() && r.turn.is_none_or(|t| t < *turn));
             }
             // Your answer to a reply, in its review: under the thread.
             Target::Answer { run, k } => {
@@ -7154,7 +7180,7 @@ impl App {
         let mut last = first;
         while rows.get(last + 1).is_some_and(|r| matches!(r.kind, Kind::Comment | Kind::Stream)) {
             if let Target::Reply { id, .. } | Target::Edit { id, .. } = &e.target
-                && rows[last + 1].note.as_deref() != Some(id)
+                && (rows[last + 1].note.as_deref() != Some(id) || rows[last + 1].is_reference())
             {
                 break;
             }
