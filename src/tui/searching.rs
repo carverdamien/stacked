@@ -339,7 +339,10 @@ impl App {
             }
             Place::Comment { change, id, turn } => {
                 let Some(n) = self.db.note(change, id) else { return };
-                let deco = Deco::default();
+                let deco = Deco {
+                    pointed: self.pointed_of([n]),
+                    ..Default::default()
+                };
                 let rows = if n.on_stack() {
                     let name = self.stack_of(change).unwrap_or_default();
                     let titles: Vec<String> = self

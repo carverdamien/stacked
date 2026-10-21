@@ -86,6 +86,9 @@ pub struct Row {
     /// A reference a turn of the comment attached, under the comment:
     /// Enter previews its lines.
     pub reference: Option<crate::refs::Ref>,
+    /// A comment a reference points at, under the comment pointing:
+    /// Enter goes to it.
+    pub points: Option<(String, String)>,
 }
 
 impl Row {
@@ -116,6 +119,9 @@ pub struct Deco {
     /// the first, to the one after the last, of all its turns. The editor
     /// shows them, and its rows do not.
     pub writing: HashMap<String, (usize, usize)>,
+    /// The comments references point at, by change and id, as their line
+    /// under the comment pointing says them.
+    pub pointed: HashMap<(String, String), String>,
 }
 
 /// `3/10`: how many of `keys` are read, of how many.
@@ -186,7 +192,7 @@ pub fn comment_rows(n: &Note, width: usize, deco: &Deco) -> Vec<Row> {
     }
     let hidden = deco.writing.get(&n.id).copied().unwrap_or((usize::MAX, usize::MAX));
     // The references the turns attach, each once, by the turn and its author.
-    let mut refs: Vec<(usize, By, crate::refs::Ref)> = Vec::new();
+    let mut refs: Vec<(usize, By, crate::refs::Pointer)> = Vec::new();
     for (i, t) in all_turns(&n.text).into_iter().enumerate() {
         // Deleted the first way: shown nowhere. Written in the editor: shown
         // there only.
@@ -225,14 +231,34 @@ pub fn comment_rows(n: &Note, width: usize, deco: &Deco) -> Vec<Row> {
             });
         }
     }
-    // Under the comment, a line for each reference: Enter previews it.
-    for (i, author, r) in refs {
-        let said = format!("⇢ {}", r.said());
+    // Under the comment, a line for each reference attached to it, by its
+    // name, then for each a turn points at: Enter previews lines, and goes
+    // to a comment.
+    let attached = n.attached.iter().filter_map(|a| {
+        let p = match &a.to {
+            crate::refs::To::Comment { change, id } => crate::refs::Pointer::Comment {
+                change: change.clone(),
+                id: id.clone(),
+            },
+            crate::refs::To::Lines(_) => crate::refs::Pointer::Lines(a.lines()?),
+        };
+        Some((None, By::You, format!("{} ", a.name()), p))
+    });
+    let pointed = refs.into_iter().map(|(i, author, p)| (Some(i), author, String::new(), p));
+    for (turn, author, name, p) in attached.collect::<Vec<_>>().into_iter().chain(pointed) {
+        let (said, reference, points) = match p {
+            crate::refs::Pointer::Lines(r) => (format!("{name}⇢ {}", r.said()), Some(r), None),
+            crate::refs::Pointer::Comment { change, id } => {
+                let what = deco.pointed.get(&(change.clone(), id.clone())).map_or("a comment that is gone", String::as_str);
+                (format!("{name}↗ {what}"), None, Some((change, id)))
+            }
+        };
         out.push(Row {
-            turn: Some(i),
+            turn,
             by: Some(author),
             pieces: vec![(said.clone(), crate::markdown::Mark::Link)],
-            reference: Some(r),
+            reference,
+            points,
             ..row(Kind::Comment, format!("     {BAR}   {said}"), false)
         });
     }

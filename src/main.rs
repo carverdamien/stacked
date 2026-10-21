@@ -722,6 +722,25 @@ fn print_thread(db: &Db, name: &str, n: &Note, state: &str) {
     for line in stacked::thread::said_lines(&n.text) {
         println!("  {line}");
     }
+    for a in &n.attached {
+        println!("  {}", attached_line(db, name, a));
+    }
+}
+
+/// Reference `a`, attached to a comment of stack `name`, as a line: a
+/// comment by its id, where it is, and whether it is closed; lines as a
+/// `refs` line says them.
+fn attached_line(db: &Db, name: &str, a: &stacked::refs::Attached) -> String {
+    match &a.to {
+        stacked::refs::To::Comment { change, id } => match stacked::refs::find_comment(db, name, change, id) {
+            Some((c, open)) => {
+                let closed = if open { "" } else { " (closed)" };
+                format!("{} ↗ {}\t{}{closed}", a.name(), short_id(&c.change, &c.id), where_on(db, name, &c))
+            }
+            None => format!("{} ↗ a comment that is gone", a.name()),
+        },
+        stacked::refs::To::Lines(l) => format!("{} ⇢ {}", a.name(), a.lines().map_or(l.clone(), |r| r.said())),
+    }
 }
 
 /// The deleted comments of stack `name`, its own then each patch's, or

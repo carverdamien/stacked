@@ -419,6 +419,17 @@ pub struct Edit {
     /// meanwhile: how it was on it. It goes back on if it is left as it
     /// was.
     pub held: Option<crate::db::Queued>,
+    /// The references attached to the comment, as it is saved: those it
+    /// had, as they are attached and detached meanwhile.
+    pub attached: Vec<crate::refs::Attached>,
+}
+
+/// Lines of a file being named, to attach to the comment being written,
+/// `back`: as a `refs` line says them, `a.txt:120-140,200-210 @2`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Lines {
+    pub ed: Editor,
+    pub back: Edit,
 }
 
 /// Where the keys go, over the screen.
@@ -443,6 +454,9 @@ pub enum Mode {
     Stream { change: String, id: String, up: usize },
     /// The lines a reference points at, previewed: Enter goes there.
     Preview(Box<Preview>),
+    /// Lines of a file being named, to attach to the comment being
+    /// written: Enter attaches them, Esc goes back to the comment.
+    Lines(Box<Lines>),
 }
 
 /// A reference's lines, previewed: `title` says which; `lines` are the
@@ -626,6 +640,19 @@ pub enum Action {
     HeadSync,
     /// A reference a comment attached: its lines previewed.
     ShowRef(Box<crate::refs::Ref>),
+    /// A comment a reference points at: there, or, closed, as it was.
+    GoToPointed(String, String),
+    /// In the editor's menu: what may be attached to the comment, to pick.
+    AttachRef,
+    /// Comment (change, id) attached to the comment being written.
+    AttachComment(String, String),
+    /// Lines of a file, to name, attached to the comment being written.
+    AttachLines,
+    /// In the editor's menu: the references attached, to pick one to
+    /// detach.
+    DetachRef,
+    /// Reference `r{0}` detached from the comment being written.
+    Detach(usize),
     Send(Way),
     /// A patch's comment sent to the whole stack: the agent may change any
     /// patch.
@@ -794,6 +821,14 @@ fn about(action: &Action) -> String {
             "pick whether HEAD of your checkout moves to the top of the stack as the review leaves it, once its change is accepted: ← → or Enter".into()
         }
         Action::ShowRef(_) => "preview the lines the agent points at: Enter there goes to them".into(),
+        Action::GoToPointed(..) => "go to the comment this points at; closed, read it as it was".into(),
+        Action::AttachRef => {
+            "attach a reference to the comment: another comment of the stack, or lines of a file; what you write names it @r1, several @r{1,2}, all @r*".into()
+        }
+        Action::AttachComment(..) => "attach this comment: the agent reads it with yours, open or closed".into(),
+        Action::AttachLines => "attach lines of a file, as a patch leaves it, as the base has it, or as the whole stack leaves it".into(),
+        Action::DetachRef => "detach a reference from the comment".into(),
+        Action::Detach(_) => "detach this reference: a mention of it then names nothing".into(),
         Action::Send(Way::Change) => "ask the agent, which may change the code within this comment's place".into(),
         Action::Send(Way::Answer) => "ask the agent, to answer only: nothing changes".into(),
         Action::Send(Way::Test) => "ask the agent to build and test, in the stack's build worktree, .stacked/NAME/build".into(),
@@ -1820,6 +1855,7 @@ impl App {
             Show::Closed => self.closed().into_iter().map(|(rev, n)| (n.id, rev)).collect(),
             _ => HashMap::new(),
         };
+        deco.pointed = self.pointed_of(notes);
         for n in notes {
             let tag = match deleted.get(&n.id) {
                 Some(rev) => format!("closed @{rev}"),
@@ -2128,6 +2164,14 @@ impl App {
                 self.mode = Mode::Normal;
                 return Effect::None;
             }
+            // Lines being named: a click out of their box goes back to the
+            // comment.
+            Mode::Lines(_) => {
+                if !matches!(spot, Some(Spot::Box)) {
+                    return press(self, KeyCode::Esc);
+                }
+                return Effect::None;
+            }
             // What the agent writes, read in place: folded.
             Mode::Stream { .. } => {
                 self.mode = Mode::Normal;
@@ -2403,7 +2447,7 @@ impl App {
         // what `?` said.
         // The search reads what is typed too.
         let typed = self.screen == Screen::Search && matches!(self.mode, Mode::Normal);
-        let k = if matches!(self.mode, Mode::Edit(_)) || typed {
+        let k = if matches!(self.mode, Mode::Edit(_) | Mode::Lines(_)) || typed {
             k
         } else {
             match self.cfg.keys.translate(&k) {
@@ -2443,7 +2487,7 @@ impl App {
             if matches!(k.code, KeyCode::Esc | KeyCode::Char('?')) {
                 return Effect::None;
             }
-        } else if k.code == KeyCode::Char('?') && !matches!(self.mode, Mode::Edit(_)) {
+        } else if k.code == KeyCode::Char('?') && !matches!(self.mode, Mode::Edit(_) | Mode::Lines(_)) {
             self.mode = Mode::Help {
                 lines: self.help(),
                 back: Box::new(self.mode.clone()),
@@ -2456,6 +2500,7 @@ impl App {
             Mode::Menu(m) => return self.menu_key(m, k),
             Mode::Preview(p) => return self.preview_key(*p, k),
             Mode::Edit(e) => return self.edit_key(*e, k),
+            Mode::Lines(l) => return self.lines_key(*l, k),
             Mode::Moving { from, to } => {
                 self.moving_key(from, to, k);
                 return Effect::None;
@@ -2926,6 +2971,10 @@ impl App {
                 if let Some(r) = self.rows.get(self.target_row()).and_then(|row| row.reference.clone()) {
                     return Some(Action::ShowRef(Box::new(r)));
                 }
+                // A comment a reference points at: there.
+                if let Some((change, id)) = self.rows.get(self.target_row()).and_then(|row| row.points.clone()) {
+                    return Some(Action::GoToPointed(change, id));
+                }
                 if let Some(n) = self.picked() {
                     // Closed: its menu, to reopen it.
                     if self.is_closed(&n) {
@@ -3394,6 +3443,8 @@ impl App {
             Op::Close => false,
             Op::Done(_) => true,
         };
+        // A reference attached or detached: changed too.
+        let changed = changed || (self.attachable(&e.target) && e.attached != self.attached_of(&e.target));
         // Esc asks what to do with what is written, changed or not: it may
         // be saved and sent as it is. Not with nothing written, as nothing
         // would be saved; nor with nothing changed, if the agent cannot be
@@ -3401,6 +3452,18 @@ impl App {
         let send = self.can_send_target(&e.target);
         let w = self.read_only().is_none();
         let ask = send && w;
+        // A mention naming no reference attached: the agent is not asked
+        // until it does.
+        let broken = e.ed.broken();
+        let named = broken.is_empty();
+        let note = self.read_only().map(String::from).or_else(|| {
+            (!named).then(|| format!("{} names no reference attached: attach one, or write it otherwise, to ask the agent", broken.join(", ")))
+        });
+        let refs: Vec<Item> = match self.attachable(&e.target) {
+            true if e.attached.is_empty() => vec![Item::new("Attach a reference…", Action::AttachRef)],
+            true => vec![Item::new("Attach a reference…", Action::AttachRef), Item::new("Detach a reference…", Action::DetachRef)],
+            false => vec![],
+        };
         if self.nothing_written(&e) || !(changed || ask) {
             self.settle_edit(&e, false);
             return Effect::None;
@@ -3423,19 +3486,23 @@ impl App {
             if send {
                 let (ask, later) = match changed {
                     true => (
-                        Item::new("Save it and ask agent, answer only", Action::Save(Some(Way::Answer))).when(w),
+                        Item::new("Save it and ask agent, answer only", Action::Save(Some(Way::Answer))).when(w && named),
                         "Save it and ask agent later, answer only",
                     ),
-                    false => (Item::new("Ask agent, answer only", Action::SendAsItIs(Way::Answer)), "Ask agent later, answer only"),
+                    false => (
+                        Item::new("Ask agent, answer only", Action::SendAsItIs(Way::Answer)).when(named),
+                        "Ask agent later, answer only",
+                    ),
                 };
                 self.push_ask(&mut items, ask, later);
             }
             if changed {
                 items.push(Item::new("Save it", Action::Save(None)));
             }
+            items.extend(refs);
             items.extend(rest);
             self.pending = Some(e);
-            self.mode = Mode::Menu(Menu::new("the question", items, self.read_only().map(String::from)));
+            self.mode = Mode::Menu(Menu::new("the question", items, note));
             return Effect::None;
         }
         let mut items = vec![];
@@ -3453,18 +3520,19 @@ impl App {
             let test = matches!(e.target, Target::Stack | Target::Patch(_));
             let mut choices = self.ask_choices(a_patch_s, test, true);
             if changed {
-                let ask = Item::new("Save it and ask agent", Action::Save(Some(Way::Change))).when(w).with(choices);
+                let ask = Item::new("Save it and ask agent", Action::Save(Some(Way::Change))).when(w && named).with(choices);
                 self.push_ask(&mut items, ask, "Save it and ask agent later");
             } else {
                 for c in &mut choices.list {
                     c.action = c.action.take().map(as_it_is);
                 }
-                self.push_ask(&mut items, Item::new("Ask agent", Action::SendAsItIs(Way::Change)).with(choices), "Ask agent later");
+                self.push_ask(&mut items, Item::new("Ask agent", Action::SendAsItIs(Way::Change)).when(named).with(choices), "Ask agent later");
             }
         }
+        items.extend(refs);
         items.extend(rest);
         self.pending = Some(e);
-        self.mode = Mode::Menu(Menu::new("the comment", items, self.read_only().map(String::from)));
+        self.mode = Mode::Menu(Menu::new("the comment", items, note));
         Effect::None
     }
 
@@ -4358,6 +4426,48 @@ impl App {
             // Their rows pick in the menu itself.
             Action::AskingAll | Action::HeadSync => {}
             Action::ShowRef(r) => self.show_ref(&r),
+            Action::GoToPointed(change, id) => match crate::refs::find_comment(&self.db, &self.stack, &change, &id) {
+                Some((n, true)) => self.go_to(&n.change, &n.id),
+                Some((n, false)) => {
+                    let lines = crate::thread::said_lines(&n.text).into_iter().map(|l| (l, Style::new())).collect();
+                    self.open_text(format!("a closed comment · {}", where_on(&self.db, &self.stack, &n)), lines);
+                }
+                None => self.status = "that comment is gone".into(),
+            },
+            Action::AttachRef => self.attach_menu(),
+            Action::DetachRef => self.detach_menu(),
+            Action::AttachComment(change, id) => {
+                if let Some(mut e) = self.pending.take() {
+                    let n = self.next_number(&e);
+                    e.attached.push(crate::refs::Attached {
+                        n,
+                        to: crate::refs::To::Comment { change, id },
+                    });
+                    self.status = format!("attached as r{n}: write @r{n} where you mean it");
+                    self.show_attached(&mut e);
+                    self.mode = Mode::Edit(Box::new(e));
+                }
+            }
+            Action::AttachLines => {
+                if let Some(e) = self.pending.take() {
+                    let (text, col) = self.lines_prefill(&e.target);
+                    let mut ed = Editor::new(&text).single();
+                    ed.set_col(col);
+                    self.mode = Mode::Lines(Box::new(Lines { ed, back: e }));
+                }
+            }
+            Action::Detach(n) => {
+                if let Some(mut e) = self.pending.take() {
+                    if self.named_elsewhere(&e.target, n) {
+                        self.status = format!("r{n} is named in another turn of the comment: it stays attached");
+                    } else {
+                        e.attached.retain(|a| a.n != n);
+                        self.status = format!("r{n} is detached");
+                    }
+                    self.show_attached(&mut e);
+                    self.mode = Mode::Edit(Box::new(e));
+                }
+            }
             Action::ReviewCloseStop(rest) => {
                 let builds = ask::builds_going(&self.db, &self.stack);
                 self.review_close(rest);
@@ -4728,7 +4838,7 @@ impl App {
                     }
                     let text = e.ed.text();
                     let was = self.mine_of(&e.target);
-                    match (self.save(&e.target, &text), way) {
+                    match (self.save_attached(&e.target, &text, &e.attached), way) {
                         (Some(saved), Some(way)) => self.ask_agent(vec![saved], way, false),
                         (saved, _) => self.settle_edit(&e, saved.is_some() && was.as_deref() != Some(text.trim())),
                     }
@@ -4742,7 +4852,7 @@ impl App {
                         return Effect::None;
                     }
                     let text = e.ed.text();
-                    if let Some(saved) = self.save(&e.target, &text) {
+                    if let Some(saved) = self.save_attached(&e.target, &text, &e.attached) {
                         self.ask_agent(vec![saved], Way::Change, true);
                     }
                 }
@@ -4833,6 +4943,221 @@ impl App {
         self.mode = Mode::Menu(m);
     }
 
+    /// Whether references may be attached to what is written on `target`:
+    /// a turn of yours, not your answer in a review, nor the agent's turn
+    /// written again.
+    fn attachable(&self, target: &Target) -> bool {
+        match target {
+            Target::Answer { .. } => false,
+            Target::Turn { change, id, turn } => {
+                self.db.note(change, id).and_then(|n| all_turns(&n.text).into_iter().nth(*turn)).is_some_and(|t| t.role == Role::You)
+            }
+            _ => true,
+        }
+    }
+
+    /// The comment `target` writes on, if it is one already there: its
+    /// change and id. A line's in a review that does not show it is not.
+    fn comment_of(&self, target: &Target) -> Option<(String, String)> {
+        match target {
+            Target::Reply { change, id } | Target::Edit { change, id } | Target::Turn { change, id, .. } | Target::Rewind { change, id, .. } => {
+                Some((change.clone(), id.clone()))
+            }
+            Target::Line { change, key, .. } => self
+                .db
+                .note(change, key)
+                .filter(|n| self.screen != Screen::Review || self.review_shows(n))
+                .map(|n| (n.change.clone(), n.id.clone())),
+            _ => None,
+        }
+    }
+
+    /// The references attached to the comment `target` writes on, as they
+    /// are.
+    fn attached_of(&self, target: &Target) -> Vec<crate::refs::Attached> {
+        self.comment_of(target).and_then(|(c, i)| self.db.note(&c, &i).map(|n| n.attached.clone())).unwrap_or_default()
+    }
+
+    /// The number the next reference attached to the comment `e` writes
+    /// takes: one past every number it has or had.
+    fn next_number(&self, e: &Edit) -> usize {
+        crate::refs::next_n(&e.attached).max(crate::refs::next_n(&self.attached_of(&e.target)))
+    }
+
+    /// Comment (change, id), pointed at, as its line says it: where it is,
+    /// how it starts, and whether it is closed.
+    fn pointed_said(&self, change: &str, id: &str) -> String {
+        match crate::refs::find_comment(&self.db, &self.stack, change, id) {
+            Some((n, open)) => {
+                let first = thread_turns(&n.text).first().map(|t| crate::markdown::first_line(&crate::refs::split(&t.body).0)).unwrap_or_default();
+                let closed = if open { "" } else { " · closed" };
+                format!("{} · \"{}\"{closed}", where_on(&self.db, &self.stack, &n), short(&first, 60))
+            }
+            None => "a comment that is gone".into(),
+        }
+    }
+
+    /// The comments `notes` point at, each as its line under them says
+    /// it.
+    pub(super) fn pointed_of<'a>(&self, notes: impl IntoIterator<Item = &'a Note>) -> HashMap<(String, String), String> {
+        let mut out = HashMap::new();
+        for n in notes {
+            for (change, id) in crate::refs::pointed(n) {
+                if !out.contains_key(&(change.clone(), id.clone())) {
+                    let said = self.pointed_said(&change, &id);
+                    out.insert((change, id), said);
+                }
+            }
+        }
+        out
+    }
+
+    /// Reference `a`, attached, as its line says it.
+    fn attached_said(&self, a: &crate::refs::Attached) -> String {
+        match &a.to {
+            crate::refs::To::Comment { change, id } => format!("{} ↗ {}", a.name(), self.pointed_said(change, id)),
+            crate::refs::To::Lines(l) => format!("{} ⇢ {}", a.name(), a.lines().map_or(l.clone(), |r| r.said())),
+        }
+    }
+
+    /// The editor of `e` told of the references attached to its comment:
+    /// their numbers, which mentions name, and their lines under the text.
+    fn show_attached(&self, e: &mut Edit) {
+        if self.attachable(&e.target) {
+            let lines = e.attached.iter().map(|a| self.attached_said(a)).collect();
+            e.ed.set_attached(e.attached.iter().map(|a| a.n).collect(), lines);
+        }
+    }
+
+    /// The menu of what may be attached to the comment being written: lines
+    /// of a file, or a comment of the stack, open or closed, but itself and
+    /// those attached already.
+    fn attach_menu(&mut self) {
+        let Some(e) = &self.pending else { return };
+        let mut skip: Vec<(String, String)> = self.comment_of(&e.target).into_iter().collect();
+        skip.extend(e.attached.iter().filter_map(|a| match &a.to {
+            crate::refs::To::Comment { change, id } => Some((change.clone(), id.clone())),
+            crate::refs::To::Lines(_) => None,
+        }));
+        let free = |n: &Note| !skip.iter().any(|(c, i)| *c == n.change && *i == n.id);
+        let first = |n: &Note| thread_turns(&n.text).first().map(|t| crate::markdown::first_line(&crate::refs::split(&t.body).0)).unwrap_or_default();
+        let mut comments: Vec<Item> = Vec::new();
+        for n in self.db.stack_notes(&self.stack).into_iter().filter(|n| free(n)) {
+            let label = format!("{} · \"{}\"", where_on(&self.db, &self.stack, n), short(&first(n), 60));
+            comments.push(Item::new(label, Action::AttachComment(n.change.clone(), n.id.clone())));
+        }
+        let changes: Vec<String> = std::iter::once(stack_change(&self.stack))
+            .chain(self.current().into_iter().flat_map(|s| s.patches.iter().map(|id| self.db.patch(id).change.clone())))
+            .collect();
+        for (_, n) in changes.iter().flat_map(|c| self.db.deleted_notes(&self.stack, c)).filter(|(_, n)| free(n)) {
+            let label = format!("{} · \"{}\" · closed", where_on(&self.db, &self.stack, &n), short(&first(&n), 60));
+            comments.push(Item::new(label, Action::AttachComment(n.change.clone(), n.id.clone())));
+        }
+        let mut items = vec![Item::new("Lines of a file…", Action::AttachLines)];
+        if !comments.is_empty() {
+            items.push(Item::line());
+            items.extend(comments);
+        }
+        self.mode = Mode::Menu(Menu::new("a reference to attach", items, None));
+    }
+
+    /// The menu of the references attached to the comment being written,
+    /// to pick one to detach.
+    fn detach_menu(&mut self) {
+        let Some(e) = &self.pending else { return };
+        let items = e.attached.iter().map(|a| Item::new(self.attached_said(a), Action::Detach(a.n))).collect();
+        self.mode = Mode::Menu(Menu::new("a reference to detach", items, None));
+    }
+
+    /// Whether a turn of the comment `target` writes on, but the one being
+    /// written, names reference `r{n}`: then it stays attached.
+    fn named_elsewhere(&self, target: &Target, n: usize) -> bool {
+        let Some(note) = self.comment_of(target).and_then(|(c, i)| self.db.note(&c, &i).cloned()) else { return false };
+        let turns = all_turns(&note.text);
+        let last = turns.len().saturating_sub(1);
+        let kept = |k: usize| match target {
+            Target::Edit { .. } => k != last || turns[k].role != Role::You,
+            Target::Turn { turn, .. } => k != *turn,
+            Target::Rewind { from, .. } => k < *from,
+            _ => true,
+        };
+        turns.iter().enumerate().filter(|(k, t)| kept(*k) && t.role == Role::You).any(|(_, t)| {
+            crate::refs::mentions(&t.body).iter().any(|m| matches!(&m.names, crate::refs::Names::Some(ns) if ns.contains(&n)))
+        })
+    }
+
+    /// What the lines to attach start as, and where the cursor goes in
+    /// them: for a comment on a line, its file, as its patch leaves it.
+    fn lines_prefill(&self, target: &Target) -> (String, usize) {
+        if let Target::Line { change, file, .. } = target
+            && let Some(k) = self.current().and_then(|s| s.patches.iter().position(|p| self.db.patch(p).change == *change))
+            && file != MSG_PATH
+        {
+            return (format!("{file}: @{}", k + 1), file.chars().count() + 1);
+        }
+        (String::new(), 0)
+    }
+
+    /// The lines `text` names, as a `refs` line says them, if the file has
+    /// them as that version leaves it; else why not.
+    fn lines_to_attach(&self, text: &str) -> std::result::Result<crate::refs::Ref, String> {
+        let how = "write the file, its lines and which version: a.txt:120-140,200-210 @2 (@0 the base; no @, the whole stack)";
+        let r = crate::refs::Ref::parse(text).ok_or_else(|| how.to_string())?;
+        let s = self.current().cloned().ok_or_else(|| "there is no stack to read the file of".to_string())?;
+        match self.ref_file(&s, &r) {
+            Ok(Some(f)) => {
+                let n = f.lines().count();
+                match r.ranges.last() {
+                    Some(&(_, last)) if last > n => Err(format!("{} has {n} lines {}", r.file, r.at_said())),
+                    _ => Ok(r),
+                }
+            }
+            Ok(None) => Err(format!("{} is not there {}", r.file, r.at_said())),
+            Err(e) => Err(e.0),
+        }
+    }
+
+    /// A key while lines of a file are named: Enter attaches them to the
+    /// comment, if the file has them; Esc goes back to the comment.
+    fn lines_key(&mut self, mut l: Lines, k: KeyEvent) -> Effect {
+        match k.code {
+            KeyCode::Esc => self.mode = Mode::Edit(Box::new(l.back)),
+            KeyCode::Enter => match self.lines_to_attach(&l.ed.text()) {
+                Ok(r) => {
+                    let mut e = l.back;
+                    let n = self.next_number(&e);
+                    e.attached.push(crate::refs::Attached {
+                        n,
+                        to: crate::refs::To::Lines(r.line()),
+                    });
+                    self.status = format!("attached as r{n}: write @r{n} where you mean it");
+                    self.show_attached(&mut e);
+                    self.mode = Mode::Edit(Box::new(e));
+                }
+                Err(why) => {
+                    self.status = why;
+                    self.mode = Mode::Lines(Box::new(l));
+                }
+            },
+            _ => {
+                l.ed.key(k);
+                self.mode = Mode::Lines(Box::new(l));
+            }
+        }
+        Effect::None
+    }
+
+    /// The lines being named, in a box over the screen; where the cursor
+    /// goes.
+    fn draw_lines(&self, buf: &mut Buffer, area: Rect) -> Option<(u16, u16)> {
+        let Mode::Lines(l) = &self.mode else { return None };
+        let (w, h) = (area.width as usize, area.height as usize);
+        let bw = (w * 9 / 10).clamp(30.min(w), 100.min(w));
+        let (x, y) = (w.saturating_sub(bw) / 2, h.saturating_sub(3) / 2);
+        spot_in(&self.spots, area, (x, y, bw, 3), Spot::Box);
+        Some(l.ed.draw(buf, area, x, y, bw, 3, "lines of a file, to attach: a.txt:120-140,200-210 @2", "enter: attach · esc: back"))
+    }
+
     /// Opens the editor for `target`, in `pane`.
     fn write(&mut self, target: Target, pane: Focus, text: &str) {
         let mut held = None;
@@ -4868,7 +5193,16 @@ impl App {
         {
             ed = ed.with_ghost(crate::thread::said_lines(&n.text));
         }
-        self.mode = Mode::Edit(Box::new(Edit { ed, target, pane, held }));
+        let attached = self.attached_of(&target);
+        let mut e = Edit {
+            ed,
+            target,
+            pane,
+            held,
+            attached,
+        };
+        self.show_attached(&mut e);
+        self.mode = Mode::Edit(Box::new(e));
     }
 
     /// The comment last closed on the line a new comment goes on (a line,
@@ -4914,6 +5248,17 @@ impl App {
     /// Saves `text` where `target` says: a new comment, or your turn of the
     /// thread. The comment, (change, id).
     pub fn save(&mut self, target: &Target, text: &str) -> Option<(String, String)> {
+        self.save_with(target, text, None)
+    }
+
+    /// As `save`, the comment's references attached as `attached` says.
+    pub fn save_attached(&mut self, target: &Target, text: &str, attached: &[crate::refs::Attached]) -> Option<(String, String)> {
+        self.save_with(target, text, self.attachable(target).then_some(attached))
+    }
+
+    /// As `save`, with the references `attached` to the comment, if it
+    /// says: else those it has.
+    fn save_with(&mut self, target: &Target, text: &str, attached: Option<&[crate::refs::Attached]>) -> Option<(String, String)> {
         if text.trim().is_empty() {
             return None;
         }
@@ -4984,7 +5329,7 @@ impl App {
                     let n = db.note(change, id).cloned().ok_or_else(|| crate::db::Error("the comment is gone".into()))?;
                     // Answered meanwhile, it is a reply.
                     let text = replace_last_turn(&n.text, &text).unwrap_or_else(|| append_turn(&n.text, Role::You, &text, None));
-                    if text == n.text {
+                    if text == n.text && attached.is_none_or(|a| a == n.attached) {
                         return Ok((change.clone(), id.clone()));
                     }
                     Note { text, failed: None, ..n }
@@ -4999,7 +5344,7 @@ impl App {
                 Target::Turn { change, id, turn } => {
                     let n = db.note(change, id).cloned().ok_or_else(|| crate::db::Error("the comment is gone".into()))?;
                     let text = edit_turn(&n.text, *turn, &text).ok_or_else(|| crate::db::Error("the turn you edited was deleted meanwhile".into()))?;
-                    if text == n.text {
+                    if text == n.text && attached.is_none_or(|a| a == n.attached) {
                         return Ok((change.clone(), id.clone()));
                     }
                     Note { text, failed: None, ..n }
@@ -5024,6 +5369,7 @@ impl App {
             };
             let note = Note {
                 review: review.clone().or(note.review),
+                attached: attached.map_or(note.attached, <[_]>::to_vec),
                 ..note
             };
             let at = (note.change.clone(), note.id.clone());
@@ -5507,6 +5853,7 @@ impl App {
                     target,
                     pane: self.focus,
                     held: n.queued.clone().filter(|q| !q.batched()),
+                    attached: vec![],
                 };
                 let text = match edit_text(&format!("{mine}\n"), ".txt") {
                     Ok(t) => t.trim().to_string(),
@@ -5535,6 +5882,7 @@ impl App {
                     target: Target::Rewind { change, id, from },
                     pane: self.focus,
                     held: n.queued.clone().filter(|q| !q.batched()),
+                    attached: vec![],
                 };
                 let wrote = rewind_written(&n.text, from);
                 let text = match ops::edit_file(&format!("\n{}\n", wrote.join("\n")), "rewind.txt", Some(1)) {
@@ -5571,6 +5919,7 @@ impl App {
                     target,
                     pane: self.focus,
                     held,
+                    attached: vec![],
                 };
                 let text = match edit_text("\n# Your comment. Lines starting with # are dropped.\n", ".txt") {
                     Ok(t) => strip_comments(&t),
@@ -5734,6 +6083,7 @@ impl App {
         self.draw_menu(buf, body);
         self.draw_help(buf, body);
         self.draw_ref_preview(buf, body);
+        let cursor = self.draw_lines(buf, body).or(cursor);
         self.draw_status(buf, area);
         cursor
     }
@@ -6000,6 +6350,7 @@ impl App {
             Mode::Edit(e) => format!("enter: a new line · {}", self.esc_does(e)),
             Mode::Help { .. } => "any key: back, and that key".into(),
             Mode::Preview(_) => "↑↓: scroll · enter: go there · esc: back".into(),
+            Mode::Lines(_) => "enter: attach these lines · esc: back to the comment".into(),
             Mode::Stream { .. } => "↑↓: scroll · esc: fold it".into(),
             Mode::Normal if self.screen == Screen::Main && self.on_banner => {
                 let enter = match self.banner_lines().get(self.banner_sel) {
@@ -6158,6 +6509,7 @@ impl App {
         match &self.mode {
             Mode::Edit(e) => Some(e),
             Mode::Menu(_) => self.pending.as_ref(),
+            Mode::Lines(l) => Some(&l.back),
             _ => None,
         }
     }

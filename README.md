@@ -308,8 +308,9 @@ comment or in the next one. ctrl-← and ctrl-→ go a word back and a word on,
 as alt-← and alt-→ (alt-b and alt-f) do; a word is what is between blanks.
 On a Mac, ctrl-← and ctrl-→ switch desktops unless that is turned off in
 the keyboard settings, so use alt (option) there. Esc
-asks what to do with the comment: `Save it`, `Save it and ask agent`, `Throw it
-away`, `Keep writing`; above the ask, `Send it`, `[x] now  [ ] later`, picks
+asks what to do with the comment: `Save it`, `Save it and ask agent`,
+`Attach a reference…` (below), `Throw it away`, `Keep writing`; above the
+ask, `Send it`, `[x] now  [ ] later`, picks
 when it asks (later, the comment waits in the stack's batch: Asking the
 agent, below). The menu opens under the comment (above it when
 there is no room under), and the comment stays where it was written, to
@@ -331,6 +332,28 @@ again, is still the agent's word). Where a
 comment is written is a choice too, kept for the stack: `Comment on this
 line`, `Reply` and `Edit your reply` each have `[x] here  [ ] in $EDITOR`.
 Nothing is typed at the bottom: the bottom line only says things.
+
+A comment may have references attached to it: other comments of the
+stack, open or closed, and lines of a file. In the editor, Esc, then
+`Attach a reference…`, lists `Lines of a file…` and the stack's comments,
+those closed after those open. Lines are written as a `refs` line says
+them, `a.txt:120-140,200-210 @2` (`@0` the base; no `@`, the whole stack);
+for a comment on a line, they start with its file, as its patch leaves it.
+Each reference takes a number, never given twice in the comment, and what
+you write names it: `@r1`, several `@r{1,2,3}` (or `@r{2-4}`), all of them
+`@r*`. They show in the editor, under what you write, and under the comment
+once it is saved, a line each: `r1 ↗ patch 2 · a.txt: TWO · "why so
+loud?"`, `r2 ⇢ a.txt:2-3 · as patch 1 leaves it`. Enter on a comment's goes
+to that comment (closed, it opens as it was); on lines, it previews them. A
+mention naming no reference attached is drawn in the warning colour, and
+the agent is not asked until it names one: the menu says why, and `stacked
+send` refuses it. `Detach a reference…` takes one off, but not one that
+another turn of the comment names. The references stay with the comment,
+whatever its turns become, and go with it to the agent each time it is
+asked: each comment as it stands, said open or closed (closed, as it was
+last), each file's lines as the version says. The agent reads them for
+what they say; they are not asked of it, and they close only as any
+comment does. `stacked comments` lists them under the comment.
 
 When the last word of a comment is yours, enter on it opens what you said
 last, in place, to edit or add to (a reply would only add to it), the turns
@@ -520,7 +543,11 @@ ranges; Enter again goes there: to the line in its patch, when the patch's
 diff has it, else to the file whole, at that line, as it reads (Esc comes
 back). They are kept in the agent's turn as a `refs` block, a reference a
 line (`a.txt:2-3,10 @1`; `@0` the base, no `@` the whole stack), which
-`stacked comments` shows and the agent reads back in its thread.
+`stacked comments` shows and the agent reads back in its thread. The agent
+may point at another comment of the stack too, by its label in the ask or
+its id as `stacked comments` lists it: under what it wrote, `↗` and where
+that comment is, Enter going there. It may name what is attached to a
+comment as you do, `@r1`.
 
 An ask goes now, or later, as in self-review's batch: above `Ask agent`
 (and `Save it and ask agent`), `Send it`, `[x] now  [ ] later`, picks when,

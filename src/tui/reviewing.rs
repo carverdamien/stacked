@@ -340,7 +340,10 @@ impl App {
                 .collect();
             notes.extend(h.opened.iter().filter(|n| n.change == p.change).cloned());
         }
-        let mut deco = Deco::default();
+        let mut deco = Deco {
+            pointed: self.pointed_of(&notes),
+            ..Default::default()
+        };
         if let Some((id, turns)) = self.written_turns() {
             deco.writing.insert(id, turns);
         }
@@ -659,7 +662,10 @@ impl App {
     /// Comment `n` of the work of run `r` where it is, `w` wide, `said`
     /// above it; and the lines that are its own.
     fn comment_view(&self, r: &Run, n: &Note, said: String, w: usize) -> View {
-        let deco = Deco::default();
+        let deco = Deco {
+            pointed: self.pointed_of([n]),
+            ..Default::default()
+        };
         let rows = if n.on_stack() {
             let Ok(s) = self.db.stack(&r.stack) else { return (said, vec![], 0..0) };
             let titles: Vec<String> = s.patches.iter().map(|id| self.db.patch(id).title().to_string()).collect();

@@ -81,6 +81,14 @@ pub struct Editor {
     /// How far down it is scrolled, and how many lines the box last held.
     ghost_top: Cell<usize>,
     ghost_page: Cell<usize>,
+    /// For a comment: the numbers of the references attached to it. A
+    /// mention of one is drawn as a link, of none as broken. None: a
+    /// mention is text as any.
+    attached: Option<Vec<usize>>,
+    /// The references attached, said, a line each under the text.
+    under: Vec<String>,
+    /// A line to write, not a comment: Enter is its caller's.
+    single: bool,
 }
 
 impl Editor {
@@ -98,7 +106,37 @@ impl Editor {
             ghost: Vec::new(),
             ghost_top: Cell::new(0),
             ghost_page: Cell::new(1),
+            attached: None,
+            under: Vec::new(),
+            single: false,
         }
+    }
+
+    /// A line to write, not a comment: its caller takes Enter, and the
+    /// keys at its foot say only `esc`'s.
+    pub fn single(mut self) -> Editor {
+        self.single = true;
+        self
+    }
+
+    /// The cursor at column `col` of its line.
+    pub fn set_col(&mut self, col: usize) {
+        self.col = col.min(self.lines[self.row].len());
+    }
+
+    /// For a comment: the references attached to it, by their numbers,
+    /// which mentions name, and as their lines under the text say them.
+    pub fn set_attached(&mut self, numbers: Vec<usize>, lines: Vec<String>) {
+        self.attached = Some(numbers);
+        self.under = lines;
+    }
+
+    /// The mentions of what is written that name no reference attached, as
+    /// written.
+    pub fn broken(&self) -> Vec<String> {
+        let Some(ns) = &self.attached else { return vec![] };
+        let text = self.text();
+        crate::refs::broken(&text, ns).into_iter().map(str::to_string).collect()
     }
 
     /// With `lines` shown dimmed until you write: what was closed here.
@@ -273,12 +311,15 @@ impl Editor {
     }
 
     /// The text as the screen lines it takes at `wrap_w` columns, each with
-    /// the part it plays, and where the cursor is among them.
-    fn visual(&self, wrap_w: usize) -> (Vec<(String, LineRole)>, usize, usize) {
+    /// the part it plays and the mentions on it (as characters of the
+    /// screen line, each with whether it names references attached), and
+    /// where the cursor is among them.
+    #[allow(clippy::type_complexity)]
+    fn visual(&self, wrap_w: usize) -> (Vec<(String, LineRole, Vec<(usize, usize, bool)>)>, usize, usize) {
         let wrap_w = wrap_w.max(1);
         let strings: Vec<String> = self.lines.iter().map(|l| l.iter().collect()).collect();
         let roles = thread_line_roles(&strings);
-        let mut vis: Vec<(String, LineRole)> = Vec::new();
+        let mut vis: Vec<(String, LineRole, Vec<(usize, usize, bool)>)> = Vec::new();
         let (mut cur_vrow, mut cur_vcol) = (0, 0);
         for (li, ln) in self.lines.iter().enumerate() {
             let segs: Vec<String> = if ln.is_empty() {
@@ -294,10 +335,28 @@ impl Editor {
                 cur_vrow += sub;
                 cur_vcol = self.col - sub * wrap_w;
             }
-            vis.extend(segs.into_iter().map(|s| (s, roles[li])));
+            // The mentions of the line, in characters, each with whether it
+            // holds.
+            let marks: Vec<(usize, usize, bool)> = match &self.attached {
+                Some(ns) if matches!(roles[li], LineRole::You) => {
+                    let s = &strings[li];
+                    let chars = |b: usize| s[..b].chars().count();
+                    crate::refs::mentions(s).iter().map(|m| (chars(m.at.start), chars(m.at.end), crate::refs::holds(m, ns))).collect()
+                }
+                _ => vec![],
+            };
+            for (k, seg) in segs.into_iter().enumerate() {
+                let (from, to) = (k * wrap_w, (k + 1) * wrap_w);
+                let on: Vec<(usize, usize, bool)> = marks
+                    .iter()
+                    .filter(|(a, b, _)| *a < to && *b > from)
+                    .map(|&(a, b, ok)| (a.max(from) - from, b.min(to) - from, ok))
+                    .collect();
+                vis.push((seg, roles[li], on));
+            }
         }
         if cur_vrow >= vis.len() {
-            vis.push((String::new(), LineRole::You));
+            vis.push((String::new(), LineRole::You, vec![]));
         }
         (vis, cur_vrow, cur_vcol)
     }
@@ -320,12 +379,11 @@ impl Editor {
     }
 
     /// How many lines the box needs inside, `inner` columns wide: it grows
-    /// with the text, or with what was closed here while it shows.
+    /// with the text, or with what was closed here while it shows, and with
+    /// the references attached.
     pub fn height(&self, inner: usize) -> usize {
-        if self.ghosted() {
-            return self.ghost_lines(inner).len().max(1);
-        }
-        self.visual(inner).0.len().max(1)
+        let text = if self.ghosted() { self.ghost_lines(inner).len() } else { self.visual(inner).0.len() };
+        text.max(1) + self.under.len()
     }
 
     /// Draws the editor as a box of `w` by `h` at `(x, y)` of `area`: `title`
@@ -335,11 +393,16 @@ impl Editor {
     pub fn draw(&self, buf: &mut Buffer, area: Rect, x: usize, y: usize, w: usize, h: usize, title: &str, esc: &str) -> (u16, u16) {
         let (w, h) = (w.max(8), h.max(3));
         let inner = w - 2;
-        let text_h = h - 2;
+        // The references attached, under the text: as many as leave a line
+        // for it.
+        let under = self.under.len().min(h.saturating_sub(3));
+        let text_h = h - 2 - under;
+        type Spans = Vec<(String, ratatui::style::Style)>;
         // Nothing written yet: what was closed here, dimmed, scrolled by
-        // ↑↓, the cursor at its start. Else the text, scrolled to the cursor.
-        let (vis, vtop, (cur_row, cur_vcol), foot) = if self.ghosted() {
-            let vis: Vec<(String, ratatui::style::Style)> = self.ghost_lines(inner).into_iter().map(|l| (l, color::dim())).collect();
+        // ↑↓, the cursor at its start. Else the text, scrolled to the cursor,
+        // its mentions drawn as links, or as broken.
+        let (vis, vtop, (cur_row, cur_vcol), foot): (Vec<Spans>, usize, (usize, usize), String) = if self.ghosted() {
+            let vis: Vec<Spans> = self.ghost_lines(inner).into_iter().map(|l| vec![(l, color::dim())]).collect();
             let top = self.ghost_top.get().min(vis.len().saturating_sub(text_h));
             self.ghost_top.set(top);
             self.ghost_page.set(text_h);
@@ -353,19 +416,29 @@ impl Editor {
                 vtop = cur_vrow + 1 - text_h;
             }
             self.vtop.set(vtop);
+            let link = ratatui::style::Style::new().add_modifier(ratatui::style::Modifier::UNDERLINED);
             let vis = vis
                 .into_iter()
-                .map(|(seg, role)| {
+                .map(|(seg, role, marks)| {
                     let st = match role {
                         LineRole::You => ratatui::style::Style::new(),
                         LineRole::Agent => color::agent(),
                         LineRole::Reviewer => color::reviewer(),
                         LineRole::Fence => color::meta(),
                     };
-                    (seg, st)
+                    let chars: Vec<char> = seg.chars().collect();
+                    let (mut spans, mut at) = (Vec::new(), 0);
+                    for (a, b, ok) in marks {
+                        spans.push((chars[at..a].iter().collect(), st));
+                        spans.push((chars[a..b].iter().collect(), if ok { link } else { color::warn().add_modifier(ratatui::style::Modifier::UNDERLINED) }));
+                        at = b;
+                    }
+                    spans.push((chars[at..].iter().collect(), st));
+                    spans
                 })
                 .collect();
-            (vis, vtop, (cur_vrow - vtop, cur_vcol), format!(" enter: a new line · {esc} "))
+            let foot = if self.single { format!(" {esc} ") } else { format!(" enter: a new line · {esc} ") };
+            (vis, vtop, (cur_vrow - vtop, cur_vcol), foot)
         };
         window(buf, area, x, y, w, h, title, color::note());
         let room = inner.saturating_sub(2);
@@ -377,8 +450,18 @@ impl Editor {
             put(buf, area, x + w - 4, y + h - 1, 1, "▼", color::meta());
         }
         for i in 0..text_h {
-            let Some((seg, st)) = vis.get(vtop + i) else { break };
-            put(buf, area, x + 1, y + 1 + i, inner, seg, *st);
+            let Some(spans) = vis.get(vtop + i) else { break };
+            let mut col = 0;
+            for (s, st) in spans {
+                let n = s.chars().count();
+                if n > 0 && col < inner {
+                    put(buf, area, x + 1 + col, y + 1 + i, inner - col, s, *st);
+                }
+                col += n;
+            }
+        }
+        for (k, l) in self.under.iter().take(under).enumerate() {
+            put(buf, area, x + 1, y + 1 + text_h + k, inner, &l.chars().take(inner).collect::<String>(), color::meta());
         }
         (
             area.x + (x + 1 + cur_vcol.min(inner.saturating_sub(1))) as u16,

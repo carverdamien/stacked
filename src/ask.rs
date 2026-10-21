@@ -668,6 +668,13 @@ fn enqueue(db: &mut Db, notes: &[(String, String)], way: Way, whole: bool, stage
         if busy.contains_key(&(change.clone(), id.clone())) {
             return err("the agent is already working on it");
         }
+        let broken = crate::refs::broken_in(&n);
+        if !broken.is_empty() {
+            return err(format!(
+                "{} names no reference attached to the comment: attach one, or write it otherwise, before the agent is asked",
+                broken.join(", ")
+            ));
+        }
         if crate::held::reply_waiting(db, change, id).is_some() {
             return err("the agent's reply to it waits for your review: review it first");
         }
@@ -1067,10 +1074,83 @@ fn transcript(text: &str) -> String {
                 Role::Agent => "You (the agent, earlier)".to_string(),
                 Role::Reviewer => format!("{} (a reviewer, on Phabricator)", t.tag.as_deref().unwrap_or("someone")),
             };
-            format!("{who}: {}", t.body)
+            // What it points at, said rather than as its block.
+            let (body, pointers) = crate::refs::split(&t.body);
+            let pointers: Vec<String> = pointers
+                .iter()
+                .map(|p| match p {
+                    crate::refs::Pointer::Lines(r) => r.said(),
+                    crate::refs::Pointer::Comment { change, id } => format!("the comment [{}]", crate::db::short_id(change, id)),
+                })
+                .collect();
+            match pointers.is_empty() {
+                true => format!("{who}: {body}"),
+                false => format!("{who}: {body}\n(pointing at: {})", pointers.join("; ")),
+            }
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// The most lines of a file attached to a comment the agent is shown.
+const ATTACHED_LINES: usize = 200;
+
+/// What is attached to comment `n`, as the agent is told it: each reference
+/// by its name, a comment as it stands, open or closed, lines as stack `s`
+/// has them. Nothing if nothing is.
+fn attached_part(db: &Db, s: &Stack, n: &Note) -> String {
+    if n.attached.is_empty() {
+        return String::new();
+    }
+    let mut out = "Attached to it, as what it says names them (@r1; @r{1,2} several; @r* all), for what they say; \
+                   they are not asked of you:\n"
+        .to_string();
+    for a in &n.attached {
+        match &a.to {
+            crate::refs::To::Comment { change, id } => match crate::refs::find_comment(db, &s.name, change, id) {
+                Some((c, open)) => {
+                    let state = if open { "open" } else { "closed" };
+                    out += &format!("  {} [{}] {} ({state}):\n", a.name(), crate::db::short_id(&c.change, &c.id), place(db, s, &c));
+                    for l in transcript(&c.text).lines() {
+                        out += &format!("    {l}\n");
+                    }
+                }
+                None => out += &format!("  {}: a comment that is gone\n", a.name()),
+            },
+            crate::refs::To::Lines(l) => {
+                let Some(r) = crate::refs::Ref::parse(l) else { continue };
+                out += &format!("  {}: {}:\n", a.name(), r.said());
+                let Some(text) = lines_text(db, s, &r) else {
+                    out += "    (the file is not there)\n";
+                    continue;
+                };
+                let all: Vec<&str> = text.lines().collect();
+                let wanted: Vec<usize> = r.ranges.iter().flat_map(|&(x, y)| x..=y.min(all.len())).collect();
+                for &k in wanted.iter().take(ATTACHED_LINES) {
+                    out += &format!("    {k:>5} │ {}\n", all[k - 1]);
+                }
+                if wanted.len() > ATTACHED_LINES {
+                    out += &format!("    … {} lines more\n", wanted.len() - ATTACHED_LINES);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The file reference `r` is of, as it says: as a patch of stack `s`
+/// leaves it, as the stack's base has it, or as the whole stack leaves it.
+fn lines_text(db: &Db, s: &Stack, r: &crate::refs::Ref) -> Option<String> {
+    use crate::refs::At;
+    match r.at {
+        At::Patch(n) if (1..=s.patches.len()).contains(&n) => crate::ops::file_at(db, s, n - 1, &r.file).ok().flatten(),
+        At::Patch(_) => None,
+        At::Top if !s.patches.is_empty() => crate::ops::file_at(db, s, s.patches.len() - 1, &r.file).ok().flatten(),
+        _ => {
+            let (repo, base) = crate::ops::base_of(s).ok()?;
+            git::git(&repo, &["show", &format!("{base}:{}", r.file)]).ok()
+        }
+    }
 }
 
 /// Where an ask to answer only is, told it: the repository as the user has
@@ -1264,6 +1344,7 @@ fn prompt(db: &Db, i: &Info, s: &Stack, cmd: &str, run: &str) -> String {
     for sh in &i.notes {
         let Some(n) = db.note(&sh.change, &sh.id) else { continue };
         p.push_str(&format!("\n[{}] {}:\n{}\n", sh.label, place(db, s, n), transcript(&n.text)));
+        p.push_str(&attached_part(db, s, n));
     }
     p.push_str(&history_part(db, i, s, cmd));
     p.push_str(match i.way {
@@ -1300,7 +1381,10 @@ const REFS: &str = " To point at the code you mean, in the stack or out of it, a
 there may be an object instead of a string, {\"text\": what you write, \"refs\": [...]}, and a \
 comment you open may have \"refs\" too: each {\"file\": its path, \"lines\": \"120-140,200-210\", \
 \"patch\": a patch's number, for the file as that patch leaves it; 0, as the stack's base has it; \
-none, as the whole stack leaves it}. The user reads each under what you wrote, and goes there.";
+none, as the whole stack leaves it}; or, to point at a comment of the stack, {\"comment\": its label \
+above ([c1] is \"c1\"), or its id, as `stacked comments` lists it}. The user reads each under what \
+you wrote, and goes there. What is attached to a comment, you may name in what you write as the \
+user does: @r1, @r{1,2}, @r*.";
 
 /// The program run as claude, when not `$STACKED_CLAUDE`'s or `claude`,
 /// and the stacked an ask calls back (`prompt`, `record`, `land`), when not
@@ -1965,8 +2049,20 @@ fn leave(i: &Info) {
     }
 }
 
+/// The comment the agent names `name` in what it points at: a label of
+/// ask `i`'s comments (`c1`), or the id of one of stack `stack`'s as
+/// `stacked comments` lists it.
+fn named_comment(db: &Db, i: &Info, stack: &str, name: &str) -> Option<(String, String)> {
+    let name = name.trim().trim_start_matches('[').trim_end_matches(']');
+    if let Some(sh) = i.notes.iter().find(|sh| sh.label == name) {
+        return Some((sh.change.clone(), sh.id.clone()));
+    }
+    db.find_note(stack, name).ok().map(|n| (n.change.clone(), n.id.clone()))
+}
+
 /// Claude's replies to the comments it was sent, held: turns `way` names.
 fn held_replies(db: &Db, i: &Info, replies: &Map<String, Value>) -> Vec<crate::held::Reply> {
+    let stack = db.node(i.from).map(|s| s.name.clone()).unwrap_or_default();
     i.notes
         .iter()
         .filter(|sh| db.note(&sh.change, &sh.id).is_some())
@@ -1974,7 +2070,7 @@ fn held_replies(db: &Db, i: &Info, replies: &Map<String, Value>) -> Vec<crate::h
             Some(crate::held::Reply {
                 change: sh.change.clone(),
                 id: sh.id.clone(),
-                text: replies.get(&sh.label).map(crate::refs::written)?,
+                text: replies.get(&sh.label).map(|v| crate::refs::written_with(v, &|c| named_comment(db, i, &stack, c)))?,
                 tag: i.way.name().into(),
                 ..Default::default()
             })
@@ -2321,7 +2417,13 @@ fn opened_notes(db: &Db, run: &Run, i: &Info, result: &str) -> Result<Vec<Note>>
             change: p.change.clone(),
             id: format!("agent:{}:{n}", run.id),
             line,
-            text: fenced("agent answer", &crate::refs::attach(str_of(note.get("text")).trim(), &crate::refs::of_json(note.get("refs")))),
+            text: fenced(
+                "agent answer",
+                &crate::refs::attach(
+                    str_of(note.get("text")).trim(),
+                    &crate::refs::resolved(crate::refs::of_json(note.get("refs")), &|c| named_comment(db, i, &from.name, c)),
+                ),
+            ),
             file,
             preview: text.chars().take(80).collect(),
             by: Some("agent".into()),
@@ -2356,6 +2458,7 @@ fn test_notes(db: &Db, run: &Run, i: &Info, result: &str) -> Result<Vec<Note>> {
             line: title_key(&p),
             text: {
                 let (found, refs) = crate::refs::text_and_refs(v);
+                let refs = crate::refs::resolved(refs, &|c| named_comment(db, i, &from.name, c));
                 fenced("agent test", &crate::refs::attach(&format!("{} (tested @{})", found.trim(), i.from), &refs))
             },
             file: MSG_PATH.into(),

@@ -710,7 +710,7 @@ fn comments_are_written_where_they_will_show() {
     let all: Vec<String> = items(&app).into_iter().map(|(l, _)| l).collect();
     assert_eq!(
         all,
-        ["Save it", "Send it", "Save it and ask agent", "", "Throw it away", "Keep writing"]
+        ["Save it", "Send it", "Save it and ask agent", "Attach a reference…", "", "Throw it away", "Keep writing"]
     );
     // When, a choice of the row above the ask: now, or later, in the batch.
     assert_eq!(choices_named(&app, "Send it"), ["now", "later"]);
@@ -807,6 +807,113 @@ fn a_patch_is_edited_by_hand_where_the_cursor_is() {
     assert_eq!(choose(&mut app, "Edit a.txt here"), Effect::EditCode { file: "a.txt".into(), line: 39, again: None });
     keys(&mut app, &[KeyCode::Left]);
     assert!(matches!(choose(&mut app, "Edit this patch in $EDITOR"), Effect::EditPatch { line: Some(_) }));
+}
+
+#[test]
+fn references_attached_to_a_comment_are_named_in_it_and_asking_waits_for_what_it_names() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Right]);
+    // A comment to point at.
+    down_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Enter]);
+    save(&mut app, "why so loud?");
+    // Another, naming references not attached yet.
+    down_to(&mut app, "+LINE 39");
+    keys(&mut app, &[KeyCode::Enter]);
+    typed(&mut app, "Same as @r1, and @r2?");
+    keys(&mut app, &[KeyCode::Esc]);
+    // The agent is not asked while they name nothing, and the menu says so.
+    let Mode::Menu(m) = &app.mode else { panic!("{:?}", app.mode) };
+    assert_eq!(m.note.as_deref(), Some("@r1, @r2 names no reference attached: attach one, or write it otherwise, to ask the agent"));
+    assert!(items(&app).iter().any(|(l, ok)| l == "Save it and ask agent" && !ok), "{:?}", items(&app));
+    // Attached: the comment on TWO.
+    choose(&mut app, "Attach a reference…");
+    assert_eq!(items(&app)[0].0, "Lines of a file…");
+    choose(&mut app, "patch 1 · a.txt: TWO");
+    assert!(matches!(app.mode, Mode::Edit(_)), "{:?}", app.mode);
+    assert_eq!(app.status, "attached as r1: write @r1 where you mean it");
+    let screen = draw(&mut app);
+    assert!(screen.contains("r1 ↗ patch 1 · a.txt: TWO · \"why so loud?\""), "{screen}");
+    let Mode::Edit(e) = &app.mode else { panic!("{:?}", app.mode) };
+    assert_eq!(e.ed.broken(), ["@r2"]);
+    // Drawn: @r1 as a link, @r2 as broken, in another colour.
+    let mut buf = Buffer::empty(Rect::new(0, 0, 120, 40));
+    app.draw(&mut buf);
+    let cell = |text: &str| {
+        (0..40u16)
+            .find_map(|y| {
+                let line: String = (0..120u16).map(|x| buf[(x, y)].symbol()).collect();
+                line.find(text).map(|k| buf[(line[..k].chars().count() as u16, y)].style())
+            })
+            .unwrap_or_else(|| panic!("no {text:?}"))
+    };
+    let (named, broken) = (cell("@r1,"), cell("@r2?"));
+    let underlined = ratatui::style::Modifier::UNDERLINED;
+    assert!(named.add_modifier.contains(underlined) && broken.add_modifier.contains(underlined), "{named:?} {broken:?}");
+    assert_ne!(named.fg, broken.fg, "{named:?} {broken:?}");
+    // Lines of a file: the comment's own file, as its patch leaves it, to
+    // say which lines; the file has them, or it says so.
+    keys(&mut app, &[KeyCode::Esc]);
+    choose(&mut app, "Attach a reference…");
+    choose(&mut app, "Lines of a file…");
+    let Mode::Lines(l) = &app.mode else { panic!("{:?}", app.mode) };
+    assert_eq!(l.ed.text(), "a.txt: @1");
+    assert_eq!(app.hint(), "enter: attach these lines · esc: back to the comment");
+    typed(&mut app, "900");
+    keys(&mut app, &[KeyCode::Enter]);
+    assert_eq!(app.status, "a.txt has 43 lines as patch 1 leaves it");
+    assert!(matches!(app.mode, Mode::Lines(_)));
+    for _ in 0..3 {
+        key(&mut app, KeyCode::Backspace);
+    }
+    typed(&mut app, "2-3");
+    keys(&mut app, &[KeyCode::Enter]);
+    assert_eq!(app.status, "attached as r2: write @r2 where you mean it");
+    let Mode::Edit(e) = &app.mode else { panic!("{:?}", app.mode) };
+    assert!(e.ed.broken().is_empty());
+    keys(&mut app, &[KeyCode::Esc]);
+    assert!(items(&app).iter().any(|(l, ok)| l == "Save it and ask agent" && *ok), "{:?}", items(&app));
+    choose(&mut app, "Save it");
+    // Kept with the comment, by their numbers.
+    let a = notes_of(&db, "s", 0).into_iter().find(|n| n.text == "why so loud?").unwrap();
+    let b = notes_of(&db, "s", 0).into_iter().find(|n| n.text == "Same as @r1, and @r2?").unwrap();
+    assert_eq!(b.attached.iter().map(|r| r.name()).collect::<Vec<_>>(), ["r1", "r2"]);
+    assert_eq!(b.attached[1].to, stacked::refs::To::Lines("a.txt:2-3 @1".into()));
+    // Under it, a line each; Enter on the comment's goes to that comment.
+    let screen = draw(&mut app);
+    assert!(screen.contains("r1 ↗ patch 1 · a.txt: TWO · \"why so loud?\""), "{screen}");
+    assert!(screen.contains("r2 ⇢ a.txt:2-3 · as patch 1 leaves it"), "{screen}");
+    down_to(&mut app, "     ▎   r1 ↗");
+    keys(&mut app, &[KeyCode::Enter]);
+    draw(&mut app);
+    assert_eq!(app.rows[app.cursor].note.as_deref(), Some(a.id.as_str()), "{}", app.rows[app.cursor].text);
+    // Closed, it stays attached, said so; Enter reads it as it was.
+    Db::edit(&db, |d| d.set_note(Note { text: String::new(), ..a.clone() })).unwrap();
+    app.refresh();
+    draw(&mut app);
+    let said: Vec<&str> = app.rows.iter().map(|r| r.text.as_str()).filter(|t| t.contains(" ↗ ")).collect();
+    assert_eq!(said, ["     ▎   r1 ↗ patch 1 · a.txt: TWO · \"why so loud?\" · closed"]);
+    down_to(&mut app, "     ▎   r1 ↗");
+    keys(&mut app, &[KeyCode::Enter]);
+    assert_eq!(app.screen, Screen::Text);
+    let t = app.text.as_ref().unwrap();
+    assert!(t.title.starts_with("a closed comment · patch 1 · a.txt: TWO"), "{}", t.title);
+    assert!(t.lines.iter().any(|(l, _)| l.contains("why so loud?")), "{:?}", t.lines);
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Home]);
+    // Detached, the mention of it names nothing: the agent is not asked.
+    down_to(&mut app, "+LINE 39");
+    keys(&mut app, &[KeyCode::Enter]);
+    keys(&mut app, &[KeyCode::Esc]);
+    choose(&mut app, "Detach a reference…");
+    choose(&mut app, "r1 ↗");
+    assert_eq!(app.status, "r1 is detached");
+    let Mode::Edit(e) = &app.mode else { panic!("{:?}", app.mode) };
+    assert_eq!(e.ed.broken(), ["@r1"]);
+    keys(&mut app, &[KeyCode::Esc]);
+    assert!(items(&app).iter().any(|(l, ok)| l == "Save it and ask agent" && !ok), "{:?}", items(&app));
+    choose(&mut app, "Throw the changes away");
+    assert_eq!(notes_of(&db, "s", 0).into_iter().find(|n| n.id == b.id).unwrap().attached.len(), 2);
 }
 
 #[test]
@@ -957,7 +1064,7 @@ fn what_you_said_last_may_be_written_again() {
     key(&mut app, KeyCode::Backspace);
     keys(&mut app, &[KeyCode::Esc]);
     let labels: Vec<String> = items(&app).into_iter().map(|(l, _)| l).collect();
-    assert_eq!(labels, ["Send it", "Ask agent", "", "Leave it as it is", "Keep writing"]);
+    assert_eq!(labels, ["Send it", "Ask agent", "Attach a reference…", "", "Leave it as it is", "Keep writing"]);
     assert_eq!(choices_named(&app, "Ask agent"), ["change", "the whole stack", "answer only"]);
     assert_eq!(app.help()[0], "Press Enter to ask the agent about the comment as it is (may change the code).");
     choose(&mut app, "Leave it as it is");
@@ -3153,7 +3260,7 @@ fn a_comment_asked_later_waits_in_the_batch() {
     // Later, picked on the row above the ask: the ask says so.
     pick(&mut app, "Send it", "later");
     let all: Vec<String> = items(&app).into_iter().map(|(l, _)| l).collect();
-    assert_eq!(all, ["Save it", "Send it", "Save it and ask agent later", "", "Throw it away", "Keep writing"]);
+    assert_eq!(all, ["Save it", "Send it", "Save it and ask agent later", "Attach a reference…", "", "Throw it away", "Keep writing"]);
     assert_eq!(
         app.help()[0],
         "Press Enter to save the comment and ask the agent (may change the code), later: it waits in the batch, which the banner sends."

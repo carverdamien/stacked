@@ -448,6 +448,11 @@ pub struct Note {
     /// back to the agent with it, not accepted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub review: Option<String>,
+    /// The references you attached to it, which what you write names
+    /// (`@r1`): other comments of the stack, lines of files. The agent reads
+    /// them with it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attached: Vec<crate::refs::Attached>,
     pub time: i64,
 }
 

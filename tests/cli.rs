@@ -1120,6 +1120,85 @@ fn a_commit_the_agent_rewords_is_a_new_version_of_its_patch() {
 }
 
 #[test]
+fn what_is_attached_to_a_comment_goes_with_it_to_the_agent_open_or_closed() {
+    use stacked::db::Note;
+    use stacked::refs::{Attached, Pointer, To};
+    let e = env();
+    e.ok(&["import", "s", "base"]);
+    let open = comment(&e, &["--patch", "1", "Use", "a", "map."]);
+    let closed = comment(&e, &["--patch", "2", "Keep", "the", "vector."]);
+    let asked = comment(&e, &["Which", "is", "better,", "@r1", "or", "@r2?"]);
+    let d = Db::load(&e.db).unwrap();
+    let find = |short: &str| d.find_note("s", short).unwrap().clone();
+    let (o, c, a) = (find(&open), find(&closed), find(&asked));
+    let to = |n: &Note| To::Comment {
+        change: n.change.clone(),
+        id: n.id.clone(),
+    };
+    let attached = vec![
+        Attached { n: 1, to: to(&o) },
+        Attached { n: 2, to: to(&c) },
+        Attached {
+            n: 3,
+            to: To::Lines("a.txt:1-2 @1".into()),
+        },
+    ];
+    Db::edit(&e.db, |db| {
+        db.set_note(Note { attached, ..a.clone() })?;
+        db.set_note(Note { text: String::new(), ..c.clone() })
+    })
+    .unwrap();
+    // A mention naming nothing attached: not sent.
+    let bad = comment(&e, &["See", "@r9."]);
+    let (fine, _, err) = e.run(&["send", "s", &bad, "--answer-only"]);
+    assert!(!fine && err.contains("@r9 names no reference attached to the comment"), "{err}");
+    // Sent, what it has attached is told the agent with it, open or closed;
+    // the agent points at comments by a label and by an id.
+    let prompts = e.root.join("prompts.txt");
+    let result = format!(r#"{{"replies": {{"c1": {{"text": "As @r1 says.", "refs": [{{"comment": "c1"}}, {{"comment": "{open}"}}, {{"comment": "nowhere"}}]}}}}}}"#);
+    let claude = fake_claude(&e, "claude-attached.sh", &format!("printf '%s' \"$2\" > {}", prompts.display()), &result);
+    let (fine, out, err) = stacked_in(&e.src, &e.db, &["send", "s", &asked, "--answer-only", "--wait"], "", &[("STACKED_CLAUDE", claude.as_path())]);
+    assert!(fine, "{out}{err}");
+    let prompt = std::fs::read_to_string(&prompts).unwrap();
+    for said in [
+        "Attached to it, as what it says names them (@r1; @r{1,2} several; @r* all), for what they say; they are not asked of you:".to_string(),
+        format!("  r1 [{open}] patch 1, its message, line `Bug 1 - change two` (open):"),
+        "    The user: Use a map.".into(),
+        format!("  r2 [{closed}] patch 2, its message, line `Bug 2 - add b` (closed):"),
+        "    The user: Keep the vector.".into(),
+        "  r3: a.txt:1-2 · as patch 1 leaves it:".into(),
+        "        1 │ one\n        2 │ 2\n".into(),
+        "{\"comment\": its label".into(),
+    ] {
+        assert!(prompt.contains(&said), "{said:?} in:\n{prompt}");
+    }
+    // The reply, held for review, points at the comments it named, those
+    // there are.
+    let d = Db::load(&e.db).unwrap();
+    let r = stacked::held::queue(&d, "s")[0].clone();
+    let (body, pointers) = stacked::refs::split(&r.held.as_ref().unwrap().replies[0].text);
+    assert_eq!(body, "As @r1 says.");
+    assert_eq!(
+        pointers,
+        [
+            Pointer::Comment {
+                change: a.change.clone(),
+                id: a.id.clone()
+            },
+            Pointer::Comment {
+                change: o.change.clone(),
+                id: o.id.clone()
+            },
+        ]
+    );
+    // What is attached, listed with the comment.
+    let listed = e.ok(&["comments", "s"]);
+    assert!(listed.contains(&format!("  r1 ↗ {open}\t")), "{listed}");
+    assert!(listed.contains(&format!("  r2 ↗ {closed}\t")) && listed.contains("(closed)"), "{listed}");
+    assert!(listed.contains("  r3 ⇢ a.txt:1-2 · as patch 1 leaves it"), "{listed}");
+}
+
+#[test]
 fn an_agent_attaches_references_to_its_reply_and_to_the_comments_it_opens() {
     let e = env();
     e.ok(&["import", "s", "base"]);
