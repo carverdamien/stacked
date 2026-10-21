@@ -378,8 +378,10 @@ here or in $EDITOR; `Reply` adds to it without showing it. Not while the
 agent works on it. A comment waiting its turn
 leaves the agent's queue while it is edited, so that it is not asked as it
 was: its changes thrown away, or left as it is, it goes back on; edited, it
-waits to be asked again (or `Save it and ask agent`). In $EDITOR it is only what you
-said, nothing dropped, a line starting with `#` as any. The comment's
+waits to be asked again (or `Save it and ask agent`). In $EDITOR it opens
+as a reply does: the conversation above what you said, the cursor on it,
+the comment's references under it. Only the lines stacked wrote are
+dropped when you save; any other line is yours, `#` or not. The comment's
 history says `you edited it`. On the command line: `stacked reply NAME ID
 --edit TEXT`.
 
@@ -389,7 +391,9 @@ the agent's reply` (or `Edit your comment`, `Edit ann's reply`), here or in
 $EDITOR: trim the agent's answer down to what you need, and the agent is
 told it as you left it the next time it is asked. While a turn is written
 again, the editor shows it, and the thread above the editor no longer
-does.
+does. In $EDITOR, it is in its place in the conversation: the turns
+before it above it, those after it under it, as lines starting with `#`,
+a turn not yours under who said it.
 
 A conversation can also be rewound: `Rewind the conversation from your
 reply` (or `from your comment`), on a turn of yours, or on the agent's or
@@ -1453,7 +1457,8 @@ asked about a record of the history, a new database started from it, a
 moved comment and an answer's comments, a patch's comment asked of the
 whole stack, what you said last written again (off the queue meanwhile;
 left as it was, asked as it is or left so), a reply written in $EDITOR
-under its conversation, its references under it, a comment moved to the stack
+under its conversation, its references under it, and a turn written again
+there in its place, a comment moved to the stack
 taking the cursor with it, the mouse (the cursor following it, a click as
 Enter, a right click's menu, a menu's item), the comments pane's previews,
 moving a patch, searching (what is in sight first, the patches then the

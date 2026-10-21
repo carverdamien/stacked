@@ -5090,6 +5090,12 @@ impl App {
         None
     }
 
+    /// The references of comment `n`, a line each as the editor says them:
+    /// for $EDITOR, under what you write.
+    fn references_said(&self, n: &Note) -> Vec<String> {
+        crate::refs::references(n).iter().map(|(k, p, agent)| self.reference_said(*k, p, *agent)).collect()
+    }
+
     /// Reference `r{k}` of a comment, pointing at `p`, as the editor says
     /// it: by whom, when the agent attached it.
     fn reference_said(&self, k: usize, p: &crate::refs::Pointer, agent: bool) -> String {
@@ -5967,8 +5973,17 @@ impl App {
                 }
                 let Some(n) = self.db.note(change, id).cloned() else { return Ok(()) };
                 let Some(mine) = self.mine_of(&target) else { return Ok(()) };
-                // Off the agent's queue meanwhile; nothing is dropped from
-                // what you wrote, a line starting with # as any.
+                // In its place in the conversation, as a reply opens, the
+                // comment's references under it.
+                let at = match &target {
+                    Target::Turn { turn, .. } => Some(*turn),
+                    _ => last_mine_at(&n.text),
+                };
+                let refs = self.references_said(&n);
+                let Some((file, wrote, line)) = at.and_then(|at| rewrite_file(&n.text, at, &refs)) else { return Ok(()) };
+                // Off the agent's queue meanwhile; only the lines stacked
+                // wrote are dropped from what you wrote, a line starting
+                // with # kept as any.
                 if n.queued.as_ref().is_some_and(|q| !q.batched()) {
                     ask::unsend(&self.path, &[(change.clone(), id.clone())])?;
                 }
@@ -5979,8 +5994,8 @@ impl App {
                     held: n.queued.clone().filter(|q| !q.batched()),
                     attached: vec![],
                 };
-                let text = match edit_text(&format!("{mine}\n"), ".txt") {
-                    Ok(t) => t.trim().to_string(),
+                let text = match ops::edit_file(&file, "edit.txt", Some(line)) {
+                    Ok(t) => without_written(&t, &wrote),
                     Err(err) => {
                         self.settle_edit(&e, false);
                         return Err(err);
@@ -6051,8 +6066,7 @@ impl App {
                 };
                 let opened = match &on {
                     Some(n) => {
-                        let refs: Vec<String> = crate::refs::references(n).iter().map(|(k, p, agent)| self.reference_said(*k, p, *agent)).collect();
-                        let (file, at) = reply_file(&n.text, &refs);
+                        let (file, at) = reply_file(&n.text, &self.references_said(n));
                         ops::edit_file(&file, "reply.txt", Some(at))
                     }
                     None => edit_text("\n# Your comment. Lines starting with # are dropped.\n", ".txt"),
@@ -7588,27 +7602,80 @@ pub type Busy = HashMap<(String, String), (Way, String)>;
 /// name in what you write, and the rules. Every line stacked writes there
 /// but the empty ones starts with `#`, and is dropped as any such line is.
 fn reply_file(text: &str, refs: &[String]) -> (String, usize) {
-    let mut above: Vec<String> = Vec::new();
-    for t in thread_turns(text) {
-        let who = match t.role {
-            Role::You => "you",
-            Role::Agent => "agent",
-            Role::Reviewer => t.tag.as_deref().filter(|w| !w.is_empty()).unwrap_or("reviewer"),
-        };
-        above.push(format!("# {who}:"));
-        let (body, _) = crate::refs::split(&t.body);
-        above.extend(body.lines().map(|l| if l.trim().is_empty() { "#".to_string() } else { format!("#   {l}") }));
-    }
-    let mut below: Vec<String> = Vec::new();
-    if !refs.is_empty() {
-        below.push("# The comment's references, which your reply names as @r1, @r{1,2},".into());
-        below.push("# @r{2-4} or @r*:".into());
-        below.extend(refs.iter().map(|r| format!("#   {r}")));
-        below.push("#".into());
-    }
+    let above = said_turns(&thread_turns(text));
+    let mut below = refs_said(refs);
     below.push("# Write your reply above these lines, under the conversation. Lines".into());
     below.push("# starting with # are dropped; with nothing written, nothing is saved.".into());
     (format!("{}\n\n\n{}\n", above.join("\n"), below.join("\n")), above.len() + 1)
+}
+
+/// What turn `at` of all the turns of `text`, written again in $EDITOR,
+/// opens on, as a reply does: the turns before it, then what it says, the
+/// cursor on its first line, under who said it when that is not you; then
+/// the turns after it, `refs`, the lines of the comment's references, and
+/// the rules. And the lines stacked wrote there, every one starting with
+/// `#`: only they are dropped once it is saved, any other line yours, `#`
+/// or not. And the line of the cursor, from 1. None if there is no such
+/// turn.
+fn rewrite_file(text: &str, at: usize, refs: &[String]) -> Option<(String, Vec<String>, usize)> {
+    let turns = all_turns(text);
+    let t = turns.get(at).filter(|t| !t.deleted)?;
+    let mut above = said_turns(turns[..at].iter().filter(|t| !t.deleted));
+    if t.role != Role::You {
+        above.push(format!("# {}:", who_said(t)));
+    }
+    let mut below = Vec::new();
+    let after: Vec<&Turn> = turns[at + 1..].iter().filter(|t| !t.deleted).collect();
+    if !after.is_empty() {
+        below.push("# The conversation goes on after it:".to_string());
+        below.extend(said_turns(after));
+        below.push("#".into());
+    }
+    below.extend(refs_said(refs));
+    below.push(format!("# Write {} again above these lines. The lines stacked wrote here,", t.name(at)));
+    below.push("# starting with #, are dropped; any other line is yours, # or not. If you".into());
+    below.push("# write nothing, or quit without saving, it stays as it was.".into());
+    let line = above.len() + 1;
+    let mut lines = above.clone();
+    lines.push(t.body.clone());
+    lines.push(String::new());
+    lines.extend(below.iter().cloned());
+    let mut wrote = above;
+    wrote.extend(below);
+    Some((lines.join("\n") + "\n", wrote, line))
+}
+
+/// The lines $EDITOR shows of `turns` of a conversation, each starting with
+/// `#`: each turn under who said it, the references it attaches left out.
+fn said_turns<'a>(turns: impl IntoIterator<Item = &'a Turn>) -> Vec<String> {
+    let mut out = Vec::new();
+    for t in turns {
+        out.push(format!("# {}:", who_said(t)));
+        let (body, _) = crate::refs::split(&t.body);
+        out.extend(body.lines().map(|l| if l.trim().is_empty() { "#".to_string() } else { format!("#   {l}") }));
+    }
+    out
+}
+
+/// Who said turn `t`, as $EDITOR's lines say it: `you`, `agent`, `ann`.
+fn who_said(t: &Turn) -> &str {
+    match t.role {
+        Role::You => "you",
+        Role::Agent => "agent",
+        Role::Reviewer => t.tag.as_deref().filter(|w| !w.is_empty()).unwrap_or("reviewer"),
+    }
+}
+
+/// The lines $EDITOR shows of a comment's references, `refs`, under what
+/// you write: none, without any.
+fn refs_said(refs: &[String]) -> Vec<String> {
+    if refs.is_empty() {
+        return vec![];
+    }
+    let mut out = vec!["# The comment's references, to name as @r1, @r{1,2}, @r{2-4} or @r*:".to_string()];
+    out.extend(refs.iter().map(|r| format!("#   {r}")));
+    out.push("#".into());
+    out
 }
 
 /// Every line a rewind from turn `from` writes in its editor, all of them
@@ -7820,8 +7887,7 @@ mod tests {
                 "#   Agreed.",
                 "",
                 "",
-                "# The comment's references, which your reply names as @r1, @r{1,2},",
-                "# @r{2-4} or @r*:",
+                "# The comment's references, to name as @r1, @r{1,2}, @r{2-4} or @r*:",
                 "#   r1 ↗ patch 1 · a.txt: TWO · \"why so loud?\"",
                 "#   r2 ⇢ a.txt:2 · as patch 1 leaves it (the agent's)",
                 "#",
@@ -7838,6 +7904,49 @@ mod tests {
         // No references: the rules alone under it.
         let (file, at) = super::reply_file("Why?", &[]);
         assert_eq!((file.as_str(), at), ("# you:\n#   Why?\n\n\n# Write your reply above these lines, under the conversation. Lines\n# starting with # are dropped; with nothing written, nothing is saved.\n", 3));
+    }
+
+    #[test]
+    fn a_turn_written_again_in_editor_is_in_its_place_in_the_conversation() {
+        let text = [
+            "Why so loud?".to_string(),
+            crate::thread::fenced("agent answer", "As @r2 shows.\n\n```refs\nr2 a.txt:2 @1\n```"),
+            "Then @r2 it is.\n# Mine, kept".to_string(),
+        ]
+        .join("\n");
+        let refs = ["r2 ⇢ a.txt:2 · as patch 1 leaves it (the agent's)".to_string()];
+        let rules = |name: &str| {
+            [
+                format!("# Write {name} again above these lines. The lines stacked wrote here,"),
+                "# starting with #, are dropped; any other line is yours, # or not. If you".into(),
+                "# write nothing, or quit without saving, it stays as it was.".into(),
+            ]
+        };
+        let refs_lines = ["# The comment's references, to name as @r1, @r{1,2}, @r{2-4} or @r*:", "#   r2 ⇢ a.txt:2 · as patch 1 leaves it (the agent's)", "#"];
+        // Your last reply: the conversation above it, the cursor on it, a #
+        // line of yours kept.
+        let (file, wrote, line) = super::rewrite_file(&text, 2, &refs).unwrap();
+        let mut want: Vec<String> = ["# you:", "#   Why so loud?", "# agent:", "#   As @r2 shows.", "Then @r2 it is.", "# Mine, kept", ""].map(String::from).to_vec();
+        want.extend(refs_lines.map(String::from));
+        want.extend(rules("your reply"));
+        assert_eq!(file.lines().collect::<Vec<_>>(), want);
+        assert_eq!(line, 5);
+        assert_eq!(crate::thread::without_written(&file, &wrote), "Then @r2 it is.\n# Mine, kept");
+        // The agent's, in the middle: under who said it, the turns after it
+        // under it.
+        let (file, wrote, line) = super::rewrite_file(&text, 1, &refs).unwrap();
+        let mut want: Vec<String> = ["# you:", "#   Why so loud?", "# agent:", "As @r2 shows.", "", "```refs", "r2 a.txt:2 @1", "```", ""].map(String::from).to_vec();
+        want.extend(["# The conversation goes on after it:", "# you:", "#   Then @r2 it is.", "#   # Mine, kept", "#"].map(String::from));
+        want.extend(refs_lines.map(String::from));
+        want.extend(rules("the agent's reply"));
+        assert_eq!(file.lines().collect::<Vec<_>>(), want);
+        assert_eq!(line, 4);
+        assert_eq!(crate::thread::without_written(&file, &wrote), "As @r2 shows.\n\n```refs\nr2 a.txt:2 @1\n```");
+        // Your comment, first: nothing above it. No such turn: none.
+        let (file, _, line) = super::rewrite_file(&text, 0, &[]).unwrap();
+        assert!(file.starts_with("Why so loud?\n\n# The conversation goes on after it:\n# agent:\n"), "{file}");
+        assert_eq!(line, 1);
+        assert!(super::rewrite_file(&text, 3, &refs).is_none());
     }
 
     #[test]

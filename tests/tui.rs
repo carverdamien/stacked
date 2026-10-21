@@ -1004,7 +1004,7 @@ fn mentions_in_a_thread_are_links_to_what_they_name_the_agents_numbered_too() {
 }
 
 #[test]
-fn a_reply_in_editor_is_written_under_the_conversation_its_references_under_it() {
+fn what_is_written_in_editor_is_in_its_place_in_the_conversation_its_references_under_it() {
     use std::cell::RefCell;
     use std::rc::Rc;
     use stacked::tui::Target;
@@ -1068,8 +1068,7 @@ fn a_reply_in_editor_is_written_under_the_conversation_its_references_under_it()
             "#   As @r2 shows.",
             "",
             "",
-            "# The comment's references, which your reply names as @r1, @r{1,2},",
-            "# @r{2-4} or @r*:",
+            "# The comment's references, to name as @r1, @r{1,2}, @r{2-4} or @r*:",
             "#   r1 ↗ patch 1 · a.txt: TWO · \"why so loud?\"",
             "#   r2 ⇢ a.txt:2 · as patch 1 leaves it (the agent's)",
             "#",
@@ -1092,6 +1091,42 @@ fn a_reply_in_editor_is_written_under_the_conversation_its_references_under_it()
     assert!(text.starts_with("# you:\n#   why so loud?\n\n\n# Write your reply above these lines"), "{text}");
     assert_eq!(at, Some(3));
     assert_eq!(notes_of(&db, "s", 0).into_iter().find(|n| n.id == a.id).unwrap().text, "why so loud?\nStill loud.");
+    // Your reply written again in $EDITOR: in its place, the cursor on it,
+    // the references under it; a line of yours starting with # kept.
+    stacked::ops::stand_in(Some(write("Then @r1 it is.\n# Mine, kept")));
+    keys(&mut app, &[KeyCode::Home]);
+    down_to(&mut app, "     ▎   Then @r2 it is.");
+    let e = choose_as(&mut app, "Edit your reply", "in $EDITOR");
+    assert_eq!(e, Effect::EditComment(Target::Edit { change: b.change.clone(), id: b.id.clone() }));
+    app.effect(e).unwrap();
+    let (text, at) = seen.borrow_mut().remove(0);
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines[..6], ["# you:", "#   Same as @r1?", "# agent:", "#   As @r2 shows.", "Then @r2 it is.", ""]);
+    assert_eq!(lines[6], "# The comment's references, to name as @r1, @r{1,2}, @r{2-4} or @r*:");
+    assert_eq!(lines[10], "# Write your reply again above these lines. The lines stacked wrote here,");
+    assert_eq!(at, Some(5));
+    let b = notes_of(&db, "s", 0).into_iter().find(|n| n.id == b.id).unwrap();
+    assert!(b.text.ends_with("```\nThen @r1 it is.\n# Mine, kept"), "{}", b.text);
+    // The agent's reply written again: under who said it, what follows it
+    // under it; left as it was, nothing changes.
+    stacked::ops::stand_in(Some(Box::new({
+        let opened = seen.clone();
+        move |file: &Path, at: Option<usize>| -> stacked::db::Result<()> {
+            opened.borrow_mut().push((std::fs::read_to_string(file).unwrap(), at));
+            Ok(())
+        }
+    })));
+    keys(&mut app, &[KeyCode::Home]);
+    down_to(&mut app, "     ▎   As @r2 shows.");
+    let e = choose_as(&mut app, "Edit the agent's reply", "in $EDITOR");
+    assert!(matches!(&e, Effect::EditComment(Target::Turn { turn: 1, .. })), "{e:?}");
+    app.effect(e).unwrap();
+    let (text, at) = seen.borrow_mut().remove(0);
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines[..5], ["# you:", "#   Same as @r1?", "# agent:", "As @r2 shows.", ""]);
+    assert!(text.contains("\n# The conversation goes on after it:\n# you:\n#   Then @r1 it is.\n#   # Mine, kept\n#\n"), "{text}");
+    assert_eq!(at, Some(4));
+    assert_eq!(notes_of(&db, "s", 0).into_iter().find(|n| n.id == b.id).unwrap().text, b.text);
     stacked::ops::stand_in(None);
 }
 
