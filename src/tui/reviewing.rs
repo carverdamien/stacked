@@ -1201,10 +1201,17 @@ impl App {
             Item::new("Save", Action::ReviewSave),
             Item::new("Discard", Action::ReviewDiscard),
             Item::new("Close review", if self.review_close_menu().is_some() { Action::AskClose } else { Action::ReviewClose(None) }).when(done),
+            // What remains, accepted or rejected together, a section of its
+            // own; over it, whether the comments that asked close with it.
+            Item::line(),
+        ];
+        items.extend(self.asking_row());
+        items.extend([
             Item::new("Accept all remaining and Close", Action::AskReviewClose(true)).when(!done),
             Item::new("Reject all remaining and Close", Action::AskReviewClose(false)).when(!done),
-        ];
-        items.extend([Item::line(), Item::new("Keep reviewing", Action::Cancel)]);
+            Item::line(),
+            Item::new("Keep reviewing", Action::Cancel),
+        ]);
         let run = self.reviewing.as_ref().and_then(|rv| self.db.run(&rv.run));
         let of = match run {
             Some(r) if crate::held::pulled(r) => "the comments pulled",
@@ -1214,6 +1221,40 @@ impl App {
         let mut m = Menu::new(format!("your review of {of}"), items, None);
         m.note = Some(self.review_summary());
         m
+    }
+
+    /// The row picking whether the comments that asked are kept open or
+    /// closed as the review closes, every one of them: picked as the review
+    /// has them, `close` if every one is marked to close. None without
+    /// such comments.
+    fn asking_row(&self) -> Option<Item> {
+        let rv = self.reviewing.as_ref()?;
+        let asking = self.asking_open();
+        if asking.is_empty() {
+            return None;
+        }
+        let close = asking.iter().all(|(k, _)| rv.marks.get(&crate::held::asking_key(*k)) == Some(&true));
+        let (label, these) = if asking.len() == 1 { ("Asking comment", "the comment") } else { ("Asking comments", "the comments") };
+        let list = vec![
+            Choice::new("keep", "keep", format!("{these} kept open when the review closes"), None),
+            Choice::new(
+                "close",
+                "close",
+                format!("{these} closed when the review closes, done with, and the replies that go with them accepted"),
+                None,
+            ),
+        ];
+        let choices = Choices::new("asking", "whether they close", list, Some(if close { "close" } else { "keep" }));
+        Some(Item::new(label, Action::AskingAll).with(choices))
+    }
+
+    /// Every comment that asked marked to close with the review (`close`),
+    /// or to keep, as the review's menu picks it.
+    pub(super) fn mark_all_asking(&mut self, close: bool) {
+        let asking: Vec<usize> = self.asking_open().into_iter().map(|(k, _)| k).collect();
+        for k in asking {
+            self.mark_asking(k, close);
+        }
     }
 
     /// What closing the review with every part not marked yet accepted, or

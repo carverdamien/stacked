@@ -3399,6 +3399,52 @@ fn an_edit_by_hand_lands_and_its_review_opens_at_once() {
 }
 
 #[test]
+fn leaving_a_review_picks_whether_the_asking_comment_closes_above_accept_and_reject_all() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Enter]);
+    save(&mut app, "why so loud?");
+    let n = notes_of(&db, "s", 0).remove(0);
+    agent_changed(&db, "run-agent", &n);
+    app.refresh();
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Enter]);
+    assert_eq!(app.screen, Screen::Review);
+    // Marked to close in the review: so the menu has it.
+    keys(&mut app, &[KeyCode::Home, KeyCode::Enter, KeyCode::Esc]);
+    let row = |app: &App| {
+        let Mode::Menu(m) = &app.mode else { panic!("{:?}", app.mode) };
+        let at = m.items.iter().position(|i| i.label == "Asking comment").expect("the row");
+        (at, m.sel, m.items[at].choices.as_ref().unwrap().pick(), m.items.iter().map(|i| (i.label.clone(), i.action.clone())).collect::<Vec<_>>())
+    };
+    let (at, _, pick, all) = row(&app);
+    assert_eq!(pick, "close");
+    // Accept and Reject all, under it, in a section of their own.
+    assert_eq!(all[at - 1].1, stacked::tui::Action::Line);
+    assert_eq!(all[at + 1].0, "Accept all remaining and Close");
+    assert_eq!(all[at + 2].0, "Reject all remaining and Close");
+    assert_eq!(all[at + 3].1, stacked::tui::Action::Line);
+    // ← keeps it: in the review too, its reply as it was.
+    while row(&app).1 != at {
+        keys(&mut app, &[KeyCode::Down]);
+    }
+    keys(&mut app, &[KeyCode::Left]);
+    assert_eq!(row(&app).2, "keep");
+    let marks = app.reviewing.as_ref().unwrap().marks.clone();
+    assert!(!marks.contains_key("asking 0") && !marks.contains_key("reply 0"), "{marks:?}");
+    // Enter picks the other, the menu staying.
+    keys(&mut app, &[KeyCode::Enter]);
+    assert_eq!(row(&app).2, "close");
+    assert_eq!(app.reviewing.as_ref().unwrap().marks.get("asking 0"), Some(&true));
+    // Accept all: closed with the review.
+    choose(&mut app, "Accept all remaining and Close");
+    choose(&mut app, "Accept them and close");
+    assert_eq!(app.screen, Screen::Main);
+    assert!(!notes_of(&db, "s", 0).iter().any(|m| m.id == n.id), "the comment that asked is closed");
+}
+
+#[test]
 fn the_review_closes_with_what_remains_marked_only_while_something_remains() {
     let (_tmp, db, _src) = setup();
     let mut app = open(&db).unwrap();

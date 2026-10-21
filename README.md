@@ -772,10 +772,14 @@ the change is rejected. Esc says what is marked, by kind of part
 the marks in the file, for the review to go on from them when you open it
 again; `Discard` throws away the marks made since the review was opened;
 `Close review`, once every part is marked, applies what is accepted;
-`Accept all remaining and Close` and `Reject all remaining and Close`
-mark what is left and close once you say so (the question says what is
-left, the menu on `Keep reviewing`), while something is left: once every
-part is marked, they are grayed. A reply that goes with a change of the stack
+`Accept all remaining and Close` and `Reject all remaining and Close`, in
+a section of their own, mark what is left and close once you say so (the
+question says what is left, the menu on `Keep reviewing`), while
+something is left: once every part is marked, they are grayed. Over them,
+`Asking comment  [x] keep  [ ] close` picks whether the comments the agent
+was asked about are kept open or closed as the review closes, every one,
+picked as the review has them: ← → or Enter pick the other, the menu
+staying. A reply that goes with a change of the stack
 opens that review, on the reply, from its comment (Enter, or `Review the
 agent's work…` in its menu).
 

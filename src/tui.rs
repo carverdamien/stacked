@@ -598,6 +598,9 @@ pub enum Action {
     AskClose,
     AskSendBack,
     ReviewCloseStop(Option<bool>),
+    /// In the review's menu: the row picking whether the comments that
+    /// asked are kept open or closed when the review closes.
+    AskingAll,
     Send(Way),
     /// A patch's comment sent to the whole stack: the agent may change any
     /// patch.
@@ -761,6 +764,7 @@ fn about(action: &Action) -> String {
         Action::AskClose => "close the review, once you say so: what you accepted is applied, and what that asks again is said first".into(),
         Action::AskSendBack => "send the work back to the agent, once you say so: what went on from it is asked again".into(),
         Action::ReviewCloseStop(_) => "close the review, and stop the build and test of the stack as it was".into(),
+        Action::AskingAll => "pick whether the comments that asked are kept open or closed when the review closes: ← → or Enter".into(),
         Action::Send(Way::Change) => "ask the agent, which may change the code within this comment's place".into(),
         Action::Send(Way::Answer) => "ask the agent, to answer only: nothing changes".into(),
         Action::Send(Way::Test) => "ask the agent to build and test, in the stack's build worktree, .stacked/NAME/build".into(),
@@ -3253,7 +3257,13 @@ impl App {
                     (c.of, c.pick())
                 });
                 if let Some((of, pick)) = picked {
-                    self.pick_choice(of, pick);
+                    // The comments that asked: marked so in the review, not
+                    // kept for the stack.
+                    if of == "asking" {
+                        self.mark_all_asking(pick == "close");
+                    } else {
+                        self.pick_choice(of, pick);
+                    }
                     if of == "when" {
                         m.relabel(pick == "later");
                     }
@@ -3265,6 +3275,15 @@ impl App {
                     self.mode = Mode::Edit(Box::new(e));
                 }
                 return Effect::None;
+            }
+            // On the row picking whether the comments that asked close: the
+            // other pick, the menu staying.
+            KeyCode::Enter if m.chosen().is_some_and(|i| i.action == Action::AskingAll) => {
+                if let Some(c) = m.items.get_mut(m.sel).and_then(|i| i.choices.as_mut()) {
+                    c.picked = (c.picked + 1) % c.list.len();
+                    let close = c.pick() == "close";
+                    self.mark_all_asking(close);
+                }
             }
             KeyCode::Enter => {
                 // On the row picking when an ask goes, the ask.
@@ -4237,6 +4256,8 @@ impl App {
                 }
             }
             Action::AskSendBack => self.mode = Mode::Menu(self.review_send_back_ask()),
+            // Its row picks in the menu itself.
+            Action::AskingAll => {}
             Action::ReviewCloseStop(rest) => {
                 let builds = ask::builds_going(&self.db, &self.stack);
                 self.review_close(rest);
