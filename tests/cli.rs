@@ -309,7 +309,8 @@ fn a_broken_line_is_passed_over_never_cut() {
     assert_eq!(db.warnings.len(), 1, "{:?}", db.warnings);
     let rev = Db::edit(&path, |db| db.new_stack("t", &base, repo)).unwrap();
     let text = std::fs::read_to_string(&path).unwrap();
-    assert!(text.starts_with(&torn), "nothing is cut off:\n{text}");
+    // After the header, which a checkpoint's pointer is written over.
+    assert!(text[128..].starts_with(&torn[128..]), "nothing is cut off:\n{text}");
     assert_eq!(rev, 4, "the torn line keeps its number");
     let db = Db::load(&path).unwrap();
     assert_eq!(db.stacks().len(), 2);
@@ -319,7 +320,8 @@ fn a_broken_line_is_passed_over_never_cut() {
     let db = Db::load(&path).unwrap();
     assert_eq!(db.stacks().len(), 2);
     assert_eq!(db.warnings.len(), 3, "{:?}", db.warnings);
-    assert!(db.warnings[1].contains(":5:"), "{:?}", db.warnings);
+    let no = text.lines().count() + 1;
+    assert!(db.warnings[1].contains(&format!(":{no}:")), "{:?}", db.warnings);
 }
 
 #[test]
@@ -372,7 +374,8 @@ fn records_only_ever_append() {
     for m in ["one", "two", "three"] {
         let before = std::fs::read(&path).unwrap();
         Db::edit(&path, |db| ops::add(db, "s", d(m), None)).unwrap();
-        assert!(std::fs::read(&path).unwrap().starts_with(&before));
+        // After the header, which a checkpoint's pointer is written over.
+        assert!(std::fs::read(&path).unwrap()[128..].starts_with(&before[128..]));
     }
     Db::edit(&path, |db| ops::move_patch(db, "s", 0, 2)).unwrap();
     Db::edit(&path, |db| db.undo("s")).unwrap();

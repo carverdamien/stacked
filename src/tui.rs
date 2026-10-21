@@ -7147,8 +7147,8 @@ pub fn where_on(db: &Db, name: &str, n: &Note) -> String {
         .ok()
         .and_then(|s| s.patches.iter().position(|id| db.patch(id).change == n.change))
         .map_or("a patch no longer in the stack".to_string(), |i| format!("patch {}", i + 1));
-    let p = db.versions(&n.change).last().map(|p| (*p).clone());
-    if n.file == MSG_PATH && p.is_some_and(|p| title_key(&p) == n.line) {
+    let p = db.latest_version(&n.change);
+    if n.file == MSG_PATH && p.is_some_and(|p| title_key(p) == n.line) {
         format!("{at}, as a whole")
     } else {
         format!("{at} · {}: {}", n.file, n.preview)

@@ -2,10 +2,11 @@
 
 A stack editor, in the terminal. Patches, the stacks they make and every
 edit made to them, comments on them, and what the agent (claude) and
-Phabricator said: all in one file that is only ever appended to, so that
-any edit can be undone and the history read back. A comment can be asked of
-the agent, which answers it or changes the patches; what it brings back
-waits for your review. Your checkout is not touched unless you ask.
+Phabricator said: all in one file that is only ever appended to (its
+header aside), so that any edit can be undone and the history read back. A
+comment can be asked of the agent, which answers it or changes the
+patches; what it brings back waits for your review. Your checkout is not
+touched unless you ask.
 
 What follows are the notes on using it that do not belong in its `--help`.
 Press `?` in the editor: it says what can be done where the cursor is.
@@ -1182,13 +1183,13 @@ each stack, whether it applies.
 ## One file, only appended to
 
 Everything is in the database, one JSON object per line, and a line once
-written is never changed: patches, every state of every stack, which state
-each stack is on, comments and their replies, every run (an ask, an apply,
-a pull) with what came of it, every line the agent wrote while it worked,
-what each stack's comments pane shows, and what is read. A record is named
-by its place among the records, its rev: `@12`. The first line, the
-header, is `@1`: it says the file's format, and is 128 bytes long, padded
-with spaces.
+written is never changed, but the header: patches, every state of every
+stack, which state each stack is on, comments and their replies, every run
+(an ask, an apply, a pull) with what came of it, every line the agent
+wrote while it worked, what each stack's comments pane shows, and what is
+read. A record is named by its place among the records, its rev: `@12`.
+The first line, the header, is `@1`: it says the file's format, and is 128
+bytes long, padded with spaces.
 
 - A patch is stored once, by the sha1 of its content. An edited patch is a
   new patch with the same change, so `versions` and `interdiff` can follow a
@@ -1228,6 +1229,23 @@ with spaces.
   old file open reads the new one whole, and a process waiting for the
   lock opens the new file once it has the old one's lock. An older stacked
   does not read the new file.
+- The header points at the last checkpoint: a line of its own, which
+  takes no rev, saying where in the file the records are that the state
+  stands on (each stack's head, the stacks one undo and one redo go to,
+  the comments open, the asks going or waiting for your review and what
+  they need, what is chosen and marked read), and how the indexes stood.
+  stacked reads the header, that checkpoint, the records it says, and the
+  lines after it: not the whole file. What needs the history (an older
+  stack, the log and the tree, the versions of a patch, a comment's
+  history, the comments closed, the runs done with and what their agent
+  wrote) reads the whole file the first time it is asked.
+- A checkpoint is written, then the header pointed at it, once the file
+  has grown four times the last one's length past it (and at least
+  256 KB), and when a stack's head moves. A crash in between leaves the
+  header pointing at the one before. A header or a checkpoint that does
+  not check out (half written, pointing past the end, its sum wrong) is
+  passed over, and the file read whole; a header half written is written
+  again.
 
 The file only grows; `stacked trim` makes a new, shorter one. An ask's
 events include the agent's tool output, so a long ask can add a few
@@ -1346,6 +1364,11 @@ the other.
 Run `cargo test` after any change; `cargo test --features web,demo` runs
 the browser's and the tour's too (the web feature needs the wasm target, as
 in Install). No test runs claude: a script stands in for it.
+
+With `STACKED_TEST_CHECKPOINTS=1` set, every write writes a checkpoint, and
+every database read from one is read whole too and the two compared, a
+difference a panic: run the suite so too after a change to the database,
+or to what reads it.
 
 `tests/cli.rs` builds a repo and drives the binary. It covers a round trip
 through `git am`, the tree, recovery from broken lines, comments on the

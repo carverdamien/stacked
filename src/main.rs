@@ -1434,7 +1434,7 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
                     // their line), and those an answer opened.
                     let mut failed = 0;
                     for n in db.stack_notes(&name) {
-                        if db.note_history(&n.change, &n.id).last().is_some_and(|(rev, _)| *rev > since) {
+                        if db.note_rev(&n.change, &n.id).is_some_and(|rev| rev > since) {
                             failed += n.failed.is_some() as usize;
                             print_note(&db, &name, n, &busy);
                         }

@@ -27,12 +27,29 @@
 //! again once, the same lines under the new header, and renamed over the
 //! old: so a process takes the lock, then sees that the file it locked is
 //! still the one there, else opens it again.
+//!
+//! The header points at the last checkpoint: a line that takes no rev,
+//! saying where the records are that the state stands on (each stack's
+//! head and the stacks one undo and one redo go to, the comments open, the
+//! runs under way and what they name, what is chosen and marked read) and
+//! how the indexes stood. A reader reads the header, the checkpoint, those
+//! records and the lines after it, not the whole file; the records it did
+//! not read are `Unloaded`. What needs the history (an older stack, the
+//! log, versions of a patch, a comment's history, the comments closed, the
+//! runs done with) reads the whole file the first time it is asked, and
+//! anything that changes the database takes that in first: an accessor
+//! never answers from part of the history. A checkpoint is written, then
+//! the header pointed at it, once the file has grown four times the last
+//! one's length past it (and at least 256 KB), and when a head moves. A
+//! crash in between leaves the header pointing at the one before; a header
+//! or checkpoint that does not check out is passed over, the file read
+//! whole.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs::File;
 use std::io::{Read, Write};
 use std::os::fd::AsRawFd;
-use std::os::unix::fs::MetadataExt;
+use std::os::unix::fs::{FileExt, MetadataExt};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -44,13 +61,196 @@ pub const VERSION: u32 = 3;
 /// How long the header is, its newline in.
 const HEADER: usize = 128;
 
-/// How a checkpoint's line starts: in a file of format 3 on, a line that
-/// does is one, whether it reads or not, and takes no rev.
+/// How a checkpoint's line starts: a line that does is one, whether it
+/// reads or not, and takes no rev. No record's line starts so.
 const CHECKPOINT: &[u8] = b"{\"t\":\"checkpoint\",";
 
-/// The header of a new file: of the fixed length, its newline left out.
+/// The layout of a checkpoint: one of another is passed over.
+const STATE: u32 = 1;
+
+/// The least the file grows past the last checkpoint before a new one.
+const FLOOR: u64 = 256 * 1024;
+
+/// The header, of the fixed length, its newline left out, pointing at
+/// checkpoint `at` if any: none when the pointer does not fit.
+fn header_with(at: Option<&Pointer>) -> Option<String> {
+    let checkpoint = at.map_or("null".to_string(), |p| serde_json::to_string(p).unwrap());
+    let line = format!(r#"{{"t":"stacked","version":{VERSION},"checkpoint":{checkpoint}}}"#);
+    (line.len() < HEADER).then(|| format!("{line:<width$}", width = HEADER - 1))
+}
+
+/// The header of a new file.
 pub(crate) fn header_line() -> String {
-    format!("{:<width$}", format!(r#"{{"t":"stacked","version":{VERSION},"checkpoint":null}}"#), width = HEADER - 1)
+    header_with(None).expect("an empty header fits")
+}
+
+/// The header as read: the format, and where the last checkpoint is.
+#[derive(Deserialize)]
+struct Header {
+    version: u32,
+    #[serde(default)]
+    checkpoint: Option<Pointer>,
+}
+
+/// Where the last checkpoint is: its line's offset and length (its newline
+/// left out), the records before it, and a sum of those and of its line,
+/// which a header cut short, or pointing elsewhere, does not match.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+struct Pointer {
+    at: u64,
+    rev: usize,
+    len: u64,
+    sum: String,
+}
+
+impl Pointer {
+    fn new(at: u64, rev: usize, line: &[u8]) -> Pointer {
+        let len = line.len() as u64;
+        Pointer {
+            at,
+            rev,
+            len,
+            sum: sum(at, rev, len, line),
+        }
+    }
+}
+
+/// The line `bytes` hold, between the newline before it and its own: none
+/// if they are not so.
+fn whole_line(bytes: &[u8]) -> Option<&[u8]> {
+    let line = bytes.strip_prefix(b"\n")?.strip_suffix(b"\n")?;
+    (!line.contains(&b'\n')).then_some(line)
+}
+
+fn sum(at: u64, rev: usize, len: u64, line: &[u8]) -> String {
+    let mut h = sha1_smol::Sha1::new();
+    h.update(format!("{at} {rev} {len}\n").as_bytes());
+    h.update(line);
+    h.digest().to_string()[..16].to_string()
+}
+
+/// A checkpoint: where the records are that the state stood on after its
+/// `rev` records, and how the indexes stood. Revs, not indices.
+#[derive(Serialize, Deserialize, Default, Debug)]
+struct Checkpoint {
+    /// "checkpoint", first, so that its line starts as a checkpoint's.
+    t: String,
+    state: u32,
+    /// The records before it.
+    rev: usize,
+    /// The lines before it, the header's in.
+    lines: usize,
+    changes: usize,
+    /// The records read with it: rev, offset and length.
+    load: Vec<(usize, u64, u64)>,
+    heads: Vec<(String, Option<usize>)>,
+    patches: Vec<(String, usize)>,
+    latest: Vec<(String, usize)>,
+    /// Every stack: its rev, name and parent.
+    stacks: Vec<(usize, String, Option<usize>)>,
+    on: Vec<(String, Vec<usize>)>,
+    /// Every comment: change, id, the rev of its latest record and of its
+    /// first.
+    notes: Vec<(String, String, usize, usize)>,
+    queued: Vec<(String, String, Queued)>,
+    note_lines: Vec<(String, String, Vec<String>)>,
+    views: Vec<(String, usize)>,
+    choices: Vec<(String, String, usize)>,
+    collapsed: Vec<(String, String)>,
+    reviews: Vec<(String, usize)>,
+    marks: Vec<(String, Vec<usize>)>,
+    /// Every run, oldest started first, and the rev of its latest record.
+    runs: Vec<(String, usize)>,
+    /// The runs whose events are read with it, and those events' revs.
+    events: Vec<(String, Vec<usize>)>,
+    /// The runs with events not read with it.
+    unread: Vec<String>,
+    warnings: Vec<String>,
+}
+
+/// What a database read from a checkpoint did not read.
+#[derive(Debug, Default)]
+struct Partial {
+    /// The runs with events not read: the others' are all there.
+    unread: HashSet<String>,
+    /// A review written since of a run not read: what is under way is then
+    /// known only from the whole history.
+    stale: bool,
+}
+
+/// The file a database was read from, to read more of it: the file as it
+/// was opened (another may have been renamed over it since), or one kept
+/// in memory.
+enum Src {
+    File(File),
+    #[cfg(feature = "demo")]
+    Memory(std::sync::Arc<std::sync::Mutex<Vec<u8>>>),
+}
+
+impl Src {
+    /// The `len` bytes from `at`.
+    fn read(&self, at: u64, len: u64) -> std::io::Result<Vec<u8>> {
+        match self {
+            Src::File(f) => {
+                let mut buf = vec![0; len as usize];
+                f.read_exact_at(&mut buf, at)?;
+                Ok(buf)
+            }
+            #[cfg(feature = "demo")]
+            Src::Memory(m) => {
+                let bytes = m.lock().unwrap();
+                let end = at.checked_add(len).filter(|&e| e <= bytes.len() as u64);
+                end.map(|e| bytes[at as usize..e as usize].to_vec()).ok_or_else(|| std::io::ErrorKind::UnexpectedEof.into())
+            }
+        }
+    }
+
+    /// Every byte from `at` on.
+    fn rest(&self, at: u64) -> std::io::Result<Vec<u8>> {
+        match self {
+            Src::File(f) => {
+                let (mut out, mut buf, mut pos) = (Vec::new(), vec![0; 1 << 20], at);
+                loop {
+                    let n = f.read_at(&mut buf, pos)?;
+                    if n == 0 {
+                        return Ok(out);
+                    }
+                    out.extend_from_slice(&buf[..n]);
+                    pos += n as u64;
+                }
+            }
+            #[cfg(feature = "demo")]
+            Src::Memory(m) => Ok(m.lock().unwrap().get(at as usize..).map_or(vec![], <[u8]>::to_vec)),
+        }
+    }
+}
+
+/// Under test: a checkpoint at every write, and each database read from one
+/// read whole too, the two the same or a panic. The whole suite runs so
+/// with `STACKED_TEST_CHECKPOINTS` set.
+fn test_checkpoints() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("STACKED_TEST_CHECKPOINTS").is_some())
+}
+
+/// What run `r` names: the stacks (by rev), the patches, the runs.
+fn named_by(r: &Run) -> (Vec<usize>, Vec<String>, Vec<String>) {
+    let (mut revs, mut patches, mut runs): (Vec<usize>, Vec<String>, Vec<String>) = (r.rev.into_iter().collect(), vec![], vec![]);
+    if let Some(c) = r.held.as_ref().and_then(|h| h.stack.as_ref()) {
+        revs.extend(c.from);
+        patches.extend(c.patches.iter().cloned());
+    }
+    if let Some(a) = &r.ask {
+        revs.extend(a.get("from").and_then(|f| f.as_u64()).map(|f| f as usize));
+        patches.extend(a.get("patch").and_then(|p| p.get(0)).and_then(|p| p.as_str()).map(str::to_string));
+        for c in a.get("commits").and_then(|c| c.as_array()).into_iter().flatten() {
+            patches.extend(c.get(1).and_then(|p| p.as_str()).map(str::to_string));
+        }
+        for k in ["on", "after", "was"] {
+            runs.extend(a.get(k).and_then(|v| v.as_str()).map(str::to_string));
+        }
+    }
+    (revs, patches, runs)
 }
 
 /// Where a record's line is in the file: its offset, and its length, the
@@ -113,6 +313,10 @@ pub enum Record {
     /// A line that could not be read.
     #[serde(skip)]
     Broken,
+    /// A record not read: the file was read from a checkpoint, and the
+    /// state did not need it.
+    #[serde(skip)]
+    Unloaded,
 }
 
 /// Lines of a patch marked read at once, in the reading mode: a block of
@@ -533,6 +737,17 @@ pub struct Db {
     /// The file read, by device and inode: another renamed over it, it is
     /// read again whole.
     ino: Option<(u64, u64)>,
+    /// The file read, to read more of it.
+    src: Option<Src>,
+    /// Read from a checkpoint: what was not read.
+    cp: Option<Box<Partial>>,
+    /// Read from a checkpoint: the whole history, read the first time it
+    /// is asked, and taken in before anything changes.
+    shadow: std::sync::OnceLock<Box<Db>>,
+    /// The last checkpoint's line: its offset and length.
+    last_cp: Option<(u64, u64)>,
+    /// A line cut short was ended: it is read again before a checkpoint.
+    mended: bool,
     /// The lines passed over, and why.
     pub warnings: Vec<String>,
 }
@@ -624,23 +839,239 @@ impl Db {
     pub fn load(path: &Path) -> Result<Db> {
         #[cfg(feature = "demo")]
         if let Some(m) = crate::memory::file(path) {
-            let bytes = m.lock().unwrap().clone();
-            return Db::parse(path, &bytes);
+            return Db::read_src(path, Src::Memory(m), None);
         }
-        let mut bytes = Vec::new();
-        let mut ino = None;
         match File::open(path) {
-            Ok(mut f) => {
-                ino = f.metadata().ok().map(|m| (m.dev(), m.ino()));
-                f.read_to_end(&mut bytes)
-                    .map_err(|e| Error(format!("{}: {e}", path.display())))?;
+            Ok(f) => {
+                let ino = f.metadata().ok().map(|m| (m.dev(), m.ino()));
+                Db::read_src(path, Src::File(f), ino)
             }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return err(format!("{}: {e}", path.display())),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Db::parse(path, &[]),
+            Err(e) => err(format!("{}: {e}", path.display())),
         }
-        let mut db = Db::parse(path, &bytes)?;
-        db.ino = ino;
+    }
+
+    /// The database `src` holds: from the checkpoint its header points at
+    /// and what follows it, if that checks out; else read whole.
+    fn read_src(path: &Path, src: Src, ino: Option<(u64, u64)>) -> Result<Db> {
+        let io = |e: std::io::Error| Error(format!("{}: {e}", path.display()));
+        let mut db = match Db::from_checkpoint(path, &src) {
+            Some(mut db) => {
+                db.read(&src.rest(db.len).map_err(io)?)?;
+                db
+            }
+            None => Db::parse(path, &src.rest(0).map_err(io)?)?,
+        };
+        if test_checkpoints() && db.cp.is_some() {
+            let whole = Db::parse(path, &src.read(0, db.len).map_err(io)?)?;
+            if let Some(e) = db.differs(&whole) {
+                panic!("{}: read from its checkpoint, not as read whole: {e}", path.display());
+            }
+        }
+        (db.src, db.ino) = (Some(src), ino);
         Ok(db)
+    }
+
+    /// The database as the checkpoint the header of `src` points at left
+    /// it: the records it needs read, the others not. None if there is no
+    /// checkpoint, or anything of it does not check out.
+    fn from_checkpoint(path: &Path, src: &Src) -> Option<Db> {
+        let head = src.read(0, HEADER as u64).ok()?;
+        let line = head.strip_suffix(b"\n")?;
+        let header: Header = serde_json::from_slice(line).ok()?;
+        let ptr = header.checkpoint.filter(|_| header.version == VERSION)?;
+        if ptr.at < HEADER as u64 || ptr.rev == 0 {
+            return None;
+        }
+        // Its line whole, and the sum of it.
+        let bytes = src.read(ptr.at - 1, ptr.len.checked_add(2)?).ok()?;
+        let at = whole_line(&bytes)?;
+        if sum(ptr.at, ptr.rev, ptr.len, at) != ptr.sum {
+            return None;
+        }
+        let cp: Checkpoint = serde_json::from_slice(at).ok()?;
+        if cp.t != "checkpoint" || cp.state != STATE || cp.rev != ptr.rev {
+            return None;
+        }
+        let mut db = Db::empty(path);
+        db.records = vec![Record::Unloaded; cp.rev];
+        db.pos = vec![Pos::NONE; cp.rev];
+        db.records[0] = serde_json::from_slice(line).ok()?;
+        db.pos[0] = Pos {
+            at: 0,
+            len: line.len() as u64,
+        };
+        (db.version, db.fixed) = (VERSION, true);
+        for &(rev, at, len) in &cp.load {
+            if !(2..=cp.rev).contains(&rev) || at < HEADER as u64 {
+                return None;
+            }
+            let bytes = src.read(at - 1, len.checked_add(2)?).ok()?;
+            let rec: Record = serde_json::from_slice(whole_line(&bytes)?).ok()?;
+            if matches!(rec, Record::Stacked { .. }) {
+                return None;
+            }
+            db.records[rev - 1] = rec;
+            db.pos[rev - 1] = Pos { at, len };
+        }
+        db.restore(cp)?;
+        db.len = ptr.at + ptr.len + 1;
+        db.last_cp = Some((ptr.at, ptr.len));
+        Some(db)
+    }
+
+    /// The indexes as checkpoint `cp` says they stood, seen to hold with
+    /// the records read: none if they do not.
+    fn restore(&mut self, cp: Checkpoint) -> Option<()> {
+        let n = cp.rev;
+        let ix = |rev: usize| (1..=n).contains(&rev).then(|| rev - 1);
+        let read = |db: &Db, i: usize| !matches!(db.records[i], Record::Unloaded);
+        for (name, head) in cp.heads {
+            let h = match head {
+                Some(r) => Some(ix(r)?),
+                None => None,
+            };
+            if h.is_some_and(|i| !matches!(&self.records[i], Record::Stack(s) if s.name == name)) {
+                return None;
+            }
+            self.heads.insert(name, h);
+        }
+        for (id, rev) in cp.patches {
+            let i = ix(rev)?;
+            if read(self, i) && !matches!(&self.records[i], Record::Patch(p) if p.id == id) {
+                return None;
+            }
+            self.patches.insert(id, i);
+        }
+        for (change, rev) in cp.latest {
+            let i = ix(rev)?;
+            if read(self, i) && !matches!(&self.records[i], Record::Patch(p) if p.change == change) {
+                return None;
+            }
+            self.latest.insert(change, i);
+        }
+        for (rev, name, parent) in cp.stacks {
+            let i = ix(rev)?;
+            if read(self, i) && !matches!(&self.records[i], Record::Stack(s) if s.name == name && s.parent == parent) {
+                return None;
+            }
+            self.stacks.insert(i, (name, parent));
+        }
+        self.on = cp.on.into_iter().collect();
+        for (change, id, rev, first) in cp.notes {
+            let (i, f) = (ix(rev)?, ix(first)?);
+            if read(self, i) && !matches!(&self.records[i], Record::Comment(c) if c.change == change && c.id == id) {
+                return None;
+            }
+            self.note_first.insert((change.clone(), id.clone()), f);
+            self.notes.insert((change, id), i);
+        }
+        self.last_queued = cp.queued.into_iter().map(|(c, i, q)| ((c, i), q)).collect();
+        self.note_lines = cp.note_lines.into_iter().map(|(c, i, l)| ((c, i), l)).collect();
+        for (stack, rev) in cp.views {
+            let i = ix(rev)?;
+            if !matches!(&self.records[i], Record::View { stack: s, .. } if *s == stack) {
+                return None;
+            }
+            self.views.insert(stack, i);
+        }
+        for (stack, of, rev) in cp.choices {
+            let i = ix(rev)?;
+            if !matches!(&self.records[i], Record::Choice { stack: s, of: o, .. } if *s == stack && *o == of) {
+                return None;
+            }
+            self.choices.insert((stack, of), i);
+        }
+        self.collapsed = cp.collapsed.into_iter().collect();
+        for (run, rev) in cp.reviews {
+            let i = ix(rev)?;
+            if read(self, i) && !matches!(&self.records[i], Record::Review { run: r, .. } if *r == run) {
+                return None;
+            }
+            self.reviews.insert(run, i);
+        }
+        for (change, revs) in cp.marks {
+            let mut at = Vec::new();
+            for rev in revs {
+                let i = ix(rev)?;
+                if !matches!(&self.records[i], Record::Read(m) if m.change == change) {
+                    return None;
+                }
+                at.push(i);
+            }
+            self.marks.insert(change, at);
+        }
+        for (id, rev) in cp.runs {
+            let i = ix(rev)?;
+            if read(self, i) && !matches!(&self.records[i], Record::Run(r) if r.id == id) {
+                return None;
+            }
+            if self.runs.insert(id.clone(), i).is_some() {
+                return None;
+            }
+            self.run_order.push(id);
+        }
+        for (run, revs) in cp.events {
+            let mut at = Vec::new();
+            for rev in revs {
+                let i = ix(rev)?;
+                if !matches!(&self.records[i], Record::Event { run: r, .. } if *r == run) {
+                    return None;
+                }
+                at.push(i);
+            }
+            self.events.insert(run, at);
+        }
+        // Its own line too.
+        (self.changes, self.lines, self.saved) = (cp.changes, cp.lines + 1, n);
+        self.warnings = cp.warnings;
+        self.cp = Some(Box::new(Partial {
+            unread: cp.unread.into_iter().collect(),
+            stale: false,
+        }));
+        Some(())
+    }
+
+    /// How this database, read from a checkpoint, differs from `whole`, the
+    /// same bytes read whole: under test, there is no difference.
+    fn differs(&self, whole: &Db) -> Option<String> {
+        macro_rules! same {
+            ($($f:ident),*) => {$(
+                if self.$f != whole.$f {
+                    return Some(format!("{}: {:?}, read whole {:?}", stringify!($f), self.$f, whole.$f));
+                }
+            )*};
+        }
+        same!(len, lines, torn, torn_slot, tail, saved, version, fixed, changes, warnings, last_cp);
+        same!(patches, latest, heads, stacks, on, notes, note_first, last_queued, note_lines);
+        same!(views, choices, collapsed, reviews, marks, runs, run_order);
+        if self.records.len() != whole.records.len() {
+            return Some(format!("{} records, read whole {}", self.records.len(), whole.records.len()));
+        }
+        for (i, r) in self.records.iter().enumerate() {
+            match r {
+                // Not read: a comment's latest only when it is closed.
+                Record::Unloaded => {
+                    if matches!(&whole.records[i], Record::Comment(n) if !n.text.is_empty()) && self.notes.values().any(|&k| k == i) {
+                        return Some(format!("@{}: an open comment not read", i + 1));
+                    }
+                }
+                r if *r != whole.records[i] => return Some(format!("@{}: {r:?}, read whole {:?}", i + 1, whole.records[i])),
+                _ if self.pos[i] != whole.pos[i] => return Some(format!("@{}: at {:?}, read whole {:?}", i + 1, self.pos[i], whole.pos[i])),
+                _ => {}
+            }
+        }
+        let ids = |db: &Db| db.live_runs().iter().map(|r| r.id.clone()).collect::<Vec<_>>();
+        if ids(self) != ids(whole) {
+            return Some(format!("under way {:?}, read whole {:?}", ids(self), ids(whole)));
+        }
+        let unread = self.cp.as_ref().map(|c| &c.unread);
+        for (run, at) in &whole.events {
+            if !unread.is_some_and(|u| u.contains(run)) && self.events.get(run) != Some(at) {
+                return Some(format!("the events of {run}: {:?}, read whole {at:?}", self.events.get(run)));
+            }
+        }
+        None
     }
 
     /// The database `bytes` hold, as if read from `path`.
@@ -649,7 +1080,13 @@ impl Db {
     }
 
     fn parse(path: &Path, bytes: &[u8]) -> Result<Db> {
-        let mut db = Db {
+        let mut db = Db::empty(path);
+        db.read(bytes)?;
+        Ok(db)
+    }
+
+    fn empty(path: &Path) -> Db {
+        Db {
             path: path.to_path_buf(),
             records: Vec::new(),
             patches: HashMap::new(),
@@ -681,10 +1118,13 @@ impl Db {
             version: 0,
             fixed: false,
             ino: None,
+            src: None,
+            cp: None,
+            shadow: std::sync::OnceLock::new(),
+            last_cp: None,
+            mended: false,
             warnings: Vec::new(),
-        };
-        db.read(bytes)?;
-        Ok(db)
+        }
     }
 
     /// Reads `bytes`, what the file holds from byte `self.len` on.
@@ -704,8 +1144,10 @@ impl Db {
                 at: offset,
                 len: line.len() as u64,
             };
-            // A checkpoint's line: no record.
-            let checkpoint = self.version >= 3 && line.starts_with(CHECKPOINT);
+            // A checkpoint's line: no record. Known by how it starts, as no
+            // record's does, whatever the header says: one half written
+            // says nothing.
+            let checkpoint = line.starts_with(CHECKPOINT);
             // A last line with no newline is not read: a write in progress,
             // or one a crash cut short. It holds its record's place.
             if last {
@@ -720,6 +1162,7 @@ impl Db {
             }
             offset += line.len() as u64 + 1;
             if checkpoint {
+                self.last_cp = Some((pos.at, pos.len));
                 continue;
             }
             let rec = std::str::from_utf8(line)
@@ -782,6 +1225,7 @@ impl Db {
     /// Reads what was appended since: the file only grows, so only the new
     /// bytes, and the line that was cut short again. Whether there was any.
     pub fn catch_up(&mut self) -> Result<bool> {
+        self.promote();
         let path = self.path.clone();
         let io = |e: std::io::Error| Error(format!("{}: {e}", path.display()));
         #[cfg(feature = "demo")]
@@ -874,12 +1318,13 @@ impl Db {
     }
 
     fn index(&mut self, rec: Record, pos: Pos) -> Result<()> {
+        self.promote();
         let at = self.records.len();
         if !matches!(rec, Record::Event { .. }) {
             self.changes += 1;
         }
         match &rec {
-            Record::Stacked { .. } | Record::Broken => {}
+            Record::Stacked { .. } | Record::Broken | Record::Unloaded => {}
             Record::Patch(p) => {
                 self.patches.entry(p.id.clone()).or_insert(at);
                 self.latest.insert(p.change.clone(), at);
@@ -894,9 +1339,9 @@ impl Db {
             }
             Record::Head(h) => {
                 if let Some(rev) = h.rev {
-                    match self.rev(rev) {
-                        Some(Record::Stack(s)) if s.name == h.name => {}
-                        _ => return err(format!("@{rev} is not a stack of {}", h.name)),
+                    // By the stacks' index: the stack may be one not read.
+                    if rev.checked_sub(1).and_then(|i| self.stacks.get(&i)).is_none_or(|(name, _)| *name != h.name) {
+                        return err(format!("@{rev} is not a stack of {}", h.name));
                     }
                     self.on.entry(h.name.clone()).or_default().push(rev);
                 }
@@ -939,6 +1384,13 @@ impl Db {
             }
             Record::Review { run, .. } => {
                 self.reviews.insert(run.clone(), at);
+                // Of a run not read: whether it is under way now is known
+                // only from the whole history.
+                if let Some(cp) = &mut self.cp
+                    && self.runs.get(run).is_some_and(|&i| matches!(self.records[i], Record::Unloaded))
+                {
+                    cp.stale = true;
+                }
             }
             Record::Read(m) => {
                 let marks = self.marks.entry(m.change.clone()).or_default();
@@ -972,20 +1424,28 @@ impl Db {
             }
             let guard = crate::memory::lock();
             LOCKED.with(|l| l.set(true));
-            let bytes = m.lock().unwrap().clone();
-            let lock = Lock(Held::Memory { _held: guard, bytes: m });
-            return Ok((Db::parse(path, &bytes)?, lock));
+            let lock = Lock(Held::Memory {
+                _held: guard,
+                bytes: m.clone(),
+            });
+            return Ok((Db::read_src(path, Src::Memory(m), None)?, lock));
         }
         // Given back if reading fails: the lock first.
         let mut lock = open_locked(path)?;
-        let mut bytes = Vec::new();
-        lock.file()
-            .read_to_end(&mut bytes)
-            .map_err(|e| Error(format!("{}: {e}", path.display())))?;
-        let mut db = Db::parse(path, &bytes)?;
-        db.ino = lock.file().metadata().ok().map(|m| (m.dev(), m.ino()));
+        let ino = lock.file().metadata().ok().map(|m| (m.dev(), m.ino()));
+        // Read by another opening of the file: the lock's appends.
+        let src = File::open(path).map_err(|e| Error(format!("{}: {e}", path.display())))?;
+        let mut db = Db::read_src(path, Src::File(src), ino)?;
+        // The header of the fixed length, but not read: a crash as it was
+        // written over. Written again, pointing at no checkpoint.
+        if matches!(db.records.first(), Some(Record::Broken)) && db.pos[0] == (Pos { at: 0, len: HEADER as u64 - 1 }) {
+            let io = |e: std::io::Error| Error(format!("{}: {e}", path.display()));
+            let f = File::options().write(true).open(path).map_err(io)?;
+            f.write_all_at(header_line().as_bytes(), 0).and_then(|_| f.sync_data()).map_err(io)?;
+            db = Db::read_src(path, Src::File(File::open(path).map_err(io)?), ino)?;
+        }
         if db.needs_upgrade() {
-            match db.upgrade(&bytes, &mut lock) {
+            match db.upgrade(&mut lock) {
                 Ok(Some(new)) => db = new,
                 Ok(None) => {}
                 Err(e) => db.warnings.push(format!("{}: not written again under a new header: {}", path.display(), e.0)),
@@ -1004,13 +1464,14 @@ impl Db {
     /// renames it over the old one, `lock` then holding the new one's lock;
     /// the database read from it. Not while an ask is going: its process
     /// could be an older stacked's, which reads no file of a newer format.
-    fn upgrade(&self, bytes: &[u8], lock: &mut Lock) -> Result<Option<Db>> {
+    fn upgrade(&self, lock: &mut Lock) -> Result<Option<Db>> {
         if self.live_runs().iter().any(|r| crate::ask::busy(r)) {
             return Ok(None);
         }
-        let Some(nl) = bytes.iter().position(|&b| b == b'\n') else { return Ok(None) };
         let path = &self.path;
         let io = |e: std::io::Error| Error(format!("{}: {e}", path.display()));
+        let bytes = self.src.as_ref().map_or(Ok(vec![]), |s| s.rest(0)).map_err(io)?;
+        let Some(nl) = bytes.iter().position(|&b| b == b'\n') else { return Ok(None) };
         let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         let tmp = path.with_file_name(format!("{name}.upgrade-{}", std::process::id()));
         let _ = std::fs::remove_file(&tmp);
@@ -1033,11 +1494,16 @@ impl Db {
         }
         // The old file's lock given back: whoever waits on it sees it is
         // not the file there, and opens this one.
-        if let Held::File(old) = std::mem::replace(&mut lock.0, Held::File(f)) {
-            unsafe { libc::flock(old.as_raw_fd(), libc::LOCK_UN) };
+        match std::mem::replace(&mut lock.0, Held::File(f)) {
+            Held::File(old) => {
+                unsafe { libc::flock(old.as_raw_fd(), libc::LOCK_UN) };
+            }
+            #[cfg(feature = "demo")]
+            Held::Memory { .. } => {}
         }
         let mut db = Db::parse(path, &new)?;
         db.ino = lock.file().metadata().ok().map(|m| (m.dev(), m.ino()));
+        db.src = Some(Src::File(File::open(path).map_err(io)?));
         Ok(Some(db))
     }
 
@@ -1052,12 +1518,22 @@ impl Db {
 
     /// Appends the records added since the database was read.
     pub fn save(&mut self, lock: &mut Lock) -> Result<()> {
+        self.promote();
         if self.saved == self.records.len() {
             return Ok(());
         }
+        let from = self.saved;
         let mut out = String::new();
         if self.torn {
             out.push('\n');
+            // Ended, a line cut short reads as whatever it holds: a
+            // checkpoint's is one, a record's is read again before a
+            // checkpoint is made.
+            if self.torn_slot {
+                self.mended = true;
+            } else {
+                self.last_cp = Some((self.tail, self.len - self.tail));
+            }
         }
         for i in self.saved..self.records.len() {
             let line = match &self.records[i] {
@@ -1086,7 +1562,201 @@ impl Db {
         self.torn = false;
         self.torn_slot = false;
         self.saved = self.records.len();
+        if self.wants_checkpoint(from) {
+            self.write_checkpoint(lock)?;
+        }
         Ok(())
+    }
+
+    /// Whether to write a checkpoint after the records from `from` on:
+    /// once the file has grown four times the last one's length past it,
+    /// and at least `FLOOR`; or when a head moved, which may be to a stack
+    /// the last one did not read.
+    fn wants_checkpoint(&self, from: usize) -> bool {
+        if !self.fixed {
+            return false;
+        }
+        let (end, last) = self.last_cp.map_or((HEADER as u64, 0), |(at, len)| (at + len + 1, len + 1));
+        test_checkpoints()
+            || self.records[from..].iter().any(|r| matches!(r, Record::Head(_)))
+            || self.len.saturating_sub(end) >= FLOOR.max(4 * last)
+    }
+
+    /// Appends a checkpoint, then points the header at it. A crash in
+    /// between leaves the header pointing at the one before; a reader
+    /// catching the header half written finds its sum wrong, and reads the
+    /// file whole.
+    fn write_checkpoint(&mut self, lock: &mut Lock) -> Result<()> {
+        if self.mended || self.cp.as_ref().is_some_and(|c| c.stale) {
+            self.reread()?;
+        }
+        let need = match self.needed() {
+            Some(need) => need,
+            // Something it needs was not read: the file read whole first.
+            None => {
+                self.reread()?;
+                match self.needed() {
+                    Some(need) => need,
+                    None => return Ok(()),
+                }
+            }
+        };
+        let line = serde_json::to_string(&self.checkpoint(&need)).map_err(|e| Error(e.to_string()))?;
+        let at = self.len;
+        let Some(header) = header_with(Some(&Pointer::new(at, self.records.len(), line.as_bytes()))) else {
+            return Ok(());
+        };
+        let io = |e: std::io::Error| Error(format!("{}: {e}", self.path.display()));
+        match &mut lock.0 {
+            Held::File(f) => {
+                f.write_all(format!("{line}\n").as_bytes()).map_err(io)?;
+                // Written over in place, by another opening of the file:
+                // the lock's appends.
+                let h = File::options().write(true).open(&self.path).map_err(io)?;
+                if h.metadata().ok().map(|m| (m.dev(), m.ino())) == self.ino {
+                    h.write_all_at(header.as_bytes(), 0).map_err(io)?;
+                }
+            }
+            #[cfg(feature = "demo")]
+            Held::Memory { bytes, .. } => {
+                let mut b = bytes.lock().unwrap();
+                b.extend_from_slice(format!("{line}\n").as_bytes());
+                b[..HEADER - 1].copy_from_slice(header.as_bytes());
+            }
+        }
+        self.len += line.len() as u64 + 1;
+        self.lines += 1;
+        self.last_cp = Some((at, line.len() as u64));
+        Ok(())
+    }
+
+    /// The file read again whole, as far as this one read it: what a
+    /// reader reads now.
+    fn reread(&mut self) -> Result<()> {
+        let Some(src) = self.src.take() else { return Ok(()) };
+        let bytes = match src.read(0, self.len) {
+            Ok(b) => b,
+            Err(e) => {
+                self.src = Some(src);
+                return err(format!("{}: {e}", self.path.display()));
+            }
+        };
+        let (path, ino) = (self.path.clone(), self.ino);
+        *self = Db::parse(&path, &bytes)?;
+        (self.src, self.ino) = (Some(src), ino);
+        Ok(())
+    }
+
+    /// The records a checkpoint reads with it, by index: what the state
+    /// stands on. None when one of them was not read here.
+    fn needed(&self) -> Option<BTreeSet<usize>> {
+        let mut need = BTreeSet::new();
+        let (mut stacks, mut patches, mut runs) = (Vec::new(), Vec::new(), BTreeSet::new());
+        // Each head, and where one undo and one redo go; a name deleted,
+        // the stack undoing that brings back.
+        for (name, head) in &self.heads {
+            match head {
+                Some(h) => {
+                    stacks.push(*h);
+                    stacks.extend(self.stacks.get(h).and_then(|(_, p)| *p).and_then(|p| p.checked_sub(1)));
+                    stacks.extend(self.redo_child(name).and_then(|c| c.checked_sub(1)));
+                }
+                None => stacks.extend(self.last_head(name).and_then(|r| r.checked_sub(1))),
+            }
+        }
+        // The runs under way, the runs they name, and what the agent of
+        // those going wrote.
+        let unread = |run: &str| self.cp.as_ref().is_some_and(|c| c.unread.contains(run));
+        for r in self.live_runs() {
+            runs.insert(r.id.clone());
+            runs.extend(named_by(r).2);
+            if r.state == RunState::Started && !unread(&r.id) {
+                need.extend(self.events.get(&r.id).into_iter().flatten().copied());
+            }
+        }
+        // The comments open, the runs their sending names, and the latest
+        // version of their patch.
+        for &at in self.notes.values() {
+            let Record::Comment(n) = &self.records[at] else { continue };
+            if n.text.is_empty() {
+                continue;
+            }
+            need.insert(at);
+            if let Some(q) = &n.queued {
+                runs.extend(q.on.iter().chain(&q.was).cloned());
+            }
+            need.extend(self.latest.get(&n.change).copied());
+        }
+        // Each of those runs, its review, and the stacks and patches it
+        // names: an ask starts from the stack the work it goes on from makes.
+        for id in &runs {
+            let Some(&at) = self.runs.get(id) else { continue };
+            let Record::Run(r) = &self.records[at] else { return None };
+            need.insert(at);
+            need.extend(self.reviews.get(id).copied());
+            let (revs, ps, _) = named_by(r);
+            stacks.extend(revs.into_iter().filter_map(|r| r.checked_sub(1)));
+            patches.extend(ps);
+        }
+        need.extend(self.views.values().copied());
+        need.extend(self.choices.values().copied());
+        need.extend(self.marks.values().flatten().copied());
+        for s in stacks {
+            let Some(Record::Stack(st)) = self.records.get(s) else { return None };
+            need.insert(s);
+            patches.extend(st.patches.iter().cloned());
+        }
+        need.extend(patches.iter().filter_map(|id| self.patches.get(id).copied()));
+        need.iter()
+            .all(|&i| !matches!(self.records[i], Record::Unloaded | Record::Broken) && self.pos[i] != Pos::NONE)
+            .then_some(need)
+    }
+
+    /// The checkpoint of the state as it is, reading `need` with it.
+    fn checkpoint(&self, need: &BTreeSet<usize>) -> Checkpoint {
+        fn sorted<T: Ord>(mut v: Vec<T>) -> Vec<T> {
+            v.sort();
+            v
+        }
+        let revs = |at: &[usize]| at.iter().map(|i| i + 1).collect::<Vec<_>>();
+        let mut queued: Vec<(String, String, Queued)> = self.last_queued.iter().map(|((c, i), q)| (c.clone(), i.clone(), q.clone())).collect();
+        queued.sort_by(|a, b| (&a.0, &a.1).cmp(&(&b.0, &b.1)));
+        // The events read with it: those of the runs going.
+        let mut unread: BTreeSet<String> = self.cp.as_ref().map(|c| c.unread.iter().cloned().collect()).unwrap_or_default();
+        let going: HashSet<&str> = self.live_runs().iter().filter(|r| r.state == RunState::Started).map(|r| r.id.as_str()).collect();
+        let mut events = Vec::new();
+        for (run, at) in &self.events {
+            if going.contains(run.as_str()) && !unread.contains(run) {
+                events.push((run.clone(), revs(at)));
+            } else {
+                unread.insert(run.clone());
+            }
+        }
+        Checkpoint {
+            t: "checkpoint".into(),
+            state: STATE,
+            rev: self.records.len(),
+            lines: self.lines,
+            changes: self.changes,
+            load: need.iter().map(|&i| (i + 1, self.pos[i].at, self.pos[i].len)).collect(),
+            heads: self.heads.iter().map(|(n, h)| (n.clone(), h.map(|i| i + 1))).collect(),
+            patches: sorted(self.patches.iter().map(|(id, i)| (id.clone(), i + 1)).collect()),
+            latest: sorted(self.latest.iter().map(|(c, i)| (c.clone(), i + 1)).collect()),
+            stacks: self.stacks.iter().map(|(i, (n, p))| (i + 1, n.clone(), *p)).collect(),
+            on: sorted(self.on.iter().map(|(n, r)| (n.clone(), r.clone())).collect()),
+            notes: self.notes.iter().map(|((c, id), i)| (c.clone(), id.clone(), i + 1, self.note_first[&(c.clone(), id.clone())] + 1)).collect(),
+            queued,
+            note_lines: sorted(self.note_lines.iter().map(|((c, i), l)| (c.clone(), i.clone(), l.clone())).collect()),
+            views: sorted(self.views.iter().map(|(s, i)| (s.clone(), i + 1)).collect()),
+            choices: self.choices.iter().map(|((s, o), i)| (s.clone(), o.clone(), i + 1)).collect(),
+            collapsed: sorted(self.collapsed.iter().cloned().collect()),
+            reviews: sorted(self.reviews.iter().map(|(r, i)| (r.clone(), i + 1)).collect()),
+            marks: sorted(self.marks.iter().map(|(c, at)| (c.clone(), revs(at))).collect()),
+            runs: self.run_order.iter().map(|id| (id.clone(), self.runs[id] + 1)).collect(),
+            events: sorted(events),
+            unread: unread.into_iter().collect(),
+            warnings: self.warnings.clone(),
+        }
     }
 
     /// The bytes read: when the file is longer, someone else wrote to it.
@@ -1133,14 +1803,56 @@ impl Db {
         self.records.len()
     }
 
-    /// Every record, `records()[i]` rev `i + 1`.
+    /// Every record, `records()[i]` rev `i + 1`: the whole history.
     pub fn records(&self) -> &[Record] {
-        &self.records
+        &self.full().records
     }
 
     /// The record at `rev`.
     pub fn rev(&self, rev: usize) -> Option<&Record> {
-        rev.checked_sub(1).and_then(|i| self.records.get(i))
+        rev.checked_sub(1).filter(|&i| i < self.records.len()).map(|i| self.at(i))
+    }
+
+    /// The record at index `i`: read from the whole history if it was not.
+    fn at(&self, i: usize) -> &Record {
+        match &self.records[i] {
+            Record::Unloaded => &self.full().records[i],
+            r => r,
+        }
+    }
+
+    /// The database with its whole history: this one, unless it was read
+    /// from a checkpoint; then the file read whole as this one read it, the
+    /// first time it is asked.
+    fn full(&self) -> &Db {
+        if self.cp.is_none() {
+            return self;
+        }
+        self.shadow.get_or_init(|| {
+            let whole = self.read_whole();
+            Box::new(whole.unwrap_or_else(|e| panic!("{}: reading the whole history: {}", self.path.display(), e.0)))
+        })
+    }
+
+    /// The file read whole, up to where this one read it, and what this
+    /// one has added since that is not written yet.
+    fn read_whole(&self) -> Result<Db> {
+        let src = self.src.as_ref().ok_or_else(|| Error("the file it was read from is not kept".into()))?;
+        let bytes = src.read(0, self.len).map_err(|e| Error(e.to_string()))?;
+        let mut db = Db::parse(&self.path, &bytes)?;
+        for rec in &self.records[self.saved..] {
+            db.index(rec.clone(), Pos::NONE)?;
+        }
+        Ok(db)
+    }
+
+    /// The whole history taken in, if it was read: before anything changes.
+    fn promote(&mut self) {
+        if let Some(whole) = self.shadow.take() {
+            let (src, ino) = (self.src.take(), self.ino);
+            *self = *whole;
+            (self.src, self.ino) = (src, ino);
+        }
     }
 
     /// The stack at `rev`.
@@ -1152,7 +1864,7 @@ impl Db {
     }
 
     pub fn patch(&self, id: &str) -> &Patch {
-        match &self.records[self.patches[id]] {
+        match self.at(self.patches[id]) {
             Record::Patch(p) => p,
             _ => unreachable!(),
         }
@@ -1179,7 +1891,7 @@ impl Db {
 
     /// The latest version of `change`.
     pub fn latest_version(&self, change: &str) -> Option<&Patch> {
-        match &self.records[*self.latest.get(change)?] {
+        match self.at(*self.latest.get(change)?) {
             Record::Patch(p) => Some(p),
             _ => None,
         }
@@ -1187,6 +1899,9 @@ impl Db {
 
     /// Every version of `change`, oldest first.
     pub fn versions(&self, change: &str) -> Vec<&Patch> {
+        if self.cp.is_some() {
+            return self.full().versions(change);
+        }
         self.records
             .iter()
             .filter_map(|r| match r {
@@ -1199,6 +1914,9 @@ impl Db {
     /// The first stack to hold patch `id`, and its rev: when, and by what
     /// edit, that version came in.
     pub fn first_use(&self, id: &str) -> Option<(usize, &Stack)> {
+        if self.cp.is_some() {
+            return self.full().first_use(id);
+        }
         self.records.iter().enumerate().find_map(|(i, r)| match r {
             Record::Stack(s) if s.patches.iter().any(|p| p == id) => Some((i + 1, s)),
             _ => None,
@@ -1208,7 +1926,7 @@ impl Db {
     /// The stack `name` is on, and its rev.
     pub fn head(&self, name: &str) -> Option<(usize, &Stack)> {
         let at = (*self.heads.get(name)?)?;
-        match &self.records[at] {
+        match self.at(at) {
             Record::Stack(s) => Some((at + 1, s)),
             _ => unreachable!(),
         }
@@ -1235,6 +1953,9 @@ impl Db {
     /// The edits to `name`, or to every name, oldest first: each stack
     /// made, and each move of a head.
     pub fn log(&self, name: Option<&str>) -> Vec<(usize, &Record)> {
+        if self.cp.is_some() {
+            return self.full().log(name);
+        }
         self.records
             .iter()
             .enumerate()
@@ -1249,6 +1970,9 @@ impl Db {
 
     /// Every stack of `name`'s tree, oldest first.
     pub fn tree(&self, name: &str) -> Vec<(usize, &Stack)> {
+        if self.cp.is_some() {
+            return self.full().tree(name);
+        }
         self.records
             .iter()
             .enumerate()
@@ -1409,13 +2133,14 @@ impl Db {
 
     /// Where redo would take `name`, and the edit it would make again.
     pub fn redo_target(&self, name: &str) -> Option<(usize, String)> {
-        let (rev, _) = self.head(name)?;
-        self.on
-            .get(name)?
-            .iter()
-            .rev()
-            .find_map(|&later| self.child_towards(rev, later))
-            .and_then(|child| Some((child, self.node(child).ok()?.op.clone())))
+        let child = self.redo_child(name)?;
+        Some((child, self.node(child).ok()?.op.clone()))
+    }
+
+    /// Where redo would take `name`, by the indexes alone.
+    fn redo_child(&self, name: &str) -> Option<usize> {
+        let rev = (*self.heads.get(name)?)? + 1;
+        self.on.get(name)?.iter().rev().find_map(|&later| self.child_towards(rev, later))
     }
 
     /// The child of `from` on the way to `to`, if `to` descends from it.
@@ -1459,6 +2184,7 @@ impl Db {
         self.notes
             .range((change.to_string(), String::new())..)
             .take_while(|((c, _), _)| c == change)
+            // A comment's latest record not read is one that closed it.
             .filter_map(|(_, &at)| match &self.records[at] {
                 Record::Comment(n) if !n.text.is_empty() => Some(n),
                 _ => None,
@@ -1494,6 +2220,9 @@ impl Db {
 
     /// Every record of comment `id` on `change`, oldest first, with its rev.
     pub fn note_history(&self, change: &str, id: &str) -> Vec<(usize, &Note)> {
+        if self.cp.is_some() {
+            return self.full().note_history(change, id);
+        }
         self.note_records
             .get(&(change.to_string(), id.to_string()))
             .into_iter()
@@ -1541,7 +2270,7 @@ impl Db {
 
     /// What stack `name`'s comments pane shows, if it was ever picked.
     pub fn view(&self, name: &str) -> Option<&str> {
-        match &self.records[*self.views.get(name)?] {
+        match self.at(*self.views.get(name)?) {
             Record::View { show, .. } => Some(show),
             _ => None,
         }
@@ -1559,7 +2288,7 @@ impl Db {
 
     /// What stack `name` picked for its menus' choice `of`, if it ever did.
     pub fn choice(&self, name: &str, of: &str) -> Option<&str> {
-        match &self.records[*self.choices.get(&(name.to_string(), of.to_string()))?] {
+        match self.at(*self.choices.get(&(name.to_string(), of.to_string()))?) {
             Record::Choice { pick, .. } => Some(pick),
             _ => None,
         }
@@ -1570,7 +2299,7 @@ impl Db {
         self.choices
             .range((name.to_string(), String::new())..)
             .take_while(|((s, _), _)| s == name)
-            .filter_map(|(_, &at)| match &self.records[at] {
+            .filter_map(|(_, &at)| match self.at(at) {
                 Record::Choice { of, pick, .. } => Some((of.as_str(), pick.as_str())),
                 _ => None,
             })
@@ -1611,7 +2340,7 @@ impl Db {
             .get(change)
             .into_iter()
             .flatten()
-            .filter_map(|&i| match &self.records[i] {
+            .filter_map(|&i| match self.at(i) {
                 Record::Read(m) => Some((i + 1, m)),
                 _ => None,
             })
@@ -1648,7 +2377,7 @@ impl Db {
 
     /// Where run `id` stands.
     pub fn run(&self, id: &str) -> Option<&Run> {
-        match &self.records[*self.runs.get(id)?] {
+        match self.at(*self.runs.get(id)?) {
             Record::Run(r) => Some(r),
             _ => None,
         }
@@ -1663,7 +2392,19 @@ impl Db {
     /// The runs whose agent is going, or whose work waits for your review,
     /// oldest started first: those under way, not those done with.
     pub fn live_runs(&self) -> Vec<&Run> {
-        self.runs().into_iter().filter(|r| r.state == RunState::Started || crate::held::waiting(self, r)).collect()
+        if self.cp.as_ref().is_some_and(|c| c.stale) {
+            return self.full().live_runs();
+        }
+        self.run_order
+            .iter()
+            // A run not read was done with at the checkpoint, and nothing
+            // was written of it since.
+            .filter_map(|id| match &self.records[self.runs[id]] {
+                Record::Run(r) => Some(r),
+                _ => None,
+            })
+            .filter(|r| r.state == RunState::Started || crate::held::waiting(self, r))
+            .collect()
     }
 
     /// Whether a run was ever written.
@@ -1678,6 +2419,9 @@ impl Db {
 
     /// What run `id`'s claude wrote, in order.
     pub fn events(&self, id: &str) -> Vec<&serde_json::Value> {
+        if self.cp.as_ref().is_some_and(|c| c.unread.contains(id)) {
+            return self.full().events(id);
+        }
         self.events
             .get(id)
             .into_iter()
@@ -1691,6 +2435,9 @@ impl Db {
 
     /// How many lines run `id`'s agent wrote.
     pub fn event_count(&self, id: &str) -> usize {
+        if self.cp.as_ref().is_some_and(|c| c.unread.contains(id)) {
+            return self.full().event_count(id);
+        }
         self.events.get(id).map_or(0, Vec::len)
     }
 
@@ -1714,7 +2461,7 @@ impl Db {
 
     /// The review of what run `id` brought back, as last saved.
     pub fn review(&self, id: &str) -> Option<&crate::held::Review> {
-        match &self.records[*self.reviews.get(id)?] {
+        match self.at(*self.reviews.get(id)?) {
             Record::Review { review, .. } => Some(review),
             _ => None,
         }
@@ -1745,6 +2492,9 @@ impl Db {
     /// it. A comment the agent moved to the stack is not one of them, nor
     /// one moved back to where it came from.
     pub fn deleted_notes(&self, name: &str, change: &str) -> Vec<(usize, Note)> {
+        if self.cp.is_some() {
+            return self.full().deleted_notes(name, change);
+        }
         // Where the comments on the stack were moved from.
         let origins: std::collections::HashSet<(String, String)> = self
             .stack_notes(name)
@@ -1773,7 +2523,8 @@ impl Db {
         out
     }
 
-    /// The comment `id` on `change`, if it is not deleted.
+    /// The comment `id` on `change`, if it is not deleted: its latest
+    /// record not read is one that deleted it.
     pub fn note(&self, change: &str, id: &str) -> Option<&Note> {
         match &self.records[*self.notes.get(&(change.to_string(), id.to_string()))?] {
             Record::Comment(n) if !n.text.is_empty() => Some(n),
@@ -1783,11 +2534,13 @@ impl Db {
 
     /// Writes a comment; empty text deletes it.
     pub fn set_note(&mut self, note: Note) -> Result<()> {
-        let same = self
-            .notes
-            .get(&(note.change.clone(), note.id.clone()))
-            .map(|&at| &self.records[at])
-            .is_some_and(|r| matches!(r, Record::Comment(n) if *n == Note { time: n.time, ..note.clone() }));
+        let same = self.notes.get(&(note.change.clone(), note.id.clone())).is_some_and(|&at| {
+            // Not read, it deleted the comment: the same only if this does too.
+            if matches!(self.records[at], Record::Unloaded) && !note.text.is_empty() {
+                return false;
+            }
+            matches!(self.at(at), Record::Comment(n) if *n == Note { time: n.time, ..note.clone() })
+        });
         if !same {
             self.push(Record::Comment(Note { time: now(), ..note }))?;
         }
@@ -1870,7 +2623,18 @@ mod tests {
         let path = tmp.path().join("db.jsonl");
         Db::edit(&path, |db| db.set_view("s", "all")).unwrap();
         let bytes = std::fs::read(&path).unwrap();
-        assert_eq!(&bytes[..HEADER], format!("{}\n", header_line()).as_bytes());
+        assert_fixed(&bytes);
+    }
+
+    /// That `bytes` start with the header of the fixed length: pointing at
+    /// no checkpoint, unless one is written at every write.
+    fn assert_fixed(bytes: &[u8]) {
+        assert_eq!(bytes[HEADER - 1], b'\n');
+        let h: Header = serde_json::from_slice(&bytes[..HEADER - 1]).unwrap();
+        assert_eq!(h.version, VERSION);
+        if !test_checkpoints() {
+            assert_eq!(&bytes[..HEADER - 1], header_line().as_bytes());
+        }
     }
 
     #[test]
@@ -1900,10 +2664,11 @@ mod tests {
         assert_eq!((db.last_rev(), db.view("s")), (4, Some("all")));
         assert!(db.warnings.is_empty(), "{:?}", db.warnings);
         // A line that does not read keeps its rev, and is said by its line.
+        let no = std::fs::read(&path).unwrap().iter().filter(|&&b| b == b'\n').count() + 1;
         add(b"garbage\n");
         let db = Db::load(&path).unwrap();
         assert_eq!(db.last_rev(), 5);
-        assert!(db.warnings[0].contains(":7: passed over"), "{:?}", db.warnings);
+        assert!(db.warnings[0].contains(&format!(":{no}: passed over")), "{:?}", db.warnings);
     }
 
     /// The file as stacked 2 wrote it, of `lines` after its header.
@@ -1932,7 +2697,7 @@ mod tests {
         assert!(!reader.fixed);
         Db::edit(&path, |db| db.set_view("s", "all")).unwrap();
         let bytes = std::fs::read(&path).unwrap();
-        assert_eq!(&bytes[..HEADER], format!("{}\n", header_line()).as_bytes());
+        assert_fixed(&bytes);
         assert!(bytes[HEADER..].starts_with(&old.as_bytes()[old.find('\n').unwrap() + 1..]), "every line after it as it was");
         assert_ne!(ino(&path), was, "a new file, renamed over the old");
         let db = Db::load(&path).unwrap();
@@ -2021,6 +2786,264 @@ mod tests {
         assert_eq!(db.view("s"), Some("none"));
         assert_eq!(db.events("r").len(), 1);
         assert!(db.warnings.is_empty(), "{:?}", db.warnings);
+    }
+
+    /// A database with a history, its revs said:
+    /// - @2-@5 two versions of a patch and the stacks of each, the second
+    ///   edited from the first; @6 an undo back to the first;
+    /// - @7-@10 a run done with, and the lines its agent wrote; @11 a run
+    ///   going, @12 a line its agent wrote;
+    /// - @13 a comment open; @14 one opened, @15 closed;
+    /// - @16 a view, @17 a choice, @18 a read mark, @19 a collapse.
+    fn history(path: &Path) {
+        let p1 = Patch::new("c".into(), None, None, "Bug 1 - one".into(), "diff --git a/a b/a\n".into());
+        let p2 = Patch::new("c".into(), None, None, "Bug 1 - one again".into(), "diff --git a/a b/a\n".into());
+        let stack = |p: &Patch, parent: Option<usize>, op: &str| {
+            Record::Stack(Stack {
+                name: "s".into(),
+                patches: vec![p.id.clone()],
+                base: None,
+                repo: None,
+                parent,
+                op: op.into(),
+                time: 1,
+            })
+        };
+        let run = |id: &str, state: RunState| {
+            Record::Run(Run {
+                id: id.into(),
+                what: "edit".into(),
+                stack: "s".into(),
+                state,
+                pid: Some(std::process::id()),
+                ask: Some(serde_json::json!({"from": 3})),
+                time: 3,
+                ..Default::default()
+            })
+        };
+        let event = |run: &str, n: usize| Record::Event {
+            run: run.into(),
+            event: serde_json::json!({"type": "x", "n": n}),
+        };
+        let undo = Record::Head(Head {
+            name: "s".into(),
+            rev: Some(3),
+            op: "undo edit".into(),
+            time: 2,
+        });
+        Db::append(
+            path,
+            &[
+                Record::Patch(p1.clone()),
+                stack(&p1, None, "import"),
+                Record::Patch(p2.clone()),
+                stack(&p2, Some(3), "edit"),
+                undo,
+                run("r1", RunState::Started),
+                event("r1", 1),
+                event("r1", 2),
+                run("r1", RunState::Done),
+                run("r2", RunState::Started),
+                event("r2", 1),
+            ],
+        )
+        .unwrap();
+        let note = |id: &str, text: &str| Note {
+            change: "c".into(),
+            id: id.into(),
+            line: format!("+{id}"),
+            text: text.into(),
+            ..Default::default()
+        };
+        Db::edit(path, |db| {
+            db.set_note(note("a", "why?"))?;
+            db.set_note(note("b", "and?"))?;
+            db.set_note(note("b", ""))?;
+            db.set_view("s", "all")?;
+            db.set_choice("s", "ask", "whole")?;
+            db.mark_read("c", vec!["+x".into()])?;
+            db.set_collapsed("c", "a", true)
+        })
+        .unwrap();
+    }
+
+    /// A checkpoint written now, as a write past the threshold does.
+    fn checkpoint(path: &Path) {
+        let (mut db, mut lock) = Db::lock(path).unwrap();
+        db.write_checkpoint(&mut lock).unwrap();
+    }
+
+    #[test]
+    fn a_database_read_from_its_checkpoint_is_the_one_read_whole() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("db.jsonl");
+        history(&path);
+        checkpoint(&path);
+        // And a line after it.
+        Db::append(&path, &[Record::Event { run: "r2".into(), event: serde_json::json!({"type": "y"}) }]).unwrap();
+        let whole = Db::from_bytes(&path, &std::fs::read(&path).unwrap()).unwrap();
+        let mut db = Db::load(&path).unwrap();
+        assert!(db.cp.is_some(), "read from its checkpoint");
+        assert_eq!(db.differs(&whole), None);
+        // Read: the stacks undo and redo go to, their patches, the run
+        // going and what its agent wrote, what is open, chosen and marked.
+        let read = |rev: usize| !matches!(db.records[rev - 1], Record::Unloaded);
+        for rev in [2, 3, 4, 5, 11, 12, 13, 16, 17, 18, 20] {
+            assert!(read(rev), "@{rev} read");
+        }
+        // Not: the undo, the run done with, the comment closed, the
+        // collapse (the checkpoint holds what is collapsed).
+        for rev in [6, 7, 8, 9, 10, 14, 15, 19] {
+            assert!(!read(rev), "@{rev} not read");
+        }
+        assert_eq!(db.live_runs().iter().map(|r| r.id.as_str()).collect::<Vec<_>>(), ["r2"]);
+        assert_eq!(db.events("r2").len(), 2);
+        assert_eq!(db.note("c", "a").map(|n| n.text.as_str()), Some("why?"));
+        assert!(db.note("c", "b").is_none() && db.collapsed("c", "a"));
+        assert_eq!((db.undo_target("s"), db.redo_target("s")), (whole.undo_target("s"), whole.redo_target("s")));
+        assert_eq!(db.redo_target("s"), Some((5, "edit".into())));
+        assert!(db.shadow.get().is_none(), "nothing has read the whole history");
+        // The history, read the first time it is asked.
+        assert_eq!(db.versions("c"), whole.versions("c"));
+        assert_eq!(db.note_history("c", "b"), whole.note_history("c", "b"));
+        assert_eq!(db.events("r1"), whole.events("r1"));
+        assert_eq!(db.runs(), whole.runs());
+        assert_eq!(db.deleted_notes("s", "c"), whole.deleted_notes("s", "c"));
+        assert!(db.shadow.get().is_some());
+        // Taken in before anything changes.
+        db.catch_up().unwrap();
+        assert!(db.cp.is_none() && db.records == whole.records);
+    }
+
+    #[test]
+    fn a_checkpoint_that_does_not_check_out_is_passed_over_the_file_read_whole() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("db.jsonl");
+        history(&path);
+        checkpoint(&path);
+        let good = std::fs::read(&path).unwrap();
+        let whole = Db::from_bytes(&path, &good).unwrap();
+        let ptr = serde_json::from_slice::<Header>(&good[..HEADER - 1]).unwrap().checkpoint.unwrap();
+        let line = good[ptr.at as usize..(ptr.at + ptr.len) as usize].to_vec();
+        // The header pointed at checkpoint line `line`, appended.
+        let pointing = |line: &[u8]| {
+            let mut b = good.clone();
+            let at = b.len() as u64;
+            b.extend_from_slice(line);
+            b.push(b'\n');
+            b[..HEADER - 1].copy_from_slice(header_with(Some(&Pointer::new(at, ptr.rev, line))).unwrap().as_bytes());
+            b
+        };
+        let edited = |edit: &dyn Fn(&mut serde_json::Value)| {
+            let mut v: serde_json::Value = serde_json::from_slice(&line).unwrap();
+            edit(&mut v);
+            pointing(serde_json::to_string(&v).unwrap().as_bytes())
+        };
+        let header = |p: Pointer| {
+            let mut b = good.clone();
+            b[..HEADER - 1].copy_from_slice(header_with(Some(&p)).unwrap().as_bytes());
+            b
+        };
+        let cases: Vec<(&str, Vec<u8>)> = vec![
+            ("the header half written", {
+                let mut b = good.clone();
+                b[30..90].fill(b'#');
+                b
+            }),
+            (
+                "a sum that does not match",
+                header(Pointer {
+                    sum: "0000000000000000".into(),
+                    ..ptr.clone()
+                }),
+            ),
+            (
+                "a pointer past the end",
+                header(Pointer {
+                    at: good.len() as u64 + 100,
+                    ..ptr.clone()
+                }),
+            ),
+            ("a checkpoint's line cut short", pointing(&line[..line.len() / 2])),
+            ("a checkpoint of another layout", edited(&|v| v["state"] = 99.into())),
+            ("a record not where it says", edited(&|v| v["load"][0][1] = (v["load"][0][1].as_u64().unwrap() + 1).into())),
+            ("a head on a stack not read", edited(&|v| v["load"] = serde_json::json!([]))),
+        ];
+        for (what, bytes) in cases {
+            std::fs::write(&path, &bytes).unwrap();
+            let db = Db::load(&path).unwrap();
+            assert!(db.cp.is_none(), "{what}: read whole");
+            assert_eq!(db.records[1..], whole.records[1..], "{what}");
+            assert_eq!(db.head("s").map(|(r, _)| r), Some(3), "{what}");
+        }
+        // The header half written, it is written again under the lock.
+        let mut b = good.clone();
+        b[30..90].fill(b'#');
+        std::fs::write(&path, &b).unwrap();
+        Db::edit(&path, |db| db.set_view("s", "none")).unwrap();
+        let db = Db::load(&path).unwrap();
+        assert!(db.warnings.is_empty() && db.fixed, "{:?}", db.warnings);
+        assert_eq!((db.last_rev(), db.view("s")), (20, Some("none")));
+    }
+
+    #[test]
+    fn a_reader_reads_while_checkpoints_are_written_and_pointed_at() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("db.jsonl");
+        history(&path);
+        let writer = {
+            let path = path.clone();
+            std::thread::spawn(move || {
+                for k in 0..60 {
+                    Db::edit(&path, |db| db.set_view("s", if k % 2 == 0 { "none" } else { "all" })).unwrap();
+                    checkpoint(&path);
+                }
+            })
+        };
+        let mut read = 0;
+        while !writer.is_finished() {
+            let db = Db::load(&path).unwrap();
+            // Each read as the file read whole up to where it read it.
+            let whole = Db::from_bytes(&path, &std::fs::read(&path).unwrap()[..db.len as usize]).unwrap();
+            assert_eq!(db.records.len(), whole.records.len());
+            assert_eq!(db.view("s"), whole.view("s"));
+            assert_eq!(db.head("s").map(|(r, _)| r), Some(3));
+            read += usize::from(db.cp.is_some());
+        }
+        writer.join().unwrap();
+        assert!(read > 0, "some read from a checkpoint");
+    }
+
+    #[test]
+    fn a_checkpoint_is_written_once_the_file_has_grown_enough() {
+        if test_checkpoints() {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("db.jsonl");
+        history(&path);
+        let pointer = || serde_json::from_slice::<Header>(&std::fs::read(&path).unwrap()[..HEADER - 1]).unwrap().checkpoint;
+        Db::edit(&path, |db| db.set_view("s", "none")).unwrap();
+        assert_eq!(pointer(), None, "the file is short");
+        // The agent of the run going writes on, past `FLOOR`.
+        let big = "x".repeat(4096);
+        let lines: Vec<Record> = (0..70).map(|n| Record::Event { run: "r2".into(), event: serde_json::json!({"n": n, "text": big}) }).collect();
+        Db::append(&path, &lines).unwrap();
+        assert_eq!(pointer(), None, "appending alone writes none");
+        Db::edit(&path, |db| db.set_view("s", "all")).unwrap();
+        let first = pointer().expect("the next write writes one");
+        assert!(Db::load(&path).unwrap().cp.is_some());
+        // Not again until the file grows past it: four times its length,
+        // and `FLOOR`.
+        Db::edit(&path, |db| db.set_view("s", "none")).unwrap();
+        assert_eq!(pointer(), Some(first.clone()));
+        // A head moved: at once.
+        Db::append(&path, &[Record::Head(Head { name: "s".into(), rev: Some(5), op: "redo edit".into(), time: 4 })]).unwrap();
+        Db::edit(&path, |db| db.restore_head("s", Some(3), "undo edit".into()).map(|_| ())).unwrap();
+        let db = Db::load(&path).unwrap();
+        assert_ne!(pointer(), Some(first));
+        assert!(db.cp.is_some());
+        assert_eq!(db.head("s").map(|(r, _)| r), Some(3));
     }
 
     #[test]
