@@ -52,7 +52,7 @@ use std::process::{Command, Stdio};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-use crate::claude::{allowed_tools, format_event, parse_claude_replies, parse_review_notes};
+use crate::claude::{allowed_tools, format_event, last_object, parse_claude_replies, parse_review_notes};
 use crate::config::Workspace;
 use crate::db::{
     Db, Error, Moved, Note, Patch, Queued, Record, Result, Run, RunState, Stack, Stage, Way, err,
@@ -1866,15 +1866,6 @@ fn str_of(v: Option<&Value>) -> String {
     }
 }
 
-/// The JSON object `text` ends with.
-fn last_object(text: &str) -> Option<Map<String, Value>> {
-    let (i, j) = (text.find('{')?, text.rfind('}')?);
-    if j < i {
-        return None;
-    }
-    serde_json::from_str::<Value>(&text[i..=j]).ok()?.as_object().cloned()
-}
-
 /// What claude replied to each comment: `replies`, else labels at the top.
 fn replies_of(text: &str) -> Map<String, Value> {
     match last_object(text).and_then(|o| o.get("replies").and_then(Value::as_object).cloned()) {
@@ -2622,6 +2613,16 @@ mod tests {
             bytes.push('\n');
         }
         Db::from_bytes(Path::new("t.jsonl"), bytes.as_bytes()).unwrap()
+    }
+
+    #[test]
+    fn replies_are_found_after_prose_holding_braces() {
+        let text = "Left: `Provider.${this.name}` @r1.\n\n```json\n{\"replies\": {\"c1\": {\"text\": \"Done.\"}}}\n```";
+        assert_eq!(replies_of(text)["c1"]["text"], "Done.");
+        assert!(last_object("no object { here").is_none());
+        // Prose after it, braces in it too: still the answer.
+        let after = format!("{text}\nThen `${{more}}`, as fn f() {{}} does.");
+        assert_eq!(replies_of(&after)["c1"]["text"], "Done.");
     }
 
     #[test]

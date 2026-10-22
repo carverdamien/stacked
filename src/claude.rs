@@ -130,16 +130,39 @@ fn unfence(text: &str) -> String {
     rest.trim().to_string()
 }
 
+/// The JSON objects `text` holds, in order, wherever each starts: the
+/// prose before them, between them and after them left out, braces of its
+/// own too (`${name}`). An object in another is part of it; an empty one,
+/// `{}`, is as likely code as an answer, and is left out.
+pub fn objects(text: &str) -> Vec<Map<String, Value>> {
+    let mut out = Vec::new();
+    let mut at = 0;
+    while let Some(k) = text[at..].find('{') {
+        let i = at + k;
+        let mut one = serde_json::Deserializer::from_str(&text[i..]).into_iter::<Value>();
+        match one.next() {
+            Some(Ok(Value::Object(o))) => {
+                at = i + one.byte_offset();
+                if !o.is_empty() {
+                    out.push(o);
+                }
+            }
+            _ => at = i + 1,
+        }
+    }
+    out
+}
+
+/// The last JSON object `text` holds: what the agent ends its answer with,
+/// whatever prose comes before it or after it.
+pub fn last_object(text: &str) -> Option<Map<String, Value>> {
+    objects(text).pop()
+}
+
 /// Best-effort extraction of an {id: reply} map from claude's output.
 pub fn parse_claude_replies(text: &str) -> Option<Map<String, Value>> {
     let text = unfence(text);
-    let obj: Value = serde_json::from_str(&text).ok().or_else(|| {
-        let (i, j) = (text.find('{')?, text.rfind('}')?);
-        if j <= i {
-            return None;
-        }
-        serde_json::from_str(&text[i..=j]).ok()
-    })?;
+    let obj: Value = serde_json::from_str(&text).ok().or_else(|| last_object(&text).map(Value::Object))?;
     let obj = obj.as_object()?;
     Some(
         obj.iter()
@@ -157,16 +180,10 @@ pub fn parse_claude_replies(text: &str) -> Option<Map<String, Value>> {
 /// The notes a review answered with, or None if unreadable.
 pub fn parse_review_notes(text: &str) -> Option<Vec<Map<String, Value>>> {
     let text = unfence(text);
-    let candidates = [
-        text.clone(),
-        match (text.find('{'), text.rfind('}')) {
-            (Some(i), Some(j)) if j >= i => text[i..=j].to_string(),
-            _ => String::new(),
-        },
-    ];
-    let obj: Value = candidates
-        .iter()
-        .find_map(|c| serde_json::from_str(c).ok())?;
+    let obj: Value = serde_json::from_str(&text)
+        .ok()
+        .filter(Value::is_object)
+        .or_else(|| last_object(&text).map(Value::Object))?;
     let comments = obj.as_object()?.get("comments")?.as_array()?;
     Some(
         comments
@@ -380,6 +397,23 @@ mod tests {
         assert_eq!(r["a"], "x");
         assert!(parse_claude_replies("no json").is_none());
         assert!(parse_claude_replies("[1, 2]").is_none());
+    }
+
+    #[test]
+    fn the_objects_of_a_text_are_found_whatever_prose_is_around_them() {
+        // An object in the prose, braces of it that are none, then the
+        // answer, then more prose: code with an empty block in it.
+        let text = "Left: `Provider.${this.name}`, as `{\"a\": 1}` says.\n\n```json\n{\"replies\": {\"c1\": \"Done.\"}, \"comments\": [{\"text\": \"See.\", \"patch\": 1}]}\n```\nThen `${more}`, as fn f() {} does.";
+        let found = objects(text);
+        assert_eq!(found.len(), 2, "{found:?}");
+        assert_eq!(found[0]["a"], 1);
+        assert_eq!(last_object(text).unwrap()["replies"]["c1"], "Done.");
+        // The comments it opened, as its replies.
+        assert_eq!(parse_review_notes(text).unwrap().len(), 1);
+        assert_eq!(parse_claude_replies("Sure, `${x}`: {\"a\": \"x\"} then {y}.").unwrap()["a"], "x");
+        // An object in one that does not parse is no answer of its own.
+        assert_eq!(objects("{\"replies\": {\"c1\": \"x\"}, oops}").len(), 1);
+        assert!(objects("no object { here }, nor {}").is_empty());
     }
 
     #[test]
