@@ -381,12 +381,8 @@ enum Cmd {
     Runs { name: Option<String> },
     /// What a run's agent wrote.
     Transcript { id: String },
-    /// Pull a stack's reviews from Phabricator: what is new waits for your
-    /// review, as the agent's work does (`landed`, `review`).
-    #[cfg(feature = "moz-phab")]
-    Pull { name: String },
-    /// Phabricator, over Conduit with moz-phab's token: `import`, a stack
-    /// of its revisions.
+    /// Phabricator, over Conduit with moz-phab's token: `pull`, a stack's
+    /// reviews; `import`, a stack of its revisions.
     #[cfg(feature = "moz-phab")]
     MozPhab {
         #[command(subcommand)]
@@ -511,6 +507,9 @@ enum MozPhabWhat {
         #[arg(long)]
         name: Option<String>,
     },
+    /// Pull a stack's reviews from Phabricator: what is new waits for your
+    /// review, as the agent's work does (`landed`, `review`).
+    Pull { name: String },
 }
 
 #[derive(Subcommand)]
@@ -1581,11 +1580,11 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
             }
         }
         #[cfg(feature = "moz-phab")]
-        Cmd::Pull { name } => print_run(&review::pull(path, &name)?),
-        #[cfg(feature = "moz-phab")]
         Cmd::MozPhab { what: MozPhabWhat::Import { revision, name } } => {
             println!("{}", stacked::phab::import(path, &here(), &revision, name.as_deref())?)
         }
+        #[cfg(feature = "moz-phab")]
+        Cmd::MozPhab { what: MozPhabWhat::Pull { name } } => print_run(&review::pull(path, &name)?),
         Cmd::Apply { name, branch } => print_run(&ops::apply_stack(path, &name, branch.as_deref())?),
         Cmd::Trim { new, from } => {
             let from = from.as_deref().map(parse_rev).transpose()?;

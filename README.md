@@ -66,7 +66,7 @@ stacked send bug123 --all --answer-only   # every comment that can be sent
 stacked send bug123 4f1c2a --later   # in the stack's batch, to go with the rest
 stacked send bug123 --batch --fan-out   # the batch: edits to one agent, answers an agent each
 stacked reply bug123 4f1c2a and keep the title
-stacked pull bug123                # reviewers' comments from Phabricator, held for your review (moz-phab)
+stacked moz-phab pull bug123       # reviewers' comments from Phabricator, held for your review (moz-phab)
 stacked moz-phab import D123       # a new stack of D123, those it stacks on and those on it (moz-phab)
 stacked apply bug123 --branch bug123   # only now does the worktree change
 stacked export bug123 | git am     # or put it anywhere by hand
@@ -1391,7 +1391,8 @@ REVISION` makes a new stack of a revision, `D123`, `123` or its link, as
 `Import from Phabricator…` does in the editor (Making a stack in the
 editor): `imported 2 patches from D11..D12 as D12`.
 
-`pull`, or the menu's `Pull reviews from Phabricator`, reads the revision in
+`stacked moz-phab pull NAME`, or the menu's `Pull reviews from
+Phabricator`, reads the revision in
 each patch's `Differential Revision:` trailer (the settings can name
 another) over Conduit, with the token moz-phab keeps in `~/.arcrc`, or the
 settings'. While it reads them, the banner says which revision it reads

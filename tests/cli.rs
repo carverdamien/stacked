@@ -2998,6 +2998,8 @@ fn a_stack_is_imported_from_phabricator_by_its_revision() {
     use stacked::phab::{Revision, import, stack_stand_in};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
+    // The settings of no file: a developer's own must not change it.
+    stacked::config::init(stacked::config::Config::default());
     let e = env();
     let base = git(&e.src, &["rev-parse", "base"]).trim().to_string();
     // Phabricator as the test has it: D21 on base, D22 on it, read from
@@ -3063,17 +3065,31 @@ fn a_stack_is_imported_from_phabricator_by_its_revision() {
 
 #[cfg(feature = "moz-phab")]
 #[test]
-fn moz_phab_import_says_what_names_no_revision() {
+fn moz_phab_says_what_it_cannot_do_before_reaching_phabricator() {
     let e = env();
     let (fine, _, err) = e.run(&["moz-phab", "import", "D2x"]);
     assert!(!fine && err.contains("\"D2x\" names no revision: give D123, 123, or its link"), "{err}");
+    // Reviews from nowhere, as the settings say: neither pulled nor
+    // imported.
+    let settings = e.root.join("nowhere.toml");
+    std::fs::write(&settings, "[reviews]\nsource = \"none\"\n").unwrap();
+    let env = [("STACKED_CONFIG", settings.as_path())];
+    for (args, said) in [(&["moz-phab", "import", "D21"][..], "revisions come from nowhere"), (&["moz-phab", "pull", "s"][..], "reviews come from nowhere")] {
+        let (fine, _, err) = stacked_in(&e.src, &e.db, args, "", &env);
+        assert!(!fine && err.contains(&format!("{said}: reviews.source is \"none\" in {}", settings.display())), "{args:?}: {err}");
+    }
 }
 
 #[test]
 fn phabricator_s_commands_are_there_when_built_with_it() {
     let e = env();
+    let listed = |help: &str, cmd: &str| help.lines().any(|l| l.trim_start().starts_with(&format!("{cmd} ")));
     let help = e.ok(&["--help"]);
-    for cmd in ["pull ", "moz-phab "] {
-        assert_eq!(help.lines().any(|l| l.trim_start().starts_with(cmd)), cfg!(feature = "moz-phab"), "{cmd}\n{help}");
+    assert_eq!(listed(&help, "moz-phab"), cfg!(feature = "moz-phab"), "{help}");
+    assert!(!listed(&help, "pull"), "under moz-phab, if anywhere: {help}");
+    #[cfg(feature = "moz-phab")]
+    {
+        let help = e.ok(&["moz-phab", "--help"]);
+        assert!(listed(&help, "import") && listed(&help, "pull"), "{help}");
     }
 }

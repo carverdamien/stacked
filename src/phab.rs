@@ -563,9 +563,16 @@ pub fn plan(at: &Path, rev: &str, revs: Vec<Revision>) -> Result<Plan, String> {
 /// its link) read with those it stacks on, and those that stack on it while
 /// one is open, imported as a new stack of the database at `db`, in the
 /// checkout at `at`, named `name` (else the revision's, or one free): what
-/// was imported, said.
+/// was imported, said. Not while the settings say reviews come from
+/// nowhere, as the editor offers no import then.
 pub fn import(db: &Path, at: &Path, text: &str, name: Option<&str>) -> crate::db::Result<String> {
     use crate::db::{Db, err};
+    if crate::config::get().reviews.source == crate::config::Source::None {
+        return err(format!(
+            "revisions come from nowhere: reviews.source is \"none\" in {}",
+            crate::config::path().display()
+        ));
+    }
     let Some((rev, link)) = revision_named(text) else {
         return err(format!("{text:?} names no revision: give D123, 123, or its link"));
     };

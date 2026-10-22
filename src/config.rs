@@ -675,7 +675,7 @@ impl Config {
         out.push_str(&format!("schema = {}\n", self.agent.schema));
         // Phabricator's, built with it (the moz-phab feature).
         if cfg!(feature = "moz-phab") {
-            out.push_str("\n[reviews]\n# Where `pull` reads reviews from: \"phabricator\", or \"none\".\n");
+            out.push_str("\n[reviews]\n# Where `moz-phab pull` reads reviews from, and `moz-phab import` revisions: \"phabricator\", or \"none\".\n");
             out.push_str(&format!(
                 "source = {}\n",
                 q(match self.reviews.source {

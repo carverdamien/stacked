@@ -21,7 +21,7 @@ web = ["dep:unicode-width"]
 # database and repository kept in memory: nothing is written on disk.
 demo = []
 # Phabricator, over Conduit with moz-phab's token (`curl` calls it): the
-# reviews pulled (`stacked pull`, the editor's `Pull reviews from
+# reviews pulled (`stacked moz-phab pull`, the editor's `Pull reviews from
 # Phabricator`), and stacks imported from its revisions (`stacked moz-phab
 # import`, the editor's `Import from Phabricator…`).
 moz-phab = []
