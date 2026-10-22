@@ -226,6 +226,7 @@ the help then names those:
 - `?` says what can be done where the cursor is, as `Press Enter to create a
   comment on this line.`, and where the arrows go. The next key closes it
   and does what it does, so the key it names can be pressed straight away.
+  With no stack, it says nothing: the menu has nothing but Quit.
 - Esc goes back: out of a menu, a list, a stream. In the panes, it goes to
   the banner first, when there is one (while a comment is open, or work
   waits), from wherever the cursor is; Esc there comes back where it was.

@@ -2506,7 +2506,7 @@ impl App {
             if matches!(k.code, KeyCode::Esc | KeyCode::Char('?')) {
                 return Effect::None;
             }
-        } else if k.code == KeyCode::Char('?') && !matches!(self.mode, Mode::Edit(_) | Mode::Lines(_)) {
+        } else if k.code == KeyCode::Char('?') && !matches!(self.mode, Mode::Edit(_) | Mode::Lines(_)) && (self.helps() || self.mode != Mode::Normal) {
             self.mode = Mode::Help {
                 lines: self.help(),
                 back: Box::new(self.mode.clone()),
@@ -3149,12 +3149,8 @@ impl App {
                 out.push(self.arrows_help());
             }
             Screen::Main => {
-                match self.enter() {
-                    Some(a) => out.push(format!("Press Enter to {}.", about(&a))),
-                    None if self.current().is_none() => {
-                        out.push("There is no stack here: `stacked import NAME main..HEAD` makes one.".into())
-                    }
-                    None => {}
+                if let Some(a) = self.enter() {
+                    out.push(format!("Press Enter to {}.", about(&a)));
                 }
                 let here = match self.focus {
                     Focus::List if self.on_stack => "on the stack: its comments, sending them, and the stack's own menu",
@@ -3809,6 +3805,13 @@ impl App {
     /// edit`.
     fn reply_said(&self, run: &str, k: usize) -> String {
         self.db.run(run).and_then(|r| r.held.as_ref()).and_then(|h| h.replies.get(k)).map_or("the agent's reply".into(), |rp| rp.said())
+    }
+
+    /// Whether `?` says what can be done where the cursor is: not on the
+    /// main screen without a stack, where there is nothing to do but what
+    /// the menu has.
+    fn helps(&self) -> bool {
+        !(self.screen == Screen::Main && self.current().is_none())
     }
 
     /// The comments listed in the comments pane, of the stack's or the
@@ -6573,7 +6576,8 @@ impl App {
                     (Screen::Main, true) => "1: view · 2: comment · ",
                     _ => "",
                 };
-                format!("{enter}space: menu · {keys}?: what can I do here")
+                let ask = if self.helps() { "?: what can I do here" } else { "" };
+                format!("{enter}space: menu · {keys}{ask}").trim_end_matches(" · ").to_string()
             }
         }
     }

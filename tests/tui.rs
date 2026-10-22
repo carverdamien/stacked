@@ -3185,6 +3185,12 @@ fn an_empty_database() {
         assert_eq!(key(&mut app, c), Effect::None);
         draw(&mut app);
     }
+    // Nothing for `?` to say: no help opens, and the bottom line offers
+    // none.
+    assert_eq!(key(&mut app, KeyCode::Char('?')), Effect::None);
+    assert_eq!(app.mode, Mode::Normal);
+    assert_eq!(app.hint(), "enter or space: menu · 1: view · 2: read");
+    assert!(!draw(&mut app).contains("what can I do here"));
     // Enter, with nothing else to do, is the menu: only to quit.
     keys(&mut app, &[KeyCode::Enter]);
     assert_eq!(items(&app), vec![("Quit".to_string(), true)]);
