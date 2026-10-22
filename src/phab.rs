@@ -362,6 +362,153 @@ fn read_each(
     Ok(out)
 }
 
+/// A revision of Phabricator as an import takes it: its latest diff, as a
+/// patch, and the commit that diff is on.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Revision {
+    /// `D123`.
+    pub id: String,
+    /// The patch's message: its commit's, as uploaded, else the revision's
+    /// title and summary; with its trailer (`Differential Revision:`).
+    pub message: String,
+    /// Who wrote it, `Name <email>`, as its commit says, if it does.
+    pub author: Option<String>,
+    /// The diff, as git writes one.
+    pub diff: String,
+    /// The commit its diff is on, as it says, if it does.
+    pub base: Option<String>,
+}
+
+/// What reads a stack of revisions in place of Conduit, from (`D123`, its
+/// link if given): the tests', which never reach Phabricator.
+pub type ReadStack = Box<dyn Fn(&str, Option<&str>) -> Result<Vec<Revision>, String> + Send + Sync>;
+
+static STACK_STAND_IN: std::sync::Mutex<Option<ReadStack>> = std::sync::Mutex::new(None);
+
+/// Reads stacks of revisions with `read` rather than over Conduit; with
+/// none, over Conduit again.
+pub fn stack_stand_in(read: Option<ReadStack>) {
+    *STACK_STAND_IN.lock().unwrap() = read;
+}
+
+/// The revision `text` names, `D123` or its link: its `D123`, and the link
+/// if one was given. None if it names none.
+pub fn revision_named(text: &str) -> Option<(String, Option<String>)> {
+    let t = text.trim().trim_end_matches('/');
+    let last = t.rsplit('/').next()?;
+    let digits = last.strip_prefix('D')?;
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    Some((last.to_string(), t.contains('/').then(|| t.to_string())))
+}
+
+/// Revision `rev` (`D123`), at `link` if given, read with the revisions it
+/// stacks on, down to the first that is not open, and those that stack on
+/// it while one is open: bottom first, each as an import takes it.
+pub fn read_stack(rev: &str, link: Option<&str>) -> Result<Vec<Revision>, String> {
+    if let Some(read) = STACK_STAND_IN.lock().unwrap().as_ref() {
+        return read(rev, link);
+    }
+    let conduit = Conduit::for_url(link)?;
+    let trailer = crate::config::get().reviews.trailer.clone();
+    stack_over(&mut |method, params| conduit.call(method, params), &conduit.api, &trailer, rev)
+}
+
+/// How Conduit is called: a method, its parameters; its `result`.
+type Call<'a> = dyn FnMut(&str, Value) -> Result<Value, String> + 'a;
+
+/// Whether revision `r`, as differential.revision.search gives it, is
+/// open: neither landed nor abandoned.
+fn open(r: &Value) -> bool {
+    !matches!(r.pointer("/fields/status/value").and_then(Value::as_str), Some("published" | "abandoned"))
+}
+
+/// The first revision `constraints` find, as differential.revision.search
+/// gives it.
+fn revision_by(call: &mut Call, constraints: Value) -> Result<Option<Value>, String> {
+    let r = call("differential.revision.search", json!({ "constraints": constraints }))?;
+    Ok(r.pointer("/data/0").cloned())
+}
+
+/// Where the edges of kind `kind` (`revision.parent`, `revision.child`)
+/// from revision `phid` go: their PHIDs.
+fn edges(call: &mut Call, phid: &str, kind: &str) -> Result<Vec<String>, String> {
+    let r = call("edge.search", json!({"sourcePHIDs": [phid], "types": [kind]}))?;
+    Ok(r.get("data")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|e| e.get("destinationPHID").and_then(Value::as_str).map(String::from))
+        .collect())
+}
+
+/// As `read_stack`, Conduit called with `call` at `api`, the trailer named
+/// `trailer`: down while a revision stacks on one other, open; up while one
+/// open revision stacks on it.
+fn stack_over(call: &mut Call, api: &str, trailer: &str, rev: &str) -> Result<Vec<Revision>, String> {
+    let n: u64 = rev.trim_start_matches('D').parse().map_err(|_| format!("{rev} names no revision"))?;
+    let first = revision_by(call, json!({ "ids": [n] }))?.ok_or(format!("no revision {rev}"))?;
+    let phid = |r: &Value| r.get("phid").and_then(Value::as_str).unwrap_or("").to_string();
+    let mut chain = vec![first.clone()];
+    for (kind, down) in [("revision.parent", true), ("revision.child", false)] {
+        let mut at = first.clone();
+        while chain.len() < 100 {
+            let mut next = Vec::new();
+            for p in edges(call, &phid(&at), kind)? {
+                if let Some(r) = revision_by(call, json!({ "phids": [p] }))?.filter(open) {
+                    next.push(r);
+                }
+            }
+            let [r] = next.as_slice() else { break };
+            if down {
+                chain.insert(0, r.clone());
+            } else {
+                chain.push(r.clone());
+            }
+            at = r.clone();
+        }
+    }
+    chain.iter().map(|r| revision_patch(call, api, trailer, r)).collect()
+}
+
+/// Revision `r`, as differential.revision.search gives it, as an import
+/// takes it: its latest diff, raw; the commit that diff is on; and the
+/// message and author of its commit as uploaded.
+fn revision_patch(call: &mut Call, api: &str, trailer: &str, r: &Value) -> Result<Revision, String> {
+    let n = r.get("id").and_then(Value::as_u64).ok_or("a revision without its id")?;
+    let field = |k: &str| r.pointer(&format!("/fields/{k}")).and_then(Value::as_str).unwrap_or("").trim().to_string();
+    let diffs = call("differential.querydiffs", json!({ "revisionIDs": [n] }))?;
+    let (id, d) = diffs
+        .as_object()
+        .into_iter()
+        .flatten()
+        .filter_map(|(k, v)| Some((k.parse::<u64>().ok()?, v)))
+        .max_by_key(|(k, _)| *k)
+        .ok_or(format!("D{n} has no diff"))?;
+    let commit = d.pointer("/properties/local:commits").and_then(Value::as_object).and_then(|m| m.values().next());
+    let said = |k: &str| commit.and_then(|c| c.get(k)).and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty());
+    let author = said("author").map(|name| match said("authorEmail") {
+        Some(e) => format!("{name} <{e}>"),
+        None => name.to_string(),
+    });
+    let mut message = said("message")
+        .map(String::from)
+        .unwrap_or_else(|| format!("{}\n\n{}", field("title"), field("summary")).trim().to_string());
+    let trailer = format!("{trailer}:");
+    if !message.lines().any(|l| l.starts_with(&trailer)) {
+        message = format!("{message}\n\n{trailer} {}D{n}", api.trim_end_matches("api/"));
+    }
+    let diff = call("differential.getrawdiff", json!({ "diffID": id }))?;
+    Ok(Revision {
+        id: format!("D{n}"),
+        message,
+        author,
+        diff: diff.as_str().unwrap_or("").to_string(),
+        base: d.get("sourceControlBaseRevision").and_then(Value::as_str).filter(|b| !b.is_empty()).map(String::from),
+    })
+}
+
 /// The key of the line a comment is on: the line with its text near its
 /// number, else the line at its number, else None.
 pub fn anchor(lines: &[NoteLine], c: &Remote) -> Option<String> {
@@ -457,6 +604,83 @@ mod tests {
         let txns = vec![json!({"type": "comment", "authorPHID": "PHID-USER-ann", "fields": {}, "comments": [version("v1", 1, 100, "Fine.", false), version("v2", 2, 200, "Fine!", false)]})];
         let got = comments_of(&txns, &names, |_, _, _| None);
         assert_eq!((got[0].phid.as_str(), got[0].text.as_str(), got[0].earlier.clone()), ("v2", "Fine!", vec![v("v1", "Fine.")]));
+    }
+
+    #[test]
+    fn a_stack_of_revisions_is_read_down_while_open_and_up_while_one_child_is() {
+        // D10 landed; D11 on it, D12 on D11, D13 on D12: read from D12.
+        let rev = |n: u64, status: &str, title: &str| {
+            json!({"id": n, "phid": format!("PHID-DREV-{n}"), "fields": {"title": title, "summary": "Why.", "status": {"value": status}}})
+        };
+        let diff = |n: u64| format!("diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-{n}\n+{}\n", n + 1);
+        let mut calls = Vec::new();
+        let mut call = |method: &str, params: Value| -> Result<Value, String> {
+            calls.push(method.to_string());
+            let first = |k: &str| params.pointer(k).and_then(|v| v.get(0)).cloned().unwrap_or(Value::Null);
+            Ok(match method {
+                "differential.revision.search" => {
+                    let n = match first("/constraints/ids").as_u64() {
+                        Some(n) => n,
+                        None => first("/constraints/phids").as_str().unwrap().trim_start_matches("PHID-DREV-").parse().unwrap(),
+                    };
+                    let status = if n == 10 { "published" } else { "needs-review" };
+                    json!({"data": [rev(n, status, &format!("Bug {n}"))]})
+                }
+                "edge.search" => {
+                    let n: u64 = first("/sourcePHIDs").as_str().unwrap().trim_start_matches("PHID-DREV-").parse().unwrap();
+                    let to = match first("/types").as_str().unwrap() {
+                        "revision.parent" => n - 1,
+                        _ if n < 13 => n + 1,
+                        _ => return Ok(json!({"data": []})),
+                    };
+                    json!({"data": [{"destinationPHID": format!("PHID-DREV-{to}")}]})
+                }
+                // Two diffs of D11, the latest read; D11's commit as uploaded,
+                // the others' none.
+                "differential.querydiffs" => match first("/revisionIDs").as_u64().unwrap() {
+                    11 => json!({
+                        "101": {"sourceControlBaseRevision": "aaa", "properties": {}},
+                        "111": {"sourceControlBaseRevision": "bbb", "properties": {"local:commits": {"c1": {
+                            "author": "Ann", "authorEmail": "ann@example.com",
+                            "message": "Bug 11 - as committed\n\nDifferential Revision: https://p.example/D11"
+                        }}}}
+                    }),
+                    n => json!({ (n * 10 + 2).to_string(): {"sourceControlBaseRevision": "ccc", "properties": []} }),
+                },
+                "differential.getrawdiff" => Value::String(diff(params["diffID"].as_u64().unwrap())),
+                m => return Err(format!("not as Phabricator is asked: {m}")),
+            })
+        };
+        let revs = stack_over(&mut call, "https://p.example/api/", "Differential Revision", "D12").unwrap();
+        assert_eq!(revs.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(), ["D11", "D12", "D13"]);
+        assert_eq!(
+            revs[0],
+            Revision {
+                id: "D11".into(),
+                message: "Bug 11 - as committed\n\nDifferential Revision: https://p.example/D11".into(),
+                author: Some("Ann <ann@example.com>".into()),
+                diff: diff(111),
+                base: Some("bbb".into()),
+            }
+        );
+        // No commit as uploaded: the revision's title and summary, and its
+        // trailer.
+        assert_eq!(revs[1].message, "Bug 12\n\nWhy.\n\nDifferential Revision: https://p.example/D12");
+        assert_eq!((revs[1].author.clone(), revs[1].diff.clone()), (None, diff(122)));
+        assert!(calls.contains(&"edge.search".to_string()));
+        // A revision that is not there: said.
+        let mut none = |_: &str, _: Value| -> Result<Value, String> { Ok(json!({"data": []})) };
+        assert_eq!(stack_over(&mut none, "https://p.example/api/", "Differential Revision", "D9"), Err("no revision D9".to_string()));
+    }
+
+    #[test]
+    fn a_revision_is_named_by_its_number_or_its_link() {
+        assert_eq!(revision_named(" D123 "), Some(("D123".into(), None)));
+        let link = "https://phabricator.example.com/D123";
+        assert_eq!(revision_named(&format!("{link}/")), Some(("D123".into(), Some(link.into()))));
+        for wrong in ["", "D", "123", "D12x", "https://phabricator.example.com/"] {
+            assert_eq!(revision_named(wrong), None, "{wrong:?}");
+        }
     }
 
     #[test]

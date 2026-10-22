@@ -265,6 +265,35 @@ written, and the check of a stack someone else made; the bar says
 `pulling…`, `applying…`, `checking…` meanwhile, and what came of it when it
 is done. While the agent writes, only what it writes is drawn again.
 
+## Making a stack in the editor
+
+With no stack yet, the menu (Space, or Enter) has the ways to make one;
+with stacks, the stack's own menu has them under `New stack…`:
+
+- `Ask the agent to make a stack…`: named after the branch checked out, as
+  no stack is, the stack is made empty, on HEAD of the checkout stacked
+  runs in, and a comment on it opens, to say what the agent should make of
+  it. `Save it and ask agent` asks it; what it makes waits for your review,
+  as any of its work does.
+- `Import from the workspace…`: the branch checked out, on its upstream
+  (else `origin/HEAD`, else main or master: `feature on origin/main: 3
+  commits`); `Another branch…`, each on its own; or `A range…`, typed, and
+  said as it is typed (`unknown ref`, `0 commits: nothing to import`, `2
+  commits`), taken only once it holds a commit. The staged changes, and the
+  unstaged ones, when there are, may each be checked to go on top of what
+  ends at HEAD, a patch of their own (`Staged changes`, `Unstaged changes`).
+- `Import from Phabricator…`: a revision, `D123` or its link, read away from
+  the screen with the revisions it stacks on, down to the first that is not
+  open, and those stacked on it while one is open; each its latest diff,
+  with the message and author of its commit as uploaded. They go on the
+  commit the bottom one is on, which the repository must have (`D11 is on
+  0123456789ab, which this repository does not have: fetch it first`).
+
+An import is seen before it is made: its patches, bottom first, the commit
+they go on, and the name of the stack it makes, after the branch or the
+revision, as no stack is (`Name it otherwise…`). `Import it as NAME` makes
+it, and shows it.
+
 ## Writing comments
 
 A comment shows under what it is on: `└ comment:` (or `└ agent's comment:`,
@@ -1382,8 +1411,9 @@ or braces). It also takes the Conduit half of `phab.rs`, the thread fences
 of `thread.rs`, the side-by-side pairing of `rows.rs`, the compact layout of
 `nav.rs` (`panes.rs`), the reading view's marks of `review.rs`
 (`reading.rs`), the inline editor (`editor.rs`), the rule for which asks go
-together, and the filter of the comments pane. A fix to one may belong in
-the other.
+together, the filter of the comments pane, and what a range is on (a
+branch on its upstream, else the remote's HEAD; a range typed, said as it
+is typed: `import.rs`). A fix to one may belong in the other.
 
 ## Layout of the code
 
@@ -1398,6 +1428,8 @@ the other.
   landing; claude's command line, its stream and its replies.
 - `held.rs`: what an ask brought back, held for your review.
 - `review.rs`, `phab.rs`: Phabricator.
+- `import.rs`: what a stack made in the editor is imported from: a range of
+  the checkout, its uncommitted changes on top if asked.
 - `mbox.rs`: reading `git format-patch` mail, writing mail for `git am`.
 - `rows.rs`, `view.rs`, `diff.rs`, `thread.rs`: the patch or the stack as
   rows, line keys, comment threads.
@@ -1465,7 +1497,10 @@ whole stack, what you said last written again (off the queue meanwhile;
 left as it was, asked as it is or left so), a reply written in $EDITOR
 under its conversation, its references under it, and a turn written again
 there in its place, the editor in the middle between the last reply and the
-references, a comment moved to the stack
+references, a stack made with none there (imported from the workspace, a
+range typed and refused until it holds a commit, the changes staged on top;
+from Phabricator, its revisions read by a stand-in; or by the agent), a
+comment moved to the stack
 taking the cursor with it, the mouse (the cursor following it, a click as
 Enter, a right click's menu, a menu's item), the comments pane's previews,
 moving a patch, searching (what is in sight first, the patches then the

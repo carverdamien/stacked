@@ -459,6 +459,66 @@ pub enum Mode {
     /// Lines of a file being named, to attach to the comment being
     /// written: Enter attaches them, Esc goes back to the comment.
     Lines(Box<Lines>),
+    /// A line to type, what it gives said as it is typed: Enter takes it
+    /// once it can be taken, Esc goes back.
+    Prompt(Box<Prompt>),
+}
+
+/// A line being typed, for what `asking` asks: what it gives, said, and
+/// whether Enter takes it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Prompt {
+    pub ed: Editor,
+    pub asking: Asking,
+    pub said: String,
+    pub ok: bool,
+}
+
+/// What a prompt asks for.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Asking {
+    /// A range of the checkout stacked runs in, to import.
+    Range,
+    /// The name of the stack an import makes.
+    ImportName,
+    /// The name of the stack the agent is asked to make.
+    AgentName,
+    /// A revision of Phabricator, to import with those it stacks on.
+    Revision,
+}
+
+impl Asking {
+    /// What its box says on its top: what to type.
+    fn title(self) -> &'static str {
+        match self {
+            Asking::Range => "a range of the workspace, to import: main..HEAD, or main for main..HEAD",
+            Asking::ImportName => "the name of the stack it makes",
+            Asking::AgentName => "the name of the stack the agent makes",
+            Asking::Revision => "a revision of Phabricator, with those it stacks on: D123, or its link",
+        }
+    }
+
+    /// What Enter does with what is typed.
+    fn does(self) -> &'static str {
+        match self {
+            Asking::Range => "see the stack it makes",
+            Asking::ImportName => "name it so",
+            Asking::AgentName => "make it, empty, then say what it should hold",
+            Asking::Revision => "read it, and the revisions it stacks on",
+        }
+    }
+}
+
+/// An import read, to see before it is made: what it is from, said; its
+/// drafts, bottom first, the commit they go on and its repository; and the
+/// name of the stack it makes.
+#[derive(Debug, Clone)]
+pub struct Planned {
+    pub from: String,
+    pub drafts: Vec<crate::mbox::Draft>,
+    pub base: String,
+    pub repo: String,
+    pub name: String,
 }
 
 /// A reference's lines, previewed: `title` says which; `lines` are the
@@ -560,6 +620,32 @@ impl Choices {
 pub enum Action {
     /// A line between groups of items.
     Line,
+    /// A line that says something, to read: nothing to do.
+    Said,
+    /// The ways to make a new stack, as a menu.
+    NewStack,
+    /// What can be imported from the checkout stacked runs in, as a menu.
+    FromWorkspace,
+    /// The checkout's other branches, as a menu, each to import on what it
+    /// is on.
+    ImportBranches,
+    /// A range of the checkout to type, to import.
+    ImportByHand,
+    /// The checkout's staged changes (true), or its unstaged ones, to go on
+    /// top of what is imported, or not.
+    ImportWith(bool),
+    /// Range `0` of the checkout, read, to see before it is imported.
+    ImportRange(String),
+    /// The import seen, made.
+    ImportIt,
+    /// The stack the import makes, named otherwise.
+    NameImport,
+    /// A stack for the agent to make: named, made empty, then said in a
+    /// comment on it, to ask the agent.
+    AgentStack,
+    /// A revision of Phabricator to type, to import with those it stacks
+    /// on.
+    FromPhabricator,
     Cancel,
     Open,
     GoToNote,
@@ -759,6 +845,18 @@ fn as_it_is(a: Action) -> Action {
 fn about(action: &Action) -> String {
     match action {
         Action::Line | Action::Cancel => "change nothing".into(),
+        Action::Said => "nothing: it says what it says".into(),
+        Action::NewStack => "make a new stack: from the workspace's commits, from Phabricator's revisions, or by the agent".into(),
+        Action::FromWorkspace => "import a stack from the workspace: its branch, another branch, or a range, its staged and unstaged changes on top if checked".into(),
+        Action::ImportBranches => "import another branch of the workspace, on its upstream".into(),
+        Action::ImportByHand => "type a range of the workspace to import, said as it is typed: main..HEAD".into(),
+        Action::ImportWith(true) => "take the staged changes too, as a patch on top, when what is imported ends at HEAD".into(),
+        Action::ImportWith(false) => "take the unstaged changes too, as a patch on top, when what is imported ends at HEAD".into(),
+        Action::ImportRange(r) => format!("see the stack {r} makes, before it is imported"),
+        Action::ImportIt => "import it: the stack is made, and shown".into(),
+        Action::NameImport => "give the stack it makes another name".into(),
+        Action::AgentStack => "make a stack, empty, on HEAD of the workspace, then say in a comment on it what the agent should make of it, to ask the agent".into(),
+        Action::FromPhabricator => "import a stack from Phabricator: a revision, with those it stacks on, and those that stack on it while one is open".into(),
         Action::Open => "read this patch".into(),
         Action::GoToNote => "go to this comment".into(),
         Action::MovePatch => "pick this patch up and put it elsewhere in the stack".into(),
@@ -1225,8 +1323,14 @@ pub struct App {
     /// lands, the status line says what came of it.
     going: Vec<String>,
     judged: Option<Judged>,
-    /// The checkout stacked runs in, whose HEAD the patches pane shows.
+    /// The checkout stacked runs in, whose HEAD the patches pane shows,
+    /// and what a stack is imported from.
     pub checkout: PathBuf,
+    /// What an import from the checkout takes on top of its commits: its
+    /// staged changes, its unstaged ones.
+    import_with: (bool, bool),
+    /// An import read, to see before it is made.
+    planned: Option<Planned>,
     /// Where its HEAD was against a stack, when last looked at.
     head: Option<HeadSeen>,
     /// The work done away from the screen.
@@ -1265,6 +1369,9 @@ enum Done {
     Said(&'static str, String),
     /// Where the pull under way is.
     Pulling(review::Pulling),
+    /// Revision `0` read from Phabricator, with those it stacks on: or what
+    /// was wrong.
+    Revisions(String, std::result::Result<Vec<crate::phab::Revision>, String>),
     /// Whether stack `name` at `rev` applies: why not, if not.
     Judged {
         name: String,
@@ -1457,6 +1564,8 @@ impl App {
             going: going(&db),
             judged: None,
             checkout: std::env::current_dir().unwrap_or_default(),
+            import_with: (false, false),
+            planned: None,
             head: None,
             bg: Background::new(),
             busy_memo: std::cell::RefCell::new(None),
@@ -1649,6 +1758,13 @@ impl App {
             Done::Pulling(p) => {
                 if let Some((_, at)) = &mut self.bg.pull {
                     *at = p;
+                }
+            }
+            Done::Revisions(rev, read) => {
+                self.bg.doing.retain(|d| *d != "importing");
+                match read {
+                    Ok(revs) => self.plan_revisions(&rev, revs),
+                    Err(e) => self.status = e,
                 }
             }
             Done::Said(what, said) => {
@@ -2182,9 +2298,9 @@ impl App {
                 self.mode = Mode::Normal;
                 return Effect::None;
             }
-            // Lines being named: a click out of their box goes back to the
-            // comment.
-            Mode::Lines(_) => {
+            // Lines being named, or a line typed: a click out of their box
+            // goes back.
+            Mode::Lines(_) | Mode::Prompt(_) => {
                 if !matches!(spot, Some(Spot::Box)) {
                     return press(self, KeyCode::Esc);
                 }
@@ -2466,7 +2582,7 @@ impl App {
         // what `?` said.
         // The search reads what is typed too.
         let typed = self.screen == Screen::Search && matches!(self.mode, Mode::Normal);
-        let k = if matches!(self.mode, Mode::Edit(_) | Mode::Lines(_)) || typed {
+        let k = if matches!(self.mode, Mode::Edit(_) | Mode::Lines(_) | Mode::Prompt(_)) || typed {
             k
         } else {
             match self.cfg.keys.translate(&k) {
@@ -2506,7 +2622,7 @@ impl App {
             if matches!(k.code, KeyCode::Esc | KeyCode::Char('?')) {
                 return Effect::None;
             }
-        } else if k.code == KeyCode::Char('?') && !matches!(self.mode, Mode::Edit(_) | Mode::Lines(_)) && (self.helps() || self.mode != Mode::Normal) {
+        } else if k.code == KeyCode::Char('?') && !matches!(self.mode, Mode::Edit(_) | Mode::Lines(_) | Mode::Prompt(_)) && (self.helps() || self.mode != Mode::Normal) {
             self.mode = Mode::Help {
                 lines: self.help(),
                 back: Box::new(self.mode.clone()),
@@ -2520,6 +2636,7 @@ impl App {
             Mode::Preview(p) => return self.preview_key(*p, k),
             Mode::Edit(e) => return self.edit_key(*e, k),
             Mode::Lines(l) => return self.lines_key(*l, k),
+            Mode::Prompt(p) => return self.prompt_key(*p, k),
             Mode::Moving { from, to } => {
                 self.moving_key(from, to, k);
                 return Effect::None;
@@ -4061,6 +4178,14 @@ impl App {
                 if self.db.stacks().iter().any(|s| s.name != self.stack) {
                     items.push(Item::new("Switch stack…", Action::Stacks));
                 }
+                // No stack here: the ways to make one, at once; else in a
+                // menu of their own.
+                if self.current().is_none() {
+                    title = "a new stack".into();
+                    self.new_stack_items(&mut items);
+                } else {
+                    items.push(Item::new("New stack…", Action::NewStack));
+                }
                 if self.current().is_some() {
                     items.push(Item::new("Delete this stack…", Action::AskDeleteStack).when(h));
                 }
@@ -4298,13 +4423,49 @@ impl App {
         // disk, or reaches Phabricator.
         #[cfg(feature = "demo")]
         if crate::memory::is_file(&self.path)
-            && matches!(action, Action::Pull | Action::AskApply | Action::Apply | Action::AskTrim(_) | Action::Trim(_))
+            && matches!(action, Action::Pull | Action::AskApply | Action::Apply | Action::AskTrim(_) | Action::Trim(_) | Action::FromWorkspace | Action::AgentStack | Action::FromPhabricator)
         {
             self.status = "not in the demo: this would write on disk, or reach Phabricator".into();
             return Effect::None;
         }
         match action {
-            Action::Line | Action::Cancel => {}
+            Action::Line | Action::Cancel | Action::Said => {}
+            Action::NewStack => {
+                let mut items = Vec::new();
+                self.new_stack_items(&mut items);
+                self.mode = Mode::Menu(Menu::new("a new stack", items, None));
+            }
+            Action::FromWorkspace => match self.workspace_menu() {
+                Some(m) => self.mode = Mode::Menu(m),
+                None => self.status = "not in a git repository: a stack is imported from the checkout stacked runs in".into(),
+            },
+            Action::ImportBranches => self.mode = Mode::Menu(self.branches_menu()),
+            Action::ImportByHand => self.prompt(Asking::Range, ""),
+            Action::ImportWith(staged) => {
+                if staged {
+                    self.import_with.0 = !self.import_with.0;
+                } else {
+                    self.import_with.1 = !self.import_with.1;
+                }
+                if let Some(mut m) = self.workspace_menu() {
+                    if let Some(k) = m.items.iter().position(|i| i.action == Action::ImportWith(staged)) {
+                        m.sel = k;
+                    }
+                    self.mode = Mode::Menu(m);
+                }
+            }
+            Action::ImportRange(spec) => self.plan_range(&spec),
+            Action::ImportIt => self.import_planned(),
+            Action::NameImport => {
+                let name = self.planned.as_ref().map(|p| p.name.clone()).unwrap_or_default();
+                self.prompt(Asking::ImportName, &name);
+            }
+            Action::AgentStack => {
+                let want = crate::import::current_branch(&self.checkout).unwrap_or_else(|| "stack".into());
+                let name = crate::import::free_name(&self.db, &want);
+                self.prompt(Asking::AgentName, &name);
+            }
+            Action::FromPhabricator => self.prompt(Asking::Revision, ""),
             Action::Open => {
                 self.screen = Screen::Main;
                 self.focus = Focus::Diff;
@@ -5305,6 +5466,295 @@ impl App {
         Effect::None
     }
 
+    /// The ways to make a new stack: by the agent, from the checkout's
+    /// commits, from Phabricator's revisions.
+    fn new_stack_items(&self, items: &mut Vec<Item>) {
+        items.push(Item::new("Ask the agent to make a stack…", Action::AgentStack));
+        items.push(Item::new("Import from the workspace…", Action::FromWorkspace));
+        if self.cfg.reviews.source != crate::config::Source::None {
+            items.push(Item::new("Import from Phabricator…", Action::FromPhabricator));
+        }
+    }
+
+    /// The stack of the revision `text` names read from Phabricator, away
+    /// from the screen: seen once it is, before it is imported.
+    fn read_revisions(&mut self, text: &str) {
+        let Some((rev, link)) = crate::phab::revision_named(text) else { return };
+        self.mode = Mode::Normal;
+        if self.bg.doing.contains(&"importing") {
+            self.status = "already reading revisions from Phabricator".into();
+            return;
+        }
+        self.bg.doing.push("importing");
+        self.status = format!("reading {rev} and the revisions it stacks on, from Phabricator…");
+        self.spawn(move || {
+            let read = crate::phab::read_stack(&rev, link.as_deref());
+            Done::Revisions(rev, read)
+        });
+    }
+
+    /// Revisions `revs` read, bottom first, `rev` among them: seen before
+    /// they are imported, on the commit the bottom one is on, which the
+    /// checkout must have. Not while a comment is written, which it would
+    /// take the place of.
+    fn plan_revisions(&mut self, rev: &str, revs: Vec<crate::phab::Revision>) {
+        if self.writing().is_some() {
+            self.status = format!("{rev} and the revisions it stacks on are read, but a comment is being written: import them once it is done");
+            return;
+        }
+        let at = self.checkout.clone();
+        let Some(bottom) = revs.first() else {
+            self.status = format!("{rev}: nothing to import");
+            return;
+        };
+        let Some(base) = bottom.base.clone() else {
+            self.status = format!("{} does not say what commit it is on", bottom.id);
+            return;
+        };
+        let Ok(repo) = crate::git::toplevel(&at) else {
+            self.status = "not in a git repository: a stack is imported into the checkout stacked runs in".into();
+            return;
+        };
+        let Ok(base) = crate::git::rev_parse(&at, &base) else {
+            self.status = format!("{} is on {}, which this repository does not have: fetch it first", bottom.id, &base[..12.min(base.len())]);
+            return;
+        };
+        let from = match revs.as_slice() {
+            [a, .., b] => format!("{}..{}", a.id, b.id),
+            _ => rev.to_string(),
+        };
+        let drafts = revs
+            .into_iter()
+            .map(|r| crate::mbox::Draft {
+                author: r.author,
+                message: r.message,
+                diff: r.diff,
+                ..Default::default()
+            })
+            .collect();
+        self.planned = Some(Planned {
+            from,
+            drafts,
+            base,
+            repo,
+            name: crate::import::free_name(&self.db, rev),
+        });
+        self.mode = Mode::Menu(self.preview_menu());
+    }
+
+    /// Stack `name` made, empty, on HEAD of the checkout stacked runs in,
+    /// for the agent to make: shown, and a comment on it opened, to say
+    /// what it should hold and ask the agent.
+    fn agent_stack(&mut self, name: &str) {
+        let at = self.checkout.clone();
+        let Ok((base, repo)) = crate::git::rev_parse(&at, "HEAD").and_then(|b| Ok((b, crate::git::toplevel(&at)?))) else {
+            self.status = "not in a git repository: the agent's stack goes on HEAD of the checkout stacked runs in".into();
+            return;
+        };
+        if self.edit(|db| db.new_stack(name, &base, &repo)).is_none() {
+            return;
+        }
+        self.switch_stack(name);
+        self.write(Target::Stack, Focus::List, "");
+        self.status = format!(
+            "the stack {name} is made, empty, on HEAD {}: say what the agent should make of it, then Esc and Save it and ask agent",
+            &base[..12.min(base.len())]
+        );
+    }
+
+    /// What can be imported from the checkout stacked runs in, as a menu:
+    /// its branch on what it is on, another branch, a range given by hand;
+    /// and its staged and unstaged changes, if there are, each checked to go
+    /// on top or not. None out of a git repository.
+    fn workspace_menu(&self) -> Option<Menu> {
+        let at = &self.checkout;
+        crate::git::toplevel(at).ok()?;
+        let (staged, unstaged) = crate::import::uncommitted(at);
+        let with = (staged && self.import_with.0) || (unstaged && self.import_with.1);
+        let here = crate::import::current_branch(at).unwrap_or_else(|| "HEAD".into());
+        let mut items = Vec::new();
+        match crate::import::upstream(at, None) {
+            Some(up) => {
+                let n = crate::import::count(at, &format!("{up}..HEAD")).unwrap_or(0);
+                let label = format!("{here} on {up}: {n} commit{}", plural(n));
+                items.push(Item::new(label, Action::ImportRange(format!("{up}..HEAD"))).when(n > 0 || with));
+            }
+            None => items.push(Item::new(format!("{here}, on no upstream, no origin/HEAD, no main"), Action::Said).when(false)),
+        }
+        items.push(Item::new("Another branch…", Action::ImportBranches));
+        items.push(Item::new("A range…", Action::ImportByHand));
+        items.push(Item::line());
+        if staged {
+            items.push(Item::new("With the staged changes on top, a patch of their own", Action::ImportWith(true)).checked(self.import_with.0));
+        }
+        if unstaged {
+            items.push(Item::new("With the unstaged changes on top, a patch of their own", Action::ImportWith(false)).checked(self.import_with.1));
+        }
+        Some(Menu::new("import from the workspace", items, None))
+    }
+
+    /// The checkout's other branches, as a menu: each on what it is on, to
+    /// import.
+    fn branches_menu(&self) -> Menu {
+        let at = &self.checkout;
+        let here = crate::import::current_branch(at);
+        let mut items: Vec<Item> = crate::import::branches(at)
+            .into_iter()
+            .filter(|b| Some(b) != here.as_ref())
+            .map(|b| match crate::import::upstream(at, Some(&b)) {
+                Some(up) => {
+                    let n = crate::import::count(at, &format!("{up}..{b}")).unwrap_or(0);
+                    Item::new(format!("{b} on {up}: {n} commit{}", plural(n)), Action::ImportRange(format!("{up}..{b}"))).when(n > 0)
+                }
+                None => Item::new(format!("{b}, on nothing"), Action::Said).when(false),
+            })
+            .collect();
+        if items.is_empty() {
+            items.push(Item::new("no other branch", Action::Said).when(false));
+        }
+        Menu::new("another branch of the workspace", items, None)
+    }
+
+    /// Range `spec` of the checkout read, to see before it is imported: its
+    /// commits, and the changes checked to go on top when it ends at the
+    /// checkout's HEAD; the stack it makes named after the branch it ends
+    /// at, as no stack is.
+    fn plan_range(&mut self, spec: &str) {
+        let at = self.checkout.clone();
+        let (_, tip) = crate::import::ends(spec);
+        let head = crate::git::rev_parse(&at, "HEAD").ok();
+        let at_head = head.is_some() && crate::git::rev_parse(&at, &tip).ok() == head;
+        let (staged, unstaged) = if at_head { self.import_with } else { (false, false) };
+        let read = crate::import::read_range(&at, spec, staged, unstaged).and_then(|r| Ok((r, crate::git::toplevel(&at)?)));
+        let (read, repo) = match read {
+            Ok(r) => r,
+            Err(e) => {
+                self.status = e.0;
+                return;
+            }
+        };
+        if read.drafts.is_empty() {
+            self.status = format!("nothing to import in {}", spec.trim());
+            return;
+        }
+        let want = if tip == "HEAD" {
+            crate::import::current_branch(&at)
+        } else {
+            crate::import::branches(&at).into_iter().find(|b| *b == tip)
+        };
+        self.planned = Some(Planned {
+            from: spec.trim().to_string(),
+            name: crate::import::free_name(&self.db, want.as_deref().unwrap_or("stack")),
+            drafts: read.drafts,
+            base: read.base,
+            repo,
+        });
+        self.mode = Mode::Menu(self.preview_menu());
+    }
+
+    /// The import read, as a menu: the patches it makes, bottom first, on
+    /// what; to make it, or to name its stack otherwise.
+    fn preview_menu(&self) -> Menu {
+        let Some(p) = &self.planned else { return Menu::new("nothing to import", vec![], None) };
+        let mut items: Vec<Item> = p.drafts.iter().enumerate().map(|(k, d)| Item::new(format!("{} {}", k + 1, d.title()), Action::Said).when(false)).collect();
+        items.push(Item::line());
+        items.push(Item::new(format!("Import it as {}", p.name), Action::ImportIt));
+        items.push(Item::new("Name it otherwise…", Action::NameImport));
+        let n = p.drafts.len();
+        let title = format!("{n} patch{} from {}, on {}", if n == 1 { "" } else { "es" }, p.from, &p.base[..12.min(p.base.len())]);
+        Menu::new(title, items, None)
+    }
+
+    /// The import seen, made: its stack shown.
+    fn import_planned(&mut self) {
+        let Some(p) = self.planned.clone() else { return };
+        let (name, from, n) = (p.name.clone(), p.from.clone(), p.drafts.len());
+        if self.edit(|db| crate::ops::import(db, &p.name, p.drafts, false, Some((p.base, p.repo)))).is_some() {
+            self.planned = None;
+            self.switch_stack(&name);
+            self.status = format!("imported {n} patch{} from {from} as {name}", if n == 1 { "" } else { "es" });
+        }
+    }
+
+    /// A line to type, for what `asking` asks, `text` typed already: what it
+    /// gives said.
+    fn prompt(&mut self, asking: Asking, text: &str) {
+        let (said, ok) = self.prompt_said(asking, text);
+        self.mode = Mode::Prompt(Box::new(Prompt {
+            ed: Editor::new(text).single(),
+            asking,
+            said,
+            ok,
+        }));
+    }
+
+    /// What `text`, typed for what `asking` asks, gives, said; and whether
+    /// Enter takes it.
+    fn prompt_said(&self, asking: Asking, text: &str) -> (String, bool) {
+        match asking {
+            Asking::Range => crate::import::check_range(&self.checkout, text),
+            Asking::ImportName | Asking::AgentName => match crate::import::name_wrong(&self.db, text) {
+                Some(why) => (why, false),
+                None => (format!("the stack {}", text.trim()), true),
+            },
+            Asking::Revision => match crate::phab::revision_named(text) {
+                Some((rev, _)) => (format!("{rev}, and the revisions it stacks on"), true),
+                None => ("give a revision: D123, or its link".into(), false),
+            },
+        }
+    }
+
+    /// A key while a line is typed: Enter takes it, once it can be taken;
+    /// Esc goes back; any other edits it, what it gives said again.
+    fn prompt_key(&mut self, mut p: Prompt, k: KeyEvent) -> Effect {
+        match k.code {
+            KeyCode::Esc => match p.asking {
+                Asking::Range => self.mode = self.workspace_menu().map_or(Mode::Normal, Mode::Menu),
+                Asking::ImportName => self.mode = Mode::Menu(self.preview_menu()),
+                Asking::AgentName | Asking::Revision => self.mode = Mode::Normal,
+            },
+            KeyCode::Enter if p.ok => {
+                let text = p.ed.text().trim().to_string();
+                match p.asking {
+                    Asking::Range => return self.perform(Action::ImportRange(text)),
+                    Asking::ImportName => {
+                        if let Some(planned) = &mut self.planned {
+                            planned.name = text;
+                        }
+                        self.mode = Mode::Menu(self.preview_menu());
+                    }
+                    Asking::AgentName => self.agent_stack(&text),
+                    Asking::Revision => self.read_revisions(&text),
+                }
+            }
+            KeyCode::Enter => {
+                self.status = p.said.clone();
+                self.mode = Mode::Prompt(Box::new(p));
+            }
+            _ => {
+                p.ed.key(k);
+                (p.said, p.ok) = self.prompt_said(p.asking, &p.ed.text());
+                self.mode = Mode::Prompt(Box::new(p));
+            }
+        }
+        Effect::None
+    }
+
+    /// The line being typed, in a box over the screen, what it gives said
+    /// at its foot; where the cursor goes.
+    fn draw_prompt(&self, buf: &mut Buffer, area: Rect) -> Option<(u16, u16)> {
+        let Mode::Prompt(p) = &self.mode else { return None };
+        let (w, h) = (area.width as usize, area.height as usize);
+        let bw = (w * 9 / 10).clamp(30.min(w), 100.min(w));
+        let (x, y) = (w.saturating_sub(bw) / 2, h.saturating_sub(3) / 2);
+        spot_in(&self.spots, area, (x, y, bw, 3), Spot::Box);
+        let foot = match p.ok {
+            true => format!("{} · enter: {} · esc: back", p.said, p.asking.does()),
+            false => format!("{} · esc: back", p.said),
+        };
+        Some(p.ed.draw(buf, area, x, y, bw, 3, p.asking.title(), &foot))
+    }
+
     /// The lines being named, in a box over the screen; where the cursor
     /// goes.
     fn draw_lines(&self, buf: &mut Buffer, area: Rect) -> Option<(u16, u16)> {
@@ -6262,6 +6712,7 @@ impl App {
         self.draw_help(buf, body);
         self.draw_ref_preview(buf, body);
         let cursor = self.draw_lines(buf, body).or(cursor);
+        let cursor = self.draw_prompt(buf, body).or(cursor);
         self.draw_status(buf, area);
         cursor
     }
@@ -6529,6 +6980,8 @@ impl App {
             Mode::Help { .. } => "any key: back, and that key".into(),
             Mode::Preview(_) => "↑↓: scroll · enter: go there · esc: back".into(),
             Mode::Lines(_) => "enter: attach these lines · esc: back to the comment".into(),
+            Mode::Prompt(p) if p.ok => format!("enter: {} · esc: back", p.asking.does()),
+            Mode::Prompt(_) => "esc: back".into(),
             Mode::Stream { .. } => "↑↓: scroll · esc: fold it".into(),
             Mode::Normal if self.screen == Screen::Main && self.on_banner => {
                 let enter = match self.banner_lines().get(self.banner_sel) {
@@ -6765,7 +7218,7 @@ impl App {
             let say = if self.db.names().contains(&self.stack.as_str()) {
                 format!("{} is deleted: Undo, in the menu, brings it back", self.stack)
             } else {
-                "no stack yet: `stacked import NAME main..HEAD` makes one".to_string()
+                "no stack yet: Space for the ways to make one".to_string()
             };
             for (y, line) in wrap(&say, w.saturating_sub(2)).iter().enumerate() {
                 put(buf, area, 1, y + 1, w, line, color::dim());

@@ -20,6 +20,7 @@ pub mod git;
 pub mod head;
 pub mod held;
 pub mod history;
+pub mod import;
 pub mod keys;
 pub mod markdown;
 pub mod mbox;

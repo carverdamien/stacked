@@ -3180,7 +3180,7 @@ fn an_empty_database() {
     let tmp = tempfile::tempdir().unwrap();
     let mut app = open(&tmp.path().join("none.jsonl")).unwrap();
     let screen = draw(&mut app);
-    assert!(screen.contains("no stack yet") && screen.contains("import NAME main..HEAD"), "{screen}");
+    assert!(screen.contains("no stack yet: Space for the") && screen.contains("ways to make one"), "{screen}");
     for c in [KeyCode::Down, KeyCode::Up, KeyCode::Left, KeyCode::Right, KeyCode::Home, KeyCode::End] {
         assert_eq!(key(&mut app, c), Effect::None);
         draw(&mut app);
@@ -3191,10 +3191,240 @@ fn an_empty_database() {
     assert_eq!(app.mode, Mode::Normal);
     assert_eq!(app.hint(), "enter or space: menu · 1: view · 2: read");
     assert!(!draw(&mut app).contains("what can I do here"));
-    // Enter, with nothing else to do, is the menu: only to quit.
+    // Enter, with nothing else to do, is the menu: the ways to make a
+    // stack, or quit.
     keys(&mut app, &[KeyCode::Enter]);
-    assert_eq!(items(&app), vec![("Quit".to_string(), true)]);
-    assert_eq!(key(&mut app, KeyCode::Enter), Effect::Quit);
+    let labels: Vec<String> = items(&app).into_iter().map(|(l, _)| l).collect();
+    assert_eq!(labels, ["Ask the agent to make a stack…", "Import from the workspace…", "Import from Phabricator…", "", "Quit"]);
+    assert_eq!(choose(&mut app, "Quit"), Effect::Quit);
+}
+
+/// A repository: main, a file; `other` on it, a commit; `feature` on it,
+/// main its upstream, two commits, then changes staged and more not.
+fn workspace(at: &Path) {
+    git(at, &["init", "-q", "-b", "main"]);
+    git(at, &["config", "commit.gpgsign", "false"]);
+    std::fs::write(at.join("a.txt"), "one\n").unwrap();
+    git(at, &["add", "."]);
+    git(at, &["commit", "-qm", "base"]);
+    git(at, &["checkout", "-qb", "other"]);
+    std::fs::write(at.join("b.txt"), "bee\n").unwrap();
+    git(at, &["add", "."]);
+    git(at, &["commit", "-qm", "Bug 3 - add b"]);
+    git(at, &["checkout", "-q", "main"]);
+    git(at, &["checkout", "-qb", "feature"]);
+    git(at, &["branch", "-q", "--set-upstream-to=main"]);
+    std::fs::write(at.join("a.txt"), "one\ntwo\n").unwrap();
+    git(at, &["commit", "-qam", "Bug 1 - add two"]);
+    std::fs::write(at.join("a.txt"), "one\ntwo\nthree\n").unwrap();
+    git(at, &["commit", "-qam", "Bug 2 - add three"]);
+    std::fs::write(at.join("a.txt"), "one\ntwo\nthree\nfour\n").unwrap();
+    git(at, &["add", "a.txt"]);
+    std::fs::write(at.join("a.txt"), "one\ntwo\nthree\nfour\nfive\n").unwrap();
+}
+
+#[test]
+fn the_agent_is_asked_to_make_a_stack_from_a_comment_on_it_empty() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("src");
+    std::fs::create_dir(&src).unwrap();
+    workspace(&src);
+    let db = tmp.path().join("db.jsonl");
+    let mut app = open(&db).unwrap();
+    app.checkout = src.clone();
+    // Named after the branch, as no stack is; made empty, on HEAD.
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    choose(&mut app, "Ask the agent to make a stack…");
+    assert!(matches!(&app.mode, Mode::Prompt(p) if p.ok && p.ed.text() == "feature" && p.said == "the stack feature"), "{:?}", app.mode);
+    assert_eq!(app.hint(), "enter: make it, empty, then say what it should hold · esc: back");
+    keys(&mut app, &[KeyCode::Enter]);
+    assert_eq!(app.stack, "feature");
+    let d = Db::load(&db).unwrap();
+    let s = d.stack("feature").unwrap();
+    let head = String::from_utf8(Command::new("git").args(["rev-parse", "HEAD"]).current_dir(&src).output().unwrap().stdout).unwrap();
+    assert!(s.patches.is_empty() && s.base.as_deref() == Some(head.trim()), "{s:?}");
+    drop(d);
+    // A comment on it, open to say what the agent should make of it; saved,
+    // the agent asked.
+    assert!(matches!(&app.mode, Mode::Edit(e) if e.target == stacked::tui::Target::Stack), "{:?}", app.mode);
+    assert!(app.status.starts_with("the stack feature is made, empty, on HEAD "), "{}", app.status);
+    typed(&mut app, "Make a stack of two patches: four, then five.");
+    keys(&mut app, &[KeyCode::Esc]);
+    choose(&mut app, "Save it and ask agent");
+    assert!(app.status.contains("asked the agent about 1 comment"), "{}", app.status);
+    wait_for(&mut app, "⟳ 1 landed ask waits for your review");
+}
+
+#[test]
+fn a_stack_is_imported_from_phabricator_seen_first() {
+    use stacked::phab::Revision;
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("src");
+    std::fs::create_dir(&src).unwrap();
+    workspace(&src);
+    let main = String::from_utf8(Command::new("git").args(["rev-parse", "main"]).current_dir(&src).output().unwrap().stdout).unwrap();
+    let main = main.trim().to_string();
+    let db = tmp.path().join("db.jsonl");
+    let mut app = open(&db).unwrap();
+    app.checkout = src.clone();
+    // Phabricator as the tests have it: D11 on main, D12 on it; read from
+    // the top, or with D11's base one the repository does not have.
+    let on = std::sync::Arc::new(std::sync::Mutex::new(main.clone()));
+    let base = on.clone();
+    stacked::phab::stack_stand_in(Some(Box::new(move |rev, link| {
+        if rev != "D12" || link != Some("https://phabricator.example.com/D12") {
+            return Err(format!("not as the test reads it: {rev} {link:?}"));
+        }
+        let trailer = |n: u32| format!("\n\nDifferential Revision: https://phabricator.example.com/D{n}");
+        Ok(vec![
+            Revision {
+                id: "D11".into(),
+                message: format!("Bug 1 - add two{}", trailer(11)),
+                author: Some("Ann <ann@example.com>".into()),
+                diff: "diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -1 +1,2 @@\n one\n+two\n".into(),
+                base: Some(base.lock().unwrap().clone()),
+            },
+            Revision {
+                id: "D12".into(),
+                message: format!("Bug 2 - add three{}", trailer(12)),
+                author: Some("Ann <ann@example.com>".into()),
+                diff: "diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -1,2 +1,3 @@\n one\n two\n+three\n".into(),
+                base: None,
+            },
+        ])
+    })));
+    let labels = |app: &App| items(app).into_iter().map(|(l, _)| l).collect::<Vec<_>>();
+    // The revision, typed: said as it is, taken once it names one.
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    choose(&mut app, "Import from Phabricator…");
+    assert!(matches!(&app.mode, Mode::Prompt(p) if !p.ok && p.said == "give a revision: D123, or its link"), "{:?}", app.mode);
+    typed(&mut app, "D1x");
+    keys(&mut app, &[KeyCode::Enter]);
+    assert!(matches!(app.mode, Mode::Prompt(_)), "not taken");
+    for _ in 0..3 {
+        key(&mut app, KeyCode::Backspace);
+    }
+    typed(&mut app, "https://phabricator.example.com/D12");
+    assert!(matches!(&app.mode, Mode::Prompt(p) if p.ok && p.said == "D12, and the revisions it stacks on"), "{:?}", app.mode);
+    // Read away from the screen, then seen before it is imported.
+    keys(&mut app, &[KeyCode::Enter]);
+    assert_eq!(app.status, "reading D12 and the revisions it stacks on, from Phabricator…");
+    app.settle();
+    let Mode::Menu(m) = &app.mode else { panic!("{:?} {}", app.mode, app.status) };
+    assert_eq!(m.title, format!("2 patches from D11..D12, on {}", &main[..12]));
+    assert_eq!(labels(&app), ["1 Bug 1 - add two", "2 Bug 2 - add three", "", "Import it as D12", "Name it otherwise…"]);
+    choose(&mut app, "Import it as D12");
+    assert_eq!(app.stack, "D12");
+    let d = Db::load(&db).unwrap();
+    let ps: Vec<stacked::db::Patch> = d.stack("D12").unwrap().patches.iter().map(|id| d.patch(id).clone()).collect();
+    assert_eq!(ps.iter().map(|p| p.title().to_string()).collect::<Vec<_>>(), ["Bug 1 - add two", "Bug 2 - add three"]);
+    assert_eq!(ps[0].author.as_deref(), Some("Ann <ann@example.com>"));
+    assert!(ps[1].message.contains("Differential Revision: https://phabricator.example.com/D12"), "{}", ps[1].message);
+    drop(d);
+    // On a commit the repository does not have: said, nothing imported.
+    *on.lock().unwrap() = "0123456789abcdef0123456789abcdef01234567".into();
+    keys(&mut app, &[KeyCode::Home]);
+    choose(&mut app, "New stack…");
+    choose(&mut app, "Import from Phabricator…");
+    typed(&mut app, "https://phabricator.example.com/D12");
+    keys(&mut app, &[KeyCode::Enter]);
+    app.settle();
+    assert_eq!(app.status, "D11 is on 0123456789ab, which this repository does not have: fetch it first");
+    assert_eq!(app.mode, Mode::Normal);
+    stacked::phab::stack_stand_in(None);
+}
+
+#[test]
+fn a_stack_is_imported_from_the_workspace_seen_first() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("src");
+    std::fs::create_dir(&src).unwrap();
+    workspace(&src);
+    let db = tmp.path().join("db.jsonl");
+    let mut app = open(&db).unwrap();
+    app.checkout = src.clone();
+    let labels = |app: &App| items(app).into_iter().map(|(l, _)| l).collect::<Vec<_>>();
+    let titles = |name: &str| {
+        let d = Db::load(&db).unwrap();
+        d.stack(name).unwrap().patches.iter().map(|id| d.patch(id).title().to_string()).collect::<Vec<_>>()
+    };
+    let erase = |app: &mut App, n: usize| {
+        for _ in 0..n {
+            key(app, KeyCode::Backspace);
+        }
+    };
+    // The branch checked out, on its upstream; the changes not committed,
+    // each checked to go on top or not.
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    choose(&mut app, "Import from the workspace…");
+    assert_eq!(
+        labels(&app),
+        [
+            "feature on main: 2 commits",
+            "Another branch…",
+            "A range…",
+            "",
+            "With the staged changes on top, a patch of their own",
+            "With the unstaged changes on top, a patch of their own"
+        ]
+    );
+    choose(&mut app, "With the staged changes");
+    let Mode::Menu(m) = &app.mode else { panic!("{:?}", app.mode) };
+    assert_eq!(m.items.iter().map(|i| i.check).collect::<Vec<_>>()[4..], [Some(true), Some(false)]);
+    // Seen before it is imported: its patches, on what, and the name of its
+    // stack, which may be another.
+    choose(&mut app, "feature on main: 2 commits");
+    let Mode::Menu(m) = &app.mode else { panic!("{:?}", app.mode) };
+    assert!(m.title.starts_with("3 patches from main..HEAD, on "), "{}", m.title);
+    assert_eq!(labels(&app), ["1 Bug 1 - add two", "2 Bug 2 - add three", "3 Staged changes", "", "Import it as feature", "Name it otherwise…"]);
+    choose(&mut app, "Name it otherwise…");
+    erase(&mut app, 7);
+    typed(&mut app, "a b");
+    assert!(matches!(&app.mode, Mode::Prompt(p) if !p.ok && p.said.contains("cannot name a stack")), "{:?}", app.mode);
+    assert_eq!(app.hint(), "esc: back");
+    keys(&mut app, &[KeyCode::Enter]);
+    assert!(matches!(app.mode, Mode::Prompt(_)), "not taken");
+    erase(&mut app, 3);
+    typed(&mut app, "fix");
+    assert_eq!(app.hint(), "enter: name it so · esc: back");
+    keys(&mut app, &[KeyCode::Enter]);
+    choose(&mut app, "Import it as fix");
+    assert_eq!(app.stack, "fix");
+    assert_eq!(app.status, "imported 3 patches from main..HEAD as fix");
+    assert_eq!(titles("fix"), ["Bug 1 - add two", "Bug 2 - add three", "Staged changes"]);
+    // A range given by hand: said as it is typed, taken once it holds a
+    // commit; another branch's, without the changes of the one checked out.
+    keys(&mut app, &[KeyCode::Home]);
+    assert!(app.focus == Focus::List && app.on_stack, "{:?}", app.focus);
+    choose(&mut app, "New stack…");
+    assert_eq!(labels(&app), ["Ask the agent to make a stack…", "Import from the workspace…", "Import from Phabricator…"]);
+    choose(&mut app, "Import from the workspace…");
+    choose(&mut app, "A range…");
+    assert!(matches!(&app.mode, Mode::Prompt(p) if !p.ok && p.said == "give a commit, or a base..tip range"), "{:?}", app.mode);
+    typed(&mut app, "nope");
+    assert!(matches!(&app.mode, Mode::Prompt(p) if p.said == "unknown ref"), "{:?}", app.mode);
+    keys(&mut app, &[KeyCode::Enter]);
+    assert_eq!(app.status, "unknown ref");
+    erase(&mut app, 4);
+    typed(&mut app, "main..other");
+    assert!(matches!(&app.mode, Mode::Prompt(p) if p.ok && p.said == "1 commit"), "{:?}", app.mode);
+    assert!(draw(&mut app).contains("a range of the workspace, to import"));
+    keys(&mut app, &[KeyCode::Enter]);
+    assert_eq!(labels(&app), ["1 Bug 3 - add b", "", "Import it as other", "Name it otherwise…"]);
+    choose(&mut app, "Import it as other");
+    assert_eq!(titles("other"), ["Bug 3 - add b"]);
+    // Another branch, picked: each on what it is on; its stack named as no
+    // other is.
+    keys(&mut app, &[KeyCode::Home]);
+    assert!(app.focus == Focus::List && app.on_stack, "{:?}", app.focus);
+    choose(&mut app, "New stack…");
+    choose(&mut app, "Import from the workspace…");
+    choose(&mut app, "Another branch…");
+    assert_eq!(items(&app), [("main, on nothing".to_string(), false), ("other on main: 1 commit".to_string(), true)]);
+    choose(&mut app, "other on main: 1 commit");
+    choose(&mut app, "Import it as other-2");
+    assert_eq!(app.stack, "other-2");
+    assert_eq!(titles("other-2"), ["Bug 3 - add b"]);
 }
 
 #[test]
