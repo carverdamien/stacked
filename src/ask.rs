@@ -1215,7 +1215,17 @@ fn before(db: &Db, i: &Info, was: &str, name: &str, cmd: &str) -> String {
 
 /// The prompt for an ask: what it may do, the stack, the comments, and
 /// what to answer with.
-fn prompt(db: &Db, i: &Info, s: &Stack, cmd: &str, run: &str) -> String {
+fn prompt(db: &Db, i: &Info, s: &Stack, cmd: &str, run: &str, structured: bool) -> String {
+    // How it answers: as structured output, which claude checks against
+    // what this asks for (`answer_schema`); else as JSON it ends with.
+    let (end, only, said) = match structured {
+        true => (
+            "Give your answer as the structured output asked of you",
+            "Give your answer as the structured output asked of you",
+            "in your answer",
+        ),
+        false => ("End your reply with a JSON object", "Output ONLY a JSON object", "in the JSON you end with"),
+    };
     let n = s.patches.len();
     let k = i.patch.as_ref().map(|(_, k)| *k);
     // The stack it started from: at its rev; a guess's, as the work it goes
@@ -1240,8 +1250,8 @@ fn prompt(db: &Db, i: &Info, s: &Stack, cmd: &str, run: &str) -> String {
              with a GIT_SEQUENCE_EDITOR script to reorder, drop or squash, `git reset` and \
              `git commit` to split, a new commit where a new patch belongs. Do not touch \
              commits below {base}. To rebase the stack onto another commit, `git rebase \
-             --onto COMMIT {base}`, and say onto what: \"base\": COMMIT's full sha, in the \
-             JSON you end with. {KEEP_TITLES}",
+             --onto COMMIT {base}`, and say onto what: \"base\": COMMIT's full sha, {said}. \
+             {KEEP_TITLES}",
             base = i.base
         ),
         (Way::Change, Scope::Patch(_)) => format!(
@@ -1351,33 +1361,99 @@ fn prompt(db: &Db, i: &Info, s: &Stack, cmd: &str, run: &str) -> String {
         p.push_str(&format!("(The references you attach to your reply to it are numbered from r{} on.)\n", crate::refs::next_of(n)));
     }
     p.push_str(&history_part(db, i, s, cmd));
-    p.push_str(match i.way {
+    p.push_str(&match i.way {
         Way::Change => match i.scope {
-            Scope::Stack => {
-                "\nEnd your reply with a JSON object: {\"replies\": {label: your reply to that \
-                 comment, saying what you changed}}, labels as above ([c1] is \"c1\"); with \
-                 \"base\": the commit's sha, when you rebased the stack onto another."
-            }
-            Scope::Patch(_) => {
-                "\nEnd your reply with a JSON object: {\"replies\": {label: your reply to that \
-                 comment, saying what you changed}}, labels as above ([c1] is \"c1\"); with \
-                 \"promote\": why, when the comments need more than this patch."
-            }
+            Scope::Stack => format!(
+                "\n{end}: {{\"replies\": {{label: your reply to that comment, saying what you \
+                 changed}}}}, labels as above ([c1] is \"c1\"); with \"base\": the commit's sha, \
+                 when you rebased the stack onto another."
+            ),
+            Scope::Patch(_) => format!(
+                "\n{end}: {{\"replies\": {{label: your reply to that comment, saying what you \
+                 changed}}}}, labels as above ([c1] is \"c1\"); with \"promote\": why, when the \
+                 comments need more than this patch."
+            ),
         },
-        Way::Answer => {
-            "\nOutput ONLY a JSON object: {\"replies\": {label: your answer}, \"comments\": \
-             [{\"patch\": its number, \"file\": the path as the diff names it, \"side\": \"+\" \
-             for an added line, \"-\" for a removed one, \" \" for context, \"line\": that \
-             line's exact text without its leading +/-/space, \"text\": your comment, one \
-             issue}]}, the comments optional, as many on one line as it has issues."
-        }
-        Way::Test => {
-            "\nEnd your reply with a JSON object: {\"replies\": {label: what you found, with \
-             the commands run}, \"patches\": {its number: what building and testing it found}}."
-        }
+        Way::Answer => format!(
+            "\n{only}: {{\"replies\": {{label: your answer}}, \"comments\": [{{\"patch\": its \
+             number, \"file\": the path as the diff names it, \"side\": \"+\" for an added line, \
+             \"-\" for a removed one, \" \" for context, \"line\": that line's exact text without \
+             its leading +/-/space, \"text\": your comment, one issue}}]}}, the comments \
+             optional, as many on one line as it has issues."
+        ),
+        Way::Test => format!(
+            "\n{end}: {{\"replies\": {{label: what you found, with the commands run}}, \
+             \"patches\": {{its number: what building and testing it found}}}}."
+        ),
     });
     p.push_str(REFS);
     p
+}
+
+/// What the agent's answer to ask `i`, on stack `s`, is to be, as a JSON
+/// Schema: what its prompt asks for, given back as structured output
+/// (`--json-schema`), which claude checks before it is done. Its replies by
+/// the comments' labels, a build and test's findings by the patches'
+/// numbers; what is written a string, or one with the references it
+/// attaches.
+fn answer_schema(i: &Info, s: &Stack) -> Value {
+    use serde_json::json;
+    let refs = json!({
+        "type": "array",
+        "items": {
+            "type": "object",
+            "properties": {
+                "file": {"type": "string"},
+                "lines": {"type": "string"},
+                "patch": {"type": "integer"},
+                "comment": {"type": "string"}
+            },
+            "additionalProperties": false
+        }
+    });
+    let written = json!({"anyOf": [
+        {"type": "string"},
+        {
+            "type": "object",
+            "properties": {"text": {"type": "string"}, "refs": refs.clone()},
+            "required": ["text"],
+            "additionalProperties": false
+        }
+    ]});
+    let keyed = |keys: Vec<String>| {
+        let props: Map<String, Value> = keys.into_iter().map(|k| (k, written.clone())).collect();
+        json!({"type": "object", "properties": props, "additionalProperties": false})
+    };
+    let mut props = Map::new();
+    props.insert("replies".into(), keyed(i.notes.iter().map(|sh| sh.label.clone()).collect()));
+    match (i.way, &i.scope) {
+        (Way::Change, Scope::Stack) => {
+            props.insert("base".into(), json!({"type": "string"}));
+        }
+        (Way::Change, Scope::Patch(_)) => {
+            props.insert("promote".into(), json!({"type": "string"}));
+        }
+        (Way::Answer, _) => {
+            let comment = json!({
+                "type": "object",
+                "properties": {
+                    "patch": {"type": "integer"},
+                    "file": {"type": "string"},
+                    "side": {"enum": ["+", "-", " "]},
+                    "line": {"type": "string"},
+                    "text": {"type": "string"},
+                    "refs": refs
+                },
+                "required": ["patch", "file", "line", "text"],
+                "additionalProperties": false
+            });
+            props.insert("comments".into(), json!({"type": "array", "items": comment}));
+        }
+        (Way::Test, _) => {
+            props.insert("patches".into(), keyed((1..=s.patches.len()).map(|n| n.to_string()).collect()));
+        }
+    }
+    json!({"type": "object", "properties": props, "required": ["replies"], "additionalProperties": false})
 }
 
 /// What an ask is told of the references it may attach to what it writes.
@@ -1736,7 +1812,7 @@ fn start(db_path: &Path, id: &str) -> Result<()> {
     };
     let db_abs = db_path.canonicalize().map_err(|e| Error(e.to_string()))?;
     let cmd = format!("{} -f {}", exe.display(), db_abs.display());
-    i.prompt = prompt(&db, &i, &s, &cmd, id);
+    i.prompt = prompt(&db, &i, &s, &cmd, id, agent.schema);
     let cwd = i.worktree.clone().map_or(repo.clone(), PathBuf::from);
     let mut tools = match i.way {
         Way::Change => format!("{},Bash({cmd} fits *),Bash({cmd} export *)", allowed_tools()),
@@ -1744,6 +1820,11 @@ fn start(db_path: &Path, id: &str) -> Result<()> {
         // Building and testing runs what the project needs: Bash at large.
         Way::Test => format!("Bash,{}", allowed_tools()),
     };
+    // Its answer given as structured output: with the tool claude gives it
+    // with.
+    if agent.schema {
+        tools.push_str(",StructuredOutput");
+    }
     // The settings' own, for every ask: an MCP server's tools, a command.
     for t in &agent.tools {
         tools.push(',');
@@ -1774,6 +1855,11 @@ fn start(db_path: &Path, id: &str) -> Result<()> {
     c.arg("-c").arg(WRAPPER).arg("sh").arg(id).arg(&cwd).arg(&exe).arg(&db_abs);
     c.args(["--output-format", "stream-json", "--verbose"]);
     c.args(["--permission-mode", permission, "--allowedTools", &tools]);
+    // Its answer asked as structured output, checked against what this ask
+    // asks for; else read from what it writes.
+    if agent.schema {
+        c.args(["--json-schema", &answer_schema(&i, &s).to_string()]);
+    }
     // What the settings add: a model, arguments of the user's.
     c.args(cfg.agent_args());
     c.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
@@ -1830,14 +1916,29 @@ fn exit_code(db: &Db, id: &str, exit: Option<&str>) -> String {
         .unwrap_or_else(|| "unknown".into())
 }
 
-/// What the agent said last: the `result` of its stream.
+/// What the agent answered last: the structured output of its stream's
+/// `result`, as JSON, when it gave one; else what that `result` says.
 fn result_text(events: &[&Value]) -> String {
-    events
-        .iter()
-        .rev()
-        .filter(|v| v.get("type").and_then(Value::as_str) == Some("result"))
-        .find_map(|v| v.get("result").and_then(Value::as_str).map(String::from))
-        .unwrap_or_default()
+    let results = || events.iter().rev().filter(|v| v.get("type").and_then(Value::as_str) == Some("result"));
+    if let Some(o) = results().find_map(|v| v.get("structured_output").filter(|o| o.is_object())) {
+        return o.to_string();
+    }
+    results().find_map(|v| v.get("result").and_then(Value::as_str).map(String::from)).unwrap_or_default()
+}
+
+/// How the agent's stream ended, when it ended in an error: as its
+/// `result` says, said.
+fn ended_badly(events: &[&Value]) -> Option<String> {
+    let r = events.iter().rev().find(|v| v.get("type").and_then(Value::as_str) == Some("result"))?;
+    if r.get("is_error").and_then(Value::as_bool) != Some(true) {
+        return None;
+    }
+    Some(match r.get("subtype").and_then(Value::as_str).unwrap_or("") {
+        "error_max_structured_output_retries" => "its answer never fit what it was asked for, tried again and again".into(),
+        "error_max_turns" => "it ran out of turns".into(),
+        "" => "it said it failed".into(),
+        other => other.to_string(),
+    })
 }
 
 /// The tools the agent was not let use, as its result says
@@ -1954,6 +2055,9 @@ pub fn land(db_path: &Path, id: &str, exit: Option<&str>) -> Result<Run> {
                 .collect();
             let keep = left_work(&i);
             let mut summary = format!("the agent failed ({code}): {}", said.join("\n").trim());
+            if let Some(why) = ended_badly(&events) {
+                summary += &format!("; {why}");
+            }
             if keep {
                 summary += &format!("; its work is left in {}", left_in(&i));
             }
@@ -2613,6 +2717,50 @@ mod tests {
             bytes.push('\n');
         }
         Db::from_bytes(Path::new("t.jsonl"), bytes.as_bytes()).unwrap()
+    }
+
+    #[test]
+    fn the_answer_is_asked_as_structured_output_of_what_each_ask_asks_for() {
+        let s = Stack {
+            name: "s".into(),
+            patches: vec!["p1".into(), "p2".into()],
+            base: None,
+            repo: None,
+            parent: None,
+            op: String::new(),
+            time: 0,
+        };
+        let i = |way: Way, scope: Scope| -> Info {
+            let notes = serde_json::json!([{"label": "c1", "change": "x", "id": "1"}, {"label": "c2", "change": "x", "id": "2"}]);
+            serde_json::from_value(serde_json::json!({"way": way, "scope": scope, "from": 0, "notes": notes})).unwrap()
+        };
+        let keys = |v: &Value| v["properties"].as_object().unwrap().keys().cloned().collect::<Vec<_>>();
+        // Replies by the comments' labels, nothing else.
+        let change = answer_schema(&i(Way::Change, Scope::Stack), &s);
+        assert_eq!((keys(&change), change["required"].clone()), (vec!["replies".to_string(), "base".into()], serde_json::json!(["replies"])));
+        assert_eq!(keys(&change["properties"]["replies"]), ["c1", "c2"]);
+        assert_eq!(change["properties"]["replies"]["additionalProperties"], false);
+        assert_eq!(keys(&answer_schema(&i(Way::Change, Scope::Patch("x".into())), &s)), ["replies", "promote"]);
+        // An answer's comments; a build and test's findings by the patches'
+        // numbers.
+        let answer = answer_schema(&i(Way::Answer, Scope::Stack), &s);
+        assert_eq!(answer["properties"]["comments"]["items"]["required"], serde_json::json!(["patch", "file", "line", "text"]));
+        let test = answer_schema(&i(Way::Test, Scope::Stack), &s);
+        assert_eq!(keys(&test["properties"]["patches"]), ["1", "2"]);
+        // What is written: a string, or one with its references.
+        let written = &test["properties"]["replies"]["properties"]["c1"]["anyOf"];
+        assert_eq!((written[0]["type"].clone(), written[1]["required"].clone()), (serde_json::json!("string"), serde_json::json!(["text"])));
+    }
+
+    #[test]
+    fn the_answer_is_its_structured_output_when_it_gives_one() {
+        let said = serde_json::json!({"type": "result", "result": "Done: {\"replies\": {\"c1\": \"as said\"}}"});
+        let structured = serde_json::json!({"type": "result", "result": "", "structured_output": {"replies": {"c1": "as given"}}});
+        assert_eq!(replies_of(&result_text(&[&said]))["c1"], "as said");
+        assert_eq!(replies_of(&result_text(&[&said, &structured]))["c1"], "as given");
+        let failed = serde_json::json!({"type": "result", "is_error": true, "subtype": "error_max_structured_output_retries"});
+        assert_eq!(ended_badly(&[&failed]).as_deref(), Some("its answer never fit what it was asked for, tried again and again"));
+        assert_eq!(ended_badly(&[&said]), None);
     }
 
     #[test]

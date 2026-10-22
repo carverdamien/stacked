@@ -2089,6 +2089,63 @@ fn a_comment_edited_on_phabricator_is_held_as_an_edit_of_its_turn() {
 }
 
 #[test]
+fn the_agents_answer_is_asked_as_structured_output_and_read_from_it() {
+    let e = env();
+    e.ok(&["import", "s", "base"]);
+    let args = e.root.join("args");
+    // A claude that keeps what it is run with, then ends as `result` says,
+    // with `code`.
+    let keeps = format!("for a in \"$@\"; do printf '%s\\0' \"$a\"; done > {}", args.display());
+    let ends = |name: &str, result: serde_json::Value, code: u8| {
+        e.script(
+            name,
+            &format!("{keeps}\necho '{{\"type\":\"system\",\"subtype\":\"init\",\"model\":\"fake\"}}'\ncat <<'EOF'\n{result}\nEOF\nexit {code}\n"),
+        )
+    };
+    let run_with = || -> Vec<String> { std::fs::read_to_string(&args).unwrap().split('\0').map(String::from).collect() };
+    let after = |all: &[String], flag: &str| all.iter().position(|a| a == flag).map(|k| all[k + 1].clone());
+    // Asked as structured output, of what the ask asks for; answered so,
+    // the text of its result empty.
+    let given = ends(
+        "claude-structured.sh",
+        serde_json::json!({"type": "result", "subtype": "success", "result": "", "structured_output": {"replies": {"c1": "As given."}}}),
+        0,
+    );
+    let id = comment(&e, &["Why?"]);
+    let (fine, out, err) = send(&e, &given, &[&id, "--answer-only"], &[]);
+    assert!(fine, "{out}{err}");
+    assert!(e.ok(&["comments", "s"]).contains("As given."), "{}", e.ok(&["comments", "s"]));
+    let all = run_with();
+    let schema: serde_json::Value = serde_json::from_str(&after(&all, "--json-schema").expect("asked as structured output")).unwrap();
+    assert!(schema["properties"]["replies"]["properties"]["c1"].is_object(), "{schema}");
+    assert!(schema["properties"]["comments"]["items"].is_object(), "an answer's comments: {schema}");
+    assert!(after(&all, "--allowedTools").unwrap().split(',').any(|t| t == "StructuredOutput"), "{all:?}");
+    assert!(after(&all, "-p").unwrap().contains("Give your answer as the structured output asked of you"));
+    // Off in the settings: none of it, the answer read from what the agent
+    // writes, the prose around it left out.
+    let settings = e.root.join("settings.toml");
+    std::fs::write(&settings, "[agent]\nschema = false\n").unwrap();
+    let said = fake_claude(&e, "claude-said.sh", &keeps, r#"Seen `${x}`: {"replies": {"c1": "As said."}}"#);
+    let id = comment(&e, &["And?"]);
+    let (fine, out, err) = send(&e, &said, &[&id, "--answer-only"], &[("STACKED_CONFIG", &settings)]);
+    assert!(fine, "{out}{err}");
+    let all = run_with();
+    assert!(after(&all, "--json-schema").is_none() && !after(&all, "--allowedTools").unwrap().contains("StructuredOutput"), "{all:?}");
+    assert!(after(&all, "-p").unwrap().contains("Output ONLY a JSON object"));
+    assert!(e.ok(&["comments", "s"]).contains("As said."));
+    // Given up on by claude, its answer never fitting: the ask fails, and
+    // says why.
+    let gave_up = ends(
+        "claude-gave-up.sh",
+        serde_json::json!({"type": "result", "subtype": "error_max_structured_output_retries", "is_error": true}),
+        1,
+    );
+    let id = comment(&e, &["Again?"]);
+    let (fine, out, err) = send(&e, &gave_up, &[&id, "--answer-only"], &[]);
+    assert!(!fine && out.contains("its answer never fit what it was asked for, tried again and again"), "{out}{err}");
+}
+
+#[test]
 fn apply_is_the_only_change_to_the_worktree() {
     let e = env();
     e.ok(&["import", "s", "base"]);

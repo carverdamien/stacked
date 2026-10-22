@@ -159,6 +159,10 @@ pub struct Agent {
     /// rejected, sent back or edited by hand, what went on from it starts
     /// again.
     pub chain: bool,
+    /// Whether the agent gives its answer as structured output, checked
+    /// against what the ask asks for (`--json-schema`): off for an agent
+    /// that does not take it, its answer then read from what it writes.
+    pub schema: bool,
 }
 
 impl Default for Agent {
@@ -172,6 +176,7 @@ impl Default for Agent {
             answer_only_worktree: Workspace::Pwd,
             worktrees: None,
             chain: true,
+            schema: true,
         }
     }
 }
@@ -331,6 +336,7 @@ struct WrittenAgent {
     answer_only_worktree: Option<String>,
     worktrees: Option<String>,
     chain: Option<bool>,
+    schema: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -424,6 +430,7 @@ impl Config {
             c.agent.worktrees = Some(expand(&d));
         }
         c.agent.chain = a.chain.unwrap_or(c.agent.chain);
+        c.agent.schema = a.schema.unwrap_or(c.agent.schema);
         for (key, written, at) in [
             ("agent.worktree", &a.worktree, &mut c.agent.worktree),
             ("agent.answer_only_worktree", &a.answer_only_worktree, &mut c.agent.answer_only_worktree),
@@ -660,6 +667,12 @@ impl Config {
              # while changes work in your checkout (worktree = \"pwd\").\n",
         );
         out.push_str(&format!("chain = {}\n", self.agent.chain));
+        out.push_str(
+            "# Whether the agent gives its answer as structured output, checked against what the\n\
+             # ask asks for (claude's --json-schema): off for an agent that does not take it,\n\
+             # its answer then read from what it writes.\n",
+        );
+        out.push_str(&format!("schema = {}\n", self.agent.schema));
         out.push_str("\n[reviews]\n# Where `pull` reads reviews from: \"phabricator\", or \"none\".\n");
         out.push_str(&format!(
             "source = {}\n",
@@ -762,7 +775,7 @@ enum Kind {
 
 /// Every setting there is, as the file names it, and what it holds; the
 /// keys', `keys.NAME`, are lists.
-const SETTINGS: [(&str, Kind); 23] = [
+const SETTINGS: [(&str, Kind); 24] = [
     ("file", Kind::Text),
     ("editor", Kind::Text),
     ("agent.command", Kind::Text),
@@ -773,6 +786,7 @@ const SETTINGS: [(&str, Kind); 23] = [
     ("agent.answer_only_worktree", Kind::Text),
     ("agent.worktrees", Kind::Text),
     ("agent.chain", Kind::Flag),
+    ("agent.schema", Kind::Flag),
     ("reviews.source", Kind::Text),
     ("reviews.url", Kind::Text),
     ("reviews.arcrc", Kind::Text),
@@ -848,6 +862,7 @@ pub fn value_of(c: &Config, key: &str) -> Result<Vec<String>, String> {
         "agent.answer_only_worktree" => vec![c.agent.answer_only_worktree.name().into()],
         "agent.worktrees" => path(&c.agent.worktrees),
         "agent.chain" => vec![c.agent.chain.to_string()],
+        "agent.schema" => vec![c.agent.schema.to_string()],
         "reviews.source" => vec![match c.reviews.source {
             Source::Phabricator => "phabricator".into(),
             Source::None => "none".into(),

@@ -1173,7 +1173,13 @@ settings:
   and what `tools` is to be, in the file it writes, at the bottom. Space
   lets a tool or not, `s` saves, esc leaves with nothing written.
   `worktrees`, where the agents' worktrees go, else `.stacked/` at the top
-  of the stack's repository.
+  of the stack's repository. `schema`, whether the agent gives its answer
+  as structured output, checked against what the ask asks for (claude's
+  `--json-schema`: its replies by the comments' labels, an answer's
+  comments, a build and test's findings by the patches' numbers; on
+  unless set): off for an agent that does not take it, its answer is read
+  from what it writes, the JSON it ends with, the prose around it left
+  out. Given up on by claude, the ask fails and says so.
 - `[reviews]`: `source`, `"phabricator"` or `"none"` (no pulling); `url`,
   the Phabricator a bare `D123` trailer is on; `arcrc`, where the tokens
   are; `token`, one for `url` instead; `trailer`, the trailer naming a
@@ -1537,7 +1543,8 @@ checkout's own read and written unless git tracks it.
 - How apply picks a branch, which belongs to publishing: the editor applies
   on no branch, `stacked apply --branch` on one.
 - A stack-wide review runs one agent; one per patch is not done.
-- An agent other than claude must speak claude's command line and stream.
+- An agent other than claude must speak claude's command line and stream,
+  and take `--json-schema`, unless `agent.schema` is off.
 - Only git mail is read: no `hg export`.
 - Nothing submits to Phabricator: `stacked apply`, then moz-phab.
 
