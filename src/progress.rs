@@ -1,5 +1,5 @@
-//! How far the review of a stack is: the lines left to review and the
-//! comments left to close, as the stack is now.
+//! How far the review of a stack is: the lines left to review, of all it
+//! changes, and the comments left to close, as the stack is now.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -15,22 +15,24 @@ pub type Memo = HashMap<String, Arc<Vec<(String, bool)>>>;
 pub struct Progress {
     /// The changed lines of its patches not marked read.
     pub lines: usize,
+    /// The changed lines of its patches, read or not.
+    pub total: usize,
     /// The comments open on it.
     pub comments: usize,
 }
 
 impl Progress {
     /// What the top bar says of it, the longest first, then shorter ones
-    /// for less room.
+    /// for less room: the lines left of them all, and the comments open.
     pub fn said(&self) -> Vec<String> {
-        let (l, c) = (self.lines, self.comments);
+        let (l, t, c) = (self.lines, self.total, self.comments);
         if l == 0 && c == 0 {
             return vec!["nothing left to review".into(), "all reviewed".into()];
         }
         let (mut long, mut short) = (Vec::new(), Vec::new());
         if l > 0 {
-            long.push(format!("{l} line{} to review", plural(l)));
-            short.push(format!("{l} line{}", plural(l)));
+            long.push(format!("{l}/{t} line{} to review", plural(t)));
+            short.push(format!("{l}/{t} line{}", plural(t)));
         }
         if c > 0 {
             long.push(format!("{c} comment{} to close", plural(c)));
@@ -72,13 +74,19 @@ pub fn progress(db: &Db, name: &str, memo: &mut Memo, whitespace: bool) -> Progr
     let Some((_, stack)) = db.head(name) else {
         return Progress::default();
     };
-    let mut lines = 0;
+    let (mut lines, mut total) = (0, 0);
     for id in &stack.patches {
         let read = db.read_keys(&db.patch(id).change);
-        lines += keys_of(db, memo, id).iter().filter(|(k, blank)| (whitespace || !blank) && !read.contains(k)).count();
+        for (k, _) in keys_of(db, memo, id).iter().filter(|(_, blank)| whitespace || !blank) {
+            total += 1;
+            if !read.contains(k) {
+                lines += 1;
+            }
+        }
     }
     Progress {
         lines,
+        total,
         comments: db.stack_notes(name).len(),
     }
 }
@@ -145,13 +153,18 @@ mod tests {
     }
 
     #[test]
-    fn the_bar_says_what_is_left_then_less() {
-        let p = Progress { lines: 1, comments: 2 };
-        assert_eq!(p.said(), ["1 line to review · 2 comments to close", "1 line · 2 comments"]);
-        let p = Progress { lines: 3, comments: 0 };
-        assert_eq!(p.said(), ["3 lines to review", "3 lines"]);
-        let p = Progress { lines: 0, comments: 1 };
+    fn the_bar_says_what_is_left_of_all_then_less() {
+        let p = Progress { lines: 1, total: 4, comments: 2 };
+        assert_eq!(p.said(), ["1/4 lines to review · 2 comments to close", "1/4 lines · 2 comments"]);
+        let p = Progress { lines: 3, total: 3, comments: 0 };
+        assert_eq!(p.said(), ["3/3 lines to review", "3/3 lines"]);
+        let p = Progress { lines: 1, total: 1, comments: 0 };
+        assert_eq!(p.said(), ["1/1 line to review", "1/1 line"]);
+        // All read: no lines to count, however many there are.
+        let p = Progress { lines: 0, total: 5, comments: 1 };
         assert_eq!(p.said(), ["1 comment to close", "1 comment"]);
+        let p = Progress { lines: 0, total: 5, comments: 0 };
+        assert_eq!(p.said(), ["nothing left to review", "all reviewed"]);
         assert_eq!(Progress::default().said(), ["nothing left to review", "all reviewed"]);
     }
 
@@ -159,15 +172,19 @@ mod tests {
     fn what_is_left_is_the_lines_not_read_and_the_comments_open() {
         let a = patch("a", &["one", "two", "three", "four"]);
         let start = [Record::Patch(a.clone()), stack("s", &[&a], 1000)];
-        assert_eq!(of(&start), Progress { lines: 4, comments: 0 });
+        assert_eq!(of(&start), Progress { lines: 4, total: 4, comments: 0 });
         // 2 lines read; a comment open on the patch, one on the stack.
         let recs = [&start[..], &[read(&a, 2, 1600), note("a", "n", "why?", 1700), note(&stack_change("s"), "m", "and?", 1800)]].concat();
-        assert_eq!(of(&recs), Progress { lines: 2, comments: 2 });
+        assert_eq!(of(&recs), Progress { lines: 2, total: 4, comments: 2 });
         // A new version keeps the mark on the line it did not change; a
         // comment closed.
         let a2 = patch("a", &["one", "TWO", "three", "four"]);
         let recs = [&recs[..], &[Record::Patch(a2.clone()), stack("s", &[&a2], 1900), note("a", "n", "", 2000)]].concat();
-        assert_eq!(of(&recs), Progress { lines: 3, comments: 1 });
+        assert_eq!(of(&recs), Progress { lines: 3, total: 4, comments: 1 });
+        // A patch more: its lines to review, of the stack's.
+        let b = patch("b", &["five", "six"]);
+        let recs = [&recs[..], &[Record::Patch(b.clone()), stack("s", &[&a2, &b], 2100), read(&b, 1, 2200)]].concat();
+        assert_eq!(of(&recs), Progress { lines: 4, total: 6, comments: 1 });
     }
 
     #[test]
@@ -175,8 +192,10 @@ mod tests {
         let a = patch("a", &["one", "", "  \t", "two"]);
         let recs = [Record::Patch(a.clone()), stack("s", &[&a], 1000)];
         let db = db_of(&recs);
-        assert_eq!(progress(&db, "s", &mut Memo::new(), false).lines, 2, "the empty line and the blank one need no review");
-        assert_eq!(progress(&db, "s", &mut Memo::new(), true).lines, 4);
+        let p = progress(&db, "s", &mut Memo::new(), false);
+        assert_eq!((p.lines, p.total), (2, 2), "the empty line and the blank one need no review, nor count among the lines");
+        let p = progress(&db, "s", &mut Memo::new(), true);
+        assert_eq!((p.lines, p.total), (4, 4));
         // The same memo serves either setting.
         let mut memo = Memo::new();
         assert_eq!(progress(&db, "s", &mut memo, false).lines, 2);

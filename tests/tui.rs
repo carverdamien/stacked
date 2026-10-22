@@ -2728,7 +2728,7 @@ fn lines_of_white_space_alone_need_no_reading_unless_the_settings_say_so() {
     let db = tmp.path().join("db.jsonl");
     stacked(&src, &db, &["import", "s", "HEAD~1"]);
     let mut app = open(&db).unwrap();
-    assert!(draw(&mut app).contains("2 lines to review"));
+    assert!(draw(&mut app).contains("2/2 lines to review"));
     keys(&mut app, &[KeyCode::Char('2'), KeyCode::Enter]);
     app.wait_blocks();
     let screen = draw(&mut app);
@@ -3834,9 +3834,9 @@ fn the_top_bar_says_what_is_left_to_review() {
         app.draw(&mut buf);
         (0..w).map(|x| buf[(x, 0)].symbol()).collect::<String>()
     };
-    // Nothing read yet: the 5 lines the patches change.
+    // Nothing read yet: all 5 lines the patches change, of 5.
     let bar = first(&mut app, 120);
-    assert!(bar.ends_with("   5 lines to review "), "{bar}");
+    assert!(bar.ends_with("   5/5 lines to review "), "{bar}");
     let d = Db::load(&db).unwrap();
     let t0 = d.stack("t").unwrap().time;
     let s = d.stack("s").unwrap();
@@ -3849,28 +3849,28 @@ fn the_top_bar_says_what_is_left_to_review() {
             time,
         })
     };
-    // 2 lines read: 3 left.
+    // 2 lines read: 3 left of the 5.
     Db::append(&db, &[read(&one, 2, t0 + 600)]).unwrap();
     app.refresh();
     let bar = first(&mut app, 120);
-    assert!(bar.ends_with("   3 lines to review "), "{bar}");
+    assert!(bar.ends_with("   3/5 lines to review "), "{bar}");
     // A line more, of the other patch.
     Db::append(&db, &[read(&two, 1, t0 + 1200)]).unwrap();
     app.refresh();
     let bar = first(&mut app, 120);
-    assert!(bar.ends_with("   2 lines to review "), "{bar}");
+    assert!(bar.ends_with("   2/5 lines to review "), "{bar}");
     // A comment open.
     keys(&mut app, &[KeyCode::Right]);
     down_to(&mut app, "+TWO");
     keys(&mut app, &[KeyCode::Enter]);
     save(&mut app, "why so loud?");
     let bar = first(&mut app, 120);
-    assert!(bar.ends_with("   2 lines to review · 1 comment to close "), "{bar}");
+    assert!(bar.ends_with("   2/5 lines to review · 1 comment to close "), "{bar}");
     // With less room, less of it; with none, none.
     let bar = first(&mut app, 80);
-    assert!(bar.ends_with("   2 lines · 1 comment ") && !bar.contains("to review"), "{bar}");
+    assert!(bar.ends_with("   2/5 lines · 1 comment ") && !bar.contains("to review"), "{bar}");
     let bar = first(&mut app, 50);
-    assert!(!bar.contains("2 lines"), "{bar}");
+    assert!(!bar.contains("2/5 lines"), "{bar}");
     // All read, the comment closed: nothing left.
     Db::append(&db, &[read(&one, 4, t0 + 1800)]).unwrap();
     let n = notes_of(&db, "s", 0).into_iter().find(|n| n.text == "why so loud?").unwrap();

@@ -989,10 +989,10 @@ them, in an index of stacked's own (as the check does), in a thread: the
 screen does not wait.
 
 On the right of the top bar, how far the review of the stack is: the lines
-its patches change that are not read yet, and the comments open on it
-(`120 lines to review · 3 comments to close`). With less room, less of it
-(`120 lines · 3 comments`); with all read and no comment open, `nothing
-left to review`.
+its patches change that are not read yet, of all the lines they change,
+and the comments open on it (`24/120 lines to review · 3 comments to
+close`). With less room, less of it (`24/120 lines · 3 comments`); with
+all read and no comment open, `nothing left to review`.
 
 ## Searching
 
