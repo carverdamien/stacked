@@ -342,7 +342,7 @@ as alt-← and alt-→ (alt-b and alt-f) do; a word is what is between blanks.
 On a Mac, ctrl-← and ctrl-→ switch desktops unless that is turned off in
 the keyboard settings, so use alt (option) there. Esc
 asks what to do with the comment: `Save it`, `Save it and ask agent`,
-`Attach a reference…` (below), `Throw it away`, `Keep writing`; above the
+`Attach a reference…` (below), `Throw it away`, `Keep writing`; under the
 ask, `Send it`, `[x] now  [ ] later`, picks
 when it asks (later, the comment waits in the stack's batch: Asking the
 agent, below). The menu opens under the comment (above it when
@@ -607,9 +607,9 @@ numbers its own from `r1`), and one it names that is no comment leaves
 its number out. In what it writes, and in what you write after, `@r4`
 names one of them as `@r1` names one you attached.
 
-An ask goes now, or later, as in self-review's batch: above `Ask agent`
+An ask goes now, or later, as in self-review's batch: under `Ask agent`
 (and `Save it and ask agent`), `Send it`, `[x] now  [ ] later`, picks when,
-kept for the stack, and Enter on it asks as the ask under it does, which
+kept for the stack, and Enter on it asks as the ask over it does, which
 then says so (`Ask agent later`). Asked later, a comment waits in the
 stack's batch, marked `◇` and said `batched (may change the code)`; nothing
 is started. Its menu has `Send it now (…)`, alone, as it was batched, and

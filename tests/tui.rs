@@ -710,7 +710,7 @@ fn comments_are_written_where_they_will_show() {
     let all: Vec<String> = items(&app).into_iter().map(|(l, _)| l).collect();
     assert_eq!(
         all,
-        ["Save it", "Send it", "Save it and ask agent", "Attach a reference…", "", "Throw it away", "Keep writing"]
+        ["Save it", "Save it and ask agent", "Send it", "Attach a reference…", "", "Throw it away", "Keep writing"]
     );
     // When, a choice of the row above the ask: now, or later, in the batch.
     assert_eq!(choices_named(&app, "Send it"), ["now", "later"]);
@@ -1463,7 +1463,7 @@ fn what_you_said_last_may_be_written_again() {
     key(&mut app, KeyCode::Backspace);
     keys(&mut app, &[KeyCode::Esc]);
     let labels: Vec<String> = items(&app).into_iter().map(|(l, _)| l).collect();
-    assert_eq!(labels, ["Send it", "Ask agent", "Attach a reference…", "", "Leave it as it is", "Keep writing"]);
+    assert_eq!(labels, ["Ask agent", "Send it", "Attach a reference…", "", "Leave it as it is", "Keep writing"]);
     assert_eq!(choices_named(&app, "Ask agent"), ["change", "the whole stack", "answer only"]);
     assert_eq!(app.help()[0], "Press Enter to ask the agent about the comment as it is (may change the code).");
     choose(&mut app, "Leave it as it is");
@@ -1657,7 +1657,7 @@ fn esc_asks_what_to_do_with_a_comment_unless_nothing_would_be_done() {
     keys(&mut app, &[KeyCode::Enter]);
     assert!(matches!(&app.mode, Mode::Edit(e) if e.ed.text() == "louder"), "{:?}", app.mode);
     keys(&mut app, &[KeyCode::Esc]);
-    assert_eq!(items(&app)[1], ("Ask agent".to_string(), true));
+    assert_eq!(items(&app)[0], ("Ask agent".to_string(), true));
     let before = notes_of(&db, "s", 0).remove(0).text;
     choose_as(&mut app, "Ask agent", "answer only");
     assert_eq!(notes_of(&db, "s", 0).remove(0).text, before, "nothing written: asked as it is");
@@ -2413,7 +2413,7 @@ fn a_comment_on_a_patch_may_be_sent_to_the_whole_stack() {
     keys(&mut app, &[KeyCode::Esc]);
     // Written on a patch, it may be saved and sent past its patch.
     let all: Vec<String> = items(&app).into_iter().map(|(l, _)| l).collect();
-    assert_eq!(all[2], "Save it and ask agent", "{all:?}");
+    assert_eq!(all[1], "Save it and ask agent", "{all:?}");
     assert_eq!(choices_named(&app, "Save it and ask agent")[..2], ["change", "the whole stack"]);
     choose(&mut app, "Save it");
     // Its menu has it too, beside asking about its patch alone.
@@ -2966,7 +2966,7 @@ fn the_agent_is_asked_about_the_history_to_answer_only() {
     assert!(screen.lines().nth(at + 1).unwrap().contains(&format!("a question on @{rev}")), "under it:\n{screen}");
     typed(&mut app, "why drop it?");
     keys(&mut app, &[KeyCode::Esc]);
-    assert_eq!(items(&app)[1].0, "Save it and ask agent, answer only");
+    assert_eq!(items(&app)[0].0, "Save it and ask agent, answer only");
     assert!(!items(&app).iter().any(|(l, _)| l == "Save it and ask agent"), "it changes nothing");
     choose(&mut app, "Save it and ask agent, answer only");
     assert_eq!(app.screen, Screen::History);
@@ -3948,7 +3948,7 @@ fn a_comment_asked_later_waits_in_the_batch() {
     // Later, picked on the row above the ask: the ask says so.
     pick(&mut app, "Send it", "later");
     let all: Vec<String> = items(&app).into_iter().map(|(l, _)| l).collect();
-    assert_eq!(all, ["Save it", "Send it", "Save it and ask agent later", "Attach a reference…", "", "Throw it away", "Keep writing"]);
+    assert_eq!(all, ["Save it", "Save it and ask agent later", "Send it", "Attach a reference…", "", "Throw it away", "Keep writing"]);
     assert_eq!(
         app.help()[0],
         "Press Enter to save the comment and ask the agent (may change the code), later: it waits in the batch, which the banner sends."
@@ -3959,7 +3959,7 @@ fn a_comment_asked_later_waits_in_the_batch() {
     // Nothing is started: it waits for the batch to be sent.
     assert!(Db::load(&db).unwrap().runs().is_empty());
     // Kept for the stack: the next is asked later too, Enter on the row
-    // above the ask asking as the ask does.
+    // under the ask asking as the ask does.
     down_to(&mut app, "+LINE 39");
     keys(&mut app, &[KeyCode::Enter]);
     typed(&mut app, "and this?");

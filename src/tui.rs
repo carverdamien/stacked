@@ -3160,9 +3160,9 @@ impl App {
             Mode::Menu(m) => {
                 if let Some(item) = m.chosen() {
                     // On the row picking when an ask goes, Enter does the ask
-                    // under it; later, in the batch.
-                    let (ask, does) = match (&item.action, m.items.get(m.sel + 1)) {
-                        (Action::When, Some(next)) => (next, next.doing()),
+                    // over it; later, in the batch.
+                    let (ask, does) = match (&item.action, m.sel.checked_sub(1).and_then(|k| m.items.get(k))) {
+                        (Action::When, Some(over)) => (over, over.doing()),
                         _ => (item, item.doing()),
                     };
                     let later = if ask.labels.is_some() && self.later() { ", later: it waits in the batch, which the banner sends" } else { "" };
@@ -3562,9 +3562,9 @@ impl App {
                 }
             }
             KeyCode::Enter => {
-                // On the row picking when an ask goes, the ask.
+                // On the row picking when an ask goes, the ask over it.
                 let item = match m.chosen() {
-                    Some(i) if i.action == Action::When => m.items.get(m.sel + 1).filter(|i| i.enabled),
+                    Some(i) if i.action == Action::When => m.sel.checked_sub(1).and_then(|k| m.items.get(k)).filter(|i| i.enabled),
                     chosen => chosen,
                 };
                 return match item {
@@ -4117,14 +4117,15 @@ impl App {
         self.db.choice(&self.stack, "when") == Some("later")
     }
 
-    /// Ask `ask`, under the row that picks when it asks, labelled `later`
-    /// while it asks later.
+    /// Ask `ask`, over the row that picks when it asks, labelled `later`
+    /// while it asks later: under it, as it is seldom picked otherwise.
     fn push_ask(&self, items: &mut Vec<Item>, mut ask: Item, later: &str) {
-        items.push(Item::new("Send it", Action::When).when(ask.enabled).with(self.when_choices()));
+        let enabled = ask.enabled;
         let now = std::mem::take(&mut ask.label);
         ask.label = if self.later() { later.to_string() } else { now.clone() };
         ask.labels = Some((now, later.to_string()));
         items.push(ask);
+        items.push(Item::new("Send it", Action::When).when(enabled).with(self.when_choices()));
     }
 
     /// Where a comment is written, as radio buttons: here, in an editor in
