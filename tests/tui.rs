@@ -1226,6 +1226,96 @@ fn a_comment_holding_a_fence_of_a_turn_is_yours_whole() {
 }
 
 #[test]
+fn every_open_comment_of_the_stack_is_closed_at_once_once_asked() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Enter]);
+    save(&mut app, "why so loud?");
+    down_to(&mut app, "+LINE 39");
+    keys(&mut app, &[KeyCode::Enter]);
+    save(&mut app, "and this one?");
+    keys(&mut app, &[KeyCode::Left, KeyCode::Home]);
+    choose(&mut app, "Comment on the stack…");
+    save(&mut app, "and the rest");
+    // A reply to one waits for your review: it stays open.
+    let waits = notes_of(&db, "s", 0).into_iter().find(|n| n.text == "and this one?").unwrap();
+    Db::edit(&db, |d| {
+        let reply = stacked::held::Reply {
+            change: waits.change.clone(),
+            id: waits.id.clone(),
+            text: "Later.".into(),
+            reviewer: Some("ann".into()),
+            ..Default::default()
+        };
+        d.add_run(stacked::db::Run {
+            id: "pull-1".into(),
+            what: "pull".into(),
+            stack: "s".into(),
+            state: stacked::db::RunState::Done,
+            held: Some(stacked::held::Held {
+                at: 1,
+                replies: vec![reply],
+                ..Default::default()
+            }),
+            ..Default::default()
+        })
+        .map(|_| ())
+    })
+    .unwrap();
+    app.refresh();
+    // On the stack's menu: asked first, how many said, keeping them open
+    // picked.
+    keys(&mut app, &[KeyCode::Home]);
+    assert!(app.focus == Focus::List && app.on_stack, "{:?}", app.focus);
+    choose(&mut app, "Close all comments…");
+    let Mode::Menu(m) = &app.mode else { panic!("{:?}", app.mode) };
+    assert_eq!(
+        m.title,
+        "close 2 of the stack's 3 open comments? 1 stays open: with the agent, or a reply waiting for your review. Show…, closed, can reopen each"
+    );
+    assert_eq!(items(&app), [("Close them".to_string(), true), ("Keep them open".to_string(), true)]);
+    assert_eq!(m.sel, 1);
+    keys(&mut app, &[KeyCode::Enter]);
+    assert_eq!(Db::load(&db).unwrap().stack_notes("s").len(), 3, "kept open");
+    // Closed: those that can be.
+    choose(&mut app, "Close all comments…");
+    choose(&mut app, "Close them");
+    assert_eq!(app.status, "closed 2 comments: Show…, closed, lists them to reopen; 1 left open, with the agent or a reply waiting for your review");
+    let d = Db::load(&db).unwrap();
+    assert_eq!(d.stack_notes("s").into_iter().map(|n| n.text.clone()).collect::<Vec<_>>(), ["and this one?"]);
+    drop(d);
+    // Nothing more to close: not to be chosen.
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    assert!(items(&app).contains(&("Close all comments…".to_string(), false)), "{:?}", items(&app));
+}
+
+#[test]
+fn closing_all_says_how_many_it_closes() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Left, KeyCode::Home]);
+    choose(&mut app, "Comment on the stack…");
+    save(&mut app, "one");
+    keys(&mut app, &[KeyCode::Home]);
+    choose(&mut app, "Close all comments…");
+    let Mode::Menu(m) = &app.mode else { panic!("{:?}", app.mode) };
+    assert_eq!(m.title, "close the stack's open comment? Show…, closed, can reopen it");
+    assert_eq!(items(&app), [("Close it".to_string(), true), ("Keep it open".to_string(), true)]);
+    keys(&mut app, &[KeyCode::Esc]);
+    choose(&mut app, "Comment on the stack…");
+    save(&mut app, "two");
+    keys(&mut app, &[KeyCode::Home]);
+    choose(&mut app, "Close all comments…");
+    let Mode::Menu(m) = &app.mode else { panic!("{:?}", app.mode) };
+    assert_eq!(m.title, "close all 2 open comments of the stack? Show…, closed, can reopen each");
+    choose(&mut app, "Close them");
+    assert_eq!(app.status, "closed 2 comments: Show…, closed, lists them to reopen");
+    assert!(Db::load(&db).unwrap().stack_notes("s").is_empty());
+}
+
+#[test]
 fn deleting_a_comment_asks_first() {
     let (_tmp, db, _src) = setup();
     let mut app = open(&db).unwrap();

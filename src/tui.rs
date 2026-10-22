@@ -778,6 +778,11 @@ pub enum Action {
     MoveBack,
     NoteHistory,
     AskCloseComment,
+    /// Every open comment of the stack that can be closed, closed, once
+    /// asked: those with the agent, or whose reply waits for your review,
+    /// stay open.
+    AskCloseAll,
+    CloseAll,
     CloseComment,
     /// A closed comment open again, as it was.
     Reopen,
@@ -975,6 +980,9 @@ fn about(action: &Action) -> String {
         Action::NoteHistory => "read every state this comment has been in".into(),
         Action::AskCloseComment | Action::CloseComment => "close this comment, done with: it leaves the comments shown (Show…, closed, lists it, to reopen)".into(),
         Action::Reopen => "reopen this comment, as it was when it was closed".into(),
+        Action::AskCloseAll | Action::CloseAll => {
+            "close every open comment of the stack, done with, asked first: those with the agent, or whose reply waits for your review, stay open; Show…, closed, lists them, to reopen each".into()
+        }
         Action::ShowMenu => "pick which comments the panes show".into(),
         Action::SetShow(s) => format!("show the comments {}", s.name()),
         Action::Undo => "go back to the stack before this edit".into(),
@@ -3931,6 +3939,24 @@ impl App {
         !(self.screen == Screen::Main && self.current().is_none())
     }
 
+    /// The open comments of the stack Close all closes, its own and its
+    /// patches', and how many it leaves open: those with the agent, or
+    /// whose reply waits for your review, as one comment is closed only
+    /// once neither is so.
+    fn closable(&self) -> (Vec<Note>, usize) {
+        let (busy, held) = (self.busy(), self.held_replies());
+        let (mut free, mut kept) = (Vec::new(), 0);
+        for n in self.db.stack_notes(&self.stack) {
+            let key = (n.change.clone(), n.id.clone());
+            if busy.contains_key(&key) || held.contains_key(&key) {
+                kept += 1;
+            } else {
+                free.push(n.clone());
+            }
+        }
+        (free, kept)
+    }
+
     /// The comments listed in the comments pane, of the stack's or the
     /// patch's: what Send all sends, the sendable ones.
     fn listed_sendable(&self, way: Way) -> Vec<(String, String)> {
@@ -4158,6 +4184,7 @@ impl App {
                     items.push(Item::new("Comment on the stack…", Action::CommentStack));
                     self.send_all_items(&mut items, true);
                     items.push(Item::new("Show…", Action::ShowMenu));
+                    items.push(Item::new("Close all comments…", Action::AskCloseAll).when(!self.closable().0.is_empty()));
                     items.push(Item::line());
                     items.push(Item::new("Edit the stack as a list in $EDITOR", Action::EditList).when(h && n > 0));
                     items.push(Item::new("Tree of edits…", Action::Tree));
@@ -4852,6 +4879,40 @@ impl App {
                     "Keep it open",
                     true,
                 ));
+            }
+            Action::AskCloseAll => {
+                let (free, kept) = self.closable();
+                let n = free.len();
+                let close = match (n, kept) {
+                    (1, 0) => "close the stack's open comment?".to_string(),
+                    (n, 0) => format!("close all {n} open comments of the stack?"),
+                    (n, k) => format!("close {n} of the stack's {} open comments?", n + k),
+                };
+                let stay = match kept {
+                    0 => String::new(),
+                    1 => " 1 stays open: with the agent, or a reply waiting for your review.".into(),
+                    k => format!(" {k} stay open: with the agent, or a reply waiting for your review."),
+                };
+                let (it, yes, no) = if n == 1 { ("it", "Close it", "Keep it open") } else { ("each", "Close them", "Keep them open") };
+                let title = format!("{close}{stay} Show…, closed, can reopen {it}");
+                self.mode = Mode::Menu(Menu::ask(title, Item::new(yes, Action::CloseAll), no, true));
+            }
+            Action::CloseAll => {
+                let (free, kept) = self.closable();
+                let n = free.len();
+                let closed = self.edit(|db| {
+                    for c in free {
+                        db.set_note(Note { text: String::new(), ..c })?;
+                    }
+                    Ok(())
+                });
+                if closed.is_some() {
+                    let left = match kept {
+                        0 => String::new(),
+                        k => format!("; {k} left open, with the agent or a reply waiting for your review"),
+                    };
+                    self.status = format!("closed {n} comment{}: Show…, closed, lists them to reopen{left}", plural(n));
+                }
             }
             Action::CloseComment => {
                 if let Some(c) = self.picked()

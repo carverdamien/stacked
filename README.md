@@ -747,7 +747,11 @@ with is closed, from its menu (`Close this comment…`): it leaves the
 comments shown. It is not lost, as the file only grows: `closed` shows each
 as it was, `closed @12` on its first line, its menu (which Enter opens) to
 `Reopen it` or to read its history. The agent's comments moved to the stack
-are not closed, nor what is moved back.
+are not closed, nor what is moved back. The stack's menu, on its header,
+has `Close all comments…`, every open comment of the stack, its own and its
+patches': it asks first, saying how many it closes (`close all 3 open
+comments of the stack?`), and how many stay open, those with the agent or
+whose reply waits for your review, as no comment is closed while so.
 
 A comment you no longer need to read can be collapsed by hand: its menu's
 `Collapse this comment` shows it in the middle as one quiet line, which
@@ -1501,7 +1505,8 @@ editing a patch by hand at the cursor, the history screens, the branches
 History… draws and the stack diff it shows beside each change, the agent
 asked about a record of the history, a new database started from it, a
 moved comment and an answer's comments, a patch's comment asked of the
-whole stack, what you said last written again (off the queue meanwhile;
+whole stack, every comment of the stack closed at once but those that
+cannot be, what you said last written again (off the queue meanwhile;
 left as it was, asked as it is or left so), a reply written in $EDITOR
 under its conversation, its references under it, and a turn written again
 there in its place, the editor in the middle between the last reply and the
