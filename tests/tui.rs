@@ -899,7 +899,7 @@ fn references_attached_to_a_comment_are_named_in_it_and_asking_waits_for_what_it
     assert_eq!(app.screen, Screen::Text);
     let t = app.text.as_ref().unwrap();
     assert!(t.title.starts_with("a closed comment · patch 1 · a.txt: TWO"), "{}", t.title);
-    assert!(t.lines.iter().any(|(l, _)| l.contains("why so loud?")), "{:?}", t.lines);
+    assert!(t.texts().iter().any(|l| l.contains("why so loud?")), "{:?}", t.texts());
     keys(&mut app, &[KeyCode::Esc, KeyCode::Home]);
     // Detached, the mention of it names nothing: the agent is not asked.
     down_to(&mut app, "+LINE 39");
@@ -4383,7 +4383,7 @@ fn a_reference_the_agent_attached_is_a_line_under_the_comment_previewed_then_gon
     keys(&mut app, &[KeyCode::Enter]);
     let Mode::Preview(p) = &app.mode else { panic!("{:?}", app.mode) };
     assert_eq!(p.title, "a.txt:2 · as patch 1 leaves it");
-    assert_eq!(p.lines.iter().map(|(l, _)| l.as_str()).collect::<Vec<_>>(), ["    2 │ TWO"]);
+    assert_eq!(p.texts(), ["    2 │ TWO"]);
     assert!(draw(&mut app).contains("    2 │ TWO"));
     assert_eq!(app.hint(), "↑↓: scroll · enter: go there · esc: back");
     // Enter again: there, its line in patch 1's diff.
@@ -4395,15 +4395,32 @@ fn a_reference_the_agent_attached_is_a_line_under_the_comment_previewed_then_gon
     down_to(&mut app, "     ▎   ⇢ a.txt:20-21");
     keys(&mut app, &[KeyCode::Enter]);
     let Mode::Preview(p) = &app.mode else { panic!("{:?}", app.mode) };
-    assert_eq!(p.lines.iter().map(|(l, _)| l.as_str()).collect::<Vec<_>>(), ["   20 │ line 17", "   21 │ line 18"]);
+    assert_eq!(p.texts(), ["   20 │ line 17", "   21 │ line 18"]);
+    // The numbers of the lines it points at marked, as everywhere.
+    use ratatui::style::Modifier;
+    let marked = |parts: &stacked::tui::Parts| parts[0].1.add_modifier.contains(Modifier::REVERSED) && !parts[1].1.add_modifier.contains(Modifier::REVERSED);
+    assert!(p.lines.iter().all(marked), "{:?}", p.lines);
     keys(&mut app, &[KeyCode::Esc]);
     assert!(matches!(app.mode, Mode::Normal), "{:?}", app.mode);
     keys(&mut app, &[KeyCode::Enter, KeyCode::Enter]);
     assert_eq!(app.screen, Screen::Text);
     let t = app.text.as_ref().unwrap();
     assert_eq!(t.title, "a.txt, as patch 1 leaves it");
-    assert_eq!(t.lines[19].0, "   20 │ line 17");
+    assert_eq!(t.texts()[19], "   20 │ line 17");
     assert_eq!(t.scroll, 16);
+    // The file whole, the numbers of the lines it points at marked, the
+    // lines around them not.
+    assert!(marked(&t.lines[19]) && marked(&t.lines[20]), "{:?}", &t.lines[19..21]);
+    assert!(!marked(&t.lines[18]) && !marked(&t.lines[21]), "{:?} {:?}", t.lines[18], t.lines[21]);
+    // As drawn: the number reversed, what the line says not.
+    let mut buf = Buffer::empty(Rect::new(0, 0, 120, 30));
+    app.draw(&mut buf);
+    let screen = (0..30).map(|y| (0..120).map(|x| buf[(x, y)].symbol()).collect::<String>()).collect::<Vec<_>>().join("\n");
+    let reversed = |x: u16, y: u16| buf[(x, y)].modifier.contains(Modifier::REVERSED);
+    let (x, y) = at(&screen, "   20 │ line 17");
+    assert!(reversed(x + 3, y) && reversed(x + 4, y) && !reversed(x + 8, y), "{screen}");
+    let (x, y) = at(&screen, "   19 │ line 16");
+    assert!(!reversed(x + 3, y), "{screen}");
 }
 
 #[test]

@@ -609,7 +609,8 @@ Under the comment, a line for each: `⇢ a.txt:2-3, 10 · as patch 1 leaves
 it`. Enter on it previews those lines in a box, numbered, `⋯` between the
 ranges; Enter again goes there: to the line in its patch, when the patch's
 diff has it, else to the file whole, at that line, as it reads (Esc comes
-back). They are kept in the agent's turn as a `refs` block, a reference a
+back). In the box and in the file whole, the numbers of the lines it
+points at are marked, drawn reversed. They are kept in the agent's turn as a `refs` block, a reference a
 line (`a.txt:2-3,10 @1`; `@0` the base, no `@` the whole stack), which
 `stacked comments` shows and the agent reads back in its thread. The agent
 may point at another comment of the stack too, by its label in the ask or

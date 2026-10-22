@@ -533,14 +533,36 @@ pub struct Planned {
     pub name: String,
 }
 
+/// A line drawn in parts, each in its style.
+pub type Parts = Vec<(String, Style)>;
+
+/// What `lines` read, each its parts one after another.
+fn texts(lines: &[Parts]) -> Vec<String> {
+    lines.iter().map(|l| l.iter().map(|(s, _)| s.as_str()).collect()).collect()
+}
+
+/// Line `n` of a file, `text`, numbered: its number marked when a
+/// reference points at it.
+fn numbered(n: usize, text: &str, referenced: bool) -> Parts {
+    let st = if referenced { Style::new().add_modifier(Modifier::REVERSED) } else { Style::new() };
+    vec![(format!("{n:>5}"), st), (format!(" │ {text}"), Style::new())]
+}
+
 /// A reference's lines, previewed: `title` says which; `lines` are the
 /// lines, numbered, `top` the first shown; `jump`, where Enter goes.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Preview {
     pub title: String,
-    pub lines: Vec<(String, Style)>,
+    pub lines: Vec<Parts>,
     pub top: usize,
     pub jump: Jump,
+}
+
+impl Preview {
+    /// What its lines read.
+    pub fn texts(&self) -> Vec<String> {
+        texts(&self.lines)
+    }
 }
 
 /// Where a reference's preview goes: the line in its patch, when the
@@ -548,7 +570,7 @@ pub struct Preview {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Jump {
     Line { change: String, key: String },
-    File { title: String, lines: Vec<(String, Style)>, at: usize },
+    File { title: String, lines: Vec<Parts>, at: usize },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1242,9 +1264,16 @@ enum Want {
 #[derive(Debug, Clone)]
 pub struct TextView {
     pub title: String,
-    pub lines: Vec<(String, Style)>,
+    pub lines: Vec<Parts>,
     pub scroll: usize,
     back: Screen,
+}
+
+impl TextView {
+    /// What its lines read.
+    pub fn texts(&self) -> Vec<String> {
+        texts(&self.lines)
+    }
 }
 
 pub use crate::config::Pane;
@@ -6291,8 +6320,8 @@ impl App {
         self.back_to_list();
     }
 
-    /// Reference `r`, previewed: its lines numbered, `⋯` between its
-    /// ranges; Enter there goes to them.
+    /// Reference `r`, previewed: its lines numbered, the numbers marked,
+    /// `⋯` between its ranges; Enter there goes to them.
     fn show_ref(&mut self, r: &crate::refs::Ref) {
         let Some(s) = self.current().cloned() else { return };
         let text = match self.ref_file(&s, r) {
@@ -6310,10 +6339,10 @@ impl App {
         let mut lines = Vec::new();
         for &(a, b) in &r.ranges {
             if !lines.is_empty() {
-                lines.push(("      ⋯".to_string(), color::dim()));
+                lines.push(vec![("      ⋯".to_string(), color::dim())]);
             }
             for n in a..=b.min(all.len()) {
-                lines.push((format!("{n:>5} │ {}", all[n - 1]), Style::new()));
+                lines.push(numbered(n, all[n - 1], true));
             }
         }
         if lines.is_empty() {
@@ -6346,7 +6375,8 @@ impl App {
 
     /// Where Enter in reference `r`'s preview goes: its first line in the
     /// patch whose diff has it, as that patch leaves the file (for the whole
-    /// stack, the last patch that touches it); else the file whole, `all`.
+    /// stack, the last patch that touches it); else the file whole, `all`,
+    /// the numbers of the lines it points at marked.
     fn ref_jump(&self, s: &crate::db::Stack, r: &crate::refs::Ref, all: &[&str]) -> Jump {
         use crate::refs::At;
         let first = r.ranges[0].0;
@@ -6364,7 +6394,8 @@ impl App {
                 return Jump::Line { change: p.change.clone(), key };
             }
         }
-        let lines = all.iter().enumerate().map(|(i, l)| (format!("{:>5} │ {l}", i + 1), Style::new())).collect();
+        let pointed = |n: usize| r.ranges.iter().any(|&(a, b)| (a..=b).contains(&n));
+        let lines = all.iter().enumerate().map(|(i, l)| numbered(i + 1, l, pointed(i + 1))).collect();
         Jump::File {
             title: format!("{}, {}", r.file, r.at_said()),
             lines,
@@ -6383,7 +6414,7 @@ impl App {
                 match p.jump {
                     Jump::Line { change, key } => self.go_to_patch_line(&change, &key),
                     Jump::File { title, lines, at } => {
-                        self.open_text(title, lines);
+                        self.open_parts(title, lines);
                         if let Some(t) = &mut self.text {
                             t.scroll = at.saturating_sub(4);
                         }
@@ -6411,12 +6442,17 @@ impl App {
         let (x, y) = (w.saturating_sub(bw) / 2, h.saturating_sub(bh) / 2);
         window(buf, area, x, y, bw, bh, &p.title, color::meta());
         spot_in(&self.spots, area, (x, y, bw, bh), Spot::Box);
-        for (k, (l, st)) in p.lines.iter().skip(p.top).take(bh.saturating_sub(2)).enumerate() {
-            put(buf, area, x + 2, y + 1 + k, bw.saturating_sub(4), &fit(l, bw.saturating_sub(4)), *st);
+        for (k, parts) in p.lines.iter().skip(p.top).take(bh.saturating_sub(2)).enumerate() {
+            put_parts(buf, area, x + 2, y + 1 + k, bw.saturating_sub(4), parts);
         }
     }
 
     fn open_text(&mut self, title: String, lines: Vec<(String, Style)>) {
+        self.open_parts(title, lines.into_iter().map(|l| vec![l]).collect());
+    }
+
+    /// The text screen, on `lines` drawn in parts.
+    fn open_parts(&mut self, title: String, lines: Vec<Parts>) {
         self.text = Some(TextView {
             title,
             lines,
@@ -8169,8 +8205,8 @@ impl App {
         let (w, h) = (area.width as usize, area.height as usize);
         let Some(t) = &self.text else { return };
         put(buf, area, 0, 0, w, &fit(&format!(" {}", t.title), w), color::file());
-        for (y, (l, st)) in t.lines.iter().skip(t.scroll).take(h.saturating_sub(1)).enumerate() {
-            put(buf, area, 0, y + 1, w, &fit(l, w), *st);
+        for (y, parts) in t.lines.iter().skip(t.scroll).take(h.saturating_sub(1)).enumerate() {
+            put_parts(buf, area, 0, y + 1, w, parts);
         }
     }
 
