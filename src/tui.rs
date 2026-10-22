@@ -7042,10 +7042,11 @@ impl App {
                 if self.screen == Screen::Main {
                     if self.reading {
                         text += " · reading";
-                        // Of the changed lines that need reading.
-                        let changed = self.rows.iter().filter(|r| matches!(r.kind, Kind::Add | Kind::Del) && !r.free).count();
+                        // Of the changed lines that need reading, a line
+                        // folded once.
+                        let changed = self.rows.iter().filter(|r| matches!(r.kind, Kind::Add | Kind::Del) && !r.free && !r.cont).count();
                         if !self.on_stack && changed > 0 {
-                            let read = self.rows.iter().filter(|r| r.read && !r.free).count();
+                            let read = self.rows.iter().filter(|r| r.read && !r.free && !r.cont).count();
                             text += &format!(" {read}/{changed}");
                         }
                     }
@@ -7786,14 +7787,15 @@ impl App {
         let row = &self.rows[i];
         let mut x0 = x;
         if let Some((tick, keys)) = ticks {
-            let changed = matches!(row.kind, Kind::Add | Kind::Del);
+            // A line folded is marked on its first piece.
+            let changed = matches!(row.kind, Kind::Add | Kind::Del) && !row.cont;
             let (text, st) = match row.key.as_ref() {
                 Some(k) if changed && keys.contains(k) => match tick {
                     Tick::ToRead => ("○→✓ ", color::add().add_modifier(Modifier::BOLD)),
                     Tick::ToUnread => ("✓→○ ", color::del().add_modifier(Modifier::BOLD)),
                 },
                 // A line that needs no reading has no check, marked or not.
-                _ if row.read && !row.free => ("  ✓ ", color::add()),
+                _ if row.read && !row.free && !row.cont => ("  ✓ ", color::add()),
                 _ => ("    ", Style::new()),
             };
             put(buf, area, x, y, MARGIN_W.min(w), text, st);
@@ -7833,7 +7835,11 @@ impl App {
             }
             _ => return None,
         };
+        // A line folded: its last piece, its comments under it.
         let mut last = first;
+        while rows.get(last + 1).is_some_and(|r| r.cont) {
+            last += 1;
+        }
         while rows.get(last + 1).is_some_and(|r| matches!(r.kind, Kind::Comment | Kind::Stream)) {
             if let Target::Reply { id, .. } | Target::Edit { id, .. } = &e.target
                 && (rows[last + 1].note.as_deref() != Some(id) || rows[last + 1].is_reference())
@@ -7873,10 +7879,12 @@ impl App {
             return;
         }
         let above = end < first;
-        // The line it is on, then its thread, as much as a third of the pane.
+        // The line it is on, every piece of it folded, then its thread, as
+        // much as a third of the pane.
         let mut rows: Vec<&Row> = Vec::new();
         if let Some(a) = head.checked_sub(1).filter(|&a| self.rows[a].note.is_none() && self.rows[a].key.is_some()) {
-            rows.push(&self.rows[a]);
+            let first = (0..=a).rev().find(|&k| !self.rows[k].cont).unwrap_or(a);
+            rows.extend(&self.rows[first..=a]);
         }
         rows.extend(&self.rows[head..=end]);
         let room = (h / 3).max(3).min(h).saturating_sub(1);

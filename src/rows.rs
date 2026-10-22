@@ -92,6 +92,9 @@ pub struct Row {
     /// The numbers of the comment's references its text names on this
     /// line: Enter goes to the one, or picks among them.
     pub names: Vec<usize>,
+    /// A piece of a line too wide for the pane, after its first: the same
+    /// line, folded, which counts once.
+    pub cont: bool,
 }
 
 impl Row {
@@ -99,6 +102,85 @@ impl Row {
     pub fn is_reference(&self) -> bool {
         self.reference.is_some() || self.points.is_some()
     }
+}
+
+/// What begins each piece of a line of code folded, after the first, in
+/// place of the line's `+`, `-` or space.
+pub const FOLDED: char = '↪';
+
+/// A diff line, `text`, its `+`, `-` or space first, in pieces of at most
+/// `w` characters: each after the first is `↪` and what comes next. As it
+/// is when it fits, or the pane is too narrow to fold it.
+fn fold_code(text: &str, w: usize) -> Vec<String> {
+    let chars: Vec<char> = text.chars().collect();
+    if chars.len() <= w || w < 10 {
+        return vec![text.to_string()];
+    }
+    let mut out = vec![chars[..w].iter().collect::<String>()];
+    let mut at = w;
+    while at < chars.len() {
+        let end = (at + w - 1).min(chars.len());
+        out.push(format!("{FOLDED}{}", chars[at..end].iter().collect::<String>()));
+        at = end;
+    }
+    out
+}
+
+/// A line of a patch's message, `text`, folded into lines of at most `w`
+/// characters, between words: its indent kept, and each line after the
+/// first under its text, a bullet's under what follows the bullet; a word
+/// longer than a line broken where the line ends. As it is when it fits,
+/// or the pane is too narrow to fold it.
+fn fold_prose(text: &str, w: usize) -> Vec<String> {
+    let indent: String = text.chars().take_while(|c| *c == ' ').collect();
+    let rest = &text[indent.len()..];
+    // `- `, `* `, `+ `, `1. `, `2) `: what follows it is where the lines go.
+    let bullet = {
+        let digits = rest.chars().take_while(char::is_ascii_digit).count();
+        let mark = match rest[digits..].chars().next() {
+            Some('-' | '*' | '+') if digits == 0 => 1,
+            Some('.' | ')') if digits > 0 => digits + 1,
+            _ => 0,
+        };
+        if mark > 0 && rest[mark..].starts_with(' ') { mark + 1 } else { 0 }
+    };
+    let hang = indent.chars().count() + bullet;
+    if text.chars().count() <= w || w < hang + 10 {
+        return vec![text.to_string()];
+    }
+    let (first, under) = (w - indent.chars().count(), w - hang);
+    let mut out: Vec<String> = Vec::new();
+    let mut line = String::new();
+    let room = |out: &Vec<String>| if out.is_empty() { first } else { under };
+    for word in rest.split_whitespace() {
+        let mut word = word.to_string();
+        loop {
+            let (len, wl) = (line.chars().count(), word.chars().count());
+            if (if line.is_empty() { wl } else { len + 1 + wl }) <= room(&out) {
+                if !line.is_empty() {
+                    line.push(' ');
+                }
+                line.push_str(&word);
+                break;
+            }
+            if !line.is_empty() {
+                out.push(std::mem::take(&mut line));
+                continue;
+            }
+            // Longer than a line on its own: broken where the line ends.
+            let r = room(&out);
+            out.push(word.chars().take(r).collect());
+            word = word.chars().skip(r).collect();
+            if word.is_empty() {
+                break;
+            }
+        }
+    }
+    if !line.is_empty() || out.is_empty() {
+        out.push(line);
+    }
+    let pad = " ".repeat(hang);
+    out.into_iter().enumerate().map(|(k, l)| if k == 0 { format!("{indent}{l}") } else { format!("{pad}{l}") }).collect()
 }
 
 /// `pieces`, a line of a comment's text, its mentions marked as what the
@@ -337,7 +419,9 @@ pub fn parsed(p: &Patch) -> std::sync::Arc<Vec<crate::diff::FileDiff>> {
 }
 
 /// The rows of `p`, with `notes` under their lines and those whose line is
-/// gone at the end.
+/// gone at the end. A line too wide for `width` is folded: the message's
+/// between words, the code's where the pane ends; its comments under its
+/// last piece.
 pub fn patch_rows(p: &Patch, notes: &[&Note], width: usize, deco: &Deco) -> Vec<Row> {
     let mut on: HashMap<&str, Vec<&Note>> = HashMap::new();
     for n in notes {
@@ -347,7 +431,14 @@ pub fn patch_rows(p: &Patch, notes: &[&Note], width: usize, deco: &Deco) -> Vec<
     let mut rows = Vec::new();
     let mut line = |rows: &mut Vec<Row>, row: Row| {
         let key = row.key.clone();
-        rows.push(row);
+        let pieces = match row.kind {
+            Kind::Msg => fold_prose(&row.text, width),
+            Kind::Add | Kind::Del | Kind::Ctx => fold_code(&row.text, width),
+            _ => vec![row.text.clone()],
+        };
+        for (k, text) in pieces.into_iter().enumerate() {
+            rows.push(Row { text, cont: k > 0, ..row.clone() });
+        }
         if let Some(k) = key
             && let Some(ns) = on.get(k.as_str())
         {
@@ -486,6 +577,79 @@ mod tests {
         assert_eq!(said("averyveryverylongwordindeed", 10), ["averyveryv", "erylongwor", "dindeed"]);
         assert_eq!(said("a\n\nb", 10), ["a", "", "b"]);
     }
+
+    #[test]
+    fn a_line_of_code_too_wide_is_folded_where_the_pane_ends() {
+        use super::fold_code;
+        assert_eq!(fold_code("+short", 20), ["+short"]);
+        let line = format!("+{}", "abcdefghij".repeat(3));
+        let pieces = fold_code(&line, 12);
+        assert_eq!(pieces, ["+abcdefghija", "↪bcdefghijab", "↪cdefghij"]);
+        // Each as wide as the pane at most, and all of the line in them.
+        assert!(pieces.iter().all(|p| p.chars().count() <= 12));
+        let back: String = pieces.iter().enumerate().map(|(k, p)| if k == 0 { p.clone() } else { p.chars().skip(1).collect() }).collect();
+        assert_eq!(back, line);
+        // Too narrow to fold: as it is.
+        assert_eq!(fold_code(&line, 9), std::slice::from_ref(&line));
+    }
+
+    #[test]
+    fn a_line_of_the_message_too_wide_is_folded_between_words() {
+        use super::fold_prose;
+        assert_eq!(fold_prose("   Short.", 40), ["   Short."]);
+        assert_eq!(
+            fold_prose("   This summary was typed as one long line on Phabricator", 24),
+            ["   This summary was", "   typed as one long", "   line on Phabricator"]
+        );
+        // A bullet's lines under what follows the bullet.
+        assert_eq!(fold_prose("   - an item that goes on and on", 20), ["   - an item that", "     goes on and on"]);
+        // A word longer than a line: broken where the line ends.
+        assert_eq!(
+            fold_prose("   see https://example.com/a/very/long/path/indeed", 20),
+            ["   see", "   https://example.c", "   om/a/very/long/pa", "   th/indeed"]
+        );
+        // Too narrow to fold: as it is.
+        assert_eq!(fold_prose("   - x y z", 12), ["   - x y z"]);
+    }
+
+    #[test]
+    fn a_patch_s_lines_too_wide_are_folded_each_piece_the_same_line() {
+        use super::{Deco, Kind, Row, patch_rows};
+        let diff = format!("diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-old\n+{}\n", "x".repeat(50));
+        let message = "Bug 1 - a title\n\nA summary typed as one long line, as Phabricator has them.";
+        let p = crate::db::Patch::new("c".into(), None, None, message.into(), diff);
+        let rows = patch_rows(&p, &[], 30, &Deco::default());
+        let long: Vec<&Row> = rows.iter().filter(|r| r.kind == Kind::Add).collect();
+        assert_eq!(long.len(), 2, "{rows:#?}");
+        assert_eq!((long[0].cont, long[1].cont, long[0].key.is_some()), (false, true, true));
+        assert_eq!((&long[0].key, &long[0].diff_at), (&long[1].key, &long[1].diff_at));
+        assert!(long[1].text.starts_with('↪'), "{}", long[1].text);
+        let msg: Vec<&str> = rows.iter().filter(|r| r.msg_at == Some(2)).map(|r| r.text.as_str()).collect();
+        assert_eq!(msg, ["   A summary typed as one long", "   line, as Phabricator has", "   them."]);
+        // A comment on it: under its last piece.
+        let key = long[0].key.clone().unwrap();
+        let n = crate::db::Note {
+            change: "c".into(),
+            id: "n".into(),
+            line: key.clone(),
+            text: "Why so long?".into(),
+            ..Default::default()
+        };
+        let rows = patch_rows(&p, &[&n], 30, &Deco::default());
+        let at = rows.iter().position(|r| r.note.as_deref() == Some("n")).unwrap();
+        assert!(rows[at - 1].cont && rows[at - 1].key.as_deref() == Some(key.as_str()), "{rows:#?}");
+    }
+
+    #[test]
+    fn side_by_side_a_line_folded_is_paired_as_one() {
+        use super::{Kind, Row, split_lines};
+        let r = |kind: Kind, cont: bool| Row { kind, cont, ..Default::default() };
+        // Two lines removed, the first in three pieces; two added.
+        let rows = vec![r(Kind::Del, false), r(Kind::Del, true), r(Kind::Del, true), r(Kind::Del, false), r(Kind::Add, false), r(Kind::Add, false)];
+        let (lines, _) = split_lines(&rows);
+        let pairs: Vec<(Option<usize>, Option<usize>)> = lines.iter().map(|l| (l.left, l.right)).collect();
+        assert_eq!(pairs, [(Some(0), Some(4)), (Some(1), None), (Some(2), None), (Some(3), Some(5))]);
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -496,28 +660,37 @@ pub struct SplitLine {
 }
 
 /// Pairs unified rows into side-by-side lines: a removal run and the
-/// addition run after it zipped into replacement pairs. Returns the lines
-/// and a row -> line index.
+/// addition run after it zipped into replacement pairs, line by line, the
+/// pieces of a line folded beside the other's, the fewer padded. Returns
+/// the lines and a row -> line index.
 pub fn split_lines(rows: &[Row]) -> (Vec<SplitLine>, HashMap<usize, usize>) {
     let mut lines = Vec::new();
     let mut i = 0;
+    // The run of `kind` from `i` on, a line each: its rows, its pieces.
+    let run = |kind: Kind, i: &mut usize| {
+        let mut out: Vec<Vec<usize>> = Vec::new();
+        while *i < rows.len() && rows[*i].kind == kind {
+            match out.last_mut() {
+                Some(l) if rows[*i].cont => l.push(*i),
+                _ => out.push(vec![*i]),
+            }
+            *i += 1;
+        }
+        out
+    };
     while i < rows.len() {
         if matches!(rows[i].kind, Kind::Add | Kind::Del) {
-            let (mut dels, mut adds) = (Vec::new(), Vec::new());
-            while i < rows.len() && rows[i].kind == Kind::Del {
-                dels.push(i);
-                i += 1;
-            }
-            while i < rows.len() && rows[i].kind == Kind::Add {
-                adds.push(i);
-                i += 1;
-            }
+            let dels = run(Kind::Del, &mut i);
+            let adds = run(Kind::Add, &mut i);
             for n in 0..dels.len().max(adds.len()) {
-                lines.push(SplitLine {
-                    left: dels.get(n).copied(),
-                    right: adds.get(n).copied(),
-                    span: None,
-                });
+                let (l, r) = (dels.get(n).map_or(&[][..], Vec::as_slice), adds.get(n).map_or(&[][..], Vec::as_slice));
+                for k in 0..l.len().max(r.len()) {
+                    lines.push(SplitLine {
+                        left: l.get(k).copied(),
+                        right: r.get(k).copied(),
+                        span: None,
+                    });
+                }
             }
             continue;
         }

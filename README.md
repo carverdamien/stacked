@@ -262,6 +262,15 @@ patch: the comment is marked where it is if the patch shows it, else its
 thread is shown over the top or the bottom of the patch, as it is above or
 below. Enter goes to it.
 
+A line too wide for the middle is folded, as comments are: a line of the
+message between words, its indent kept and a bullet's lines under what
+follows the bullet; a line of code where the pane ends, each piece after
+the first `↪` in place of its `+`, `-` or space. Side by side, each side
+folds in its half. A line folded is still one line: the cursor goes
+through its pieces, its comments go under its last piece, reading marks
+and counts it once, and side by side its pieces go beside the line the
+other side has there.
+
 Moving a patch is ↑↓ to place it, enter to put it there, after the menu's
 `Move this patch…`. If the patch does not apply at that place, stacked
 refuses, and the patch is still being moved: the status line says why, and

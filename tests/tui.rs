@@ -1967,6 +1967,69 @@ fn heads_line_stays_in_sight_when_the_stack_is_too_long_for_the_pane() {
 }
 
 #[test]
+fn lines_too_wide_for_the_pane_are_folded_each_the_same_line() {
+    use stacked::rows::Kind;
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("src");
+    std::fs::create_dir(&src).unwrap();
+    git(&src, &["init", "-q", "-b", "main"]);
+    git(&src, &["config", "commit.gpgsign", "false"]);
+    git(&src, &["config", "tag.gpgsign", "false"]);
+    std::fs::write(src.join("a.txt"), "one\n").unwrap();
+    git(&src, &["add", "."]);
+    git(&src, &["commit", "-qm", "base"]);
+    // A line of code, and a summary typed as one line, both too wide.
+    let long = format!("two{}", " and more".repeat(30));
+    std::fs::write(src.join("a.txt"), format!("one\n{long}\n")).unwrap();
+    let summary = ["A summary typed as one long line, as Phabricator has them."; 4].join(" ");
+    git(&src, &["commit", "-qam", &format!("Bug 1 - add a long line\n\n{summary}")]);
+    let db = tmp.path().join("db.jsonl");
+    stacked(&src, &db, &["import", "s", "HEAD~1"]);
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Right]);
+    let screen = draw(&mut app);
+    // The code, folded where the pane ends: each piece after the first
+    // `↪`, all of the line in them, each in sight, uncut.
+    let pieces = |app: &App| app.rows.iter().filter(|r| r.kind == Kind::Add).map(|r| r.text.clone()).collect::<Vec<_>>();
+    let unified = pieces(&app);
+    assert!(unified.len() > 1 && unified[1..].iter().all(|p| p.starts_with('↪')), "{unified:?}");
+    let back: String = unified.iter().map(|p| p.chars().skip(1).collect::<String>()).collect();
+    assert_eq!(back, long);
+    for p in &unified {
+        assert!(screen.contains(p.trim_end()), "{p:?}\n{screen}");
+    }
+    // The message, folded between words: all of it there.
+    let said: Vec<String> = app.rows.iter().filter(|r| r.msg_at == Some(2)).map(|r| r.text.trim().to_string()).collect();
+    assert!(said.len() > 1, "{said:?}");
+    assert_eq!(said.join(" "), summary);
+    for l in &said {
+        assert!(screen.contains(l.as_str()), "{l:?}\n{screen}");
+    }
+    // Side by side: folded in the half of the pane each side has; then
+    // back to the one view.
+    keys(&mut app, &[KeyCode::Char('1')]);
+    assert_eq!(app.layout, Layout::Split);
+    let screen = draw(&mut app);
+    let halves = pieces(&app);
+    assert!(halves.len() > unified.len(), "{halves:?}");
+    for p in &halves {
+        assert!(screen.contains(p.trim_end()), "{p:?}\n{screen}");
+    }
+    keys(&mut app, &[KeyCode::Char('1'), KeyCode::Char('1')]);
+    assert_eq!(app.layout, Layout::Unified);
+    // A comment on the line folded: under its last piece.
+    down_to(&mut app, "+two");
+    keys(&mut app, &[KeyCode::Enter]);
+    save(&mut app, "why so long?");
+    let head = app.rows.iter().position(|r| r.head && r.note.is_some()).unwrap();
+    assert!(app.rows[head - 1].cont && app.rows[head - 1].kind == Kind::Add, "{}", app.rows[head - 1].text);
+    // Reading: the line once, however many pieces it is in.
+    keys(&mut app, &[KeyCode::Char('2')]);
+    let screen = draw(&mut app);
+    assert!(screen.contains("reading 0/1"), "{screen}");
+}
+
+#[test]
 fn head_is_moved_along_the_stack_only_once_enter_leaves_the_mode() {
     let (_tmp, db, src) = setup();
     let mut app = open(&db).unwrap();

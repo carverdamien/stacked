@@ -48,15 +48,18 @@ impl Reading<'_> {
     }
 
     /// The changed lines that need no reading, by key: white space alone,
-    /// unless they need it.
+    /// unless they need it. A line folded is white space alone when no
+    /// piece of it needs reading.
     fn free(&self) -> HashSet<&str> {
         if self.whitespace {
             return HashSet::new();
         }
+        let needed: HashSet<&str> = self.rows.iter().filter(|r| self.needs(r)).filter_map(|r| r.key.as_deref()).collect();
         self.rows
             .iter()
-            .filter(|r| changed(r) && !self.needs(r))
+            .filter(|r| changed(r))
             .filter_map(|r| r.key.as_deref())
+            .filter(|k| !needed.contains(k))
             .collect()
     }
 
@@ -195,11 +198,12 @@ impl Reading<'_> {
     }
 
     /// The first changed line not read after row `i`, or before it: of
-    /// those that need reading.
+    /// those that need reading; a line folded, at its first piece.
     pub fn next_unread(&self, i: usize, forward: bool) -> Option<usize> {
+        let free = self.free();
         let unread = |j: &usize| {
             let r = &self.rows[*j];
-            self.needs(r) && r.key.as_ref().is_some_and(|k| !self.read.contains(k))
+            changed(r) && !r.cont && r.key.as_deref().is_some_and(|k| self.unread(k, &free))
         };
         if forward {
             (i + 1..self.rows.len()).find(unread)
@@ -208,9 +212,10 @@ impl Reading<'_> {
         }
     }
 
-    /// How many changed lines that need reading are read, of how many.
+    /// How many changed lines that need reading are read, of how many: a
+    /// line folded, once.
     pub fn progress(&self) -> (usize, usize) {
-        let keys: Vec<&String> = self.rows.iter().filter(|r| self.needs(r)).filter_map(|r| r.key.as_ref()).collect();
+        let keys: HashSet<&String> = self.rows.iter().filter(|r| self.needs(r)).filter_map(|r| r.key.as_ref()).collect();
         (keys.iter().filter(|k| self.read.contains(**k)).count(), keys.len())
     }
 }
@@ -466,6 +471,27 @@ mod tests {
         let rows = patch_rows(&p, &[], 80, &deco);
         assert_eq!(rows.iter().filter(|r| r.text.ends_with("   read 0/3 lines")).count(), 2);
         assert!(!rows.iter().any(|r| r.free));
+    }
+
+    #[test]
+    fn a_line_folded_is_one_line_to_read() {
+        // Two lines added: one too wide for the pane, its first piece white
+        // space alone, its code in the next; and one short.
+        let deep = format!("{}code", " ".repeat(40));
+        let diff = format!("diff --git a/f.txt b/f.txt\n--- a/f.txt\n+++ b/f.txt\n@@ -0,0 +1,2 @@\n+{deep}\n+short\n");
+        let p = Patch::new("c".into(), None, None, "t".into(), diff);
+        let rows = patch_rows(&p, &[], 30, &Deco::default());
+        let lines: Vec<usize> = (0..rows.len()).filter(|&i| rows[i].kind == Kind::Add).collect();
+        assert_eq!(lines.len(), 3, "{rows:#?}");
+        assert!(rows[lines[1]].cont && !rows[lines[2]].cont);
+        let none = Blocks::new();
+        let r = Reading { rows: &rows, blocks: &none, read: &HashSet::new(), marks: &[], whitespace: false };
+        assert_eq!(r.progress(), (0, 2), "the line folded counted once, its code in its second piece");
+        assert_eq!(r.next_unread(0, true), Some(lines[0]));
+        assert_eq!(r.next_unread(lines[0], true), Some(lines[2]), "past its second piece, to the next line");
+        let read = HashSet::from([rows[lines[0]].key.clone().unwrap()]);
+        let r = Reading { rows: &rows, blocks: &none, read: &read, marks: &[], whitespace: false };
+        assert_eq!(r.progress(), (1, 2));
     }
 
     #[test]
