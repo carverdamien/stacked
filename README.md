@@ -157,8 +157,12 @@ stack's repository, a line among them says where its HEAD is: `▶ HEAD main`
 after the patches its commits since the stack's base are (a commit is a
 patch when its diff is, whatever its message), `+2` when two commits above
 them are not the stack's; under the header at the base, or when it is not
-on the stack (`▶ HEAD main: off the stack`). It is looked at again as the
-stack changes, and every few seconds. `stacked head NAME` says the same.
+on the stack (`▶ HEAD main: off the stack`). With more patches than the
+pane has room for, the line stays in sight: on the pane's last line while
+its place is further down (`↓ HEAD main`), under the header while it is
+further up (`↑ HEAD main`), the arrow saying that patches go on between.
+It is looked at again as the stack changes, and every few seconds.
+`stacked head NAME` says the same.
 `Move HEAD…`, in the stack's menu and each patch's, moves that checkout
 along the stack: ↑↓ place HEAD's line (`↕ HEAD`), the checkout as it is
 meanwhile, and Enter moves it there, Esc leaving it where it was. HEAD is

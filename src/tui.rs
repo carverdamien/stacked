@@ -7381,14 +7381,50 @@ impl App {
         // The first shown: the one the cursor is on in sight, all its lines.
         let h = area.height as usize;
         let room = h.saturating_sub(1 + edit_h);
-        let mut top = on_entry.min(entries.len().saturating_sub(1));
-        let mut used = entries.get(top).map_or(1, |(_, its)| its.len());
-        while top > 0 && used + entries[top - 1].1.len() <= room {
-            top -= 1;
-            used += entries[top].1.len();
+        let first = |room: usize| {
+            let mut top = on_entry.min(entries.len().saturating_sub(1));
+            let mut used = entries.get(top).map_or(1, |(_, its)| its.len());
+            while top > 0 && used + entries[top - 1].1.len() <= room {
+                top -= 1;
+                used += entries[top].1.len();
+            }
+            top
+        };
+        // How far the entries from `top` go, whole, in `room`.
+        let end = |top: usize, room: usize| {
+            let (mut k, mut used) = (top, 0);
+            while k < entries.len() && used + entries[k].1.len() <= room {
+                used += entries[k].1.len();
+                k += 1;
+            }
+            k
+        };
+        let mut top = first(room);
+        // HEAD's line out of sight, the stack too long for the pane: a line
+        // is taken from the patches for it. Next to those shown, it is in
+        // its place; else it is on the pane's edge it is beyond, `↓` (`↑`)
+        // saying the patches go on between.
+        let mut pinned: Option<(bool, String)> = None;
+        if let Some(k) = entries.iter().position(|(e, _)| e.is_none())
+            && (k < top || k >= end(top, room))
+        {
+            let room = room.saturating_sub(1);
+            top = first(room);
+            if k + 1 == top {
+                top = k;
+            } else if k < top {
+                pinned = Some((true, entries[k].1[0].replacen('▶', "↑", 1)));
+            } else if k > end(top, room) {
+                pinned = Some((false, entries[k].1[0].replacen('▶', "↓", 1)));
+            }
         }
+        if let Some((true, line)) = &pinned {
+            put(buf, area, 0, y, w, &fit(line, w), color::meta());
+            y += 1;
+        }
+        let bottom = if matches!(pinned, Some((false, _))) { h.saturating_sub(1) } else { h };
         for (entry, its) in entries.iter().skip(top) {
-            if y >= h {
+            if y >= bottom {
                 break;
             }
             let Some((at, i)) = *entry else {
@@ -7406,7 +7442,7 @@ impl App {
                 };
             }
             for line in its {
-                if y >= h {
+                if y >= bottom {
                     break;
                 }
                 put(buf, area, 0, y, w, &fit(line, w), st);
@@ -7418,6 +7454,9 @@ impl App {
                 cursor = self.draw_editor(buf, area, y, Focus::List);
                 y += edit_h;
             }
+        }
+        if let Some((false, line)) = &pinned {
+            put(buf, area, 0, bottom, w, &fit(line, w), color::meta());
         }
         cursor
     }

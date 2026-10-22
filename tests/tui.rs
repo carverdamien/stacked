@@ -1900,6 +1900,73 @@ fn the_patches_pane_says_where_head_is_in_the_checkout() {
 }
 
 #[test]
+fn heads_line_stays_in_sight_when_the_stack_is_too_long_for_the_pane() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("src");
+    std::fs::create_dir(&src).unwrap();
+    git(&src, &["init", "-q", "-b", "main"]);
+    git(&src, &["config", "commit.gpgsign", "false"]);
+    git(&src, &["config", "tag.gpgsign", "false"]);
+    std::fs::write(src.join("base.txt"), "base\n").unwrap();
+    git(&src, &["add", "."]);
+    git(&src, &["commit", "-qm", "base"]);
+    for n in 1..=12 {
+        std::fs::write(src.join(format!("{n}.txt")), format!("{n}\n")).unwrap();
+        git(&src, &["add", "."]);
+        git(&src, &["commit", "-qm", &format!("Bug {n} - add {n}")]);
+    }
+    let db = tmp.path().join("db.jsonl");
+    stacked(&src, &db, &["import", "s", "HEAD~12"]);
+    let mut app = open(&db).unwrap();
+    app.checkout = src.clone();
+    app.look_at_head();
+    app.settle();
+    // A screen of 12 lines: the 12 patches and HEAD's line do not fit.
+    let small = |app: &mut App| {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 120, 12));
+        app.draw(&mut buf);
+        (0..buf.area.height).map(|y| (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect::<String>()).collect::<Vec<_>>()
+    };
+    let row = |lines: &[String], text: &str| lines.iter().position(|l| l.contains(text));
+    // On patch 1, HEAD after patch 12: on the pane's last line, said to
+    // be further down, the patches over it.
+    let lines = small(&mut app);
+    let screen = lines.join("\n");
+    let head = row(&lines, "↓ HEAD main").unwrap_or_else(|| panic!("{screen}"));
+    assert!(row(&lines, "  1 Bug 1").is_some_and(|y| y < head) && !screen.contains("12 Bug 12"), "{screen}");
+    assert!(lines[head + 1..].iter().all(|l| !l.contains(" Bug ")), "{screen}");
+    // On patch 12: in its place, under it.
+    for _ in 0..11 {
+        key(&mut app, KeyCode::Down);
+        small(&mut app);
+    }
+    assert_eq!(app.sel, 11);
+    let lines = small(&mut app);
+    let screen = lines.join("\n");
+    assert_eq!(row(&lines, "▶ HEAD main"), row(&lines, " 12 Bug 12").map(|y| y + 1), "{screen}");
+    assert!(!screen.contains("↓ HEAD"), "{screen}");
+    // HEAD at the base, the cursor on patch 12: under the header, said to
+    // be further up.
+    git(&src, &["checkout", "-q", "--detach", "HEAD~12"]);
+    app.look_at_head();
+    app.settle();
+    let lines = small(&mut app);
+    let screen = lines.join("\n");
+    let head = row(&lines, "↑ HEAD ").unwrap_or_else(|| panic!("{screen}"));
+    assert_eq!(Some(head), row(&lines, "≡ s").map(|y| y + 1), "{screen}");
+    assert!(row(&lines, " 12 Bug 12").is_some_and(|y| y > head) && !screen.contains("  1 Bug 1"), "{screen}");
+    // Back on patch 1: in its place, over it.
+    for _ in 0..11 {
+        key(&mut app, KeyCode::Up);
+        small(&mut app);
+    }
+    let lines = small(&mut app);
+    let screen = lines.join("\n");
+    assert_eq!(row(&lines, "▶ HEAD "), row(&lines, "  1 Bug 1").map(|y| y - 1), "{screen}");
+    assert!(!screen.contains("↑ HEAD"), "{screen}");
+}
+
+#[test]
 fn head_is_moved_along_the_stack_only_once_enter_leaves_the_mode() {
     let (_tmp, db, src) = setup();
     let mut app = open(&db).unwrap();
