@@ -954,7 +954,9 @@ all of it as soon as it lands, for a script.
 `2` switches to reading, as self-review's view of what is left to review:
 in the middle, Space marks the block of code at the cursor read and goes on
 to the next line not read, and Enter marks it unread again (no menu in the
-code meanwhile: the other panes still have theirs). A block is the
+code meanwhile: the other panes still have theirs). Going on, the cursor
+stays on its line of the screen and the code comes up under it, in every
+view, past the end of the patch if it takes that. A block is the
 innermost block of code around the line with lines not read yet, from a
 tree-sitter grammar (Rust, C, C++, Python, JavaScript, TypeScript, Java,
 Go) or else the file's braces: on a line whose block is read, the block

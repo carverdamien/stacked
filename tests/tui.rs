@@ -2652,13 +2652,13 @@ fn two_reads_rather_than_comments() {
     assert!(screen.contains("Press Space to mark this block as read: this hunk, 2 lines not read"), "{screen}");
     assert!(screen.contains("nothing here is marked read"), "{screen}");
     // Space marks it read: no menu in the code. The cursor goes on to what
-    // is left to read.
+    // is left to read, the hunk read coming up, its header out of sight.
     keys(&mut app, &[KeyCode::Esc, KeyCode::Char(' ')]);
     assert_eq!(app.mode, Mode::Normal);
     assert!(app.status.contains("read: this hunk, 2 lines"), "{}", app.status);
     assert_eq!(app.rows[app.cursor].text, "-line 39");
     let screen = draw(&mut app);
-    assert!(screen.contains("  ✓ +TWO") && screen.contains("read 2/2 lines"), "{screen}");
+    assert!(screen.contains("  ✓ +TWO") && app.rows.iter().any(|r| r.text.ends_with("   read 2/2 lines")), "{screen}");
     assert!(screen.contains("reading 2/4") && screen.contains(" 2/4"), "{screen}");
     keys(&mut app, &[KeyCode::Char(' ')]);
     assert!(app.status.contains("nothing left to read below"), "{}", app.status);
@@ -2709,6 +2709,37 @@ fn reading_goes_by_the_blocks_of_the_code() {
     keys(&mut app, &[KeyCode::Char(' ')]);
     assert!(app.status.contains("read: the block of lines 5–7, 2 lines"), "{}", app.status);
     assert!(draw(&mut app).contains("reading 4/4"));
+}
+
+#[test]
+fn reading_on_the_cursor_stays_on_its_line_and_the_code_comes_up() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    draw(&mut app);
+    keys(&mut app, &[KeyCode::Char('2'), KeyCode::Enter]);
+    app.wait_blocks();
+    // The line of the screen a row is on, as what Space would read.
+    let line_of = |screen: &str, text: &str| screen.lines().position(|l| l.contains(&format!("○→✓ {text}")));
+    for view in [Layout::Unified, Layout::Split, Layout::Compact] {
+        assert_eq!(app.layout, view);
+        down_to(&mut app, "+TWO");
+        let screen = draw(&mut app);
+        let y = line_of(&screen, "+TWO").unwrap_or_else(|| panic!("{view:?}:\n{screen}"));
+        let below = screen.lines().position(|l| l.contains("-line 39")).unwrap_or_else(|| panic!("{view:?}:\n{screen}"));
+        assert!(below > y, "{view:?}: the next line not read, further down:\n{screen}");
+        // The whole patch is in sight: Space scrolls it all the same.
+        keys(&mut app, &[KeyCode::Char(' ')]);
+        assert_eq!(app.rows[app.cursor].text, "-line 39", "{view:?}");
+        let screen = draw(&mut app);
+        assert_eq!(line_of(&screen, "-line 39"), Some(y), "{view:?}: on the line the cursor was on:\n{screen}");
+        assert!(screen.lines().nth(y).unwrap().contains("○→✓ -line 39"), "{view:?}:\n{screen}");
+        assert!(!screen.contains("  ✓ +TWO") || screen.lines().position(|l| l.contains("  ✓ +TWO")).unwrap() < y, "{view:?}: what was read, above:\n{screen}");
+        // Read again from the start, in the next view.
+        keys(&mut app, &[KeyCode::Home]);
+        down_to(&mut app, "+TWO");
+        keys(&mut app, &[KeyCode::Enter, KeyCode::Home, KeyCode::Char('1')]);
+        assert!(app.status.contains("unread") || draw(&mut app).contains("reading 0/4"), "{}", app.status);
+    }
 }
 
 #[test]

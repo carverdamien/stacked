@@ -138,6 +138,14 @@ enum Tick {
     ToUnread,
 }
 
+/// The top of the middle that draws its line `k` on the screen's line
+/// `y`; `pinned` says whether a top pins the title on the first line, the
+/// lines then starting under it.
+fn top_for(k: usize, y: usize, pinned: impl Fn(usize) -> bool) -> usize {
+    let top = k.saturating_sub(y);
+    if pinned(top) { (k + 1).saturating_sub(y).min(k) } else { top }
+}
+
 /// A line of an interdiff or a mail, coloured as a diff's.
 fn diff_style(line: &str) -> Style {
     match line.chars().next() {
@@ -1287,6 +1295,12 @@ pub struct App {
     want: Option<Want>,
     pub cursor: usize,
     pub top: usize,
+    /// The line of the middle the cursor was last drawn on.
+    cursor_y: Option<usize>,
+    /// Space moved the cursor on, reading: the row it went on to, drawn
+    /// on the line the cursor was on, the rows coming up under it; with
+    /// what the rows were built from, as they must still be.
+    keep: Option<(String, usize, usize)>,
     /// The selected line of a list screen, and its top.
     pub pick: usize,
     pick_top: usize,
@@ -1548,6 +1562,8 @@ impl App {
             want: None,
             cursor: 0,
             top: 0,
+            cursor_y: None,
+            keep: None,
             pick: 0,
             pick_top: 0,
             hist_rev: None,
@@ -3008,18 +3024,25 @@ impl App {
                 self.rebuild_now();
                 self.status = format!("read: {}, {n} line{}", t.what, plural(n));
                 match next(self) {
-                    Some(j) => self.cursor = j,
+                    Some(j) => self.read_on(j),
                     None => self.status += " · nothing left to read below",
                 }
             }
             None => match next(self) {
                 Some(j) => {
-                    self.cursor = j;
+                    self.read_on(j);
                     self.status = "all read there: on to the next line not read".into();
                 }
                 None => self.status = "nothing left to read below".into(),
             },
         }
+    }
+
+    /// The cursor on to row `j`, reading on: once drawn, on the line it is
+    /// on, the rows coming up under it.
+    fn read_on(&mut self, j: usize) {
+        self.keep = self.built.clone().zip(self.cursor_y).map(|(built, y)| (built, j, y));
+        self.cursor = j;
     }
 
     /// Enter, reading: takes back the latest mark around the cursor.
@@ -7451,6 +7474,9 @@ impl App {
         let anchor = self.editor_anchor();
         let gap = if anchor.is_some() { self.editor_height(area, Focus::Diff) } else { 0 };
         let mut editor_y: Option<usize> = None;
+        // Read on with Space: the row the cursor went on to, on the line it
+        // was on, as long as the rows are those it was in.
+        let keep = self.keep.take().filter(|(built, ..)| anchor.is_none() && self.built.as_ref() == Some(built)).map(|(_, j, y)| (j, y));
         // Not while the cursor is on the banner: it comes back there.
         let lit = |i: usize, app: &App| i == app.cursor && app.focus != Focus::List && !app.on_banner;
         // A patch's title, its message's first line: on the first line of
@@ -7460,6 +7486,10 @@ impl App {
         let mut drawn: Vec<(usize, usize, usize)> = Vec::new();
         match layout {
             Layout::Unified => {
+                let pinned = |top: usize| h > 2 && title.is_some_and(|t| top > t);
+                if let Some((j, y)) = keep {
+                    self.top = top_for(j, y, pinned);
+                }
                 // The anchor, a third down, and the box under it, in sight.
                 if let Some(a) = anchor
                     && (a < self.top || a + 1 + gap > self.top + h)
@@ -7475,7 +7505,6 @@ impl App {
                 }
                 // Pinned, the title leaves the rows a line less: the cursor,
                 // or the anchor and its box, in it.
-                let pinned = |top: usize| h > 2 && title.is_some_and(|t| top > t);
                 if pinned(self.top) {
                     match anchor {
                         Some(a) if a + 1 + gap > self.top + h - 1 => self.top = (a + 2 + gap).saturating_sub(h).min(a),
@@ -7507,13 +7536,18 @@ impl App {
                 let (lines, index) = split_lines(&self.rows);
                 let cur = *index.get(&anchor.unwrap_or(self.cursor)).unwrap_or(&0);
                 let at = anchor.and_then(|a| index.get(&a).copied());
+                let pinned = |top: usize| h > 2 && title.and_then(|t| index.get(&t)).is_some_and(|&l| top > l);
                 let mut top = *index.get(&self.top).unwrap_or(&0);
+                if let Some((j, y)) = keep
+                    && let Some(&k) = index.get(&j)
+                {
+                    top = top_for(k, y, pinned);
+                }
                 if cur < top {
                     top = cur;
                 } else if cur + 1 + gap > top + h {
                     top = (cur + 1 + gap).saturating_sub(h).min(cur);
                 }
-                let pinned = |top: usize| h > 2 && title.and_then(|t| index.get(&t)).is_some_and(|&l| top > l);
                 if pinned(top) && cur + 2 + gap > top + h {
                     top = (cur + 2 + gap).saturating_sub(h).min(cur);
                 }
@@ -7555,7 +7589,17 @@ impl App {
                 let p = self.panes.clone();
                 // The title above both panes: pinned, the panes under it.
                 let above = |pos: &HashMap<usize, usize>, top: usize| title.and_then(|t| pos.get(&t)).is_some_and(|&k| k < top);
-                let pin = h > 2 && above(&p.lpos, self.compact.top[0]) && above(&p.rpos, self.compact.top[1]);
+                let pinned = |c: &Compact| h > 2 && above(&p.lpos, c.top[0]) && above(&p.rpos, c.top[1]);
+                // Read on with Space: the row on the line of the screen the
+                // cursor was on, a line lower in the panes once they pin the
+                // title over them.
+                if let Some((j, y)) = keep {
+                    self.compact.keep(&p, j, y, h);
+                    if pinned(&self.compact) {
+                        self.compact.keep(&p, j, y.saturating_sub(1), h - 1);
+                    }
+                }
+                let pin = pinned(&self.compact);
                 let panes_h = h - pin as usize;
                 // Moved by row (to a comment, to a comment being written):
                 // the panes go there; with a box, in what it leaves of them.
@@ -7616,7 +7660,12 @@ impl App {
                         }
                     }
                 }
+                self.cursor_y = Some(self.compact.y + pin as usize);
             }
+        }
+        // The line the cursor is on, for Space to keep it there.
+        if layout != Layout::Compact {
+            self.cursor_y = drawn.iter().find(|d| d.0 == self.cursor).map(|d| d.1);
         }
         if anchor.is_some() {
             return self.draw_editor(buf, area, editor_y.unwrap_or(h / 3), Focus::Diff);

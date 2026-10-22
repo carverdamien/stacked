@@ -205,6 +205,20 @@ impl Compact {
         if self.cursor == Some(row) {
             return;
         }
+        self.place(p, row, h, None);
+    }
+
+    /// Puts the panes on `row` when the cursor was moved on to it, on the
+    /// cursor's line `y`: the panes scroll up to it, past their ends if it
+    /// takes that, as the other views' rows do; the other pane lined up on
+    /// the nearest row both show.
+    pub fn keep(&mut self, p: &Panes, row: usize, y: usize, h: usize) {
+        self.place(p, row, h, Some(y));
+    }
+
+    /// The panes on `row`, the cursor on it: on line `y`, else where it is
+    /// if its pane shows it, else a third down.
+    fn place(&mut self, p: &Panes, row: usize, h: usize, y: Option<usize>) {
         let h = h.max(1);
         let mut mine = self.side();
         let pos = match Self::pos(p, mine, row) {
@@ -220,15 +234,20 @@ impl Compact {
         self.cursor = Some(row);
         self.held = true;
         // On screen already, in its pane: the cursor goes to it there.
-        for (y, (l, r)) in self.lines(p, h).iter().enumerate() {
-            if (if mine == 0 { *l } else { *r }) == Some(row) {
-                self.y = y;
-                return;
+        if y.is_none() {
+            for (y, (l, r)) in self.lines(p, h).iter().enumerate() {
+                if (if mine == 0 { *l } else { *r }) == Some(row) {
+                    self.y = y;
+                    return;
+                }
             }
         }
         let other = 1 - mine;
+        // On line `y`, as far as that takes the panes; else no further than
+        // their ends.
+        let limit = |which: usize| if y.is_some() { usize::MAX } else { Self::limit(p, which, h) };
         let mut top = [0; 2];
-        top[mine] = pos.saturating_sub(h / 3).min(Self::limit(p, mine, h));
+        top[mine] = pos.saturating_sub(y.unwrap_or(h / 3).min(h - 1)).min(limit(mine));
         let shared = (0..=row).rev().find(|r| p.lpos.contains_key(r) && p.rpos.contains_key(r));
         top[other] = match shared {
             Some(s) => {
@@ -237,7 +256,7 @@ impl Compact {
             }
             None => top[mine],
         }
-        .min(Self::limit(p, other, h));
+        .min(limit(other));
         self.top = top;
         self.y = pos - top[mine];
     }
