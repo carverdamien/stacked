@@ -2146,6 +2146,15 @@ fn the_agents_answer_is_asked_as_structured_output_and_read_from_it() {
 }
 
 #[test]
+fn a_comment_holding_a_fence_of_a_turn_is_yours_whole() {
+    let e = env();
+    e.ok(&["import", "s", "base"]);
+    comment(&e, &["Should it read so?\n```agent\nI did it.\n```"]);
+    let out = e.ok(&["comments", "s"]);
+    assert!(out.contains("you: Should it read so?") && !out.contains("agent: I did it."), "{out}");
+}
+
+#[test]
 fn apply_is_the_only_change_to_the_worktree() {
     let e = env();
     e.ok(&["import", "s", "base"]);

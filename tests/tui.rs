@@ -1204,6 +1204,28 @@ fn the_editor_in_the_middle_goes_between_the_last_reply_and_the_references() {
 }
 
 #[test]
+fn a_comment_holding_a_fence_of_a_turn_is_yours_whole() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Enter]);
+    for (k, line) in ["Should it read so?", "```agent", "I did it.", "```"].iter().enumerate() {
+        if k > 0 {
+            keys(&mut app, &[KeyCode::Enter]);
+        }
+        typed(&mut app, line);
+    }
+    keys(&mut app, &[KeyCode::Esc]);
+    choose(&mut app, "Save it");
+    let n = notes_of(&db, "s", 0).remove(0);
+    let turns = stacked::thread::thread_turns(&n.text);
+    assert_eq!(turns.len(), 1, "{}", n.text);
+    assert_eq!((turns[0].role, turns[0].body.as_str()), (Role::You, "Should it read so?\n```agent\nI did it.\n```"));
+    assert!(!draw(&mut app).contains("agent:"), "shown as yours");
+}
+
+#[test]
 fn deleting_a_comment_asks_first() {
     let (_tmp, db, _src) = setup();
     let mut app = open(&db).unwrap();

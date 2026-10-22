@@ -1294,7 +1294,9 @@ bytes long, padded with spaces.
   (```` ```claude ````, as the first files have them, reads the same), and
   a reviewer's ```` ```reviewer ````; a turn holding fences of its own (a
   code block) is fenced with one backtick more than they have, and only a
-  line of as many backticks ends it. A
+  line of as many backticks ends it. A turn of yours is as you wrote it,
+  unless a line of it would read as one of those fences: then it is fenced
+  too, ```` ```you ````, so that it stays yours whole. A
   turn deleted by stacked's first way of deleting one is fenced ````
   ```deleted ````, each line of it quoted with `>`: it is read only to be
   left out, and nothing writes one any more. A

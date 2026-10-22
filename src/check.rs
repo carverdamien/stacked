@@ -8,6 +8,7 @@
 //! made again against the whole base before it is believed, so a path the
 //! patches touch and the list missed cannot make a good patch fail.
 
+use crate::diff::unquote;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -489,45 +490,6 @@ fn touched_by(repo: &Path, diffs: &[&str]) -> BTreeSet<String> {
         }
     }
     paths
-}
-
-/// A path as git writes it in a header: bare, or quoted as C would,
-/// `"a/caf\303\251"`. `sided`: it has the `a/` or `b/` of its side.
-fn unquote(p: &str, sided: bool) -> String {
-    let Some(inner) = p.strip_prefix('"').and_then(|s| s.strip_suffix('"')) else {
-        return p.to_string();
-    };
-    let mut out = Vec::new();
-    let b = inner.as_bytes();
-    let mut i = 0;
-    while i < b.len() {
-        if b[i] != b'\\' || i + 1 == b.len() {
-            out.push(b[i]);
-            i += 1;
-            continue;
-        }
-        if let Some(o) = b.get(i + 1..i + 4).filter(|o| o.iter().all(|d| (b'0'..=b'7').contains(d))) {
-            out.push(u8::from_str_radix(std::str::from_utf8(o).unwrap(), 8).unwrap_or(b'?'));
-            i += 4;
-            continue;
-        }
-        out.push(match b[i + 1] {
-            b'a' => 7,
-            b'b' => 8,
-            b't' => b'\t',
-            b'n' => b'\n',
-            b'v' => 11,
-            b'f' => 12,
-            b'r' => b'\r',
-            c => c,
-        });
-        i += 2;
-    }
-    let s = String::from_utf8_lossy(&out).into_owned();
-    match s.get(..2) {
-        Some("a/") | Some("b/") if sided => s[2..].to_string(),
-        _ => s,
-    }
 }
 
 #[cfg(test)]

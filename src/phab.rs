@@ -394,7 +394,9 @@ pub fn stack_stand_in(read: Option<ReadStack>) {
 /// The revision `text` names, `D123` or its link: its `D123`, and the link
 /// if one was given. None if it names none.
 pub fn revision_named(text: &str) -> Option<(String, Option<String>)> {
-    let t = text.trim().trim_end_matches('/');
+    // A link as the browser gives it: its anchor, its query left out.
+    let t = text.trim();
+    let t = t.split(['#', '?']).next().unwrap_or(t).trim_end_matches('/');
     let last = t.rsplit('/').next()?;
     let digits = last.strip_prefix('D')?;
     if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
@@ -537,8 +539,15 @@ pub fn anchor(lines: &[NoteLine], c: &Remote) -> Option<String> {
 /// settings' Phabricator.
 pub fn revision_of(message: &str) -> Option<(String, String)> {
     let cfg = &crate::config::get().reviews;
-    let trailer = format!("{}:", cfg.trailer);
-    message.lines().find_map(|line| {
+    revision_in(message, &cfg.trailer, cfg.url.as_deref())
+}
+
+/// As `revision_of`, the trailer named `trailer`, a bare `D123` on `url`:
+/// the last line that says one, trailers being last, the message above it
+/// free to name another revision.
+fn revision_in(message: &str, trailer: &str, url: Option<&str>) -> Option<(String, String)> {
+    let trailer = format!("{trailer}:");
+    message.lines().rev().find_map(|line| {
         let rest = line.strip_prefix(&trailer)?.trim();
         let last = rest.rsplit('/').next()?;
         let digits = last.strip_prefix('D')?;
@@ -548,7 +557,7 @@ pub fn revision_of(message: &str) -> Option<(String, String)> {
         let link = if rest.contains('/') {
             rest.to_string()
         } else {
-            format!("{}/{last}", cfg.url.as_deref()?)
+            format!("{}/{last}", url?)
         };
         Some((last.to_string(), link))
     })
@@ -681,6 +690,20 @@ mod tests {
         for wrong in ["", "D", "123", "D12x", "https://phabricator.example.com/"] {
             assert_eq!(revision_named(wrong), None, "{wrong:?}");
         }
+        // As the browser gives it, at an inline comment, or asked for a diff.
+        for given in [format!("{link}#inline-456"), format!("{link}?id=789"), format!("{link}/#change-x")] {
+            assert_eq!(revision_named(&given), Some(("D123".into(), Some(link.into()))), "{given:?}");
+        }
+    }
+
+    #[test]
+    fn a_patchs_revision_is_its_last_trailer_the_message_naming_others() {
+        let msg = "Bug 2 - back out\n\nThis backs out the change of\nDifferential Revision: https://p.example/D100\nwhich broke the build.\n\nDifferential Revision: https://p.example/D200";
+        assert_eq!(revision_in(msg, "Differential Revision", None), Some(("D200".into(), "https://p.example/D200".into())));
+        let bare = "Bug 3 - x\n\nDifferential Revision: D7";
+        assert_eq!(revision_in(bare, "Differential Revision", Some("https://p.example")), Some(("D7".into(), "https://p.example/D7".into())));
+        assert_eq!(revision_in(bare, "Differential Revision", None), None, "no Phabricator to name it on");
+        assert_eq!(revision_in("Bug 4 - y", "Differential Revision", None), None);
     }
 
     #[test]

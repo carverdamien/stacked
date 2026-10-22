@@ -7,7 +7,7 @@ use stacked::ask;
 use stacked::db::{Db, Error, Note, Patch, Record, Result, Way, err, local_time as time, short_id, stack_change};
 use stacked::mbox::{Draft, base_commit, format_mbox, parse_mail, parse_mbox};
 use stacked::ops;
-use stacked::thread::{Role, all_turns, append_turn, edit_turn, replace_last_turn, rewind_from};
+use stacked::thread::{Role, all_turns, append_turn, edit_turn, replace_last_turn, rewind_from, yours};
 use stacked::tui::{Busy, Show, note_state, shows, where_on};
 use stacked::view::{MSG_PATH, find_line, fold, note_lines, title_key};
 use stacked::{git, review, tree};
@@ -1142,7 +1142,7 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
             let note = Note {
                 change: stack_change(&name),
                 id: format!("h{}", stacked::db::unique()),
-                text: text.join(" "),
+                text: yours(&text.join(" ")),
                 preview: e.text.chars().take(80).collect(),
                 about: Some(rev),
                 ..Default::default()
@@ -1165,7 +1165,7 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
                 (None, _) => Note {
                     change: stack_change(&name),
                     id: format!("s{}", stacked::db::unique()),
-                    text,
+                    text: yours(&text),
                     ..Default::default()
                 },
                 (Some(spec), None) => {
@@ -1174,7 +1174,7 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
                         change: p.change.clone(),
                         id: format!("p{}", stacked::db::unique()),
                         line: title_key(&p),
-                        text,
+                        text: yours(&text),
                         file: MSG_PATH.into(),
                         preview: p.title().chars().take(80).collect(),
                         ..Default::default()
@@ -1203,7 +1203,7 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
                                 change: p.change.clone(),
                                 id: key.clone(),
                                 line: key,
-                                text,
+                                text: yours(&text),
                                 file: at.file,
                                 preview: fold(&at.text).chars().take(80).collect(),
                                 ..Default::default()

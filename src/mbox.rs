@@ -119,7 +119,9 @@ pub fn parse_mail(text: &str) -> Result<Draft> {
         .iter()
         .enumerate()
         .position(|(i, l)| {
-            l.starts_with("diff ")
+            // As git's mail splitter: `diff -`, not a line of the message
+            // that starts with the word.
+            l.starts_with("diff -")
                 || l.starts_with("Index: ")
                 || (l.starts_with("--- ") && rest.get(i + 1).is_some_and(|n| n.starts_with("+++ ")))
         })
@@ -320,4 +322,17 @@ pub fn format_mbox(patches: &[&Patch]) -> String {
         out.push_str("-- \nstacked\n\n");
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_line_of_the_message_starting_with_diff_is_the_messages() {
+        let mail = "From: A <a@x>\nSubject: [PATCH] Bug 1 - add b\n\nThe old code made a mess of it.\ndiff between the two: none now.\nAnd this line is the message's too.\n---\n a.txt | 1 +\n\ndiff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -1 +1,2 @@\n a\n+b\n";
+        let d = parse_mail(mail).unwrap();
+        assert_eq!(d.message, "Bug 1 - add b\n\nThe old code made a mess of it.\ndiff between the two: none now.\nAnd this line is the message's too.");
+        assert!(d.diff.starts_with("diff --git a/a.txt b/a.txt\n"), "{}", d.diff);
+    }
 }

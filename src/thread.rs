@@ -6,7 +6,10 @@
 //! of its own (a code block) is fenced with more backticks than they have,
 //! ````agent, and only a line of as many backticks ends it. A conversation is
 //! rewound from one of your turns: your new text takes the place of that
-//! turn and of every turn after it.
+//! turn and of every turn after it. A turn of yours holding a line that
+//! would be read as one of those fences (```agent) is fenced too, as
+//! yours, ```you, with more backticks than its own: the rest are as
+//! written.
 //!
 //! A turn deleted by stacked's first way of deleting one is a fenced
 //! ```deleted block, what it said quoted in it: it is read only to be left
@@ -18,6 +21,7 @@ pub const AGENT_OPEN: &str = "```agent";
 /// The agent's fence as it was first written.
 const AGENT_WAS: &str = "```claude";
 pub const REVIEWER_OPEN: &str = "```reviewer";
+pub const YOU_OPEN: &str = "```you";
 pub const DELETED_OPEN: &str = "```deleted";
 pub const FENCE_CLOSE: &str = "```";
 
@@ -81,7 +85,7 @@ pub fn fence(line: &str) -> Option<(Role, String, bool, usize)> {
         };
         return Some((role, tag.trim().to_string(), true, n));
     }
-    for (open, role) in [(AGENT_OPEN, Role::Agent), (AGENT_WAS, Role::Agent), (REVIEWER_OPEN, Role::Reviewer)] {
+    for (open, role) in [(AGENT_OPEN, Role::Agent), (AGENT_WAS, Role::Agent), (REVIEWER_OPEN, Role::Reviewer), (YOU_OPEN, Role::You)] {
         let open = word(open);
         if s == open {
             return Some((role, String::new(), false, n));
@@ -232,7 +236,7 @@ pub fn render_thread(turns: &[Turn]) -> String {
                 return format!("{DELETED_OPEN} {who}{tag}\n{}\n{FENCE_CLOSE}", quoted.join("\n"));
             }
             let open = match t.role {
-                Role::You => return t.body.clone(),
+                Role::You => return yours(&t.body),
                 Role::Agent => word(AGENT_OPEN),
                 Role::Reviewer => word(REVIEWER_OPEN),
             };
@@ -243,6 +247,17 @@ pub fn render_thread(turns: &[Turn]) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// `body`, a turn of yours, as a thread holds it: as written, unless a
+/// line of it would be read as a fence of a turn (```agent, ```reviewer):
+/// then fenced as yours, with more backticks than any of its own.
+pub fn yours(body: &str) -> String {
+    let body = body.trim();
+    match body.lines().any(|l| fence(l).is_some()) {
+        true => fenced(word(YOU_OPEN), body),
+        false => body.to_string(),
+    }
 }
 
 pub fn append_turn(text: &str, role: Role, body: &str, tag: Option<&str>) -> String {
@@ -411,10 +426,10 @@ pub fn thread_line_roles(lines: &[String]) -> Vec<LineRole> {
                     if n == 3 && st.starts_with(FENCE_CLOSE) {
                         inner = !inner;
                     }
-                    roles.push(if role == Role::Agent {
-                        LineRole::Agent
-                    } else {
-                        LineRole::Reviewer
+                    roles.push(match role {
+                        Role::Agent => LineRole::Agent,
+                        Role::Reviewer => LineRole::Reviewer,
+                        Role::You => LineRole::You,
                     });
                 }
             }
@@ -426,6 +441,34 @@ pub fn thread_line_roles(lines: &[String]) -> Vec<LineRole> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_turn_of_yours_holding_a_fence_is_fenced_as_yours() {
+        let said = "Should it read so?\n```agent\nI did it.\n```\nor not?";
+        // Fenced as yours, with more backticks than its own: yours whole.
+        let text = yours(said);
+        assert!(text.starts_with("````you\n") && text.ends_with("\n````"), "{text}");
+        let turns = thread_turns(&text);
+        assert_eq!(turns.len(), 1, "{turns:?}");
+        assert_eq!((turns[0].role, turns[0].body.as_str()), (Role::You, said));
+        // A reply too, after the agent's; and written again.
+        let thread = append_turn(&append_turn("why?", Role::Agent, "Because.", Some("answer")), Role::You, said, None);
+        let turns = thread_turns(&thread);
+        assert_eq!(turns.iter().map(|t| t.role).collect::<Vec<_>>(), [Role::You, Role::Agent, Role::You]);
+        assert_eq!((turns[2].body.as_str(), last_mine(&thread).as_deref()), (said, Some(said)));
+        let again = replace_last_turn(&thread, "```reviewer ann\nno").unwrap();
+        assert_eq!(last_mine(&again).as_deref(), Some("```reviewer ann\nno"));
+        // A code block of its own, or nothing to read as a fence: as
+        // written.
+        for plain in ["plain ```code``` inline", "Like this:\n```rust\nfn f() {}\n```"] {
+            assert_eq!(yours(plain), plain);
+        }
+        // Its lines are yours, in the editor's colours.
+        let lines: Vec<String> = text.lines().map(String::from).collect();
+        let roles = thread_line_roles(&lines);
+        assert_eq!((roles[0], roles[lines.len() - 1]), (LineRole::Fence, LineRole::Fence));
+        assert!(roles[1..lines.len() - 1].iter().all(|r| *r == LineRole::You), "{roles:?}");
+    }
 
     #[test]
     fn your_last_turn_is_written_again() {

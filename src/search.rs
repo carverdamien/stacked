@@ -236,18 +236,16 @@ impl Search<'_> {
                 }
             }
         }
-        let mut file = String::new();
+        let mut file = crate::diff::FileOf::default();
         for (i, line) in p.diff.lines().enumerate() {
-            if let Some(rest) = line.strip_prefix("diff --git ") {
-                file = rest.split_once(" b/").map_or(rest, |(_, b)| b).to_string();
-            }
+            file.read(line);
             if self.matches(line) {
                 let f = Found {
                     place: Place::Diff {
                         change: p.change.clone(),
                         at: i,
                     },
-                    at: format!("patch {} · {file}", k + 1),
+                    at: format!("patch {} · {}", k + 1, file.path),
                     line: line.to_string(),
                     context: None,
                 };
@@ -364,13 +362,9 @@ fn where_note(db: &Db, name: &str, n: &Note) -> String {
 /// hunk's new lines, from and to (not counted).
 fn shown_lines(diff: &str, path: &str) -> Vec<(usize, usize)> {
     let mut out = Vec::new();
-    let mut ours = false;
+    let mut file = crate::diff::FileOf::default();
     for line in diff.lines() {
-        if let Some(rest) = line.strip_prefix("diff --git ") {
-            ours = rest.split_once(" b/").map_or(rest, |(_, b)| b) == path;
-            continue;
-        }
-        if !ours {
+        if file.read(line) || file.path != path {
             continue;
         }
         let Some(head) = line.strip_prefix("@@ ") else { continue };
@@ -393,6 +387,10 @@ mod tests {
         assert_eq!(shown_lines(diff, "a.txt"), [(1, 5), (21, 22)]);
         assert_eq!(shown_lines(diff, "b.txt"), [(1, 2)]);
         assert!(shown_lines(diff, "c.txt").is_empty());
+        // A path git quotes, one holding " b/".
+        let named = "diff --git \"a/caf\\303\\251.txt\" \"b/caf\\303\\251.txt\"\n--- \"a/caf\\303\\251.txt\"\n+++ \"b/caf\\303\\251.txt\"\n@@ -1 +1 @@\n-x\n+y\ndiff --git a/plan b/x.txt b/plan b/x.txt\n--- a/plan b/x.txt\t\n+++ b/plan b/x.txt\t\n@@ -2 +2 @@\n-x\n+y\n";
+        assert_eq!(shown_lines(named, "café.txt"), [(1, 2)]);
+        assert_eq!(shown_lines(named, "plan b/x.txt"), [(2, 3)]);
     }
 
     #[test]

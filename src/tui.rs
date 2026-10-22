@@ -5887,7 +5887,7 @@ impl App {
                 Target::Stack => Note {
                     change: stack_change(&name),
                     id: format!("s{stamp}"),
-                    text,
+                    text: crate::thread::yours(&text),
                     ..Default::default()
                 },
                 Target::Patch(change) => {
@@ -5903,7 +5903,7 @@ impl App {
                         change: change.clone(),
                         id: format!("p{stamp}"),
                         line: title_key(&p),
-                        text,
+                        text: crate::thread::yours(&text),
                         file: MSG_PATH.into(),
                         preview: p.title().chars().take(80).collect(),
                         ..Default::default()
@@ -5919,7 +5919,7 @@ impl App {
                         change: change.clone(),
                         id: if apart { format!("l{stamp}") } else { key.clone() },
                         line: key.clone(),
-                        text,
+                        text: crate::thread::yours(&text),
                         file: file.clone(),
                         preview: preview.clone(),
                         ..Default::default()
@@ -5960,7 +5960,7 @@ impl App {
                 Target::About(rev) => Note {
                     change: stack_change(&name),
                     id: format!("h{stamp}"),
-                    text,
+                    text: crate::thread::yours(&text),
                     preview: crate::history::entries(db, &name)
                         .into_iter()
                         .find(|e| e.rev == *rev)
@@ -6250,10 +6250,7 @@ impl App {
     fn ref_jump(&self, s: &crate::db::Stack, r: &crate::refs::Ref, all: &[&str]) -> Jump {
         use crate::refs::At;
         let first = r.ranges[0].0;
-        let touches = |id: &String| {
-            let d = &self.db.patch(id).diff;
-            d.lines().any(|l| l.strip_prefix("+++ b/").or_else(|| l.strip_prefix("--- a/")) == Some(r.file.as_str()))
-        };
+        let touches = |id: &String| crate::diff::paths(&self.db.patch(id).diff).contains(&r.file);
         let at = match r.at {
             At::Patch(n) => n.checked_sub(1),
             At::Top => s.patches.iter().rposition(touches),
