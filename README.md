@@ -19,8 +19,7 @@ cargo install --git https://github.com/carverdamien/stacked
 
 or, in a clone of this repository, `cargo install --path .`; or run it in
 place with `target/release/stacked` after `cargo build --release`. It needs
-`git`, an agent for asks (`claude`, unless the settings name another), and
-`curl` for Phabricator.
+`git`, and an agent for asks (`claude`, unless the settings name another).
 
 With the editor in a browser too (`stacked web`, below), built with the
 `web` feature; its browser half is compiled to wasm, with Rust's
@@ -34,6 +33,13 @@ cargo install --path . --features web
 With a tour of it, to learn it by (`stacked demo`, below), built with the
 `demo` feature: `cargo install --path . --features demo` (or
 `--features web,demo` for both).
+
+With Phabricator (below), built with the `moz-phab` feature: the reviews
+pulled from its revisions, and stacks imported from them, over Conduit with
+the token moz-phab (or arc) keeps, which `curl` calls: `cargo install
+--path . --features moz-phab` (or `--features web,demo,moz-phab` for all
+three). Built without it, stacked has none of it, but reads a database
+that holds reviews pulled.
 
 ## Running
 
@@ -60,7 +66,8 @@ stacked send bug123 --all --answer-only   # every comment that can be sent
 stacked send bug123 4f1c2a --later   # in the stack's batch, to go with the rest
 stacked send bug123 --batch --fan-out   # the batch: edits to one agent, answers an agent each
 stacked reply bug123 4f1c2a and keep the title
-stacked pull bug123                # reviewers' comments from Phabricator, held for your review
+stacked pull bug123                # reviewers' comments from Phabricator, held for your review (moz-phab)
+stacked moz-phab import D123       # a new stack of D123, those it stacks on and those on it (moz-phab)
 stacked apply bug123 --branch bug123   # only now does the worktree change
 stacked export bug123 | git am     # or put it anywhere by hand
 stacked trim new.jsonl --from @40  # a new database, the history before @40 left out
@@ -286,12 +293,15 @@ with stacks, the stack's own menu has them under `New stack…`:
   commits`), taken only once it holds a commit. The staged changes, and the
   unstaged ones, when there are, may each be checked to go on top of what
   ends at HEAD, a patch of their own (`Staged changes`, `Unstaged changes`).
-- `Import from Phabricator…`: a revision, `D123` or its link, read away from
-  the screen with the revisions it stacks on, down to the first that is not
-  open, and those stacked on it while one is open; each its latest diff,
-  with the message and author of its commit as uploaded. They go on the
-  commit the bottom one is on, which the repository must have (`D11 is on
-  0123456789ab, which this repository does not have: fetch it first`).
+- `Import from Phabricator…` (built with the `moz-phab` feature): a
+  revision, `D123` (or `123`) or its link, read away from the screen with
+  the revisions it stacks on, down to the first that is not open, and those
+  stacked on it while one is open; each its latest diff, with the message
+  and author of its commit as uploaded. They go on the commit the bottom
+  one is on, which the repository must have (`D11 is on 0123456789ab,
+  which this repository does not have: fetch it first`). `stacked moz-phab
+  import D123` makes the same stack from the command line, at once, named
+  after the revision as no stack is, or `--name NAME`.
 
 An import is seen before it is made: its patches, bottom first, the commit
 they go on, and the name of the stack it makes, after the branch or the
@@ -1190,10 +1200,11 @@ settings:
   unless set): off for an agent that does not take it, its answer is read
   from what it writes, the JSON it ends with, the prose around it left
   out. Given up on by claude, the ask fails and says so.
-- `[reviews]`: `source`, `"phabricator"` or `"none"` (no pulling); `url`,
-  the Phabricator a bare `D123` trailer is on; `arcrc`, where the tokens
-  are; `token`, one for `url` instead; `trailer`, the trailer naming a
-  revision (`Differential Revision`).
+- `[reviews]` (built with the `moz-phab` feature; read either way, so one
+  file serves both builds): `source`, `"phabricator"` or `"none"` (no
+  pulling, no importing); `url`, the Phabricator a bare `D123` trailer is
+  on; `arcrc`, where the tokens are; `token`, one for `url` instead;
+  `trailer`, the trailer naming a revision (`Differential Revision`).
 - `[view]`: `layout` at the start (`unified`, `side-by-side`, `compact`);
   `reading`, to start reading; `whitespace_needs_review`, whether changed
   lines that are empty or white space alone need review in the reading mode
@@ -1374,6 +1385,11 @@ brings it back.
 
 ## Phabricator
 
+Built with the `moz-phab` feature (Install). `stacked moz-phab import
+REVISION` makes a new stack of a revision, `D123`, `123` or its link, as
+`Import from Phabricator…` does in the editor (Making a stack in the
+editor): `imported 2 patches from D11..D12 as D12`.
+
 `pull`, or the menu's `Pull reviews from Phabricator`, reads the revision in
 each patch's `Differential Revision:` trailer (the settings can name
 another) over Conduit, with the token moz-phab keeps in `~/.arcrc`, or the
@@ -1445,7 +1461,7 @@ is typed: `import.rs`). A fix to one may belong in the other.
 - `ask.rs`, `claude.rs`: asking the agent about comments, from the queue to
   landing; claude's command line, its stream and its replies.
 - `held.rs`: what an ask brought back, held for your review.
-- `review.rs`, `phab.rs`: Phabricator.
+- `review.rs`, `phab.rs`: Phabricator, built with the `moz-phab` feature.
 - `import.rs`: what a stack made in the editor is imported from: a range of
   the checkout, its uncommitted changes on top if asked.
 - `mbox.rs`: reading `git format-patch` mail, writing mail for `git am`.
@@ -1477,9 +1493,11 @@ is typed: `import.rs`). A fix to one may belong in the other.
 
 ## Tests
 
-Run `cargo test` after any change; `cargo test --features web,demo` runs
-the browser's and the tour's too (the web feature needs the wasm target, as
-in Install). No test runs claude: a script stands in for it.
+Run `cargo test` after any change; `cargo test --features
+web,demo,moz-phab` runs the browser's, the tour's and Phabricator's too (the
+web feature needs the wasm target, as in Install). No test runs claude: a
+script stands in for it; none reaches Phabricator: its revisions and their
+comments are read by stand-ins.
 
 With `STACKED_TEST_CHECKPOINTS=1` set, every write writes a checkpoint, and
 every database read from one is read whole too and the two compared, a
@@ -1500,7 +1518,9 @@ them, an ask on a stack having its checkout's wherever stacked runs, one
 git tracks not read; and the tools every ask may use, set up with the
 agent, in the checkout's own or with `--global`), Phabricator's comments
 held for review then filed (none twice, none rejected again, an edit held
-as an edit of its turn), apply, and
+as an edit of its turn), a stack imported from Phabricator's revisions (by
+number or link, named or not), Phabricator's commands there only when
+built with it, apply, and
 what does not apply being refused, edited again, or read-only. `tests/tui.rs` draws the editor into a buffer and presses keys:
 that no letter but 1 and 2 does anything, keys mapped by the settings, the
 menus by place, what `?` says where, writing in every pane, a comment asked

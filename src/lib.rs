@@ -29,10 +29,12 @@ pub mod memory;
 pub mod ops;
 pub mod paint;
 pub mod panes;
+#[cfg(feature = "moz-phab")]
 pub mod phab;
 pub mod progress;
 pub mod reading;
 pub mod refs;
+#[cfg(feature = "moz-phab")]
 pub mod review;
 pub mod rows;
 pub mod search;

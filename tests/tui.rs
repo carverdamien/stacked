@@ -3405,7 +3405,11 @@ fn an_empty_database() {
     // stack, or quit.
     keys(&mut app, &[KeyCode::Enter]);
     let labels: Vec<String> = items(&app).into_iter().map(|(l, _)| l).collect();
-    assert_eq!(labels, ["Ask the agent to make a stack…", "Import from the workspace…", "Import from Phabricator…", "", "Quit"]);
+    let mut want = vec!["Ask the agent to make a stack…", "Import from the workspace…"];
+    if cfg!(feature = "moz-phab") {
+        want.push("Import from Phabricator…");
+    }
+    assert_eq!(labels, [&want[..], &["", "Quit"]].concat());
     assert_eq!(choose(&mut app, "Quit"), Effect::Quit);
 }
 
@@ -3465,6 +3469,7 @@ fn the_agent_is_asked_to_make_a_stack_from_a_comment_on_it_empty() {
     wait_for(&mut app, "⟳ 1 landed ask waits for your review");
 }
 
+#[cfg(feature = "moz-phab")]
 #[test]
 fn a_stack_is_imported_from_phabricator_seen_first() {
     use stacked::phab::Revision;
@@ -3607,7 +3612,11 @@ fn a_stack_is_imported_from_the_workspace_seen_first() {
     keys(&mut app, &[KeyCode::Home]);
     assert!(app.focus == Focus::List && app.on_stack, "{:?}", app.focus);
     choose(&mut app, "New stack…");
-    assert_eq!(labels(&app), ["Ask the agent to make a stack…", "Import from the workspace…", "Import from Phabricator…"]);
+    let mut want = vec!["Ask the agent to make a stack…", "Import from the workspace…"];
+    if cfg!(feature = "moz-phab") {
+        want.push("Import from Phabricator…");
+    }
+    assert_eq!(labels(&app), want);
     choose(&mut app, "Import from the workspace…");
     choose(&mut app, "A range…");
     assert!(matches!(&app.mode, Mode::Prompt(p) if !p.ok && p.said == "give a commit, or a base..tip range"), "{:?}", app.mode);
@@ -5715,10 +5724,14 @@ fn expanded_the_patches_say_their_titles_whole() {
 
 /// The stand-in for Phabricator, in the test of a pull: D11 holds ann's
 /// comment; D12 none, and waits to be let go, then fails if it is told to.
+#[cfg(feature = "moz-phab")]
 static LET_GO: std::sync::Mutex<bool> = std::sync::Mutex::new(false);
+#[cfg(feature = "moz-phab")]
 static GONE_ON: std::sync::Condvar = std::sync::Condvar::new();
+#[cfg(feature = "moz-phab")]
 static FAIL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+#[cfg(feature = "moz-phab")]
 fn phabricator(source: &str, rev: &str, _url: &str) -> Result<stacked::phab::RevisionComments, String> {
     if rev == "D12" {
         let mut go = LET_GO.lock().unwrap();
@@ -5747,6 +5760,7 @@ fn phabricator(source: &str, rev: &str, _url: &str) -> Result<stacked::phab::Rev
     })
 }
 
+#[cfg(feature = "moz-phab")]
 #[test]
 fn a_pull_from_phabricator_says_in_the_banner_where_it_is_until_it_is_done() {
     // A stack of two patches, each on its revision.
@@ -5812,6 +5826,7 @@ fn a_pull_from_phabricator_says_in_the_banner_where_it_is_until_it_is_done() {
     stacked::phab::stand_in(None);
 }
 
+#[cfg(feature = "moz-phab")]
 #[test]
 fn reviews_pulled_wait_in_the_banner_as_the_agent_s_work_does() {
     use stacked::phab::{Pulled, Remote, RevisionComments, Version};

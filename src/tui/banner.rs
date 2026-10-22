@@ -33,6 +33,7 @@ pub(super) fn landed_how(r: &crate::db::Run, room: usize) -> String {
 }
 
 /// What a pull under way brings, said on its banner line.
+#[cfg(feature = "moz-phab")]
 pub(super) const PULL_BRINGS: &str = "what is new from Phabricator will wait here for your review once the pull is done";
 
 /// `a`, `a and b`, `a, b and c`.
@@ -51,6 +52,7 @@ pub enum BannerLine {
     Landed(String),
     /// A pull from Phabricator under way: what it brings is read only, to
     /// review.
+    #[cfg(feature = "moz-phab")]
     Pulling,
     /// The batch: the comments asked about later, to send.
     Batch,
@@ -61,6 +63,7 @@ pub enum BannerLine {
 impl App {
     /// The pull from Phabricator under way on the stack shown, if one is:
     /// where it is.
+    #[cfg(feature = "moz-phab")]
     pub(super) fn pulling(&self) -> Option<&crate::review::Pulling> {
         self.bg.pull.as_ref().filter(|(name, _)| *name == self.stack).map(|(_, p)| p)
     }
@@ -83,6 +86,7 @@ impl App {
                         .map(|id| BannerLine::Landed(id.clone())),
                 );
             }
+            #[cfg(feature = "moz-phab")]
             if !edits && self.pulling().is_some() {
                 out.push(BannerLine::Pulling);
             }
@@ -110,6 +114,7 @@ impl App {
     fn banner_section(&self, l: &BannerLine) -> usize {
         match l {
             BannerLine::Landed(id) => usize::from(self.work(id).is_some_and(|(_, h)| h.stack.is_some())),
+            #[cfg(feature = "moz-phab")]
             BannerLine::Pulling => 0,
             _ => 2,
         }
@@ -179,10 +184,16 @@ impl App {
             }
             said.push(head);
         }
-        let pulling = self.pulling();
-        if let Some(p) = pulling {
-            said.push(format!("{}…", p.said()));
-        }
+        #[cfg(feature = "moz-phab")]
+        let pulling = match self.pulling() {
+            Some(p) => {
+                said.push(format!("{}…", p.said()));
+                true
+            }
+            None => false,
+        };
+        #[cfg(not(feature = "moz-phab"))]
+        let pulling = false;
         if batched > 0 {
             said.push(of(batched, "batched ask", "batched asks"));
         }
@@ -199,7 +210,7 @@ impl App {
             return None;
         }
         // As its lines mark them, and the top bar the agents going (●).
-        let mark = match (landed, going, pulling.is_some(), ready, batched) {
+        let mark = match (landed, going, pulling, ready, batched) {
             (0, 0, false, 0, 0) => "○",
             (0, 0, false, 0, _) => "◇",
             (0, 0, false, _, _) => "◌",
@@ -333,6 +344,7 @@ impl App {
                 Some((r, h)) => format!("   ⟳ Review {}{}", h.said(), landed_how(r, 40)),
                 None => format!("   ⟳ Review {run}"),
             },
+            #[cfg(feature = "moz-phab")]
             BannerLine::Pulling => {
                 let said = self.pulling().map(crate::review::Pulling::said).unwrap_or_default();
                 let mut c = said.chars();
@@ -377,6 +389,7 @@ impl App {
         match k.code {
             KeyCode::Enter => match lines.get(self.banner_sel).cloned() {
                 Some(BannerLine::Landed(run)) => self.open_review(&run, None),
+                #[cfg(feature = "moz-phab")]
                 Some(BannerLine::Pulling) => self.status = PULL_BRINGS.into(),
                 // The whole menu, on what sends the batch.
                 Some(BannerLine::Batch) => {

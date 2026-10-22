@@ -1892,6 +1892,7 @@ fn what_the_agent_makes_is_checked_too() {
     git(&e.src, &["worktree", "remove", "--force", &kept]);
 }
 
+#[cfg(feature = "moz-phab")]
 #[test]
 fn reviews_from_phabricator_wait_for_review_then_are_threads() {
     use stacked::phab::{Pulled, Remote, RevisionComments};
@@ -1967,6 +1968,7 @@ fn reviews_from_phabricator_wait_for_review_then_are_threads() {
     assert_eq!(again.summary, "nothing new from 1 revision", "nor pulled again");
 }
 
+#[cfg(feature = "moz-phab")]
 #[test]
 fn a_comment_edited_on_phabricator_is_held_as_an_edit_of_its_turn() {
     use stacked::db::Note;
@@ -2988,4 +2990,90 @@ fn mail_parsing() {
     assert_eq!((d.message.as_str(), d.diff.as_str()), ("Title only", "diff --git a/a b/a\n"));
     assert!(parse_mbox("").unwrap().is_empty());
     assert!(parse_mail("\n\n---\ndiff --git a/a b/a\n").is_err());
+}
+
+#[cfg(feature = "moz-phab")]
+#[test]
+fn a_stack_is_imported_from_phabricator_by_its_revision() {
+    use stacked::phab::{Revision, import, stack_stand_in};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
+    let e = env();
+    let base = git(&e.src, &["rev-parse", "base"]).trim().to_string();
+    // Phabricator as the test has it: D21 on base, D22 on it, read from
+    // either, or from its link; each read counted.
+    let on = Arc::new(Mutex::new(base.clone()));
+    let reads = Arc::new(AtomicUsize::new(0));
+    let (at, read) = (on.clone(), reads.clone());
+    stack_stand_in(Some(Box::new(move |rev, link| {
+        read.fetch_add(1, Ordering::SeqCst);
+        if !["D21", "D22"].contains(&rev) || link.is_some_and(|l| l != format!("https://phabricator.example.com/{rev}")) {
+            return Err(format!("not as the test reads it: {rev} {link:?}"));
+        }
+        let trailer = |n: u32| format!("\n\nDifferential Revision: https://phabricator.example.com/D{n}");
+        Ok(vec![
+            Revision {
+                id: "D21".into(),
+                message: format!("Bug 1 - change two{}", trailer(21)),
+                author: Some("Ann <ann@example.com>".into()),
+                diff: "diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -1,5 +1,5 @@\n one\n-two\n+2\n three\n four\n five\n".into(),
+                base: Some(at.lock().unwrap().clone()),
+            },
+            Revision {
+                id: "D22".into(),
+                message: format!("Bug 2 - add b{}", trailer(22)),
+                author: None,
+                diff: new_file("b.txt", "new"),
+                base: None,
+            },
+        ])
+    })));
+    // Its number alone: the stack of both, named as it, on the commit the
+    // bottom one is on.
+    assert_eq!(import(&e.db, &e.src, "22", None).unwrap(), "imported 2 patches from D21..D22 as D22");
+    let d = Db::load(&e.db).unwrap();
+    let s = d.stack("D22").unwrap();
+    assert_eq!(s.base.as_deref(), Some(base.as_str()));
+    let ps: Vec<stacked::db::Patch> = s.patches.iter().map(|id| d.patch(id).clone()).collect();
+    assert_eq!(ps.iter().map(|p| p.title().to_string()).collect::<Vec<_>>(), ["Bug 1 - change two", "Bug 2 - add b"]);
+    assert_eq!(ps[0].author.as_deref(), Some("Ann <ann@example.com>"));
+    assert!(ps[1].message.ends_with("Differential Revision: https://phabricator.example.com/D22"), "{}", ps[1].message);
+    drop(d);
+    // Its link, as the browser gives it; the revision again, a name free.
+    assert_eq!(import(&e.db, &e.src, "https://phabricator.example.com/D21#inline-5", None).unwrap(), "imported 2 patches from D21..D22 as D21");
+    assert_eq!(import(&e.db, &e.src, "D22", None).unwrap(), "imported 2 patches from D21..D22 as D22-2");
+    // Named: so; a name taken, or none can have, refused before Phabricator
+    // is read.
+    assert_eq!(import(&e.db, &e.src, "D22", Some("fix")).unwrap(), "imported 2 patches from D21..D22 as fix");
+    let before = reads.load(Ordering::SeqCst);
+    assert_eq!(import(&e.db, &e.src, "D22", Some("fix")).unwrap_err().0, "there is a stack fix already");
+    assert_eq!(import(&e.db, &e.src, "D22", Some("a b")).unwrap_err().0, "\"a b\" cannot name a stack: no blank, no /, no - first");
+    assert_eq!(reads.load(Ordering::SeqCst), before);
+    // What names no revision, said.
+    assert_eq!(import(&e.db, &e.src, "D2x", None).unwrap_err().0, "\"D2x\" names no revision: give D123, 123, or its link");
+    // On a commit the repository does not have: said, nothing imported.
+    *on.lock().unwrap() = "0123456789abcdef0123456789abcdef01234567".into();
+    assert_eq!(
+        import(&e.db, &e.src, "D22", None).unwrap_err().0,
+        "D21 is on 0123456789ab, which this repository does not have: fetch it first"
+    );
+    assert_eq!(Db::load(&e.db).unwrap().names().len(), 4);
+    stack_stand_in(None);
+}
+
+#[cfg(feature = "moz-phab")]
+#[test]
+fn moz_phab_import_says_what_names_no_revision() {
+    let e = env();
+    let (fine, _, err) = e.run(&["moz-phab", "import", "D2x"]);
+    assert!(!fine && err.contains("\"D2x\" names no revision: give D123, 123, or its link"), "{err}");
+}
+
+#[test]
+fn phabricator_s_commands_are_there_when_built_with_it() {
+    let e = env();
+    let help = e.ok(&["--help"]);
+    for cmd in ["pull ", "moz-phab "] {
+        assert_eq!(help.lines().any(|l| l.trim_start().starts_with(cmd)), cfg!(feature = "moz-phab"), "{cmd}\n{help}");
+    }
 }

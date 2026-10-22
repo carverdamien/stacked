@@ -20,6 +20,11 @@ web = ["dep:unicode-width"]
 # `stacked demo`: a tour of the editor on a game of tic-tac-toe, its
 # database and repository kept in memory: nothing is written on disk.
 demo = []
+# Phabricator, over Conduit with moz-phab's token (`curl` calls it): the
+# reviews pulled (`stacked pull`, the editor's `Pull reviews from
+# Phabricator`), and stacks imported from its revisions (`stacked moz-phab
+# import`, the editor's `Import from Phabricator…`).
+moz-phab = []
 
 [dependencies]
 clap = { version = "4.6.7", features = ["derive"] }

@@ -10,7 +10,9 @@ use stacked::ops;
 use stacked::thread::{Role, all_turns, append_turn, edit_turn, replace_last_turn, rewind_from, yours};
 use stacked::tui::{Busy, Show, note_state, shows, where_on};
 use stacked::view::{MSG_PATH, find_line, fold, note_lines, title_key};
-use stacked::{git, review, tree};
+#[cfg(feature = "moz-phab")]
+use stacked::review;
+use stacked::{git, tree};
 
 /// A stack editor. Patches, stacks and every edit made to them, comments
 /// and what the agent (claude) and Phabricator said: all in one file that is only ever
@@ -381,7 +383,15 @@ enum Cmd {
     Transcript { id: String },
     /// Pull a stack's reviews from Phabricator: what is new waits for your
     /// review, as the agent's work does (`landed`, `review`).
+    #[cfg(feature = "moz-phab")]
     Pull { name: String },
+    /// Phabricator, over Conduit with moz-phab's token: `import`, a stack
+    /// of its revisions.
+    #[cfg(feature = "moz-phab")]
+    MozPhab {
+        #[command(subcommand)]
+        what: MozPhabWhat,
+    },
     /// Put a stack into the worktree here: its base checked out and its
     /// patches committed, detached or on --branch. Only with nothing
     /// uncommitted.
@@ -482,6 +492,25 @@ fn stdin() -> Result<String> {
         .read_to_string(&mut s)
         .map_err(|e| Error(format!("stdin: {e}")))?;
     Ok(s)
+}
+
+#[cfg(feature = "moz-phab")]
+#[derive(Subcommand)]
+enum MozPhabWhat {
+    /// Import a new stack from Phabricator: revision REVISION (D123, 123,
+    /// or its link) with the revisions it stacks on, down to the first that
+    /// is not open, and those that stack on it while one is open. Each is a
+    /// patch of its latest diff, with its commit's message as uploaded
+    /// (else its title and summary), on the commit the bottom one's diff is
+    /// on, which the repository here must have.
+    Import {
+        /// D123, 123, or the revision's link.
+        revision: String,
+        /// The stack's name; else the revision's (D123), or the first of
+        /// D123-2, D123-3, … that no stack has.
+        #[arg(long)]
+        name: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1551,7 +1580,12 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
                 println!("\n{}", r.output);
             }
         }
+        #[cfg(feature = "moz-phab")]
         Cmd::Pull { name } => print_run(&review::pull(path, &name)?),
+        #[cfg(feature = "moz-phab")]
+        Cmd::MozPhab { what: MozPhabWhat::Import { revision, name } } => {
+            println!("{}", stacked::phab::import(path, &here(), &revision, name.as_deref())?)
+        }
         Cmd::Apply { name, branch } => print_run(&ops::apply_stack(path, &name, branch.as_deref())?),
         Cmd::Trim { new, from } => {
             let from = from.as_deref().map(parse_rev).transpose()?;

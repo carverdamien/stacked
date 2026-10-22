@@ -31,6 +31,7 @@ use crate::ops::{self, edit_text, strip_comments};
 use crate::paint::{color, fit, put, put_parts, window, wrap};
 use crate::panes::{Compact, Panes, Scroll, pane_streams, spans};
 use crate::reading::{Blocks, Finder, Reading, Target as Block};
+#[cfg(feature = "moz-phab")]
 use crate::review;
 use crate::rows::{BAR, By, Deco, Kind, Row, by_of, patch_rows, split_lines, split_row, stack_rows};
 use crate::thread::{
@@ -492,6 +493,7 @@ pub enum Asking {
     /// The name of the stack the agent is asked to make.
     AgentName,
     /// A revision of Phabricator, to import with those it stacks on.
+    #[cfg(feature = "moz-phab")]
     Revision,
 }
 
@@ -502,6 +504,7 @@ impl Asking {
             Asking::Range => "a range of the workspace, to import: main..HEAD, or main for main..HEAD",
             Asking::ImportName => "the name of the stack it makes",
             Asking::AgentName => "the name of the stack the agent makes",
+            #[cfg(feature = "moz-phab")]
             Asking::Revision => "a revision of Phabricator, with those it stacks on: D123, or its link",
         }
     }
@@ -512,6 +515,7 @@ impl Asking {
             Asking::Range => "see the stack it makes",
             Asking::ImportName => "name it so",
             Asking::AgentName => "make it, empty, then say what it should hold",
+            #[cfg(feature = "moz-phab")]
             Asking::Revision => "read it, and the revisions it stacks on",
         }
     }
@@ -653,6 +657,7 @@ pub enum Action {
     AgentStack,
     /// A revision of Phabricator to type, to import with those it stacks
     /// on.
+    #[cfg(feature = "moz-phab")]
     FromPhabricator,
     Cancel,
     Open,
@@ -819,6 +824,7 @@ pub enum Action {
     Whole(bool),
     MarkRead,
     MarkUnread,
+    #[cfg(feature = "moz-phab")]
     Pull,
     AskApply,
     Apply,
@@ -854,12 +860,23 @@ fn as_it_is(a: Action) -> Action {
     }
 }
 
+/// Whether `action` reaches Phabricator.
+#[cfg(feature = "demo")]
+fn reaches_phabricator(action: &Action) -> bool {
+    match action {
+        #[cfg(feature = "moz-phab")]
+        Action::Pull | Action::FromPhabricator => true,
+        _ => false,
+    }
+}
+
 /// What `action` does, to follow "Press Enter to".
 fn about(action: &Action) -> String {
     match action {
         Action::Line | Action::Cancel => "change nothing".into(),
         Action::Said => "nothing: it says what it says".into(),
-        Action::NewStack => "make a new stack: from the workspace's commits, from Phabricator's revisions, or by the agent".into(),
+        Action::NewStack if cfg!(feature = "moz-phab") => "make a new stack: from the workspace's commits, from Phabricator's revisions, or by the agent".into(),
+        Action::NewStack => "make a new stack: from the workspace's commits, or by the agent".into(),
         Action::FromWorkspace => "import a stack from the workspace: its branch, another branch, or a range, its staged and unstaged changes on top if checked".into(),
         Action::ImportBranches => "import another branch of the workspace, on its upstream".into(),
         Action::ImportByHand => "type a range of the workspace to import, said as it is typed: main..HEAD".into(),
@@ -869,6 +886,7 @@ fn about(action: &Action) -> String {
         Action::ImportIt => "import it: the stack is made, and shown".into(),
         Action::NameImport => "give the stack it makes another name".into(),
         Action::AgentStack => "make a stack, empty, on HEAD of the workspace, then say in a comment on it what the agent should make of it, to ask the agent".into(),
+        #[cfg(feature = "moz-phab")]
         Action::FromPhabricator => "import a stack from Phabricator: a revision, with those it stacks on, and those that stack on it while one is open".into(),
         Action::Open => "read this patch".into(),
         Action::GoToNote => "go to this comment".into(),
@@ -1013,6 +1031,7 @@ fn about(action: &Action) -> String {
         Action::Whole(false) => "read what changed from the version before".into(),
         Action::MarkRead => "mark this block as read".into(),
         Action::MarkUnread => "mark this block as unread".into(),
+        #[cfg(feature = "moz-phab")]
         Action::Pull => "pull the reviewers' comments from Phabricator".into(),
         Action::AskApply | Action::Apply => "commit the stack's patches in the worktree, on top of its base".into(),
         Action::Runs => "see the agent's asks, the applies and the pulls, and what came of them".into(),
@@ -1390,9 +1409,11 @@ enum Done {
     /// A pull or an apply (`what` it was): what came of it, said.
     Said(&'static str, String),
     /// Where the pull under way is.
+    #[cfg(feature = "moz-phab")]
     Pulling(review::Pulling),
     /// Revision `0` read from Phabricator, with those it stacks on: or what
     /// was wrong.
+    #[cfg(feature = "moz-phab")]
     Revisions(String, std::result::Result<Vec<crate::phab::Revision>, String>),
     /// Whether stack `name` at `rev` applies: why not, if not.
     Judged {
@@ -1443,6 +1464,7 @@ struct Background {
     doing: Vec<&'static str>,
     /// The pull under way: its stack, and where it is, which the banner
     /// says.
+    #[cfg(feature = "moz-phab")]
     pull: Option<(String, review::Pulling)>,
     /// The stack being checked, and its rev.
     judging: Option<(String, Option<usize>)>,
@@ -1463,6 +1485,7 @@ impl Background {
             launching: false,
             again: false,
             doing: vec![],
+            #[cfg(feature = "moz-phab")]
             pull: None,
             judging: None,
             precreating: vec![],
@@ -1779,11 +1802,13 @@ impl App {
                     self.launch();
                 }
             }
+            #[cfg(feature = "moz-phab")]
             Done::Pulling(p) => {
                 if let Some((_, at)) = &mut self.bg.pull {
                     *at = p;
                 }
             }
+            #[cfg(feature = "moz-phab")]
             Done::Revisions(rev, read) => {
                 self.bg.doing.retain(|d| *d != "importing");
                 match read {
@@ -1793,6 +1818,7 @@ impl App {
             }
             Done::Said(what, said) => {
                 self.bg.doing.retain(|d| *d != what);
+                #[cfg(feature = "moz-phab")]
                 if what == "pulling" {
                     self.bg.pull = None;
                 }
@@ -3224,12 +3250,13 @@ impl App {
         }
         match self.screen {
             Screen::Main if self.on_banner => {
-                out.push(
-                    "The banner says what waits on you on this stack, a line for each, in three sections. Read only: what landed and changes nothing, the agent's answers and the comments pulled from Phabricator, then a pull from Phabricator under way, with the revision it reads. Edits: what changes the stack, the one you review now first, then those going on from it, as if you accept it, which you review after it. Nothing of it is applied before you review it. Then the batch, the comments you asked the agent about later, to send together, and every comment open, the most recently updated first, marked as the comments pane marks it, with where it stands."
-                        .into(),
-                );
+                let pulling = if cfg!(feature = "moz-phab") { ", then a pull from Phabricator under way, with the revision it reads" } else { "" };
+                out.push(format!(
+                    "The banner says what waits on you on this stack, a line for each, in three sections. Read only: what landed and changes nothing, the agent's answers and the comments pulled from Phabricator{pulling}. Edits: what changes the stack, the one you review now first, then those going on from it, as if you accept it, which you review after it. Nothing of it is applied before you review it. Then the batch, the comments you asked the agent about later, to send together, and every comment open, the most recently updated first, marked as the comments pane marks it, with where it stands."
+                ));
                 out.push(match self.banner_lines().get(self.banner_sel) {
                     Some(BannerLine::Landed(_)) => "Press Enter to review this one.".to_string(),
+                    #[cfg(feature = "moz-phab")]
                     Some(BannerLine::Pulling) => format!("The pull is under way: {}.", banner::PULL_BRINGS),
                     Some(BannerLine::Batch) => {
                         "Press Enter to pick what to send: the batch's edits to a single agent, its answers to a single agent or fanned out, an agent each; and which comments are in it.".into()
@@ -4213,6 +4240,7 @@ impl App {
                     items.push(Item::new("Edit the stack as a list in $EDITOR", Action::EditList).when(h && n > 0));
                     items.push(Item::new("Tree of edits…", Action::Tree));
                     items.push(Item::new("History…", Action::History));
+                    #[cfg(feature = "moz-phab")]
                     if self.cfg.reviews.source != crate::config::Source::None {
                         items.push(Item::new("Pull reviews from Phabricator", Action::Pull));
                     }
@@ -4474,7 +4502,8 @@ impl App {
         // disk, or reaches Phabricator.
         #[cfg(feature = "demo")]
         if crate::memory::is_file(&self.path)
-            && matches!(action, Action::Pull | Action::AskApply | Action::Apply | Action::AskTrim(_) | Action::Trim(_) | Action::FromWorkspace | Action::AgentStack | Action::FromPhabricator)
+            && (matches!(action, Action::AskApply | Action::Apply | Action::AskTrim(_) | Action::Trim(_) | Action::FromWorkspace | Action::AgentStack)
+                || reaches_phabricator(&action))
         {
             self.status = "not in the demo: this would write on disk, or reach Phabricator".into();
             return Effect::None;
@@ -4516,6 +4545,7 @@ impl App {
                 let name = crate::import::free_name(&self.db, &want);
                 self.prompt(Asking::AgentName, &name);
             }
+            #[cfg(feature = "moz-phab")]
             Action::FromPhabricator => self.prompt(Asking::Revision, ""),
             Action::Open => {
                 self.screen = Screen::Main;
@@ -5032,6 +5062,7 @@ impl App {
             Action::Whole(w) => self.whole = w,
             Action::MarkRead => self.mark_read(),
             Action::MarkUnread => self.mark_unread(),
+            #[cfg(feature = "moz-phab")]
             Action::Pull => {
                 if self.bg.doing.contains(&"pulling") {
                     self.status = "already pulling the reviews".into();
@@ -5556,6 +5587,7 @@ impl App {
     fn new_stack_items(&self, items: &mut Vec<Item>) {
         items.push(Item::new("Ask the agent to make a stack…", Action::AgentStack));
         items.push(Item::new("Import from the workspace…", Action::FromWorkspace));
+        #[cfg(feature = "moz-phab")]
         if self.cfg.reviews.source != crate::config::Source::None {
             items.push(Item::new("Import from Phabricator…", Action::FromPhabricator));
         }
@@ -5563,6 +5595,7 @@ impl App {
 
     /// The stack of the revision `text` names read from Phabricator, away
     /// from the screen: seen once it is, before it is imported.
+    #[cfg(feature = "moz-phab")]
     fn read_revisions(&mut self, text: &str) {
         let Some((rev, link)) = crate::phab::revision_named(text) else { return };
         self.mode = Mode::Normal;
@@ -5582,46 +5615,24 @@ impl App {
     /// they are imported, on the commit the bottom one is on, which the
     /// checkout must have. Not while a comment is written, which it would
     /// take the place of.
+    #[cfg(feature = "moz-phab")]
     fn plan_revisions(&mut self, rev: &str, revs: Vec<crate::phab::Revision>) {
         if self.writing().is_some() {
             self.status = format!("{rev} and the revisions it stacks on are read, but a comment is being written: import them once it is done");
             return;
         }
-        let at = self.checkout.clone();
-        let Some(bottom) = revs.first() else {
-            self.status = format!("{rev}: nothing to import");
-            return;
+        let p = match crate::phab::plan(&self.checkout, rev, revs) {
+            Ok(p) => p,
+            Err(e) => {
+                self.status = e;
+                return;
+            }
         };
-        let Some(base) = bottom.base.clone() else {
-            self.status = format!("{} does not say what commit it is on", bottom.id);
-            return;
-        };
-        let Ok(repo) = crate::git::toplevel(&at) else {
-            self.status = "not in a git repository: a stack is imported into the checkout stacked runs in".into();
-            return;
-        };
-        let Ok(base) = crate::git::rev_parse(&at, &base) else {
-            self.status = format!("{} is on {}, which this repository does not have: fetch it first", bottom.id, &base[..12.min(base.len())]);
-            return;
-        };
-        let from = match revs.as_slice() {
-            [a, .., b] => format!("{}..{}", a.id, b.id),
-            _ => rev.to_string(),
-        };
-        let drafts = revs
-            .into_iter()
-            .map(|r| crate::mbox::Draft {
-                author: r.author,
-                message: r.message,
-                diff: r.diff,
-                ..Default::default()
-            })
-            .collect();
         self.planned = Some(Planned {
-            from,
-            drafts,
-            base,
-            repo,
+            from: p.from,
+            drafts: p.drafts,
+            base: p.base,
+            repo: p.repo,
             name: crate::import::free_name(&self.db, rev),
         });
         self.mode = Mode::Menu(self.preview_menu());
@@ -5782,6 +5793,7 @@ impl App {
                 Some(why) => (why, false),
                 None => (format!("the stack {}", text.trim()), true),
             },
+            #[cfg(feature = "moz-phab")]
             Asking::Revision => match crate::phab::revision_named(text) {
                 Some((rev, _)) => (format!("{rev}, and the revisions it stacks on"), true),
                 None => ("give a revision: D123, or its link".into(), false),
@@ -5796,7 +5808,9 @@ impl App {
             KeyCode::Esc => match p.asking {
                 Asking::Range => self.mode = self.workspace_menu().map_or(Mode::Normal, Mode::Menu),
                 Asking::ImportName => self.mode = Mode::Menu(self.preview_menu()),
-                Asking::AgentName | Asking::Revision => self.mode = Mode::Normal,
+                Asking::AgentName => self.mode = Mode::Normal,
+                #[cfg(feature = "moz-phab")]
+                Asking::Revision => self.mode = Mode::Normal,
             },
             KeyCode::Enter if p.ok => {
                 let text = p.ed.text().trim().to_string();
@@ -5809,6 +5823,7 @@ impl App {
                         self.mode = Mode::Menu(self.preview_menu());
                     }
                     Asking::AgentName => self.agent_stack(&text),
+                    #[cfg(feature = "moz-phab")]
                     Asking::Revision => self.read_revisions(&text),
                 }
             }
@@ -7068,6 +7083,7 @@ impl App {
             Mode::Normal if self.screen == Screen::Main && self.on_banner => {
                 let enter = match self.banner_lines().get(self.banner_sel) {
                     Some(BannerLine::Landed(_)) => "review it",
+                    #[cfg(feature = "moz-phab")]
                     Some(BannerLine::Pulling) => "say what the pull brings",
                     Some(BannerLine::Batch) => "pick what to send",
                     _ => "go to it",

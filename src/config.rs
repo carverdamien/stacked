@@ -673,25 +673,28 @@ impl Config {
              # its answer then read from what it writes.\n",
         );
         out.push_str(&format!("schema = {}\n", self.agent.schema));
-        out.push_str("\n[reviews]\n# Where `pull` reads reviews from: \"phabricator\", or \"none\".\n");
-        out.push_str(&format!(
-            "source = {}\n",
-            q(match self.reviews.source {
-                Source::Phabricator => "phabricator",
-                Source::None => "none",
-            })
-        ));
-        out.push_str("# The Phabricator a trailer's bare D123 is on, and whose token is used.\n");
-        out.push_str(&opt("url", &self.reviews.url, "the host each trailer's link names"));
-        out.push_str("# Where the tokens are, as moz-phab and arc keep them.\n");
-        out.push_str(&format!("arcrc = {}\n", path(&self.reviews.arcrc)));
-        out.push_str("# A token for url, rather than the file's.\n");
-        out.push_str(&match &self.reviews.token {
-            Some(_) => "token = \"...\"   # set\n".to_string(),
-            None => "# token = \"api-...\"\n".into(),
-        });
-        out.push_str("# The trailer naming a patch's revision.\n");
-        out.push_str(&format!("trailer = {}\n", q(&self.reviews.trailer)));
+        // Phabricator's, built with it (the moz-phab feature).
+        if cfg!(feature = "moz-phab") {
+            out.push_str("\n[reviews]\n# Where `pull` reads reviews from: \"phabricator\", or \"none\".\n");
+            out.push_str(&format!(
+                "source = {}\n",
+                q(match self.reviews.source {
+                    Source::Phabricator => "phabricator",
+                    Source::None => "none",
+                })
+            ));
+            out.push_str("# The Phabricator a trailer's bare D123 is on, and whose token is used.\n");
+            out.push_str(&opt("url", &self.reviews.url, "the host each trailer's link names"));
+            out.push_str("# Where the tokens are, as moz-phab and arc keep them.\n");
+            out.push_str(&format!("arcrc = {}\n", path(&self.reviews.arcrc)));
+            out.push_str("# A token for url, rather than the file's.\n");
+            out.push_str(&match &self.reviews.token {
+                Some(_) => "token = \"...\"   # set\n".to_string(),
+                None => "# token = \"api-...\"\n".into(),
+            });
+            out.push_str("# The trailer naming a patch's revision.\n");
+            out.push_str(&format!("trailer = {}\n", q(&self.reviews.trailer)));
+        }
         let v = &self.view;
         out.push_str("\n[view]\n# How code is drawn at the start: \"unified\", \"side-by-side\" or \"compact\" (1 cycles them).\n");
         out.push_str(&format!("layout = {}\n", q(v.layout.name())));

@@ -391,18 +391,24 @@ pub fn stack_stand_in(read: Option<ReadStack>) {
     *STACK_STAND_IN.lock().unwrap() = read;
 }
 
-/// The revision `text` names, `D123` or its link: its `D123`, and the link
-/// if one was given. None if it names none.
+/// The revision `text` names, `D123` (or `123`) or its link: its `D123`,
+/// and the link if one was given. None if it names none.
 pub fn revision_named(text: &str) -> Option<(String, Option<String>)> {
     // A link as the browser gives it: its anchor, its query left out.
     let t = text.trim();
     let t = t.split(['#', '?']).next().unwrap_or(t).trim_end_matches('/');
     let last = t.rsplit('/').next()?;
-    let digits = last.strip_prefix('D')?;
+    let link = t.contains('/');
+    let digits = match last.strip_prefix('D') {
+        Some(digits) => digits,
+        // A number alone names one too; a link, only as D123 does.
+        None if !link => last,
+        None => return None,
+    };
     if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
         return None;
     }
-    Some((last.to_string(), t.contains('/').then(|| t.to_string())))
+    Some((format!("D{digits}"), link.then(|| t.to_string())))
 }
 
 /// Revision `rev` (`D123`), at `link` if given, read with the revisions it
@@ -509,6 +515,80 @@ fn revision_patch(call: &mut Call, api: &str, trailer: &str, r: &Value) -> Resul
         diff: diff.as_str().unwrap_or("").to_string(),
         base: d.get("sourceControlBaseRevision").and_then(Value::as_str).filter(|b| !b.is_empty()).map(String::from),
     })
+}
+
+/// A stack of revisions as an import makes it: where it is from (`D1..D3`),
+/// its patches, bottom first, the commit the bottom one is on, and the
+/// repository.
+pub struct Plan {
+    pub from: String,
+    pub drafts: Vec<crate::mbox::Draft>,
+    pub base: String,
+    pub repo: String,
+}
+
+/// Revisions `revs`, read for `rev`, bottom first, as an import makes them
+/// in the checkout at `at`: on the commit the bottom one is on, which the
+/// checkout must have. What is wrong, said, if they cannot be.
+pub fn plan(at: &Path, rev: &str, revs: Vec<Revision>) -> Result<Plan, String> {
+    let Some(bottom) = revs.first() else {
+        return Err(format!("{rev}: nothing to import"));
+    };
+    let Some(base) = bottom.base.clone() else {
+        return Err(format!("{} does not say what commit it is on", bottom.id));
+    };
+    let Ok(repo) = crate::git::toplevel(at) else {
+        return Err("not in a git repository: a stack is imported into the checkout stacked runs in".into());
+    };
+    let Ok(base) = crate::git::rev_parse(at, &base) else {
+        return Err(format!("{} is on {}, which this repository does not have: fetch it first", bottom.id, &base[..12.min(base.len())]));
+    };
+    let from = match revs.as_slice() {
+        [a, .., b] => format!("{}..{}", a.id, b.id),
+        _ => rev.to_string(),
+    };
+    let drafts = revs
+        .into_iter()
+        .map(|r| crate::mbox::Draft {
+            author: r.author,
+            message: r.message,
+            diff: r.diff,
+            ..Default::default()
+        })
+        .collect();
+    Ok(Plan { from, drafts, base, repo })
+}
+
+/// `stacked moz-phab import`: the revision `text` names (`D123`, `123`, or
+/// its link) read with those it stacks on, and those that stack on it while
+/// one is open, imported as a new stack of the database at `db`, in the
+/// checkout at `at`, named `name` (else the revision's, or one free): what
+/// was imported, said.
+pub fn import(db: &Path, at: &Path, text: &str, name: Option<&str>) -> crate::db::Result<String> {
+    use crate::db::{Db, err};
+    let Some((rev, link)) = revision_named(text) else {
+        return err(format!("{text:?} names no revision: give D123, 123, or its link"));
+    };
+    if let Some(n) = name
+        && let Some(why) = crate::import::name_wrong(&Db::load(db)?, n)
+    {
+        return err(why);
+    }
+    let revs = read_stack(&rev, link.as_deref()).map_err(crate::db::Error)?;
+    let p = plan(at, &rev, revs).map_err(crate::db::Error)?;
+    let n = p.drafts.len();
+    let name = Db::edit(db, |d| {
+        let name = match name {
+            Some(n) => n.trim().to_string(),
+            None => crate::import::free_name(d, &rev),
+        };
+        if let Some(why) = crate::import::name_wrong(d, &name) {
+            return err(why);
+        }
+        crate::ops::import(d, &name, p.drafts, false, Some((p.base, p.repo)))?;
+        Ok(name)
+    })?;
+    Ok(format!("imported {n} patch{} from {} as {name}", if n == 1 { "" } else { "es" }, p.from))
 }
 
 /// The key of the line a comment is on: the line with its text near its
@@ -685,9 +765,10 @@ mod tests {
     #[test]
     fn a_revision_is_named_by_its_number_or_its_link() {
         assert_eq!(revision_named(" D123 "), Some(("D123".into(), None)));
+        assert_eq!(revision_named("123"), Some(("D123".into(), None)), "a number alone");
         let link = "https://phabricator.example.com/D123";
         assert_eq!(revision_named(&format!("{link}/")), Some(("D123".into(), Some(link.into()))));
-        for wrong in ["", "D", "123", "D12x", "https://phabricator.example.com/"] {
+        for wrong in ["", "D", "12x", "D12x", "https://phabricator.example.com/", "https://phabricator.example.com/123"] {
             assert_eq!(revision_named(wrong), None, "{wrong:?}");
         }
         // As the browser gives it, at an inline comment, or asked for a diff.
