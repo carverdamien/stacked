@@ -562,6 +562,38 @@ fn the_menu_goes_by_place() {
 }
 
 #[test]
+fn a_comment_on_a_file_s_name_is_on_the_file_as_a_whole() {
+    use stacked::rows::Kind;
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "a.txt");
+    assert_eq!(app.rows[app.cursor].kind, Kind::File);
+    // Said so where the cursor is, and in its menu.
+    key(&mut app, KeyCode::Char('?'));
+    let screen = draw(&mut app);
+    assert!(screen.contains("Press Enter to create a comment on this file, as a whole."), "{screen}");
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Char(' ')]);
+    let Mode::Menu(m) = &app.mode else { panic!("{:?}", app.mode) };
+    assert_eq!(m.title, "file: a.txt");
+    assert!(m.items.iter().any(|i| i.label == "Comment on this file"), "{:?}", m.items);
+    key(&mut app, KeyCode::Char('?'));
+    assert!(draw(&mut app).contains("Press Enter to create a comment on this file, as a whole."));
+    // Written: under the file's name, before its hunks, and said to be on
+    // the file as a whole.
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Esc, KeyCode::Enter]);
+    assert!(matches!(app.mode, Mode::Edit(_)), "{:?}", app.mode);
+    save(&mut app, "why this file?");
+    let head = app.rows.iter().position(|r| r.head && r.note.is_some()).unwrap();
+    assert_eq!((app.rows[head - 1].kind, app.rows[head - 1].text.starts_with("a.txt")), (Kind::File, true));
+    assert!(app.rows[head..].iter().any(|r| r.kind == Kind::Hunk), "its hunks under it");
+    let screen = draw(&mut app);
+    assert!(screen.contains("a.txt, as a whole"), "{screen}");
+    let n = notes_of(&db, "s", 0).into_iter().find(|n| n.text.contains("why this file?")).unwrap();
+    assert_eq!((n.file.as_str(), stacked::diff::is_file_key(&n.line)), ("a.txt", true));
+}
+
+#[test]
 fn question_mark_says_what_can_be_done_where_the_cursor_is() {
     let (_tmp, db, _src) = setup();
     let mut app = open(&db).unwrap();

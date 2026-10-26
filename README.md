@@ -59,6 +59,7 @@ stacked review bug123 --accept-all # an edit lands for review first: accepted, i
 stacked comment bug123 rebase onto origin/main        # a comment on the stack
 stacked comment bug123 --patch 2 split this in two    # on a patch as a whole
 stacked comment bug123 --patch 2 --line a.txt:+TWO why?   # on one of its lines
+stacked comment bug123 --patch 2 --path a.txt why here?   # on one of its files, as a whole
 stacked comments bug123            # every comment: short id, where, state, thread
 stacked comments bug123 --show closed    # the closed ones, as each was
 stacked send bug123 4f1c2a --wait  # the agent works on it; its answer lands in the thread
@@ -347,8 +348,13 @@ as it was written.
 
 Comments are written where they will show, in an editor inline: a comment
 on the stack under the left pane's header, on a patch under its title in
-the left pane, on a line under the line, a reply under its comment, in the
-middle or in the comments pane. In the middle, a reply goes under the last
+the left pane, on a line under the line, on a file as a whole under its
+name (Enter on the file's name in the middle, `Comment on this file` in its
+menu), a reply under its comment, in the middle or in the comments pane. A
+comment on a file stays on it as long as the patch changes the file, and is
+said to be on it as a whole (`patch 1 · a.txt, as a whole`); the agent is
+told so, and one it opens with no line (`"line": ""`) is on its file as a
+whole too. In the middle, a reply goes under the last
 turn of the comment, its references under the box (a turn written again
 goes in its place, the turns after it under the box), so that the last
 reply and the references are in sight both. The editor's box hides nothing: what was

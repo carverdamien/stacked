@@ -482,7 +482,7 @@ impl App {
                 yours: None,
             });
             for (k, n) in asking {
-                let at = if n.on_stack() { "the stack".to_string() } else { format!("{}: {}", n.file, n.preview) };
+                let at = if n.on_stack() { "the stack".to_string() } else { n.where_said() };
                 let (m, st) = match rv.marks.get(&crate::held::asking_key(k)) {
                     Some(true) => ("close", color::del()),
                     _ => ("keep ", Style::new()),
@@ -543,7 +543,7 @@ impl App {
                 let n = &h.opened[k];
                 let (m, st) = mark_of(mark(p));
                 out.push(Line {
-                    text: format!("   {m} {}: {} · {}", n.file, n.preview, first_words(&n.text)),
+                    text: format!("   {m} {} · {}", n.where_said(), first_words(&n.text)),
                     style: st,
                     part: Some(p),
                     entry: None,
@@ -560,7 +560,7 @@ impl App {
                 let rp = &h.replies[k];
                 let at = match self.db.note(&rp.change, &rp.id) {
                     Some(n) if n.on_stack() => "the stack".to_string(),
-                    Some(n) => format!("{}: {}", n.file, n.preview),
+                    Some(n) => n.where_said(),
                     None => "a comment deleted".to_string(),
                 };
                 let (m, st) = mark_of(mark(p));
@@ -583,12 +583,12 @@ impl App {
             // What you said last there: the comment, or your reply to it.
             for n in opened.iter().filter_map(|(c, i)| self.db.note(c, i)) {
                 let said = last_mine(&n.text).unwrap_or_default();
-                let text = format!("   ✎ {}: {} · {}", n.file, n.preview, crate::markdown::first_line(&said));
+                let text = format!("   ✎ {} · {}", n.where_said(), crate::markdown::first_line(&said));
                 yours.push((text, Yours::Comment(n.change.clone(), n.id.clone())));
             }
         }
         for (k, rp) in h.replies.iter().enumerate().filter(|(_, rp)| rp.answer.is_some()) {
-            let at = self.db.note(&rp.change, &rp.id).map_or("a comment".to_string(), |n| format!("{}: {}", n.file, n.preview));
+            let at = self.db.note(&rp.change, &rp.id).map_or("a comment".to_string(), |n| n.where_said());
             let text = format!("   ✎ your answer on {at} · {}", crate::markdown::first_line(rp.answer.as_deref().unwrap_or("")));
             yours.push((text, Yours::Answer(k)));
         }

@@ -39,7 +39,7 @@ use crate::thread::{
     rewind_from, rewound_lines, thread_turns, without_written,
 };
 use crate::tree;
-use crate::view::{MSG_PATH, note_lines, title_key};
+use crate::view::{MSG_PATH, note_keys, title_key};
 
 pub mod banner;
 pub use banner::BannerLine;
@@ -1997,7 +1997,7 @@ impl App {
 
     fn line_keys(&self) -> HashSet<String> {
         match (self.on_stack, self.patch_id()) {
-            (false, Some(id)) => note_lines(self.db.patch(&id)).into_iter().map(|l| l.key).collect(),
+            (false, Some(id)) => note_keys(self.db.patch(&id)),
             _ => HashSet::new(),
         }
     }
@@ -2543,6 +2543,16 @@ impl App {
             Spot::Item(_) | Spot::Choice(..) | Spot::Box => return false,
         }
         true
+    }
+
+    /// What `action` does, said for where the cursor is: on a file's name,
+    /// a comment is on the file as a whole.
+    fn about_here(&self, action: &Action) -> String {
+        let on_file = self.focus == Focus::Diff && self.rows.get(self.cursor).is_some_and(|r| r.kind == Kind::File);
+        match action {
+            Action::CommentLine if on_file => "create a comment on this file, as a whole".into(),
+            _ => about(action),
+        }
     }
 
     /// The line the middle pane's cursor is on, if a comment can go on it:
@@ -3265,7 +3275,7 @@ impl App {
                         _ => (item, item.doing()),
                     };
                     let later = if ask.labels.is_some() && self.later() { ", later: it waits in the batch, which the banner sends" } else { "" };
-                    out.push(format!("Press Enter to {}{later}.", about(&does)));
+                    out.push(format!("Press Enter to {}{later}.", self.about_here(&does)));
                     if let Some(c) = &item.choices {
                         let each: Vec<String> = c.list.iter().map(|ch| format!("{}, {}", ch.shown, ch.said)).collect();
                         out.push(format!("Press ← → to pick {}: {}. What is picked is kept for this stack.", c.what, each.join("; ")));
@@ -3375,7 +3385,7 @@ impl App {
             }
             Screen::Main => {
                 if let Some(a) = self.enter() {
-                    out.push(format!("Press Enter to {}.", about(&a)));
+                    out.push(format!("Press Enter to {}.", self.about_here(&a)));
                 }
                 let here = match self.focus {
                     Focus::List if self.on_stack => "on the stack: its comments, sending them, and the stack's own menu",
@@ -4354,9 +4364,13 @@ impl App {
                     self.comment_items(&c, &mut items, w);
                 } else {
                     if self.commentable().is_some() {
-                        title = format!("line: {}", self.rows.get(self.cursor).and_then(|r| r.preview.clone()).unwrap_or_default());
+                        // A file's name: the file as a whole.
+                        let file = self.rows.get(self.cursor).is_some_and(|r| r.kind == Kind::File);
+                        let preview = self.rows.get(self.cursor).and_then(|r| r.preview.clone()).unwrap_or_default();
+                        title = if file { format!("file: {preview}") } else { format!("line: {preview}") };
                         let choices = self.write_choices(Action::CommentLine, Action::CommentInEditor);
-                        items.push(Item::new("Comment on this line", Action::CommentLine).with(choices));
+                        let label = if file { "Comment on this file" } else { "Comment on this line" };
+                        items.push(Item::new(label, Action::CommentLine).with(choices));
                     }
                     // Edited by hand, where the cursor is.
                     if self.focus == Focus::Diff && !self.on_stack && self.patch_id().is_some() {
@@ -7033,7 +7047,7 @@ impl App {
         let at = match n.about {
             Some(rev) => format!("history @{rev}"),
             None if n.on_stack() => "the stack".to_string(),
-            None => format!("{}: {}", n.file, n.preview),
+            None => n.where_said(),
         };
         let last = thread_turns(&n.text).last().map(|t| crate::markdown::first_line(&t.body)).unwrap_or_default();
         (format!("{mark} {who} · {at}"), format!("   {last}"))
@@ -8444,7 +8458,7 @@ pub fn where_was(db: &Db, name: &str, m: &crate::db::Moved) -> String {
         .ok()
         .and_then(|s| s.patches.iter().position(|id| db.patch(id).change == m.change))
         .map_or("a patch".to_string(), |i| format!("patch {}", i + 1));
-    format!("{at} · {}: {}", m.file, m.preview)
+    format!("{at} · {}", m.where_said())
 }
 
 /// Where comment `n` of stack `name` is, in a line: on the history, the
@@ -8465,7 +8479,7 @@ pub fn where_on(db: &Db, name: &str, n: &Note) -> String {
     if n.file == MSG_PATH && p.is_some_and(|p| title_key(p) == n.line) {
         format!("{at}, as a whole")
     } else {
-        format!("{at} · {}: {}", n.file, n.preview)
+        format!("{at} · {}", n.where_said())
     }
 }
 

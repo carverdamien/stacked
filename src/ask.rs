@@ -984,6 +984,8 @@ fn place(db: &Db, s: &Stack, n: &Note) -> String {
         .map_or("a patch no longer in the stack".to_string(), |i| format!("patch {}", i + 1));
     if n.file == MSG_PATH {
         format!("{at}, its message, line `{}`", n.preview)
+    } else if crate::diff::is_file_key(&n.line) {
+        format!("{at}, the file {} as a whole", n.file)
     } else {
         format!("{at}, {} line `{}`", n.file, n.preview)
     }
@@ -995,7 +997,10 @@ fn where_was(db: &Db, s: &Stack, m: &Moved) -> String {
         .iter()
         .position(|id| db.patch(id).change == m.change)
         .map_or("a patch".to_string(), |i| format!("patch {}", i + 1));
-    format!("{at}, {} line `{}`", m.file, m.preview)
+    match crate::diff::is_file_key(&m.line) {
+        true => format!("{at}, the file {} as a whole", m.file),
+        false => format!("{at}, {} line `{}`", m.file, m.preview),
+    }
 }
 
 /// For comments on the stack's history: the history, oldest first, and
@@ -1381,8 +1386,8 @@ fn prompt(db: &Db, i: &Info, s: &Stack, cmd: &str, run: &str, structured: bool) 
             "\n{only}: {{\"replies\": {{label: your answer}}, \"comments\": [{{\"patch\": its \
              number, \"file\": the path as the diff names it, \"side\": \"+\" for an added line, \
              \"-\" for a removed one, \" \" for context, \"line\": that line's exact text without \
-             its leading +/-/space, \"text\": your comment, one issue}}]}}, the comments \
-             optional, as many on one line as it has issues."
+             its leading +/-/space, or \"\" for the file as a whole, \"text\": your comment, one \
+             issue}}]}}, the comments optional, as many on one line as it has issues."
         ),
         Way::Test => format!(
             "\n{end}: {{\"replies\": {{label: what you found, with the commands run}}, \
@@ -2419,7 +2424,7 @@ pub(crate) fn follow_lines(db: &mut Db, olds: &[Patch], now: &[String]) -> Resul
     let patches: Vec<Patch> = now.iter().map(|id| db.patch(id).clone()).collect();
     let keys: Vec<(String, HashSet<String>)> = patches
         .iter()
-        .map(|p| (p.change.clone(), note_lines(p).into_iter().map(|l| l.key).collect()))
+        .map(|p| (p.change.clone(), crate::view::note_keys(p)))
         .collect();
     let mut moved = 0;
     for old in olds {
@@ -2529,9 +2534,12 @@ fn opened_notes(db: &Db, run: &Run, i: &Info, result: &str) -> Result<Vec<Note>>
         let file = str_of(note.get("file"));
         let text = str_of(note.get("line"));
         let side = str_of(note.get("side")).chars().next().unwrap_or(' ');
-        let (line, file) = match find_line(&note_lines(&p), &file, side, &text) {
-            Some(k) => (k, file),
-            None => (title_key(&p), MSG_PATH.to_string()),
+        // No line, a file of the patch: on the file as a whole.
+        let whole = text.trim().is_empty().then(|| crate::view::file_keys(&p).into_iter().find(|(f, _)| *f == file)).flatten();
+        let (line, file, text) = match (whole, find_line(&note_lines(&p), &file, side, &text)) {
+            (Some((f, k)), _) => (k, f.clone(), f),
+            (None, Some(k)) => (k, file, text),
+            (None, None) => (title_key(&p), MSG_PATH.to_string(), text),
         };
         out.push(Note {
             change: p.change.clone(),

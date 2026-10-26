@@ -250,6 +250,10 @@ enum Cmd {
         /// `+`, `-` or a space first: `a.txt:+TWO`.
         #[arg(long, requires = "patch")]
         line: Option<String>,
+        /// A file the patch changes, as its diff names it: the comment is on
+        /// the file as a whole, on its name.
+        #[arg(long, requires = "patch", conflicts_with = "line")]
+        path: Option<String>,
         /// A record of the stack's history (`stacked log` lists them), as
         /// @12: a question on it, for the agent to answer only.
         #[arg(long, conflicts_with = "patch")]
@@ -803,7 +807,7 @@ fn comments_of(db: &Db, name: &str, spec: Option<&str>) -> Result<Vec<(Note, boo
     let mut out = Vec::new();
     for (change, p) in subjects {
         let keys: std::collections::HashSet<String> =
-            p.as_ref().map(|p| note_lines(p).into_iter().map(|l| l.key).collect()).unwrap_or_default();
+            p.as_ref().map(stacked::view::note_keys).unwrap_or_default();
         for n in db.notes(&change) {
             let gone = p.is_some() && !keys.contains(&n.line);
             out.push((n.clone(), gone));
@@ -1179,7 +1183,7 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
             Db::edit(path, |db| db.set_note(note))?;
             println!("{short}");
         }
-        Cmd::Comment { name, patch, line, about: None, text, work } => {
+        Cmd::Comment { name, patch, line, path: on_file, about: None, text, work } => {
             let text = text.join(" ");
             let db = Db::load(path)?;
             db.stack(&name)?;
@@ -1189,14 +1193,14 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
                 let s = ops::edited_from(db, name, work.as_deref())?;
                 Ok(db.patch(&s.patches[db.resolve(&s, spec)?]).clone())
             };
-            let note = match (&patch, &line) {
-                (None, _) => Note {
+            let note = match (&patch, &line, &on_file) {
+                (None, ..) => Note {
                     change: stack_change(&name),
                     id: format!("s{}", stacked::db::unique()),
                     text: yours(&text),
                     ..Default::default()
                 },
-                (Some(spec), None) => {
+                (Some(spec), None, None) => {
                     let p = patch_of(&db, &name, spec)?;
                     Note {
                         change: p.change.clone(),
@@ -1208,35 +1212,47 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
                         ..Default::default()
                     }
                 }
-                (Some(spec), Some(l)) => {
+                (Some(spec), line, file) => {
                     let p = patch_of(&db, &name, spec)?;
-                    let key = line_of(&p, l)?;
-                    // A comment on the line already: this is a turn of it,
-                    // not while the agent works on it.
+                    // On a line, or on a file as a whole, its name: its key,
+                    // its file, and what shows it.
+                    let (key, file, preview, on) = match line {
+                        Some(l) => {
+                            let key = line_of(&p, l)?;
+                            let at = note_lines(&p).into_iter().find(|nl| nl.key == key).unwrap();
+                            (key, at.file, fold(&at.text).chars().take(80).collect::<String>(), "that line")
+                        }
+                        None => {
+                            let want = file.as_deref().unwrap_or_default();
+                            let Some((path, key)) = stacked::view::file_keys(&p).into_iter().find(|(f, _)| f == want) else {
+                                return err(format!("patch {spec} does not change {want}"));
+                            };
+                            (key, path.clone(), path, "that file")
+                        }
+                    };
+                    // A comment there already: this is a turn of it, not
+                    // while the agent works on it.
                     match db.note(&p.change, &key) {
                         Some(n) if ask::with_agent(&db).contains_key(&(n.change.clone(), n.id.clone())) => {
-                            return err("the agent is working on the comment on that line: wait for it to land");
+                            return err(format!("the agent is working on the comment on {on}: wait for it to land"));
                         }
                         Some(n) if stacked::held::reply_waiting(&db, &n.change, &n.id).is_some() => {
-                            return err("the agent's reply to the comment on that line waits for your review: review it first");
+                            return err(format!("the agent's reply to the comment on {on} waits for your review: review it first"));
                         }
                         Some(n) => Note {
                             text: append_turn(&n.text, Role::You, &text, None),
                             failed: None,
                             ..n.clone()
                         },
-                        None => {
-                            let at = note_lines(&p).into_iter().find(|nl| nl.key == key).unwrap();
-                            Note {
-                                change: p.change.clone(),
-                                id: key.clone(),
-                                line: key,
-                                text: yours(&text),
-                                file: at.file,
-                                preview: fold(&at.text).chars().take(80).collect(),
-                                ..Default::default()
-                            }
-                        }
+                        None => Note {
+                            change: p.change.clone(),
+                            id: key.clone(),
+                            line: key,
+                            text: yours(&text),
+                            file,
+                            preview,
+                            ..Default::default()
+                        },
                     }
                 }
             };
@@ -1521,7 +1537,7 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
                         stacked::held::Part::Opened(k) => {
                             let n = &h.opened[k];
                             let first = stacked::thread::thread_turns(&n.text).first().map(|t| t.body.lines().next().unwrap_or("").to_string());
-                            format!("opened\t{}: {}\t{}", n.file, n.preview, first.unwrap_or_default())
+                            format!("opened\t{}\t{}", n.where_said(), first.unwrap_or_default())
                         }
                     };
                     println!("  {what}{mark}");

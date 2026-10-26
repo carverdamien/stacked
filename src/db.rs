@@ -461,6 +461,21 @@ impl Note {
     pub fn on_stack(&self) -> bool {
         self.change.starts_with(STACK)
     }
+
+    /// Where on its patch it is, said: `a.txt: TWO`, its file and line; on
+    /// a file's name, `a.txt, as a whole`.
+    pub fn where_said(&self) -> String {
+        where_said(&self.line, &self.file, &self.preview)
+    }
+}
+
+/// Where a comment on `line` (its key), in `file`, showing `preview`, is
+/// on its patch, said.
+fn where_said(line: &str, file: &str, preview: &str) -> String {
+    match crate::diff::is_file_key(line) {
+        true => format!("{file}, as a whole"),
+        false => format!("{file}: {preview}"),
+    }
 }
 
 /// What claude may do with a comment sent to it.
@@ -559,6 +574,13 @@ pub struct Moved {
     pub line: String,
     pub file: String,
     pub preview: String,
+}
+
+impl Moved {
+    /// Where on its patch it was, said, as `Note::where_said` says it.
+    pub fn where_said(&self) -> String {
+        where_said(&self.line, &self.file, &self.preview)
+    }
 }
 
 /// The change a stack's own comments are on.

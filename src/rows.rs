@@ -29,9 +29,11 @@ pub enum Kind {
 }
 
 impl Kind {
-    /// A line a comment can be on.
+    /// A line a comment can be on: a line of the message or of the diff,
+    /// or a file's name, for the file as a whole (a file's row with a key:
+    /// the message's has none).
     pub fn commentable(self) -> bool {
-        matches!(self, Kind::Add | Kind::Del | Kind::Ctx | Kind::Msg)
+        matches!(self, Kind::Add | Kind::Del | Kind::Ctx | Kind::Msg | Kind::File)
     }
 }
 
@@ -478,12 +480,18 @@ pub fn patch_rows(p: &Patch, notes: &[&Note], width: usize, deco: &Deco) -> Vec<
         if let Some(read) = &deco.read {
             label += &format!("   read {} lines", read_of(&changed(&fd.hunks), read));
         }
-        rows.push(Row {
-            path: Some(fd.path.clone()),
-            diff_at: Some(fd.at),
-            new_no: Some(1),
-            ..Row::new(Kind::File, label)
-        });
+        // Its name: a comment on it is on the file as a whole.
+        line(
+            &mut rows,
+            Row {
+                key: Some(crate::diff::file_key(&mode(&p.change), &fd.path)),
+                path: Some(fd.path.clone()),
+                preview: Some(fd.path.clone()),
+                diff_at: Some(fd.at),
+                new_no: Some(1),
+                ..Row::new(Kind::File, label)
+            },
+        );
         for (j, h) in fd.header.iter().enumerate().skip(1) {
             if !h.starts_with("--- ") && !h.starts_with("+++ ") {
                 rows.push(Row {
@@ -535,7 +543,11 @@ pub fn patch_rows(p: &Patch, notes: &[&Note], width: usize, deco: &Deco) -> Vec<
     if !gone.is_empty() {
         rows.push(Row::new(Kind::File, "comments on lines this version does not have"));
         for n in gone {
-            rows.push(Row::new(Kind::Meta, format!("   {}: {}", n.file, n.preview)));
+            let was = match crate::diff::is_file_key(&n.line) {
+                true => format!("   {}, as a whole", n.file),
+                false => format!("   {}: {}", n.file, n.preview),
+            };
+            rows.push(Row::new(Kind::Meta, was));
             rows.extend(comment_rows(n, width, deco));
         }
     }
@@ -638,6 +650,38 @@ mod tests {
         let rows = patch_rows(&p, &[&n], 30, &Deco::default());
         let at = rows.iter().position(|r| r.note.as_deref() == Some("n")).unwrap();
         assert!(rows[at - 1].cont && rows[at - 1].key.as_deref() == Some(key.as_str()), "{rows:#?}");
+    }
+
+    #[test]
+    fn a_comment_on_a_file_s_name_is_on_the_file_as_a_whole() {
+        use super::{Deco, Kind, patch_rows};
+        let patch = |diff: &str| crate::db::Patch::new("c".into(), None, None, "Bug 1 - t".into(), diff.into());
+        let p = patch("diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-old\n+new\n");
+        let rows = patch_rows(&p, &[], 80, &Deco::default());
+        let file = rows.iter().find(|r| r.kind == Kind::File && r.path.as_deref() == Some("a.txt")).unwrap();
+        let key = file.key.clone().unwrap();
+        assert_eq!(key, crate::diff::file_key(&crate::view::mode("c"), "a.txt"));
+        assert!(crate::diff::is_file_key(&key) && file.kind.commentable() && crate::view::note_keys(&p).contains(&key));
+        assert!(!crate::diff::is_file_key(rows.iter().find(|r| r.kind == Kind::Add).unwrap().key.as_ref().unwrap()));
+        // The message's header has none: no comment goes on it.
+        assert!(rows[0].kind == Kind::File && rows[0].key.is_none());
+        // A comment on it: under its row, over its hunks.
+        let n = crate::db::Note {
+            change: "c".into(),
+            id: key.clone(),
+            line: key.clone(),
+            file: "a.txt".into(),
+            preview: "a.txt".into(),
+            text: "Why this file?".into(),
+            ..Default::default()
+        };
+        let rows = patch_rows(&p, &[&n], 80, &Deco::default());
+        let at = rows.iter().position(|r| r.note.as_deref() == Some(key.as_str())).unwrap();
+        assert_eq!((rows[at - 1].kind, rows[at - 1].path.as_deref()), (Kind::File, Some("a.txt")));
+        // A version that no longer changes the file: gone, said as a whole.
+        let p2 = patch("diff --git a/b.txt b/b.txt\n--- a/b.txt\n+++ b/b.txt\n@@ -1 +1 @@\n-x\n+y\n");
+        let rows = patch_rows(&p2, &[&n], 80, &Deco::default());
+        assert!(rows.iter().any(|r| r.text == "   a.txt, as a whole"), "{rows:#?}");
     }
 
     #[test]

@@ -88,6 +88,17 @@ pub fn section_key(mode: &str) -> String {
     format!("{mode}\0\0section")
 }
 
+/// Stable anchor for a comment on a file as a whole, on its name: there as
+/// long as the patch touches the file.
+pub fn file_key(mode: &str, path: &str) -> String {
+    format!("{mode}\0{path}\0file")
+}
+
+/// Whether `key` is a file's, as `file_key` makes them, not a line's.
+pub fn is_file_key(key: &str) -> bool {
+    key.ends_with("\0file") && key.matches('\0').count() == 2
+}
+
 /// Content-based id for the "reviewed" mark, from the hunk's +/- lines.
 pub fn hunk_key(mode: &str, path: &str, signature: &str, ordinal: usize) -> String {
     format!("{mode}\0{path}\0{ordinal}\0{}", sha1_12(signature))

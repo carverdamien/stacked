@@ -2,10 +2,10 @@
 //! self-review keys them, under its change, so a comment stays on a line
 //! the next version of the patch keeps.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::db::Patch;
-use crate::diff::{line_key, parse_diff};
+use crate::diff::{file_key, line_key, parse_diff};
 
 /// Pseudo-path the message is shown under.
 pub const MSG_PATH: &str = "✉ message";
@@ -75,6 +75,23 @@ pub fn note_lines(p: &Patch) -> Vec<NoteLine> {
         }
     }
     out
+}
+
+/// The files of `p`, each with the key a comment on it as a whole is on.
+pub fn file_keys(p: &Patch) -> Vec<(String, String)> {
+    let m = mode(&p.change);
+    parse_diff(&p.diff, &m)
+        .into_iter()
+        .map(|fd| {
+            let key = file_key(&m, &fd.path);
+            (fd.path, key)
+        })
+        .collect()
+}
+
+/// Every key of `p` a comment can be on: its lines' and its files'.
+pub fn note_keys(p: &Patch) -> HashSet<String> {
+    note_lines(p).into_iter().map(|l| l.key).chain(file_keys(p).into_iter().map(|(_, k)| k)).collect()
 }
 
 /// The key of the line `text` is, on `side` if it says, in `file`.

@@ -1238,6 +1238,38 @@ fn an_agent_attaches_references_to_its_reply_and_to_the_comments_it_opens() {
 }
 
 #[test]
+fn a_comment_on_a_file_is_on_it_as_a_whole_for_you_and_the_agent() {
+    let e = env();
+    e.ok(&["import", "s", "base"]);
+    // On patch 1's a.txt, its name: listed so; again there, a turn of it.
+    let id = comment(&e, &["--patch", "1", "--path", "a.txt", "Why", "this", "file?"]);
+    assert_eq!(comment(&e, &["--patch", "1", "--path", "a.txt", "And", "its", "name?"]), id, "a turn of it");
+    let listed = e.ok(&["comments", "s"]);
+    assert!(listed.contains("patch 1 · a.txt, as a whole"), "{listed}");
+    assert!(listed.contains("you: Why this file?\n    And its name?"), "{listed}");
+    // A file the patch does not change: said; a line and a file at once,
+    // refused.
+    let (fine, _, err) = e.run(&["comment", "s", "--patch", "1", "--path", "b.txt", "No."]);
+    assert!(!fine && err.contains("patch 1 does not change b.txt"), "{err}");
+    let (fine, _, err) = e.run(&["comment", "s", "--patch", "1", "--path", "a.txt", "--line", "a.txt:+2", "No."]);
+    assert!(!fine && err.contains("cannot be used with"), "{err}");
+    // Asked: the agent is told it is on the file as a whole; one it opens
+    // with no line is on its file as a whole too.
+    let prompts = e.root.join("prompts.txt");
+    let result = r#"{"replies": {"c1": "Because."}, "comments": [{"patch": 1, "file": "a.txt", "side": "+", "line": "", "text": "And its tests."}]}"#;
+    let claude = fake_claude(&e, "claude-files.sh", &format!("printf '%s' \"$2\" > {}", prompts.display()), result);
+    let (fine, out, err) = stacked_in(&e.src, &e.db, &["send", "s", &id, "--answer-only", "--wait"], "", &[("STACKED_CLAUDE", claude.as_path())]);
+    assert!(fine, "{out}{err}");
+    let prompt = std::fs::read_to_string(&prompts).unwrap();
+    assert!(prompt.contains("patch 1, the file a.txt as a whole:") && prompt.contains("or \"\" for the file as a whole"), "{prompt}");
+    let d = Db::load(&e.db).unwrap();
+    let r = stacked::held::queue(&d, "s")[0].clone();
+    let opened = &r.held.as_ref().unwrap().opened[0];
+    assert!(stacked::diff::is_file_key(&opened.line) && opened.file == "a.txt", "{opened:?}");
+    assert_eq!(opened.where_said(), "a.txt, as a whole");
+}
+
+#[test]
 fn several_asks_wait_their_turn() {
     let e = env();
     e.ok(&["import", "s", "base"]);
