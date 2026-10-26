@@ -884,6 +884,7 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
             if !no_open {
                 stacked::web::open_browser(&url);
             }
+            stacked::web::catch_signals();
             bound.serve(path)?;
         }
         #[cfg(feature = "app")]

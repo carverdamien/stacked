@@ -11,6 +11,7 @@
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::time::{Duration, Instant};
 
@@ -106,6 +107,42 @@ fn token() -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
+/// Set by SIGINT, ctrl-c where `stacked web` was started: the editor is
+/// left as Quit leaves it, but for a ctrl-c while `$EDITOR` ran there,
+/// which was the editor's.
+static INTERRUPTED: AtomicBool = AtomicBool::new(false);
+
+/// Set by SIGTERM (a kill) and SIGHUP (that terminal closed): the editor is
+/// left as Quit leaves it, once back from what it does.
+static TERMINATED: AtomicBool = AtomicBool::new(false);
+
+extern "C" fn on_signal(sig: libc::c_int) {
+    // A store, which a signal's handler may safely do, and nothing else.
+    match sig {
+        libc::SIGINT => INTERRUPTED.store(true, Ordering::SeqCst),
+        _ => TERMINATED.store(true, Ordering::SeqCst),
+    }
+}
+
+/// SIGINT, SIGTERM and SIGHUP, from now on, leave the editor served as Quit
+/// does: for `stacked web` to call, as the process is its own.
+pub fn catch_signals() {
+    let handler = on_signal as extern "C" fn(libc::c_int) as libc::sighandler_t;
+    for sig in [libc::SIGINT, libc::SIGTERM, libc::SIGHUP] {
+        unsafe { libc::signal(sig, handler) };
+    }
+}
+
+/// The editor left, as the terminal's is once quit: the browsers told, the
+/// agents' worktrees it made ahead removed, the asks still running said.
+fn leave(app: &App, browsers: &[Sender<String>]) {
+    for b in browsers {
+        let _ = b.send("bye".into());
+    }
+    app.leave();
+    app.say_still_running();
+}
+
 /// The editor, as the terminal runs it: what the browsers send done, its
 /// screen drawn after, the rows that changed sent them.
 fn run(path: &Path, rx: Receiver<Input>) -> Result<()> {
@@ -119,8 +156,16 @@ fn run(path: &Path, rx: Receiver<Input>) -> Result<()> {
         let first = match rx.recv_timeout(Duration::from_millis(250)) {
             Ok(i) => Some(i),
             Err(RecvTimeoutError::Timeout) => None,
-            Err(RecvTimeoutError::Disconnected) => return Ok(()),
+            Err(RecvTimeoutError::Disconnected) => {
+                leave(&app, &browsers);
+                return Ok(());
+            }
         };
+        // Ctrl-c, a kill, the terminal closed: left as Quit leaves it.
+        if INTERRUPTED.load(Ordering::SeqCst) || TERMINATED.load(Ordering::SeqCst) {
+            leave(&app, &browsers);
+            return Ok(());
+        }
         // All that came meanwhile, before it is drawn: a paste is many keys.
         let mut whole = false;
         for input in first.into_iter().chain(std::iter::from_fn(|| rx.try_recv().ok())) {
@@ -135,16 +180,16 @@ fn run(path: &Path, rx: Receiver<Input>) -> Result<()> {
                     match act(&mut app, &line, &mut size) {
                         Effect::None => {}
                         Effect::Quit => {
-                            for b in &browsers {
-                                let _ = b.send("bye".into());
-                            }
+                            leave(&app, &browsers);
                             return Ok(());
                         }
-                        // $EDITOR, where `stacked web` was started.
+                        // $EDITOR, where `stacked web` was started: a ctrl-c
+                        // there meanwhile was the editor's.
                         e => {
                             if let Err(e) = app.effect(e) {
                                 app.status = e.0;
                             }
+                            INTERRUPTED.store(false, Ordering::SeqCst);
                         }
                     }
                     whole |= size != was;

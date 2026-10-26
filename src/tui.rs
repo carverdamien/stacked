@@ -1709,9 +1709,13 @@ impl App {
         let now = Db::load(&self.path);
         let running = ask::still_running(now.as_ref().unwrap_or(&self.db));
         if !running.is_empty() {
-            eprintln!("stacked: {} of the agent's asks still running; what they do lands on its own:", running.len());
+            // Not eprintln!, which panics with nowhere to say it: `stacked
+            // web` left as its terminal closed.
+            use std::io::Write;
+            let mut err = std::io::stderr().lock();
+            let _ = writeln!(err, "stacked: {} of the agent's asks still running; what they do lands on its own:", running.len());
             for l in running {
-                eprintln!("  {l}");
+                let _ = writeln!(err, "  {l}");
             }
         }
     }

@@ -158,7 +158,11 @@ It listens on 127.0.0.1 only, and only a page holding the token in the
 address it opened (a new one each time) may see it or drive it: a page from
 elsewhere could otherwise send it keys. The editor runs where `stacked web`
 was started: `$EDITOR`, for what is edited in it, opens there. Quit is
-quit, the page saying so; ctrl-c there stops it too.
+quit, and the page says so. A ctrl-c there, a kill, or that terminal
+closing quits too. Either way, as when the editor in a terminal is left,
+the agents' worktrees made ahead are removed, and the asks still running
+are listed there. A ctrl-c while `$EDITOR` runs there goes to `$EDITOR`
+alone.
 
 The server runs the editor as the terminal does, drawn into a buffer of the
 page's size, and sends the page the rows that changed (server-sent events);
@@ -1637,7 +1641,10 @@ nothing in each view of the code, each pane keeping where its cursor
 was, the patch's title kept at the top of the middle, and the side panes'
 modes (expanded, compact, hidden). With `--features web`, `tests/web.rs`
 serves the editor and asks it over HTTP as a browser would: the token
-needed, the page, the wasm, the rows as they change, a key and a click; and
+needed, the page, the wasm, the rows as they change, a key and a click,
+and the editor left, the worktree made ahead removed (Quit in the page;
+`stacked web` itself sent SIGINT, SIGTERM or SIGHUP, the first while
+`$EDITOR` runs left to `$EDITOR`, the second waiting for it); and
 `web.rs` tests the rows and the lines both ways, with the client's own tests
 (`web/client.rs`, compiled to the machine as well as to wasm). With
 `--features app`, `tests/app.rs` runs StackED's editor as its window runs
