@@ -11,7 +11,7 @@ use ratatui::style::Modifier;
 
 use crate::ask::{CHANGING, GIVEN};
 use crate::db::{Error, Result};
-use crate::paint::{color, fit, put};
+use crate::paint::{color, fit, put, window};
 
 /// A row of the screen.
 #[derive(Debug, Clone, PartialEq)]
@@ -38,6 +38,9 @@ pub struct Setup {
     was: Vec<String>,
     from: Option<String>,
     to: String,
+    /// Esc's menu, open, its item picked: as the comment editor's, once
+    /// something changed.
+    pub menu: Option<usize>,
 }
 
 /// What a key comes to.
@@ -49,6 +52,20 @@ pub enum Step {
     /// Left, nothing written.
     Leave,
 }
+
+/// What an item of Esc's menu does: what is chosen saved, or thrown away,
+/// or the boxes picked on; a line between them.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Choice {
+    Save,
+    Throw,
+    Keep,
+    Line,
+}
+
+/// Esc's menu, as the comment editor's: saving first, throwing away under
+/// a line, then going on.
+const MENU: [(&str, Choice); 4] = [("Save it", Choice::Save), ("", Choice::Line), ("Throw it away", Choice::Throw), ("Keep choosing", Choice::Keep)];
 
 /// The MCP server tool `t` is of, if it is one's (`mcp__NAME__TOOL`).
 fn server_of(t: &str) -> Option<String> {
@@ -122,7 +139,13 @@ impl Setup {
             was: was.to_vec(),
             from: from.map(String::from),
             to: to.to_string(),
+            menu: None,
         }
+    }
+
+    /// Whether what is chosen is not what the settings say now.
+    fn changed(&self) -> bool {
+        self.chosen() != self.was
     }
 
     /// Whether all of `server`'s tools are let.
@@ -198,9 +221,32 @@ impl Setup {
         }
     }
 
+    /// A key. Esc (or q), as in the comment editor: with something changed,
+    /// a menu, to save it, throw it away or keep choosing; with nothing,
+    /// out. Ctrl-c is out, whatever is open.
     pub fn key(&mut self, k: KeyEvent) -> Step {
+        if k.code == KeyCode::Char('c') && k.modifiers.contains(KeyModifiers::CONTROL) {
+            return Step::Leave;
+        }
+        if let Some(at) = self.menu {
+            // ↑↓ past the line between its items.
+            let picks: Vec<usize> = (0..MENU.len()).filter(|&k| MENU[k].1 != Choice::Line).collect();
+            let here = picks.iter().position(|&k| k == at).unwrap_or(0);
+            match k.code {
+                KeyCode::Up => self.menu = Some(picks[here.saturating_sub(1)]),
+                KeyCode::Down => self.menu = Some(picks[(here + 1).min(picks.len() - 1)]),
+                KeyCode::Esc => self.menu = None,
+                KeyCode::Enter => match MENU[at].1 {
+                    Choice::Save => return Step::Save(self.chosen()),
+                    Choice::Throw => return Step::Leave,
+                    Choice::Keep => self.menu = None,
+                    Choice::Line => {}
+                },
+                _ => {}
+            }
+            return Step::Stay;
+        }
         match k.code {
-            KeyCode::Char('c') if k.modifiers.contains(KeyModifiers::CONTROL) => return Step::Leave,
             KeyCode::Up => self.step(false, 1),
             KeyCode::Down => self.step(true, 1),
             KeyCode::PageUp => self.step(false, 10),
@@ -209,6 +255,7 @@ impl Setup {
             KeyCode::End => self.step(true, self.rows.len()),
             KeyCode::Char(' ') | KeyCode::Enter => self.toggle(),
             KeyCode::Char('s') => return Step::Save(self.chosen()),
+            KeyCode::Esc | KeyCode::Char('q') if self.changed() => self.menu = Some(0),
             KeyCode::Esc | KeyCode::Char('q') => return Step::Leave,
             _ => {}
         }
@@ -272,8 +319,36 @@ impl Setup {
             }
             put(buf, area, 0, y + 2, w, &fit(&text, w), st);
         }
-        let keys = " ↑↓: pick · space: let it or not · s: save · esc: leave, nothing written";
+        // What the keys do, as the comment editor says it.
+        let keys = match (self.menu, self.changed()) {
+            (Some(_), _) => " ↑↓ choose · enter: do it · esc: keep choosing",
+            (None, true) => " ↑↓: pick · space: let it or not · s: save · esc: save or throw away",
+            (None, false) => " ↑↓: pick · space: let it or not · s: save · esc: close",
+        };
         put(buf, area, 0, h - 1, w, &fit(keys, w), color::status());
+        if let Some(at) = self.menu {
+            self.draw_menu(buf, at);
+        }
+    }
+
+    /// Esc's menu, in a box over the screen, item `at` picked.
+    fn draw_menu(&self, buf: &mut Buffer, at: usize) {
+        let area = buf.area;
+        let (w, h) = (area.width as usize, area.height as usize);
+        let title = format!("agent.tools, in {}", self.to);
+        let widest = MENU.iter().map(|(l, _)| l.chars().count()).max().unwrap_or(0);
+        let bw = (widest.max(title.chars().count() + 2).max(24) + 4).min(w.saturating_sub(2));
+        let bh = MENU.len() + 2;
+        let (x, y) = (w.saturating_sub(bw) / 2, h.saturating_sub(bh) / 2);
+        window(buf, area, x, y, bw, bh, &title, color::meta());
+        for (r, (label, what)) in MENU.iter().enumerate() {
+            if *what == Choice::Line {
+                put(buf, area, x + 1, y + 1 + r, bw - 2, &"─".repeat(bw - 2), color::meta());
+                continue;
+            }
+            let st = if r == at { ratatui::style::Style::new().add_modifier(Modifier::REVERSED) } else { ratatui::style::Style::new() };
+            put(buf, area, x + 1, y + 1 + r, bw - 2, &fit(&format!(" {label}"), bw - 2), st);
+        }
     }
 }
 
@@ -356,7 +431,51 @@ mod tests {
         press(&mut s, KeyCode::End);
         press(&mut s, KeyCode::Char(' '));
         assert_eq!(press(&mut s, KeyCode::Char('s')), Step::Save(strings(&["mcp__moz__get_revision", "WebFetch"])));
+    }
+
+    #[test]
+    fn esc_is_a_menu_once_something_changed_as_in_the_comment_editor() {
+        let tools = strings(&["mcp__moz__get_bug", "WebFetch"]);
+        let fresh = || Setup::new(&tools, &[], &[], None, "local.toml");
+        // Nothing changed: out, nothing to write.
+        let mut s = fresh();
+        assert!(screen(&mut s).ends_with("esc: close"), "{}", screen(&mut s));
         assert_eq!(press(&mut s, KeyCode::Esc), Step::Leave);
+        // Changed: a menu, on saving it; ↑↓ past the line between its items.
+        let mut s = fresh();
+        press(&mut s, KeyCode::Char(' '));
+        assert!(screen(&mut s).ends_with("esc: save or throw away"), "{}", screen(&mut s));
+        assert_eq!(press(&mut s, KeyCode::Esc), Step::Stay);
+        let shown = screen(&mut s);
+        for item in ["agent.tools, in local.toml", " Save it", " Throw it away", " Keep choosing"] {
+            assert!(shown.contains(item), "{item:?} in:\n{shown}");
+        }
+        assert!(shown.ends_with("↑↓ choose · enter: do it · esc: keep choosing"), "{shown}");
+        assert_eq!(s.menu, Some(0));
+        press(&mut s, KeyCode::Down);
+        assert_eq!(s.menu, Some(2), "past the line");
+        // Keep choosing, or Esc: back to the boxes, what was chosen kept.
+        press(&mut s, KeyCode::Down);
+        assert_eq!(press(&mut s, KeyCode::Enter), Step::Stay);
+        assert_eq!((s.menu, s.chosen()), (None, strings(&["mcp__moz__*"])));
+        press(&mut s, KeyCode::Char('q'));
+        assert_eq!(press(&mut s, KeyCode::Esc), Step::Stay);
+        assert_eq!(s.menu, None);
+        // Saved from it; thrown away from it, each the screen's end.
+        press(&mut s, KeyCode::Esc);
+        assert_eq!(press(&mut s, KeyCode::Enter), Step::Save(strings(&["mcp__moz__*"])));
+        let changed = || {
+            let mut s = fresh();
+            press(&mut s, KeyCode::Char(' '));
+            press(&mut s, KeyCode::Esc);
+            s
+        };
+        let mut s = changed();
+        press(&mut s, KeyCode::Down);
+        assert_eq!(press(&mut s, KeyCode::Enter), Step::Leave);
+        // Ctrl-c, out whatever is open.
+        let mut s = changed();
+        assert_eq!(s.key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)), Step::Leave);
     }
 
     #[test]

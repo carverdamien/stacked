@@ -1210,7 +1210,10 @@ settings:
   each other tool, and for what the settings let that the agent does not
   say it has (`Bash(jq *)`, a server not there now), to keep or take out;
   and what `tools` is to be, in the file it writes, at the bottom. Space
-  lets a tool or not, `s` saves, esc leaves with nothing written.
+  lets a tool or not, `s` saves. Esc (or `q`) is as in the comment editor:
+  with something changed, a menu, `Save it`, `Throw it away`, `Keep
+  choosing` (Esc there keeps choosing too); with nothing changed, out,
+  nothing written. Ctrl-c leaves at once, nothing written.
   `worktrees`, where the agents' worktrees go, else `.stacked/` at the top
   of the stack's repository. `schema`, whether the agent gives its answer
   as structured output, checked against what the ask asks for (claude's
