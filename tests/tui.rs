@@ -2333,6 +2333,25 @@ fn landed_work_is_reviewed_from_the_banner_part_by_part() {
     keys(&mut app, &[KeyCode::Esc]);
     assert!(!app.on_banner && app.focus == focus && app.cursor == cursor, "back where it was");
     assert!(!draw(&mut app).contains("   ⟳ Review"), "closed again");
+    // From a patch of the list: on the banner, the patch is picked, not
+    // reversed, as in a pane the cursor is not in; back, reversed again.
+    let reversed = |app: &mut App| {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 120, 30));
+        app.draw(&mut buf);
+        let y = (0..30u16)
+            .find(|&y| (0..40u16).map(|x| buf[(x, y)].symbol()).collect::<String>().contains("1 Bug 1 - shout two"))
+            .expect("the first patch");
+        buf[(2, y)].modifier.contains(ratatui::style::Modifier::REVERSED)
+    };
+    keys(&mut app, &[KeyCode::Left, KeyCode::Home, KeyCode::Down]);
+    assert_eq!(app.focus, Focus::List);
+    assert!(reversed(&mut app), "the cursor on it");
+    keys(&mut app, &[KeyCode::Esc]);
+    assert!(app.on_banner);
+    assert!(!reversed(&mut app), "the cursor on the banner");
+    keys(&mut app, &[KeyCode::Esc]);
+    assert!(!app.on_banner && reversed(&mut app), "the cursor back on it");
+    keys(&mut app, &[KeyCode::Right]);
     // ↑ from the stack's header goes there too.
     keys(&mut app, &[KeyCode::Left, KeyCode::Home, KeyCode::Up]);
     assert!(app.on_banner);

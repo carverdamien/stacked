@@ -7683,8 +7683,10 @@ impl App {
                 continue;
             };
             let mut st = Style::new();
+            // The cursor on it, reversed; else picked, as in a pane the
+            // cursor is not in: on the banner, it is in none.
             if at == on && !self.on_stack && !moving_head {
-                st = if self.focus == Focus::List || moving {
+                st = if (self.focus == Focus::List && !self.on_banner) || moving {
                     st.add_modifier(Modifier::REVERSED)
                 } else {
                     st.patch(color::picked())

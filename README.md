@@ -999,7 +999,9 @@ comments are open (`5 open comments`); it is there while any of it is. Landing w
 on the bottom line. Esc goes to the banner from wherever the cursor is in
 the panes, and ↑ from the stack's header goes there too; a click on it as
 well, but not the mouse going by. With the cursor on it, the banner opens,
-a line for each, in three sections under their titles. `read only, to
+a line for each, in three sections under their titles, and the cursor is in
+none of the panes: what each has picked shows as in a pane the cursor is
+not in (`picked`), not reversed. `read only, to
 review`: `⟳ Review …` for what landed and changes nothing (an answer, the
 comments pulled from Phabricator), the first landed first, then `◌ … after
 the edit under review` for those going on from it, then, while a pull from
