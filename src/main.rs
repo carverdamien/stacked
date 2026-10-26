@@ -1850,13 +1850,21 @@ fn opened_as_app() {
     }
 }
 
+/// Whether `word`, first on the command line and no command, names a
+/// database to open: a file there, or a path to one (`./x`, `x.jsonl`).
+fn names_database(word: &str) -> bool {
+    Path::new(word).is_file() || word.contains('/') || word.ends_with(".jsonl")
+}
+
 fn main() {
     // Opened as StackED.app is, given nothing to do: StackED, as an app.
     #[cfg(all(feature = "app", target_os = "macos"))]
     if std::env::current_exe().is_ok_and(|exe| stacked::bundle::opened(&exe, &std::env::args().collect::<Vec<_>>())) {
         return opened_as_app();
     }
-    // A first argument that is not a command is the file to open.
+    // A first argument that is not a command is the file to open, if it
+    // names one: a file there, or a path to one. Any other word is a command
+    // mistyped, which clap says, rather than a new database of its name.
     let mut argv: Vec<String> = std::env::args().collect();
     let commands: Vec<String> = <Cli as clap::CommandFactory>::command()
         .get_subcommands()
@@ -1867,7 +1875,7 @@ fn main() {
     while i < argv.len() && argv[i].starts_with('-') {
         i += if argv[i] == "-f" || argv[i] == "--file" { 2 } else { 1 };
     }
-    if i < argv.len() && !commands.contains(&argv[i]) {
+    if i < argv.len() && !commands.contains(&argv[i]) && names_database(&argv[i]) {
         argv.insert(i, "open".into());
     }
     let cli = Cli::parse_from(argv);

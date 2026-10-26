@@ -3194,3 +3194,33 @@ fn the_shell_completes_the_commands_and_what_the_database_holds() {
     assert!(zsh("stacked show s ''").starts_with("1:Bug 1 - change two\n2:Bug 2 - add b\n"), "{}", zsh("stacked show s ''"));
     assert_eq!(zsh("stacked -f ''"), "files\n");
 }
+
+#[test]
+fn a_word_that_is_no_command_is_not_taken_for_a_database() {
+    let e = env();
+    // Run with no -f: the word first.
+    let first = |args: &[&str]| {
+        let out = Command::new(env!("CARGO_BIN_EXE_stacked"))
+            .args(args)
+            .current_dir(&e.src)
+            .env("STACKED_CONFIG", "/nonexistent/stacked.toml")
+            .env_remove("STACKED_FILE")
+            .output()
+            .unwrap();
+        (out.status.success(), String::from_utf8_lossy(&out.stdout).to_string(), String::from_utf8_lossy(&out.stderr).to_string())
+    };
+    // A command mistyped: said, with the one near it; no database made.
+    let (ok, _, err) = first(&["shwo"]);
+    assert!(!ok && err.contains("unrecognized subcommand 'shwo'") && err.contains("'show'"), "{err}");
+    assert!(!e.src.join("shwo").exists());
+    // A database, by its path, or a file there: opened (`--help` says how,
+    // with no editor started).
+    let opens = |word: &str| {
+        let (ok, out, err) = first(&[word, "--help"]);
+        assert!(ok && out.starts_with("Open the editor"), "{word}: {out}{err}");
+    };
+    opens("bug123.jsonl");
+    opens("./bug123");
+    std::fs::write(e.src.join("mine"), "").unwrap();
+    opens("mine");
+}

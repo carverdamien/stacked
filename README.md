@@ -108,7 +108,11 @@ stacked setup agent bug123 --tui   # ... on a screen, a box for each
 ```
 
 `-f FILE` points any command at a database. A first argument that is not a
-command is the database to open: `stacked FILE` is `stacked open FILE`.
+command is the database to open, if it names one: a file there, or a path
+to one (`./bug123`, `bug123.jsonl`); `stacked FILE` is then `stacked open
+FILE`. Any other word is a command mistyped: stacked says so, and which
+command is near it (`stacked shwo`: `show`), rather than open a new
+database of that name.
 
 ## A tour
 
