@@ -179,8 +179,8 @@ impl App {
                 BannerLine::Landed(run) => self.work(run).filter(|(r, _)| ask::guessing(&self.db, r).is_none()),
                 _ => None,
             });
-            if let Some((r, h)) = next {
-                head += &format!(" · the next: {}{}", h.said(), landed_how(r, usize::MAX));
+            if let Some((r, _)) = next {
+                head += &format!(" · the next: {}{}", crate::held::left(&self.db, r), landed_how(r, usize::MAX));
             }
             said.push(head);
         }
@@ -227,9 +227,10 @@ impl App {
     /// the most recently updated first, to go to.
     pub(super) fn banner_items(&self, items: &mut Vec<Item>) {
         for id in self.queue() {
-            let Some((r, h)) = self.work(&id) else { continue };
+            let Some((r, _)) = self.work(&id) else { continue };
             let first = ask::guessing(&self.db, r).is_none();
-            items.push(Item::new(format!("Review {}{}", h.said(), landed_how(r, 40)), Action::Review(id.clone(), None)).when(first));
+            let left = crate::held::left(&self.db, r);
+            items.push(Item::new(format!("Review {left}{}", landed_how(r, 40)), Action::Review(id.clone(), None)).when(first));
         }
         let batch = self.batch_items();
         if !items.is_empty() && !batch.is_empty() {
@@ -338,10 +339,10 @@ impl App {
         match l {
             BannerLine::Landed(run) => match self.work(run) {
                 // Gone on from the work above it, guessing: reviewed after it.
-                Some((r, h)) if ask::guessing(&self.db, r).is_some() => {
-                    format!("   ◌ {}{} · after the edit under review, which you review first", h.said(), landed_how(r, 40))
+                Some((r, _)) if ask::guessing(&self.db, r).is_some() => {
+                    format!("   ◌ {}{} · after the edit under review, which you review first", crate::held::left(&self.db, r), landed_how(r, 40))
                 }
-                Some((r, h)) => format!("   ⟳ Review {}{}", h.said(), landed_how(r, 40)),
+                Some((r, _)) => format!("   ⟳ Review {}{}", crate::held::left(&self.db, r), landed_how(r, 40)),
                 None => format!("   ⟳ Review {run}"),
             },
             #[cfg(feature = "moz-phab")]

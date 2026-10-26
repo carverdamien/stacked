@@ -1189,7 +1189,8 @@ const BEFORE_LINES: usize = 300;
 /// opened; for a change, what it changed, its stack diff from the stack it
 /// went on from, and how to read the stack it made.
 fn before(db: &Db, i: &Info, was: &str, name: &str, cmd: &str) -> String {
-    if db.run(was).and_then(|r| r.held.as_ref()).is_none() {
+    // Nothing brought back: nothing to tell.
+    if db.run(was).and_then(|r| r.held.as_ref()).is_none_or(Held::is_empty) {
         return String::new();
     }
     let out = match i.way {
@@ -1370,8 +1371,9 @@ fn prompt(db: &Db, i: &Info, s: &Stack, cmd: &str, run: &str, structured: bool) 
     // then, and the comments it opened, shown, as to a round asked again;
     // its replies are in their threads.
     if let Some(on) = &i.on {
+        let changed = db.run(on).and_then(|r| r.held.as_ref()).is_some_and(|h| h.stack.is_some());
         p.push_str(&match i.way {
-            Way::Change => format!(
+            Way::Change if changed => format!(
                 " This is another round: the user reviewed the change you made, which the worktree holds \
                  as you left it, and sent it back with the comments below: change it as they ask, from \
                  there. What you changed then is below, and `{cmd} export {} --work {on}` prints the \
@@ -2097,7 +2099,7 @@ impl Landed {
     /// What claude brought back, held for review.
     fn held(held: Held) -> Landed {
         let summary = if held.is_empty() {
-            "the agent brought nothing back".to_string()
+            crate::held::NOTHING_BACK.to_string()
         } else {
             format!("its work waits for your review: {}", held.said())
         };
@@ -2178,6 +2180,13 @@ pub fn land(db_path: &Path, id: &str, exit: Option<&str>) -> Result<Run> {
                 Landed::failed(format!("could not file what the agent did: {}{at}", e.0), true)
             })
         };
+        // Bringing nothing back, it waits for your review all the same while
+        // a comment it was asked about is still open: to close or keep.
+        let open = crate::held::asking_open(db, &started).len();
+        let waits = landed.ok && (!landed.held.is_empty() || open > 0);
+        if landed.ok && landed.held.is_empty() && open > 0 {
+            landed.summary = format!("{}: its work waits for your review", crate::held::nothing_back(open, i.notes.len()));
+        }
         if !refused.is_empty() {
             landed.summary += &format!(
                 "; the agent was not allowed to use {}: your claude settings, or stacked's agent.tools, allow more",
@@ -2190,8 +2199,9 @@ pub fn land(db_path: &Path, id: &str, exit: Option<&str>) -> Result<Run> {
         if landed.keep {
             after = None;
         }
-        // Held for review: in the queue, unless it brought nothing back.
-        let held = (landed.ok && !landed.held.is_empty()).then(|| Held { at: now(), ..landed.held });
+        // Held for review: in the queue, unless it brought nothing back and
+        // no comment it was asked about is still open.
+        let held = waits.then(|| Held { at: now(), ..landed.held });
         let run = Run {
             state: if landed.ok { RunState::Done } else { RunState::Failed },
             summary: landed.summary,

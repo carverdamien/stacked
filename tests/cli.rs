@@ -1443,6 +1443,198 @@ fn the_asking_comment_is_closed_with_its_review_if_said() {
 }
 
 #[test]
+fn work_that_brought_nothing_back_waits_for_review_while_its_comment_is_open() {
+    let e = env();
+    e.ok(&["import", "s", "base"]);
+    let id = comment(&e, &["--patch", "1", "Why", "2?"]);
+    // The agent replies to nothing, and opens no comment.
+    let claude = fake_claude(&e, "claude-nothing.sh", "", r#"{"replies": {}}"#);
+    let env = [("STACKED_CLAUDE", claude.as_path())];
+    let (fine, out, err) = stacked_in(&e.src, &e.db, &["send", "s", &id, "--answer-only", "--wait"], "", &env);
+    assert!(fine, "{out}{err}");
+    // Its comment still open, the work waits for your review all the same,
+    // said so wherever it is listed.
+    assert!(out.contains("\twaits for your review: 1 asking comment to close or keep, nothing brought back\n"), "{out}");
+    let runs = e.ok(&["runs", "s"]);
+    assert!(
+        runs.contains("\tdone\tthe agent brought nothing back, and the comment it was asked about is still open: its work waits for your review\n"),
+        "{runs}"
+    );
+    let landed = e.ok(&["landed", "s"]);
+    assert!(landed.lines().count() == 1 && landed.ends_with("\t1 asking comment to close or keep, nothing brought back\n"), "{landed}");
+    // Closed with nothing to mark, the comment kept: nothing waits, and the
+    // comment is open still, to ask again.
+    let out = e.ok(&["review", "s", "--accept-all"]);
+    assert!(out.ends_with("\treviewed: the agent brought nothing back\n"), "{out}");
+    assert_eq!(e.ok(&["landed", "s"]), "");
+    assert!(e.ok(&["comments", "s", "--show", "to-send"]).contains(&id));
+    // Asked again, and nothing back again: this review closes the comment.
+    let (fine, out, err) = stacked_in(&e.src, &e.db, &["send", "s", &id, "--answer-only", "--wait"], "", &env);
+    assert!(fine && out.contains("waits for your review: 1 asking comment to close or keep"), "{out}{err}");
+    let out = e.ok(&["review", "s", "--accept-all", "--close-asking"]);
+    assert!(out.ends_with("\treviewed: the agent brought nothing back; 1 asking comment closed\n"), "{out}");
+    assert_eq!(e.ok(&["comments", "s"]), "");
+    assert!(e.ok(&["comments", "s", "--show", "closed"]).contains("you: Why 2?"));
+    // A change that changes nothing, and says nothing, waits so too.
+    let id = comment(&e, &["--patch", "3", "Shorter?"]);
+    let (fine, out, err) = stacked_in(&e.src, &e.db, &["send", "s", &id, "--wait"], "", &env);
+    assert!(fine && out.contains("\twaits for your review: 1 asking comment to close or keep, nothing brought back\n"), "{out}{err}");
+    assert!(e.ok(&["review", "s", "--accept-all"]).ends_with("\treviewed: the agent brought nothing back\n"));
+    // Accepted as it lands, it waits for nothing.
+    let id = comment(&e, &["--patch", "2", "And", "b?"]);
+    let (fine, out, err) = send(&e, &claude, &[&id, "--answer-only"], &[]);
+    assert!(fine && !out.contains("waits for your review"), "{out}{err}");
+    assert_eq!(e.ok(&["landed", "s"]), "");
+    assert!(e.ok(&["runs", "s"]).ends_with("\tdone\treviewed: the agent brought nothing back\n"));
+}
+
+/// Run `run` of stack s, an answer about `notes` (change, id), landed as
+/// if the agent had run and answered `result`: the stream in the database,
+/// no agent run.
+fn landed_answer(e: &Env, run: &str, notes: &[(String, String)], result: &str) -> stacked::db::Run {
+    Db::edit(&e.db, |d| {
+        let from = d.head("s").unwrap().0;
+        let shown: Vec<serde_json::Value> =
+            notes.iter().enumerate().map(|(k, (c, i))| serde_json::json!({"label": format!("c{}", k + 1), "change": c, "id": i})).collect();
+        d.add_run(stacked::db::Run {
+            id: run.into(),
+            what: "answer".into(),
+            stack: "s".into(),
+            state: RunState::Started,
+            ask: Some(serde_json::json!({"way": "answer", "scope": "stack", "from": from, "notes": shown})),
+            ..Default::default()
+        })?;
+        d.add_event(run, serde_json::json!({"type": "result", "result": result}))?;
+        d.add_event(run, serde_json::json!({"type": "exit", "code": 0}))
+    })
+    .unwrap();
+    stacked::ask::land(&e.db, run, None).unwrap()
+}
+
+/// Closes comment (change, id), as its menu's `Close this comment…` does.
+fn close_comment(e: &Env, (change, id): &(String, String)) {
+    Db::edit(&e.db, |d| {
+        let n = d.note(change, id).cloned().unwrap();
+        d.set_note(stacked::db::Note { text: String::new(), ..n })
+    })
+    .unwrap();
+}
+
+#[test]
+fn work_that_brought_nothing_back_is_held_only_while_a_comment_it_was_asked_about_is_open() {
+    let e = env();
+    e.ok(&["import", "s", "base"]);
+    let (one, two) = (comment(&e, &["One?"]), comment(&e, &["Two?"]));
+    let d = Db::load(&e.db).unwrap();
+    let at = |id: &str| d.find_note("s", id).map(|n| (n.change.clone(), n.id.clone())).unwrap();
+    let notes = [at(&one), at(&two)];
+    // One of the two closed meanwhile: held for the other.
+    close_comment(&e, &notes[0]);
+    let r1 = landed_answer(&e, "r1", &notes, r#"{"replies": {}}"#);
+    assert_eq!(r1.summary, "the agent brought nothing back, and 1 of the 2 comments it was asked about is still open: its work waits for your review");
+    assert!(r1.held.as_ref().is_some_and(stacked::held::Held::is_empty));
+    assert!(e.ok(&["landed", "s"]).starts_with("r1\t"), "listed");
+    // Both closed meanwhile: not held, nothing to review.
+    close_comment(&e, &notes[1]);
+    let r2 = landed_answer(&e, "r2", &notes, r#"{"replies": {}}"#);
+    assert_eq!((r2.summary.as_str(), r2.held.is_none()), ("the agent brought nothing back", true));
+    // The first still waits, said as it is now: no comment left to close or
+    // keep. Its review closes with nothing to mark.
+    let landed = e.ok(&["landed", "s"]);
+    assert!(landed.lines().count() == 1 && landed.starts_with("r1\t") && landed.ends_with("\tnothing brought back\n"), "{landed}");
+    assert_eq!(e.ok(&["review", "s", "--accept-all"]), "r1\treviewed: the agent brought nothing back\n");
+    assert_eq!(e.ok(&["landed", "s"]), "");
+    // A failed ask is not held, its comment open.
+    let three = comment(&e, &["Three?"]);
+    let d = Db::load(&e.db).unwrap();
+    let n = d.find_note("s", &three).unwrap();
+    Db::edit(&e.db, |d| {
+        let from = d.head("s").unwrap().0;
+        let ask = serde_json::json!({"way": "answer", "scope": "stack", "from": from, "notes": [{"label": "c1", "change": n.change, "id": n.id}]});
+        d.add_run(stacked::db::Run {
+            id: "r3".into(),
+            what: "answer".into(),
+            stack: "s".into(),
+            state: RunState::Started,
+            ask: Some(ask),
+            ..Default::default()
+        })?;
+        d.add_event("r3", serde_json::json!({"type": "exit", "code": 1}))
+    })
+    .unwrap();
+    let r3 = stacked::ask::land(&e.db, "r3", None).unwrap();
+    assert!(r3.state == RunState::Failed && r3.held.is_none(), "{r3:?}");
+    assert_eq!(e.ok(&["landed", "s"]), "");
+}
+
+#[test]
+fn a_reply_taken_at_once_leaves_its_work_to_review_while_its_comment_is_open() {
+    let e = env();
+    e.ok(&["import", "s", "base"]);
+    let id = comment(&e, &["--patch", "1", "Why", "2?"]);
+    let claude = fake_claude(&e, "claude-answer.sh", "", r#"{"replies": {"c1": "Because."}}"#);
+    let env = [("STACKED_CLAUDE", claude.as_path())];
+    let ask = |e: &Env| {
+        let (fine, out, err) = stacked_in(&e.src, &e.db, &["send", "s", &id, "--answer-only", "--wait"], "", &env);
+        assert!(fine && out.contains("waits for your review: 1 reply"), "{out}{err}");
+        stacked::held::queue(&Db::load(&e.db).unwrap(), "s")[0].id.clone()
+    };
+    // Taken at once, as Enter on the comment takes it: the reply is in its
+    // thread, and the work still waits, for the comment to be closed or
+    // kept.
+    let run = ask(&e);
+    Db::edit(&e.db, |d| stacked::held::take(d, &run, 0)).unwrap();
+    assert!(e.ok(&["comments", "s"]).contains("agent: Because."));
+    let landed = e.ok(&["landed", "s"]);
+    assert!(landed.lines().count() == 1 && landed.starts_with(&run) && landed.ends_with("\t1 asking comment to close or keep\n"), "{landed}");
+    // Its review closed, the comment kept: open, the reply in its thread.
+    assert_eq!(e.ok(&["review", "s", "--accept-all"]), format!("{run}\treviewed: 1 reply accepted\n"));
+    assert_eq!(e.ok(&["landed", "s"]), "");
+    assert!(e.ok(&["comments", "s"]).contains("agent: Because."));
+    // Again, the review closing the comment this time: closed, its thread
+    // holding both replies.
+    e.ok(&["reply", "s", &id, "Really?"]);
+    let run = ask(&e);
+    Db::edit(&e.db, |d| stacked::held::take(d, &run, 0)).unwrap();
+    assert!(e.ok(&["landed", "s"]).starts_with(&run));
+    let out = e.ok(&["review", "s", "--accept-all", "--close-asking"]);
+    assert_eq!(out, format!("{run}\treviewed: 1 reply accepted; 1 asking comment closed\n"));
+    assert_eq!(e.ok(&["comments", "s"]), "");
+    let closed = e.ok(&["comments", "s", "--show", "closed"]);
+    assert_eq!(closed.matches("agent: Because.").count(), 2, "{closed}");
+}
+
+#[test]
+fn taking_the_last_reply_closes_the_review_once_no_comment_it_answers_is_open() {
+    let e = env();
+    e.ok(&["import", "s", "base"]);
+    // Closed while its reply waits: taking the reply closes the review.
+    let id = comment(&e, &["--patch", "1", "Why", "2?"]);
+    let claude = fake_claude(&e, "claude-answer.sh", "", r#"{"replies": {"c1": "Because."}}"#);
+    let (fine, out, err) = stacked_in(&e.src, &e.db, &["send", "s", &id, "--answer-only", "--wait"], "", &[("STACKED_CLAUDE", &claude)]);
+    assert!(fine, "{out}{err}");
+    let d = Db::load(&e.db).unwrap();
+    let run = stacked::held::queue(&d, "s")[0].id.clone();
+    let n = d.find_note("s", &id).unwrap();
+    close_comment(&e, &(n.change.clone(), n.id.clone()));
+    Db::edit(&e.db, |d| stacked::held::take(d, &run, 0)).unwrap();
+    assert_eq!(e.ok(&["landed", "s"]), "");
+    let runs = e.ok(&["runs", "s"]);
+    assert!(runs.starts_with(&format!("{run}\t")) && runs.ends_with("\tdone\treviewed: 1 reply accepted\n"), "{runs}");
+    // Moved to the stack's comments as its reply is taken, the comment is
+    // gone from where it was asked: the review closes.
+    let id = comment(&e, &["--patch", "2", "Add", "c", "too."]);
+    let promote = fake_claude(&e, "claude-promote.sh", "", r#"{"replies": {"c1": "Patch 3 has to change too."}, "promote": "patch 3 has to change too"}"#);
+    let (fine, out, err) = stacked_in(&e.src, &e.db, &["send", "s", &id, "--wait"], "", &[("STACKED_CLAUDE", &promote)]);
+    assert!(fine && out.contains("waits for your review: 1 reply"), "{out}{err}");
+    let run = stacked::held::queue(&Db::load(&e.db).unwrap(), "s")[0].id.clone();
+    Db::edit(&e.db, |d| stacked::held::take(d, &run, 0)).unwrap();
+    assert_eq!(e.ok(&["landed", "s"]), "");
+    let comments = e.ok(&["comments", "s"]);
+    assert!(comments.contains("\tthe stack\tmoved from patch 2") && comments.contains("agent: Patch 3 has to change too."), "{comments}");
+}
+
+#[test]
 fn an_answer_opens_a_comment_for_each_issue_several_on_a_line() {
     let e = env();
     e.ok(&["import", "s", "base"]);

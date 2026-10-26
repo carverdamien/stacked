@@ -134,8 +134,9 @@ has 14 sections, the most useful first, and takes about fifteen minutes:
    opens the banner; Enter there opens the review, its change of the
    stack patch by patch and its reply, each accepted with Enter, then
    closed.
-5. Reply to the agent with a question, asked answer only, its answer
-   accepted at once with Enter on the comment.
+5. Reply to the agent with a question, asked answer only: its answer is
+   accepted at once with Enter on the comment, and then its review is
+   closed, the comment kept open.
 6. Keep track of what you have read, in reading.
 7. Switch how the code is drawn: unified, side by side, compact.
 8. The history of the stack, and the versions of a patch.
@@ -1006,7 +1007,12 @@ first landed first; the reviews pulled from Phabricator wait in it too
 (Phabricator, below). One landed ask may hold three kinds of parts: its
 change of the stack, if it changed it; its replies to the comments it was
 asked about; and the comments it opened (an answer's, or a build and
-test's findings on each patch's title). You accept or reject each part. A
+test's findings on each patch's title). An ask that brought none of them
+back waits for your review all the same while a comment it was asked
+about is still open: its review has no part, only those comments, to
+close or keep. If every comment it was asked about was closed or deleted
+meanwhile, it is not held, and its run says that the agent brought
+nothing back. You accept or reject each part. A
 comment is one part, and the change of the stack is one part, taken whole
 or not at all. Rejecting the change of the stack rejects the replies that
 go with it too, since each says what the agent changed. Once every part is
@@ -1024,6 +1030,11 @@ reply waits for your review`), and is not written on, nor asked again,
 before you take its reply. Enter on it takes the reply into its thread at
 once, accepted, out of the review (its menu's `Accept the agent's reply`).
 A reply that goes with a change of the stack is reviewed with that change.
+Once every reply is taken at once, and the work opened no comment, its
+review closes by itself, unless a comment the agent was asked about is
+still open: then the work still waits for your review, to close that
+comment or keep it, and the banner says what is left (`⟳ Review 1 asking
+comment to close or keep`).
 
 In the editor, a banner under the top bar says what waits on you on the
 stack, in a line: what waits for your review (`⟳ 2 landed asks wait for
@@ -1039,8 +1050,9 @@ well, but not the mouse going by. With the cursor on it, the banner opens,
 a line for each, in three sections under their titles, and the cursor is in
 none of the panes: what each has picked shows as in a pane the cursor is
 not in (`picked`), not reversed. `read only, to
-review`: `⟳ Review …` for what landed and changes nothing (an answer, the
-comments pulled from Phabricator), the first landed first, then `◌ … after
+review`: `⟳ Review …` for what landed and changes nothing (an answer, an
+ask that brought nothing back, the comments pulled from Phabricator), each
+said by what is left of it to review, the first landed first, then `◌ … after
 the edit under review` for those going on from it, then, while a pull from
 Phabricator is under way, `⇣ Pulling the reviews from Phabricator: D12,
 revision 2 of 3…`: what it brings waits there once it is done. `edits, to
@@ -1070,7 +1082,10 @@ done with: Enter turns one to the other, as Space's `Close it with the
 review` and `Keep it open` do, and the review closes those to close as it
 closes, once their replies are in their threads (`Show…`, closed, lists
 them, to reopen). Marked to close, a comment's replies, which go with it,
-are accepted; kept again, they are as they were. The sections are the stack
+are accepted; kept again, they are as they were. With no part left, as
+when the agent brought nothing back or every reply was taken at once, the
+list has only those comments, and `Close review` closes or keeps them as
+marked. The sections are the stack
 operations of the change (a line for each patch: `noop`, `add`, `modify`,
 `reword` when its message alone changed, `move`, `remove`, and the base
 when it is rebased), the comments it opened, and its replies. On the right
@@ -1162,7 +1177,9 @@ line, `stacked edit NAME PATCH --work RUN` edits the patch as that landed
 work leaves it.
 
 On the command line, `stacked landed NAME` lists the queue: each landed ask
-by its run, what it holds, and each part of it. `stacked review NAME [RUN]
+by its run, what is left of it to review (with no part left, the comments
+the agent was asked about: `1 asking comment to close or keep, nothing
+brought back`), and each part of it. `stacked review NAME [RUN]
 --accept-all` (or `--reject-all`) closes the review of that ask, the first
 landed if no run is given: the parts not marked yet are accepted (or
 rejected), and what is accepted is applied; `--close-asking` closes the
@@ -1560,7 +1577,9 @@ bytes long, padded with spaces.
 - An ask's run, once landed, holds what it brought back for review: the
   stack its change makes (its patches stored already, by their content),
   each reply, each comment it opened. Nothing of it is applied before its
-  review closes. A review record holds the marks saved for a run's review,
+  review closes. Bringing nothing back, it holds none of them, and is held
+  all the same while a comment it was asked about is still open. A review
+  record holds the marks saved for a run's review,
   the replies taken already, and whether it is closed; the last one is
   what stands.
 - A crash can only cut the last line short. A line that cannot be read is
@@ -1756,7 +1775,11 @@ none without a plan or with one that runs a command, claude told what to
 refuse; runs `stacked fits`,
 answers, opens comments, tests), a split following its comments, a comment
 moved to the stack, a patch's comment asked of the whole stack adding a
-patch on top, a reply written again, asks waiting their turn, a rebase, the stack not
+patch on top, work that brought nothing back held for review while a
+comment it was asked about is open (and not once every one is closed), a
+reply taken at once leaving its work to review until its comment is closed
+or kept (and closing it when none is open), a reply written again, asks
+waiting their turn, a rebase, the stack not
 edited by hand while the agent changes it, failures kept to look at, comments staying on their line
 across versions, a patch edited by hand (as mail and as code, at a line,
 refused and taken up again), trimming, the settings (a checkout's own over
@@ -1808,7 +1831,9 @@ moving a patch, searching (what is in sight first, the patches then the
 files they touch, the history), the agents' worktrees made ahead as the
 stack's checkout says, the banner of the agent's work (Esc to it and
 back, open a line for each, Enter on each; the reviews pulled waiting in
-it as the agent's work does), the comment editor hiding
+it as the agent's work does; a reply taken with Enter leaving its work
+there while its comment is open, and work that brought nothing back
+reviewed for its comment alone), the comment editor hiding
 nothing in each view of the code, each pane keeping where its cursor
 was, the patch's title kept at the top of the middle, and the side panes'
 modes (expanded, compact, hidden). With `--features web`, `tests/web.rs`
@@ -1862,8 +1887,11 @@ opened); `icon.rs`, what the icon shows where, at its largest (the sheets' edges
 and at its smallest (a plain white S), and that it is grey all over. With
 `--features demo`, `tests/demo.rs` takes the tour, each step done as Tab
 does it: the
-stand-in's fix, the board at its end, nothing made on disk; `memory.rs` tests its diffs applied as git applies them. The
-stream's thinking is tested in `ask.rs`. The tests in `check.rs` show
+stand-in's fix, the board at its end, nothing made on disk; and the answer
+to the tour's question taken at once, the tour going on once its review is
+closed; `memory.rs` tests its diffs applied as git applies them. The
+stream's thinking is tested in `ask.rs`, and what is said of landed work
+left to review in `held.rs`. The tests in `check.rs` show
 the check's index holds only what the patches touch, that it writes nothing
 to the repository, and how a patch's files are read before and after it;
 those in `history.rs`, what the history leaves out (comments, runs, a move

@@ -395,7 +395,8 @@ enum Cmd {
     },
     /// What waits for your review on a stack, the first landed first: what
     /// each ask brought back, and the reviews each pull brought from
-    /// Phabricator; and what each holds.
+    /// Phabricator; and what is left of each to review: its parts, or the
+    /// comments the agent was asked about, to close or keep.
     Landed { name: String },
     /// Close the review of what landed, an ask's work or a pull's reviews
     /// (by its run, as `landed` lists it, else the first landed): accept all
@@ -1557,8 +1558,7 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
                         continue;
                     }
                     for r in stacked::held::queue(&db, &name).into_iter().filter(|r| ours(r)) {
-                        let said = r.held.as_ref().map(|h| h.said()).unwrap_or_default();
-                        println!("{}\twaits for your review: {said}", r.id);
+                        println!("{}\twaits for your review: {}", r.id, stacked::held::left(&db, r));
                     }
                     // What came of it: every comment written since, the
                     // sent ones where they are now (a split moves them with
@@ -1585,11 +1585,8 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
                 let review = db.review(&r.id).cloned().unwrap_or_default();
                 // Gone on from the work before it, guessing: reviewed after it.
                 let after = ask::guessing(&db, r).map_or(String::new(), |on| format!("\tgoes on from {on}, which waits for your review"));
-                println!("{}\t{}\t{}{after}", r.id, time(h.at), h.said());
-                for p in h.parts() {
-                    if matches!(p, stacked::held::Part::Reply(k) if review.taken.contains(&k)) {
-                        continue;
-                    }
+                println!("{}\t{}\t{}{after}", r.id, time(h.at), stacked::held::left(&db, r));
+                for p in stacked::held::parts_left(&db, r) {
                     let mark = match review.marks.get(&p.key()) {
                         Some(true) => "\taccepted",
                         Some(false) => "\trejected",

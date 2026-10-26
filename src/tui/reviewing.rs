@@ -5,7 +5,9 @@
 //! cursor is on as it would be: the stack diff of the change, or the
 //! comment in its place, only to look at. Each part is accepted or
 //! rejected, the change of the stack as one; then the review is saved to go
-//! on later, thrown away, or closed, what was accepted applied.
+//! on later, thrown away, or closed, what was accepted applied. Work with no
+//! part left (it brought nothing back, or its replies were taken at once)
+//! is reviewed for the comments its ask was about, to close or keep.
 
 use std::collections::BTreeMap;
 use std::ops::Range;
@@ -180,10 +182,8 @@ impl App {
     /// The parts of what is reviewed still to resolve: the replies taken
     /// already left out.
     fn review_parts(&self) -> Vec<Part> {
-        let Some(rv) = &self.reviewing else { return vec![] };
-        let Some((_, h)) = self.work(&rv.run) else { return vec![] };
-        let taken = self.db.review(&rv.run).map(|v| v.taken.clone()).unwrap_or_default();
-        h.parts().into_iter().filter(|p| !matches!(p, Part::Reply(k) if taken.contains(k))).collect()
+        let Some(r) = self.reviewing.as_ref().and_then(|rv| self.db.run(&rv.run)) else { return vec![] };
+        crate::held::parts_left(&self.db, r)
     }
 
     /// Opens the review of what run `run` brought back, with its marks as
@@ -211,7 +211,8 @@ impl App {
             Some(p) => lines.iter().position(|l| l.part == Some(p)),
             None => was.or_else(|| lines.iter().position(|l| l.part.is_some_and(|p| !marks.contains_key(&p.key())))),
         };
-        let at = at.or_else(|| lines.iter().position(|l| l.part.is_some())).unwrap_or(0);
+        // No part left: on the first comment that asked.
+        let at = at.or_else(|| lines.iter().position(|l| l.part.is_some())).or_else(|| lines.iter().position(Line::selectable)).unwrap_or(0);
         if let Some(rv) = &mut self.reviewing {
             rv.sel = at;
         }
@@ -238,11 +239,7 @@ impl App {
     /// with its place among them.
     fn asking_open(&self) -> Vec<(usize, Note)> {
         let Some((r, _)) = self.reviewing.as_ref().and_then(|rv| self.work(&rv.run)) else { return vec![] };
-        crate::held::asking_of(r)
-            .into_iter()
-            .enumerate()
-            .filter_map(|(k, (c, i))| Some((k, self.db.note(&c, &i)?.clone())))
-            .collect()
+        crate::held::asking_open(&self.db, r).into_iter().map(|(k, n)| (k, n.clone())).collect()
     }
 
     /// Whether the work reviewed is the agent's, to send back to it with
@@ -612,7 +609,10 @@ impl App {
     /// the change, or the comment in its place; and the lines that are the
     /// part, the first to show first.
     fn review_view(&self, line: Option<&Line>, w: usize) -> View {
-        let Some((rv, line)) = self.reviewing.as_ref().zip(line) else { return (String::new(), vec![], 0..0) };
+        // The list empty: no part left, nor a comment that asked still open.
+        let Some((rv, line)) = self.reviewing.as_ref().zip(line) else {
+            return (" nothing is left to accept or reject: press Esc, then choose Close review".into(), vec![], 0..0);
+        };
         let Some((r, h)) = self.work(&rv.run) else { return (String::new(), vec![], 0..0) };
         // A comment that asked: as it is now.
         if let Some(k) = line.asking
@@ -731,16 +731,18 @@ impl App {
         let wide = rv.in_main && rv.wide;
         let rows = h.saturating_sub(1);
         if !wide {
+            // What is left of it to review: not the replies taken already.
             let title = self.work(&rv.run).map_or(String::new(), |(r, h)| {
+                let left = crate::held::left(&self.db, r);
                 if crate::held::pulled(r) {
-                    return format!(" pulled from Phabricator: {}", h.said());
+                    return format!(" pulled from Phabricator: {left}");
                 }
                 if crate::held::by_hand(r) {
-                    return format!(" your edit by hand: {} · {}", h.said(), h.edits.join(", then "));
+                    return format!(" your edit by hand: {left} · {}", h.edits.join(", then "));
                 }
                 let asked = if r.request.is_empty() { String::new() } else { format!(" · asked \"{}\"", r.request) };
                 let edited = if h.edits.is_empty() { String::new() } else { format!(" · then you {}", h.edits.join(", then ")) };
-                format!(" the agent's work: {}{asked}{edited}", h.said())
+                format!(" the agent's work: {left}{asked}{edited}")
             });
             put(buf, list, 0, 0, list_w, &fit(&title, list_w), color::header());
             let mut top = rv.top;
@@ -1136,6 +1138,10 @@ impl App {
         let parts = self.review_parts();
         let mark = |p: &Part| rv.marks.get(&p.key()).copied();
         let mut out = Vec::new();
+        // Nothing brought back: only the comments that asked, to say.
+        if self.work(&rv.run).is_some_and(|(_, h)| h.is_empty()) {
+            out.push(crate::held::NOTHING_BACK.to_string());
+        }
         let asking = self.asking_open();
         if !asking.is_empty() {
             let closing = asking.iter().filter(|(k, _)| rv.marks.get(&crate::held::asking_key(*k)) == Some(&true)).count();

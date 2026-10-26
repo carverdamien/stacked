@@ -4181,8 +4181,16 @@ impl App {
             }
         };
         let Some((change, id)) = at else { return };
+        // Nothing brought back, its work waits all the same while the
+        // comment is still open.
+        let empty = self.db.live_runs().into_iter().any(|r| {
+            r.held.as_ref().is_some_and(crate::held::Held::is_empty)
+                && crate::held::waiting(&self.db, r)
+                && crate::held::asking_of(r).iter().any(|(c, i)| *c == change && *i == id)
+        });
         self.status = match crate::held::reply_waiting(&self.db, &change, &id) {
             Some(_) => "the agent is done: what it brought waits for your review".into(),
+            None if empty => "the agent is done, and brought nothing back: its work waits for your review all the same, to close this comment or keep it open".into(),
             None => "the agent is done: what it wrote is folded".into(),
         };
     }
@@ -4940,6 +4948,16 @@ impl App {
                 let said = self.reply_said(&run, k);
                 if self.edit(|db| crate::held::take(db, &run, k)).is_some() {
                     self.status = format!("you accepted {said}: it is in the thread now");
+                    // Nothing else left of its work: what waits is the
+                    // comments its ask was about, still open, to close or
+                    // keep in its review.
+                    if let Some(r) = self.db.run(&run).filter(|r| crate::held::waiting(&self.db, r) && crate::held::parts_left(&self.db, r).is_empty()) {
+                        let these = match crate::held::asking_open(&self.db, r).len() {
+                            1 => "the comment the agent was asked about".to_string(),
+                            n => format!("the {n} comments the agent was asked about"),
+                        };
+                        self.status += &format!("; the agent's work still waits for your review, to close or keep {these}");
+                    }
                     self.launch();
                 }
             }

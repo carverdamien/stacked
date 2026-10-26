@@ -2,13 +2,16 @@
 //! lands, nothing changes under you: what it brought back is held in its
 //! run, in the queue of work to review, oldest first. It may hold a change
 //! of the stack, replies to the comments it was asked about, and comments
-//! it opened. Reviews pulled from Phabricator are held the same way, in
-//! their pull's run: the reviewers' new comments, their replies, and their
-//! comments edited on Phabricator since they were filed. Each
-//! part is accepted or rejected, the change of the stack as one; once every
-//! part is, the review closes: what was accepted is applied, and the rest
-//! is dropped for good. Until then, the stack is not edited by hand if the
-//! agent changed it, and the comments it answered are not written on.
+//! it opened; or nothing, while one of those comments is still open, for
+//! its review to close it or keep it. Reviews pulled from Phabricator are
+//! held the same way, in their pull's run: the reviewers' new comments,
+//! their replies, and their comments edited on Phabricator since they were
+//! filed. Each part is accepted or rejected, the change of the stack as
+//! one; once every part is, the review closes: what was accepted is
+//! applied, and the rest is dropped for good. Work about a comment still
+//! open waits until you close its review, which closes that comment or
+//! keeps it. Until then, the stack is not edited by hand if the agent
+//! changed it, and the comments it answered are not written on.
 //!
 //! Your own edits by hand land the same way, in a run of their own
 //! (`hand`), to review before they change anything. An edit made in the
@@ -278,13 +281,19 @@ impl Held {
 
     /// What it holds, said: `a change of patch 2, 2 replies`.
     pub fn said(&self) -> String {
+        self.said_but(&[])
+    }
+
+    /// What it holds but its replies `taken`, said.
+    fn said_but(&self, taken: &[usize]) -> String {
         let mut out = Vec::new();
         if let Some(c) = &self.stack {
             out.push(format!("a change of {}", c.of));
         }
-        let edits = self.replies.iter().filter(|rp| rp.was.is_some()).count();
-        if self.replies.len() > edits {
-            out.push(count(self.replies.len() - edits, "reply", "replies"));
+        let replies: Vec<&Reply> = self.replies.iter().enumerate().filter(|(k, _)| !taken.contains(k)).map(|(_, rp)| rp).collect();
+        let edits = replies.iter().filter(|rp| rp.was.is_some()).count();
+        if replies.len() > edits {
+            out.push(count(replies.len() - edits, "reply", "replies"));
         }
         if edits > 0 {
             out.push(count(edits, "edited comment", "edited comments"));
@@ -316,6 +325,56 @@ pub fn queue<'a>(db: &'a Db, name: &str) -> Vec<&'a Run> {
 /// The run whose change of stack `name` waits for review, if one does.
 pub fn change_waiting<'a>(db: &'a Db, name: &str) -> Option<&'a Run> {
     queue(db, name).into_iter().find(|r| r.held.as_ref().is_some_and(|h| h.stack.is_some()))
+}
+
+/// The parts of the work run `r` holds still to accept or reject: those
+/// of a reply taken already left out.
+pub fn parts_left(db: &Db, r: &Run) -> Vec<Part> {
+    let Some(h) = &r.held else { return vec![] };
+    let taken = db.review(&r.id).map(|v| v.taken.clone()).unwrap_or_default();
+    h.parts().into_iter().filter(|p| !matches!(p, Part::Reply(k) if taken.contains(k))).collect()
+}
+
+/// What is left to review of the work run `r` holds, said: its parts not
+/// taken already (`a change of patch 2, 1 reply`); else the comments its
+/// ask was about that are still open (`1 asking comment to close or
+/// keep`), and whether the agent brought nothing back.
+pub fn left(db: &Db, r: &Run) -> String {
+    let Some(h) = &r.held else { return String::new() };
+    let taken = db.review(&r.id).map(|v| v.taken.clone()).unwrap_or_default();
+    let parts = h.said_but(&taken);
+    if !parts.is_empty() {
+        return parts;
+    }
+    let mut out = Vec::new();
+    let open = asking_open(db, r).len();
+    if open > 0 {
+        out.push(format!("{} to close or keep", count(open, "asking comment", "asking comments")));
+    }
+    if h.is_empty() {
+        out.push("nothing brought back".to_string());
+    }
+    if out.is_empty() {
+        out.push("nothing left to accept or reject".to_string());
+    }
+    out.join(", ")
+}
+
+/// What work that holds nothing is said to be.
+pub const NOTHING_BACK: &str = "the agent brought nothing back";
+
+/// What an ask that brought nothing back says of it, `open` of the `asked`
+/// comments it was asked about still open: `the agent brought nothing
+/// back, and the comment it was asked about is still open`.
+pub fn nothing_back(open: usize, asked: usize) -> String {
+    let still = match (open, asked) {
+        (0, _) => return NOTHING_BACK.into(),
+        (1, 1) => "the comment it was asked about is still open".to_string(),
+        (o, a) if o == a => format!("the {a} comments it was asked about are still open"),
+        (1, a) => format!("1 of the {a} comments it was asked about is still open"),
+        (o, a) => format!("{o} of the {a} comments it was asked about are still open"),
+    };
+    format!("{NOTHING_BACK}, and {still}")
 }
 
 /// The comments whose reply waits for review: to the run, and where the
@@ -384,7 +443,8 @@ fn apply_reply(db: &mut Db, name: &str, rp: &Reply) -> Result<()> {
 /// Takes reply `k` of what run `id` brought back into its thread at once,
 /// accepted, out of the review; not one going with a change of the stack,
 /// which is reviewed with it. With nothing left to review, the review
-/// closes.
+/// closes: no part left, and no comment the ask was about still open, as
+/// one is closed or kept only as its review closes.
 pub fn take(db: &mut Db, id: &str, k: usize) -> Result<()> {
     let (r, h, mut v) = under_review(db, id)?;
     if h.stack.is_some() {
@@ -400,7 +460,7 @@ pub fn take(db: &mut Db, id: &str, k: usize) -> Result<()> {
     apply_reply(db, &r.stack, rp)?;
     v.taken.push(k);
     v.marks.insert(Part::Reply(k).key(), true);
-    v.closed = h.opened.is_empty() && (0..h.replies.len()).all(|j| v.taken.contains(&j));
+    v.closed = h.opened.is_empty() && (0..h.replies.len()).all(|j| v.taken.contains(&j)) && asking_open(db, &r).is_empty();
     let closed = v.closed;
     db.set_review(id, v.clone())?;
     if closed {
@@ -525,6 +585,12 @@ pub fn asking_of(r: &Run) -> Vec<(String, String)> {
     crate::ask::info(r).map(|i| i.notes.into_iter().map(|sh| (sh.change, sh.id)).collect()).unwrap_or_default()
 }
 
+/// The comments the ask of run `r` was about that are still open, neither
+/// closed nor gone, each with its place among them.
+pub fn asking_open<'a>(db: &'a Db, r: &Run) -> Vec<(usize, &'a Note)> {
+    asking_of(r).into_iter().enumerate().filter_map(|(k, (c, i))| Some((k, db.note(&c, &i)?))).collect()
+}
+
 /// Closes run `id`'s review: each part as marked in `marks`, those left
 /// unmarked accepted or rejected as `rest` says (with none, every part must
 /// be marked). Rejecting the change of the stack rejects its replies and
@@ -629,7 +695,8 @@ pub fn close_with(db: &mut Db, id: &str, marks: &BTreeMap<String, bool>, rest: O
     v.marks.extend(marks.iter().filter(|(k, _)| k.starts_with("asking ")).map(|(k, m)| (k.clone(), *m)));
     v.closed = true;
     db.set_review(id, v.clone())?;
-    let mut said = said(&h, &v.marks);
+    // Nothing brought back: no part to say.
+    let mut said = if h.is_empty() { NOTHING_BACK.to_string() } else { said(&h, &v.marks) };
     if closed > 0 {
         said += &format!("; {}", count(closed, "asking comment closed", "asking comments closed"));
     }
@@ -710,5 +777,21 @@ mod tests {
         assert_eq!(h.said(), "1 reply, 1 edited comment");
         let marks = [("reply 0".to_string(), true), ("reply 1".to_string(), false)].into();
         assert_eq!(said(&h, &marks), "1 reply rejected; 1 edited comment accepted");
+    }
+
+    #[test]
+    fn what_is_left_of_work_is_said_without_what_was_taken() {
+        // Its replies taken at once: said no more.
+        let h = Held {
+            replies: vec![Reply::default(), Reply::default()],
+            ..Default::default()
+        };
+        assert_eq!((h.said_but(&[1]), h.said_but(&[0, 1])), ("1 reply".to_string(), String::new()));
+        // Nothing brought back: which of the comments asked about are open.
+        assert_eq!(nothing_back(0, 1), "the agent brought nothing back");
+        assert_eq!(nothing_back(1, 1), "the agent brought nothing back, and the comment it was asked about is still open");
+        assert_eq!(nothing_back(2, 2), "the agent brought nothing back, and the 2 comments it was asked about are still open");
+        assert_eq!(nothing_back(1, 3), "the agent brought nothing back, and 1 of the 3 comments it was asked about is still open");
+        assert_eq!(nothing_back(2, 3), "the agent brought nothing back, and 2 of the 3 comments it was asked about are still open");
     }
 }

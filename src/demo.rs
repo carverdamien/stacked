@@ -604,6 +604,13 @@ impl Tour {
         notes.into_iter().next().cloned()
     }
 
+    /// Whether the agent's answer is the last turn of your comment's thread.
+    fn answered(&self, app: &App) -> bool {
+        self.thread(app).is_some_and(|n| {
+            thread_turns(&n.text).last().is_some_and(|t| t.role == Role::Agent && t.tag.as_deref() == Some(Way::Answer.name()))
+        })
+    }
+
     /// The landed ask whose work waits for review on the tour's stack, the
     /// first landed, and whether it changes the stack.
     fn landed(app: &App) -> Option<(String, bool)> {
@@ -668,10 +675,11 @@ impl Tour {
             // Landed, its change waiting for review; or accepted already.
             Step::Ask => Tour::has(app, FIXES[0].2) || Tour::landed(app).is_some_and(|(_, change)| change),
             Step::Review => Tour::has(app, FIXES[0].2) && app.screen == Screen::Main,
-            // The agent's answer, the thread's last turn.
-            Step::Question => self.thread(app).is_some_and(|n| {
-                thread_turns(&n.text).last().is_some_and(|t| t.role == Role::Agent && t.tag.as_deref() == Some(Way::Answer.name()))
-            }),
+            // The agent's answer, the thread's last turn, and the review of
+            // its work closed: your comment kept open, or closed with it.
+            Step::Question => {
+                Tour::landed(app).is_none() && app.screen == Screen::Main && !Tour::working(app) && (self.answered(app) || self.thread(app).is_none())
+            }
             Step::Reading => Tour::read(app, 0),
             Step::Commenting => !app.reading,
             Step::Views => self.seen && app.layout == Layout::Unified,
@@ -710,7 +718,10 @@ impl Tour {
             Step::Review if app.screen == Screen::Review => "This is the review of the agent's work. On the left are its parts: the stack operations of its change, a line for each patch (patches 4 and 5 are modified), and its reply to your comment. On the right is what the part the cursor is on would be: the stack diff of the change, or the reply as the last turn of its thread. Press ↓ to go through the parts and Enter on each to accept it (Enter again puts it back to review; rejecting a part is in its menu, Space). Then press Esc and choose Close review: what you accepted is applied then.".into(),
             Step::Review if Tour::landed(app).is_some() => "The agent's work has landed, and nothing changed under you: it waits for your review, and the banner at the top says so. Nothing of it is applied before you review it, and the stack is not edited by hand meanwhile. Press Esc: the banner opens, a line for each piece of the agent's work, the landed one picked. Then press Enter to review the agent's work.".into(),
             Step::Review => "You rejected the agent's change, so the stack is as it was. Ask the agent again: on your comment, press Space, go to Ask agent, pick the whole stack with ← →, and press Enter.".into(),
-            Step::Question if Tour::landed(app).is_some() => "The agent's answer has landed, and waits for your review: your comment's first line says so, and the comments pane marks the comment ◆. An answer changes nothing in the stack, so it can be accepted at once, without the review: press Enter on your comment to accept the answer.".into(),
+            Step::Question if app.screen == Screen::Review && self.answered(app) => "This is the review of the agent's work. The agent's answer is in your comment's thread already, so only your comment is left, at the top, marked keep: Enter on it would mark it close. Press Esc and choose Close review: your comment stays open.".into(),
+            Step::Question if app.screen == Screen::Review => "This is the review of the agent's work: its answer, under replies, where the cursor is, and your comment at the top, which stays open unless you mark it close. Press Enter to accept the answer, then press Esc and choose Close review: the answer goes into your comment's thread then.".into(),
+            Step::Question if Tour::landed(app).is_some() && self.answered(app) => "The agent's answer is the last turn of your comment's thread now. Your comment is still open, so the agent's work still waits for your review, where you close your comment or keep it open. Press Esc: the banner opens, the agent's work picked. Then press Enter to review the agent's work.".into(),
+            Step::Question if Tour::landed(app).is_some() => "The agent's answer has landed, and waits for your review: your comment's first line says so, and the comments pane marks the comment ◆. An answer changes nothing in the stack, so it can be accepted at once: press Enter on your comment to accept the answer.".into(),
             Step::Question if working => "The agent is answering your question. Asked that way, it reads the code and answers, and changes nothing.".into(),
             Step::Question => {
                 let moved = self.thread(app).is_some_and(|n| n.moved.is_some());

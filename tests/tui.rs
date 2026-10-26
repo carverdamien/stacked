@@ -2250,12 +2250,23 @@ fn the_agent_s_reply_waits_for_review_and_enter_takes_it() {
     }
     assert!(!all.iter().any(|(l, _)| l == "Ask agent"), "{all:?}");
     keys(&mut app, &[KeyCode::Esc]);
-    // Enter takes it into the thread, at once: out of the review.
+    // Enter takes it into the thread, at once: out of the review. The
+    // comment still open, its work stays on the banner, for the comment to
+    // be closed or kept in its review.
     assert!(app.hint().starts_with("enter: accept the agent's reply"), "{}", app.hint());
     keys(&mut app, &[KeyCode::Enter]);
-    assert!(app.status.contains("you accepted the agent's reply"), "{}", app.status);
-    assert!(draw(&mut app).contains("It is a shout."));
-    assert!(stacked::held::queue(&Db::load(&db).unwrap(), "s").is_empty(), "nothing left of it to review");
+    assert_eq!(
+        app.status,
+        "you accepted the agent's reply: it is in the thread now; the agent's work still waits for your review, to close or keep the comment the agent was asked about"
+    );
+    let screen = draw(&mut app);
+    assert!(screen.contains("It is a shout."), "{screen}");
+    assert!(screen.contains("⟳ 1 landed ask waits for your review · the next: 1 asking comment to close or keep"), "{screen}");
+    assert_eq!(stacked::held::queue(&Db::load(&db).unwrap(), "s").len(), 1, "its comment to close or keep");
+    // Its review closed, the comment kept: nothing waits.
+    Db::edit(&db, |d| stacked::held::close(d, "run-answer", &Default::default(), None)).unwrap();
+    app.refresh();
+    assert!(!draw(&mut app).contains("⟳"), "nothing left of it to review");
     // A reply going with a change of the stack is reviewed with it; the
     // stack is not edited by hand meanwhile.
     held(&db, "run-change", &n.change, &n.id, "Changed it.", true);
@@ -2276,6 +2287,99 @@ fn the_agent_s_reply_waits_for_review_and_enter_takes_it() {
         Some("the agent's change of patch 1 waits for your review: the stack can be edited by hand again once you have reviewed it")
     );
     assert!(items(&app).contains(&("Edit this patch in $EDITOR".into(), false)), "{:?}", items(&app));
+}
+
+#[test]
+fn a_reply_taken_at_once_leaves_its_work_on_the_banner_until_its_review_closes_the_comment() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Enter]);
+    save(&mut app, "why so loud?");
+    let n = notes_of(&db, "s", 0).remove(0);
+    held(&db, "run-answer", &n.change, &n.id, "It is a shout.", false);
+    app.refresh();
+    // Taken with Enter, the reply is in the thread; its work is on the
+    // banner still, said by what is left of it.
+    keys(&mut app, &[KeyCode::Down, KeyCode::Enter]);
+    assert!(app.status.starts_with("you accepted the agent's reply: it is in the thread now; "), "{}", app.status);
+    keys(&mut app, &[KeyCode::Esc]);
+    assert!(app.on_banner);
+    let banner = selected_banner(&mut app);
+    assert!(banner.starts_with("   ⟳ Review 1 asking comment to close or keep") && !banner.contains("reply"), "{banner}");
+    // Its review has the comment alone, the cursor on it, kept.
+    keys(&mut app, &[KeyCode::Enter]);
+    assert_eq!(app.screen, Screen::Review);
+    let screen = draw(&mut app);
+    assert!(screen.contains(" the agent's work: 1 asking comment to close") && !screen.contains(" replies"), "{screen}");
+    assert!(screen.contains("the comment that asked, as it is: kept open"), "{screen}");
+    assert!(selected_line(&mut app).unwrap().starts_with("   keep  a.txt: TWO · why so loud?"), "{:?}", selected_line(&mut app));
+    // Marked to close, and closed with the review: the reply stays in its
+    // thread, which Show…, closed, lists.
+    keys(&mut app, &[KeyCode::Enter]);
+    assert!(selected_line(&mut app).unwrap().starts_with("   close a.txt: TWO · why so loud?"));
+    keys(&mut app, &[KeyCode::Esc]);
+    let Mode::Menu(m) = &app.mode else { panic!("{:?}", app.mode) };
+    assert_eq!(m.note.as_deref(), Some("asking comment: 1 to close"));
+    choose(&mut app, "Close review");
+    assert_eq!(app.status, "reviewed: 1 reply accepted; 1 asking comment closed");
+    assert_eq!(app.screen, Screen::Main);
+    assert!(stacked::held::queue(&Db::load(&db).unwrap(), "s").is_empty());
+    assert!(notes_of(&db, "s", 0).is_empty(), "closed");
+    let d = Db::load(&db).unwrap();
+    let closed = d.deleted_notes("s", &n.change);
+    assert!(closed.len() == 1 && closed[0].1.text.contains("It is a shout."), "{closed:?}");
+}
+
+#[test]
+fn work_that_brought_nothing_back_is_reviewed_for_the_comment_it_was_asked_about() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Enter]);
+    save(&mut app, "why so loud?");
+    let n = notes_of(&db, "s", 0).remove(0);
+    // Landed with nothing, its comment still open: held all the same.
+    Db::edit(&db, |d| {
+        let from = d.head("s").unwrap().0;
+        let ask = serde_json::json!({"way": "answer", "scope": {"patch": n.change}, "from": from, "notes": [{"label": "c1", "change": n.change, "id": n.id}]});
+        d.add_run(stacked::db::Run {
+            id: "run-nothing".into(),
+            what: "answer".into(),
+            stack: "s".into(),
+            state: stacked::db::RunState::Done,
+            request: "why so loud?".into(),
+            ask: Some(ask),
+            held: Some(stacked::held::Held {
+                at: stacked::db::now(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        })
+        .map(|_| ())
+    })
+    .unwrap();
+    app.refresh();
+    let screen = draw(&mut app);
+    assert!(
+        screen.contains("⟳ 1 landed ask waits for your review · the next: 1 asking comment to close or keep, nothing brought back"),
+        "{screen}"
+    );
+    // Its review: the comment alone, the cursor on it. Esc says the agent
+    // brought nothing back; closed, the review keeps the comment open.
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Enter]);
+    assert_eq!(app.screen, Screen::Review);
+    assert!(draw(&mut app).contains(" the agent's work: 1 asking comment to close"));
+    assert!(selected_line(&mut app).unwrap().starts_with("   keep  a.txt: TWO · why so loud?"), "{:?}", selected_line(&mut app));
+    keys(&mut app, &[KeyCode::Esc]);
+    let Mode::Menu(m) = &app.mode else { panic!("{:?}", app.mode) };
+    assert_eq!(m.note.as_deref(), Some("the agent brought nothing back\nasking comment: 1 kept"));
+    choose(&mut app, "Close review");
+    assert_eq!(app.status, "reviewed: the agent brought nothing back");
+    assert!(!draw(&mut app).contains("⟳"), "nothing waits");
+    assert_eq!(notes_of(&db, "s", 0).len(), 1, "the comment kept open");
 }
 
 #[test]
