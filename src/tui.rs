@@ -5586,7 +5586,7 @@ impl App {
     /// The lines `text` names, as a `refs` line says them, if the file has
     /// them as that version leaves it; else why not.
     fn lines_to_attach(&self, text: &str) -> std::result::Result<crate::refs::Ref, String> {
-        let how = "write the file, its lines and which version: a.txt:120-140,200-210 @2 (@0 the base; no @, the whole stack)";
+        let how = "write the file, its lines and which version: a.txt:120-140,200-210 @2 (no lines, the whole file; @0 the base; no @, the whole stack)";
         let r = crate::refs::Ref::parse(text).ok_or_else(|| how.to_string())?;
         let s = self.current().cloned().ok_or_else(|| "there is no stack to read the file of".to_string())?;
         match self.ref_file(&s, &r) {
@@ -6342,7 +6342,8 @@ impl App {
     }
 
     /// Reference `r`, previewed: its lines numbered, the numbers marked,
-    /// `⋯` between its ranges; Enter there goes to them.
+    /// `⋯` between its ranges; the whole file, every line, the numbers
+    /// plain, as it points at them all. Enter there goes to them.
     fn show_ref(&mut self, r: &crate::refs::Ref) {
         let Some(s) = self.current().cloned() else { return };
         let text = match self.ref_file(&s, r) {
@@ -6357,17 +6358,21 @@ impl App {
             }
         };
         let all: Vec<&str> = text.lines().collect();
+        let spans = if r.whole() { vec![(1, all.len())] } else { r.ranges.clone() };
         let mut lines = Vec::new();
-        for &(a, b) in &r.ranges {
+        for (a, b) in spans {
             if !lines.is_empty() {
                 lines.push(vec![("      ⋯".to_string(), color::dim())]);
             }
             for n in a..=b.min(all.len()) {
-                lines.push(numbered(n, all[n - 1], true));
+                lines.push(numbered(n, all[n - 1], !r.whole()));
             }
         }
         if lines.is_empty() {
-            self.status = format!("{} has {} lines, {}: none of those", r.file, all.len(), r.at_said());
+            self.status = match r.whole() {
+                true => format!("{} is empty, {}", r.file, r.at_said()),
+                false => format!("{} has {} lines, {}: none of those", r.file, all.len(), r.at_said()),
+            };
             return;
         }
         let jump = self.ref_jump(&s, r, &all);
@@ -6394,13 +6399,14 @@ impl App {
         }
     }
 
-    /// Where Enter in reference `r`'s preview goes: its first line in the
-    /// patch whose diff has it, as that patch leaves the file (for the whole
-    /// stack, the last patch that touches it); else the file whole, `all`,
-    /// the numbers of the lines it points at marked.
+    /// Where Enter in reference `r`'s preview goes: its first line (the
+    /// whole file's, its first) in the patch whose diff has it, as that
+    /// patch leaves the file (for the whole stack, the last patch that
+    /// touches it); else the file whole, `all`, the numbers of the lines it
+    /// points at marked.
     fn ref_jump(&self, s: &crate::db::Stack, r: &crate::refs::Ref, all: &[&str]) -> Jump {
         use crate::refs::At;
-        let first = r.ranges[0].0;
+        let first = r.ranges.first().map_or(1, |&(a, _)| a);
         let touches = |id: &String| crate::diff::paths(&self.db.patch(id).diff).contains(&r.file);
         let at = match r.at {
             At::Patch(n) => n.checked_sub(1),
@@ -6415,6 +6421,7 @@ impl App {
                 return Jump::Line { change: p.change.clone(), key };
             }
         }
+        // The whole file pointed at: every number plain, none stands out.
         let pointed = |n: usize| r.ranges.iter().any(|&(a, b)| (a..=b).contains(&n));
         let lines = all.iter().enumerate().map(|(i, l)| numbered(i + 1, l, pointed(i + 1))).collect();
         Jump::File {

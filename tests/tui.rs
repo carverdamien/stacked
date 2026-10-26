@@ -4453,10 +4453,11 @@ fn a_reference_the_agent_attached_is_a_line_under_the_comment_previewed_then_gon
     save(&mut app, "why so loud?");
     let n = notes_of(&db, "s", 0).remove(0);
     // The agent answers, pointing at a.txt as patch 1 leaves it: a line its
-    // diff has, and lines it has not.
+    // diff has, and lines it has not; and at b.txt whole, as patch 2 leaves
+    // it.
     Db::edit(&db, |d| {
         let n = d.note(&n.change, &n.id).cloned().unwrap();
-        let said = "It shouts there.\n\n```refs\na.txt:2 @1\na.txt:20-21 @1\n```";
+        let said = "It shouts there.\n\n```refs\na.txt:2 @1\na.txt:20-21 @1\nb.txt @2\n```";
         d.set_note(Note {
             text: append_turn(&n.text, Role::Agent, said, Some("answer")),
             ..n
@@ -4466,6 +4467,7 @@ fn a_reference_the_agent_attached_is_a_line_under_the_comment_previewed_then_gon
     app.refresh();
     let screen = draw(&mut app);
     assert!(screen.contains("⇢ a.txt:2 · as patch 1 leaves it") && screen.contains("⇢ a.txt:20-21 · as patch 1 leaves it"), "{screen}");
+    assert!(screen.contains("⇢ b.txt · as patch 2 leaves it"), "{screen}");
     assert!(screen.contains("It shouts there.") && !screen.contains("```refs") && !screen.contains("a.txt:2 @1"), "{screen}");
     // Enter on the first: its line, previewed.
     down_to(&mut app, "     ▎   ⇢ a.txt:2 ");
@@ -4510,6 +4512,18 @@ fn a_reference_the_agent_attached_is_a_line_under_the_comment_previewed_then_gon
     assert!(reversed(x + 3, y) && reversed(x + 4, y) && !reversed(x + 8, y), "{screen}");
     let (x, y) = at(&screen, "   19 │ line 16");
     assert!(!reversed(x + 3, y), "{screen}");
+    // A file whole: every line of it previewed, the numbers plain as it
+    // points at them all; Enter again, its first line in the diff of the
+    // patch it is of.
+    keys(&mut app, &[KeyCode::Esc]);
+    down_to(&mut app, "     ▎   ⇢ b.txt");
+    keys(&mut app, &[KeyCode::Enter]);
+    let Mode::Preview(p) = &app.mode else { panic!("{:?}", app.mode) };
+    assert_eq!((p.title.as_str(), p.texts()), ("b.txt · as patch 2 leaves it", vec!["    1 │ bee".to_string()]));
+    assert!(!p.lines.iter().any(marked), "{:?}", p.lines);
+    keys(&mut app, &[KeyCode::Enter]);
+    assert!(matches!(app.mode, Mode::Normal), "{:?}", app.mode);
+    assert!(app.rows[app.cursor].text.starts_with("+bee"), "{}", app.rows[app.cursor].text);
 }
 
 #[test]

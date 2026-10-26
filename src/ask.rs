@@ -1128,7 +1128,10 @@ fn attached_part(db: &Db, s: &Stack, n: &Note) -> String {
                     continue;
                 };
                 let all: Vec<&str> = text.lines().collect();
-                let wanted: Vec<usize> = r.ranges.iter().flat_map(|&(x, y)| x..=y.min(all.len())).collect();
+                let wanted: Vec<usize> = match r.whole() {
+                    true => (1..=all.len()).collect(),
+                    false => r.ranges.iter().flat_map(|&(x, y)| x..=y.min(all.len())).collect(),
+                };
                 for &k in wanted.iter().take(ATTACHED_LINES) {
                     out += &format!("    {k:>5} │ {}\n", all[k - 1]);
                 }
@@ -1459,9 +1462,10 @@ fn answer_schema(i: &Info, s: &Stack) -> Value {
 /// What an ask is told of the references it may attach to what it writes.
 const REFS: &str = " To point at the code you mean, in the stack or out of it, anything you write \
 there may be an object instead of a string, {\"text\": what you write, \"refs\": [...]}, and a \
-comment you open may have \"refs\" too: each {\"file\": its path, \"lines\": \"120-140,200-210\", \
-\"patch\": a patch's number, for the file as that patch leaves it; 0, as the stack's base has it; \
-none, as the whole stack leaves it}; or, to point at a comment of the stack, {\"comment\": its label \
+comment you open may have \"refs\" too: each {\"file\": its path, \"lines\": \"120-140,200-210\" \
+(none, the whole file), \"patch\": a patch's number, for the file as that patch leaves it; 0, as \
+the stack's base has it; none, as the whole stack leaves it}; or, to point at a comment of the \
+stack, {\"comment\": its label \
 above ([c1] is \"c1\"), or its id, as `stacked comments` lists it}. The user reads each under what \
 you wrote, and goes there. Each takes a number, in the order you give them: in a reply, from the \
 one its comment above says; in a comment you open, from r1. In what you write, @r1 names \

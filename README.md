@@ -396,8 +396,9 @@ A comment may have references attached to it: other comments of the
 stack, open or closed, and lines of a file. In the editor, Esc, then
 `Attach a reference…`, lists `Lines of a file…` and the stack's comments,
 those closed after those open. Lines are written as a `refs` line says
-them, `a.txt:120-140,200-210 @2` (`@0` the base; no `@`, the whole stack);
-for a comment on a line, they start with its file, as its patch leaves it.
+them, `a.txt:120-140,200-210 @2` (no lines, `a.txt @2`, the whole file;
+`@0` the base; no `@`, the whole stack); for a comment on a line, they
+start with its file, as its patch leaves it.
 Each reference takes a number, never given twice in the comment, and what
 you write names it: `@r1`, several `@r{1,2,3}` (or `@r{2-4}`), all of them
 `@r*`. They show under what you write (written in the middle on a comment
@@ -615,23 +616,26 @@ ask agent`'s:
 
 Whatever it writes, a reply or a comment it opens, the agent may attach
 references to it: lines of a file, a union of ranges (`120-140,200-210`),
-as a patch leaves the file, as the stack's base has it, or as the whole
-stack leaves it, which reaches the files the stack does not touch too.
-Under the comment, a line for each: `⇢ a.txt:2-3, 10 · as patch 1 leaves
-it`. Enter on it previews those lines in a box, numbered, `⋯` between the
+or the whole file, as a patch leaves the file, as the stack's base has it,
+or as the whole stack leaves it, which reaches the files the stack does
+not touch too. Under the comment, a line for each: `⇢ a.txt:2-3, 10 · as
+patch 1 leaves it`, `⇢ a.txt · as patch 1 leaves it` for the whole file,
+which previews whole, its numbers plain. Enter on it previews those lines in a box, numbered, `⋯` between the
 ranges; Enter again goes there: to the line in its patch, when the patch's
 diff has it, else to the file whole, at that line, as it reads (Esc comes
 back). In the box and in the file whole, the numbers of the lines it
 points at are marked, drawn reversed. They are kept in the agent's turn as a `refs` block, a reference a
-line (`a.txt:2-3,10 @1`; `@0` the base, no `@` the whole stack), which
+line (`a.txt:2-3,10 @1`; `a.txt @1` the whole file; `@0` the base, no `@`
+the whole stack), which
 `stacked comments` shows and the agent reads back in its thread. The agent
 may point at another comment of the stack too, by its label in the ask or
 its id as `stacked comments` lists it: under what it wrote, `↗` and where
 that comment is, Enter going there. The references it attaches take
 numbers too, after those of the comment it writes on, in the order it
 gives them (the prompt says the first free one; a comment it opens
-numbers its own from `r1`), and one it names that is no comment leaves
-its number out. In what it writes, and in what you write after, `@r4`
+numbers its own from `r1`), and one it gives that is no reference (a
+comment that is none, lines that are none) leaves its number out, so that
+what names the others still does. In what it writes, and in what you write after, `@r4`
 names one of them as `@r1` names one you attached.
 
 An ask goes now, or later, as in self-review's batch: under `Ask agent`

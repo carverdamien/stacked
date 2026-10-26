@@ -1,12 +1,12 @@
 //! References an agent attaches to what it writes: lines of a file, as
-//! ranges, as a patch of the stack leaves the file, as the stack's base has
-//! it, or as the whole stack leaves it, which reaches the files the stack
-//! does not touch too; or another comment of the stack. Kept in the turn
-//! they come with, as a `refs` block, a reference a line:
-//! `path:120-140,200-210 @3` (`@0` the base; no `@`, the whole stack), or a
-//! comment's change and id as JSON. Under the comment, a line each; Enter
-//! previews a reference's lines, and Enter again goes there; Enter on a
-//! comment goes to it.
+//! ranges, or the whole file, as a patch of the stack leaves the file, as
+//! the stack's base has it, or as the whole stack leaves it, which reaches
+//! the files the stack does not touch too; or another comment of the stack.
+//! Kept in the turn they come with, as a `refs` block, a reference a line:
+//! `path:120-140,200-210 @3` (`path @3` the whole file; `@0` the base; no
+//! `@`, the whole stack), or a comment's change and id as JSON. Under the
+//! comment, a line each; Enter previews a reference's lines, and Enter
+//! again goes there; Enter on a comment goes to it.
 //!
 //! The references you attach to a comment are the comment's own, kept with
 //! it whatever its turns become: each numbered once and for all, `r1`,
@@ -20,7 +20,7 @@ use serde_json::Value;
 use crate::db::{Db, Note};
 
 /// A reference: `file`'s lines `ranges` (from 1, both ends in, sorted,
-/// apart), as `at` has the file.
+/// apart), as `at` has the file; with none, the whole file.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Ref {
     pub file: String,
@@ -80,17 +80,27 @@ fn ranges_said(ranges: &[(usize, usize)], sep: &str) -> String {
 }
 
 impl Ref {
-    /// As a line of a `refs` block: `path:120-140,200-210 @3`.
+    /// Whether it points at the whole file, not at lines of it.
+    pub fn whole(&self) -> bool {
+        self.ranges.is_empty()
+    }
+
+    /// As a line of a `refs` block: `path:120-140,200-210 @3`; the whole
+    /// file, `path @3`.
     pub fn line(&self) -> String {
         let at = match self.at {
             At::Top => String::new(),
             At::Base => " @0".into(),
             At::Patch(n) => format!(" @{n}"),
         };
+        if self.whole() {
+            return format!("{}{at}", self.file);
+        }
         format!("{}:{}{at}", self.file, ranges_said(&self.ranges, ","))
     }
 
-    /// A line of a `refs` block, if it is one.
+    /// A line of a `refs` block, if it is one: with no lines (`path @3`,
+    /// `path: @3`), the whole file.
     pub fn parse(line: &str) -> Option<Ref> {
         let line = line.trim();
         let (spec, at) = match line.rsplit_once(" @") {
@@ -103,27 +113,32 @@ impl Ref {
             ),
             None => (line, At::Top),
         };
-        let (file, lines) = spec.rsplit_once(':')?;
+        let (file, lines) = match spec.rsplit_once(':') {
+            Some((file, lines)) if lines.trim().is_empty() => (file, vec![]),
+            Some((file, lines)) => (file, ranges(lines)?),
+            None => (spec, vec![]),
+        };
         let file = file.trim();
         (!file.is_empty()).then_some(())?;
         Some(Ref {
             file: file.to_string(),
-            ranges: ranges(lines)?,
+            ranges: lines,
             at,
         })
     }
 
-    /// One the agent gave: `{"file", "lines", "patch"}`, `"patch"` 0 for the
-    /// base, none for the whole stack.
+    /// One the agent gave: `{"file", "lines", "patch"}`, no `"lines"` for
+    /// the whole file, `"patch"` 0 for the base, none for the whole stack.
     pub fn from_json(v: &Value) -> Option<Ref> {
         let file = v.get("file")?.as_str()?.trim();
         if file.is_empty() {
             return None;
         }
-        let lines = match v.get("lines")? {
-            Value::String(s) => s.clone(),
-            Value::Number(n) => n.to_string(),
-            Value::Array(a) => a
+        let lines = match v.get("lines") {
+            None | Some(Value::Null) => String::new(),
+            Some(Value::String(s)) => s.clone(),
+            Some(Value::Number(n)) => n.to_string(),
+            Some(Value::Array(a)) => a
                 .iter()
                 .map(|x| match x {
                     Value::String(s) => s.clone(),
@@ -131,7 +146,7 @@ impl Ref {
                 })
                 .collect::<Vec<_>>()
                 .join(","),
-            _ => return None,
+            Some(_) => return None,
         };
         let at = match v.get("patch").and_then(|p| p.as_u64().or_else(|| p.as_str()?.trim().parse().ok())) {
             None => At::Top,
@@ -140,13 +155,17 @@ impl Ref {
         };
         Some(Ref {
             file: file.to_string(),
-            ranges: ranges(&lines)?,
+            ranges: if lines.trim().is_empty() { vec![] } else { ranges(&lines)? },
             at,
         })
     }
 
-    /// As the comment shows it: `a.txt:2-3, 10 · as patch 1 leaves it`.
+    /// As the comment shows it: `a.txt:2-3, 10 · as patch 1 leaves it`;
+    /// the whole file, `a.txt · as patch 1 leaves it`.
     pub fn said(&self) -> String {
+        if self.whole() {
+            return format!("{} · {}", self.file, self.at_said());
+        }
         format!("{}:{} · {}", self.file, ranges_said(&self.ranges, ", "), self.at_said())
     }
 
@@ -228,15 +247,19 @@ impl Pointing {
 pub enum Given {
     Lines(Ref),
     Comment(String),
+    /// One that does not read as either: it keeps its place, and its number
+    /// with it.
+    Unread,
 }
 
-/// The references the agent gave, `v` (a list), those it can read.
+/// The references the agent gave, `v` (a list), each in its place, those
+/// it cannot read too, so that what names the others still does.
 pub fn of_json(v: Option<&Value>) -> Vec<Given> {
     let given = |r: &Value| match r.get("comment") {
         Some(c) => c.as_str().map(|c| Given::Comment(c.trim().to_string())).filter(|g| *g != Given::Comment(String::new())),
         None => Ref::from_json(r).map(Given::Lines),
     };
-    v.and_then(Value::as_array).map_or(vec![], |a| a.iter().filter_map(given).collect())
+    v.and_then(Value::as_array).map_or(vec![], |a| a.iter().map(|r| given(r).unwrap_or(Given::Unread)).collect())
 }
 
 /// What an agent wrote, `v`: its text and the references it attaches; a
@@ -258,14 +281,15 @@ pub fn text_and_refs(v: &Value) -> (String, Vec<Given>) {
 }
 
 /// The references the agent gave, the comments it named found by
-/// `comment` (their change and id): those it names that are none, left
-/// out.
+/// `comment` (their change and id): those it names that are none, and
+/// those that do not read, left out.
 pub fn resolved(given: Vec<Given>, first: Option<usize>, comment: &dyn Fn(&str) -> Option<(String, String)>) -> Vec<Pointing> {
     let mut out: Vec<Pointing> = Vec::new();
     for (k, g) in given.into_iter().enumerate() {
         let to = match g {
             Given::Lines(r) => Some(Pointer::Lines(r)),
             Given::Comment(name) => comment(&name).map(|(change, id)| Pointer::Comment { change, id }),
+            Given::Unread => None,
         };
         let Some(to) = to else { continue };
         match first {
@@ -586,7 +610,47 @@ mod tests {
         assert_eq!(r.said(), "dom/base/Foo.cpp:120-140, 200 · as patch 3 leaves it");
         assert_eq!(Ref::parse("a.txt:2 @0").map(|r| r.at), Some(At::Base));
         assert_eq!(Ref::parse("a.txt:2").map(|r| r.at), Some(At::Top));
-        assert_eq!(Ref::parse("a.txt"), None);
+        // No lines: the whole file, as the whole stack leaves it or a patch
+        // does; lines that are none, no reference.
+        let whole = Ref {
+            file: "lib/rule.mjs".into(),
+            ranges: vec![],
+            at: At::Patch(15),
+        };
+        assert_eq!(whole.line(), "lib/rule.mjs @15");
+        assert_eq!(Ref::parse(&whole.line()), Some(whole.clone()));
+        assert_eq!(Ref::parse("lib/rule.mjs: @15"), Some(whole.clone()), "as the editor starts it");
+        assert_eq!(whole.said(), "lib/rule.mjs · as patch 15 leaves it");
+        assert!(whole.whole() && !r.whole());
+        assert_eq!(Ref::parse("a.txt").map(|r| (r.whole(), r.at)), Some((true, At::Top)));
+        assert_eq!(Ref::parse("a.txt:x @1"), None);
+    }
+
+    #[test]
+    fn what_the_agent_points_at_keeps_its_number_a_whole_file_too() {
+        // As an agent gave them: lines, two whole files, one that is no
+        // reference, and lines again.
+        let v: Value = serde_json::json!({
+            "text": "See @r1, @r{2,3} and @r5.",
+            "refs": [
+                {"file": "dom/console/Console.cpp", "lines": "890-925", "patch": 1},
+                {"file": "lib/rule.mjs", "patch": 15},
+                {"file": "lib/rule.mjs", "lines": null, "patch": 19},
+                {"file": "x.txt", "lines": "nope"},
+                {"file": "lib/AdsClient.sys.mjs", "lines": "55-70", "patch": 18}
+            ]
+        });
+        let text = written_with(&v, 1, &|_| None);
+        assert!(
+            text.ends_with("```refs\nr1 dom/console/Console.cpp:890-925 @1\nr2 lib/rule.mjs @15\nr3 lib/rule.mjs @19\nr5 lib/AdsClient.sys.mjs:55-70 @18\n```"),
+            "{text}"
+        );
+        // What it names is each what it meant: r4 left out, its number too.
+        let (_, refs) = split(&text);
+        assert_eq!(refs.iter().map(|p| p.n.unwrap()).collect::<Vec<_>>(), [1, 2, 3, 5]);
+        assert!(broken("See @r1, @r{2,3} and @r5.", &[1, 2, 3, 5]).is_empty());
+        assert_eq!(of_json(v.get("refs")).len(), 5, "each in its place");
+        assert_eq!(of_json(v.get("refs"))[3], Given::Unread);
     }
 
     #[test]

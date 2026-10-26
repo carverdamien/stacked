@@ -1142,6 +1142,10 @@ fn what_is_attached_to_a_comment_goes_with_it_to_the_agent_open_or_closed() {
             n: 3,
             to: To::Lines("a.txt:1-2 @1".into()),
         },
+        Attached {
+            n: 4,
+            to: To::Lines("b.txt @2".into()),
+        },
     ];
     Db::edit(&e.db, |db| {
         db.set_note(Note { attached, ..a.clone() })?;
@@ -1168,8 +1172,9 @@ fn what_is_attached_to_a_comment_goes_with_it_to_the_agent_open_or_closed() {
         "    The user: Keep the vector.".into(),
         "  r3: a.txt:1-2 · as patch 1 leaves it:".into(),
         "        1 │ one\n        2 │ 2\n".into(),
+        "  r4: b.txt · as patch 2 leaves it:\n        1 │ new\n".into(),
         "{\"comment\": its label".into(),
-        "(The references you attach to your reply to it are numbered from r4 on.)".into(),
+        "(The references you attach to your reply to it are numbered from r5 on.)".into(),
     ] {
         assert!(prompt.contains(&said), "{said:?} in:\n{prompt}");
     }
@@ -1185,14 +1190,14 @@ fn what_is_attached_to_a_comment_goes_with_it_to_the_agent_open_or_closed() {
         pointers,
         [
             Pointing {
-                n: Some(4),
+                n: Some(5),
                 to: Pointer::Comment {
                     change: a.change.clone(),
                     id: a.id.clone()
                 }
             },
             Pointing {
-                n: Some(5),
+                n: Some(6),
                 to: Pointer::Comment {
                     change: o.change.clone(),
                     id: o.id.clone()
@@ -1205,6 +1210,7 @@ fn what_is_attached_to_a_comment_goes_with_it_to_the_agent_open_or_closed() {
     assert!(listed.contains(&format!("  r1 ↗ {open}\t")), "{listed}");
     assert!(listed.contains(&format!("  r2 ↗ {closed}\t")) && listed.contains("(closed)"), "{listed}");
     assert!(listed.contains("  r3 ⇢ a.txt:1-2 · as patch 1 leaves it"), "{listed}");
+    assert!(listed.contains("  r4 ⇢ b.txt · as patch 2 leaves it"), "{listed}");
 }
 
 #[test]
@@ -1213,19 +1219,21 @@ fn an_agent_attaches_references_to_its_reply_and_to_the_comments_it_opens() {
     e.ok(&["import", "s", "base"]);
     let id = comment(&e, &["--patch", "1", "Why", "2?"]);
     let prompts = e.root.join("prompts.txt");
-    let result = r#"{"replies": {"c1": {"text": "See there.", "refs": [{"file": "a.txt", "lines": "3,1-2", "patch": 1}, {"file": "b.txt", "lines": "1"}]}}, "comments": [{"patch": 1, "file": "a.txt", "side": "+", "line": "2", "text": "And here.", "refs": [{"file": "a.txt", "lines": "2", "patch": 0}]}]}"#;
+    let result = r#"{"replies": {"c1": {"text": "See there.", "refs": [{"file": "a.txt", "lines": "3,1-2", "patch": 1}, {"file": "b.txt", "lines": "1"}, {"file": "b.txt", "patch": 2}, {"file": "c.txt", "lines": "x"}, {"file": "a.txt", "lines": "9", "patch": 0}]}}, "comments": [{"patch": 1, "file": "a.txt", "side": "+", "line": "2", "text": "And here.", "refs": [{"file": "a.txt", "lines": "2", "patch": 0}]}]}"#;
     let claude = fake_claude(&e, "claude-refs.sh", &format!("printf '%s' \"$2\" > {}", prompts.display()), result);
     let (fine, out, err) = stacked_in(&e.src, &e.db, &["send", "s", &id, "--answer-only", "--wait"], "", &[("STACKED_CLAUDE", claude.as_path())]);
     assert!(fine, "{out}{err}");
-    // Told how to attach them.
-    assert!(std::fs::read_to_string(&prompts).unwrap().contains("{\"text\": what you write, \"refs\": [...]}"));
+    // Told how to attach them, lines or a file whole.
+    let prompt = std::fs::read_to_string(&prompts).unwrap();
+    assert!(prompt.contains("{\"text\": what you write, \"refs\": [...]}") && prompt.contains("\"lines\": \"120-140,200-210\" (none, the whole file)"), "{prompt}");
     // Kept in what it wrote, a refs block each, the ranges merged, each
     // numbered: after the comment's own (it has none), and from r1 in a
-    // comment it opens.
+    // comment it opens; a file whole, as it is; one that is no reference,
+    // left out with its number, so that what names the others still does.
     let d = Db::load(&e.db).unwrap();
     let r = stacked::held::queue(&d, "s")[0].clone();
     let h = r.held.as_ref().unwrap();
-    assert_eq!(h.replies[0].text, "See there.\n\n```refs\nr1 a.txt:1-3 @1\nr2 b.txt:1\n```");
+    assert_eq!(h.replies[0].text, "See there.\n\n```refs\nr1 a.txt:1-3 @1\nr2 b.txt:1\nr3 b.txt @2\nr5 a.txt:9 @0\n```");
     assert!(h.opened[0].text.contains("And here.\n\n```refs\nr1 a.txt:2 @0\n```"), "{}", h.opened[0].text);
 }
 
