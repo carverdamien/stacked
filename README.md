@@ -369,8 +369,12 @@ the help then names those:
   order the middle shows them: a line for each file, its path, cut to its
   end when it is too long (`…/tui/banner.rs`), and, when the path leaves
   room for them, the lines the patch adds and removes in it (`+12 −3`).
-  The pane is then as wide as the paths need, from as wide as expanded to
-  a third of the screen. ↑↓ go through the patches and those files as one
+  In the reading mode (Reading, below), each file says instead how many
+  of its changed lines are left to mark read (`7 left`), or `✓` once all
+  of them are read, and its path is cut, if it must be, to leave room for
+  that. The pane is then as wide as the paths need, from as wide as
+  expanded to a third of the screen, and keeps that width from patch to
+  patch. ↑↓ go through the patches and those files as one
   list: on a file, the middle shows it at once, its name at the top; ↑
   above the first file goes back to the patch itself, from its start, and
   ↓ under the last picks the next patch, whose files are listed in place
@@ -1258,7 +1262,9 @@ hunk's header reads the hunk, on a file's the file. Enter takes back the
 latest mark holding the line or its block, in this hunk. The
 margin shows what Space would mark (`○→✓`), or else what Enter would unmark
 (`✓→○`), and `✓` beside each line read, drawn dim; hunks, files, the
-patches on the left and the top bar count what is read (`reading 5/11`).
+patches on the left and the top bar count what is read (`reading 5/11`),
+and each file listed under a patch on the left counts what is left of it
+(`7 left`).
 
 A patch's message is read as its code is, its lines lines to review too,
 counted on its header (`✉ message   read 1/3 lines`) and with the rest: a
@@ -1887,8 +1893,11 @@ was, the patch's title kept at the top of the middle, the patches pane's
 states (expanded, files, hidden) and its files (listed under the patch
 picked, gone through with the arrows past their ends, gone into with
 Enter and →, clicked, and picked from the middle, where ← comes back to
-the file), and the comments pane's states (expanded, compact, hidden) and
-the compact view of the code as they were. With `--features web`, `tests/web.rs`
+the file; reading, each saying the lines left to mark read as marks are
+made and taken back, those of white space alone counted only as the
+settings say, the pane keeping its width from patch to patch), and the
+comments pane's states (expanded, compact, hidden) and the compact view
+of the code as they were. With `--features web`, `tests/web.rs`
 serves the editor and asks it over HTTP as a browser would: the token
 needed, the page, the wasm, the rows as they change, a key and a click,
 and the editor left, the worktree made ahead removed (Quit in the page;

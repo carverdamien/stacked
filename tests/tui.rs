@@ -992,6 +992,132 @@ fn side_by_side_too_narrow_says_what_gives_the_middle_room() {
 }
 
 #[test]
+fn reading_each_file_listed_says_the_lines_left_to_mark_read() {
+    use ratatui::style::{Color, Modifier};
+    let (_tmp, db, _src) = setup_files();
+    let mut app = open(&db).unwrap();
+    // Reading, listing files: a.txt's 8 changed lines, in four hunks, and
+    // the deep file's 2, all left to mark read, in place of the lines the
+    // patch adds and removes; the deep file's path is cut to leave room for
+    // its count.
+    keys(&mut app, &[KeyCode::Char('2'), KeyCode::Left]);
+    let screen = draw(&mut app);
+    assert_eq!(pane_lines(&screen)[1..3], ["      a.txt                       8 left", "      …/urlbar/src/tui/banner.rs  2 left"], "{screen}");
+    // A hunk of a.txt read: its count goes down, the other file's does not.
+    keys(&mut app, &[KeyCode::Enter]);
+    app.wait_blocks();
+    down_to(&mut app, "-line 2");
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    assert!(app.status.contains("read: this hunk, 2 lines"), "{}", app.status);
+    let words = pane_words(&draw(&mut app));
+    assert_eq!(words[..3], ["1 Bug 1 - two files 2/12", "a.txt 6 left", "…/urlbar/src/tui/banner.rs 2 left"], "{words:?}");
+    // All of a.txt read: a tick, the middle's cursor gone on to the deep
+    // file.
+    keys(&mut app, &[KeyCode::Char(' '), KeyCode::Char(' '), KeyCode::Char(' ')]);
+    let words = pane_words(&draw(&mut app));
+    assert_eq!(words[1..3], ["a.txt ✓", "…/urlbar/src/tui/banner.rs 2 left"], "{words:?}");
+    assert_eq!(app.rows[app.cursor].text, "-line 5");
+    // The tag looks as the rest of its line: picked, as the file the
+    // middle's cursor is in, then under the cursor, back in the patches.
+    assert_eq!(pane_cell(&mut app, "2 left").bg, Color::Indexed(238));
+    assert_eq!(pane_cell(&mut app, "✓").bg, Color::Reset);
+    keys(&mut app, &[KeyCode::Left]);
+    assert_eq!(app.file_on(), Some(1));
+    assert!(pane_cell(&mut app, "2 left").modifier.contains(Modifier::REVERSED));
+    let said = "Each file listed under the patch says how many of its changed lines are left to mark read, as 7 left, or ✓ once all of them are read.";
+    assert!(app.help().iter().any(|l| l == said), "{:?}", app.help());
+    // Enter takes a mark back: a.txt has lines left again.
+    keys(&mut app, &[KeyCode::Right, KeyCode::Home]);
+    down_to(&mut app, "+LINE 32");
+    keys(&mut app, &[KeyCode::Enter]);
+    assert!(app.status.contains("unread: 2 lines"), "{}", app.status);
+    assert_eq!(pane_words(&draw(&mut app))[1], "a.txt 2 left");
+    // Commenting, the lines the patch adds and removes, as before.
+    keys(&mut app, &[KeyCode::Char('2'), KeyCode::Left]);
+    let words = pane_words(&draw(&mut app));
+    assert_eq!(words[..3], ["1 Bug 1 - two files", "a.txt +4 −4", "…/urlbar/src/tui/banner.rs"], "{words:?}");
+    assert!(!app.help().iter().any(|l| l == said), "{:?}", app.help());
+}
+
+#[test]
+fn reading_a_file_s_lines_of_white_space_alone_count_only_when_the_settings_say_so() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("src");
+    std::fs::create_dir(&src).unwrap();
+    git(&src, &["init", "-q", "-b", "main"]);
+    git(&src, &["config", "commit.gpgsign", "false"]);
+    std::fs::write(src.join("f.txt"), "one\n").unwrap();
+    std::fs::write(src.join("g.txt"), "one\n").unwrap();
+    git(&src, &["add", "."]);
+    git(&src, &["commit", "-qm", "base"]);
+    // f.txt gets two lines of text, an empty line and a blank one between
+    // them; g.txt the empty line and the blank one alone.
+    std::fs::write(src.join("f.txt"), "one\ntwo\n\n  \nthree\n").unwrap();
+    std::fs::write(src.join("g.txt"), "one\n\n  \n").unwrap();
+    git(&src, &["commit", "-qam", "Bug 1 - more"]);
+    let db = tmp.path().join("db.jsonl");
+    stacked(&src, &db, &["import", "s", "HEAD~1"]);
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Char('2'), KeyCode::Left]);
+    let words = pane_words(&draw(&mut app));
+    assert_eq!(words, ["1 Bug 1 - more 0/3", "f.txt 2 left", "g.txt ✓"], "nothing of g.txt needs reading");
+    // With whitespace_needs_review, as the settings may say, the empty and
+    // blank lines count as any other.
+    let mut cfg = stacked::config::Config::default();
+    cfg.view.whitespace_needs_review = true;
+    let mut all = App::with_config(&db, cfg).unwrap();
+    keys(&mut all, &[KeyCode::Char('2'), KeyCode::Left]);
+    let words = pane_words(&draw(&mut all));
+    assert_eq!(words, ["1 Bug 1 - more 0/7", "f.txt 4 left", "g.txt 2 left"]);
+}
+
+#[test]
+fn reading_the_patches_pane_keeps_its_width_from_patch_to_patch() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("src");
+    std::fs::create_dir_all(src.join("docs/notes")).unwrap();
+    git(&src, &["init", "-q", "-b", "main"]);
+    git(&src, &["config", "commit.gpgsign", "false"]);
+    let lines: String = (1..=20).map(|n| format!("line {n}\n")).collect();
+    std::fs::write(src.join("docs/notes/today.txt"), &lines).unwrap();
+    std::fs::write(src.join("b.txt"), &lines).unwrap();
+    git(&src, &["add", "."]);
+    git(&src, &["commit", "-qm", "base"]);
+    // Patch 1 changes six lines of docs/notes/today.txt, patch 2 one line
+    // of b.txt.
+    std::fs::write(src.join("docs/notes/today.txt"), lines.replacen("line", "LINE", 6)).unwrap();
+    git(&src, &["commit", "-qam", "Bug 1 - notes"]);
+    std::fs::write(src.join("b.txt"), lines.replacen("line", "LINE", 1)).unwrap();
+    git(&src, &["commit", "-qam", "Bug 2 - b"]);
+    let db = tmp.path().join("db.jsonl");
+    stacked(&src, &db, &["import", "w", "HEAD~2"]);
+    let mut app = open(&db).unwrap();
+    // How wide the patches pane is: where the line right of it is drawn.
+    let width = |app: &mut App| draw(app).lines().nth(2).unwrap().chars().position(|c| c == '│');
+    // Listing files: as wide as today.txt's line needs, with the lines its
+    // patch adds and removes.
+    keys(&mut app, &[KeyCode::Left]);
+    assert_eq!(width(&mut app), Some(33));
+    // Reading, as wide as its 12 lines left need, on either patch.
+    keys(&mut app, &[KeyCode::Char('2')]);
+    let screen = draw(&mut app);
+    assert_eq!(pane_lines(&screen)[1], "      docs/notes/today.txt  12 left", "{screen}");
+    assert_eq!(width(&mut app), Some(35));
+    keys(&mut app, &[KeyCode::Down, KeyCode::Down]);
+    assert_eq!((app.sel, app.file_on()), (1, None));
+    assert_eq!(pane_words(&draw(&mut app))[2], "b.txt 2 left");
+    assert_eq!(width(&mut app), Some(35));
+    // Read whole, today.txt shows its tick, which takes less room, and the
+    // pane stays as wide.
+    keys(&mut app, &[KeyCode::Up, KeyCode::Enter]);
+    app.wait_blocks();
+    down_to(&mut app, "-line 1");
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    assert_eq!(pane_words(&draw(&mut app))[1], "docs/notes/today.txt ✓");
+    assert_eq!(width(&mut app), Some(35));
+}
+
+#[test]
 fn right_on_the_comments_hides_them() {
     let (_tmp, db, _src) = setup();
     let mut app = open(&db).unwrap();

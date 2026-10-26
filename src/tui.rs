@@ -342,27 +342,41 @@ fn short(text: &str, n: usize) -> String {
     }
 }
 
-/// The lines a patch adds and removes in a file, as the file's line in the
-/// patches pane ends with them.
-fn file_stats(added: usize, removed: usize) -> String {
-    format!(" +{added} −{removed}")
+/// What file `f`'s line in the patches pane ends with: reading, how many of
+/// its lines are left to mark read, `left`, or a tick once none are; else
+/// the lines its patch adds and removes in it.
+fn file_tag(f: &FileStat, left: Option<usize>) -> String {
+    match left {
+        Some(0) => " ✓".into(),
+        Some(n) => format!(" {n} left"),
+        None => format!(" +{} −{}", f.added, f.removed),
+    }
 }
 
 /// How wide file `f`'s line in the patches pane is after its indent, all
-/// of it said.
-fn file_said_w(f: &FileStat) -> usize {
-    f.0.chars().count() + file_stats(f.1, f.2).chars().count()
+/// of it said. Reading, `whitespace` says whether lines of white space
+/// alone need reading, and the tag is counted as wide as it gets, with
+/// none of the file's lines read.
+fn file_said_w(f: &FileStat, whitespace: Option<bool>) -> usize {
+    let left = whitespace.map(|ws| f.to_read(ws).count());
+    f.path.chars().count() + file_tag(f, left).chars().count()
 }
 
 /// File `f`'s line in the patches pane, `w` wide: indented under its patch,
-/// its path, then, where the path leaves room for them, the lines its patch
-/// adds and removes in it, at the end; else its path alone, cut to fit, its
-/// end kept.
-fn file_line((path, added, removed): &FileStat, w: usize) -> String {
+/// its path, then its tag at the end (`file_tag`). Reading, the tag is
+/// always there, and the path is cut to leave room for it, its end kept;
+/// else the tag is there only where the path leaves room for it, the path
+/// otherwise alone, cut to fit with its end kept.
+fn file_line(f: &FileStat, left: Option<usize>, w: usize) -> String {
     let room = w.saturating_sub(FILE_INDENT);
-    let stats = file_stats(*added, *removed);
-    let (n, s) = (path.chars().count(), stats.chars().count());
-    let said = if n + s <= room { format!("{}{stats}", fit(path, room - s)) } else { path_end(path, room) };
+    let tag = file_tag(f, left);
+    let (n, t) = (f.path.chars().count(), tag.chars().count());
+    let said = if left.is_some() || n + t <= room {
+        let r = room.saturating_sub(t);
+        format!("{}{tag}", fit(&path_end(&f.path, r), r))
+    } else {
+        path_end(&f.path, room)
+    };
     fit(&format!("{}{said}", " ".repeat(FILE_INDENT)), w)
 }
 
@@ -1598,7 +1612,7 @@ pub struct App {
     /// the database had then.
     busy_memo: std::cell::RefCell<Option<(usize, std::rc::Rc<Busy>)>>,
     /// The files each patch modifies, by its id, as the patches pane lists
-    /// them.
+    /// them, with the keys of the lines each changes, to count those read.
     files_memo: std::cell::RefCell<HashMap<String, std::rc::Rc<Vec<FileStat>>>>,
     /// The comments whose reply waits for review, as last read, and how
     /// many changes the database had then.
@@ -1630,9 +1644,23 @@ enum Listed {
     Head,
 }
 
-/// A file a patch modifies: its path, and the lines the patch adds and
-/// removes in it.
-type FileStat = (String, usize, usize);
+/// A file a patch modifies: its path, the lines the patch adds and removes
+/// in it, and those lines as the reading mode marks them, each one's key
+/// and whether it is white space alone.
+struct FileStat {
+    path: String,
+    added: usize,
+    removed: usize,
+    changed: Vec<(String, bool)>,
+}
+
+impl FileStat {
+    /// The keys of its lines that need reading: those of white space alone
+    /// only when `whitespace` says that they need reading too.
+    fn to_read(&self, whitespace: bool) -> impl Iterator<Item = &String> {
+        self.changed.iter().filter(move |(_, blank)| whitespace || !blank).map(|(k, _)| k)
+    }
+}
 
 /// How far a file's line in the patches pane is indented: under its
 /// patch's title, a little further in.
@@ -3181,8 +3209,8 @@ impl App {
     }
 
     /// The files patch `id` modifies, in the order the middle shows them,
-    /// each with the lines it adds and removes there: counted once, as its
-    /// versions do not change.
+    /// each with the lines it adds and removes there and their keys:
+    /// counted once, as its versions do not change.
     fn files_of(&self, id: &str) -> std::rc::Rc<Vec<FileStat>> {
         if let Some(f) = self.files_memo.borrow().get(id) {
             return f.clone();
@@ -3191,12 +3219,14 @@ impl App {
             .iter()
             .map(|fd| {
                 let lines = fd.hunks.iter().flat_map(|h| h.lines.iter());
-                let (added, removed) = lines.fold((0, 0), |(a, r), l| match l.origin {
-                    '+' => (a + 1, r),
-                    '-' => (a, r + 1),
-                    _ => (a, r),
-                });
-                (fd.path.clone(), added, removed)
+                let changed: Vec<&crate::diff::Line> = lines.filter(|l| matches!(l.origin, '+' | '-')).collect();
+                let added = changed.iter().filter(|l| l.origin == '+').count();
+                FileStat {
+                    path: fd.path.clone(),
+                    added,
+                    removed: changed.len() - added,
+                    changed: changed.iter().map(|l| (l.key.clone(), crate::diff::white_space(&l.text))).collect(),
+                }
             })
             .collect();
         let files = std::rc::Rc::new(files);
@@ -3240,7 +3270,7 @@ impl App {
         let id = self.patch_id().filter(|id| self.middle_on(id))?;
         let above = self.rows.get(..=self.cursor)?;
         let path = above.iter().rev().find(|r| r.kind == Kind::File)?.path.as_deref()?;
-        self.files_of(&id).iter().position(|(p, ..)| p == path)
+        self.files_of(&id).iter().position(|f| f.path == path)
     }
 
     /// The patches pane's cursor `delta` lines down (up, negative) the list
@@ -3297,7 +3327,7 @@ impl App {
     /// already, else once it does.
     fn show_file(&mut self, k: usize) {
         let Some(id) = self.patch_id() else { return };
-        let Some((path, ..)) = self.files_of(&id).get(k).cloned() else { return };
+        let Some(path) = self.files_of(&id).get(k).map(|f| f.path.clone()) else { return };
         let row = self.file_row(&path).filter(|_| self.middle_on(&id));
         match row.zip(self.built.clone()) {
             Some((i, built)) => {
@@ -3822,12 +3852,17 @@ impl App {
                     out.push("Press Esc for the banner, open: the agent's work on this stack; Esc there comes back here.".into());
                 }
                 match self.focus {
-                    Focus::List => out.push(match (self.list, self.file_on()) {
-                        (_, Some(_)) => "Press ↑↓ for another file of this patch, ↑ above the first for the patch itself, ↓ under the last for the next patch; → to read this file; ← to hide the patches.",
-                        (PatchesPane::Files, None) => "Press ↑↓ for another patch, or the stack at the top, and ↓ from the patch picked for its files, listed under it; → to read it; ← to hide the patches.",
-                        _ => "Press ↑↓ for another patch, or the stack at the top; → to read it; ← to list the files of the patch picked under it, then ← again to hide the patches.",
+                    Focus::List => {
+                        out.push(match (self.list, self.file_on()) {
+                            (_, Some(_)) => "Press ↑↓ for another file of this patch, ↑ above the first for the patch itself, ↓ under the last for the next patch; → to read this file; ← to hide the patches.",
+                            (PatchesPane::Files, None) => "Press ↑↓ for another patch, or the stack at the top, and ↓ from the patch picked for its files, listed under it; → to read it; ← to hide the patches.",
+                            _ => "Press ↑↓ for another patch, or the stack at the top; → to read it; ← to list the files of the patch picked under it, then ← again to hide the patches.",
+                        }
+                        .into());
+                        if self.reading && !self.files_listed().is_empty() {
+                            out.push("Each file listed under the patch says how many of its changed lines are left to mark read, as 7 left, or ✓ once all of them are read.".into());
+                        }
                     }
-                    .into()),
                     Focus::Diff => out.push(self.arrows_help()),
                     Focus::Notes => out.push(
                         "Press ↑↓ for another comment, or the list at the top (the middle stays where it is, and shows it at its top or bottom); ← to go back; → for less of the comments: a line each, then hidden."
@@ -7484,10 +7519,13 @@ impl App {
 
     /// How wide the patches pane is to be, listing files: its widest file
     /// line whole, of every patch of the stack, so that it keeps its width
-    /// as the cursor goes from patch to patch.
+    /// as the cursor goes from patch to patch. Reading, each file's tag is
+    /// counted as wide as it gets, so that the width stays as lines are
+    /// read too.
     fn files_wants(&self) -> usize {
         let Some(s) = self.current() else { return 0 };
-        let widest = s.patches.iter().filter_map(|id| self.files_of(id).iter().map(file_said_w).max()).max();
+        let whitespace = self.reading.then_some(self.cfg.view.whitespace_needs_review);
+        let widest = s.patches.iter().filter_map(|id| self.files_of(id).iter().map(|f| file_said_w(f, whitespace)).max()).max();
         widest.map_or(0, |n| FILE_INDENT + n + 1)
     }
 
@@ -7940,13 +7978,20 @@ impl App {
                     .collect()
             })
             .collect();
-        // Listing files: those of the patch picked, under it, a line each.
+        // Listing files: those of the patch picked, under it, a line each;
+        // reading, each with its lines left to mark read, as marked now.
         let files = self.files_listed();
+        let read = match self.patch_id() {
+            Some(id) if self.reading && !files.is_empty() => Some(self.db.read_keys(&self.db.patch(&id).change)),
+            _ => None,
+        };
+        let whitespace = self.cfg.view.whitespace_needs_review;
+        let left = |f: &FileStat| read.as_ref().map(|r| f.to_read(whitespace).filter(|k| !r.contains(*k)).count());
         let mut entries: Vec<ListEntry> = Vec::new();
         for (at, (&i, its)) in order.iter().zip(lines).enumerate() {
             entries.push((Listed::Patch(at, i), its));
             if at == on {
-                entries.extend(files.iter().enumerate().map(|(k, f)| (Listed::File(k), vec![file_line(f, w)])));
+                entries.extend(files.iter().enumerate().map(|(k, f)| (Listed::File(k), vec![file_line(f, left(f), w)])));
             }
         }
         // HEAD of the checkout stacked runs in: after the patches it has as
