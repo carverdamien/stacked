@@ -1103,9 +1103,12 @@ all of it as soon as it lands, for a script.
 `2` switches to reading, as self-review's view of what is left to review:
 in the middle, Space marks the block of code at the cursor read and goes on
 to the next line not read, and Enter marks it unread again (no menu in the
-code meanwhile: the other panes still have theirs). Going on, the cursor
-stays on its line of the screen and the code comes up under it, in every
-view, past the end of the patch if it takes that. A block is the
+code meanwhile: the other panes still have theirs). Going on from above
+the middle line of the screen, the cursor goes down to that line where it
+is, the code staying where it is, but no further than the middle line:
+the code comes up from there. From the middle line or below it, the
+cursor stays on its line of the screen and the code comes up under it.
+So it is in every view, past the end of the patch if it takes that. A block is the
 innermost block of code around the line with lines not read yet, from a
 tree-sitter grammar (Rust, C, C++, Python, JavaScript, TypeScript, Java,
 Go) or else the file's braces: on a line whose block is read, the block
@@ -1680,7 +1683,9 @@ says it drew (its panes, then the boxes over them, inside their borders:
 what StackED's selections keep to), a comment asked
 about and its stream and answer shown in place, the screen never waiting on
 the agent, redrawing not slowing as the agent writes, the filter kept in
-the file, the three views, reading by hunks and by a Rust file's blocks,
+the file, the three views, reading by hunks and by a Rust file's blocks
+(the cursor going down to the middle line, then the code coming up under
+it, in each view),
 editing a patch by hand at the cursor, the history screens, the branches
 History… draws and the stack diff it shows beside each change, the agent
 asked about a record of the history, a new database started from it, a

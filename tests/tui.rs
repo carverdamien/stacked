@@ -2937,33 +2937,73 @@ fn reading_goes_by_the_blocks_of_the_code() {
 }
 
 #[test]
-fn reading_on_the_cursor_stays_on_its_line_and_the_code_comes_up() {
+fn reading_on_the_cursor_goes_down_to_the_middle_then_the_code_comes_up() {
     let (_tmp, db, _src) = setup();
     let mut app = open(&db).unwrap();
     draw(&mut app);
     keys(&mut app, &[KeyCode::Char('2'), KeyCode::Enter]);
     app.wait_blocks();
+    // The screen `h` lines high, and its middle line: the middle pane's,
+    // under the top bar, over the bottom line.
+    let draw_h = |app: &mut App, h: u16| {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 120, h));
+        app.draw(&mut buf);
+        let text = (0..h).map(|y| (0..120).map(|x| buf[(x, y)].symbol()).collect::<String>()).collect::<Vec<_>>().join("\n");
+        (text, 1 + (h as usize - 2) / 2)
+    };
     // The line of the screen a row is on, as what Space would read.
     let line_of = |screen: &str, text: &str| screen.lines().position(|l| l.contains(&format!("○→✓ {text}")));
+    // A key pressed, the screen drawn `h` lines high after it, as it is
+    // (`keys` draws it 30).
+    let press = |app: &mut App, code: KeyCode, h: u16| {
+        assert_eq!(key(app, code), Effect::None, "{code:?}");
+        draw_h(app, h);
+    };
+    // The cursor down to +TWO, from the top.
+    let to_two = |app: &mut App, h: u16| {
+        press(app, KeyCode::Home, h);
+        for _ in 0..100 {
+            if app.rows[app.cursor].text == "+TWO" {
+                return;
+            }
+            press(app, KeyCode::Down, h);
+        }
+        panic!("no +TWO");
+    };
+    // Its mark taken back, the cursor on it again.
+    let unread = |app: &mut App, h: u16| {
+        to_two(app, h);
+        press(app, KeyCode::Enter, h);
+        assert!(app.status.contains("unread"), "{}", app.status);
+    };
     for view in [Layout::Unified, Layout::Split, Layout::Compact] {
         assert_eq!(app.layout, view);
-        down_to(&mut app, "+TWO");
-        let screen = draw(&mut app);
+        // Above the middle line: the cursor goes down to the next line not
+        // read, where it is, the code staying where it is.
+        to_two(&mut app, 30);
+        let (screen, middle) = draw_h(&mut app, 30);
         let y = line_of(&screen, "+TWO").unwrap_or_else(|| panic!("{view:?}:\n{screen}"));
+        assert!(y < middle, "{view:?}: above the middle:\n{screen}");
         let below = screen.lines().position(|l| l.contains("-line 39")).unwrap_or_else(|| panic!("{view:?}:\n{screen}"));
         assert!(below > y, "{view:?}: the next line not read, further down:\n{screen}");
-        // The whole patch is in sight: Space scrolls it all the same.
         keys(&mut app, &[KeyCode::Char(' ')]);
         assert_eq!(app.rows[app.cursor].text, "-line 39", "{view:?}");
-        let screen = draw(&mut app);
+        let (screen, _) = draw_h(&mut app, 30);
+        assert_eq!(line_of(&screen, "-line 39"), Some(below.min(middle)), "{view:?}: down to it:\n{screen}");
+        assert!(screen.contains("  ✓ +TWO"), "{view:?}: what was read, where it was:\n{screen}");
+        // On the middle line, or under it: the code comes up under the
+        // cursor, which stays on its line.
+        unread(&mut app, 10);
+        let (screen, middle) = draw_h(&mut app, 10);
+        let y = line_of(&screen, "+TWO").unwrap_or_else(|| panic!("{view:?}:\n{screen}"));
+        assert!(y >= middle, "{view:?}: on the middle line or under it:\n{screen}");
+        press(&mut app, KeyCode::Char(' '), 10);
+        assert_eq!(app.rows[app.cursor].text, "-line 39", "{view:?}");
+        let (screen, _) = draw_h(&mut app, 10);
         assert_eq!(line_of(&screen, "-line 39"), Some(y), "{view:?}: on the line the cursor was on:\n{screen}");
-        assert!(screen.lines().nth(y).unwrap().contains("○→✓ -line 39"), "{view:?}:\n{screen}");
-        assert!(!screen.contains("  ✓ +TWO") || screen.lines().position(|l| l.contains("  ✓ +TWO")).unwrap() < y, "{view:?}: what was read, above:\n{screen}");
         // Read again from the start, in the next view.
-        keys(&mut app, &[KeyCode::Home]);
-        down_to(&mut app, "+TWO");
-        keys(&mut app, &[KeyCode::Enter, KeyCode::Home, KeyCode::Char('1')]);
-        assert!(app.status.contains("unread") || draw(&mut app).contains("reading 0/6"), "{}", app.status);
+        unread(&mut app, 30);
+        keys(&mut app, &[KeyCode::Home, KeyCode::Char('1')]);
     }
 }
 

@@ -1345,6 +1345,10 @@ pub struct App {
     pub top: usize,
     /// The line of the middle the cursor was last drawn on.
     cursor_y: Option<usize>,
+    /// The rows the middle last drew, each with its line; and how many
+    /// lines it had: where Space, reading on, takes the cursor.
+    drawn_rows: Vec<(usize, usize)>,
+    mid_h: usize,
     /// Space moved the cursor on, reading: the row it went on to, drawn
     /// on the line the cursor was on, the rows coming up under it; with
     /// what the rows were built from, as they must still be.
@@ -1621,6 +1625,8 @@ impl App {
             cursor: 0,
             top: 0,
             cursor_y: None,
+            drawn_rows: Vec::new(),
+            mid_h: 0,
             keep: None,
             hovered: None,
             pick: 0,
@@ -3145,10 +3151,17 @@ impl App {
         }
     }
 
-    /// The cursor on to row `j`, reading on: once drawn, on the line it is
-    /// on, the rows coming up under it.
+    /// The cursor on to row `j`, reading on. On the middle line of the
+    /// middle, or under it, it stays on its line, the rows coming up under
+    /// it; above, it goes down to the row where it is drawn, as far as the
+    /// middle line, the rows coming up from there.
     fn read_on(&mut self, j: usize) {
-        self.keep = self.built.clone().zip(self.cursor_y).map(|(built, y)| (built, j, y));
+        let middle = self.mid_h / 2;
+        let y = self.cursor_y.map(|y| match y >= middle {
+            true => y,
+            false => self.drawn_rows.iter().find(|d| d.0 == j).map_or(middle, |d| d.1.min(middle)),
+        });
+        self.keep = self.built.clone().zip(y).map(|(built, y)| (built, j, y));
         self.cursor = j;
     }
 
@@ -7624,6 +7637,7 @@ impl App {
     fn draw_patch(&mut self, buf: &mut Buffer, area: Rect) -> Option<(u16, u16)> {
         let (w, h) = (area.width as usize, area.height as usize);
         self.mid_w = w;
+        self.mid_h = h;
         let layout = self.drawn_layout(w);
         let half = w.saturating_sub(3) / 2;
         let margin = if self.reading && !self.on_stack { MARGIN_W } else { 0 };
@@ -7845,6 +7859,7 @@ impl App {
         if layout != Layout::Compact {
             self.cursor_y = drawn.iter().find(|d| d.0 == self.cursor).map(|d| d.1);
         }
+        self.drawn_rows = drawn.iter().map(|&(i, y, _)| (i, y)).collect();
         if anchor.is_some() {
             return self.draw_editor(buf, area, editor_y.unwrap_or(h / 3), Focus::Diff);
         }
