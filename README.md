@@ -253,11 +253,14 @@ once it exits; closing that window before it does changes nothing. An
 editor with a window of its own (`code --wait`, `zed --wait`, `open -W -n
 -a TextEdit`) opens that window instead.
 
-StackED's icon is drawn rather than kept as a picture (`icon.rs`): the
-stack's patches as cards, the one in front a diff with the cursor at the
-end of a line, on a dark rounded square. It is the window's icon, and the
-Dock's on macOS, whether StackED is started from a terminal or from
-StackED.app, whose icon file is drawn from it at every size macOS asks for.
+StackED's icon is drawn rather than kept as a picture (`icon.rs`): an S of
+white sheets of paper, stacked along the letter, each a little further
+along than the one under it so that their edges show, fanned where the S
+turns, on a black rounded square. Small, as in the Finder's lists, the
+sheets' edges are left out, and the S is plain white. It is the window's
+icon, and the Dock's on macOS, whether StackED is started from a terminal
+or from StackED.app, whose icon file is drawn from it at every size macOS
+asks for.
 
 The editor runs on a thread of its own, drawn into a buffer of the window's
 size, as `stacked web` runs it for a page; the window (eframe: egui, on
@@ -1760,7 +1763,8 @@ again, and leaves alone something else of its name; `bundle.rs` tests when
 stacked is opened as the app, the login shell's environment read (a
 shell that never ends given up), and an edit in a window of its own waited
 for (in its folder, it failing, its window closed before it exits);
-`icon.rs`, what the icon shows where. With
+`icon.rs`, what the icon shows where, at its largest (the sheets' edges)
+and at its smallest (a plain white S), and that it is grey all over. With
 `--features demo`, `tests/demo.rs` takes the tour, each step done as Tab
 does it: the
 stand-in's fix, the board at its end, nothing made on disk; `memory.rs` tests its diffs applied as git applies them. The
