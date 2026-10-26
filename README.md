@@ -346,7 +346,9 @@ head NAME` lists them, and `--messages-to-stack [PATCH…]` and
 `--messages-to-checkout [PATCH…]` do the same, every one if none is named.
 The middle shows what the left pane's cursor is on: a patch (its message,
 then its diff, the comments under the
-lines they are on), or, on the header, the stack itself (its patches, then
+lines they are on), from a file's name when the cursor is on one of the
+files the left pane lists under the patch (the arrows, below, say how), or,
+on the header, the stack itself (its patches, then
 the comments on the stack). Scrolled past, a patch's title stays on the
 middle's first line, the rest under it, in every view of the code; a click
 on it goes back to it. The right pane lists the comments the middle
@@ -361,19 +363,30 @@ the help then names those:
 - The arrows move. ↑↓ go through the patches (the header is above the
   first), the lines of the patch, or the comments (their header above the
   first); pgup, pgdn, home and end go further. ← and → go from pane to
-  pane, and past the side panes cycle what they show: expanded, compact,
-  hidden. ← on the expanded patches makes them compact (each its number
-  and the lines it adds and removes, `+12 −3`, in a narrow pane), ← again
-  hides them, for the middle to have the width, and ← from the middle
-  brings them back expanded (each its number and title, whole, folded
-  under itself when the pane is too narrow). → on the comments does the
-  same: compact, a line for each (who, and where it is); hidden, the bar
-  saying how many there are; expanded again, each with the first line of
-  what was said last.
+  pane, and past the side panes cycle what they show. ← on the expanded
+  patches (each its number and title, whole, folded under itself when the
+  pane is too narrow) lists the files of the patch picked under it, in the
+  order the middle shows them: a line for each file, its path, cut to its
+  end when it is too long (`…/tui/banner.rs`), and, when the path leaves
+  room for them, the lines the patch adds and removes in it (`+12 −3`).
+  The pane is then as wide as the paths need, from as wide as expanded to
+  a third of the screen. ↑↓ go through the patches and those files as one
+  list: on a file, the middle shows it at once, its name at the top; ↑
+  above the first file goes back to the patch itself, from its start, and
+  ↓ under the last picks the next patch, whose files are listed in place
+  of the others. Enter or → on a file goes into the middle there, and a
+  click on a file goes to it. While the cursor is in the middle, the pane
+  shows the file the cursor is in as picked, and ← comes back to that
+  file. ← again hides the patches, for the middle to have the width, and ←
+  from the middle brings them back expanded. → on the comments makes them
+  compact, a line for each (who, and where it is); → again hides them, the
+  bar saying how many there are; and → from the middle brings them back
+  expanded, each with the first line of what was said last.
 - Enter does what is to be done where the cursor is: on a patch, read it; on
-  a line, comment on it; on a comment, reply, or, while the agent works on
-  it, open what it is writing; in the comments pane, go to the comment.
-  Elsewhere it is the menu.
+  a file the patches pane lists, read the patch there; on a line, comment
+  on it; on a comment, reply, or, while the agent works on it, open what it
+  is writing; in the comments pane, go to the comment. Elsewhere it is the
+  menu.
 - Space is the menu: all that can be done where the cursor is, then undo,
   redo, `Runs…` and quit, which every menu ends with. The stack's items
   (comment on it, ask about all, `Show…`, the stack as a list, the tree,
@@ -392,7 +405,8 @@ the help then names those:
   the banner first, when there is one (while a comment is open, or work
   waits), from wherever the cursor is; Esc there comes back where it was.
   Without a banner, it
-  goes up, from the comments to the middle, to the patches, to the stack's
+  goes up, from the comments to the middle, to the patches (from a file
+  they list, to its patch first), to the stack's
   header. In the comment editor, Esc asks what to do with the comment.
 - Every pane keeps where its cursor was, while the editor is open: the
   middle and the comments of each patch (whichever its version, so an edit
@@ -1451,11 +1465,13 @@ settings:
 - `[view]`: `layout` at the start (`unified`, `side-by-side`, `compact`);
   `reading`, to start reading; `whitespace_needs_review`, whether changed
   lines that are empty or white space alone need review in the reading mode
-  (`false`: they need no mark, and no count holds them); `patches` and
-  `comments`, the side panes at
-  the start, `"expanded"`, `"compact"` or `"hidden"` (`true` and `false`,
-  as before, are expanded and hidden); `stream_lines`, the agent's lines
-  under a comment; and
+  (`false`: they need no mark, and no count holds them); `patches`, the
+  patches pane at the start, `"expanded"`, `"files"` (the files of the
+  patch picked listed under it; `"compact"`, as versions before the files
+  wrote it, is read as them) or `"hidden"`; `comments`, the comments pane
+  at the start, `"expanded"`, `"compact"` or `"hidden"` (for both, `true`
+  and `false`, as before, are expanded and hidden); `stream_lines`, the
+  agent's lines under a comment; and
   `split_width`, the columns two sides need.
 - `[colors]`: what paints each part of the screen, as git writes a colour
   (`git config color.diff.new "green bold"`): a foreground, then a
@@ -1835,8 +1851,12 @@ it as the agent's work does; a reply taken with Enter leaving its work
 there while its comment is open, and work that brought nothing back
 reviewed for its comment alone), the comment editor hiding
 nothing in each view of the code, each pane keeping where its cursor
-was, the patch's title kept at the top of the middle, and the side panes'
-modes (expanded, compact, hidden). With `--features web`, `tests/web.rs`
+was, the patch's title kept at the top of the middle, the patches pane's
+states (expanded, files, hidden) and its files (listed under the patch
+picked, gone through with the arrows past their ends, gone into with
+Enter and →, clicked, and picked from the middle, where ← comes back to
+the file), and the comments pane's states (expanded, compact, hidden) and
+the compact view of the code as they were. With `--features web`, `tests/web.rs`
 serves the editor and asks it over HTTP as a browser would: the token
 needed, the page, the wasm, the rows as they change, a key and a click,
 and the editor left, the worktree made ahead removed (Quit in the page;
@@ -1899,8 +1919,9 @@ to where the stack is, a branch put straight back) and how a stack diff
 follows each patch by its change, a move told from a shift. Those in
 `setup.rs` show the setup screen's boxes, a server's tools let all at once
 or one by one; those in `search.rs`, which lines of a file a hunk shows
-already; those in `config.rs`, a file of settings over another, and a
-checkout's own read and written unless git tracks it.
+already; those in `config.rs`, a file of settings over another, a
+checkout's own read and written unless git tracks it, and the patches
+pane's `compact`, as versions before the files wrote it, read as them.
 
 ## Not done yet
 

@@ -7,7 +7,7 @@ use ratatui::layout::Rect;
 
 use stacked::db::{Db, Note, stack_change};
 use stacked::thread::{Role, append_turn};
-use stacked::tui::{App, Effect, Focus, Layout, Mode, Pane, Screen, Show, Spot};
+use stacked::tui::{App, Effect, Focus, Layout, Mode, Pane, PatchesPane, Screen, Show, Spot};
 
 fn git(dir: &Path, args: &[&str]) {
     let out = Command::new("git")
@@ -669,29 +669,326 @@ fn question_mark_says_what_can_be_done_where_the_cursor_is() {
     assert!(matches!(app.mode, Mode::Menu(_)), "back in the menu");
 }
 
+/// A file deep in folders, its path longer than the patches pane is wide.
+const DEEP: &str = "browser/components/urlbar/src/tui/banner.rs";
+
+/// A database holding stack `f` of three patches: the first modifies a.txt
+/// in four places and `DEEP` in one, the second b.txt, c.txt and d.txt,
+/// the third a.txt; and the repository.
+fn setup_files() -> (tempfile::TempDir, PathBuf, PathBuf) {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("src");
+    std::fs::create_dir_all(src.join(DEEP).parent().unwrap()).unwrap();
+    git(&src, &["init", "-q", "-b", "main"]);
+    git(&src, &["config", "commit.gpgsign", "false"]);
+    let lines: String = (1..=40).map(|n| format!("line {n}\n")).collect();
+    for f in ["a.txt", "b.txt", "c.txt", "d.txt", DEEP] {
+        std::fs::write(src.join(f), &lines).unwrap();
+    }
+    git(&src, &["add", "."]);
+    git(&src, &["commit", "-qm", "base"]);
+    // Lines `at` of file `f`, from 1, in capitals.
+    let shout = |f: &str, at: &[usize]| {
+        let text = std::fs::read_to_string(src.join(f)).unwrap();
+        let line = |(k, l): (usize, &str)| if at.contains(&(k + 1)) { l.to_uppercase() } else { l.to_string() };
+        let text: String = text.lines().enumerate().map(|kl| line(kl) + "\n").collect();
+        std::fs::write(src.join(f), text).unwrap();
+    };
+    shout("a.txt", &[2, 12, 22, 32]);
+    shout(DEEP, &[5]);
+    git(&src, &["commit", "-qam", "Bug 1 - two files\n\nBecause."]);
+    for f in ["b.txt", "c.txt", "d.txt"] {
+        shout(f, &[1]);
+    }
+    git(&src, &["commit", "-qam", "Bug 2 - three files"]);
+    shout("a.txt", &[39]);
+    git(&src, &["commit", "-qam", "Bug 3 - one file"]);
+    let db = tmp.path().join("db.jsonl");
+    stacked(&src, &db, &["import", "f", "HEAD~3"]);
+    (tmp, db, src)
+}
+
+/// The patches pane's lines under its header, as drawn on a screen, each
+/// cut where the pane ends.
+fn pane_lines(screen: &str) -> Vec<String> {
+    screen.lines().skip(2).map(|l| l.split('│').next().unwrap().trim_end().to_string()).take_while(|l| !l.is_empty()).collect()
+}
+
+/// The words of each of those lines.
+fn pane_words(screen: &str) -> Vec<String> {
+    pane_lines(screen).iter().map(|l| l.split_whitespace().collect::<Vec<_>>().join(" ")).collect()
+}
+
+/// How the cell where `text` starts in the patches pane (its first 40
+/// columns) looks, the screen drawn.
+fn pane_cell(app: &mut App, text: &str) -> ratatui::buffer::Cell {
+    let mut buf = Buffer::empty(Rect::new(0, 0, 120, 30));
+    app.draw(&mut buf);
+    for y in 0..30u16 {
+        let line: String = (0..40u16).map(|x| buf[(x, y)].symbol()).collect();
+        if let Some(k) = line.find(text) {
+            return buf[(line[..k].chars().count() as u16, y)].clone();
+        }
+    }
+    panic!("no {text:?} in the patches pane");
+}
+
 #[test]
-fn left_on_the_patches_cycles_them_compact_hidden_expanded() {
-    let (_tmp, db, _src) = setup();
+fn left_on_the_patches_lists_the_files_of_the_patch_picked_then_hides_them() {
+    let (_tmp, db, _src) = setup_files();
     let mut app = open(&db).unwrap();
     let screen = draw(&mut app);
-    assert!(app.list == Pane::Expanded && screen.contains("  2 Bug 2 - add b"), "expanded at the start:\n{screen}");
-    // Compact: each patch's number and the lines it adds and removes.
+    assert!(app.list == PatchesPane::Expanded, "expanded at the start");
+    assert_eq!(pane_words(&screen), ["1 Bug 1 - two files", "2 Bug 2 - three files", "3 Bug 3 - one file"], "{screen}");
+    // Listing files: each patch as expanded, and under the one picked its
+    // files, in the middle's order, each with the lines the patch adds and
+    // removes in it. The pane is as wide as the paths need, a third of the
+    // screen at most: a path longer than that keeps its end, without the
+    // lines.
     keys(&mut app, &[KeyCode::Left]);
-    assert!(app.list == Pane::Compact && app.focus == Focus::List);
+    assert!(app.list == PatchesPane::Files && app.focus == Focus::List && app.file_on().is_none());
     let screen = draw(&mut app);
-    assert!(screen.contains("\n  1 +2 −2 ") && screen.contains("\n  2 +1 −0 "), "{screen}");
-    assert!(!screen.contains("Bug 2 - add b"), "no title:\n{screen}");
+    let lines = pane_lines(&screen);
+    assert_eq!(
+        lines[..4],
+        ["  1 Bug 1 - two files", "      a.txt                        +4 −4", "      …/urlbar/src/tui/banner.rs", "  2 Bug 2 - three files"],
+        "{screen}"
+    );
+    assert_eq!(screen.lines().nth(2).unwrap().chars().nth(40), Some('│'), "40 columns:\n{screen}");
+    assert_eq!(lines.len(), 5, "{lines:?}");
+    // The stack's header has none: no patch is picked.
+    keys(&mut app, &[KeyCode::Up]);
+    assert!(app.on_stack);
+    assert_eq!(pane_words(&draw(&mut app)), ["1 Bug 1 - two files", "2 Bug 2 - three files", "3 Bug 3 - one file"]);
     // Hidden: the middle has the width.
-    keys(&mut app, &[KeyCode::Left]);
-    assert!(app.list == Pane::Hidden && app.focus == Focus::Diff);
+    keys(&mut app, &[KeyCode::Down, KeyCode::Left]);
+    assert!(app.list == PatchesPane::Hidden && app.focus == Focus::Diff);
     let screen = draw(&mut app);
-    assert!(!screen.contains("Bug 2 - add b"), "the patches are gone:\n{screen}");
+    assert!(!screen.contains("Bug 2 - three files"), "the patches are gone:\n{screen}");
     assert!(screen.lines().nth(1).unwrap().starts_with("✉ message"), "the patch has the width:\n{screen}");
-    assert!(screen.contains("patch 1 of 2"), "{screen}");
     // Expanded again, the cursor in it.
     keys(&mut app, &[KeyCode::Left]);
-    assert!(app.list == Pane::Expanded && app.focus == Focus::List);
-    assert!(draw(&mut app).contains("  2 Bug 2 - add b"));
+    assert!(app.list == PatchesPane::Expanded && app.focus == Focus::List);
+    assert_eq!(pane_words(&draw(&mut app)).len(), 3, "no files");
+}
+
+#[test]
+fn down_onto_a_file_shows_it_in_the_middle_its_name_at_the_top() {
+    let (_tmp, db, _src) = setup_files();
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Left, KeyCode::Down]);
+    // On a.txt: the middle's cursor on its name, the cursor in the patches.
+    assert_eq!((app.focus, app.sel, app.file_on()), (Focus::List, 0, Some(0)));
+    assert_eq!(app.rows[app.cursor].text, "a.txt");
+    assert!(pane_cell(&mut app, "a.txt").modifier.contains(ratatui::style::Modifier::REVERSED), "the cursor on it");
+    assert!(!pane_cell(&mut app, "1 Bug 1").modifier.contains(ratatui::style::Modifier::REVERSED), "not on its patch");
+    // On the next, further down than the middle shows: its name on the
+    // middle's first line, under the patch's title, pinned.
+    keys(&mut app, &[KeyCode::Down]);
+    assert_eq!(app.file_on(), Some(1));
+    assert_eq!(app.rows[app.cursor].text, DEEP);
+    let screen = draw(&mut app);
+    let lines: Vec<&str> = screen.lines().collect();
+    assert!(right_of_list(lines[1]).starts_with("   Bug 1 - two files"), "{screen}");
+    assert!(right_of_list(lines[2]).starts_with(DEEP), "{screen}");
+    assert!(app.hint().starts_with("enter: read it"), "{}", app.hint());
+    let help = app.help();
+    assert_eq!(help[0], "Press Enter to read this file.");
+    assert!(help.iter().any(|l| l.contains("↑ above the first for the patch itself, ↓ under the last for the next patch")), "{help:?}");
+}
+
+#[test]
+fn down_past_the_last_file_picks_the_next_patch_its_files_listed() {
+    let (_tmp, db, _src) = setup_files();
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Left, KeyCode::Down, KeyCode::Down, KeyCode::Down]);
+    // Patch 2, from its top, as any patch picked; its files under it, and
+    // patch 1's gone.
+    assert_eq!((app.sel, app.file_on(), app.cursor), (1, None, 0));
+    let screen = draw(&mut app);
+    assert_eq!(
+        pane_words(&screen),
+        ["1 Bug 1 - two files", "2 Bug 2 - three files", "b.txt +1 −1", "c.txt +1 −1", "d.txt +1 −1", "3 Bug 3 - one file"],
+        "{screen}"
+    );
+    assert!(screen.contains("│   Bug 2 - three files"), "{screen}");
+    keys(&mut app, &[KeyCode::Down, KeyCode::Down]);
+    assert_eq!(app.rows[app.cursor].text, "c.txt");
+    // Past the last patch's last file, nowhere.
+    keys(&mut app, &[KeyCode::Down, KeyCode::Down, KeyCode::Down]);
+    assert_eq!((app.sel, app.file_on()), (2, Some(0)));
+    keys(&mut app, &[KeyCode::Down]);
+    assert_eq!((app.sel, app.file_on()), (2, Some(0)));
+    // Home and End: the header, and the last patch itself; PageDown and
+    // PageUp, a page down or up the list as shown.
+    keys(&mut app, &[KeyCode::Home]);
+    assert!(app.on_stack && app.file_on().is_none());
+    keys(&mut app, &[KeyCode::End]);
+    assert!(!app.on_stack && app.sel == 2 && app.file_on().is_none());
+    keys(&mut app, &[KeyCode::PageUp]);
+    assert!(!app.on_stack && app.sel == 0 && app.file_on().is_none());
+    keys(&mut app, &[KeyCode::PageUp]);
+    assert!(app.on_stack);
+    keys(&mut app, &[KeyCode::PageDown]);
+    assert!(!app.on_stack && app.sel == 0);
+    keys(&mut app, &[KeyCode::PageDown]);
+    assert!(app.sel == 2 && app.file_on().is_none(), "past patch 1's files and patch 2, the last");
+}
+
+#[test]
+fn up_past_the_first_file_reaches_the_patch_then_the_one_above() {
+    let (_tmp, db, _src) = setup_files();
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Left, KeyCode::End, KeyCode::Up, KeyCode::Down]);
+    assert_eq!((app.sel, app.file_on()), (1, Some(0)));
+    assert_eq!(app.rows[app.cursor].text, "b.txt");
+    // The patch itself, the middle on it from its start.
+    keys(&mut app, &[KeyCode::Up]);
+    assert_eq!((app.sel, app.file_on(), app.cursor, app.top), (1, None, 0, 0));
+    assert!(pane_cell(&mut app, "2 Bug 2").modifier.contains(ratatui::style::Modifier::REVERSED));
+    // Then the one above, picked as any: its own files listed in place.
+    keys(&mut app, &[KeyCode::Up]);
+    assert_eq!((app.sel, app.file_on()), (0, None));
+    let words = pane_words(&draw(&mut app));
+    assert_eq!(words[..3], ["1 Bug 1 - two files", "a.txt +4 −4", "…/urlbar/src/tui/banner.rs"], "{words:?}");
+    assert!(!words.iter().any(|w| w.starts_with("b.txt")), "{words:?}");
+    // Esc from a file goes up to its patch too; from the patch, to the
+    // header.
+    keys(&mut app, &[KeyCode::Down, KeyCode::Down, KeyCode::Esc]);
+    assert_eq!((app.sel, app.file_on(), app.on_stack), (0, None, false));
+    keys(&mut app, &[KeyCode::Esc]);
+    assert!(app.on_stack);
+}
+
+#[test]
+fn enter_or_right_on_a_file_goes_into_the_middle_there() {
+    let (_tmp, db, _src) = setup_files();
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Left, KeyCode::Down, KeyCode::Down, KeyCode::Enter]);
+    assert_eq!(app.focus, Focus::Diff);
+    assert_eq!(app.rows[app.cursor].text, DEEP);
+    down_to(&mut app, "+LINE 5");
+    // Back, on that file; up to a.txt, and → there.
+    keys(&mut app, &[KeyCode::Left]);
+    assert_eq!((app.focus, app.file_on()), (Focus::List, Some(1)));
+    keys(&mut app, &[KeyCode::Up, KeyCode::Right]);
+    assert_eq!(app.focus, Focus::Diff);
+    assert_eq!(app.rows[app.cursor].text, "a.txt");
+}
+
+#[test]
+fn a_click_on_a_file_goes_there_and_a_second_into_the_middle() {
+    use ratatui::style::Modifier;
+    let (_tmp, db, _src) = setup_files();
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Left, KeyCode::Right]);
+    let (x, y) = at(&draw(&mut app), "…/urlbar");
+    // The mouse over it: underlined, and not picked.
+    app.hover(x, y);
+    assert_eq!(app.hovered, Some(Spot::File(1)));
+    assert_eq!(app.focus, Focus::Diff);
+    assert!(pane_cell(&mut app, "…/urlbar").modifier.contains(Modifier::UNDERLINED));
+    // A click: the cursor on it in the patches, the middle on the file.
+    app.click(x, y, false);
+    assert_eq!((app.focus, app.file_on()), (Focus::List, Some(1)));
+    draw(&mut app);
+    assert_eq!(app.rows[app.cursor].text, DEEP);
+    // Another, as Enter: into the middle there.
+    app.click(x, y, false);
+    assert_eq!(app.focus, Focus::Diff);
+    assert_eq!(app.rows[app.cursor].text, DEEP);
+    // A click on its patch: the patch itself, from its start.
+    let (x, y) = at(&draw(&mut app), "1 Bug 1");
+    keys(&mut app, &[KeyCode::Left]);
+    app.click(x, y, false);
+    assert_eq!((app.focus, app.sel, app.file_on(), app.cursor), (Focus::List, 0, None, 0));
+}
+
+#[test]
+fn the_file_the_middle_s_cursor_is_in_is_picked_and_left_comes_back_to_it() {
+    use ratatui::style::Color;
+    let (_tmp, db, _src) = setup_files();
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Left, KeyCode::Right]);
+    let picked = |app: &mut App, text: &str| pane_cell(app, text).bg == Color::Indexed(238);
+    // In the message: the patch is the pick.
+    assert!(picked(&mut app, "1 Bug 1") && !picked(&mut app, "a.txt"));
+    // In a.txt, then in the file after it: that file.
+    down_to(&mut app, "+LINE 12");
+    assert!(picked(&mut app, "a.txt") && !picked(&mut app, "1 Bug 1") && !picked(&mut app, "…/urlbar"));
+    down_to(&mut app, "+LINE 5");
+    assert!(picked(&mut app, "…/urlbar") && !picked(&mut app, "a.txt"));
+    // ← comes back to it, the middle where it was; → goes back there.
+    keys(&mut app, &[KeyCode::Left]);
+    assert_eq!((app.focus, app.file_on()), (Focus::List, Some(1)));
+    assert!(app.rows[app.cursor].text.starts_with("+LINE 5"));
+    assert!(pane_cell(&mut app, "…/urlbar").modifier.contains(ratatui::style::Modifier::REVERSED));
+    keys(&mut app, &[KeyCode::Right]);
+    assert!(app.focus == Focus::Diff && app.rows[app.cursor].text.starts_with("+LINE 5"));
+    // Back in the message, ← comes back to the patch itself.
+    keys(&mut app, &[KeyCode::Home, KeyCode::Left]);
+    assert_eq!((app.focus, app.sel, app.file_on()), (Focus::List, 0, None));
+}
+
+#[test]
+fn listing_files_the_comments_pane_and_the_compact_view_are_as_they_were() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Left, KeyCode::Right]);
+    assert_eq!(app.list, PatchesPane::Files);
+    down_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Enter]);
+    save(&mut app, "why so loud?");
+    // → on the comments: compact, a line each, then hidden.
+    keys(&mut app, &[KeyCode::Right, KeyCode::Right]);
+    assert!(app.comments == Pane::Compact && app.focus == Focus::Notes);
+    assert!(draw(&mut app).contains("you · a.txt: TWO"));
+    keys(&mut app, &[KeyCode::Right]);
+    assert!(!app.notes_shown() && app.focus == Focus::Diff);
+    // 1: side by side, then the compact view, each side a pane.
+    keys(&mut app, &[KeyCode::Char('1'), KeyCode::Char('1')]);
+    assert_eq!(app.layout, Layout::Compact);
+    assert!(draw(&mut app).contains("side-by-side, compact <>"));
+    assert_eq!(app.list, PatchesPane::Files, "the patches as they were");
+}
+
+#[test]
+fn side_by_side_too_narrow_says_what_gives_the_middle_room() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    // A comment beside patch 1: on 120 columns, the patches and the
+    // comments, expanded, leave the middle 58, short of two sides.
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Enter]);
+    save(&mut app, "why so loud?");
+    // What 1 says fits on the status line, as long as the screen is wide.
+    let one = |app: &mut App| {
+        keys(app, &[KeyCode::Char('1')]);
+        assert!(app.status.chars().count() < 120, "{}", app.status);
+        app.status.clone()
+    };
+    let said = one(&mut app);
+    assert_eq!(said, "side-by-side needs 60 columns: press ← twice on the patches to hide them, or → on the comments to make them compact");
+    assert_eq!(app.layout, Layout::Unified);
+    // Listing the files gives no room: ← once more hides the patches.
+    keys(&mut app, &[KeyCode::Left, KeyCode::Left]);
+    assert_eq!(app.list, PatchesPane::Files);
+    let said = one(&mut app);
+    assert_eq!(said, "side-by-side needs 60 columns: press ← on the patches to hide them, or → on the comments to make them compact");
+    // The comments compact: the middle has the room.
+    keys(&mut app, &[KeyCode::Right, KeyCode::Right, KeyCode::Right]);
+    assert_eq!(app.comments, Pane::Compact);
+    let said = one(&mut app);
+    assert_eq!((app.layout, said.as_str()), (Layout::Split, "side-by-side view"));
+    // Both out of sight on a screen narrower than two sides: nothing gives
+    // more room.
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Left, KeyCode::Left, KeyCode::Right, KeyCode::Right, KeyCode::Right]);
+    assert!(app.list == PatchesPane::Hidden && !app.notes_shown());
+    app.draw(&mut Buffer::empty(Rect::new(0, 0, 50, 30)));
+    key(&mut app, KeyCode::Char('1'));
+    assert_eq!(app.status, "side-by-side needs 60 columns, more than the screen has");
 }
 
 #[test]
@@ -6383,9 +6680,14 @@ fn expanded_the_patches_say_their_titles_whole() {
     let lines = pane(&mut app);
     assert!(lines.len() > 1 && lines[1].starts_with("    "), "{lines:?}");
     assert_eq!(lines.join(" ").split_whitespace().skip(1).collect::<Vec<_>>().join(" "), title, "{lines:?}");
-    // Compact: its number, and the lines it adds and removes.
+    // Listing files: the title as expanded, and its file under it, further
+    // in, with the lines the patch adds and removes in it.
     keys(&mut app, &[KeyCode::Left]);
-    assert_eq!(pane(&mut app), ["  1 +1 −1"]);
+    let (expanded, files) = (lines, pane(&mut app));
+    assert_eq!(files[..expanded.len()], expanded[..], "{files:?}");
+    assert_eq!(files.len(), expanded.len() + 1, "{files:?}");
+    let file = files.last().unwrap();
+    assert!(file.starts_with("      a.txt ") && file.ends_with(" +1 −1"), "{files:?}");
 }
 
 /// The stand-in for Phabricator, in the test of a pull: D11 holds ann's

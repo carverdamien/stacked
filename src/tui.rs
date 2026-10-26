@@ -6,12 +6,14 @@
 //! database; claude's asks run on their own and what they did shows up when
 //! it lands.
 //!
-//! The keys are few: the arrows move (← on the patches makes them compact,
-//! then hides them; → on the comments too), enter does what is to be done
-//! where the cursor is, space is the menu of all that can be done there,
-//! `?` says what that is, and esc goes back. Nothing else is a shortcut:
-//! what the menu does, only the menu does. Comments are written in an
-//! editor inline where they will show, and sent to claude from their menu.
+//! The keys are few: the arrows move (← on the patches lists the files of
+//! the patch picked under it, to jump to, then hides the patches; → on the
+//! comments makes them compact, then hides them), enter does what is to be
+//! done where the cursor is, space is the menu of all that can be done
+//! there, `?` says what that is, and esc goes back. Nothing else is a
+//! shortcut: what the menu does, only the menu does. Comments are written
+//! in an editor inline where they will show, and sent to claude from their
+//! menu.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -340,6 +342,47 @@ fn short(text: &str, n: usize) -> String {
     }
 }
 
+/// The lines a patch adds and removes in a file, as the file's line in the
+/// patches pane ends with them.
+fn file_stats(added: usize, removed: usize) -> String {
+    format!(" +{added} −{removed}")
+}
+
+/// How wide file `f`'s line in the patches pane is after its indent, all
+/// of it said.
+fn file_said_w(f: &FileStat) -> usize {
+    f.0.chars().count() + file_stats(f.1, f.2).chars().count()
+}
+
+/// File `f`'s line in the patches pane, `w` wide: indented under its patch,
+/// its path, then, where the path leaves room for them, the lines its patch
+/// adds and removes in it, at the end; else its path alone, cut to fit, its
+/// end kept.
+fn file_line((path, added, removed): &FileStat, w: usize) -> String {
+    let room = w.saturating_sub(FILE_INDENT);
+    let stats = file_stats(*added, *removed);
+    let (n, s) = (path.chars().count(), stats.chars().count());
+    let said = if n + s <= room { format!("{}{stats}", fit(path, room - s)) } else { path_end(path, room) };
+    fit(&format!("{}{said}", " ".repeat(FILE_INDENT)), w)
+}
+
+/// `path` in at most `w` characters, its end kept: whole when it fits, else
+/// `…` and as many of its last parts as fit (`…/tui/banner.rs`), else `…`
+/// and the end of its name.
+fn path_end(path: &str, w: usize) -> String {
+    let n = path.chars().count();
+    if n <= w {
+        return path.to_string();
+    }
+    if w == 0 {
+        return String::new();
+    }
+    match path.match_indices('/').map(|(i, _)| &path[i..]).find(|rest| rest.chars().count() < w) {
+        Some(rest) => format!("…{rest}"),
+        None => format!("…{}", path.chars().skip(n + 1 - w).collect::<String>()),
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
     /// The patches, on the left.
@@ -360,13 +403,16 @@ pub enum HistFocus {
 }
 
 /// What a cell of the screen shows, for a click there: the stack's header,
-/// or a patch of the list by its place; a row of the middle; the comments
-/// pane's header, or a comment; an item of a menu, or of a list screen; a
-/// line of History…'s stack diff; or a box over the rest (a menu, an editor,
-/// help), where a click is on nothing but what is in it.
+/// a patch of the list by its place, or a file of the patch picked; a row
+/// of the middle; the comments pane's header, or a comment; an item of a
+/// menu, or of a list screen; a line of History…'s stack diff; or a box
+/// over the rest (a menu, an editor, help), where a click is on nothing but
+/// what is in it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Spot {
     Patch(Option<usize>),
+    /// File `k` of the patch picked, as the patches pane lists them.
+    File(usize),
     Row(usize),
     NotesHead,
     Note(usize),
@@ -1378,6 +1424,8 @@ enum Want {
     Diff(usize),
     /// The row of file `path` nearest its line, from 1.
     Near(String, usize),
+    /// The name of file `path`, at the top of the middle.
+    File(String),
 }
 
 /// A text to read, on a screen of its own.
@@ -1396,7 +1444,7 @@ impl TextView {
     }
 }
 
-pub use crate::config::Pane;
+pub use crate::config::{Pane, PatchesPane};
 pub use crate::history::{Diffed, Entry};
 use crate::history::{note_change, way_said};
 
@@ -1426,9 +1474,13 @@ pub struct App {
     pub searching: Option<Searching>,
     pub searches: Vec<String>,
     pub focus: Focus,
-    /// How the patches are shown, on the left: expanded, compact or
-    /// hidden.
-    pub list: Pane,
+    /// How the patches are shown, on the left: expanded, listing the files
+    /// of the patch picked, or hidden.
+    pub list: PatchesPane,
+    /// The file the patches pane's cursor is on, listing files: of the
+    /// patch of this id, its place among them (`files_of`). None, on the
+    /// patch itself.
+    file_sel: Option<(String, usize)>,
     /// How the comments are shown, on the right, when there are any.
     pub comments: Pane,
     /// The comment selected in the comments pane, of `notes()`.
@@ -1470,8 +1522,9 @@ pub struct App {
     drawn_rows: Vec<(usize, usize)>,
     mid_h: usize,
     /// Space moved the cursor on, reading: the row it went on to, drawn
-    /// on the line the cursor was on, the rows coming up under it; with
-    /// what the rows were built from, as they must still be.
+    /// on the line the cursor was on, the rows coming up under it; or a
+    /// file's name gone to from the patches pane, drawn on the first line.
+    /// With what the rows were built from, as they must still be.
     keep: Option<(String, usize, usize)>,
     /// The line of a side pane the mouse is over, in the browser: a patch
     /// of the list or its header, a comment of the comments pane or its
@@ -1538,9 +1591,9 @@ pub struct App {
     /// The comments the agent works on, as last read, and how many records
     /// the database had then.
     busy_memo: std::cell::RefCell<Option<(usize, std::rc::Rc<Busy>)>>,
-    /// The lines each patch adds and removes, by its id: the compact
-    /// patches pane's stats.
-    stats_memo: std::cell::RefCell<HashMap<String, (usize, usize)>>,
+    /// The files each patch modifies, by its id, as the patches pane lists
+    /// them.
+    files_memo: std::cell::RefCell<HashMap<String, std::rc::Rc<Vec<FileStat>>>>,
     /// The comments whose reply waits for review, as last read, and how
     /// many changes the database had then.
     held_memo: std::cell::RefCell<Option<(usize, std::rc::Rc<Held>)>>,
@@ -1559,9 +1612,25 @@ pub struct App {
 /// (an agent's stream aside).
 type HistMemo = Option<((String, usize), std::rc::Rc<Vec<Entry>>)>;
 
-/// What the patches pane shows, its lines: a patch, by its place shown and
-/// in the stack; or, none, HEAD.
-type ListEntry = (Option<(usize, usize)>, Vec<String>);
+/// What the patches pane shows, with its lines.
+type ListEntry = (Listed, Vec<String>);
+
+/// What the patches pane shows: a patch, by its place shown and in the
+/// stack; a file of the patch picked, by its place among them; or HEAD.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Listed {
+    Patch(usize, usize),
+    File(usize),
+    Head,
+}
+
+/// A file a patch modifies: its path, and the lines the patch adds and
+/// removes in it.
+type FileStat = (String, usize, usize);
+
+/// How far a file's line in the patches pane is indented: under its
+/// patch's title, a little further in.
+const FILE_INDENT: usize = 6;
 
 /// What work done away from the screen came to.
 enum Done {
@@ -1742,6 +1811,7 @@ impl App {
             searches: Vec::new(),
             focus: Focus::List,
             list: cfg.view.patches,
+            file_sel: None,
             comments: cfg.view.comments,
             note_sel: 0,
             notes_head: false,
@@ -1795,7 +1865,7 @@ impl App {
             head: None,
             bg: Background::new(),
             busy_memo: std::cell::RefCell::new(None),
-            stats_memo: std::cell::RefCell::new(HashMap::new()),
+            files_memo: std::cell::RefCell::new(HashMap::new()),
             held_memo: std::cell::RefCell::new(None),
             hist_memo: std::cell::RefCell::new(None),
             spots: std::cell::RefCell::new(Vec::new()),
@@ -2357,12 +2427,16 @@ impl App {
                     .filter(|(_, r)| r.note.is_none() && r.path.as_deref() == Some(path.as_str()))
                     .min_by_key(|(_, r)| r.new_no.map_or(usize::MAX, |n| n.abs_diff(*line)))
                     .map(|(i, _)| i),
+                Want::File(path) => self.file_row(path),
             };
             match at {
                 Some(i) => {
                     self.cursor = i;
                     self.top = i.saturating_sub(self.body_h / 3);
                     self.compact.cursor = None;
+                    if matches!(w, Want::File(_)) {
+                        self.keep = self.built.clone().map(|built| (built, i, 0));
+                    }
                 }
                 // Not shown as filtered: all of them are, for it.
                 None if matches!(w, Want::Note(_)) && self.show != Show::All => {
@@ -2472,7 +2546,8 @@ impl App {
         let panes = !self.on_banner;
         match spot {
             Spot::Patch(None) => panes && self.focus == Focus::List && self.on_stack,
-            Spot::Patch(Some(i)) => panes && self.focus == Focus::List && !self.on_stack && self.sel == i,
+            Spot::Patch(Some(i)) => panes && self.focus == Focus::List && !self.on_stack && self.sel == i && self.file_on().is_none(),
+            Spot::File(k) => panes && self.file_on() == Some(k),
             Spot::Row(i) => panes && self.focus == Focus::Diff && self.cursor == i,
             Spot::NotesHead => panes && self.focus == Focus::Notes && self.notes_head,
             Spot::Note(i) => panes && self.focus == Focus::Notes && !self.notes_head && self.note_sel == i,
@@ -2607,7 +2682,7 @@ impl App {
     /// there. Not while a comment is written, nor over what `?` says.
     pub fn hover(&mut self, x: u16, y: u16) {
         let spot = self.spot_at(x, y);
-        let side = |s: &Spot| matches!(s, Spot::Patch(_) | Spot::NotesHead | Spot::Note(_));
+        let side = |s: &Spot| matches!(s, Spot::Patch(_) | Spot::File(_) | Spot::NotesHead | Spot::Note(_));
         self.hovered = spot.filter(|s| side(s) && matches!(self.mode, Mode::Normal));
         let Some(spot) = spot else { return };
         match &mut self.mode {
@@ -2675,10 +2750,15 @@ impl App {
                 self.focus = Focus::List;
                 self.on_stack = true;
             }
+            // As the arrows would: a file clicked shows in the middle, and
+            // its patch, clicked from it, from the patch's start.
             Spot::Patch(Some(i)) => {
+                self.list_to(i, None);
                 self.focus = Focus::List;
-                self.on_stack = false;
-                self.sel = i;
+            }
+            Spot::File(k) => {
+                self.list_to(self.sel, Some(k));
+                self.focus = Focus::List;
             }
             Spot::Row(i) => {
                 self.focus = Focus::Diff;
@@ -2710,11 +2790,13 @@ impl App {
     }
 
     /// What `action` does, said for where the cursor is: on a file's name,
-    /// a comment is on the file as a whole.
+    /// a comment is on the file as a whole; on a file the patches list, the
+    /// patch is read there.
     fn about_here(&self, action: &Action) -> String {
         let on_file = self.focus == Focus::Diff && self.rows.get(self.cursor).is_some_and(|r| r.kind == Kind::File);
         match action {
             Action::CommentLine if on_file => "create a comment on this file, as a whole".into(),
+            Action::Open if self.file_on().is_some() => "read this file".into(),
             _ => about(action),
         }
     }
@@ -2807,7 +2889,7 @@ impl App {
         if n == 0 {
             self.on_stack = true;
             if !self.list.shown() {
-                self.list = Pane::Expanded;
+                self.list = PatchesPane::Expanded;
             }
             if self.focus == Focus::List {
                 self.on_stack = true;
@@ -2996,52 +3078,41 @@ impl App {
             // Esc goes to the banner first, from any pane, when there is one:
             // the agent's work, open; Esc there comes back here. Without one,
             // it goes back up: from the comments to the middle, from there to
-            // the patches, from a patch to the stack's header.
+            // the patches, from a file to its patch, from a patch to the
+            // stack's header.
             (_, KeyCode::Esc) if !self.banner_lines().is_empty() => self.open_banner(0),
+            (Focus::List, KeyCode::Esc) if self.file_on().is_some() => self.list_to(self.sel, None),
             (Focus::List, KeyCode::Esc) if !self.on_stack => self.on_stack = true,
             // Up from the stack's header, the banner's last line, just above.
             (Focus::List, KeyCode::Up) if self.on_stack && !self.banner_lines().is_empty() => {
                 let last = self.banner_lines().len() - 1;
                 self.open_banner(last);
             }
-            (Focus::List, KeyCode::Down) if self.on_stack => {
-                if n > 0 {
-                    self.on_stack = false;
-                    self.sel = 0;
-                }
+            (Focus::List, KeyCode::Down) => self.list_step(1),
+            (Focus::List, KeyCode::Up) => self.list_step(-1),
+            (Focus::List, KeyCode::PageDown) => self.list_step(self.page() as isize),
+            (Focus::List, KeyCode::PageUp) => self.list_step(-(self.page() as isize)),
+            (Focus::List, KeyCode::Home) => {
+                self.on_stack = true;
+                self.file_sel = None;
             }
-            (Focus::List, KeyCode::Down) => self.sel = (self.sel + 1).min(last),
-            (Focus::List, KeyCode::Up) if self.sel == 0 => self.on_stack = true,
-            (Focus::List, KeyCode::Up) => self.sel = self.sel.saturating_sub(1),
-            (Focus::List, KeyCode::PageDown) if n > 0 => {
-                self.sel = if self.on_stack { 0 } else { (self.sel + self.page()).min(last) };
-                self.on_stack = false;
-            }
-            (Focus::List, KeyCode::PageUp) => {
-                if self.sel == 0 {
-                    self.on_stack = true;
-                }
-                self.sel = self.sel.saturating_sub(self.page());
-            }
-            (Focus::List, KeyCode::Home) => self.on_stack = true,
-            (Focus::List, KeyCode::End) if n > 0 => {
-                self.on_stack = false;
-                self.sel = last;
-            }
-            (Focus::List, KeyCode::Right) if self.current().is_some() => self.focus = Focus::Diff,
-            // Further left than the patches: they say less, compact, then
-            // make way for the middle, hidden.
+            (Focus::List, KeyCode::End) if n > 0 => self.list_to(last, None),
+            (Focus::List, KeyCode::Right) if self.current().is_some() => self.go_to_middle(),
+            // Further left than the patches: they list the files of the
+            // patch picked, then make way for the middle, hidden.
             (Focus::List, KeyCode::Left) if self.current().is_some() => {
                 self.list = self.list.next();
                 if !self.list.shown() {
                     self.focus = Focus::Diff;
                 }
             }
-            // To the patches; hidden, they are shown again, expanded.
+            // To the patches; hidden, they are shown again, expanded. Listing
+            // files, on the one the middle's cursor is in.
             (Focus::Diff, KeyCode::Left | KeyCode::Esc) => {
                 if !self.list.shown() {
                     self.list = self.list.next();
                 }
+                self.file_sel = self.file_at_cursor().zip(self.patch_id()).map(|(k, id)| (id, k));
                 self.focus = Focus::List;
             }
             (Focus::Diff, KeyCode::Right) if !self.subject_notes().is_empty() => {
@@ -3102,6 +3173,158 @@ impl App {
         Effect::None
     }
 
+    /// The files patch `id` modifies, in the order the middle shows them,
+    /// each with the lines it adds and removes there: counted once, as its
+    /// versions do not change.
+    fn files_of(&self, id: &str) -> std::rc::Rc<Vec<FileStat>> {
+        if let Some(f) = self.files_memo.borrow().get(id) {
+            return f.clone();
+        }
+        let files: Vec<FileStat> = crate::rows::parsed(self.db.patch(id))
+            .iter()
+            .map(|fd| {
+                let lines = fd.hunks.iter().flat_map(|h| h.lines.iter());
+                let (added, removed) = lines.fold((0, 0), |(a, r), l| match l.origin {
+                    '+' => (a + 1, r),
+                    '-' => (a, r + 1),
+                    _ => (a, r),
+                });
+                (fd.path.clone(), added, removed)
+            })
+            .collect();
+        let files = std::rc::Rc::new(files);
+        self.files_memo.borrow_mut().insert(id.to_string(), files.clone());
+        files
+    }
+
+    /// The files the patches pane lists under the patch picked: its files,
+    /// listing them; none on the stack's header, where no patch is picked,
+    /// nor while a patch or HEAD is being moved.
+    fn files_listed(&self) -> std::rc::Rc<Vec<FileStat>> {
+        let moving = matches!(self.mode, Mode::Moving { .. } | Mode::MovingHead { .. });
+        match self.patch_id() {
+            Some(id) if self.list == PatchesPane::Files && !self.on_stack && !moving => self.files_of(&id),
+            _ => std::rc::Rc::new(Vec::new()),
+        }
+    }
+
+    /// The file the patches pane's cursor is on, of those it lists: none
+    /// while the cursor is on a patch, or in another pane.
+    pub fn file_on(&self) -> Option<usize> {
+        let (id, k) = self.file_sel.as_ref()?;
+        let here = self.focus == Focus::List && self.patch_id().as_ref() == Some(id);
+        (here && *k < self.files_listed().len()).then_some(*k)
+    }
+
+    /// Whether the middle's rows are those of patch `id`.
+    fn middle_on(&self, id: &str) -> bool {
+        !self.on_stack && self.subject.as_deref() == Some(id)
+    }
+
+    /// The row of the middle naming file `path`.
+    fn file_row(&self, path: &str) -> Option<usize> {
+        self.rows.iter().position(|r| r.kind == Kind::File && r.path.as_deref() == Some(path))
+    }
+
+    /// The file of the patch picked the middle's cursor is in, of
+    /// `files_of`: from its name down to the next. None in the message,
+    /// and before the middle shows the patch.
+    fn file_at_cursor(&self) -> Option<usize> {
+        let id = self.patch_id().filter(|id| self.middle_on(id))?;
+        let above = self.rows.get(..=self.cursor)?;
+        let path = above.iter().rev().find(|r| r.kind == Kind::File)?.path.as_deref()?;
+        self.files_of(&id).iter().position(|(p, ..)| p == path)
+    }
+
+    /// The patches pane's cursor `delta` lines down (up, negative) the list
+    /// as it shows it: the stack's header, the patches and, listing files,
+    /// those of the patch picked under it. Onto another patch, that one is
+    /// picked. Up, it stops on the first patch before the header.
+    fn list_step(&mut self, delta: isize) {
+        let n = self.patch_count();
+        if n == 0 {
+            return;
+        }
+        let files = self.files_listed().len();
+        // The header is line 0, the patch picked line `1 + sel`, and its
+        // files the lines under it.
+        let at = if self.on_stack { 0 } else { 1 + self.sel + self.file_on().map_or(0, |k| k + 1) };
+        let to = match at {
+            0 if delta > 0 => 1,
+            0 | 1 if delta < 0 => 0,
+            _ if delta < 0 => at.saturating_sub(delta.unsigned_abs()).max(1),
+            _ => (at + delta.unsigned_abs()).min(n + files),
+        };
+        if to == at {
+            return;
+        }
+        match to {
+            0 => {
+                self.on_stack = true;
+                self.file_sel = None;
+            }
+            t if t <= 1 + self.sel => self.list_to(t - 1, None),
+            t if t <= 1 + self.sel + files => self.list_to(self.sel, Some(t - 2 - self.sel)),
+            t => self.list_to(t - 1 - files, None),
+        }
+    }
+
+    /// The patches pane's cursor on patch `sel`, or on its file `file`.
+    /// Onto another patch, the middle shows it as it shows any patch
+    /// picked; onto a file, that file; back from a file onto its patch,
+    /// the patch from its start.
+    fn list_to(&mut self, sel: usize, file: Option<usize>) {
+        let from_file = !self.on_stack && self.sel == sel && self.file_on().is_some();
+        self.on_stack = false;
+        self.sel = sel;
+        self.file_sel = file.zip(self.patch_id()).map(|(k, id)| (id, k));
+        match file {
+            Some(k) => self.show_file(k),
+            None if from_file => self.show_patch_start(),
+            None => {}
+        }
+    }
+
+    /// The middle on file `k` of the patch picked: its cursor on the file's
+    /// name, that line at the top. At once when the middle shows the patch
+    /// already, else once it does.
+    fn show_file(&mut self, k: usize) {
+        let Some(id) = self.patch_id() else { return };
+        let Some((path, ..)) = self.files_of(&id).get(k).cloned() else { return };
+        let row = self.file_row(&path).filter(|_| self.middle_on(&id));
+        match row.zip(self.built.clone()) {
+            Some((i, built)) => {
+                self.cursor = i;
+                self.keep = Some((built, i, 0));
+            }
+            None => {
+                self.built = None;
+                self.want = Some(Want::File(path));
+            }
+        }
+    }
+
+    /// The middle on the patch picked from its start, its message on the
+    /// first line, when it shows the patch.
+    fn show_patch_start(&mut self) {
+        let here = self.patch_id().is_some_and(|id| self.middle_on(&id));
+        if let Some(built) = self.built.clone().filter(|_| here) {
+            self.cursor = 0;
+            self.keep = Some((built, 0, 0));
+        }
+    }
+
+    /// Into the middle, from the patches: from a file they list, in that
+    /// file, where the middle's cursor is if it is in it, else on its name.
+    fn go_to_middle(&mut self) {
+        if let Some(k) = self.file_on()
+            && self.file_at_cursor() != Some(k)
+        {
+            self.show_file(k);
+        }
+        self.focus = Focus::Diff;
+    }
+
     /// The arrows in the compact layout: ↑↓ move down the panes, ← → turn
     /// which of them scrolls, the old side, both, or the new side, and past
     /// those go on to the pane beyond.
@@ -3152,13 +3375,37 @@ impl App {
         let next = self.layout.next();
         if next != Layout::Unified && !self.sides_fit() {
             let need = self.cfg.view.split_width;
-            self.status = self.say_keys(format!(
-                "side-by-side needs {need} columns: ← on the patches makes them compact, then hides them; → on the comments too"
-            ));
+            self.status = self.say_keys(match self.room_said() {
+                Some(how) => format!("side-by-side needs {need} columns: {how}"),
+                None => format!("side-by-side needs {need} columns, more than the screen has"),
+            });
             return;
         }
         self.set_layout(next);
         self.status = format!("{} view", next.label());
+    }
+
+    /// What gives the middle more room, as the side panes are shown now:
+    /// hiding the patches (listing their files gives none), making the
+    /// comments compact or hiding them. None when both are out of sight.
+    fn room_said(&self) -> Option<String> {
+        let patches = match self.list {
+            PatchesPane::Expanded => Some("press ← twice on the patches to hide them"),
+            PatchesPane::Files => Some("press ← on the patches to hide them"),
+            PatchesPane::Hidden => None,
+        };
+        let comments = match self.comments {
+            _ if !self.notes_shown() => None,
+            Pane::Expanded => Some("→ on the comments to make them compact"),
+            Pane::Compact => Some("→ on the comments to hide them"),
+            Pane::Hidden => None,
+        };
+        match (patches, comments) {
+            (Some(p), Some(c)) => Some(format!("{p}, or {c}")),
+            (Some(p), None) => Some(p.to_string()),
+            (None, Some(c)) => Some(format!("press {c}")),
+            (None, None) => None,
+        }
     }
 
     /// The code drawn as `l` from now on; two sides once the middle has room
@@ -3568,10 +3815,12 @@ impl App {
                     out.push("Press Esc for the banner, open: the agent's work on this stack; Esc there comes back here.".into());
                 }
                 match self.focus {
-                    Focus::List => out.push(
-                        "Press ↑↓ for another patch, or the stack at the top; → to read it; ← for less of the patches: compact, then hidden."
-                            .into(),
-                    ),
+                    Focus::List => out.push(match (self.list, self.file_on()) {
+                        (_, Some(_)) => "Press ↑↓ for another file of this patch, ↑ above the first for the patch itself, ↓ under the last for the next patch; → to read this file; ← to hide the patches.",
+                        (PatchesPane::Files, None) => "Press ↑↓ for another patch, or the stack at the top, and ↓ from the patch picked for its files, listed under it; → to read it; ← to hide the patches.",
+                        _ => "Press ↑↓ for another patch, or the stack at the top; → to read it; ← to list the files of the patch picked under it, then ← again to hide the patches.",
+                    }
+                    .into()),
                     Focus::Diff => out.push(self.arrows_help()),
                     Focus::Notes => out.push(
                         "Press ↑↓ for another comment, or the list at the top (the middle stays where it is, and shows it at its top or bottom); ← to go back; → for less of the comments: a line each, then hidden."
@@ -4792,7 +5041,7 @@ impl App {
             Action::FromPhabricator => self.prompt(Asking::Revision, ""),
             Action::Open => {
                 self.screen = Screen::Main;
-                self.focus = Focus::Diff;
+                self.go_to_middle();
             }
             Action::GoToNote => self.go_to_note(),
             Action::MessagesToStack(at) => {
@@ -7087,14 +7336,17 @@ impl App {
 
     /// How wide the side panes are, of `w`, as `left` and `right` show
     /// them: expanded, a quarter of the width (what does not fit in it
-    /// folds: the patches' titles whole); compact, what they show needs, the
-    /// patches a quarter at most, the comments a fifth; hidden, not at all.
-    /// The pane a comment is written in, `wide`, takes half the width.
-    fn side_widths(&mut self, w: usize, left: Pane, right: Pane, wide: Option<Focus>) -> (usize, usize) {
+    /// folds: the patches' titles whole); the patches listing files, as
+    /// wide as their paths need, from as wide as expanded to a third of the
+    /// width; the comments compact, what they show needs, a fifth at most;
+    /// hidden, not at all. The pane a comment is written in, `wide`, takes
+    /// half the width.
+    fn side_widths(&self, w: usize, left: PatchesPane, right: Pane, wide: Option<Focus>) -> (usize, usize) {
+        let expanded = (w / 4).clamp(20, 40);
         let mut left_w = match left {
-            Pane::Hidden => 0,
-            Pane::Compact => self.list_wants().clamp(10, (w / 4).max(10)),
-            Pane::Expanded => (w / 4).clamp(20, 40),
+            PatchesPane::Hidden => 0,
+            PatchesPane::Files => self.files_wants().clamp(expanded, (w / 3).max(expanded)),
+            PatchesPane::Expanded => expanded,
         };
         let mut right_w = match right {
             Pane::Hidden => 0,
@@ -7165,11 +7417,10 @@ impl App {
         }
     }
 
-    /// What the patches pane says of patch `id`, as `mode` shows it: its
-    /// title (expanded) or the lines it adds and removes (compact); and its
-    /// tags: what is read of it, reading; its comments the agent has not
-    /// answered last.
-    fn patch_said(&mut self, id: &str, mode: Pane) -> (String, String) {
+    /// What the patches pane says of patch `id`: its title; and its tags:
+    /// what is read of it, reading; its comments the agent has not answered
+    /// last.
+    fn patch_said(&mut self, id: &str) -> (String, String) {
         let mut tag = match self.reading.then(|| self.read_of(id)) {
             Some((n, m)) if m > 0 && n == m => " ✓".to_string(),
             Some((n, m)) if m > 0 => format!(" {n}/{m}"),
@@ -7180,45 +7431,16 @@ impl App {
         if open > 0 {
             tag += &format!(" [{open}]");
         }
-        let said = match mode {
-            Pane::Compact => {
-                let (added, removed) = self.stats(id);
-                format!("+{added} −{removed}")
-            }
-            _ => p.title().to_string(),
-        };
-        (said, tag)
+        (p.title().to_string(), tag)
     }
 
-    /// The lines patch `id` adds and removes, counted once: its versions do
-    /// not change.
-    fn stats(&self, id: &str) -> (usize, usize) {
-        if let Some(s) = self.stats_memo.borrow().get(id) {
-            return *s;
-        }
-        let mut s = (0, 0);
-        for f in crate::diff::parse_diff(&self.db.patch(id).diff, "") {
-            for l in f.hunks.iter().flat_map(|h| h.lines.iter()) {
-                match l.origin {
-                    '+' => s.0 += 1,
-                    '-' => s.1 += 1,
-                    _ => {}
-                }
-            }
-        }
-        self.stats_memo.borrow_mut().insert(id.to_string(), s);
-        s
-    }
-
-    /// How wide the patches pane is to be, compact: its widest line.
-    fn list_wants(&mut self) -> usize {
-        let Some(ids) = self.current().map(|s| s.patches.clone()) else { return 0 };
-        let mut most = 0;
-        for id in &ids {
-            let (said, tag) = self.patch_said(id, Pane::Compact);
-            most = most.max(4 + said.chars().count() + tag.chars().count());
-        }
-        most + 1
+    /// How wide the patches pane is to be, listing files: its widest file
+    /// line whole, of every patch of the stack, so that it keeps its width
+    /// as the cursor goes from patch to patch.
+    fn files_wants(&self) -> usize {
+        let Some(s) = self.current() else { return 0 };
+        let widest = s.patches.iter().filter_map(|id| self.files_of(id).iter().map(file_said_w).max()).max();
+        widest.map_or(0, |n| FILE_INDENT + n + 1)
     }
 
     /// How comment `n` is marked where it is listed: with the agent (●),
@@ -7637,16 +7859,16 @@ impl App {
             }
             _ => (self.sel, false),
         };
-        // Each patch's lines: its number and, compact, its stats; expanded,
-        // its title whole, folded under itself where the pane is narrower;
-        // its tags at the end of its first.
+        // Each patch's lines: its number, its title whole, folded under
+        // itself where the pane is narrower, and its tags at the end of its
+        // first.
         // ✉: its message differs from its commit's in the checkout.
         let differ = self.head_here().map(|h| h.differ()).unwrap_or_default();
         let lines: Vec<Vec<String>> = order
             .iter()
             .enumerate()
             .map(|(at, &i)| {
-                let (said, mut tag) = self.patch_said(&s.patches[i], self.list);
+                let (said, mut tag) = self.patch_said(&s.patches[i]);
                 if differ.contains(&i) {
                     tag += " ✉";
                 }
@@ -7654,7 +7876,7 @@ impl App {
                 let head = format!(" {mark} ");
                 let (head_w, tag_w) = (head.chars().count(), tag.chars().count());
                 let mut folded = vec![said.clone()];
-                if self.list == Pane::Expanded && head_w + said.chars().count() + tag_w > w {
+                if head_w + said.chars().count() + tag_w > w {
                     folded = wrap(&said, w.saturating_sub(head_w + tag_w).max(1));
                 }
                 if folded.is_empty() {
@@ -7670,20 +7892,37 @@ impl App {
                     .collect()
             })
             .collect();
+        // Listing files: those of the patch picked, under it, a line each.
+        let files = self.files_listed();
+        let mut entries: Vec<ListEntry> = Vec::new();
+        for (at, (&i, its)) in order.iter().zip(lines).enumerate() {
+            entries.push((Listed::Patch(at, i), its));
+            if at == on {
+                entries.extend(files.iter().enumerate().map(|(k, f)| (Listed::File(k), vec![file_line(f, w)])));
+            }
+        }
         // HEAD of the checkout stacked runs in: after the patches it has as
         // commits, under the header at the base or elsewhere.
         let moving_head = matches!(self.mode, Mode::MovingHead { .. });
-        let head = self.head_line();
-        let mut entries: Vec<ListEntry> =
-            order.iter().zip(lines).enumerate().map(|(at, (&i, its))| (Some((at, i)), its)).collect();
-        if let Some((n, line)) = &head {
-            entries.insert((*n).min(entries.len()), (None, vec![line.clone()]));
+        if let Some((n, line)) = self.head_line() {
+            let at = entries.iter().position(|(e, _)| matches!(e, Listed::Patch(at, _) if *at == n)).unwrap_or(entries.len());
+            entries.insert(at, (Listed::Head, vec![line]));
         }
-        let on_entry = match moving_head {
-            true => entries.iter().position(|(e, _)| e.is_none()),
-            false => entries.iter().position(|(e, _)| e.is_some_and(|(at, _)| at == on)),
-        }
-        .unwrap_or(0);
+        // The pick, listing files: the file the cursor is on, in this pane;
+        // from another, the file the middle's cursor is in. Else the patch.
+        let file_pick = match self.focus {
+            _ if files.is_empty() => None,
+            Focus::List => self.file_on(),
+            _ => self.file_at_cursor(),
+        };
+        let on_entry = entries
+            .iter()
+            .position(|(e, _)| match (moving_head, file_pick) {
+                (true, _) => *e == Listed::Head,
+                (false, Some(k)) => *e == Listed::File(k),
+                (false, None) => matches!(e, Listed::Patch(at, _) if *at == on),
+            })
+            .unwrap_or(0);
         // The first shown: the one the cursor is on in sight, all its lines.
         let h = area.height as usize;
         let room = h.saturating_sub(1 + edit_h);
@@ -7711,7 +7950,7 @@ impl App {
         // its place; else it is on the pane's edge it is beyond, `↓` (`↑`)
         // saying the patches go on between.
         let mut pinned: Option<(bool, String)> = None;
-        if let Some(k) = entries.iter().position(|(e, _)| e.is_none())
+        if let Some(k) = entries.iter().position(|(e, _)| *e == Listed::Head)
             && (k < top || k >= end(top, room))
         {
             let room = room.saturating_sub(1);
@@ -7729,25 +7968,35 @@ impl App {
             y += 1;
         }
         let bottom = if matches!(pinned, Some((false, _))) { h.saturating_sub(1) } else { h };
+        // The cursor on the pick, in this pane, or on a patch being moved;
+        // else the pick as it is in a pane the cursor is not in: on the
+        // banner, it is in none.
+        let here = (self.focus == Focus::List && !self.on_banner) || moving;
+        let pick = |st: Style| if here { on_cursor(st) } else { st.patch(color::picked()) };
         for (entry, its) in entries.iter().skip(top) {
             if y >= bottom {
                 break;
             }
-            let Some((at, i)) = *entry else {
-                let st = if moving_head { on_cursor(color::meta()) } else { color::meta() };
-                put(buf, area, 0, y, w, &fit(&its[0], w), st);
-                y += 1;
-                continue;
+            let (at, i) = match *entry {
+                Listed::Patch(at, i) => (at, i),
+                Listed::File(k) => {
+                    let st = if file_pick == Some(k) { pick(Style::new()) } else { Style::new() };
+                    put(buf, area, 0, y, w, &its[0], self.hovered_style(Spot::File(k), st));
+                    self.spot(area, (0, y, w), Spot::File(k));
+                    y += 1;
+                    continue;
+                }
+                Listed::Head => {
+                    let st = if moving_head { on_cursor(color::meta()) } else { color::meta() };
+                    put(buf, area, 0, y, w, &fit(&its[0], w), st);
+                    y += 1;
+                    continue;
+                }
             };
             let mut st = Style::new();
-            // The cursor on it; else picked, as in a pane the cursor is not
-            // in: on the banner, it is in none.
-            if at == on && !self.on_stack && !moving_head {
-                st = if (self.focus == Focus::List && !self.on_banner) || moving {
-                    on_cursor(st)
-                } else {
-                    st.patch(color::picked())
-                };
+            // The patch picked, unless one of its files is the pick.
+            if at == on && !self.on_stack && !moving_head && file_pick.is_none() {
+                st = pick(st);
             }
             let st = self.hovered_style(Spot::Patch(Some(at)), st);
             for line in its {

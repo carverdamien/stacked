@@ -410,7 +410,7 @@ impl App {
             KeyCode::Down if self.banner_sel >= last => {
                 self.on_banner = false;
                 if !self.list.shown() {
-                    self.list = Pane::Expanded;
+                    self.list = PatchesPane::Expanded;
                 }
                 self.focus = Focus::List;
                 self.on_stack = true;

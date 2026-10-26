@@ -732,7 +732,7 @@ impl Tour {
             }
             Step::Reading => "The agent answered your question, and changed nothing. Next, keep track of what you have read. Press 2 to switch to reading: each patch on the left then counts its changed lines read, as 0/2, and the bar at the top counts them too. In the list of patches (← from the middle), pick patch 1 and press → to read it. Then press Space: it marks the block of code at the cursor read and goes on to the next line not read, and Enter marks it unread again. Mark patch 1 read.".into(),
             Step::Commenting => "Patch 1 is read: the list marks it ✓. Read marks are kept by the lines' content, so a new version of a patch keeps them on the lines it did not change. Press 2 again to switch back to commenting, where Enter on a line comments on it.".into(),
-            Step::Views if !app.sides_fit() => "Press 1 to switch how the code is drawn: unified, side by side, then compact. Side by side needs a wider middle than this one: press ← on the patches, and they say less, compact, then ← again hides them; → on the comments does the same, and ← from the middle brings the patches back. Go through the three views. Press 1 until the code is unified again.".into(),
+            Step::Views if !app.sides_fit() => "Press 1 to switch how the code is drawn: unified, side by side, then compact. Side by side needs a wider middle than this one: press ← on the patches, and they list the files of the patch picked under it, then ← again hides them; → on the comments makes them compact, then → again hides them, and ← from the middle brings the patches back. Go through the three views. Press 1 until the code is unified again.".into(),
             Step::Views => "Press 1 to switch how the code is drawn: unified, side by side, then compact. Go through the three views. Press 1 until the code is unified again.".into(),
             Step::History => "Every change of the stack is kept. History… shows them: press ← to go to the patches and ↑ until the stack's header (≡ game) is picked, then press Space and choose History….".into(),
             Step::InHistory => "This is the history of the stack, game, newest change first. Beside the picked change is its stack diff: the patches before and after that change, and under each new version of a patch, what changed in it. Press ↑↓ to pick another change, and Esc to leave the history.".into(),
@@ -863,7 +863,7 @@ impl Tour {
             }
             Step::Views => {
                 self.seen = true;
-                app.list = crate::config::Pane::Expanded;
+                app.list = crate::config::PatchesPane::Expanded;
                 app.set_layout(Layout::Unified);
             }
             // From the stack's header, as by hand: back from the history,

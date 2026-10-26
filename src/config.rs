@@ -50,9 +50,55 @@ impl Layout {
     }
 }
 
-/// How a side pane is shown: not at all; compact, saying the least (the
-/// patches' numbers and stats, the comments a line each); or expanded, as
-/// wide as what it says needs (the patches' titles whole).
+/// How the patches pane is shown: not at all; listing the files of the
+/// patch picked under it, a line each, to jump to; or expanded, each patch
+/// its title whole.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PatchesPane {
+    Hidden,
+    Files,
+    #[default]
+    Expanded,
+}
+
+impl PatchesPane {
+    pub fn name(self) -> &'static str {
+        match self {
+            PatchesPane::Hidden => "hidden",
+            PatchesPane::Files => "files",
+            PatchesPane::Expanded => "expanded",
+        }
+    }
+
+    /// The state `s` names. `compact`, the patches' state before the files
+    /// took its place, is read as the files.
+    fn parse(s: &str) -> Option<PatchesPane> {
+        match s {
+            "hidden" => Some(PatchesPane::Hidden),
+            "files" | "compact" => Some(PatchesPane::Files),
+            "expanded" => Some(PatchesPane::Expanded),
+            _ => None,
+        }
+    }
+
+    /// The next, as ← on the patches cycles them: expanded, files, hidden,
+    /// then expanded again.
+    pub fn next(self) -> PatchesPane {
+        match self {
+            PatchesPane::Expanded => PatchesPane::Files,
+            PatchesPane::Files => PatchesPane::Hidden,
+            PatchesPane::Hidden => PatchesPane::Expanded,
+        }
+    }
+
+    pub fn shown(self) -> bool {
+        self != PatchesPane::Hidden
+    }
+}
+
+/// How the comments pane is shown: not at all; compact, a line for each
+/// comment, as narrow as those need; or expanded, the first line of what
+/// was said last under each.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Pane {
     Hidden,
@@ -79,8 +125,8 @@ impl Pane {
         }
     }
 
-    /// The next, as the arrow toward the pane's edge cycles them:
-    /// expanded, compact, hidden, then expanded again.
+    /// The next, as → on the comments cycles them: expanded, compact,
+    /// hidden, then expanded again.
     pub fn next(self) -> Pane {
         match self {
             Pane::Expanded => Pane::Compact,
@@ -203,8 +249,8 @@ pub struct View {
     /// review, in the reading mode: when not, they need no mark, and no
     /// count of lines to read holds them.
     pub whitespace_needs_review: bool,
-    /// The patches on the left, at the start: expanded, compact or hidden.
-    pub patches: Pane,
+    /// The patches on the left, at the start: expanded, files or hidden.
+    pub patches: PatchesPane,
     /// The comments on the right, when there are any, at the start.
     pub comments: Pane,
     /// The lines of claude's stream under a comment it works on.
@@ -219,7 +265,7 @@ impl Default for View {
             layout: Layout::Unified,
             reading: false,
             whitespace_needs_review: false,
-            patches: Pane::Expanded,
+            patches: PatchesPane::Expanded,
             comments: Pane::Expanded,
             stream_lines: 3,
             split_width: 60,
@@ -474,15 +520,21 @@ impl Config {
         }
         c.view.reading = v.reading.unwrap_or(c.view.reading);
         c.view.whitespace_needs_review = v.whitespace_needs_review.unwrap_or(c.view.whitespace_needs_review);
-        for (key, written, at) in [("view.patches", v.patches, &mut c.view.patches), ("view.comments", v.comments, &mut c.view.comments)] {
-            match written {
-                Some(WrittenPane::Flag(shown)) => *at = if shown { Pane::Expanded } else { Pane::Hidden },
-                Some(WrittenPane::Mode(m)) => match Pane::parse(&m) {
-                    Some(p) => *at = p,
-                    None => wrong.push(format!("{key}: {m:?} is not expanded, compact or hidden")),
-                },
-                None => {}
-            }
+        match v.patches {
+            Some(WrittenPane::Flag(shown)) => c.view.patches = if shown { PatchesPane::Expanded } else { PatchesPane::Hidden },
+            Some(WrittenPane::Mode(m)) => match PatchesPane::parse(&m) {
+                Some(p) => c.view.patches = p,
+                None => wrong.push(format!("view.patches: {m:?} is not expanded, files or hidden")),
+            },
+            None => {}
+        }
+        match v.comments {
+            Some(WrittenPane::Flag(shown)) => c.view.comments = if shown { Pane::Expanded } else { Pane::Hidden },
+            Some(WrittenPane::Mode(m)) => match Pane::parse(&m) {
+                Some(p) => c.view.comments = p,
+                None => wrong.push(format!("view.comments: {m:?} is not expanded, compact or hidden")),
+            },
+            None => {}
         }
         c.view.stream_lines = v.stream_lines.unwrap_or(c.view.stream_lines);
         if let Some(n) = v.split_width {
@@ -706,9 +758,10 @@ impl Config {
         );
         out.push_str(&format!("whitespace_needs_review = {}\n", v.whitespace_needs_review));
         out.push_str(
-            "# The patches on the left, and the comments on the right, at the start: \"expanded\" (the\n\
-             # patches' titles whole), \"compact\" (their numbers and stats; a line for each comment) or\n\
-             # \"hidden\". The arrow toward a pane's edge cycles them.\n",
+            "# The patches on the left, at the start: \"expanded\" (their titles whole), \"files\" (the\n\
+             # files of the patch picked listed under it, to jump to) or \"hidden\". The comments on\n\
+             # the right: \"expanded\", \"compact\" (a line for each) or \"hidden\". The arrow toward a\n\
+             # pane's edge cycles them.\n",
         );
         out.push_str(&format!("patches = {}\ncomments = {}\n", q(v.patches.name()), q(v.comments.name())));
         out.push_str("# The lines of claude's stream under a comment it works on.\n");
@@ -772,7 +825,9 @@ enum Kind {
     List,
     /// A colour, as git writes one.
     Color,
-    /// A side pane's mode, or true or false.
+    /// The patches pane's state, or true or false.
+    Patches,
+    /// The comments pane's state, or true or false.
     Pane,
 }
 
@@ -798,7 +853,7 @@ const SETTINGS: [(&str, Kind); 24] = [
     ("view.layout", Kind::Text),
     ("view.reading", Kind::Flag),
     ("view.whitespace_needs_review", Kind::Flag),
-    ("view.patches", Kind::Pane),
+    ("view.patches", Kind::Patches),
     ("view.comments", Kind::Pane),
     ("view.stream_lines", Kind::Count),
     ("view.split_width", Kind::Count),
@@ -835,6 +890,13 @@ fn literal(key: &str, kind: Kind, values: &[String]) -> Result<String, String> {
             Err(_) => return Err(format!("{key} is a number, not {:?}", values[0])),
         },
         Kind::List => toml::Value::Array(values.iter().map(|v| toml::Value::String(v.clone())).collect()).to_string(),
+        // `compact`, read as the files from a file written before them, is
+        // not written.
+        Kind::Patches => match one()? {
+            v @ ("true" | "false") => v.to_string(),
+            v if PatchesPane::parse(v).is_some_and(|p| p.name() == v) => toml::Value::String(v.to_string()).to_string(),
+            v => return Err(format!("{key} is expanded, files or hidden, not {v:?}")),
+        },
         Kind::Pane => match one()? {
             v @ ("true" | "false") => v.to_string(),
             v if Pane::parse(v).is_some() => toml::Value::String(v.to_string()).to_string(),
@@ -1525,24 +1587,54 @@ mod tests {
     }
 
     #[test]
-    fn a_side_pane_is_expanded_compact_or_hidden() {
-        let (c, wrong) = Config::parse("[view]\npatches = \"compact\"\ncomments = false\n").unwrap();
+    fn the_patches_pane_is_expanded_files_or_hidden() {
+        let (c, wrong) = Config::parse("[view]\npatches = \"files\"\n").unwrap();
         assert!(wrong.is_empty(), "{wrong:?}");
-        assert_eq!((c.view.patches, c.view.comments), (Pane::Compact, Pane::Hidden));
-        let (c, _) = Config::parse("[view]\npatches = true\n").unwrap();
-        assert_eq!(c.view.patches, Pane::Expanded, "shown, as before there were modes");
-        let (c, wrong) = Config::parse("[view]\ncomments = \"wide\"\n").unwrap();
-        assert_eq!(c.view.comments, Pane::Expanded, "what is wrong keeps its default");
-        assert_eq!(wrong, ["view.comments: \"wide\" is not expanded, compact or hidden"]);
-        // Written, read and refused as any setting is.
+        assert_eq!(c.view.patches, PatchesPane::Files);
+        // Compact, as versions before the files wrote it: the files.
+        let (c, wrong) = Config::parse("[view]\npatches = \"compact\"\n").unwrap();
+        assert!(wrong.is_empty(), "{wrong:?}");
+        assert_eq!(c.view.patches, PatchesPane::Files);
+        let (c, _) = Config::parse("[view]\npatches = false\n").unwrap();
+        assert_eq!(c.view.patches, PatchesPane::Hidden, "hidden, as before there were modes");
+        let (c, wrong) = Config::parse("[view]\npatches = \"wide\"\n").unwrap();
+        assert_eq!(c.view.patches, PatchesPane::Expanded, "what is wrong keeps its default");
+        assert_eq!(wrong, ["view.patches: \"wide\" is not expanded, files or hidden"]);
+        // Written, read and refused as any setting is; compact is read, and
+        // not written.
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("settings.toml");
         let vals = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-        set(&path, "view.patches", &vals(&["compact"])).unwrap();
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "[view]\npatches = \"compact\"\n");
-        assert_eq!(value_of(&Config::load(&path).0, "view.patches"), Ok(vals(&["compact"])));
-        assert!(set(&path, "view.patches", &vals(&["wide"])).unwrap_err().contains("expanded, compact or hidden"));
-        // The arrow toward a pane's edge cycles them.
+        set(&path, "view.patches", &vals(&["files"])).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "[view]\npatches = \"files\"\n");
+        assert_eq!(value_of(&Config::load(&path).0, "view.patches"), Ok(vals(&["files"])));
+        assert!(set(&path, "view.patches", &vals(&["compact"])).unwrap_err().contains("expanded, files or hidden, not \"compact\""));
+        std::fs::write(&path, "[view]\npatches = \"compact\"\n").unwrap();
+        assert_eq!(value_of(&Config::load(&path).0, "view.patches"), Ok(vals(&["files"])));
+        assert!(Config::default().render().contains("\npatches = \"expanded\"\n"));
+        // ← on the patches cycles them.
+        let all = [PatchesPane::Expanded, PatchesPane::Files, PatchesPane::Hidden];
+        assert_eq!(all.map(PatchesPane::next), [PatchesPane::Files, PatchesPane::Hidden, PatchesPane::Expanded]);
+    }
+
+    #[test]
+    fn the_comments_pane_is_expanded_compact_or_hidden() {
+        let (c, wrong) = Config::parse("[view]\ncomments = \"compact\"\n").unwrap();
+        assert!(wrong.is_empty(), "{wrong:?}");
+        assert_eq!(c.view.comments, Pane::Compact);
+        let (c, _) = Config::parse("[view]\ncomments = false\n").unwrap();
+        assert_eq!(c.view.comments, Pane::Hidden, "hidden, as before there were modes");
+        let (c, wrong) = Config::parse("[view]\ncomments = \"files\"\n").unwrap();
+        assert_eq!(c.view.comments, Pane::Expanded, "the files are the patches'");
+        assert_eq!(wrong, ["view.comments: \"files\" is not expanded, compact or hidden"]);
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("settings.toml");
+        let vals = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        set(&path, "view.comments", &vals(&["compact"])).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "[view]\ncomments = \"compact\"\n");
+        assert_eq!(value_of(&Config::load(&path).0, "view.comments"), Ok(vals(&["compact"])));
+        assert!(set(&path, "view.comments", &vals(&["files"])).unwrap_err().contains("expanded, compact or hidden"));
+        // → on the comments cycles them.
         assert_eq!([Pane::Expanded.next(), Pane::Compact.next(), Pane::Hidden.next()], [Pane::Compact, Pane::Hidden, Pane::Expanded]);
     }
 
