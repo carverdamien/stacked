@@ -75,9 +75,6 @@ enum Cmd {
     /// Open the editor: `stacked FILE` is `stacked open FILE`, and
     /// `stacked` alone opens the default database.
     Open { file: Option<PathBuf> },
-    /// The editor in a browser: a server on this machine, and the browser
-    /// opened on it. The cursor follows the mouse: a click is Enter, a right
-    /// click Space. Built with `--features web`.
     /// A tour of the editor, in sections, the most useful first, on a game
     /// of tic-tac-toe played in a file, a move a patch. It writes nothing on
     /// disk but `[demo] seen` in the settings: opened again, it starts on
@@ -85,6 +82,9 @@ enum Cmd {
     /// `--features demo`.
     #[cfg(feature = "demo")]
     Demo,
+    /// The editor in a browser: a server on this machine, and the browser
+    /// opened on it. The cursor follows the mouse: a click is Enter, a right
+    /// click Space. Built with `--features web`.
     #[cfg(feature = "web")]
     Web {
         /// The port of 127.0.0.1 to listen on; else any free one.
