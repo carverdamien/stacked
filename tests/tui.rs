@@ -3206,6 +3206,50 @@ fn the_history_of_the_stack_its_patches_and_comments() {
 }
 
 #[test]
+fn what_changed_between_versions_is_painted_as_words_in_interdiffs_and_stack_diffs() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    // A second version of patch 1: its title reworded.
+    Db::edit(&db, |d| {
+        let s = d.stack("s")?.clone();
+        let mut draft = stacked::mbox::Draft::from(d.patch(&s.patches[0]));
+        draft.message = "Bug 1 - shout two, reworded".into();
+        stacked::ops::replace(d, "s", 0, draft, "reword").map(|_| ())
+    })
+    .unwrap();
+    app.refresh();
+    // The style of the cell `dx` after where `text` is on the screen.
+    let style_of = |app: &mut App, text: &str, dx: usize| {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 120, 30));
+        app.draw(&mut buf);
+        for y in 0..30 {
+            let line: String = (0..120).map(|x| buf[(x, y)].symbol()).collect();
+            if let Some(at) = line.find(text) {
+                let c = &buf[((line[..at].chars().count() + dx) as u16, y)];
+                return (c.fg, c.bg, c.modifier);
+            }
+        }
+        panic!("no {text}");
+    };
+    let as_drawn = |s: ratatui::style::Style| (s.fg.unwrap_or_default(), s.bg.unwrap_or_default(), s.add_modifier);
+    let (word, line) = (stacked::paint::color::add_word(), stacked::paint::color::add());
+    let added = "+Subject: Bug 1 - shout two, reworded";
+    let reworded = added.find("reworded").unwrap();
+    // The interdiff of the new version: the words put in, as words; the rest
+    // of the line, as added.
+    choose(&mut app, "Versions of this patch…");
+    assert_eq!(app.screen, Screen::Versions);
+    assert_eq!(style_of(&mut app, added, reworded), as_drawn(word), "reworded");
+    assert_eq!(style_of(&mut app, added, 1), as_drawn(line), "Subject");
+    // The stack diff of the change, in the history: the same.
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Home]);
+    choose(&mut app, "History…");
+    assert_eq!(app.screen, Screen::History);
+    assert_eq!(style_of(&mut app, added, reworded), as_drawn(word), "reworded, in the history");
+    assert_eq!(style_of(&mut app, added, 1), as_drawn(line), "Subject, in the history");
+}
+
+#[test]
 fn the_history_shows_each_change_as_a_stack_diff() {
     let (_tmp, db, _src) = setup();
     let mut app = open(&db).unwrap();

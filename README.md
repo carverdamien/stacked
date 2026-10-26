@@ -370,7 +370,11 @@ the help then names those:
   every view, a line removed and the line added in its place (paired as the
   two sides pair them), when the two are almost the same, at least half of
   what they say, show what changed in them in the colours for words
-  (`removed_word`, `added_word`), the rest of them in the lines' own. Made
+  (`removed_word`, `added_word`), the rest of them in the lines' own. So do
+  the lines of an interdiff, what changed from one version of a patch to the
+  next (`Versions…`), and of the stack diffs (`History…`, the edits' `What
+  this edit changed…`, the review of the agent's work), paired by their
+  first sign. Made
   shorter than the cursor's line, the screen keeps the cursor's line in
   sight, on its last line, in every view.
 - `2` switches between commenting and reading (below).
@@ -1722,7 +1726,8 @@ what StackED's selections keep to), a comment asked
 about and its stream and answer shown in place, the screen never waiting on
 the agent, redrawing not slowing as the agent writes, the filter kept in
 the file, the three views, what changed in a line almost the same as the
-one removed painted as words (and lines quite other, not), reading by hunks and by a Rust file's blocks
+one removed painted as words (and lines quite other, not), in the code, in
+a version's interdiff and in the history's stack diff, reading by hunks and by a Rust file's blocks
 (the cursor going down to the middle line, then the code coming up under
 it, in each view),
 editing a patch by hand at the cursor, the history screens, the branches

@@ -195,19 +195,31 @@ fn word_diff(old: &str, new: &str) -> Option<(Spans, Spans)> {
 /// each pair almost the same, the ranges of the characters that changed in
 /// each (`word_diff`), its sign first. Else none.
 pub fn changed_words(lines: &[crate::diff::Line]) -> Vec<Spans> {
+    word_spans(&lines.iter().map(|l| l.text.as_str()).collect::<Vec<_>>())
+}
+
+/// What changed in each of `lines`, lines of a diff as it is written, each
+/// its sign first (an interdiff's, its outer sign): as `changed_words` says,
+/// a line's `---` or `+++` header no line removed or added, but the end of
+/// a run.
+pub fn word_spans(lines: &[&str]) -> Vec<Spans> {
+    let sign = |l: &str| match l.chars().next() {
+        Some('-') if !l.starts_with("---") => '-',
+        Some('+') if !l.starts_with("+++") => '+',
+        _ => ' ',
+    };
     let mut out = vec![Vec::new(); lines.len()];
     let mut i = 0;
     while i < lines.len() {
-        if lines[i].origin != '-' {
+        if sign(lines[i]) != '-' {
             i += 1;
             continue;
         }
-        let removed = lines[i..].iter().take_while(|l| l.origin == '-').count();
-        let added = lines[i + removed..].iter().take_while(|l| l.origin == '+').count();
+        let removed = lines[i..].iter().take_while(|l| sign(l) == '-').count();
+        let added = lines[i + removed..].iter().take_while(|l| sign(l) == '+').count();
         for k in 0..removed.min(added) {
             let (d, a) = (i + k, i + removed + k);
-            let text = |l: &crate::diff::Line| l.text.get(1..).unwrap_or("").to_string();
-            if let Some((was, is)) = word_diff(&text(&lines[d]), &text(&lines[a])) {
+            if let Some((was, is)) = word_diff(&lines[d][1..], &lines[a][1..]) {
                 let signed = |r: Spans| r.into_iter().map(|(s, e)| (s + 1, e + 1)).collect();
                 out[d] = signed(was);
                 out[a] = signed(is);
@@ -744,6 +756,25 @@ mod tests {
         for k in [0, 3, 6, 7] {
             assert!(words[k].is_empty(), "{k}");
         }
+    }
+
+    #[test]
+    fn an_interdiff_s_lines_are_paired_by_their_outer_sign() {
+        // Two versions' mails, diffed: the outer sign first, the patch's own
+        // after it; the headers no line removed or added.
+        let lines = [
+            "--- 1234abcd",
+            "+++ 5678ef01",
+            "@@ -3,3 +3,3 @@",
+            "-+    let total = price * count;",
+            "++    let total = price * quantity;",
+            " +    fine();",
+        ];
+        let words = super::word_spans(&lines);
+        assert!(words[..3].iter().all(Vec::is_empty), "{words:?}");
+        assert_eq!(words[3], [(26, 31)], "count");
+        assert_eq!(words[4], [(26, 34)], "quantity");
+        assert!(words[5].is_empty());
     }
 
     #[test]

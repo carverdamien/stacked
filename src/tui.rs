@@ -73,24 +73,7 @@ pub(crate) fn row_parts(row: &Row, selected: bool) -> Vec<(String, Style)> {
         if selected {
             word = word.add_modifier(Modifier::REVERSED);
         }
-        let chars: Vec<char> = row.text.chars().collect();
-        let mut parts = Vec::new();
-        let mut at = 0;
-        for &(s, e) in &row.words {
-            let (s, e) = (s.clamp(at, chars.len()), e.clamp(at, chars.len()));
-            if e <= s {
-                continue;
-            }
-            if s > at {
-                parts.push((chars[at..s].iter().collect(), st));
-            }
-            parts.push((chars[s..e].iter().collect(), word));
-            at = e;
-        }
-        if at < chars.len() {
-            parts.push((chars[at..].iter().collect(), st));
-        }
-        return parts;
+        return split_words(&row.text, &row.words, st, word);
     }
     let bar = row.text.find(BAR).filter(|_| row.kind == Kind::Comment && row.turn.is_some());
     let Some(at) = bar else {
@@ -176,6 +159,37 @@ fn top_for(k: usize, y: usize, pinned: impl Fn(usize) -> bool) -> usize {
     if pinned(top) { (k + 1).saturating_sub(y).min(k) } else { top }
 }
 
+/// `text` as parts: the characters `words` says (ranges, as
+/// `rows::changed_words` gives them) in `word`, the rest in `st`.
+fn split_words(text: &str, words: &[(usize, usize)], st: Style, word: Style) -> Parts {
+    let chars: Vec<char> = text.chars().collect();
+    let mut parts = Vec::new();
+    let mut at = 0;
+    for &(s, e) in words {
+        let (s, e) = (s.clamp(at, chars.len()), e.clamp(at, chars.len()));
+        if e <= s {
+            continue;
+        }
+        if s > at {
+            parts.push((chars[at..s].iter().collect(), st));
+        }
+        parts.push((chars[s..e].iter().collect(), word));
+        at = e;
+    }
+    if at < chars.len() || parts.is_empty() {
+        parts.push((chars[at..].iter().collect(), st));
+    }
+    parts
+}
+
+/// A line of an interdiff or a mail, as parts coloured as a diff's
+/// (`diff_style`): what changed in it, given as `words`, in the colour for
+/// words.
+fn diff_line_parts(line: &str, words: &[(usize, usize)]) -> Parts {
+    let word = if line.starts_with('+') { color::add_word() } else { color::del_word() };
+    split_words(line, words, diff_style(line), word)
+}
+
 /// A line of an interdiff or a mail, coloured as a diff's.
 fn diff_style(line: &str) -> Style {
     match line.chars().next() {
@@ -207,32 +221,79 @@ fn diff_lines(diff: &[Diffed]) -> Vec<(String, Style)> {
         .collect()
 }
 
-/// `line` cut into lines of at most `w` characters, between words where it
-/// can be, those after the first indented by `indent`: a long line of a
-/// stack diff, kept in its pane.
-fn fold(line: &str, w: usize, indent: usize) -> Vec<String> {
-    let mut rest: Vec<char> = line.chars().collect();
-    if rest.len() <= w || w <= indent + 10 {
-        return vec![line.to_string()];
+/// A stack diff's lines as parts, coloured as `diff_lines` colours them; in
+/// the interdiffs under its patches, what changed in a line almost the same
+/// as the one paired with it, in the colour for words.
+fn diff_parts(diff: &[Diffed]) -> Vec<Parts> {
+    let lines = diff_lines(diff);
+    let mut out: Vec<Parts> = lines.iter().map(|(t, st)| vec![(t.clone(), *st)]).collect();
+    // An interdiff's lines, one run of them at a time: drawn as ` ` and
+    // `Diffed::text`'s indent, then the line.
+    let shift = 1 + Diffed::Code(String::new()).text().chars().count();
+    let mut k = 0;
+    while k < diff.len() {
+        let start = k;
+        while matches!(diff.get(k), Some(Diffed::Code(_))) {
+            k += 1;
+        }
+        if k == start {
+            k += 1;
+            continue;
+        }
+        let code: Vec<&str> = diff[start..k].iter().map(|d| if let Diffed::Code(l) = d { l.as_str() } else { "" }).collect();
+        for (j, words) in crate::rows::word_spans(&code).into_iter().enumerate().filter(|(_, w)| !w.is_empty()) {
+            let (text, st) = &lines[start + j];
+            let word = if code[j].starts_with('+') { color::add_word() } else { color::del_word() };
+            let words: Vec<(usize, usize)> = words.iter().map(|&(s, e)| (s + shift, e + shift)).collect();
+            out[start + j] = split_words(text, &words, *st, word);
+        }
     }
+    out
+}
+
+/// A line of `parts` cut into lines of at most `w` characters, between
+/// words where it can be, those after the first indented by `indent`: a
+/// long line of a stack diff, kept in its pane. Each character keeps its
+/// colour, an indent the first part's.
+fn fold_parts(parts: &[(String, Style)], w: usize, indent: usize) -> Vec<Parts> {
+    let mut rest: Vec<(char, Style)> = parts.iter().flat_map(|(text, st)| text.chars().map(move |c| (c, *st))).collect();
+    if rest.len() <= w || w <= indent + 10 {
+        return vec![parts.to_vec()];
+    }
+    let lead = parts.first().map_or(Style::new(), |(_, st)| *st);
+    // Characters back into parts, those of a colour together.
+    let joined = |cs: &[(char, Style)]| -> Parts {
+        let mut out: Parts = Vec::new();
+        for &(c, st) in cs {
+            match out.last_mut() {
+                Some((text, was)) if *was == st => text.push(c),
+                _ => out.push((c.to_string(), st)),
+            }
+        }
+        out
+    };
     let mut out = Vec::new();
     while rest.len() > w {
         // The last space in the line's second half, else where it ends.
-        let cut = match rest[..=w].iter().rposition(|c| *c == ' ') {
+        let cut = match rest[..=w].iter().rposition(|(c, _)| *c == ' ') {
             Some(at) if at > w / 2 => at,
             _ => w,
         };
-        out.push(rest[..cut].iter().collect::<String>().trim_end().to_string());
+        let mut piece = rest[..cut].to_vec();
+        while piece.last().is_some_and(|(c, _)| c.is_whitespace()) {
+            piece.pop();
+        }
+        out.push(joined(&piece));
         rest.drain(..cut);
-        while rest.first() == Some(&' ') {
+        while rest.first().is_some_and(|(c, _)| *c == ' ') {
             rest.remove(0);
         }
         if rest.is_empty() {
             return out;
         }
-        rest.splice(0..0, std::iter::repeat_n(' ', indent));
+        rest.splice(0..0, std::iter::repeat_n((' ', lead), indent));
     }
-    out.push(rest.into_iter().collect());
+    out.push(joined(&rest));
     out
 }
 
@@ -1399,7 +1460,7 @@ pub struct App {
     hist_top: usize,
     /// The lines of the stack diff of the record picked, and what they were
     /// made of: the stacks diffed, the width.
-    pub hist_rows: Vec<(String, Style)>,
+    pub hist_rows: Vec<Parts>,
     hist_built: Option<(Option<usize>, Option<usize>, usize)>,
     /// The run a transcript is of, and how far it is scrolled up.
     transcript: Option<String>,
@@ -5157,9 +5218,9 @@ impl App {
             }
             Action::WhatChanged(rev) => {
                 let Ok(s) = self.db.node(rev) else { return Effect::None };
-                let mut lines = vec![(format!("@{rev} · {} · {}", local_time(s.time), s.op), color::file())];
-                lines.extend(diff_lines(&crate::history::what_changed(&self.db, rev)));
-                self.open_text(format!("what the edit that made @{rev} changed"), lines);
+                let mut lines: Vec<Parts> = vec![vec![(format!("@{rev} · {} · {}", local_time(s.time), s.op), color::file())]];
+                lines.extend(diff_parts(&crate::history::what_changed(&self.db, rev)));
+                self.open_parts(format!("what the edit that made @{rev} changed"), lines);
             }
             Action::History => self.open_list(Screen::History),
             Action::Versions => {
@@ -8230,8 +8291,10 @@ impl App {
             .map_or("never in the stack".to_string(), |(r, s)| format!("@{r} {} · {}", local_time(s.time), s.op));
         let here = if self.current().is_some_and(|s| s.patches.contains(&p.id)) { ", in the stack" } else { "" };
         put(buf, area, 0, 0, w, &fit(&format!(" v{}{here} · {say} · {made}", self.pick + 1), w), color::file());
-        for (y, l) in text.lines().take(h.saturating_sub(1)).enumerate() {
-            put(buf, area, 0, y + 1, w, &fit(l, w), diff_style(l));
+        let lines: Vec<&str> = text.lines().collect();
+        let words = crate::rows::word_spans(&lines);
+        for (y, (l, words)) in lines.iter().zip(&words).take(h.saturating_sub(1)).enumerate() {
+            put_parts(buf, area, 0, y + 1, w, &diff_line_parts(l, words));
         }
     }
 
@@ -8316,10 +8379,7 @@ impl App {
             // Made, or deleted, its header says.
             let mut diff = crate::history::stack_diff(&self.db, e.from, e.to, true);
             diff.retain(|d| !matches!(d, Diffed::Made | Diffed::Deleted));
-            self.hist_rows = diff_lines(&diff)
-                .into_iter()
-                .flat_map(|(l, st)| fold(&l, w.saturating_sub(1), 6).into_iter().map(move |l| (l, st)))
-                .collect();
+            self.hist_rows = diff_parts(&diff).into_iter().flat_map(|parts| fold_parts(&parts, w.saturating_sub(1), 6)).collect();
             self.hist_built = Some(want);
             self.hist_cursor = self.hist_cursor.min(self.hist_rows.len().saturating_sub(1));
         }
@@ -8338,9 +8398,10 @@ impl App {
         }
         for y in 0..rows {
             let i = self.hist_top + y;
-            let Some((l, st)) = self.hist_rows.get(i) else { break };
-            let st = if focus && i == self.hist_cursor { st.add_modifier(Modifier::REVERSED) } else { *st };
-            put(buf, area, 0, y + 2, w, &fit(l, w), st);
+            let Some(parts) = self.hist_rows.get(i) else { break };
+            let lit = focus && i == self.hist_cursor;
+            let parts: Parts = parts.iter().map(|(t, st)| (t.clone(), if lit { st.add_modifier(Modifier::REVERSED) } else { *st })).collect();
+            put_parts(buf, area, 0, y + 2, w, &parts);
             spot_in(&self.spots, area, (0, y + 2, w, 1), Spot::HistRow(i));
         }
     }
@@ -8768,13 +8829,32 @@ mod tests {
 
     #[test]
     fn a_long_line_of_a_stack_diff_folds_between_words() {
+        use ratatui::style::{Color, Modifier, Style};
+        let fold = |line: &str, w: usize, indent: usize| -> Vec<String> {
+            super::fold_parts(&[(line.to_string(), Style::new())], w, indent)
+                .into_iter()
+                .map(|parts| parts.into_iter().map(|(text, _)| text).collect())
+                .collect()
+        };
         let line = " 1 ~ Bug 1 - parse skips blank lines, total does not overflow (reworded)";
-        assert_eq!(
-            super::fold(line, 40, 6),
-            [" 1 ~ Bug 1 - parse skips blank lines,", "      total does not overflow (reworded)"]
-        );
+        assert_eq!(fold(line, 40, 6), [" 1 ~ Bug 1 - parse skips blank lines,", "      total does not overflow (reworded)"]);
         // A word longer than the line is cut where the line ends.
-        assert_eq!(super::fold("     ++averyveryverylongwordindeedsolong", 20, 6), ["     ++averyveryvery", "      longwordindeed", "      solong"]);
-        assert_eq!(super::fold("short", 20, 6), ["short"]);
+        assert_eq!(fold("     ++averyveryverylongwordindeedsolong", 20, 6), ["     ++averyveryvery", "      longwordindeed", "      solong"]);
+        assert_eq!(fold("short", 20, 6), ["short"]);
+        // Each character keeps its colour, folded; the indent is the first
+        // part's.
+        let (plain, word) = (Style::new().fg(Color::Green), Style::new().fg(Color::Green).add_modifier(Modifier::REVERSED));
+        let parts = vec![
+            ("+ the total is ".to_string(), plain),
+            ("price times quantity".to_string(), word),
+            (" now".to_string(), plain),
+        ];
+        assert_eq!(
+            super::fold_parts(&parts, 24, 2),
+            [
+                vec![("+ the total is ".to_string(), plain), ("price".to_string(), word)],
+                vec![("  ".to_string(), plain), ("times quantity".to_string(), word), (" now".to_string(), plain)],
+            ]
+        );
     }
 }

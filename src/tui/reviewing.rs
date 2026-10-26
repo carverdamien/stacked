@@ -272,9 +272,9 @@ impl App {
         // The patch the lines of code under it are of, by its entry among
         // the stack operations, which have every entry but those lines.
         let mut under = None;
-        for (k, (d, (text, st))) in diff.iter().zip(diff_lines(&diff)).enumerate() {
+        for (k, (d, parts)) in diff.iter().zip(diff_parts(&diff)).enumerate() {
             let start = v.lines.len();
-            v.lines.extend(fold(&text, w.saturating_sub(1), 6).into_iter().map(|l| vec![(l, st)]));
+            v.lines.extend(fold_parts(&parts, w.saturating_sub(1), 6));
             v.spans.push(start..v.lines.len());
             let code = matches!(d, Diffed::Code(_));
             if !code {
