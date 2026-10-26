@@ -29,6 +29,12 @@ struct Cli {
 }
 
 /// Which comments `comments` lists, as the editor's Show… picks them.
+/// A shell `completions` completes stacked in.
+#[derive(Clone, Copy, ValueEnum)]
+enum Shell {
+    Zsh,
+}
+
 #[derive(Clone, Copy, ValueEnum)]
 enum ShowArg {
     All,
@@ -107,6 +113,19 @@ enum Cmd {
         #[cfg(target_os = "macos")]
         #[arg(long, value_name = "DIR", num_args = 0..=1)]
         bundle: Option<Option<PathBuf>>,
+    },
+    /// The completion of stacked's commands for a shell, zsh's: kept as
+    /// `_stacked` in a folder of `$fpath`, or read by `source <(stacked
+    /// completions zsh)` once compinit has run. TAB then offers the
+    /// commands and their options, and the stacks, patches, comments and
+    /// runs of the database.
+    Completions { shell: Shell },
+    /// What the shell's completion offers for the words after `stacked`,
+    /// the last being typed: for the function `completions` prints.
+    #[command(name = "__complete", hide = true)]
+    Complete {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        words: Vec<String>,
     },
     /// The stacks: name, patches, the stack it is on.
     Stacks,
@@ -909,6 +928,12 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
         }
         #[cfg(feature = "app")]
         Cmd::App { .. } => stacked::app::run(path)?,
+        Cmd::Completions { shell: Shell::Zsh } => print!("{}", stacked::complete::ZSH),
+        Cmd::Complete { words } => {
+            let mut cli = <Cli as clap::CommandFactory>::command();
+            cli.build();
+            print!("{}", stacked::complete::complete(&cli, &words, path).lines());
+        }
         Cmd::Stacks => {
             let db = Db::load(path)?;
             for s in db.stacks() {
@@ -1858,7 +1883,15 @@ fn main() {
     // here for the commands, but those asks run by themselves.
     let quiet = matches!(
         cli.cmd,
-        Some(Cmd::Open { .. } | Cmd::Prompt { .. } | Cmd::Record { .. } | Cmd::Land { .. } | Cmd::Fits { .. } | Cmd::Config { .. }) | None
+        Some(
+            Cmd::Open { .. }
+                | Cmd::Prompt { .. }
+                | Cmd::Record { .. }
+                | Cmd::Land { .. }
+                | Cmd::Fits { .. }
+                | Cmd::Config { .. }
+                | Cmd::Complete { .. }
+        ) | None
     );
     if !quiet {
         for w in stacked::config::warnings() {

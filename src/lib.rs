@@ -15,6 +15,7 @@ pub mod blocks;
 pub mod bundle;
 pub mod check;
 pub mod claude;
+pub mod complete;
 pub mod config;
 pub mod db;
 #[cfg(feature = "demo")]

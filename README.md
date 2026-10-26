@@ -48,6 +48,24 @@ eframe (egui), on OpenGL, which the build fetches: on macOS nothing more is
 needed; elsewhere, what eframe needs there (the X11 or Wayland libraries).
 On macOS, `stacked app --bundle` then makes StackED.app, for the Dock.
 
+### Completion in zsh
+
+`stacked completions zsh` prints stacked's completion for zsh. Keep it
+where zsh finds its functions:
+
+```sh
+mkdir -p ~/.zfunc && stacked completions zsh > ~/.zfunc/_stacked
+# and in ~/.zshrc, before compinit runs: fpath=(~/.zfunc $fpath)
+```
+
+or have ~/.zshrc read it, once compinit has run: `source <(stacked
+completions zsh)`. TAB then offers stacked's commands and their options,
+each with what it does, the values an option lists (`--show`'s), files
+where a file goes, and from the database (`-f`'s, else the one stacked
+opens) its stacks, a stack's patches with their titles, its comments (to
+reply to, or send) and the agent's runs. The function asks stacked each
+time (`stacked __complete`), so it is never out of date with it.
+
 ## Running
 
 ```sh

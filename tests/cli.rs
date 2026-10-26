@@ -3142,3 +3142,55 @@ fn phabricator_s_commands_are_there_when_built_with_it() {
         assert!(listed(&help, "import") && listed(&help, "pull"), "{help}");
     }
 }
+
+#[test]
+fn the_shell_completes_the_commands_and_what_the_database_holds() {
+    let e = env();
+    e.ok(&["import", "s", "base"]);
+    let offered = |words: &[&str]| e.ok(&[&["__complete", "--"][..], words].concat());
+    // The commands, each with what it does; not those hidden.
+    let commands = offered(&[""]);
+    assert!(commands.lines().any(|l| l.starts_with("show:")), "{commands}");
+    assert!(commands.lines().any(|l| l.starts_with("completions:")), "{commands}");
+    assert!(!commands.contains("__complete"), "{commands}");
+    // The stacks, and a stack's patches with their titles.
+    assert_eq!(offered(&["show", ""]), "s:3 patches\n");
+    let patches = offered(&["show", "s", ""]);
+    assert!(patches.starts_with("1:Bug 1 - change two\n2:Bug 2 - add b\n3:Bug 3 - café"), "{patches}");
+    // A command's options; what an option lists; a file's, files.
+    let options = offered(&["comments", "s", "--"]);
+    assert!(options.lines().any(|l| l == "--show") && options.contains("--file:The database\n"), "{options}");
+    assert!(offered(&["comments", "s", "--show", ""]).lines().any(|l| l.starts_with("to-send:")));
+    assert_eq!(offered(&["-f", ""]), ":files\n");
+    // A comment, to reply to: its id, and what it says.
+    let id = comment(&e, &["Why", "this?"]);
+    assert!(offered(&["reply", "s", ""]).lines().any(|l| l == format!("{id}:you: Why this?")), "{}", offered(&["reply", "s", ""]));
+    // The function zsh runs, run as completion runs it, on the words up to
+    // the cursor's: `_describe` given what to offer, `_files` asked for
+    // files. No rc file of the user's is read (`-f`).
+    let function = e.root.join("_stacked");
+    std::fs::write(&function, e.ok(&["completions", "zsh"])).unwrap();
+    let bin = Path::new(env!("CARGO_BIN_EXE_stacked")).parent().unwrap();
+    let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap_or_default());
+    let zsh = |words: &str| {
+        let script = format!(
+            "compdef() {{ :; }}; _describe() {{ print -rl -- \"${{(@P)2}}\"; }}; _files() {{ print files; }}; source \"$1\"; words=({words}); CURRENT=${{#words}}; _stacked"
+        );
+        let out = Command::new("zsh")
+            .args(["-fc", &script, "zsh"])
+            .arg(&function)
+            .current_dir(&e.src)
+            .env("PATH", &path)
+            .env("STACKED_FILE", &e.db)
+            .env("STACKED_CONFIG", "/nonexistent/stacked.toml")
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        String::from_utf8_lossy(&out.stdout).to_string()
+    };
+    if Command::new("zsh").arg("--version").output().is_err() {
+        return;
+    }
+    assert!(zsh("stacked show s ''").starts_with("1:Bug 1 - change two\n2:Bug 2 - add b\n"), "{}", zsh("stacked show s ''"));
+    assert_eq!(zsh("stacked -f ''"), "files\n");
+}
