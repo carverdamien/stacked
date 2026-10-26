@@ -78,7 +78,7 @@ lines (\\n line breaks, a line per point) so it is easy to read in a \
 terminal -- no prose, no \
 markdown, no code fences.";
 
-const GIT_SUBCOMMANDS: [&str; 14] = [
+const GIT_SUBCOMMANDS: [&str; 16] = [
     "status",
     "log",
     "show",
@@ -87,17 +87,26 @@ const GIT_SUBCOMMANDS: [&str; 14] = [
     "restore",
     "reset",
     "commit",
-    "rebase",
     "cherry-pick",
     "apply",
     "checkout",
     "switch",
-    "config",
+    // A rebase takes the plan the ask writes (`-i`, `--onto` with it): as
+    // it goes on, or gives up.
+    "rebase -i",
+    "rebase --continue",
+    "rebase --skip",
+    "rebase --abort",
 ];
 
-const READ_COMMANDS: [&str; 22] = [
-    "grep", "rg", "find", "ls", "cat", "head", "tail", "wc", "sort", "uniq", "cut", "tr", "awk",
-    "sed", "fd", "tree", "which", "file", "stat", "dirname", "basename", "realpath",
+/// git's settings, read: none set, as one may run a program
+/// (`core.fsmonitor`, `sequence.editor`), nor given a command (`git -c`).
+const GIT_CONFIG_READS: [&str; 4] = ["--get", "--get-all", "--get-regexp", "--list"];
+
+/// What runs another program (`awk`'s `system`, `fd -x`) is not here.
+const READ_COMMANDS: [&str; 20] = [
+    "grep", "rg", "find", "ls", "cat", "head", "tail", "wc", "sort", "uniq", "cut", "tr", "sed", "tree", "which",
+    "file", "stat", "dirname", "basename", "realpath",
 ];
 
 /// The git history operations, and read-only tools, an editing ask may run
@@ -108,10 +117,31 @@ pub fn allowed_tools() -> String {
         .iter()
         .map(|s| format!("Bash(git {s} *)"))
         .collect();
-    tools.push("Bash(git -c *)".into());
+    tools.extend(GIT_CONFIG_READS.iter().map(|r| format!("Bash(git config {r} *)")));
     tools.extend(["Read", "Grep", "Glob", "LS"].map(String::from));
     tools.extend(READ_COMMANDS.iter().map(|c| format!("Bash({c} *)")));
     tools.join(",")
+}
+
+/// What an editing ask may not run, though `allowed_tools` would let it:
+/// what makes those commands run another program, which could reach the
+/// network. Claude refuses what one of these matches, whatever allows it.
+pub fn refused_tools() -> String {
+    [
+        "git rebase *--exec*",
+        "git rebase * -x*",
+        "rg *--pre*",
+        "sort *--compress-program*",
+        "find *-exec*",
+        "find *-ok*",
+        "find *-delete*",
+        "find *-fprint*",
+        "find *-fls*",
+    ]
+    .iter()
+    .map(|r| format!("Bash({r})"))
+    .collect::<Vec<_>>()
+    .join(",")
 }
 
 /// Text with a leading ```lang and a trailing ``` taken off, as
@@ -464,8 +494,19 @@ mod tests {
     #[test]
     fn allowed_tools_has_no_network() {
         let t = allowed_tools();
-        assert!(t.contains("Bash(git rebase *)") && t.contains("Bash(rg *)") && t.contains("Read"));
+        assert!(t.contains("Bash(git rebase -i *)") && t.contains("Bash(rg *)") && t.contains("Read"));
         assert!(!t.contains("push") && !t.contains("fetch"));
+        // Nothing that would run another program, nor set what does.
+        let tools: Vec<&str> = t.split(',').collect();
+        for no in ["Bash(git -c *)", "Bash(git config *)", "Bash(git rebase *)", "Bash(awk *)", "Bash(fd *)"] {
+            assert!(!tools.contains(&no), "{no}");
+        }
+        assert!(tools.contains(&"Bash(git config --get *)"));
+        // And what would, of what it lets run, refused.
+        let refused = refused_tools();
+        for r in ["Bash(git rebase *--exec*)", "Bash(rg *--pre*)", "Bash(find *-exec*)", "Bash(sort *--compress-program*)"] {
+            assert!(refused.split(',').any(|x| x == r), "{r}");
+        }
     }
 
     #[test]

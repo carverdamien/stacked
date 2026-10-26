@@ -127,6 +127,11 @@ enum Cmd {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         words: Vec<String>,
     },
+    /// The rebase plan PLAN an ask wrote, given git as its todo TODO once
+    /// checked: the sequence editor of its rebases. A plan that runs a
+    /// command is refused, the rebase not started.
+    #[command(name = "__plan", hide = true)]
+    Plan { plan: PathBuf, todo: PathBuf },
     /// The stacks: name, patches, the stack it is on.
     Stacks,
     /// Make an empty stack, on a commit of the repository here.
@@ -928,6 +933,12 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
         }
         #[cfg(feature = "app")]
         Cmd::App { .. } => stacked::app::run(path)?,
+        Cmd::Plan { plan, todo } => {
+            let text = std::fs::read_to_string(&plan)
+                .map_err(|e| Error(format!("no plan in {}: {e}; write it there first", plan.display())))?;
+            ask::check_plan(&text)?;
+            std::fs::write(&todo, text).map_err(|e| Error(format!("{}: {e}", todo.display())))?;
+        }
         Cmd::Completions { shell: Shell::Zsh } => print!("{}", stacked::complete::ZSH),
         Cmd::Complete { words } => {
             let mut cli = <Cli as clap::CommandFactory>::command();
@@ -1901,6 +1912,7 @@ fn main() {
                 | Cmd::Fits { .. }
                 | Cmd::Config { .. }
                 | Cmd::Complete { .. }
+                | Cmd::Plan { .. }
         ) | None
     );
     if !quiet {

@@ -862,6 +862,20 @@ its agent rebase. Claude refuses a command that starts by setting a
 variable (`GIT_SEQUENCE_EDITOR=… git rebase -i`), as it refuses any command
 that no rule allows.
 
+What a change may run reaches no network. It may run git's history
+commands (`status`, `log`, `show`, `diff`, `add`, `restore`, `reset`,
+`commit`, `cherry-pick`, `apply`, `checkout`, `switch`), `git rebase` with
+its plan (`-i`, and `--continue`, `--skip`, `--abort`), git's settings to
+read them (`git config --get`, `--list`), and commands that read (`grep`,
+`rg`, `find`, `cat`, `sed`, `sort` and the like). It may not set git's
+settings (`git -c`, `git config` otherwise), as one can run a program, and
+stacked has claude refuse what would make the rest run another program
+(`--disallowedTools`: `git rebase --exec`, `find -exec`, `rg --pre`, `sort
+--compress-program`), as claude's own refusals win over what it allows. The
+plan is checked before git takes it: one with an `exec` line is refused, and
+the rebase is not started. Claude's rules are what it is let do, not a
+wall around what it runs: for that, claude's sandbox.
+
 Changes are checked when they land, like any edit. A patch's change slots
 into the stack in its place. Before it finishes,
 the agent runs `stacked fits`, which says whether the patches above still
@@ -1670,7 +1684,9 @@ or to what reads it.
 through `git am`, the tree, recovery from broken lines, comments on the
 stack, a patch and a line, every way of asking about them (a script stands
 in for the agent and rewrites commits with git, with a plain `git rebase
--i` that takes the plan written to the todo file the prompt names, runs `stacked fits`,
+-i` that takes the plan written to the todo file the prompt names, and
+none without a plan or with one that runs a command, claude told what to
+refuse; runs `stacked fits`,
 answers, opens comments, tests), a split following its comments, a comment
 moved to the stack, a patch's comment asked of the whole stack adding a
 patch on top, a reply written again, asks waiting their turn, a rebase, the stack not
