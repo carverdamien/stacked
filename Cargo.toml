@@ -18,8 +18,8 @@ path = "src/main.rs"
 # (`rustup target add wasm32-unknown-unknown`).
 web = ["dep:unicode-width"]
 # `stacked app`: StackED, the editor in a window of its own, drawn as the
-# terminal draws it, with eframe (egui) on OpenGL. On macOS, its File menu,
-# panels and alerts are AppKit's, called through objc2.
+# terminal draws it, with eframe (egui) on OpenGL. On macOS, its File and
+# Edit menus, panels and alerts are AppKit's, called through objc2.
 app = ["dep:eframe", "dep:ttf-parser", "dep:unicode-width", "dep:objc2", "dep:objc2-foundation", "dep:objc2-app-kit"]
 # `stacked demo`: a tour of the editor on a game of tic-tac-toe, its
 # database and repository kept in memory: nothing is written on disk.

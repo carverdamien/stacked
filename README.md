@@ -258,6 +258,15 @@ Closing the last window leaves StackED running, its menu bar there, until
 are kept in ~/Library/Application Support/StackED/state.json (never in the
 settings' file), with the windows StackED.app has open.
 
+The menu bar also has an Edit menu, after File, with Undo, Redo, Cut, Copy,
+Paste and Select All. Its items act on the panels' text fields, such as the
+name in the Save panel and the folder typed after ⇧⌘G (Go to Folder). While
+a panel is open, ⌘Z, ⇧⌘Z, ⌘X, ⌘C, ⌘V and ⌘A do in its fields what they do
+in any Mac app, so that a name can be pasted. Outside the panels, the Edit
+menu's items have no shortcuts and are greyed out, and StackED's windows
+keep those keys: ⌘C still copies the text selected, and ⌘V still types the
+clipboard where text is being written.
+
 On macOS, `stacked app --bundle` makes StackED.app in ~/Applications
 (`--bundle DIR` makes it in DIR), for the Dock and the Finder: drag it to
 the Dock to keep it there. It holds a copy of this stacked, so make it again
@@ -292,8 +301,8 @@ size, as `stacked web` runs it for a page; the window (eframe: egui, on
 OpenGL) paints what the buffer holds, and sends the editor its keys, clicks
 and size (`app.rs`). On macOS each window is a viewport of eframe's, which
 paints itself, and eframe's root viewport is hidden (`app/windows.rs`); the
-File menu, its panels and its alerts are AppKit's, called through objc2
-(`app/menu.rs`).
+File and Edit menus, the panels and the alerts are AppKit's, called through
+objc2 (`app/menu.rs`).
 
 ## The editor
 
@@ -1717,10 +1726,11 @@ is typed: `import.rs`). A fix to one may belong in the other.
   the window that paints its screen and sends it what is done there.
   `app/windows.rs`: its windows on macOS, one for each database opened,
   and what the File menu's items do; `app/menu.rs`, the File menu itself,
-  its panels and its alerts (AppKit's); `app/state.rs`, the databases
-  opened last and the windows to open again, kept between runs. `icon.rs`:
-  StackED's icon, drawn at any size. `bundle.rs`: StackED.app (macOS), made
-  by `stacked app --bundle`, and opened from the Dock.
+  its panels and its alerts, and the Edit menu (AppKit's); `app/state.rs`,
+  the databases opened last and the windows to open again, kept between
+  runs. `icon.rs`: StackED's icon, drawn at any size. `bundle.rs`:
+  StackED.app (macOS), made by `stacked app --bundle`, and opened from
+  the Dock.
 - `demo.rs`, `memory.rs`: `stacked demo`, the tour; and the database and
   repository it keeps in memory, with a stand-in for the agent.
 
@@ -1837,7 +1847,9 @@ between runs: the recent databases, the latest first, once each and eight
 at most, cleared; those deleted taken off both lists; and a file that
 cannot be read. On macOS, they test that the fonts hold every character
 stacked draws, `app/menu.rs` that the File menu's target is a class the
-Objective-C runtime takes, with a method for each item's action, and
+Objective-C runtime takes, with a method for each item's action, and that
+the Edit menu's items have the titles and shortcuts they have in any Mac
+app, with actions that AppKit's text fields and windows answer, and
 `tests/app.rs` makes StackED.app as macOS reads an app
 (its Info.plist, its signature, its icon at every size, the stacked in it,
 which runs), makes it again, and leaves alone something else of its name;
@@ -1876,9 +1888,9 @@ checkout's own read and written unless git tracks it.
 - Only git mail is read: no `hg export`.
 - Nothing submits to Phabricator: `stacked apply`, then moz-phab.
 - StackED's windows are on macOS only: elsewhere it has one, on one
-  database, and no File menu. A database is not opened by dropping it on
-  StackED's icon or by double-clicking it in the Finder, and there is no
-  Window menu. Its text is not yet a setting: it is Menlo (Hack
+  database, and no File or Edit menu. A database is not opened by dropping
+  it on StackED's icon or by double-clicking it in the Finder, and there is
+  no Window menu. Its text is not yet a setting: it is Menlo (Hack
   elsewhere), at 14 points before ⌘+ and ⌘−, which change it in every
   window at once. The editor the settings name for `$EDITOR` is read where
   StackED runs (where `stacked app` was started, the home folder from the
