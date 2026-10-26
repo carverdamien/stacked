@@ -176,7 +176,9 @@ fn split_words(text: &str, words: &[(usize, usize)], st: Style, word: Style) -> 
         parts.push((chars[s..e].iter().collect(), word));
         at = e;
     }
-    if at < chars.len() || parts.is_empty() {
+    // Ending in a word, the line ends with none of it: the room after it,
+    // padded in the last part's colour (`put_parts`), is the line's.
+    if at < chars.len() || parts.last().is_none_or(|(_, last)| *last != st) {
         parts.push((chars[at..].iter().collect(), st));
     }
     parts
@@ -261,7 +263,10 @@ fn fold_parts(parts: &[(String, Style)], w: usize, indent: usize) -> Vec<Parts> 
         return vec![parts.to_vec()];
     }
     let lead = parts.first().map_or(Style::new(), |(_, st)| *st);
-    // Characters back into parts, those of a colour together.
+    // Characters back into parts, those of a colour together; ending in
+    // another colour than the first part's, an empty part of the first's,
+    // for the room after it to be the line's (`put_parts` pads in the last
+    // part's colour).
     let joined = |cs: &[(char, Style)]| -> Parts {
         let mut out: Parts = Vec::new();
         for &(c, st) in cs {
@@ -269,6 +274,9 @@ fn fold_parts(parts: &[(String, Style)], w: usize, indent: usize) -> Vec<Parts> 
                 Some((text, was)) if *was == st => text.push(c),
                 _ => out.push((c.to_string(), st)),
             }
+        }
+        if out.last().is_some_and(|(_, st)| *st != lead) {
+            out.push((String::new(), lead));
         }
         out
     };
@@ -8852,7 +8860,8 @@ mod tests {
         assert_eq!(
             super::fold_parts(&parts, 24, 2),
             [
-                vec![("+ the total is ".to_string(), plain), ("price".to_string(), word)],
+                // Ending in a word: the room after it, the line's.
+                vec![("+ the total is ".to_string(), plain), ("price".to_string(), word), (String::new(), plain)],
                 vec![("  ".to_string(), plain), ("times quantity".to_string(), word), (" now".to_string(), plain)],
             ]
         );

@@ -1407,8 +1407,8 @@ settings:
   `magenta`, `cyan`, `white`, any of these after `bright`, `default`,
   `normal`), a number from 0 to 255, or `#rrggbb`; and any of `bold`, `dim`,
   `italic`, `ul`, `blink`, `reverse`, `strike`. `added` (`green`), `removed`
-  (`red`), `added_word` (`green reverse`) and `removed_word` (`red
-  reverse`): what changed in a line almost the same as the one paired with it,
+  (`red`), `added_word` (`green 22`) and `removed_word` (`red 52`, on a
+  dark tint): what changed in a line almost the same as the one paired with it,
   `hunk` (`magenta`), `file` (`cyan bold`: a file's name, the
   titles of boxes, the history's records), `meta` (`blue`: index lines,
   borders), `header` (`cyan bold`: each pane's first row); `you` (`172`),
@@ -1727,7 +1727,10 @@ about and its stream and answer shown in place, the screen never waiting on
 the agent, redrawing not slowing as the agent writes, the filter kept in
 the file, the three views, what changed in a line almost the same as the
 one removed painted as words (and lines quite other, not), in the code, in
-a version's interdiff and in the history's stack diff, reading by hunks and by a Rust file's blocks
+a version's interdiff and in the history's stack diff, none of the room after
+a word last in its line, and the words still standing out of their line
+under the cursor (`paint.rs` tests the colours for words so: whatever they
+become, they must look otherwise than their line's, reversed too), reading by hunks and by a Rust file's blocks
 (the cursor going down to the middle line, then the code coming up under
 it, in each view),
 editing a patch by hand at the cursor, the history screens, the branches

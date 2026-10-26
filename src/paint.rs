@@ -104,8 +104,8 @@ impl Paint {
         match self {
             Paint::Added => "green",
             Paint::Removed => "red",
-            Paint::AddedWord => "green reverse",
-            Paint::RemovedWord => "red reverse",
+            Paint::AddedWord => "green 22",
+            Paint::RemovedWord => "red 52",
             Paint::Hunk => "magenta",
             Paint::File => "cyan bold",
             Paint::Meta => "blue",
@@ -366,6 +366,29 @@ pub fn window(buf: &mut Buffer, area: Rect, x: usize, y: usize, w: usize, h: usi
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// How text in `s` looks: its colours as shown, swapped when reversed,
+    /// and its other attributes.
+    fn looks(s: Style) -> (Color, Color, Modifier) {
+        let (fg, bg) = (s.fg.unwrap_or(Color::Reset), s.bg.unwrap_or(Color::Reset));
+        match s.add_modifier.contains(Modifier::REVERSED) {
+            true => (bg, fg, s.add_modifier - Modifier::REVERSED),
+            false => (fg, bg, s.add_modifier),
+        }
+    }
+
+    #[test]
+    fn a_word_changed_stands_out_of_its_line_under_the_cursor_too() {
+        // The cursor's line is drawn reversed, its words too (`row_parts`):
+        // a word reversed of its own vanishes into it. Whatever the colours
+        // for words become, they must look otherwise than their line's.
+        for (word, line) in [(Paint::AddedWord, Paint::Added), (Paint::RemovedWord, Paint::Removed)] {
+            let (w, l) = (parse_color(word.default_spec()).unwrap(), parse_color(line.default_spec()).unwrap());
+            assert_ne!(looks(w), looks(l), "{}: as {} looks", word.name(), line.name());
+            let cursor = |s: Style| looks(s.add_modifier(Modifier::REVERSED));
+            assert_ne!(cursor(w), cursor(l), "{}: as {} looks, under the cursor", word.name(), line.name());
+        }
+    }
 
     #[test]
     fn a_colour_is_read_as_git_writes_one() {

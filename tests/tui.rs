@@ -3034,11 +3034,11 @@ fn what_changed_in_a_line_almost_the_same_as_the_one_removed_is_painted_as_words
     std::fs::create_dir(&src).unwrap();
     git(&src, &["init", "-q", "-b", "main"]);
     git(&src, &["config", "commit.gpgsign", "false"]);
-    std::fs::write(src.join("f.rs"), "fn f() {\n    let total = price * count;\n    old();\n}\n").unwrap();
+    std::fs::write(src.join("f.rs"), "fn f() {\n    let total = price * count;\n    old();\n    // the total of the order\n}\n").unwrap();
     git(&src, &["add", "."]);
     git(&src, &["commit", "-qm", "base"]);
     // A line almost the same, and one quite another.
-    std::fs::write(src.join("f.rs"), "fn f() {\n    let total = price * quantity + tax;\n    something_else(1, 2, 3);\n}\n").unwrap();
+    std::fs::write(src.join("f.rs"), "fn f() {\n    let total = price * quantity + tax;\n    something_else(1, 2, 3);\n    // the total of the basket\n}\n").unwrap();
     git(&src, &["commit", "-qam", "Bug 1 - the total"]);
     let db = tmp.path().join("db.jsonl");
     stacked(&src, &db, &["import", "s", "HEAD~1"]);
@@ -3080,6 +3080,34 @@ fn what_changed_in_a_line_almost_the_same_as_the_one_removed_is_painted_as_words
     assert_eq!(style(at, 5), as_drawn(added));
     let at = row("-    old();");
     assert_eq!(style(at, 5), as_drawn(removed));
+    // A word changed last in its line: the room after it, the line's.
+    let at = row("+    // the total of the basket");
+    assert_eq!(style(at, 26), as_drawn(word_added), "basket");
+    assert_eq!(style(at, 31), as_drawn(added), "after basket");
+    // The cursor on each of the lines, which it reverses: what changed in
+    // it still looks otherwise than the rest of it, its colours as shown.
+    use ratatui::style::{Color, Modifier};
+    let looks = |(fg, bg, m): (Color, Color, Modifier)| match m.contains(Modifier::REVERSED) {
+        true => (bg, fg, m - Modifier::REVERSED),
+        false => (fg, bg, m),
+    };
+    for text in ["-    let total = price * count;", "+    let total = price * quantity + tax;"] {
+        down_to(&mut app, text);
+        let mut buf = Buffer::empty(Rect::new(0, 0, 120, 30));
+        app.draw(&mut buf);
+        let (x, y) = (0..30u16)
+            .find_map(|y| {
+                let line: String = (0..120).map(|x| buf[(x, y)].symbol()).collect();
+                line.find(text).map(|at| (line[..at].chars().count() as u16, y))
+            })
+            .unwrap_or_else(|| panic!("no {text}"));
+        let cell = |dx: u16| {
+            let c = &buf[(x + dx, y)];
+            (c.fg, c.bg, c.modifier)
+        };
+        assert!(cell(5).2.contains(Modifier::REVERSED), "the cursor is on it: {text}");
+        assert_ne!(looks(cell(25)), looks(cell(5)), "the word stands out under the cursor: {text}");
+    }
 }
 
 #[test]
