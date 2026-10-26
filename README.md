@@ -196,6 +196,15 @@ and does nothing elsewhere. On macOS ⌘ is the window's own (⌘Q quits, ⌘H
 hides it), and option types the characters it makes (é, ∂), as Terminal
 does.
 
+A drag selects the text it goes over, as in a terminal, but kept to the
+pane it starts in, or to the box (a menu, a preview, a comment being
+written): the lines from where it starts to where it ends, or with option
+held (alt elsewhere) a block of them, their columns only. ⌘C copies it
+(ctrl-c elsewhere, which quits only when nothing is selected), each line
+without the blanks at its end. A click or a key for the editor lets it go.
+A click is a press let go where it was pressed, so that a drag is not one;
+the cursor does not follow the mouse while its button is down.
+
 StackED runs where `stacked app` was started, as the editor in the terminal
 does: it opens the database the editor would (`-f`, `$STACKED_FILE`, the
 settings' `file`, else ./stacked.jsonl), and HEAD is the HEAD of the
@@ -1648,7 +1657,9 @@ number or link, named or not), Phabricator's commands there only when
 built with it, apply, and
 what does not apply being refused, edited again, or read-only. `tests/tui.rs` draws the editor into a buffer and presses keys:
 that no letter but 1 and 2 does anything, keys mapped by the settings, the
-menus by place, what `?` says where, writing in every pane, a comment asked
+menus by place, what `?` says where, writing in every pane, the regions it
+says it drew (its panes, then the boxes over them, inside their borders:
+what StackED's selections keep to), a comment asked
 about and its stream and answer shown in place, the screen never waiting on
 the agent, redrawing not slowing as the agent writes, the filter kept in
 the file, the three views, reading by hunks and by a Rust file's blocks,
@@ -1692,7 +1703,9 @@ any window; and `app.rs` tests what the window paints of a screen (the
 colours, reversed and dim, the faces, wide characters, the lines of boxes
 and blocks), what it makes of keys, clicks, the wheel and pastes, and the
 window itself, run by egui with no window: the grid's size sent, the
-screen painted, what is done sent, the wait for `$EDITOR`, and closing. On
+screen painted, what is done sent, the wait for `$EDITOR`, and closing,
+and text dragged over lit and copied, kept to its pane (a block with alt,
+a drag past the grid up to its edge, a key letting it go). On
 macOS, they test that the fonts hold every character stacked draws, and
 `tests/app.rs` makes StackED.app as macOS reads an app (its Info.plist, its
 signature, its icon at every size, the stacked in it, which runs), makes it

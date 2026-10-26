@@ -92,15 +92,15 @@ fn until(s: &Session, what: &str, wanted: impl Fn(&Output) -> bool) -> Output {
         }
     }
     match last {
-        Some(Output::Screen(buf, _)) => panic!("never sent {what}; the last screen:\n{}", text(&buf)),
+        Some(Output::Screen(buf, ..)) => panic!("never sent {what}; the last screen:\n{}", text(&buf)),
         other => panic!("never sent {what}; the last sent: {other:?}"),
     }
 }
 
 /// The screens it sends, read until one is as `wanted` says: that one.
 fn screen(s: &Session, what: &str, wanted: impl Fn(&Buffer) -> bool) -> Buffer {
-    match until(s, what, |o| matches!(o, Output::Screen(buf, _) if wanted(buf))) {
-        Output::Screen(buf, _) => buf,
+    match until(s, what, |o| matches!(o, Output::Screen(buf, ..) if wanted(buf))) {
+        Output::Screen(buf, ..) => buf,
         _ => unreachable!(),
     }
 }

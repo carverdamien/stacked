@@ -1425,6 +1425,8 @@ pub struct App {
     /// Where the editor box was last drawn, on the screen: the menu Esc
     /// opens goes beside it, not over it.
     edit_box: std::cell::Cell<Option<Rect>>,
+    /// The panes the screen was last drawn in: what `regions` says.
+    areas: std::cell::RefCell<Vec<Rect>>,
 }
 
 /// The stack's history, as last made: of which stack, at how many records
@@ -1655,6 +1657,7 @@ impl App {
             hist_memo: std::cell::RefCell::new(None),
             spots: std::cell::RefCell::new(Vec::new()),
             edit_box: std::cell::Cell::new(None),
+            areas: std::cell::RefCell::new(Vec::new()),
             db,
             cfg,
         };
@@ -6828,6 +6831,7 @@ impl App {
         }
         self.edit_box.set(None);
         self.spots.borrow_mut().clear();
+        self.areas.borrow_mut().clear();
         // Where the cursor is in a list of its own screen, kept as it goes.
         self.keep_list();
         self.keep_progress();
@@ -6844,6 +6848,8 @@ impl App {
         self.body_h = h - top - 1;
         self.body_w = w;
         let body = Rect::new(area.x, area.y + top as u16, area.width, (h - top - 1) as u16);
+        // The screen's one pane, unless it is drawn in several.
+        self.areas.borrow_mut().push(body);
         if let Some(text) = &banner {
             self.draw_banner(buf, area, text, &lines, room);
         }
@@ -6865,6 +6871,7 @@ impl App {
                     }
                     let list = Rect::new(body.x, body.y, list_w as u16, body.height);
                     let diff = Rect::new(body.x + (list_w + 1) as u16, body.y, (w - list_w - 1) as u16, body.height);
+                    self.areas.borrow_mut().extend([list, diff]);
                     cursor = self.draw_history(buf, list);
                     self.draw_history_diff(buf, diff);
                 }
@@ -6957,7 +6964,22 @@ impl App {
             line(buf, x + mid_w);
             Rect::new(body.x + (x + mid_w + 1) as u16, body.y, right_w as u16, body.height)
         });
+        self.areas.borrow_mut().extend(l.into_iter().chain([mid]).chain(r));
         (l, (mid, r))
+    }
+
+    /// Where text was drawn as one, when the screen was last drawn: each of
+    /// its panes, then each box drawn over them, inside its border. Text
+    /// selected in StackED keeps to the last one it starts in.
+    pub fn regions(&self) -> Vec<Rect> {
+        let boxes: Vec<Rect> = self
+            .spots
+            .borrow()
+            .iter()
+            .filter(|(_, s)| matches!(s, Spot::Box))
+            .map(|(r, _)| r.inner(ratatui::layout::Margin::new(1, 1)))
+            .collect();
+        self.areas.borrow().iter().copied().chain(boxes).collect()
     }
 
     /// The patches pane's header: the stack's own place.

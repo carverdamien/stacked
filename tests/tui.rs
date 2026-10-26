@@ -4095,6 +4095,37 @@ fn the_agents_worktrees_are_made_ahead_as_the_stack_s_checkout_says() {
 }
 
 #[test]
+fn the_regions_drawn_are_the_panes_then_the_boxes_over_them() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    let screen = draw(&mut app);
+    let rows: Vec<&str> = screen.lines().collect();
+    let r = app.regions();
+    // The body, under the top bar and over the bottom line, then its panes
+    // side by side, a line drawn between each.
+    assert_eq!((r[0].x, r[0].width, r[0].bottom()), (0, 120, 29), "{r:?}");
+    let panes = &r[1..];
+    assert!(panes.len() >= 2, "the patches' and the code's at least: {r:?}");
+    for two in panes.windows(2) {
+        assert_eq!(two[0].right() + 1, two[1].x, "{r:?}");
+        assert_eq!(rows[two[0].y as usize].chars().nth(two[0].right() as usize), Some('│'), "{r:?}\n{screen}");
+    }
+    // A menu open over them: its box, inside its border, last.
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    let screen = draw(&mut app);
+    let menu = *app.regions().last().unwrap();
+    let inside: Vec<String> = screen
+        .lines()
+        .skip(menu.y as usize)
+        .take(menu.height as usize)
+        .map(|l| l.chars().skip(menu.x as usize).take(menu.width as usize).collect())
+        .collect();
+    assert!(inside.iter().any(|l| l.contains("Read this patch")), "{inside:?}\n{screen}");
+    // Its border not in it (the lines between its parts are).
+    assert!(!inside.iter().any(|l| l.contains(['│', '┌', '┐', '└', '┘'])), "{inside:?}");
+}
+
+#[test]
 fn the_top_bar_says_what_is_left_to_review() {
     let (_tmp, db, _src) = setup();
     let mut app = open(&db).unwrap();
