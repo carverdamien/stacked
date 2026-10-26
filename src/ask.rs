@@ -1189,8 +1189,10 @@ const BEFORE_LINES: usize = 300;
 /// opened; for a change, what it changed, its stack diff from the stack it
 /// went on from, and how to read the stack it made.
 fn before(db: &Db, i: &Info, was: &str, name: &str, cmd: &str) -> String {
-    let Some((r, h)) = db.run(was).and_then(|r| Some((r, r.held.as_ref()?))) else { return String::new() };
-    let mut out = match i.way {
+    if db.run(was).and_then(|r| r.held.as_ref()).is_none() {
+        return String::new();
+    }
+    let out = match i.way {
         Way::Answer => " This was asked before, on the stack as it was before an edit of it was \
                         accepted; what was answered then is below. Answer again on the stack as it is \
                         now: keep what still holds, and say what the edit changes."
@@ -1201,7 +1203,17 @@ fn before(db: &Db, i: &Info, was: &str, name: &str, cmd: &str) -> String {
              made. Make it again on the stack as it is now, keeping what still applies."
         ),
     };
-    for sh in &i.notes {
+    out + &brought(db, i, was, name, cmd, true)
+}
+
+/// What run `was` brought back, for ask `i` to go on from or make again: its
+/// replies (`replies`: unless their threads hold them already), the comments
+/// it opened, and for a change, what it changed, as a stack diff from the
+/// stack it went on from.
+fn brought(db: &Db, i: &Info, was: &str, name: &str, cmd: &str, replies: bool) -> String {
+    let Some((r, h)) = db.run(was).and_then(|r| Some((r, r.held.as_ref()?))) else { return String::new() };
+    let mut out = String::new();
+    for sh in i.notes.iter().filter(|_| replies) {
         if let Some(rp) = h.replies.iter().find(|rp| rp.change == sh.change && rp.id == sh.id) {
             out += &format!("\n\nWhat was answered then to {}:\n{}", sh.label, rp.text.trim_end());
         }
@@ -1238,9 +1250,9 @@ fn prompt(db: &Db, i: &Info, s: &Stack, cmd: &str, run: &str, structured: bool) 
     };
     let n = s.patches.len();
     let k = i.patch.as_ref().map(|(_, k)| *k);
-    // The stack it started from: at its rev; a guess's, as the work it goes
-    // on from makes it.
-    let at = i.after.as_ref().map_or(format!("--rev {}", i.from), |w| format!("--work {w}"));
+    // The stack it started from: at its rev; a guess's, or a round's sent
+    // back, as the work it goes on from makes it.
+    let at = i.after.as_ref().or(i.on.as_ref()).map_or(format!("--rev {}", i.from), |w| format!("--work {w}"));
     let export = format!("{cmd} export {} {at}", s.name);
     let show = format!("{cmd} show {} {at}", s.name);
     // Where it works, told it.
@@ -1354,16 +1366,22 @@ fn prompt(db: &Db, i: &Info, s: &Stack, cmd: &str, run: &str, structured: bool) 
             )
         }
     };
-    // Another round: what it brought back was sent back.
-    if i.on.is_some() {
-        p.push_str(match i.way {
-            Way::Change => {
+    // Another round: what it brought back was sent back. What it changed
+    // then, and the comments it opened, shown, as to a round asked again;
+    // its replies are in their threads.
+    if let Some(on) = &i.on {
+        p.push_str(&match i.way {
+            Way::Change => format!(
                 " This is another round: the user reviewed the change you made, which the worktree holds \
                  as you left it, and sent it back with the comments below: change it as they ask, from \
-                 there."
-            }
-            _ => " This is another round: the user read what you answered, and asks again in the comments below.",
+                 there. What you changed then is below, and `{cmd} export {} --work {on}` prints the \
+                 stack you made.",
+                s.name
+            ),
+            _ => " This is another round: the user read what you answered, and asks again in the comments below."
+                .to_string(),
         });
+        p.push_str(&brought(db, i, on, &s.name, cmd, false));
     }
     // Asked again, the work landed before dropped: shown, to reuse.
     if let Some(was) = &i.was {

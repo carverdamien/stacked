@@ -1496,11 +1496,15 @@ fn landed_work_with_what_you_wrote_in_its_review_goes_back_to_the_agent_from_it(
     let (fine, out, err) = stacked_in(&e.src, &e.db, &["review", "s", "--send-back"], "", &env);
     assert!(fine && out.contains("sent back to the agent (may change the code): 2 comments to ask again"), "{out}{err}");
     landed(&e, 2);
-    // The second round went on from the first one's work, told so; its work
-    // lands in place of the first's.
+    // The second round went on from the first one's work, told so: what it
+    // changed then, as a stack diff, and how to print the stack it made, as
+    // a round asked again is told; its work lands in place of the first's.
     let told = std::fs::read_to_string(&prompts).unwrap();
     let second = told.split("=====").nth(1).unwrap();
     assert!(second.contains("This is another round") && second.contains("Not French.") && second.contains("Not like this."), "{second}");
+    assert!(second.contains(&format!("export s --work {work}` prints the stack you made")), "{second}");
+    let diff = second.split("What was changed then, as a stack diff:\n").nth(1).unwrap_or_else(|| panic!("{second}"));
+    assert!(diff.contains("-2") && diff.contains("+deux"), "{second}");
     // A change is told too that a tool refused is not allowed.
     let first = told.split("=====").next().unwrap();
     assert!(first.contains("that the tool was not allowed, naming it"), "{first}");

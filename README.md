@@ -1091,7 +1091,12 @@ your answers after them, and the comments it opened go as you marked them.
 Then the comments it was asked about whose last word is yours, and what you
 wrote in its review, are asked again, in a round that starts from the stack
 this work makes: the agent's worktree holds the change it made, and the
-agent is told it is another round. That round's work lands for review in
+agent is told it is another round. As a round asked again after its work
+was dropped is told, it is told what it changed in the round sent back (a
+stack diff from the stack that round went on from) and the comments it
+opened then, and `stacked export --work` prints the stack it made for it;
+its replies are in their threads already. Its session is not the one
+before: claude starts afresh each round. That round's work lands for review in
 place of the one sent back. The round goes before anything else waiting
 for the agent, and the stack is not edited by hand until you have reviewed
 its work: nothing changes the stack it goes on from.
