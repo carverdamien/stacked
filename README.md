@@ -1446,9 +1446,14 @@ settings:
   their bar and name; `note` (`yellow`: what a menu says under its items, the
   tour's box, the comment editor's frame, a run going); `bar` (`brightwhite
   blue`), `warn` (`black yellow`: the top bar when the stack cannot change),
-  `status` (`black brightwhite`: the bottom line), `picked` (`normal
-  238`: what a pane has picked while the cursor is in another, on a grey
-  background, the cursor's own pane reversing its pick) and `code` (`252
+  `status` (`black brightwhite`: the bottom line), `cursor` (`reverse`: the
+  line, the item or the pick the cursor is on, in the terminal's own colours
+  reversed, white on a dark theme; the cursor looks the same on every line
+  whatever the line's own colours, and a line read is not dim under it, but
+  what changed in a line almost the same as its pair keeps its tint under
+  the cursor), `picked` (`normal 238`: what a pane has picked while the
+  cursor is in another, on a grey background, the cursor's own pane drawing
+  its pick as `cursor` paints it) and `code` (`252
   236`: code in what a comment says, `code` in a line and code blocks, light
   grey on a dark grey). `stacked config colors.you 208` sets one.
 - `[keys]`: for each thing a key does (`up`, `down`, `left`, `right`,
@@ -1762,9 +1767,15 @@ the agent, redrawing not slowing as the agent writes, the filter kept in
 the file, the three views, what changed in a line almost the same as the
 one removed painted as words (and lines quite other, not), in the code, in
 a version's interdiff and in the history's stack diff, none of the room after
-a word last in its line, and the words still standing out of their line
-under the cursor (`paint.rs` tests the colours for words so: whatever they
-become, they must look otherwise than their line's, reversed too), reading by hunks and by a Rust file's blocks
+a word last in its line, and the words keeping their own colours under the
+cursor, in the code and in the history's stack diff, the rest of their line
+in the cursor's (`paint.rs` tests the colours for words so: whatever they
+become, they must look otherwise than their line's, and than the cursor's),
+the cursor looking the same on every line, as `cursor` paints it, whatever
+the line's own colours (a line added, a line removed, a hunk's header, a
+file's name, each line of a comment, a line read, the patch picked in its
+pane), and the patch picked as `picked` paints it once the cursor is in the
+middle (`paint.rs` tests the cursor so, over each colour, dim or reversed), reading by hunks and by a Rust file's blocks
 (the cursor going down to the middle line, then the code coming up under
 it, in each view),
 editing a patch by hand at the cursor, the history screens, the branches

@@ -21,7 +21,7 @@ use crate::ask;
 use crate::db::{Db, Error, Note, Record, Result, Run, RunState, Way, stack_change};
 use crate::keys::Key;
 use crate::mbox::Draft;
-use crate::paint::{color, put, window, wrap};
+use crate::paint::{color, on_cursor, put, window, wrap};
 use crate::thread::{Role, append_turn, last_role, thread_turns};
 use crate::tui::{App, Effect, Focus, Layout, Mode, Screen};
 
@@ -1142,7 +1142,7 @@ impl Tour {
         // The picked section in sight.
         let skip = picked.map_or(0, |p| (p + 1).saturating_sub(room));
         for (row, (i, l)) in lines.iter().enumerate().skip(skip).take(room).enumerate() {
-            let style = if Some(i) == picked { Style::new().add_modifier(Modifier::REVERSED) } else { Style::new() };
+            let style = if Some(i) == picked { on_cursor(Style::new()) } else { Style::new() };
             put(buf, area, 2, h - ph + 1 + row, tw, l, style);
         }
         let x = w.saturating_sub(foot.chars().count() + 2);

@@ -7,11 +7,10 @@ use std::collections::HashSet;
 
 use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use ratatui::style::Modifier;
 
 use crate::ask::{CHANGING, GIVEN};
 use crate::db::{Error, Result};
-use crate::paint::{color, fit, put, window};
+use crate::paint::{color, fit, on_cursor, put, window};
 
 /// A row of the screen.
 #[derive(Debug, Clone, PartialEq)]
@@ -315,7 +314,7 @@ impl Setup {
                 }
             };
             if i == self.sel {
-                st = st.add_modifier(Modifier::REVERSED);
+                st = on_cursor(st);
             }
             put(buf, area, 0, y + 2, w, &fit(&text, w), st);
         }
@@ -346,7 +345,7 @@ impl Setup {
                 put(buf, area, x + 1, y + 1 + r, bw - 2, &"─".repeat(bw - 2), color::meta());
                 continue;
             }
-            let st = if r == at { ratatui::style::Style::new().add_modifier(Modifier::REVERSED) } else { ratatui::style::Style::new() };
+            let st = if r == at { on_cursor(ratatui::style::Style::new()) } else { ratatui::style::Style::new() };
             put(buf, area, x + 1, y + 1 + r, bw - 2, &fit(&format!(" {label}"), bw - 2), st);
         }
     }

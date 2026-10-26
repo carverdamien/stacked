@@ -752,7 +752,7 @@ impl App {
             for (y, (i, l)) in lines.iter().enumerate().skip(top).take(rows).enumerate() {
                 let mut st = l.style;
                 if i == rv.sel {
-                    st = if rv.in_main { st.patch(color::picked()) } else { st.add_modifier(Modifier::REVERSED) };
+                    st = if rv.in_main { st.patch(color::picked()) } else { on_cursor(st) };
                 }
                 put(buf, list, 0, y + 1, list_w, &fit(&l.text, list_w), st);
                 spot_in(&self.spots, list, (0, y + 1, list_w, 1), Spot::ReviewLine(i));
@@ -848,10 +848,7 @@ impl App {
                 break;
             }
             match &picked {
-                Some(c) if c.contains(&i) => {
-                    let parts: Vec<(String, Style)> = parts.iter().map(|(s, st)| (s.clone(), st.add_modifier(Modifier::REVERSED))).collect();
-                    put_parts(buf, main, 0, y, main_w, &parts);
-                }
+                Some(c) if c.contains(&i) => put_parts(buf, main, 0, y, main_w, &on_cursor_parts(parts)),
                 _ => put_parts(buf, main, 0, y, main_w, parts),
             }
         }

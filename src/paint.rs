@@ -25,12 +25,13 @@ pub enum Paint {
     Bar,
     Warn,
     Status,
+    Cursor,
     Picked,
     Code,
 }
 
 impl Paint {
-    pub const ALL: [Paint; 17] = [
+    pub const ALL: [Paint; 18] = [
         Paint::Added,
         Paint::Removed,
         Paint::AddedWord,
@@ -46,6 +47,7 @@ impl Paint {
         Paint::Bar,
         Paint::Warn,
         Paint::Status,
+        Paint::Cursor,
         Paint::Picked,
         Paint::Code,
     ];
@@ -67,6 +69,7 @@ impl Paint {
             Paint::Bar => "bar",
             Paint::Warn => "warn",
             Paint::Status => "status",
+            Paint::Cursor => "cursor",
             Paint::Picked => "picked",
             Paint::Code => "code",
         }
@@ -94,7 +97,8 @@ impl Paint {
             Paint::Bar => "The top bar.",
             Paint::Warn => "The top bar when the stack cannot change.",
             Paint::Status => "The bottom line: what was just done, or the keys to press.",
-            Paint::Picked => "What a pane has picked while the cursor is in another: its patch, its comment, the review's part; the cursor's own pane reverses its pick.",
+            Paint::Cursor => "The cursor, the same on every line whatever the line's own colours: on a line of the middle, a pane's pick, a menu's item. What changed in a line almost the same as its pair keeps its own colours under it.",
+            Paint::Picked => "What a pane has picked while the cursor is in another: its patch, its comment, the review's part; in the cursor's own pane, the pick is drawn as the cursor.",
             Paint::Code => "Code in what a comment says, as its markdown has it: `code` in a line, and code blocks.",
         }
     }
@@ -117,6 +121,7 @@ impl Paint {
             Paint::Bar => "brightwhite blue",
             Paint::Warn => "black yellow",
             Paint::Status => "black brightwhite",
+            Paint::Cursor => "reverse",
             Paint::Picked => "normal 238",
             Paint::Code => "252 236",
         }
@@ -270,6 +275,11 @@ pub mod color {
     pub fn status() -> Style {
         of(Paint::Status)
     }
+    /// The cursor, whatever the colours of the line it is on: see
+    /// `on_cursor`.
+    pub fn cursor() -> Style {
+        of(Paint::Cursor)
+    }
     /// What a pane has picked, while the cursor is in another.
     pub fn picked() -> Style {
         of(Paint::Picked)
@@ -285,6 +295,24 @@ pub mod color {
     pub fn header() -> Style {
         of(Paint::Header)
     }
+}
+
+/// Text in `st` under the cursor, as the settings' `cursor` paints it.
+pub fn on_cursor(st: Style) -> Style {
+    under(color::cursor(), st)
+}
+
+/// Text in `st` under a cursor painted `cursor`: in the cursor's colours,
+/// the terminal's own where it names none, whatever `st`'s were, and not
+/// dim, so that the cursor looks the same on every line; bold, italic,
+/// underlined or struck through as `st` is.
+fn under(cursor: Style, st: Style) -> Style {
+    let kept = st.add_modifier - Modifier::DIM - Modifier::REVERSED;
+    Style::new()
+        .fg(cursor.fg.unwrap_or(Color::Reset))
+        .bg(cursor.bg.unwrap_or(Color::Reset))
+        .remove_modifier(Modifier::DIM | Modifier::REVERSED)
+        .add_modifier(kept | cursor.add_modifier)
 }
 
 /// Writes `text` at `(x, y)` of `area`, cut at `w` and the area's edge.
@@ -367,10 +395,24 @@ pub fn window(buf: &mut Buffer, area: Rect, x: usize, y: usize, w: usize, h: usi
 mod tests {
     use super::*;
 
-    /// How text in `s` looks: its colours as shown, swapped when reversed,
-    /// and its other attributes.
-    fn looks(s: Style) -> (Color, Color, Modifier) {
-        let (fg, bg) = (s.fg.unwrap_or(Color::Reset), s.bg.unwrap_or(Color::Reset));
+    /// A colour as shown: the terminal's own foreground or background, or
+    /// one of its own.
+    #[derive(Debug, PartialEq)]
+    enum Shown {
+        Fg,
+        Bg,
+        Is(Color),
+    }
+
+    /// How text in `s` looks: its colours as shown, the terminal's own
+    /// where it names none, swapped when reversed; and its other
+    /// attributes.
+    fn looks(s: Style) -> (Shown, Shown, Modifier) {
+        let shown = |c: Option<Color>, own: Shown| match c {
+            None | Some(Color::Reset) => own,
+            Some(c) => Shown::Is(c),
+        };
+        let (fg, bg) = (shown(s.fg, Shown::Fg), shown(s.bg, Shown::Bg));
         match s.add_modifier.contains(Modifier::REVERSED) {
             true => (bg, fg, s.add_modifier - Modifier::REVERSED),
             false => (fg, bg, s.add_modifier),
@@ -379,15 +421,39 @@ mod tests {
 
     #[test]
     fn a_word_changed_stands_out_of_its_line_under_the_cursor_too() {
-        // The cursor's line is drawn reversed, its words too (`row_parts`):
-        // a word reversed of its own vanishes into it. Whatever the colours
-        // for words become, they must look otherwise than their line's.
+        // Under the cursor, a line is in the cursor's colours whatever its
+        // own (`under`), but what changed in it keeps its own (`row_parts`):
+        // a word in the cursor's colours would vanish into it. Whatever the
+        // colours for words become, they must look otherwise than their
+        // line's, and than the cursor's.
+        let cursor = parse_color(Paint::Cursor.default_spec()).unwrap();
         for (word, line) in [(Paint::AddedWord, Paint::Added), (Paint::RemovedWord, Paint::Removed)] {
             let (w, l) = (parse_color(word.default_spec()).unwrap(), parse_color(line.default_spec()).unwrap());
             assert_ne!(looks(w), looks(l), "{}: as {} looks", word.name(), line.name());
-            let cursor = |s: Style| looks(s.add_modifier(Modifier::REVERSED));
-            assert_ne!(cursor(w), cursor(l), "{}: as {} looks, under the cursor", word.name(), line.name());
+            assert_ne!(looks(w), looks(under(cursor, l)), "{}: as the cursor looks on {}", word.name(), line.name());
         }
+    }
+
+    #[test]
+    fn the_cursor_looks_the_same_on_every_line() {
+        // As it is when the settings do not say: the terminal's own colours
+        // reversed, whatever the line's own, dim or reversed as they may be.
+        let cursor = parse_color(Paint::Cursor.default_spec()).unwrap();
+        for p in Paint::ALL {
+            let st = parse_color(p.default_spec()).unwrap();
+            for st in [st, st.add_modifier(Modifier::DIM), st.add_modifier(Modifier::REVERSED)] {
+                let (fg, bg, m) = looks(under(cursor, st));
+                assert_eq!((fg, bg), (Shown::Bg, Shown::Fg), "{}: {st:?}", p.name());
+                assert!(!m.contains(Modifier::DIM), "{}: {st:?}", p.name());
+            }
+        }
+        // Bold, italic, underlined as the line is.
+        let line = Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD | Modifier::UNDERLINED | Modifier::DIM);
+        assert_eq!(looks(under(cursor, line)), (Shown::Bg, Shown::Fg, Modifier::BOLD | Modifier::UNDERLINED));
+        // A cursor of colours of its own: in them, on any line.
+        let yellow = parse_color("black yellow").unwrap();
+        let line = Style::new().fg(Color::Green).bg(Color::Indexed(22)).add_modifier(Modifier::REVERSED);
+        assert_eq!(looks(under(yellow, line)), (Shown::Is(Color::Black), Shown::Is(Color::Yellow), Modifier::empty()));
     }
 
     #[test]

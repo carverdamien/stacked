@@ -220,6 +220,27 @@ fn at_from(screen: &str, text: &str, from: usize) -> (u16, u16) {
     panic!("no {text:?} on the screen from column {from}:\n{screen}");
 }
 
+/// A colour as shown: the terminal's own foreground or background, or one
+/// of its own.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Shown {
+    Fg,
+    Bg,
+    Is(ratatui::style::Color),
+}
+
+/// How a cell looks: its colours as shown, swapped when it is reversed,
+/// and its other attributes.
+fn looks(c: &ratatui::buffer::Cell) -> (Shown, Shown, ratatui::style::Modifier) {
+    use ratatui::style::{Color, Modifier};
+    let shown = |c: Color, own: Shown| if c == Color::Reset { own } else { Shown::Is(c) };
+    let (fg, bg) = (shown(c.fg, Shown::Fg), shown(c.bg, Shown::Bg));
+    match c.modifier.contains(Modifier::REVERSED) {
+        true => (bg, fg, c.modifier - Modifier::REVERSED),
+        false => (fg, bg, c.modifier),
+    }
+}
+
 #[test]
 fn the_mouse_marks_a_side_pane_s_line_and_elsewhere_the_cursor_follows_it() {
     use ratatui::style::Modifier;
@@ -1678,8 +1699,10 @@ fn a_turn_is_drawn_in_its_author_s_colour_what_they_said_in_the_terminal_s() {
         assert_eq!(buf[(x, y)].fg, Color::Indexed(colour), "the bar of what {who} said");
         assert_eq!(buf[(x + 4, y)].fg, Color::Reset, "what {who} said");
     }
-    // Lines a patch adds are green, as ever.
-    let (x, y) = at(&screen, "+TWO");
+    // Lines a patch adds are green, as ever; the one the cursor is on is in
+    // the cursor's colours.
+    assert_eq!(app.rows[app.cursor].text, "+TWO");
+    let (x, y) = at(&screen, "+LINE 39");
     assert_eq!(buf[(x, y)].fg, Color::Green);
 }
 
@@ -3103,14 +3126,11 @@ fn what_changed_in_a_line_almost_the_same_as_the_one_removed_is_painted_as_words
     let at = row("+    // the total of the basket");
     assert_eq!(style(at, 26), as_drawn(word_added), "basket");
     assert_eq!(style(at, 31), as_drawn(added), "after basket");
-    // The cursor on each of the lines, which it reverses: what changed in
-    // it still looks otherwise than the rest of it, its colours as shown.
-    use ratatui::style::{Color, Modifier};
-    let looks = |(fg, bg, m): (Color, Color, Modifier)| match m.contains(Modifier::REVERSED) {
-        true => (bg, fg, m - Modifier::REVERSED),
-        false => (fg, bg, m),
-    };
-    for text in ["-    let total = price * count;", "+    let total = price * quantity + tax;"] {
+    // The cursor on each of the lines: the rest of the line is in the
+    // cursor's colours, and what changed in it is in its own, which look
+    // otherwise than the cursor's, as shown.
+    let cursor = as_drawn(stacked::paint::on_cursor(ratatui::style::Style::new()));
+    for (text, word) in [("-    let total = price * count;", word), ("+    let total = price * quantity + tax;", word_added)] {
         down_to(&mut app, text);
         let mut buf = Buffer::empty(Rect::new(0, 0, 120, 30));
         app.draw(&mut buf);
@@ -3120,11 +3140,10 @@ fn what_changed_in_a_line_almost_the_same_as_the_one_removed_is_painted_as_words
                 line.find(text).map(|at| (line[..at].chars().count() as u16, y))
             })
             .unwrap_or_else(|| panic!("no {text}"));
-        let cell = |dx: u16| {
-            let c = &buf[(x + dx, y)];
-            (c.fg, c.bg, c.modifier)
-        };
-        assert!(cell(5).2.contains(Modifier::REVERSED), "the cursor is on it: {text}");
+        let cell = |dx: u16| &buf[(x + dx, y)];
+        let drawn = |dx: u16| (cell(dx).fg, cell(dx).bg, cell(dx).modifier);
+        assert_eq!(drawn(5), cursor, "the cursor is on it: {text}");
+        assert_eq!(drawn(25), as_drawn(word), "the word in its own colours: {text}");
         assert_ne!(looks(cell(25)), looks(cell(5)), "the word stands out under the cursor: {text}");
     }
 }
@@ -3294,6 +3313,17 @@ fn what_changed_between_versions_is_painted_as_words_in_interdiffs_and_stack_dif
     assert_eq!(app.screen, Screen::History);
     assert_eq!(style_of(&mut app, added, reworded), as_drawn(word), "reworded, in the history");
     assert_eq!(style_of(&mut app, added, 1), as_drawn(line), "Subject, in the history");
+    // The cursor on that line of the stack diff: the line is in the
+    // cursor's colours, and the words put in are still in their own.
+    keys(&mut app, &[KeyCode::Right]);
+    let text = |parts: &stacked::tui::Parts| parts.iter().map(|(t, _)| t.as_str()).collect::<String>();
+    let k = app.hist_rows.iter().position(|parts| text(parts).contains(added)).unwrap();
+    while app.hist_cursor < k {
+        keys(&mut app, &[KeyCode::Down]);
+    }
+    let cursor = as_drawn(stacked::paint::on_cursor(ratatui::style::Style::new()));
+    assert_eq!(style_of(&mut app, added, reworded), as_drawn(word), "reworded, under the cursor");
+    assert_eq!(style_of(&mut app, added, 1), cursor, "Subject, under the cursor");
 }
 
 #[test]
@@ -5878,6 +5908,107 @@ fn what_a_pane_has_picked_shows_while_the_cursor_is_elsewhere() {
     assert_eq!(app.screen, Screen::Review);
     let c = cell(&mut app, "· a.txt: TWO · It is a shout.");
     assert!(!c.modifier.contains(Modifier::REVERSED) && c.bg == Color::Indexed(238), "{c:?}");
+}
+
+#[test]
+fn the_cursor_looks_the_same_on_every_line_whatever_its_colours() {
+    use ratatui::buffer::Cell;
+    use ratatui::style::{Modifier, Style};
+    use stacked::paint::color;
+    use stacked::rows::{Kind, Row};
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    // The colours a cell painted in `st` shows.
+    let colours = |st: Style| {
+        let mut c = Cell::default();
+        c.set_style(st);
+        let (fg, bg, _) = looks(&c);
+        (fg, bg)
+    };
+    // As the cursor paints when the settings do not say: the terminal's
+    // own colours, reversed.
+    let cursor = colours(color::cursor());
+    assert_eq!(cursor, (Shown::Bg, Shown::Fg));
+    // Each cell of `cells`, of `what`, is in the cursor's colours, and not
+    // dim.
+    let under = |cells: &[Cell], what: &str| {
+        assert!(cells.len() > 10, "{what}: {cells:?}");
+        for (k, c) in cells.iter().enumerate() {
+            let (fg, bg, m) = looks(c);
+            assert!((fg, bg) == cursor && !m.contains(Modifier::DIM), "{what}, its cell {k}: {c:?}");
+        }
+    };
+    // The first patch's row, the pane's 30 columns.
+    let patch = |app: &mut App| -> Vec<Cell> {
+        let (_, y) = at(&draw(app), " 1 Bug 1 - shout two");
+        let mut buf = Buffer::empty(Rect::new(0, 0, 120, 30));
+        app.draw(&mut buf);
+        (0..30).map(|x| buf[(x, y)].clone()).collect()
+    };
+    under(&patch(&mut app), "the patch picked, the cursor in its pane");
+    // The middle's line the cursor is on: from where its row's text starts,
+    // past the reading mode's margin, to the pane's edge.
+    fn cursor_line(app: &mut App) -> Vec<Cell> {
+        let text = app.rows[app.cursor].text.clone();
+        let mut buf = Buffer::empty(Rect::new(0, 0, 120, 30));
+        app.draw(&mut buf);
+        let (x, y) = (0..30)
+            .find_map(|y| {
+                let line: String = (31..120).map(|x| buf[(x, y)].symbol()).collect();
+                let at = line.find(&text).map(|b| line[..b].chars().count()).filter(|&n| n <= 4)?;
+                Some((31 + at as u16, y))
+            })
+            .unwrap_or_else(|| panic!("no {text:?} at the start of the middle"));
+        (x..120).map(|x| buf[(x, y)].clone()).take_while(|c| c.symbol() != "│").collect()
+    }
+    // The cursor on the first row `is` says.
+    fn go(app: &mut App, what: &str, is: impl Fn(&Row) -> bool) {
+        let i = app.rows.iter().position(is).unwrap_or_else(|| panic!("no {what}"));
+        for _ in 0..app.rows.len() * 2 {
+            if app.cursor == i {
+                return;
+            }
+            key(app, if app.cursor < i { KeyCode::Down } else { KeyCode::Up });
+            draw(app);
+        }
+        panic!("the cursor never on {what}");
+    }
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Enter]);
+    save(&mut app, "why so loud?");
+    // An added line, a removed one, a hunk's header, a file's name and each
+    // line of a comment are in the cursor's colours under it, whatever their
+    // own.
+    type Is = fn(&Row) -> bool;
+    let lines: [(&str, Is); 7] = [
+        ("an added line", |r| r.kind == Kind::Add),
+        ("a removed line", |r| r.kind == Kind::Del),
+        ("a hunk's header", |r| r.kind == Kind::Hunk),
+        ("a file's name", |r| r.kind == Kind::File && r.text == "a.txt"),
+        ("a comment's head", |r| r.kind == Kind::Comment && r.head),
+        ("who said a comment's turn", |r| r.kind == Kind::Comment && r.who),
+        ("what a comment's turn says", |r| r.kind == Kind::Comment && r.text.ends_with("why so loud?")),
+    ];
+    for (what, is) in lines {
+        go(&mut app, what, is);
+        under(&cursor_line(&mut app), what);
+    }
+    // Elsewhere, the patches' pick is as `picked` paints it, over the
+    // line's own colours: not the cursor's.
+    let picked = colours(Style::new().patch(color::picked()));
+    assert_ne!(picked, cursor);
+    for c in patch(&mut app) {
+        let (fg, bg, _) = looks(&c);
+        assert_eq!((fg, bg), picked, "the patch picked, the cursor in the middle: {c:?}");
+    }
+    // A line read, dim, looks under the cursor as any other line does.
+    keys(&mut app, &[KeyCode::Char('2')]);
+    app.wait_blocks();
+    go(&mut app, "the line added", |r| r.text == "+TWO");
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    go(&mut app, "a line read", |r| r.text == "+TWO" && r.read);
+    under(&cursor_line(&mut app), "a line read");
 }
 
 #[test]

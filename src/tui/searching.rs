@@ -284,7 +284,7 @@ impl App {
             s.top = s.sel + 1 - rows;
         }
         for (y, (i, f)) in s.found.iter().enumerate().skip(s.top).take(rows).enumerate() {
-            let st = if i == s.sel { Style::new().add_modifier(Modifier::REVERSED) } else { Style::new() };
+            let st = if i == s.sel { on_cursor(Style::new()) } else { Style::new() };
             put(buf, list, 0, y + 1, list_w, &fit(&format!(" {} · {}", f.at, f.line), list_w), st);
             spot_in(&self.spots, list, (0, y + 1, list_w, 1), Spot::Found(i));
         }

@@ -455,7 +455,7 @@ impl App {
                 put(buf, area, 0, 2 + y, w, &fit(title, w), color::file());
                 continue;
             };
-            let st = if i == self.banner_sel { Style::new().add_modifier(Modifier::REVERSED) } else { Style::new() };
+            let st = if i == self.banner_sel { on_cursor(Style::new()) } else { Style::new() };
             put(buf, area, 0, 2 + y, w, &fit(&self.banner_line(&lines[i]), w), st);
             spot_in(&self.spots, area, (0, 2 + y, w, 1), Spot::BannerLine(i));
         }

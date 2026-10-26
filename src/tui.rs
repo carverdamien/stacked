@@ -28,7 +28,7 @@ use crate::ask::{self, Scope};
 use crate::db::{Db, Note, Patch, Result, RunState, Stack, Way, err, local_time, short_id, stack_change};
 use crate::editor::{Editor, Op};
 use crate::ops::{self, edit_text, strip_comments};
-use crate::paint::{color, fit, put, put_parts, window, wrap};
+use crate::paint::{color, fit, on_cursor, put, put_parts, window, wrap};
 use crate::panes::{Compact, Panes, Scroll, pane_streams, spans};
 use crate::reading::{Blocks, Finder, Reading, Target as Block};
 #[cfg(feature = "moz-phab")]
@@ -60,37 +60,45 @@ fn by_style(by: Option<&By>) -> Style {
 /// Row `row` as the parts it is drawn in, each in its style: a turn of a
 /// comment's thread has its bar in its author's colour, their name bold in
 /// it, and what they said in the terminal's own colour; any other row is
-/// one part.
+/// one part. Under the cursor, each part is in the cursor's colours
+/// (`on_cursor`), but what changed in a line almost the same as its pair
+/// keeps its own.
 pub(crate) fn row_parts(row: &Row, selected: bool) -> Vec<(String, Style)> {
-    let st = row_style(row, selected);
+    let st = row_style(row);
     // A line almost the same as the one paired with it: what changed in
-    // its own colour, for words, dim and reversed as the line is.
+    // its own colour, for words, dim as the line is; under the cursor, in
+    // its own colour still, to stand out of the cursor's.
     if !row.words.is_empty() && matches!(row.kind, Kind::Add | Kind::Del) {
         let mut word = if row.kind == Kind::Add { color::add_word() } else { color::del_word() };
+        if selected {
+            return split_words(&row.text, &row.words, on_cursor(st), word);
+        }
         if row.read || row.free {
             word = word.add_modifier(Modifier::DIM);
         }
-        if selected {
-            word = word.add_modifier(Modifier::REVERSED);
-        }
         return split_words(&row.text, &row.words, st, word);
     }
+    let parts = turn_parts(row, st);
+    match selected {
+        true => parts.into_iter().map(|(text, st)| (text, on_cursor(st))).collect(),
+        false => parts,
+    }
+}
+
+/// Row `row` as parts, in `st`: a turn of a comment's thread has its bar
+/// and its author's name in `st`, and what was said in the terminal's own
+/// colour, each piece of its markdown as it looks; any other row is one
+/// part.
+fn turn_parts(row: &Row, st: Style) -> Parts {
     let bar = row.text.find(BAR).filter(|_| row.kind == Kind::Comment && row.turn.is_some());
     let Some(at) = bar else {
         return vec![(row.text.clone(), st)];
     };
     let (left, said) = row.text.split_at(at + BAR.len_utf8());
-    let said_st = if row.who {
-        st.add_modifier(Modifier::BOLD)
-    } else {
-        let mut plain = Style::new();
-        if row.read {
-            plain = plain.add_modifier(Modifier::DIM);
-        }
-        if selected {
-            plain = plain.add_modifier(Modifier::REVERSED);
-        }
-        plain
+    let said_st = match (row.who, row.read) {
+        (true, _) => st.add_modifier(Modifier::BOLD),
+        (false, true) => Style::new().add_modifier(Modifier::DIM),
+        (false, false) => Style::new(),
     };
     // Read as markdown: the bar's indent, then each piece as it looks.
     if !row.who && !row.pieces.is_empty() {
@@ -120,7 +128,7 @@ fn mark_style(m: crate::markdown::Mark, plain: Style) -> Style {
     }
 }
 
-fn row_style(row: &Row, selected: bool) -> Style {
+fn row_style(row: &Row) -> Style {
     let mut st = match row.kind {
         Kind::Add => color::add(),
         Kind::Del => color::del(),
@@ -133,9 +141,6 @@ fn row_style(row: &Row, selected: bool) -> Style {
     };
     if row.read || row.free {
         st = st.add_modifier(Modifier::DIM);
-    }
-    if selected {
-        st = st.add_modifier(Modifier::REVERSED);
     }
     st
 }
@@ -251,6 +256,23 @@ fn diff_parts(diff: &[Diffed]) -> Vec<Parts> {
         }
     }
     out
+}
+
+/// A stack diff's line under the cursor: each of its parts in the cursor's
+/// colours (`on_cursor`), but what changed in a line almost the same as its
+/// pair, which keeps its own to stand out of the cursor's. Those are the
+/// parts in a colour for words, when that is not the line's own (its first
+/// part's).
+fn on_cursor_parts(parts: &[(String, Style)]) -> Parts {
+    let line = parts.first().map(|(_, st)| *st);
+    let words = [color::add_word(), color::del_word()];
+    parts
+        .iter()
+        .map(|(text, st)| {
+            let word = Some(*st) != line && words.contains(st);
+            (text.clone(), if word { *st } else { on_cursor(*st) })
+        })
+        .collect()
 }
 
 /// A line of `parts` cut into lines of at most `w` characters, between
@@ -7449,7 +7471,7 @@ impl App {
             spot_in(&self.spots, area, (x + 1, y + 1 + r, bw - 2, 1), Spot::Item(i));
             let mut st = if item.enabled { Style::new() } else { color::dim() };
             if i == m.sel {
-                st = st.add_modifier(Modifier::REVERSED);
+                st = on_cursor(st);
             }
             let (text, choices) = item.row(pad);
             put(buf, area, x + 1, y + 1 + r, bw - 2, &fit(&format!(" {text}"), bw - 2), st);
@@ -7552,7 +7574,7 @@ impl App {
         let mut st = color::header();
         if self.on_stack {
             st = if self.focus == Focus::List && !self.on_banner {
-                st.add_modifier(Modifier::REVERSED)
+                on_cursor(st)
             } else {
                 // As a patch picked is, on what the cursor's pane is not:
                 // underlined is the mouse over it.
@@ -7694,17 +7716,17 @@ impl App {
                 break;
             }
             let Some((at, i)) = *entry else {
-                let st = if moving_head { color::meta().add_modifier(Modifier::REVERSED) } else { color::meta() };
+                let st = if moving_head { on_cursor(color::meta()) } else { color::meta() };
                 put(buf, area, 0, y, w, &fit(&its[0], w), st);
                 y += 1;
                 continue;
             };
             let mut st = Style::new();
-            // The cursor on it, reversed; else picked, as in a pane the
-            // cursor is not in: on the banner, it is in none.
+            // The cursor on it; else picked, as in a pane the cursor is not
+            // in: on the banner, it is in none.
             if at == on && !self.on_stack && !moving_head {
                 st = if (self.focus == Focus::List && !self.on_banner) || moving {
-                    st.add_modifier(Modifier::REVERSED)
+                    on_cursor(st)
                 } else {
                     st.patch(color::picked())
                 };
@@ -8155,7 +8177,7 @@ impl App {
         }
         let mut st = color::header();
         if self.focus == Focus::Notes && self.notes_head && !self.on_banner {
-            st = st.add_modifier(Modifier::REVERSED);
+            st = on_cursor(st);
         }
         let st = self.hovered_style(Spot::NotesHead, st);
         put(buf, area, 0, 0, w, &fit(&header, w), st);
@@ -8187,7 +8209,7 @@ impl App {
             let mut tail = color::dim();
             if lit == Some(i) {
                 (head, tail) = if self.focus == Focus::Notes {
-                    (head.add_modifier(Modifier::REVERSED), Style::new().add_modifier(Modifier::REVERSED))
+                    (on_cursor(head), on_cursor(tail))
                 } else {
                     // Its author's colour, on what the cursor's pane is not.
                     (head.patch(color::picked()), color::picked())
@@ -8224,7 +8246,7 @@ impl App {
         for (y, (i, l)) in lines.iter().enumerate().skip(top).take(h).enumerate() {
             let s = self.db.node(l.rev).unwrap();
             let text = format!(" {}@{} {}", l.lanes, l.rev, s.op);
-            let st = if i == self.pick { Style::new().add_modifier(Modifier::REVERSED) } else { Style::new() };
+            let st = if i == self.pick { on_cursor(Style::new()) } else { Style::new() };
             put(buf, area, 0, y, w, &fit(&text, w), st);
             self.spot(area, (0, y, w), Spot::Pick(i));
         }
@@ -8236,7 +8258,7 @@ impl App {
         let stacks: Vec<(String, usize)> = self.db.stacks().iter().map(|s| (s.name.clone(), s.patches.len())).collect();
         for (y, (i, (name, n))) in stacks.iter().enumerate().skip(top).take(h).enumerate() {
             let text = format!(" {name} ({n} patches)");
-            let st = if i == self.pick { Style::new().add_modifier(Modifier::REVERSED) } else { Style::new() };
+            let st = if i == self.pick { on_cursor(Style::new()) } else { Style::new() };
             put(buf, area, 0, y, w, &fit(&text, w), st);
             self.spot(area, (0, y, w), Spot::Pick(i));
         }
@@ -8296,7 +8318,7 @@ impl App {
             let here = if current.contains(&p.id) { "●" } else { " " };
             let made = first.as_ref().map_or("never in the stack".to_string(), |(r, s)| format!("@{r} {}", s.op));
             let text = format!(" v{}{here} {made}", i + 1);
-            let st = if i == self.pick { Style::new().add_modifier(Modifier::REVERSED) } else { Style::new() };
+            let st = if i == self.pick { on_cursor(Style::new()) } else { Style::new() };
             put(buf, area, 0, y, w, &fit(&text, w), st);
             self.spot(area, (0, y, w), Spot::Pick(i));
         }
@@ -8380,7 +8402,7 @@ impl App {
             if y > h {
                 break;
             }
-            let st = if *i == Some(self.pick) { st.add_modifier(Modifier::REVERSED) } else { *st };
+            let st = if *i == Some(self.pick) { on_cursor(*st) } else { *st };
             put(buf, area, 0, y, w, &fit(text, w), st);
             self.spot(area, (0, y, w), Spot::Pick(owner));
             y += 1;
@@ -8426,9 +8448,10 @@ impl App {
         for y in 0..rows {
             let i = self.hist_top + y;
             let Some(parts) = self.hist_rows.get(i) else { break };
-            let lit = focus && i == self.hist_cursor;
-            let parts: Parts = parts.iter().map(|(t, st)| (t.clone(), if lit { st.add_modifier(Modifier::REVERSED) } else { *st })).collect();
-            put_parts(buf, area, 0, y + 2, w, &parts);
+            match focus && i == self.hist_cursor {
+                true => put_parts(buf, area, 0, y + 2, w, &on_cursor_parts(parts)),
+                false => put_parts(buf, area, 0, y + 2, w, parts),
+            }
             spot_in(&self.spots, area, (0, y + 2, w, 1), Spot::HistRow(i));
         }
     }
@@ -8477,7 +8500,7 @@ impl App {
             put(buf, area, 1, 0, w, "no runs yet", color::dim());
         }
         for (y, (i, (text, st))) in lines.iter().enumerate().skip(top).take(h).enumerate() {
-            let st = if i == self.pick { st.add_modifier(Modifier::REVERSED) } else { *st };
+            let st = if i == self.pick { on_cursor(*st) } else { *st };
             put(buf, area, 0, y, w, &fit(text, w), st);
             self.spot(area, (0, y, w), Spot::Pick(i));
         }
