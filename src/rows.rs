@@ -97,6 +97,9 @@ pub struct Row {
     /// A piece of a line too wide for the pane, after its first: the same
     /// line, folded, which counts once.
     pub cont: bool,
+    /// A line removed or added, the line paired with it almost the same:
+    /// what changed in it, as ranges of its characters (`changed_words`).
+    pub words: Spans,
 }
 
 impl Row {
@@ -124,6 +127,93 @@ fn fold_code(text: &str, w: usize) -> Vec<String> {
         let end = (at + w - 1).min(chars.len());
         out.push(format!("{FOLDED}{}", chars[at..end].iter().collect::<String>()));
         at = end;
+    }
+    out
+}
+
+/// What changed in a line: ranges of its characters, from where each
+/// starts to where it ends.
+pub type Spans = Vec<(usize, usize)>;
+
+/// A line's words, for telling what changed in it: each run of letters,
+/// digits and `_`, each run of white space, and each other character.
+fn tokens(s: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut start = 0;
+    let mut was = None;
+    for (i, c) in s.char_indices() {
+        let kind = if c.is_alphanumeric() || c == '_' { 1 } else if c.is_whitespace() { 2 } else { 0 };
+        if i > start && (kind == 0 || was != Some(kind)) {
+            out.push(&s[start..i]);
+            start = i;
+        }
+        was = Some(kind);
+    }
+    if start < s.len() {
+        out.push(&s[start..]);
+    }
+    out
+}
+
+/// What changed between line `old` and line `new`, as ranges of the
+/// characters of each, when the two are almost the same: at least half of
+/// what they say the same. Else, or the same altogether, none.
+fn word_diff(old: &str, new: &str) -> Option<(Spans, Spans)> {
+    let (a, b) = (tokens(old), tokens(new));
+    let ops = similar::capture_diff_slices(similar::Algorithm::Myers, &a, &b);
+    let width = |t: &[&str]| t.iter().map(|s| s.chars().count()).sum::<usize>();
+    let same: usize = ops.iter().filter(|o| o.tag() == similar::DiffTag::Equal).map(|o| width(&a[o.old_range()])).sum();
+    let all = width(&a) + width(&b);
+    if 4 * same < all || 2 * same == all {
+        return None;
+    }
+    // Where each word starts, in characters, and where the last ends.
+    let starts = |t: &[&str]| -> Vec<usize> {
+        let mut at = vec![0];
+        for s in t {
+            at.push(at[at.len() - 1] + s.chars().count());
+        }
+        at
+    };
+    let (sa, sb) = (starts(&a), starts(&b));
+    let (mut was, mut is) = (Vec::new(), Vec::new());
+    for o in ops.iter().filter(|o| o.tag() != similar::DiffTag::Equal) {
+        let (r, s) = (o.old_range(), o.new_range());
+        if !r.is_empty() {
+            was.push((sa[r.start], sa[r.end]));
+        }
+        if !s.is_empty() {
+            is.push((sb[s.start], sb[s.end]));
+        }
+    }
+    Some((was, is))
+}
+
+/// What changed in each of a hunk's `lines`: each line it removes paired
+/// with a line it adds in its place, as the view of two sides pairs them,
+/// the removed lines of a run with the added ones after them in turn; for
+/// each pair almost the same, the ranges of the characters that changed in
+/// each (`word_diff`), its sign first. Else none.
+pub fn changed_words(lines: &[crate::diff::Line]) -> Vec<Spans> {
+    let mut out = vec![Vec::new(); lines.len()];
+    let mut i = 0;
+    while i < lines.len() {
+        if lines[i].origin != '-' {
+            i += 1;
+            continue;
+        }
+        let removed = lines[i..].iter().take_while(|l| l.origin == '-').count();
+        let added = lines[i + removed..].iter().take_while(|l| l.origin == '+').count();
+        for k in 0..removed.min(added) {
+            let (d, a) = (i + k, i + removed + k);
+            let text = |l: &crate::diff::Line| l.text.get(1..).unwrap_or("").to_string();
+            if let Some((was, is)) = word_diff(&text(&lines[d]), &text(&lines[a])) {
+                let signed = |r: Spans| r.into_iter().map(|(s, e)| (s + 1, e + 1)).collect();
+                out[d] = signed(was);
+                out[a] = signed(is);
+            }
+        }
+        i += removed + added;
     }
     out
 }
@@ -438,8 +528,22 @@ pub fn patch_rows(p: &Patch, notes: &[&Note], width: usize, deco: &Deco) -> Vec<
             Kind::Add | Kind::Del | Kind::Ctx => fold_code(&row.text, width),
             _ => vec![row.text.clone()],
         };
+        // What changed in the line, piece by piece: after the first, each
+        // begins with `↪`.
+        let mut at = 0;
         for (k, text) in pieces.into_iter().enumerate() {
-            rows.push(Row { text, cont: k > 0, ..row.clone() });
+            let lead = usize::from(k > 0);
+            let n = text.chars().count() - lead;
+            let words = row
+                .words
+                .iter()
+                .filter_map(|&(s, e)| {
+                    let (s, e) = (s.max(at), e.min(at + n));
+                    (s < e).then(|| (s - at + lead, e - at + lead))
+                })
+                .collect();
+            rows.push(Row { text, cont: k > 0, words, ..row.clone() });
+            at += n;
         }
         if let Some(k) = key
             && let Some(ns) = on.get(k.as_str())
@@ -525,7 +629,8 @@ pub fn patch_rows(p: &Patch, notes: &[&Note], width: usize, deco: &Deco) -> Vec<
                 new_no: Some(hunk.new_start.max(1)),
                 ..Row::new(Kind::Hunk, label)
             });
-            for l in &hunk.lines {
+            let words = changed_words(&hunk.lines);
+            for (li, l) in hunk.lines.iter().enumerate() {
                 let kind = match l.origin {
                     '+' => Kind::Add,
                     '-' => Kind::Del,
@@ -545,6 +650,7 @@ pub fn patch_rows(p: &Patch, notes: &[&Note], width: usize, deco: &Deco) -> Vec<
                         free: changed_line && free(l),
                         diff_at: Some(l.at),
                         new_no: Some(l.new_no.max(1)),
+                        words: words[li].clone(),
                         ..Row::new(kind, l.text.clone())
                     },
                 );
@@ -593,6 +699,53 @@ pub fn stack_rows(about: &str, titles: &[String], notes: &[&Note], width: usize,
 /// new columns, or a row drawn across the full width.
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn what_changed_in_a_line_almost_the_same_as_another_is_told() {
+        use super::{tokens, word_diff};
+        assert_eq!(tokens("let x = f(a_b, 12);"), ["let", " ", "x", " ", "=", " ", "f", "(", "a_b", ",", " ", "12", ")", ";"]);
+        // One word in place of three: those, in each.
+        let (was, is) = word_diff("    let total = price * count;", "    let total = price * quantity + tax;").unwrap();
+        assert_eq!((was, is), (vec![(24, 29)], vec![(24, 38)]));
+        // Words put in: those alone, none in the line removed.
+        let (was, is) = word_diff("\"name\": \"stacked\",", "\"name\": \"stacked-rs\",").unwrap();
+        assert_eq!((was, is), (vec![], vec![(16, 19)]));
+        // Too different, or the same: nothing.
+        assert_eq!(word_diff("fn main() {}", "use std::io;"), None);
+        assert_eq!(word_diff("same", "same"), None);
+    }
+
+    #[test]
+    fn a_hunk_s_lines_removed_are_paired_with_the_lines_added_after_them() {
+        let line = |origin: char, text: &str| crate::diff::Line {
+            origin,
+            text: format!("{origin}{text}"),
+            key: String::new(),
+            old_no: 0,
+            new_no: 0,
+            at: 0,
+        };
+        let lines = [
+            line(' ', "fn f() {"),
+            line('-', "    a(1);"),
+            line('-', "    b(2);"),
+            line('-', "    gone();"),
+            line('+', "    a(10);"),
+            line('+', "    b(2, 3);"),
+            line(' ', "}"),
+            line('+', "    new();"),
+        ];
+        let words = super::changed_words(&lines);
+        // Each removed line with the added one in its turn, its sign first;
+        // what has no pair, and context, nothing.
+        assert_eq!(words[1], [(7, 8)], "the 1 of a(1)");
+        assert_eq!(words[4], [(7, 9)], "the 10 of a(10)");
+        assert_eq!(words[2], Vec::<(usize, usize)>::new(), "b(2) lost nothing");
+        assert_eq!(words[5], [(8, 11)], "the , 3 of b(2, 3)");
+        for k in [0, 3, 6, 7] {
+            assert!(words[k].is_empty(), "{k}");
+        }
+    }
+
     #[test]
     fn a_turn_wraps_between_words() {
         let said = |text: &str, w: usize| -> Vec<String> {

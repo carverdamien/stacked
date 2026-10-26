@@ -12,6 +12,8 @@ use ratatui::style::{Color, Modifier, Style};
 pub enum Paint {
     Added,
     Removed,
+    AddedWord,
+    RemovedWord,
     Hunk,
     File,
     Meta,
@@ -28,9 +30,11 @@ pub enum Paint {
 }
 
 impl Paint {
-    pub const ALL: [Paint; 15] = [
+    pub const ALL: [Paint; 17] = [
         Paint::Added,
         Paint::Removed,
+        Paint::AddedWord,
+        Paint::RemovedWord,
         Paint::Hunk,
         Paint::File,
         Paint::Meta,
@@ -50,6 +54,8 @@ impl Paint {
         match self {
             Paint::Added => "added",
             Paint::Removed => "removed",
+            Paint::AddedWord => "added_word",
+            Paint::RemovedWord => "removed_word",
             Paint::Hunk => "hunk",
             Paint::File => "file",
             Paint::Meta => "meta",
@@ -75,6 +81,8 @@ impl Paint {
         match self {
             Paint::Added => "The lines a patch adds.",
             Paint::Removed => "The lines a patch removes.",
+            Paint::AddedWord => "In a line added in place of one removed, the two almost the same: what it changes.",
+            Paint::RemovedWord => "In a line removed, another added in its place, the two almost the same: what changes.",
             Paint::Hunk => "A hunk's @@ line.",
             Paint::File => "A file's name in a patch, the titles of boxes, and the records of the history.",
             Paint::Meta => "A patch's index lines, the borders of the panes and the menus, and the editor's keys.",
@@ -96,6 +104,8 @@ impl Paint {
         match self {
             Paint::Added => "green",
             Paint::Removed => "red",
+            Paint::AddedWord => "green reverse",
+            Paint::RemovedWord => "red reverse",
             Paint::Hunk => "magenta",
             Paint::File => "cyan bold",
             Paint::Meta => "blue",
@@ -217,6 +227,14 @@ pub mod color {
     }
     pub fn del() -> Style {
         of(Paint::Removed)
+    }
+    /// What a line added changes, against the line removed in its place.
+    pub fn add_word() -> Style {
+        of(Paint::AddedWord)
+    }
+    /// What changes of a line removed, against the line added in its place.
+    pub fn del_word() -> Style {
+        of(Paint::RemovedWord)
     }
     pub fn hunk() -> Style {
         of(Paint::Hunk)

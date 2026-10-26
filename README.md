@@ -366,7 +366,11 @@ the help then names those:
 - `1` cycles the views of the code, as in self-review: unified, side by
   side, and compact, the two sides each a pane of its own with no gaps,
   scrolled together or one alone (← → turn which, and past the old side or
-  the new one go on to the pane beyond). Two sides need 60 columns. Made
+  the new one go on to the pane beyond). Two sides need 60 columns. In
+  every view, a line removed and the line added in its place (paired as the
+  two sides pair them), when the two are almost the same, at least half of
+  what they say, show what changed in them in the colours for words
+  (`removed_word`, `added_word`), the rest of them in the lines' own. Made
   shorter than the cursor's line, the screen keeps the cursor's line in
   sight, on its last line, in every view.
 - `2` switches between commenting and reading (below).
@@ -1399,7 +1403,9 @@ settings:
   `magenta`, `cyan`, `white`, any of these after `bright`, `default`,
   `normal`), a number from 0 to 255, or `#rrggbb`; and any of `bold`, `dim`,
   `italic`, `ul`, `blink`, `reverse`, `strike`. `added` (`green`), `removed`
-  (`red`), `hunk` (`magenta`), `file` (`cyan bold`: a file's name, the
+  (`red`), `added_word` (`green reverse`) and `removed_word` (`red
+  reverse`): what changed in a line almost the same as the one paired with it,
+  `hunk` (`magenta`), `file` (`cyan bold`: a file's name, the
   titles of boxes, the history's records), `meta` (`blue`: index lines,
   borders), `header` (`cyan bold`: each pane's first row); `you` (`172`),
   `agent` (`134`) and `reviewer` (`32`): the comments and turns of each,
@@ -1715,7 +1721,8 @@ says it drew (its panes, then the boxes over them, inside their borders:
 what StackED's selections keep to), a comment asked
 about and its stream and answer shown in place, the screen never waiting on
 the agent, redrawing not slowing as the agent writes, the filter kept in
-the file, the three views, reading by hunks and by a Rust file's blocks
+the file, the three views, what changed in a line almost the same as the
+one removed painted as words (and lines quite other, not), reading by hunks and by a Rust file's blocks
 (the cursor going down to the middle line, then the code coming up under
 it, in each view),
 editing a patch by hand at the cursor, the history screens, the branches

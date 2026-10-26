@@ -3028,6 +3028,61 @@ fn reading_on_the_cursor_goes_down_to_the_middle_then_the_code_comes_up() {
 }
 
 #[test]
+fn what_changed_in_a_line_almost_the_same_as_the_one_removed_is_painted_as_words() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("src");
+    std::fs::create_dir(&src).unwrap();
+    git(&src, &["init", "-q", "-b", "main"]);
+    git(&src, &["config", "commit.gpgsign", "false"]);
+    std::fs::write(src.join("f.rs"), "fn f() {\n    let total = price * count;\n    old();\n}\n").unwrap();
+    git(&src, &["add", "."]);
+    git(&src, &["commit", "-qm", "base"]);
+    // A line almost the same, and one quite another.
+    std::fs::write(src.join("f.rs"), "fn f() {\n    let total = price * quantity + tax;\n    something_else(1, 2, 3);\n}\n").unwrap();
+    git(&src, &["commit", "-qam", "Bug 1 - the total"]);
+    let db = tmp.path().join("db.jsonl");
+    stacked(&src, &db, &["import", "s", "HEAD~1"]);
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Enter]);
+    let mut buf = Buffer::empty(Rect::new(0, 0, 120, 30));
+    app.draw(&mut buf);
+    let row = |text: &str| -> (u16, u16) {
+        for y in 0..30 {
+            let line: String = (0..120).map(|x| buf[(x, y)].symbol()).collect();
+            if let Some(at) = line.find(text) {
+                return (line[..at].chars().count() as u16, y);
+            }
+        }
+        panic!("no {text}");
+    };
+    let style = |(x, y): (u16, u16), dx: u16| {
+        let c = &buf[(x + dx, y)];
+        (c.fg, c.bg, c.modifier)
+    };
+    let (word, removed, added, word_added) = (
+        stacked::paint::color::del_word(),
+        stacked::paint::color::del(),
+        stacked::paint::color::add(),
+        stacked::paint::color::add_word(),
+    );
+    let as_drawn = |s: ratatui::style::Style| (s.fg.unwrap_or_default(), s.bg.unwrap_or_default(), s.add_modifier);
+    // The line removed: its count, as words; the rest as the line.
+    let at = row("-    let total = price * count;");
+    assert_eq!(style(at, 25), as_drawn(word), "count");
+    assert_eq!(style(at, 5), as_drawn(removed), "let");
+    // The line added: its quantity + tax, as words; the rest as the line.
+    let at = row("+    let total = price * quantity + tax;");
+    assert_eq!(style(at, 25), as_drawn(word_added), "quantity");
+    assert_eq!(style(at, 35), as_drawn(word_added), "tax");
+    assert_eq!(style(at, 5), as_drawn(added), "let");
+    // Lines quite other than each other: the lines alone.
+    let at = row("+    something_else(1, 2, 3);");
+    assert_eq!(style(at, 5), as_drawn(added));
+    let at = row("-    old();");
+    assert_eq!(style(at, 5), as_drawn(removed));
+}
+
+#[test]
 fn lines_of_white_space_alone_need_no_reading_unless_the_settings_say_so() {
     let tmp = tempfile::tempdir().unwrap();
     let src = tmp.path().join("src");

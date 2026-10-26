@@ -63,6 +63,35 @@ fn by_style(by: Option<&By>) -> Style {
 /// one part.
 pub(crate) fn row_parts(row: &Row, selected: bool) -> Vec<(String, Style)> {
     let st = row_style(row, selected);
+    // A line almost the same as the one paired with it: what changed in
+    // its own colour, for words, dim and reversed as the line is.
+    if !row.words.is_empty() && matches!(row.kind, Kind::Add | Kind::Del) {
+        let mut word = if row.kind == Kind::Add { color::add_word() } else { color::del_word() };
+        if row.read || row.free {
+            word = word.add_modifier(Modifier::DIM);
+        }
+        if selected {
+            word = word.add_modifier(Modifier::REVERSED);
+        }
+        let chars: Vec<char> = row.text.chars().collect();
+        let mut parts = Vec::new();
+        let mut at = 0;
+        for &(s, e) in &row.words {
+            let (s, e) = (s.clamp(at, chars.len()), e.clamp(at, chars.len()));
+            if e <= s {
+                continue;
+            }
+            if s > at {
+                parts.push((chars[at..s].iter().collect(), st));
+            }
+            parts.push((chars[s..e].iter().collect(), word));
+            at = e;
+        }
+        if at < chars.len() {
+            parts.push((chars[at..].iter().collect(), st));
+        }
+        return parts;
+    }
     let bar = row.text.find(BAR).filter(|_| row.kind == Kind::Comment && row.turn.is_some());
     let Some(at) = bar else {
         return vec![(row.text.clone(), st)];
