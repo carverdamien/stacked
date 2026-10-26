@@ -361,7 +361,9 @@ the help then names those:
 - `1` cycles the views of the code, as in self-review: unified, side by
   side, and compact, the two sides each a pane of its own with no gaps,
   scrolled together or one alone (← → turn which, and past the old side or
-  the new one go on to the pane beyond). Two sides need 60 columns.
+  the new one go on to the pane beyond). Two sides need 60 columns. Made
+  shorter than the cursor's line, the screen keeps the cursor's line in
+  sight, on its last line, in every view.
 - `2` switches between commenting and reading (below).
 
 Nothing else is a key. Going through the comments pane does not move the

@@ -7784,7 +7784,11 @@ impl App {
                 let pinned = |c: &Compact| h > 2 && above(&p.lpos, c.top[0]) && above(&p.rpos, c.top[1]);
                 // Read on with Space: the row on the line of the screen the
                 // cursor was on, a line lower in the panes once they pin the
-                // title over them.
+                // title over them. On a screen shorter than the cursor's
+                // line, its row on the last line, kept in sight rather than
+                // another row taken for it.
+                let shorter = anchor.is_none() && self.compact.y >= h - pinned(&self.compact) as usize;
+                let keep = keep.or_else(|| shorter.then_some((self.cursor, h - 1)));
                 if let Some((j, y)) = keep {
                     self.compact.keep(&p, j, y, h);
                     if pinned(&self.compact) {

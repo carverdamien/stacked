@@ -358,6 +358,26 @@ fn titles_on_the_left_the_patch_in_the_middle() {
 }
 
 #[test]
+fn the_compact_panes_keep_the_cursor_in_sight_on_a_shorter_screen() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    draw(&mut app);
+    keys(&mut app, &[KeyCode::Enter, KeyCode::Char('1'), KeyCode::Char('1')]);
+    assert_eq!(app.layout, Layout::Compact);
+    down_to(&mut app, "+TWO");
+    // Drawn 10 lines high, the cursor's line past the panes: its row comes
+    // up to their last line, still the cursor's.
+    let mut buf = Buffer::empty(Rect::new(0, 0, 120, 10));
+    app.draw(&mut buf);
+    let screen: Vec<String> = (0..10).map(|y| (0..120).map(|x| buf[(x, y)].symbol()).collect()).collect();
+    assert_eq!(app.rows[app.cursor].text, "+TWO", "{}", screen.join("\n"));
+    assert!(screen[8].contains("+TWO"), "on the last line of the panes:\n{}", screen.join("\n"));
+    // Taller again: where it is.
+    let screen = draw(&mut app);
+    assert_eq!(app.rows[app.cursor].text, "+TWO", "{screen}");
+}
+
+#[test]
 fn one_cycles_the_views_of_the_code() {
     let (_tmp, db, _src) = setup();
     let mut app = open(&db).unwrap();
