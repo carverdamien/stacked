@@ -1390,8 +1390,18 @@ fn prompt(db: &Db, i: &Info, s: &Stack, cmd: &str, run: &str, structured: bool) 
         ),
     });
     p.push_str(REFS);
+    p.push_str(NOT_ALLOWED);
     p
 }
+
+/// What an ask is told of a tool it is not let use: that nothing it would
+/// have reached said no, so that it says not allowed, not that a service
+/// refused.
+const NOT_ALLOWED: &str = " A tool you are not let use is refused before it runs (\"Claude \
+requested permissions to use …, but you haven't granted it yet\"): nothing it would have reached \
+was asked. Say so in what you write: that the tool was not allowed, naming it \
+(`mcp__moz__get_bugzilla_bug`, `Bash: curl …`), never that the service behind it refused, failed or \
+would not let you read; then go on with what you can read. The user can let every ask use it.";
 
 /// What the agent's answer to ask `i`, on stack `s`, is to be, as a JSON
 /// Schema: what its prompt asks for, given back as structured output

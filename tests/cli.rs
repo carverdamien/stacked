@@ -1459,6 +1459,9 @@ fn landed_work_with_what_you_wrote_in_its_review_goes_back_to_the_agent_from_it(
     let told = std::fs::read_to_string(&prompts).unwrap();
     let second = told.split("=====").nth(1).unwrap();
     assert!(second.contains("This is another round") && second.contains("Not French.") && second.contains("Not like this."), "{second}");
+    // A change is told too that a tool refused is not allowed.
+    let first = told.split("=====").next().unwrap();
+    assert!(first.contains("that the tool was not allowed, naming it"), "{first}");
     let landed_now = e.ok(&["landed", "s"]);
     assert_eq!(landed_now.lines().filter(|l| !l.starts_with(' ')).count(), 1, "{landed_now}");
     assert!(!landed_now.starts_with(&work), "{landed_now}");
@@ -2291,6 +2294,9 @@ fn every_ask_may_use_the_tools_the_settings_add() {
     let tools = said.split("--allowedTools ").nth(1).unwrap().split(" --").next().unwrap().trim_end();
     assert!(tools.contains("Read,") && tools.ends_with(",mcp__bugzilla__*,Bash(jq *)"), "{tools}");
     assert!(!tools.contains("Edit") && !tools.contains("Write"), "{tools}");
+    // Told that a tool refused is not allowed, not a service saying no.
+    assert!(said.contains("Say so in what you write: that the tool was not allowed, naming it"), "{said}");
+    assert!(said.contains("never that the service behind it refused, failed or would not let you read"), "{said}");
     // What it was not let use is said, in its stream and in its run, with
     // how to allow it.
     let result = serde_json::json!({"type": "result", "result": "{\"replies\": {\"c1\": \"I could not read it.\"}}",

@@ -596,7 +596,9 @@ ask agent`'s:
   them: Settings, below), your MCP servers' among them: running in
   the repository, it has the servers you added there. What it was not let
   use is said in its stream (`⛔ not allowed: mcp__moz__get_bug: …`) and in
-  its run's summary, to allow it if it should be. No worktree is made for
+  its run's summary, to allow it if it should be; every ask, a change's too,
+  is told to say so in what it writes, the tool not allowed, never that the
+  service behind it (Bugzilla, Phabricator) refused. No worktree is made for
   it, which in a big repository takes a while, unless the settings say so
   (below): as self-review's answers do, it runs in the stack's repository as
   it is checked out, and is told that this need not be the stack. It reads
