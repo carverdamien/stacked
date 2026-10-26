@@ -21,9 +21,9 @@ pub enum Kind {
     Meta,
     Msg,
     Comment,
-    /// A quiet line of a comment: one of claude's stream, under the comment
-    /// it is working on; where the comment stands, when its first line has
-    /// no room for it; the comment, collapsed.
+    /// A quiet line of a comment: one of claude's stream, under the turns
+    /// of the comment it is working on; where the comment stands, when its
+    /// first line has no room for it; the comment, collapsed.
     Stream,
     Blank,
 }
@@ -61,6 +61,9 @@ pub struct Row {
     /// The row naming who said a turn of a comment's thread, over what they
     /// said.
     pub who: bool,
+    /// A line of the agent's stream, under the turns of the comment it is
+    /// working on, over its references.
+    pub stream: bool,
     /// The turn of its comment's thread a row shows, of all its turns
     /// (those deleted too), from 0.
     pub turn: Option<usize>,
@@ -387,7 +390,8 @@ pub fn by_of(n: &Note) -> By {
 pub const BAR: char = '▎';
 
 /// The rows of a comment, its turns folded to `width`, what `deco` says of
-/// it on its first line and under it.
+/// it on its first line and under it: under its turns, the agent's stream,
+/// then its references.
 pub fn comment_rows(n: &Note, width: usize, deco: &Deco) -> Vec<Row> {
     let by = by_of(n);
     let who = match (&by, n.by.as_deref()) {
@@ -481,9 +485,17 @@ pub fn comment_rows(n: &Note, width: usize, deco: &Deco) -> Vec<Row> {
             });
         }
     }
-    // Under the comment, a line for each reference attached to it, by its
-    // name, then for each a turn points at: Enter previews lines, and goes
-    // to a comment.
+    // While the agent works on it, the last lines of its stream, under its
+    // turns: over its references, as the editor written on it is.
+    for line in deco.streams.get(&n.id).into_iter().flatten() {
+        let line: String = line.chars().take(width.saturating_sub(7)).collect();
+        out.push(Row {
+            stream: true,
+            ..row(Kind::Stream, format!("     ⋯ {line}"), false)
+        });
+    }
+    // Last, a line for each reference attached to it, by its name, then for
+    // each a turn points at: Enter previews lines, and goes to a comment.
     let attached = n.attached.iter().filter_map(|a| {
         let p = match &a.to {
             crate::refs::To::Comment { change, id } => crate::refs::Pointer::Comment {
@@ -511,10 +523,6 @@ pub fn comment_rows(n: &Note, width: usize, deco: &Deco) -> Vec<Row> {
             points,
             ..row(Kind::Comment, format!("     {BAR}   {said}"), false)
         });
-    }
-    for line in deco.streams.get(&n.id).into_iter().flatten() {
-        let line: String = line.chars().take(width.saturating_sub(7)).collect();
-        out.push(row(Kind::Stream, format!("     ⋯ {line}"), false));
     }
     out
 }
@@ -888,6 +896,43 @@ mod tests {
         let p2 = patch("diff --git a/b.txt b/b.txt\n--- a/b.txt\n+++ b/b.txt\n@@ -1 +1 @@\n-x\n+y\n");
         let rows = patch_rows(&p2, &[&n], 80, &Deco::default());
         assert!(rows.iter().any(|r| r.text == "   a.txt, as a whole"), "{rows:#?}");
+    }
+
+    #[test]
+    fn a_comment_s_stream_is_under_its_turns_over_its_references() {
+        use super::{Deco, comment_rows};
+        use crate::thread::{Role, append_turn};
+        // A comment with a reference attached, the agent's answer pointing
+        // at lines, your reply; the agent at work on it.
+        let n = crate::db::Note {
+            change: "c".into(),
+            id: "n".into(),
+            text: append_turn(&append_turn("Same as @r1?", Role::Agent, "As @r2 shows.\n\n```refs\nr2 a.txt:2 @1\n```", Some("answer")), Role::You, "Which one?", None),
+            attached: vec![crate::refs::Attached {
+                n: 1,
+                to: crate::refs::To::Comment { change: "c".into(), id: "m".into() },
+            }],
+            ..Default::default()
+        };
+        let mut deco = Deco::default();
+        deco.streams.insert("n".into(), vec!["Reading the patch.".into(), "$ git log".into()]);
+        let rows = comment_rows(&n, 80, &deco);
+        let at = |text: &str| rows.iter().position(|r| r.text.contains(text)).unwrap_or_else(|| panic!("no {text:?} in {rows:#?}"));
+        // Its turns, then the stream, then the references.
+        assert!(at("Which one?") < at("⋯ Reading the patch.") && at("⋯ $ git log") < at("r1 ↗"), "{rows:#?}");
+        assert!(at("r1 ↗") < at("r2 ⇢"), "{rows:#?}");
+        // Only the lines of the stream are marked so. The references are as
+        // they were: the one attached points at a comment, and the agent's
+        // is of the turn that attached it.
+        let streams: Vec<&str> = rows.iter().filter(|r| r.stream).map(|r| r.text.as_str()).collect();
+        assert_eq!(streams, ["     ⋯ Reading the patch.", "     ⋯ $ git log"]);
+        assert!(rows.iter().filter(|r| r.stream).all(|r| !r.is_reference() && r.turn.is_none() && r.note.as_deref() == Some("n")));
+        let refs: Vec<(Option<usize>, bool, bool)> = rows.iter().filter(|r| r.is_reference()).map(|r| (r.turn, r.points.is_some(), r.reference.is_some())).collect();
+        assert_eq!(refs, [(None, true, false), (Some(1), false, true)]);
+        // Its last row is a reference's, as when the agent is not at work.
+        let quiet = comment_rows(&n, 80, &Deco::default());
+        assert_eq!(rows.last(), quiet.last());
+        assert_eq!(rows.len(), quiet.len() + 2);
     }
 
     #[test]

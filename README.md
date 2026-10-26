@@ -531,7 +531,9 @@ told so, and one it opens with no line (`"line": ""`) is on its file as a
 whole too. In the middle, a reply goes under the last
 turn of the comment, its references under the box (a turn written again
 goes in its place, the turns after it under the box), so that the last
-reply and the references are in sight both. The editor's box hides nothing: what was
+reply and the references are in sight both. If the agent starts on the
+comment meanwhile (asked from the command line, say), its stream goes under
+the box too, over the references. The editor's box hides nothing: what was
 under the line goes on after the box, in every view of the code. The pane
 being written in takes half the width meanwhile. Typing and the arrows
 edit, and enter breaks the line. On a line where no comment is open but one
@@ -982,7 +984,8 @@ what (the agent adds `"base"` to its answer): the stack's base moves there.
 
 Where it stands shows on the comment's first line, or under it when that is
 too long: ready (and on what), with the agent (and the last lines of its
-stream under it: what it says and runs, and while it thinks, one line
+stream under the comment's turns, over its references: what it says and
+runs, and while it thinks, one line
 counting it, `✻ thinking · ~688 tokens`, with the words of it when claude
 gives them), agent replied (changed, answered, tested), failed (and why),
 moved. Until the agent writes its first line, one line says what is being
@@ -1868,7 +1871,10 @@ cannot be, what you said last written again (off the queue meanwhile;
 left as it was, asked as it is or left so), a reply written in $EDITOR
 under its conversation, its references under it, and a turn written again
 there in its place, the editor in the middle between the last reply and the
-references, the references a rewind or an edit no longer names detached
+references, the agent's stream between them too, under the editor when one
+is open on the comment (Enter on the stream still opening it, Enter on a
+reference still previewing it, and the cursor staying on its line as the
+stream grows and goes), the references a rewind or an edit no longer names detached
 (the status line saying so; those never named, those the agent attached
 without naming them, and those the reply waiting for review names, kept;
 the next one attached taking a number never given), the agent's reply

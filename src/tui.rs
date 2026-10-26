@@ -2420,6 +2420,15 @@ impl App {
             deco.read = self.subject_change().map(|c| self.db.read_keys(&c));
             deco.whitespace = self.cfg.view.whitespace_needs_review;
         }
+        // How many rows are over the cursor, the lines of the agents'
+        // streams not counted, and on such a line, which line of its stream
+        // it is: the cursor stays on its row as a stream over it grows,
+        // shrinks or goes (a comment's stream is over its references).
+        let was = self.rows.get(self.cursor).map(|r| {
+            let before = &self.rows[..self.cursor];
+            let down = r.stream.then(|| before.iter().rev().take_while(|r| r.stream).count());
+            (before.iter().filter(|r| !r.stream).count(), down)
+        });
         self.rows = if self.on_stack {
             match self.current() {
                 Some(s) => {
@@ -2446,6 +2455,16 @@ impl App {
             self.compact.reset();
             // Back on what they showed before: where they were.
             self.back_to_panes(&subject);
+        } else if let Some((k, down)) = was {
+            // The row as many rows down, the streams' lines not counted. On
+            // a stream's line, the same line of it, or its last; with the
+            // stream gone, the row over where it was, its comment's.
+            let next = self.rows.iter().enumerate().filter(|(_, r)| !r.stream).nth(k).map_or(self.rows.len(), |(i, _)| i);
+            let over = self.rows[..next].iter().rev().take_while(|r| r.stream).count();
+            self.cursor = match down {
+                Some(j) => (next - over + j).min(next.saturating_sub(1)),
+                None => next,
+            };
         }
         self.cursor = self.cursor.min(self.rows.len().saturating_sub(1));
         self.note_sel = self.note_sel.min(self.notes().len().saturating_sub(1));
@@ -6009,7 +6028,8 @@ impl App {
     /// Whether the references of the comment `e` writes on show under the
     /// editor, as that comment's lines, rather than in it: written in the
     /// middle on a comment there, the editor goes between its turns and
-    /// them, for the last reply and the references to be in sight both.
+    /// them, for the last reply and the references to be in sight both
+    /// (the agent's stream between, while it works on the comment).
     fn refs_in_rows(&self, e: &Edit) -> bool {
         e.pane == Focus::Diff && matches!(e.target, Target::Reply { .. } | Target::Edit { .. } | Target::Turn { .. } | Target::Rewind { .. })
     }
@@ -8412,7 +8432,7 @@ impl App {
 
     /// The last row of what a comment being written in the middle goes
     /// under: its line and the comments on it, or the turns of the comment
-    /// it answers, its references under the editor.
+    /// it answers, the agent's stream and the references under the editor.
     fn editor_anchor(&self) -> Option<usize> {
         self.editor_anchor_in(&self.rows)
     }
@@ -8428,9 +8448,12 @@ impl App {
             Target::Line { key, .. } => rows.iter().position(|r| r.key.as_deref() == Some(key) && r.note.is_none())?,
             Target::Reply { id, .. } | Target::Edit { id, .. } => rows.iter().position(|r| r.note.as_deref() == Some(id))?,
             // Where the turn written again was, or the turns rewound: under
-            // what comes before it, over what comes after.
+            // what comes before it, over what comes after, the agent's
+            // stream included.
             Target::Turn { id, turn, .. } | Target::Rewind { id, from: turn, .. } => {
-                return rows.iter().rposition(|r| r.note.as_deref() == Some(id) && !r.is_reference() && r.turn.is_none_or(|t| t < *turn));
+                return rows
+                    .iter()
+                    .rposition(|r| r.note.as_deref() == Some(id) && !r.is_reference() && !r.stream && r.turn.is_none_or(|t| t < *turn));
             }
             // Your answer to a reply, in its review: under the thread.
             Target::Answer { run, k } => {
@@ -8446,7 +8469,7 @@ impl App {
         }
         while rows.get(last + 1).is_some_and(|r| matches!(r.kind, Kind::Comment | Kind::Stream)) {
             if let Target::Reply { id, .. } | Target::Edit { id, .. } = &e.target
-                && (rows[last + 1].note.as_deref() != Some(id) || rows[last + 1].is_reference())
+                && (rows[last + 1].note.as_deref() != Some(id) || rows[last + 1].is_reference() || rows[last + 1].stream)
             {
                 break;
             }

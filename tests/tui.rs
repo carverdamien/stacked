@@ -1725,6 +1725,156 @@ fn the_editor_in_the_middle_goes_between_the_last_reply_and_the_references() {
     assert!(top < reply && reply < r1, "{screen}");
 }
 
+/// The editor on `why so loud?`, a comment on TWO, and `Same as @r1?`, a
+/// comment on LINE 39 whose r1 points at the first; the agent's answer to
+/// the second, attaching r2, lines of a.txt; your reply after it. And the
+/// second comment.
+fn a_thread_with_references(db: &Path) -> (App, Note) {
+    let mut app = open(db).unwrap();
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Enter]);
+    save(&mut app, "why so loud?");
+    down_to(&mut app, "+LINE 39");
+    keys(&mut app, &[KeyCode::Enter]);
+    save(&mut app, "Same as @r1?");
+    let a = notes_of(db, "s", 0).into_iter().find(|n| n.text == "why so loud?").unwrap();
+    let b = notes_of(db, "s", 0).into_iter().find(|n| n.text == "Same as @r1?").unwrap();
+    Db::edit(db, |d| {
+        let said = "As @r2 shows.\n\n```refs\nr2 a.txt:2 @1\n```";
+        d.set_note(Note {
+            text: append_turn(&append_turn(&b.text, Role::Agent, said, Some("answer")), Role::You, "Which one?", None),
+            attached: vec![stacked::refs::Attached {
+                n: 1,
+                to: stacked::refs::To::Comment {
+                    change: a.change.clone(),
+                    id: a.id.clone(),
+                },
+            }],
+            ..b.clone()
+        })
+    })
+    .unwrap();
+    app.refresh();
+    (app, b)
+}
+
+/// The agent's stream on the run `changing` starts: `said`, a line each.
+fn agent_writes(db: &Path, said: &[&str]) {
+    let events: Vec<stacked::db::Record> = said
+        .iter()
+        .map(|text| stacked::db::Record::Event {
+            run: "run-changing".into(),
+            event: serde_json::json!({"type": "assistant", "message": {"content": [{"type": "text", "text": text}]}}),
+        })
+        .collect();
+    Db::append(db, &events).unwrap();
+}
+
+#[test]
+fn the_agent_s_stream_goes_between_the_last_reply_and_the_references() {
+    let (_tmp, db, _src) = setup();
+    let (mut app, b) = a_thread_with_references(&db);
+    // The agent at work on it: what it writes under the last reply, over
+    // the references.
+    changing(&db, &b.change, &b.id, serde_json::json!({"patch": b.change}));
+    agent_writes(&db, &["Reading the patch."]);
+    app.refresh();
+    draw(&mut app);
+    keys(&mut app, &[KeyCode::End]);
+    let screen = draw(&mut app);
+    let y = |text: &str| at(&screen, text).1;
+    let (reply, stream, r1, r2) = (y("▎   Which one?"), y("⋯ Reading the patch."), y("▎   r1 ↗ patch 1 · a.txt: TWO"), y("▎   r2 ⇢ a.txt:2"));
+    assert!(reply < stream && stream < r1 && r1 < r2, "{screen}");
+    // Enter on the stream opens it in place, as anywhere on the comment.
+    keys(&mut app, &[KeyCode::Home]);
+    down_to(&mut app, "     ⋯ Reading the patch.");
+    keys(&mut app, &[KeyCode::Enter]);
+    assert!(matches!(&app.mode, Mode::Stream { id, .. } if *id == b.id), "{:?}", app.mode);
+    keys(&mut app, &[KeyCode::Esc]);
+    assert_eq!(app.mode, Mode::Normal);
+    // Enter on a reference under it previews its lines.
+    down_to(&mut app, "     ▎   r2 ⇢ a.txt:2");
+    keys(&mut app, &[KeyCode::Enter]);
+    let Mode::Preview(p) = &app.mode else { panic!("{:?}", app.mode) };
+    assert_eq!(p.title, "a.txt:2 · as patch 1 leaves it");
+    keys(&mut app, &[KeyCode::Esc]);
+    // The stream growing over it, the cursor stays on it, and Enter still
+    // previews it.
+    agent_writes(&db, &["Looking at a.txt.", "Seen."]);
+    app.refresh();
+    let screen = draw(&mut app);
+    assert!(app.rows[app.cursor].text.starts_with("     ▎   r2 ⇢ a.txt:2"), "{}", app.rows[app.cursor].text);
+    assert!(screen.contains("⋯ Reading the patch.") && screen.contains("⋯ Looking at a.txt.") && screen.contains("⋯ Seen."), "{screen}");
+    assert!(at(&screen, "⋯ Seen.").1 < at(&screen, "▎   r1 ↗").1, "{screen}");
+    keys(&mut app, &[KeyCode::Enter]);
+    assert!(matches!(&app.mode, Mode::Preview(p) if p.title == "a.txt:2 · as patch 1 leaves it"), "{:?}", app.mode);
+    // Enter on the other reference goes to the comment it points at.
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Up]);
+    assert!(app.rows[app.cursor].text.starts_with("     ▎   r1 ↗"), "{}", app.rows[app.cursor].text);
+    keys(&mut app, &[KeyCode::Enter]);
+    let a = notes_of(&db, "s", 0).into_iter().find(|n| n.text == "why so loud?").unwrap();
+    assert!(app.rows[app.cursor].head && app.rows[app.cursor].note.as_deref() == Some(a.id.as_str()), "{}", app.rows[app.cursor].text);
+    // On a line of the stream as it changes, the cursor stays on one; once
+    // the agent is done, the stream goes, and the cursor stays on the
+    // comment.
+    down_to(&mut app, "     ⋯ Looking at a.txt.");
+    agent_writes(&db, &["Done."]);
+    app.refresh();
+    draw(&mut app);
+    assert!(app.rows[app.cursor].stream && app.rows[app.cursor].note.as_deref() == Some(b.id.as_str()), "{}", app.rows[app.cursor].text);
+    Db::edit(&db, |d| {
+        let r = d.run("run-changing").cloned().unwrap();
+        d.add_run(stacked::db::Run { state: stacked::db::RunState::Done, ..r }).map(|_| ())
+    })
+    .unwrap();
+    app.refresh();
+    draw(&mut app);
+    assert!(!app.rows.iter().any(|r| r.stream), "the stream is gone");
+    assert_eq!(app.rows[app.cursor].text, "     ▎   Which one?");
+}
+
+#[test]
+fn the_editor_on_a_comment_the_agent_is_at_goes_over_its_stream() {
+    let (_tmp, db, _src) = setup();
+    let (mut app, b) = a_thread_with_references(&db);
+    // A reply being written as the agent starts on the comment, asked
+    // elsewhere: the editor under the last reply, then the stream, then
+    // the references.
+    down_to(&mut app, "     ▎   Which one?");
+    choose_as(&mut app, "Reply", "here");
+    changing(&db, &b.change, &b.id, serde_json::json!({"patch": b.change}));
+    agent_writes(&db, &["Reading the patch."]);
+    app.refresh();
+    assert!(matches!(&app.mode, Mode::Edit(e) if matches!(e.target, stacked::tui::Target::Reply { .. })), "{:?}", app.mode);
+    let screen = draw(&mut app);
+    let y = |text: &str| at(&screen, text).1;
+    let (reply, top, stream, r1, r2) = (y("▎   Which one?"), y("┌─"), y("⋯ Reading the patch."), y("▎   r1 ↗"), y("▎   r2 ⇢"));
+    assert!(reply < top && top < stream && stream < r1 && r1 < r2, "{screen}");
+    keys(&mut app, &[KeyCode::Esc]);
+    assert_eq!(app.mode, Mode::Normal);
+    // The agent done, its reply written again as the agent starts on the
+    // comment once more: the editor in that reply's place, your reply under
+    // the editor, then the stream, then the references.
+    Db::edit(&db, |d| {
+        let r = d.run("run-changing").cloned().unwrap();
+        d.add_run(stacked::db::Run { state: stacked::db::RunState::Done, ..r }).map(|_| ())
+    })
+    .unwrap();
+    app.refresh();
+    keys(&mut app, &[KeyCode::Home]);
+    down_to(&mut app, "     ▎   As @r2 shows.");
+    choose_as(&mut app, "Edit the agent's reply", "here");
+    changing(&db, &b.change, &b.id, serde_json::json!({"patch": b.change}));
+    agent_writes(&db, &["Reading it again."]);
+    app.refresh();
+    assert!(matches!(&app.mode, Mode::Edit(e) if matches!(e.target, stacked::tui::Target::Turn { turn: 1, .. })), "{:?}", app.mode);
+    let screen = draw(&mut app);
+    let y = |text: &str| at(&screen, text).1;
+    let (first, top, reply, stream, r1) = (y("▎   Same as @r1?"), y("┌─"), y("▎   Which one?"), y("⋯ Reading it again."), y("▎   r1 ↗"));
+    assert!(first < top && top < reply && reply < stream && stream < r1, "{screen}");
+}
+
 /// The lines under the comments drawn, a reference each, as they say it:
 /// `r2 ⇢ a.txt:2-3 · as patch 1 leaves it`.
 fn references_under(app: &mut App) -> Vec<String> {
