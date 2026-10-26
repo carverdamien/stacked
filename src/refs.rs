@@ -8,11 +8,24 @@
 //! comment, a line each; Enter previews a reference's lines, and Enter
 //! again goes there; Enter on a comment goes to it.
 //!
-//! The references you attach to a comment are the comment's own, kept with
-//! it whatever its turns become: each numbered once and for all, `r1`,
-//! `r2`, which what you write names: `@r1`, `@r{1,3-4}` several, `@r*` all
-//! of them. The agent reads them with the comment, the comments as they
-//! stand, open or closed.
+//! The references you attach to a comment are the comment's own: each
+//! numbered once and for all, `r1`, `r2`, which what you write names:
+//! `@r1`, `@r{1,3-4}` several, `@r*` all of them. The agent reads them with
+//! the comment, the comments as they stand, open or closed.
+//!
+//! What names a reference is a mention in a turn that stands, whoever wrote
+//! it, or in the agent's reply waiting for review, which goes in once
+//! accepted. A rewind or an edit that takes away the last mention of one
+//! detaches it, as Detach does: one you attached from the comment, one a
+//! turn attaches out of its block. One that nothing named, attached for
+//! what it says, stays; one a turn attaches without naming it in its text
+//! counts as named by its turn, and goes only with it. A turn written
+//! again keeps the references it attaches, but those whose last mention
+//! the edit took away. A turn deleted the first way counts nowhere: its
+//! references are not the comment's, its mentions name nothing. A number
+//! is never given again in a comment, its reference gone or not.
+
+use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -361,7 +374,8 @@ pub enum To {
 }
 
 /// A reference you attach to a comment: its number, which `@r1` names, and
-/// what it points at. A number is never given twice in a comment.
+/// what it points at. A number is never given twice in a comment, not even
+/// once its reference is detached (`next_of`).
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct Attached {
     pub n: usize,
@@ -395,7 +409,8 @@ impl Attached {
     }
 }
 
-/// The number the next reference attached to `attached` takes.
+/// The number past those of `attached`; a comment's next reference takes
+/// `next_of`'s, past those it had too.
 pub fn next_n(attached: &[Attached]) -> usize {
     attached.iter().map(|a| a.n).max().unwrap_or(0) + 1
 }
@@ -521,7 +536,7 @@ pub fn broken_in(n: &Note) -> Vec<String> {
 }
 
 /// The comments comment `n` points at, by change and id: those attached to
-/// it, then those its turns point at.
+/// it, then those its turns that stand point at.
 pub fn pointed(n: &Note) -> Vec<(String, String)> {
     let mut out: Vec<(String, String)> = n
         .attached
@@ -531,7 +546,7 @@ pub fn pointed(n: &Note) -> Vec<(String, String)> {
             To::Lines(_) => None,
         })
         .collect();
-    for t in crate::thread::all_turns(&n.text) {
+    for t in crate::thread::thread_turns(&n.text) {
         for p in split(&t.body).1 {
             if let Pointer::Comment { change, id } = p.to
                 && !out.contains(&(change.clone(), id.clone()))
@@ -544,10 +559,11 @@ pub fn pointed(n: &Note) -> Vec<(String, String)> {
 }
 
 /// Comment `n`'s references by number: those attached to it, and those its
-/// turns attach (the agent's), each with whether the agent attached it.
+/// turns that stand attach (the agent's), each with whether the agent
+/// attached it.
 pub fn references(n: &Note) -> Vec<(usize, Pointer, bool)> {
     let mut out: Vec<(usize, Pointer, bool)> = n.attached.iter().filter_map(|a| Some((a.n, a.pointer()?, false))).collect();
-    for t in crate::thread::all_turns(&n.text) {
+    for t in crate::thread::thread_turns(&n.text) {
         for p in split(&t.body).1 {
             if let Some(k) = p.n {
                 out.push((k, p.to, t.role != crate::thread::Role::You));
@@ -565,10 +581,138 @@ pub fn numbers(n: &Note) -> Vec<usize> {
     out
 }
 
+/// The highest number comment `n` gave a reference: of those attached to
+/// it, of those its turns attach (deleted ones too), and of one gone since
+/// (`Note::given`).
+pub fn highest(n: &Note) -> usize {
+    let turns = crate::thread::all_turns(&n.text).into_iter().flat_map(|t| split(&t.body).1).filter_map(|p| p.n);
+    n.attached.iter().map(|a| a.n).chain(turns).chain(n.given).max().unwrap_or(0)
+}
+
 /// The number comment `n`'s next reference takes: one past every one it
-/// has.
+/// has or had, so that none is given twice.
 pub fn next_of(n: &Note) -> usize {
-    numbers(n).last().map_or(1, |k| k + 1)
+    highest(n) + 1
+}
+
+/// The numbers the mentions in `text` name, of `ns`, a comment's
+/// references' numbers, added to `out`: `@r*` names all of them; a mention
+/// in a `refs` block is none.
+fn named_in(text: &str, ns: &[usize], out: &mut BTreeSet<usize>) {
+    for m in mentions(&split(text).0) {
+        match m.names {
+            Names::All => out.extend(ns),
+            Names::Some(named) => out.extend(named),
+            Names::Bad => {}
+        }
+    }
+}
+
+/// The numbers the mentions of comment `n` name: those in its turns that
+/// stand, whoever wrote them, and in `waiting`, the agent's reply waiting
+/// for review, which goes in once accepted.
+pub fn named(n: &Note, waiting: Option<&str>) -> BTreeSet<usize> {
+    let ns = numbers(n);
+    let mut out = BTreeSet::new();
+    for t in crate::thread::thread_turns(&n.text) {
+        named_in(&t.body, &ns, &mut out);
+    }
+    if let Some(w) = waiting {
+        named_in(w, &ns, &mut out);
+    }
+    out
+}
+
+/// The references the turns of comment `n` that stand attach without
+/// naming them in their text, by number: the agent's, for what they say,
+/// which count as named by their turn as long as it stands.
+fn context(n: &Note) -> BTreeSet<usize> {
+    let ns = numbers(n);
+    let mut out = BTreeSet::new();
+    for t in crate::thread::thread_turns(&n.text) {
+        let mut said = BTreeSet::new();
+        named_in(&t.body, &ns, &mut said);
+        out.extend(split(&t.body).1.into_iter().filter_map(|p| p.n).filter(|k| !said.contains(k)));
+    }
+    out
+}
+
+/// Comment `now`, saved in the place of `was` by a rewind, an edit or any
+/// save: each reference of `was` whose last mention the save took away is
+/// detached, as Detach does, one you attached from the comment, one a turn
+/// attaches out of its `refs` block. One that nothing named (attached for
+/// what it says, or named by nothing yet) stays; so does one a turn
+/// attaches without its text naming it, as its turn names it (a rewind
+/// that takes the turn takes it with it). `waiting`, the agent's reply
+/// waiting for review, names them too. The highest number `was` gave is
+/// kept, so that no reference takes it again. The numbers detached, in
+/// order.
+pub fn settle(was: &Note, now: &mut Note, waiting: Option<&str>) -> Vec<usize> {
+    let had = numbers(was);
+    let own = context(was);
+    let after = named(now, waiting);
+    let lost: Vec<usize> = named(was, waiting).into_iter().filter(|k| had.contains(k) && !own.contains(k) && !after.contains(k)).collect();
+    let mut gone: Vec<usize> = Vec::new();
+    if !lost.is_empty() {
+        now.attached.retain(|a| {
+            let kept = !lost.contains(&a.n);
+            if !kept {
+                gone.push(a.n);
+            }
+            kept
+        });
+        let mut turns = crate::thread::all_turns(&now.text);
+        let mut changed = false;
+        for t in turns.iter_mut().filter(|t| !t.deleted) {
+            let (body, refs) = split(&t.body);
+            let (out, kept): (Vec<Pointing>, Vec<Pointing>) = refs.into_iter().partition(|p| p.n.is_some_and(|k| lost.contains(&k)));
+            if !out.is_empty() {
+                gone.extend(out.iter().filter_map(|p| p.n));
+                t.body = attach(&body, &kept);
+                changed = true;
+            }
+        }
+        if changed {
+            now.text = crate::thread::render_thread(&turns);
+        }
+    }
+    let top = highest(was);
+    if highest(now) < top {
+        now.given = Some(top);
+    }
+    gone.sort_unstable();
+    gone.dedup();
+    gone
+}
+
+/// What a turn written again as `body` holds: `body`, and the references
+/// the turn attached as it was, `was`, unless `body` attaches its own; the
+/// editor shows a turn's text without them. Those nothing names any more
+/// go once it is saved (`settle`).
+pub fn kept(was: &str, body: &str) -> String {
+    let (_, refs) = split(was);
+    match refs.is_empty() || body.trim().is_empty() || !split(body).1.is_empty() {
+        true => body.to_string(),
+        false => attach(body, &refs),
+    }
+}
+
+/// References `ns`, detached as nothing names them any more, said: `r2 is
+/// no longer named: it is detached`.
+pub fn detached_said(ns: &[usize]) -> String {
+    let names: Vec<String> = ns.iter().map(|k| format!("r{k}")).collect();
+    match names.as_slice() {
+        [] => String::new(),
+        [one] => format!("{one} is no longer named: it is detached"),
+        [rest @ .., last] => format!("{} and {last} are no longer named: they are detached", rest.join(", ")),
+    }
+}
+
+/// What the agent's reply to comment (change, id) that waits for your
+/// review says: it goes in the thread once accepted.
+pub fn waiting(db: &Db, change: &str, id: &str) -> Option<String> {
+    let (run, k) = crate::held::reply_waiting(db, change, id)?;
+    db.run(&run)?.held.as_ref()?.replies.get(k).map(|rp| rp.text.clone())
 }
 
 /// Comment (change, id) of stack `name` as it stands: open; open on the
@@ -787,5 +931,214 @@ mod tests {
         assert_eq!((b.name(), b.lines().map(|r| r.said())), ("r3".into(), Some("a.txt:2-3 · as patch 1 leaves it".into())));
         assert_eq!(next_n(&[a, b]), 4);
         assert_eq!(next_n(&[]), 1);
+    }
+
+    /// Lines of a file, attached as reference `n`.
+    fn lines(n: usize, l: &str) -> Attached {
+        Attached {
+            n,
+            to: To::Lines(l.into()),
+        }
+    }
+
+    #[test]
+    fn a_rewind_detaches_what_only_the_turns_it_takes_named() {
+        use crate::thread::{Role, append_turn, rewind};
+        // r2 named by your comment, r3 the agent's, named by its reply, r1 by
+        // your reply; r4 attached for what it says, named by none.
+        let text = append_turn("Is @r2 right?", Role::Agent, "No: @r3 shows why.\n\n```refs\nr3 b.txt:4 @1\n```", Some("answer"));
+        let was = Note {
+            text: append_turn(&text, Role::You, "And @r1?", None),
+            attached: vec![lines(1, "a.txt:1"), lines(2, "a.txt:2"), lines(4, "a.txt:4")],
+            ..Default::default()
+        };
+        // Rewound from your reply: r1, named there only, is detached.
+        let mut now = Note {
+            text: rewind(&was.text, 2, "Thanks.").unwrap(),
+            ..was.clone()
+        };
+        assert_eq!(settle(&was, &mut now, None), [1]);
+        assert_eq!(now.attached.iter().map(Attached::name).collect::<Vec<_>>(), ["r2", "r4"]);
+        assert_eq!(numbers(&now), [2, 3, 4]);
+        // Rewound from your comment: r2 is detached, r3 goes with the
+        // agent's reply, and r4, never named, stays.
+        let was = now;
+        let mut now = Note {
+            text: rewind(&was.text, 0, "Start again.").unwrap(),
+            ..was.clone()
+        };
+        assert_eq!(settle(&was, &mut now, None), [2]);
+        assert_eq!(references(&now).into_iter().map(|(k, ..)| k).collect::<Vec<_>>(), [4]);
+        assert_eq!((now.given, next_of(&now)), (None, 5));
+    }
+
+    #[test]
+    fn an_edit_detaches_what_it_no_longer_names() {
+        use crate::thread::{Role, append_turn, replace_last_turn};
+        let text = append_turn(&append_turn("Look here.", Role::Agent, "Seen.", Some("answer")), Role::You, "Compare @r1 and @r{2,3}.", None);
+        let was = Note {
+            text,
+            attached: vec![lines(1, "a.txt:1"), lines(2, "a.txt:2"), lines(3, "a.txt:3")],
+            ..Default::default()
+        };
+        // Your reply written again without r2 and r3: both are detached.
+        let mut now = Note {
+            text: replace_last_turn(&was.text, "Compare @r1.").unwrap(),
+            ..was.clone()
+        };
+        assert_eq!(settle(&was, &mut now, None), [2, 3]);
+        assert_eq!(numbers(&now), [1]);
+        assert_eq!(detached_said(&[2, 3]), "r2 and r3 are no longer named: they are detached");
+        assert_eq!(detached_said(&[2]), "r2 is no longer named: it is detached");
+        assert_eq!(detached_said(&[1, 2, 4]), "r1, r2 and r4 are no longer named: they are detached");
+        // Nothing taken away, nothing detached.
+        let mut same = was.clone();
+        assert!(settle(&was, &mut same, None).is_empty());
+        assert_eq!(same, was);
+    }
+
+    #[test]
+    fn a_reference_still_named_stays_by_another_turn_the_agent_all_or_the_reply_waiting() {
+        use crate::thread::{Role, append_turn, rewind};
+        // Your reply names r1; rewound from it, that mention goes.
+        let thread = |first: &str, agent: &str| Note {
+            text: append_turn(&append_turn(first, Role::Agent, agent, Some("answer")), Role::You, "Is @r1 it?", None),
+            attached: vec![lines(1, "a.txt:1")],
+            ..Default::default()
+        };
+        let rewound = |was: &Note| Note {
+            text: rewind(&was.text, 2, "Thanks.").unwrap(),
+            ..was.clone()
+        };
+        // Named still by your comment, by the agent, by @r*: it stays.
+        for (first, agent) in [("See @r1.", "Seen."), ("See.", "@r1 it is."), ("Recap @r*.", "Seen.")] {
+            let was = thread(first, agent);
+            let mut now = rewound(&was);
+            assert!(settle(&was, &mut now, None).is_empty(), "{first:?} {agent:?}");
+            assert_eq!(now.attached, was.attached);
+        }
+        // Named by nothing else, it goes; but for the agent's reply waiting
+        // for review that names it, which goes in once accepted.
+        let was = thread("See.", "Seen.");
+        let mut now = rewound(&was);
+        assert!(settle(&was, &mut now, Some("As @r1 says.\n\n```refs\nr2 b.txt:1\n```")).is_empty());
+        assert_eq!(now.attached, was.attached);
+        let mut now = rewound(&was);
+        assert_eq!(settle(&was, &mut now, None), [1]);
+        assert!(now.attached.is_empty());
+        // Named only in a refs block, it is not named.
+        assert!(named(&Note { text: "```refs\n@r1 a.txt:1\n```".into(), ..was.clone() }, None).is_empty());
+    }
+
+    #[test]
+    fn a_turn_written_again_keeps_its_references_but_those_it_no_longer_names() {
+        use crate::thread::{Role, all_turns, append_turn, edit_turn, rewind};
+        // The agent names r1 and r2, and attaches r3 for what it says.
+        let said = "See @r1 and @r2.\n\n```refs\nr1 a.txt:1 @1\nr2 a.txt:2 @1\nr3 a.txt:3 @1\n```";
+        let was = Note {
+            text: append_turn("Why?", Role::Agent, said, Some("answer")),
+            ..Default::default()
+        };
+        // Written again as the editor has it, its text alone: its block is
+        // kept, but r2, which nothing names any more; r3, never named,
+        // stays.
+        let old = all_turns(&was.text)[1].body.clone();
+        assert_eq!(kept(&old, "See @r1."), format!("See @r1.\n\n{}", said.split_once("\n\n").unwrap().1));
+        let mut now = Note {
+            text: edit_turn(&was.text, 1, &kept(&old, "See @r1.")).unwrap(),
+            ..was.clone()
+        };
+        assert_eq!(settle(&was, &mut now, None), [2]);
+        assert_eq!(all_turns(&now.text)[1].body, "See @r1.\n\n```refs\nr1 a.txt:1 @1\nr3 a.txt:3 @1\n```");
+        assert_eq!(all_turns(&now.text)[1].tag.as_deref(), Some("answer"));
+        // What is written with references of its own keeps those; with
+        // nothing written, nothing is kept.
+        assert_eq!(kept(&old, "Mine.\n\n```refs\nr9 c.txt:1\n```"), "Mine.\n\n```refs\nr9 c.txt:1\n```");
+        assert_eq!((kept(&old, " "), kept("Plain.", "Plainer.")), (" ".to_string(), "Plainer.".to_string()));
+        // One the agent attached without naming it counts as named by its
+        // turn: named by you, then no longer, it stays while that turn does.
+        let was = Note {
+            text: append_turn(&now.text, Role::You, "Why @r3?", None),
+            ..now.clone()
+        };
+        let mut again = Note {
+            text: rewind(&was.text, 2, "Thanks.").unwrap(),
+            ..was.clone()
+        };
+        assert!(settle(&was, &mut again, None).is_empty());
+        assert_eq!(numbers(&again), [1, 3]);
+    }
+
+    #[test]
+    fn a_turn_deleted_the_first_way_counts_nowhere() {
+        use crate::thread::{Role, Turn, render_thread, rewind};
+        let turn = |role: Role, body: &str, deleted: bool| Turn {
+            role,
+            body: body.into(),
+            tag: (role != Role::You).then(|| "answer".to_string()),
+            deleted,
+        };
+        // The agent's reply, deleted the first way, names r1 and points at
+        // a comment, r2.
+        let text = render_thread(&[
+            turn(Role::You, "Look.", false),
+            turn(Role::Agent, "As @r1 says.\n\n```refs\nr2 {\"change\":\"c\",\"id\":\"+x\"}\n```", true),
+            turn(Role::You, "Well?", false),
+        ]);
+        let was = Note {
+            text,
+            attached: vec![lines(1, "a.txt:1")],
+            ..Default::default()
+        };
+        // Its reference is not the comment's, nor pointed at; its mention
+        // names nothing.
+        assert_eq!(numbers(&was), [1]);
+        assert!(pointed(&was).is_empty());
+        assert!(named(&was, None).is_empty());
+        // So r1 was never named: a rewind leaves it attached. The deleted
+        // turn's number is not given again.
+        let mut now = Note {
+            text: rewind(&was.text, 2, "Thanks.").unwrap(),
+            ..was.clone()
+        };
+        assert!(settle(&was, &mut now, None).is_empty());
+        assert_eq!((now.attached.clone(), next_of(&now)), (was.attached.clone(), 3));
+    }
+
+    #[test]
+    fn a_number_is_never_given_again_its_reference_detached_or_gone() {
+        use crate::thread::{Role, append_turn, rewind};
+        // r3, the highest, detached by hand: not as no longer named, but its
+        // number is kept.
+        let was = Note {
+            text: "See @r1.".into(),
+            attached: vec![lines(1, "a.txt:1"), lines(2, "a.txt:2"), lines(3, "a.txt:3")],
+            ..Default::default()
+        };
+        let mut now = Note {
+            attached: was.attached[..2].to_vec(),
+            ..was.clone()
+        };
+        assert!(settle(&was, &mut now, None).is_empty());
+        assert_eq!((now.given, next_of(&now)), (Some(3), 4));
+        // Kept in the database, and read back; a comment saved before it was
+        // kept reads as having none.
+        let json = serde_json::to_value(&now).unwrap();
+        assert_eq!(json["given"], 3);
+        assert_eq!(serde_json::from_value::<Note>(json).unwrap().given, Some(3));
+        assert!(serde_json::to_value(&was).unwrap().get("given").is_none());
+        // The agent's r2 gone with its reply, rewound: 2 is not given again,
+        // and r1, never named, stays.
+        let was = Note {
+            text: append_turn("Why?", Role::Agent, "@r2 shows it.\n\n```refs\nr2 b.txt:1\n```", Some("answer")),
+            attached: vec![lines(1, "a.txt:1")],
+            ..Default::default()
+        };
+        let mut now = Note {
+            text: rewind(&was.text, 0, "Why, really?").unwrap(),
+            ..was.clone()
+        };
+        assert!(settle(&was, &mut now, None).is_empty());
+        assert_eq!((numbers(&now), now.given, next_of(&now)), (vec![1], Some(2), 3));
     }
 }

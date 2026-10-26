@@ -353,8 +353,9 @@ pub struct Deco {
     /// The comments collapsed by hand, by id: a quiet line each.
     pub collapsed: HashSet<String>,
     /// The turns of a comment being written in the editor, by its id: from
-    /// the first, to the one after the last, of all its turns. The editor
-    /// shows them, and its rows do not.
+    /// the first, to the one after the last, of all its turns, or to
+    /// `usize::MAX` when rewound from the first. The editor shows them, and
+    /// its rows do not, but for the references of a turn written again.
     pub writing: HashMap<String, (usize, usize)>,
     /// The comments references point at, by change and id, as their line
     /// under the comment pointing says them.
@@ -433,9 +434,8 @@ pub fn comment_rows(n: &Note, width: usize, deco: &Deco) -> Vec<Row> {
     // The references the turns attach, each once, by the turn and its author.
     let mut refs: Vec<(usize, By, crate::refs::Pointing)> = Vec::new();
     for (i, t) in all_turns(&n.text).into_iter().enumerate() {
-        // Deleted the first way: shown nowhere. Written in the editor: shown
-        // there only.
-        if t.deleted || (hidden.0..hidden.1).contains(&i) {
+        // Deleted the first way: shown nowhere.
+        if t.deleted {
             continue;
         }
         let (name, author) = match t.role {
@@ -443,6 +443,22 @@ pub fn comment_rows(n: &Note, width: usize, deco: &Deco) -> Vec<Row> {
             Role::Agent => ("agent", By::Agent),
             Role::Reviewer => (t.tag.as_deref().unwrap_or("reviewer"), By::Reviewer),
         };
+        // The references it attaches, kept for under the comment. Written
+        // in the editor, it is shown there only; written again in its
+        // place, it keeps them, and they show here still; rewound from
+        // there (to the end), they go with it.
+        let writing = (hidden.0..hidden.1).contains(&i);
+        let (body, attached) = crate::refs::split(&t.body);
+        if !writing || hidden.1 != usize::MAX {
+            for r in attached {
+                if !refs.iter().any(|(_, _, had)| *had == r) {
+                    refs.push((i, author.clone(), r));
+                }
+            }
+        }
+        if writing {
+            continue;
+        }
         // Each turn its author's: their name, then what they said, the bar
         // left of both.
         let of = |r: Row| Row {
@@ -454,14 +470,7 @@ pub fn comment_rows(n: &Note, width: usize, deco: &Deco) -> Vec<Row> {
             who: true,
             ..of(row(Kind::Comment, format!("     {BAR} {name}:"), false))
         });
-        // What they said, read as markdown, the references it attaches kept
-        // for under the comment.
-        let (body, attached) = crate::refs::split(&t.body);
-        for r in attached {
-            if !refs.iter().any(|(_, _, had)| *had == r) {
-                refs.push((i, author.clone(), r));
-            }
-        }
+        // What they said, read as markdown.
         for pieces in crate::markdown::render(&body, width.saturating_sub(9)) {
             let (pieces, names) = marked(pieces, &nums);
             let line: String = pieces.iter().map(|(s, _)| s.as_str()).collect();

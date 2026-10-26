@@ -1599,6 +1599,188 @@ fn the_editor_in_the_middle_goes_between_the_last_reply_and_the_references() {
     assert!(top < reply && reply < r1, "{screen}");
 }
 
+/// The lines under the comments drawn, a reference each, as they say it:
+/// `r2 ⇢ a.txt:2-3 · as patch 1 leaves it`.
+fn references_under(app: &mut App) -> Vec<String> {
+    draw(app);
+    app.rows.iter().filter(|r| r.is_reference()).map(|r| r.text.trim().trim_start_matches('▎').trim().to_string()).collect()
+}
+
+#[test]
+fn a_reference_no_longer_named_is_detached_by_a_rewind_or_an_edit() {
+    use stacked::refs::{Attached, To};
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Enter]);
+    save(&mut app, "why so loud?");
+    down_to(&mut app, "+LINE 39");
+    keys(&mut app, &[KeyCode::Enter]);
+    save(&mut app, "Same as the other?");
+    let a = notes_of(&db, "s", 0).into_iter().find(|n| n.text == "why so loud?").unwrap();
+    let b = notes_of(&db, "s", 0).into_iter().find(|n| n.text == "Same as the other?").unwrap();
+    // Attached: r1, the comment on TWO, and r5, which your reply names; r2,
+    // for what it says, named by none. The agent names its r3, and attaches
+    // r4 without naming it.
+    let lines = |n: usize, l: &str| Attached { n, to: To::Lines(l.into()) };
+    Db::edit(&db, |d| {
+        let said = "It is: @r3 shows it.\n\n```refs\nr3 a.txt:2 @1\nr4 b.txt @2\n```";
+        let text = append_turn(&b.text, Role::Agent, said, Some("answer"));
+        let text = append_turn(&text, Role::You, "And @r1? Or @r5, @r4?", None);
+        let r1 = Attached {
+            n: 1,
+            to: To::Comment {
+                change: a.change.clone(),
+                id: a.id.clone(),
+            },
+        };
+        d.set_note(Note {
+            text: append_turn(&text, Role::Agent, "Neither.", Some("answer")),
+            attached: vec![r1, lines(2, "a.txt:2-3 @1"), lines(5, "a.txt:5 @1")],
+            ..b.clone()
+        })
+    })
+    .unwrap();
+    app.refresh();
+    let all = ["r2 ⇢ a.txt:2-3 · as patch 1 leaves it", "r3 ⇢ a.txt:2 · as patch 1 leaves it", "r4 ⇢ b.txt · as patch 2 leaves it"];
+    assert_eq!(references_under(&mut app).len(), 5);
+    // Rewound from your reply, the only turn naming r1 and r5: both are
+    // detached, as the status line says. r2 stays, as nothing named it; so
+    // do the agent's r3, which it names, and r4, which its reply attaches.
+    down_to(&mut app, "     ▎   Neither.");
+    choose_as(&mut app, "Rewind the conversation from your reply", "here");
+    typed(&mut app, "Thanks.");
+    keys(&mut app, &[KeyCode::Esc]);
+    choose(&mut app, "Save it");
+    assert_eq!(app.status, "r1 and r5 are no longer named: they are detached");
+    assert_eq!(references_under(&mut app), all);
+    // No longer the comment's, they are not told the agent either.
+    let n = notes_of(&db, "s", 0).into_iter().find(|n| n.id == b.id).unwrap();
+    assert_eq!(n.attached.iter().map(Attached::name).collect::<Vec<_>>(), ["r2"]);
+    assert_eq!(stacked::refs::numbers(&n), [2, 3, 4]);
+    // The next one attached takes a number never given in the comment;
+    // detached before it is saved, its number is not given again either.
+    keys(&mut app, &[KeyCode::Home]);
+    down_to(&mut app, "     ▎   Thanks.");
+    choose_as(&mut app, "Edit your reply", "here");
+    let attach = |app: &mut App, said: &str| {
+        keys(app, &[KeyCode::Esc]);
+        choose(app, "Attach a reference…");
+        choose(app, "Lines of a file…");
+        typed(app, "a.txt:7 @1");
+        keys(app, &[KeyCode::Enter]);
+        assert_eq!(app.status, said);
+    };
+    attach(&mut app, "attached as r6: write @r6 where you mean it");
+    keys(&mut app, &[KeyCode::Esc]);
+    choose(&mut app, "Detach a reference…");
+    choose(&mut app, "r6 ⇢");
+    assert_eq!(app.status, "r6 is detached");
+    attach(&mut app, "attached as r7: write @r7 where you mean it");
+    typed(&mut app, " And @r7?");
+    keys(&mut app, &[KeyCode::Esc]);
+    choose(&mut app, "Save it");
+    assert!(references_under(&mut app).contains(&"r7 ⇢ a.txt:7 · as patch 1 leaves it".to_string()));
+    // Your reply written again without naming it: r7 is detached, and its
+    // number is kept from being given again.
+    keys(&mut app, &[KeyCode::Home]);
+    down_to(&mut app, "     ▎   Thanks. And @r7?");
+    choose_as(&mut app, "Edit your reply", "here");
+    for _ in 0.." And @r7?".len() {
+        key(&mut app, KeyCode::Backspace);
+    }
+    keys(&mut app, &[KeyCode::Esc]);
+    choose(&mut app, "Save it");
+    assert_eq!(app.status, "r7 is no longer named: it is detached");
+    assert_eq!(references_under(&mut app), all);
+    let n = notes_of(&db, "s", 0).into_iter().find(|n| n.id == b.id).unwrap();
+    assert_eq!((n.attached.len(), n.given, stacked::refs::next_of(&n)), (1, Some(7), 8));
+    // The agent's reply waiting for review names r2: a rewind that took
+    // every other mention of it would keep it, as that reply goes in once
+    // accepted.
+    held(&db, "run-answer", &b.change, &b.id, "As @r2 says.", false);
+    let d = Db::load(&db).unwrap();
+    let waiting = stacked::refs::waiting(&d, &b.change, &b.id);
+    assert_eq!(waiting.as_deref(), Some("As @r2 says."));
+    let was = Note {
+        text: append_turn(&n.text, Role::You, "So @r2?", None),
+        ..n.clone()
+    };
+    let mut now = Note {
+        text: stacked::thread::rewind(&was.text, 2, "Fine.").unwrap(),
+        ..was.clone()
+    };
+    assert!(stacked::refs::settle(&was, &mut now, waiting.as_deref()).is_empty());
+    assert_eq!(stacked::refs::settle(&was, &mut now, None), [2]);
+}
+
+#[test]
+fn a_turn_written_again_keeps_its_references_but_those_no_longer_named_and_a_deleted_turn_s_count_nowhere() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Enter]);
+    save(&mut app, "why so loud?");
+    let n = notes_of(&db, "s", 0).remove(0);
+    // The agent names r1 and r2, and attaches r3 without naming it; a reply
+    // of its deleted the first way names r4 and attaches it.
+    Db::edit(&db, |d| {
+        let said = "@r1 and @r2 show it.\n\n```refs\nr1 a.txt:2 @1\nr2 a.txt:3 @1\nr3 b.txt @2\n```";
+        let text = append_turn(&n.text, Role::Agent, said, Some("answer"));
+        let text = format!("{text}\n```deleted agent answer\n> As @r4 says.\n>\n> ```refs\n> r4 a.txt:9 @1\n> ```\n```");
+        d.set_note(Note {
+            text: append_turn(&text, Role::You, "Thanks.", None),
+            ..n.clone()
+        })
+    })
+    .unwrap();
+    app.refresh();
+    // The deleted reply's reference is shown nowhere, and is not the
+    // comment's.
+    let three = ["r1 ⇢ a.txt:2 · as patch 1 leaves it", "r2 ⇢ a.txt:3 · as patch 1 leaves it", "r3 ⇢ b.txt · as patch 2 leaves it"];
+    assert_eq!(references_under(&mut app), three);
+    let refs = stacked::refs::references(&notes_of(&db, "s", 0).remove(0));
+    assert_eq!(refs.iter().map(|(k, ..)| *k).collect::<Vec<_>>(), [1, 2, 3]);
+    // Written again, the agent's reply is its text alone in the editor, its
+    // references under the comment still.
+    down_to(&mut app, "     ▎   @r1 and @r2 show it.");
+    choose_as(&mut app, "Edit the agent's reply", "here");
+    assert!(matches!(&app.mode, Mode::Edit(e) if e.ed.text() == "@r1 and @r2 show it."), "{:?}", app.mode);
+    let screen = draw(&mut app);
+    assert!(!screen.contains("```refs"), "{screen}");
+    assert_eq!(references_under(&mut app), three);
+    // Its mention of r2 taken away: r2 is taken out of its references, said
+    // so; r3, which it never named, stays.
+    ctrl(&mut app, KeyCode::Char('a'));
+    ctrl(&mut app, KeyCode::Char('k'));
+    typed(&mut app, "@r1 shows it.");
+    keys(&mut app, &[KeyCode::Esc]);
+    choose(&mut app, "Save it");
+    assert_eq!(app.status, "r2 is no longer named: it is detached");
+    assert_eq!(references_under(&mut app), [three[0], three[2]]);
+    let turns = stacked::thread::all_turns(&notes_of(&db, "s", 0).remove(0).text);
+    assert_eq!(
+        (turns[1].body.as_str(), turns[1].tag.as_deref()),
+        ("@r1 shows it.\n\n```refs\nr1 a.txt:2 @1\nr3 b.txt @2\n```", Some("answer"))
+    );
+    assert!(turns[2].deleted && turns[2].body.contains("r4 a.txt:9 @1"), "the deleted reply as it was: {turns:?}");
+    // Attached next, a reference takes a number none had: neither r2's nor
+    // the deleted reply's.
+    keys(&mut app, &[KeyCode::Home]);
+    down_to(&mut app, "     ▎   Thanks.");
+    choose_as(&mut app, "Edit your reply", "here");
+    keys(&mut app, &[KeyCode::Esc]);
+    choose(&mut app, "Attach a reference…");
+    choose(&mut app, "Lines of a file…");
+    typed(&mut app, "a.txt:1 @1");
+    keys(&mut app, &[KeyCode::Enter]);
+    assert_eq!(app.status, "attached as r5: write @r5 where you mean it");
+    keys(&mut app, &[KeyCode::Esc]);
+    choose(&mut app, "Throw the changes away");
+}
+
 #[test]
 fn a_comment_holding_a_fence_of_a_turn_is_yours_whole() {
     let (_tmp, db, _src) = setup();

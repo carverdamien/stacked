@@ -599,6 +599,9 @@ pub struct Edit {
     /// The references attached to the comment, as it is saved: those it
     /// had, as they are attached and detached meanwhile.
     pub attached: Vec<crate::refs::Attached>,
+    /// The highest number a reference attached meanwhile took, detached
+    /// since or not: none takes it again.
+    pub given: usize,
 }
 
 /// Lines of a file being named, to attach to the comment being written,
@@ -1558,6 +1561,9 @@ pub struct App {
     /// A comment written and not yet saved, while what to do with it is
     /// asked.
     pending: Option<Edit>,
+    /// The references the last save detached, as nothing named them any
+    /// more: said once what the save led to is.
+    detached: Vec<usize>,
     /// An edit of a patch's code the stack did not take: its file, line and
     /// the edit as it was left, to edit again.
     refused: Option<(String, usize, ops::Kept)>,
@@ -1851,6 +1857,7 @@ impl App {
             text: None,
             show,
             pending: None,
+            detached: vec![],
             refused: None,
             refused_work: None,
             conflict: None,
@@ -4284,15 +4291,16 @@ impl App {
     }
 
     /// What the turn `t` writes again says now: what you said last, or the
-    /// turn it is.
+    /// turn it is; the references it attaches left out, as it keeps them.
     fn mine_of(&self, t: &Target) -> Option<String> {
-        match t {
+        let body = match t {
             Target::Edit { change, id } => last_mine(&self.db.note(change, id)?.text),
             Target::Turn { change, id, turn } => {
                 all_turns(&self.db.note(change, id)?.text).into_iter().nth(*turn).filter(|t| !t.deleted).map(|t| t.body)
             }
             _ => None,
-        }
+        };
+        body.map(|b| crate::refs::split(&b).0)
     }
 
     /// Opens what you said last on comment (change, id) in an editor in
@@ -5258,6 +5266,7 @@ impl App {
                         n,
                         to: crate::refs::To::Comment { change, id },
                     });
+                    e.given = n;
                     self.status = format!("attached as r{n}: write @r{n} where you mean it");
                     self.show_attached(&mut e);
                     self.mode = Mode::Edit(Box::new(e));
@@ -5692,6 +5701,7 @@ impl App {
                         (Some(saved), Some(way)) => self.ask_agent(vec![saved], way, false),
                         (saved, _) => self.settle_edit(&e, saved.is_some() && was.as_deref() != Some(text.trim())),
                     }
+                    self.say_detached();
                 }
             }
             Action::SaveWhole => {
@@ -5705,6 +5715,7 @@ impl App {
                     if let Some(saved) = self.save_attached(&e.target, &text, &e.attached) {
                         self.ask_agent(vec![saved], Way::Change, true);
                     }
+                    self.say_detached();
                 }
             }
             // Saving what did not change writes nothing: it is asked as it is.
@@ -5829,24 +5840,26 @@ impl App {
     }
 
     /// The number the next reference attached to the comment `e` writes
-    /// takes: one past every number it has or had.
+    /// takes: one past every number it has or had, those of references
+    /// detached and of turns gone too, saved or not.
     fn next_number(&self, e: &Edit) -> usize {
         let mut used: Vec<usize> = self.editing_refs(e).into_iter().map(|(k, ..)| k).collect();
-        used.extend(self.attached_of(&e.target).iter().map(|a| a.n));
-        // Those of the agent's reply to it waiting for your review, which
-        // goes in once it is accepted.
-        if let Some((c, i)) = self.comment_of(&e.target)
-            && let Some((run, k)) = crate::held::reply_waiting(&self.db, &c, &i)
-            && let Some(rp) = self.db.run(&run).and_then(|r| r.held.as_ref()?.replies.get(k).cloned())
-        {
-            used.extend(crate::refs::split(&rp.text).1.into_iter().filter_map(|p| p.n));
+        used.push(e.given);
+        if let Some((c, i)) = self.comment_of(&e.target) {
+            used.extend(self.db.note(&c, &i).map(crate::refs::highest));
+            // Those of the agent's reply to it waiting for your review,
+            // which goes in once it is accepted.
+            if let Some(text) = crate::refs::waiting(&self.db, &c, &i) {
+                used.extend(crate::refs::split(&text).1.into_iter().filter_map(|p| p.n));
+            }
         }
         used.into_iter().max().map_or(1, |k| k + 1)
     }
 
     /// The references of the comment `e` writes, as they will be: those
     /// attached as `e` has them, and those its turns that stay attach (the
-    /// agent's); each by its number, with whether the agent attached it.
+    /// agent's), not those of a turn deleted the first way; each by its
+    /// number, with whether the agent attached it.
     fn editing_refs(&self, e: &Edit) -> Vec<(usize, crate::refs::Pointer, bool)> {
         let mut out: Vec<(usize, crate::refs::Pointer, bool)> = e.attached.iter().filter_map(|a| Some((a.n, a.pointer()?, false))).collect();
         if let Some(note) = self.comment_of(&e.target).and_then(|(c, i)| self.db.note(&c, &i).cloned()) {
@@ -5854,7 +5867,7 @@ impl App {
                 Target::Rewind { from, .. } => *from,
                 _ => usize::MAX,
             };
-            for t in all_turns(&note.text).into_iter().take(upto) {
+            for t in all_turns(&note.text).into_iter().take(upto).filter(|t| !t.deleted) {
                 for p in crate::refs::split(&t.body).1 {
                     if let Some(k) = p.n {
                         out.push((k, p.to, t.role != Role::You));
@@ -6007,18 +6020,19 @@ impl App {
     }
 
     /// Whether a turn of the comment `target` writes on, but the one being
-    /// written, names reference `r{n}`: then it stays attached.
+    /// written and those deleted the first way, names reference `r{n}`:
+    /// then it stays attached.
     fn named_elsewhere(&self, target: &Target, n: usize) -> bool {
         let Some(note) = self.comment_of(target).and_then(|(c, i)| self.db.note(&c, &i).cloned()) else { return false };
         let turns = all_turns(&note.text);
-        let last = turns.len().saturating_sub(1);
+        let last = last_mine_at(&note.text);
         let kept = |k: usize| match target {
-            Target::Edit { .. } => k != last || turns[k].role != Role::You,
+            Target::Edit { .. } => Some(k) != last,
             Target::Turn { turn, .. } => k != *turn,
             Target::Rewind { from, .. } => k < *from,
             _ => true,
         };
-        turns.iter().enumerate().filter(|(k, t)| kept(*k) && t.role == Role::You).any(|(_, t)| {
+        turns.iter().enumerate().filter(|(k, t)| kept(*k) && !t.deleted && t.role == Role::You).any(|(_, t)| {
             crate::refs::mentions(&t.body).iter().any(|m| matches!(&m.names, crate::refs::Names::Some(ns) if ns.contains(&n)))
         })
     }
@@ -6067,6 +6081,7 @@ impl App {
                         n,
                         to: crate::refs::To::Lines(r.line()),
                     });
+                    e.given = n;
                     self.status = format!("attached as r{n}: write @r{n} where you mean it");
                     self.show_attached(&mut e);
                     self.mode = Mode::Edit(Box::new(e));
@@ -6410,6 +6425,7 @@ impl App {
             pane,
             held,
             attached,
+            given: 0,
         };
         self.show_attached(&mut e);
         self.mode = Mode::Edit(Box::new(e));
@@ -6484,6 +6500,7 @@ impl App {
             Target::Line { change, key, .. } if review.is_some() => self.db.note(change, key).is_some_and(|n| !self.review_shows(n)),
             _ => false,
         };
+        let mut detached = vec![];
         let saved = self.edit(|db| {
             let note = match target {
                 Target::Stack => Note {
@@ -6537,8 +6554,10 @@ impl App {
                 }
                 Target::Edit { change, id } => {
                     let n = db.note(change, id).cloned().ok_or_else(|| crate::db::Error("the comment is gone".into()))?;
-                    // Answered meanwhile, it is a reply.
-                    let text = replace_last_turn(&n.text, &text).unwrap_or_else(|| append_turn(&n.text, Role::You, &text, None));
+                    // Answered meanwhile, it is a reply. Written again, it
+                    // keeps the references it attaches.
+                    let body = crate::refs::kept(&last_mine(&n.text).unwrap_or_default(), &text);
+                    let text = replace_last_turn(&n.text, &body).unwrap_or_else(|| append_turn(&n.text, Role::You, &text, None));
                     if text == n.text && attached.is_none_or(|a| a == n.attached) {
                         return Ok((change.clone(), id.clone()));
                     }
@@ -6553,7 +6572,9 @@ impl App {
                 }
                 Target::Turn { change, id, turn } => {
                     let n = db.note(change, id).cloned().ok_or_else(|| crate::db::Error("the comment is gone".into()))?;
-                    let text = edit_turn(&n.text, *turn, &text).ok_or_else(|| crate::db::Error("the turn you edited was deleted meanwhile".into()))?;
+                    let was = all_turns(&n.text).into_iter().nth(*turn).map(|t| t.body).unwrap_or_default();
+                    let text = edit_turn(&n.text, *turn, &crate::refs::kept(&was, &text))
+                        .ok_or_else(|| crate::db::Error("the turn you edited was deleted meanwhile".into()))?;
                     if text == n.text && attached.is_none_or(|a| a == n.attached) {
                         return Ok((change.clone(), id.clone()));
                     }
@@ -6577,11 +6598,17 @@ impl App {
                     return rp.map(|rp| (rp.change, rp.id)).ok_or_else(|| crate::db::Error("the reply is gone".into()));
                 }
             };
-            let note = Note {
+            let mut note = Note {
                 review: review.clone().or(note.review),
                 attached: attached.map_or(note.attached, <[_]>::to_vec),
                 ..note
             };
+            // What the comment no longer names, rewound or edited, is
+            // detached.
+            if let Some(was) = db.note(&note.change, &note.id) {
+                let waiting = crate::refs::waiting(db, &note.change, &note.id);
+                detached = crate::refs::settle(was, &mut note, waiting.as_deref());
+            }
             let at = (note.change.clone(), note.id.clone());
             db.set_note(note)?;
             Ok(at)
@@ -6589,7 +6616,22 @@ impl App {
         if saved.is_some() && review.is_some() {
             self.status = "saved in the review: Esc sends the work back to the agent with what you wrote".into();
         }
+        self.detached = if saved.is_some() { detached } else { vec![] };
         saved
+    }
+
+    /// The status line told of the references the last save detached, as
+    /// nothing named them any more: after what it says of the save.
+    fn say_detached(&mut self) {
+        let ns = std::mem::take(&mut self.detached);
+        if ns.is_empty() {
+            return;
+        }
+        let said = crate::refs::detached_said(&ns);
+        self.status = match self.status.is_empty() {
+            true => said,
+            false => format!("{}; {said}", self.status),
+        };
     }
 
     /// Asks the agent about `notes`, to the whole stack if `whole`: now, or
@@ -7084,6 +7126,7 @@ impl App {
                     pane: self.focus,
                     held: n.queued.clone().filter(|q| !q.batched()),
                     attached: vec![],
+                    given: 0,
                 };
                 let text = match ops::edit_file(&file, "edit.txt", Some(line), &self.checkout) {
                     Ok(t) => without_written(&t, &wrote),
@@ -7097,6 +7140,7 @@ impl App {
                     self.save(&e.target, &text);
                 }
                 self.settle_edit(&e, changed);
+                self.say_detached();
             }
             Effect::EditComment(Target::Rewind { change, id, from }) => {
                 if let Some(why) = self.locked(&change, &id) {
@@ -7113,6 +7157,7 @@ impl App {
                     pane: self.focus,
                     held: n.queued.clone().filter(|q| !q.batched()),
                     attached: vec![],
+                    given: 0,
                 };
                 let wrote = rewind_written(&n.text, from);
                 let text = match ops::edit_file(&format!("\n{}\n", wrote.join("\n")), "rewind.txt", Some(1), &self.checkout) {
@@ -7129,6 +7174,7 @@ impl App {
                     self.status = "nothing was written: the conversation is as it was".into();
                 }
                 self.settle_edit(&e, changed);
+                self.say_detached();
             }
             Effect::EditComment(target) => {
                 // A reply: not while the agent works on the comment, which
@@ -7154,6 +7200,7 @@ impl App {
                     pane: self.focus,
                     held,
                     attached: vec![],
+                    given: 0,
                 };
                 let opened = match &on {
                     Some(n) => {
@@ -7171,6 +7218,7 @@ impl App {
                 };
                 let saved = self.save(&e.target, &text);
                 self.settle_edit(&e, saved.is_some());
+                self.say_detached();
             }
             _ => {}
         }
@@ -8814,13 +8862,13 @@ fn reply_file(text: &str, refs: &[String]) -> (String, usize) {
 }
 
 /// What turn `at` of all the turns of `text`, written again in $EDITOR,
-/// opens on, as a reply does: the turns before it, then what it says, the
-/// cursor on its first line, under who said it when that is not you; then
-/// the turns after it, `refs`, the lines of the comment's references, and
-/// the rules. And the lines stacked wrote there, every one starting with
-/// `#`: only they are dropped once it is saved, any other line yours, `#`
-/// or not. And the line of the cursor, from 1. None if there is no such
-/// turn.
+/// opens on, as a reply does: the turns before it, then what it says (the
+/// references it attaches left out, as it keeps them), the cursor on its
+/// first line, under who said it when that is not you; then the turns
+/// after it, `refs`, the lines of the comment's references, and the rules.
+/// And the lines stacked wrote there, every one starting with `#`: only
+/// they are dropped once it is saved, any other line yours, `#` or not.
+/// And the line of the cursor, from 1. None if there is no such turn.
 fn rewrite_file(text: &str, at: usize, refs: &[String]) -> Option<(String, Vec<String>, usize)> {
     let turns = all_turns(text);
     let t = turns.get(at).filter(|t| !t.deleted)?;
@@ -8841,7 +8889,7 @@ fn rewrite_file(text: &str, at: usize, refs: &[String]) -> Option<(String, Vec<S
     below.push("# write nothing, or quit without saving, it stays as it was.".into());
     let line = above.len() + 1;
     let mut lines = above.clone();
-    lines.push(t.body.clone());
+    lines.push(crate::refs::split(&t.body).0);
     lines.push(String::new());
     lines.extend(below.iter().cloned());
     let mut wrote = above;
@@ -9127,16 +9175,17 @@ mod tests {
         assert_eq!(file.lines().collect::<Vec<_>>(), want);
         assert_eq!(line, 5);
         assert_eq!(crate::thread::without_written(&file, &wrote), "Then @r2 it is.\n# Mine, kept");
-        // The agent's, in the middle: under who said it, the turns after it
-        // under it.
+        // The agent's, in the middle: under who said it, its text alone (it
+        // keeps the references it attaches, listed under it), the turns
+        // after it under it.
         let (file, wrote, line) = super::rewrite_file(&text, 1, &refs).unwrap();
-        let mut want: Vec<String> = ["# you:", "#   Why so loud?", "# agent:", "As @r2 shows.", "", "```refs", "r2 a.txt:2 @1", "```", ""].map(String::from).to_vec();
+        let mut want: Vec<String> = ["# you:", "#   Why so loud?", "# agent:", "As @r2 shows.", ""].map(String::from).to_vec();
         want.extend(["# The conversation goes on after it:", "# you:", "#   Then @r2 it is.", "#   # Mine, kept", "#"].map(String::from));
         want.extend(refs_lines.map(String::from));
         want.extend(rules("the agent's reply"));
         assert_eq!(file.lines().collect::<Vec<_>>(), want);
         assert_eq!(line, 4);
-        assert_eq!(crate::thread::without_written(&file, &wrote), "As @r2 shows.\n\n```refs\nr2 a.txt:2 @1\n```");
+        assert_eq!(crate::thread::without_written(&file, &wrote), "As @r2 shows.");
         // Your comment, first: nothing above it. No such turn: none.
         let (file, _, line) = super::rewrite_file(&text, 0, &[]).unwrap();
         assert!(file.starts_with("Why so loud?\n\n# The conversation goes on after it:\n# agent:\n"), "{file}");

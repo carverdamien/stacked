@@ -453,6 +453,12 @@ pub struct Note {
     /// them with it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attached: Vec<crate::refs::Attached>,
+    /// The highest number one of its references was given, once that
+    /// reference is gone (detached, or gone with its turn): no reference
+    /// takes it again, nor one below it. None while a reference it has
+    /// holds the highest, as in a comment saved before it was kept.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub given: Option<usize>,
     pub time: i64,
 }
 

@@ -1360,8 +1360,9 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
         }
         Cmd::Reply { name, id, edit, turn, rewind, text, .. } => {
             let text = text.join(" ");
-            let off = Db::edit(path, |db| {
+            let (short, off, detached) = Db::edit(path, |db| {
                 let n = db.find_note(&name, &id)?.clone();
+                let short = short_id(&n.change, &n.id);
                 // Not while the agent works on it: its reply is to what it
                 // was asked.
                 if ask::with_agent(db).contains_key(&(n.change.clone(), n.id.clone())) {
@@ -1385,8 +1386,9 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
                         failed: None,
                         ..n
                     })?;
-                    return Ok(None);
+                    return Ok((short, false, vec![]));
                 }
+                // A turn written again keeps the references it attaches.
                 let again = match (rewind, turn) {
                     (Some(k), _) => {
                         let Some(from) = rewind_from(&n.text, at(k)?) else {
@@ -1395,34 +1397,44 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
                         stacked::thread::rewind(&n.text, from, &text).ok_or_else(|| Error("nothing to write: the conversation is as it was".into()))?
                     }
                     (None, Some(k)) => {
-                        let Some(again) = edit_turn(&n.text, at(k)?, &text) else {
+                        let i = at(k)?;
+                        let was = all_turns(&n.text).into_iter().nth(i).map(|t| t.body).unwrap_or_default();
+                        let Some(again) = edit_turn(&n.text, i, &stacked::refs::kept(&was, &text)) else {
                             return err(format!("turn {k} cannot be written again"));
                         };
                         again
                     }
                     (None, None) => {
-                        let Some(again) = replace_last_turn(&n.text, &text) else {
+                        let was = stacked::thread::last_mine(&n.text).unwrap_or_default();
+                        let Some(again) = replace_last_turn(&n.text, &stacked::refs::kept(&was, &text)) else {
                             return err("the last word is not yours: reply instead");
                         };
                         again
                     }
                 };
                 if again == n.text {
-                    return Ok(None);
+                    return Ok((short, false, vec![]));
                 }
                 // Off the agent's queue, until it is sent again; in the
                 // batch, it stays there, to go as it is now.
-                let off = n.queued.as_ref().is_some_and(|q| !q.batched()).then(|| short_id(&n.change, &n.id));
-                db.set_note(Note {
+                let off = n.queued.as_ref().is_some_and(|q| !q.batched());
+                let mut note = Note {
                     text: again,
                     failed: None,
                     queued: n.queued.clone().filter(|q| q.batched()),
-                    ..n
-                })?;
-                Ok(off)
+                    ..n.clone()
+                };
+                // What it no longer names is detached.
+                let waiting = stacked::refs::waiting(db, &n.change, &n.id);
+                let detached = stacked::refs::settle(&n, &mut note, waiting.as_deref());
+                db.set_note(note)?;
+                Ok((short, off, detached))
             })?;
-            if let Some(short) = off {
+            if off {
                 println!("{short}\tedited: off the agent's queue, until it is sent again");
+            }
+            if !detached.is_empty() {
+                println!("{short}\t{}", stacked::refs::detached_said(&detached));
             }
         }
         Cmd::Send { name, ids, all, patch, answer_only, build_and_test, whole_stack, later, batch, fan_out, wait, accept } => {

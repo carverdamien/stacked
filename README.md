@@ -575,23 +575,35 @@ those closed after those open. Lines are written as a `refs` line says
 them, `a.txt:120-140,200-210 @2` (no lines, `a.txt @2`, the whole file;
 `@0` the base; no `@`, the whole stack); for a comment on a line, they
 start with its file, as its patch leaves it.
-Each reference takes a number, never given twice in the comment, and what
-you write names it: `@r1`, several `@r{1,2,3}` (or `@r{2-4}`), all of them
-`@r*`. They show under what you write (written in the middle on a comment
-there, as its lines under the editor, those attached meanwhile with them;
-else in the editor, under the text), and under the comment once it is
-saved, a line each: `r1 ↗ patch 2 · a.txt: TWO · "why so
-loud?"`, `r2 ⇢ a.txt:2-3 · as patch 1 leaves it`. Enter on a comment's goes
-to that comment (closed, it opens as it was); on lines, it previews them. A
-mention naming no reference attached is drawn in the warning colour, and
-the agent is not asked until it names one: the menu says why, and `stacked
-send` refuses it. `Detach a reference…` takes one off, but not one that
-another turn of the comment names. The references stay with the comment,
-whatever its turns become, and go with it to the agent each time it is
-asked: each comment as it stands, said open or closed (closed, as it was
-last), each file's lines as the version says. The agent reads them for
-what they say; they are not asked of it, and they close only as any
-comment does. `stacked comments` lists them under the comment.
+Each reference takes a number, never given twice in the comment (not even
+once its reference is detached), and what you write names it: `@r1`,
+several `@r{1,2,3}` (or `@r{2-4}`), all of them `@r*`. They show under what
+you write (written in the middle on a comment there, as its lines under
+the editor, those attached meanwhile with them; else in the editor, under
+the text), and under the comment once it is saved, a line each: `r1 ↗
+patch 2 · a.txt: TWO · "why so loud?"`, `r2 ⇢ a.txt:2-3 · as patch 1 leaves
+it`. Enter on a comment's goes to that comment (closed, it opens as it
+was); on lines, it previews them. A mention naming no reference attached
+is drawn in the warning colour, and the agent is not asked until it names
+one: the menu says why, and `stacked send` refuses it. `Detach a
+reference…` takes one off, but not one that another turn of the comment
+names. The references stay with the comment as its turns change, and go
+with it to the agent each time it is asked: each comment as it stands,
+said open or closed (closed, as it was last), each file's lines as the
+version says. The agent reads them for what they say; they are not asked
+of it, and they close only as any comment does. `stacked comments` lists
+them under the comment.
+
+A reference is named by a mention in a turn of the comment, whoever wrote
+it (you, the agent, a reviewer), and by one in the agent's reply waiting
+for your review, as that reply goes in once accepted. When a rewind or an
+edit takes away the last mention of a reference you attached, that
+reference is detached, as `Detach a reference…` would: it is no longer
+shown under the comment, nor in the editor's lists, and the agent is no
+longer told it. The status line says so: `r2 is no longer named: it is
+detached` (`stacked reply --edit` and `--rewind` print it too). A
+reference that nothing named (attached for what it says, or named by
+nothing yet) stays as it is.
 
 In a comment's thread, a mention is drawn as a link, and one naming no
 reference the comment has in the warning colour, whoever wrote it. Enter
@@ -631,15 +643,22 @@ told it as you left it the next time it is asked. While a turn is written
 again, the editor shows it, and the thread above the editor no longer
 does. In $EDITOR, it is in its place in the conversation: the turns
 before it above it, those after it under it, as lines starting with `#`,
-a turn not yours under who said it.
+a turn not yours under who said it. The editor shows the turn's text
+alone; the references it attaches (the agent's) are shown with the
+comment's meanwhile, and the turn keeps them once saved. Only one it
+named, and that nothing names any more, is taken out, as the status line
+says. One it attached without naming it counts as named by its turn, and
+stays as long as the turn does.
 
 A conversation can also be rewound: `Rewind the conversation from your
 reply` (or `from your comment`), on a turn of yours, or on the agent's or
 a reviewer's to rewind from your turn above it. The editor opens empty for
 your new text, and under it, every line starting with `#`, is what goes
-once you save: your turn and every turn after it. Your text then takes the
+once you save: your turn and every turn after it, with the references the
+agent's turns attach. Your text then takes the
 place of all of it: the turns before your turn stay as they were, and your
-text is the last word, to ask the agent again. Only the lines stacked wrote
+text is the last word, to ask the agent again; a reference you attached
+that only the turns gone named is detached. Only the lines stacked wrote
 are dropped when you save; any other line is yours, `#` or not. In
 $EDITOR, `#` lines at the top say these rules too. Leave nothing but
 stacked's lines, or throw the text away, and nothing changes. A thread the
@@ -814,7 +833,12 @@ gives them (the prompt says the first free one; a comment it opens
 numbers its own from `r1`), and one it gives that is no reference (a
 comment that is none, lines that are none) leaves its number out, so that
 what names the others still does. In what it writes, and in what you write after, `@r4`
-names one of them as `@r1` names one you attached.
+names one of them as `@r1` names one you attached. They go with their
+turn when a rewind takes it; when the turn is written again, it keeps
+them, but one it named whose last mention the edit took away (Writing
+comments, above). A turn deleted by stacked's first way of deleting one
+counts nowhere: its references are not the comment's (not shown, not
+listed in $EDITOR, not told the agent), and its mentions name nothing.
 
 An ask goes now, or later, as in self-review's batch: under `Ask agent`
 (and `Save it and ask agent`), `Send it`, `[x] now  [ ] later`, picks when,
@@ -1794,8 +1818,10 @@ moved to the stack, a patch's comment asked of the whole stack adding a
 patch on top, work that brought nothing back held for review while a
 comment it was asked about is open (and not once every one is closed), a
 reply taken at once leaving its work to review until its comment is closed
-or kept (and closing it when none is open), a reply written again, asks
-waiting their turn, a rebase, the stack not
+or kept (and closing it when none is open), a reply written again, a
+reference no longer named detached by `stacked reply --edit` and the
+agent's reference by `--edit --turn` (said so), and a rewind keeping one
+never named, asks waiting their turn, a rebase, the stack not
 edited by hand while the agent changes it, failures kept to look at, comments staying on their line
 across versions, a patch edited by hand (as mail and as code, at a line,
 refused and taken up again), trimming, the settings (a checkout's own over
@@ -1836,7 +1862,13 @@ cannot be, what you said last written again (off the queue meanwhile;
 left as it was, asked as it is or left so), a reply written in $EDITOR
 under its conversation, its references under it, and a turn written again
 there in its place, the editor in the middle between the last reply and the
-references, a stack made with none there (imported from the workspace, a
+references, the references a rewind or an edit no longer names detached
+(the status line saying so; those never named, those the agent attached
+without naming them, and those the reply waiting for review names, kept;
+the next one attached taking a number never given), the agent's reply
+written again as its text alone,
+keeping its references but the one it no longer names, a turn deleted the
+first way counting nowhere, a stack made with none there (imported from the workspace, a
 range typed and refused until it holds a commit, the changes staged on top;
 from Phabricator, its revisions read by a stand-in; or by the agent), a
 comment moved to the stack
@@ -1921,7 +1953,12 @@ follows each patch by its change, a move told from a shift. Those in
 or one by one; those in `search.rs`, which lines of a file a hunk shows
 already; those in `config.rs`, a file of settings over another, a
 checkout's own read and written unless git tracks it, and the patches
-pane's `compact`, as versions before the files wrote it, read as them.
+pane's `compact`, as versions before the files wrote it, read as them;
+those in `refs.rs`, which references a rewind or an edit detaches, which
+stay (named by another turn, the agent's or by `@r*`, by the reply waiting
+for review, or never named), the agent's turn written again keeping its
+own, a turn deleted the first way counting nowhere, and no number given
+twice, a reference detached by hand or gone with its turn.
 
 ## Not done yet
 

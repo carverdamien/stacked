@@ -3021,6 +3021,42 @@ fn any_turn_may_be_written_again_and_the_conversation_rewound() {
 }
 
 #[test]
+fn a_reference_no_longer_named_is_detached_by_an_edit_or_a_rewind() {
+    use stacked::refs::{Attached, To};
+    use stacked::thread::{Role, all_turns, append_turn};
+    let e = env();
+    e.ok(&["import", "s", "base"]);
+    let id = comment(&e, &["--patch", "1", "Why", "2?"]);
+    // r1 named by your reply, r2 attached for what it says; the agent names
+    // its r3, and attaches r4 without naming it.
+    Db::edit(&e.db, |db| {
+        let n = db.find_note("s", &id)?.clone();
+        let text = append_turn(&n.text, Role::Agent, "As @r3 shows.\n\n```refs\nr3 a.txt:2 @1\nr4 a.txt:3 @1\n```", Some("answer"));
+        let lines = |n: usize, l: &str| Attached { n, to: To::Lines(l.into()) };
+        db.set_note(stacked::db::Note {
+            text: append_turn(&text, Role::You, "And @r1?", None),
+            attached: vec![lines(1, "a.txt:1 @1"), lines(2, "a.txt:5 @1")],
+            ..n
+        })
+    })
+    .unwrap();
+    // Your reply written again without naming r1: it is detached, said so.
+    assert_eq!(e.ok(&["reply", "s", &id, "--edit", "And", "then?"]), format!("{id}\tr1 is no longer named: it is detached\n"));
+    let listed = e.ok(&["comments", "s"]);
+    assert!(!listed.contains("r1 ⇢") && listed.contains("\n  r2 ⇢ a.txt:5 · as patch 1 leaves it\n"), "{listed}");
+    // The agent's reply written again keeps its references, but r3, which
+    // it no longer names; r4, which it never named, stays.
+    assert_eq!(e.ok(&["reply", "s", &id, "--edit", "--turn", "2", "Seen."]), format!("{id}\tr3 is no longer named: it is detached\n"));
+    let n = Db::load(&e.db).unwrap().find_note("s", &id).unwrap().clone();
+    assert_eq!(all_turns(&n.text)[1].body, "Seen.\n\n```refs\nr4 a.txt:3 @1\n```");
+    // Rewound from the comment itself: r4 goes with the agent's reply, r2
+    // stays, never named; no number is given again.
+    assert_eq!(e.ok(&["reply", "s", &id, "--rewind", "1", "Why", "two?"]), "");
+    let n = Db::load(&e.db).unwrap().find_note("s", &id).unwrap().clone();
+    assert_eq!((n.attached.iter().map(Attached::name).collect::<Vec<_>>(), stacked::refs::next_of(&n)), (vec!["r2".to_string()], 5));
+}
+
+#[test]
 fn a_trim_writes_a_new_database_from_a_rev_on() {
     let e = env();
     e.ok(&["import", "s", "base"]);
