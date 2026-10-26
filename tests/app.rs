@@ -169,3 +169,59 @@ fn a_database_that_cannot_be_read_is_said_before_any_window() {
     let e = Session::open(tmp.path()).err().expect("no session on a directory");
     assert!(!e.0.is_empty());
 }
+
+#[cfg(target_os = "macos")]
+#[test]
+fn the_bundle_is_made_as_macos_reads_an_app_and_made_again() {
+    let tmp = tempfile::tempdir().unwrap();
+    let bundle = |dir: &Path| {
+        Command::new(env!("CARGO_BIN_EXE_stacked"))
+            .args(["app", "--bundle"])
+            .arg(dir)
+            .env("STACKED_CONFIG", "/nonexistent/stacked.toml")
+            .output()
+            .unwrap()
+    };
+    let ok = |program: &str, args: &[&std::ffi::OsStr]| {
+        let out = Command::new(program).args(args).output().unwrap();
+        assert!(out.status.success(), "{program}: {}", String::from_utf8_lossy(&out.stderr));
+        String::from_utf8_lossy(&out.stdout).to_string()
+    };
+    let out = bundle(tmp.path());
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let app = tmp.path().join("StackED.app");
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), app.display().to_string());
+    // As macOS reads it: its Info.plist, its signature, its icon at every
+    // size, and the stacked in it, which runs.
+    let contents = app.join("Contents");
+    ok("plutil", &["-lint".as_ref(), contents.join("Info.plist").as_os_str()]);
+    ok("codesign", &["--verify".as_ref(), "--strict".as_ref(), app.as_os_str()]);
+    let pictures = tmp.path().join("check.iconset");
+    let icns = contents.join("Resources/StackED.icns");
+    ok("iconutil", &["-c".as_ref(), "iconset".as_ref(), icns.as_os_str(), "-o".as_ref(), pictures.as_os_str()]);
+    assert_eq!(std::fs::read_dir(&pictures).unwrap().count(), 10, "16 to 512 points, each twice as dense too");
+    let version = ok(&contents.join("MacOS/stacked").to_string_lossy(), &["--version".as_ref()]);
+    assert_eq!(version.trim(), format!("stacked {}", env!("CARGO_PKG_VERSION")));
+    // Not by the stacked in it, which it would remove before copying.
+    let out = Command::new(contents.join("MacOS/stacked"))
+        .args(["app", "--bundle"])
+        .arg(tmp.path())
+        .env("STACKED_CONFIG", "/nonexistent/stacked.toml")
+        .output()
+        .unwrap();
+    let said = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success() && said.contains("this stacked is the one in"), "{said}");
+    assert!(contents.join("MacOS/stacked").exists());
+    // Made again: anew.
+    std::fs::write(contents.join("Resources/left.txt"), "x").unwrap();
+    assert!(bundle(tmp.path()).status.success());
+    assert!(!contents.join("Resources/left.txt").exists() && icns.exists());
+    // Something else of its name: left alone.
+    let other = tmp.path().join("other");
+    std::fs::create_dir_all(other.join("StackED.app/Contents")).unwrap();
+    std::fs::write(other.join("StackED.app/Contents/Info.plist"), "not ours").unwrap();
+    let out = bundle(&other);
+    let said = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success() && said.contains("is there, and is not StackED: nothing changed"), "{said}");
+    assert_eq!(std::fs::read_to_string(other.join("StackED.app/Contents/Info.plist")).unwrap(), "not ours");
+}

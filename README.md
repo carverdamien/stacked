@@ -46,6 +46,7 @@ built with the `app` feature: `cargo install --path . --features app` (or
 `--features web,demo,moz-phab,app` for all four). Its window is drawn by
 eframe (egui), on OpenGL, which the build fetches: on macOS nothing more is
 needed; elsewhere, what eframe needs there (the X11 or Wayland libraries).
+On macOS, `stacked app --bundle` then makes StackED.app, for the Dock.
 
 ## Running
 
@@ -56,6 +57,7 @@ stacked new bug124 --base main     # an empty stack, to add patches to
 stacked stacks.jsonl               # open the editor on that database
 stacked                            # ... on $STACKED_FILE, the settings' file, else ./stacked.jsonl
 stacked app                        # ... in a window of its own: StackED (app)
+stacked app --bundle               # StackED.app, in ~/Applications, for the Dock (macOS)
 stacked show bug123                # its patches, bottom first
 stacked show bug123 2 --path a.txt # a file as patch 2 leaves it, no checkout made
 stacked edit bug123                # as `git rebase -i`: reorder, drop, reword, edit
@@ -203,6 +205,26 @@ editor with a window of its own (`editor = "code --wait"` in the settings)
 opens that window instead. Quit (ctrl-c) closes the window, and closing the
 window quits; either way, the agent's asks still running are listed in the
 terminal, as the editor in the terminal lists them.
+
+On macOS, `stacked app --bundle` makes StackED.app in ~/Applications
+(`--bundle DIR` makes it in DIR), for the Dock and the Finder: drag it to
+the Dock to keep it there. It holds a copy of this stacked, so make it again
+once stacked is updated; made again, it replaces the StackED.app there, but
+nothing else of that name. Opened from the Dock or the Finder, StackED has
+no terminal, nor what a terminal's shell sets. It first takes what your
+login shell sets (`$SHELL -ilc`, given ten seconds): `PATH`, to find git and
+claude with, `EDITOR`, `STACKED_FILE`. It then opens the database
+`$STACKED_FILE` or the settings' `file` names, else the one you pick in the
+Open dialog, and runs in that database's folder as if started there. What
+goes wrong is said in an alert. `$EDITOR` has no terminal to open in there:
+an editor with a window of its own (`editor = "code --wait"`) works, and
+one that needs a terminal fails, changing nothing.
+
+StackED's icon is drawn rather than kept as a picture (`icon.rs`): the
+stack's patches as cards, the one in front a diff with the cursor at the
+end of a line, on a dark rounded square. It is the window's icon, and the
+Dock's on macOS, whether StackED is started from a terminal or from
+StackED.app, whose icon file is drawn from it at every size macOS asks for.
 
 The editor runs on a thread of its own, drawn into a buffer of the window's
 size, as `stacked web` runs it for a page; the window (eframe: egui, on
@@ -1577,6 +1599,8 @@ is typed: `import.rs`). A fix to one may belong in the other.
   its server, its wasm and its page; the build script compiles the wasm.
 - `app.rs`: `stacked app`, StackED: the editor on a thread of its own, and
   the window that paints its screen and sends it what is done there.
+  `icon.rs`: StackED's icon, drawn at any size. `bundle.rs`: StackED.app
+  (macOS), made by `stacked app --bundle`, and opened from the Dock.
 - `demo.rs`, `memory.rs`: `stacked demo`, the tour; and the database and
   repository it keeps in memory, with a stand-in for the agent.
 
@@ -1657,7 +1681,12 @@ colours, reversed and dim, the faces, wide characters, the lines of boxes
 and blocks), what it makes of keys, clicks, the wheel and pastes, and the
 window itself, run by egui with no window: the grid's size sent, the
 screen painted, what is done sent, the wait for `$EDITOR`, and closing. On
-macOS, they test that the fonts hold every character stacked draws. With
+macOS, they test that the fonts hold every character stacked draws, and
+`tests/app.rs` makes StackED.app as macOS reads an app (its Info.plist, its
+signature, its icon at every size, the stacked in it, which runs), makes it
+again, and leaves alone something else of its name; `bundle.rs` tests when
+stacked is opened as the app, and the login shell's environment read (a
+shell that never ends given up); `icon.rs`, what the icon shows where. With
 `--features demo`, `tests/demo.rs` takes the tour, each step done as Tab
 does it: the
 stand-in's fix, the board at its end, nothing made on disk; `memory.rs` tests its diffs applied as git applies them. The
@@ -1685,11 +1714,11 @@ checkout's own read and written unless git tracks it.
   and take `--json-schema`, unless `agent.schema` is off.
 - Only git mail is read: no `hg export`.
 - Nothing submits to Phabricator: `stacked apply`, then moz-phab.
-- StackED starts from a terminal, as `stacked app`: there is no StackED.app
-  to start from the Finder or the Dock. Started there, it would have no
-  terminal for `$EDITOR`, no checkout to run in, and not the terminal's
-  `PATH` to find git and claude with. Its text is not yet a setting: it is
-  Menlo (Hack elsewhere), at 14 points before ⌘+ and ⌘−.
+- StackED opened from the Dock has no terminal for `$EDITOR`: an editor
+  that needs one fails there, rather than opening in a Terminal window.
+  StackED.app opens one database, the settings' or one picked, and can open
+  no other until it is quit. Its text is not yet a setting: it is Menlo
+  (Hack elsewhere), at 14 points before ⌘+ and ⌘−.
 
 ## License
 

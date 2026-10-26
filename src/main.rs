@@ -99,7 +99,15 @@ enum Cmd {
     /// Enter, a right click Space. `$EDITOR` opens where it was started.
     /// Built with `--features app`.
     #[cfg(feature = "app")]
-    App,
+    App {
+        /// StackED.app made in DIR (else ~/Applications), for the Dock and
+        /// the Finder: this stacked copied into it, with StackED's icon, so
+        /// made again once stacked is updated. Opened, it opens the
+        /// database $STACKED_FILE or the settings name, else asks which.
+        #[cfg(target_os = "macos")]
+        #[arg(long, value_name = "DIR", num_args = 0..=1)]
+        bundle: Option<Option<PathBuf>>,
+    },
     /// The stacks: name, patches, the stack it is on.
     Stacks,
     /// Make an empty stack, on a commit of the repository here.
@@ -887,8 +895,20 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
             stacked::web::catch_signals();
             bound.serve(path)?;
         }
+        #[cfg(all(feature = "app", target_os = "macos"))]
+        Cmd::App { bundle: Some(dir) } => {
+            let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
+            let dir = dir.unwrap_or_else(|| home.join("Applications"));
+            std::fs::create_dir_all(&dir).map_err(|e| Error(format!("{}: {e}", dir.display())))?;
+            let app = stacked::bundle::make(&dir)?;
+            println!("{}", app.display());
+            eprintln!(
+                "stacked: StackED.app is made. Drag it from the Finder to the Dock to keep it there (`open -R {}` shows it). Make it again once stacked is updated: it runs a copy of this stacked.",
+                app.display()
+            );
+        }
         #[cfg(feature = "app")]
-        Cmd::App => stacked::app::run(path)?,
+        Cmd::App { .. } => stacked::app::run(path)?,
         Cmd::Stacks => {
             let db = Db::load(path)?;
             for s in db.stacks() {
@@ -1776,7 +1796,41 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
     Ok(())
 }
 
+/// StackED.app, opened from the Dock or the Finder: StackED, with what the
+/// user's login shell sets, on the database `$STACKED_FILE` or the settings
+/// name, else on one picked, in its folder as if started there. What goes
+/// wrong is said in an alert, as there is no terminal to say it in.
+#[cfg(all(feature = "app", target_os = "macos"))]
+fn opened_as_app() {
+    use stacked::bundle;
+    let shell = std::env::var_os("SHELL").map_or_else(|| PathBuf::from("/bin/zsh"), PathBuf::from);
+    if let Some(env) = bundle::login_env(&shell, std::time::Duration::from_secs(10)) {
+        bundle::adopt(env);
+    }
+    if let Some(home) = std::env::var_os("HOME") {
+        let _ = std::env::set_current_dir(home);
+    }
+    let settings = stacked::config::Config::load(&stacked::config::path()).0;
+    let named = std::env::var_os("STACKED_FILE").map(PathBuf::from).or(settings.file);
+    let Some(file) = named.or_else(bundle::pick) else {
+        return;
+    };
+    let file = std::path::absolute(&file).unwrap_or(file);
+    if let Some(dir) = file.parent() {
+        let _ = std::env::set_current_dir(dir);
+    }
+    if let Err(e) = stacked::app::run(&file) {
+        bundle::alert(&e.0);
+        std::process::exit(1);
+    }
+}
+
 fn main() {
+    // Opened as StackED.app is, given nothing to do: StackED, as an app.
+    #[cfg(all(feature = "app", target_os = "macos"))]
+    if std::env::current_exe().is_ok_and(|exe| stacked::bundle::opened(&exe, &std::env::args().collect::<Vec<_>>())) {
+        return opened_as_app();
+    }
     // A first argument that is not a command is the file to open.
     let mut argv: Vec<String> = std::env::args().collect();
     let commands: Vec<String> = <Cli as clap::CommandFactory>::command()

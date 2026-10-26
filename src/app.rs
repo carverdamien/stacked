@@ -109,6 +109,8 @@ pub fn run(path: &Path) -> Result<()> {
         viewport: egui::ViewportBuilder::default()
             .with_title(format!("StackED · {name}"))
             .with_app_id("stacked")
+            // The Dock's on macOS, started from a terminal or not.
+            .with_icon(Arc::new(crate::icon::data(512)))
             .with_inner_size(room(120.0, 36.0))
             .with_min_inner_size(room(MIN.0 as f32, MIN.1 as f32)),
         ..Default::default()

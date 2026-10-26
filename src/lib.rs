@@ -11,6 +11,8 @@
 pub mod app;
 pub mod ask;
 pub mod blocks;
+#[cfg(all(feature = "app", target_os = "macos"))]
+pub mod bundle;
 pub mod check;
 pub mod claude;
 pub mod config;
@@ -23,6 +25,8 @@ pub mod git;
 pub mod head;
 pub mod held;
 pub mod history;
+#[cfg(feature = "app")]
+pub mod icon;
 pub mod import;
 pub mod keys;
 pub mod markdown;
