@@ -427,8 +427,9 @@ fn strip_errors(text: &str) -> String {
 /// apply; if it does not, the list comes back with why at its top, and a
 /// patch edited before comes back as it was left. The editor runs with no
 /// lock held, so the stack is checked to be as it was before anything is
-/// written. It lands for your review. What came of it.
-pub fn edit_stack(path: &std::path::Path, name: &str, work: Option<&str>) -> Result<Edited> {
+/// written. It lands for your review. What came of it. The editor runs in
+/// `here`, the folder stacked runs in.
+pub fn edit_stack(path: &std::path::Path, name: &str, work: Option<&str>, here: &std::path::Path) -> Result<Edited> {
     use crate::todo::{self, Action};
     let db = Db::load(path)?;
     db.writable(name)?;
@@ -441,7 +442,7 @@ pub fn edit_stack(path: &std::path::Path, name: &str, work: Option<&str>) -> Res
     /// The list as read, and the message or patch made of each line, if any.
     type Plan = (Vec<(Action, String)>, Vec<Option<Draft>>);
     let (lines, drafts) = loop {
-        let edited = edit_text(&list, ".todo")?;
+        let edited = edit_text(&list, ".todo", here)?;
         let Some(lines) = todo::parse(&strip_errors(&edited))? else {
             return Ok(Edited::Unchanged("the list was emptied; nothing changed".into()));
         };
@@ -459,7 +460,7 @@ pub fn edit_stack(path: &std::path::Path, name: &str, work: Option<&str>) -> Res
                     Action::Pick | Action::Drop => None,
                     Action::Reword => {
                         let was = texts.get(id).cloned().unwrap_or_else(|| p.message.clone());
-                        let message = strip_comments(&edit_text(&was, ".txt")?);
+                        let message = strip_comments(&edit_text(&was, ".txt", here)?);
                         texts.insert(id.clone(), message.clone());
                         if message.is_empty() {
                             return err(format!("the message of {} was emptied", &id[..8]));
@@ -471,7 +472,7 @@ pub fn edit_stack(path: &std::path::Path, name: &str, work: Option<&str>) -> Res
                     }
                     Action::Edit => {
                         let was = texts.get(id).cloned().unwrap_or_else(|| render(p));
-                        let text = strip_errors(&edit_text(&was, ".patch")?);
+                        let text = strip_errors(&edit_text(&was, ".patch", here)?);
                         texts.insert(id.clone(), text.clone());
                         Some(crate::mbox::parse_mail(&text)?)
                     }
@@ -555,7 +556,15 @@ pub fn mail_line(p: &Patch, row: &crate::rows::Row) -> usize {
 /// at `line` if one is given; with `work`, as the landed work run `work`
 /// would make it. If it no longer applies, or cannot be read, it comes
 /// back with why at its top. It lands for your review. What came of it.
-pub fn edit_patch(path: &std::path::Path, name: &str, at: usize, line: Option<usize>, work: Option<&str>) -> Result<Edited> {
+/// The editor runs in `here`, the folder stacked runs in.
+pub fn edit_patch(
+    path: &std::path::Path,
+    name: &str,
+    at: usize,
+    line: Option<usize>,
+    work: Option<&str>,
+    here: &std::path::Path,
+) -> Result<Edited> {
     let db = Db::load(path)?;
     db.writable(name)?;
     may_edit(&db, name, work)?;
@@ -566,7 +575,7 @@ pub fn edit_patch(path: &std::path::Path, name: &str, at: usize, line: Option<us
     let mut text = render(&old);
     let mut line = line;
     let draft = loop {
-        let edited = strip_errors(&edit_file(&text, "edit.patch", line)?);
+        let edited = strip_errors(&edit_file(&text, "edit.patch", line, here)?);
         if edited.trim().is_empty() {
             return Ok(Edited::Unchanged("the patch was emptied; nothing changed".into()));
         }
@@ -675,10 +684,11 @@ impl Place {
         }
     }
 
-    /// The place `name` is, a checkout being the one stacked runs in.
-    pub fn named(name: &str) -> Place {
+    /// The place `name` is, a checkout being `here`, the one stacked runs
+    /// in.
+    pub fn named(name: &str, here: &std::path::Path) -> Place {
         match name {
-            "pwd" => Place::Checkout(std::env::current_dir().unwrap_or_default()),
+            "pwd" => Place::Checkout(here.to_path_buf()),
             "worktree" => Place::Worktree,
             _ => Place::Copy,
         }
@@ -691,7 +701,8 @@ impl Place {
 /// before, is where it starts from (and a commit, where it was made).
 /// What the edit makes of the patch lands for your review once the stack
 /// is seen to apply with it. With `work`, the patch is as the landed work
-/// run `work` would make it.
+/// run `work` would make it. A copy is edited with the editor in `here`,
+/// the folder stacked runs in.
 #[allow(clippy::too_many_arguments)]
 pub fn edit_code(
     path: &std::path::Path,
@@ -702,11 +713,12 @@ pub fn edit_code(
     place: &Place,
     again: Option<Kept>,
     work: Option<&str>,
+    here: &std::path::Path,
 ) -> Result<Edited> {
     match (place, again) {
         (_, Some(Kept::Commit { place, commit })) => edit_in(path, name, at, file, line, &place, Some(commit), work),
-        (Place::Copy, Some(Kept::Text(text))) => edit_copy(path, name, at, file, line, Some(text), work),
-        (Place::Copy, None) => edit_copy(path, name, at, file, line, None, work),
+        (Place::Copy, Some(Kept::Text(text))) => edit_copy(path, name, at, file, line, Some(text), work, here),
+        (Place::Copy, None) => edit_copy(path, name, at, file, line, None, work, here),
         (place, _) => edit_in(path, name, at, file, line, place, None, work),
     }
 }
@@ -714,7 +726,8 @@ pub fn edit_code(
 /// Edits `file` as the patch at `at` of stack `name` leaves it, as a copy
 /// alone, in the editor at `line`, from `text` if given (an edit refused
 /// before), else the file. The patch's part for that file is made again
-/// from what is saved.
+/// from what is saved. The editor runs in `here`.
+#[allow(clippy::too_many_arguments)]
 fn edit_copy(
     path: &std::path::Path,
     name: &str,
@@ -723,6 +736,7 @@ fn edit_copy(
     line: usize,
     text: Option<String>,
     work: Option<&str>,
+    here: &std::path::Path,
 ) -> Result<Edited> {
     let db = Db::load(path)?;
     db.writable(name)?;
@@ -745,7 +759,7 @@ fn edit_copy(
     };
     let start = text.unwrap_or_else(|| after.clone());
     let short = file.rsplit('/').next().unwrap_or(file);
-    let edited = edit_file(&start, short, Some(line))?;
+    let edited = edit_file(&start, short, Some(line), here)?;
     if edited == after {
         return Ok(Edited::Unchanged("saved as it was: nothing changed".into()));
     }
@@ -842,7 +856,7 @@ fn edit_in(
                 crate::git::am(&dir, &crate::mbox::format_mbox(&patches))?;
             }
         }
-        run_editor(&dir.join(file), Some(line), Some(&dir))?;
+        run_editor(&dir.join(file), Some(line), &dir)?;
         take_edit(&db, &s, at, &old, &dir, &before)
     })();
     // An edit that failed midway leaves nothing behind; a checkout of
@@ -1105,8 +1119,9 @@ fn has_markers(text: &str, at: usize) -> bool {
 /// new version of the file. Once the stack applies with every edit, they
 /// go in it at once, as one change; else the conflict comes back, to
 /// resolve again, or the next one does. `kept`, the edit by hand as it was
-/// kept, comes back with it.
-pub fn resolve(path: &std::path::Path, name: &str, c: &Conflict, kept: Kept) -> Result<Edited> {
+/// kept, comes back with it. The editor runs in `here`, the folder stacked
+/// runs in.
+pub fn resolve(path: &std::path::Path, name: &str, c: &Conflict, kept: Kept, here: &std::path::Path) -> Result<Edited> {
     let work = c.work.as_deref();
     let db = Db::load(path)?;
     db.writable(name)?;
@@ -1120,7 +1135,7 @@ pub fn resolve(path: &std::path::Path, name: &str, c: &Conflict, kept: Kept) -> 
     let patch = with_edits(&olds, &c.edits).swap_remove(c.at);
     let line = c.text.lines().position(|l| l.starts_with("<<<<<<< ")).map_or(1, |i| i + 1);
     let short = c.file.rsplit('/').next().unwrap_or(&c.file);
-    let edited = edit_file(&c.text, short, Some(line))?;
+    let edited = edit_file(&c.text, short, Some(line), here)?;
     let again = |why: String| Edited::Refused {
         why,
         kept: kept.clone(),
@@ -1317,20 +1332,27 @@ fn with_section(diff: &str, k: usize, section: Option<&str>) -> String {
     out
 }
 
-/// Opens `text` in the editor and gives back what was saved.
-pub fn edit_text(text: &str, suffix: &str) -> Result<String> {
-    edit_file(text, &format!("edit{suffix}"), None)
+/// Opens `text` in the editor and gives back what was saved. The editor
+/// runs in `here`, the folder stacked runs in.
+pub fn edit_text(text: &str, suffix: &str, here: &std::path::Path) -> Result<String> {
+    edit_file(text, &format!("edit{suffix}"), None, here)
 }
+
+/// The files opened in the editor so far: each in a folder of its own, as
+/// each of StackED's windows may have one open at the same time.
+static EDITED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 /// Opens `text` in the editor as a file named `name`, at `line` (from 1)
 /// if one is given, and gives back what was saved. The editor is the
-/// settings', else $VISUAL, $EDITOR or vi, told the line as it takes it.
-pub fn edit_file(text: &str, name: &str, line: Option<usize>) -> Result<String> {
-    let dir = std::env::temp_dir().join(format!("stacked-{}", std::process::id()));
+/// settings', else $VISUAL, $EDITOR or vi, told the line as it takes it; it
+/// runs in `here`, the folder stacked runs in.
+pub fn edit_file(text: &str, name: &str, line: Option<usize>, here: &std::path::Path) -> Result<String> {
+    let n = EDITED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("stacked-{}-{n}", std::process::id()));
     std::fs::create_dir_all(&dir).map_err(|e| Error(e.to_string()))?;
     let path = dir.join(name);
     std::fs::write(&path, text).map_err(|e| Error(e.to_string()))?;
-    let ran = run_editor(&path, line, None);
+    let ran = run_editor(&path, line, here);
     let out = std::fs::read_to_string(&path).map_err(|e| Error(e.to_string()));
     let _ = std::fs::remove_dir_all(&dir);
     ran?;
@@ -1354,9 +1376,9 @@ pub fn stand_in(edit: Option<Editing>) {
     STAND_IN.with(|s| *s.borrow_mut() = edit);
 }
 
-/// Runs the editor on `file`, at `line` if given, in `dir` if given (else
-/// where stacked runs): an error if it says it failed.
-fn run_editor(file: &std::path::Path, line: Option<usize>, dir: Option<&std::path::Path>) -> Result<()> {
+/// Runs the editor on `file`, at `line` if given, in `dir`: an error if it
+/// says it failed.
+fn run_editor(file: &std::path::Path, line: Option<usize>, dir: &std::path::Path) -> Result<()> {
     if let Some(done) = STAND_IN.with(|s| s.borrow_mut().as_mut().map(|edit| edit(file, line))) {
         return done;
     }
@@ -1366,15 +1388,19 @@ fn run_editor(file: &std::path::Path, line: Option<usize>, dir: Option<&std::pat
     // window of Terminal's, unless it opens a window of its own.
     #[cfg(all(feature = "app", target_os = "macos"))]
     if crate::bundle::no_terminal() && !crate::bundle::own_window(&editor) {
-        let here = dir.map_or_else(|| std::env::current_dir().unwrap_or_default(), std::path::Path::to_path_buf);
-        return crate::bundle::edit_in_window(&cfg.editing(line), file, &here, &crate::bundle::terminal)
+        return crate::bundle::edit_in_window(&cfg.editing(line), file, dir, &crate::bundle::terminal)
             .map_err(|e| Error(format!("{editor} {}", e.0)));
     }
     let mut cmd = std::process::Command::new("sh");
     cmd.arg("-c").arg(cfg.editing(line)).arg("editor").arg(file);
-    if let Some(dir) = dir {
+    // A folder stacked could not tell (its own gone) is left as it is.
+    if !dir.as_os_str().is_empty() {
         cmd.current_dir(dir);
     }
+    // One editor at a time in the terminal: StackED's windows share the one
+    // `stacked app` was started from.
+    static TERMINAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _terminal = TERMINAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let status = cmd.status().map_err(|e| Error(format!("{editor}: {e}")))?;
     if !status.success() {
         return err(format!("{editor} failed; nothing changed"));

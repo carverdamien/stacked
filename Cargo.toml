@@ -18,8 +18,9 @@ path = "src/main.rs"
 # (`rustup target add wasm32-unknown-unknown`).
 web = ["dep:unicode-width"]
 # `stacked app`: StackED, the editor in a window of its own, drawn as the
-# terminal draws it, with eframe (egui) on OpenGL.
-app = ["dep:eframe", "dep:ttf-parser", "dep:unicode-width"]
+# terminal draws it, with eframe (egui) on OpenGL. On macOS, its File menu,
+# panels and alerts are AppKit's, called through objc2.
+app = ["dep:eframe", "dep:ttf-parser", "dep:unicode-width", "dep:objc2", "dep:objc2-foundation", "dep:objc2-app-kit"]
 # `stacked demo`: a tour of the editor on a game of tic-tac-toe, its
 # database and repository kept in memory: nothing is written on disk.
 demo = []
@@ -50,6 +51,11 @@ tree-sitter-rust = "0.24.2"
 tree-sitter-typescript = "0.23.2"
 ttf-parser = { version = "0.25.1", optional = true }
 unicode-width = { version = "0.2.2", optional = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { version = "0.6.5", optional = true }
+objc2-foundation = { version = "0.3.2", optional = true, default-features = false, features = ["std", "NSArray", "NSObject", "NSString", "NSURL"] }
+objc2-app-kit = { version = "0.3.2", optional = true, default-features = false, features = ["std", "NSAlert", "NSApplication", "NSMenu", "NSMenuItem", "NSOpenPanel", "NSPanel", "NSResponder", "NSSavePanel", "NSWindow"] }
 
 [dev-dependencies]
 tempfile = "3.27.0"

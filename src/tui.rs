@@ -1500,7 +1500,9 @@ pub struct App {
     going: Vec<String>,
     judged: Option<Judged>,
     /// The checkout stacked runs in, whose HEAD the patches pane shows,
-    /// and what a stack is imported from.
+    /// and what a stack is imported from; `$EDITOR` runs there too. The
+    /// current directory, but in StackED, whose windows each have their
+    /// own in one process.
     pub checkout: PathBuf,
     /// What an import from the checkout takes on top of its commits: its
     /// staged changes, its unstaged ones.
@@ -1669,8 +1671,23 @@ impl App {
         App::with_config(path, crate::config::get().clone())
     }
 
+    /// The editor on the database at `path` as if started in `dir`: `dir`
+    /// is its checkout, where `$EDITOR` runs, and the settings are those of
+    /// the checkout it is in (`config::of`). For StackED, whose windows
+    /// each have an editor of their own, in one process.
+    pub fn new_in(path: &Path, dir: &Path) -> Result<App> {
+        let (cfg, wrong) = crate::config::of(dir);
+        App::open(path, cfg, &wrong, dir)
+    }
+
     /// The editor on the database at `path`, with settings `cfg`.
     pub fn with_config(path: &Path, cfg: crate::config::Config) -> Result<App> {
+        App::open(path, cfg, crate::config::warnings(), &std::env::current_dir().unwrap_or_default())
+    }
+
+    /// The editor on the database at `path`, with settings `cfg`, what was
+    /// wrong with them `wrong`, run in `dir`.
+    fn open(path: &Path, cfg: crate::config::Config, wrong: &[String], dir: &Path) -> Result<App> {
         let db = Db::load(path)?;
         let stack = db
             .stacks()
@@ -1678,7 +1695,7 @@ impl App {
             .max_by_key(|s| db.head(&s.name).map(|(r, _)| r))
             .map(|s| s.name.clone())
             .unwrap_or_default();
-        let status = match (crate::config::warnings(), db.warnings.len()) {
+        let status = match (wrong, db.warnings.len()) {
             ([w, ..], _) => w.clone(),
             ([], 0) => String::new(),
             ([], n) => format!("{n} lines of the database passed over: `stacked check` lists them"),
@@ -1750,7 +1767,7 @@ impl App {
             body_w: 80,
             going: going(&db),
             judged: None,
-            checkout: std::env::current_dir().unwrap_or_default(),
+            checkout: dir.to_path_buf(),
             import_with: (false, false),
             planned: None,
             head: None,
@@ -4382,7 +4399,7 @@ impl App {
 
     /// Where this stack's files are edited by hand, as its menus picked.
     fn edit_place(&self) -> ops::Place {
-        ops::Place::named(self.db.choice(&self.stack, "edit").unwrap_or("tmp"))
+        ops::Place::named(self.db.choice(&self.stack, "edit").unwrap_or("tmp"), &self.checkout)
     }
 
     /// `pick`, kept for this stack as its choice of `of`.
@@ -6704,13 +6721,13 @@ impl App {
         }
         match e {
             Effect::EditPatch { line } if self.patch_id().is_some() => {
-                let done = ops::edit_patch(&self.path, &name, self.sel, line, None)?;
+                let done = ops::edit_patch(&self.path, &name, self.sel, line, None, &self.checkout)?;
                 self.edited(done, None, None);
                 return Ok(());
             }
             Effect::EditCode { file, line, again } if self.patch_id().is_some() => {
                 let place = self.edit_place();
-                let done = ops::edit_code(&self.path, &name, self.sel, &file, line, &place, again, None)?;
+                let done = ops::edit_code(&self.path, &name, self.sel, &file, line, &place, again, None, &self.checkout)?;
                 self.refused_work = None;
                 self.edited(done, Some((file, line)), None);
                 return Ok(());
@@ -6718,10 +6735,10 @@ impl App {
             Effect::EditWork { run, edit } => {
                 let place = self.edit_place();
                 let (done, file) = match edit {
-                    WorkEdit::List => (ops::edit_stack(&self.path, &name, Some(&run))?, None),
-                    WorkEdit::Mail(at) => (ops::edit_patch(&self.path, &name, at, None, Some(&run))?, None),
+                    WorkEdit::List => (ops::edit_stack(&self.path, &name, Some(&run), &self.checkout)?, None),
+                    WorkEdit::Mail(at) => (ops::edit_patch(&self.path, &name, at, None, Some(&run), &self.checkout)?, None),
                     WorkEdit::Code { at, file, line, again } => {
-                        let done = ops::edit_code(&self.path, &name, at, &file, line, &place, again, Some(&run))?;
+                        let done = ops::edit_code(&self.path, &name, at, &file, line, &place, again, Some(&run), &self.checkout)?;
                         self.refused_work = Some((run.clone(), at));
                         (done, Some((file, line)))
                     }
@@ -6733,7 +6750,7 @@ impl App {
                 let (Some(c), Some((_, _, kept))) = (self.conflict.take(), self.refused.clone()) else {
                     return Ok(());
                 };
-                match ops::resolve(&self.path, &name, &c, kept) {
+                match ops::resolve(&self.path, &name, &c, kept, &self.checkout) {
                     Ok(done) => self.edited(done, None, c.work.clone()),
                     // Not resolved (the editor failed, say): the conflict is
                     // as it was, to resolve again.
@@ -6746,7 +6763,7 @@ impl App {
                 return Ok(());
             }
             Effect::EditTodo => {
-                let done = ops::edit_stack(&self.path, &name, None)?;
+                let done = ops::edit_stack(&self.path, &name, None, &self.checkout)?;
                 self.edited(done, None, None);
                 return Ok(());
             }
@@ -6779,7 +6796,7 @@ impl App {
                     held: n.queued.clone().filter(|q| !q.batched()),
                     attached: vec![],
                 };
-                let text = match ops::edit_file(&file, "edit.txt", Some(line)) {
+                let text = match ops::edit_file(&file, "edit.txt", Some(line), &self.checkout) {
                     Ok(t) => without_written(&t, &wrote),
                     Err(err) => {
                         self.settle_edit(&e, false);
@@ -6809,7 +6826,7 @@ impl App {
                     attached: vec![],
                 };
                 let wrote = rewind_written(&n.text, from);
-                let text = match ops::edit_file(&format!("\n{}\n", wrote.join("\n")), "rewind.txt", Some(1)) {
+                let text = match ops::edit_file(&format!("\n{}\n", wrote.join("\n")), "rewind.txt", Some(1), &self.checkout) {
                     Ok(t) => t,
                     Err(err) => {
                         self.settle_edit(&e, false);
@@ -6852,9 +6869,9 @@ impl App {
                 let opened = match &on {
                     Some(n) => {
                         let (file, at) = reply_file(&n.text, &self.references_said(n));
-                        ops::edit_file(&file, "reply.txt", Some(at))
+                        ops::edit_file(&file, "reply.txt", Some(at), &self.checkout)
                     }
-                    None => edit_text("\n# Your comment. Lines starting with # are dropped.\n", ".txt"),
+                    None => edit_text("\n# Your comment. Lines starting with # are dropped.\n", ".txt", &self.checkout),
                 };
                 let text = match opened {
                     Ok(t) => strip_comments(&t),

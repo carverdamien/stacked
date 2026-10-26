@@ -103,13 +103,16 @@ enum Cmd {
     /// StackED: the editor in a window of its own, drawn as in a terminal,
     /// the mouse as in `stacked web`: the cursor follows it, a click is
     /// Enter, a right click Space. `$EDITOR` opens where it was started.
-    /// Built with `--features app`.
+    /// On macOS, File → Open… opens more databases, each in a window of its
+    /// own. Built with `--features app`.
     #[cfg(feature = "app")]
     App {
         /// StackED.app made in DIR (else ~/Applications), for the Dock and
         /// the Finder: this stacked copied into it, with StackED's icon, so
-        /// made again once stacked is updated. Opened, it opens the
-        /// database $STACKED_FILE or the settings name, else asks which.
+        /// made again once stacked is updated. Opened, it opens again the
+        /// windows open when it was last quit, else the database
+        /// $STACKED_FILE or the settings name, else none: File → Open…
+        /// opens one.
         #[cfg(target_os = "macos")]
         #[arg(long, value_name = "DIR", num_args = 0..=1)]
         bundle: Option<Option<PathBuf>>,
@@ -1066,19 +1069,19 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
         }
         Cmd::Edit { name, patch: None, accept, work, .. } => {
             let work = work_of(&Db::load(path)?, &name, work.as_deref())?;
-            edited(path, &name, ops::edit_stack(path, &name, work.as_deref())?, accept)?
+            edited(path, &name, ops::edit_stack(path, &name, work.as_deref(), &here())?, accept)?
         }
         Cmd::Edit { name, patch: Some(p), line, path: None, accept, work, .. } => {
             let db = Db::load(path)?;
             let work = work_of(&db, &name, work.as_deref())?;
             let at = db.resolve(&ops::edited_from(&db, &name, work.as_deref())?, &p)?;
-            edited(path, &name, ops::edit_patch(path, &name, at, line, work.as_deref())?, accept)?;
+            edited(path, &name, ops::edit_patch(path, &name, at, line, work.as_deref(), &here())?, accept)?;
         }
         Cmd::Edit { name, patch: Some(p), line, path: Some(f), place, from, resolve, accept, work } => {
             let db = Db::load(path)?;
             let work = work_of(&db, &name, work.as_deref())?;
             let at = db.resolve(&ops::edited_from(&db, &name, work.as_deref())?, &p)?;
-            let place = ops::Place::named(place.as_deref().or(db.choice(&name, "edit")).unwrap_or("tmp"));
+            let place = ops::Place::named(place.as_deref().or(db.choice(&name, "edit")).unwrap_or("tmp"), &here());
             let again = match (&from, &place) {
                 (None, _) => None,
                 (Some(from), ops::Place::Copy) => {
@@ -1089,13 +1092,13 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
                     commit: commit.clone(),
                 }),
             };
-            let mut done = ops::edit_code(path, &name, at, &f, line.unwrap_or(1), &place, again, work.as_deref())?;
+            let mut done = ops::edit_code(path, &name, at, &f, line.unwrap_or(1), &place, again, work.as_deref(), &here())?;
             // One conflict after another, until one is left unresolved.
             while resolve
                 && let ops::Edited::Refused { kept, conflict: Some(c), .. } = &done
                 && !c.left
             {
-                done = ops::resolve(path, &name, c, kept.clone())?;
+                done = ops::resolve(path, &name, c, kept.clone(), &here())?;
             }
             let (why, kept, conflict) = match done {
                 ops::Edited::Refused { why, kept, conflict } => (why, kept, conflict),
@@ -1832,10 +1835,11 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
     Ok(())
 }
 
-/// StackED.app, opened from the Dock or the Finder: StackED, with what the
-/// user's login shell sets, on the database `$STACKED_FILE` or the settings
-/// name, else on one picked, in its folder as if started there. What goes
-/// wrong is said in an alert, as there is no terminal to say it in.
+/// StackED.app, opened from the Dock or the Finder: StackED with what the
+/// user's login shell sets, opening again the windows that were open when
+/// it was last quit, else one on the database `$STACKED_FILE` or the
+/// settings name, else none (`app::dock`). What goes wrong is said in an
+/// alert, as there is no terminal to say it in.
 #[cfg(all(feature = "app", target_os = "macos"))]
 fn opened_as_app() {
     use stacked::bundle;
@@ -1843,22 +1847,17 @@ fn opened_as_app() {
     if let Some(env) = bundle::login_env(&shell, std::time::Duration::from_secs(10)) {
         bundle::adopt(env);
     }
+    // A path the settings give is from the home folder; each window's
+    // editor runs in its own database's folder.
     if let Some(home) = std::env::var_os("HOME") {
         let _ = std::env::set_current_dir(home);
     }
     let settings = stacked::config::Config::load(&stacked::config::path()).0;
     let named = std::env::var_os("STACKED_FILE").map(PathBuf::from).or(settings.file);
-    let Some(file) = named.or_else(bundle::pick) else {
-        return;
-    };
-    let file = std::path::absolute(&file).unwrap_or(file);
-    if let Some(dir) = file.parent() {
-        let _ = std::env::set_current_dir(dir);
-    }
     // No terminal for $EDITOR: a window of Terminal's for it.
     bundle::set_no_terminal();
-    if let Err(e) = stacked::app::run(&file) {
-        bundle::alert(&e.0);
+    if let Err(e) = stacked::app::dock(named) {
+        stacked::app::menu::alert(&e.0);
         std::process::exit(1);
     }
 }

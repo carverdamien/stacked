@@ -862,6 +862,15 @@ impl Drop for Lock {
 }
 
 impl Db {
+    /// Makes an empty database at `path`, as a first write starts one: its
+    /// header alone. Only where nothing is: a file there, even one made
+    /// meanwhile, is an error, and is not written over.
+    pub fn create(path: &Path) -> Result<()> {
+        let io = |e: std::io::Error| Error(format!("{}: {e}", path.display()));
+        let mut f = File::options().write(true).create_new(true).open(path).map_err(io)?;
+        f.write_all(format!("{}\n", header_line()).as_bytes()).and_then(|_| f.sync_data()).map_err(io)
+    }
+
     /// Reads `path`; a missing file is an empty database.
     pub fn load(path: &Path) -> Result<Db> {
         #[cfg(feature = "demo")]
@@ -2651,6 +2660,27 @@ mod tests {
         Db::edit(&path, |db| db.set_view("s", "all")).unwrap();
         let bytes = std::fs::read(&path).unwrap();
         assert_fixed(&bytes);
+    }
+
+    #[test]
+    fn a_database_made_empty_is_its_header_and_never_a_file_written_over() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("new.jsonl");
+        Db::create(&path).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), format!("{}\n", header_line()).as_bytes());
+        let db = Db::load(&path).unwrap();
+        assert!(db.fixed && db.warnings.is_empty() && db.stacks().is_empty(), "{:?}", db.warnings);
+        // Written to as any database is.
+        Db::edit(&path, |db| db.set_view("s", "all")).unwrap();
+        assert_eq!(Db::load(&path).unwrap().view("s"), Some("all"));
+        assert_fixed(&std::fs::read(&path).unwrap());
+        // A file there already: an error, its bytes as they were.
+        let before = std::fs::read(&path).unwrap();
+        assert!(Db::create(&path).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        std::fs::write(tmp.path().join("notes.txt"), "mine\n").unwrap();
+        assert!(Db::create(&tmp.path().join("notes.txt")).is_err());
+        assert_eq!(std::fs::read_to_string(tmp.path().join("notes.txt")).unwrap(), "mine\n");
     }
 
     /// That `bytes` start with the header of the fixed length: pointing at

@@ -3,8 +3,8 @@
 //! drawn into its icon file, the whole signed as this machine's own (ad
 //! hoc). Opened so, stacked has no terminal, nor what a terminal's shell
 //! sets: it takes what the user's login shell sets (PATH, for git and
-//! claude; EDITOR), then opens StackED on the database `$STACKED_FILE` or
-//! the settings name, else on one picked in the system's Open dialog.
+//! claude; EDITOR), then opens StackED's windows again (`app::dock`), and
+//! runs `$EDITOR` in windows of Terminal's.
 
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
@@ -215,20 +215,6 @@ pub fn adopt(env: Vec<(OsString, OsString)>) {
     }
 }
 
-/// A database picked in the system's Open dialog: none if it is cancelled.
-pub fn pick() -> Option<PathBuf> {
-    let choose = "POSIX path of (choose file with prompt \"Pick the stacked database for StackED to open (a .jsonl file).\")";
-    let out = Command::new("osascript")
-        .args(["-e", "activate", "-e", choose])
-        .stdin(Stdio::null())
-        .stderr(Stdio::null())
-        .output()
-        .ok()?;
-    let path = String::from_utf8(out.stdout).ok()?;
-    let path = path.trim_end_matches('\n');
-    (out.status.success() && !path.is_empty()).then(|| PathBuf::from(path))
-}
-
 /// Opened from the Dock: no terminal for `$EDITOR` to run in, a window of
 /// Terminal's opened for it instead (`edit_in_window`).
 static NO_TERMINAL: AtomicBool = AtomicBool::new(false);
@@ -312,23 +298,44 @@ pub fn edit_in_window(editing: &str, file: &Path, dir: &Path, open: &dyn Fn(&str
     }
 }
 
-/// Opens a window of Terminal's running `command`, for `edit_in_window`.
+/// Opens a window of Terminal's running `command`, for `edit_in_window`:
+/// `command` is written in a script, which `open -a Terminal` has Terminal
+/// run in a window of its own, as it runs any `.command` file. No
+/// AppleScript, so macOS asks for no permission to control Terminal.
 pub fn terminal(command: &str) -> Result<()> {
-    let quoted = command.replace('\\', "\\\\").replace('"', "\\\"");
-    let script = format!("tell application \"Terminal\"\nactivate\ndo script \"{quoted}\"\nend tell");
-    run("osascript", &[OsStr::new("-e"), OsStr::new(&script)])
+    in_terminal(command, &|script| run("open", &[OsStr::new("-a"), OsStr::new("Terminal"), script]))
 }
 
-/// `text` said in an alert: opened from the Dock, stacked has no terminal
-/// to say it in.
-pub fn alert(text: &str) {
-    let quoted = text.replace('\\', "\\\\").replace('"', "\\\"");
-    let _ = Command::new("osascript")
-        .args(["-e", "activate", "-e", &format!("display alert \"StackED\" message \"{quoted}\" as critical")])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
+/// Has `open` run `command`, written in a script of its own (`script_file`),
+/// as `open -a Terminal` runs it. The script is removed if `open` fails;
+/// run, it removes itself.
+fn in_terminal(command: &str, open: &dyn Fn(&OsStr) -> Result<()>) -> Result<()> {
+    let script = script_file(command)?;
+    open(script.as_os_str()).inspect_err(|_| {
+        let _ = std::fs::remove_file(&script);
+    })
+}
+
+/// The scripts written for Terminal so far: each a file of its own.
+static SCRIPTS: AtomicUsize = AtomicUsize::new(0);
+
+/// `command` written in a script (`script`) in the temporary folder, which
+/// only its owner can read or run: where it is.
+fn script_file(command: &str) -> Result<PathBuf> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    let n = SCRIPTS.fetch_add(1, Ordering::Relaxed);
+    let path = std::env::temp_dir().join(format!("stacked-terminal-{}-{n}.command", std::process::id()));
+    let at = |e: std::io::Error| Error(format!("{}: {e}", path.display()));
+    let _ = std::fs::remove_file(&path);
+    let mut f = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o700).open(&path).map_err(at)?;
+    f.write_all(script(command).as_bytes()).map_err(at)?;
+    Ok(path)
+}
+
+/// A script that removes itself, then runs `command` with sh.
+fn script(command: &str) -> String {
+    format!("#!/bin/sh\nrm -f \"$0\"\n{command}\n")
 }
 
 #[cfg(test)]
@@ -425,6 +432,47 @@ mod tests {
         // A window of its own: the editor run as it is.
         assert!(own_window("code --wait") && own_window("/opt/homebrew/bin/zed --wait") && own_window("open -W -n -a TextEdit"));
         assert!(!own_window("hx") && !own_window("/usr/bin/vim -p"));
+    }
+
+    #[test]
+    fn terminal_is_given_a_script_that_removes_itself_then_runs_the_edit() {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(script("exec sh -c 'vi x'"), "#!/bin/sh\nrm -f \"$0\"\nexec sh -c 'vi x'\n");
+        // For its owner alone, to read and run.
+        let path = script_file("true").unwrap();
+        assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o700);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), script("true"));
+        std::fs::remove_file(&path).unwrap();
+        // An edit in a window of Terminal's, Terminal played by running the
+        // script as a program, as Terminal runs a .command file: waited for,
+        // and the script gone.
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("note.txt");
+        std::fs::write(&file, "before\n").unwrap();
+        let given: std::sync::Mutex<Option<PathBuf>> = std::sync::Mutex::new(None);
+        let terminal = |script: &OsStr| {
+            *given.lock().unwrap() = Some(PathBuf::from(script));
+            let mut child = Command::new(script)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .map_err(|e| Error(e.to_string()))?;
+            std::thread::spawn(move || child.wait());
+            Ok(())
+        };
+        let open = |command: &str| in_terminal(command, &terminal);
+        edit_in_window("printf 'after\\n' > \"$1\"", &file, tmp.path(), &open).unwrap();
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "after\n");
+        let ran = given.lock().unwrap().take().unwrap();
+        assert!(ran.extension().is_some_and(|e| e == "command") && !ran.exists(), "{}", ran.display());
+        // Terminal not opened: said, and the script removed.
+        let fails = |script: &OsStr| {
+            *given.lock().unwrap() = Some(PathBuf::from(script));
+            Err(Error("no Terminal".into()))
+        };
+        assert_eq!(in_terminal("true", &fails).unwrap_err().0, "no Terminal");
+        assert!(!given.lock().unwrap().take().unwrap().exists());
     }
 
     #[test]

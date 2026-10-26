@@ -7,6 +7,16 @@
 //!
 //! What runs `$EDITOR` runs it where `stacked app` was started, in its
 //! terminal; the window waits meanwhile, and says so.
+//!
+//! On macOS, StackED is an app of many windows (`windows`), one for each
+//! database opened, each with an editor of its own. Its File menu (`menu`)
+//! opens them, and the databases opened last are kept between runs
+//! (`state`).
+
+#[cfg(target_os = "macos")]
+pub mod menu;
+pub mod state;
+pub mod windows;
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -103,21 +113,49 @@ pub enum Output {
     Bye,
 }
 
-/// Opens StackED's window on the database at `path`, until the editor is
-/// quit or the window closed.
+/// `stacked app`: StackED's window on the database at `path`, its editor
+/// run where `stacked app` was started, as the editor in a terminal is.
+/// The File menu opens more, each database's editor in that database's
+/// folder; StackED runs until it is quit, its last window closed or not.
+#[cfg(target_os = "macos")]
 pub fn run(path: &Path) -> Result<()> {
-    let session = Session::open(path)?;
+    let path = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+    let session = Session::open(&path, &std::env::current_dir().unwrap_or_default())?;
+    windows::run(vec![windows::Opened { path, session }], Vec::new(), false)
+}
+
+/// StackED as StackED.app opens it, from the Dock or the Finder: a window
+/// again for each database whose window was open when it was last quit,
+/// those no longer there left out; with none, a window on `named` (from
+/// `$STACKED_FILE`, the settings' `file`) if there is one; else no window,
+/// only the menu bar. Each database's editor runs in its folder. What goes
+/// wrong opening one is said in an alert once StackED runs.
+#[cfg(target_os = "macos")]
+pub fn dock(named: Option<std::path::PathBuf>) -> Result<()> {
+    let mut dbs = state::reopen(&state::path());
+    if dbs.is_empty() {
+        dbs.extend(named.map(|f| std::path::absolute(&f).unwrap_or(f)));
+    }
+    let mut first = Vec::new();
+    let mut said = Vec::new();
+    for db in dbs {
+        match windows::open(&db) {
+            Ok(o) => first.push(o),
+            Err(e) => said.push(windows::not_opened(&db, &e)),
+        }
+    }
+    windows::run(first, said, true)
+}
+
+/// Opens StackED's window on the database at `path`, its editor run where
+/// `stacked app` was started, until the editor is quit or the window
+/// closed.
+#[cfg(not(target_os = "macos"))]
+pub fn run(path: &Path) -> Result<()> {
+    let session = Session::open(path, &std::env::current_dir().unwrap_or_default())?;
     let failed = session.failed.clone();
-    let name = path.file_name().unwrap_or(path.as_os_str()).to_string_lossy();
-    let room = |cols: f32, rows: f32| vec2(cols * CELL.0 * FONT_SIZE + 2.0 * PAD, rows * CELL.1 * FONT_SIZE + 2.0 * PAD);
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_title(format!("StackED · {name}"))
-            .with_app_id("stacked")
-            // The Dock's on macOS, started from a terminal or not.
-            .with_icon(Arc::new(crate::icon::data(512)))
-            .with_inner_size(room(120.0, 36.0))
-            .with_min_inner_size(room(MIN.0 as f32, MIN.1 as f32)),
+        viewport: builder(path).with_icon(Arc::new(crate::icon::data(512))),
         ..Default::default()
     };
     eframe::run_native("StackED", options, Box::new(|cc| Ok(Box::new(Window::new(cc, session)))))
@@ -128,32 +166,46 @@ pub fn run(path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// The window of the database at `path`: named after it, as large as 120
+/// cells by 36, and no smaller than the editor draws well.
+fn builder(path: &Path) -> egui::ViewportBuilder {
+    let name = path.file_name().unwrap_or(path.as_os_str()).to_string_lossy();
+    let room = |cols: f32, rows: f32| vec2(cols * CELL.0 * FONT_SIZE + 2.0 * PAD, rows * CELL.1 * FONT_SIZE + 2.0 * PAD);
+    egui::ViewportBuilder::default()
+        .with_title(format!("StackED · {name}"))
+        .with_app_id("stacked")
+        .with_inner_size(room(120.0, 36.0))
+        .with_min_inner_size(room(MIN.0 as f32, MIN.1 as f32))
+}
+
 /// The editor on a thread of its own, for a window: what is done in the
 /// window sent to it, what it draws sent back.
 pub struct Session {
     to: Option<Sender<Input>>,
     from: Receiver<Output>,
     thread: Option<JoinHandle<()>>,
-    /// The window's context once there is one, woken by what is sent.
-    waker: Arc<OnceLock<egui::Context>>,
+    /// The window's context and viewport once there is one, woken by what
+    /// is sent.
+    waker: Arc<OnceLock<(egui::Context, egui::ViewportId)>>,
     /// Whether the editor's thread ended in a panic.
     failed: Arc<AtomicBool>,
 }
 
 impl Session {
-    /// The editor on the database at `path`, opened, with no window yet: an
-    /// error if it cannot be, before there is one.
-    pub fn open(path: &Path) -> Result<Session> {
+    /// The editor on the database at `path`, opened, with no window yet, as
+    /// if started in `dir` (`App::new_in`): an error if it cannot be, before
+    /// there is a window.
+    pub fn open(path: &Path, dir: &Path) -> Result<Session> {
         let (to, inputs) = mpsc::channel();
         let (outputs, from) = mpsc::channel();
         let (opened, open) = mpsc::channel();
-        let waker: Arc<OnceLock<egui::Context>> = Arc::default();
+        let waker: Arc<OnceLock<(egui::Context, egui::ViewportId)>> = Arc::default();
         let wake = waker.clone();
-        let path = path.to_path_buf();
+        let (path, dir) = (path.to_path_buf(), dir.to_path_buf());
         let thread = std::thread::Builder::new()
             .name("stacked app".into())
             .spawn(move || {
-                let app = match App::new(&path) {
+                let app = match App::new_in(&path, &dir) {
                     Ok(app) => app,
                     Err(e) => {
                         let _ = opened.send(Err(e));
@@ -162,8 +214,8 @@ impl Session {
                 };
                 let _ = opened.send(Ok(()));
                 work(app, &inputs, &outputs, &|| {
-                    if let Some(ctx) = wake.get() {
-                        ctx.request_repaint();
+                    if let Some((ctx, id)) = wake.get() {
+                        ctx.request_repaint_of(*id);
                     }
                 });
             })
@@ -178,6 +230,18 @@ impl Session {
         })
     }
 
+    /// A session with no editor, gone already: what a window's is once the
+    /// window set has let its own go.
+    fn gone() -> Session {
+        Session {
+            to: None,
+            from: mpsc::channel().1,
+            thread: None,
+            waker: Arc::default(),
+            failed: Arc::default(),
+        }
+    }
+
     /// Sends the editor what was done in the window.
     pub fn send(&self, input: Input) {
         if let Some(to) = &self.to {
@@ -189,6 +253,17 @@ impl Session {
     /// came, or the editor is gone.
     pub fn recv(&self, wait: Duration) -> Option<Output> {
         self.from.recv_timeout(wait).ok()
+    }
+
+    /// The editor told it is done with, its channel closed: it leaves on its
+    /// thread, which `close` waits for.
+    fn let_go(&mut self) {
+        self.to = None;
+    }
+
+    /// Whether the editor's thread has ended, or there is none.
+    fn left(&self) -> bool {
+        self.thread.as_ref().is_none_or(JoinHandle::is_finished)
     }
 
     /// Done with: the editor told so, its channel closed, and waited for, as
@@ -318,17 +393,18 @@ pub struct Window {
     editing: bool,
     /// The program `$EDITOR` runs, as the window names it meanwhile.
     program: String,
-    /// The editor is gone: the window closes.
+    /// The editor is gone, or the window was closed: the window closes,
+    /// and its editor is let go.
     gone: bool,
 }
 
 impl Window {
-    /// The window of `session`, in eframe's context `cc`: its fonts set,
-    /// and the editor told how to wake it.
+    /// The window of `session`, eframe's root viewport in its context `cc`:
+    /// its fonts set, and the editor told how to wake it.
     pub fn new(cc: &eframe::CreationContext<'_>, session: Session) -> Window {
         let (fonts, real) = fonts();
         cc.egui_ctx.set_fonts(fonts);
-        let _ = session.waker.set(cc.egui_ctx.clone());
+        let _ = session.waker.set((cc.egui_ctx.clone(), egui::ViewportId::ROOT));
         Window::with(session, real, program(&crate::config::get().editor()))
     }
 
@@ -440,8 +516,7 @@ impl eframe::App for Window {
         BG.to_normalized_gamma_f32()
     }
 
-    /// Closed, by the editor or the window (on macOS, ⌘Q exits right
-    /// after): the editor waited for.
+    /// Closed, by the editor or the window: the editor waited for.
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         self.session.close();
     }
