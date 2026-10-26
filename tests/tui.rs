@@ -7,7 +7,7 @@ use ratatui::layout::Rect;
 
 use stacked::db::{Db, Note, stack_change};
 use stacked::thread::{Role, append_turn};
-use stacked::tui::{App, Effect, Focus, Layout, Mode, Pane, Screen, Show};
+use stacked::tui::{App, Effect, Focus, Layout, Mode, Pane, Screen, Show, Spot};
 
 fn git(dir: &Path, args: &[&str]) {
     let out = Command::new("git")
@@ -221,17 +221,39 @@ fn at_from(screen: &str, text: &str, from: usize) -> (u16, u16) {
 }
 
 #[test]
-fn the_cursor_follows_the_mouse() {
+fn the_mouse_marks_a_side_pane_s_line_and_elsewhere_the_cursor_follows_it() {
+    use ratatui::style::Modifier;
     let (_tmp, db, _src) = setup();
     let mut app = open(&db).unwrap();
-    // Over the second patch: picked, its patch in the middle; a click on it
-    // is Enter: read, the cursor in the middle.
-    let (x, y) = at(&draw(&mut app), "Bug 2 - add b");
+    let drawn = |app: &mut App| {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 120, 30));
+        app.draw(&mut buf);
+        buf
+    };
+    let screen = draw(&mut app);
+    let (x, y) = at(&screen, "Bug 2 - add b");
+    let (_, y1) = at(&screen, "Bug 1 - shout two");
+    // Over the second patch: marked, underlined, and not picked: what was
+    // picked stays so, the first patch in the middle.
+    let picked = (app.focus, app.on_stack, app.sel);
     app.hover(x, y);
+    assert_eq!((app.focus, app.on_stack, app.sel), picked);
+    assert_eq!(app.hovered, Some(Spot::Patch(Some(1))));
+    let buf = drawn(&mut app);
+    assert!(buf[(x, y)].modifier.contains(Modifier::UNDERLINED) && !buf[(x, y1)].modifier.contains(Modifier::UNDERLINED));
+    assert!(!draw(&mut app).contains("+bee"), "the first patch still in the middle");
+    // A click picks it, its patch in the middle; another is Enter: read,
+    // the cursor in the middle.
+    app.click(x, y, false);
     assert_eq!((app.focus, app.on_stack, app.sel), (Focus::List, false, 1));
+    let buf = drawn(&mut app);
+    assert!(buf[(x, y)].modifier.contains(Modifier::REVERSED | Modifier::UNDERLINED), "picked, and under the mouse");
     assert!(draw(&mut app).contains("+bee"));
     app.click(x, y, false);
-    assert_eq!(app.focus, Focus::Diff, "one click");
+    assert_eq!(app.focus, Focus::Diff, "a second click");
+    // The mouse gone from the screen: nothing marked.
+    app.unhover();
+    assert!(!drawn(&mut app)[(x, y)].modifier.contains(Modifier::UNDERLINED));
     // Over a line of it: the cursor there.
     let (x, y) = at(&draw(&mut app), "+bee");
     app.hover(x, y);
@@ -287,9 +309,13 @@ fn a_click_picks_and_a_second_does_as_enter() {
     draw(&mut app);
     app.click(0, 29, false);
     assert_eq!(app.mode, Mode::Normal);
-    // The comment, in the comments pane (from column 90): picked, then
-    // gone to.
+    // The comment, in the comments pane (from column 90): marked by the
+    // mouse over it, not picked; picked by a click, then gone to.
     let (x, y) = at_from(&draw(&mut app), "a bee", 90);
+    let focus = app.focus;
+    app.hover(x, y);
+    assert_eq!((app.focus, app.hovered), (focus, Some(Spot::Note(0))));
+    assert_ne!(app.focus, Focus::Notes);
     app.click(x, y, false);
     assert_eq!((app.focus, app.note_sel), (Focus::Notes, 0));
     app.click(x, y, false);

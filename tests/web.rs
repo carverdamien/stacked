@@ -108,11 +108,18 @@ fn a_browser_sees_the_editor_and_drives_it() {
     // A click on the first patch, the screen's third row, picks it.
     ask(port, &host, &format!("POST /input?t={token}"), "m 5 2 l\n");
     until(&mut events, "the first patch", |l| l.contains("+TWO"));
-    // The mouse over the second picks it; a click on it then is Enter: read,
-    // the cursor in the middle, the patch in the list on grey (colour 238,
-    // the settings' `picked`), not reversed.
+    // The mouse over the second marks it, underlined (8), and picks
+    // nothing: the first stays in the middle. A click on it picks it; a
+    // second is Enter: read, the cursor in the middle, the patch in the
+    // list on grey (colour 238, the settings' `picked`), not reversed, and
+    // underlined while the mouse is over it.
     ask(port, &host, &format!("POST /input?t={token}"), "v 5 3\n");
-    until(&mut events, "the second patch, hovered", |l| l.contains("+bee"));
+    until(&mut events, "the second patch, hovered", |l| l.starts_with("data: r 3 ") && l.contains(",,8\u{1f}  2 Bug 2 - add b"));
     ask(port, &host, &format!("POST /input?t={token}"), "m 5 3 l\n");
-    until(&mut events, "the second patch read", |l| l.starts_with("data: r 3 ") && l.contains(",#444444,0\u{1f}  2 Bug 2 - add b"));
+    until(&mut events, "the second patch picked", |l| l.contains("+bee"));
+    ask(port, &host, &format!("POST /input?t={token}"), "m 5 3 l\n");
+    until(&mut events, "the second patch read", |l| l.starts_with("data: r 3 ") && l.contains(",#444444,8\u{1f}  2 Bug 2 - add b"));
+    // The mouse gone from the page: nothing underlined.
+    ask(port, &host, &format!("POST /input?t={token}"), "o\n");
+    until(&mut events, "the mouse gone", |l| l.starts_with("data: r 3 ") && l.contains(",#444444,0\u{1f}  2 Bug 2 - add b"));
 }

@@ -134,12 +134,15 @@ apply, trim) or reach Phabricator says that it is not in the demo.
 
 `stacked web` (built with `--features web`) serves the editor on this
 machine and opens the browser on it: the same editor, the same keys, drawn
-in the page as in a terminal. The cursor follows the mouse: what is under it
-is picked, as the arrows would (a patch of the list, a line, a comment, an
-item of a list or of a menu; a patch being moved goes there), so a click is
-Enter on it, and a right click Space, its menu. Outside a menu, a click
-closes it; writing a comment, or reading what `?` says, the mouse moves
-nothing. The wheel is ↑↓, and a paste types what is pasted, into a comment
+in the page as in a terminal. Over the side panes, the patches and the
+comments, the mouse marks the line under it, underlined, and picks nothing:
+what is picked stays so (reversed in the pane the cursor is in, grey in the
+other) until a click picks the line, and a second click on it is Enter.
+Elsewhere the cursor follows the mouse: what is under it is picked, as the
+arrows would (a line of the patch, an item of a list or of a menu; a patch
+being moved goes there), so a click is Enter on it. A right click is
+Space, its menu. Outside a menu, a click closes it; writing a comment, or
+reading what `?` says, the mouse moves nothing. The wheel is ↑↓, and a paste types what is pasted, into a comment
 being written. `--port N` listens on port N
 (else any free one), `--no-open` only says where it is.
 
@@ -1551,7 +1554,8 @@ references, a stack made with none there (imported from the workspace, a
 range typed and refused until it holds a commit, the changes staged on top;
 from Phabricator, its revisions read by a stand-in; or by the agent), a
 comment moved to the stack
-taking the cursor with it, the mouse (the cursor following it, a click as
+taking the cursor with it, the mouse (a side pane's line marked under it and picked by a click,
+elsewhere the cursor following it, a click as
 Enter, a right click's menu, a menu's item), the comments pane's previews,
 moving a patch, searching (what is in sight first, the patches then the
 files they touch, the history), the agents' worktrees made ahead as the

@@ -181,7 +181,7 @@ fn fitted(cols: u16, rows: u16) -> (u16, u16) {
 
 /// What a line a browser sent does: a key pressed (`k NAME MODS`, `k c HEX
 /// MODS`), a click on a cell (`m X Y l|r`), the mouse over another (`v X
-/// Y`), a new size (`s COLS ROWS`).
+/// Y`) or gone from the screen (`o`), a new size (`s COLS ROWS`).
 fn act(app: &mut App, line: &str, size: &mut (u16, u16)) -> Effect {
     let parts: Vec<&str> = line.split_whitespace().collect();
     match parts.as_slice() {
@@ -197,6 +197,10 @@ fn act(app: &mut App, line: &str, size: &mut (u16, u16)) -> Effect {
             if let (Ok(x), Ok(y)) = (x.parse(), y.parse()) {
                 app.hover(x, y);
             }
+            Effect::None
+        }
+        ["o"] => {
+            app.unhover();
             Effect::None
         }
         ["s", cols, rows] => {

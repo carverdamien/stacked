@@ -1349,6 +1349,10 @@ pub struct App {
     /// on the line the cursor was on, the rows coming up under it; with
     /// what the rows were built from, as they must still be.
     keep: Option<(String, usize, usize)>,
+    /// The line of a side pane the mouse is over, in the browser: a patch
+    /// of the list or its header, a comment of the comments pane or its
+    /// header. Drawn underlined, and not picked: a click picks it.
+    pub hovered: Option<Spot>,
     /// The selected line of a list screen, and its top.
     pub pick: usize,
     pick_top: usize,
@@ -1616,6 +1620,7 @@ impl App {
             top: 0,
             cursor_y: None,
             keep: None,
+            hovered: None,
             pick: 0,
             pick_top: 0,
             hist_rev: None,
@@ -2430,12 +2435,17 @@ impl App {
         Effect::None
     }
 
-    /// The mouse over `(x, y)` of the screen: what is there picked, as the
-    /// arrows would, so that a click does on it what Enter does. In a menu,
-    /// its item; a patch being moved goes there. Not while a comment is
-    /// written, nor over what `?` says.
+    /// The mouse over `(x, y)` of the screen. Over a line of a side pane,
+    /// the patches' or the comments': that line marked as under it, and
+    /// not picked, the line picked staying so until a click. Elsewhere,
+    /// what is there picked, as the arrows would, so that a click does on
+    /// it what Enter does: in a menu, its item; a patch being moved goes
+    /// there. Not while a comment is written, nor over what `?` says.
     pub fn hover(&mut self, x: u16, y: u16) {
-        let Some(spot) = self.spot_at(x, y) else { return };
+        let spot = self.spot_at(x, y);
+        let side = |s: &Spot| matches!(s, Spot::Patch(_) | Spot::NotesHead | Spot::Note(_));
+        self.hovered = spot.filter(|s| side(s) && matches!(self.mode, Mode::Normal));
+        let Some(spot) = spot else { return };
         match &mut self.mode {
             Mode::Menu(m) => {
                 if let Spot::Item(i) | Spot::Choice(i, _) = spot {
@@ -2455,11 +2465,22 @@ impl App {
             // Not onto the banner, nor off it: it opens and closes under a
             // key or a click, not under the mouse going by, which would move
             // what is under the mouse.
-            Mode::Normal if matches!(spot, Spot::Banner | Spot::BannerLine(_)) == self.on_banner => {
+            Mode::Normal if !side(&spot) && matches!(spot, Spot::Banner | Spot::BannerLine(_)) == self.on_banner => {
                 self.pick_spot(spot);
             }
             _ => {}
         }
+    }
+
+    /// The mouse gone from the screen: no line marked as under it.
+    pub fn unhover(&mut self) {
+        self.hovered = None;
+    }
+
+    /// `st`, underlined while the mouse is over `spot`, a line of a side
+    /// pane.
+    fn hovered_style(&self, spot: Spot, st: Style) -> Style {
+        if self.hovered == Some(spot) { st.add_modifier(Modifier::UNDERLINED) } else { st }
     }
 
     /// `spot` picked, as the arrows would: whether it is one to pick.
@@ -7344,9 +7365,12 @@ impl App {
             st = if self.focus == Focus::List && !self.on_banner {
                 st.add_modifier(Modifier::REVERSED)
             } else {
-                st.add_modifier(Modifier::UNDERLINED)
+                // As a patch picked is, on what the cursor's pane is not:
+                // underlined is the mouse over it.
+                st.patch(color::picked())
             };
         }
+        let st = self.hovered_style(Spot::Patch(None), st);
         put(buf, area, 0, 0, w, &fit(&header, w), st);
         self.spot(area, (0, 0, w), Spot::Patch(None));
         let Some(s) = self.current().cloned() else {
@@ -7494,6 +7518,7 @@ impl App {
                     st.patch(color::picked())
                 };
             }
+            let st = self.hovered_style(Spot::Patch(Some(at)), st);
             for line in its {
                 if y >= bottom {
                     break;
@@ -7935,6 +7960,7 @@ impl App {
         if self.focus == Focus::Notes && self.notes_head && !self.on_banner {
             st = st.add_modifier(Modifier::REVERSED);
         }
+        let st = self.hovered_style(Spot::NotesHead, st);
         put(buf, area, 0, 0, w, &fit(&header, w), st);
         self.spot(area, (0, 0, w), Spot::NotesHead);
         // The one the middle's cursor is in, when the cursor is there.
@@ -7970,6 +7996,7 @@ impl App {
                     (head.patch(color::picked()), color::picked())
                 };
             }
+            let (head, tail) = (self.hovered_style(Spot::Note(i), head), self.hovered_style(Spot::Note(i), tail));
             put(buf, area, 0, y, w, &fit(&said, w), head);
             if per == 2 {
                 put(buf, area, 0, y + 1, w, &fit(&last, w), tail);

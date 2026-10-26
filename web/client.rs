@@ -12,7 +12,7 @@
 //! The lines for the server: `k NAME MODS`, a key (`k c HEX MODS` for a
 //! character, by its code), MODS `c` ctrl, `a` alt, `s` shift, or `-`;
 //! `m X Y l|r`, a click on a cell, with the left or the right button; `v X
-//! Y`, the mouse over another cell.
+//! Y`, the mouse over another cell; `o`, the mouse gone from the screen.
 
 /// Where the cursor is, in a run's modifiers: past ratatui's own.
 pub const CURSOR: u32 = 1 << 16;
@@ -176,6 +176,13 @@ pub fn moved(last: &mut Option<(u32, u32)>, x: f64, y: f64, cw: f64, ch: f64) ->
     format!("v {} {}", at.0, at.1)
 }
 
+/// The mouse gone from the screen: said, and the cell it was over, `last`,
+/// forgotten, so that coming back over it says so.
+pub fn left(last: &mut Option<(u32, u32)>) -> String {
+    *last = None;
+    "o".into()
+}
+
 /// The wheel turned `dy` pixels, kept with what it turned before: a line up
 /// or down for each notch of it, as ↑↓.
 pub fn wheel(turned: &mut f64, dy: f64) -> String {
@@ -257,6 +264,12 @@ mod wasm {
     }
 
     #[unsafe(no_mangle)]
+    pub extern "C" fn left() -> usize {
+        let mut over = OVER.lock().unwrap();
+        give(super::left(&mut over))
+    }
+
+    #[unsafe(no_mangle)]
     pub extern "C" fn wheel(dy: f64) -> usize {
         let mut turned = TURNED.lock().unwrap();
         give(super::wheel(&mut turned, dy))
@@ -305,6 +318,9 @@ mod tests {
         let mut over = None;
         assert_eq!(moved(&mut over, 17.0, 41.0, 8.0, 20.0), "v 2 2");
         assert_eq!(moved(&mut over, 20.0, 45.0, 8.0, 20.0), "", "the same cell");
+        assert_eq!(moved(&mut over, 25.0, 45.0, 8.0, 20.0), "v 3 2");
+        // Gone from the screen: said; back over the same cell, said again.
+        assert_eq!(left(&mut over), "o");
         assert_eq!(moved(&mut over, 25.0, 45.0, 8.0, 20.0), "v 3 2");
         let mut turned = 0.0;
         assert_eq!(wheel(&mut turned, 30.0), "");
