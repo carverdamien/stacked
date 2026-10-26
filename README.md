@@ -247,9 +247,11 @@ login shell sets (`$SHELL -ilc`, given ten seconds): `PATH`, to find git and
 claude with, `EDITOR`, `STACKED_FILE`. It then opens the database
 `$STACKED_FILE` or the settings' `file` names, else the one you pick in the
 Open dialog, and runs in that database's folder as if started there. What
-goes wrong is said in an alert. `$EDITOR` has no terminal to open in there:
-an editor with a window of its own (`editor = "code --wait"`) works, and
-one that needs a terminal fails, changing nothing.
+goes wrong is said in an alert. `$EDITOR` has no terminal to run in there,
+so it runs in a window of Terminal's, opened for it, and StackED goes on
+once it exits; closing that window before it does changes nothing. An
+editor with a window of its own (`code --wait`, `zed --wait`, `open -W -n
+-a TextEdit`) opens that window instead.
 
 StackED's icon is drawn rather than kept as a picture (`icon.rs`): the
 stack's patches as cards, the one in front a diff with the cursor at the
@@ -1739,8 +1741,10 @@ macOS, they test that the fonts hold every character stacked draws, and
 `tests/app.rs` makes StackED.app as macOS reads an app (its Info.plist, its
 signature, its icon at every size, the stacked in it, which runs), makes it
 again, and leaves alone something else of its name; `bundle.rs` tests when
-stacked is opened as the app, and the login shell's environment read (a
-shell that never ends given up); `icon.rs`, what the icon shows where. With
+stacked is opened as the app, the login shell's environment read (a
+shell that never ends given up), and an edit in a window of its own waited
+for (in its folder, it failing, its window closed before it exits);
+`icon.rs`, what the icon shows where. With
 `--features demo`, `tests/demo.rs` takes the tour, each step done as Tab
 does it: the
 stand-in's fix, the board at its end, nothing made on disk; `memory.rs` tests its diffs applied as git applies them. The
@@ -1768,9 +1772,7 @@ checkout's own read and written unless git tracks it.
   and take `--json-schema`, unless `agent.schema` is off.
 - Only git mail is read: no `hg export`.
 - Nothing submits to Phabricator: `stacked apply`, then moz-phab.
-- StackED opened from the Dock has no terminal for `$EDITOR`: an editor
-  that needs one fails there, rather than opening in a Terminal window.
-  StackED.app opens one database, the settings' or one picked, and can open
+- StackED.app opens one database, the settings' or one picked, and can open
   no other until it is quit. Its text is not yet a setting: it is Menlo
   (Hack elsewhere), at 14 points before ⌘+ and ⌘−.
 

@@ -1291,13 +1291,20 @@ fn program(editor: &str) -> String {
 /// Over the screen while `$EDITOR` runs `program`, in `area`: what the
 /// window waits for.
 fn waiting(painter: &egui::Painter, area: egui::Rect, program: &str) {
+    // Opened from the Dock, in a window of Terminal's.
+    #[cfg(target_os = "macos")]
+    let window = crate::bundle::no_terminal();
+    #[cfg(not(target_os = "macos"))]
+    let window = false;
+    let place = match window {
+        true => "in a window of Terminal's",
+        false => "in the terminal StackED was started from",
+    };
     painter.rect_filled(area, 0.0, Color32::from_black_alpha(190));
     painter.text(
         area.center(),
         egui::Align2::CENTER_CENTER,
-        format!(
-            "The text is open in {program}, in the terminal StackED was started from if {program} runs in one.\nStackED goes on once {program} exits."
-        ),
+        format!("The text is open in {program}, {place} if {program} runs in one.\nStackED goes on once {program} exits."),
         FontId::proportional(15.0),
         Color32::WHITE,
     );

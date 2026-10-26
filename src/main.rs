@@ -1844,6 +1844,8 @@ fn opened_as_app() {
     if let Some(dir) = file.parent() {
         let _ = std::env::set_current_dir(dir);
     }
+    // No terminal for $EDITOR: a window of Terminal's for it.
+    bundle::set_no_terminal();
     if let Err(e) = stacked::app::run(&file) {
         bundle::alert(&e.0);
         std::process::exit(1);
