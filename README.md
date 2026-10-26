@@ -816,6 +816,17 @@ patch's mail, or the stack's list, opens again with why at its top. A
 comment waiting its turn is off the agent's queue while you reply to it,
 and goes back on with your reply.
 
+To change commits below the top of the stack, the agent writes its rebase
+plan (a `pick`, `edit`, `squash`, `fixup` or `drop` line for each commit)
+to a file its prompt names, then runs a plain `git rebase -i`. The file is
+`$TMPDIR/stacked-todo/…/REBASE_TODO`, one for each worktree, outside the
+git directory, which claude may not write in; stacked lets claude write
+there (`--add-dir`), has `GIT_SEQUENCE_EDITOR` copy the plan in, and sets
+`GIT_EDITOR` to `true`, so that no editor opens. That is how self-review has
+its agent rebase. Claude refuses a command that starts by setting a
+variable (`GIT_SEQUENCE_EDITOR=… git rebase -i`), as it refuses any command
+that no rule allows.
+
 Changes are checked when they land, like any edit. A patch's change slots
 into the stack in its place. Before it finishes,
 the agent runs `stacked fits`, which says whether the patches above still
@@ -1620,7 +1631,8 @@ or to what reads it.
 `tests/cli.rs` builds a repo and drives the binary. It covers a round trip
 through `git am`, the tree, recovery from broken lines, comments on the
 stack, a patch and a line, every way of asking about them (a script stands
-in for the agent and rewrites commits with git, runs `stacked fits`,
+in for the agent and rewrites commits with git, with a plain `git rebase
+-i` that takes the plan written to the todo file the prompt names, runs `stacked fits`,
 answers, opens comments, tests), a split following its comments, a comment
 moved to the stack, a patch's comment asked of the whole stack adding a
 patch on top, a reply written again, asks waiting their turn, a rebase, the stack not

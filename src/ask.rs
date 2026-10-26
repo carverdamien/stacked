@@ -1253,10 +1253,19 @@ fn prompt(db: &Db, i: &Info, s: &Stack, cmd: &str, run: &str, structured: bool) 
             "You are changing a stack of patches, as the comments below ask. {here}: the \
              stack is the commits {base}..HEAD, \
              each commit a patch, listed below bottom first. You may change any of them: \
-             edit files and `git commit --amend`, `git commit --fixup` then \
-             `GIT_SEQUENCE_EDITOR=true git rebase -i --autosquash {base}`, `git rebase -i` \
-             with a GIT_SEQUENCE_EDITOR script to reorder, drop or squash, `git reset` and \
-             `git commit` to split, a new commit where a new patch belongs. Do not touch \
+             edit files and `git commit --amend` for HEAD, `git reset` and `git commit` to \
+             split, a new commit where a new patch belongs. To change, reorder, squash or \
+             drop commits below HEAD: (1) write the plan, with your file-editing tools, to \
+             the rebase todo file named at the end: a `pick`, `edit`, `squash`, `fixup` or \
+             `drop` line (`pick SHA TITLE`) for every commit of {base}..HEAD, bottom first, \
+             a commit left out being dropped; (2) run a plain `git rebase -i {base}`, which \
+             takes that plan; (3) at each `edit` stop, change the files and `git commit \
+             --amend` (`-m` or `-F` for a new message: `reword` keeps the old one), then \
+             `git rebase --continue`. No editor opens, and none is to be set: a command \
+             that starts by setting a variable (`GIT_SEQUENCE_EDITOR=…`) is refused. A \
+             commit's sha changes when it or a commit below it does: after a rebase, find \
+             the commits by their titles. If a rebase conflicts and you cannot resolve it, \
+             `git rebase --abort`, and say so. Do not touch \
              commits below {base}. To rebase the stack onto another commit, `git rebase \
              --onto COMMIT {base}`, and say onto what: \"base\": COMMIT's full sha, {said}. \
              {KEEP_TITLES}",
@@ -1733,6 +1742,22 @@ pub fn forget(db_path: &Path, made: &[Ahead]) {
     }
 }
 
+/// Where a change to the stack writes its rebase plan, for the worktree (or
+/// checkout) `dir`: outside its git dir, which claude may not write in, one
+/// for each, as self-review has it; a plan an earlier ask left there gone.
+fn rebase_todo(dir: &Path) -> Result<PathBuf> {
+    let gitdir = git::git(dir, &["rev-parse", "--absolute-git-dir"])?;
+    let todo = std::env::temp_dir()
+        .join("stacked-todo")
+        .join(crate::diff::sha1_12(gitdir.trim()))
+        .join("REBASE_TODO");
+    let _ = std::fs::remove_file(&todo);
+    if let Some(d) = todo.parent() {
+        std::fs::create_dir_all(d).map_err(|e| Error(format!("{}: {e}", d.display())))?;
+    }
+    Ok(todo)
+}
+
 /// Starts claimed run `id`: its worktree made, its prompt written, claude
 /// started.
 fn start(db_path: &Path, id: &str) -> Result<()> {
@@ -1833,6 +1858,16 @@ fn start(db_path: &Path, id: &str) -> Result<()> {
     let cmd = format!("{} -f {}", exe.display(), db_abs.display());
     i.prompt = prompt(&db, &i, &s, &cmd, id, agent.schema);
     let cwd = i.worktree.clone().map_or(repo.clone(), PathBuf::from);
+    // A change to the stack rewrites what is below HEAD with a plan it
+    // writes, which a plain `git rebase -i` takes: claude refuses a command
+    // that sets an editor.
+    let todo = match (i.way, &i.scope) {
+        (Way::Change, Scope::Stack) => Some(rebase_todo(&cwd)?),
+        _ => None,
+    };
+    if let Some(todo) = &todo {
+        i.prompt += &format!("\n\nThe rebase todo file: {}", todo.display());
+    }
     let mut tools = match i.way {
         Way::Change => format!("{},Bash({cmd} fits *),Bash({cmd} export *)", allowed_tools()),
         Way::Answer => answer_tools(&cmd),
@@ -1874,6 +1909,16 @@ fn start(db_path: &Path, id: &str) -> Result<()> {
     c.arg("-c").arg(WRAPPER).arg("sh").arg(id).arg(&cwd).arg(&exe).arg(&db_abs);
     c.args(["--output-format", "stream-json", "--verbose"]);
     c.args(["--permission-mode", permission, "--allowedTools", &tools]);
+    // The plan copied in as the rebase's todo, the messages kept: no editor
+    // opens. The plan's folder is claude's to write in, as the worktree is.
+    if let Some(todo) = &todo {
+        let quoted = format!("'{}'", todo.display().to_string().replace('\'', "'\\''"));
+        c.env("GIT_SEQUENCE_EDITOR", format!("cp -f -- {quoted}"));
+        c.env("GIT_EDITOR", "true");
+        if let Some(dir) = todo.parent() {
+            c.arg("--add-dir").arg(dir);
+        }
+    }
     // Its answer asked as structured output, checked against what this ask
     // asks for; else read from what it writes.
     if agent.schema {

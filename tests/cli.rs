@@ -632,18 +632,21 @@ fn a_comment_on_the_stack_lets_the_agent_change_it_all() {
     let id = comment(&e, &["Squash", "the", "top", "into", "the", "bottom,", "and", "add", "c."]);
     let before = e.column(2);
     let user_head = git(&e.src, &["rev-parse", "HEAD"]);
-    // Squash the top patch into the bottom one, and add one on top.
+    // Squash the top patch into the bottom one, and add one on top: the
+    // plan written to the todo file the prompt names, which claude may write
+    // in (`--add-dir`), a plain `git rebase -i` taking it, as claude refuses
+    // a command that sets an editor.
     let claude = fake_claude(
         &e,
         "claude-edit.sh",
         r#"set -e
 test "$(git rev-parse --show-toplevel)" != "$STACKED_SRC"
 a=$(git rev-parse HEAD~2) b=$(git rev-parse HEAD~1) c=$(git rev-parse HEAD)
-seq="${TMPDIR:-/tmp}/seq-$$.sh"
-printf '#!/bin/sh\nprintf "pick %s\\nfixup %s\\npick %s\\n" > "$1"\n' $a $c $b > "$seq"
-chmod +x "$seq"
-GIT_SEQUENCE_EDITOR="$seq" git -c user.name=C -c user.email=c@x rebase -q -i HEAD~3 >&2
-rm "$seq"
+todo=$(printf '%s\n' "$2" | sed -n 's/^The rebase todo file: //p')
+test -n "$todo" && test ! -e "$todo"
+printf '%s\n' "$@" | grep -qx -- "$(dirname "$todo")"
+printf 'pick %s\nfixup %s\npick %s\n' $a $c $b > "$todo"
+git -c user.name=C -c user.email=c@x rebase -q -i HEAD~3 >&2
 echo extra > c.txt && git add c.txt && git -c user.name=C -c user.email=c@x commit -qm "Bug 4 - add c""#,
         r#"Done. {"replies": {"c1": "Squashed it, and added c."}}"#,
     );
