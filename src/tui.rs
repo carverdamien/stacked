@@ -1702,6 +1702,20 @@ impl App {
         ask::forget(&self.path, &self.bg.precreated);
     }
 
+    /// As the editor exits: the agent's asks still running said on stderr,
+    /// each where its agent works, the database read again for one started
+    /// a moment ago. What they do lands on its own.
+    pub fn say_still_running(&self) {
+        let now = Db::load(&self.path);
+        let running = ask::still_running(now.as_ref().unwrap_or(&self.db));
+        if !running.is_empty() {
+            eprintln!("stacked: {} of the agent's asks still running; what they do lands on its own:", running.len());
+            for l in running {
+                eprintln!("  {l}");
+            }
+        }
+    }
+
     /// Checks the stack the current name is on, once per stack: why it
     /// cannot be changed, or why it does not apply, if it cannot or does not.
     /// The first is checked before the screen is drawn; any after, away
@@ -8538,16 +8552,7 @@ pub fn run(path: &Path) -> Result<()> {
     let mut terminal = ratatui::init();
     let res = event_loop(&mut terminal, &mut app);
     ratatui::restore();
-    // The asks still running, each where its agent works: read again, for
-    // one started a moment ago.
-    let now = Db::load(path);
-    let running = ask::still_running(now.as_ref().unwrap_or(&app.db));
-    if !running.is_empty() {
-        eprintln!("stacked: {} of the agent's asks still running; what they do lands on its own:", running.len());
-        for l in running {
-            eprintln!("  {l}");
-        }
-    }
+    app.say_still_running();
     res
 }
 

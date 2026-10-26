@@ -41,6 +41,12 @@ the token moz-phab (or arc) keeps, which `curl` calls: `cargo install
 three). Built without it, stacked has none of it, but reads a database
 that holds reviews pulled.
 
+With StackED, the editor in a window of its own (`stacked app`, below),
+built with the `app` feature: `cargo install --path . --features app` (or
+`--features web,demo,moz-phab,app` for all four). Its window is drawn by
+eframe (egui), on OpenGL, which the build fetches: on macOS nothing more is
+needed; elsewhere, what eframe needs there (the X11 or Wayland libraries).
+
 ## Running
 
 ```sh
@@ -49,6 +55,7 @@ git format-patch --stdout main | stacked import bug123 --base main   # or mail
 stacked new bug124 --base main     # an empty stack, to add patches to
 stacked stacks.jsonl               # open the editor on that database
 stacked                            # ... on $STACKED_FILE, the settings' file, else ./stacked.jsonl
+stacked app                        # ... in a window of its own: StackED (app)
 stacked show bug123                # its patches, bottom first
 stacked show bug123 2 --path a.txt # a file as patch 2 leaves it, no checkout made
 stacked edit bug123                # as `git rebase -i`: reorder, drop, reword, edit
@@ -158,6 +165,45 @@ page's size, and sends the page the rows that changed (server-sent events);
 the page sends its keys and clicks back. What the page does is wasm
 (`web/client.rs`: the rows made HTML, the keys and clicks made lines for
 the server), carried by fifty lines of JS (`web/index.html`).
+
+## In a window of its own: StackED
+
+`stacked app` (built with `--features app`) opens StackED, the editor in a
+window of its own, with no terminal and no browser: the same editor, the
+same keys, drawn as in a terminal. The window paints the editor's screen
+as a terminal would, a grid of cells in their colours, bold and italic,
+underlined or struck through, and draws the lines of boxes itself, so that
+they meet from row to row. On macOS its text is in Menlo, the system's
+monospace font, with Apple Symbols for the few characters Menlo lacks;
+elsewhere it is in Hack, egui's own font, its bold drawn twice a pixel
+apart and its italics slanted. ⌘+ and ⌘− (ctrl elsewhere) make the text
+larger and smaller, ⌘0 brings it back, and the window holds as many cells
+as fit in it.
+
+The mouse works as in the browser (above): over the patches and the
+comments it marks the line under it, and a click picks the line, a second
+click on it being Enter; elsewhere the cursor follows it, so that a click
+is Enter on what is under it. A right click is Space, its menu, and so is
+ctrl-click on macOS. The wheel and the trackpad are ↑↓. A paste (⌘V on
+macOS, ctrl-v elsewhere) types what is pasted where text is being written,
+and does nothing elsewhere. On macOS ⌘ is the window's own (⌘Q quits, ⌘H
+hides it), and option types the characters it makes (é, ∂), as Terminal
+does.
+
+StackED runs where `stacked app` was started, as the editor in the terminal
+does: it opens the database the editor would (`-f`, `$STACKED_FILE`, the
+settings' `file`, else ./stacked.jsonl), and HEAD is the HEAD of the
+checkout there. `$EDITOR`, for what is edited in it, opens in that
+terminal, and the window says that it waits until the editor exits; an
+editor with a window of its own (`editor = "code --wait"` in the settings)
+opens that window instead. Quit (ctrl-c) closes the window, and closing the
+window quits; either way, the agent's asks still running are listed in the
+terminal, as the editor in the terminal lists them.
+
+The editor runs on a thread of its own, drawn into a buffer of the window's
+size, as `stacked web` runs it for a page; the window (eframe: egui, on
+OpenGL) paints what the buffer holds, and sends the editor its keys, clicks
+and size (`app.rs`).
 
 ## The editor
 
@@ -1525,16 +1571,18 @@ is typed: `import.rs`). A fix to one may belong in the other.
   each pane's cursor was.
 - `web.rs`, `web/client.rs`, `web/index.html`, `build.rs`: `stacked web`,
   its server, its wasm and its page; the build script compiles the wasm.
+- `app.rs`: `stacked app`, StackED: the editor on a thread of its own, and
+  the window that paints its screen and sends it what is done there.
 - `demo.rs`, `memory.rs`: `stacked demo`, the tour; and the database and
   repository it keeps in memory, with a stand-in for the agent.
 
 ## Tests
 
 Run `cargo test` after any change; `cargo test --features
-web,demo,moz-phab` runs the browser's, the tour's and Phabricator's too (the
-web feature needs the wasm target, as in Install). No test runs claude: a
-script stands in for it; none reaches Phabricator: its revisions and their
-comments are read by stand-ins.
+web,demo,moz-phab,app` runs the browser's, the tour's, Phabricator's and
+StackED's too (the web feature needs the wasm target, as in Install). No
+test runs claude: a script stands in for it; none reaches Phabricator: its
+revisions and their comments are read by stand-ins; none opens a window.
 
 With `STACKED_TEST_CHECKPOINTS=1` set, every write writes a checkpoint, and
 every database read from one is read whole too and the two compared, a
@@ -1591,8 +1639,20 @@ modes (expanded, compact, hidden). With `--features web`, `tests/web.rs`
 serves the editor and asks it over HTTP as a browser would: the token
 needed, the page, the wasm, the rows as they change, a key and a click; and
 `web.rs` tests the rows and the lines both ways, with the client's own tests
-(`web/client.rs`, compiled to the machine as well as to wasm). With `--features
-demo`, `tests/demo.rs` takes the tour, each step done as Tab does it: the
+(`web/client.rs`, compiled to the machine as well as to wasm). With
+`--features app`, `tests/app.rs` runs StackED's editor as its window runs
+it, with no window: nothing drawn before the window's size, a key, a click,
+the mouse over a patch then gone, a window too small, the wait while
+`$EDITOR` runs (an editor that edits nothing, set in the test's settings),
+quit, the command there, and a database that cannot be read said before
+any window; and `app.rs` tests what the window paints of a screen (the
+colours, reversed and dim, the faces, wide characters, the lines of boxes
+and blocks), what it makes of keys, clicks, the wheel and pastes, and the
+window itself, run by egui with no window: the grid's size sent, the
+screen painted, what is done sent, the wait for `$EDITOR`, and closing. On
+macOS, they test that the fonts hold every character stacked draws. With
+`--features demo`, `tests/demo.rs` takes the tour, each step done as Tab
+does it: the
 stand-in's fix, the board at its end, nothing made on disk; `memory.rs` tests its diffs applied as git applies them. The
 stream's thinking is tested in `ask.rs`. The tests in `check.rs` show
 the check's index holds only what the patches touch, that it writes nothing
@@ -1618,6 +1678,11 @@ checkout's own read and written unless git tracks it.
   and take `--json-schema`, unless `agent.schema` is off.
 - Only git mail is read: no `hg export`.
 - Nothing submits to Phabricator: `stacked apply`, then moz-phab.
+- StackED starts from a terminal, as `stacked app`: there is no StackED.app
+  to start from the Finder or the Dock. Started there, it would have no
+  terminal for `$EDITOR`, no checkout to run in, and not the terminal's
+  `PATH` to find git and claude with. Its text is not yet a setting: it is
+  Menlo (Hack elsewhere), at 14 points before ⌘+ and ⌘−.
 
 ## License
 

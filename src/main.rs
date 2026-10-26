@@ -94,6 +94,12 @@ enum Cmd {
         #[arg(long)]
         no_open: bool,
     },
+    /// StackED: the editor in a window of its own, drawn as in a terminal,
+    /// the mouse as in `stacked web`: the cursor follows it, a click is
+    /// Enter, a right click Space. `$EDITOR` opens where it was started.
+    /// Built with `--features app`.
+    #[cfg(feature = "app")]
+    App,
     /// The stacks: name, patches, the stack it is on.
     Stacks,
     /// Make an empty stack, on a commit of the repository here.
@@ -880,6 +886,8 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
             }
             bound.serve(path)?;
         }
+        #[cfg(feature = "app")]
+        Cmd::App => stacked::app::run(path)?,
         Cmd::Stacks => {
             let db = Db::load(path)?;
             for s in db.stacks() {

@@ -17,6 +17,9 @@ path = "src/main.rs"
 # by build.rs, with Rust's wasm32-unknown-unknown target
 # (`rustup target add wasm32-unknown-unknown`).
 web = ["dep:unicode-width"]
+# `stacked app`: StackED, the editor in a window of its own, drawn as the
+# terminal draws it, with eframe (egui) on OpenGL.
+app = ["dep:eframe", "dep:ttf-parser", "dep:unicode-width"]
 # `stacked demo`: a tour of the editor on a game of tic-tac-toe, its
 # database and repository kept in memory: nothing is written on disk.
 demo = []
@@ -28,6 +31,7 @@ moz-phab = []
 
 [dependencies]
 clap = { version = "4.6.7", features = ["derive"] }
+eframe = { version = "0.33.3", optional = true, default-features = false, features = ["default_fonts", "glow", "wayland", "x11"] }
 libc = "0.2.190"
 ratatui = "0.30.2"
 serde = { version = "1.0.229", features = ["derive"] }
@@ -44,6 +48,7 @@ tree-sitter-javascript = "0.25.0"
 tree-sitter-python = "0.25.0"
 tree-sitter-rust = "0.24.2"
 tree-sitter-typescript = "0.23.2"
+ttf-parser = { version = "0.25.1", optional = true }
 unicode-width = { version = "0.2.2", optional = true }
 
 [dev-dependencies]

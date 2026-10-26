@@ -1,11 +1,14 @@
 //! stacked: a stack editor. Patches, stacks and every edit made to them,
 //! comments, and what claude and Phabricator said, all in one file that is
 //! only ever appended to (`db`). The library holds all of it; `tui` draws
-//! it, and the binary's commands script it.
+//! it (in a browser with `web`, in a window of its own with `app`), and the
+//! binary's commands script it.
 
 // Keys join their parts with NUL, so "\00" in a key is NUL then "0".
 #![allow(clippy::octal_escapes)]
 
+#[cfg(feature = "app")]
+pub mod app;
 pub mod ask;
 pub mod blocks;
 pub mod check;
