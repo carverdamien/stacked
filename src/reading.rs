@@ -10,6 +10,7 @@ use std::sync::Arc;
 use crate::blocks::{FileBlocks, Side};
 use crate::db::Mark;
 use crate::rows::{Kind, Row};
+use crate::view::MSG_PATH;
 
 /// Each file's code blocks, by path: None for a file they could not be
 /// found in.
@@ -37,8 +38,10 @@ pub struct Reading<'a> {
     pub whitespace: bool,
 }
 
+/// Whether row `r` is a line to read: a changed line of the diff, or a
+/// line of the message.
 fn changed(r: &Row) -> bool {
-    matches!(r.kind, Kind::Add | Kind::Del)
+    matches!(r.kind, Kind::Add | Kind::Del | Kind::Msg)
 }
 
 impl Reading<'_> {
@@ -68,12 +71,12 @@ impl Reading<'_> {
         !self.read.contains(k) && !free.contains(k)
     }
 
-    /// The diff line row `i` is, or the one the comment it is part of is
-    /// on.
+    /// The line row `i` is, of the diff or of the message, or the one the
+    /// comment it is part of is on.
     pub fn line_at(&self, mut i: usize) -> Option<usize> {
         loop {
             let r = self.rows.get(i)?;
-            if matches!(r.kind, Kind::Add | Kind::Del | Kind::Ctx) {
+            if matches!(r.kind, Kind::Add | Kind::Del | Kind::Ctx | Kind::Msg) {
                 return Some(i);
             }
             if !matches!(r.kind, Kind::Comment | Kind::Stream) || i == 0 {
@@ -105,6 +108,39 @@ impl Reading<'_> {
             .collect()
     }
 
+    /// The message's lines to read, by key: all of them, or those of the
+    /// paragraph of message row `at` (the title one of its own), said; on
+    /// an empty line, all of them.
+    fn message_keys(&self, at: Option<usize>) -> (HashSet<String>, String) {
+        // Each line of the message once, its first piece: where it is, its
+        // key, whether it is empty.
+        let mut lines: Vec<(usize, &str, bool)> = Vec::new();
+        for r in self.rows.iter().filter(|r| r.kind == Kind::Msg && !r.cont) {
+            if let (Some(n), Some(k)) = (r.msg_at, r.key.as_deref()) {
+                lines.push((n, k, r.text.trim().is_empty()));
+            }
+        }
+        let all = || lines.iter().map(|(_, k, _)| k.to_string()).collect();
+        let Some(n) = at.and_then(|i| self.rows[i].msg_at).filter(|&n| lines.iter().any(|&(m, _, empty)| m == n && !empty)) else {
+            return (all(), "the message".into());
+        };
+        if n == 0 {
+            return (lines.iter().filter(|l| l.0 == 0).map(|l| l.1.to_string()).collect(), "the title".into());
+        }
+        // The run of lines around it between empty ones, the title apart.
+        let filled = |m: usize| m > 0 && lines.iter().any(|&(k, _, empty)| k == m && !empty);
+        let (mut a, mut b) = (n, n);
+        while a > 1 && filled(a - 1) {
+            a -= 1;
+        }
+        while filled(b + 1) {
+            b += 1;
+        }
+        let keys = lines.iter().filter(|l| (a..=b).contains(&l.0)).map(|l| l.1.to_string()).collect();
+        let what = if a == b { format!("line {} of the message", a + 1) } else { format!("lines {}–{} of the message", a + 1, b + 1) };
+        (keys, what)
+    }
+
     fn file_blocks(&self, at: usize) -> Option<&Arc<FileBlocks>> {
         self.blocks.get(self.rows[at].path.as_deref()?)?.as_ref()
     }
@@ -132,10 +168,23 @@ impl Reading<'_> {
         let Some(at) = self.line_at(i) else {
             return match row.kind {
                 Kind::Hunk => whole(self.hunk_keys(i), "this hunk".into()),
+                // The message's header: the message.
+                Kind::File if row.path.as_deref() == Some(MSG_PATH) => {
+                    let (keys, what) = self.message_keys(None);
+                    whole(keys, what)
+                }
                 Kind::File => whole(self.file_keys(i), "this file".into()),
                 _ => None,
             };
         };
+        // A line of the message: its paragraph, then the whole message.
+        if self.rows[at].kind == Kind::Msg {
+            let (keys, what) = self.message_keys(Some(at));
+            return whole(keys, what).or_else(|| {
+                let (keys, what) = self.message_keys(None);
+                whole(keys, what)
+            });
+        }
         let hunk = self.hunk_keys(at);
         for b in self.chain(at).unwrap_or_default() {
             let inside: HashSet<String> = b.changed.intersection(&hunk).cloned().collect();
@@ -159,9 +208,16 @@ impl Reading<'_> {
         let near: HashSet<String> = match self.line_at(i) {
             None => match row.kind {
                 Kind::Hunk => self.hunk_keys(i),
+                Kind::File if row.path.as_deref() == Some(MSG_PATH) => self.message_keys(None).0,
                 Kind::File => self.file_keys(i),
                 _ => return None,
             },
+            // A line of the message: its paragraph's marks.
+            Some(at) if self.rows[at].kind == Kind::Msg => {
+                let mut near = self.message_keys(Some(at)).0;
+                near.extend(self.rows[at].key.clone());
+                near
+            }
             Some(at) => {
                 // Its file's blocks known: the innermost around it with
                 // changes in its hunk, those changes alone, as a mark holds
@@ -354,13 +410,16 @@ mod tests {
         read.extend(t.keys);
         let r = Reading { rows: &rows, blocks: &blocks, read: &read, marks: &marks, whitespace: false };
         assert_eq!(r.to_mark(two), None, "all read");
-        assert_eq!(r.progress(), (4, 4));
+        assert_eq!(r.progress(), (4, 5), "the code read, the title not yet");
         // With no blocks to go by, the hunk.
         let none = Blocks::from([("f.rs".to_string(), None)]);
         let unread = HashSet::new();
         let r = Reading { rows: &rows, blocks: &none, read: &unread, marks: &marks, whitespace: false };
         assert_eq!(r.to_mark(two).map(|t| (t.what, t.new.len())), Some(("this hunk".into(), 4)));
-        assert_eq!(r.next_unread(0, true), Some(row(&rows, "-  uno")));
+        // From the top, the title first, then the code.
+        let title = row(&rows, "   t");
+        assert_eq!(r.next_unread(0, true), Some(title));
+        assert_eq!(r.next_unread(title, true), Some(row(&rows, "-  uno")));
     }
 
     #[test]
@@ -413,7 +472,7 @@ mod tests {
         assert_eq!((first.what.as_str(), first.new.len()), ("the block of lines 2–18, in this hunk", 2));
         read.extend(first.keys.clone());
         let r = Reading { rows: &rows, blocks: &blocks, read: &read, marks: &[], whitespace: false };
-        assert_eq!(r.progress(), (2, 4), "the other hunk is not read");
+        assert_eq!(r.progress(), (2, 5), "the other hunk is not read, nor the title");
         assert_eq!(r.to_mark(top), None, "its hunk is read");
         let second = r.to_mark(end).unwrap();
         assert_eq!(second.new.len(), 2);
@@ -441,15 +500,15 @@ mod tests {
         let two = row(&rows, "+  two");
         let unread = HashSet::new();
         let r = Reading { rows: &rows, blocks: &none, read: &unread, marks: &[], whitespace: false };
-        assert_eq!(r.progress(), (0, 1), "only the line of code needs reading");
+        assert_eq!(r.progress(), (0, 2), "only the line of code needs reading, and the title");
         let t = r.to_mark(two).unwrap();
         assert_eq!((t.what.as_str(), t.keys.len(), t.new.len()), ("this hunk", 3, 1), "the mark holds the hunk's lines, one of them new to read");
         // That line read: nothing is left there, nor below.
         let read: HashSet<String> = rows[two].key.iter().cloned().collect();
         let r = Reading { rows: &rows, blocks: &none, read: &read, marks: &[], whitespace: false };
-        assert_eq!(r.progress(), (1, 1));
+        assert_eq!(r.progress(), (1, 2));
         assert_eq!(r.to_mark(two), None);
-        assert_eq!(r.next_unread(0, true), None, "the empty line and the blank one are passed over");
+        assert_eq!(r.next_unread(two, true), None, "the empty line and the blank one are passed over");
         // Enter, the hunk marked: the line of code alone is left not read.
         let m = Mark { keys: t.keys.iter().cloned().collect(), ..Default::default() };
         let marks = vec![(4, &m)];
@@ -458,14 +517,14 @@ mod tests {
         assert_eq!(r.to_unmark(two).map(|(rev, gone)| (rev, gone.len())), Some((4, 1)));
         // When they need reading, they are read as any other line.
         let r = Reading { rows: &rows, blocks: &none, read: &read, marks: &[], whitespace: true };
-        assert_eq!(r.progress(), (1, 3));
+        assert_eq!(r.progress(), (1, 4));
         assert_eq!(r.to_mark(two).map(|t| t.new.len()), Some(2));
-        assert_eq!(r.next_unread(0, true), Some(row(&rows, "+")));
+        assert_eq!(r.next_unread(two, true), Some(row(&rows, "+")));
         // The hunk's and the file's counts, reading, leave them out too, and
         // they are drawn as lines that need nothing.
         let deco = Deco { read: Some(HashSet::new()), ..Default::default() };
         let rows = patch_rows(&p, &[], 80, &deco);
-        assert_eq!(rows.iter().filter(|r| r.text.ends_with("   read 0/1 lines")).count(), 2, "{rows:#?}");
+        assert_eq!(rows.iter().filter(|r| r.text.ends_with("   read 0/1 lines")).count(), 3, "the message's too: {rows:#?}");
         assert_eq!(rows.iter().filter(|r| r.free).map(|r| r.text.as_str()).collect::<Vec<_>>(), ["+", "+  "]);
         let deco = Deco { read: Some(HashSet::new()), whitespace: true, ..Default::default() };
         let rows = patch_rows(&p, &[], 80, &deco);
@@ -486,12 +545,49 @@ mod tests {
         assert!(rows[lines[1]].cont && !rows[lines[2]].cont);
         let none = Blocks::new();
         let r = Reading { rows: &rows, blocks: &none, read: &HashSet::new(), marks: &[], whitespace: false };
-        assert_eq!(r.progress(), (0, 2), "the line folded counted once, its code in its second piece");
-        assert_eq!(r.next_unread(0, true), Some(lines[0]));
+        assert_eq!(r.progress(), (0, 3), "the line folded counted once, its code in its second piece; the title");
+        let title = row(&rows, "   t");
+        assert_eq!(r.next_unread(0, true), Some(title));
+        assert_eq!(r.next_unread(title, true), Some(lines[0]));
         assert_eq!(r.next_unread(lines[0], true), Some(lines[2]), "past its second piece, to the next line");
         let read = HashSet::from([rows[lines[0]].key.clone().unwrap()]);
         let r = Reading { rows: &rows, blocks: &none, read: &read, marks: &[], whitespace: false };
-        assert_eq!(r.progress(), (1, 2));
+        assert_eq!(r.progress(), (1, 3));
+    }
+
+    #[test]
+    fn the_message_is_read_a_paragraph_at_a_time_its_title_one_of_its_own() {
+        let diff = "diff --git a/f.txt b/f.txt\n--- a/f.txt\n+++ b/f.txt\n@@ -1 +1 @@\n-a\n+b\n";
+        let message = "Bug 1 - a title\n\nWhy it is so,\nin two lines.\n\nDifferential Revision: D1";
+        let p = Patch::new("c".into(), None, None, message.into(), diff.into());
+        let rows = patch_rows(&p, &[], 80, &Deco::default());
+        let none = Blocks::new();
+        let r = Reading { rows: &rows, blocks: &none, read: &HashSet::new(), marks: &[], whitespace: false };
+        // Its lines to read, the empty ones not: four, and the change's two.
+        assert_eq!(r.progress(), (0, 6));
+        let title = row(&rows, "   Bug 1 - a title");
+        assert_eq!(r.to_mark(title).map(|t| (t.what, t.new.len())), Some(("the title".into(), 1)));
+        let why = row(&rows, "   in two lines.");
+        let t = r.to_mark(why).unwrap();
+        assert_eq!((t.what.as_str(), t.new.len()), ("lines 3–4 of the message", 2));
+        // Its paragraph read: the whole message next, as on its header.
+        let read: HashSet<String> = t.keys.clone();
+        let r = Reading { rows: &rows, blocks: &none, read: &read, marks: &[], whitespace: false };
+        assert_eq!(r.to_mark(why).map(|t| (t.what, t.new.len())), Some(("the message".into(), 2)));
+        assert_eq!(r.to_mark(0).map(|t| (t.what, t.new.len())), Some(("the message".into(), 2)));
+        assert_eq!(r.progress(), (2, 6));
+        // Space goes on past the empty line, to the trailer; Enter there
+        // takes back the paragraph's mark.
+        let trailer = row(&rows, "   Differential Revision: D1");
+        assert_eq!(r.next_unread(why, true), Some(trailer));
+        assert_eq!(r.to_mark(trailer).map(|t| t.what), Some("line 6 of the message".into()));
+        let m = Mark { keys: t.keys.iter().cloned().collect(), ..Default::default() };
+        let marks = vec![(3, &m)];
+        let r = Reading { rows: &rows, blocks: &none, read: &read, marks: &marks, whitespace: false };
+        assert_eq!(r.to_unmark(why).map(|(rev, gone)| (rev, gone.len())), Some((3, 2)));
+        // Its empty lines need reading when the settings say white space does.
+        let r = Reading { rows: &rows, blocks: &none, read: &HashSet::new(), marks: &[], whitespace: true };
+        assert_eq!(r.progress(), (0, 8));
     }
 
     #[test]

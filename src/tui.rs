@@ -7086,7 +7086,7 @@ impl App {
                         text += " · reading";
                         // Of the changed lines that need reading, a line
                         // folded once.
-                        let changed = self.rows.iter().filter(|r| matches!(r.kind, Kind::Add | Kind::Del) && !r.free && !r.cont).count();
+                        let changed = self.rows.iter().filter(|r| matches!(r.kind, Kind::Add | Kind::Del | Kind::Msg) && !r.free && !r.cont).count();
                         if !self.on_stack && changed > 0 {
                             let read = self.rows.iter().filter(|r| r.read && !r.free && !r.cont).count();
                             text += &format!(" {read}/{changed}");
@@ -7834,7 +7834,7 @@ impl App {
         let mut x0 = x;
         if let Some((tick, keys)) = ticks {
             // A line folded is marked on its first piece.
-            let changed = matches!(row.kind, Kind::Add | Kind::Del) && !row.cont;
+            let changed = matches!(row.kind, Kind::Add | Kind::Del | Kind::Msg) && !row.cont;
             let (text, st) = match row.key.as_ref() {
                 Some(k) if changed && keys.contains(k) => match tick {
                     Tick::ToRead => ("○→✓ ", color::add().add_modifier(Modifier::BOLD)),

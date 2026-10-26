@@ -1015,6 +1015,14 @@ margin shows what Space would mark (`○→✓`), or else what Enter would unmar
 (`✓→○`), and `✓` beside each line read, drawn dim; hunks, files, the
 patches on the left and the top bar count what is read (`reading 5/11`).
 
+A patch's message is read as its code is, its lines lines to review too,
+counted on its header (`✉ message   read 1/3 lines`) and with the rest: a
+paragraph at a time, its lines between empty ones, its title a paragraph of
+its own; Space on a line of it marks its paragraph, once more the whole
+message, as Space on its header does; Enter takes back the latest mark
+there. Its empty lines need no reading, as a changed line of white space
+does not. A line of it reworded in a new version is to read again.
+
 A changed line that is empty or white space alone needs no review, unless
 `whitespace_needs_review` (in `[view]`) is `true`: Space marks no such line
 as one to read, the cursor going on to the next line not read passes it

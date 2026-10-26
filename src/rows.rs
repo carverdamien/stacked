@@ -450,12 +450,25 @@ pub fn patch_rows(p: &Patch, notes: &[&Note], width: usize, deco: &Deco) -> Vec<
             }
         }
     };
-    rows.push(Row::new(Kind::File, MSG_PATH));
     let keys = message_keys(p);
+    // Reading: the message's lines are read as the diff's changed lines
+    // are, its title first; an empty one needs no reading.
+    let msg_free = |text: &str| deco.read.is_some() && !deco.whitespace && text.trim().is_empty();
+    let mut label = MSG_PATH.to_string();
+    if let Some(read) = &deco.read {
+        let to_read: Vec<String> = p.message.split('\n').zip(&keys).filter(|(t, _)| !msg_free(t)).map(|(_, k)| k.clone()).collect();
+        label += &format!("   read {} lines", read_of(&to_read, read));
+    }
+    rows.push(Row {
+        path: Some(MSG_PATH.into()),
+        ..Row::new(Kind::File, label)
+    });
     for (i, (text, key)) in p.message.split('\n').zip(keys).enumerate() {
         line(
             &mut rows,
             Row {
+                read: deco.read.as_ref().is_some_and(|r| r.contains(&key)),
+                free: msg_free(text),
                 key: Some(key),
                 path: Some(MSG_PATH.into()),
                 preview: Some(text.trim().chars().take(80).collect()),

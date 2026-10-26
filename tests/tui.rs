@@ -2081,10 +2081,11 @@ fn lines_too_wide_for_the_pane_are_folded_each_the_same_line() {
     save(&mut app, "why so long?");
     let head = app.rows.iter().position(|r| r.head && r.note.is_some()).unwrap();
     assert!(app.rows[head - 1].cont && app.rows[head - 1].kind == Kind::Add, "{}", app.rows[head - 1].text);
-    // Reading: the line once, however many pieces it is in.
+    // Reading: the line once, however many pieces it is in; and the
+    // message's title and summary, each once too.
     keys(&mut app, &[KeyCode::Char('2')]);
     let screen = draw(&mut app);
-    assert!(screen.contains("reading 0/1"), "{screen}");
+    assert!(screen.contains("reading 0/3"), "{screen}");
 }
 
 #[test]
@@ -2847,17 +2848,17 @@ fn two_reads_rather_than_comments() {
     assert_eq!(app.rows[app.cursor].text, "-line 39");
     let screen = draw(&mut app);
     assert!(screen.contains("  ✓ +TWO") && app.rows.iter().any(|r| r.text.ends_with("   read 2/2 lines")), "{screen}");
-    assert!(screen.contains("reading 2/4") && screen.contains(" 2/4"), "{screen}");
+    assert!(screen.contains("reading 2/6") && screen.contains(" 2/6"), "{screen}");
     keys(&mut app, &[KeyCode::Char(' ')]);
     assert!(app.status.contains("nothing left to read below"), "{}", app.status);
     let screen = draw(&mut app);
     let line = screen.lines().find(|l| l.contains("1 Bug 1 - shout two")).unwrap();
-    assert!(line.contains(" ✓│"), "all read: {line}");
+    assert!(line.contains(" 4/6│"), "the code read, its message not: {line}");
     // Enter takes the mark back.
     assert_eq!(app.rows[app.cursor].text, "-line 39", "where the last mark was made");
     keys(&mut app, &[KeyCode::Enter]);
     assert!(app.status.contains("unread: 2 lines"), "{}", app.status);
-    assert!(draw(&mut app).contains("reading 2/4"));
+    assert!(draw(&mut app).contains("reading 2/6"));
     // Kept in the file.
     let mut again = open(&db).unwrap();
     draw(&mut again);
@@ -2868,6 +2869,42 @@ fn two_reads_rather_than_comments() {
     keys(&mut again, &[KeyCode::Char('2')]);
     keys(&mut again, &[KeyCode::Enter]);
     assert!(matches!(again.mode, Mode::Edit(_)), "{:?}", again.mode);
+}
+
+#[test]
+fn a_patch_s_title_and_message_are_read_as_its_code_is() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    draw(&mut app);
+    keys(&mut app, &[KeyCode::Char('2'), KeyCode::Enter]);
+    app.wait_blocks();
+    // Patch 1's message: its title, an empty line, `Because.`: two lines to
+    // read, counted on its header as a file's are.
+    let screen = draw(&mut app);
+    assert!(screen.contains("✉ message   read 0/2 lines"), "{screen}");
+    down_to(&mut app, "   Bug 1 - shout two");
+    assert!(draw(&mut app).contains("○→✓    Bug 1 - shout two"), "what Space would read, marked");
+    // The title, a paragraph of its own; then on, past the empty line.
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    assert!(app.status.contains("read: the title, 1 line"), "{}", app.status);
+    assert_eq!(app.rows[app.cursor].text, "   Because.");
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    assert!(app.status.contains("read: line 3 of the message, 1 line"), "{}", app.status);
+    // The code come up under the cursor, the message's rows say so.
+    let screen = draw(&mut app);
+    assert!(app.rows.iter().any(|r| r.text == "✉ message   read 2/2 lines"), "{:?}", app.rows.iter().map(|r| &r.text).collect::<Vec<_>>());
+    assert!(app.rows.iter().any(|r| r.text == "   Because." && r.read));
+    assert!(screen.contains("reading 2/6") && screen.contains(" 2/6"), "{screen}");
+    // Enter on its header takes back the latest mark in it; Space there
+    // reads it whole.
+    keys(&mut app, &[KeyCode::Home]);
+    assert!(app.rows[app.cursor].text.starts_with("✉ message"), "{}", app.rows[app.cursor].text);
+    keys(&mut app, &[KeyCode::Enter]);
+    assert!(app.status.contains("unread: 1 line"), "{}", app.status);
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    assert!(app.status.contains("read: the message, 1 line"), "{}", app.status);
+    draw(&mut app);
+    assert!(app.rows.iter().any(|r| r.text == "✉ message   read 2/2 lines"));
 }
 
 #[test]
@@ -2896,7 +2933,7 @@ fn reading_goes_by_the_blocks_of_the_code() {
     assert_eq!(app.rows[app.cursor].text, "-    two();");
     keys(&mut app, &[KeyCode::Char(' ')]);
     assert!(app.status.contains("read: the block of lines 5–7, 2 lines"), "{}", app.status);
-    assert!(draw(&mut app).contains("reading 4/4"));
+    assert!(draw(&mut app).contains("reading 4/5"), "the title left");
 }
 
 #[test]
@@ -2926,7 +2963,7 @@ fn reading_on_the_cursor_stays_on_its_line_and_the_code_comes_up() {
         keys(&mut app, &[KeyCode::Home]);
         down_to(&mut app, "+TWO");
         keys(&mut app, &[KeyCode::Enter, KeyCode::Home, KeyCode::Char('1')]);
-        assert!(app.status.contains("unread") || draw(&mut app).contains("reading 0/4"), "{}", app.status);
+        assert!(app.status.contains("unread") || draw(&mut app).contains("reading 0/6"), "{}", app.status);
     }
 }
 
@@ -2947,14 +2984,18 @@ fn lines_of_white_space_alone_need_no_reading_unless_the_settings_say_so() {
     let db = tmp.path().join("db.jsonl");
     stacked(&src, &db, &["import", "s", "HEAD~1"]);
     let mut app = open(&db).unwrap();
-    assert!(draw(&mut app).contains("2/2 lines to review"));
+    assert!(draw(&mut app).contains("3/3 lines to review"));
     keys(&mut app, &[KeyCode::Char('2'), KeyCode::Enter]);
     app.wait_blocks();
     let screen = draw(&mut app);
-    assert!(screen.contains("reading 0/2") && screen.contains("read 0/2 lines") && screen.contains(" 0/2"), "{screen}");
+    assert!(screen.contains("reading 0/3") && screen.contains("read 0/2 lines") && screen.contains(" 0/3"), "{screen}");
+    // The title read first, Space goes on to the code.
+    down_to(&mut app, "   Bug 1 - more");
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    assert!(app.status.contains("read: the title, 1 line"), "{}", app.status);
+    assert_eq!(app.rows[app.cursor].text, "+two");
     // Space reads on to what is left, never stopping at the empty line or
     // the blank one, until nothing is.
-    down_to(&mut app, "+two");
     for _ in 0..4 {
         keys(&mut app, &[KeyCode::Char(' ')]);
         assert!(!["+", "+  "].contains(&app.rows[app.cursor].text.as_str()), "{}", app.status);
@@ -2964,7 +3005,7 @@ fn lines_of_white_space_alone_need_no_reading_unless_the_settings_say_so() {
     }
     assert!(app.status.contains("nothing left to read below"), "{}", app.status);
     let screen = draw(&mut app);
-    assert!(screen.contains("reading 2/2") && screen.contains("nothing left to review"), "{screen}");
+    assert!(screen.contains("reading 3/3") && screen.contains("nothing left to review"), "{screen}");
     let line = screen.lines().find(|l| l.contains("1 Bug 1 - more")).unwrap();
     assert!(line.contains(" ✓│"), "all read: {line}");
     // Enter would take the mark back from the lines of code; the empty one
@@ -2981,7 +3022,7 @@ fn lines_of_white_space_alone_need_no_reading_unless_the_settings_say_so() {
     all.wait_blocks();
     let screen = draw(&mut all);
     let read = all.rows.iter().filter(|r| r.read).count();
-    assert!(screen.contains(&format!("reading {read}/4")), "{screen}");
+    assert!(screen.contains(&format!("reading {read}/5")), "{screen}");
     assert!(!all.rows.iter().any(|r| r.free));
 }
 
@@ -4062,9 +4103,10 @@ fn the_top_bar_says_what_is_left_to_review() {
         app.draw(&mut buf);
         (0..w).map(|x| buf[(x, 0)].symbol()).collect::<String>()
     };
-    // Nothing read yet: all 5 lines the patches change, of 5.
+    // Nothing read yet: the 5 lines the patches change, and the 3 of their
+    // messages, all 8.
     let bar = first(&mut app, 120);
-    assert!(bar.ends_with("   5/5 lines to review "), "{bar}");
+    assert!(bar.ends_with("   8/8 lines to review "), "{bar}");
     let d = Db::load(&db).unwrap();
     let t0 = d.stack("t").unwrap().time;
     let s = d.stack("s").unwrap();
@@ -4077,30 +4119,30 @@ fn the_top_bar_says_what_is_left_to_review() {
             time,
         })
     };
-    // 2 lines read: 3 left of the 5.
+    // 2 lines read: 6 left of the 8.
     Db::append(&db, &[read(&one, 2, t0 + 600)]).unwrap();
     app.refresh();
     let bar = first(&mut app, 120);
-    assert!(bar.ends_with("   3/5 lines to review "), "{bar}");
+    assert!(bar.ends_with("   6/8 lines to review "), "{bar}");
     // A line more, of the other patch.
     Db::append(&db, &[read(&two, 1, t0 + 1200)]).unwrap();
     app.refresh();
     let bar = first(&mut app, 120);
-    assert!(bar.ends_with("   2/5 lines to review "), "{bar}");
+    assert!(bar.ends_with("   5/8 lines to review "), "{bar}");
     // A comment open.
     keys(&mut app, &[KeyCode::Right]);
     down_to(&mut app, "+TWO");
     keys(&mut app, &[KeyCode::Enter]);
     save(&mut app, "why so loud?");
     let bar = first(&mut app, 120);
-    assert!(bar.ends_with("   2/5 lines to review · 1 comment to close "), "{bar}");
+    assert!(bar.ends_with("   5/8 lines to review · 1 comment to close "), "{bar}");
     // With less room, less of it; with none, none.
     let bar = first(&mut app, 80);
-    assert!(bar.ends_with("   2/5 lines · 1 comment ") && !bar.contains("to review"), "{bar}");
+    assert!(bar.ends_with("   5/8 lines · 1 comment ") && !bar.contains("to review"), "{bar}");
     let bar = first(&mut app, 50);
-    assert!(!bar.contains("2/5 lines"), "{bar}");
-    // All read, the comment closed: nothing left.
-    Db::append(&db, &[read(&one, 4, t0 + 1800)]).unwrap();
+    assert!(!bar.contains("5/8 lines"), "{bar}");
+    // All read, the messages too, the comment closed: nothing left.
+    Db::append(&db, &[read(&one, usize::MAX, t0 + 1800), read(&two, usize::MAX, t0 + 1800)]).unwrap();
     let n = notes_of(&db, "s", 0).into_iter().find(|n| n.text == "why so loud?").unwrap();
     Db::edit(&db, |d| d.set_note(Note { text: String::new(), ..n })).unwrap();
     app.refresh();

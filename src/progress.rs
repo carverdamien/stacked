@@ -51,16 +51,19 @@ pub fn changed_keys(p: &Patch) -> Vec<String> {
     changed_lines(p).into_iter().map(|(k, _)| k).collect()
 }
 
-/// The changed lines of patch `p`: each one's key, and whether it is white
-/// space alone.
+/// The lines of patch `p` to read: the changed lines of its diff, then the
+/// lines of its message, its title first; each one's key, and whether it
+/// is white space alone (a line of the message, empty).
 pub fn changed_lines(p: &Patch) -> Vec<(String, bool)> {
-    crate::diff::parse_diff(&p.diff, &crate::view::mode(&p.change))
+    let diff = crate::diff::parse_diff(&p.diff, &crate::view::mode(&p.change))
         .iter()
         .flat_map(|f| f.hunks.iter())
         .flat_map(|h| h.lines.iter())
         .filter(|l| l.origin != ' ')
         .map(|l| (l.key.clone(), crate::diff::white_space(&l.text)))
-        .collect()
+        .collect::<Vec<_>>();
+    let message = p.message.split('\n').zip(crate::view::message_keys(p)).map(|(l, k)| (k, l.trim().is_empty()));
+    diff.into_iter().chain(message).collect()
 }
 
 fn keys_of(db: &Db, memo: &mut Memo, id: &str) -> Arc<Vec<(String, bool)>> {
@@ -172,19 +175,20 @@ mod tests {
     fn what_is_left_is_the_lines_not_read_and_the_comments_open() {
         let a = patch("a", &["one", "two", "three", "four"]);
         let start = [Record::Patch(a.clone()), stack("s", &[&a], 1000)];
-        assert_eq!(of(&start), Progress { lines: 4, total: 4, comments: 0 });
+        // Its 4 lines, and its message's title.
+        assert_eq!(of(&start), Progress { lines: 5, total: 5, comments: 0 });
         // 2 lines read; a comment open on the patch, one on the stack.
         let recs = [&start[..], &[read(&a, 2, 1600), note("a", "n", "why?", 1700), note(&stack_change("s"), "m", "and?", 1800)]].concat();
-        assert_eq!(of(&recs), Progress { lines: 2, total: 4, comments: 2 });
+        assert_eq!(of(&recs), Progress { lines: 3, total: 5, comments: 2 });
         // A new version keeps the mark on the line it did not change; a
         // comment closed.
         let a2 = patch("a", &["one", "TWO", "three", "four"]);
         let recs = [&recs[..], &[Record::Patch(a2.clone()), stack("s", &[&a2], 1900), note("a", "n", "", 2000)]].concat();
-        assert_eq!(of(&recs), Progress { lines: 3, total: 4, comments: 1 });
+        assert_eq!(of(&recs), Progress { lines: 4, total: 5, comments: 1 });
         // A patch more: its lines to review, of the stack's.
         let b = patch("b", &["five", "six"]);
         let recs = [&recs[..], &[Record::Patch(b.clone()), stack("s", &[&a2, &b], 2100), read(&b, 1, 2200)]].concat();
-        assert_eq!(of(&recs), Progress { lines: 4, total: 6, comments: 1 });
+        assert_eq!(of(&recs), Progress { lines: 6, total: 8, comments: 1 });
     }
 
     #[test]
@@ -193,13 +197,13 @@ mod tests {
         let recs = [Record::Patch(a.clone()), stack("s", &[&a], 1000)];
         let db = db_of(&recs);
         let p = progress(&db, "s", &mut Memo::new(), false);
-        assert_eq!((p.lines, p.total), (2, 2), "the empty line and the blank one need no review, nor count among the lines");
+        assert_eq!((p.lines, p.total), (3, 3), "the empty line and the blank one need no review, nor count among the lines");
         let p = progress(&db, "s", &mut Memo::new(), true);
-        assert_eq!((p.lines, p.total), (4, 4));
+        assert_eq!((p.lines, p.total), (5, 5));
         // The same memo serves either setting.
         let mut memo = Memo::new();
-        assert_eq!(progress(&db, "s", &mut memo, false).lines, 2);
-        assert_eq!(progress(&db, "s", &mut memo, true).lines, 4);
+        assert_eq!(progress(&db, "s", &mut memo, false).lines, 3);
+        assert_eq!(progress(&db, "s", &mut memo, true).lines, 5);
         assert_eq!(changed_lines(&a).iter().filter(|(_, blank)| *blank).count(), 2);
     }
 }

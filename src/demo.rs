@@ -640,7 +640,7 @@ impl Tour {
         };
         let p = app.db.patch(&id);
         let keys = app.db.read_keys(&p.change);
-        crate::view::note_lines(p).iter().filter(|l| l.origin != ' ').all(|l| keys.contains(&l.key))
+        crate::progress::changed_lines(p).iter().filter(|(_, blank)| !blank).all(|(k, _)| keys.contains(k))
     }
 
     /// What the stack's last record did: an edit, or a move of its head.
@@ -839,7 +839,7 @@ impl Tour {
                 if let Some(p) = first.map(|id| app.db.patch(&id).clone())
                     && !Tour::read(app, 0)
                 {
-                    let keys = crate::view::note_lines(&p).into_iter().filter(|l| l.origin != ' ').map(|l| l.key).collect();
+                    let keys = crate::progress::changed_keys(&p);
                     if let Err(e) = Db::edit(&path, |db| db.mark_read(&p.change, keys)) {
                         fail(app, e);
                     }
