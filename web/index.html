@@ -72,9 +72,11 @@ WebAssembly.instantiateStreaming(fetch('/client.wasm?t=' + token)).then(({instan
   });
   screen.addEventListener('mousemove', e => {
     const r = screen.getBoundingClientRect();
-    send(read(w.moved(e.clientX - r.left, e.clientY - r.top, cw, ch)));
+    send(read(w.moved(e.clientX - r.left, e.clientY - r.top, cw, ch, document.hasFocus())));
   });
   screen.addEventListener('mouseleave', () => send(read(w.left())));
+  // The page losing the focus says the mouse gone, as mouseleave does.
+  addEventListener('blur', () => send(read(w.left())));
   screen.addEventListener('contextmenu', e => e.preventDefault());
   addEventListener('wheel', e => send(read(w.wheel(e.deltaY))));
   addEventListener('paste', e => { e.preventDefault(); send(call(w.paste, e.clipboardData.getData('text'))); });

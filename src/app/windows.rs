@@ -446,6 +446,27 @@ mod tests {
         let _ = ctx.run(input, |ctx| pass(ctx));
     }
 
+    /// A pass of the window of viewport `id`, as `window` runs one, the
+    /// window the active one or not as `focused` says, which eframe says
+    /// twice: in the input, and in the viewport's info. `events`, what was
+    /// done in the window.
+    fn window_focused(ctx: &egui::Context, out: &egui::FullOutput, id: egui::ViewportId, focused: bool, events: Vec<egui::Event>) {
+        let pass = out.viewport_output[&id].viewport_ui_cb.clone().expect("a deferred viewport");
+        let mut input = egui::RawInput {
+            viewport_id: id,
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0))),
+            events,
+            focused,
+            ..Default::default()
+        };
+        let info = egui::ViewportInfo {
+            focused: Some(focused),
+            ..Default::default()
+        };
+        input.viewports.insert(id, info);
+        let _ = ctx.run(input, |ctx| pass(ctx));
+    }
+
     /// The windows `out` shows, but the root.
     fn windows_in(out: &egui::FullOutput) -> Vec<egui::ViewportId> {
         let mut ids: Vec<egui::ViewportId> = out.viewport_output.keys().copied().filter(|id| *id != egui::ViewportId::ROOT).collect();
@@ -564,6 +585,56 @@ mod tests {
         };
         let out = ctx.run(input, |ctx| windows.pass(ctx));
         assert!(out.viewport_output[&egui::ViewportId::ROOT].commands.contains(&egui::ViewportCommand::CancelClose));
+    }
+
+    #[test]
+    fn each_window_follows_the_mouse_only_while_it_is_the_active_one() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = tmp.path().join("state.json");
+        let (mut windows, to, ctx) = set(&state, false);
+        let mut editors = Vec::new();
+        for name in ["a.jsonl", "b.jsonl"] {
+            let path = tmp.path().join(name);
+            std::fs::write(&path, "").unwrap();
+            let (session, inputs, outputs) = stand_in();
+            to.send(Opened { path, session }).unwrap();
+            editors.push((inputs, outputs));
+        }
+        let out = root(&ctx, &mut windows);
+        let ids: Vec<egui::ViewportId> = windows.shown.iter().map(|s| s.id).collect();
+        for id in &ids {
+            window(&ctx, &out, *id, vec![]);
+        }
+        let cell = windows.shown[0].window.lock().unwrap().cell;
+        let on = |x: u16, y: u16| egui::pos2(PAD + (x as f32 + 0.5) * cell.x, PAD + (y as f32 + 0.5) * cell.y);
+        let moved = |x, y| egui::Event::PointerMoved(on(x, y));
+        // What each window sent its editor, but the grid's size.
+        let sent = |w: usize| editors[w].0.try_iter().filter(|i| !matches!(i, Input::Size(..))).collect::<Vec<_>>();
+        // The second window the active one, the first behind it: the mouse
+        // going over each in turn is followed over the second only.
+        window_focused(&ctx, &out, ids[0], false, vec![moved(1, 1)]);
+        window_focused(&ctx, &out, ids[1], true, vec![moved(2, 2)]);
+        assert_eq!(sent(0), []);
+        assert_eq!(sent(1), [Input::Hover(2, 2)]);
+        // A click on the first makes it the active one: the second's hover
+        // goes, and the first says the mouse over the cell where it was last
+        // seen, at once, then the click.
+        let button = |pressed| egui::Event::PointerButton {
+            pos: on(1, 1),
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        window_focused(&ctx, &out, ids[1], false, vec![egui::Event::WindowFocused(false)]);
+        window_focused(&ctx, &out, ids[0], true, vec![egui::Event::WindowFocused(true), moved(1, 1), button(true), button(false)]);
+        assert_eq!(sent(1), [Input::Unhover]);
+        assert_eq!(sent(0), [Input::Hover(1, 1), Input::Click { x: 1, y: 1, right: false }]);
+        // Each keeps its own: the mouse over the second, behind now, is not
+        // followed; over the first, it is.
+        window_focused(&ctx, &out, ids[1], false, vec![moved(3, 3)]);
+        window_focused(&ctx, &out, ids[0], true, vec![moved(4, 4)]);
+        assert_eq!(sent(1), []);
+        assert_eq!(sent(0), [Input::Hover(4, 4)]);
     }
 
     #[test]

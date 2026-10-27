@@ -2,8 +2,9 @@
 //! runs as the terminal runs it, on a thread of its own, its screen drawn
 //! into a buffer of the window's size. The window paints the buffer's cells
 //! as a terminal would, a grid of a monospace font in their colours, and
-//! sends back its keys, clicks, hover, wheel and pastes, as `stacked web`
-//! does for a browser. The window is eframe's: egui, drawn with OpenGL.
+//! sends back its keys, clicks, wheel and pastes, and the hover while it is
+//! the active window, as `stacked web` does for a browser. The window is
+//! eframe's: egui, drawn with OpenGL.
 //!
 //! What runs `$EDITOR` runs it where `stacked app` was started, in its
 //! terminal; the window waits meanwhile, and says so.
@@ -460,8 +461,11 @@ impl Window {
         }
         let writing = self.screen.as_ref().and_then(|(_, cursor, _)| *cursor);
         if !self.editing && !self.gone {
-            let events = ctx.input(|i| i.events.clone());
-            for input in inputs(&events, &grid, &mut self.pointer, writing.is_some(), cfg!(target_os = "macos")) {
+            // Whether the window is the active one, as egui has it for this
+            // window's viewport: what eframe asks the window at each pass,
+            // else what the window was last told.
+            let (events, focused) = ctx.input(|i| (i.events.clone(), i.viewport().focused.unwrap_or(i.focused)));
+            for input in inputs(&events, &grid, &mut self.pointer, focused, writing.is_some(), cfg!(target_os = "macos")) {
                 self.session.send(input);
             }
         }
@@ -1025,6 +1029,10 @@ impl Grid {
 #[derive(Debug, Default)]
 struct Pointer {
     over: Option<(u16, u16)>,
+    /// The window is not the active one: the mouse is not followed. Where
+    /// the mouse was last seen over the window meanwhile, unless it left.
+    away: bool,
+    seen: Option<Pos2>,
     turned: f32,
     /// The left button held down, since it was pressed on that cell, with
     /// alt or not.
@@ -1090,6 +1098,25 @@ fn selected_text(buf: &Buffer, s: &Selection, region: Rect) -> String {
 }
 
 impl Pointer {
+    /// The window the active one or not, as `focused` says. When it stops
+    /// being the active one, the mouse is said gone, and is not followed;
+    /// when it is again, the mouse is said over the cell where it was last
+    /// seen meanwhile, at once, unless a button is down. Else the mouse is
+    /// followed from its next movement.
+    fn focus(&mut self, focused: bool, grid: &Grid) -> Option<Input> {
+        let away = !focused;
+        if self.away == away {
+            return None;
+        }
+        self.away = away;
+        if away {
+            return self.over.take().map(|_| Input::Unhover);
+        }
+        let at = grid.cell_at(self.seen.take()?).filter(|_| self.down.is_none())?;
+        self.over = Some(at);
+        Some(Input::Hover(at.0, at.1))
+    }
+
     /// The wheel turned `dy` of `unit` (more than 0 brings what is above):
     /// ↑ or ↓ for each line of it, PageUp or PageDown for each page, with
     /// what it turned before.
@@ -1113,12 +1140,14 @@ impl Pointer {
 /// them (with ⌘, on macOS, the window's own: ⌘Q, ⌘V, ⌘+); a click on a
 /// cell once the button is let go where it was pressed, ctrl-click the
 /// right button's on macOS, which clicks on its press; the mouse over
-/// another cell, or gone from the grid; the wheel as ↑↓; a paste typed,
-/// while text is written (`writing`), and nothing elsewhere. A drag with
-/// the left button selects the text it goes over, in `pointer`, the mouse
-/// over nothing meanwhile; ⌘C (ctrl-c elsewhere) copies it.
-fn inputs(events: &[egui::Event], grid: &Grid, pointer: &mut Pointer, writing: bool, mac: bool) -> Vec<Input> {
+/// another cell, or gone from the grid, while the window is the active one
+/// (`focused`, as `Pointer::focus` takes it); the wheel as ↑↓; a paste
+/// typed, while text is written (`writing`), and nothing elsewhere. A drag
+/// with the left button selects the text it goes over, in `pointer`, the
+/// mouse over nothing meanwhile; ⌘C (ctrl-c elsewhere) copies it.
+fn inputs(events: &[egui::Event], grid: &Grid, pointer: &mut Pointer, focused: bool, writing: bool, mac: bool) -> Vec<Input> {
     let mut out = Vec::new();
+    out.extend(pointer.focus(focused, grid));
     // The last key pressed: whether what alt typed with it is its own.
     let mut last = None;
     for e in events {
@@ -1160,6 +1189,9 @@ fn inputs(events: &[egui::Event], grid: &Grid, pointer: &mut Pointer, writing: b
                     pointer.selected = Some(Selection { from, to, block });
                 }
             }
+            // Not the active window: the mouse is not followed, but where it
+            // is seen is kept, for when the window is the active one again.
+            egui::Event::PointerMoved(pos) if pointer.away => pointer.seen = Some(*pos),
             egui::Event::PointerMoved(pos) => match grid.cell_at(*pos) {
                 Some(at) if pointer.over != Some(at) => {
                     pointer.over = Some(at);
@@ -1172,6 +1204,7 @@ fn inputs(events: &[egui::Event], grid: &Grid, pointer: &mut Pointer, writing: b
                 _ => {}
             },
             egui::Event::PointerGone => {
+                pointer.seen = None;
                 if pointer.over.take().is_some() {
                     out.push(Input::Unhover);
                 }
@@ -1573,7 +1606,7 @@ mod tests {
         assert_eq!(grid.cell_at(pos2(5.0, 30.0)), None, "in the room around the grid");
         assert_eq!(grid.cell_at(pos2(86.0, 30.0)), None, "past its last column");
         let mut pointer = Pointer::default();
-        let mut run = |events: Vec<egui::Event>, writing: bool, mac: bool| inputs(&events, &grid, &mut pointer, writing, mac);
+        let mut run = |events: Vec<egui::Event>, writing: bool, mac: bool| inputs(&events, &grid, &mut pointer, true, writing, mac);
         let moved = |x, y| egui::Event::PointerMoved(pos2(x, y));
         let click = |button, pressed, modifiers| egui::Event::PointerButton {
             pos: pos2(16.0, 26.0),
@@ -1671,7 +1704,7 @@ mod tests {
         // Cells of 10 by 20 points, from (6, 6): 8 by 4 of them.
         let grid = Grid::new(egui::Rect::from_min_size(Pos2::ZERO, vec2(100.0, 100.0)), vec2(10.0, 20.0));
         let mut pointer = Pointer::default();
-        let run = |pointer: &mut Pointer, events: Vec<egui::Event>, mac: bool| inputs(&events, &grid, pointer, false, mac);
+        let run = |pointer: &mut Pointer, events: Vec<egui::Event>, mac: bool| inputs(&events, &grid, pointer, true, false, mac);
         let on = |x: u16, y: u16| pos2(6.0 + 10.0 * x as f32 + 1.0, 6.0 + 20.0 * y as f32 + 1.0);
         let button = |pos, pressed, modifiers| egui::Event::PointerButton {
             pos,
@@ -1710,6 +1743,57 @@ mod tests {
             run(&mut pointer, vec![egui::Event::Copy], false),
             [Input::Key(key(KeyCode::Char('c'), KeyModifiers::CONTROL))]
         );
+    }
+
+    #[test]
+    fn the_mouse_is_followed_only_while_the_window_is_the_active_one() {
+        // Cells of 10 by 20 points, from (6, 6): 8 by 4 of them.
+        let grid = Grid::new(egui::Rect::from_min_size(Pos2::ZERO, vec2(100.0, 100.0)), vec2(10.0, 20.0));
+        let mut pointer = Pointer::default();
+        let run = |pointer: &mut Pointer, events: Vec<egui::Event>, focused: bool| inputs(&events, &grid, pointer, focused, false, true);
+        let on = |x: u16, y: u16| pos2(6.0 + 10.0 * x as f32 + 1.0, 6.0 + 20.0 * y as f32 + 1.0);
+        let moved = |x, y| egui::Event::PointerMoved(on(x, y));
+        let button = |pos, pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        };
+        assert_eq!(run(&mut pointer, vec![moved(1, 1)], true), [Input::Hover(1, 1)]);
+        // No longer the active window: the mouse said gone at once, then not
+        // followed.
+        assert_eq!(run(&mut pointer, vec![], false), [Input::Unhover]);
+        assert_eq!(run(&mut pointer, vec![moved(2, 1), moved(3, 2)], false), []);
+        // A click and the wheel act there all the same.
+        let wheel = egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Line,
+            delta: vec2(0.0, -1.0),
+            modifiers: Modifiers::NONE,
+        };
+        assert_eq!(
+            run(&mut pointer, vec![button(on(3, 2), true), button(on(3, 2), false), wheel], false),
+            [Input::Click { x: 3, y: 2, right: false }, plain(KeyCode::Down)]
+        );
+        // The active window again: the mouse said over the cell where it was
+        // last seen, at once, then followed.
+        assert_eq!(run(&mut pointer, vec![], true), [Input::Hover(3, 2)]);
+        assert_eq!(run(&mut pointer, vec![moved(4, 2)], true), [Input::Hover(4, 2)]);
+        // Gone from the window meanwhile, or not seen over it since: the
+        // mouse followed from its next movement.
+        assert_eq!(run(&mut pointer, vec![moved(5, 2), egui::Event::PointerGone], false), [Input::Unhover]);
+        assert_eq!(run(&mut pointer, vec![], true), []);
+        assert_eq!(run(&mut pointer, vec![moved(5, 3)], true), [Input::Hover(5, 3)]);
+        assert_eq!(run(&mut pointer, vec![], false), [Input::Unhover]);
+        assert_eq!(run(&mut pointer, vec![], true), []);
+        assert_eq!(run(&mut pointer, vec![moved(5, 3)], true), [Input::Hover(5, 3)]);
+        // Pressed while the window is not the active one, then dragged once
+        // it is: the mouse said over nothing while its button is down, and
+        // what it went over selected, as ever.
+        assert_eq!(run(&mut pointer, vec![moved(2, 0), button(on(2, 0), true)], false), [Input::Unhover]);
+        assert_eq!(run(&mut pointer, vec![], true), []);
+        assert_eq!(run(&mut pointer, vec![moved(4, 0), button(on(4, 0), false)], true), []);
+        assert_eq!(pointer.selected, Some(Selection { from: (2, 0), to: (4, 0), block: false }));
+        assert_eq!(run(&mut pointer, vec![moved(4, 1)], true), [Input::Hover(4, 1)]);
     }
 
     #[test]
@@ -1766,6 +1850,24 @@ mod tests {
             events,
             ..Default::default()
         };
+        ctx.run(input, |ctx| window.frame(ctx))
+    }
+
+    /// A frame, as `frame` runs one, the window the active one or not as
+    /// `focused` says, which eframe says twice: in the input, and in the
+    /// viewport's info.
+    fn frame_focused(ctx: &egui::Context, window: &mut Window, focused: bool, events: Vec<egui::Event>) -> egui::FullOutput {
+        let mut input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(Pos2::ZERO, vec2(800.0, 600.0))),
+            events,
+            focused,
+            ..Default::default()
+        };
+        let info = egui::ViewportInfo {
+            focused: Some(focused),
+            ..Default::default()
+        };
+        input.viewports.insert(egui::ViewportId::ROOT, info);
         ctx.run(input, |ctx| window.frame(ctx))
     }
 
@@ -1905,6 +2007,77 @@ mod tests {
             copied.iter().any(|c| matches!(c, egui::OutputCommand::CopyText(t) if t == "x = 1;\nlet y = 2")),
             "{copied:?}"
         );
+    }
+
+    #[test]
+    fn the_window_follows_the_mouse_only_while_it_is_the_active_one() {
+        let (session, inputs, outputs) = stand_in();
+        let ctx = egui::Context::default();
+        let (fonts, real) = fonts();
+        ctx.set_fonts(fonts);
+        let mut window = Window::with(session, real, program("vim"));
+        frame(&ctx, &mut window, vec![]);
+        let cell = window.cell;
+        let Some(Input::Size(cols, rows)) = inputs.try_iter().next() else { panic!("no size") };
+        let on = |x: u16, y: u16| pos2(PAD + (x as f32 + 0.5) * cell.x, PAD + (y as f32 + 0.5) * cell.y);
+        let moved = |x, y| egui::Event::PointerMoved(on(x, y));
+        let pass = |window: &mut Window, focused: bool, events: Vec<egui::Event>| {
+            frame_focused(&ctx, window, focused, events);
+            inputs.try_iter().collect::<Vec<_>>()
+        };
+        assert_eq!(pass(&mut window, true, vec![moved(2, 1)]), [Input::Hover(2, 1)]);
+        // Another window made the active one: the hover gone at once, and the
+        // mouse not followed over this one, where a click is sent all the
+        // same.
+        assert_eq!(pass(&mut window, false, vec![egui::Event::WindowFocused(false), moved(3, 1)]), [Input::Unhover]);
+        let right = egui::Event::PointerButton {
+            pos: on(4, 1),
+            button: egui::PointerButton::Secondary,
+            pressed: true,
+            modifiers: Modifiers::NONE,
+        };
+        assert_eq!(pass(&mut window, false, vec![moved(4, 1), right]), [Input::Click { x: 4, y: 1, right: true }]);
+        // This one the active window again: the mouse said over the cell
+        // where it was last seen, at once.
+        assert_eq!(pass(&mut window, true, vec![egui::Event::WindowFocused(true)]), [Input::Hover(4, 1)]);
+        // `$EDITOR` runs, and its terminal becomes the active window: nothing
+        // is sent meanwhile, and the hover goes once the editor's next screen
+        // comes.
+        outputs.send(Output::Editing).unwrap();
+        assert_eq!(pass(&mut window, false, vec![egui::Event::WindowFocused(false)]), []);
+        outputs.send(Output::Screen(Buffer::empty(Rect::new(0, 0, cols, rows)), None, vec![])).unwrap();
+        assert_eq!(pass(&mut window, false, vec![]), [Input::Unhover]);
+        // Where egui has no viewport's info to say it, the input says whether
+        // the window is the active one: it is, as in the frames of the other
+        // tests, then it is not.
+        frame(&ctx, &mut window, vec![moved(5, 2)]);
+        assert_eq!(inputs.try_iter().collect::<Vec<_>>(), [Input::Hover(5, 2)]);
+        let area = Some(egui::Rect::from_min_size(Pos2::ZERO, vec2(800.0, 600.0)));
+        let input = egui::RawInput {
+            screen_rect: area,
+            events: vec![moved(6, 2)],
+            focused: false,
+            ..Default::default()
+        };
+        assert_eq!(input.viewports[&egui::ViewportId::ROOT].focused, None);
+        let _ = ctx.run(input, |ctx| window.frame(ctx));
+        assert_eq!(inputs.try_iter().collect::<Vec<_>>(), [Input::Unhover]);
+        // Where the two say otherwise, the viewport's info, which eframe asks
+        // of the window at each pass, is taken over the input.
+        frame(&ctx, &mut window, vec![moved(6, 2)]);
+        assert_eq!(inputs.try_iter().collect::<Vec<_>>(), [Input::Hover(6, 2)]);
+        let mut input = egui::RawInput {
+            screen_rect: area,
+            focused: true,
+            ..Default::default()
+        };
+        let info = egui::ViewportInfo {
+            focused: Some(false),
+            ..Default::default()
+        };
+        input.viewports.insert(egui::ViewportId::ROOT, info);
+        let _ = ctx.run(input, |ctx| window.frame(ctx));
+        assert_eq!(inputs.try_iter().collect::<Vec<_>>(), [Input::Unhover]);
     }
 
     #[cfg(target_os = "macos")]

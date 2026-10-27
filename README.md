@@ -182,8 +182,12 @@ patch, an item of a list or of a menu; a patch being moved goes there), so
 a click is Enter on it. A right click is Space, its menu. Outside a menu,
 a click closes it; writing a comment, or reading what `?` says, the mouse
 moves nothing. The wheel is ↑↓, and a paste types what is pasted, into a
-comment being written. `--port N` listens on port N (else any free one),
-`--no-open` only says where it is.
+comment being written. The page follows the mouse only while it is the
+active one: while another window or another tab has the focus, the mouse
+going over the page marks and picks nothing, and the line it marked is
+underlined no longer. A click and the wheel act on the page all the same.
+`--port N` listens on port N (else any free one), `--no-open` only says
+where it is.
 
 It listens on 127.0.0.1 only, and only a page holding the token in the
 address it opened (a new one each time) may see it or drive it: a page from
@@ -220,7 +224,10 @@ The mouse works as in the browser (above): over the patches and the
 comments it marks the line under it, and a click picks the line, a second
 click on it being Enter; elsewhere the cursor follows it, so that a click
 is Enter on what is under it. A right click is Space, its menu, and so is
-ctrl-click on macOS. The wheel and the trackpad are ↑↓. A paste (⌘V on
+ctrl-click on macOS. The wheel and the trackpad are ↑↓. Each window
+follows the mouse only while it is the active one, as the page does: over
+a window in the background, the mouse marks and picks nothing, but a
+click and the wheel act there all the same. A paste (⌘V on
 macOS, ctrl-v elsewhere) types what is pasted where text is being written,
 and does nothing elsewhere. On macOS ⌘ is StackED's own (⌘Q quits it, ⌘H
 hides it, ⌘W closes the window), and option types the characters it makes
@@ -1997,10 +2004,12 @@ it makes of keys, clicks, the wheel and pastes, and the window itself, run
 by egui with no window: the grid's size sent, the screen painted, what is
 done sent, the wait for `$EDITOR`, and closing, and text dragged over lit
 and copied, kept to its pane (a block with alt, a drag past the grid up to
-its edge, a key letting it go). `app/windows.rs` tests StackED's windows,
+its edge, a key letting it go), and the mouse followed only while the
+window is the active one. `app/windows.rs` tests StackED's windows,
 run by egui with no window as eframe runs them: the root's window hidden,
 a window for each database opened (one twice), each telling its own editor
-its size, a window closed telling its editor to leave, the last closed
+its size and following the mouse only while it is the active one, a
+window closed telling its editor to leave, the last closed
 leaving StackED running, and Quit keeping the windows open for StackED.app
 and waiting for each editor to leave. `state.rs` tests what is kept
 between runs: the recent databases, the latest first, once each and eight
