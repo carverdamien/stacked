@@ -84,13 +84,16 @@ enum Cmd {
     /// A tour of the editor, in sections, the most useful first, on a game
     /// of tic-tac-toe played in a file, a move a patch. It writes nothing on
     /// disk but `[demo] seen` in the settings: opened again, it starts on
-    /// the list of its sections, to start at any of them. Built with
-    /// `--features demo`.
+    /// the list of its sections, to start at any of them. `stacked demo` is
+    /// built by default, with the `demo` feature: `--no-default-features
+    /// --features app,moz-phab,web` builds stacked without it.
     #[cfg(feature = "demo")]
     Demo,
     /// The editor in a browser: a server on this machine, and the browser
     /// opened on it. The cursor follows the mouse: a click is Enter, a right
-    /// click Space. Built with `--features web`.
+    /// click Space. `stacked web` is built by default, with the `web`
+    /// feature: `--no-default-features --features app,demo,moz-phab` builds
+    /// stacked without it.
     #[cfg(feature = "web")]
     Web {
         /// The port of 127.0.0.1 to listen on; else any free one.
@@ -104,7 +107,9 @@ enum Cmd {
     /// the mouse as in `stacked web`: the cursor follows it, a click is
     /// Enter, a right click Space. `$EDITOR` opens where it was started.
     /// On macOS, File → Open… opens more databases, each in a window of its
-    /// own. Built with `--features app`.
+    /// own. `stacked app` is built by default, with the `app` feature:
+    /// `--no-default-features --features demo,moz-phab,web` builds stacked
+    /// without it.
     #[cfg(feature = "app")]
     App {
         /// StackED.app made in DIR (else ~/Applications), for the Dock and
@@ -428,7 +433,9 @@ enum Cmd {
     /// What a run's agent wrote.
     Transcript { id: String },
     /// Phabricator, over Conduit with moz-phab's token: `pull`, a stack's
-    /// reviews; `import`, a stack of its revisions.
+    /// reviews; `import`, a stack of its revisions. `stacked moz-phab` is
+    /// built by default, with the `moz-phab` feature: `--no-default-features
+    /// --features app,demo,web` builds stacked without it.
     #[cfg(feature = "moz-phab")]
     MozPhab {
         #[command(subcommand)]

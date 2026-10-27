@@ -13,13 +13,22 @@ name = "stacked"
 path = "src/main.rs"
 
 [features]
+# Every feature is on by default: `cargo build`, `cargo install --path .` and
+# `cargo test` build all four. `--no-default-features` builds stacked with
+# none of them, and `--features` then names those to keep:
+# `--no-default-features --features demo,moz-phab` leaves out the browser
+# and StackED.
+default = ["web", "demo", "moz-phab", "app"]
 # `stacked web`: the editor in a browser. Its browser half is built to wasm
 # by build.rs, with Rust's wasm32-unknown-unknown target
-# (`rustup target add wasm32-unknown-unknown`).
+# (`rustup target add wasm32-unknown-unknown`). Without that target, the
+# build stops and says to add it, or to build without `web`.
 web = ["dep:unicode-width"]
 # `stacked app`: StackED, the editor in a window of its own, drawn as the
 # terminal draws it, with eframe (egui) on OpenGL. On macOS, its File and
-# Edit menus, panels and alerts are AppKit's, called through objc2.
+# Edit menus, panels and alerts are AppKit's, called through objc2. On
+# Linux, building it needs no X11, Wayland or OpenGL package: eframe loads
+# their libraries (and xkbcommon's) when StackED starts.
 app = ["dep:eframe", "dep:ttf-parser", "dep:unicode-width", "dep:objc2", "dep:objc2-foundation", "dep:objc2-app-kit"]
 # `stacked demo`: a tour of the editor on a game of tic-tac-toe, its
 # database and repository kept in memory: nothing is written on disk.

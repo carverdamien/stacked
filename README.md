@@ -14,6 +14,7 @@ Press `?` in the editor: it says what can be done where the cursor is.
 ## Install
 
 ```sh
+rustup target add wasm32-unknown-unknown
 cargo install --git https://github.com/carverdamien/stacked
 ```
 
@@ -21,32 +22,33 @@ or, in a clone of this repository, `cargo install --path .`; or run it in
 place with `target/release/stacked` after `cargo build --release`. It needs
 `git`, and an agent for asks (`claude`, unless the settings name another).
 
-With the editor in a browser too (`stacked web`, below), built with the
-`web` feature; its browser half is compiled to wasm, with Rust's
-wasm32-unknown-unknown target:
+The four features below are on by default, so that a build has them all.
+`--no-default-features` builds stacked with none of them, and `--features`
+then names those to keep: `cargo install --path . --no-default-features
+--features demo,moz-phab`, for instance, builds stacked with the tour and
+Phabricator, but without the editor in a browser or StackED.
 
-```sh
-rustup target add wasm32-unknown-unknown
-cargo install --path . --features web
-```
+The `web` feature adds the editor in a browser (`stacked web`, below). Its
+browser half is compiled to wasm, with Rust's wasm32-unknown-unknown
+target, which `rustup target add` installs (above). Without that target,
+the build stops and says to add it, or to build stacked without `web`, as
+`--no-default-features --features app,demo,moz-phab` does.
 
-With a tour of it, to learn it by (`stacked demo`, below), built with the
-`demo` feature: `cargo install --path . --features demo` (or
-`--features web,demo` for both).
+The `demo` feature adds a tour of the editor, to learn it by (`stacked
+demo`, below).
 
-With Phabricator (below), built with the `moz-phab` feature: the reviews
-pulled from its revisions, and stacks imported from them, over Conduit with
-the token moz-phab (or arc) keeps, which `curl` calls: `cargo install
---path . --features moz-phab` (or `--features web,demo,moz-phab` for all
-three). Built without it, stacked has none of it, but reads a database
-that holds reviews pulled.
+The `moz-phab` feature adds Phabricator (below): the reviews pulled from
+its revisions, and stacks imported from them, over Conduit with the token
+moz-phab (or arc) keeps, which `curl` calls. Built without it, stacked has
+none of it, but reads a database that holds reviews pulled.
 
-With StackED, the editor in a window of its own (`stacked app`, below),
-built with the `app` feature: `cargo install --path . --features app` (or
-`--features web,demo,moz-phab,app` for all four). Its window is drawn by
-eframe (egui), on OpenGL, which the build fetches: on macOS nothing more is
-needed; elsewhere, what eframe needs there (the X11 or Wayland libraries).
-On macOS, `stacked app --bundle` then makes StackED.app, for the Dock.
+The `app` feature adds StackED, the editor in a window of its own
+(`stacked app`, below). Its window is drawn by eframe (egui), on OpenGL,
+which the build fetches: on macOS and on Linux, the build needs nothing
+more. On Linux, eframe loads X11's or Wayland's libraries, xkbcommon's and
+OpenGL's (EGL or GLX) only when StackED starts, and a Linux desktop has
+them. On macOS, `stacked app --bundle` then makes StackED.app, for the
+Dock.
 
 ### Completion in zsh
 
@@ -116,12 +118,14 @@ database of that name.
 
 ## A tour
 
-`stacked demo` (built with `--features demo`) teaches the editor with a game
-of tic-tac-toe played in a file, board.txt, one patch per move. It starts
-from an empty board and an empty stack, and plays five moves as patches.
-Each patch shows the whole board, so the moves before it can be seen. O's
-fourth move is a mistake, and X's fifth move wins because of it. The tour
-has 14 sections, the most useful first, and takes about fifteen minutes:
+`stacked demo` (built by default, with the `demo` feature:
+`--no-default-features --features app,moz-phab,web` builds stacked without
+it) teaches the editor with a game of tic-tac-toe played in a file,
+board.txt, one patch per move. The tour starts from an empty board and an
+empty stack, and plays five moves as patches. Each patch shows the whole
+board, so the moves before it can be seen. O's fourth move is a mistake,
+and X's fifth move wins because of it. The tour has 14 sections, the most
+useful first, and takes about fifteen minutes:
 
 1. Read a stack and its patches.
 2. Comment on a line: O's mistake.
@@ -165,19 +169,21 @@ apply, trim) or reach Phabricator says that it is not in the demo.
 
 ## In a browser
 
-`stacked web` (built with `--features web`) serves the editor on this
-machine and opens the browser on it: the same editor, the same keys, drawn
-in the page as in a terminal. Over the side panes, the patches and the
-comments, the mouse marks the line under it, underlined, and picks nothing:
-what is picked stays so (reversed in the pane the cursor is in, grey in the
-other) until a click picks the line, and a second click on it is Enter.
-Elsewhere the cursor follows the mouse: what is under it is picked, as the
-arrows would (a line of the patch, an item of a list or of a menu; a patch
-being moved goes there), so a click is Enter on it. A right click is
-Space, its menu. Outside a menu, a click closes it; writing a comment, or
-reading what `?` says, the mouse moves nothing. The wheel is ↑↓, and a paste types what is pasted, into a comment
-being written. `--port N` listens on port N
-(else any free one), `--no-open` only says where it is.
+`stacked web` (built by default, with the `web` feature:
+`--no-default-features --features app,demo,moz-phab` builds stacked without
+it) serves the editor on this machine and opens the browser on it: the
+same editor, the same keys, drawn in the page as in a terminal. Over the
+side panes, the patches and the comments, the mouse marks the line under
+it, underlined, and picks nothing: what is picked stays so (reversed in
+the pane the cursor is in, grey in the other) until a click picks the
+line, and a second click on it is Enter. Elsewhere the cursor follows the
+mouse: what is under it is picked, as the arrows would (a line of the
+patch, an item of a list or of a menu; a patch being moved goes there), so
+a click is Enter on it. A right click is Space, its menu. Outside a menu,
+a click closes it; writing a comment, or reading what `?` says, the mouse
+moves nothing. The wheel is ↑↓, and a paste types what is pasted, into a
+comment being written. `--port N` listens on port N (else any free one),
+`--no-open` only says where it is.
 
 It listens on 127.0.0.1 only, and only a page holding the token in the
 address it opened (a new one each time) may see it or drive it: a page from
@@ -197,17 +203,18 @@ the server), carried by fifty lines of JS (`web/index.html`).
 
 ## In a window of its own: StackED
 
-`stacked app` (built with `--features app`) opens StackED, the editor in a
-window of its own, with no terminal and no browser: the same editor, the
-same keys, drawn as in a terminal. The window paints the editor's screen
-as a terminal would, a grid of cells in their colours, bold and italic,
-underlined or struck through, and draws the lines of boxes itself, so that
-they meet from row to row. On macOS its text is in Menlo, the system's
-monospace font, with Apple Symbols for the few characters Menlo lacks;
-elsewhere it is in Hack, egui's own font, its bold drawn twice a pixel
-apart and its italics slanted. ⌘+ and ⌘− (ctrl elsewhere) make the text
-larger and smaller, ⌘0 brings it back, and the window holds as many cells
-as fit in it.
+`stacked app` (built by default, with the `app` feature:
+`--no-default-features --features demo,moz-phab,web` builds stacked without
+it) opens StackED, the editor in a window of its own, with no terminal and
+no browser: the same editor, the same keys, drawn as in a terminal. The
+window paints the editor's screen as a terminal would, a grid of cells in
+their colours, bold and italic, underlined or struck through, and draws
+the lines of boxes itself, so that they meet from row to row. On macOS
+its text is in Menlo, the system's monospace font, with Apple Symbols for
+the few characters Menlo lacks; elsewhere it is in Hack, egui's own font,
+its bold drawn twice a pixel apart and its italics slanted. ⌘+ and ⌘−
+(ctrl elsewhere) make the text larger and smaller, ⌘0 brings it back, and
+the window holds as many cells as fit in it.
 
 The mouse works as in the browser (above): over the patches and the
 comments it marks the line under it, and a click picks the line, a second
@@ -480,15 +487,16 @@ with stacks, the stack's own menu has them under `New stack…`:
   commits`), taken only once it holds a commit. The staged changes, and the
   unstaged ones, when there are, may each be checked to go on top of what
   ends at HEAD, a patch of their own (`Staged changes`, `Unstaged changes`).
-- `Import from Phabricator…` (built with the `moz-phab` feature): a
-  revision, `D123` (or `123`) or its link, read away from the screen with
-  the revisions it stacks on, down to the first that is not open, and those
-  stacked on it while one is open; each its latest diff, with the message
-  and author of its commit as uploaded. They go on the commit the bottom
-  one is on, which the repository must have (`D11 is on 0123456789ab,
-  which this repository does not have: fetch it first`). `stacked moz-phab
-  import D123` makes the same stack from the command line, at once, named
-  after the revision as no stack is, or `--name NAME`.
+- `Import from Phabricator…` (built with the `moz-phab` feature, on by
+  default): a revision, `D123` (or `123`) or its link, read away from the
+  screen with the revisions it stacks on, down to the first that is not
+  open, and those stacked on it while one is open; each its latest diff,
+  with the message and author of its commit as uploaded. They go on the
+  commit the bottom one is on, which the repository must have (`D11 is on
+  0123456789ab, which this repository does not have: fetch it first`).
+  `stacked moz-phab import D123` makes the same stack from the command
+  line, at once, named after the revision as no stack is, or `--name
+  NAME`.
 
 An import is seen before it is made: its patches, bottom first, the commit
 they go on, and the name of the stack it makes, after the branch or the
@@ -1495,11 +1503,12 @@ settings:
   unless set): off for an agent that does not take it, its answer is read
   from what it writes, the JSON it ends with, the prose around it left
   out. Given up on by claude, the ask fails and says so.
-- `[reviews]` (built with the `moz-phab` feature; read either way, so one
-  file serves both builds): `source`, `"phabricator"` or `"none"` (no
-  pulling, no importing); `url`, the Phabricator a bare `D123` trailer is
-  on; `arcrc`, where the tokens are; `token`, one for `url` instead;
-  `trailer`, the trailer naming a revision (`Differential Revision`).
+- `[reviews]` (built with the `moz-phab` feature, on by default; read
+  either way, so one file serves both builds): `source`, `"phabricator"`
+  or `"none"` (no pulling, no importing); `url`, the Phabricator a bare
+  `D123` trailer is on; `arcrc`, where the tokens are; `token`, one for
+  `url` instead; `trailer`, the trailer naming a revision
+  (`Differential Revision`).
 - `[view]`: `layout` at the start (`unified`, `side-by-side`, `compact`);
   `reading`, to start reading; `whitespace_needs_review`, whether changed
   lines that are empty or white space alone need review in the reading mode
@@ -1691,10 +1700,12 @@ brings it back.
 
 ## Phabricator
 
-Built with the `moz-phab` feature (Install). `stacked moz-phab import
-REVISION` makes a new stack of a revision, `D123`, `123` or its link, as
-`Import from Phabricator…` does in the editor (Making a stack in the
-editor): `imported 2 patches from D11..D12 as D12`.
+What follows is built by default, with the `moz-phab` feature:
+`--no-default-features --features app,demo,web` builds stacked without it
+(Install). `stacked moz-phab import REVISION` makes a new stack of a
+revision, `D123`, `123` or its link, as `Import from Phabricator…` does in
+the editor (Making a stack in the editor): `imported 2 patches from
+D11..D12 as D12`.
 
 `stacked moz-phab pull NAME`, or the menu's `Pull reviews from
 Phabricator`, reads the revision in
@@ -1768,7 +1779,8 @@ is typed: `import.rs`). A fix to one may belong in the other.
 - `ask.rs`, `claude.rs`: asking the agent about comments, from the queue to
   landing; claude's command line, its stream and its replies.
 - `held.rs`: what an ask brought back, held for your review.
-- `review.rs`, `phab.rs`: Phabricator, built with the `moz-phab` feature.
+- `review.rs`, `phab.rs`: Phabricator, built with the `moz-phab` feature
+  (on by default).
 - `import.rs`: what a stack made in the editor is imported from: a range of
   the checkout, its uncommitted changes on top if asked.
 - `mbox.rs`: reading `git format-patch` mail, writing mail for `git am`.
@@ -1794,7 +1806,9 @@ is typed: `import.rs`). A fix to one may belong in the other.
   `tui/banner.rs`, the banner of the agent's work; `tui/places.rs`, where
   each pane's cursor was.
 - `web.rs`, `web/client.rs`, `web/index.html`, `build.rs`: `stacked web`,
-  its server, its wasm and its page; the build script compiles the wasm.
+  its server, its wasm and its page; the build script compiles the wasm,
+  or, where Rust lacks the wasm target, stops the build and says what to
+  run.
 - `app.rs`: `stacked app`, StackED: the editor on a thread of its own, and
   the window that paints its screen and sends it what is done there.
   `app/windows.rs`: its windows on macOS, one for each database opened,
@@ -1809,16 +1823,19 @@ is typed: `import.rs`). A fix to one may belong in the other.
 
 ## Tests
 
-Run `cargo test` after any change; `cargo test --features
-web,demo,moz-phab,app` runs the browser's, the tour's, Phabricator's and
-StackED's too (the web feature needs the wasm target, as in Install). No
-test runs claude: a script stands in for it; none reaches Phabricator: its
-revisions and their comments are read by stand-ins; none opens a window.
+Run `cargo test` after any change. With every feature on by default,
+`cargo test` runs every test: the browser's, the tour's, Phabricator's and
+StackED's too (the web feature needs the wasm target, as in Install).
+`cargo test --no-default-features` runs the minimal set, the tests of
+stacked built with no feature, and needs no wasm target; `--features` then
+adds the tests of each feature named. No test runs claude: a script stands
+in for it; none reaches Phabricator: its revisions and their comments are
+read by stand-ins; none opens a window.
 
 With `STACKED_TEST_CHECKPOINTS=1` set, every write writes a checkpoint, and
 every database read from one is read whole too and the two compared, a
 difference a panic: run the suite so too after a change to the database,
-or to what reads it.
+or to what reads it, as `STACKED_TEST_CHECKPOINTS=1 cargo test`.
 
 `tests/cli.rs` builds a repo and drives the binary. It covers a round trip
 through `git am`, the tree, recovery from broken lines, comments on the
@@ -1909,7 +1926,7 @@ made and taken back, those of white space alone counted only as the
 settings say, a file with no newline at its end ticked once read whole,
 its patch too, the pane keeping its width from patch to patch), and the
 comments pane's states (expanded, compact, hidden) and the compact view
-of the code as they were. With `--features web`, `tests/web.rs`
+of the code as they were. With the `web` feature, `tests/web.rs`
 serves the editor and asks it over HTTP as a browser would: the token
 needed, the page, the wasm, the rows as they change, a key and a click,
 and the editor left, the worktree made ahead removed (Quit in the page;
@@ -1917,7 +1934,7 @@ and the editor left, the worktree made ahead removed (Quit in the page;
 `$EDITOR` runs left to `$EDITOR`, the second waiting for it); and
 `web.rs` tests the rows and the lines both ways, with the client's own tests
 (`web/client.rs`, compiled to the machine as well as to wasm). With
-`--features app`, `tests/app.rs` runs StackED's editor as its window runs
+the `app` feature, `tests/app.rs` runs StackED's editor as its window runs
 it, with no window: nothing drawn before the window's size, a key, a click,
 the mouse over a patch then gone, a window too small, the wait while
 `$EDITOR` runs (an editor that edits nothing, set in the test's settings),
@@ -1958,7 +1975,7 @@ it exits), and the script Terminal is given to run it (for its owner
 alone, removing itself as it runs the edit, removed if Terminal cannot be
 opened); `icon.rs`, what the icon shows where, at its largest (the sheets' edges)
 and at its smallest (a plain white S), and that it is grey all over. With
-`--features demo`, `tests/demo.rs` takes the tour, each step done as Tab
+the `demo` feature, `tests/demo.rs` takes the tour, each step done as Tab
 does it: the
 stand-in's fix, the board at its end, nothing made on disk; and the answer
 to the tour's question taken at once, the tour going on once its review is
