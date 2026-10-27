@@ -3121,23 +3121,15 @@ fn the_agent_s_reply_waits_for_review_and_enter_takes_it() {
     }
     assert!(!all.iter().any(|(l, _)| l == "Ask agent"), "{all:?}");
     keys(&mut app, &[KeyCode::Esc]);
-    // Enter takes it into the thread, at once: out of the review. The
-    // comment still open, its work stays on the banner, for the comment to
-    // be closed or kept in its review.
+    // Enter takes it into the thread, at once: out of the review, which
+    // closes, nothing else of its work left. The comment stays open.
     assert!(app.hint().starts_with("enter: accept the agent's reply"), "{}", app.hint());
     keys(&mut app, &[KeyCode::Enter]);
-    assert_eq!(
-        app.status,
-        "you accepted the agent's reply: it is in the thread now; the agent's work still waits for your review, to close or keep the comment the agent was asked about"
-    );
+    assert_eq!(app.status, "you accepted the agent's reply: it is in the thread now");
     let screen = draw(&mut app);
-    assert!(screen.contains("It is a shout."), "{screen}");
-    assert!(screen.contains("⟳ 1 landed ask waits for your review · the next: 1 asking comment to close or keep"), "{screen}");
-    assert_eq!(stacked::held::queue(&Db::load(&db).unwrap(), "s").len(), 1, "its comment to close or keep");
-    // Its review closed, the comment kept: nothing waits.
-    Db::edit(&db, |d| stacked::held::close(d, "run-answer", &Default::default(), None)).unwrap();
-    app.refresh();
-    assert!(!draw(&mut app).contains("⟳"), "nothing left of it to review");
+    assert!(screen.contains("It is a shout.") && !screen.contains("⟳"), "{screen}");
+    assert!(stacked::held::queue(&Db::load(&db).unwrap(), "s").is_empty(), "nothing left of it to review");
+    assert_eq!(notes_of(&db, "s", 0).len(), 1, "the comment open still");
     // A reply going with a change of the stack is reviewed with it; the
     // stack is not edited by hand meanwhile.
     held(&db, "run-change", &n.change, &n.id, "Changed it.", true);
@@ -3146,7 +3138,9 @@ fn the_agent_s_reply_waits_for_review_and_enter_takes_it() {
     let all = items(&app);
     assert!(all.contains(&("Review the agent's work…".into(), true)) && !all.iter().any(|(l, _)| l.starts_with("Accept")), "{all:?}");
     // Enter opens the review of that work, on the reply.
-    keys(&mut app, &[KeyCode::Esc, KeyCode::Enter]);
+    keys(&mut app, &[KeyCode::Esc]);
+    assert!(app.hint().starts_with("enter: review the agent's reply · "), "{}", app.hint());
+    keys(&mut app, &[KeyCode::Enter]);
     assert_eq!(app.screen, Screen::Review);
     assert!(draw(&mut app).contains("its reply, as it would be in its thread"), "on the reply");
     app.screen = Screen::Main;
@@ -3161,46 +3155,124 @@ fn the_agent_s_reply_waits_for_review_and_enter_takes_it() {
 }
 
 #[test]
-fn a_reply_taken_at_once_leaves_its_work_on_the_banner_until_its_review_closes_the_comment() {
+fn replies_taken_with_enter_close_their_work_s_review_once_none_is_left() {
     let (_tmp, db, _src) = setup();
     let mut app = open(&db).unwrap();
     keys(&mut app, &[KeyCode::Right]);
     down_to(&mut app, "+TWO");
     keys(&mut app, &[KeyCode::Enter]);
     save(&mut app, "why so loud?");
-    let n = notes_of(&db, "s", 0).remove(0);
-    held(&db, "run-answer", &n.change, &n.id, "It is a shout.", false);
+    down_to(&mut app, "+LINE 39");
+    keys(&mut app, &[KeyCode::Enter]);
+    save(&mut app, "and this?");
+    // An answer replying to each comment, which opened none.
+    answered(&db, "run-1", &notes_of(&db, "s", 0));
+    Db::edit(&db, |d| {
+        let mut r = d.run("run-1").unwrap().clone();
+        r.held.as_mut().unwrap().opened.clear();
+        d.add_run(r).map(|_| ())
+    })
+    .unwrap();
     app.refresh();
-    // Taken with Enter, the reply is in the thread; its work is on the
-    // banner still, said by what is left of it.
+    // One taken with Enter on its comment: in its thread. The other reply
+    // is what is left of the work, on the banner.
+    keys(&mut app, &[KeyCode::Down]);
+    assert!(app.hint().starts_with("enter: accept the agent's reply"), "{}", app.hint());
+    keys(&mut app, &[KeyCode::Enter]);
+    assert_eq!(app.status, "you accepted the agent's reply: it is in the thread now");
+    let screen = draw(&mut app);
+    assert!(screen.contains("⟳ 1 landed ask waits for your review · the next: 1 reply"), "{screen}");
+    assert_eq!(stacked::held::queue(&Db::load(&db).unwrap(), "s").len(), 1);
+    // The other taken: nothing of the work is left, and its review closes.
+    // Both comments stay open, each its reply in its thread, to reply to.
+    keys(&mut app, &[KeyCode::Home]);
+    down_to(&mut app, "+TWO");
     keys(&mut app, &[KeyCode::Down, KeyCode::Enter]);
-    assert!(app.status.starts_with("you accepted the agent's reply: it is in the thread now; "), "{}", app.status);
+    assert_eq!(app.status, "you accepted the agent's reply: it is in the thread now");
+    assert!(!draw(&mut app).contains("⟳"), "nothing waits");
+    let d = Db::load(&db).unwrap();
+    assert!(stacked::held::queue(&d, "s").is_empty());
+    assert_eq!(d.run("run-1").unwrap().summary, "reviewed: 2 replies accepted");
+    let open = notes_of(&db, "s", 0);
+    assert_eq!(open.len(), 2, "both open");
+    for n in &open {
+        assert!(stacked::thread::last_role(&n.text) == Some(Role::Agent) && n.text.contains("Seen: "), "{}", n.text);
+    }
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    assert!(items(&app).contains(&("Reply".into(), true)), "{:?}", items(&app));
+}
+
+#[test]
+fn a_reply_that_goes_with_comments_the_agent_opened_is_reviewed_with_them() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Enter]);
+    save(&mut app, "why so loud?");
+    // An answer replying to the comment, and opening one of its own.
+    answered(&db, "run-1", &notes_of(&db, "s", 0));
+    app.refresh();
+    // Not taken at once: its menu has no Accept, and Enter opens the
+    // review of the work, on the reply.
+    keys(&mut app, &[KeyCode::Down, KeyCode::Char(' ')]);
+    let all = items(&app);
+    assert!(all.contains(&("Review the agent's work…".into(), true)) && !all.iter().any(|(l, _)| l.starts_with("Accept")), "{all:?}");
     keys(&mut app, &[KeyCode::Esc]);
-    assert!(app.on_banner);
-    let banner = selected_banner(&mut app);
-    assert!(banner.starts_with("   ⟳ Review 1 asking comment to close or keep") && !banner.contains("reply"), "{banner}");
-    // Its review has the comment alone, the cursor on it, kept.
+    assert!(app.hint().starts_with("enter: review the agent's reply · "), "{}", app.hint());
+    let refused = Db::edit(&db, |d| stacked::held::take(d, "run-1", 0)).unwrap_err();
+    assert_eq!(refused.0, "this reply goes with the comments the agent opened: review them together");
     keys(&mut app, &[KeyCode::Enter]);
     assert_eq!(app.screen, Screen::Review);
-    let screen = draw(&mut app);
-    assert!(screen.contains(" the agent's work: 1 asking comment to close") && !screen.contains(" replies"), "{screen}");
-    assert!(screen.contains("the comment that asked, as it is: kept open"), "{screen}");
-    assert!(selected_line(&mut app).unwrap().starts_with("   keep  a.txt: TWO · why so loud?"), "{:?}", selected_line(&mut app));
-    // Marked to close, and closed with the review: the reply stays in its
-    // thread, which Show…, closed, lists.
-    keys(&mut app, &[KeyCode::Enter]);
-    assert!(selected_line(&mut app).unwrap().starts_with("   close a.txt: TWO · why so loud?"));
+    assert!(draw(&mut app).contains("its reply, as it would be in its thread"), "on the reply");
+    // The work waits until its review accepts or rejects the comment it
+    // opened, with the reply.
+    assert_eq!(stacked::held::queue(&Db::load(&db).unwrap(), "s").len(), 1);
     keys(&mut app, &[KeyCode::Esc]);
-    let Mode::Menu(m) = &app.mode else { panic!("{:?}", app.mode) };
-    assert_eq!(m.note.as_deref(), Some("asking comment: 1 to close"));
-    choose(&mut app, "Close review");
-    assert_eq!(app.status, "reviewed: 1 reply accepted; 1 asking comment closed");
-    assert_eq!(app.screen, Screen::Main);
+    choose(&mut app, "Accept all remaining and Close");
+    choose(&mut app, "Accept them and close");
+    assert_eq!(app.status, "reviewed: 1 opened comment accepted; 1 reply accepted");
     assert!(stacked::held::queue(&Db::load(&db).unwrap(), "s").is_empty());
-    assert!(notes_of(&db, "s", 0).is_empty(), "closed");
-    let d = Db::load(&db).unwrap();
-    let closed = d.deleted_notes("s", &n.change);
-    assert!(closed.len() == 1 && closed[0].1.text.contains("It is a shout."), "{closed:?}");
+}
+
+#[test]
+fn a_reply_of_work_going_on_from_an_edit_under_review_waits_for_that_edit() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Enter]);
+    save(&mut app, "why so loud?");
+    down_to(&mut app, "+LINE 39");
+    keys(&mut app, &[KeyCode::Enter]);
+    save(&mut app, "and this?");
+    let notes = notes_of(&db, "s", 0);
+    let on = |text: &str| notes.iter().find(|n| n.text == text).unwrap();
+    // An edit about the first comment, and an answer about the second
+    // going on from that edit, as if it is accepted.
+    held(&db, "run-1", &on("why so loud?").change, &on("why so loud?").id, "Quieter now.", true);
+    held(&db, "run-2", &on("and this?").change, &on("and this?").id, "It shouts too.", false);
+    Db::edit(&db, |d| {
+        let mut r = d.run("run-2").unwrap().clone();
+        let mut ask = r.ask.clone().unwrap();
+        ask["after"] = serde_json::json!("run-1");
+        r.ask = Some(ask);
+        d.add_run(r).map(|_| ())
+    })
+    .unwrap();
+    app.refresh();
+    // On the second comment, its reply is not taken at once: its menu has
+    // no Accept, and Enter says to review the edit first.
+    keys(&mut app, &[KeyCode::Down, KeyCode::Char(' ')]);
+    let all = items(&app);
+    assert!(all.contains(&("Review the agent's work…".into(), true)) && !all.iter().any(|(l, _)| l.starts_with("Accept")), "{all:?}");
+    keys(&mut app, &[KeyCode::Esc]);
+    let refused = Db::edit(&db, |d| stacked::held::take(d, "run-2", 0)).unwrap_err();
+    assert_eq!(refused.0, "this reply goes on from the work landed before it, which waits for your review: review that one first");
+    keys(&mut app, &[KeyCode::Enter]);
+    assert_eq!(app.screen, Screen::Main);
+    assert_eq!(app.status, "this work goes on from the work landed before it, which waits for your review: review that one first");
+    assert_eq!(stacked::held::queue(&Db::load(&db).unwrap(), "s").len(), 2, "both wait");
 }
 
 #[test]

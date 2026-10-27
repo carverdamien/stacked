@@ -1587,47 +1587,52 @@ fn work_that_brought_nothing_back_is_held_only_while_a_comment_it_was_asked_abou
 }
 
 #[test]
-fn a_reply_taken_at_once_leaves_its_work_to_review_while_its_comment_is_open() {
+fn a_reply_taken_at_once_closes_the_review_of_its_work_its_comment_left_open() {
     let e = env();
     e.ok(&["import", "s", "base"]);
     let id = comment(&e, &["--patch", "1", "Why", "2?"]);
     let claude = fake_claude(&e, "claude-answer.sh", "", r#"{"replies": {"c1": "Because."}}"#);
-    let env = [("STACKED_CLAUDE", claude.as_path())];
-    let ask = |e: &Env| {
-        let (fine, out, err) = stacked_in(&e.src, &e.db, &["send", "s", &id, "--answer-only", "--wait"], "", &env);
-        assert!(fine && out.contains("waits for your review: 1 reply"), "{out}{err}");
-        stacked::held::queue(&Db::load(&e.db).unwrap(), "s")[0].id.clone()
-    };
+    let (fine, out, err) = stacked_in(&e.src, &e.db, &["send", "s", &id, "--answer-only", "--wait"], "", &[("STACKED_CLAUDE", &claude)]);
+    assert!(fine && out.contains("waits for your review: 1 reply"), "{out}{err}");
     // Taken at once, as Enter on the comment takes it: the reply is in its
-    // thread, and the work still waits, for the comment to be closed or
-    // kept.
-    let run = ask(&e);
+    // thread, and nothing else is left of the work, so its review closes.
+    let run = stacked::held::queue(&Db::load(&e.db).unwrap(), "s")[0].id.clone();
     Db::edit(&e.db, |d| stacked::held::take(d, &run, 0)).unwrap();
-    assert!(e.ok(&["comments", "s"]).contains("agent: Because."));
-    let landed = e.ok(&["landed", "s"]);
-    assert!(landed.lines().count() == 1 && landed.starts_with(&run) && landed.ends_with("\t1 asking comment to close or keep\n"), "{landed}");
-    // Its review closed, the comment kept: open, the reply in its thread.
-    assert_eq!(e.ok(&["review", "s", "--accept-all"]), format!("{run}\treviewed: 1 reply accepted\n"));
     assert_eq!(e.ok(&["landed", "s"]), "");
-    assert!(e.ok(&["comments", "s"]).contains("agent: Because."));
-    // Again, the review closing the comment this time: closed, its thread
-    // holding both replies.
+    let runs = e.ok(&["runs", "s"]);
+    assert!(runs.starts_with(&format!("{run}\t")) && runs.ends_with("\tdone\treviewed: 1 reply accepted\n"), "{runs}");
+    // The comment stays open, the reply its last word: to read, and to
+    // reply to, as any comment.
+    assert_eq!(e.ok(&["comments", "s", "--show", "to-review"]), "");
+    assert!(e.ok(&["comments", "s", "--show", "to-read"]).contains("agent: Because."));
     e.ok(&["reply", "s", &id, "Really?"]);
-    let run = ask(&e);
-    Db::edit(&e.db, |d| stacked::held::take(d, &run, 0)).unwrap();
-    assert!(e.ok(&["landed", "s"]).starts_with(&run));
-    let out = e.ok(&["review", "s", "--accept-all", "--close-asking"]);
-    assert_eq!(out, format!("{run}\treviewed: 1 reply accepted; 1 asking comment closed\n"));
-    assert_eq!(e.ok(&["comments", "s"]), "");
-    let closed = e.ok(&["comments", "s", "--show", "closed"]);
-    assert_eq!(closed.matches("agent: Because.").count(), 2, "{closed}");
+    assert!(e.ok(&["comments", "s", "--show", "to-send"]).contains("you: Really?"));
 }
 
 #[test]
-fn taking_the_last_reply_closes_the_review_once_no_comment_it_answers_is_open() {
+fn taking_the_last_reply_closes_the_review_its_comments_open_or_not() {
     let e = env();
     e.ok(&["import", "s", "base"]);
-    // Closed while its reply waits: taking the reply closes the review.
+    // Two replies: one taken, the other is what is left to review.
+    let (one, two) = (comment(&e, &["One?"]), comment(&e, &["Two?"]));
+    let d = Db::load(&e.db).unwrap();
+    let at = |id: &str| d.find_note("s", id).map(|n| (n.change.clone(), n.id.clone())).unwrap();
+    let r1 = landed_answer(&e, "r1", &[at(&one), at(&two)], r#"{"replies": {"c1": "For one.", "c2": "For two."}}"#);
+    let k = r1.held.as_ref().and_then(|h| h.replies.iter().position(|rp| rp.text == "For one.")).unwrap();
+    Db::edit(&e.db, |d| stacked::held::take(d, "r1", k)).unwrap();
+    let landed = e.ok(&["landed", "s"]);
+    let lines: Vec<&str> = landed.lines().collect();
+    assert!(lines.len() == 2 && lines[0].starts_with("r1\t") && lines[0].ends_with("\t1 reply"), "{landed}");
+    assert!(lines[1].starts_with("  reply\t") && lines[1].ends_with("\tFor two."), "{landed}");
+    // The other taken: the review closes, both comments open still, each
+    // its reply in its thread.
+    Db::edit(&e.db, |d| stacked::held::take(d, "r1", 1 - k)).unwrap();
+    assert_eq!(e.ok(&["landed", "s"]), "");
+    assert!(e.ok(&["runs", "s"]).ends_with("\tdone\treviewed: 2 replies accepted\n"));
+    let read = e.ok(&["comments", "s", "--show", "to-read"]);
+    assert!(read.contains("agent: For one.") && read.contains("agent: For two."), "{read}");
+    // Closed while its reply waits: taking the reply closes the review all
+    // the same.
     let id = comment(&e, &["--patch", "1", "Why", "2?"]);
     let claude = fake_claude(&e, "claude-answer.sh", "", r#"{"replies": {"c1": "Because."}}"#);
     let (fine, out, err) = stacked_in(&e.src, &e.db, &["send", "s", &id, "--answer-only", "--wait"], "", &[("STACKED_CLAUDE", &claude)]);
@@ -1639,7 +1644,8 @@ fn taking_the_last_reply_closes_the_review_once_no_comment_it_answers_is_open() 
     Db::edit(&e.db, |d| stacked::held::take(d, &run, 0)).unwrap();
     assert_eq!(e.ok(&["landed", "s"]), "");
     let runs = e.ok(&["runs", "s"]);
-    assert!(runs.starts_with(&format!("{run}\t")) && runs.ends_with("\tdone\treviewed: 1 reply accepted\n"), "{runs}");
+    let last = runs.lines().last().unwrap_or_default();
+    assert!(last.starts_with(&format!("{run}\t")) && last.ends_with("\tdone\treviewed: 1 reply accepted"), "{runs}");
     // Moved to the stack's comments as its reply is taken, the comment is
     // gone from where it was asked: the review closes.
     let id = comment(&e, &["--patch", "2", "Add", "c", "too."]);
@@ -1651,6 +1657,24 @@ fn taking_the_last_reply_closes_the_review_once_no_comment_it_answers_is_open() 
     assert_eq!(e.ok(&["landed", "s"]), "");
     let comments = e.ok(&["comments", "s"]);
     assert!(comments.contains("\tthe stack\tmoved from patch 2") && comments.contains("agent: Patch 3 has to change too."), "{comments}");
+}
+
+#[test]
+fn a_reply_is_taken_at_once_only_when_replies_are_all_its_work_holds() {
+    let e = env();
+    e.ok(&["import", "s", "base"]);
+    let id = comment(&e, &["Why?"]);
+    let d = Db::load(&e.db).unwrap();
+    let n = d.find_note("s", &id).map(|n| (n.change.clone(), n.id.clone())).unwrap();
+    // A reply, and a comment the agent opened: not taken at once, but
+    // reviewed together.
+    let opened = r#"{"replies": {"c1": "Because."}, "comments": [{"patch": 1, "file": "a.txt", "side": "+", "line": "2", "text": "Say two."}]}"#;
+    landed_answer(&e, "r1", &[n], opened);
+    let refused = Db::edit(&e.db, |d| stacked::held::take(d, "r1", 0)).unwrap_err();
+    assert_eq!(refused.0, "this reply goes with the comments the agent opened: review them together");
+    assert!(e.ok(&["comments", "s", "--show", "to-review"]).contains(&id), "its reply waits still");
+    assert_eq!(e.ok(&["review", "s", "--accept-all"]), "r1\treviewed: 1 opened comment accepted; 1 reply accepted\n");
+    assert_eq!(e.ok(&["landed", "s"]), "");
 }
 
 #[test]

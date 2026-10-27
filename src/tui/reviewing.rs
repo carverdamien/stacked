@@ -5,9 +5,9 @@
 //! cursor is on as it would be: the stack diff of the change, or the
 //! comment in its place, only to look at. Each part is accepted or
 //! rejected, the change of the stack as one; then the review is saved to go
-//! on later, thrown away, or closed, what was accepted applied. Work with no
-//! part left (it brought nothing back, or its replies were taken at once)
-//! is reviewed for the comments its ask was about, to close or keep.
+//! on later, thrown away, or closed, what was accepted applied. Work that
+//! brought nothing back has no part: it is reviewed for the comments its
+//! ask was about, to close or keep.
 
 use std::collections::BTreeMap;
 use std::ops::Range;

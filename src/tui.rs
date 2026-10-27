@@ -3719,9 +3719,10 @@ impl App {
                     return Some(if busy.contains_key(&(n.change.clone(), n.id.clone())) {
                         Action::OpenStream
                     } else if let Some((run, k)) = held {
-                        // Its reply waiting for review: taken at once; or,
-                        // going with a change of the stack, reviewed with it.
-                        let alone = self.db.run(&run).and_then(|r| r.held.as_ref()).is_some_and(|h| h.stack.is_none());
+                        // Its reply waiting for review: taken at once, when
+                        // replies are all its work holds and that work goes
+                        // on from none under review; else reviewed with it.
+                        let alone = self.db.run(&run).is_some_and(|r| crate::held::can_take(&self.db, r).is_ok());
                         if alone { Action::TakeReply(run, k) } else { Action::Review(run, Some(crate::held::Part::Reply(k))) }
                     } else if last_mine(&n.text).is_some() {
                         // The last word yours: a reply would only add to it.
@@ -4997,12 +4998,13 @@ impl App {
                 items.push(Item::new("Read what the agent is writing", Action::OpenStream));
                 items.push(Item::new("Stop the agent…", Action::AskStop(run.clone())));
             }
-            // Taken at once into the thread, as enter does; not a reply going
-            // with a change of the stack, reviewed with it.
+            // Taken at once into the thread, as enter does, when replies are
+            // all its work holds and that work goes on from none under
+            // review; else only reviewed with that work.
             None if held.is_some() => {
                 let (run, k) = held.clone().unwrap();
                 let r = self.db.run(&run);
-                let alone = r.and_then(|r| r.held.as_ref()).is_some_and(|h| h.stack.is_none());
+                let alone = r.is_some_and(|r| crate::held::can_take(&self.db, r).is_ok());
                 if alone {
                     items.push(Item::new(format!("Accept {}", self.reply_said(&run, k)), Action::TakeReply(run.clone(), k)));
                 }
@@ -5259,16 +5261,6 @@ impl App {
                 let said = self.reply_said(&run, k);
                 if self.edit(|db| crate::held::take(db, &run, k)).is_some() {
                     self.status = format!("you accepted {said}: it is in the thread now");
-                    // Nothing else left of its work: what waits is the
-                    // comments its ask was about, still open, to close or
-                    // keep in its review.
-                    if let Some(r) = self.db.run(&run).filter(|r| crate::held::waiting(&self.db, r) && crate::held::parts_left(&self.db, r).is_empty()) {
-                        let these = match crate::held::asking_open(&self.db, r).len() {
-                            1 => "the comment the agent was asked about".to_string(),
-                            n => format!("the {n} comments the agent was asked about"),
-                        };
-                        self.status += &format!("; the agent's work still waits for your review, to close or keep {these}");
-                    }
                     self.launch();
                 }
             }
@@ -7716,8 +7708,11 @@ impl App {
             }
             Mode::Normal => {
                 let action = self.enter();
-                let taking = match &action {
+                // On a comment whose reply waits: the reply accepted at
+                // once, or reviewed with the rest of its work.
+                let reply = match &action {
                     Some(Action::TakeReply(run, k)) => format!("enter: accept {} · ", self.reply_said(run, *k)),
+                    Some(Action::Review(run, Some(crate::held::Part::Reply(k)))) => format!("enter: review {} · ", self.reply_said(run, *k)),
                     _ => String::new(),
                 };
                 let enter = match (self.screen, action) {
@@ -7727,7 +7722,7 @@ impl App {
                     (Screen::Main, Some(Action::EditMine)) => "enter: edit it · ",
                     (Screen::Main, Some(Action::OpenStream)) => "enter: what the agent writes · ",
                     (Screen::Main, Some(Action::Expand)) => "enter: expand it · ",
-                    (Screen::Main, Some(Action::TakeReply(..))) => taking.as_str(),
+                    (Screen::Main, Some(Action::TakeReply(..) | Action::Review(_, Some(crate::held::Part::Reply(_))))) => reply.as_str(),
                     (Screen::Main, Some(_)) => "enter: comment · ",
                     (Screen::Main, None) => "enter or ",
                     (Screen::Transcript | Screen::Text, _) => "↑↓: scroll · ",

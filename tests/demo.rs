@@ -12,7 +12,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::Rect;
 use stacked::demo::{SECTIONS, STEPS, Step, Tour, place};
 use stacked::thread::{Role, last_role};
-use stacked::tui::{App, Focus, Mode};
+use stacked::tui::{Action, App, Focus, Mode};
 
 fn text(buf: &Buffer) -> String {
     (0..buf.area.height)
@@ -297,34 +297,35 @@ fn asked_about_patch_4_alone_the_agent_sends_the_comment_to_the_stack() {
 }
 
 #[test]
-fn the_answer_taken_at_once_leaves_its_review_to_close_before_the_tour_goes_on() {
+fn the_answer_taken_with_enter_closes_its_review_and_the_tour_goes_on() {
     let (mut app, mut tour) = Tour::new().unwrap();
     tour.forward(&mut app, place(Step::Question)).unwrap();
     tour.quick(true);
     // The question asked as Tab asks it, and answered.
     tour.show(&mut app);
     until(&mut app, &mut tour, "the answer to review", |app, tour| tour.say(app).0.starts_with("The agent's answer has landed"));
-    // Taken at once, as Enter on the comment takes it: the answer is in the
-    // thread, but the comment is still open, so its work still waits for
-    // review, and the step says so.
-    let run = stacked::held::queue(&app.db, "game")[0].id.clone();
-    stacked::db::Db::edit(&app.path, |db| stacked::held::take(db, &run, 0)).unwrap();
-    app.refresh();
-    tour.tick(&mut app);
-    assert_eq!(tour.step(), Step::Question, "not done before the review closes");
-    assert!(tour.say(&app).0.starts_with("The agent's answer is the last turn of your comment's thread now"), "{}", tour.say(&app).0);
-    assert!(screen(&mut app, &tour).contains("⟳ 1 landed ask waits for your review · the next: 1 asking comment to close or keep"));
-    // Its review, from the banner: the comment alone, kept as the review
-    // closes; then the tour goes on.
-    press(&mut app, KeyCode::Esc);
+    // Enter on your comment, as the step says: on patch 4, read, ↓ to it.
+    app.on_stack = false;
+    app.sel = titles(&app).iter().position(|t| t == "O blocks the diagonal at the bottom left").unwrap();
+    app.focus = Focus::List;
+    press(&mut app, KeyCode::Right);
+    for _ in 0..60 {
+        screen(&mut app, &tour);
+        if matches!(app.enter(), Some(Action::TakeReply(..))) {
+            break;
+        }
+        press(&mut app, KeyCode::Down);
+    }
+    assert!(matches!(app.enter(), Some(Action::TakeReply(..))), "not on your comment:\n{}", screen(&mut app, &tour));
     press(&mut app, KeyCode::Enter);
-    assert!(tour.say(&app).0.starts_with("This is the review of the agent's work. The agent's answer is in your comment's thread already"), "{}", tour.say(&app).0);
-    press(&mut app, KeyCode::Esc);
-    choose(&mut app, "Close review");
+    // The answer is in the thread, nothing of its work is left to review,
+    // and the tour goes on.
+    assert_eq!(app.status, "you accepted the agent's reply: it is in the thread now");
     app.refresh();
+    assert!(stacked::held::queue(&app.db, "game").is_empty());
+    assert!(!screen(&mut app, &tour).contains("landed ask waits for your review"));
     tour.tick(&mut app);
     assert_eq!(tour.step(), Step::Reading);
-    assert!(stacked::held::queue(&app.db, "game").is_empty());
 }
 
 #[test]

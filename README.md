@@ -138,9 +138,8 @@ useful first, and takes about fifteen minutes:
    opens the banner; Enter there opens the review, its change of the
    stack patch by patch and its reply, each accepted with Enter, then
    closed.
-5. Reply to the agent with a question, asked answer only: its answer is
-   accepted at once with Enter on the comment, and then its review is
-   closed, the comment kept open.
+5. Reply to the agent with a question, asked answer only, its answer
+   accepted at once with Enter on the comment.
 6. Keep track of what you have read, in reading.
 7. Switch how the code is drawn: unified, side by side, compact.
 8. The history of the stack, and the versions of a patch.
@@ -1098,14 +1097,17 @@ and the next ask that may change the code waits for that review
 change of patch 2`). Asks to answer only, or to build and test, do not
 wait. A comment whose reply waits says so on its first line (`the agent's
 reply waits for your review`), and is not written on, nor asked again,
-before you take its reply. Enter on it takes the reply into its thread at
-once, accepted, out of the review (its menu's `Accept the agent's reply`).
-A reply that goes with a change of the stack is reviewed with that change.
-Once every reply is taken at once, and the work opened no comment, its
-review closes by itself, unless a comment the agent was asked about is
-still open: then the work still waits for your review, to close that
-comment or keep it, and the banner says what is left (`⟳ Review 1 asking
-comment to close or keep`).
+before you take its reply. When the work the reply came with holds
+nothing but replies, Enter on the comment takes the reply into its thread
+at once, accepted, out of the review (its menu's `Accept the agent's
+reply`), and the review closes by itself once the last of those replies
+is taken. The comments the agent was asked about stay open, as any comment
+does, to reply to or to close. A reply that goes with a change of the
+stack, or with comments the agent opened, is reviewed with them: Enter on
+the comment opens the review of that work, on the reply. A reply of work
+that goes on from an edit under review waits until that edit is reviewed.
+No other review closes by itself: the review of an ask that brought
+nothing back waits until you close it.
 
 In the editor, a banner under the top bar says what waits on you on the
 stack, in a line: what waits for your review (`⟳ 2 landed asks wait for
@@ -1153,10 +1155,9 @@ done with: Enter turns one to the other, as Space's `Close it with the
 review` and `Keep it open` do, and the review closes those to close as it
 closes, once their replies are in their threads (`Show…`, closed, lists
 them, to reopen). Marked to close, a comment's replies, which go with it,
-are accepted; kept again, they are as they were. With no part left, as
-when the agent brought nothing back or every reply was taken at once, the
-list has only those comments, and `Close review` closes or keeps them as
-marked. The sections are the stack
+are accepted; kept again, they are as they were. With no part, as when
+the agent brought nothing back, the list has only those comments, and
+`Close review` closes or keeps them as marked. The sections are the stack
 operations of the change (a line for each patch: `noop`, `add`, `modify`,
 `reword` when its message alone changed, `move`, `remove`, and the base
 when it is rebased), the comments it opened, and its replies. On the right
@@ -1897,9 +1898,10 @@ refuse; runs `stacked fits`,
 answers, opens comments, tests), a split following its comments, a comment
 moved to the stack, a patch's comment asked of the whole stack adding a
 patch on top, work that brought nothing back held for review while a
-comment it was asked about is open (and not once every one is closed), a
-reply taken at once leaving its work to review until its comment is closed
-or kept (and closing it when none is open), a reply written again, a
+comment it was asked about is open (and not once every one is closed), the
+last reply taken at once closing its work's review with its comment open
+or not, a reply going with a comment the agent opened not taken at once, a
+reply written again, a
 reference no longer named detached by `stacked reply --edit` and the
 agent's reference by `--edit --turn` (said so), and a rewind keeping one
 never named, asks waiting their turn, a rebase, the stack not
@@ -1969,9 +1971,11 @@ moving a patch, searching (what is in sight first, the patches then the
 files they touch, the history), the agents' worktrees made ahead as the
 stack's checkout says, the banner of the agent's work (Esc to it and
 back, open a line for each, Enter on each; the reviews pulled waiting in
-it as the agent's work does; a reply taken with Enter leaving its work
-there while its comment is open, and work that brought nothing back
-reviewed for its comment alone), the comment editor hiding
+it as the agent's work does; replies taken with Enter, the last one
+closing their work's review, its comments left open; Enter opening the
+review of work that opened comments too, and saying to review first the
+edit that work goes on from; and work that brought nothing back reviewed
+for its comment alone), the comment editor hiding
 nothing in each view of the code, each pane keeping where its cursor
 was, the patch's title kept at the top of the middle, the patches pane's
 states (expanded, files, hidden) and its files (listed under the patch
@@ -2046,8 +2050,8 @@ and at its smallest (a plain white S), and that it is grey all over. With
 the `demo` feature, `tests/demo.rs` takes the tour, each step done as Tab
 does it: the
 stand-in's fix, the board at its end, nothing made on disk; and the answer
-to the tour's question taken at once, the tour going on once its review is
-closed; `memory.rs` tests its diffs applied as git applies them. The
+to the tour's question taken at once with Enter, the tour going on then;
+`memory.rs` tests its diffs applied as git applies them. The
 stream's thinking is tested in `ask.rs`, and what is said of landed work
 left to review in `held.rs`. The tests in `check.rs` show
 the check's index holds only what the patches touch, that it writes nothing

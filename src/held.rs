@@ -8,10 +8,14 @@
 //! their replies, and their comments edited on Phabricator since they were
 //! filed. Each part is accepted or rejected, the change of the stack as
 //! one; once every part is, the review closes: what was accepted is
-//! applied, and the rest is dropped for good. Work about a comment still
-//! open waits until you close its review, which closes that comment or
-//! keeps it. Until then, the stack is not edited by hand if the agent
-//! changed it, and the comments it answered are not written on.
+//! applied, and the rest is dropped for good. Until then, the stack is not
+//! edited by hand if the agent changed it, and the comments it answered
+//! are not written on. Replies that are all their work holds may also be
+//! taken at once, one by one, out of its review, unless that work goes on
+//! from work under review: the last one taken, the review closes, and the
+//! comments the ask was about stay open, as any comment does. Work that
+//! brought nothing back has no part: it waits until you close its review,
+//! which closes the comments it was asked about or keeps them.
 //!
 //! Your own edits by hand land the same way, in a run of their own
 //! (`hand`), to review before they change anything. An edit made in the
@@ -440,19 +444,32 @@ fn apply_reply(db: &mut Db, name: &str, rp: &Reply) -> Result<()> {
     Ok(())
 }
 
-/// Takes reply `k` of what run `id` brought back into its thread at once,
-/// accepted, out of the review; not one going with a change of the stack,
-/// which is reviewed with it. With nothing left to review, the review
-/// closes: no part left, and no comment the ask was about still open, as
-/// one is closed or kept only as its review closes.
-pub fn take(db: &mut Db, id: &str, k: usize) -> Result<()> {
-    let (r, h, mut v) = under_review(db, id)?;
+/// Whether the replies of the work run `r` holds may be taken at once, out
+/// of its review: they are all it holds, with no change of the stack nor
+/// comment opened that they go with, and it does not go on from work that
+/// waits for review, which is reviewed first. If not, why.
+pub fn can_take(db: &Db, r: &Run) -> Result<()> {
+    let Some(h) = &r.held else { return err(format!("run {} holds nothing to review", r.id)) };
     if h.stack.is_some() {
         return err("this reply goes with the agent's change of the stack: review them together");
     }
-    if crate::ask::guessing(db, &r).is_some() {
+    if !h.opened.is_empty() {
+        let opened = if pulled(r) { "the new comments pulled with it" } else { "the comments the agent opened" };
+        return err(format!("this reply goes with {opened}: review them together"));
+    }
+    if crate::ask::guessing(db, r).is_some() {
         return err("this reply goes on from the work landed before it, which waits for your review: review that one first");
     }
+    Ok(())
+}
+
+/// Takes reply `k` of what run `id` brought back into its thread at once,
+/// accepted, out of the review, if `can_take` lets it. The last reply
+/// taken, the review closes: the comments the ask was about stay open, as
+/// any comment does.
+pub fn take(db: &mut Db, id: &str, k: usize) -> Result<()> {
+    let (r, h, mut v) = under_review(db, id)?;
+    can_take(db, &r)?;
     let rp = h.replies.get(k).ok_or_else(|| Error(format!("run {id} holds no reply {k}")))?;
     if v.taken.contains(&k) {
         return Ok(());
@@ -460,7 +477,7 @@ pub fn take(db: &mut Db, id: &str, k: usize) -> Result<()> {
     apply_reply(db, &r.stack, rp)?;
     v.taken.push(k);
     v.marks.insert(Part::Reply(k).key(), true);
-    v.closed = h.opened.is_empty() && (0..h.replies.len()).all(|j| v.taken.contains(&j)) && asking_open(db, &r).is_empty();
+    v.closed = (0..h.replies.len()).all(|j| v.taken.contains(&j));
     let closed = v.closed;
     db.set_review(id, v.clone())?;
     if closed {
