@@ -32,6 +32,37 @@ struct Env {
     db: PathBuf,
 }
 
+/// The test's folder is removed once the test is over, but only once
+/// nothing works in it any more: an ask the test left going (its claude,
+/// the stacked that records and lands what claude did) would write in the
+/// folder as it is removed, and some of it would be left. When the test
+/// failed, the folder is removed at once: the test may have left an agent
+/// waiting for ever.
+impl Drop for Env {
+    fn drop(&mut self) {
+        if !std::thread::panicking() {
+            quiet(&self.root);
+        }
+    }
+}
+
+/// Waits until no process works in `dir`, a test's folder: none whose
+/// command names what is in it, as those of an ask do. With no `ps` to
+/// say, it does not wait.
+fn quiet(dir: &Path) {
+    let inside = format!("{}/", dir.display());
+    let mut working = String::new();
+    for _ in 0..300 {
+        let Ok(ps) = Command::new("ps").args(["axww", "-o", "command="]).output() else { return };
+        working = String::from_utf8_lossy(&ps.stdout).lines().filter(|l| l.contains(&inside)).collect::<Vec<_>>().join("\n");
+        if working.is_empty() {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    panic!("still at work in {}:\n{working}", dir.display());
+}
+
 const TEN: &str = "one\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nten\n";
 
 /// A repo with a base commit and three on top that apply in any order, the
@@ -87,12 +118,19 @@ fn new_file(file: &str, line: &str) -> String {
 /// whose files is read, written or moved. A test gives a settings' file of
 /// its own as `$STACKED_CONFIG`, over the folder's. The agents' rebase
 /// plans are kept in `todo` beside it (`$STACKED_TODO`): never in the
-/// temporary directory's folder, which every stacked shares.
+/// temporary directory's folder, which every stacked shares. What else the
+/// run writes in the temporary directory (an edit it could not take, kept
+/// for `--from`) goes in `tmp`, another folder of the test's beside it
+/// (`$TMPDIR`): removed with the test's folder, none of it is left in the
+/// temporary directory, which every process shares.
 fn kept_in<'a>(cmd: &'a mut Command, home: &Path) -> &'a mut Command {
+    let tmp = home.with_file_name("tmp");
+    std::fs::create_dir_all(&tmp).unwrap();
     cmd.env("STACKED_HOME", home)
         .env_remove("STACKED_CONFIG")
         .env_remove("STACKED_APP_STATE")
         .env("STACKED_TODO", home.with_file_name("todo"))
+        .env("TMPDIR", tmp)
 }
 
 /// What runs stacked as a run of yours: no override, so that the files of
@@ -2569,11 +2607,13 @@ fn a_patch_is_edited_where_the_cursor_is() {
     assert!(e.ok(&["check"]).contains("s: applies"));
 
     // One the patch above cannot take is not taken; it is kept, and taken
-    // up again from where it was left.
+    // up again from where it was left. It is kept in the temporary
+    // directory, which is a folder of the test's here.
     script("sed -i '' 's/^eight$/huit/' \"$file\"");
     let (fine, _, err) = edit(&["1", "--path", "a.txt", "--line", "8"]);
     assert!(!fine && err.contains("patch 3 (Bug 3 - café") && err.contains("does not apply"), "{err}");
     let kept = err.split("Your edit is kept in ").nth(1).unwrap().split(':').next().unwrap().to_string();
+    assert!(Path::new(&kept).starts_with(e.root.join("tmp")), "{kept}");
     assert!(std::fs::read_to_string(&kept).unwrap().contains("huit"));
     assert_eq!(e.ok(&["versions", "s", "1"]).lines().count(), 2, "nothing changed");
     script("sed -i '' 's/^huit$/eight/' \"$file\"");

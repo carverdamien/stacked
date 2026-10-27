@@ -25,14 +25,18 @@ fn git(dir: &Path, args: &[&str]) {
 /// stacked run in `dir` on the database `db`, as the tests run it: its own
 /// things (its settings, the databases opened last) kept in `home` beside
 /// the database (`$STACKED_HOME`), never in the home of whoever runs the
-/// tests.
+/// tests; what it writes in the temporary directory, in `tmp` beside it
+/// (`$TMPDIR`), removed with the test's folder.
 fn stacked(dir: &Path, db: &Path, args: &[&str]) {
+    let tmp = db.with_file_name("tmp");
+    std::fs::create_dir_all(&tmp).unwrap();
     let out = Command::new(env!("CARGO_BIN_EXE_stacked"))
         .current_dir(dir)
         .arg("-f")
         .arg(db)
         .args(args)
         .env("STACKED_HOME", db.with_file_name("home"))
+        .env("TMPDIR", tmp)
         .env_remove("STACKED_CONFIG")
         .env_remove("STACKED_APP_STATE")
         .output()
@@ -86,11 +90,69 @@ fn setup() -> (tempfile::TempDir, PathBuf, PathBuf) {
 
 /// The editor on `db`, with the settings of no file: the tests share their
 /// process, and a developer's own settings must not change them.
-fn open(db: &Path) -> stacked::db::Result<App> {
+fn open(db: &Path) -> stacked::db::Result<Editor> {
     stacked::config::init(stacked::config::Config::default());
     // No agent of the user's is ever asked: the tests' stand-in is.
     fake_claude();
-    App::with_config(db, stacked::config::Config::default())
+    App::with_config(db, stacked::config::Config::default()).map(Editor)
+}
+
+/// The editor a test opened (`open`). Once it goes, at the end of the test,
+/// it waits for the asks the test started to be over (`asks_over`), before
+/// the test's folder is removed.
+struct Editor(App);
+
+impl std::ops::Deref for Editor {
+    type Target = App;
+
+    fn deref(&self) -> &App {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for Editor {
+    fn deref_mut(&mut self) -> &mut App {
+        &mut self.0
+    }
+}
+
+/// When the test failed, its asks are not waited for: the test may have
+/// left an agent held for ever.
+impl Drop for Editor {
+    fn drop(&mut self) {
+        if !std::thread::panicking() {
+            asks_over(&mut self.0);
+        }
+    }
+}
+
+/// Waits for the asks `app` started to be over: the work away from the
+/// screen done (`settle`), and no process working in the folder of the
+/// database, none whose command names what is in it, as those of an ask do
+/// (its claude, the stacked that records and lands what claude did). Else
+/// an ask's processes would write in the folder as it is removed, and leave
+/// some of it. With no `ps` to say, it does not wait for them.
+fn asks_over(app: &mut App) {
+    app.settle();
+    // The folder as the test named it, and as the asks name it: its real
+    // path.
+    let given = app.path.parent().map(Path::to_path_buf).unwrap_or_default();
+    let Ok(real) = given.canonicalize() else { return };
+    let inside: Vec<String> = [&given, &real].iter().filter(|d| d.is_absolute()).map(|d| format!("{}/", d.display())).collect();
+    let mut working = String::new();
+    for _ in 0..300 {
+        let Ok(ps) = Command::new("ps").args(["axww", "-o", "command="]).output() else { break };
+        working = String::from_utf8_lossy(&ps.stdout)
+            .lines()
+            .filter(|l| inside.iter().any(|i| l.contains(i.as_str())))
+            .collect::<Vec<_>>()
+            .join("\n");
+        if working.is_empty() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    assert!(working.is_empty(), "still at work in {}:\n{working}", real.display());
 }
 
 /// Draws the screen; what it shows, and where the terminal's cursor is.
@@ -1845,7 +1907,7 @@ fn the_editor_in_the_middle_goes_between_the_last_reply_and_the_references() {
 /// comment on LINE 39 whose r1 points at the first; the agent's answer to
 /// the second, attaching r2, lines of a.txt; your reply after it. And the
 /// second comment.
-fn a_thread_with_references(db: &Path) -> (App, Note) {
+fn a_thread_with_references(db: &Path) -> (Editor, Note) {
     let mut app = open(db).unwrap();
     keys(&mut app, &[KeyCode::Right]);
     down_to(&mut app, "+TWO");
@@ -2383,17 +2445,20 @@ fn the_comments_pane_previews_without_moving_the_patch() {
 fn fake_claude() -> PathBuf {
     static FAKE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
     FAKE.get_or_init(|| {
-        let path = std::env::temp_dir().join(format!("stacked-tui-claude-{}.sh", std::process::id()));
         let result = serde_json::to_string(&serde_json::json!({"type": "result", "result": r#"{"replies": {"c1": "Seen."}}"#})).unwrap();
-        std::fs::write(
-            &path,
-            format!(
-                "#!/bin/sh\necho '{{\"type\":\"system\",\"subtype\":\"init\",\"model\":\"fake\"}}'\necho '{{\"type\":\"assistant\",\"message\":{{\"content\":[{{\"type\":\"text\",\"text\":\"Reading the patch.\"}}]}}}}'\n\
-                 git=$(git rev-parse --path-format=absolute --git-common-dir)\nwhile test -e \"$git/../../hold\"; do sleep 0.1; done\ncat <<'EOF'\n{result}\nEOF\n"
-            ),
-        )
-        .unwrap();
-        Command::new("chmod").arg("+x").arg(&path).status().unwrap();
+        let script = format!(
+            "#!/bin/sh\necho '{{\"type\":\"system\",\"subtype\":\"init\",\"model\":\"fake\"}}'\necho '{{\"type\":\"assistant\",\"message\":{{\"content\":[{{\"type\":\"text\",\"text\":\"Reading the patch.\"}}]}}}}'\n\
+             git=$(git rev-parse --path-format=absolute --git-common-dir)\nwhile test -e \"$git/../../hold\"; do sleep 0.1; done\ncat <<'EOF'\n{result}\nEOF\n"
+        );
+        // Written in the folder Cargo gives the tests for their files, not in
+        // the temporary directory, where it would be left: the same script
+        // for every run of the tests, written whole before it takes the place
+        // of the one there, which another run may be running.
+        let dir = Path::new(env!("CARGO_TARGET_TMPDIR"));
+        let (path, part) = (dir.join("tui-claude.sh"), dir.join(format!("tui-claude-{}.sh", std::process::id())));
+        std::fs::write(&part, script).unwrap();
+        Command::new("chmod").arg("+x").arg(&part).status().unwrap();
+        std::fs::rename(&part, &path).unwrap();
         stacked::ask::stand_in(&path, Path::new(env!("CARGO_BIN_EXE_stacked")));
         path
     })
@@ -3829,7 +3894,7 @@ fn a_comment_is_sent_from_its_menu_and_answered_in_place() {
 
 /// A comment asked about, its stream opened in place: the agent held at
 /// work until what this gives is dropped.
-fn asked_and_streamed(db: &Path) -> (App, Held) {
+fn asked_and_streamed(db: &Path) -> (Editor, Held) {
     fake_claude();
     let mut app = open(db).unwrap();
     keys(&mut app, &[KeyCode::Right]);
@@ -6049,7 +6114,7 @@ fn the_review_closes_with_what_remains_marked_only_while_something_remains() {
 /// An edit by hand of patch 1 of `s` waiting for review, its review open,
 /// the editor run in the checkout the stack was imported from: on main,
 /// HEAD is in sync with `s`.
-fn reviewing_with_head(prepare: impl FnOnce(&Path)) -> (tempfile::TempDir, PathBuf, PathBuf, App) {
+fn reviewing_with_head(prepare: impl FnOnce(&Path)) -> (tempfile::TempDir, PathBuf, PathBuf, Editor) {
     let (tmp, db, src) = setup();
     prepare(&src);
     let mut app = open(&db).unwrap();
@@ -6840,7 +6905,7 @@ fn selected_banner(app: &mut App) -> String {
 /// Patch 1 commented on, and the work runs `kinds` name landed for it: an
 /// edit (`edit`), an answer (`answer`), an edit going on from `run-1`
 /// (`guess`); and a build and test going, with `build`.
-fn landed_kinds(kinds: &[(&str, &str)], build: bool) -> (tempfile::TempDir, PathBuf, App) {
+fn landed_kinds(kinds: &[(&str, &str)], build: bool) -> (tempfile::TempDir, PathBuf, Editor) {
     let (tmp, db, _src) = setup();
     let mut app = open(&db).unwrap();
     keys(&mut app, &[KeyCode::Right]);

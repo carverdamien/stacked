@@ -1915,6 +1915,17 @@ directory, nor while another ask still running writes its plan there.
 `tests/cli.rs` shows the folder gone once an agent's change to the whole
 stack lands.
 
+Nor does any test leave anything else in the temporary directory, which
+every process shares. In each test file, the function that gives every run
+of the binary its home gives it another folder of the test's as `$TMPDIR`,
+so that what stacked writes in the temporary directory (an edit it could
+not take, kept for `--from`) is removed with the test's folder. The
+editor's tests write their stand-in for claude in the folder Cargo gives
+the tests for their files. The folder of a test that asks the agent is
+removed only once its asks are over, with no process working in the folder
+any more: an ask the test left going would write in the folder as it is
+removed, and leave some of it.
+
 With `STACKED_TEST_CHECKPOINTS=1` set, every write writes a checkpoint, and
 every database read from one is read whole too and the two compared, a
 difference a panic: run the suite so too after a change to the database,

@@ -44,10 +44,14 @@ fn settings() {
 /// `program`, a stacked (this one, or the copy in StackED.app), as the
 /// tests run it: its own things (its settings, the databases opened last)
 /// kept in `home`, a folder of the test's (`$STACKED_HOME`), never in the
-/// home of whoever runs the tests.
+/// home of whoever runs the tests; what it writes in the temporary
+/// directory, in `tmp` beside it (`$TMPDIR`), removed with the test's
+/// folder.
 fn stacked_at(program: &Path, home: &Path) -> Command {
+    let tmp = home.with_file_name("tmp");
+    std::fs::create_dir_all(&tmp).unwrap();
     let mut cmd = Command::new(program);
-    cmd.env("STACKED_HOME", home).env_remove("STACKED_CONFIG").env_remove("STACKED_APP_STATE");
+    cmd.env("STACKED_HOME", home).env("TMPDIR", tmp).env_remove("STACKED_CONFIG").env_remove("STACKED_APP_STATE");
     cmd
 }
 
