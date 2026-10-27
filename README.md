@@ -186,8 +186,12 @@ comment being written. The page follows the mouse only while it is the
 active one: while another window or another tab has the focus, the mouse
 going over the page marks and picks nothing, and the line it marked is
 underlined no longer. A click and the wheel act on the page all the same.
-`--port N` listens on port N (else any free one), `--no-open` only says
-where it is.
+When the page has the focus again, what is under the mouse is marked or
+picked at once, if the mouse went over the page in the meantime and is
+still there. The click that gives the page the focus back thus acts as any
+other click does, whether the browser sends the click before the focus or
+after: a click on a line of the patch is Enter on that line. `--port N`
+listens on port N (else any free one), `--no-open` only says where it is.
 
 It listens on 127.0.0.1 only, and only a page holding the token in the
 address it opened (a new one each time) may see it or drive it: a page from
@@ -1987,7 +1991,12 @@ and the editor left, the worktree made ahead removed (Quit in the page;
 `stacked web` at once, each putting its database, named from where it
 runs, on the list StackED's Open Recent shows; and
 `web.rs` tests the rows and the lines both ways, with the client's own tests
-(`web/client.rs`, compiled to the machine as well as to wasm). With
+(`web/client.rs`, compiled to the machine as well as to wasm), which also
+test the mouse followed only while the page has the focus: the cell where
+the mouse was last seen while the page did not have the focus said at once
+when the page has it again (unless the mouse left the page), so that the
+click that gives the page the focus back acts on that cell, whether the
+browser sends the click before the focus or after. With
 the `app` feature, `tests/app.rs` runs StackED's editor as its window runs
 it, with no window: nothing drawn before the window's size, a key, a click,
 the mouse over a patch then gone, a window too small, the wait while

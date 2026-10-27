@@ -12,8 +12,10 @@
 //! The lines for the server: `k NAME MODS`, a key (`k c HEX MODS` for a
 //! character, by its code), MODS `c` ctrl, `a` alt, `s` shift, or `-`;
 //! `m X Y l|r`, a click on a cell, with the left or the right button; `v X
-//! Y`, the mouse over another cell, while the page has the focus; `o`, the
-//! mouse gone from the screen, or the page losing the focus.
+//! Y`, the mouse over another cell while the page has the focus, or, when
+//! the page gets the focus back, over the cell where the mouse was last
+//! seen while the page did not have it; `o`, the mouse gone from the
+//! screen, or the page losing the focus.
 
 /// Where the cursor is, in a run's modifiers: past ratatui's own.
 pub const CURSOR: u32 = 1 << 16;
@@ -153,42 +155,93 @@ pub fn key(key: &str, ctrl: bool, alt: bool, shift: bool, meta: bool) -> String 
     format!("k {name} {}", mods(shift && name != "BackTab"))
 }
 
+/// What the page's mouse has done: the cell it is over, as the server was
+/// last told, and the cell where it was last seen over the screen while the
+/// page did not have the focus, unless it left the screen since. When the
+/// page has the focus again, the mouse is said over that second cell at
+/// once, as StackED says it of a window that is the active one again
+/// (`Pointer::focus`, in src/app.rs).
+#[derive(Default)]
+pub struct Mouse {
+    over: Option<(u32, u32)>,
+    seen: Option<(u32, u32)>,
+}
+
+/// The cell at `(x, y)` pixels of the screen, its cells `cw` by `ch`.
+fn cell(x: f64, y: f64, cw: f64, ch: f64) -> Option<(u32, u32)> {
+    if cw <= 0.0 || ch <= 0.0 || x < 0.0 || y < 0.0 {
+        return None;
+    }
+    Some(((x / cw) as u32, (y / ch) as u32))
+}
+
 /// A click at `(x, y)` pixels of the screen, its cells `cw` by `ch`, made
 /// a line for the server: on a cell, with the right button if `right`.
-pub fn click(x: f64, y: f64, cw: f64, ch: f64, right: bool) -> String {
-    if cw <= 0.0 || ch <= 0.0 || x < 0.0 || y < 0.0 {
-        return String::new();
-    }
-    format!("m {} {} {}", (x / cw) as u32, (y / ch) as u32, if right { "r" } else { "l" })
+/// The click with the left button that gives the page the focus back may
+/// come before the focus: if the mouse was seen over a cell while the page
+/// did not have the focus, the mouse is said over that cell first, as
+/// `focus` says it, so that the click acts as it does after the focus, and
+/// the focus then has nothing more to say. A click with the right button
+/// leaves a window in the background on macOS: the mouse is not said over
+/// a cell before it.
+pub fn click(mouse: &mut Mouse, x: f64, y: f64, cw: f64, ch: f64, right: bool) -> String {
+    let Some(at) = cell(x, y, cw, ch) else { return String::new() };
+    let click = format!("m {} {} {}", at.0, at.1, if right { "r" } else { "l" });
+    let over = if right { String::new() } else { focus(mouse) };
+    if over.is_empty() { click } else { format!("{over}\n{click}") }
 }
 
 /// The mouse at `(x, y)` pixels of the screen, its cells `cw` by `ch`, made
-/// a line for the server when it is over another cell than `last`, the one
-/// it was over, while the page has the focus (`focused`). Without the
-/// focus, the mouse is not followed: if it was over a cell, it is said gone
-/// from the screen, as `left` says it, and after that nothing is said until
-/// the page has the focus again.
-pub fn moved(last: &mut Option<(u32, u32)>, x: f64, y: f64, cw: f64, ch: f64, focused: bool) -> String {
+/// a line for the server when it is over another cell than the one it was
+/// over, while the page has the focus (`focused`). Without the focus, the
+/// mouse is not followed: if it was over a cell, it is said gone from the
+/// screen, as `left` says it, and after that nothing is said until the page
+/// has the focus again. The cell where the mouse is seen meanwhile is kept,
+/// for `focus` to say.
+pub fn moved(mouse: &mut Mouse, x: f64, y: f64, cw: f64, ch: f64, focused: bool) -> String {
+    let at = cell(x, y, cw, ch);
     if !focused {
-        return if last.is_some() { left(last) } else { String::new() };
+        mouse.seen = at;
+        return if mouse.over.take().is_some() { "o".into() } else { String::new() };
     }
-    if cw <= 0.0 || ch <= 0.0 || x < 0.0 || y < 0.0 {
-        return String::new();
+    // Followed again: where the mouse was seen without the focus is past.
+    mouse.seen = None;
+    match at {
+        Some(at) if mouse.over != Some(at) => {
+            mouse.over = Some(at);
+            format!("v {} {}", at.0, at.1)
+        }
+        _ => String::new(),
     }
-    let at = ((x / cw) as u32, (y / ch) as u32);
-    if *last == Some(at) {
-        return String::new();
-    }
-    *last = Some(at);
-    format!("v {} {}", at.0, at.1)
 }
 
-/// The mouse gone from the screen, or the page losing the focus: said, and
-/// the cell the mouse was over, `last`, forgotten, so that coming back over
-/// it says so.
-pub fn left(last: &mut Option<(u32, u32)>) -> String {
-    *last = None;
+/// The mouse gone from the screen: said, and the cell it was over
+/// forgotten, so that coming back over it says so; the cell where it was
+/// seen while the page did not have the focus is forgotten too.
+pub fn left(mouse: &mut Mouse) -> String {
+    *mouse = Mouse::default();
     "o".into()
+}
+
+/// The page losing the focus: the mouse said gone, as `left` says it, and
+/// not followed until the page has the focus again. The cell where the
+/// mouse was seen while the page did not have the focus, which the browser
+/// may send before the loss of the focus, is kept.
+pub fn blur(mouse: &mut Mouse) -> String {
+    mouse.over = None;
+    "o".into()
+}
+
+/// The page given the focus back: the mouse said at once over the cell
+/// where it was last seen while the page did not have the focus, so that
+/// the click that gave the focus back acts on what is under the mouse, as
+/// any click does where the mouse is followed. If the mouse was not seen
+/// over the screen meanwhile, or left the screen since, nothing is said,
+/// and the mouse is followed from its next movement.
+pub fn focus(mouse: &mut Mouse) -> String {
+    let Some(at) = mouse.seen.take() else { return String::new() };
+    mouse.over = Some(at);
+    format!("v {} {}", at.0, at.1)
 }
 
 /// The wheel turned `dy` pixels, kept with what it turned before: a line up
@@ -224,7 +277,7 @@ mod wasm {
 
     static OUT: Mutex<Vec<u8>> = Mutex::new(Vec::new());
     static TURNED: Mutex<f64> = Mutex::new(0.0);
-    static OVER: Mutex<Option<(u32, u32)>> = Mutex::new(None);
+    static MOUSE: Mutex<super::Mouse> = Mutex::new(super::Mouse { over: None, seen: None });
 
     /// Room for `n` bytes, the text of the call after.
     #[unsafe(no_mangle)]
@@ -262,19 +315,32 @@ mod wasm {
 
     #[unsafe(no_mangle)]
     pub extern "C" fn click(x: f64, y: f64, cw: f64, ch: f64, right: u32) -> usize {
-        give(super::click(x, y, cw, ch, right != 0))
+        let mut mouse = MOUSE.lock().unwrap();
+        give(super::click(&mut mouse, x, y, cw, ch, right != 0))
     }
 
     #[unsafe(no_mangle)]
     pub extern "C" fn moved(x: f64, y: f64, cw: f64, ch: f64, focused: u32) -> usize {
-        let mut over = OVER.lock().unwrap();
-        give(super::moved(&mut over, x, y, cw, ch, focused != 0))
+        let mut mouse = MOUSE.lock().unwrap();
+        give(super::moved(&mut mouse, x, y, cw, ch, focused != 0))
     }
 
     #[unsafe(no_mangle)]
     pub extern "C" fn left() -> usize {
-        let mut over = OVER.lock().unwrap();
-        give(super::left(&mut over))
+        let mut mouse = MOUSE.lock().unwrap();
+        give(super::left(&mut mouse))
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn blur() -> usize {
+        let mut mouse = MOUSE.lock().unwrap();
+        give(super::blur(&mut mouse))
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn focus() -> usize {
+        let mut mouse = MOUSE.lock().unwrap();
+        give(super::focus(&mut mouse))
     }
 
     #[unsafe(no_mangle)]
@@ -319,17 +385,17 @@ mod tests {
         assert_eq!(key("é", false, true, false, false), "k c e9 a");
         assert_eq!(key("v", false, false, false, true), "", "⌘V, the browser's");
         assert_eq!(key("Shift", false, false, true, false), "");
-        assert_eq!(click(17.0, 41.0, 8.0, 20.0, false), "m 2 2 l");
-        assert_eq!(click(0.0, 0.0, 8.0, 20.0, true), "m 0 0 r");
-        assert_eq!(click(5.0, 5.0, 0.0, 20.0, false), "");
+        let mut mouse = Mouse::default();
+        assert_eq!(click(&mut mouse, 17.0, 41.0, 8.0, 20.0, false), "m 2 2 l");
+        assert_eq!(click(&mut mouse, 0.0, 0.0, 8.0, 20.0, true), "m 0 0 r");
+        assert_eq!(click(&mut mouse, 5.0, 5.0, 0.0, 20.0, false), "");
         // The mouse moved: said when it is over another cell.
-        let mut over = None;
-        assert_eq!(moved(&mut over, 17.0, 41.0, 8.0, 20.0, true), "v 2 2");
-        assert_eq!(moved(&mut over, 20.0, 45.0, 8.0, 20.0, true), "", "the same cell");
-        assert_eq!(moved(&mut over, 25.0, 45.0, 8.0, 20.0, true), "v 3 2");
+        assert_eq!(moved(&mut mouse, 17.0, 41.0, 8.0, 20.0, true), "v 2 2");
+        assert_eq!(moved(&mut mouse, 20.0, 45.0, 8.0, 20.0, true), "", "the same cell");
+        assert_eq!(moved(&mut mouse, 25.0, 45.0, 8.0, 20.0, true), "v 3 2");
         // Gone from the screen: said; back over the same cell, said again.
-        assert_eq!(left(&mut over), "o");
-        assert_eq!(moved(&mut over, 25.0, 45.0, 8.0, 20.0, true), "v 3 2");
+        assert_eq!(left(&mut mouse), "o");
+        assert_eq!(moved(&mut mouse, 25.0, 45.0, 8.0, 20.0, true), "v 3 2");
         let mut turned = 0.0;
         assert_eq!(wheel(&mut turned, 30.0), "");
         assert_eq!(wheel(&mut turned, 30.0), "k Down -", "a notch, with what it turned before");
@@ -339,20 +405,100 @@ mod tests {
 
     #[test]
     fn the_mouse_is_followed_only_while_the_page_has_the_focus() {
-        let mut over = None;
-        assert_eq!(moved(&mut over, 17.0, 41.0, 8.0, 20.0, true), "v 2 2");
+        let mut mouse = Mouse::default();
+        assert_eq!(moved(&mut mouse, 17.0, 41.0, 8.0, 20.0, true), "v 2 2");
         // The page losing the focus: the mouse said gone, as when it leaves
-        // the screen, then not followed.
-        assert_eq!(left(&mut over), "o");
-        assert_eq!(moved(&mut over, 25.0, 45.0, 8.0, 20.0, false), "");
-        assert_eq!(moved(&mut over, 33.0, 45.0, 8.0, 20.0, false), "");
-        // The focus back: the mouse followed from its next movement, over
-        // the cell it was over before as over another.
-        assert_eq!(moved(&mut over, 17.0, 41.0, 8.0, 20.0, true), "v 2 2");
-        // Moved without the focus while it was over a cell, its loss not
-        // said: the mouse said gone, once, then not followed.
-        assert_eq!(moved(&mut over, 25.0, 45.0, 8.0, 20.0, false), "o");
-        assert_eq!(moved(&mut over, 33.0, 45.0, 8.0, 20.0, false), "");
-        assert_eq!(moved(&mut over, 33.0, 45.0, 8.0, 20.0, true), "v 4 2");
+        // the screen, then not followed: it is said over no cell.
+        assert_eq!(blur(&mut mouse), "o");
+        assert_eq!(moved(&mut mouse, 25.0, 45.0, 8.0, 20.0, false), "");
+        assert_eq!(moved(&mut mouse, 33.0, 45.0, 8.0, 20.0, false), "");
+        // A click with the right button, which leaves the page in the
+        // background on macOS, acts all the same, and the mouse is said over
+        // no cell before it.
+        assert_eq!(click(&mut mouse, 33.0, 45.0, 8.0, 20.0, true), "m 4 2 r");
+        assert_eq!(moved(&mut mouse, 41.0, 45.0, 8.0, 20.0, false), "");
+        // The focus back: the mouse said at once over the cell where it was
+        // last seen, then followed.
+        assert_eq!(focus(&mut mouse), "v 5 2");
+        assert_eq!(moved(&mut mouse, 17.0, 41.0, 8.0, 20.0, true), "v 2 2");
+        // Moved without the focus while it was over a cell, the loss of the
+        // focus not said yet: the mouse said gone, once, then not followed.
+        // The loss said after keeps the cell where the mouse was seen.
+        assert_eq!(moved(&mut mouse, 25.0, 45.0, 8.0, 20.0, false), "o");
+        assert_eq!(moved(&mut mouse, 33.0, 45.0, 8.0, 20.0, false), "");
+        assert_eq!(blur(&mut mouse), "o");
+        assert_eq!(focus(&mut mouse), "v 4 2");
+    }
+
+    #[test]
+    fn where_the_mouse_was_seen_without_the_focus_is_said_once_the_page_has_it_again() {
+        let mut mouse = Mouse::default();
+        // Seen over the screen while the page does not have the focus: the
+        // last cell it was seen over said at once when the page has the
+        // focus again, then the mouse followed.
+        assert_eq!(moved(&mut mouse, 17.0, 41.0, 8.0, 20.0, false), "");
+        assert_eq!(moved(&mut mouse, 25.0, 45.0, 8.0, 20.0, false), "");
+        assert_eq!(focus(&mut mouse), "v 3 2");
+        assert_eq!(focus(&mut mouse), "", "said once");
+        assert_eq!(moved(&mut mouse, 26.0, 46.0, 8.0, 20.0, true), "", "the same cell");
+        assert_eq!(moved(&mut mouse, 33.0, 45.0, 8.0, 20.0, true), "v 4 2");
+        // Gone from the screen since: forgotten, the focus back saying
+        // nothing, and a click acting alone.
+        assert_eq!(blur(&mut mouse), "o");
+        assert_eq!(moved(&mut mouse, 25.0, 45.0, 8.0, 20.0, false), "");
+        assert_eq!(left(&mut mouse), "o");
+        assert_eq!(focus(&mut mouse), "");
+        assert_eq!(click(&mut mouse, 25.0, 45.0, 8.0, 20.0, false), "m 3 2 l");
+        assert_eq!(moved(&mut mouse, 25.0, 45.0, 8.0, 20.0, true), "v 3 2", "followed from its next movement");
+        // Not seen since the page lost the focus: the focus back says
+        // nothing, where the mouse is not known.
+        assert_eq!(blur(&mut mouse), "o");
+        assert_eq!(focus(&mut mouse), "");
+        // Followed before the browser says the focus back, the page having
+        // it already: the focus has nothing more to say.
+        assert_eq!(blur(&mut mouse), "o");
+        assert_eq!(moved(&mut mouse, 17.0, 41.0, 8.0, 20.0, false), "");
+        assert_eq!(moved(&mut mouse, 25.0, 45.0, 8.0, 20.0, true), "v 3 2");
+        assert_eq!(focus(&mut mouse), "");
+    }
+
+    #[test]
+    fn the_click_back_in_focus_acts_on_the_cell_seen_whatever_the_order_of_the_events() {
+        // The page in the background, the mouse seen over the cell (3, 2),
+        // then a click there. Browsers send the click (mousedown) before the
+        // focus or after, and a movement may come first, the page having
+        // the focus before the browser says so. Whichever comes first, the
+        // server is told that the mouse is over the cell, then the click on
+        // it.
+        let background = || {
+            let mut mouse = Mouse::default();
+            moved(&mut mouse, 17.0, 41.0, 8.0, 20.0, true);
+            blur(&mut mouse);
+            moved(&mut mouse, 25.0, 45.0, 8.0, 20.0, false);
+            mouse
+        };
+        let lines = |said: &[String]| said.iter().flat_map(|s| s.lines()).map(str::to_string).collect::<Vec<_>>();
+        let mut m = background();
+        let focus_first = [focus(&mut m), click(&mut m, 25.0, 45.0, 8.0, 20.0, false)];
+        let mut m = background();
+        let click_first = [click(&mut m, 25.0, 45.0, 8.0, 20.0, false), focus(&mut m)];
+        let mut m = background();
+        let moved_first =
+            [moved(&mut m, 26.0, 46.0, 8.0, 20.0, true), click(&mut m, 25.0, 45.0, 8.0, 20.0, false), focus(&mut m)];
+        let mut m = background();
+        let moved_between =
+            [focus(&mut m), moved(&mut m, 26.0, 46.0, 8.0, 20.0, true), click(&mut m, 25.0, 45.0, 8.0, 20.0, false)];
+        for said in [&focus_first[..], &click_first[..], &moved_first[..], &moved_between[..]] {
+            assert_eq!(lines(said), ["v 3 2", "m 3 2 l"], "{said:?}");
+        }
+        // The click before the focus, and the mouse moving between the two:
+        // the page still without the focus, the mouse is not followed, and
+        // the focus then says the mouse over the cell where it was last seen.
+        let mut m = background();
+        assert_eq!(click(&mut m, 25.0, 45.0, 8.0, 20.0, false), "v 3 2\nm 3 2 l");
+        assert_eq!(moved(&mut m, 33.0, 45.0, 8.0, 20.0, false), "o");
+        assert_eq!(focus(&mut m), "v 4 2");
+        // Later clicks act alone, as any click does.
+        assert_eq!(click(&mut m, 33.0, 45.0, 8.0, 20.0, false), "m 4 2 l");
     }
 }

@@ -75,8 +75,11 @@ WebAssembly.instantiateStreaming(fetch('/client.wasm?t=' + token)).then(({instan
     send(read(w.moved(e.clientX - r.left, e.clientY - r.top, cw, ch, document.hasFocus())));
   });
   screen.addEventListener('mouseleave', () => send(read(w.left())));
-  // The page losing the focus says the mouse gone, as mouseleave does.
-  addEventListener('blur', () => send(read(w.left())));
+  // The page losing the focus says the mouse gone, as mouseleave does;
+  // the page getting the focus back says the mouse over the cell where the
+  // mouse was last seen meanwhile.
+  addEventListener('blur', () => send(read(w.blur())));
+  addEventListener('focus', () => send(read(w.focus())));
   screen.addEventListener('contextmenu', e => e.preventDefault());
   addEventListener('wheel', e => send(read(w.wheel(e.deltaY))));
   addEventListener('paste', e => { e.preventDefault(); send(call(w.paste, e.clipboardData.getData('text'))); });
