@@ -9116,6 +9116,8 @@ pub fn scope_said(db: &Db, name: &str, s: &Scope) -> String {
 
 pub fn run(path: &Path) -> Result<()> {
     let mut app = App::new(path)?;
+    // Opened: on StackED's File → Open Recent too.
+    crate::state::opened_in_editor(path);
     app.launch();
     let mut terminal = ratatui::init();
     let res = event_loop(&mut terminal, &mut app);

@@ -41,6 +41,21 @@ fn settings() {
     });
 }
 
+/// `program`, a stacked (this one, or the copy in StackED.app), as the
+/// tests run it: its own things (its settings, the databases opened last)
+/// kept in `home`, a folder of the test's (`$STACKED_HOME`), never in the
+/// home of whoever runs the tests.
+fn stacked_at(program: &Path, home: &Path) -> Command {
+    let mut cmd = Command::new(program);
+    cmd.env("STACKED_HOME", home).env_remove("STACKED_CONFIG").env_remove("STACKED_APP_STATE");
+    cmd
+}
+
+/// This stacked, as the tests run it (`stacked_at`).
+fn stacked(home: &Path) -> Command {
+    stacked_at(Path::new(env!("CARGO_BIN_EXE_stacked")), home)
+}
+
 /// A database holding stack `s` of two patches.
 fn setup() -> (tempfile::TempDir, PathBuf) {
     settings();
@@ -58,10 +73,9 @@ fn setup() -> (tempfile::TempDir, PathBuf) {
     git(&src, &["add", "."]);
     git(&src, &["commit", "-qm", "Bug 2 - add b"]);
     let db = tmp.path().join("db.jsonl");
-    let out = Command::new(env!("CARGO_BIN_EXE_stacked"))
+    let out = stacked(&tmp.path().join("home"))
         .current_dir(&src)
         .args(["-f", db.to_str().unwrap(), "import", "s", "HEAD~2"])
-        .env("STACKED_CONFIG", "/nonexistent/stacked.toml")
         .output()
         .unwrap();
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
@@ -169,11 +183,8 @@ fn the_window_s_editor_draws_at_its_size_and_does_what_it_is_sent() {
 
 #[test]
 fn stacked_app_is_a_command_of_its_own() {
-    let out = Command::new(env!("CARGO_BIN_EXE_stacked"))
-        .args(["app", "--help"])
-        .env("STACKED_CONFIG", "/nonexistent/stacked.toml")
-        .output()
-        .unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let out = stacked(&tmp.path().join("home")).args(["app", "--help"]).output().unwrap();
     let help = String::from_utf8_lossy(&out.stdout);
     assert!(out.status.success() && help.starts_with("StackED: the editor in a window of its own"), "{help}");
 }
@@ -295,11 +306,7 @@ fn file_new_makes_an_empty_database_and_never_replaces_a_file() {
     // A database as stacked starts one, which its commands read.
     let db = stacked::db::Db::load(&new).unwrap();
     assert!(db.warnings.is_empty() && db.stacks().is_empty());
-    let out = Command::new(env!("CARGO_BIN_EXE_stacked"))
-        .args(["-f", new.to_str().unwrap(), "stacks"])
-        .env("STACKED_CONFIG", "/nonexistent/stacked.toml")
-        .output()
-        .unwrap();
+    let out = stacked(&tmp.path().join("home")).args(["-f", new.to_str().unwrap(), "stacks"]).output().unwrap();
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     opened.session.send(Input::Size(100, 30));
     screen(&opened.session, "the new database's screen", |_| true);
@@ -337,7 +344,7 @@ fn open_recent_lists_the_databases_opened_last_and_drops_those_gone() {
     let (a, b) = (tmp.path().join("a.jsonl"), tmp.path().join("b.jsonl"));
     for db in [&a, &b] {
         stacked::db::Db::create(db).unwrap();
-        stacked::app::state::opened(&state, db);
+        stacked::state::opened(&state, db);
     }
     let (file, from, _) = file_menu(&state);
     assert_eq!(file.recent(), [b.clone(), a.clone()]);
@@ -363,17 +370,11 @@ fn open_recent_lists_the_databases_opened_last_and_drops_those_gone() {
 #[test]
 fn the_bundle_is_made_as_macos_reads_an_app_and_made_again() {
     let tmp = tempfile::tempdir().unwrap();
-    let bundle = |dir: &Path| {
-        Command::new(env!("CARGO_BIN_EXE_stacked"))
-            .args(["app", "--bundle"])
-            .arg(dir)
-            .env("STACKED_CONFIG", "/nonexistent/stacked.toml")
-            .output()
-            .unwrap()
-    };
-    let ok = |program: &str, args: &[&std::ffi::OsStr]| {
-        let out = Command::new(program).args(args).output().unwrap();
-        assert!(out.status.success(), "{program}: {}", String::from_utf8_lossy(&out.stderr));
+    let home = tmp.path().join("home");
+    let bundle = |dir: &Path| stacked(&home).args(["app", "--bundle"]).arg(dir).output().unwrap();
+    let ok = |cmd: &mut Command| {
+        let out = cmd.output().unwrap();
+        assert!(out.status.success(), "{:?}: {}", cmd.get_program(), String::from_utf8_lossy(&out.stderr));
         String::from_utf8_lossy(&out.stdout).to_string()
     };
     let out = bundle(tmp.path());
@@ -383,21 +384,17 @@ fn the_bundle_is_made_as_macos_reads_an_app_and_made_again() {
     // As macOS reads it: its Info.plist, its signature, its icon at every
     // size, and the stacked in it, which runs.
     let contents = app.join("Contents");
-    ok("plutil", &["-lint".as_ref(), contents.join("Info.plist").as_os_str()]);
-    ok("codesign", &["--verify".as_ref(), "--strict".as_ref(), app.as_os_str()]);
+    ok(Command::new("plutil").arg("-lint").arg(contents.join("Info.plist")));
+    ok(Command::new("codesign").args(["--verify", "--strict"]).arg(&app));
     let pictures = tmp.path().join("check.iconset");
     let icns = contents.join("Resources/StackED.icns");
-    ok("iconutil", &["-c".as_ref(), "iconset".as_ref(), icns.as_os_str(), "-o".as_ref(), pictures.as_os_str()]);
+    ok(Command::new("iconutil").args(["-c", "iconset"]).arg(&icns).arg("-o").arg(&pictures));
     assert_eq!(std::fs::read_dir(&pictures).unwrap().count(), 10, "16 to 512 points, each twice as dense too");
-    let version = ok(&contents.join("MacOS/stacked").to_string_lossy(), &["--version".as_ref()]);
+    let copy = contents.join("MacOS/stacked");
+    let version = ok(stacked_at(&copy, &home).arg("--version"));
     assert_eq!(version.trim(), format!("stacked {}", env!("CARGO_PKG_VERSION")));
     // Not by the stacked in it, which it would remove before copying.
-    let out = Command::new(contents.join("MacOS/stacked"))
-        .args(["app", "--bundle"])
-        .arg(tmp.path())
-        .env("STACKED_CONFIG", "/nonexistent/stacked.toml")
-        .output()
-        .unwrap();
+    let out = stacked_at(&copy, &home).args(["app", "--bundle"]).arg(tmp.path()).output().unwrap();
     let said = String::from_utf8_lossy(&out.stderr);
     assert!(!out.status.success() && said.contains("this stacked is the one in"), "{said}");
     assert!(contents.join("MacOS/stacked").exists());

@@ -10,12 +10,11 @@
 //!
 //! On macOS, StackED is an app of many windows (`windows`), one for each
 //! database opened, each with an editor of its own. Its File menu (`menu`)
-//! opens them, and the databases opened last are kept between runs
-//! (`state`).
+//! opens them, and the databases opened last are kept between runs, with
+//! those stacked's editor opens (`crate::state`).
 
 #[cfg(target_os = "macos")]
 pub mod menu;
-pub mod state;
 pub mod windows;
 
 use std::collections::HashMap;
@@ -129,15 +128,15 @@ pub fn run(path: &Path) -> Result<()> {
 /// those no longer there left out; with none, a window on `named` (from
 /// `$STACKED_FILE`, the settings' `file`) if there is one; else no window,
 /// only the menu bar. Each database's editor runs in its folder. What goes
-/// wrong opening one is said in an alert once StackED runs.
+/// wrong opening one is said in an alert once StackED runs, after `said`,
+/// what StackED says as it starts.
 #[cfg(target_os = "macos")]
-pub fn dock(named: Option<std::path::PathBuf>) -> Result<()> {
-    let mut dbs = state::reopen(&state::path());
+pub fn dock(named: Option<std::path::PathBuf>, mut said: Vec<String>) -> Result<()> {
+    let mut dbs = crate::state::reopen(&crate::home::get().state);
     if dbs.is_empty() {
         dbs.extend(named.map(|f| std::path::absolute(&f).unwrap_or(f)));
     }
     let mut first = Vec::new();
-    let mut said = Vec::new();
     for db in dbs {
         match windows::open(&db) {
             Ok(o) => first.push(o),

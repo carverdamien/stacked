@@ -486,11 +486,12 @@ enum Cmd {
         from: Option<String>,
     },
     /// The settings, as they are: every one, in the form of the file they
-    /// are read from (~/.stacked.toml, or $STACKED_CONFIG), to start one
-    /// from: `stacked config > ~/.stacked.toml`; those the checkout's own
+    /// are read from (~/.stacked/config.toml, or $STACKED_CONFIG; with
+    /// $STACKED_HOME, config.toml in that folder), to start one from:
+    /// `stacked config > ~/.stacked/config.toml`; those the checkout's own
     /// settings set (.stacked/local.toml at its top) are said so. With KEY,
-    /// its value; with VALUE too, KEY written in that file, the rest of it
-    /// as it was.
+    /// its value; with VALUE too, KEY written in that file (made, with its
+    /// folder, if it is not there), the rest of it as it was.
     Config {
         /// A setting, as the file names it: `editor`, `view.layout`,
         /// `keys.down`.
@@ -579,7 +580,7 @@ enum SetupWhat {
         /// question each.
         #[arg(long)]
         tui: bool,
-        /// Written in the settings' file (~/.stacked.toml, or
+        /// Written in the settings' file (~/.stacked/config.toml, or
         /// $STACKED_CONFIG), for every checkout without its own, rather
         /// than in the checkout's own.
         #[arg(long)]
@@ -1868,14 +1869,33 @@ fn opened_as_app() {
     if let Some(home) = std::env::var_os("HOME") {
         let _ = std::env::set_current_dir(home);
     }
+    // What is to be said of the files of before, with no terminal to say
+    // it in: in alerts, each a sentence of its own.
+    let said = settle(true)
+        .into_iter()
+        .map(|s| {
+            let mut chars = s.chars();
+            chars.next().map_or_else(String::new, |c| c.to_uppercase().chain(chars).collect())
+        })
+        .collect();
     let settings = stacked::config::Config::load(&stacked::config::path()).0;
     let named = std::env::var_os("STACKED_FILE").map(PathBuf::from).or(settings.file);
     // No terminal for $EDITOR: a window of Terminal's for it.
     bundle::set_no_terminal();
-    if let Err(e) = stacked::app::dock(named) {
+    if let Err(e) = stacked::app::dock(named, said) {
         stacked::app::menu::alert(&e.0);
         std::process::exit(1);
     }
+}
+
+/// Where stacked keeps what is yours (`home`), as its environment says,
+/// set for the whole process before anything reads it: the one place that
+/// works it out from `$HOME`. What is to be said of the files of before,
+/// moved into it if this run is yours (`by_you`).
+fn settle(by_you: bool) -> Vec<String> {
+    let (home, said) = stacked::home::resolve(|k| std::env::var_os(k), by_you);
+    stacked::home::set(home);
+    said
 }
 
 /// Whether `word`, first on the command line and no command, names a
@@ -1907,6 +1927,16 @@ fn main() {
         argv.insert(i, "open".into());
     }
     let cli = Cli::parse_from(argv);
+    // The files of before moved by a run of yours, which says so; not by
+    // those stacked runs itself (an ask's, git's, the shell's completion),
+    // which could not say so.
+    let by_you = !matches!(
+        cli.cmd,
+        Some(Cmd::Prompt { .. } | Cmd::Record { .. } | Cmd::Land { .. } | Cmd::Fits { .. } | Cmd::Plan { .. } | Cmd::Complete { .. })
+    );
+    for said in settle(by_you) {
+        eprintln!("stacked: {said}");
+    }
     let mut file = cli.file;
     if let Some(Cmd::Open { file: Some(f) }) = &cli.cmd {
         file = Some(f.clone());

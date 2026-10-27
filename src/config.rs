@@ -1,10 +1,11 @@
-//! The settings, in `~/.stacked.toml` (or the file `$STACKED_CONFIG`
-//! names): the database opened by default, the editor and how it is told a
-//! line, the agent claude's asks run, where reviews come from, how the
-//! editor starts, and the keys. Every one is optional, and what is not set
-//! is as it would be with no file. A file that cannot be read is said, and
-//! not used: the defaults are. `stacked config` prints every setting as it
-//! is, in the file's form.
+//! The settings, in `~/.stacked/config.toml` (or the file `$STACKED_CONFIG`
+//! names, or `config.toml` in the folder `$STACKED_HOME` names: `home`): the
+//! database opened by default, the editor and how it is told a line, the
+//! agent claude's asks run, where reviews come from, how the editor starts,
+//! and the keys. Every one is optional, and what is not set is as it would
+//! be with no file. A file that cannot be read is said, and not used: the
+//! defaults are. `stacked config` prints every setting as it is, in the
+//! file's form.
 //!
 //! A checkout's own settings, `.stacked/local.toml` at its top, override
 //! those there: those of the checkout stacked runs in, and for a stack's
@@ -427,7 +428,7 @@ fn home() -> PathBuf {
     std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default()
 }
 
-/// `~/x` as a path in $HOME.
+/// `~/x`, as a setting names a path, as a path in $HOME.
 pub fn expand(p: &str) -> PathBuf {
     match p.strip_prefix("~/") {
         Some(rest) => home().join(rest),
@@ -794,7 +795,8 @@ impl Config {
 
 /// Writes in the settings' file at `path` that the tour was opened: `seen =
 /// true` under `[demo]`, the rest of the file as it was. A file that is not
-/// there is made; one stacked cannot read is left as it is, and said.
+/// there is made, and its folder; one stacked cannot read is left as it is,
+/// and said.
 /// Whether it wrote: not when the file said so already.
 pub fn remember_demo(path: &Path) -> Result<bool, String> {
     let at = |e: &dyn std::fmt::Display| format!("{}: {e}", path.display());
@@ -812,8 +814,18 @@ pub fn remember_demo(path: &Path) -> Result<bool, String> {
         Ok((c, _)) if c.demo.seen => {}
         _ => return Err(at(&"[demo] seen = true cannot be written in it as it is")),
     }
-    std::fs::write(path, new).map_err(|e| at(&e))?;
+    write_settings(path, &new)?;
     Ok(true)
+}
+
+/// `text` written as the settings' file at `path`, its folder made if it
+/// is not there (stacked's own, `~/.stacked`, the first time).
+fn write_settings(path: &Path, text: &str) -> Result<(), String> {
+    let at = |e: std::io::Error, p: &Path| format!("{}: {e}", p.display());
+    if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
+        std::fs::create_dir_all(dir).map_err(|e| at(e, dir))?;
+    }
+    std::fs::write(path, text).map_err(|e| at(e, path))
 }
 
 /// What a setting holds, as the file writes it.
@@ -957,9 +969,9 @@ pub fn value_of(c: &Config, key: &str) -> Result<Vec<String>, String> {
 }
 
 /// Writes `key` = `values` in the settings' file at `path`, every other
-/// line as it was; a file there is not, made. Refused, with why, for a
-/// setting there is not, a value of the wrong kind, or one stacked would
-/// not take; a file stacked cannot read is left as it is.
+/// line as it was; a file there is not, made, and its folder. Refused,
+/// with why, for a setting there is not, a value of the wrong kind, or one
+/// stacked would not take; a file stacked cannot read is left as it is.
 pub fn set(path: &Path, key: &str, values: &[String]) -> Result<(), String> {
     let lit = literal(key, kind_of(key)?, values)?;
     edit_settings(path, |text| with_setting(text, key, Some(&lit)))
@@ -991,7 +1003,7 @@ fn edit_settings(path: &Path, edit: impl FnOnce(&str) -> String) -> Result<(), S
     if !more.is_empty() {
         return Err(more.iter().map(|w| w.to_string()).collect::<Vec<_>>().join("; ") + "; nothing written");
     }
-    std::fs::write(path, new).map_err(|e| at(&e))
+    write_settings(path, &new)
 }
 
 /// `text`, a settings' file, with `key` (`table.name`, or `name` at the
@@ -1114,13 +1126,12 @@ struct Loaded {
 
 static LOADED: OnceLock<Loaded> = OnceLock::new();
 
-/// Where the settings are read from: `$STACKED_CONFIG`, else
-/// `~/.stacked.toml`.
+/// Where the settings are read from, as the binary worked it out as it
+/// started (`home`): `config.toml` in stacked's folder, or the file
+/// `$STACKED_CONFIG` names. The null device where nothing worked it out, as
+/// in the tests' own processes: no file of the user's is read.
 pub fn path() -> PathBuf {
-    match std::env::var_os("STACKED_CONFIG") {
-        Some(p) if !p.is_empty() => PathBuf::from(p),
-        _ => home().join(".stacked.toml"),
-    }
+    crate::home::get().config.clone()
 }
 
 fn loaded() -> &'static Loaded {

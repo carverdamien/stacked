@@ -22,16 +22,42 @@ fn git(dir: &Path, args: &[&str]) {
     assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
 }
 
+/// stacked run in `dir` on the database `db`, as the tests run it: its own
+/// things (its settings, the databases opened last) kept in `home` beside
+/// the database (`$STACKED_HOME`), never in the home of whoever runs the
+/// tests.
 fn stacked(dir: &Path, db: &Path, args: &[&str]) {
     let out = Command::new(env!("CARGO_BIN_EXE_stacked"))
         .current_dir(dir)
         .arg("-f")
         .arg(db)
         .args(args)
-        .env("STACKED_CONFIG", "/nonexistent/stacked.toml")
+        .env("STACKED_HOME", db.with_file_name("home"))
+        .env_remove("STACKED_CONFIG")
+        .env_remove("STACKED_APP_STATE")
         .output()
         .unwrap();
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+}
+
+#[test]
+fn the_editor_s_tests_read_and_keep_nothing_of_the_home() {
+    // In the tests' own process, which the binary's start never set up:
+    // no settings' file read, the defaults used, and nothing kept, wherever
+    // the environment points.
+    let nowhere = Path::new(stacked::home::NOWHERE);
+    assert_eq!(*stacked::home::get(), stacked::home::Home::none());
+    assert_eq!(stacked::config::path(), nowhere);
+    let (c, wrong) = stacked::config::Config::load(&stacked::config::path());
+    assert!(wrong.is_empty(), "{wrong:?}");
+    assert_eq!(c.render(), stacked::config::Config::default().render());
+    // The stacked an ask calls back is told so too.
+    let mut c = Command::new("true");
+    stacked::home::get().pass_on(&mut c);
+    for (k, v) in c.get_envs() {
+        assert_eq!(v, Some(nowhere.as_os_str()), "{k:?}");
+    }
+    assert_eq!(c.get_envs().count(), 3);
 }
 
 /// A database holding stack `s` of two patches, and another stack `t`; and

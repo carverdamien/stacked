@@ -14,8 +14,9 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use eframe::egui;
 
-use super::{Session, Window, state};
+use super::{Session, Window};
 use crate::db::{Db, Error, Result};
+use crate::state;
 
 /// A database opened for a window of its own: where it is, and its editor.
 pub struct Opened {
@@ -354,10 +355,11 @@ impl eframe::App for Windows {
 /// StackED's windows until it is quit: one for each of `first`, opened
 /// already, and one for each database the File menu opens; `said`, what
 /// went wrong opening others, is said in alerts once StackED runs. `keeps`
-/// for StackED.app, whose windows open are kept, to open them again.
+/// for StackED.app, whose windows open are kept, to open them again. The
+/// state is kept where stacked keeps it (`home`).
 #[cfg(target_os = "macos")]
 pub fn run(first: Vec<Opened>, said: Vec<String>, keeps: bool) -> Result<()> {
-    let state = state::path();
+    let state = crate::home::get().state.clone();
     let (to, from) = std::sync::mpsc::channel();
     for opened in first {
         let _ = to.send(opened);

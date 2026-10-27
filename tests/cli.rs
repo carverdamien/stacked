@@ -81,6 +81,25 @@ fn new_file(file: &str, line: &str) -> String {
     format!("diff --git a/{file} b/{file}\nnew file mode 100644\n--- /dev/null\n+++ b/{file}\n@@ -0,0 +1 @@\n+{line}\n")
 }
 
+/// stacked's own things (its settings, the databases opened last) kept, by
+/// a run of it as the tests run it, in `home`, a folder of the test's
+/// (`$STACKED_HOME`): never in the home of whoever runs the tests, none of
+/// whose files is read, written or moved. A test gives a settings' file of
+/// its own as `$STACKED_CONFIG`, over the folder's.
+fn kept_in<'a>(cmd: &'a mut Command, home: &Path) -> &'a mut Command {
+    cmd.env("STACKED_HOME", home).env_remove("STACKED_CONFIG").env_remove("STACKED_APP_STATE")
+}
+
+/// What runs stacked as a run of yours: no override, so that the files of
+/// before in `home`, a home of the test's standing in for one of yours,
+/// are moved into its folder.
+fn as_yours(home: &Path) -> [(&'static str, &Path); 2] {
+    [("HOME", home), ("STACKED_HOME", Path::new(""))]
+}
+
+/// stacked run in `dir` on the database `db`, its own things kept in
+/// `home` beside the database (`kept_in`), with `env` over what the tests
+/// set.
 fn stacked_in(
     dir: &Path,
     db: &Path,
@@ -89,7 +108,8 @@ fn stacked_in(
     env: &[(&str, &Path)],
 ) -> (bool, String, String) {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_stacked"));
-    cmd.current_dir(dir)
+    kept_in(&mut cmd, &db.with_file_name("home"))
+        .current_dir(dir)
         .arg("-f")
         .arg(db)
         .args(args)
@@ -97,7 +117,6 @@ fn stacked_in(
         .env("EDITOR", "false")
         // No agent of the user's is ever asked: a test asks its stand-in.
         .env("STACKED_CLAUDE", "/usr/bin/false")
-        .env("STACKED_CONFIG", "/nonexistent/stacked.toml")
         .env("GIT_AUTHOR_NAME", "A U Thor")
         .env("GIT_AUTHOR_EMAIL", "author@example.com")
         .env("GIT_COMMITTER_NAME", "C O Mitter")
@@ -3244,9 +3263,10 @@ fn the_settings_are_a_file_in_home() {
     .unwrap();
     // `config` prints every setting, the file's and the defaults, and what
     // is wrong; what it prints reads back.
+    let home = e.root.join("home");
     let run = |args: &[&str]| {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_stacked"));
-        cmd.current_dir(&e.src).args(args).env("STACKED_CONFIG", &cfg).env_remove("STACKED_FILE");
+        kept_in(&mut cmd, &home).current_dir(&e.src).args(args).env("STACKED_CONFIG", &cfg).env_remove("STACKED_FILE");
         let out = cmd.output().unwrap();
         (String::from_utf8(out.stdout).unwrap(), String::from_utf8(out.stderr).unwrap())
     };
@@ -3257,13 +3277,136 @@ fn the_settings_are_a_file_in_home() {
     assert!(out.contains("menu = [\"space\"]") && out.contains("[agent]"), "{out}");
     let copy = e.root.join("copy.toml");
     std::fs::write(&copy, &out).unwrap();
-    let again = Command::new(env!("CARGO_BIN_EXE_stacked")).arg("config").env("STACKED_CONFIG", &copy).output().unwrap();
+    let again = kept_in(&mut Command::new(env!("CARGO_BIN_EXE_stacked")), &home).arg("config").env("STACKED_CONFIG", &copy).output().unwrap();
     assert!(!String::from_utf8(again.stdout).unwrap().contains("# wrong"), "what it prints is a good file");
     // The database the settings name is the one opened when none is; what
     // is wrong with them is said by every command.
     let (out, err) = run(&["stacks"]);
     assert!(out.starts_with("s\t3 patches"), "{out}");
     assert!(err.contains("view.layout"), "{err}");
+}
+
+/// The names under `dir`, each with what its file holds: all there is, to
+/// see that nothing was moved, made or changed.
+fn listing(dir: &Path) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    let mut todo = vec![dir.to_path_buf()];
+    while let Some(d) = todo.pop() {
+        for e in std::fs::read_dir(&d).unwrap().flatten() {
+            let p = e.path();
+            let name = p.strip_prefix(dir).unwrap().display().to_string();
+            if e.file_type().unwrap().is_dir() {
+                todo.push(p);
+                out.push((name, "/".into()));
+            } else {
+                out.push((name, std::fs::read_to_string(&p).unwrap()));
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+/// A home folder of the test's, `someone` in `root`, as one of yours was
+/// before stacked kept its things in ~/.stacked: its settings (`editor =
+/// "hx"`) in ~/.stacked.toml, and StackED's state, `db` the database opened
+/// last, in ~/Library/Application Support/StackED.
+fn home_of_before(root: &Path, db: &Path) -> PathBuf {
+    let home = root.join("someone");
+    let stacked = home.join("Library/Application Support/StackED");
+    std::fs::create_dir_all(&stacked).unwrap();
+    std::fs::write(home.join(".stacked.toml"), "editor = \"hx\"\n").unwrap();
+    std::fs::write(stacked.join("state.json"), serde_json::json!({"recent": [db]}).to_string()).unwrap();
+    home
+}
+
+#[test]
+fn a_run_of_stacked_as_the_tests_run_it_reaches_nothing_in_the_home() {
+    let e = env();
+    e.ok(&["import", "s", "base"]);
+    // A home holding what a run of yours would read and move stands in for
+    // that of whoever runs the tests.
+    let home = home_of_before(&e.root, &e.db);
+    let before = listing(&home);
+    let (fine, out, err) = stacked_in(&e.src, &e.db, &["config"], "", &[("HOME", &home)]);
+    assert!(fine, "{err}");
+    // Where it reads its settings, as it says: the test's folder, beside
+    // the database.
+    let settings = e.root.join("home/config.toml");
+    assert_eq!(out.lines().next(), Some(format!("# none in {}", settings.display()).as_str()), "{out}");
+    assert!(out.contains("\n# editor = ...") && !out.contains("editor = \"hx\""), "the home's settings not read: {out}");
+    // Nothing of the home's read, moved, made or said.
+    assert_eq!(listing(&home), before);
+    assert!(!err.contains("moved") && !err.contains("no longer read"), "{err}");
+    // Nor of the home of whoever runs the tests.
+    let real = PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
+    for theirs in [real.join(".stacked"), real.join(".stacked.toml"), real.join("Library/Application Support/StackED")] {
+        assert!(!settings.starts_with(&theirs), "{}", theirs.display());
+    }
+}
+
+#[test]
+fn the_settings_are_in_stacked_s_folder_the_one_stacked_home_names_else_the_home_s() {
+    let e = env();
+    // The tests' folder: made by the first setting written.
+    let folder = e.root.join("home");
+    assert!(!folder.exists());
+    let (fine, _, err) = e.run(&["config", "editor", "hx"]);
+    assert!(fine && err.contains(&format!("editor written in {}", folder.join("config.toml").display())), "{err}");
+    assert_eq!(std::fs::read_to_string(folder.join("config.toml")).unwrap(), "editor = \"hx\"\n");
+    assert_eq!(e.ok(&["config", "editor"]), "hx\n");
+    assert!(e.ok(&["config"]).starts_with(&format!("# read from {}\n", folder.join("config.toml").display())));
+    // Another folder, named: its own.
+    let other = e.root.join("other");
+    let (_, out, _) = stacked_in(&e.src, &e.db, &["config"], "", &[("STACKED_HOME", &other)]);
+    assert!(out.starts_with(&format!("# none in {}\n", other.join("config.toml").display())), "{out}");
+    // $STACKED_CONFIG names the file itself, over the folder's.
+    let mine = e.root.join("mine.toml");
+    std::fs::write(&mine, "editor = \"vim\"\n").unwrap();
+    assert_eq!(stacked_in(&e.src, &e.db, &["config", "editor"], "", &[("STACKED_CONFIG", &mine)]).1, "vim\n");
+    // With no override, ~/.stacked/config.toml: of a home of the test's.
+    let home = e.root.join("someone");
+    let (fine, _, err) = stacked_in(&e.src, &e.db, &["config", "editor", "kak"], "", &as_yours(&home));
+    let theirs = home.join(".stacked/config.toml");
+    assert!(fine && err.contains(&format!("editor written in {}", theirs.display())), "{err}");
+    assert_eq!(std::fs::read_to_string(&theirs).unwrap(), "editor = \"kak\"\n");
+}
+
+#[test]
+fn a_run_of_yours_moves_the_files_of_before_into_stacked_s_folder_once_and_says_so() {
+    let e = env();
+    e.ok(&["import", "s", "base"]);
+    let home = home_of_before(&e.root, &e.db);
+    let (old, new) = (home.join(".stacked.toml"), home.join(".stacked/config.toml"));
+    let (old_state, new_state) = (home.join("Library/Application Support/StackED/state.json"), home.join(".stacked/state.json"));
+    // The shell's completion, which stacked's function runs: nothing moved,
+    // nothing said.
+    let (fine, _, err) = stacked_in(&e.src, &e.db, &["__complete", "--", ""], "", &as_yours(&home));
+    assert!(fine && err.is_empty(), "{err}");
+    assert!(old.exists() && old_state.exists() && !home.join(".stacked").exists());
+    // A run of yours: each moved, as it was, and said.
+    let (fine, out, err) = stacked_in(&e.src, &e.db, &["config", "editor"], "", &as_yours(&home));
+    assert!(fine && out == "hx\n", "{out}{err}");
+    assert!(err.contains(&format!("stacked: your settings were moved from {} to {}", old.display(), new.display())), "{err}");
+    assert!(
+        err.contains(&format!("stacked: StackED's list of the databases opened last was moved from {} to {}", old_state.display(), new_state.display())),
+        "{err}"
+    );
+    assert!(!old.exists() && !old_state.exists());
+    assert_eq!(stacked::state::recent(&new_state), std::slice::from_ref(&e.db), "the list as it was");
+    // Once: the next run says nothing of it.
+    let (_, out, err) = stacked_in(&e.src, &e.db, &["config"], "", &as_yours(&home));
+    assert!(out.starts_with(&format!("# read from {}\n", new.display())), "{out}");
+    assert!(!err.contains("moved") && !err.contains("no longer read"), "{err}");
+    // One of before there again, as an older stacked would write it: the
+    // folder's read, never written over; the other left as it is, and said
+    // to be read no longer.
+    std::fs::write(&old, "editor = \"vim\"\n").unwrap();
+    let (_, out, err) = stacked_in(&e.src, &e.db, &["config", "editor"], "", &as_yours(&home));
+    assert_eq!(out, "hx\n");
+    assert!(err.contains(&format!("stacked: {} is no longer read, as stacked reads its settings from {}", old.display(), new.display())), "{err}");
+    assert_eq!(std::fs::read_to_string(&old).unwrap(), "editor = \"vim\"\n");
+    assert_eq!(std::fs::read_to_string(&new).unwrap(), "editor = \"hx\"\n");
 }
 
 #[test]
@@ -3415,13 +3558,13 @@ fn the_shell_completes_the_commands_and_what_the_database_holds() {
         let script = format!(
             "compdef() {{ :; }}; _describe() {{ print -rl -- \"${{(@P)2}}\"; }}; _files() {{ print files; }}; source \"$1\"; words=({words}); CURRENT=${{#words}}; _stacked"
         );
-        let out = Command::new("zsh")
+        // The stacked it runs keeps its own things in the test's folder.
+        let out = kept_in(&mut Command::new("zsh"), &e.root.join("home"))
             .args(["-fc", &script, "zsh"])
             .arg(&function)
             .current_dir(&e.src)
             .env("PATH", &path)
             .env("STACKED_FILE", &e.db)
-            .env("STACKED_CONFIG", "/nonexistent/stacked.toml")
             .output()
             .unwrap();
         assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
@@ -3439,10 +3582,9 @@ fn a_word_that_is_no_command_is_not_taken_for_a_database() {
     let e = env();
     // Run with no -f: the word first.
     let first = |args: &[&str]| {
-        let out = Command::new(env!("CARGO_BIN_EXE_stacked"))
+        let out = kept_in(&mut Command::new(env!("CARGO_BIN_EXE_stacked")), &e.root.join("home"))
             .args(args)
             .current_dir(&e.src)
-            .env("STACKED_CONFIG", "/nonexistent/stacked.toml")
             .env_remove("STACKED_FILE")
             .output()
             .unwrap();

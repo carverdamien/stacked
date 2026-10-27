@@ -26,6 +26,7 @@ pub mod git;
 pub mod head;
 pub mod held;
 pub mod history;
+pub mod home;
 #[cfg(feature = "app")]
 pub mod icon;
 pub mod import;
@@ -47,6 +48,7 @@ pub mod review;
 pub mod rows;
 pub mod search;
 pub mod setup;
+pub mod state;
 pub mod thread;
 pub mod todo;
 pub mod tree;

@@ -1982,6 +1982,9 @@ fn start(db_path: &Path, id: &str) -> Result<()> {
     let extra: String = cfg.agent_args().iter().map(|a| format!(" {a}")).collect();
     step(format!("{claude} -p … --permission-mode {permission}{extra}, in {}", cwd.display()));
     c.env("STACKED_CLAUDE", claude);
+    // The stacked it calls back keeps what is yours where this one does:
+    // nowhere, in the tests' own processes.
+    crate::home::get().pass_on(&mut c);
     // The agent's commits are read back as patches, then gone: not signed,
     // which would want the user's key for each.
     unsigned(&mut c);

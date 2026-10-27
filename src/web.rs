@@ -147,6 +147,8 @@ fn leave(app: &App, browsers: &[Sender<String>]) {
 /// screen drawn after, the rows that changed sent them.
 fn run(path: &Path, rx: Receiver<Input>) -> Result<()> {
     let mut app = App::new(path)?;
+    // Opened: on StackED's File → Open Recent too.
+    crate::state::opened_in_editor(path);
     app.launch();
     let mut browsers: Vec<Sender<String>> = Vec::new();
     let mut size = (100, 30);

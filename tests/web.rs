@@ -22,6 +22,15 @@ fn git(dir: &Path, args: &[&str]) {
     assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
 }
 
+/// stacked, as the tests run it: its own things (its settings, the
+/// databases opened last) kept in `home`, a folder of the test's
+/// (`$STACKED_HOME`), never in the home of whoever runs the tests.
+fn stacked(home: &Path) -> Command {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_stacked"));
+    cmd.env("STACKED_HOME", home).env_remove("STACKED_CONFIG").env_remove("STACKED_APP_STATE");
+    cmd
+}
+
 /// A database holding stack `s` of two patches.
 fn setup() -> (tempfile::TempDir, PathBuf) {
     let tmp = tempfile::tempdir().unwrap();
@@ -38,10 +47,9 @@ fn setup() -> (tempfile::TempDir, PathBuf) {
     git(&src, &["add", "."]);
     git(&src, &["commit", "-qm", "Bug 2 - add b"]);
     let db = tmp.path().join("db.jsonl");
-    let out = Command::new(env!("CARGO_BIN_EXE_stacked"))
+    let out = stacked(&tmp.path().join("home"))
         .current_dir(&src)
         .args(["-f", db.to_str().unwrap(), "import", "s", "HEAD~2"])
-        .env("STACKED_CONFIG", "/nonexistent/stacked.toml")
         .output()
         .unwrap();
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
@@ -132,9 +140,8 @@ fn web(tmp: &Path, db: &Path, signal: &str) -> (Running, BufReader<ChildStderr>,
     let script = format!("#!/bin/sh\nkill -{signal} \"$(cat '{}')\"\nsleep 0.2\ntouch '{}'\n", pid.display(), edited.display());
     std::fs::write(&editor, script).unwrap();
     std::fs::set_permissions(&editor, std::fs::Permissions::from_mode(0o755)).unwrap();
-    let mut child = Command::new(env!("CARGO_BIN_EXE_stacked"))
+    let mut child = stacked(&tmp.join("home"))
         .args(["-f", db.to_str().unwrap(), "web", "--no-open"])
-        .env("STACKED_CONFIG", "/nonexistent/stacked.toml")
         .env("VISUAL", &editor)
         .env("EDITOR", &editor)
         .current_dir(tmp)
@@ -294,4 +301,47 @@ fn a_kill_or_its_terminal_closing_leaves_it_as_quit_does() {
     let (child, said, mut events, _, _) = web(tmp.path(), &db, "HUP");
     send(&child, "HUP");
     left(child, said, &mut events, &made);
+}
+
+#[test]
+fn the_database_the_editor_opens_is_on_the_list_stacked_s_open_recent_reads() {
+    let (tmp, _) = setup();
+    std::fs::copy(tmp.path().join("db.jsonl"), tmp.path().join("other.jsonl")).unwrap();
+    let home = tmp.path().join("home");
+    // Two at once, each on a database named from where it runs, as a
+    // terminal's `stacked web` is.
+    let serve = |name: &str| {
+        let mut child = stacked(&home)
+            .args(["-f", name, "web", "--no-open"])
+            .current_dir(tmp.path())
+            .stdin(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut said = BufReader::new(child.stderr.take().unwrap());
+        let child = Running(child);
+        let mut line = String::new();
+        said.read_line(&mut line).unwrap();
+        let url = line.split_whitespace().find_map(|w| w.strip_prefix("http://127.0.0.1:")).expect(&line).to_string();
+        (child, url)
+    };
+    let both = [serve("db.jsonl"), serve("other.jsonl")];
+    for (_, url) in &both {
+        let (port, token) = url.split_once("/?t=").unwrap();
+        let mut events = events(port.parse().unwrap(), token, 100);
+        until(&mut events, "the patches", |l| l.contains("Bug 2 - add b"));
+    }
+    // Each from the root, on the list StackED's File → Open Recent shows.
+    let state = home.join("state.json");
+    let mut listed = stacked::state::recent(&state);
+    listed.sort();
+    let root = tmp.path().canonicalize().unwrap();
+    assert_eq!(listed, [root.join("db.jsonl"), root.join("other.jsonl")]);
+    #[cfg(feature = "app")]
+    {
+        let (to, _) = std::sync::mpsc::channel();
+        let mut menu = stacked::app::windows::File::new(to, Box::new(|| {}), state).recent();
+        menu.sort();
+        assert_eq!(menu, listed, "as StackED's menu lists them");
+    }
 }

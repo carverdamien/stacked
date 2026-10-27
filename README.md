@@ -101,7 +101,7 @@ stacked moz-phab import D123       # a new stack of D123, those it stacks on and
 stacked apply bug123 --branch bug123   # only now does the worktree change
 stacked export bug123 | git am     # or put it anywhere by hand
 stacked trim new.jsonl --from @40  # a new database, the history before @40 left out
-stacked config > ~/.stacked.toml   # every setting, to start a settings file from
+stacked config > ~/.stacked/config.toml   # every setting, to start a settings file from (once ~/.stacked is made)
 stacked config editor hx           # one written in the settings file; KEY alone reads it
 stacked config --unset editor      # ... taken out of it
 stacked config --local editor vim  # ... in this checkout's own settings, over the file's here
@@ -255,16 +255,23 @@ window already. New… shows the Save panel, then makes an empty database
 where it says and opens it. New… never replaces a file: the panel offers
 to, but a file there already is said in an alert and nothing is made
 (delete it first, outside StackED). Open Recent lists the eight databases
-opened last, the latest first; one no longer there is taken off the list,
-and Clear Menu empties it. Each window has an editor of its own, which
-runs as if started in its database's folder: HEAD is the HEAD of the
-checkout there, and `$EDITOR` runs there; only the first window of
-`stacked app` runs where it was started. Close Window, like the window's
-close button, closes the window and quits its editor, as ctrl-c does.
-Closing the last window leaves StackED running, its menu bar there, until
-⌘Q quits it, and each window's editor with it. The databases opened last
-are kept in ~/Library/Application Support/StackED/state.json (never in the
-settings' file), with the windows StackED.app has open.
+opened last, the latest first, whether StackED opened them or stacked's
+editor did, in a terminal or in a browser (`stacked web`); one no longer
+there is taken off the list, and Clear Menu empties it. Each window has an
+editor of its own, which runs as if started in its database's folder: HEAD
+is the HEAD of the checkout there, and `$EDITOR` runs there; only the first
+window of `stacked app` runs where it was started. Close Window, like the
+window's close button, closes the window and quits its editor, as ctrl-c
+does. Closing the last window leaves StackED running, its menu bar there,
+until ⌘Q quits it, and each window's editor with it. The databases opened
+last are kept, with the windows StackED.app has open, in
+~/.stacked/state.json, never in the settings' file (`$STACKED_HOME` names
+another folder than ~/.stacked, and `$STACKED_APP_STATE` another file).
+StackED and a terminal's stacked may change that file at once: each change
+is made under a lock, on the file state.json.lock beside it, so that
+neither loses what the other wrote. StackED kept the file in
+~/Library/Application Support/StackED/state.json before; your first run of
+this stacked moves it (Settings, below).
 
 The menu bar also has an Edit menu, after File, with Undo, Redo, Cut, Copy,
 Paste and Select All. Its items act on the panels' text fields, such as the
@@ -1448,13 +1455,16 @@ nothing is written.
 
 ## Settings
 
-`~/.stacked.toml` (or the file `$STACKED_CONFIG` names) holds the settings,
-which a checkout's own, `.stacked/local.toml`, overrides there (below);
-each is optional, and `stacked config` prints them all as they are, in the
-file's form, with what is wrong with the file. As `git config` does,
-`stacked config KEY` prints one (`view.layout`, `keys.down`: each value on a
-line of its own), `stacked config KEY VALUE…` writes it in the file (several
-values for a list: `stacked config keys.down down j`), and `stacked config
+`~/.stacked/config.toml` holds the settings, in stacked's own folder,
+beside the databases opened last (`state.json`, StackED above);
+`$STACKED_HOME` names another folder than ~/.stacked, and `$STACKED_CONFIG`
+another file. A checkout's own settings, `.stacked/local.toml`, override
+them there (below); each is optional, and `stacked config` prints them all
+as they are, in the file's form, with what is wrong with the file. As `git
+config` does, `stacked config KEY` prints one (`view.layout`, `keys.down`:
+each value on a line of its own), `stacked config KEY VALUE…` writes it in
+the file (several values for a list: `stacked config keys.down down j`),
+the file and its folder made if they are not there, and `stacked config
 --unset KEY` takes it out. The rest of the file stays as it was, comments
 too. What is written is checked first: a setting there is not, a value of
 the wrong kind, or one stacked would not take is refused, with why, and
@@ -1482,7 +1492,7 @@ settings:
   change things (`Bash`, `Edit`, `Write`…) that an answer could change
   things too. No answer is no. What you let it is added to `tools`, what
   you did not taken out, in that checkout's own settings (below; with
-  `--global`, in `~/.stacked.toml`, for the checkouts without their own),
+  `--global`, in `~/.stacked/config.toml`, for the checkouts without their own),
   the rest of the file as it was; it says first which file `tools` is in
   now, and which it writes. Outside a checkout, only `--global` can be
   written. With `--tui`, on a screen of its own: `tools` as the settings
@@ -1557,8 +1567,19 @@ A file stacked cannot read, or with a setting it does not know, is not
 used at all: the editor's bar says why, as every command does. A setting
 with a wrong value keeps its default, and that is said too.
 
+The settings were once in `~/.stacked.toml`, and StackED's state in
+~/Library/Application Support/StackED/state.json. The first run of yours
+that finds either, with nothing in its place in ~/.stacked, moves it there
+and says so on stderr (StackED opened from the Dock says so in an alert);
+a link moves as a link, to the same file. A run that finds both reads the
+one in ~/.stacked, never writes over it, and says each time that the other
+is no longer read. Nothing is moved when `$STACKED_HOME`, or the file's own
+override, names where it is to be; nor by what stacked runs itself (an
+ask's `stacked land`, the shell's completion), which reads the file where
+it is until a run of yours moves it.
+
 A checkout's own settings, `.stacked/local.toml` at its top (beside the
-stacks' worktrees, out of git's sight), override `~/.stacked.toml` there:
+stacks' worktrees, out of git's sight), override `~/.stacked/config.toml` there:
 what it sets is its own, a list whole and a table's settings each (`[keys]
 down` alone, the other keys as they were); what it does not set, or sets
 wrong, is the other file's. The settings used are those of the checkout
@@ -1570,7 +1591,7 @@ VALUE…` writes one there, `stacked config --local --unset KEY` takes it
 out, `stacked config --local KEY` reads it, and `stacked config --local`
 prints the file. `stacked config` names both files and marks each setting
 the checkout's own sets (`# .stacked/local.toml`); one written in
-`~/.stacked.toml` that the checkout's own sets too is said to be the
+`~/.stacked/config.toml` that the checkout's own sets too is said to be the
 checkout's there. A `.stacked/local.toml` that git tracks is neither read
 nor written, and that is said: it came with the repository, and a setting
 can name a program to run (`agent.command`, `editor`).
@@ -1795,8 +1816,14 @@ is typed: `import.rs`). A fix to one may belong in the other.
 - `trim.rs`: a new database, the start of the history left out.
 - `todo.rs`: the `git rebase -i` style list.
 - `search.rs`: searching what stacked holds, in a thread of its own.
-- `config.rs`, `keys.rs`: the settings (`~/.stacked.toml`, and a
+- `config.rs`, `keys.rs`: the settings (`~/.stacked/config.toml`, and a
   checkout's own over it), and the keys they map.
+- `home.rs`: where stacked keeps what is yours, ~/.stacked, as the binary
+  works it out as it starts (nowhere, in the tests' own processes), and
+  the files of before moved into it.
+- `state.rs`: the databases opened last, by StackED and by stacked's
+  editor, and StackED's windows to open again, kept between runs under a
+  lock.
 - `setup.rs`: `stacked setup agent --tui`, the agent's tools on a screen.
 - `editor.rs`: the inline comment editor.
 - `paint.rs`: colours, and drawing text and boxes.
@@ -1813,9 +1840,8 @@ is typed: `import.rs`). A fix to one may belong in the other.
   the window that paints its screen and sends it what is done there.
   `app/windows.rs`: its windows on macOS, one for each database opened,
   and what the File menu's items do; `app/menu.rs`, the File menu itself,
-  its panels and its alerts, and the Edit menu (AppKit's); `app/state.rs`,
-  the databases opened last and the windows to open again, kept between
-  runs. `icon.rs`: StackED's icon, drawn at any size. `bundle.rs`:
+  its panels and its alerts, and the Edit menu (AppKit's).
+  `icon.rs`: StackED's icon, drawn at any size. `bundle.rs`:
   StackED.app (macOS), made by `stacked app --bundle`, and opened from
   the Dock.
 - `demo.rs`, `memory.rs`: `stacked demo`, the tour; and the database and
@@ -1831,6 +1857,19 @@ stacked built with no feature, and needs no wasm target; `--features` then
 adds the tests of each feature named. No test runs claude: a script stands
 in for it; none reaches Phabricator: its revisions and their comments are
 read by stand-ins; none opens a window.
+
+Nor does any test reach what is yours to stacked: ~/.stacked,
+~/.stacked.toml, StackED's state in ~/Library/Application Support. In each
+test file, one function gives every run of the binary a folder of the
+test's as `$STACKED_HOME`. The tests' own processes are never set up as
+the binary's start sets one up: their settings' file and their state are
+the null device, so that they read no settings but the defaults and keep
+nothing, and the asks they start are told the same. `tests/cli.rs` checks
+the first: stacked, run as the tests run it in a home holding the files of
+before, reads its settings from the test's folder and leaves that home as
+it was. `tests/tui.rs` and `home.rs` check the second. The tests of the
+move, and of the settings in ~/.stacked, give stacked a home of the
+test's.
 
 With `STACKED_TEST_CHECKPOINTS=1` set, every write writes a checkpoint, and
 every database read from one is read whole too and the two compared, a
@@ -1855,10 +1894,14 @@ agent's reference by `--edit --turn` (said so), and a rewind keeping one
 never named, asks waiting their turn, a rebase, the stack not
 edited by hand while the agent changes it, failures kept to look at, comments staying on their line
 across versions, a patch edited by hand (as mail and as code, at a line,
-refused and taken up again), trimming, the settings (a checkout's own over
-them, an ask on a stack having its checkout's wherever stacked runs, one
-git tracks not read; and the tools every ask may use, set up with the
-agent, in the checkout's own or with `--global`), Phabricator's comments
+refused and taken up again), trimming, the settings (in ~/.stacked, or the
+folder `$STACKED_HOME` names, the folder made by the first written, a file
+`$STACKED_CONFIG` names over it; the files of before moved in by a run of
+yours, said once, never over a file there, and not by the shell's
+completion; a checkout's own over them, an ask on a stack having its
+checkout's wherever stacked runs, one git tracks not read; and the tools
+every ask may use, set up with the agent, in the checkout's own or with
+`--global`), Phabricator's comments
 held for review then filed (none twice, none rejected again, an edit held
 as an edit of its turn), a stack imported from Phabricator's revisions (by
 number or link, named or not), Phabricator's commands there only when
@@ -1931,7 +1974,9 @@ serves the editor and asks it over HTTP as a browser would: the token
 needed, the page, the wasm, the rows as they change, a key and a click,
 and the editor left, the worktree made ahead removed (Quit in the page;
 `stacked web` itself sent SIGINT, SIGTERM or SIGHUP, the first while
-`$EDITOR` runs left to `$EDITOR`, the second waiting for it); and
+`$EDITOR` runs left to `$EDITOR`, the second waiting for it), and two
+`stacked web` at once, each putting its database, named from where it
+runs, on the list StackED's Open Recent shows; and
 `web.rs` tests the rows and the lines both ways, with the client's own tests
 (`web/client.rs`, compiled to the machine as well as to wasm). With
 the `app` feature, `tests/app.rs` runs StackED's editor as its window runs
@@ -1957,10 +2002,13 @@ run by egui with no window as eframe runs them: the root's window hidden,
 a window for each database opened (one twice), each telling its own editor
 its size, a window closed telling its editor to leave, the last closed
 leaving StackED running, and Quit keeping the windows open for StackED.app
-and waiting for each editor to leave. `app/state.rs` tests what is kept
+and waiting for each editor to leave. `state.rs` tests what is kept
 between runs: the recent databases, the latest first, once each and eight
-at most, cleared; those deleted taken off both lists; and a file that
-cannot be read. On macOS, they test that the fonts hold every character
+at most, cleared; those deleted taken off both lists; a file that cannot be
+read; writers at once, each keeping what it wrote (with no lock, some
+would not); a file of another kind (the null device) keeping nothing; and
+the editor's database kept nowhere in a test's own process. On macOS,
+`app.rs` tests that the fonts hold every character
 stacked draws, `app/menu.rs` that the File menu's target is a class the
 Objective-C runtime takes, with a method for each item's action, and that
 the Edit menu's items have the titles and shortcuts they have in any Mac
@@ -1999,7 +2047,13 @@ those in `refs.rs`, which references a rewind or an edit detaches, which
 stay (named by another turn, the agent's or by `@r*`, by the reply waiting
 for review, or never named), the agent's turn written again keeping its
 own, a turn deleted the first way counting nowhere, and no number given
-twice, a reference detached by hand or gone with its turn.
+twice, a reference detached by hand or gone with its turn. Those in
+`home.rs` show where stacked keeps what is yours (the home's folder, the
+one `$STACKED_HOME` names, a file named over it, nowhere with neither);
+the files of before moved in once by a run of yours and said, never over a
+file there, a link moved as a link, and nothing moved that an override
+names the place of; what stacked runs told the same places; and nowhere in
+a test's own process.
 
 ## Not done yet
 
