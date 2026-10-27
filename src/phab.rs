@@ -602,9 +602,11 @@ pub fn import(db: &Path, at: &Path, text: &str, name: Option<&str>) -> crate::db
 /// number, else the line at its number, else None.
 pub fn anchor(lines: &[NoteLine], c: &Remote) -> Option<String> {
     let path = c.path.as_deref()?;
+    // The new side's lines: not those removed, nor git's `\ No newline at
+    // end of file`, which has the number of the line after it.
     let here: Vec<&NoteLine> = lines
         .iter()
-        .filter(|l| l.file == path && l.origin != '-')
+        .filter(|l| l.file == path && matches!(l.origin, ' ' | '+'))
         .collect();
     if let Some(t) = &c.line_text {
         let want = fold(t);
@@ -807,5 +809,24 @@ mod tests {
         });
         assert_eq!(told, [0, 1]);
         assert_eq!(pulled, Err("transaction.search: D2 is gone".to_string()));
+    }
+
+    #[test]
+    fn a_comment_on_a_line_after_no_newline_at_end_of_file_is_on_that_line() {
+        // f.txt ended with no newline: the patch gives it one, and a line
+        // more, after git's `\ No newline at end of file`.
+        let diff = "diff --git a/f.txt b/f.txt\n--- a/f.txt\n+++ b/f.txt\n@@ -1,2 +1,3 @@\n one\n-two\n\\ No newline at end of file\n+two\n+three\n";
+        let p = crate::db::Patch::new("c".into(), None, None, "Bug 1 - three".into(), diff.into());
+        let lines = crate::view::note_lines(&p);
+        let added = |text: &str| lines.iter().find(|l| l.origin == '+' && l.text == text).map(|l| l.key.clone());
+        let on = |line: usize, text: Option<&str>| {
+            let c = Remote { path: Some("f.txt".into()), line, line_text: text.map(String::from), ..Default::default() };
+            anchor(&lines, &c)
+        };
+        // By its number, the line's text not found, and by its text.
+        assert_eq!(on(2, None), added("two"));
+        assert_eq!(on(3, None), added("three"));
+        assert_eq!(on(3, Some("three")), added("three"));
+        assert_eq!(on(2, Some("gone since")), added("two"));
     }
 }

@@ -1399,6 +1399,55 @@ fn a_patch_is_edited_by_hand_where_the_cursor_is() {
 }
 
 #[test]
+fn a_line_after_no_newline_at_end_of_file_is_opened_and_gone_to_at_its_number() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("src");
+    std::fs::create_dir(&src).unwrap();
+    git(&src, &["init", "-q", "-b", "main"]);
+    git(&src, &["config", "commit.gpgsign", "false"]);
+    // f.txt's last line has no newline before the patch, which gives it one
+    // and a line more: git writes `\ No newline at end of file` under the
+    // line removed, then the lines added.
+    std::fs::write(src.join("f.txt"), "one\ntwo").unwrap();
+    git(&src, &["add", "."]);
+    git(&src, &["commit", "-qm", "base"]);
+    std::fs::write(src.join("f.txt"), "one\ntwo\nthree\n").unwrap();
+    git(&src, &["commit", "-qam", "Bug 1 - three"]);
+    let db = tmp.path().join("db.jsonl");
+    stacked(&src, &db, &["import", "s", "HEAD~1"]);
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Right]);
+    // Each line added is opened in $EDITOR at its own line of the file.
+    down_to(&mut app, "+two");
+    assert_eq!(choose(&mut app, "Edit f.txt here in $EDITOR"), Effect::EditCode { file: "f.txt".into(), line: 2, again: None });
+    down_to(&mut app, "+three");
+    assert_eq!(choose(&mut app, "Edit f.txt here in $EDITOR"), Effect::EditCode { file: "f.txt".into(), line: 3, again: None });
+    // The agent's reference to line 3, previewed, then gone to: Enter goes
+    // to the line added there.
+    keys(&mut app, &[KeyCode::Enter]);
+    save(&mut app, "why three?");
+    let n = notes_of(&db, "s", 0).remove(0);
+    Db::edit(&db, |d| {
+        let n = d.note(&n.change, &n.id).cloned().unwrap();
+        let said = "The file ends there.\n\n```refs\nf.txt:3 @1\n```";
+        d.set_note(Note {
+            text: append_turn(&n.text, Role::Agent, said, Some("answer")),
+            ..n
+        })
+    })
+    .unwrap();
+    app.refresh();
+    draw(&mut app);
+    down_to(&mut app, "     ▎   ⇢ f.txt:3 ");
+    keys(&mut app, &[KeyCode::Enter]);
+    let Mode::Preview(p) = &app.mode else { panic!("{:?}", app.mode) };
+    assert_eq!(p.texts(), ["    3 │ three"]);
+    keys(&mut app, &[KeyCode::Enter]);
+    assert!(matches!(app.mode, Mode::Normal), "{:?}", app.mode);
+    assert!(app.rows[app.cursor].text.starts_with("+three"), "{}", app.rows[app.cursor].text);
+}
+
+#[test]
 fn references_attached_to_a_comment_are_named_in_it_and_asking_waits_for_what_it_names() {
     let (_tmp, db, _src) = setup();
     let mut app = open(&db).unwrap();

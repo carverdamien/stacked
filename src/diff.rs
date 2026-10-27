@@ -14,7 +14,9 @@ pub struct Line {
     /// A stable, content-based anchor for comments.
     pub key: String,
     /// Line numbers on each side; on the side a line is missing from, where
-    /// it would sit -- the number of the line that follows it there.
+    /// it would sit -- the number of the line that follows it there. git's
+    /// `\` line is missing from both sides: it has the numbers of the lines
+    /// that follow it, and counts on neither.
     pub old_no: usize,
     pub new_no: usize,
     /// Its line in the diff's text, from 0.
@@ -325,6 +327,11 @@ pub fn parse_diff(text: &str, mode: &str) -> Vec<FileDiff> {
             new_no,
             at,
         });
+        // git's `\ No newline at end of file` is a line of neither side:
+        // the lines after it are numbered as if it were not there.
+        if origin == '\\' {
+            continue;
+        }
         if origin != '-' {
             if hunk.last_new == 0 {
                 hunk.first_new = new_no;
@@ -426,5 +433,79 @@ diff --git a/gone.txt b/gone.txt\ndeleted file mode 100644\n--- a/gone.txt\n+++ 
         let wider = DIFF.replace("@@ -1,3 +1,3 @@\n a\n", "@@ -1,3 +1,3 @@\n z\n a\n");
         let b = parse_diff(&wider, "m");
         assert_eq!(a[0].hunks[0].hkey, b[0].hunks[0].hkey);
+    }
+
+    /// Diffs of f.txt, whose last line has no newline, as git writes them:
+    /// before the patch only (the patch gives the file a newline, and a line
+    /// more), after it only, before and after it, and before and after it
+    /// on a line the patch keeps.
+    const NO_NEWLINE_BEFORE: &str = "diff --git a/f.txt b/f.txt\nindex 9ed40b4..4cb29ea 100644\n--- a/f.txt\n+++ b/f.txt\n\
+@@ -1,2 +1,3 @@\n one\n-two\n\\ No newline at end of file\n+two\n+three\n";
+    const NO_NEWLINE_AFTER: &str = "diff --git a/f.txt b/f.txt\nindex 814f4a4..530cc72 100644\n--- a/f.txt\n+++ b/f.txt\n\
+@@ -1,2 +1,2 @@\n one\n-two\n+TWO\n\\ No newline at end of file\n";
+    const NO_NEWLINE_BOTH: &str = "diff --git a/f.txt b/f.txt\nindex 9ed40b4..530cc72 100644\n--- a/f.txt\n+++ b/f.txt\n\
+@@ -1,2 +1,2 @@\n one\n-two\n\\ No newline at end of file\n+TWO\n\\ No newline at end of file\n";
+    const NO_NEWLINE_KEPT: &str = "diff --git a/f.txt b/f.txt\nindex 54d55bf..dfd8bbf 100644\n--- a/f.txt\n+++ b/f.txt\n\
+@@ -1,3 +1,3 @@\n-one\n+ONE\n two\n three\n\\ No newline at end of file\n";
+
+    /// A line's origin and numbers, old then new.
+    type Numbered = (char, usize, usize);
+
+    /// The lines of the one hunk of `diff`, numbered; and the new side's
+    /// first and last lines.
+    fn numbers(diff: &str) -> (Vec<Numbered>, (usize, usize)) {
+        let h = parse_diff(diff, "m").remove(0).hunks.remove(0);
+        (h.lines.iter().map(|l| (l.origin, l.old_no, l.new_no)).collect(), (h.first_new, h.last_new))
+    }
+
+    #[test]
+    fn no_newline_at_end_of_file_counts_on_neither_side() {
+        // Under the old side's last line, in the middle of the hunk: the
+        // lines added after it are the new file's lines 2 and 3.
+        let (lines, ends) = numbers(NO_NEWLINE_BEFORE);
+        assert_eq!(lines, [(' ', 1, 1), ('-', 2, 2), ('\\', 3, 2), ('+', 3, 2), ('+', 3, 3)]);
+        assert_eq!(ends, (1, 3));
+        // Under the new side's last line, at the hunk's end.
+        let (lines, ends) = numbers(NO_NEWLINE_AFTER);
+        assert_eq!(lines, [(' ', 1, 1), ('-', 2, 2), ('+', 3, 2), ('\\', 3, 3)]);
+        assert_eq!(ends, (1, 2));
+        // Under each side's.
+        let (lines, ends) = numbers(NO_NEWLINE_BOTH);
+        assert_eq!(lines, [(' ', 1, 1), ('-', 2, 2), ('\\', 3, 2), ('+', 3, 2), ('\\', 3, 3)]);
+        assert_eq!(ends, (1, 2));
+        // Under a line both sides have: once, for both.
+        let (lines, ends) = numbers(NO_NEWLINE_KEPT);
+        assert_eq!(lines, [('-', 1, 1), ('+', 2, 1), (' ', 2, 2), (' ', 3, 3), ('\\', 4, 4)]);
+        assert_eq!(ends, (1, 3));
+    }
+
+    #[test]
+    fn the_keys_of_lines_around_no_newline_at_end_of_file_are_as_they_were() {
+        // As stacked keyed them when git's line counted on both sides: the
+        // keys that comments and read marks are on in the databases of
+        // then. They are made of the lines' text and ordinals, the hunk's
+        // changed lines and its header, never of a line's number.
+        let key = |origin: char, ordinal: usize, sha: &str| format!("m\0f.txt\0{origin}\0{ordinal}\0{sha}");
+        let (one, two, three, upper, marker) = ("fe05bcdcdc49", "ad782ecdac77", "b802f384302c", "b10e0da85e90", "d4c749a24fbe");
+        let keys = |diff: &str| {
+            let h = parse_diff(diff, "m").remove(0).hunks.remove(0);
+            (h.lines.iter().map(|l| l.key.clone()).collect::<Vec<_>>(), h.hkey, h.hid)
+        };
+        assert_eq!(
+            keys(NO_NEWLINE_BEFORE),
+            (
+                vec![key(' ', 0, one), key('-', 0, two), key('\\', 0, marker), key('+', 0, two), key('+', 0, three)],
+                "m\0f.txt\00\090ce83c08201".to_string(),
+                "m\0f.txt\01\01".to_string()
+            )
+        );
+        assert_eq!(
+            keys(NO_NEWLINE_BOTH),
+            (
+                vec![key(' ', 0, one), key('-', 0, two), key('\\', 0, marker), key('+', 0, upper), key('\\', 1, marker)],
+                "m\0f.txt\00\059e9452ec980".to_string(),
+                "m\0f.txt\01\01".to_string()
+            )
+        );
     }
 }

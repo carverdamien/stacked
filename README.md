@@ -1934,7 +1934,9 @@ pane), and the patch picked as `picked` paints it once the cursor is in the
 middle (`paint.rs` tests the cursor so, over each colour, dim or reversed), reading by hunks and by a Rust file's blocks
 (the cursor going down to the middle line, then the code coming up under
 it, in each view),
-editing a patch by hand at the cursor, the history screens, the branches
+editing a patch by hand at the cursor (a line added after git's
+`\ No newline at end of file` opened at its own number, and a reference
+to that number going to that line), the history screens, the branches
 History… draws and the stack diff it shows beside each change, the agent
 asked about a record of the history, a new database started from it, a
 moved comment and an answer's comments, a patch's comment asked of the
@@ -2056,7 +2058,16 @@ those in `refs.rs`, which references a rewind or an edit detaches, which
 stay (named by another turn, the agent's or by `@r*`, by the reply waiting
 for review, or never named), the agent's turn written again keeping its
 own, a turn deleted the first way counting nowhere, and no number given
-twice, a reference detached by hand or gone with its turn. Those in
+twice, a reference detached by hand or gone with its turn. The tests in
+`diff.rs` show each line's numbers on each side, git's
+`\ No newline at end of file` counting on neither (under the old side's
+last line, under the new side's, under both, or under a line both sides
+have), and show that the keys of those lines, which comments and read marks
+are on, are as they were when git's line counted on both sides. Those in
+`blocks.rs` show that a line added after git's `\ No newline at end of file`
+is in the block its own number is in, and those in `phab.rs` show that a
+reviewer's comment on such a line is put on that line, found by its number
+as by its text. Those in
 `home.rs` show where stacked keeps what is yours (the home's folder, the
 one `$STACKED_HOME` names, a file named over it, nowhere with neither);
 the files of before moved in once by a run of yours and said, never over a

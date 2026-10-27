@@ -593,4 +593,21 @@ mod tests {
         let top = fd.hunks[0].lines.iter().find(|l| l.text == " top").unwrap();
         assert!(fb.chain(&top.key).is_empty());
     }
+
+    #[test]
+    fn a_line_after_no_newline_at_end_of_file_is_in_the_block_at_its_number() {
+        // f.rs ended with a `}` and no newline: the patch gives it one, and
+        // a function after it, under git's `\ No newline at end of file`.
+        let new = lines("fn a() {\n}\nfn b() {\n    x();\n}\n");
+        let diff = "diff --git a/f.rs b/f.rs\n--- a/f.rs\n+++ b/f.rs\n@@ -1,2 +1,5 @@\n fn a() {\n-}\n\\ No newline at end of file\n+}\n+fn b() {\n+    x();\n+}\n";
+        let fd = &parse_diff(diff, "m")[0];
+        let fb = file_blocks(fd, Some(&new), None).unwrap();
+        let spans = |l: &crate::diff::Line| -> Vec<(usize, usize)> { fb.chain(&l.key).iter().map(|&i| (fb.blocks[i].start, fb.blocks[i].end)).collect() };
+        let added: Vec<&crate::diff::Line> = fd.hunks[0].lines.iter().filter(|l| l.origin == '+').collect();
+        // The `}` added, line 2, closes a; the lines after it, 3 to 5, are b.
+        assert_eq!(spans(added[0]), [(1, 2)]);
+        for l in &added[1..] {
+            assert_eq!(spans(l), [(3, 5)], "{}", l.text);
+        }
+    }
 }
