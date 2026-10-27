@@ -39,13 +39,25 @@ fn side(diff: &str, sign: char) -> String {
         .collect()
 }
 
-/// What there is of stacked's in the temporary directory.
+/// What this process has made in the temporary directory. Everything
+/// stacked makes there has the id of the process making it as the first
+/// number of its name (`stacked-check-PID-N`, `stacked-diff-PID`,
+/// `stacked-PID-N`): an entry with another id first is another process's,
+/// made or removed meanwhile, and is left out. So is `stacked-todo`, the
+/// folder of the agents' rebase plans, which every process shares: the
+/// tour's asks are answered in memory, and write nothing there. The other
+/// tests here share this process: they take tours too.
 fn temporary() -> BTreeSet<String> {
+    let pid = std::process::id().to_string();
+    let ours = |name: &str| {
+        let number = |p: &&str| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit());
+        name.starts_with("stacked-") && name.split(['-', '.']).find(number) == Some(pid.as_str())
+    };
     std::fs::read_dir(std::env::temp_dir())
         .map(|d| {
             d.flatten()
                 .map(|e| e.file_name().to_string_lossy().into_owned())
-                .filter(|n| n.contains("stacked"))
+                .filter(|n| ours(n))
                 .collect()
         })
         .unwrap_or_default()
@@ -173,10 +185,11 @@ fn the_tour_is_done_step_by_step_in_memory() {
         assert!(board.contains(&format!("\n{row}\n")), "{board}");
         assert!(end.contains(row), "{end}");
     }
-    // Nothing on disk: not the database, nor anything of stacked's made
-    // in the temporary directory.
+    // Nothing on disk: not the database, nor anything this process made in
+    // the temporary directory, whatever other processes make there.
     assert!(!std::path::Path::new("/nonexistent").exists());
-    assert_eq!(temporary(), before);
+    let left: Vec<String> = temporary().difference(&before).cloned().collect();
+    assert!(left.is_empty(), "left in {}: {left:?}", std::env::temp_dir().display());
 }
 
 #[test]

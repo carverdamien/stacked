@@ -1081,7 +1081,12 @@ fn conflict_of(db: &Db, s: &Stack, edits: Vec<(usize, Draft)>, said: &str) -> Op
 /// (`merge.conflictStyle`). None if git could not merge them.
 fn merge(repo: &std::path::Path, ours: &str, was: &str, theirs: &str, at: usize) -> Option<String> {
     use std::process::{Command, Stdio};
-    let dir = std::env::temp_dir().join(format!("stacked-merge-{}", crate::db::unique()));
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    // A folder for each merge, named as all that stacked makes in the
+    // temporary directory is: the process's id first, then a count.
+    static MERGES: AtomicUsize = AtomicUsize::new(0);
+    let n = MERGES.fetch_add(1, Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("stacked-merge-{}-{n}", std::process::id()));
     std::fs::create_dir_all(&dir).ok()?;
     let sides = [("ours", ours), ("was", was), ("theirs", theirs)];
     let files: Vec<std::path::PathBuf> = sides.iter().map(|(n, _)| dir.join(n)).collect();
