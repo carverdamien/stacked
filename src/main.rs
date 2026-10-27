@@ -91,9 +91,10 @@ enum Cmd {
     Demo,
     /// The editor in a browser: a server on this machine, and the browser
     /// opened on it. The cursor follows the mouse: a click is Enter, a right
-    /// click Space. `stacked web` is built by default, with the `web`
-    /// feature: `--no-default-features --features app,demo,moz-phab` builds
-    /// stacked without it.
+    /// click Space; writing a comment, a click outside its box is Esc.
+    /// `stacked web` is built by default, with the `web` feature:
+    /// `--no-default-features --features app,demo,moz-phab` builds stacked
+    /// without it.
     #[cfg(feature = "web")]
     Web {
         /// The port of 127.0.0.1 to listen on; else any free one.
@@ -105,7 +106,8 @@ enum Cmd {
     },
     /// StackED: the editor in a window of its own, drawn as in a terminal,
     /// the mouse as in `stacked web`: the cursor follows it, a click is
-    /// Enter, a right click Space. `$EDITOR` opens where it was started.
+    /// Enter, a right click Space; writing a comment, a click outside its
+    /// box is Esc. `$EDITOR` opens where it was started.
     /// On macOS, File → Open… opens more databases, each in a window of its
     /// own. `stacked app` is built by default, with the `app` feature:
     /// `--no-default-features --features demo,moz-phab,web` builds stacked

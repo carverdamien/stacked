@@ -179,7 +179,12 @@ line, and a second click on it is Enter. Elsewhere the cursor follows the
 mouse: what is under it is picked, as the arrows would (a line of the
 patch, an item of a list or of a menu; a patch being moved goes there), so
 a click is Enter on it. A right click is Space, its menu. Outside a menu,
-a click closes it; writing a comment, or reading what `?` says, the mouse
+a click is Esc for the menu: it closes, and the comment it asks about, if
+any, goes on being written. Writing a comment, a click outside its box,
+with either button, is Esc as well, and picks nothing of what is under it:
+the box closes when nothing is written in it, else the menu Esc opens asks
+what to do with the comment. A click in the box puts the cursor where the
+click is. Writing a comment, or reading what `?` says, the mouse going by
 moves nothing. The wheel is ↑↓, and a paste types what is pasted, into a
 comment being written. The page follows the mouse only while it is the
 active one: while another window or another tab has the focus, the mouse
@@ -227,7 +232,9 @@ The mouse works as in the browser (above): over the patches and the
 comments it marks the line under it, and a click picks the line, a second
 click on it being Enter; elsewhere the cursor follows it, so that a click
 is Enter on what is under it. A right click is Space, its menu, and so is
-ctrl-click on macOS. The wheel and the trackpad are ↑↓. Each window
+ctrl-click on macOS. Writing a comment, a click outside its box is Esc,
+and a click in the box puts the cursor where the click is. The wheel and
+the trackpad are ↑↓. Each window
 follows the mouse only while it is the active one, as the page does: over
 a window in the background, the mouse marks and picks nothing, but a
 click and the wheel act there all the same. A paste (⌘V on
@@ -2011,7 +2018,11 @@ from Phabricator, its revisions read by a stand-in; or by the agent), a
 comment moved to the stack
 taking the cursor with it, the mouse (a side pane's line marked under it and picked by a click,
 elsewhere the cursor following it, a click as
-Enter, a right click's menu, a menu's item), the comments pane's previews,
+Enter, a right click's menu, a menu's item; writing a comment in the middle
+in each view of the code, in the patches pane, in the comments pane, or
+between a reply and its references, a click outside the box as Esc,
+picking nothing, a click outside the menu Esc opens going back to the
+comment, and a click in the box putting the cursor there), the comments pane's previews,
 moving a patch, searching (what is in sight first, the patches then the
 files they touch, the history), the agents' worktrees made ahead as the
 stack's checkout says, the banner of the agent's work (Esc to it and

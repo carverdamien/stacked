@@ -386,17 +386,49 @@ impl Editor {
         text.max(1) + self.under.len()
     }
 
+    /// The inside of a box of `w` by `h`, as `draw` lays it out: how wide it
+    /// is, how many lines the text has, and how many the references under
+    /// the text have.
+    fn inside(&self, w: usize, h: usize) -> (usize, usize, usize) {
+        let (w, h) = (w.max(8), h.max(3));
+        // The references attached, under the text: as many as leave a line
+        // for it.
+        let under = self.under.len().min(h - 3);
+        (w - 2, h - 2 - under, under)
+    }
+
+    /// A click at `(x, y)` of the box `draw` drew `w` by `h`: the cursor on
+    /// the character clicked, or at the end of its line past it, or at the
+    /// end of the text under it. A click on the box's edges, on the
+    /// references under the text, or on what was closed here does nothing.
+    pub fn click(&mut self, x: usize, y: usize, w: usize, h: usize) {
+        let (inner, text_h, _) = self.inside(w, h);
+        if self.ghosted() || !(1..=inner).contains(&x) || !(1..=text_h).contains(&y) {
+            return;
+        }
+        // The screen line clicked, among those `visual` folds the lines into.
+        let mut at = self.vtop.get() + y - 1;
+        let last = self.lines.len() - 1;
+        (self.row, self.col) = (last, self.lines[last].len());
+        for (row, line) in self.lines.iter().enumerate() {
+            let pieces = line.len().div_ceil(inner).max(1);
+            if at < pieces {
+                (self.row, self.col) = (row, (at * inner + x - 1).min(line.len()));
+                break;
+            }
+            at -= pieces;
+        }
+        // A ctrl-k after the click cuts anew.
+        self.cutting = false;
+    }
+
     /// Draws the editor as a box of `w` by `h` at `(x, y)` of `area`: `title`
     /// on its top edge, the text inside (scrolled when taller), the keys on
     /// its bottom edge, `esc` saying what Esc does. Where the cursor goes.
     #[allow(clippy::too_many_arguments)]
     pub fn draw(&self, buf: &mut Buffer, area: Rect, x: usize, y: usize, w: usize, h: usize, title: &str, esc: &str) -> (u16, u16) {
         let (w, h) = (w.max(8), h.max(3));
-        let inner = w - 2;
-        // The references attached, under the text: as many as leave a line
-        // for it.
-        let under = self.under.len().min(h.saturating_sub(3));
-        let text_h = h - 2 - under;
+        let (inner, text_h, under) = self.inside(w, h);
         type Spans = Vec<(String, ratatui::style::Style)>;
         // Nothing written yet: what was closed here, dimmed, scrolled by
         // ↑↓, the cursor at its start. Else the text, scrolled to the cursor,
@@ -637,5 +669,64 @@ mod tests {
             press(&mut e, KeyCode::Char(c));
         }
         assert_eq!(e.height(10), 2, "folded at the width");
+    }
+
+    #[test]
+    fn a_click_puts_the_cursor_where_it_is() {
+        // A box of 12 by 5: 10 columns and 3 lines inside, the second line
+        // folded at 10.
+        let draw = |e: &Editor, h: u16| {
+            let mut buf = Buffer::empty(Rect::new(0, 0, 12, h));
+            let area = buf.area;
+            e.draw(&mut buf, area, 0, 0, 12, h as usize, "t", "esc: close");
+        };
+        let mut e = Editor::new("one two\nabcdefghijklm");
+        draw(&e, 5);
+        // On a character: the cursor before it.
+        e.click(4, 1, 12, 5);
+        typed(&mut e, "!");
+        assert_eq!(e.text(), "one! two\nabcdefghijklm");
+        // On the second piece of the line folded, then past its end.
+        e.click(2, 3, 12, 5);
+        typed(&mut e, "?");
+        e.click(9, 3, 12, 5);
+        typed(&mut e, ".");
+        assert_eq!(e.text(), "one! two\nabcdefghijk?lm.");
+        // On the edges of the box: nothing.
+        for (x, y) in [(0, 1), (11, 1), (1, 0), (1, 4)] {
+            e.click(x, y, 12, 5);
+        }
+        typed(&mut e, ";");
+        assert_eq!(e.text(), "one! two\nabcdefghijk?lm.;");
+        // Under the text, in a taller box: the end of the text.
+        let mut e = Editor::new("one\ntwo");
+        e.to_start();
+        draw(&e, 6);
+        e.click(1, 4, 12, 6);
+        typed(&mut e, "!");
+        assert_eq!(e.text(), "one\ntwo!");
+        // On a reference under the text: nothing.
+        e.set_attached(vec![1], vec!["r1 ⇢ a.txt:2".into()]);
+        e.to_start();
+        draw(&e, 5);
+        e.click(1, 3, 12, 5);
+        typed(&mut e, "0");
+        assert_eq!(e.text(), "0one\ntwo!");
+        // Scrolled to the cursor, at the end: the lines shown are clicked.
+        let mut e = Editor::new("1\n2\n3\n4\n5\n6");
+        draw(&e, 5);
+        e.click(2, 1, 12, 5);
+        typed(&mut e, "!");
+        assert_eq!(e.text(), "1\n2\n3\n4!\n5\n6");
+        // A ctrl-k after a click cuts anew: ctrl-y puts back only that.
+        let mut e = Editor::new("ab\ncd");
+        press(&mut e, KeyCode::Home);
+        ctrl(&mut e, 'k');
+        draw(&e, 5);
+        e.click(2, 1, 12, 5);
+        ctrl(&mut e, 'k');
+        ctrl(&mut e, 'y');
+        ctrl(&mut e, 'y');
+        assert_eq!(e.text(), "abb");
     }
 }

@@ -420,8 +420,8 @@ pub enum HistFocus {
 /// a patch of the list by its place, or a file of the patch picked; a row
 /// of the middle; the comments pane's header, or a comment; an item of a
 /// menu, or of a list screen; a line of History…'s stack diff; or a box
-/// over the rest (a menu, an editor, help), where a click is on nothing but
-/// what is in it.
+/// over the rest (a menu, a line to type, help), where a click is on
+/// nothing but what is in it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Spot {
     Patch(Option<usize>),
@@ -436,6 +436,9 @@ pub enum Spot {
     Pick(usize),
     HistRow(usize),
     Box,
+    /// The box of the comment being written, wherever it is: a click in it
+    /// puts the cursor there, and a click out of it is Esc.
+    Editor,
     /// The banner saying what the agent's work on the stack is; line `i`
     /// of it, open.
     Banner,
@@ -1622,7 +1625,8 @@ pub struct App {
     /// click: drawn later, on top.
     spots: std::cell::RefCell<Vec<(Rect, Spot)>>,
     /// Where the editor box was last drawn, on the screen: the menu Esc
-    /// opens goes beside it, not over it.
+    /// opens goes beside the box, not over it, and a click in the box puts
+    /// the cursor where the click is.
     edit_box: std::cell::Cell<Option<Rect>>,
     /// The panes the screen was last drawn in: what `regions` says.
     areas: std::cell::RefCell<Vec<Rect>>,
@@ -2612,16 +2616,18 @@ impl App {
             Spot::BannerLine(i) => self.on_banner && self.banner_sel == i,
             Spot::ReviewLine(i) => self.reviewing.as_ref().is_some_and(|r| r.sel == i && !r.in_main),
             Spot::Found(i) => self.searching.as_ref().is_some_and(|s| s.sel == i),
-            Spot::Item(_) | Spot::Choice(..) | Spot::Box | Spot::SearchScope => false,
+            Spot::Item(_) | Spot::Choice(..) | Spot::Box | Spot::Editor | Spot::SearchScope => false,
         }
     }
 
     /// A click at `(x, y)` of the screen, with the right button if `right`:
-    /// in a menu, the item done (and outside it, the menu closed); else
-    /// what is there picked, as the arrows would, and if it was picked
-    /// already, done as Enter does; or, a right click, its menu, as Space
-    /// opens it. Keys as they are, whatever the settings map: Enter is
-    /// Enter.
+    /// in a menu, the item done (and outside it, Esc there: the menu
+    /// closed, and the comment it asks about, if any, written on); writing
+    /// a comment, the cursor put where the click is in its box, and outside
+    /// the box, Esc there. Else what is there picked, as the arrows would,
+    /// and if it was picked already, done as Enter does; or, a right click,
+    /// its menu, as Space opens it. Keys as they are, whatever the settings
+    /// map: Enter is Enter.
     pub fn click(&mut self, x: u16, y: u16, right: bool) -> Effect {
         let spot = self.spot_at(x, y);
         let press = |app: &mut App, code: KeyCode| app.pressed(KeyEvent::new(code, KeyModifiers::NONE));
@@ -2656,10 +2662,10 @@ impl App {
                         Effect::None
                     }
                     Some(Spot::Box) => Effect::None,
-                    _ => {
-                        self.mode = Mode::Normal;
-                        Effect::None
-                    }
+                    // Out of the menu, on the comment it asks about as well:
+                    // Esc, which closes the menu, or goes back to writing
+                    // that comment.
+                    _ => press(self, KeyCode::Esc),
                 };
             }
             Mode::Help { back, .. } => {
@@ -2711,7 +2717,19 @@ impl App {
                 }
                 return Effect::None;
             }
-            Mode::Edit(_) => return Effect::None,
+            // A comment being written: a click in its box, with either
+            // button, puts the cursor where the click is; a click out of the
+            // box is Esc, and picks nothing of what is under it.
+            Mode::Edit(e) => {
+                if !matches!(spot, Some(Spot::Editor)) {
+                    return press(self, KeyCode::Esc);
+                }
+                if let Some(b) = self.edit_box.get() {
+                    let (dx, dy) = (x.saturating_sub(b.x), y.saturating_sub(b.y));
+                    e.ed.click(dx.into(), dy.into(), b.width.into(), b.height.into());
+                }
+                return Effect::None;
+            }
             Mode::Normal => {}
         }
         let Some(spot) = spot else { return Effect::None };
@@ -2778,7 +2796,7 @@ impl App {
 
     /// `spot` picked, as the arrows would: whether it is one to pick.
     fn pick_spot(&mut self, spot: Spot) -> bool {
-        if !matches!(spot, Spot::Item(_) | Spot::Choice(..) | Spot::Box) {
+        if !matches!(spot, Spot::Item(_) | Spot::Choice(..) | Spot::Box | Spot::Editor) {
             let banner = matches!(spot, Spot::Banner | Spot::BannerLine(_));
             if banner && !self.on_banner {
                 self.open_banner(0);
@@ -2838,7 +2856,7 @@ impl App {
                 self.hist_focus = HistFocus::Diff;
                 self.hist_cursor = i;
             }
-            Spot::Item(_) | Spot::Choice(..) | Spot::Box => return false,
+            Spot::Item(_) | Spot::Choice(..) | Spot::Box | Spot::Editor => return false,
         }
         true
     }
@@ -7491,7 +7509,7 @@ impl App {
             .spots
             .borrow()
             .iter()
-            .filter(|(_, s)| matches!(s, Spot::Box))
+            .filter(|(_, s)| matches!(s, Spot::Box | Spot::Editor))
             .map(|(r, _)| r.inner(ratatui::layout::Margin::new(1, 1)))
             .collect();
         self.areas.borrow().iter().copied().chain(boxes).collect()
@@ -7902,7 +7920,7 @@ impl App {
             Target::About(rev) => format!("a question on @{rev}, for the agent to answer"),
             Target::Answer { .. } => "your answer to the agent's reply".to_string(),
         };
-        spot_in(&self.spots, area, (0, y, w, bh), Spot::Box);
+        spot_in(&self.spots, area, (0, y, w, bh), Spot::Editor);
         self.edit_box.set(Some(Rect::new(area.x, area.y + y as u16, w as u16, bh as u16)));
         let cursor = e.ed.draw(buf, area, 0, y, w, bh, &title, self.esc_does(e));
         matches!(self.mode, Mode::Edit(_)).then_some(cursor)

@@ -408,9 +408,9 @@ fn a_click_picks_and_a_second_does_as_enter() {
     assert!(matches!(app.mode, Mode::Menu(_)), "the box's edge");
     app.click(x, y, false);
     assert!(matches!(app.mode, Mode::Edit(_)), "{:?}", app.mode);
-    // Writing, a click does nothing.
-    draw(&mut app);
-    app.click(1, 2, false);
+    // Writing, a click in the comment's box leaves it open.
+    let (x, y) = at(&draw(&mut app), "a comment on:");
+    app.click(x, y + 1, false);
     assert!(matches!(app.mode, Mode::Edit(_)));
     save(&mut app, "a bee");
     // Outside a menu, a click closes it.
@@ -441,6 +441,104 @@ fn a_click_picks_and_a_second_does_as_enter() {
     assert_eq!(app.pick, 1);
     app.click(x, y, false);
     assert_eq!(app.screen, Screen::Tree);
+}
+
+/// The editor that `open` opens, clicked with each button. Out of its box,
+/// on `out`, a click closes it when nothing is written, and picks nothing
+/// of what is under it. With something written, a click out of the box
+/// opens the menu that Esc opens. A click out of that menu, on the box of
+/// what is written as well, goes back to what is written, as Keep writing
+/// does. A click in the box puts the cursor where the click is, and one on
+/// the box's edge does nothing.
+fn clicked_in_and_out_of_the_editor(app: &mut App, open: impl Fn(&mut App), out: &str) {
+    let picked = |app: &App| (app.focus, app.sel, app.cursor, app.note_sel);
+    let writing = |app: &App, text: &str| matches!(&app.mode, Mode::Edit(e) if e.ed.text() == text);
+    let was = picked(app);
+    for right in [false, true] {
+        open(app);
+        assert!(writing(app, ""), "{:?}", app.mode);
+        let (x, y) = at(&draw(app), out);
+        assert_eq!(app.click(x, y, right), Effect::None);
+        assert_eq!(app.mode, Mode::Normal, "nothing written, closed (right: {right})");
+        assert_eq!(picked(app), was, "nothing picked (right: {right})");
+        open(app);
+        typed(app, "a zebra?");
+        let (x, y) = at(&draw(app), out);
+        app.click(x, y, right);
+        assert!(matches!(&app.mode, Mode::Menu(m) if m.title == "the comment"), "right: {right}: {:?}", app.mode);
+        assert_eq!(picked(app), was, "nothing picked (right: {right})");
+        let menu = items(app);
+        // Out of the menu, on the screen's top line, then on what is
+        // written: back to it; out of its box again, the menu again.
+        let on_it = at(&draw(app), "zebra?");
+        for (x, y) in [(0, 0), on_it] {
+            app.click(x, y, right);
+            assert!(writing(app, "a zebra?"), "out of the menu (right: {right}): {:?}", app.mode);
+            draw(app);
+            app.click(0, 0, right);
+            assert_eq!(items(app), menu, "right: {right}");
+        }
+        let (x, y) = at(&draw(app), "Keep writing");
+        app.click(x, y, right);
+        assert!(writing(app, "a zebra?"), "kept writing (right: {right}): {:?}", app.mode);
+        // In the box: the cursor where the click is; on its edge, where it
+        // was.
+        let (x, y) = at(&draw(app), "zebra?");
+        app.click(x, y, right);
+        assert_eq!(draw_at(app).1, Some((x, y)), "right: {right}");
+        typed(app, "striped ");
+        assert!(writing(app, "a striped zebra?"), "right: {right}: {:?}", app.mode);
+        let (screen, cursor) = draw_at(app);
+        let (x, y) = at(&screen, "enter: a new line");
+        app.click(x, y, right);
+        assert_eq!(draw_at(app).1, cursor, "its edge (right: {right})");
+        assert!(writing(app, "a striped zebra?"), "right: {right}: {:?}", app.mode);
+        // Esc opens the same menu as the click out of the box did.
+        keys(app, &[KeyCode::Esc]);
+        assert_eq!(items(app), menu, "right: {right}");
+        choose(app, "Throw it away");
+        assert_eq!((app.mode.clone(), picked(app)), (Mode::Normal, was), "right: {right}");
+    }
+}
+
+#[test]
+fn a_click_out_of_the_comment_being_written_is_esc_and_one_in_it_puts_the_cursor_there() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    // A comment on a line, in the middle, in each of the three views of the
+    // code; out of its box, a patch.
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "+TWO");
+    for _ in 0..3 {
+        clicked_in_and_out_of_the_editor(&mut app, |app| keys(app, &[KeyCode::Enter]), "Bug 2 - add b");
+        keys(&mut app, &[KeyCode::Char('1')]);
+    }
+    // A comment on the patch, under its title in the patches pane; out of
+    // its box, a line of the patch.
+    keys(&mut app, &[KeyCode::Left]);
+    let comment = |app: &mut App| {
+        choose(app, "Comment on this patch…");
+    };
+    clicked_in_and_out_of_the_editor(&mut app, comment, "+TWO");
+    assert!(notes_of(&db, "s", 0).is_empty(), "nothing saved");
+}
+
+#[test]
+fn a_click_out_of_a_reply_is_esc_in_the_comments_pane_and_in_the_middle() {
+    let (_tmp, db, _src) = setup();
+    let (mut app, _) = a_thread_with_references(&db);
+    let reply = |app: &mut App| {
+        choose_as(app, "Reply", "here");
+    };
+    // In the comments pane, under the comment; out of its box, a patch.
+    keys(&mut app, &[KeyCode::Right]);
+    assert_eq!(app.focus, Focus::Notes);
+    clicked_in_and_out_of_the_editor(&mut app, reply, "Bug 2 - add b");
+    // In the middle, between the last reply and the references; out of its
+    // box, the first reference, under it.
+    keys(&mut app, &[KeyCode::Left, KeyCode::Home]);
+    down_to(&mut app, "     ▎   Which one?");
+    clicked_in_and_out_of_the_editor(&mut app, reply, "r1 ↗ patch 1 · a.txt: TWO");
 }
 
 #[test]
