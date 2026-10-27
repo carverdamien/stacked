@@ -2374,8 +2374,12 @@ fn the_comments_pane_previews_without_moving_the_patch() {
     assert_eq!(choices_named(&app, "Ask agent about all")[..2], ["change (2)", "answer only (2)"]);
 }
 
-/// A claude that says what it does for a second, then answers each comment
-/// it is sent; for every test of the editor, as they share their process.
+/// A claude that says what it does, then answers each comment it is sent;
+/// for every test of the editor, as they share their process. While a test
+/// holds it (`hold`), it goes on working on that test's asks, so that what
+/// the editor shows while the agent works stays to be seen, however busy
+/// the machine is: it answers once there is no file `hold` beside the
+/// repository it works in, where `setup` puts the test's database too.
 fn fake_claude() -> PathBuf {
     static FAKE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
     FAKE.get_or_init(|| {
@@ -2384,7 +2388,8 @@ fn fake_claude() -> PathBuf {
         std::fs::write(
             &path,
             format!(
-                "#!/bin/sh\necho '{{\"type\":\"system\",\"subtype\":\"init\",\"model\":\"fake\"}}'\necho '{{\"type\":\"assistant\",\"message\":{{\"content\":[{{\"type\":\"text\",\"text\":\"Reading the patch.\"}}]}}}}'\nsleep 2\ncat <<'EOF'\n{result}\nEOF\n"
+                "#!/bin/sh\necho '{{\"type\":\"system\",\"subtype\":\"init\",\"model\":\"fake\"}}'\necho '{{\"type\":\"assistant\",\"message\":{{\"content\":[{{\"type\":\"text\",\"text\":\"Reading the patch.\"}}]}}}}'\n\
+                 git=$(git rev-parse --path-format=absolute --git-common-dir)\nwhile test -e \"$git/../../hold\"; do sleep 0.1; done\ncat <<'EOF'\n{result}\nEOF\n"
             ),
         )
         .unwrap();
@@ -2393,6 +2398,24 @@ fn fake_claude() -> PathBuf {
         path
     })
     .clone()
+}
+
+/// The stand-in held at work on a test's asks (`hold`): let go once this
+/// is dropped.
+struct Held(PathBuf);
+
+impl Drop for Held {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+/// Holds the stand-in at work on the asks on `db` (`fake_claude`), from
+/// now on until what this gives is dropped.
+fn hold(db: &Path) -> Held {
+    let at = db.with_file_name("hold");
+    std::fs::write(&at, "").unwrap();
+    Held(at)
 }
 
 #[test]
@@ -2504,6 +2527,7 @@ fn what_you_said_last_may_be_written_again() {
     let n = notes_of(&db, "s", 0).remove(0);
     assert!(n.queued.is_none() && n.text.ends_with("quieter, please"), "{n:?}");
     // The edit thrown away, it goes back on, and is asked as it was.
+    let held = hold(&db);
     wait(&db);
     app.refresh();
     choose_as(&mut app, "Edit your reply", "here");
@@ -2516,6 +2540,7 @@ fn what_you_said_last_may_be_written_again() {
     keys(&mut app, &[KeyCode::Char(' ')]);
     assert!(items(&app).contains(&("Edit your reply".to_string(), false)), "{:?}", items(&app));
     keys(&mut app, &[KeyCode::Esc]);
+    drop(held);
     accept_landed(&mut app, &db);
     wait_for(&mut app, "agent replied (answer only)");
     // Its history says which were edits.
@@ -3721,6 +3746,7 @@ fn a_comment_on_a_patch_may_be_sent_to_the_whole_stack() {
     let all: Vec<String> = items(&app).into_iter().map(|(l, _)| l).collect();
     assert!(all.iter().any(|l| l == "Ask agent"), "{all:?}");
     assert_eq!(choices_named(&app, "Ask agent")[..2], ["change", "the whole stack"]);
+    let held = hold(&db);
     choose_as(&mut app, "Ask agent", "the whole stack");
     assert!(app.status.contains("asked the agent about 1 comment (may change the whole stack)"), "{}", app.status);
     let screen = wait_for(&mut app, "⋯ Reading the patch.");
@@ -3731,6 +3757,7 @@ fn a_comment_on_a_patch_may_be_sent_to_the_whole_stack() {
     let run = d.runs().last().unwrap().id.clone();
     assert_eq!(stacked::ask::run_scope(&d, &run), Some(stacked::ask::Scope::Stack));
     drop(d);
+    drop(held);
     accept_landed(&mut app, &db);
     let screen = wait_for(&mut app, "agent replied (change)");
     assert!(screen.contains("Seen.") && screen.contains("you · a.txt: TWO"), "{screen}");
@@ -3756,6 +3783,7 @@ fn a_comment_is_sent_from_its_menu_and_answered_in_place() {
     keys(&mut app, &[KeyCode::Enter]);
     typed(&mut app, "why so loud?");
     keys(&mut app, &[KeyCode::Esc]);
+    let held = hold(&db);
     choose_as(&mut app, "Save it and ask agent", "answer only");
     assert!(app.status.contains("asked the agent about 1 comment (answer only)"), "{}", app.status);
     // While claude works, its stream shows under the comment, and the top
@@ -3774,6 +3802,7 @@ fn a_comment_is_sent_from_its_menu_and_answered_in_place() {
     assert_eq!(app.mode, Mode::Normal);
     // Its answer lands, and waits for your review: the banner says so, and
     // nothing else changes, not even the bottom line.
+    drop(held);
     let screen = wait_for(&mut app, "⟳ 1 landed ask waits for your review");
     assert!(screen.contains("the next: 1 reply, asked \"why so loud?\"") && !screen.contains("Seen."), "{screen}");
     assert!(!app.status.contains("answer done"), "{}", app.status);
@@ -3798,8 +3827,9 @@ fn a_comment_is_sent_from_its_menu_and_answered_in_place() {
     draw(&mut again);
 }
 
-/// A comment asked about, its stream opened in place.
-fn asked_and_streamed(db: &Path) -> App {
+/// A comment asked about, its stream opened in place: the agent held at
+/// work until what this gives is dropped.
+fn asked_and_streamed(db: &Path) -> (App, Held) {
     fake_claude();
     let mut app = open(db).unwrap();
     keys(&mut app, &[KeyCode::Right]);
@@ -3807,21 +3837,23 @@ fn asked_and_streamed(db: &Path) -> App {
     keys(&mut app, &[KeyCode::Enter]);
     typed(&mut app, "why so loud?");
     keys(&mut app, &[KeyCode::Esc]);
+    let held = hold(db);
     choose_as(&mut app, "Save it and ask agent", "answer only");
     wait_for(&mut app, "⋯ Reading the patch.");
     keys(&mut app, &[KeyCode::Down]);
     keys(&mut app, &[KeyCode::Enter]);
     assert!(matches!(app.mode, Mode::Stream { .. }), "{:?}", app.mode);
-    app
+    (app, held)
 }
 
 #[test]
 fn a_stream_read_in_place_folds_once_the_agent_is_done() {
     let (_tmp, db, _src) = setup();
-    let mut app = asked_and_streamed(&db);
+    let (mut app, held) = asked_and_streamed(&db);
     assert_eq!(app.hint(), "↑↓: scroll · esc: fold it");
     // Its answer lands: the stream folds, the keys are the screen's again,
     // and the bottom line says what waits.
+    drop(held);
     let screen = wait_for(&mut app, "⟳ 1 landed ask waits for your review");
     assert_eq!(app.mode, Mode::Normal);
     assert_eq!(app.status, "the agent is done: what it brought waits for your review");
@@ -3833,10 +3865,11 @@ fn a_stream_read_in_place_folds_once_the_agent_is_done() {
 #[test]
 fn a_stream_read_from_the_help_folds_there() {
     let (_tmp, db, _src) = setup();
-    let mut app = asked_and_streamed(&db);
+    let (mut app, held) = asked_and_streamed(&db);
     keys(&mut app, &[KeyCode::Char('?')]);
     assert!(draw(&mut app).contains("Once the agent is done, the stream folds on its own."));
     // Its answer lands: the help goes back to the screen, not the stream.
+    drop(held);
     for _ in 0..300 {
         app.refresh();
         if matches!(&app.mode, Mode::Help { back, .. } if **back == Mode::Normal) {
@@ -3863,6 +3896,7 @@ fn the_screen_never_waits_on_the_agent() {
     keys(&mut app, &[KeyCode::Esc]);
     // Asked, the ask is started elsewhere: its worktree is not made while
     // the screen waits, and keys go on working meanwhile.
+    let held = hold(&db);
     choose_as(&mut app, "Save it and ask agent", "change");
     assert!(app.working(), "the ask starts away from the screen");
     keys(&mut app, &[KeyCode::Down, KeyCode::Up]);
@@ -3877,6 +3911,7 @@ fn the_screen_never_waits_on_the_agent() {
     assert!(draw(&mut app).contains("· checking…"));
     app.settle();
     assert!(!draw(&mut app).contains("checking…"));
+    drop(held);
     accept_landed(&mut app, &db);
     wait_for(&mut app, "agent replied");
 }
@@ -3918,14 +3953,21 @@ fn redrawing_does_not_slow_as_the_agent_writes() {
     let mut app = open(&db).unwrap();
     keys(&mut app, &[KeyCode::Home]);
     assert!(draw(&mut app).contains("⋯ step 19999"));
-    // It writes on, the editor reading and drawing as it does.
+    // It writes on, the editor reading and drawing as it does. Each frame is
+    // timed by how long this thread ran to read and draw it: the clock on the
+    // wall would count too the time the machine gave to other work meanwhile.
+    let ran = || {
+        let mut t = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+        assert_eq!(unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut t) }, 0);
+        std::time::Duration::new(t.tv_sec as u64, t.tv_nsec as u32)
+    };
     let mut slowest = std::time::Duration::ZERO;
     for k in 0..40 {
         Db::append(&db, &(0..50).map(|n| line(20_000 + k * 50 + n)).collect::<Vec<_>>()).unwrap();
-        let t = std::time::Instant::now();
+        let t = ran();
         app.refresh();
         draw(&mut app);
-        slowest = slowest.max(t.elapsed());
+        slowest = slowest.max(ran() - t);
     }
     assert!(draw(&mut app).contains("⋯ step 21999"), "the stream shown is the latest");
     assert!(slowest < std::time::Duration::from_millis(100), "a frame took {slowest:?}");

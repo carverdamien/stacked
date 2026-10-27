@@ -1883,7 +1883,9 @@ StackED's too (the web feature needs the wasm target, as in Install).
 stacked built with no feature, and needs no wasm target; `--features` then
 adds the tests of each feature named. No test runs claude: a script stands
 in for it; none reaches Phabricator: its revisions and their comments are
-read by stand-ins; none opens a window.
+read by stand-ins; none opens a window. No sleep decides what a test sees:
+when a test looks at the agent's stand-in at work, the stand-in goes on
+working until the test lets it finish, however busy the machine is.
 
 Nor does any test reach what is yours to stacked: ~/.stacked,
 ~/.stacked.toml, StackED's state in ~/Library/Application Support. In each
@@ -1955,7 +1957,9 @@ menus by place, what `?` says where, writing in every pane, the regions it
 says it drew (its panes, then the boxes over them, inside their borders:
 what StackED's selections keep to), a comment asked
 about and its stream and answer shown in place, the screen never waiting on
-the agent, redrawing not slowing as the agent writes, the filter kept in
+the agent, redrawing not slowing as the agent writes (a frame timed as the
+time the editor ran to read and draw it, not by the clock, which counts
+too the time a busy machine gives to other work), the filter kept in
 the file, the three views, what changed in a line almost the same as the
 one removed painted as words (and lines quite other, not), in the code, in
 a version's interdiff and in the history's stack diff, none of the room after

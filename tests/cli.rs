@@ -907,10 +907,16 @@ fn the_stack_is_not_edited_by_hand_while_the_agent_changes_it() {
     e.ok(&["import", "s", "base"]);
     let id = comment(&e, &["Amend", "the", "top."]);
     let line = comment(&e, &["--patch", "1", "--line", "a.txt:+2", "Why", "2?"]);
+    // The agent amends the top once the test says so: until the gate is
+    // there, it is at work.
+    let gate = e.root.join("gate");
     let claude = fake_claude(
         &e,
-        "claude-slow.sh",
-        r#"sleep 2; echo x >> a.txt; git -c user.name=C -c user.email=c@x commit -qam "Bug 3 - café, a very long title that format-patch will fold over more than one line" --amend"#,
+        "claude-gated.sh",
+        &format!(
+            r#"until test -e {}; do sleep 0.1; done; echo x >> a.txt; git -c user.name=C -c user.email=c@x commit -qam "Bug 3 - café, a very long title that format-patch will fold over more than one line" --amend"#,
+            gate.display()
+        ),
         r#"{"replies": {"c1": "Amended."}}"#,
     );
     let (fine, _, err) = stacked_in(&e.src, &e.db, &["send", "s", &id], "", &[("STACKED_CLAUDE", &claude)]);
@@ -926,7 +932,9 @@ fn the_stack_is_not_edited_by_hand_while_the_agent_changes_it() {
     assert!(!fine && err.contains("the agent is working on it"), "{err}");
     // Comments, others than its own, are written on as ever.
     e.ok(&["reply", "s", &line, "Really?"]);
-    // Landed, its change waits for your review, and the stack with it.
+    // Let through the gate, it lands: its change waits for your review, and
+    // the stack with it.
+    std::fs::write(&gate, "").unwrap();
     landed(&e, 1);
     let (fine, _, err) = e.run(&["drop", "s", "1"]);
     let why = "the agent's change of the stack waits for your review: the stack can be edited by hand again once you have reviewed it";
@@ -1313,7 +1321,14 @@ fn several_asks_wait_their_turn() {
     let one = comment(&e, &["First."]);
     let two = comment(&e, &["Second."]);
     let three = comment(&e, &["--patch", "2", "Why b?"]);
-    let claude = fake_claude(&e, "claude-wait.sh", "sleep 1", r#"{"replies": {"c1": "Seen."}}"#);
+    // The agent works until the test says so: until the gate is there.
+    let gate = e.root.join("gate");
+    let claude = fake_claude(
+        &e,
+        "claude-wait.sh",
+        &format!("until test -e {}; do sleep 0.1; done", gate.display()),
+        r#"{"replies": {"c1": "Seen."}}"#,
+    );
     // Unchained: each waits for what goes before it, as self-review's do.
     let unchained = e.root.join("unchained.toml");
     std::fs::write(&unchained, "[agent]\nchain = false\n").unwrap();
@@ -1329,8 +1344,9 @@ fn several_asks_wait_their_turn() {
     assert!(out.contains("ready (answer only)"), "{out}");
     let waiting = e.ok(&["comments", "s", "--show", "in-progress"]);
     assert_eq!(waiting.lines().filter(|l| !l.starts_with(' ')).count(), 3, "{waiting}");
-    // Each goes in turn, on its own; what each brings back waits for review,
-    // the first landed first.
+    // Let through the gate, each goes in turn, on its own; what each brings
+    // back waits for review, the first landed first.
+    std::fs::write(&gate, "").unwrap();
     landed(&e, 3);
     let runs = e.ok(&["runs"]);
     assert_eq!(runs.lines().filter(|l| l.contains("\tdone\t")).count(), 3, "{runs}");
