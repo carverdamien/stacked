@@ -5,7 +5,9 @@ use std::collections::HashMap;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Line {
-    /// ' ' context, '+' add, '-' del.
+    /// ' ' context, '+' add, '-' del; '\\' the line git writes under a
+    /// file's last line when that line has no newline, `\ No newline at
+    /// end of file`, which is not a line to read.
     pub origin: char,
     /// The full line, origin character included.
     pub text: String,

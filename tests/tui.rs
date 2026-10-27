@@ -1072,6 +1072,47 @@ fn reading_a_file_s_lines_of_white_space_alone_count_only_when_the_settings_say_
 }
 
 #[test]
+fn reading_a_file_with_no_newline_at_its_end_ticks_it_and_its_patch_once_read() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("src");
+    std::fs::create_dir(&src).unwrap();
+    git(&src, &["init", "-q", "-b", "main"]);
+    git(&src, &["config", "commit.gpgsign", "false"]);
+    // The last line of f.txt has no newline, before the patch and after it:
+    // under each side's, git writes `\ No newline at end of file`.
+    std::fs::write(src.join("f.txt"), "one\ntwo").unwrap();
+    git(&src, &["add", "."]);
+    git(&src, &["commit", "-qm", "base"]);
+    std::fs::write(src.join("f.txt"), "one\nTWO").unwrap();
+    git(&src, &["commit", "-qam", "Bug 1 - shout"]);
+    let db = tmp.path().join("db.jsonl");
+    stacked(&src, &db, &["import", "s", "HEAD~1"]);
+    let mut app = open(&db).unwrap();
+    // Reading, listing files: the line removed, the line added and the
+    // title are the lines to read.
+    keys(&mut app, &[KeyCode::Char('2'), KeyCode::Left]);
+    let screen = draw(&mut app);
+    assert_eq!(pane_words(&screen), ["1 Bug 1 - shout 0/3", "f.txt 2 left"], "{screen}");
+    assert!(screen.contains("3/3 lines to review"), "{screen}");
+    keys(&mut app, &[KeyCode::Enter]);
+    app.wait_blocks();
+    assert_eq!(app.rows.iter().filter(|r| r.text == "\\ No newline at end of file").count(), 2);
+    // The title read, then the hunk.
+    down_to(&mut app, "   Bug 1 - shout");
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    assert!(app.status.contains("read: the title, 1 line"), "{}", app.status);
+    assert_eq!(app.rows[app.cursor].text, "-two");
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    assert!(app.status.contains("read: this hunk, 2 lines · nothing left to read below"), "{}", app.status);
+    // All of it read: the file's tick and the patch's, and nothing left to
+    // review on the top bar.
+    let screen = draw(&mut app);
+    assert_eq!(pane_words(&screen), ["1 Bug 1 - shout ✓", "f.txt ✓"], "{screen}");
+    assert!(screen.contains("reading 3/3") && screen.contains("nothing left to review"), "{screen}");
+    assert!(app.rows.iter().any(|r| r.text == "f.txt   read 2/2 lines"));
+}
+
+#[test]
 fn reading_the_patches_pane_keeps_its_width_from_patch_to_patch() {
     let tmp = tempfile::tempdir().unwrap();
     let src = tmp.path().join("src");

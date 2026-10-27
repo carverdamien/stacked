@@ -1285,6 +1285,11 @@ dim, with no check beside it. A mark of the block it is in still holds it,
 so with the setting `true` it is read as the rest of its block is. A line
 whose code is re-indented is not one of them: it has code to read.
 
+The line git writes under a file's last line when that line has no
+newline, `\ No newline at end of file`, is not a changed line: Space marks
+no such line, and no count of lines read or left to review holds it, so
+that a patch read whole shows its `✓` whatever its files end with.
+
 Marks are records in the file, kept by the lines' content: a new version of
 the patch keeps them on the lines it did not change, and what it changed is
 to read again. The blocks are found from the files as each patch leaves
@@ -1901,7 +1906,8 @@ picked, gone through with the arrows past their ends, gone into with
 Enter and →, clicked, and picked from the middle, where ← comes back to
 the file; reading, each saying the lines left to mark read as marks are
 made and taken back, those of white space alone counted only as the
-settings say, the pane keeping its width from patch to patch), and the
+settings say, a file with no newline at its end ticked once read whole,
+its patch too, the pane keeping its width from patch to patch), and the
 comments pane's states (expanded, compact, hidden) and the compact view
 of the code as they were. With `--features web`, `tests/web.rs`
 serves the editor and asks it over HTTP as a browser would: the token
@@ -1966,7 +1972,10 @@ to where the stack is, a branch put straight back) and how a stack diff
 follows each patch by its change, a move told from a shift. Those in
 `setup.rs` show the setup screen's boxes, a server's tools let all at once
 or one by one; those in `search.rs`, which lines of a file a hunk shows
-already; those in `config.rs`, a file of settings over another, a
+already; those in `progress.rs`, that a patch whose file has no newline
+at its end leaves nothing to review once its lines removed and added and
+its message are read (git's `\ No newline at end of file` is not a line
+to read); those in `config.rs`, a file of settings over another, a
 checkout's own read and written unless git tracks it, and the patches
 pane's `compact`, as versions before the files wrote it, read as them;
 those in `refs.rs`, which references a rewind or an edit detaches, which

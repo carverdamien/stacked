@@ -51,15 +51,17 @@ pub fn changed_keys(p: &Patch) -> Vec<String> {
     changed_lines(p).into_iter().map(|(k, _)| k).collect()
 }
 
-/// The lines of patch `p` to read: the changed lines of its diff, then the
-/// lines of its message, its title first; each one's key, and whether it
-/// is white space alone (a line of the message, empty).
+/// The lines of patch `p` to read: the changed lines of its diff, its +
+/// and − lines, which are the lines Space marks (git's `\ No newline at
+/// end of file` is not one of them), then the lines of its message, its
+/// title first; each one's key, and whether it is white space alone (a
+/// line of the message, empty).
 pub fn changed_lines(p: &Patch) -> Vec<(String, bool)> {
     let diff = crate::diff::parse_diff(&p.diff, &crate::view::mode(&p.change))
         .iter()
         .flat_map(|f| f.hunks.iter())
         .flat_map(|h| h.lines.iter())
-        .filter(|l| l.origin != ' ')
+        .filter(|l| matches!(l.origin, '+' | '-'))
         .map(|l| (l.key.clone(), crate::diff::white_space(&l.text)))
         .collect::<Vec<_>>();
     let message = p.message.split('\n').zip(crate::view::message_keys(p)).map(|(l, k)| (k, l.trim().is_empty()));
@@ -205,5 +207,30 @@ mod tests {
         assert_eq!(progress(&db, "s", &mut memo, false).lines, 3);
         assert_eq!(progress(&db, "s", &mut memo, true).lines, 5);
         assert_eq!(changed_lines(&a).iter().filter(|(_, blank)| *blank).count(), 2);
+    }
+
+    #[test]
+    fn no_newline_at_end_of_file_is_not_a_line_to_review() {
+        // The file's last line has no newline, before the patch and after
+        // it: under each side's, git writes `\ No newline at end of file`.
+        let diff = "diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -1,2 +1,2 @@\n one\n-two\n\\ No newline at end of file\n+TWO\n\\ No newline at end of file\n";
+        let a = Patch::new("a".into(), None, None, "Bug - a".into(), diff.into());
+        let lines = crate::diff::parse_diff(&a.diff, &crate::view::mode(&a.change)).remove(0).hunks.remove(0).lines;
+        assert_eq!(lines.iter().filter(|l| l.origin == '\\').count(), 2);
+        // What Space marks: the line removed, the line added, and the title.
+        let marked: Vec<String> = lines.iter().filter(|l| matches!(l.origin, '+' | '-')).map(|l| l.key.clone()).chain(crate::view::message_keys(&a)).collect();
+        assert_eq!(changed_keys(&a), marked);
+        let start = [Record::Patch(a.clone()), stack("s", &[&a], 1000)];
+        assert_eq!(of(&start), Progress { lines: 3, total: 3, comments: 0 });
+        // All of them read: nothing is left to review.
+        let all = Record::Read(Mark {
+            change: a.change.clone(),
+            keys: marked,
+            undo: None,
+            time: 1600,
+        });
+        let p = of(&[&start[..], &[all]].concat());
+        assert_eq!(p, Progress { lines: 0, total: 3, comments: 0 });
+        assert_eq!(p.said(), ["nothing left to review", "all reviewed"]);
     }
 }
