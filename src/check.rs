@@ -107,20 +107,28 @@ pub fn applies(repo: &Path, base: &str, patches: &[&Patch]) -> Result<()> {
     Ok(())
 }
 
-/// A directory of the check's own, gone when dropped.
-struct Scratch(PathBuf);
+/// A directory of its own in the temporary directory, gone when dropped:
+/// a check's, or a code edit's diff. Its name, `stacked-KIND-PID-N`, is as
+/// all that stacked makes there is named: the process's id first, then a
+/// count.
+pub(crate) struct Scratch(PathBuf);
 
 impl Scratch {
-    fn new() -> Result<Scratch> {
+    pub(crate) fn new(kind: &str) -> Result<Scratch> {
         use std::sync::atomic::{AtomicU64, Ordering};
         static N: AtomicU64 = AtomicU64::new(0);
         let dir = std::env::temp_dir().join(format!(
-            "stacked-check-{}-{}",
+            "stacked-{kind}-{}-{}",
             std::process::id(),
             N.fetch_add(1, Ordering::Relaxed)
         ));
         std::fs::create_dir_all(&dir).map_err(|e| Error(format!("{}: {e}", dir.display())))?;
         Ok(Scratch(dir))
+    }
+
+    /// Where it is.
+    pub(crate) fn path(&self) -> &Path {
+        &self.0
     }
 }
 
@@ -142,9 +150,9 @@ struct Index {
 
 impl Index {
     fn new(repo: &Path, base: &str, paths: Option<&BTreeSet<String>>) -> Result<Index> {
-        let dir = Scratch::new()?;
-        let index = dir.0.join("index");
-        let objects = dir.0.join("objects");
+        let dir = Scratch::new("check")?;
+        let index = dir.path().join("index");
+        let objects = dir.path().join("objects");
         std::fs::create_dir_all(&objects).map_err(|e| Error(format!("{}: {e}", objects.display())))?;
         let theirs = PathBuf::from(
             git(repo, &["rev-parse", "--path-format=absolute", "--git-common-dir"])?.trim(),

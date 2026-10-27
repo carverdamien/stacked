@@ -713,7 +713,9 @@ choice, `[x] tmp/file  [ ] pwd  [ ] .stacked/NAME/user`, kept for the stack:
   but the editor sees nothing around it: no project for a language server's
   go to definition. What is saved makes the patch's part for that file again
   (the file before the patch and as saved, diffed by git), the rest of the
-  patch as it was.
+  patch as it was. Each diff is made in a temporary folder of its own,
+  which is removed once the diff is made, whatever happens: two edits saved
+  at once, in two of StackED's windows, never mix their files.
 - `pwd`: the checkout stacked runs in, when it is one of the stack's
   repository and nothing it tracks has changes. It is put at the stack's
   base with the patches up to this one applied (as commits, not signed),
@@ -2084,9 +2086,12 @@ stream's thinking is tested in `ask.rs`, and what is said of landed work
 left to review in `held.rs`. The tests in `check.rs` show
 the check's index holds only what the patches touch, that it writes nothing
 to the repository, and how a patch's files are read before and after it;
-those in `history.rs`, what the history leaves out (comments, runs, a move
-to where the stack is, a branch put straight back) and how a stack diff
-follows each patch by its change, a move told from a shift. Those in
+those in `ops.rs`, that two code edits saved at once, on two threads, each
+make their diff in a folder of their own and leave nothing in the
+temporary directory; those in `history.rs`, what the history leaves out
+(comments, runs, a move to where the stack is, a branch put straight back)
+and how a stack diff follows each patch by its change, a move told from a
+shift. Those in
 `setup.rs` show the setup screen's boxes, a server's tools let all at once
 or one by one; those in `search.rs`, which lines of a file a hunk shows
 already; those in `progress.rs`, that a patch whose file has no newline

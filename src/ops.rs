@@ -1218,9 +1218,11 @@ fn put_edits(db: &mut Db, patches: &[String], edits: &[(usize, Draft)]) -> Resul
 /// adds). None when it no longer changes the file at all.
 fn file_section(repo: &std::path::Path, fd: &crate::diff::FileDiff, from: &str, old: Option<&str>, new: &str) -> Result<Option<String>> {
     use std::process::{Command, Stdio};
-    let dir = std::env::temp_dir().join(format!("stacked-diff-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).map_err(|e| Error(e.to_string()))?;
-    let (a, b) = (dir.join("a"), dir.join("b"));
+    // A folder for each diff, gone once the diff is made, whatever happens:
+    // two edits finishing at once, in two of StackED's windows, each diff
+    // files of their own.
+    let dir = crate::check::Scratch::new("diff")?;
+    let (a, b) = (dir.path().join("a"), dir.path().join("b"));
     std::fs::write(&b, new).map_err(|e| Error(e.to_string()))?;
     let old_file = match old {
         Some(t) => {
@@ -1256,7 +1258,7 @@ fn file_section(repo: &std::path::Path, fd: &crate::diff::FileDiff, from: &str, 
         Some(t) => hash(t)?,
         None => "0".repeat(40),
     };
-    let _ = std::fs::remove_dir_all(&dir);
+    drop(dir);
     // 0: the same; 1: they differ; else git could not say.
     let hunks: Vec<String> = match out.status.code() {
         Some(0) => vec![],
@@ -1517,5 +1519,48 @@ mod tests {
         assert_eq!(of(" Body."), Some(MailLine::Message(2)));
         assert_eq!(of("-+x"), Some(MailLine::Diff(5)));
         assert_eq!(of("++y"), Some(MailLine::Diff(5)));
+    }
+
+    #[test]
+    fn two_code_edits_at_once_each_diff_in_a_folder_of_their_own() {
+        // A repository for git to run in, as an edit's has.
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path();
+        let init = std::process::Command::new("git").args(["init", "-q"]).current_dir(repo).status().unwrap();
+        assert!(init.success());
+        let fd = crate::diff::parse_diff("diff --git a/f b/f\nindex 1..2 100644\n--- a/f\n+++ b/f\n@@ -1 +1 @@\n-one\n+two\n", "")
+            .remove(0);
+        // What this process has made in the temporary directory for diffs:
+        // an entry with another id first is another process's.
+        let ours = || -> std::collections::BTreeSet<String> {
+            let mine = format!("stacked-diff-{}-", std::process::id());
+            std::fs::read_dir(std::env::temp_dir())
+                .unwrap()
+                .flatten()
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .filter(|n| n.starts_with(&mine))
+                .collect()
+        };
+        let before = ours();
+        // Two edits of the file saved at once, each many times over: each
+        // diff is of its own edit, and none fails for the other's files
+        // written over or removed.
+        let start = std::sync::Barrier::new(2);
+        std::thread::scope(|s| {
+            for side in ["left", "right"] {
+                let (fd, start) = (&fd, &start);
+                s.spawn(move || {
+                    start.wait();
+                    for k in 0..25 {
+                        let saved = format!("{side} {k}\n");
+                        let section = file_section(repo, fd, "f", Some("one\n"), &saved).unwrap().unwrap();
+                        assert!(section.ends_with(&format!("@@ -1 +1 @@\n-one\n+{saved}")), "{section}");
+                    }
+                });
+            }
+        });
+        // Each folder is gone once its diff is made.
+        let left: Vec<String> = ours().difference(&before).cloned().collect();
+        assert!(left.is_empty(), "left in {}: {left:?}", std::env::temp_dir().display());
     }
 }

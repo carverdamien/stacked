@@ -41,7 +41,7 @@ fn side(diff: &str, sign: char) -> String {
 
 /// What this process has made in the temporary directory. Everything
 /// stacked makes there has the id of the process making it as the first
-/// number of its name (`stacked-check-PID-N`, `stacked-diff-PID`,
+/// number of its name (`stacked-check-PID-N`, `stacked-diff-PID-N`,
 /// `stacked-PID-N`): an entry with another id first is another process's,
 /// made or removed meanwhile, and is left out. So is `stacked-todo`, the
 /// folder of the agents' rebase plans, which every process shares: the
