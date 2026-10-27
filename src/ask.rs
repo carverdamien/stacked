@@ -157,6 +157,10 @@ pub struct Info {
     /// to the agent to reuse what still holds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub was: Option<String>,
+    /// A change to the whole stack: the folder its agent writes its rebase
+    /// plan in, removed once it lands.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub todo: Option<String>,
 }
 
 /// The stack ask `i` works on: the stack at `i.from`; or, a round sent
@@ -911,6 +915,7 @@ fn claim(db: &mut Db) -> Result<Vec<String>> {
             batch: b.clone(),
             dropped: false,
             was,
+            todo: None,
         };
         db.add_run(Run {
             id: id.clone(),
@@ -937,12 +942,16 @@ fn first_line(text: &str) -> String {
         .unwrap_or_default()
 }
 
-/// A run that could not start: failed, and its comments with it.
+/// A run that could not start: failed, and its comments with it. The
+/// folder made for its rebase plan, if one was, goes.
 fn fail_start(db_path: &Path, id: &str, why: &str) -> Result<()> {
     Db::edit(db_path, |db| {
         let Some(r) = db.run(id).cloned() else { return Ok(()) };
         if let Some(i) = info(&r) {
             mark_failed(db, &i, why)?;
+            if let Some(dir) = &i.todo {
+                drop_plan(Path::new(dir), &plans_busy(db, id));
+            }
         }
         db.add_run(Run {
             state: RunState::Failed,
@@ -1783,19 +1792,145 @@ pub fn check_plan(text: &str) -> Result<()> {
     Ok(())
 }
 
-/// Where a change to the stack writes its rebase plan, for the worktree (or
-/// checkout) `dir`: outside its git dir, which claude may not write in, one
-/// for each, as self-review has it; a plan an earlier ask left there gone.
-fn rebase_todo(dir: &Path) -> Result<PathBuf> {
-    let gitdir = git::git(dir, &["rev-parse", "--absolute-git-dir"])?;
-    let todo = std::env::temp_dir()
-        .join("stacked-todo")
-        .join(crate::diff::sha1_12(gitdir.trim()))
-        .join("REBASE_TODO");
-    let _ = std::fs::remove_file(&todo);
-    if let Some(d) = todo.parent() {
-        std::fs::create_dir_all(d).map_err(|e| Error(format!("{}: {e}", d.display())))?;
+/// The folder the agents' rebase plans are kept in, as the binary set it
+/// as it starts (`plans_in`).
+static PLANS: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+/// Where the agents' rebase plans are kept, as the environment `var` names
+/// it: the folder `$STACKED_TODO` names, else `stacked-todo` in the
+/// temporary directory, which every stacked shares. One set to nothing is
+/// not set, and one not from the root is taken from where stacked runs.
+pub fn plans_from(var: impl Fn(&str) -> Option<std::ffi::OsString>) -> PathBuf {
+    match var("STACKED_TODO").filter(|v| !v.is_empty()) {
+        Some(v) => std::path::absolute(Path::new(&v)).unwrap_or_else(|_| PathBuf::from(v)),
+        None => std::env::temp_dir().join("stacked-todo"),
     }
+}
+
+/// From now on, the agents' rebase plans are kept in `dir`, unless that was
+/// set already: by the binary, as it starts, before any ask does. Whether
+/// they are now.
+pub fn plans_in(dir: PathBuf) -> bool {
+    PLANS.set(dir).is_ok()
+}
+
+/// Where the asks on database `db` keep their rebase plans: where the
+/// binary set it as it started; else beside the database. Only the tests'
+/// own processes are never set up so: their plans are kept in the test's
+/// own folder, and they never touch the one that every stacked shares.
+fn plans(db: &Path) -> PathBuf {
+    PLANS.get().cloned().unwrap_or_else(|| db.with_file_name("stacked-todo"))
+}
+
+/// The file in a plan's folder that names, in full, the git directory the
+/// folder is for: the folder's own name is a hash of that path, which
+/// cannot be read back.
+const GITDIR: &str = "gitdir";
+
+/// How long a folder that names no git directory, as a stacked of before
+/// made them, is kept once nothing in it has changed: a day.
+const UNNAMED_KEPT: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
+
+/// Whether `name` is a plan folder's: the first 12 hex digits of a SHA-1.
+fn plan_name(name: &str) -> bool {
+    name.len() == 12 && name.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+/// The folder in `base` for the rebase plans of git directory `gitdir`,
+/// made if it is not there, and the file in it that names that git
+/// directory written. Its name is the first 12 hex digits of the SHA-1 of
+/// the git directory's path, as self-review names its own.
+fn plan_folder(base: &Path, gitdir: &str) -> Result<PathBuf> {
+    let dir = base.join(crate::diff::sha1_12(gitdir));
+    let say = |e: std::io::Error| Error(format!("{}: {e}", dir.display()));
+    std::fs::create_dir_all(&dir).map_err(say)?;
+    std::fs::write(dir.join(GITDIR), format!("{gitdir}\n")).map_err(say)?;
+    Ok(dir)
+}
+
+/// The git directory plan folder `dir` is for, as its `gitdir` file names
+/// it. A file that names one whose hash is not the folder's name, as when
+/// something else wrote over it, names none.
+fn plan_gitdir(dir: &Path) -> Option<PathBuf> {
+    let text = std::fs::read_to_string(dir.join(GITDIR)).ok()?;
+    let gitdir = text.trim();
+    let named = crate::diff::sha1_12(gitdir);
+    (dir.file_name() == Some(std::ffi::OsStr::new(&named))).then(|| PathBuf::from(gitdir))
+}
+
+/// Whether a rebase is under way in git directory `gitdir`.
+fn rebasing(gitdir: &Path) -> bool {
+    ["rebase-merge", "rebase-apply"].iter().any(|f| gitdir.join(f).exists())
+}
+
+/// When anything in folder `dir` last changed: the folder itself, or one of
+/// the files in it.
+fn last_changed(dir: &Path) -> Option<std::time::SystemTime> {
+    let mut last = std::fs::metadata(dir).and_then(|m| m.modified()).ok()?;
+    for e in std::fs::read_dir(dir).ok()?.flatten() {
+        if let Ok(t) = e.metadata().and_then(|m| m.modified()) {
+            last = last.max(t);
+        }
+    }
+    Some(last)
+}
+
+/// The plan folders of the asks still running on `db`, but run `id`'s.
+fn plans_busy(db: &Db, id: &str) -> HashSet<PathBuf> {
+    db.live_runs()
+        .iter()
+        .filter(|r| r.state == RunState::Started && r.id != id)
+        .filter_map(|r| info(r)?.todo.map(PathBuf::from))
+        .collect()
+}
+
+/// The plan folders in `base` that no rebase can want any more, removed:
+/// each folder whose git directory is gone, as its `gitdir` file names it;
+/// and each that names none, as a stacked of before made them, once nothing
+/// in it has changed for a day (`now` being the time). Never a folder that
+/// one of the asks still running (`busy`) writes its plan in: a folder
+/// whose git directory is there is kept, rebase or not.
+fn prune_plans(base: &Path, busy: &HashSet<PathBuf>, now: std::time::SystemTime) {
+    let Ok(entries) = std::fs::read_dir(base) else {
+        return;
+    };
+    for e in entries.flatten() {
+        let dir = e.path();
+        let named = e.file_name().to_str().is_some_and(plan_name);
+        if !named || !e.file_type().is_ok_and(|t| t.is_dir()) || busy.contains(&dir) {
+            continue;
+        }
+        let gone = match plan_gitdir(&dir) {
+            Some(gitdir) => matches!(gitdir.try_exists(), Ok(false)),
+            None => last_changed(&dir).is_some_and(|t| now.duration_since(t).is_ok_and(|d| d > UNNAMED_KEPT)),
+        };
+        if gone {
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+}
+
+/// Plan folder `dir`, its ask landed, removed: unless a rebase may still
+/// want it, one of the asks still running (`busy`) writing its plan there,
+/// or a rebase under way in its git directory.
+fn drop_plan(dir: &Path, busy: &HashSet<PathBuf>) {
+    let named = dir.file_name().and_then(|n| n.to_str()).is_some_and(plan_name);
+    if !named || busy.contains(dir) || plan_gitdir(dir).is_some_and(|g| rebasing(&g)) {
+        return;
+    }
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Where a change to the stack writes its rebase plan, for the worktree (or
+/// checkout) `dir`: in `base`, the folder for its git directory, outside
+/// that git directory, which claude may not write in, as self-review has
+/// it; a plan an earlier ask left there gone. The folders whose worktree is
+/// gone are removed first, but those of the asks still running (`busy`).
+fn rebase_todo(base: &Path, dir: &Path, busy: &HashSet<PathBuf>) -> Result<PathBuf> {
+    let gitdir = git::git(dir, &["rev-parse", "--absolute-git-dir"])?;
+    prune_plans(base, busy, std::time::SystemTime::now());
+    let todo = plan_folder(base, gitdir.trim())?.join("REBASE_TODO");
+    let _ = std::fs::remove_file(&todo);
     Ok(todo)
 }
 
@@ -1901,13 +2036,16 @@ fn start(db_path: &Path, id: &str) -> Result<()> {
     let cwd = i.worktree.clone().map_or(repo.clone(), PathBuf::from);
     // A change to the stack rewrites what is below HEAD with a plan it
     // writes, which a plain `git rebase -i` takes: claude refuses a command
-    // that sets an editor.
+    // that sets an editor. Its plan's folder is kept in the run, to remove
+    // once it lands.
+    let plans = plans(&db_abs);
     let todo = match (i.way, &i.scope) {
-        (Way::Change, Scope::Stack) => Some(rebase_todo(&cwd)?),
+        (Way::Change, Scope::Stack) => Some(rebase_todo(&plans, &cwd, &plans_busy(&db, id))?),
         _ => None,
     };
     if let Some(todo) = &todo {
         i.prompt += &format!("\n\nThe rebase todo file: {}", todo.display());
+        i.todo = todo.parent().map(|d| d.to_string_lossy().into_owned());
     }
     let mut tools = match i.way {
         Way::Change => format!("{},Bash({cmd} fits *),Bash({cmd} export *)", allowed_tools()),
@@ -1934,11 +2072,15 @@ fn start(db_path: &Path, id: &str) -> Result<()> {
         ..run
     };
     let landed = Db::edit(db_path, |db| {
-        // Unless it was landed meanwhile, taken for one left behind.
+        // Unless it was landed meanwhile, taken for one left behind: then
+        // the folder made for its plan goes.
         if db.run(id).is_some_and(|r| r.state == RunState::Started) {
             db.add_run(run.clone())?;
             Ok(false)
         } else {
+            if let Some(dir) = &i.todo {
+                drop_plan(Path::new(dir), &plans_busy(db, id));
+            }
             Ok(true)
         }
     })?;
@@ -1983,8 +2125,10 @@ fn start(db_path: &Path, id: &str) -> Result<()> {
     step(format!("{claude} -p … --permission-mode {permission}{extra}, in {}", cwd.display()));
     c.env("STACKED_CLAUDE", claude);
     // The stacked it calls back keeps what is yours where this one does:
-    // nowhere, in the tests' own processes.
+    // nowhere, in the tests' own processes. It keeps the agents' rebase
+    // plans where this one does too.
     crate::home::get().pass_on(&mut c);
+    c.env("STACKED_TODO", &plans);
     // The agent's commits are read back as patches, then gone: not signed,
     // which would want the user's key for each.
     unsigned(&mut c);
@@ -2214,6 +2358,11 @@ pub fn land(db_path: &Path, id: &str, exit: Option<&str>) -> Result<Run> {
             ..started
         };
         db.add_run(run.clone())?;
+        // Its rebase plan's folder goes, failed or not, under the lock: an
+        // ask that takes its worktree next makes the folder again.
+        if let Some(dir) = &i.todo {
+            drop_plan(Path::new(dir), &plans_busy(db, id));
+        }
         Ok(run)
     })?;
     if let Some(i) = after {
@@ -3060,5 +3209,127 @@ mod tests {
         assert_eq!(transcript(&text), "The user: why, really?");
         // A turn deleted the first way is told to no one.
         assert_eq!(transcript("why?\n```deleted agent answer\n> Because.\n```\nand here?"), "The user: why?\nThe user: and here?");
+    }
+
+    /// A git directory of the test's own, `tmp/NAME/.git`: its path.
+    fn git_dir(tmp: &Path, name: &str) -> String {
+        let dir = tmp.join(name).join(".git");
+        std::fs::create_dir_all(&dir).unwrap();
+        dir.to_string_lossy().into_owned()
+    }
+
+    #[test]
+    fn a_plan_s_folder_is_pruned_once_its_git_directory_is_gone() {
+        // The plans' folder is the test's own: never the temporary
+        // directory's, which every stacked shares.
+        let dir = tempfile::tempdir().unwrap();
+        let (tmp, base) = (dir.path(), dir.path().join("plans"));
+        let live = plan_folder(&base, &git_dir(tmp, "live")).unwrap();
+        let rebasing = plan_folder(&base, &git_dir(tmp, "rebasing")).unwrap();
+        std::fs::create_dir(tmp.join("rebasing/.git/rebase-merge")).unwrap();
+        let dead = plan_folder(&base, &git_dir(tmp, "dead")).unwrap();
+        std::fs::write(dead.join("REBASE_TODO"), "pick 0123abc one\n").unwrap();
+        let running = plan_folder(&base, &git_dir(tmp, "running")).unwrap();
+        for gone in ["dead", "running"] {
+            std::fs::remove_dir_all(tmp.join(gone)).unwrap();
+        }
+        // Each folder names its git directory in full, as its name cannot.
+        assert_eq!(plan_gitdir(&live), Some(tmp.join("live/.git")));
+        // A folder that a stacked of before made names none; nor does one
+        // whose file names a git directory that is not the folder's.
+        let before = base.join("0123456789ab");
+        std::fs::create_dir(&before).unwrap();
+        let written_over = base.join("ba9876543210");
+        std::fs::create_dir(&written_over).unwrap();
+        std::fs::write(written_over.join(GITDIR), format!("{}\n", tmp.join("dead/.git").display())).unwrap();
+        assert_eq!(plan_gitdir(&written_over), None);
+        // What is not a plan's folder is never touched.
+        let other = base.join("notes");
+        std::fs::create_dir(&other).unwrap();
+        std::fs::write(base.join("0123456789ac"), "a file\n").unwrap();
+        // The folder whose git directory is gone goes; not one whose git
+        // directory is there, rebase or not; not one that an ask still
+        // running writes its plan in, though its git directory is gone.
+        let busy = HashSet::from([running.clone()]);
+        let now = std::time::SystemTime::now();
+        prune_plans(&base, &busy, now);
+        assert!(!dead.exists());
+        for kept in [&live, &rebasing, &running, &before, &written_over, &other, &base.join("0123456789ac")] {
+            assert!(kept.exists(), "{} is kept", kept.display());
+        }
+        // The folders that name no git directory go once nothing in them
+        // has changed for a day.
+        prune_plans(&base, &busy, now + std::time::Duration::from_secs(25 * 60 * 60));
+        assert!(!before.exists() && !written_over.exists());
+        for kept in [&live, &rebasing, &running, &other] {
+            assert!(kept.exists(), "{} is kept", kept.display());
+        }
+        // Its ask landed, the folder whose git directory is gone goes too.
+        prune_plans(&base, &HashSet::new(), now);
+        assert!(!running.exists() && live.exists() && rebasing.exists());
+        // An ask's rebase step, starting, makes the folder of its worktree's
+        // git directory, a plan an earlier ask left there gone.
+        let repo = tmp.join("repo");
+        std::fs::create_dir(&repo).unwrap();
+        git::git(&repo, &["init", "-q"]).unwrap();
+        let gitdir = repo.canonicalize().unwrap().join(".git");
+        let folder = base.join(crate::diff::sha1_12(&gitdir.to_string_lossy()));
+        std::fs::create_dir(&folder).unwrap();
+        std::fs::write(folder.join("REBASE_TODO"), "drop 0123abc one\n").unwrap();
+        let todo = rebase_todo(&base, &repo, &HashSet::new()).unwrap();
+        assert_eq!(todo, folder.join("REBASE_TODO"));
+        assert!(!todo.exists() && plan_gitdir(&folder) == Some(gitdir));
+    }
+
+    #[test]
+    fn a_landed_ask_s_plan_goes_unless_a_rebase_may_still_want_it() {
+        // The plans' folder and the database are the test's own.
+        let dir = tempfile::tempdir().unwrap();
+        let (tmp, base) = (dir.path(), dir.path().join("plans"));
+        let db_path = tmp.join("db.jsonl");
+        let started = |id: &str, plan: &Path| Run {
+            id: id.into(),
+            state: RunState::Started,
+            ask: Some(serde_json::json!({"way": Way::Change, "scope": Scope::Stack, "from": 0, "notes": [], "todo": plan})),
+            ..Default::default()
+        };
+        // Three folders, each for a git directory that is still there.
+        let alone = plan_folder(&base, &git_dir(tmp, "alone")).unwrap();
+        let shared = plan_folder(&base, &git_dir(tmp, "shared")).unwrap();
+        let rebasing = plan_folder(&base, &git_dir(tmp, "rebasing")).unwrap();
+        std::fs::create_dir(tmp.join("rebasing/.git/rebase-apply")).unwrap();
+        Db::edit(&db_path, |db| {
+            for (id, plan) in [("r1", &alone), ("r2", &shared), ("r3", &shared), ("r4", &rebasing)] {
+                db.add_run(started(id, plan))?;
+            }
+            Ok(())
+        })
+        .unwrap();
+        // Landed, failed or not, an ask's folder goes, though its worktree
+        // is still there.
+        assert_eq!(land(&db_path, "r1", Some("1")).unwrap().state, RunState::Failed);
+        assert!(!alone.exists());
+        // Not while another ask still running writes its plan there.
+        land(&db_path, "r2", Some("1")).unwrap();
+        assert!(shared.exists());
+        land(&db_path, "r3", Some("1")).unwrap();
+        assert!(!shared.exists());
+        // Nor while a rebase is under way in its git directory.
+        land(&db_path, "r4", Some("1")).unwrap();
+        assert!(rebasing.exists());
+    }
+
+    #[test]
+    fn the_plans_are_kept_where_the_environment_says() {
+        // `$STACKED_TODO`, from where stacked runs; else the temporary
+        // directory's, which every stacked shares.
+        let named = PathBuf::from("/tmp/plans");
+        assert_eq!(plans_from(|k| (k == "STACKED_TODO").then(|| named.clone().into())), named);
+        assert!(plans_from(|_| Some("plans".into())).is_absolute());
+        assert_eq!(plans_from(|_| None), std::env::temp_dir().join("stacked-todo"));
+        assert_eq!(plans_from(|_| Some("".into())), std::env::temp_dir().join("stacked-todo"));
+        // In the tests' own processes, which the binary never set up: beside
+        // the database.
+        assert_eq!(plans(Path::new("/tmp/t/db.jsonl")), Path::new("/tmp/t/stacked-todo"));
     }
 }

@@ -85,9 +85,14 @@ fn new_file(file: &str, line: &str) -> String {
 /// a run of it as the tests run it, in `home`, a folder of the test's
 /// (`$STACKED_HOME`): never in the home of whoever runs the tests, none of
 /// whose files is read, written or moved. A test gives a settings' file of
-/// its own as `$STACKED_CONFIG`, over the folder's.
+/// its own as `$STACKED_CONFIG`, over the folder's. The agents' rebase
+/// plans are kept in `todo` beside it (`$STACKED_TODO`): never in the
+/// temporary directory's folder, which every stacked shares.
 fn kept_in<'a>(cmd: &'a mut Command, home: &Path) -> &'a mut Command {
-    cmd.env("STACKED_HOME", home).env_remove("STACKED_CONFIG").env_remove("STACKED_APP_STATE")
+    cmd.env("STACKED_HOME", home)
+        .env_remove("STACKED_CONFIG")
+        .env_remove("STACKED_APP_STATE")
+        .env("STACKED_TODO", home.with_file_name("todo"))
 }
 
 /// What runs stacked as a run of yours: no override, so that the files of
@@ -680,6 +685,9 @@ echo extra > c.txt && git add c.txt && git -c user.name=C -c user.email=c@x comm
     assert!(fine, "{err}");
     assert!(out.contains(&format!("{id}\tsent (may change the code)")), "{out}");
     assert!(out.contains(&format!("{id}\tthe stack\tagent replied (change)")), "{out}");
+    // The plan's folder, the test's own, is gone once the ask landed.
+    let plans = e.root.join("todo");
+    assert!(plans.is_dir() && std::fs::read_dir(&plans).unwrap().next().is_none(), "{}", plans.display());
     assert!(out.contains("  agent: Squashed it, and added c."), "{out}");
     assert_eq!(e.column(3), ["Bug 1 - change two", "Bug 2 - add b", "Bug 4 - add c"]);
     let after = e.column(2);

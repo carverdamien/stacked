@@ -980,6 +980,18 @@ its agent rebase. Claude refuses a command that starts by setting a
 variable (`GIT_SEQUENCE_EDITOR=… git rebase -i`), as it refuses any command
 that no rule allows.
 
+The plan's folder is named after the worktree's git directory: its name is
+the first 12 hex digits of the SHA-1 of that directory's path, and a file
+in it, `gitdir`, names the directory in full, as the hash cannot be read
+back. The folder is removed once the ask lands, failed or not, unless a
+rebase is still under way in its git directory, or another ask that is
+running writes its plan there. Each time an ask that may change the whole
+stack starts, stacked also removes every folder whose git directory is
+gone, unless an ask that is running writes its plan there. A folder that
+names no git directory, as an older stacked made them, is removed once
+nothing in it has changed for a day. `$STACKED_TODO` names another folder
+to keep the plans in, in place of `$TMPDIR/stacked-todo`.
+
 What a change may run reaches no network. It may run git's history
 commands (`status`, `log`, `show`, `diff`, `add`, `restore`, `reset`,
 `commit`, `cherry-pick`, `apply`, `checkout`, `switch`), `git rebase` with
@@ -1810,7 +1822,8 @@ is typed: `import.rs`). A fix to one may belong in the other.
 - `git.rs`: what stacked asks of git: mail from a range, the stack's
   worktrees and the agents', a checkout to edit a patch in.
 - `ask.rs`, `claude.rs`: asking the agent about comments, from the queue to
-  landing; claude's command line, its stream and its replies.
+  landing, and the folders of the agent's rebase plans; claude's command
+  line, its stream and its replies.
 - `held.rs`: what an ask brought back, held for your review.
 - `review.rs`, `phab.rs`: Phabricator, built with the `moz-phab` feature
   (on by default).
@@ -1882,6 +1895,21 @@ before, reads its settings from the test's folder and leaves that home as
 it was. `tests/tui.rs` and `home.rs` check the second. The tests of the
 move, and of the settings in ~/.stacked, give stacked a home of the
 test's.
+
+Nor does any test write in, or remove anything from, the folder of the
+agents' rebase plans in the temporary directory, which every stacked
+shares. In `tests/cli.rs`, the function that gives every run of the binary
+its home gives it a folder of the test's as `$STACKED_TODO` too. The tests'
+own processes keep the plans beside their database, in the test's own
+folder, and the asks they start are told the same. In a folder of their
+own, the tests in `ask.rs` show which plan folders are removed: one whose
+git directory is gone, and one that names no git directory once nothing in
+it has changed for a day; not one whose git directory is there, rebase or
+not, nor one that an ask still running writes its plan in. They show a
+landed ask's folder removed, but not while a rebase is under way in its git
+directory, nor while another ask still running writes its plan there.
+`tests/cli.rs` shows the folder gone once an agent's change to the whole
+stack lands.
 
 With `STACKED_TEST_CHECKPOINTS=1` set, every write writes a checkpoint, and
 every database read from one is read whole too and the two compared, a

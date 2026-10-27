@@ -1888,13 +1888,15 @@ fn opened_as_app() {
     }
 }
 
-/// Where stacked keeps what is yours (`home`), as its environment says,
-/// set for the whole process before anything reads it: the one place that
-/// works it out from `$HOME`. What is to be said of the files of before,
-/// moved into it if this run is yours (`by_you`).
+/// Where stacked keeps what is yours (`home`), and where the agents keep
+/// their rebase plans, as its environment says, set for the whole process
+/// before anything reads them: the one place that works the first out from
+/// `$HOME`. What is to be said of the files of before, moved into it if
+/// this run is yours (`by_you`).
 fn settle(by_you: bool) -> Vec<String> {
     let (home, said) = stacked::home::resolve(|k| std::env::var_os(k), by_you);
     stacked::home::set(home);
+    stacked::ask::plans_in(stacked::ask::plans_from(|k| std::env::var_os(k)));
     said
 }
 
