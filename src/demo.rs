@@ -61,6 +61,10 @@ const NEXT: (char, usize, &str, &str) = (
 /// Why O's fix needs more than its patch, as the agent says it.
 const MORE: &str = "if O takes the bottom left corner in patch 4, X can no longer win there in patch 5, so patch 5 has to change too";
 
+/// What the step on the views of the code says of 3, each file whole, and
+/// of going back.
+const VIEWS_WHOLE: &str = "Press 3 in any of them to see each file whole rather than its hunks: here each hunk holds the whole board already, so only its @@ line goes. Press 3 again for the hunks. Press 1 until the code is unified again, with its hunks.";
+
 /// The question the tour asks the agent for you, answer only.
 const QUESTION: &str = "Who is winning?";
 
@@ -674,7 +678,7 @@ impl Tour {
             }),
             Step::Reading => Tour::read(app, 0),
             Step::Commenting => !app.reading,
-            Step::Views => self.seen && app.layout == Layout::Unified,
+            Step::Views => self.seen && app.layout == Layout::Unified && !app.whole_files,
             Step::History => app.screen == Screen::History,
             Step::InHistory => app.screen == Screen::Main,
             Step::Versions | Step::Tree | Step::Runs => self.seen && on_main,
@@ -721,8 +725,8 @@ impl Tour {
             }
             Step::Reading => "The agent answered your question, and changed nothing. Next, keep track of what you have read. Press 2 to switch to reading: each patch on the left then counts its changed lines read, as 0/2, and the bar at the top counts them too. In the list of patches (← from the middle), pick patch 1 and press → to read it. Then press Space: it marks the block of code at the cursor read and goes on to the next line not read, and Enter marks it unread again. Mark patch 1 read.".into(),
             Step::Commenting => "Patch 1 is read: the list marks it ✓. Read marks are kept by the lines' content, so a new version of a patch keeps them on the lines it did not change. Press 2 again to switch back to commenting, where Enter on a line comments on it.".into(),
-            Step::Views if !app.sides_fit() => "Press 1 to switch how the code is drawn: unified, side by side, then compact. Side by side needs a wider middle than this one: press ← on the patches, and they list the files of the patch picked under it, then ← again hides them; → on the comments makes them compact, then → again hides them, and ← from the middle brings the patches back. Go through the three views. Press 1 until the code is unified again.".into(),
-            Step::Views => "Press 1 to switch how the code is drawn: unified, side by side, then compact. Go through the three views. Press 1 until the code is unified again.".into(),
+            Step::Views if !app.sides_fit() => format!("Press 1 to switch how the code is drawn: unified, side by side, then compact. Side by side needs a wider middle than this one: press ← on the patches, and they list the files of the patch picked under it, then ← again hides them; → on the comments makes them compact, then → again hides them, and ← from the middle brings the patches back. Go through the three views. {VIEWS_WHOLE}"),
+            Step::Views => format!("Press 1 to switch how the code is drawn: unified, side by side, then compact. Go through the three views. {VIEWS_WHOLE}"),
             Step::History => "Every change of the stack is kept. History… shows them: press ← to go to the patches and ↑ until the stack's header (≡ game) is picked, then press Space and choose History….".into(),
             Step::InHistory => "This is the history of the stack, game, newest change first. Beside the picked change is its stack diff: the patches before and after that change, and under each new version of a patch, what changed in it. Press ↑↓ to pick another change, and Esc to leave the history.".into(),
             Step::Versions => "A patch's versions are kept too. In the list, pick patch 4, O blocks the diagonal at the bottom left, press Space and choose Versions of this patch…: every version of patch 4, oldest first, and beside the picked one, what changed from the version before it. Press Esc to come back.".into(),
@@ -854,6 +858,7 @@ impl Tour {
                 self.seen = true;
                 app.list = crate::config::PatchesPane::Expanded;
                 app.set_layout(Layout::Unified);
+                app.set_whole(false);
             }
             // From the stack's header, as by hand: back from the history,
             // the list of patches is where the next step starts.

@@ -29,11 +29,13 @@ pub enum Key {
     View,
     /// Reading rather than commenting, or back.
     Read,
+    /// Each file whole rather than its hunks, or back.
+    Whole,
     Quit,
 }
 
 impl Key {
-    pub const ALL: [Key; 15] = [
+    pub const ALL: [Key; 16] = [
         Key::Up,
         Key::Down,
         Key::Left,
@@ -48,6 +50,7 @@ impl Key {
         Key::Back,
         Key::View,
         Key::Read,
+        Key::Whole,
         Key::Quit,
     ];
 
@@ -68,6 +71,7 @@ impl Key {
             Key::Back => "back",
             Key::View => "view",
             Key::Read => "read",
+            Key::Whole => "whole",
             Key::Quit => "quit",
         }
     }
@@ -89,6 +93,7 @@ impl Key {
             Key::Back => &["esc"],
             Key::View => &["1"],
             Key::Read => &["2"],
+            Key::Whole => &["3"],
             Key::Quit => &["ctrl-c"],
         }
     }
@@ -110,6 +115,7 @@ impl Key {
             Key::Back => (KeyCode::Esc, KeyModifiers::NONE),
             Key::View => (KeyCode::Char('1'), KeyModifiers::NONE),
             Key::Read => (KeyCode::Char('2'), KeyModifiers::NONE),
+            Key::Whole => (KeyCode::Char('3'), KeyModifiers::NONE),
             Key::Quit => (KeyCode::Char('c'), KeyModifiers::CONTROL),
         };
         KeyEvent::new(code, mods)
@@ -372,6 +378,7 @@ mod tests {
             ("up".to_string(), vec!["up".to_string(), "k".to_string()]),
             ("menu".to_string(), vec!["m".to_string()]),
             ("quit".to_string(), vec!["q".to_string(), "ctrl-c".to_string()]),
+            ("whole".to_string(), vec!["w".to_string()]),
             ("fly".to_string(), vec!["x".to_string()]),
         ];
         let (map, wrong) = Keymap::from_names(&named);
@@ -380,6 +387,9 @@ mod tests {
         assert_eq!(k('k').map(|e| e.code), Some(KeyCode::Up));
         assert_eq!(k('m').map(|e| e.code), Some(KeyCode::Char(' ')));
         assert_eq!(k(' '), None, "space no longer is the menu");
+        // Each file whole is 3 unless the settings say otherwise.
+        assert_eq!((k('w'), k('3')), (Some(Key::Whole.event()), None));
+        assert_eq!(Keymap::default().label(Key::Whole), "3");
         assert_eq!(k('q'), Some(Key::Quit.event()));
         assert_eq!(map.translate(&ev(KeyCode::Up, KeyModifiers::NONE)).map(|e| e.code), Some(KeyCode::Up));
         // Shift is in the character.

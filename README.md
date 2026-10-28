@@ -141,7 +141,8 @@ useful first, and takes about fifteen minutes:
 5. Reply to the agent with a question, asked answer only, its answer
    accepted at once with Enter on the comment.
 6. Keep track of what you have read, in reading.
-7. Switch how the code is drawn: unified, side by side, compact.
+7. Switch how the code is drawn: unified, side by side, compact; and each
+   file whole rather than its hunks.
 8. The history of the stack, and the versions of a patch.
 9. Move a patch: stacked refuses, because each patch only applies to the
    board that the patches before it leave; Esc stops moving it.
@@ -387,9 +388,10 @@ shows, under a header of its own; with none, it is not there. The top bar
 names the file and the stack, and on its right says how far the stack's
 review is (Reading, below, says how).
 
-There are five keys, and two of self-review's (Copied from self-review-rs,
-below, says what it is); the settings can make any of them other keys, and
-the help then names those:
+There are five keys, and three more for the code: two of self-review's
+(Copied from self-review-rs, below, says what it is) and one of stacked's
+own. The settings can make any of them other keys, and the help then names
+those:
 
 - The arrows move. ↑↓ go through the patches (the header is above the
   first), the lines of the patch, or the comments (their header above the
@@ -465,6 +467,32 @@ the help then names those:
   shorter than the cursor's line, the screen keeps the cursor's line in
   sight, on its last line, in every view.
 - `2` switches between commenting and reading (below).
+- `3` switches between the hunks and each file whole: every file the patch
+  changes as the patch leaves it, the lines it removes in their place, with
+  no hunk's header and nothing left out. The lines of the hunks are the
+  rows the hunks have, keyed as they are, so that comments, read marks and
+  references are on the same lines both ways. A line in no hunk is drawn
+  dim, as self-review draws the lines it adds around a hunk, and takes no
+  comment and no read mark: Enter and Space there open the menu, as on any
+  line no comment goes on, and the status line says why. Side by side, the
+  old file is whole on the left and the new one on the right, lined up as
+  the hunks are; compact, each in its pane. A file the patch adds is all
+  added, one it deletes all removed, one it renames whole under its new
+  name. The files are read as the reading mode reads them, from an index of
+  stacked's own (no checkout, the repository only read), once for each
+  patch and away from the screen: meanwhile the hunks show, and the bar
+  says `whole files: reading…`. A file that is not text shows as its diff
+  says it; a file of more than 20000 lines, and one that would take the
+  patch past 50000 lines shown whole, show as their hunks, a line over them
+  saying so.
+- `1`, `2` and `3` go together: each view of the code works in commenting
+  and in reading, with the hunks or with each file whole. Pressed in any
+  order, they leave the cursor on its line, on its line of the screen (as
+  far down as the rows over it reach). Into each file whole, a hunk's
+  header leaves the cursor on the hunk's first line; back to the hunks, a
+  line in no hunk leaves it on the closest line of its file in a hunk, by
+  their numbers, a tie going to the line above, and the status line says
+  so.
 
 Nothing else is a key. Going through the comments pane does not move the
 patch: the comment is marked where it is if the patch shows it, else its
@@ -1402,9 +1430,12 @@ that a patch read whole shows its `✓` whatever its files end with.
 
 Marks are records in the file, kept by the lines' content: a new version of
 the patch keeps them on the lines it did not change, and what it changed is
-to read again. The blocks are found from the files as each patch leaves
-them, in an index of stacked's own (as the check does), in a thread: the
-screen does not wait.
+to read again. With each file whole (`3`), the marks are on the same lines,
+by the same keys, and a block is read in its hunk as it is in the hunks: a
+line in no hunk takes no mark, and Space there goes on to the next line not
+read, the status line saying why. The blocks are found from the files as
+each patch leaves them, in an index of stacked's own (as the check does),
+in a thread: the screen does not wait.
 
 On the right of the top bar, how far the review of the stack is: the lines
 its patches change that are not read yet, of all the lines they change,
@@ -1424,8 +1455,8 @@ right, the match picked in its context: its rows in its patch (or the
 stack), the lines around it in its file, or its record of the history,
 what you look for lit. ↑↓ pick a match. Enter goes there: to the comment,
 to the patch at its line (a file's line its diff does not show: the
-patch's nearest line of that file), or to the record in the history. Esc
-goes back where the search was opened.
+patch's nearest line of that file, or with each file whole, that line), or
+to the record in the history. Esc goes back where the search was opened.
 
 Where it looks is where it was opened, and what is in sight there comes
 first. From the comments pane, the comments: those the pane shows, then
@@ -1716,7 +1747,8 @@ settings:
   grey on a dark grey). `stacked config colors.you 208` sets one.
 - `[keys]`: for each thing a key does (`up`, `down`, `left`, `right`,
   `page_up`, `page_down`, `home`, `end`, `enter`, `menu`, `help`, `back`,
-  `view`, `read`, `quit`), its keys: `down = ["down", "j"]`, `menu = "m"`.
+  `view`, `read`, `whole`, `quit`), its keys: `down = ["down", "j"]`,
+  `menu = "m"`.
   The comment editor reads what is typed, whatever the keys.
 - `[demo]`: `seen`, written by `stacked demo` the first time it is opened:
   the tour then starts on the list of its sections. `seen = false` shows
@@ -1968,6 +2000,8 @@ is typed: `import.rs`). A fix to one may belong in the other.
 - `rows.rs`, `view.rs`, `diff.rs`, `thread.rs`: the patch or the stack as
   rows, line keys, comment threads.
 - `panes.rs`: the compact layout's two panes.
+- `whole.rs`: each file of a patch whole, as `3` shows it: how its hunks go
+  in it, and its files read once for each patch, in a thread of their own.
 - `reading.rs`, `blocks.rs`: the reading mode's marks, by blocks of code.
 - `progress.rs`: how far the review of a stack is.
 - `tree.rs`: the tree of edits as a graph, and the lanes the history draws.
@@ -2120,7 +2154,7 @@ as an edit of its turn), a stack imported from Phabricator's revisions (by
 number or link, named or not), Phabricator's commands there only when
 built with it, apply, and
 what does not apply being refused, edited again, or read-only. `tests/tui.rs` draws the editor into a buffer and presses keys:
-that no letter but 1 and 2 does anything, keys mapped by the settings, the
+that no letter but 1, 2 and 3 does anything, keys mapped by the settings, the
 menus by place, what `?` says where, writing in every pane, the regions it
 says it drew (its panes, then the boxes over them, inside their borders:
 what StackED's selections keep to), the first ask opening the setup of
@@ -2144,7 +2178,24 @@ file's name, each line of a comment, a line read, the patch picked in its
 pane), and the patch picked as `picked` paints it once the cursor is in the
 middle (`paint.rs` tests the cursor so, over each colour, dim or reversed), reading by hunks and by a Rust file's blocks
 (the cursor going down to the middle line, then the code coming up under
-it, in each view),
+it, in each view), each file whole (its files read away from the screen,
+the status saying so; no hunk's header, each line removed in its place,
+the lines between the hunks in none, keyless and dim, the cursor looking
+the same on them as on any line; a file added, deleted, renamed, not text;
+a file as its patch leaves it, the patches under it applied, and nothing
+written in the repository; the rows of the hunks' lines, keys and all, as
+in the hunks; a comment on such a line shown both ways, written either
+way on the same key, and none on a line in no hunk, the menu and the status
+line saying why; a line in no hunk folded, two sides keeping its piece, and
+taking no read mark; the files listed in the patches pane gone to; the key
+a setting; on the stack's own view, said, and on another screen, no key;
+with no base to read the files on, the hunks under a line saying why),
+the cursor through 1, 2 and 3 (on its line and its line of the screen; back
+to the hunks from a line in no hunk, on the closest line in a hunk, ties
+above; a hunk's header, whole, on its first line), and the twelve ways the
+three keys combine (each view, commenting or reading, the hunks or each
+file whole: the view drawn, the old side beside the new, a comment shown, a
+read mark made on the hunks' keys and taken back, the cursor kept),
 editing a patch by hand at the cursor (a line added after git's
 `\ No newline at end of file` opened at its own number, and a reference
 to that number going to that line), the history screens, the branches
@@ -2264,8 +2315,9 @@ opened); `icon.rs`, what the icon shows where, at its largest (the sheets' edges
 and at its smallest (a plain white S), and that it is grey all over. With
 the `demo` feature, `tests/demo.rs` takes the tour, each step done as Tab
 does it: the
-stand-in's fix, the board at its end, nothing made on disk; and the answer
+stand-in's fix, the board at its end, nothing made on disk; the answer
 to the tour's question taken at once with Enter, the tour going on then;
+and the views taught with 3, the step waiting for the hunks again;
 `memory.rs` tests its diffs applied as git applies them. The
 stream's thinking is tested in `ask.rs`, with the prompt asking the agent
 to point at the stack before the web and its answer's schema taking a web
@@ -2289,7 +2341,14 @@ program on PATH, one not, a builtin and a tool stacked gives left out),
 nothing read out of the checkout; the box letting answers alone use
 skills; and the setup asked line by line; those in `search.rs`, which lines of a file a hunk shows
 already; those in `rows.rs`, a web link's line under its comment cut to
-the pane, its start kept; those in `progress.rs`, that a patch whose file has no newline
+the pane, its start kept, each file whole keeping the rows of its hunks'
+lines, a file too long and one past what a patch shows whole shown as
+their hunks, a note saying so, and a row found again in the rows built
+otherwise (whole or in hunks, folded to another width), a line in no hunk
+as the closest line in one, ties above; those in `whole.rs`, how a file's
+hunks go in it whole (a hunk with no line on one side, git's `\ No newline
+at end of file`), a file added, deleted, renamed or not text, and one that
+does not fit its hunks, not shown whole; those in `progress.rs`, that a patch whose file has no newline
 at its end leaves nothing to review once its lines removed and added and
 its message are read (git's `\ No newline at end of file` is not a line
 to read); those in `config.rs`, a file of settings over another, a

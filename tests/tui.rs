@@ -565,7 +565,7 @@ fn titles_on_the_left_the_patch_in_the_middle() {
     assert!(screen.contains("│✉ message"), "{screen}");
     assert!(screen.contains("-two") && screen.contains("+TWO"), "{screen}");
     assert!(screen.contains("s @") && screen.contains("2 patches on "), "{screen}");
-    assert!(screen.contains("enter: read it · space: menu · 1: view · 2: read · ?: what can I do here"), "{screen}");
+    assert!(screen.contains("enter: read it · space: menu · 1: view · 2: read · 3: whole · ?: what can I do here"), "{screen}");
     keys(&mut app, &[KeyCode::Down]);
     let screen = draw(&mut app);
     assert!(screen.contains("+bee") && !screen.contains("+TWO"), "{screen}");
@@ -644,8 +644,8 @@ fn no_letter_is_a_shortcut() {
     let mut app = open(&db).unwrap();
     let before = std::fs::read(&db).unwrap();
     let first = draw(&mut app);
-    // Only 1 and 2 are keys of their own, as in self-review.
-    for c in ('a'..='z').chain('A'..='Z').chain("03456789!@#$%^&*()-=_+[]{};:'\",.<>/\\|`~".chars()) {
+    // Only 1, 2 and 3 are keys of their own: 1 and 2 as in self-review.
+    for c in ('a'..='z').chain('A'..='Z').chain("0456789!@#$%^&*()-=_+[]{};:'\",.<>/\\|`~".chars()) {
         assert_eq!(key(&mut app, KeyCode::Char(c)), Effect::None, "{c:?}");
         assert_eq!(app.mode, Mode::Normal, "{c:?} did something");
         assert_eq!(app.screen, Screen::Main, "{c:?}");
@@ -904,6 +904,440 @@ fn setup_files() -> (tempfile::TempDir, PathBuf, PathBuf) {
     let db = tmp.path().join("db.jsonl");
     stacked(&src, &db, &["import", "f", "HEAD~3"]);
     (tmp, db, src)
+}
+
+/// A database holding stack `w` of two patches, and the repository. Patch 1
+/// changes a.txt at two lines far apart, its lines 2 and 42, adds b.txt,
+/// deletes c.txt, renames d.txt to e.txt with a change, and changes f.bin,
+/// which is not text; patch 2 changes a.txt's line 20 and g.txt's first
+/// line, g.txt's line 10 being longer than the middle.
+fn setup_whole() -> (tempfile::TempDir, PathBuf, PathBuf) {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("src");
+    std::fs::create_dir(&src).unwrap();
+    git(&src, &["init", "-q", "-b", "main"]);
+    git(&src, &["config", "commit.gpgsign", "false"]);
+    let lines: String = (1..=40).map(|n| format!("line {n}\n")).collect();
+    let dees = |changed: bool| -> String { (1..=30).map(|n| if changed && n == 15 { "DEE 15\n".to_string() } else { format!("dee {n}\n") }).collect() };
+    let gs = |changed: bool| -> String {
+        (1..=20)
+            .map(|n| match n {
+                1 if changed => "G ONE\n".to_string(),
+                10 => format!("g ten, {}\n", "and on ".repeat(30)),
+                n => format!("g {n}\n"),
+            })
+            .collect()
+    };
+    std::fs::write(src.join("a.txt"), format!("one\ntwo\nthree\n{lines}")).unwrap();
+    std::fs::write(src.join("c.txt"), "see\nsea\n").unwrap();
+    std::fs::write(src.join("d.txt"), dees(false)).unwrap();
+    std::fs::write(src.join("f.bin"), [0u8, 1, 2, 3]).unwrap();
+    std::fs::write(src.join("g.txt"), gs(false)).unwrap();
+    git(&src, &["add", "."]);
+    git(&src, &["commit", "-qm", "base"]);
+    let a = format!("one\nTWO\nthree\n{}", lines.replace("line 39\n", "LINE 39\n"));
+    std::fs::write(src.join("a.txt"), &a).unwrap();
+    std::fs::write(src.join("b.txt"), "bee\n").unwrap();
+    std::fs::remove_file(src.join("c.txt")).unwrap();
+    git(&src, &["mv", "d.txt", "e.txt"]);
+    std::fs::write(src.join("e.txt"), dees(true)).unwrap();
+    std::fs::write(src.join("f.bin"), [0u8, 1, 2, 4]).unwrap();
+    git(&src, &["add", "-A"]);
+    git(&src, &["commit", "-qm", "Bug 1 - every kind of file"]);
+    std::fs::write(src.join("a.txt"), a.replace("line 17\n", "LINE 17\n")).unwrap();
+    std::fs::write(src.join("g.txt"), gs(true)).unwrap();
+    git(&src, &["commit", "-qam", "Bug 2 - a.txt again, and g.txt"]);
+    let db = tmp.path().join("db.jsonl");
+    stacked(&src, &db, &["import", "w", "HEAD~2"]);
+    (tmp, db, src)
+}
+
+/// The middle's lines of file `path`: each row of a line, added, removed
+/// or kept, from its name to the next file's.
+fn lines_of(app: &App, path: &str) -> Vec<String> {
+    use stacked::rows::Kind;
+    let at = app.rows.iter().position(|r| r.kind == Kind::File && r.path.as_deref() == Some(path)).unwrap_or_else(|| panic!("no {path}"));
+    app.rows[at + 1..]
+        .iter()
+        .take_while(|r| r.kind != Kind::File)
+        .filter(|r| matches!(r.kind, Kind::Add | Kind::Del | Kind::Ctx) && r.note.is_none())
+        .map(|r| r.text.clone())
+        .collect()
+}
+
+/// Presses 3, and once the files are read, draws the screen.
+fn whole(app: &mut App) {
+    keys(app, &[KeyCode::Char('3')]);
+    app.wait_files();
+    draw(app);
+}
+
+/// Up the patch until the cursor is on the row starting with `text`.
+fn up_to(app: &mut App, text: &str) {
+    draw(app);
+    for _ in 0..app.rows.len() {
+        if app.rows[app.cursor].text.starts_with(text) {
+            return;
+        }
+        key(app, KeyCode::Up);
+        draw(app);
+    }
+    panic!("no row {text:?} above");
+}
+
+/// The line of the screen the middle's cursor is drawn on: the line whose
+/// cells right of the patches pane are in the cursor's colours.
+fn cursor_line_y(app: &mut App) -> usize {
+    let mut buf = Buffer::empty(Rect::new(0, 0, 120, 30));
+    app.draw(&mut buf);
+    let lit = |x: u16, y: u16| buf[(x, y)].modifier.contains(ratatui::style::Modifier::REVERSED);
+    (1..29).find(|&y| (31..88).any(|x| lit(x, y))).unwrap_or_else(|| panic!("no cursor in the middle")) as usize
+}
+
+/// Checks that the middle's cursor is drawn on line `y` of the screen,
+/// where it was; or, with too few rows over it to keep it there, that the
+/// middle is drawn from its first row, the cursor as far down as they take
+/// it. Then `y` is where it is.
+fn kept_on_its_line(app: &mut App, y: &mut usize, what: &str) {
+    let now = cursor_line_y(app);
+    let from_top = match app.layout {
+        Layout::Compact => app.compact.top[app.compact.side()] == 0,
+        _ => app.top == 0,
+    };
+    assert!(now == *y || (now < *y && from_top), "{what}: on line {now} of the screen, not {y}:\n{}", draw(app));
+    *y = now;
+}
+
+/// Whether the cell of `screen` where `text` starts, past its first
+/// character, is drawn dim.
+fn dim_at(app: &mut App, screen: &str, text: &str) -> bool {
+    let (x, y) = at(screen, text);
+    let mut buf = Buffer::empty(Rect::new(0, 0, 120, 30));
+    app.draw(&mut buf);
+    buf[(x + 1, y)].modifier.contains(ratatui::style::Modifier::DIM)
+}
+
+#[test]
+fn three_shows_each_file_whole_no_hunk_headers_the_lines_removed_in_place() {
+    use stacked::rows::{Kind, Row};
+    let (_tmp, db, src) = setup_whole();
+    let index = std::fs::read(src.join(".git/index")).unwrap();
+    let mut app = open(&db).unwrap();
+    draw(&mut app);
+    keys(&mut app, &[KeyCode::Enter]);
+    let hunks = app.rows.clone();
+    assert!(hunks.iter().any(|r| r.kind == Kind::Hunk));
+    // Its files are read away from the screen, as the status says, its
+    // hunks shown meanwhile.
+    key(&mut app, KeyCode::Char('3'));
+    assert!(app.whole_files);
+    assert!(app.status.starts_with("reading the files this patch changes, to show each whole"), "{}", app.status);
+    app.wait_files();
+    let screen = draw(&mut app);
+    assert!(app.status.starts_with("whole files: each file this patch changes is shown as the patch leaves it"), "{}", app.status);
+    assert!(screen.contains("· whole files") && !screen.contains("@@"), "{screen}");
+    assert!(app.rows.iter().all(|r| r.kind != Kind::Hunk), "no hunk's header");
+    // a.txt as the patch leaves it, each line removed where it was; the
+    // lines between the hunks in none, with no key, drawn dim.
+    let mut a: Vec<String> = [" one", "-two", "+TWO", " three"].map(String::from).to_vec();
+    a.extend((1..=38).map(|n| format!(" line {n}")));
+    a.extend(["-line 39", "+LINE 39", " line 40"].map(String::from));
+    assert_eq!(lines_of(&app, "a.txt"), a);
+    let outside: Vec<&Row> = app.rows.iter().filter(|r| r.outside && r.path.as_deref() == Some("a.txt")).collect();
+    let between: Vec<String> = (3..=35).map(|n| format!(" line {n}")).collect();
+    assert_eq!(outside.iter().map(|r| r.text.clone()).collect::<Vec<_>>(), between);
+    assert!(outside.iter().all(|r| r.key.is_none() && r.hunk.is_none()));
+    assert!(dim_at(&mut app, &screen, " line 10") && !dim_at(&mut app, &screen, "+TWO"), "{screen}");
+    // A file added, all of it added; deleted, all of it removed; renamed,
+    // whole with its change; not text, as its hunks say it.
+    assert_eq!(lines_of(&app, "b.txt"), ["+bee"]);
+    assert_eq!(lines_of(&app, "c.txt"), ["-see", "-sea"]);
+    let mut e: Vec<String> = (1..=30).map(|n| format!(" dee {n}")).collect();
+    e.splice(14..15, ["-dee 15".to_string(), "+DEE 15".to_string()]);
+    assert_eq!(lines_of(&app, "e.txt"), e);
+    let bin = |rows: &[Row]| -> Vec<Row> {
+        let at = rows.iter().position(|r| r.path.as_deref() == Some("f.bin")).unwrap();
+        rows[at..].iter().take_while(|r| r.kind != Kind::Blank).cloned().collect()
+    };
+    assert_eq!(bin(&app.rows), bin(&hunks));
+    assert!(bin(&app.rows).iter().any(|r| r.text == "GIT binary patch"));
+    // Every line of the hunks is the row it is in the hunks: its key too.
+    let keyed = |rows: &[Row]| -> Vec<Row> { rows.iter().filter(|r| r.key.is_some()).cloned().collect() };
+    assert_eq!(keyed(&app.rows), keyed(&hunks));
+    // Patch 2: a.txt as it leaves it, patch 1 under it: TWO in no hunk.
+    keys(&mut app, &[KeyCode::Left, KeyCode::Down, KeyCode::Right]);
+    app.wait_files();
+    draw(&mut app);
+    assert!(app.rows.iter().any(|r| r.outside && r.text == " TWO"), "{:?}", lines_of(&app, "a.txt"));
+    assert!(lines_of(&app, "a.txt").contains(&"+LINE 17".to_string()));
+    // Nothing is written in the repository: its index as it was, and
+    // nothing changed in the checkout.
+    assert_eq!(std::fs::read(src.join(".git/index")).unwrap(), index);
+    let status = Command::new("git").args(["status", "--porcelain"]).current_dir(&src).output().unwrap();
+    assert!(status.stdout.is_empty(), "{}", String::from_utf8_lossy(&status.stdout));
+    // 3 again: the hunks.
+    keys(&mut app, &[KeyCode::Char('3')]);
+    assert!(!app.whole_files && app.status.starts_with("hunks: each file this patch changes"), "{}", app.status);
+    assert!(draw(&mut app).contains("@@"));
+}
+
+#[test]
+fn comments_are_on_the_same_lines_whole_and_in_hunks_and_none_goes_on_a_line_in_no_hunk() {
+    let (_tmp, db, _src) = setup_whole();
+    let mut app = open(&db).unwrap();
+    draw(&mut app);
+    keys(&mut app, &[KeyCode::Enter]);
+    down_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Enter]);
+    save(&mut app, "why so loud?");
+    let hunks = app.rows.clone();
+    whole(&mut app);
+    // Under its line, whole too.
+    let at = app.rows.iter().position(|r| r.text == "+TWO").unwrap();
+    assert!(app.rows[at + 1].head && app.rows[at + 1].note.is_some(), "{:?}", app.rows[at + 1]);
+    assert!(draw(&mut app).contains("why so loud?"));
+    // A line in no hunk takes none: Enter opens the menu, which has no
+    // comment to write there, the status saying why; so does Space; `?`
+    // says it too.
+    down_to(&mut app, " line 10");
+    let why = "line 13 of a.txt is in no hunk of this patch: no comment goes on it";
+    for k in [KeyCode::Enter, KeyCode::Char(' ')] {
+        key(&mut app, k);
+        assert!(matches!(app.mode, Mode::Menu(_)), "{k:?}");
+        assert!(!items(&app).iter().any(|(l, _)| l.starts_with("Comment")), "{k:?}: {:?}", items(&app));
+        assert!(items(&app).iter().any(|(l, _)| l.starts_with("Edit a.txt here")), "{k:?}: {:?}", items(&app));
+        assert_eq!(app.status, why, "{k:?}");
+        keys(&mut app, &[KeyCode::Esc]);
+        assert_eq!(app.mode, Mode::Normal);
+    }
+    let help = app.help();
+    assert!(help[0].starts_with("Line 13 of a.txt is in no hunk of this patch, so no comment goes on it"), "{help:?}");
+    // A comment written whole, on a line of a hunk: on its key, as in the
+    // hunks.
+    down_to(&mut app, "+LINE 39");
+    keys(&mut app, &[KeyCode::Enter]);
+    save(&mut app, "and this?");
+    let line = hunks.iter().find(|r| r.text == "+LINE 39").and_then(|r| r.key.clone()).unwrap();
+    assert!(notes_of(&db, "w", 0).iter().any(|n| n.line == line && n.text == "and this?"));
+    // Both under their lines, in the hunks again.
+    keys(&mut app, &[KeyCode::Char('3')]);
+    draw(&mut app);
+    for text in ["+TWO", "+LINE 39"] {
+        let at = app.rows.iter().position(|r| r.text == text).unwrap();
+        assert!(app.rows[at + 1].head, "{text}: {:?}", app.rows[at + 1]);
+    }
+}
+
+#[test]
+fn three_keeps_the_cursor_on_its_line_and_out_of_the_whole_files_goes_to_the_closest_line_in_a_hunk() {
+    let (_tmp, db, _src) = setup_whole();
+    let mut app = open(&db).unwrap();
+    draw(&mut app);
+    keys(&mut app, &[KeyCode::Enter]);
+    // To each file whole: on the same line, on its line of the screen.
+    down_to(&mut app, "+LINE 39");
+    let mut y = cursor_line_y(&mut app);
+    whole(&mut app);
+    assert_eq!(app.rows[app.cursor].text, "+LINE 39");
+    kept_on_its_line(&mut app, &mut y, "whole");
+    // Back, from a line in no hunk: the closest line in a hunk, by their
+    // numbers, a tie going to the line above; the status says so. Line 22
+    // of a.txt is as far from line 5, the first hunk's last, as from line
+    // 39, the second's first.
+    up_to(&mut app, " line 19");
+    let mut y = cursor_line_y(&mut app);
+    keys(&mut app, &[KeyCode::Char('3')]);
+    assert_eq!(app.rows[app.cursor].text, " line 2");
+    assert_eq!(app.status, "line 22 of a.txt is in no hunk: the cursor is on the closest line in a hunk, above it");
+    kept_on_its_line(&mut app, &mut y, "the hunks");
+    whole(&mut app);
+    assert_eq!(app.rows[app.cursor].text, " line 2", "a line of a hunk, kept");
+    down_to(&mut app, " line 20");
+    keys(&mut app, &[KeyCode::Char('3')]);
+    assert_eq!(app.rows[app.cursor].text, " line 36");
+    assert_eq!(app.status, "line 23 of a.txt is in no hunk: the cursor is on the closest line in a hunk, below it");
+    // A hunk's header, to each file whole: its first line.
+    up_to(&mut app, "@@ -39");
+    whole(&mut app);
+    assert_eq!(app.rows[app.cursor].text, " line 36");
+    // 1, 2 and 3 in any order: the cursor on its line, on its line of the
+    // screen.
+    down_to(&mut app, "+LINE 39");
+    let mut y = cursor_line_y(&mut app);
+    keys(&mut app, &[KeyCode::Left, KeyCode::Left, KeyCode::Left]);
+    assert!(app.focus == Focus::Diff && !app.list.shown(), "the patches hidden, for two sides to fit");
+    kept_on_its_line(&mut app, &mut y, "the patches hidden");
+    for k in ['1', '2', '3', '1', '3', '2', '1', '3', '2', '3'] {
+        keys(&mut app, &[KeyCode::Char(k)]);
+        app.wait_files();
+        app.wait_blocks();
+        draw(&mut app);
+        assert_eq!(app.rows[app.cursor].text, "+LINE 39", "after {k}");
+        kept_on_its_line(&mut app, &mut y, &format!("after {k}"));
+    }
+    assert_eq!((app.layout, app.reading, app.whole_files), (Layout::Unified, true, true));
+}
+
+#[test]
+fn the_three_keys_combine_each_view_of_the_code_commenting_or_reading_the_hunks_or_each_file_whole() {
+    let (_tmp, db, _src) = setup_whole();
+    let mut app = open(&db).unwrap();
+    draw(&mut app);
+    keys(&mut app, &[KeyCode::Enter]);
+    down_to(&mut app, "+LINE 39");
+    keys(&mut app, &[KeyCode::Enter]);
+    save(&mut app, "why so loud?");
+    let key = app.rows[app.cursor].key.clone().unwrap();
+    let change = app.subject_change().unwrap();
+    // The lines changed further down read already: reading, Space on its
+    // line leaves the cursor there, nothing being left to read below.
+    let below: Vec<String> = app.rows[app.cursor + 1..]
+        .iter()
+        .filter(|r| matches!(r.kind, stacked::rows::Kind::Add | stacked::rows::Kind::Del))
+        .filter_map(|r| r.key.clone())
+        .collect();
+    assert_eq!(below.len(), 5, "+bee, -see, -sea, -dee 15, +DEE 15");
+    Db::edit(&db, |d| d.mark_read(&change, below)).unwrap();
+    app.refresh();
+    // The patches hidden: two sides fit beside the comments.
+    keys(&mut app, &[KeyCode::Left, KeyCode::Left, KeyCode::Left]);
+    let mut y = cursor_line_y(&mut app);
+    let mut seen = Vec::new();
+    for layout in [Layout::Unified, Layout::Split, Layout::Compact] {
+        for reading in [false, true] {
+            for whole in [false, true] {
+                app.wait_files();
+                app.wait_blocks();
+                let screen = draw(&mut app);
+                let what = format!("{layout:?}, reading: {reading}, whole: {whole}");
+                assert_eq!((app.layout, app.reading, app.whole_files), (layout, reading, whole), "{what}");
+                // The cursor on its line, on its line of the screen, through
+                // 1, 2 and 3.
+                assert_eq!(app.rows[app.cursor].text, "+LINE 39", "{what}");
+                kept_on_its_line(&mut app, &mut y, &what);
+                // The hunks, or each file whole: no hunk's header, the lines in
+                // no hunk drawn, dim.
+                assert_eq!(screen.contains("@@ -39,5 +39,5 @@"), !whole, "{what}:\n{screen}");
+                if whole {
+                    assert!(dim_at(&mut app, &screen, " line 35"), "{what}:\n{screen}");
+                }
+                if layout != Layout::Unified {
+                    let line = screen.lines().find(|l| l.contains("-line 39")).unwrap_or_else(|| panic!("{what}:\n{screen}"));
+                    assert!(line.contains("+LINE 39"), "{what}: the old side beside the new: {line}");
+                }
+                // The comment under its line.
+                assert!(screen.contains("why so loud?"), "{what}:\n{screen}");
+                // Reading: Space marks the hunk read, on the keys the hunks
+                // have, the margin then saying Enter takes the mark back;
+                // and it does.
+                if reading {
+                    keys(&mut app, &[KeyCode::Char(' ')]);
+                    assert_eq!(app.status, "read: this hunk, 2 lines · nothing left to read below", "{what}");
+                    assert!(app.db.read_keys(&change).contains(&key), "{what}");
+                    let screen = draw(&mut app);
+                    assert!(app.rows[app.cursor].read && screen.contains("✓→○ +LINE 39"), "{what}:\n{screen}");
+                    keys(&mut app, &[KeyCode::Enter]);
+                    assert!(app.status.starts_with("unread: 2 lines"), "{what}: {}", app.status);
+                    assert!(!app.db.read_keys(&change).contains(&key), "{what}");
+                    kept_on_its_line(&mut app, &mut y, &format!("{what}, read and unread"));
+                }
+                seen.push(what);
+                keys(&mut app, &[KeyCode::Char('3')]);
+            }
+            keys(&mut app, &[KeyCode::Char('2')]);
+        }
+        keys(&mut app, &[KeyCode::Char('1')]);
+    }
+    assert_eq!(seen.len(), 12, "{seen:?}");
+}
+
+#[test]
+fn whole_a_line_in_no_hunk_is_folded_takes_no_read_mark_and_the_files_listed_go_to_each() {
+    let (_tmp, db, _src) = setup_whole();
+    let mut app = open(&db).unwrap();
+    draw(&mut app);
+    // Patch 2, its files listed under it, each whole: down onto g.txt, its
+    // name on the middle's first line, under the patch's title.
+    keys(&mut app, &[KeyCode::Down, KeyCode::Left]);
+    whole(&mut app);
+    keys(&mut app, &[KeyCode::Down, KeyCode::Down]);
+    assert_eq!(app.rows[app.cursor].text, "g.txt");
+    let screen = draw(&mut app);
+    let lines: Vec<&str> = screen.lines().collect();
+    assert!(right_of_list(lines[1]).starts_with("   Bug 2 - a.txt again, and g.txt"), "{screen}");
+    assert!(right_of_list(lines[2]).starts_with("g.txt"), "{screen}");
+    // Its line 10 is in no hunk, and longer than the middle: folded, as a
+    // line of a hunk is. On its second piece, two sides: the same piece.
+    keys(&mut app, &[KeyCode::Enter]);
+    down_to(&mut app, " g ten");
+    keys(&mut app, &[KeyCode::Down]);
+    let piece = app.rows[app.cursor].clone();
+    assert!(piece.cont && piece.outside && piece.new_no == Some(10), "{piece:?}");
+    keys(&mut app, &[KeyCode::Left, KeyCode::Left, KeyCode::Char('1')]);
+    assert_eq!(app.layout, Layout::Split);
+    let r = &app.rows[app.cursor];
+    assert!(r.cont && r.outside && r.new_no == Some(10) && !app.rows[app.cursor - 1].cont, "{r:?}");
+    keys(&mut app, &[KeyCode::Char('1'), KeyCode::Char('1')]);
+    // Reading: no read mark goes on it, and Space goes on to the next line
+    // not read, none here; Enter takes none back.
+    keys(&mut app, &[KeyCode::Char('2')]);
+    app.wait_blocks();
+    draw(&mut app);
+    assert!(app.rows[app.cursor].outside);
+    let help = app.help();
+    assert!(help[0].starts_with("Line 10 of g.txt is in no hunk of this patch, so no read mark goes on it."), "{help:?}");
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    assert_eq!(app.status, "line 10 of g.txt is in no hunk of this patch, so no read mark goes on it, and nothing is left to read below");
+    keys(&mut app, &[KeyCode::Enter]);
+    assert_eq!(app.status, "line 10 of g.txt is in no hunk of this patch: no read mark is on it");
+    assert!(app.hint().contains("3: hunks"), "{}", app.hint());
+}
+
+#[test]
+fn three_on_the_stack_s_own_view_says_why_and_is_no_key_on_other_screens() {
+    let (_tmp, db, _src) = setup_whole();
+    let mut app = open(&db).unwrap();
+    draw(&mut app);
+    keys(&mut app, &[KeyCode::Up]);
+    assert!(app.on_stack);
+    let rows = app.rows.clone();
+    keys(&mut app, &[KeyCode::Char('3')]);
+    assert!(app.whole_files);
+    assert_eq!(app.status, "whole files: each patch shows the files it changes whole; the stack itself has no files");
+    assert_eq!(app.rows, rows, "the stack as it was");
+    // On a patch, each file whole.
+    keys(&mut app, &[KeyCode::Down]);
+    app.wait_files();
+    draw(&mut app);
+    assert!(app.rows.iter().any(|r| r.outside));
+    // Elsewhere, 3 is no key.
+    keys(&mut app, &[KeyCode::Up]);
+    choose(&mut app, "History…");
+    assert_eq!(app.screen, Screen::History);
+    let screen = draw(&mut app);
+    keys(&mut app, &[KeyCode::Char('3')]);
+    assert!(app.whole_files && app.screen == Screen::History);
+    assert_eq!(draw(&mut app), screen);
+}
+
+#[test]
+fn the_key_for_each_file_whole_is_a_setting() {
+    let (_tmp, db, _src) = setup_whole();
+    let (cfg, wrong) = stacked::config::Config::parse("[keys]\nwhole = \"w\"\n").unwrap();
+    assert!(wrong.is_empty(), "{wrong:?}");
+    stacked::config::init(stacked::config::Config::default());
+    let mut app = Editor(App::with_config(&db, cfg).unwrap());
+    draw(&mut app);
+    keys(&mut app, &[KeyCode::Enter]);
+    assert!(draw(&mut app).contains("w: whole"));
+    keys(&mut app, &[KeyCode::Char('3')]);
+    assert!(!app.whole_files, "3 is no key now");
+    keys(&mut app, &[KeyCode::Char('w')]);
+    assert!(app.whole_files);
+    app.wait_files();
+    draw(&mut app);
+    assert!(app.say_keys(app.hint()).contains("w: hunks"), "{}", app.hint());
+    assert!(app.help().iter().any(|l| l.ends_with("; w to see each file as its hunks again.")), "{:?}", app.help());
 }
 
 /// The patches pane's lines under its header, as drawn on a screen, each
@@ -5285,6 +5719,15 @@ fn a_stack_that_cannot_be_checked_is_read_only() {
     assert!(matches!(&app.mode, Mode::Edit(e) if e.ed.text() == "still fine"), "{:?}", app.mode);
     keys(&mut app, &[KeyCode::Esc]);
     assert_eq!(app.mode, Mode::Normal);
+    // With no base, its files cannot be read whole: its hunks, the status
+    // and a line over them saying why.
+    keys(&mut app, &[KeyCode::Char('3')]);
+    assert_eq!(app.status, "the files of this patch could not be read whole: the stack s has no base commit to read them on");
+    let screen = draw(&mut app);
+    let said: Vec<&str> = app.rows.iter().filter(|r| r.kind == stacked::rows::Kind::Meta && r.diff_at.is_none()).map(|r| r.text.trim()).collect();
+    assert_eq!(said.join(" "), "The files could not be read whole, so here are their hunks: the stack s has no base commit to read them on.");
+    assert!(screen.contains("so here are their") && screen.contains("@@ -0,0 +1 @@"), "{screen}");
+    assert_eq!(app.rows[app.cursor].text, "+one", "{screen}");
 }
 
 #[test]
@@ -5301,7 +5744,7 @@ fn an_empty_database() {
     // none.
     assert_eq!(key(&mut app, KeyCode::Char('?')), Effect::None);
     assert_eq!(app.mode, Mode::Normal);
-    assert_eq!(app.hint(), "enter or space: menu · 1: view · 2: read");
+    assert_eq!(app.hint(), "enter or space: menu · 1: view · 2: read · 3: whole");
     assert!(!draw(&mut app).contains("what can I do here"));
     // Enter, with nothing else to do, is the menu: the ways to make a
     // stack, or quit.
@@ -7513,6 +7956,12 @@ fn the_cursor_looks_the_same_on_every_line_whatever_its_colours() {
     keys(&mut app, &[KeyCode::Char(' ')]);
     go(&mut app, "a line read", |r| r.text == "+TWO" && r.read);
     under(&cursor_line(&mut app), "a line read");
+    // So does a line in no hunk, each file shown whole, dim.
+    keys(&mut app, &[KeyCode::Char('3')]);
+    app.wait_files();
+    draw(&mut app);
+    go(&mut app, "a line in no hunk", |r| r.outside);
+    under(&cursor_line(&mut app), "a line in no hunk");
 }
 
 #[test]

@@ -379,6 +379,41 @@ fn the_views_say_how_to_widen_a_middle_too_narrow_for_two_sides() {
 }
 
 #[test]
+fn the_views_teach_three_each_file_whole_and_wait_for_the_hunks_again() {
+    let (mut app, mut tour) = Tour::new().unwrap();
+    tour.forward(&mut app, place(Step::Views)).unwrap();
+    let said = tour.say(&app).0;
+    assert!(said.contains("Press 3 in any of them to see each file whole rather than its hunks"), "{said}");
+    // On patch 1, its comments beside it, the patches hidden: two sides fit.
+    app.on_stack = false;
+    app.sel = 0;
+    app.focus = Focus::List;
+    for code in [KeyCode::Left, KeyCode::Left] {
+        press(&mut app, code);
+    }
+    screen(&mut app, &tour);
+    // 3: the board whole, as the patch leaves it, no hunk's header.
+    press(&mut app, KeyCode::Char('3'));
+    app.wait_files();
+    let shown = screen(&mut app, &tour);
+    assert!(app.whole_files && !app.rows.iter().any(|r| r.text.starts_with("@@")), "{shown}");
+    assert!(shown.contains("+  .  |  X  |  ."), "{shown}");
+    // Through the three views, back to unified: the step waits for the hunks.
+    for _ in 0..3 {
+        press(&mut app, KeyCode::Char('1'));
+        screen(&mut app, &tour);
+        app.refresh();
+        tour.tick(&mut app);
+    }
+    assert_eq!(tour.step(), Step::Views, "unified, each file whole still");
+    press(&mut app, KeyCode::Char('3'));
+    screen(&mut app, &tour);
+    app.refresh();
+    tour.tick(&mut app);
+    assert_eq!(tour.step(), Step::History);
+}
+
+#[test]
 fn by_hand_a_refused_move_a_drop_and_its_undo() {
     let (mut app, mut tour) = Tour::new().unwrap();
     tour.forward(&mut app, place(Step::Move)).unwrap();

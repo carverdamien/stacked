@@ -141,7 +141,9 @@ fn row_style(row: &Row) -> Style {
         Kind::Stream => color::dim(),
         _ => Style::new(),
     };
-    if row.read || row.free {
+    // A line read, one that needs no reading, and a line of a file shown
+    // whole that is in no hunk: dim.
+    if row.read || row.free || row.outside {
         st = st.add_modifier(Modifier::DIM);
     }
     st
@@ -1557,6 +1559,16 @@ pub struct App {
     /// Reading rather than commenting: in the middle, Space marks the
     /// block of code at the cursor read, Enter takes the mark back.
     pub reading: bool,
+    /// Each file of the patch shown whole rather than as its hunks (`3`),
+    /// once read; and the files read, by patch.
+    pub whole_files: bool,
+    wholes: crate::whole::Reader,
+    /// How the middle's rows were built last: each file as its hunks (0),
+    /// whole (1), or as its hunks under a note saying why it is not whole
+    /// (2); how wide, and for which view of the code. Built otherwise, the
+    /// cursor is found again on what it was on, rather than as many rows
+    /// down.
+    form: Option<(u8, usize, Layout)>,
     /// The patches' code blocks, for reading.
     finder: Finder,
     /// Each patch's changed lines, by id: what is read of it, counted.
@@ -1821,6 +1833,26 @@ const REWORDING: &str = "rewording";
 /// What the bar says while a web link is being opened in the browser.
 const OPENING: &str = "opening a link";
 
+/// What the status says while the files of the patch shown are read, to
+/// show each of them whole; and once each is.
+const READING_WHOLE: &str = "reading the files this patch changes, to show each whole: here are its hunks meanwhile";
+const WHOLE: &str = "whole files: each file this patch changes is shown as the patch leaves it, the lines it removes in their place";
+
+/// What the help says of the three keys of the code, together.
+const THREE_KEYS: &str = "1, 2 and 3 go together: each view of the code works in commenting and in reading, with the hunks or with each file whole.";
+
+/// What the status says of a line in no hunk the cursor was on, the hunks
+/// shown again: where the cursor is now.
+fn moved_said(m: &crate::rows::Moved) -> String {
+    match m.to {
+        Some(to) => {
+            let way = if to <= m.line { "above it" } else { "below it" };
+            format!("line {} of {} is in no hunk: the cursor is on the closest line in a hunk, {way}", m.line, m.path)
+        }
+        None => format!("line {} of {} is in no hunk, and the file has none: the cursor is on its name", m.line, m.path),
+    }
+}
+
 /// Why stack checking said no, as the bar says it.
 fn why_not(e: crate::db::Error) -> String {
     let why = e.0.trim_end_matches("; nothing changed").to_string();
@@ -1910,6 +1942,9 @@ impl App {
             compact: Compact::default(),
             panes: Arc::new(Panes::default()),
             reading: cfg.view.reading,
+            whole_files: false,
+            wholes: crate::whole::Reader::default(),
+            form: None,
             finder: Finder::default(),
             changed: HashMap::new(),
             progress: None,
@@ -2342,7 +2377,8 @@ impl App {
         self.bg.launching || !self.bg.doing.is_empty() || self.bg.judging.is_some()
     }
 
-    /// Waits for the work away from the screen to be done.
+    /// Waits for the work away from the screen to be done, the files read
+    /// to show whole too.
     pub fn settle(&mut self) {
         while self.bg.launching || !self.bg.doing.is_empty() || self.bg.judging.is_some() || self.bg.heading {
             match self.bg.rx.recv_timeout(Duration::from_secs(60)) {
@@ -2350,6 +2386,7 @@ impl App {
                 Err(_) => break,
             }
         }
+        self.wholes.wait();
         self.reload();
     }
 
@@ -2558,8 +2595,16 @@ impl App {
             .filter_map(|n| busy.get(&(n.change.clone(), n.id.clone())))
             .map(|(_, run)| format!("{}.", self.db.event_count(run)))
             .collect();
+        // Each file whole, once read (`3`); its hunks meanwhile.
+        let whole = self.whole_here();
+        let whole_said = match &whole {
+            None if self.whole_files && !self.on_stack => "reading",
+            None => "",
+            Some(Ok(_)) => "whole",
+            Some(Err(_)) => "unread",
+        };
         let want = format!(
-            "{subject}\0{width}\0{}\0{streams}\0{:?}\0{stream}\0{}\0{}\0{:?}\0{:?}",
+            "{subject}\0{width}\0{}\0{streams}\0{:?}\0{stream}\0{}\0{}\0{:?}\0{:?}\0{whole_said}",
             self.db.changes(),
             self.show,
             self.body_h,
@@ -2581,6 +2626,19 @@ impl App {
             deco.read = self.subject_change().map(|c| self.db.read_keys(&c));
             deco.whitespace = self.cfg.view.whitespace_needs_review;
         }
+        // Built otherwise than last, each file whole or not, for another
+        // view of the code, or to another width (the reading mode's margin):
+        // the cursor is found again on what it was on, on its line of the
+        // screen, rather than as many rows down.
+        let shape = match &whole {
+            None => 0,
+            Some(Ok(_)) => 1,
+            Some(Err(_)) => 2,
+        };
+        let form = (shape, width, self.drawn_layout(self.mid_w));
+        let arrived = self.form.is_some_and(|(was, ..)| was == 0) && shape == 1;
+        let again = (same && self.form.is_some_and(|f| f != form) && !self.rows.is_empty()).then(|| crate::rows::place(&self.rows, self.cursor));
+        deco.whole = whole;
         // How many rows are over the cursor, the lines of the agents'
         // streams not counted, and on such a line, which line of its stream
         // it is: the cursor stays on its row as a stream over it grows,
@@ -2608,6 +2666,7 @@ impl App {
         };
         self.built = Some(want);
         self.subject = Some(subject.clone());
+        self.form = Some(form);
         self.panes = Arc::new(pane_streams(&self.rows));
         if !same {
             self.cursor = 0;
@@ -2616,6 +2675,18 @@ impl App {
             self.compact.reset();
             // Back on what they showed before: where they were.
             self.back_to_panes(&subject);
+        } else if let Some(at) = again.filter(|_| !self.rows.is_empty()) {
+            let (i, moved) = crate::rows::find(&self.rows, &at);
+            self.cursor = i;
+            match (self.built.clone(), self.cursor_y) {
+                (Some(built), Some(y)) => self.keep = Some((built, i, y)),
+                _ => self.top = i.saturating_sub(self.body_h / 3),
+            }
+            if let Some(m) = moved {
+                self.status = moved_said(&m);
+            } else if arrived && self.status == READING_WHOLE {
+                self.status = WHOLE.into();
+            }
         } else if let Some((k, down)) = was {
             // The row as many rows down, the streams' lines not counted. On
             // a stream's line, the same line of it, or its last; with the
@@ -3270,7 +3341,8 @@ impl App {
             }
         }
         // self-review's two keys: 1 for another view of the code, 2 to read
-        // rather than comment, or comment rather than read.
+        // rather than comment, or comment rather than read; and 3, each
+        // file whole rather than its hunks, or its hunks again.
         if self.screen == Screen::Main {
             match k.code {
                 KeyCode::Char('1') => {
@@ -3281,12 +3353,16 @@ impl App {
                     self.toggle_reading();
                     return Effect::None;
                 }
+                KeyCode::Char('3') => {
+                    self.toggle_whole();
+                    return Effect::None;
+                }
                 KeyCode::Char(' ') if self.reading_here() => return self.perform(Action::MarkRead),
                 _ => {}
             }
         }
         if k.code == KeyCode::Char(' ') {
-            self.mode = Mode::Menu(self.main_menu());
+            self.menu_here();
             return Effect::None;
         }
         match self.screen {
@@ -3333,7 +3409,7 @@ impl App {
                 return match self.enter() {
                     Some(action) => self.perform(action),
                     None => {
-                        self.mode = Mode::Menu(self.main_menu());
+                        self.menu_here();
                         Effect::None
                     }
                 };
@@ -3695,6 +3771,93 @@ impl App {
         };
     }
 
+    /// Each file of the patch whole from now on, `on`, or as its hunks.
+    pub fn set_whole(&mut self, on: bool) {
+        self.whole_files = on;
+        self.built = None;
+    }
+
+    /// 3: each file of the patch whole, or as its hunks, in every view of
+    /// the code, reading or commenting.
+    fn toggle_whole(&mut self) {
+        self.whole_files = !self.whole_files;
+        self.built = None;
+        self.status = match (self.whole_files, self.on_stack) {
+            (true, true) => "whole files: each patch shows the files it changes whole; the stack itself has no files".into(),
+            (false, true) => "hunks: each patch shows the files it changes as their hunks".into(),
+            (false, false) => "hunks: each file this patch changes is shown as its hunks".into(),
+            (true, false) => match self.whole_here() {
+                None => READING_WHOLE.into(),
+                Some(Ok(_)) => WHOLE.into(),
+                Some(Err(why)) => format!("the files of this patch could not be read whole: {why}"),
+            },
+        };
+    }
+
+    /// The files of the patch the middle shows, whole, when each file is
+    /// to be shown so: read, or why they could not be; None while they are
+    /// read (the status says so as it starts), and when the hunks are
+    /// shown. Read once for each patch, away from the screen.
+    fn whole_here(&mut self) -> Option<crate::whole::Read> {
+        if !self.whole_files || self.on_stack {
+            return None;
+        }
+        let key = self.blocks_key()?;
+        if let Some(read) = self.wholes.peek(&key) {
+            return Some(read);
+        }
+        let starting = !self.wholes.known(&key);
+        let s = self.current()?.clone();
+        let (sel, db) = (self.sel, &self.db);
+        let got = self.wholes.get(&key, || match (&s.repo, &s.base) {
+            (Some(repo), Some(base)) => Ok((PathBuf::from(repo), base.clone(), s.patches[..=sel].iter().map(|id| db.patch(id).clone()).collect())),
+            _ => Err(format!("the stack {} has no base commit to read them on", s.name)),
+        });
+        if got.is_none() && starting {
+            self.status = READING_WHOLE.into();
+        }
+        got
+    }
+
+    /// What 3 does, as the help says it.
+    fn whole_help(&self) -> &'static str {
+        match self.whole_files {
+            true => "3 to see each file as its hunks again",
+            false => "3 to see each file whole rather than its hunks",
+        }
+    }
+
+    /// Whether the files of the patch the middle shows are being read, to
+    /// show each whole.
+    fn whole_reading(&self) -> bool {
+        self.whole_files && !self.on_stack && self.blocks_key().is_some_and(|k| self.wholes.going(&k))
+    }
+
+    /// Waits for the files being read to show whole.
+    pub fn wait_files(&mut self) {
+        self.whole_here();
+        self.wholes.wait();
+    }
+
+    /// The line of the middle the cursor is on, when it is in no hunk, each
+    /// file shown whole: its number, and its file.
+    fn outside_here(&self) -> Option<(usize, String)> {
+        if self.screen != Screen::Main || self.focus != Focus::Diff || self.on_banner {
+            return None;
+        }
+        let r = self.rows.get(self.cursor).filter(|r| r.outside)?;
+        Some((r.new_no?, r.path.clone()?))
+    }
+
+    /// The menu of where the cursor is; on a line in no hunk, the status
+    /// saying why it has no comment to write.
+    fn menu_here(&mut self) {
+        self.mode = Mode::Menu(self.main_menu());
+        if let Some((n, path)) = self.outside_here() {
+            self.status = format!("line {n} of {path} is in no hunk of this patch: no comment goes on it");
+        }
+    }
+
     /// Whether the reading mode has the middle's keys: a patch is there,
     /// and the cursor is in it.
     pub fn reading_here(&self) -> bool {
@@ -3763,6 +3926,9 @@ impl App {
             self.status = "still finding this patch's code blocks".into();
             return;
         }
+        // A line in no hunk, as on any line no mark goes on: on to the next
+        // line not read.
+        let outside = self.outside_here().map(|(n, path)| format!("line {n} of {path} is in no hunk of this patch, so no read mark goes on it"));
         let at = self.cursor;
         let next = |app: &App| {
             let blocks = app.finder.peek(&app.blocks_key()?)?;
@@ -3793,9 +3959,17 @@ impl App {
             None => match next(self) {
                 Some(j) => {
                     self.read_on(j);
-                    self.status = "all read there: on to the next line not read".into();
+                    self.status = match outside {
+                        Some(why) => format!("{why}: on to the next line not read"),
+                        None => "all read there: on to the next line not read".into(),
+                    };
                 }
-                None => self.status = "nothing left to read below".into(),
+                None => {
+                    self.status = match outside {
+                        Some(why) => format!("{why}, and nothing is left to read below"),
+                        None => "nothing left to read below".into(),
+                    }
+                }
             },
         }
     }
@@ -3817,6 +3991,10 @@ impl App {
     /// Enter, reading: takes back the latest mark around the cursor.
     fn mark_unread(&mut self) {
         let Some(change) = self.subject_change() else { return };
+        if let Some((n, path)) = self.outside_here() {
+            self.status = format!("line {n} of {path} is in no hunk of this patch: no read mark is on it");
+            return;
+        }
         if self.blocks().is_none() {
             self.status = "still finding this patch's code blocks".into();
             return;
@@ -4044,6 +4222,12 @@ impl App {
             }
             Screen::Main if self.reading_here() => {
                 match self.reading_at() {
+                    _ if self.outside_here().is_some() => {
+                        let (n, path) = self.outside_here().unwrap_or_default();
+                        out.push(format!(
+                            "Line {n} of {path} is in no hunk of this patch, so no read mark goes on it. Press Space to go on to the next line not read."
+                        ));
+                    }
                     None => out.push(
                         "Press Space to mark this block as read, once this patch's code blocks are found: they are being looked for."
                             .into(),
@@ -4068,10 +4252,19 @@ impl App {
                         });
                     }
                 }
-                out.push("Press 2 to go back to commenting, where Enter comments and Space is the menu; 1 for another view of the code.".into());
+                out.push(format!(
+                    "Press 2 to go back to commenting, where Enter comments and Space is the menu; 1 for another view of the code; {}.",
+                    self.whole_help()
+                ));
+                out.push(THREE_KEYS.into());
                 out.push(self.arrows_help());
             }
             Screen::Main => {
+                if let Some((n, path)) = self.outside_here() {
+                    out.push(format!(
+                        "Line {n} of {path} is in no hunk of this patch, so no comment goes on it: the lines drawn dim are in no hunk."
+                    ));
+                }
                 if let Some(a) = self.enter() {
                     out.push(format!("Press Enter to {}.", self.about_here(&a)));
                 }
@@ -4103,11 +4296,13 @@ impl App {
                     ),
                 }
                 let next = self.layout.next().label();
+                let whole = self.whole_help();
                 out.push(if self.reading {
-                    format!("Press 1 for the {next} view of the code; 2 to comment rather than read.")
+                    format!("Press 1 for the {next} view of the code; 2 to comment rather than read; {whole}.")
                 } else {
-                    format!("Press 1 for the {next} view of the code; 2 to read: to mark the code read, a block at a time.")
+                    format!("Press 1 for the {next} view of the code; 2 to read: to mark the code read, a block at a time; {whole}.")
                 });
+                out.push(THREE_KEYS.into());
                 if let Some(why) = self.read_only() {
                     out.push(format!("This stack is {why}. Comments can still be added."));
                 }
@@ -4197,9 +4392,14 @@ impl App {
             ("; 1 for", format!("; {} for", l(Key::View))),
             ("Press 2 ", format!("Press {} ", l(Key::Read))),
             ("; 2 to", format!("; {} to", l(Key::Read))),
+            ("Press 3 ", format!("Press {} ", l(Key::Whole))),
+            ("; 3 to", format!("; {} to", l(Key::Whole))),
+            ("1, 2 and 3 go", format!("{}, {} and {} go", l(Key::View), l(Key::Read), l(Key::Whole))),
             ("1: view", format!("{}: view", l(Key::View))),
             ("2: read", format!("{}: read", l(Key::Read))),
             ("2: comment", format!("{}: comment", l(Key::Read))),
+            ("3: whole", format!("{}: whole", l(Key::Whole))),
+            ("3: hunks", format!("{}: hunks", l(Key::Whole))),
         ]
         .into_iter()
         .fold(text, |t, (from, to)| t.replace(from, &to))
@@ -7911,6 +8111,9 @@ impl App {
                             text += &format!(" {}", self.compact.scroll.mark());
                         }
                     }
+                    if self.whole_files && !self.on_stack {
+                        text += if self.whole_reading() { " · whole files: reading…" } else { " · whole files" };
+                    }
                 }
             }
             None => text += " · no stack",
@@ -7995,7 +8198,8 @@ impl App {
                 self.review_hint()
             }
             Mode::Normal if self.reading_here() => {
-                "space: mark this block read · enter: unread · 1: view · 2: comment · ?: what can I do here".into()
+                let whole = if self.whole_files { "3: hunks" } else { "3: whole" };
+                format!("space: mark this block read · enter: unread · 1: view · 2: comment · {whole} · ?: what can I do here")
             }
             Mode::Normal => {
                 let action = self.enter();
@@ -8023,9 +8227,11 @@ impl App {
                     },
                     _ => "enter: pick · ",
                 };
-                let keys = match (self.screen, self.reading) {
-                    (Screen::Main, false) => "1: view · 2: read · ",
-                    (Screen::Main, true) => "1: view · 2: comment · ",
+                let keys = match (self.screen, self.reading, self.whole_files) {
+                    (Screen::Main, false, false) => "1: view · 2: read · 3: whole · ",
+                    (Screen::Main, false, true) => "1: view · 2: read · 3: hunks · ",
+                    (Screen::Main, true, false) => "1: view · 2: comment · 3: whole · ",
+                    (Screen::Main, true, true) => "1: view · 2: comment · 3: hunks · ",
                     _ => "",
                 };
                 let ask = if self.helps() { "?: what can I do here" } else { "" };

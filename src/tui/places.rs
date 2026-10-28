@@ -13,9 +13,12 @@ use super::*;
 #[derive(Debug, Clone, Default)]
 struct PanesAt {
     /// The middle's cursor, and what its row is (a line's key, a comment's
-    /// id and turn), to find it again; how far down the middle it was.
+    /// id and turn), to find it again; where it is, for a row with neither
+    /// (a line in no hunk, its file shown whole), to find it in the rows
+    /// built otherwise since; how far down the middle it was.
     cursor: usize,
     row: (Option<String>, Option<String>, Option<usize>),
+    place: Option<crate::rows::Place>,
     down: usize,
     /// The comments pane's: on its header, or on a comment.
     notes_head: bool,
@@ -72,6 +75,7 @@ impl App {
         let at = PanesAt {
             cursor: self.cursor,
             row: (r.key.clone(), r.note.clone(), r.turn),
+            place: Some(crate::rows::place(&self.rows, self.cursor)),
             down: self.cursor.saturating_sub(self.top),
             notes_head: self.notes_head,
             note_sel: self.note_sel,
@@ -85,7 +89,10 @@ impl App {
     pub(super) fn back_to_panes(&mut self, subject: &str) {
         let Some(at) = self.place_of(subject).and_then(|p| self.places.panes.get(&p).cloned()) else { return };
         let known = at.row.0.is_some() || at.row.1.is_some();
-        let found = known.then(|| self.rows.iter().position(|r| (r.key.clone(), r.note.clone(), r.turn) == at.row)).flatten();
+        let found = match known {
+            true => self.rows.iter().position(|r| (r.key.clone(), r.note.clone(), r.turn) == at.row),
+            false => at.place.as_ref().filter(|_| !self.rows.is_empty()).map(|p| crate::rows::find(&self.rows, p).0),
+        };
         self.cursor = found.unwrap_or(at.cursor).min(self.rows.len().saturating_sub(1));
         self.top = self.cursor.saturating_sub(at.down);
         let notes = self.notes();

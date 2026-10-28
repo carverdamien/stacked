@@ -1,7 +1,8 @@
 //! What the middle pane draws, flattened into rows: a patch (its message,
-//! then each file's hunks, the comments under the lines they are on), or the
-//! stack (its patches, then the stack's own comments); and the side-by-side
-//! pairing of a patch's rows. After self-review's.
+//! then each file's hunks, or each file whole, the comments under the lines
+//! they are on), or the stack (its patches, then the stack's own comments);
+//! the side-by-side pairing of a patch's rows; and where a row is, to find
+//! it again in the rows built otherwise. After self-review's.
 
 use std::collections::{HashMap, HashSet};
 
@@ -106,6 +107,10 @@ pub struct Row {
     /// A line removed or added, the line paired with it almost the same:
     /// what changed in it, as ranges of its characters (`changed_words`).
     pub words: Spans,
+    /// A line of a file shown whole that is in no hunk: no comment goes on
+    /// it, nor a read mark. Drawn dim, as self-review draws the lines it
+    /// adds around a hunk.
+    pub outside: bool,
 }
 
 impl Row {
@@ -366,6 +371,9 @@ pub struct Deco {
     /// The comments references point at, by change and id, as their line
     /// under the comment pointing says them.
     pub pointed: HashMap<(String, String), String>,
+    /// Each file of the patch shown whole, once read (`whole::lines`), or
+    /// why its files could not be read; None, as its hunks.
+    pub whole: Option<crate::whole::Read>,
 }
 
 /// `3/10`: how many of `keys` are read, of how many.
@@ -546,10 +554,44 @@ pub fn parsed(p: &Patch) -> std::sync::Arc<Vec<crate::diff::FileDiff>> {
         .clone()
 }
 
+/// Whether line `l` of a diff is a changed line that needs no reading, as
+/// `deco` has it: white space alone.
+fn free_line(l: &crate::diff::Line, deco: &Deco) -> bool {
+    deco.read.is_some() && !deco.whitespace && crate::diff::white_space(&l.text)
+}
+
+/// Line `l` of hunk `hunk` of file `fd`, as its row: keyed, but git's `\`
+/// line; what changed in it, `words`; read, and needing no reading, as
+/// `deco` says. The same row in the hunks and in the file whole, so that
+/// what is on its key is on it in both.
+fn hunk_line(fd: &crate::diff::FileDiff, hunk: &crate::diff::Hunk, l: &crate::diff::Line, words: Spans, deco: &Deco) -> Row {
+    let kind = match l.origin {
+        '+' => Kind::Add,
+        '-' => Kind::Del,
+        ' ' => Kind::Ctx,
+        _ => Kind::Meta,
+    };
+    let changed_line = matches!(kind, Kind::Add | Kind::Del);
+    Row {
+        key: (kind != Kind::Meta).then(|| l.key.clone()),
+        path: Some(fd.path.clone()),
+        preview: Some(l.text.chars().skip(1).collect::<String>().trim().chars().take(80).collect()),
+        hunk: Some(hunk.hid.clone()),
+        read: changed_line && deco.read.as_ref().is_some_and(|r| r.contains(&l.key)),
+        free: changed_line && free_line(l, deco),
+        diff_at: Some(l.at),
+        new_no: Some(l.new_no.max(1)),
+        words,
+        ..Row::new(kind, l.text.clone())
+    }
+}
+
 /// The rows of `p`, with `notes` under their lines and those whose line is
 /// gone at the end. A line too wide for `width` is folded: the message's
 /// between words, the code's where the pane ends; its comments under its
-/// last piece.
+/// last piece. Its files as their hunks; or, once `deco` has them read,
+/// each whole, its hunks' lines in their place and the lines in no hunk
+/// between them, but a file too long, or one not text, as its hunks.
 pub fn patch_rows(p: &Patch, notes: &[&Note], width: usize, deco: &Deco) -> Vec<Row> {
     let mut on: HashMap<&str, Vec<&Note>> = HashMap::new();
     for n in notes {
@@ -618,16 +660,30 @@ pub fn patch_rows(p: &Patch, notes: &[&Note], width: usize, deco: &Deco) -> Vec<
         );
     }
     rows.push(Row::new(Kind::Blank, ""));
-    // A changed line that needs no reading: white space alone.
-    let free = |l: &crate::diff::Line| deco.read.is_some() && !deco.whitespace && crate::diff::white_space(&l.text);
     let changed = |hunks: &[crate::diff::Hunk]| -> Vec<String> {
         hunks
             .iter()
             .flat_map(|h| h.lines.iter())
-            .filter(|l| (l.origin == '+' || l.origin == '-') && !free(l))
+            .filter(|l| (l.origin == '+' || l.origin == '-') && !free_line(l, deco))
             .map(|l| l.key.clone())
             .collect()
     };
+    // What is said of the files not shown whole, folded between words.
+    let note = |rows: &mut Vec<Row>, text: String| {
+        for (k, piece) in fold_prose(&text, width).into_iter().enumerate() {
+            rows.push(Row { cont: k > 0, ..Row::new(Kind::Meta, piece) });
+        }
+    };
+    let whole = match &deco.whole {
+        Some(Ok(files)) => Some(files.clone()),
+        Some(Err(why)) => {
+            note(&mut rows, format!("   The files could not be read whole, so here are their hunks: {why}."));
+            None
+        }
+        None => None,
+    };
+    // The lines the files shown whole may have yet.
+    let mut room = crate::whole::MOST_IN_PATCH;
     for fd in parsed(p).iter() {
         let mut label = fd.path.clone();
         if let Some(read) = &deco.read {
@@ -653,43 +709,72 @@ pub fn patch_rows(p: &Patch, notes: &[&Note], width: usize, deco: &Deco) -> Vec<
                 });
             }
         }
-        for hunk in &fd.hunks {
-            let mut label = hunk.header.clone();
-            if let Some(read) = &deco.read {
-                label += &format!("   read {} lines", read_of(&changed(std::slice::from_ref(hunk)), read));
+        let words: Vec<Vec<Spans>> = fd.hunks.iter().map(|h| changed_words(&h.lines)).collect();
+        // Whole: as long as it is text, fits its hunks, and is not too long.
+        let mut said = None;
+        let lines = whole.as_ref().and_then(|files| files.get(&fd.path)).and_then(|sides| {
+            let n = sides.old.as_ref().map_or(0, Vec::len).max(sides.new.as_ref().map_or(0, Vec::len));
+            if n > crate::whole::MOST_LINES {
+                said = Some(format!(
+                    "   This file has {n} lines, more than the {} a file shown whole may have, so here are its hunks.",
+                    crate::whole::MOST_LINES
+                ));
+                return None;
             }
-            rows.push(Row {
-                path: Some(fd.path.clone()),
-                hunk: Some(hunk.hid.clone()),
-                diff_at: Some(hunk.at),
-                new_no: Some(hunk.new_start.max(1)),
-                ..Row::new(Kind::Hunk, label)
-            });
-            let words = changed_words(&hunk.lines);
-            for (li, l) in hunk.lines.iter().enumerate() {
-                let kind = match l.origin {
-                    '+' => Kind::Add,
-                    '-' => Kind::Del,
-                    ' ' => Kind::Ctx,
-                    _ => Kind::Meta,
-                };
-                let changed_line = matches!(kind, Kind::Add | Kind::Del);
-                let read = changed_line && deco.read.as_ref().is_some_and(|r| r.contains(&l.key));
-                line(
-                    &mut rows,
-                    Row {
-                        key: (kind != Kind::Meta).then(|| l.key.clone()),
+            let lines = crate::whole::lines(fd, sides);
+            match &lines {
+                // Not text: as its hunks say it.
+                None if crate::whole::binary(fd) || (sides.old.is_none() && sides.new.is_none()) => {}
+                None => said = Some("   This file as it was read does not fit its hunks, so here they are.".into()),
+                Some(ls) if ls.len() > room => {
+                    said = Some(format!(
+                        "   With this file, the patch would show more than {} lines whole, so here are its hunks.",
+                        crate::whole::MOST_IN_PATCH
+                    ));
+                    return None;
+                }
+                Some(ls) => room -= ls.len(),
+            }
+            lines
+        });
+        match lines {
+            Some(lines) => {
+                for l in lines {
+                    let row = match l {
+                        crate::whole::Line::In { hunk, line: k } => {
+                            let h = &fd.hunks[hunk];
+                            hunk_line(fd, h, &h.lines[k], words[hunk][k].clone(), deco)
+                        }
+                        crate::whole::Line::Outside { new_no, text, .. } => Row {
+                            path: Some(fd.path.clone()),
+                            new_no: Some(new_no),
+                            outside: true,
+                            ..Row::new(Kind::Ctx, format!(" {text}"))
+                        },
+                    };
+                    line(&mut rows, row);
+                }
+            }
+            None => {
+                if let Some(said) = said {
+                    note(&mut rows, said);
+                }
+                for (h, hunk) in fd.hunks.iter().enumerate() {
+                    let mut label = hunk.header.clone();
+                    if let Some(read) = &deco.read {
+                        label += &format!("   read {} lines", read_of(&changed(std::slice::from_ref(hunk)), read));
+                    }
+                    rows.push(Row {
                         path: Some(fd.path.clone()),
-                        preview: Some(l.text.chars().skip(1).collect::<String>().trim().chars().take(80).collect()),
                         hunk: Some(hunk.hid.clone()),
-                        read,
-                        free: changed_line && free(l),
-                        diff_at: Some(l.at),
-                        new_no: Some(l.new_no.max(1)),
-                        words: words[li].clone(),
-                        ..Row::new(kind, l.text.clone())
-                    },
-                );
+                        diff_at: Some(hunk.at),
+                        new_no: Some(hunk.new_start.max(1)),
+                        ..Row::new(Kind::Hunk, label)
+                    });
+                    for (k, l) in hunk.lines.iter().enumerate() {
+                        line(&mut rows, hunk_line(fd, hunk, l, words[h][k].clone(), deco));
+                    }
+                }
             }
         }
         rows.push(Row::new(Kind::Blank, ""));
@@ -976,6 +1061,125 @@ mod tests {
         assert_eq!(links(200)[0].0, format!("     ▎   r1 ⇗ {long}"));
     }
 
+    /// A patch changing f.txt, of 20 lines, at its lines 2 and 18: two
+    /// hunks, lines 6 to 14 in none, line 8 long; a comment on the line
+    /// added in the first hunk. The files before and after it, and the
+    /// comment.
+    fn whole_patch() -> (crate::db::Patch, crate::whole::Files, crate::db::Note) {
+        let old: Vec<String> = (1..=20).map(|n| if n == 8 { format!("l8 {}", "x".repeat(100)) } else { format!("l{n}") }).collect();
+        let mut new = old.clone();
+        new[1] = "L2".into();
+        new[17] = "L18".into();
+        let diff = "diff --git a/f.txt b/f.txt\nindex 1..2 100644\n--- a/f.txt\n+++ b/f.txt\n\
+@@ -1,5 +1,5 @@\n l1\n-l2\n+L2\n l3\n l4\n l5\n@@ -15,6 +15,6 @@\n l15\n l16\n l17\n-l18\n+L18\n l19\n l20\n";
+        let p = crate::db::Patch::new("c".into(), None, None, "t".into(), diff.into());
+        let files = crate::whole::Files::from([("f.txt".to_string(), crate::check::Sides { old: Some(old), new: Some(new) })]);
+        let key = crate::diff::parse_diff(diff, &crate::view::mode("c"))[0].hunks[0].lines[2].key.clone();
+        let n = crate::db::Note { change: "c".into(), id: "n".into(), line: key, text: "Why so loud?".into(), ..Default::default() };
+        (p, files, n)
+    }
+
+    #[test]
+    fn each_file_whole_keeps_the_rows_of_its_hunks_lines_and_puts_the_others_between() {
+        use super::{Deco, Kind, patch_rows};
+        let (p, files, n) = whole_patch();
+        let hunks = patch_rows(&p, &[&n], 80, &Deco::default());
+        let whole = patch_rows(&p, &[&n], 80, &Deco { whole: Some(Ok(std::sync::Arc::new(files))), ..Default::default() });
+        // No hunk's header; the lines of the hunks, and the comment under its
+        // line, the very rows the hunks have.
+        assert!(whole.iter().all(|r| r.kind != Kind::Hunk), "{whole:#?}");
+        let mine: Vec<&super::Row> = hunks.iter().filter(|r| r.kind != Kind::Hunk).collect();
+        let theirs: Vec<&super::Row> = whole.iter().filter(|r| !r.outside).collect();
+        assert_eq!(mine, theirs);
+        // Between them, lines 6 to 14, in no hunk: no key, the line's number.
+        let outside: Vec<(Option<usize>, bool)> = whole.iter().filter(|r| r.outside && !r.cont).map(|r| (r.new_no, r.key.is_none() && r.hunk.is_none())).collect();
+        assert_eq!(outside, (6..=14).map(|n| (Some(n), true)).collect::<Vec<_>>());
+        // The long one folded, as the hunks' lines are.
+        assert!(whole.iter().any(|r| r.outside && r.cont && r.new_no == Some(8)), "{whole:#?}");
+    }
+
+    #[test]
+    fn a_row_is_found_again_whole_or_in_hunks_and_a_line_in_no_hunk_as_the_closest_in_one() {
+        use super::{Deco, Kind, Moved, find, patch_rows, place};
+        let (p, files, n) = whole_patch();
+        let whole_deco = Deco { whole: Some(Ok(std::sync::Arc::new(files))), ..Default::default() };
+        let hunks = patch_rows(&p, &[&n], 80, &Deco::default());
+        let whole = patch_rows(&p, &[&n], 80, &whole_deco);
+        // Each row of the hunks found again whole, on itself; a hunk's header
+        // on its first line. And back.
+        for i in 0..hunks.len() {
+            let (j, moved) = find(&whole, &place(&hunks, i));
+            assert_eq!(moved, None, "{i}");
+            match hunks[i].kind {
+                Kind::Hunk => assert_eq!(whole[j].diff_at, hunks[i].diff_at.map(|d| d + 1), "{i}: {}", hunks[i].text),
+                _ => {
+                    assert_eq!(whole[j], hunks[i], "{i}");
+                    assert_eq!(find(&hunks, &place(&whole, j)), (i, None), "{i}, back");
+                }
+            }
+        }
+        // A line in no hunk, as the hunks: the closest line in one, ties above.
+        let at = |text: &str| whole.iter().position(|r| r.text == text).unwrap();
+        let (i, moved) = find(&hunks, &place(&whole, at(" l10")));
+        assert_eq!((hunks[i].text.as_str(), moved), (" l5", Some(Moved { path: "f.txt".into(), line: 10, to: Some(5) })));
+        let (i, moved) = find(&hunks, &place(&whole, at(" l11")));
+        assert_eq!((hunks[i].text.as_str(), moved.and_then(|m| m.to)), (" l15", Some(15)));
+        let (i, moved) = find(&hunks, &place(&whole, at(" l6")));
+        assert_eq!((hunks[i].text.as_str(), moved.and_then(|m| m.to)), (" l5", Some(5)));
+        // Folded otherwise, the same piece of the same line; a comment's row,
+        // the same row of its turn.
+        let narrow = patch_rows(&p, &[&n], 40, &whole_deco);
+        let piece = whole.iter().position(|r| r.outside && r.cont && r.new_no == Some(8)).unwrap();
+        let (j, moved) = find(&narrow, &place(&whole, piece));
+        assert!(moved.is_none() && narrow[j].cont && narrow[j].new_no == Some(8) && !narrow[j - 1].cont, "{:?}", narrow[j]);
+        let said = whole.iter().position(|r| r.text.ends_with("Why so loud?")).unwrap();
+        let (j, _) = find(&narrow, &place(&whole, said));
+        assert!(narrow[j].text.ends_with("Why so loud?"), "{:?}", narrow[j]);
+    }
+
+    #[test]
+    fn a_file_too_long_and_one_past_what_a_patch_shows_whole_are_shown_as_their_hunks_a_note_saying_so() {
+        use super::{Deco, Kind, Row, patch_rows};
+        use crate::whole::{MOST_IN_PATCH, MOST_LINES};
+        // Files of `n` lines, each changed at its line 1: one too long; then
+        // three of a third of what a patch shows whole, and a line more, two
+        // of which fit in it, the third not; and a short one.
+        let mut diff = String::new();
+        let mut files = crate::whole::Files::new();
+        let third = MOST_IN_PATCH / 3 + 1;
+        let sizes = [("long.txt", MOST_LINES + 1), ("a.txt", third), ("b.txt", third), ("c.txt", third), ("d.txt", 20)];
+        for (name, n) in sizes {
+            let old: Vec<String> = (1..=n).map(|k| k.to_string()).collect();
+            let mut new = old.clone();
+            new[0] = "ONE".into();
+            diff += &format!("diff --git a/{name} b/{name}\n--- a/{name}\n+++ b/{name}\n@@ -1,4 +1,4 @@\n-1\n+ONE\n 2\n 3\n 4\n");
+            files.insert(name.to_string(), crate::check::Sides { old: Some(old), new: Some(new) });
+        }
+        let p = crate::db::Patch::new("c".into(), None, None, "t".into(), diff);
+        let rows = patch_rows(&p, &[], 80, &Deco { whole: Some(Ok(std::sync::Arc::new(files))), ..Default::default() });
+        let file = |name: &str| -> Vec<&Row> {
+            let at = rows.iter().position(|r| r.kind == Kind::File && r.path.as_deref() == Some(name)).unwrap();
+            rows[at + 1..].iter().take_while(|r| r.kind != Kind::Blank).collect()
+        };
+        // What is said over a file not shown whole, its pieces joined.
+        let said = |rows: &[&Row]| -> String {
+            rows.iter().take_while(|r| r.kind == Kind::Meta).map(|r| r.text.trim()).collect::<Vec<_>>().join(" ")
+        };
+        let hunks = |rows: &[&Row]| rows.iter().any(|r| r.kind == Kind::Hunk) && !rows.iter().any(|r| r.outside);
+        let long = file("long.txt");
+        let more = format!("This file has {} lines, more than the {MOST_LINES} a file shown whole may have, so here are its hunks.", MOST_LINES + 1);
+        assert_eq!((said(&long), hunks(&long)), (more, true));
+        // The next two whole, as much as the patch shows whole; past it, the
+        // third as its hunks; the last, short, whole again.
+        for name in ["a.txt", "b.txt", "d.txt"] {
+            let f = file(name);
+            assert!(said(&f).is_empty() && !f.iter().any(|r| r.kind == Kind::Hunk), "{name}");
+        }
+        let c = file("c.txt");
+        let past = format!("With this file, the patch would show more than {MOST_IN_PATCH} lines whole, so here are its hunks.");
+        assert_eq!((said(&c), hunks(&c)), (past, true));
+    }
+
     #[test]
     fn side_by_side_a_line_folded_is_paired_as_one() {
         use super::{Kind, Row, split_lines};
@@ -1056,4 +1260,125 @@ pub fn split_lines(rows: &[Row]) -> (Vec<SplitLine>, HashMap<usize, usize>) {
 /// The row a split line's cursor addresses: the new side where there is one.
 pub fn split_row(line: &SplitLine) -> usize {
     line.span.or(line.right).or(line.left).unwrap_or(0)
+}
+
+/// Where a row of a patch is, to find it again in the patch's rows built
+/// otherwise, as its hunks or each file whole, folded to another width: the
+/// same piece of the same line, the same row of the same comment.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Place {
+    /// Row `k` of comment `id`'s rows that are what `part` says
+    /// (`note_part`).
+    Note { id: String, part: (bool, bool, Option<usize>), k: usize },
+    /// Piece `piece` of line `at` of the message.
+    Msg { at: usize, piece: usize },
+    /// Piece `piece` of the row that is line `at` of the diff: a line of a
+    /// hunk, a hunk's header, a file's name or a line of its header.
+    Diff { at: usize, piece: usize },
+    /// Piece `piece` of line `new_no` of file `path`, which is in no hunk.
+    Outside { path: String, new_no: usize, piece: usize },
+    /// The message's header, the first row.
+    Message,
+    /// `k` rows over the row at a place, or under it, being at none of its
+    /// own: an empty row, what is said of a file not shown whole.
+    Over(Box<Place>, usize),
+    Under(Box<Place>, usize),
+}
+
+/// What a row of a comment is, of all its rows: a reference's line, a line
+/// of the agent's stream, a row of turn `turn` (None: its first rows, over
+/// its turns).
+fn note_part(r: &Row) -> (bool, bool, Option<usize>) {
+    match r.is_reference() {
+        true => (true, false, None),
+        false => (false, r.stream, if r.stream { None } else { r.turn }),
+    }
+}
+
+/// Whether row `r` is at a place of its own.
+fn placed(r: &Row) -> bool {
+    r.note.is_some() || r.msg_at.is_some() || r.diff_at.is_some() || r.outside || (r.kind == Kind::File && r.path.as_deref() == Some(MSG_PATH))
+}
+
+/// Where row `i` of `rows` is.
+pub fn place(rows: &[Row], i: usize) -> Place {
+    let Some(r) = rows.get(i) else { return Place::Message };
+    // Which piece of its line it is: those after the first go on it.
+    let piece = rows[..=i].iter().rev().take_while(|r| r.cont).count();
+    if let Some(id) = &r.note {
+        let part = note_part(r);
+        let k = rows[..i].iter().filter(|x| x.note.as_ref() == Some(id) && note_part(x) == part).count();
+        return Place::Note { id: id.clone(), part, k };
+    }
+    if let Some(at) = r.msg_at {
+        return Place::Msg { at, piece };
+    }
+    if let Some(at) = r.diff_at {
+        return Place::Diff { at, piece };
+    }
+    if r.outside {
+        return Place::Outside { path: r.path.clone().unwrap_or_default(), new_no: r.new_no.unwrap_or(0), piece };
+    }
+    if placed(r) {
+        return Place::Message;
+    }
+    // By the next row at a place of its own, else the one before it.
+    if let Some(j) = (i + 1..rows.len()).find(|&j| placed(&rows[j])) {
+        return Place::Over(Box::new(place(rows, j)), j - i);
+    }
+    match (0..i).rev().find(|&j| placed(&rows[j])) {
+        Some(j) => Place::Under(Box::new(place(rows, j)), i - j),
+        None => Place::Under(Box::new(Place::Message), i),
+    }
+}
+
+/// A line in no hunk, found in the rows of the patch's hunks as the line
+/// closest to it that is in one: its file and its number, and the number
+/// of the line found (None: the file has no hunk, and its name is found).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Moved {
+    pub path: String,
+    pub line: usize,
+    pub to: Option<usize>,
+}
+
+/// The row of `rows` at `at`: the same piece of the same line, the same row
+/// of the same comment, or as near it as they have. A line in no hunk, in
+/// the rows of the hunks, is the closest line of its file that is in one,
+/// by their numbers, ties going to the line above; then where it was is
+/// said too.
+pub fn find(rows: &[Row], at: &Place) -> (usize, Option<Moved>) {
+    let last = rows.len().saturating_sub(1);
+    // Piece `piece` of the line whose first row is `i`, or its last.
+    let piece_of = |i: usize, piece: usize| i + piece.min(rows[i + 1..].iter().take_while(|r| r.cont).count());
+    let found = match at {
+        Place::Note { id, part, k } => {
+            let mine: Vec<usize> = (0..rows.len()).filter(|&j| rows[j].note.as_ref() == Some(id)).collect();
+            let same: Vec<usize> = mine.iter().copied().filter(|&j| note_part(&rows[j]) == *part).collect();
+            same.get(*k).or(same.last()).or(mine.first()).copied()
+        }
+        Place::Msg { at, piece } => rows.iter().position(|r| r.msg_at == Some(*at) && r.note.is_none()).map(|i| piece_of(i, *piece)),
+        Place::Diff { at, piece } => match rows.iter().position(|r| r.diff_at == Some(*at) && r.note.is_none()) {
+            Some(i) => Some(piece_of(i, *piece)),
+            // A hunk's header, the file whole: the line after it.
+            None => rows.iter().position(|r| r.note.is_none() && r.diff_at.is_some_and(|d| d > *at)),
+        },
+        Place::Outside { path, new_no, piece } => {
+            let of = |r: &Row| r.path.as_deref() == Some(path.as_str()) && r.note.is_none() && !r.cont;
+            if let Some(i) = rows.iter().position(|r| of(r) && r.outside && r.new_no == Some(*new_no)) {
+                Some(piece_of(i, *piece))
+            } else {
+                let near = (0..rows.len())
+                    .filter(|&j| of(&rows[j]) && !rows[j].outside && rows[j].hunk.is_some() && matches!(rows[j].kind, Kind::Add | Kind::Del | Kind::Ctx))
+                    .min_by_key(|&j| (rows[j].new_no.map_or(usize::MAX, |n| n.abs_diff(*new_no)), j));
+                let name = || rows.iter().position(|r| r.kind == Kind::File && r.path.as_deref() == Some(path.as_str()));
+                let moved = Moved { path: path.clone(), line: *new_no, to: near.and_then(|j| rows[j].new_no) };
+                return (near.or_else(name).unwrap_or(0).min(last), Some(moved));
+            }
+        }
+        Place::Message => rows.iter().position(|r| r.kind == Kind::File && r.path.as_deref() == Some(MSG_PATH)),
+        Place::Over(p, k) => Some(find(rows, p).0.saturating_sub(*k)),
+        Place::Under(p, k) => Some(find(rows, p).0 + k),
+    };
+    (found.unwrap_or(0).min(last), None)
 }
