@@ -1368,7 +1368,10 @@ the agent. In the patch as the work leaves it, ↑↓ move from line to line,
 and Enter writes a comment on the line in the inline editor, as in the
 main view: on a comment, what you said last written again if the last word
 is yours, a reply if not, and your answer to the agent's reply if this work
-replied to it. On a reply in the list, Space has `Reply to it`, your answer
+replied to it. Where Enter writes a new comment, on a line or on a file's
+name, Space has `Comment on this line` (`Comment on this file`), which
+writes the same comment, here or in $EDITOR as the item's choice picks, as
+in the main view. On a reply in the list, Space has `Reply to it`, your answer
 to follow the reply in its thread (`Edit your answer to it` once written).
 Nothing written there asks the agent at once, and the list shows it under
 `what you wrote, to send back`: on one of its lines, the right pane shows
@@ -1392,10 +1395,17 @@ for the agent, and the stack is not edited by hand until you have reviewed
 its work: nothing changes the stack it goes on from.
 
 The change of the stack is edited by hand from its review, as the work
-leaves the stack: on a line of the stack operations, Space has `Edit this
-patch in $EDITOR` (the patch of that line, as mail), `Edit a.txt in
-$EDITOR` for each of its files (where it is edited is the item's choice, as
-for `Edit … here in $EDITOR`), and `Edit the stack as a list in $EDITOR`.
+leaves the stack, where the cursor is, as in the main view. On a line of a
+file, in the patch looked at closer or in the stack diff (where the line
+is the one Enter goes to), Space has `Edit a.txt here in $EDITOR`, which
+opens the file as the patch leaves it at that line; on a line removed, the
+file opens at the line after where that line was. Where it is edited is
+the item's choice, as for `Edit … here in $EDITOR`. `Edit this patch in
+$EDITOR` opens the patch the cursor is in as mail, at the line of its
+message or of its diff that the cursor is on, else at its top; on the
+list, the patch is the one of the list's line. `Edit the stack as a list
+in $EDITOR` is there too. An edit that is not taken opens again at the
+same file and line with `Edit it again`.
 Saved, that work is rejected, and the work with your edit in it lands in
 its place: its replies and the comments it opened go with it, as you had
 marked them, and its change is to review again. The review goes on there,
@@ -2272,7 +2282,12 @@ file whole: the view drawn, the old side beside the new, a comment shown, a
 read mark made on the hunks' keys and taken back, the cursor kept),
 editing a patch by hand at the cursor (a line added after git's
 `\ No newline at end of file` opened at its own number, and a reference
-to that number going to that line), the history screens, the branches
+to that number going to that line), and from the review of landed work
+where its cursor is (on the list, a line of the stack diff, a row of the
+patch looked at closer: a line removed opened at the line after it, a
+comment or the message with no file to edit, an edit not taken opened
+again at the same line, and the menu writing a comment where Enter writes
+one), the history screens, the branches
 History… draws and the stack diff it shows beside each change, the agent
 asked about a record of the history, a new database started from it, a
 moved comment and an answer's comments, a patch's comment asked of the

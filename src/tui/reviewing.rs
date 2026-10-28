@@ -63,6 +63,28 @@ fn row_of(rows: &[Row], at: crate::ops::MailLine) -> usize {
     .unwrap_or(0)
 }
 
+/// Where the review's cursor is in the stack the work makes, for an edit
+/// by hand from there: the patch, by its place; the line of its mail the
+/// cursor is on, from 1, if it is on one; and the file and line, from 1,
+/// of the code it is on, as the patch leaves it, if it is.
+struct WorkPlace {
+    at: usize,
+    mail: Option<usize>,
+    code: Option<(String, usize)>,
+}
+
+impl WorkPlace {
+    /// Patch `p`, at place `at`, the cursor on `row` of its rows, if on one:
+    /// what of it the row is, as the middle has it of its own rows.
+    fn of_row(at: usize, p: &Patch, row: Option<&Row>) -> WorkPlace {
+        WorkPlace {
+            at,
+            mail: row.and_then(|r| mail_of(p, r)),
+            code: row.and_then(code_of),
+        }
+    }
+}
+
 /// A review being made: of what run `run` brought back.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Reviewing {
@@ -307,13 +329,90 @@ impl App {
     /// is on is about, with its place, if it is one of its patches.
     pub(super) fn review_patch(&self) -> Option<(usize, Patch)> {
         let rv = self.reviewing.as_ref()?;
-        let lines = self.review_lines();
-        let entry = lines.get(rv.sel)?.entry?;
+        let entry = self.review_lines().get(rv.sel)?.entry?;
+        self.entry_patch(entry)
+    }
+
+    /// The patch of the stack the work makes that entry `entry` of the stack
+    /// operations is, with its place: none for the base, or a patch dropped.
+    fn entry_patch(&self, entry: usize) -> Option<(usize, Patch)> {
         let (now, next) = self.review_stacks()?;
         match crate::history::stacks_diff(&self.db, Some(&now), Some(&next), false).get(entry)? {
             Diffed::Patch { at, .. } => Some((at - 1, self.db.patch(next.patches.get(at - 1)?).clone())),
             _ => None,
         }
+    }
+
+    /// On a patch of the stack the work makes looked at closer: its place,
+    /// the patch, and the row the cursor is on (until it is drawn, the one
+    /// Enter went to from the stack diff).
+    pub(super) fn review_row(&self) -> Option<(usize, Patch, Row)> {
+        let rv = self.reviewing.as_ref().filter(|rv| rv.in_main && rv.in_patch)?;
+        let (at, p) = self.review_patch()?;
+        let rows = self.review_rows(&p, rv.main_w);
+        let i = match rv.goto {
+            Some(m) => row_of(&rows, crate::ops::line_of_mail(&p, m)),
+            None => rv.row.min(rows.len().saturating_sub(1)),
+        };
+        let row = rows.into_iter().nth(i)?;
+        Some((at, p, row))
+    }
+
+    /// The comment of its own that Enter writes on row `row` of patch `p`,
+    /// looked at closer: on a line, or a file's name, that has no comment of
+    /// the work's nor of yours.
+    fn line_comment(&self, p: &Patch, row: &Row) -> Option<Target> {
+        let key = row.key.clone().filter(|_| row.note.is_none() && row.kind.commentable())?;
+        if self.db.note(&p.change, &key).is_some_and(|n| self.review_shows(n)) {
+            return None;
+        }
+        let (file, preview) = (row.path.clone().unwrap_or_default(), row.preview.clone().unwrap_or_default());
+        Some(Target::Line {
+            change: p.change.clone(),
+            key,
+            file,
+            preview,
+        })
+    }
+
+    /// The comment of its own that Enter writes where the cursor is, if it
+    /// writes one there: on the row of a patch looked at closer, in the
+    /// review of the agent's work.
+    pub(super) fn review_line_comment(&self) -> Option<Target> {
+        if !self.review_writable() {
+            return None;
+        }
+        let (_, p, row) = self.review_row()?;
+        self.line_comment(&p, &row)
+    }
+
+    /// Where the review's cursor is in the stack the work makes, for an edit
+    /// by hand from there. On a patch looked at closer, the row it is on. On
+    /// the stack diff, where Enter goes from the line the cursor is on: from
+    /// a line of what changed in a patch, that line as the work leaves the
+    /// patch; from the patch's own line, the patch alone. Else (on the list,
+    /// or on a line of the stack diff of no patch: the base, a patch
+    /// dropped) the patch of the list's line, alone.
+    fn work_place(&self) -> Option<WorkPlace> {
+        let rv = self.reviewing.as_ref()?;
+        if let Some((at, p, row)) = self.review_row() {
+            return Some(WorkPlace::of_row(at, &p, Some(&row)));
+        }
+        if rv.in_main
+            && !rv.in_patch
+            && self.review_on_diff()
+            && let Some(v) = self.review_diff(80)
+            && let Some((entry, m)) = v.goes.get(rv.entry.min(v.goes.len().saturating_sub(1))).copied().flatten()
+            && let Some((at, p)) = self.entry_patch(entry)
+        {
+            let row = m.and_then(|m| {
+                let rows = self.review_rows(&p, rv.main_w);
+                let i = row_of(&rows, crate::ops::line_of_mail(&p, m));
+                rows.into_iter().nth(i)
+            });
+            return Some(WorkPlace::of_row(at, &p, row.as_ref()));
+        }
+        self.review_patch().map(|(at, p)| WorkPlace::of_row(at, &p, None))
     }
 
     /// Patch `p` as the work leaves it, a row at a time, `w` wide, the
@@ -371,16 +470,14 @@ impl App {
             self.status = "only the agent's work goes back to the agent with your comments: this work is not the agent's".into();
             return;
         }
-        let Some((_, p)) = self.review_patch() else { return };
         let Some(rv) = self.reviewing.clone() else { return };
-        let Some(row) = self.review_rows(&p, rv.main_w).get(rv.row).cloned() else { return };
+        let Some((_, p, row)) = self.review_row() else { return };
         let line = row.key.clone().filter(|_| row.note.is_none() && row.kind.commentable());
         // The comment on the row, or yours on its line if it is one of the
         // work's; else a comment of its own there.
-        let Some(id) = row.note.clone().or_else(|| line.clone().filter(|k| self.db.note(&p.change, k).is_some_and(|n| self.review_shows(n)))) else {
-            if let Some(key) = line {
-                let (file, preview) = (row.path.clone().unwrap_or_default(), row.preview.clone().unwrap_or_default());
-                self.write(Target::Line { change: p.change, key, file, preview }, Focus::Diff, "");
+        let Some(id) = row.note.clone().or_else(|| line.filter(|k| self.db.note(&p.change, k).is_some_and(|n| self.review_shows(n)))) else {
+            if let Some(target) = self.line_comment(&p, &row) {
+                self.write(target, Focus::Diff, "");
             }
             return;
         };
@@ -1460,6 +1557,16 @@ impl App {
         let lines = self.review_lines();
         let Some(rv) = &self.reviewing else { return };
         let rejected = rv.marks.get(&Part::Stack.key()) == Some(&false);
+        // On a line of a patch looked at closer where Enter writes a comment
+        // of its own: that comment, here or in $EDITOR, as in the middle.
+        if self.review_writable()
+            && let Some((_, p, row)) = self.review_row()
+            && self.line_comment(&p, &row).is_some()
+        {
+            let label = if row.kind == Kind::File { "Comment on this file" } else { "Comment on this line" };
+            items.push(Item::new(label, Action::CommentLine).with(self.write_choices(Action::CommentLine, Action::CommentInEditor)));
+            items.push(Item::line());
+        }
         // What you wrote: written again, or taken back.
         if let Some(y) = lines.get(rv.sel).and_then(|l| l.yours.as_ref()) {
             let (edit, back) = match y {
@@ -1503,53 +1610,37 @@ impl App {
             items.push(Item::new("Mark all replies accepted", Action::MarkReplies(true)).when(!rejected));
             items.push(Item::new("Mark all replies rejected", Action::MarkReplies(false)));
         }
-        // Edited by hand from here, the stack the work makes: the patch the
-        // cursor is on, as mail or a file of it; the stack as a list.
-        if self.read_only().is_none()
-            && let Some((now, next)) = self.review_stacks()
-        {
+        // Edited by hand from here, the stack the work makes, where the
+        // cursor is, as in the middle: the file of the code the cursor is
+        // on, opened at that line; the patch the cursor is in, as mail,
+        // opened at the cursor's line of it, else at its top; the stack as
+        // a list.
+        if self.read_only().is_none() && self.review_stacks().is_some() {
             items.push(Item::line());
-            let diff = crate::history::stacks_diff(&self.db, Some(&now), Some(&next), false);
-            let at = lines.get(rv.sel).and_then(|l| l.entry).and_then(|k| match diff.get(k)? {
-                Diffed::Patch { at, .. } => Some(at - 1),
-                _ => None,
-            });
-            if let Some(at) = at
-                && let Some(id) = next.patches.get(at)
-            {
-                items.push(Item::new("Edit this patch in $EDITOR", Action::EditWorkPatch(at)));
-                for f in crate::diff::parse_diff(&self.db.patch(id).diff, "") {
-                    let short = f.path.rsplit('/').next().unwrap_or(&f.path).to_string();
-                    items.push(Item::new(format!("Edit {short} in $EDITOR"), Action::EditWorkFile(at, f.path.clone())).with(self.edit_choices()));
+            if let Some(w) = self.work_place() {
+                if let Some((file, line)) = w.code {
+                    let short = file.rsplit('/').next().unwrap_or(&file).to_string();
+                    items.push(Item::new(format!("Edit {short} here in $EDITOR"), Action::EditWorkFile(w.at, file, line)).with(self.edit_choices()));
                 }
+                items.push(Item::new("Edit this patch in $EDITOR", Action::EditWorkPatch(w.at, w.mail)));
             }
             items.push(Item::new("Edit the stack as a list in $EDITOR", Action::EditWorkList));
         }
     }
 
     /// The edit by hand `action` asks for in the review, of the stack the
-    /// work makes; a file opened at its first change.
+    /// work makes: opened at the line the menu found the cursor on.
     pub(super) fn work_edit(&self, action: &Action) -> Option<Effect> {
         let run = self.reviewing.as_ref()?.run.clone();
         let edit = match action {
             Action::EditWorkList => WorkEdit::List,
-            Action::EditWorkPatch(at) => WorkEdit::Mail(*at),
-            Action::EditWorkFile(at, file) => {
-                let (_, next) = self.review_stacks()?;
-                let p = self.db.patch(next.patches.get(*at)?);
-                let line = crate::diff::parse_diff(&p.diff, "")
-                    .into_iter()
-                    .find(|f| f.path == *file)
-                    .and_then(|f| f.hunks.iter().flat_map(|h| h.lines.iter()).find(|l| l.origin != ' ').map(|l| l.new_no))
-                    .unwrap_or(1)
-                    .max(1);
-                WorkEdit::Code {
-                    at: *at,
-                    file: file.clone(),
-                    line,
-                    again: None,
-                }
-            }
+            Action::EditWorkPatch(at, line) => WorkEdit::Mail { at: *at, line: *line },
+            Action::EditWorkFile(at, file, line) => WorkEdit::Code {
+                at: *at,
+                file: file.clone(),
+                line: *line,
+                again: None,
+            },
             _ => return None,
         };
         Some(Effect::EditWork { run, edit })

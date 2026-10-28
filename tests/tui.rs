@@ -7805,25 +7805,26 @@ fn landed_work_is_edited_by_hand_from_its_review_in_its_place() {
     assert_eq!(app.screen, Screen::Review);
     down_to_review(&mut app, "Quieter now.");
     keys(&mut app, &[KeyCode::Enter]);
-    // On a patch of the stack it makes: that patch edited by hand, as mail
-    // or a file of it; and the stack as a list.
+    // On a patch of the stack it makes: that patch edited by hand, as mail;
+    // and the stack as a list.
     keys(&mut app, &[KeyCode::Home]);
     down_to_review(&mut app, "noop    1 Bug 1");
     keys(&mut app, &[KeyCode::Char(' ')]);
-    let all: Vec<String> = items(&app).into_iter().map(|(l, _)| l).collect();
-    for l in ["Edit this patch in $EDITOR", "Edit a.txt in $EDITOR", "Edit the stack as a list in $EDITOR"] {
-        assert!(all.contains(&l.to_string()), "{l:?} in {all:?}");
-    }
+    assert_eq!(edits_of(&app), ["Edit this patch in $EDITOR", "Edit the stack as a list in $EDITOR"]);
     assert!(matches!(&app.mode, Mode::Menu(m) if m.note.is_none()), "nothing said to hold the edits back: {:?}", app.mode);
     let run = "run-agent".to_string();
-    assert_eq!(choose(&mut app, "Edit this patch in $EDITOR"), Effect::EditWork { run: run.clone(), edit: WorkEdit::Mail(0) });
+    let edit = WorkEdit::Mail { at: 0, line: None };
+    assert_eq!(choose(&mut app, "Edit this patch in $EDITOR"), Effect::EditWork { run: run.clone(), edit });
+    // On a line of the patch, looked at closer: a file of it too.
+    keys(&mut app, &[KeyCode::Right, KeyCode::Enter]);
+    down_to_work_row(&mut app, "+TWO");
     let edit = WorkEdit::Code {
         at: 0,
         file: "a.txt".into(),
         line: 2,
         again: None,
     };
-    assert_eq!(choose(&mut app, "Edit a.txt in $EDITOR"), Effect::EditWork { run: run.clone(), edit });
+    assert_eq!(choose(&mut app, "Edit a.txt here in $EDITOR"), Effect::EditWork { run: run.clone(), edit });
     // Saved, it lands in its place: that work is rejected, the new holds its
     // reply as it was marked, and the review goes on there.
     let new = hand_edit(&db, Some(&run));
@@ -8093,6 +8094,278 @@ fn enter_on_a_line_of_the_interdiff_goes_to_that_line_of_the_patch() {
     // There, Enter writes a comment on it.
     keys(&mut app, &[KeyCode::Enter]);
     assert!(matches!(&app.mode, Mode::Edit(_)), "{:?}", app.mode);
+}
+
+/// The edits by hand the open menu has: its items ending in `in $EDITOR`.
+fn edits_of(app: &App) -> Vec<String> {
+    items(app).into_iter().map(|(l, _)| l).filter(|l| l.ends_with("in $EDITOR")).collect()
+}
+
+/// The review of the agent's work on comment `why so loud?`, on patch 1's
+/// `+TWO`: `TWO` made `Two` (`agent_changed`), and its reply. With it,
+/// patch 1 as the work leaves it.
+fn reviewing_the_agent_s_change() -> (tempfile::TempDir, PathBuf, Editor, stacked::db::Patch) {
+    let (tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Enter]);
+    save(&mut app, "why so loud?");
+    let n = notes_of(&db, "s", 0).remove(0);
+    agent_changed(&db, "run-agent", &n);
+    app.refresh();
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Enter]);
+    assert_eq!(app.screen, Screen::Review);
+    let d = Db::load(&db).unwrap();
+    let p = d.patch(&d.run("run-agent").unwrap().held.as_ref().unwrap().stack.as_ref().unwrap().patches[0]).clone();
+    (tmp, db, app, p)
+}
+
+#[test]
+fn the_review_s_edits_by_hand_are_of_where_its_cursor_is() {
+    use stacked::tui::WorkEdit;
+    let (_tmp, _db, mut app, p) = reviewing_the_agent_s_change();
+    let run = "run-agent".to_string();
+    // The line of patch 1's mail, as $EDITOR is given it, that an edit of it
+    // opens at.
+    let mail = stacked::ops::render(&p);
+    let mail_at = |e: Effect| match e {
+        Effect::EditWork {
+            edit: WorkEdit::Mail { at: 0, line: Some(l) },
+            ..
+        } => mail.lines().nth(l - 1).unwrap().to_string(),
+        e => panic!("{e:?}"),
+    };
+    let code = |line: usize| Effect::EditWork {
+        run: run.clone(),
+        edit: WorkEdit::Code {
+            at: 0,
+            file: "a.txt".into(),
+            line,
+            again: None,
+        },
+    };
+    let top = |at: usize| Effect::EditWork {
+        run: run.clone(),
+        edit: WorkEdit::Mail { at, line: None },
+    };
+    let (file, patch, list) = ("Edit a.txt here in $EDITOR", "Edit this patch in $EDITOR", "Edit the stack as a list in $EDITOR");
+    // On the list: the patch of its line, as mail, at its top, and no file.
+    keys(&mut app, &[KeyCode::Home]);
+    down_to_review(&mut app, "modify  1 Bug 1");
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    assert_eq!(edits_of(&app), [patch, list]);
+    assert_eq!(choose(&mut app, patch), top(0));
+    // In the stack diff, on a line the work took out of the patch's mail:
+    // the line of the file, and of the mail, that took its place.
+    keys(&mut app, &[KeyCode::Right]);
+    assert_eq!(work_row(&mut app).as_deref(), Some("-+TWO"));
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    assert_eq!(edits_of(&app), [file, patch, list]);
+    assert_eq!(choose(&mut app, file), code(2));
+    assert_eq!(mail_at(choose(&mut app, patch)), "+Two");
+    // On a line the work kept, that line.
+    down_to_work_row(&mut app, "three");
+    assert_eq!(choose(&mut app, file), code(3));
+    assert_eq!(mail_at(choose(&mut app, patch)), " three");
+    // On the line of a patch, that patch alone, at its top: patch 2's too,
+    // whatever line the list is on.
+    keys(&mut app, &[KeyCode::End]);
+    assert_eq!(work_row(&mut app).as_deref(), Some("2   Bug 2 - add b"));
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    assert_eq!(edits_of(&app), [patch, list]);
+    assert_eq!(choose(&mut app, patch), top(1));
+    keys(&mut app, &[KeyCode::Home]);
+    assert_eq!(work_row(&mut app).as_deref(), Some("1 ~ Bug 1 - shout two"));
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    assert_eq!(edits_of(&app), [patch, list]);
+    assert_eq!(choose(&mut app, patch), top(0));
+    // In the patch as the work leaves it, gone to from the line that took
+    // the place of another: that line; on a line removed, the line after
+    // where it was; on a line added, its own.
+    down_to_work_row(&mut app, "++Two");
+    keys(&mut app, &[KeyCode::Enter]);
+    assert_eq!(work_row(&mut app).as_deref(), Some("+Two"));
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    assert_eq!(edits_of(&app), [file, patch, list]);
+    assert_eq!(choose(&mut app, file), code(2));
+    assert_eq!(mail_at(choose(&mut app, patch)), "+Two");
+    down_to_work_row(&mut app, "-line 39");
+    assert_eq!(choose(&mut app, file), code(42));
+    assert_eq!(mail_at(choose(&mut app, patch)), "-line 39");
+    down_to_work_row(&mut app, "+LINE 39");
+    assert_eq!(choose(&mut app, file), code(42));
+    assert_eq!(mail_at(choose(&mut app, patch)), "+LINE 39");
+    // On the message: no file; its title, the mail's subject. On a file's
+    // name, its first line; on a hunk's header, the hunk's.
+    keys(&mut app, &[KeyCode::Home]);
+    assert_eq!(work_row(&mut app).as_deref(), Some("✉ message"));
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    assert_eq!(edits_of(&app), [patch, list]);
+    assert_eq!(choose(&mut app, patch), top(0));
+    keys(&mut app, &[KeyCode::Down]);
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    assert_eq!(edits_of(&app), [patch, list]);
+    assert_eq!(mail_at(choose(&mut app, patch)), "Subject: Bug 1 - shout two");
+    down_to_work_row(&mut app, "a.txt");
+    assert_eq!(choose(&mut app, file), code(1));
+    assert_eq!(mail_at(choose(&mut app, patch)), "diff --git a/a.txt b/a.txt");
+    down_to_work_row(&mut app, "@@ -39");
+    assert_eq!(choose(&mut app, file), code(39));
+    // On a comment, at its end: no file, and the patch at its top.
+    keys(&mut app, &[KeyCode::End]);
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    assert_eq!(edits_of(&app), [patch, list]);
+    assert_eq!(choose(&mut app, patch), top(0));
+}
+
+#[test]
+fn the_review_s_edits_by_hand_open_at_the_cursor_s_line_and_come_back_there_not_taken() {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    use stacked::tui::WorkEdit;
+    let (_tmp, _db, mut app, p) = reviewing_the_agent_s_change();
+    let run = "run-agent".to_string();
+    // $EDITOR as the tests have it: what it opens and at which line, kept;
+    // the file then written as `write` has it, if it has it.
+    let seen = Rc::new(RefCell::new(Vec::<(String, Option<usize>)>::new()));
+    let editor = |write: Option<String>| -> stacked::ops::Editing {
+        let seen = seen.clone();
+        Box::new(move |file: &Path, at: Option<usize>| -> stacked::db::Result<()> {
+            seen.borrow_mut().push((std::fs::read_to_string(file).unwrap(), at));
+            if let Some(text) = &write {
+                std::fs::write(file, text).unwrap();
+            }
+            Ok(())
+        })
+    };
+    keys(&mut app, &[KeyCode::Home]);
+    down_to_review(&mut app, "modify  1 Bug 1");
+    keys(&mut app, &[KeyCode::Right, KeyCode::Enter]);
+    down_to_work_row(&mut app, "+LINE 39");
+    // The patch as the work leaves it, as mail, opened at that line of it.
+    stacked::ops::stand_in(Some(editor(None)));
+    let e = choose(&mut app, "Edit this patch in $EDITOR");
+    app.effect(e).unwrap();
+    let (text, at) = seen.borrow_mut().remove(0);
+    assert_eq!(text, stacked::ops::render(&p));
+    assert_eq!(text.lines().nth(at.unwrap() - 1), Some("+LINE 39"));
+    assert_eq!(app.status, "nothing changed");
+    // The file as the patch leaves it, opened at that line. Saved as it was
+    // before the patch, the patch would change nothing: the edit is not
+    // taken.
+    let lines: String = (1..=40).map(|n| format!("line {n}\n")).collect();
+    let before = format!("one\ntwo\nthree\n{lines}");
+    stacked::ops::stand_in(Some(editor(Some(before.clone()))));
+    let e = choose(&mut app, "Edit a.txt here in $EDITOR");
+    let edit = WorkEdit::Code {
+        at: 0,
+        file: "a.txt".into(),
+        line: 42,
+        again: None,
+    };
+    assert_eq!(e, Effect::EditWork { run: run.clone(), edit });
+    app.effect(e).unwrap();
+    let (text, at) = seen.borrow_mut().remove(0);
+    assert_eq!(at, Some(42));
+    assert_eq!(text.lines().nth(41), Some("LINE 39"));
+    assert_eq!(text.lines().nth(1), Some("Two"), "as the work leaves it:\n{text}");
+    // Taken up again: the same file, at the same line, as you left it.
+    stacked::ops::stand_in(Some(editor(None)));
+    let e = choose(&mut app, "Edit it again");
+    let edit = WorkEdit::Code {
+        at: 0,
+        file: "a.txt".into(),
+        line: 42,
+        again: Some(stacked::ops::Kept::Text(before.clone())),
+    };
+    assert_eq!(e, Effect::EditWork { run: run.clone(), edit });
+    app.effect(e).unwrap();
+    assert_eq!(seen.borrow_mut().remove(0), (before, Some(42)));
+    stacked::ops::stand_in(None);
+    choose(&mut app, "Throw the edit away");
+    assert_eq!((app.screen, app.reviewing.as_ref().map(|r| r.run.as_str())), (Screen::Review, Some("run-agent")));
+}
+
+#[test]
+fn the_review_s_menu_writes_a_comment_where_enter_writes_one() {
+    use stacked::tui::Target;
+    let (_tmp, db, mut app, _p) = reviewing_the_agent_s_change();
+    let comments = |app: &App| -> Vec<String> { items(app).into_iter().map(|(l, _)| l).filter(|l| l.starts_with("Comment on this")).collect() };
+    // Where Enter does something else, none: on the list, where it marks a
+    // part; in the stack diff, where it goes to the line in its patch.
+    keys(&mut app, &[KeyCode::Home]);
+    down_to_review(&mut app, "modify  1 Bug 1");
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    assert!(comments(&app).is_empty(), "{:?}", items(&app));
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Right, KeyCode::Char(' ')]);
+    assert!(comments(&app).is_empty(), "{:?}", items(&app));
+    // In the patch as the work leaves it, on a line with no comment of the
+    // work's nor yours, Enter writes one: so does `Comment on this line`,
+    // here or in $EDITOR, the same.
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Enter]);
+    down_to_work_row(&mut app, "+LINE 39");
+    keys(&mut app, &[KeyCode::Enter]);
+    let by_enter = match &app.mode {
+        Mode::Edit(e) => e.target.clone(),
+        m => panic!("{m:?}"),
+    };
+    keys(&mut app, &[KeyCode::Esc]);
+    assert_eq!(app.mode, Mode::Normal);
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    assert_eq!(comments(&app), ["Comment on this line"]);
+    assert_eq!(choices_named(&app, "Comment on this line"), ["here", "in $EDITOR"]);
+    assert_eq!(app.help()[0], "Press Enter to create a comment on this line.");
+    choose(&mut app, "Comment on this line");
+    assert!(matches!(&app.mode, Mode::Edit(e) if e.target == by_enter), "{:?}", app.mode);
+    save(&mut app, "Written from the menu.");
+    // It goes back to the agent with the work, as what Enter writes does.
+    let mine = notes_of(&db, "s", 0).into_iter().find(|n| n.text == "Written from the menu.").unwrap();
+    assert_eq!(mine.review.as_deref(), Some("run-agent"));
+    assert!(draw(&mut app).contains(" what you wrote, to send back"));
+    // Written there, Enter writes yours again: no comment of its own.
+    assert_eq!(work_row(&mut app).as_deref(), Some("+LINE 39"));
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    assert!(comments(&app).is_empty(), "{:?}", items(&app));
+    keys(&mut app, &[KeyCode::Esc]);
+    // On a file's name: `Comment on this file`, on the file as a whole.
+    keys(&mut app, &[KeyCode::Home]);
+    down_to_work_row(&mut app, "a.txt");
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    assert_eq!(comments(&app), ["Comment on this file"]);
+    assert_eq!(app.help()[0], "Press Enter to create a comment on this file, as a whole.");
+    let e = choose_as(&mut app, "Comment on this file", "in $EDITOR");
+    assert!(
+        matches!(&e, Effect::EditComment(Target::Line { key, file, .. }) if key.ends_with("\0file") && file == "a.txt"),
+        "{e:?}"
+    );
+    stacked::ops::stand_in(Some(Box::new(|file: &Path, _| {
+        std::fs::write(file, "On the whole file.\n").unwrap();
+        Ok(())
+    })));
+    app.effect(e).unwrap();
+    stacked::ops::stand_in(None);
+    let whole = notes_of(&db, "s", 0).into_iter().find(|n| n.text == "On the whole file.").unwrap();
+    assert_eq!((whole.review.as_deref(), whole.file.as_str()), (Some("run-agent"), "a.txt"));
+    assert!(whole.line.ends_with("\0file"), "{whole:?}");
+    // On the work's comment, whose reply Enter answers: none.
+    keys(&mut app, &[KeyCode::End]);
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    assert!(comments(&app).is_empty(), "{:?}", items(&app));
+    // Nor in the review of work that is not the agent's, which no comment
+    // goes back with: there, Enter says so.
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    let run = hand_edit(&db, None);
+    app.edited(stacked::ops::Edited::Landed { said: "edited a.txt in Bug 1 - shout two".into(), run }, None, None);
+    keys(&mut app, &[KeyCode::Home]);
+    down_to_review(&mut app, "modify  1 Bug 1");
+    keys(&mut app, &[KeyCode::Right, KeyCode::Enter]);
+    down_to_work_row(&mut app, "+LINE 39");
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    assert!(comments(&app).is_empty(), "{:?}", items(&app));
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Enter]);
+    assert_eq!(app.status, "only the agent's work goes back to the agent with your comments: this work is not the agent's");
 }
 
 #[test]

@@ -1041,11 +1041,13 @@ pub enum Action {
     /// The row above an ask, picking when it asks: now, or later, in the
     /// batch. Enter on it does the ask.
     When,
-    /// In the review of landed work, an edit by hand of the stack it makes:
-    /// as a list, the patch at a place as mail, or a file of it.
+    /// In the review of landed work, an edit by hand of the stack it makes,
+    /// where the cursor is: as a list; the patch at place `0` as mail,
+    /// opened at line `1` if the cursor is on a line of it; or file `1` of
+    /// it, opened at line `2`.
     EditWorkList,
-    EditWorkPatch(usize),
-    EditWorkFile(usize, String),
+    EditWorkPatch(usize, Option<usize>),
+    EditWorkFile(usize, String, usize),
     /// A batched comment asked now, as it was batched; or taken out of the
     /// batch.
     SendNow,
@@ -1261,12 +1263,13 @@ fn about(action: &Action) -> String {
         Action::EditWorkList => {
             "edit the stack this work makes as a list, as `git rebase -i` does, in $EDITOR: saved, it lands in place of this work, which is rejected, its replies and comments going with it".into()
         }
-        Action::EditWorkPatch(at) => format!(
-            "edit patch {} as this work leaves it, as mail in $EDITOR: saved, it lands in place of this work, which is rejected, its replies and comments going with it",
-            at + 1
+        Action::EditWorkPatch(at, line) => format!(
+            "edit patch {} as this work leaves it, as mail in $EDITOR{}: saved, it lands in place of this work, which is rejected, its replies and comments going with it",
+            at + 1,
+            if line.is_some() { ", opened where the cursor is" } else { "" }
         ),
-        Action::EditWorkFile(at, file) => format!(
-            "edit {file} as patch {} of this work leaves it, in $EDITOR, where the item picks: saved, it lands in place of this work, which is rejected, its replies and comments going with it",
+        Action::EditWorkFile(at, file, _) => format!(
+            "edit {file} as patch {} of this work leaves it, in $EDITOR where the item picks, opened at this line: saved, it lands in place of this work, which is rejected, its replies and comments going with it",
             at + 1
         ),
         Action::SendNow => "ask the agent about it now, as it was batched, without waiting for the rest of the batch".into(),
@@ -1498,12 +1501,13 @@ pub enum Effect {
 }
 
 /// What an edit by hand in the review of landed work edits, of the stack
-/// the work makes: the stack as a list, the patch at a place as mail, or
-/// a file of it at a line (from `again`, an edit not taken before).
+/// the work makes: the stack as a list, the patch at a place as mail
+/// (opened at `line` if one is known), or a file of it at a line (from
+/// `again`, an edit not taken before).
 #[derive(Debug, Clone, PartialEq)]
 pub enum WorkEdit {
     List,
-    Mail(usize),
+    Mail { at: usize, line: Option<usize> },
     Code { at: usize, file: String, line: usize, again: Option<ops::Kept> },
 }
 
@@ -1909,6 +1913,19 @@ fn going(db: &Db) -> Vec<String> {
         .filter(|r| r.state == RunState::Started)
         .map(|r| r.id.clone())
         .collect()
+}
+
+/// The file and line (from 1) of the code `row` is, as its patch leaves
+/// it: a line of a diff (a line removed, the line after where it was), a
+/// hunk's header, a file's name.
+fn code_of(row: &Row) -> Option<(String, usize)> {
+    Some((row.path.clone().filter(|p| p != MSG_PATH)?, row.new_no?))
+}
+
+/// The line (from 1) of `p`'s mail that `row`, of its rows, is: a line of
+/// its message or of its diff.
+fn mail_of(p: &Patch, row: &Row) -> Option<usize> {
+    (row.msg_at.is_some() || row.diff_at.is_some()).then(|| ops::mail_line(p, row))
 }
 
 impl App {
@@ -3168,11 +3185,14 @@ impl App {
         true
     }
 
-    /// What `action` does, said for where the cursor is: on a file's name,
-    /// a comment is on the file as a whole; on a file the patches list, the
-    /// patch is read there.
+    /// What `action` does, said for where the cursor is: on a file's name
+    /// (in the review, of a patch looked at closer), a comment is on the
+    /// file as a whole; on a file the patches list, the patch is read there.
     fn about_here(&self, action: &Action) -> String {
-        let on_file = self.focus == Focus::Diff && self.rows.get(self.cursor).is_some_and(|r| r.kind == Kind::File);
+        let on_file = match self.screen {
+            Screen::Review => self.review_row().is_some_and(|(_, _, r)| r.kind == Kind::File),
+            _ => self.focus == Focus::Diff && self.rows.get(self.cursor).is_some_and(|r| r.kind == Kind::File),
+        };
         match action {
             Action::CommentLine if on_file => "create a comment on this file, as a whole".into(),
             Action::Open if self.file_on().is_some() => "read this file".into(),
@@ -4117,9 +4137,7 @@ impl App {
         if self.on_stack {
             return None;
         }
-        let row = self.rows.get(self.cursor)?;
-        let file = row.path.clone().filter(|p| p != MSG_PATH)?;
-        Some((file, row.new_no?))
+        code_of(self.rows.get(self.cursor)?)
     }
 
     /// The line (from 1) of the patch's mail the middle's cursor is on.
@@ -4128,8 +4146,7 @@ impl App {
             return None;
         }
         let p = self.db.patch(&self.patch_id()?);
-        let row = self.rows.get(self.cursor)?;
-        (row.msg_at.is_some() || row.diff_at.is_some()).then(|| ops::mail_line(p, row))
+        mail_of(p, self.rows.get(self.cursor)?)
     }
 
     /// What enter does where the cursor is, when that is not the menu.
@@ -5660,7 +5677,7 @@ impl App {
                     };
                 }
             }
-            Action::EditWorkList | Action::EditWorkPatch(_) | Action::EditWorkFile(..) => {
+            Action::EditWorkList | Action::EditWorkPatch(..) | Action::EditWorkFile(..) => {
                 if let Some(e) = self.work_edit(&action) {
                     return e;
                 }
@@ -5688,6 +5705,13 @@ impl App {
                 if let Some(id) = self.patch_id() {
                     let change = self.db.patch(&id).change.clone();
                     self.write(Target::Patch(change), Focus::List, "");
+                }
+            }
+            // In the review, on a line of a patch looked at closer: the
+            // comment of its own that Enter writes there.
+            Action::CommentLine if self.screen == Screen::Review => {
+                if let Some(target) = self.review_line_comment() {
+                    self.write(target, Focus::Diff, "");
                 }
             }
             Action::CommentLine => {
@@ -5868,6 +5892,11 @@ impl App {
                     if collapse {
                         self.status = "the comment is collapsed: press Enter on its line to expand it".into();
                     }
+                }
+            }
+            Action::CommentInEditor if self.screen == Screen::Review => {
+                if let Some(target) = self.review_line_comment() {
+                    return Effect::EditComment(target);
                 }
             }
             Action::CommentInEditor => {
@@ -7672,7 +7701,7 @@ impl App {
                 let place = self.edit_place();
                 let (done, file) = match edit {
                     WorkEdit::List => (ops::edit_stack(&self.path, &name, Some(&run), &self.checkout)?, None),
-                    WorkEdit::Mail(at) => (ops::edit_patch(&self.path, &name, at, None, Some(&run), &self.checkout)?, None),
+                    WorkEdit::Mail { at, line } => (ops::edit_patch(&self.path, &name, at, line, Some(&run), &self.checkout)?, None),
                     WorkEdit::Code { at, file, line, again } => {
                         let done = ops::edit_code(&self.path, &name, at, &file, line, &place, again, Some(&run), &self.checkout)?;
                         self.refused_work = Some((run.clone(), at));
