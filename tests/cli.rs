@@ -2734,6 +2734,41 @@ fn each_kind_of_ask_may_use_what_the_settings_add_for_it() {
 }
 
 #[test]
+fn what_your_claude_settings_deny_in_the_checkout_is_refused_to_every_ask() {
+    let e = env();
+    e.ok(&["import", "s", "base"]);
+    // Yours, untracked: what it denies, every ask is refused, wherever it
+    // works. What the tracked one denies, a worktree has already.
+    std::fs::create_dir(e.src.join(".claude")).unwrap();
+    std::fs::write(e.src.join(".claude/settings.local.json"), r#"{"permissions": {"deny": ["Bash(rm:*)", "WebFetch"], "allow": ["Bash(lint:*)"]}}"#).unwrap();
+    std::fs::write(e.src.join(".claude/settings.json"), r#"{"permissions": {"deny": ["Bash(tracked:*)"]}}"#).unwrap();
+    // Its arguments a line each: the one after --disallowedTools, what it
+    // is refused.
+    let args = e.root.join("args");
+    let claude = fake_claude(&e, "claude-args.sh", &format!("printf '%s\\n' \"$@\" > {}", args.display()), r#"{"replies": {"c1": "Seen."}}"#);
+    let refused = || std::fs::read_to_string(&args).unwrap().lines().skip_while(|l| *l != "--disallowedTools").nth(1).map(String::from);
+    // A change: what stacked refuses it, then what you deny.
+    let id = comment(&e, &["Change", "nothing."]);
+    let (fine, _, err) = send(&e, &claude, &[&id], &[]);
+    assert!(fine, "{err}");
+    let r = refused().unwrap();
+    assert!(r.starts_with("Bash(git rebase *--exec*),") && r.ends_with(",Bash(rm:*),WebFetch") && !r.contains("tracked"), "{r}");
+    // An answer, and a build and test: what you deny.
+    for way in ["--answer-only", "--build-and-test"] {
+        let id = comment(&e, &["Look", "at", "it."]);
+        let (fine, _, err) = send(&e, &claude, &[&id, way], &[]);
+        assert!(fine, "{way}: {err}");
+        assert_eq!(refused().as_deref(), Some("Bash(rm:*),WebFetch"), "{way}");
+    }
+    // Nothing denied: an answer is refused nothing.
+    std::fs::remove_file(e.src.join(".claude/settings.local.json")).unwrap();
+    let id = comment(&e, &["And", "now?"]);
+    let (fine, _, err) = send(&e, &claude, &[&id, "--answer-only"], &[]);
+    assert!(fine, "{err}");
+    assert_eq!(refused(), None);
+}
+
+#[test]
 fn no_ask_goes_before_the_setup_is_done() {
     let e = env();
     e.ok(&["import", "s", "base"]);

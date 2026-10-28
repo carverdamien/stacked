@@ -6,14 +6,17 @@
 //! has it (`Start`): nothing for changes, curl and jq for answers. It lists
 //! what the agent says it has (`ask::agent_tools`: its own tools, and its
 //! MCP servers'); what the checkout's own claude settings allow
-//! (`allowed`), ticked for answers, as you allow it yourself; and the
-//! programs the checkout's instructions to the agent name (`named`),
-//! unticked, as stacked cannot know what they do. A command or a tool may
-//! be added to either list too, as claude writes a permission rule
-//! (`rule`). Saving is the setup done: both lists are written, with
-//! agent.setup, the version of the setup that was done, without which no ask
-//! goes. On a screen of its own (`Setup`, for `--tui`, and in the editor
-//! before its first ask), or asked line by line (`ask_lines`).
+//! (`allowed`), ticked for answers, as you allow it yourself; what the
+//! checkout's skills let run (`skilled`), and the programs its instructions
+//! to the agent name (`named`), unticked, as stacked cannot know what they
+//! do; and, for answers, a box letting them use the skills themselves. What
+//! the checkout's claude settings of yours deny (`denied`) is said, and
+//! refused to every ask. A command or a tool may be added to either list
+//! too, as claude writes a permission rule (`rule`). Saving is the setup
+//! done: both lists are written, with agent.setup, the version of the setup
+//! that was done, without which no ask goes. On a screen of its own
+//! (`Setup`, for `--tui`, and in the editor before its first ask), or asked
+//! line by line (`ask_lines`).
 
 use std::collections::HashSet;
 use std::ffi::OsStr;
@@ -126,16 +129,155 @@ pub struct Allowed {
 /// left out; what the settings deny is left alone.
 pub fn allowed(top: &Path) -> Vec<Allowed> {
     let mut out: Vec<Allowed> = Vec::new();
-    for file in [".claude/settings.local.json", ".claude/settings.json"] {
-        let Some(real) = in_checkout(top, Path::new(file)) else { continue };
-        let Some(v) = std::fs::read_to_string(&real).ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()) else { continue };
-        let rules = v.pointer("/permissions/allow").and_then(|a| a.as_array()).into_iter().flatten().filter_map(|r| r.as_str());
-        for r in rules {
-            let Ok(r) = rule(r) else { continue };
+    for file in [LOCAL_SETTINGS, ".claude/settings.json"] {
+        for r in rules_in(top, file, "allow") {
             if !gives(&r) && !out.iter().any(|a| a.rule == r) {
                 out.push(Allowed { rule: r, file: file.to_string() });
             }
         }
+    }
+    out
+}
+
+/// The checkout's own claude settings that are yours, and untracked: the
+/// agents' worktrees, made of what git tracks, do not have them.
+pub const LOCAL_SETTINGS: &str = ".claude/settings.local.json";
+
+/// What the checkout `top`'s own claude settings, yours, deny
+/// (`permissions.deny` of .claude/settings.local.json): what claude refuses
+/// when it runs in the checkout, but not in the agents' worktrees, which do
+/// not have the file. stacked refuses them to every ask, wherever it runs.
+/// Each once, as written; what .claude/settings.json denies, tracked, is
+/// in the worktrees already.
+pub fn denied(top: &Path) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for r in rules_in(top, LOCAL_SETTINGS, "deny") {
+        if !out.contains(&r) {
+            out.push(r);
+        }
+    }
+    out
+}
+
+/// The rules the checkout `top`'s claude settings `file` holds under
+/// `permissions.WHAT`, if it is a file of the checkout: each that reads as
+/// a rule (`rule`), as written; one claude could not be given in a list
+/// (a comma in it) left out.
+fn rules_in(top: &Path, file: &str, what: &str) -> Vec<String> {
+    let Some(real) = in_checkout(top, Path::new(file)) else { return vec![] };
+    let Some(v) = std::fs::read_to_string(&real).ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()) else { return vec![] };
+    let rules = v.pointer(&format!("/permissions/{what}")).and_then(|a| a.as_array()).into_iter().flatten();
+    rules.filter_map(|r| rule(r.as_str()?).ok()).collect()
+}
+
+/// A rule the checkout's skills let run, which the setup lists, unticked:
+/// the rule as a skill's header writes it, and the skills that allow it, by
+/// name.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Skilled {
+    pub rule: String,
+    pub skills: Vec<String>,
+}
+
+impl Skilled {
+    /// What the setup says of it: the skills that allow it.
+    fn said(&self) -> String {
+        match self.skills.as_slice() {
+            [one] => format!("allowed by the skill {one}"),
+            all => format!("allowed by the skills {}", all.join(", ")),
+        }
+    }
+}
+
+/// What the checkout `top`'s skills let run: the `allowed-tools` of the
+/// header of each `.claude/skills/NAME/SKILL.md`, by the skill's name (the
+/// header's, else its folder's). Each entry as written, quotes around it and
+/// a stray comma after it taken off; one that is not a rule (`[Agent]`),
+/// and what stacked gives or refuses (`gives`), left out; a rule several
+/// skills allow, once, with each. Only files of the checkout are read: a
+/// folder a link takes out of it is not.
+pub fn skilled(top: &Path) -> Vec<Skilled> {
+    let Some(root) = top.canonicalize().ok() else { return vec![] };
+    let Some(dir) = root.join(".claude/skills").canonicalize().ok().filter(|d| d.starts_with(&root) && d.is_dir()) else { return vec![] };
+    let mut folders: Vec<PathBuf> = std::fs::read_dir(&dir).into_iter().flatten().flatten().map(|e| e.path()).collect();
+    folders.sort();
+    let mut out: Vec<Skilled> = Vec::new();
+    for folder in folders {
+        let Some(text) = in_checkout(&root, &folder.join("SKILL.md")).and_then(|f| std::fs::read_to_string(f).ok()) else { continue };
+        let (name, tools) = header(&text);
+        let Some(name) = name.or_else(|| folder.file_name().map(|n| n.to_string_lossy().into_owned())) else { continue };
+        for r in tools.iter().filter_map(|t| rule(t).ok()).filter(|r| !gives(r)) {
+            match out.iter_mut().find(|s| s.rule == r) {
+                Some(s) if !s.skills.contains(&name) => s.skills.push(name.clone()),
+                Some(_) => {}
+                None => out.push(Skilled { rule: r, skills: vec![name.clone()] }),
+            }
+        }
+    }
+    out
+}
+
+/// The name and the `allowed-tools` the header of a skill, `text`, gives
+/// (its front matter, between `---` lines at its top): those on the line of
+/// `allowed-tools:`, a space or a comma between each, or listed under it,
+/// `- RULE` a line.
+fn header(text: &str) -> (Option<String>, Vec<String>) {
+    let mut lines = text.lines();
+    if lines.next().map(str::trim) != Some("---") {
+        return (None, vec![]);
+    }
+    let (mut name, mut tools, mut listed) = (None, Vec::new(), false);
+    for line in lines {
+        if line.trim() == "---" {
+            break;
+        }
+        if listed {
+            match line.trim_start().strip_prefix('-') {
+                Some(item) => {
+                    tools.extend(entries(item));
+                    continue;
+                }
+                None => listed = false,
+            }
+        }
+        // A key of the header's own, not one under another.
+        let Some((key, value)) = line.split_once(':').filter(|_| !line.starts_with(char::is_whitespace)) else { continue };
+        match key.trim() {
+            "name" => name = Some(value.trim().trim_matches(['"', '\'']).to_string()).filter(|n| !n.is_empty()),
+            "allowed-tools" if value.trim().is_empty() => listed = true,
+            "allowed-tools" => tools.extend(entries(value)),
+            _ => {}
+        }
+    }
+    (name, tools)
+}
+
+/// The entries of an `allowed-tools` value: a space or a comma between
+/// each, none within parentheses or quotes; the quotes taken off.
+fn entries(value: &str) -> Vec<String> {
+    let (mut out, mut at) = (Vec::new(), String::new());
+    let (mut depth, mut quote) = (0i32, None);
+    for c in value.chars() {
+        match (c, quote) {
+            ('"' | '\'', None) if at.is_empty() => quote = Some(c),
+            (q, Some(open)) if q == open => quote = None,
+            (',' | ' ' | '\t', None) if depth <= 0 => {
+                if !at.is_empty() {
+                    out.push(std::mem::take(&mut at));
+                }
+            }
+            _ => {
+                depth += match c {
+                    '(' => 1,
+                    ')' => -1,
+                    _ => 0,
+                };
+                at.push(c);
+            }
+        }
+    }
+    if !at.is_empty() {
+        out.push(at);
     }
     out
 }
@@ -445,15 +587,18 @@ impl Kind {
 
 /// What the setup starts from: the tools ticked for each kind of ask; what
 /// the settings let every ask use (agent.tools), ticked for both; what the
-/// checkout's own claude settings allow, and the programs its instructions
-/// name; and the version of the setup done, if one was.
+/// checkout's own claude settings allow, what its skills let run, and the
+/// programs its instructions name; what its claude settings of yours deny,
+/// refused to every ask; and the version of the setup done, if one was.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Start {
     pub change: Vec<String>,
     pub answer: Vec<String>,
     pub every: Vec<String>,
     pub allowed: Vec<Allowed>,
+    pub skilled: Vec<Skilled>,
     pub named: Vec<Named>,
+    pub denied: Vec<String>,
     pub done: Option<usize>,
 }
 
@@ -464,8 +609,9 @@ impl Start {
     /// file sets is ticked as it says. One no file sets is ticked as stacked
     /// has it: for changes, nothing; for answers, curl and jq, and what the
     /// checkout's own claude settings allow, as you allow it yourself, but
-    /// what changes things. The programs the checkout's instructions name
-    /// are ticked only as the settings say.
+    /// what changes things. What its skills let run, the skills themselves
+    /// for answers, and the programs its instructions name are ticked only
+    /// as the settings say.
     pub fn new(agent: &Agent, set: (bool, bool), top: Option<&Path>, path: &OsStr) -> Start {
         let allowed = top.map(allowed).unwrap_or_default();
         let answer = match set.1 {
@@ -480,7 +626,9 @@ impl Start {
             change: if set.0 { agent.change_tools.clone() } else { Vec::new() },
             answer,
             every: agent.tools.clone(),
+            skilled: top.map(skilled).unwrap_or_default(),
             named: top.map(|t| named(t, path)).unwrap_or_default(),
+            denied: top.map(denied).unwrap_or_default(),
             allowed,
             done: agent.setup,
         }
@@ -546,14 +694,28 @@ enum Row {
     },
     /// Where a command or a tool is added to the kind's list, typed.
     Add(Kind),
+    /// Answers let use the skills (claude's `Skill`), or not.
+    Skills { on: bool },
+    /// A warning of the row above it, to read: nothing to let or not.
+    Note(&'static str),
 }
+
+/// The rule that lets an ask use skills: claude's tool for them.
+pub const SKILL: &str = "Skill";
+
+/// What the setup says of letting answers use skills, a line each.
+const SKILLS_SAID: [&str; 2] = [
+    "a skill may run what its own allowed-tools let it, commands that change things too (rewriting history, filing a bug),",
+    "and an answer runs in your checkout itself, unless agent.answer_only_worktree says otherwise",
+];
 
 impl Row {
     /// The kind of ask it lets use something, if it does.
     fn kind(&self) -> Option<Kind> {
         match self {
             Row::Server { kind, .. } | Row::Tool { kind, .. } | Row::Add(kind) => Some(*kind),
-            Row::Heading(_) | Row::Given(_) => None,
+            Row::Skills { .. } => Some(Kind::Answer),
+            Row::Heading(_) | Row::Given(_) | Row::Note(_) => None,
         }
     }
 
@@ -584,6 +746,9 @@ pub struct Setup {
     top: usize,
     room: usize,
     every: Vec<String>,
+    /// What every ask is refused, the checkout's claude settings of yours
+    /// denying it: said, to read.
+    denied: Vec<String>,
     start: Chosen,
     to: String,
     said: String,
@@ -626,14 +791,16 @@ fn server_of(t: &str) -> Option<String> {
 impl Setup {
     /// The screen for the agent's `tools` and MCP `servers`, each kind's
     /// boxes as `start` ticks them, to be saved in the file `to`; `said`,
-    /// where the agent was asked. Each kind has its own rows: what stacked
-    /// gives it, said; for answers, curl and jq, which stacked let them run
-    /// before there were lists; what the checkout's own claude settings
-    /// allow; the programs its instructions name (but one a rule allowed
-    /// lets run whole already); each MCP server and its tools; the agent's
-    /// other tools; what the settings let that is none of those (a command,
-    /// a server not there now), to keep or take out; and a row to add one
-    /// more.
+    /// where the agent was asked. First what is refused to every ask, the
+    /// checkout's claude settings of yours denying it, to read. Then each
+    /// kind has its own rows: what stacked gives it, said; for answers, curl
+    /// and jq, which stacked let them run before there were lists, and the
+    /// skills, with what they may run; what the checkout's own claude
+    /// settings allow; what its skills let run; the programs its
+    /// instructions name (but one a rule allowed lets run whole already);
+    /// each MCP server and its tools; the agent's other tools; what the
+    /// settings let that is none of those (a command, a server not there
+    /// now), to keep or take out; and a row to add one more.
     pub fn new(tools: &[String], servers: &[String], start: &Start, to: &str, said: &str) -> Setup {
         let mut names: Vec<String> = servers.to_vec();
         for t in tools {
@@ -644,6 +811,10 @@ impl Setup {
             }
         }
         let mut rows = Vec::new();
+        if !start.denied.is_empty() {
+            rows.push(Row::Heading("Refused to every ask, whatever the lists say".into()));
+            rows.extend(start.denied.iter().map(|r| Row::Given(format!("{r}: denied in {LOCAL_SETTINGS}, refused to every ask"))));
+        }
         if !start.every.is_empty() {
             rows.push(Row::Heading("Every ask, builds and tests too: agent.tools".into()));
             rows.push(Row::Given(format!(
@@ -663,6 +834,7 @@ impl Setup {
                 rows[from..].iter().any(|r| match r {
                     Row::Server { name, .. } => t == format!("mcp__{name}__*"),
                     Row::Tool { name, .. } => name == t,
+                    Row::Skills { .. } => t == SKILL,
                     _ => false,
                 })
             };
@@ -679,6 +851,8 @@ impl Setup {
                         about: Some("stacked's default for answers".into()),
                     });
                 }
+                rows.push(Row::Skills { on: on(SKILL) });
+                rows.extend(SKILLS_SAID.map(Row::Note));
             }
             for a in &start.allowed {
                 if !known(&rows, &a.rule) {
@@ -689,6 +863,18 @@ impl Setup {
                         on: on(&a.rule),
                         warn: kind.warn(&a.rule),
                         about: Some(format!("allowed in {}", a.file)),
+                    });
+                }
+            }
+            for s in &start.skilled {
+                if !known(&rows, &s.rule) {
+                    rows.push(Row::Tool {
+                        kind,
+                        name: s.rule.clone(),
+                        server: None,
+                        on: on(&s.rule),
+                        warn: kind.warn(&s.rule),
+                        about: Some(s.said()),
                     });
                 }
             }
@@ -721,6 +907,9 @@ impl Setup {
                 }
             }
             for t in tools.iter().filter(|t| server_of(t).is_none() && !GIVEN.contains(&t.as_str())) {
+                if known(&rows, t) {
+                    continue;
+                }
                 rows.push(Row::Tool {
                     kind,
                     name: t.clone(),
@@ -758,6 +947,7 @@ impl Setup {
             top: 0,
             room: 0,
             every: start.every.clone(),
+            denied: start.denied.clone(),
             start: Chosen { change: vec![], answer: vec![], every: None },
             to: to.to_string(),
             said: said.to_string(),
@@ -788,6 +978,7 @@ impl Setup {
             let t = match r {
                 Row::Server { kind: k, name, all: true } if *k == kind => format!("mcp__{name}__*"),
                 Row::Tool { kind: k, name, server, on: true, .. } if *k == kind && !server.as_deref().is_some_and(|s| self.all(kind, s)) => name.clone(),
+                Row::Skills { on: true } if kind == Kind::Answer => SKILL.to_string(),
                 _ => continue,
             };
             if seen.insert(t.clone()) {
@@ -840,6 +1031,7 @@ impl Setup {
                 }
             }
             Some(Row::Add(kind)) => self.open_adding(kind),
+            Some(Row::Skills { on }) => self.rows[self.sel] = Row::Skills { on: !on },
             _ => {}
         }
     }
@@ -855,6 +1047,7 @@ impl Setup {
         let at = self.rows.iter().position(|r| match r {
             Row::Tool { kind: k, name, .. } => *k == kind && name == rule,
             Row::Server { kind: k, name, .. } => *k == kind && rule == format!("mcp__{name}__*"),
+            Row::Skills { .. } => kind == Kind::Answer && rule == SKILL,
             _ => false,
         });
         let at = match at {
@@ -869,7 +1062,7 @@ impl Setup {
         self.sel = at;
         let off = match &self.rows[at] {
             Row::Server { all, .. } => !all,
-            Row::Tool { on, .. } => !on,
+            Row::Tool { on, .. } | Row::Skills { on } => !on,
             _ => false,
         };
         if off {
@@ -1025,6 +1218,8 @@ impl Setup {
                     (format!("   {} {name}{said}", mark(*on)), st)
                 }
                 Row::Add(_) => ("   + add a command or a tool…".to_string(), color::dim()),
+                Row::Skills { on } => (format!("   {} Let answers use the checkout's skills ({SKILL})", mark(*on)), Style::new()),
+                Row::Note(t) => (format!("       {t}"), color::note()),
             };
             if i == self.sel {
                 st = on_cursor(st);
@@ -1116,6 +1311,9 @@ pub fn ask_lines(s: &mut Setup, ask: &mut dyn FnMut(&str) -> String, say: &mut d
         _ => was,
     };
     let yn = |on: bool| if on { "[Y/n]" } else { "[y/N]" };
+    for r in s.denied.clone() {
+        say(&format!("{r}: denied in {LOCAL_SETTINGS}, refused to every ask."));
+    }
     for kind in Kind::BOTH {
         say(&format!("{}, {}:", kind.asks(), kind.key()));
         for g in kind.given() {
@@ -1181,6 +1379,13 @@ pub fn ask_lines(s: &mut Setup, ask: &mut dyn FnMut(&str) -> String, say: &mut d
                         if let Row::Tool { on: o, .. } = &mut s.rows[k] {
                             *o = yes(&a, on);
                         }
+                    }
+                    Row::Skills { on } if kind == Kind::Answer => {
+                        let mut said = SKILLS_SAID.join(" ");
+                        let first = said[..1].to_uppercase();
+                        said.replace_range(..1, &first);
+                        let a = ask(&format!("  Let answer-only asks use the checkout's skills ({SKILL})? {said}. {}", yn(on)));
+                        s.rows[k] = Row::Skills { on: yes(&a, on) };
                     }
                     _ => {}
                 }
@@ -1365,18 +1570,20 @@ mod tests {
         let top = tmp.path().join("repo");
         std::fs::create_dir_all(top.join(".claude")).unwrap();
         // Yours, untracked, then the checkout's: a rule each, as written; a
-        // tool stacked gives, and one it gives as it wants (git's), left out;
-        // what they deny, left alone.
+        // tool stacked gives, and one it gives as it wants (git's), left out.
+        // What yours denies, every ask is refused, said; what the tracked
+        // one denies, the worktrees have already.
         std::fs::write(
             top.join(".claude/settings.local.json"),
-            r#"{"permissions": {"allow": ["Bash(searchfox-cli:*)", "Bash(grep:*)", "Bash(git push:*)"], "deny": ["Bash(rm:*)"]}}"#,
+            r#"{"permissions": {"allow": ["Bash(searchfox-cli:*)", "Bash(grep:*)", "Bash(git push:*)"], "deny": ["Bash(rm:*)", "Bash(rm:*)", "Bash(a,b)"]}}"#,
         )
         .unwrap();
         std::fs::write(
             top.join(".claude/settings.json"),
-            r#"{"permissions": {"allow": ["WebFetch(domain:example.com)", "Read", "Bash(searchfox-cli:*)", "Bash(a,b)"]}}"#,
+            r#"{"permissions": {"allow": ["WebFetch(domain:example.com)", "Read", "Bash(searchfox-cli:*)", "Bash(a,b)"], "deny": ["Bash(tracked:*)"]}}"#,
         )
         .unwrap();
+        assert_eq!(denied(&top), ["Bash(rm:*)"]);
         // The instructions name the same program: once, as allowed.
         std::fs::write(top.join("AGENTS.md"), "```sh\nsearchfox-cli --define Foo\n```\n").unwrap();
         let found = allowed(&top);
@@ -1395,6 +1602,8 @@ mod tests {
         let mut s = Setup::new(&[], &[], &start, "local.toml", "here");
         let shown = screen(&mut s);
         for line in [
+            " Refused to every ask, whatever the lists say",
+            "   Bash(rm:*): denied in .claude/settings.local.json, refused to every ask",
             "   [ ] Bash(searchfox-cli:*)   allowed in .claude/settings.local.json",
             "   [x] Bash(searchfox-cli:*)   allowed in .claude/settings.local.json",
             "   [ ] WebFetch(domain:example.com)   allowed in .claude/settings.json; it can reach the network: a change could touch a remote",
@@ -1402,7 +1611,10 @@ mod tests {
         ] {
             assert_eq!(shown.lines().filter(|l| *l == line).count(), 1, "{line:?} in:\n{shown}");
         }
-        assert!(!shown.contains("Bash(searchfox-cli *)") && !shown.contains("grep:*") && !shown.contains("rm:*"), "{shown}");
+        assert!(!shown.contains("Bash(searchfox-cli *)") && !shown.contains("grep:*") && !shown.contains("tracked"), "{shown}");
+        // What is denied is said, not let or not: no box of its own.
+        assert_eq!(shown.matches("rm:*").count(), 1, "{shown}");
+        assert!(!s.chosen().answer.iter().chain(&s.chosen().change).any(|t| t.contains("rm:*")));
         // What changes things is not ticked for answers, allowed or not.
         std::fs::write(top.join(".claude/settings.json"), r#"{"permissions": {"allow": ["Edit(src/**)", "Bash"]}}"#).unwrap();
         let start = Start::new(&Agent::default(), (false, false), Some(&top), OsStr::new(""));
@@ -1411,10 +1623,11 @@ mod tests {
         let agent = Agent { answer_tools: strings(&["Bash(curl *)"]), ..Agent::default() };
         assert_eq!(Start::new(&agent, (false, true), Some(&top), OsStr::new("")).answer, ["Bash(curl *)"]);
         // A link out of the checkout is not read.
-        std::fs::write(tmp.path().join("theirs.json"), r#"{"permissions": {"allow": ["Bash(theirs:*)"]}}"#).unwrap();
+        std::fs::write(tmp.path().join("theirs.json"), r#"{"permissions": {"allow": ["Bash(theirs:*)"], "deny": ["Bash(theirs:*)"]}}"#).unwrap();
         std::fs::remove_file(top.join(".claude/settings.local.json")).unwrap();
         std::os::unix::fs::symlink(tmp.path().join("theirs.json"), top.join(".claude/settings.local.json")).unwrap();
         assert!(!allowed(&top).iter().any(|a| a.rule.contains("theirs")), "{:?}", allowed(&top));
+        assert!(denied(&top).is_empty(), "{:?}", denied(&top));
         // What stacked gives, as it wants it given: none to suggest.
         for given in ["Read", "Grep(src/**)", "Bash(rg:*)", "Bash(git log *)", "Bash(git push:*)", "Bash(cd *)"] {
             assert!(gives(given), "{given}");
@@ -1422,6 +1635,97 @@ mod tests {
         for not in ["WebFetch", "Bash", "Bash(make:*)", "mcp__moz__get_bug"] {
             assert!(!gives(not), "{not}");
         }
+    }
+
+    #[test]
+    fn what_the_checkout_s_skills_let_run_is_listed_unticked() {
+        let tmp = tempfile::tempdir().unwrap();
+        let top = tmp.path().join("repo");
+        let skill = |folder: &str, text: &str| {
+            let at = top.join(".claude/skills").join(folder);
+            std::fs::create_dir_all(&at).unwrap();
+            std::fs::write(at.join("SKILL.md"), text).unwrap();
+        };
+        // On the line, a comma between each, the skill named in its header.
+        skill("commit", "---\nname: jj-commit\ndescription: Commits.\nallowed-tools: Bash(jj commit:*), Bash(jj log:*)\n---\nHow to commit.\n");
+        // Listed under it, quoted, a stray comma after one; one no rule;
+        // one another skill allows too.
+        skill(
+            "file-bug",
+            "---\nname: file-bug\nallowed-tools:\n  - Bash(./tools/file-bug.py *),\n  - \"Bash(jj log:*)\"\n  - [Agent]\nmodel: inherit\n---\n",
+        );
+        // A space between each, no name but its folder's; what stacked gives
+        // left out.
+        skill("lint", "---\ndescription: Lints.\nallowed-tools: Read Grep Bash(./tools/lint *)\n---\n");
+        // No header: nothing it says counts.
+        skill("plain", "Just text.\nallowed-tools: Bash(nope *)\n");
+        // A skill a link takes out of the checkout is not read.
+        std::fs::write(tmp.path().join("theirs.md"), "---\nallowed-tools: Bash(theirs *)\n---\n").unwrap();
+        std::fs::create_dir_all(top.join(".claude/skills/linked")).unwrap();
+        std::os::unix::fs::symlink(tmp.path().join("theirs.md"), top.join(".claude/skills/linked/SKILL.md")).unwrap();
+        let found = skilled(&top);
+        let one = |rule: &str, skills: &[&str]| Skilled { rule: rule.into(), skills: strings(skills) };
+        assert_eq!(
+            found,
+            [
+                one("Bash(jj commit:*)", &["jj-commit"]),
+                one("Bash(jj log:*)", &["jj-commit", "file-bug"]),
+                one("Bash(./tools/file-bug.py *)", &["file-bug"]),
+                one("Bash(./tools/lint *)", &["lint"]),
+            ]
+        );
+        // Listed for either kind, unticked, the skills that allow it said.
+        let start = Start::new(&Agent::default(), (false, false), Some(&top), OsStr::new(""));
+        let mut s = Setup::new(&[], &[], &start, "local.toml", "here");
+        let shown = screen(&mut s);
+        for line in [
+            "   [ ] Bash(jj commit:*)   allowed by the skill jj-commit",
+            "   [ ] Bash(jj log:*)   allowed by the skills jj-commit, file-bug",
+            "   [ ] Bash(./tools/lint *)   allowed by the skill lint",
+        ] {
+            assert_eq!(shown.lines().filter(|l| *l == line).count(), 2, "{line:?} in:\n{shown}");
+        }
+        assert!(!shown.contains("theirs") && !shown.contains("nope") && !shown.contains("Agent"), "{shown}");
+        assert_eq!((s.chosen().change, s.chosen().answer), (vec![], strings(&["Bash(curl *)", "Bash(jq *)"])));
+        // The settings ticking one win.
+        let agent = Agent { answer_tools: strings(&["Bash(jj log:*)"]), ..Agent::default() };
+        let mut s = Setup::new(&[], &[], &Start::new(&agent, (false, true), Some(&top), OsStr::new("")), "local.toml", "here");
+        assert!(screen(&mut s).contains("\n   [x] Bash(jj log:*)   allowed by the skills jj-commit, file-bug\n"), "{}", screen(&mut s));
+        // The skills' folder a link takes out of the checkout: none read.
+        let other = tmp.path().join("other");
+        std::fs::create_dir_all(other.join(".claude")).unwrap();
+        std::os::unix::fs::symlink(top.join(".claude/skills"), other.join(".claude/skills")).unwrap();
+        assert!(skilled(&other).is_empty());
+    }
+
+    #[test]
+    fn answers_may_be_let_use_skills_said_what_they_may_run() {
+        // The agent has claude's tool for skills: for changes a tool as any
+        // other; for answers, the box saying what a skill may do.
+        let mut s = Setup::new(&strings(&["Skill"]), &[], &fresh(), "local.toml", "here");
+        let shown = screen(&mut s);
+        for line in [
+            "   [ ] Let answers use the checkout's skills (Skill)",
+            "       a skill may run what its own allowed-tools let it, commands that change things too (rewriting history, filing a bug),",
+            "       and an answer runs in your checkout itself, unless agent.answer_only_worktree says otherwise",
+            "   [ ] Skill",
+        ] {
+            assert_eq!(shown.lines().filter(|l| *l == line).count(), 1, "{line:?} in:\n{shown}");
+        }
+        // Ticked, answers alone use skills: claude's Skill, in their list.
+        let at = s.rows.iter().position(|r| matches!(r, Row::Skills { .. })).unwrap();
+        s.pick(at);
+        assert!(screen(&mut s).ends_with(" ↑↓: pick · space: let it or not · a: add a command or a tool · s: save · esc: close"));
+        press(&mut s, KeyCode::Char(' '));
+        let c = s.chosen();
+        assert_eq!((c.change, c.answer), (vec![], strings(&["Bash(curl *)", "Bash(jq *)", "Skill"])));
+        // As the settings tick it, unticked else; added by hand, ticked.
+        let start = Start { answer: strings(&["Skill"]), ..fresh() };
+        let mut s = Setup::new(&[], &[], &start, "local.toml", "here");
+        assert!(screen(&mut s).contains("\n   [x] Let answers use the checkout's skills (Skill)\n"));
+        let mut s = Setup::new(&[], &[], &fresh(), "local.toml", "here");
+        s.add(Kind::Answer, "Skill");
+        assert_eq!(s.chosen().answer, ["Bash(curl *)", "Bash(jq *)", "Skill"]);
     }
 
     #[test]
@@ -1622,13 +1926,14 @@ mod tests {
         let start = Start {
             every: strings(&["mcp__moz__get_bug"]),
             named: vec![Named { rule: "Bash(lint *)".into(), file: "AGENTS.md".into(), found: false }],
+            denied: strings(&["Bash(rm:*)"]),
             ..fresh()
         };
         let mut s = Setup::new(&tools, &strings(&["moz"]), &start, "local.toml", "here");
         // Changes kept as they are, with a command added after a wrong one;
-        // answers one by one: jq no longer, lint let, moz's each, its
-        // revisions too, Bash not; Enter keeping the rest.
-        let mut answers = vec!["", "make check", "Bash(make check *)", "", "n", "", "n", "y", "e", "", "y", "n", ""].into_iter();
+        // answers one by one: jq no longer, the skills let, lint let, moz's
+        // each, its revisions too, Bash not; Enter keeping the rest.
+        let mut answers = vec!["", "make check", "Bash(make check *)", "", "n", "", "n", "y", "y", "e", "", "y", "n", ""].into_iter();
         let (mut asked, mut said) = (Vec::new(), Vec::new());
         let c = ask_lines(
             &mut s,
@@ -1638,6 +1943,7 @@ mod tests {
             },
             &mut |l| said.push(l.to_string()),
         );
+        assert_eq!(said[0], "Bash(rm:*): denied in .claude/settings.local.json, refused to every ask.");
         assert!(said.contains(&"Asks that change the stack, agent.change_tools:".to_string()), "{said:?}");
         assert!(said.contains(&"  Ticked: mcp__moz__get_bug.".to_string()), "{said:?}");
         assert!(said.iter().any(|l| l == "  Always given: Read, Grep, Glob, LS, and git show, log and diff."), "{said:?}");
@@ -1645,6 +1951,7 @@ mod tests {
         assert!(said.contains(&"  Bash(make check *): added.".to_string()), "{said:?}");
         for q in [
             "  Let answer-only asks use Bash(jq *), stacked's default for answers? [Y/n]",
+            "  Let answer-only asks use the checkout's skills (Skill)? A skill may run what its own allowed-tools let it, commands that change things too (rewriting history, filing a bug), and an answer runs in your checkout itself, unless agent.answer_only_worktree says otherwise. [y/N]",
             "  Let answer-only asks use Bash(lint *), named in AGENTS.md, not found on PATH? [y/N]",
             "  Let answer-only asks use all of its tools, those to come too (mcp__moz__*)? [y/n/E: each]",
             "  Let answer-only asks use Bash? It changes things: an answer could too. [y/N]",
@@ -1652,7 +1959,7 @@ mod tests {
             assert!(asked.contains(&q.to_string()), "{q:?} in {asked:#?}");
         }
         assert_eq!(c.change, ["Bash(make check *)"]);
-        assert_eq!(c.answer, ["Bash(curl *)", "Bash(lint *)", "mcp__moz__get_revision"]);
+        assert_eq!(c.answer, ["Bash(curl *)", "Skill", "Bash(lint *)", "mcp__moz__get_revision"]);
         assert_eq!(c.every, None, "moz's get_bug is let both, as it was");
     }
 }

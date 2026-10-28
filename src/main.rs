@@ -577,11 +577,13 @@ enum SetupWhat {
     /// your MCP servers, and says what tools it has. Each list is shown
     /// ticked as the settings say, else as stacked has it: nothing for
     /// changes; for answers, curl and jq, and what the checkout's own claude
-    /// settings allow. The programs the checkout's instructions to the agent
-    /// name are listed too, unticked. You check them, add to them, and save
-    /// them: saving is the setup done (agent.setup), and until it is, no ask
-    /// goes. They are written in that checkout's own settings,
-    /// .stacked/local.toml at its top, which override the others there.
+    /// settings allow. What the checkout's skills let run, and the programs
+    /// its instructions to the agent name, are listed too, unticked; what
+    /// its claude settings of yours deny is said, refused to every ask. You
+    /// check them, add to them, and save them: saving is the setup done
+    /// (agent.setup), and until it is, no ask goes. They are written in that
+    /// checkout's own settings, .stacked/local.toml at its top, which
+    /// override the others there.
     Agent {
         name: Option<String>,
         /// On a screen of its own, a box for each tool, rather than asked

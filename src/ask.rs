@@ -2184,8 +2184,16 @@ fn start(db_path: &Path, id: &str) -> Result<()> {
         }
     }
     // What would run another program, of what a change may run: refused.
+    // And to every ask, what the checkout's claude settings of yours deny,
+    // as claude does in the checkout: a worktree of the stack's own has no
+    // file of yours, git tracking none.
+    let mut refused: Vec<String> = Vec::new();
     if i.way == Way::Change {
-        c.args(["--disallowedTools", &crate::claude::refused_tools()]);
+        refused.push(crate::claude::refused_tools());
+    }
+    refused.extend(crate::setup::denied(&repo));
+    if !refused.is_empty() {
+        c.args(["--disallowedTools", &refused.join(",")]);
     }
     // Its answer asked as structured output, checked against what this ask
     // asks for; else read from what it writes.
@@ -3320,7 +3328,7 @@ mod tests {
         let cmd = "stacked -f db";
         let mine = crate::config::Agent {
             change_tools: vec!["Bash(make check *)".into()],
-            answer_tools: vec!["Bash(lint *)".into()],
+            answer_tools: vec!["Bash(lint *)".into(), crate::setup::SKILL.into()],
             tools: vec!["mcp__moz__*".into()],
             schema: false,
             ..Default::default()
@@ -3335,7 +3343,8 @@ mod tests {
         }
         // Then its list, then every ask's; its list being curl and jq unless
         // the settings say otherwise, as they were before there were lists.
-        assert_eq!(tools_for(Way::Answer, cmd, &mine), format!("{given},Bash(lint *),mcp__moz__*"));
+        // The skills, let answers, are theirs alone.
+        assert_eq!(tools_for(Way::Answer, cmd, &mine), format!("{given},Bash(lint *),Skill,mcp__moz__*"));
         assert_eq!(tools_for(Way::Answer, cmd, &none), format!("{given},Bash(curl *),Bash(jq *)"));
         // A change: git's history, what reads, stacked's fits and export; then
         // its own list, none unless set, then every ask's.
