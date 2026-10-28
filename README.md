@@ -38,8 +38,9 @@ The `demo` feature adds a tour of the editor, to learn it by (`stacked
 demo`, below).
 
 The `moz-phab` feature adds Phabricator (below): the reviews pulled from
-its revisions, and stacks imported from them, over Conduit with the token
-moz-phab (or arc) keeps, which `curl` calls. With it, the reading mode
+its revisions, stacks imported from them, and a patch submitted to it as
+work in progress, over Conduit with the token moz-phab (or arc) keeps,
+which `curl` calls. With it, the reading mode
 takes the trailer moz-phab writes in a message as an empty line, which
 needs no reading (Reading). Built without it, stacked has none of it, but
 reads a database that holds reviews pulled.
@@ -2428,6 +2429,75 @@ over. Replies and edits to a thread moved to the stack's comments go to it
 there. A comment removed on Phabricator stays in its thread as it was. A
 reviewer's comment can be asked about like any.
 
+### Submitting a patch
+
+`Submit to Phabricator as WIP`, on a patch's menu (not while reviews come
+from nowhere, `reviews.source = "none"`), sends that patch alone to
+Phabricator as work in progress, as `moz-phab submit --wip` sends a single
+commit: in Changes Planned, a status that asks no one for a review. In the
+browser (`stacked web`) and in StackED, the same. Nothing is sent before
+it is read and seen. First, away from the screen, the patch's revision is
+read: the one its trailer names (`Differential Revision:`), or none, and
+the submit makes a new one. A revision there already must be in work,
+Changes Planned or a draft, as moz-phab takes it: any other status refuses
+(`D123 is Needs Review, not Changes Planned: only a revision in work is
+updated, and nothing was sent.`). Its latest diff must be a version of the
+patch the database holds, the one in the stack or an earlier one: of the
+same effect, or leaving the same files once both are applied on the
+patches below, so that a diff moz-phab sent with more context is still the
+version it was made from. Else it came from elsewhere, and nothing is sent
+(`D123's latest diff is not a version of patch 3 that stacked knows: it
+came from elsewhere, and nothing was sent.`).
+
+For a new revision, a dialog then says what is sent and where (`Patch 3 is
+sent to Phabricator, at https://phabricator.services.mozilla.com, as a new
+revision, with the status Changes Planned.`), with its title, its parent
+and its reviewers. For a revision there already, a screen of its own shows
+what replaces what, for your review: what is sent and where; then, of what
+changes, the title and summary, Phabricator's then what is sent, line by
+line; the reviewers, the parent and the bug, before then after, and the
+status; and the code, each file as the latest diff leaves it, then as the
+patch does, both on the patches below it, a file that only one of them
+touches too. When the code is the patch's already, the screen says so at
+its top. ↑↓ (pgup pgdn home end) scroll, and 1 shows the code side by
+side, or unified again. Enter, or `Send it to Phabricator` in its menu,
+sends it; Esc, or `Cancel: send nothing`, sends nothing. Before anything
+is sent, the revision is read again: if its latest diff, its status, its
+title, summary or bug, its reviewers or its parents changed meanwhile,
+nothing is (`D123 changed on Phabricator since you reviewed it, so nothing
+was sent. Submit again to review it as it is now.`).
+
+Only what changed is sent, as moz-phab sends it: a new diff of the patch
+(differential.creatediff, its commit's author and message set with
+differential.setdiffproperty), unless the latest diff is the patch as it
+is; the title (`WIP: ` and the patch's first line, its reviewers and its
+bug written as moz-phab writes them), the summary (the rest of the
+message, without the line naming the revision) and the bug (`Bug 123` in
+the title), where they differ; and Changes Planned, kept, or put back after
+a new diff, which Phabricator takes as a request for review
+(differential.revision.edit). When the latest diff is the patch as it is
+and nothing else changes, nothing is sent, and the bottom line says so.
+Then, each in an edit of its own, so that a refusal undoes none of the
+rest: the parent, the revision of the patch below, when it is open (none
+for the bottom patch, or when the patch below has no revision, and a
+revision's parents are then left as they are); and the reviewers the title
+names (`r=alice,bob!`, `r?#build`: `!` blocking, `#` a group), those
+Phabricator does not have left out, and said. A title that names none
+leaves the revision's reviewers as they are. While it is sent, the top bar
+says `submitting…`; then the bottom line says what came of it, and what
+was done and what was not when a call failed partway (`D123 has the new
+diff of patch 3 now. D123 stays Changes Planned. But the parent of D123
+was not set to D122: …`). A new revision's link goes into the patch, its
+trailer at the end of the message, as a new version taken at once, which
+the history says (`submitted patch 3 as D124, in work`). The workspace's
+commits are not touched: when HEAD is on the stack, the banner's first
+line then says that the patch's message differs from its commit's, and
+the sync of the commit messages (The editor, above) puts the trailer on
+the commit, the message naming the revision being the one kept. The diff
+is said to be on the stack's base, in the repository the checkout's
+`.arcconfig` names (`repository.callsign`; a revision there already keeps
+its own).
+
 ## Applying
 
 `apply`, or the menu's `Apply the stack to the worktree…`, is the only thing
@@ -2476,8 +2546,9 @@ is typed: `import.rs`). A fix to one may belong in the other.
   along it, and the sync of the commit messages, both sides at once.
 - `messages.rs`: two versions of a commit message compared word by word,
   where their lines wrap aside, for the sync to colour.
-- `review.rs`, `phab.rs`: Phabricator, built with the `moz-phab` feature
-  (on by default).
+- `review.rs`, `phab.rs`, `submit.rs`: Phabricator, built with the
+  `moz-phab` feature (on by default): the reviews pulled, the stacks
+  imported, a patch submitted as work in progress.
 - `import.rs`: what a stack made in the editor is imported from: a range of
   the checkout, its uncommitted changes on top if asked.
 - `mbox.rs`: reading `git format-patch` mail, writing mail for `git am`.
@@ -2515,6 +2586,8 @@ is typed: `import.rs`). A fix to one may belong in the other.
   each half its own (`Half`). `tui/reviewing.rs`, `tui/syncing.rs` and
   `tui/searching.rs`: its screens for reviewing what the agent brought
   back, for syncing the commit messages, and for searching;
+  `tui/submitting.rs`, what a submit to Phabricator sends, said in a
+  dialog, or reviewed on a screen of its own, before it is sent;
   `tui/banner.rs`, the banner of the agent's work; `tui/places.rs`, where
   each pane's cursor was, each half's of the middle split in two;
   `tui/finding.rs`, the search of the middle (`/`).
@@ -2542,7 +2615,9 @@ StackED's too (the web feature needs the wasm target, as in Install).
 stacked built with no feature, and needs no wasm target; `--features` then
 adds the tests of each feature named. No test runs claude: a script stands
 in for it; none reaches Phabricator: its revisions and their comments are
-read by stand-ins; none opens a window, nor a browser: a script stands in
+read by stand-ins, and what a submit sends is answered by one, which keeps
+every call made to it, so that a test can see that a refusal wrote
+nothing; none opens a window, nor a browser: a script stands in
 for the program that opens a web link, and only writes down the links it
 is given. No sleep decides what a test sees:
 when a test looks at the agent's stand-in at work, the stand-in goes on
@@ -3084,7 +3159,11 @@ a test's own process.
 - An agent other than claude must speak claude's command line and stream,
   and take `--json-schema`, unless `agent.schema` is off.
 - Only git mail is read: no `hg export`.
-- Nothing submits to Phabricator: `stacked apply`, then moz-phab.
+- A patch is submitted to Phabricator one at a time, as work in progress
+  alone (Changes Planned): a stack at once, a revision sent for review, a
+  file that is not text, and each file whole as the diff's context (so
+  that reviewers can see more of it) are still moz-phab's, after
+  `stacked apply`.
 - StackED's windows are on macOS only: elsewhere it has one, on one
   database, and no File or Edit menu. A database is not opened by dropping
   it on StackED's icon or by double-clicking it in the Finder, and there is

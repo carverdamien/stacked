@@ -417,6 +417,61 @@ pub fn astray(repo: &Path, base: &str, planned: &[&str], drafts: &[&str]) -> Res
     Ok(None)
 }
 
+/// The first of `candidates` that leaves the files it and `diff` touch as
+/// `diff` leaves them, each applied on `base` in `repo` after `below`, in
+/// turn, in a pad of its own, as `astray` compares a planned diff with its
+/// draft: each file's mode and blob the same. So two diffs of one change
+/// that differ only in the context git wrote around their lines are one.
+/// None when none does, or `diff` does not apply.
+pub fn same_files(repo: &Path, base: &str, below: &[&str], diff: &str, candidates: &[&str]) -> Result<Option<usize>> {
+    let all: Vec<&str> = below.iter().chain([&diff]).chain(candidates).copied().collect();
+    let theirs = Pad::new(repo, base, &all, &[])?;
+    if theirs.apply_each(below).is_err() || !theirs.apply(diff) {
+        return Ok(None);
+    }
+    for (k, c) in candidates.iter().enumerate() {
+        let mine = Pad::new(repo, base, &all, &[])?;
+        if mine.apply_each(below).is_err() || !mine.apply(c) {
+            continue;
+        }
+        let paths: Vec<String> = touched_by(repo, &[diff, c]).into_iter().collect();
+        if mine.ix.entries(repo, &paths)? == theirs.ix.entries(repo, &paths)? {
+            return Ok(Some(k));
+        }
+    }
+    Ok(None)
+}
+
+/// A file as a diff leaves it: its mode and its text, None where it is not
+/// text; None where it is not there.
+pub type Left = Option<(String, Option<String>)>;
+
+/// The files at `paths` as `diff` leaves them (`Left`), applied on `base`
+/// in `repo` after `below`, in turn, in a pad of their own. None for them
+/// all when `below` or `diff` does not apply.
+pub fn left_by(repo: &Path, base: &str, below: &[&str], diff: &str, paths: &[String]) -> Result<Option<Vec<Left>>> {
+    let all: Vec<&str> = below.iter().chain([&diff]).copied().collect();
+    let also: Vec<&str> = paths.iter().map(String::as_str).collect();
+    let pad = Pad::new(repo, base, &all, &also)?;
+    if pad.apply_each(below).is_err() || !pad.apply(diff) {
+        return Ok(None);
+    }
+    let entries = pad.ix.entries(repo, paths)?;
+    let texts = pad.ix.texts(repo, paths)?;
+    Ok(Some(
+        paths
+            .iter()
+            .zip(texts)
+            .map(|(p, text)| entries.get(p).map(|e| (e.split(' ').next().unwrap_or_default().to_string(), text)))
+            .collect(),
+    ))
+}
+
+/// Every path `diffs` name, before or after, as `touched` reads them.
+pub fn paths_of(repo: &Path, diffs: &[&str]) -> BTreeSet<String> {
+    touched_by(repo, diffs)
+}
+
 /// The file the last of `patches` changes, as it is before it (at
 /// `old_path`) and after it (at `path`): its text, None where it is not
 /// there or is not text. Read as `versions` reads them.

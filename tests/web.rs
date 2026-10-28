@@ -257,6 +257,48 @@ fn a_browser_sees_the_editor_and_drives_it() {
     until(&mut events, "the mouse gone", |l| l.starts_with("data: r 3 ") && l.contains(",#444444,0\u{1f}  2 Bug 2 - add b"));
 }
 
+#[cfg(feature = "moz-phab")]
+#[test]
+fn a_patch_is_submitted_to_phabricator_from_its_menu_in_the_browser_too() {
+    let (tmp, db) = setup();
+    let arc = r#"{"phabricator.uri": "https://phabricator.example.com/", "repository.callsign": "TEST"}"#;
+    std::fs::write(tmp.path().join("src/.arcconfig"), arc).unwrap();
+    // The editor served from this process: a stand-in for Phabricator,
+    // which knows the repository alone, and says what was asked of it.
+    let asked = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let seen = asked.clone();
+    stacked::submit::stand_in(Some(Box::new(move |m, _| {
+        seen.lock().unwrap().push(m.to_string());
+        match m {
+            "diffusion.repository.search" => Ok(serde_json::json!({"data": [{"phid": "PHID-REPO-1", "fields": {"vcs": "git"}}]})),
+            _ => Err(format!("{m}: not asked in this test")),
+        }
+    })));
+    stacked::config::init(stacked::config::Config::default());
+    let (port, token) = stacked::web::start(db).unwrap();
+    let (host, input) = (format!("127.0.0.1:{port}"), format!("POST /input?t={token}"));
+    let mut events = events(port, &token, 100);
+    until(&mut events, "the patches", |l| l.starts_with("data: r 3 ") && l.contains("Bug 2 - add b"));
+    // The first patch's menu, opened with a right click, and its item
+    // clicked: what is sent is read, then the dialog says it.
+    ask(port, &host, &input, "m 5 2 r\n");
+    let item = "Submit to Phabricator as WIP";
+    let seen_menu = until(&mut events, "the patch's menu", |l| text(l).contains(item));
+    let row = seen_menu.last().unwrap();
+    let y = row.strip_prefix("data: r ").and_then(|r| r.split(' ').next()).unwrap();
+    let line = text(row);
+    let x = line[..line.find(item).unwrap()].chars().count() + 1;
+    ask(port, &host, &input, &format!("m {x} {y} l\n"));
+    let title = "send patch 1 to Phabricator as a new revision?";
+    let seen_dialog = until(&mut events, "the dialog", |l| text(l).contains(title));
+    let row = seen_dialog.last().unwrap().strip_prefix("data: r ").and_then(|r| r.split(' ').next()).unwrap().to_string();
+    // Esc: nothing is sent, nothing having been but read.
+    ask(port, &host, &input, "k Esc -\n");
+    until(&mut events, "the dialog closed", |l| l.starts_with(&format!("data: r {row} ")) && !text(l).contains(title));
+    assert_eq!(*asked.lock().unwrap(), ["diffusion.repository.search"]);
+    stacked::submit::stand_in(None);
+}
+
 #[test]
 fn quitting_in_the_page_removes_the_worktrees_made_ahead() {
     let (tmp, db) = setup();

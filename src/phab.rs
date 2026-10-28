@@ -424,24 +424,24 @@ pub fn read_stack(rev: &str, link: Option<&str>) -> Result<Vec<Revision>, String
 }
 
 /// How Conduit is called: a method, its parameters; its `result`.
-type Call<'a> = dyn FnMut(&str, Value) -> Result<Value, String> + 'a;
+pub(crate) type Call<'a> = dyn FnMut(&str, Value) -> Result<Value, String> + 'a;
 
 /// Whether revision `r`, as differential.revision.search gives it, is
 /// open: neither landed nor abandoned.
-fn open(r: &Value) -> bool {
+pub(crate) fn open(r: &Value) -> bool {
     !matches!(r.pointer("/fields/status/value").and_then(Value::as_str), Some("published" | "abandoned"))
 }
 
 /// The first revision `constraints` find, as differential.revision.search
 /// gives it.
-fn revision_by(call: &mut Call, constraints: Value) -> Result<Option<Value>, String> {
+pub(crate) fn revision_by(call: &mut Call, constraints: Value) -> Result<Option<Value>, String> {
     let r = call("differential.revision.search", json!({ "constraints": constraints }))?;
     Ok(r.pointer("/data/0").cloned())
 }
 
 /// Where the edges of kind `kind` (`revision.parent`, `revision.child`)
 /// from revision `phid` go: their PHIDs.
-fn edges(call: &mut Call, phid: &str, kind: &str) -> Result<Vec<String>, String> {
+pub(crate) fn edges(call: &mut Call, phid: &str, kind: &str) -> Result<Vec<String>, String> {
     let r = call("edge.search", json!({"sourcePHIDs": [phid], "types": [kind]}))?;
     Ok(r.get("data")
         .and_then(Value::as_array)

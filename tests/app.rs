@@ -219,6 +219,41 @@ fn each_window_s_editor_runs_in_its_own_folder() {
     assert!(!last.contains("▶ HEAD"), "{last}");
 }
 
+#[cfg(feature = "moz-phab")]
+#[test]
+fn a_patch_is_submitted_to_phabricator_from_its_menu_in_the_window_too() {
+    let (tmp, db) = setup();
+    let arc = r#"{"phabricator.uri": "https://phabricator.example.com/", "repository.callsign": "TEST"}"#;
+    std::fs::write(tmp.path().join("src/.arcconfig"), arc).unwrap();
+    // A stand-in for Phabricator, which knows the repository alone, and
+    // says what was asked of it.
+    let asked = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let seen = asked.clone();
+    stacked::submit::stand_in(Some(Box::new(move |m, _| {
+        seen.lock().unwrap().push(m.to_string());
+        match m {
+            "diffusion.repository.search" => Ok(serde_json::json!({"data": [{"phid": "PHID-REPO-1", "fields": {"vcs": "git"}}]})),
+            _ => Err(format!("{m}: not asked in this test")),
+        }
+    })));
+    let s = Session::open(&db, tmp.path()).unwrap();
+    s.send(Input::Size(100, 30));
+    screen(&s, "the patches", |b| row(b, 3).contains("Bug 2 - add b"));
+    // The first patch's menu, and its item clicked: what is sent is read,
+    // then the dialog says it.
+    press(&s, KeyCode::Char(' '));
+    let item = "Submit to Phabricator as WIP";
+    let menu = screen(&s, "the patch's menu", |b| find(b, item).is_some());
+    let (x, y) = find(&menu, item).unwrap();
+    s.send(Input::Click { x, y, right: false });
+    screen(&s, "the dialog", |b| text(b).contains("send patch 1 to Phabricator as a new revision?") && text(b).contains("Patch 1 is sent to Phabricator, at"));
+    // Esc: nothing is sent, nothing having been but read.
+    press(&s, KeyCode::Esc);
+    screen(&s, "the dialog closed", |b| !text(b).contains("send patch 1 to Phabricator"));
+    assert_eq!(*asked.lock().unwrap(), ["diffusion.repository.search"]);
+    stacked::submit::stand_in(None);
+}
+
 /// The File menu's panels and alerts, as the test answers them: the
 /// databases picked to open, the new database named, and what is said.
 #[derive(Default)]

@@ -50,6 +50,8 @@ pub mod rows;
 pub mod search;
 pub mod setup;
 pub mod state;
+#[cfg(feature = "moz-phab")]
+pub mod submit;
 pub mod thread;
 pub mod todo;
 pub mod tree;

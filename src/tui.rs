@@ -55,6 +55,10 @@ pub mod reviewing;
 pub use reviewing::Reviewing;
 pub mod searching;
 pub use searching::Searching;
+#[cfg(feature = "moz-phab")]
+pub mod submitting;
+#[cfg(feature = "moz-phab")]
+pub use submitting::Submitting;
 pub mod syncing;
 pub use syncing::Syncing;
 
@@ -629,6 +633,10 @@ pub enum Screen {
     Sync,
     /// The search: what it looks for, and what it finds.
     Search,
+    /// What a submit to Phabricator sends in place of a revision's latest
+    /// diff, for your review before it is sent.
+    #[cfg(feature = "moz-phab")]
+    Submit,
 }
 
 /// What the comments pane shows, as self-review's filter.
@@ -1253,6 +1261,17 @@ pub enum Action {
     MarkUnread,
     #[cfg(feature = "moz-phab")]
     Pull,
+    /// The patch picked sent to Phabricator as work in progress, once what
+    /// is sent is read and seen: its dialog, or its review. Then sent, or
+    /// nothing sent; the review's code side by side (true), or unified.
+    #[cfg(feature = "moz-phab")]
+    Submit,
+    #[cfg(feature = "moz-phab")]
+    SendSubmit,
+    #[cfg(feature = "moz-phab")]
+    CancelSubmit,
+    #[cfg(feature = "moz-phab")]
+    SubmitSide(bool),
     AskApply,
     Apply,
     Runs,
@@ -1292,7 +1311,7 @@ fn as_it_is(a: Action) -> Action {
 fn reaches_phabricator(action: &Action) -> bool {
     match action {
         #[cfg(feature = "moz-phab")]
-        Action::Pull | Action::FromPhabricator => true,
+        Action::Pull | Action::FromPhabricator | Action::Submit | Action::SendSubmit => true,
         _ => false,
     }
 }
@@ -1492,6 +1511,16 @@ fn about(action: &Action) -> String {
         Action::MarkUnread => "mark this block as unread".into(),
         #[cfg(feature = "moz-phab")]
         Action::Pull => "pull the reviewers' comments from Phabricator".into(),
+        #[cfg(feature = "moz-phab")]
+        Action::Submit => "send this patch alone to Phabricator as work in progress, in Changes Planned: as a new revision, or as a new diff of the revision its message names, once what is sent is read and you have seen it".into(),
+        #[cfg(feature = "moz-phab")]
+        Action::SendSubmit => "send it to Phabricator: a revision there already is read again first, and nothing is sent if it changed since it was read".into(),
+        #[cfg(feature = "moz-phab")]
+        Action::CancelSubmit => "send nothing to Phabricator".into(),
+        #[cfg(feature = "moz-phab")]
+        Action::SubmitSide(true) => "show the code of what is sent side by side".into(),
+        #[cfg(feature = "moz-phab")]
+        Action::SubmitSide(false) => "show the code of what is sent unified".into(),
         Action::AskApply | Action::Apply => "commit the stack's patches in the worktree, on top of its base".into(),
         Action::Runs => "see the agent's asks, the applies and the pulls, and what came of them".into(),
         Action::Search => "search the comments, the patches and the files they touch, and the history: what is found is listed as it is found, and enter goes to it".into(),
@@ -1779,6 +1808,10 @@ pub struct App {
     /// the messages are synced.
     pub syncing: Option<Syncing>,
     sync_picks: HashMap<(String, String), crate::head::Keep>,
+    /// A submit to Phabricator read, waiting on you: its dialog, or its
+    /// review.
+    #[cfg(feature = "moz-phab")]
+    pub submitting: Option<Box<Submitting>>,
     /// The search open, and the searches made before, newest first: kept
     /// for as long as the editor runs.
     pub searching: Option<Searching>,
@@ -2004,6 +2037,10 @@ enum Done {
     /// was wrong.
     #[cfg(feature = "moz-phab")]
     Revisions(String, std::result::Result<Vec<crate::phab::Revision>, String>),
+    /// What submitting a patch to Phabricator sends, read: or why nothing
+    /// can be.
+    #[cfg(feature = "moz-phab")]
+    Submitting(std::result::Result<Box<crate::submit::Prepared>, String>),
     /// Whether stack `name` at `rev` applies: why not, if not.
     Judged {
         name: String,
@@ -2231,6 +2268,8 @@ impl App {
             reviewing: None,
             syncing: None,
             sync_picks: HashMap::new(),
+            #[cfg(feature = "moz-phab")]
+            submitting: None,
             searching: None,
             searches: Vec::new(),
             finds: Vec::new(),
@@ -2525,6 +2564,8 @@ impl App {
                     Err(e) => self.status = e,
                 }
             }
+            #[cfg(feature = "moz-phab")]
+            Done::Submitting(read) => self.submit_read(read),
             Done::Said(what, said) => {
                 self.bg.doing.retain(|d| *d != what);
                 #[cfg(feature = "moz-phab")]
@@ -3858,6 +3899,8 @@ impl App {
             Screen::Main => self.main_key(k),
             Screen::Review => self.review_key(k),
             Screen::Sync => self.sync_key(k),
+            #[cfg(feature = "moz-phab")]
+            Screen::Submit => self.submit_key(k),
             Screen::History => {
                 self.history_key(k);
                 Effect::None
@@ -5198,6 +5241,8 @@ impl App {
             Screen::Transcript | Screen::Text => {
                 out.push("Press ↑↓ (pgup pgdn home end) to scroll, Esc to go back.".into())
             }
+            #[cfg(feature = "moz-phab")]
+            Screen::Submit => out.extend(self.submit_help()),
         }
         if self.screen != Screen::Main {
             out.push("Press Space for the menu.".into());
@@ -5893,8 +5938,9 @@ impl App {
         let h = self.by_hand().is_none();
         items.push(Item::line());
         // Nothing is edited from History…, nor from a review, nor from the
-        // sync of the commit messages, which changes the stack as it closes.
-        let edits = !matches!(self.screen, Screen::History | Screen::Review | Screen::Sync);
+        // sync of the commit messages, which changes the stack as it closes,
+        // nor from what a submit sends, only looked at.
+        let edits = !matches!(self.screen, Screen::History | Screen::Review | Screen::Sync) && !self.on_submit();
         if edits && (self.current().is_some() || self.db.names().contains(&self.stack.as_str())) {
             if let Some((_, op)) = self.db.undo_target(&self.stack) {
                 items.push(Item::new(format!("Undo: {op}"), Action::Undo).when(h));
@@ -6057,6 +6103,19 @@ impl App {
         }
     }
 
+    /// Whether the screen is the review of what a submit to Phabricator
+    /// sends.
+    fn on_submit(&self) -> bool {
+        #[cfg(feature = "moz-phab")]
+        {
+            self.screen == Screen::Submit
+        }
+        #[cfg(not(feature = "moz-phab"))]
+        {
+            false
+        }
+    }
+
     /// All that can be done where the cursor is, then the menu's end.
     pub fn main_menu(&self) -> Menu {
         let w = self.read_only().is_none();
@@ -6127,6 +6186,17 @@ impl App {
                 items.push(Item::new("Edit this patch in $EDITOR", Action::EditPatch).when(h));
                 items.push(Item::new("Drop this patch…", Action::AskDrop).when(h));
                 items.push(Item::new("Versions of this patch…", Action::Versions));
+                // This patch alone; not while reviews come from nowhere.
+                #[cfg(feature = "moz-phab")]
+                if self.cfg.reviews.source != crate::config::Source::None {
+                    items.push(Item::line());
+                    items.push(Item::new("Submit to Phabricator as WIP", Action::Submit).when(w));
+                }
+            }
+            #[cfg(feature = "moz-phab")]
+            (Screen::Submit, _) => {
+                title = "what is sent to Phabricator".into();
+                self.submit_items(&mut items);
             }
             (Screen::Main, Focus::Notes) if self.notes_head => {
                 title = "the comments listed".into();
@@ -6979,6 +7049,14 @@ impl App {
                     });
                 }
             }
+            #[cfg(feature = "moz-phab")]
+            Action::Submit => self.submit_patch(),
+            #[cfg(feature = "moz-phab")]
+            Action::SendSubmit => self.submit_send(),
+            #[cfg(feature = "moz-phab")]
+            Action::CancelSubmit => self.submit_cancel(),
+            #[cfg(feature = "moz-phab")]
+            Action::SubmitSide(side) => self.submit_side(side),
             Action::AskApply => {
                 let (n, repo) = match self.current() {
                     Some(s) => (s.patches.len(), s.repo.clone().unwrap_or_default()),
@@ -8800,6 +8878,8 @@ impl App {
             Screen::Review => cursor = self.draw_review(buf, body),
             Screen::Sync => self.draw_sync(buf, body),
             Screen::Search => cursor = self.draw_search(buf, body),
+            #[cfg(feature = "moz-phab")]
+            Screen::Submit => self.draw_submit(buf, body),
             Screen::Tree | Screen::Stacks | Screen::Versions => {
                 let (left, (right, _)) = self.columns(buf, body, (body.width as usize / 4).clamp(20, 40), 0);
                 let left = left.unwrap();
@@ -9143,6 +9223,8 @@ impl App {
                 self.review_hint()
             }
             Mode::Normal if self.screen == Screen::Sync => self.sync_hint(),
+            #[cfg(feature = "moz-phab")]
+            Mode::Normal if self.screen == Screen::Submit => self.submit_hint(),
             // Reading, Space marks read and Delete unread; Enter does what it
             // does commenting, and opens the menu where that is nothing, as
             // Space no longer does.

@@ -35,8 +35,9 @@ app = ["dep:eframe", "dep:ttf-parser", "dep:unicode-width", "dep:objc2", "dep:ob
 demo = []
 # Phabricator, over Conduit with moz-phab's token (`curl` calls it): the
 # reviews pulled (`stacked moz-phab pull`, the editor's `Pull reviews from
-# Phabricator`), and stacks imported from its revisions (`stacked moz-phab
-# import`, the editor's `Import from Phabricator…`).
+# Phabricator`), stacks imported from its revisions (`stacked moz-phab
+# import`, the editor's `Import from Phabricator…`), and a patch submitted
+# as work in progress (the editor's `Submit to Phabricator as WIP`).
 moz-phab = []
 
 [dependencies]
