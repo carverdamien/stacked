@@ -55,8 +55,8 @@ use serde_json::{Map, Value};
 use crate::claude::{allowed_tools, format_event, last_object, parse_claude_replies, parse_review_notes};
 use crate::config::Workspace;
 use crate::db::{
-    Db, Error, Moved, Note, Patch, Queued, Record, Result, Run, RunState, Stack, Stage, Way, err,
-    now, stack_change,
+    Db, Effort, Error, Moved, Note, Patch, Queued, Record, Result, Run, RunState, Stack, Stage, Way,
+    err, now, stack_change,
 };
 use crate::git;
 use crate::held::Held;
@@ -161,6 +161,11 @@ pub struct Info {
     /// plan in, removed once it lands.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub todo: Option<String>,
+    /// The effort the agent is asked at (`--effort`), the one its comments
+    /// were queued at; none for an ask made before efforts were picked,
+    /// which goes at the agent's own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<Effort>,
 }
 
 /// The stack ask `i` works on: the stack at `i.from`; or, a round sent
@@ -497,8 +502,9 @@ pub fn builds_going(db: &Db, name: &str) -> Vec<Run> {
 }
 
 /// The comments ask `i` was about back in the queue, ready, in the batch
-/// they were sent in: they go again as they were asked, the agent shown
-/// what run `was` brought back, if it landed.
+/// they were sent in: they go again as they were asked, at the effort they
+/// were asked at, the agent shown what run `was` brought back, if it
+/// landed.
 fn ask_again(db: &mut Db, i: &Info, was: Option<String>) -> Result<()> {
     let batch = if i.batch.is_empty() { format!("b{}", crate::db::unique()) } else { i.batch.clone() };
     for sh in &i.notes {
@@ -512,6 +518,7 @@ fn ask_again(db: &mut Db, i: &Info, was: Option<String>) -> Result<()> {
                 stage: Stage::Ready,
                 on: i.on.clone(),
                 was: was.clone(),
+                effort: i.effort,
             }),
             failed: None,
             ..n
@@ -605,11 +612,11 @@ fn position(db: &Db, name: &str, change: &str) -> Option<usize> {
 }
 
 /// Sends `notes` (change, id) of stack `name` to the agent, in `way`, to
-/// the whole stack if `whole`: they wait as ready, together, and go as soon
-/// as nothing stands in their way. What they wait on, if they could not go
-/// at once.
-pub fn send(db_path: &Path, name: &str, notes: &[(String, String)], way: Way, whole: bool) -> Result<Option<String>> {
-    queue(db_path, name, notes, way, whole)?;
+/// the whole stack if `whole`, at `effort`: they wait as ready, together,
+/// and go as soon as nothing stands in their way. What they wait on, if
+/// they could not go at once.
+pub fn send(db_path: &Path, name: &str, notes: &[(String, String)], way: Way, whole: bool, effort: Effort) -> Result<Option<String>> {
+    queue(db_path, name, notes, way, whole, effort)?;
     launch(db_path)?;
     let db = Db::load(db_path)?;
     let waiting = notes
@@ -622,12 +629,13 @@ pub fn send(db_path: &Path, name: &str, notes: &[(String, String)], way: Way, wh
     })
 }
 
-/// Puts `notes` of stack `name` on the agent's queue, in `way`, together:
-/// `launch` starts them when nothing stands in their way. The editor
-/// launches elsewhere than where it draws: making a worktree takes time.
-/// With `whole`, a patch's comments are sent to the whole stack: the agent
-/// may change any patch, add patches anywhere, reorder them.
-pub fn queue(db_path: &Path, name: &str, notes: &[(String, String)], way: Way, whole: bool) -> Result<()> {
+/// Puts `notes` of stack `name` on the agent's queue, in `way`, together,
+/// at `effort`: `launch` starts them when nothing stands in their way, at
+/// that effort whenever that is. The editor launches elsewhere than where
+/// it draws: making a worktree takes time. With `whole`, a patch's
+/// comments are sent to the whole stack: the agent may change any patch,
+/// add patches anywhere, reorder them.
+pub fn queue(db_path: &Path, name: &str, notes: &[(String, String)], way: Way, whole: bool, effort: Effort) -> Result<()> {
     if notes.is_empty() {
         return err("no comment to send");
     }
@@ -635,21 +643,22 @@ pub fn queue(db_path: &Path, name: &str, notes: &[(String, String)], way: Way, w
     Db::edit(db_path, |db| {
         set_up(db, name)?;
         applies(db, name)?;
-        enqueue(db, notes, way, whole, Stage::Ready, None)
+        enqueue(db, notes, way, whole, Stage::Ready, None, Some(effort))
     })
 }
 
 /// Sends the work run `id` holds back to the agent, as what you wrote in
 /// its review asks (`held::send_back`): another round, from that work's
-/// stack, whose own work lands to review in its place. What was sent,
-/// said. `launch` starts it.
-pub fn send_back(db_path: &Path, name: &str, id: &str, marks: &std::collections::BTreeMap<String, bool>) -> Result<String> {
+/// stack, whose own work lands to review in its place; at `effort`, else
+/// at the effort the work was asked at. What was sent, said. `launch`
+/// starts it.
+pub fn send_back(db_path: &Path, name: &str, id: &str, marks: &std::collections::BTreeMap<String, bool>, effort: Option<Effort>) -> Result<String> {
     check_ahead(db_path, name);
     Db::edit(db_path, |db| {
         set_up(db, name)?;
         applies(db, name)?;
         let round = crate::held::send_back(db, id, marks)?;
-        enqueue(db, &round.notes, round.way, round.whole, Stage::Ready, Some(id))?;
+        enqueue(db, &round.notes, round.way, round.whole, Stage::Ready, Some(id), effort.or(round.effort))?;
         let n = round.notes.len();
         let said = if round.whole && round.way == Way::Change { crate::db::WHOLE } else { round.way.said() };
         let mut out = format!("sent back to the agent ({said}): {n} comment{} to ask again", if n == 1 { "" } else { "s" });
@@ -681,9 +690,9 @@ fn applies(db: &Db, name: &str) -> Result<()> {
 }
 
 /// Under the lock: `notes` on the agent's queue, at `stage`, in `way`,
-/// together, in a batch of their own; from the stack of landed work `on`,
-/// if a round sent back from it.
-fn enqueue(db: &mut Db, notes: &[(String, String)], way: Way, whole: bool, stage: Stage, on: Option<&str>) -> Result<()> {
+/// together, in a batch of their own, to be asked at `effort`; from the
+/// stack of landed work `on`, if a round sent back from it.
+fn enqueue(db: &mut Db, notes: &[(String, String)], way: Way, whole: bool, stage: Stage, on: Option<&str>, effort: Option<Effort>) -> Result<()> {
     if notes.is_empty() {
         return err("no comment to send");
     }
@@ -730,6 +739,7 @@ fn enqueue(db: &mut Db, notes: &[(String, String)], way: Way, whole: bool, stage
                 stage,
                 on: on.map(String::from),
                 was: None,
+                effort,
             }),
             failed: None,
             ..n
@@ -739,9 +749,9 @@ fn enqueue(db: &mut Db, notes: &[(String, String)], way: Way, whole: bool, stage
 }
 
 /// Puts `notes` of stack `name` in its batch, to be asked later in `way`
-/// (to the whole stack if `whole`): each waits there until you send the
-/// batch. Nothing is started.
-pub fn batch(db_path: &Path, name: &str, notes: &[(String, String)], way: Way, whole: bool) -> Result<()> {
+/// (to the whole stack if `whole`), at `effort`: each waits there until
+/// you send the batch. Nothing is started.
+pub fn batch(db_path: &Path, name: &str, notes: &[(String, String)], way: Way, whole: bool, effort: Effort) -> Result<()> {
     if notes.is_empty() {
         return err("no comment to batch");
     }
@@ -751,7 +761,7 @@ pub fn batch(db_path: &Path, name: &str, notes: &[(String, String)], way: Way, w
             if !db.stack_notes(name).iter().any(|n| (&n.change, &n.id) == (&at.0, &at.1)) {
                 return err(format!("that comment is not on {name}"));
             }
-            enqueue(db, std::slice::from_ref(at), way, whole, Stage::Batch, None)?;
+            enqueue(db, std::slice::from_ref(at), way, whole, Stage::Batch, None, Some(effort))?;
         }
         Ok(())
     })
@@ -769,12 +779,23 @@ pub fn batched(db: &Db, name: &str, way: Way) -> Vec<((String, String), bool)> {
         .collect()
 }
 
+/// The effort stack `name`'s batch of what is asked in `way` was asked at:
+/// the highest its comments were batched at, if any was.
+pub fn batched_effort(db: &Db, name: &str, way: Way) -> Option<Effort> {
+    db.stack_notes(name)
+        .into_iter()
+        .filter_map(|n| n.queued.as_ref().filter(|q| q.batched() && q.way == way)?.effort)
+        .max()
+}
+
 /// Sends stack `name`'s batch of what is asked in `way`: its comments turn
 /// ready together, as one ask, or with `fan` (as builds and tests always
 /// do) each as an ask of its own. Together, comments from more than one
 /// place (the stack, or a patch) go to the whole stack, as do those
-/// batched so. `launch` starts them. How many were sent.
-pub fn release_batch(db_path: &Path, name: &str, way: Way, fan: bool) -> Result<usize> {
+/// batched so. Each ask goes at `effort`; else at the effort its comments
+/// were batched at, the highest of them for an ask of several. `launch`
+/// starts them. How many were sent.
+pub fn release_batch(db_path: &Path, name: &str, way: Way, fan: bool, effort: Option<Effort>) -> Result<usize> {
     check_ahead(db_path, name);
     Db::edit(db_path, |db| {
         let all = batched(db, name, way);
@@ -783,15 +804,18 @@ pub fn release_batch(db_path: &Path, name: &str, way: Way, fan: bool) -> Result<
         }
         set_up(db, name)?;
         applies(db, name)?;
+        let own = |db: &Db, (c, i): &(String, String)| db.note(c, i).and_then(|n| n.queued.as_ref()?.effort);
         if fan || way == Way::Test {
             for (at, whole) in &all {
-                enqueue(db, std::slice::from_ref(at), way, *whole, Stage::Ready, None)?;
+                let at_effort = effort.or(own(db, at));
+                enqueue(db, std::slice::from_ref(at), way, *whole, Stage::Ready, None, at_effort)?;
             }
         } else {
             let places: HashSet<Scope> = all.iter().filter_map(|((c, i), _)| db.note(c, i)).map(scope_of).collect();
             let whole = places.len() > 1 || all.iter().any(|(_, whole)| *whole);
             let notes: Vec<(String, String)> = all.iter().map(|(at, _)| at.clone()).collect();
-            enqueue(db, &notes, way, whole, Stage::Ready, None)?;
+            let at_effort = effort.or(batched_effort(db, name, way));
+            enqueue(db, &notes, way, whole, Stage::Ready, None, at_effort)?;
         }
         Ok(all.len())
     })
@@ -839,19 +863,21 @@ pub fn launch(db_path: &Path) -> Result<Vec<String>> {
 /// Under the lock: the ready batches that may go now, each a run begun,
 /// its comments taken off the queue. Their run ids.
 fn claim(db: &mut Db) -> Result<Vec<String>> {
-    // The ready batches: stack, way, scope, comments, and the landed work a
-    // round sent back starts from.
+    // The ready batches: stack, way, scope, comments, the landed work a
+    // round sent back starts from, the run asked before it, and the effort
+    // they were sent at (the highest, should they differ).
     let mut order: Vec<String> = Vec::new();
-    type Batch = (String, Way, Scope, Vec<Note>, Option<String>, Option<String>);
+    type Batch = (String, Way, Scope, Vec<Note>, Option<String>, Option<String>, Option<Effort>);
     let mut batches: HashMap<String, Batch> = HashMap::new();
     for s in db.stacks() {
         for n in db.stack_notes(&s.name) {
             let Some(q) = n.queued.as_ref().filter(|q| !q.batched()) else { continue };
             let entry = batches.entry(q.batch.clone()).or_insert_with(|| {
                 order.push(q.batch.clone());
-                (s.name.clone(), q.way, asked_scope(n), Vec::new(), q.on.clone(), q.was.clone())
+                (s.name.clone(), q.way, asked_scope(n), Vec::new(), q.on.clone(), q.was.clone(), q.effort)
             });
             entry.3.push(n.clone());
+            entry.6 = entry.6.max(q.effort);
         }
     }
     // A round sent back first, as it goes on from the work just reviewed,
@@ -864,7 +890,7 @@ fn claim(db: &mut Db) -> Result<Vec<String>> {
     let mut state: HashMap<String, Going> = HashMap::new();
     let mut test = testing(db).is_some();
     for b in &order {
-        let (name, way, scope, notes, on, was) = batches[b].clone();
+        let (name, way, scope, notes, on, was, effort) = batches[b].clone();
         let st = state.entry(name.clone()).or_insert_with(|| {
             let going = asks_going(db, &name);
             Going {
@@ -945,6 +971,7 @@ fn claim(db: &mut Db) -> Result<Vec<String>> {
             dropped: false,
             was,
             todo: None,
+            effort,
         };
         db.add_run(Run {
             id: id.clone(),
@@ -2200,8 +2227,10 @@ fn start(db_path: &Path, id: &str) -> Result<()> {
     if agent.schema {
         c.args(["--json-schema", &answer_schema(&i, &s).to_string()]);
     }
-    // What the settings add: a model, arguments of the user's.
-    c.args(cfg.agent_args());
+    // What the settings add: a model, arguments of the user's; then the
+    // effort the ask goes at, in place of one they give.
+    let args = at_effort(cfg.agent_args(), i.effort);
+    c.args(&args);
     c.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
     // The program run as claude: the tests' stand-in, else $STACKED_CLAUDE,
     // the settings' or claude.
@@ -2209,7 +2238,7 @@ fn start(db_path: &Path, id: &str) -> Result<()> {
         Some((claude, _)) => claude.to_string_lossy().into_owned(),
         None => cfg.agent_command(),
     };
-    let extra: String = cfg.agent_args().iter().map(|a| format!(" {a}")).collect();
+    let extra: String = args.iter().map(|a| format!(" {a}")).collect();
     step(format!("{claude} -p … --permission-mode {permission}{extra}, in {}", cwd.display()));
     c.env("STACKED_CLAUDE", claude);
     // The stacked it calls back keeps what is yours where this one does:
@@ -2230,6 +2259,24 @@ fn start(db_path: &Path, id: &str) -> Result<()> {
         }
         Ok(())
     })
+}
+
+/// `args`, the arguments the settings add to claude, with `--effort` at
+/// `effort`, the ask's, after them, in place of any `--effort` of theirs;
+/// as they are for an ask with none.
+fn at_effort(args: Vec<String>, effort: Option<Effort>) -> Vec<String> {
+    let Some(effort) = effort else { return args };
+    let mut out = Vec::new();
+    let mut args = args.into_iter();
+    while let Some(a) = args.next() {
+        if a == "--effort" {
+            args.next();
+        } else if !a.starts_with("--effort=") {
+            out.push(a);
+        }
+    }
+    out.extend(["--effort".to_string(), effort.name().to_string()]);
+    out
 }
 
 /// Appends each line of `input` to run `id`'s events as it comes: JSON as
@@ -3357,6 +3404,24 @@ mod tests {
         // what stacked gives.
         let schema = tools_for(Way::Answer, cmd, &crate::config::Agent::default());
         assert_eq!(schema, format!("{given},StructuredOutput,Bash(curl *),Bash(jq *)"));
+    }
+
+    #[test]
+    fn the_ask_s_effort_goes_after_the_settings_arguments_in_place_of_theirs() {
+        let args = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        // The settings' arguments as they are, then the ask's effort.
+        assert_eq!(at_effort(args(&["--model", "opus"]), Some(Effort::Max)), args(&["--model", "opus", "--effort", "max"]));
+        // The settings' own effort, either way it is written, taken out.
+        let theirs = args(&["--effort", "low", "--verbose", "--effort=medium"]);
+        assert_eq!(at_effort(theirs.clone(), Some(Effort::Xhigh)), args(&["--verbose", "--effort", "xhigh"]));
+        // An ask of before, with none: the settings' as they are.
+        assert_eq!(at_effort(theirs.clone(), None), theirs);
+        // The levels as claude takes them, the least first, high unless
+        // picked.
+        assert_eq!(Effort::ALL.map(Effort::name), ["low", "medium", "high", "xhigh", "max"]);
+        assert_eq!((Effort::default(), Effort::parse("xhigh"), Effort::parse("huge")), (Effort::High, Some(Effort::Xhigh), None));
+        assert_eq!(Effort::listed(), "low, medium, high, xhigh or max");
+        assert!(Effort::Low < Effort::Max);
     }
 
     #[test]

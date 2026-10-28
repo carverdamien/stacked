@@ -985,7 +985,7 @@ fn choose_as(app: &mut App, label: &str, pick: &str) -> Effect {
     assert!(list.iter().any(|c| c.starts_with(pick)), "no {pick:?} among {label:?}'s {list:?}");
     for _ in 0..list.len() {
         let shown = match &app.mode {
-            Mode::Menu(m) => m.items[want].choices.as_ref().map(|c| c.list[c.picked].shown.clone()),
+            Mode::Menu(m) => m.items[want].choices.first().map(|c| c.list[c.picked].shown.clone()),
             _ => None,
         };
         if shown.is_some_and(|s| s.starts_with(pick)) {
@@ -999,7 +999,7 @@ fn choose_as(app: &mut App, label: &str, pick: &str) -> Effect {
 /// The choices of the open menu's item `i`, as drawn.
 fn choices_of(app: &App, i: usize) -> Vec<String> {
     match &app.mode {
-        Mode::Menu(m) => m.items[i].choices.as_ref().map(|c| c.list.iter().map(|c| c.shown.clone()).collect()).unwrap_or_default(),
+        Mode::Menu(m) => m.items[i].choices.first().map(|c| c.list.iter().map(|c| c.shown.clone()).collect()).unwrap_or_default(),
         _ => vec![],
     }
 }
@@ -2659,15 +2659,12 @@ fn comments_are_written_where_they_will_show() {
     typed(&mut app, "really");
     keys(&mut app, &[KeyCode::Esc]);
     let all: Vec<String> = items(&app).into_iter().map(|(l, _)| l).collect();
-    assert_eq!(
-        all,
-        ["Save it", "Save it and ask agent", "Send it", "Attach a reference…", "", "Throw it away", "Keep writing"]
-    );
+    assert_eq!(all, ["Save it", "Ask agent", "Send it", "Attach a reference…", "", "Throw it away", "Keep writing"]);
     // When, a choice of the row above the ask: now, or later, in the batch.
     assert_eq!(choices_named(&app, "Send it"), ["now", "later"]);
     // How it is asked, a choice of its item; a line's comment, of a patch,
     // may be asked of the whole stack.
-    assert_eq!(choices_named(&app, "Save it and ask agent"), ["change", "the whole stack", "answer only"]);
+    assert_eq!(choices_named(&app, "Ask agent"), ["change", "the whole stack", "answer only"]);
     // Esc keeps writing too.
     keys(&mut app, &[KeyCode::Esc]);
     assert!(matches!(app.mode, Mode::Edit(_)));
@@ -2826,7 +2823,7 @@ fn references_attached_to_a_comment_are_named_in_it_and_asking_waits_for_what_it
     // The agent is not asked while they name nothing, and the menu says so.
     let Mode::Menu(m) = &app.mode else { panic!("{:?}", app.mode) };
     assert_eq!(m.note.as_deref(), Some("@r1, @r2 names no reference attached: attach one, or write it otherwise, to ask the agent"));
-    assert!(items(&app).iter().any(|(l, ok)| l == "Save it and ask agent" && !ok), "{:?}", items(&app));
+    assert!(items(&app).iter().any(|(l, ok)| l == "Ask agent" && !ok), "{:?}", items(&app));
     // Attached: the comment on TWO.
     choose(&mut app, "Attach a reference…");
     assert_eq!(items(&app)[0].0, "Lines of a file…");
@@ -2873,7 +2870,7 @@ fn references_attached_to_a_comment_are_named_in_it_and_asking_waits_for_what_it
     let Mode::Edit(e) = &app.mode else { panic!("{:?}", app.mode) };
     assert!(e.ed.broken().is_empty());
     keys(&mut app, &[KeyCode::Esc]);
-    assert!(items(&app).iter().any(|(l, ok)| l == "Save it and ask agent" && *ok), "{:?}", items(&app));
+    assert!(items(&app).iter().any(|(l, ok)| l == "Ask agent" && *ok), "{:?}", items(&app));
     choose(&mut app, "Save it");
     // Kept with the comment, by their numbers.
     let a = notes_of(&db, "s", 0).into_iter().find(|n| n.text == "why so loud?").unwrap();
@@ -2911,7 +2908,7 @@ fn references_attached_to_a_comment_are_named_in_it_and_asking_waits_for_what_it
     let Mode::Edit(e) = &app.mode else { panic!("{:?}", app.mode) };
     assert_eq!(e.ed.broken(), ["@r1"]);
     keys(&mut app, &[KeyCode::Esc]);
-    assert!(items(&app).iter().any(|(l, ok)| l == "Save it and ask agent" && !ok), "{:?}", items(&app));
+    assert!(items(&app).iter().any(|(l, ok)| l == "Ask agent" && !ok), "{:?}", items(&app));
     choose(&mut app, "Throw the changes away");
     assert_eq!(notes_of(&db, "s", 0).into_iter().find(|n| n.id == b.id).unwrap().attached.len(), 2);
 }
@@ -3580,7 +3577,7 @@ fn a_web_link_is_attached_named_shown_whole_and_opened_by_a_stand_in() {
     // Saved and asked: the agent answers, attaching a web link of its own.
     answer_with(&db, &serde_json::json!({"replies": {"c1": {"text": "It is: see @r2.", "refs": [{"url": agents}]}}}));
     keys(&mut app, &[KeyCode::Esc]);
-    choose_as(&mut app, "Save it and ask agent", "answer only");
+    choose_as(&mut app, "Ask agent", "answer only");
     let n = notes_of(&db, "s", 0).remove(0);
     assert_eq!(n.attached, [Attached { n: 1, to: To::Link(url.clone()) }]);
     accept_landed(&mut app, &db);
@@ -3878,13 +3875,18 @@ fn the_comments_pane_previews_without_moving_the_patch() {
 /// the machine is: it answers once there is no file `hold` beside the
 /// repository it works in, where `setup` puts the test's database too. It
 /// answers `Seen.`, or what the file `answer` there holds (`answer_with`).
+/// As it starts, it adds to the file `efforts` there the effort it was
+/// given, a line for each ask (`efforts`).
 fn fake_claude() -> PathBuf {
     static FAKE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
     FAKE.get_or_init(|| {
         let result = serde_json::to_string(&serde_json::json!({"type": "result", "result": r#"{"replies": {"c1": "Seen."}}"#})).unwrap();
         let script = format!(
             "#!/bin/sh\necho '{{\"type\":\"system\",\"subtype\":\"init\",\"model\":\"fake\"}}'\necho '{{\"type\":\"assistant\",\"message\":{{\"content\":[{{\"type\":\"text\",\"text\":\"Reading the patch.\"}}]}}}}'\n\
-             git=$(git rev-parse --path-format=absolute --git-common-dir)\nwhile test -e \"$git/../../hold\"; do sleep 0.1; done\n\
+             git=$(git rev-parse --path-format=absolute --git-common-dir)\n\
+             e=; prev=; for a in \"$@\"; do if test \"$prev\" = --effort; then e=\"$e${{e:+ }}$a\"; fi; prev=$a; done\n\
+             echo \"${{e:-none}}\" >> \"$git/../../efforts\"\n\
+             while test -e \"$git/../../hold\"; do sleep 0.1; done\n\
              if test -e \"$git/../../answer\"; then cat \"$git/../../answer\"; else cat <<'EOF'\n{result}\nEOF\nfi\n"
         );
         // Written in the folder Cargo gives the tests for their files, not in
@@ -3918,6 +3920,23 @@ fn hold(db: &Path) -> Held {
     let at = db.with_file_name("hold");
     std::fs::write(&at, "").unwrap();
     Held(at)
+}
+
+/// The efforts the stand-in (`fake_claude`) was started at for the asks of
+/// `app`'s database, once `n` were, in the order they started: for each,
+/// what followed each `--effort` it was given, or `none`. The editor does
+/// its work away from the screen meanwhile, as its asks start there.
+fn efforts(app: &mut App, n: usize) -> Vec<String> {
+    let at = app.path.with_file_name("efforts");
+    let read = || std::fs::read_to_string(&at).unwrap_or_default().lines().map(String::from).collect::<Vec<_>>();
+    for _ in 0..300 {
+        if read().len() >= n {
+            break;
+        }
+        app.refresh();
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    read()
 }
 
 /// Has the stand-in answer the asks on `db` (`fake_claude`) with
@@ -4045,6 +4064,7 @@ fn what_you_said_last_may_be_written_again() {
                     stage: stacked::db::Stage::Ready,
                     on: None,
                     was: None,
+                    effort: None,
                 }),
                 ..n
             })
@@ -5271,8 +5291,8 @@ fn a_comment_on_a_patch_may_be_sent_to_the_whole_stack() {
     keys(&mut app, &[KeyCode::Esc]);
     // Written on a patch, it may be saved and sent past its patch.
     let all: Vec<String> = items(&app).into_iter().map(|(l, _)| l).collect();
-    assert_eq!(all[1], "Save it and ask agent", "{all:?}");
-    assert_eq!(choices_named(&app, "Save it and ask agent")[..2], ["change", "the whole stack"]);
+    assert_eq!(all[1], "Ask agent", "{all:?}");
+    assert_eq!(choices_named(&app, "Ask agent")[..2], ["change", "the whole stack"]);
     choose(&mut app, "Save it");
     // Its menu has it too, beside asking about its patch alone.
     keys(&mut app, &[KeyCode::Down]);
@@ -5319,7 +5339,7 @@ fn a_comment_is_sent_from_its_menu_and_answered_in_place() {
     typed(&mut app, "why so loud?");
     keys(&mut app, &[KeyCode::Esc]);
     let held = hold(&db);
-    choose_as(&mut app, "Save it and ask agent", "answer only");
+    choose_as(&mut app, "Ask agent", "answer only");
     assert!(app.status.contains("asked the agent about 1 comment (answer only)"), "{}", app.status);
     // While claude works, its stream shows under the comment, and the top
     // bar and the comments pane say so.
@@ -5373,7 +5393,7 @@ fn asked_and_streamed(db: &Path) -> (Editor, Held) {
     typed(&mut app, "why so loud?");
     keys(&mut app, &[KeyCode::Esc]);
     let held = hold(db);
-    choose_as(&mut app, "Save it and ask agent", "answer only");
+    choose_as(&mut app, "Ask agent", "answer only");
     wait_for(&mut app, "⋯ Reading the patch.");
     keys(&mut app, &[KeyCode::Down]);
     keys(&mut app, &[KeyCode::Enter]);
@@ -5415,7 +5435,7 @@ fn the_first_ask_opens_the_setup_and_goes_once_it_is_saved() {
     keys(&mut app, &[KeyCode::Enter]);
     typed(&mut app, "why so loud?");
     keys(&mut app, &[KeyCode::Esc]);
-    choose_as(&mut app, "Save it and ask agent", "answer only");
+    choose_as(&mut app, "Ask agent", "answer only");
     // Saved, not sent: the setup first, the agent asked what tools it has
     // away from the screen, as the screen says.
     assert!(matches!(&app.mode, Mode::Setup(su) if su.screen.is_none()), "{:?}", app.mode);
@@ -5462,7 +5482,7 @@ fn the_first_ask_opens_the_setup_and_goes_once_it_is_saved() {
     keys(&mut app, &[KeyCode::Enter]);
     typed(&mut app, "and this one?");
     keys(&mut app, &[KeyCode::Esc]);
-    choose_as(&mut app, "Save it and ask agent", "answer only");
+    choose_as(&mut app, "Ask agent", "answer only");
     assert_eq!(app.mode, Mode::Normal);
     assert!(app.status.starts_with("asked the agent about 1 comment (answer only)"), "{}", app.status);
 }
@@ -5502,7 +5522,7 @@ fn the_screen_never_waits_on_the_agent() {
     // Asked, the ask is started elsewhere: its worktree is not made while
     // the screen waits, and keys go on working meanwhile.
     let held = hold(&db);
-    choose_as(&mut app, "Save it and ask agent", "change");
+    choose_as(&mut app, "Ask agent", "change");
     assert!(app.working(), "the ask starts away from the screen");
     keys(&mut app, &[KeyCode::Down, KeyCode::Up]);
     app.settle();
@@ -6156,9 +6176,9 @@ fn the_agent_is_asked_about_the_history_to_answer_only() {
     assert!(screen.lines().nth(at + 1).unwrap().contains(&format!("a question on @{rev}")), "under it:\n{screen}");
     typed(&mut app, "why drop it?");
     keys(&mut app, &[KeyCode::Esc]);
-    assert_eq!(items(&app)[0].0, "Save it and ask agent, answer only");
-    assert!(!items(&app).iter().any(|(l, _)| l == "Save it and ask agent"), "it changes nothing");
-    choose(&mut app, "Save it and ask agent, answer only");
+    assert_eq!(items(&app)[0].0, "Ask agent, answer only");
+    assert!(!items(&app).iter().any(|(l, _)| l == "Ask agent"), "it changes nothing");
+    choose(&mut app, "Ask agent, answer only");
     assert_eq!(app.screen, Screen::History);
     let d = Db::load(&db).unwrap();
     let n = d.notes(&stack_change("s")).into_iter().find(|n| n.about == Some(rev)).cloned().unwrap();
@@ -6467,7 +6487,7 @@ fn a_stack_that_cannot_be_checked_is_read_only() {
     keys(&mut app, &[KeyCode::Enter]);
     typed(&mut app, "still fine");
     keys(&mut app, &[KeyCode::Esc]);
-    assert!(items(&app).contains(&("Save it and ask agent".to_string(), false)));
+    assert!(items(&app).contains(&("Ask agent".to_string(), false)));
     choose(&mut app, "Save it");
     assert!(draw(&mut app).contains("still fine"));
     // Opened again and left as it was, Esc closes it: nothing can be asked.
@@ -6565,7 +6585,7 @@ fn the_agent_is_asked_to_make_a_stack_from_a_comment_on_it_empty() {
     assert!(app.status.starts_with("the stack feature is made, empty, on HEAD "), "{}", app.status);
     typed(&mut app, "Make a stack of two patches: four, then five.");
     keys(&mut app, &[KeyCode::Esc]);
-    choose(&mut app, "Save it and ask agent");
+    choose(&mut app, "Ask agent");
     assert!(app.status.contains("asked the agent about 1 comment"), "{}", app.status);
     wait_for(&mut app, "⟳ 1 landed ask waits for your review");
 }
@@ -6757,11 +6777,11 @@ fn how_the_agent_is_asked_is_one_pick_kept_for_the_stack() {
     typed(&mut app, "why so loud?");
     keys(&mut app, &[KeyCode::Esc]);
     // Saving: how to ask is the choice of one item, change at first.
-    let at = items(&app).iter().position(|(l, _)| l == "Save it and ask agent").unwrap();
+    let at = items(&app).iter().position(|(l, _)| l == "Ask agent").unwrap();
     while !matches!(&app.mode, Mode::Menu(m) if m.sel == at) {
         key(&mut app, KeyCode::Down);
     }
-    assert!(draw(&mut app).contains("Save it and ask agent    [x] change  [ ] the whole stack  [ ] answer only"));
+    assert!(draw(&mut app).contains("Ask agent    [x] change  [ ] the whole stack  [ ] answer only    Effort [high]"));
     key(&mut app, KeyCode::Right);
     assert_eq!(Db::load(&db).unwrap().choice("s", "ask"), Some("whole"));
     // Saved without asking; on the comment, Ask agent starts on the same
@@ -6772,13 +6792,251 @@ fn how_the_agent_is_asked_is_one_pick_kept_for_the_stack() {
     let at = items(&app).iter().position(|(l, _)| l == "Ask agent").unwrap();
     match &app.mode {
         Mode::Menu(m) => {
-            let c = m.items[at].choices.as_ref().unwrap();
+            let c = m.items[at].choices.first().unwrap();
             assert_eq!(c.list[c.picked].shown, "the whole stack");
         }
         other => panic!("{other:?}"),
     }
     // Where a comment is written is a pick of its own.
     assert_eq!(Db::load(&db).unwrap().choice("s", "write"), None);
+}
+
+#[test]
+fn ask_agent_saves_what_changed_first_and_asks_at_the_effort_its_line_ends_with() {
+    use ratatui::style::Modifier;
+    use stacked::db::Effort;
+    let (_tmp, db, _src) = setup();
+    fake_claude();
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Enter]);
+    typed(&mut app, "why so loud?");
+    keys(&mut app, &[KeyCode::Esc]);
+    // Changed: Ask agent saves it first, as `?` says; its line ends with
+    // the effort, high until one is picked.
+    let ask = items(&app).iter().position(|(l, _)| l == "Ask agent").unwrap();
+    while !matches!(&app.mode, Mode::Menu(m) if m.sel == ask) {
+        key(&mut app, KeyCode::Down);
+    }
+    assert!(draw(&mut app).contains("Ask agent    [x] change  [ ] the whole stack  [ ] answer only    Effort [high]"));
+    assert_eq!(app.help()[0], "Press Enter to save the comment and ask the agent (may change the code).");
+    assert_eq!(app.hint(), "↑↓ choose · ←→: how · tab: effort · enter: do it · esc: close · ?: what it does");
+    // ← → pick how; Tab goes to the effort, underlined, which they pick
+    // then, how staying as it is; shift-Tab goes back.
+    keys(&mut app, &[KeyCode::Right, KeyCode::Tab]);
+    assert_eq!(app.hint(), "↑↓ choose · ←→: effort · tab: how · enter: do it · esc: close · ?: what it does");
+    assert!(attrs(&drawn(&mut app, 30), "Effort [high]", 0).iter().all(|m| m.contains(Modifier::UNDERLINED)));
+    assert!(!attrs(&drawn(&mut app, 30), "[ ] change", 0)[0].contains(Modifier::UNDERLINED));
+    keys(&mut app, &[KeyCode::Right, KeyCode::Right, KeyCode::Right]);
+    assert_eq!(app.effort, Effort::Low, "round past the last");
+    keys(&mut app, &[KeyCode::Left, KeyCode::Left]);
+    assert!(draw(&mut app).contains("[ ] change  [x] the whole stack  [ ] answer only    Effort [xhigh]"));
+    assert_eq!(app.effort, Effort::Xhigh);
+    assert_eq!(Db::load(&db).unwrap().choice("s", "ask"), Some("whole"));
+    keys(&mut app, &[KeyCode::BackTab, KeyCode::Left]);
+    assert!(draw(&mut app).contains("[x] change  [ ] the whole stack  [ ] answer only    Effort [xhigh]"));
+    // `?` says both, and how to go from one to the other.
+    let help = app.help();
+    assert!(help[1].starts_with("Press ← → to pick how: change, it may change the code"), "{help:?}");
+    assert_eq!(
+        help[2],
+        "Press Tab, then ← →, to pick the effort the agent is asked at, as claude's --effort takes it: low, medium, high, xhigh or max. The effort picked is kept for the next asks, in every stack and in the next runs."
+    );
+    // A click picks in either, the menu staying: on the effort, the next
+    // level, round past the last; on a choice of how, that one.
+    let (x, y) = at(&draw(&mut app), "Effort [xhigh]");
+    app.click(x, y, false);
+    assert_eq!(app.effort, Effort::Max);
+    let (x, y) = at(&draw(&mut app), "Effort [max]");
+    app.click(x, y, false);
+    assert_eq!((app.effort, app.hint().contains("←→: effort")), (Effort::Low, true));
+    let (x, y) = at(&draw(&mut app), "[ ] answer only");
+    app.click(x, y, false);
+    assert!(draw(&mut app).contains("[ ] change  [ ] the whole stack  [x] answer only    Effort [low]"));
+    keys(&mut app, &[KeyCode::Tab, KeyCode::Right, KeyCode::Right, KeyCode::Right, KeyCode::Right]);
+    assert_eq!(app.effort, Effort::Max);
+    // Enter saves it, then asks: the agent is started at that effort.
+    assert_eq!(key(&mut app, KeyCode::Enter), Effect::None);
+    assert!(app.status.contains("asked the agent about 1 comment (answer only)"), "{}", app.status);
+    assert!(notes_of(&db, "s", 0).iter().any(|n| n.text == "why so loud?"));
+    assert_eq!(efforts(&mut app, 1), ["max"]);
+    // Saved alone, then opened again and left as it was: Ask agent too,
+    // asking about it as it is, at the effort picked last unless another
+    // is picked.
+    down_to(&mut app, "+LINE 39");
+    keys(&mut app, &[KeyCode::Enter]);
+    save(&mut app, "and this?");
+    keys(&mut app, &[KeyCode::Down]);
+    keys(&mut app, &[KeyCode::Enter]);
+    assert!(matches!(&app.mode, Mode::Edit(e) if e.ed.text() == "and this?"), "{:?}", app.mode);
+    keys(&mut app, &[KeyCode::Esc]);
+    let all: Vec<String> = items(&app).into_iter().map(|(l, _)| l).collect();
+    assert_eq!(all, ["Ask agent", "Send it", "Attach a reference…", "", "Leave it as it is", "Keep writing"]);
+    assert_eq!(app.help()[0], "Press Enter to ask the agent about the comment as it is (answer only).");
+    assert!(draw(&mut app).contains("Ask agent    [ ] change  [ ] the whole stack  [x] answer only    Effort [max]"));
+    keys(&mut app, &[KeyCode::Tab, KeyCode::Left, KeyCode::Left]);
+    keys(&mut app, &[KeyCode::Enter]);
+    assert!(app.status.contains("asked the agent about 1 comment (answer only)"), "{}", app.status);
+    assert_eq!(efforts(&mut app, 2), ["max", "high"]);
+}
+
+#[test]
+fn the_agent_is_started_at_the_ask_s_effort_in_place_of_the_settings_own() {
+    use stacked::db::Effort;
+    let (_tmp, db, src) = setup();
+    fake_claude();
+    // The checkout's settings give claude an effort of their own.
+    std::fs::create_dir_all(src.join(".stacked")).unwrap();
+    std::fs::write(src.join(".stacked/local.toml"), "[agent]\nargs = [\"--effort\", \"low\", \"--verbose\"]\n").unwrap();
+    let mut app = open(&db).unwrap();
+    assert_eq!(app.effort, Effort::High, "none picked yet");
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Enter]);
+    typed(&mut app, "why so loud?");
+    keys(&mut app, &[KeyCode::Esc]);
+    choose_as(&mut app, "Ask agent", "answer only");
+    // At high, the settings' own taken out, the rest of them kept: its
+    // stream says so.
+    assert_eq!(efforts(&mut app, 1), ["high"]);
+    let d = Db::load(&db).unwrap();
+    let run = d.runs().last().unwrap().id.clone();
+    let started = stacked::ask::tail(&d, &run, usize::MAX);
+    assert!(started.iter().any(|l| l.contains(" -p … --permission-mode default --verbose --effort high, in ")), "{started:?}");
+}
+
+#[test]
+fn the_effort_picked_is_where_the_next_menus_start_and_a_test_s_own_process_keeps_it_nowhere() {
+    use stacked::db::Effort;
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Enter]);
+    typed(&mut app, "why so loud?");
+    keys(&mut app, &[KeyCode::Esc]);
+    pick(&mut app, "Ask agent", "change");
+    keys(&mut app, &[KeyCode::Tab, KeyCode::Right]);
+    choose(&mut app, "Throw it away");
+    assert_eq!(app.effort, Effort::Xhigh);
+    // Every menu that asks the agent starts at it, here a record of the
+    // history; picked there, it is the next one's.
+    keys(&mut app, &[KeyCode::Left, KeyCode::Home]);
+    choose(&mut app, "History…");
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    assert!(draw(&mut app).contains("Ask agent about this, answer only…    Effort [xhigh]"), "{}", draw(&mut app));
+    keys(&mut app, &[KeyCode::Right]);
+    assert_eq!(app.effort, Effort::Max);
+    // Kept between runs where stacked keeps its state: in a test's own
+    // process, nowhere, so the next editor starts at high again.
+    assert_eq!(stacked::home::get().state, Path::new(stacked::home::NOWHERE));
+    let again = open(&db).unwrap();
+    assert_eq!(again.effort, Effort::High);
+}
+
+#[test]
+fn an_ask_that_waits_goes_at_the_effort_it_was_sent_at() {
+    use stacked::db::Effort;
+    let (_tmp, db, _src) = setup();
+    fake_claude();
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Enter]);
+    typed(&mut app, "why so loud?");
+    keys(&mut app, &[KeyCode::Esc]);
+    // Asked later, at low: it waits in the batch at that effort.
+    pick(&mut app, "Send it", "later");
+    pick(&mut app, "Ask agent later", "answer only");
+    keys(&mut app, &[KeyCode::Tab, KeyCode::Left, KeyCode::Left, KeyCode::Enter]);
+    let n = notes_of(&db, "s", 0).remove(0);
+    assert_eq!(n.queued.as_ref().map(|q| (q.batched(), q.effort)), Some((true, Some(Effort::Low))));
+    // Another effort picked since, for the next asks.
+    down_to(&mut app, "+LINE 39");
+    keys(&mut app, &[KeyCode::Enter]);
+    typed(&mut app, "not asked");
+    keys(&mut app, &[KeyCode::Esc]);
+    pick(&mut app, "Ask agent later", "change");
+    keys(&mut app, &[KeyCode::Tab, KeyCode::Right, KeyCode::Right, KeyCode::Right, KeyCode::Right]);
+    choose(&mut app, "Throw it away");
+    assert_eq!(app.effort, Effort::Max);
+    // Sent now, alone, or with the batch: each starts at the effort it was
+    // batched at.
+    keys(&mut app, &[KeyCode::Home]);
+    down_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Down, KeyCode::Char(' ')]);
+    assert!(draw(&mut app).contains("Send it now (answer only)    Effort [low]"), "{}", draw(&mut app));
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Esc]);
+    assert!(app.on_banner);
+    keys(&mut app, &[KeyCode::Enter]);
+    assert!(draw(&mut app).contains("Send 1 answer only to    [x] a single agent  [ ] fan out    Effort [low]"), "{}", draw(&mut app));
+    keys(&mut app, &[KeyCode::Enter]);
+    assert!(app.status.starts_with("sent the batch (answer only)"), "{}", app.status);
+    assert_eq!(efforts(&mut app, 1), ["low"]);
+    assert_eq!(app.effort, Effort::Max, "as it was picked last");
+    // One that waits its turn goes at its own, whatever was picked since;
+    // one sent before stacked asked at an effort, at the agent's own.
+    for (id, effort) in [("q-xhigh", Some(Effort::Xhigh)), ("q-before", None)] {
+        Db::edit(&db, |d| {
+            d.set_note(Note {
+                id: id.into(),
+                text: "and this?".into(),
+                queued: Some(stacked::db::Queued {
+                    way: stacked::db::Way::Answer,
+                    batch: format!("b-{id}"),
+                    stack: false,
+                    stage: stacked::db::Stage::Ready,
+                    on: None,
+                    was: None,
+                    effort,
+                }),
+                ..n.clone()
+            })
+        })
+        .unwrap();
+        app.refresh();
+        app.launch();
+    }
+    let mut all = efforts(&mut app, 3);
+    all.sort();
+    assert_eq!(all, ["low", "none", "xhigh"]);
+}
+
+#[test]
+fn work_sent_back_goes_at_the_effort_it_was_asked_at_unless_another_is_picked() {
+    let (_tmp, db, _src) = setup();
+    fake_claude();
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Enter]);
+    save(&mut app, "why so loud?");
+    let n = notes_of(&db, "s", 0).remove(0);
+    // The agent's work, asked at low.
+    agent_changed(&db, "run-agent", &n);
+    Db::edit(&db, |d| {
+        let mut r = d.run("run-agent").cloned().unwrap();
+        r.ask.as_mut().unwrap()["effort"] = "low".into();
+        d.add_run(r).map(|_| ())
+    })
+    .unwrap();
+    app.refresh();
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Enter]);
+    assert_eq!(app.screen, Screen::Review);
+    // Answered in its review, it goes back at low, as it was asked, though
+    // high is the next asks'; at another, if one is picked.
+    down_to_review(&mut app, "Quieter now.");
+    choose(&mut app, "Reply to it");
+    save(&mut app, "Still too loud.");
+    keys(&mut app, &[KeyCode::Esc]);
+    assert!(draw(&mut app).contains("Send it back to the agent    Effort [low]"), "{}", draw(&mut app));
+    assert_eq!(app.hint(), "↑↓ choose · ←→: effort · enter: do it · esc: close · ?: what it does");
+    keys(&mut app, &[KeyCode::Right]);
+    assert_eq!(app.effort, stacked::db::Effort::Medium);
+    choose(&mut app, "Send it back to the agent");
+    assert!(app.status.starts_with("sent back to the agent (may change the code)"), "{}", app.status);
+    assert_eq!(efforts(&mut app, 1), ["medium"]);
 }
 
 #[test]
@@ -6836,9 +7094,9 @@ fn the_comment_stays_in_sight_while_its_menu_says_what_to_do_with_it() {
     // not over it; the terminal's cursor nowhere.
     let (screen, cursor) = draw_at(&mut app);
     assert!(screen.contains("a comment on: TWO") && screen.contains("why so loud?"), "{screen}");
-    assert!(screen.contains("Save it and ask agent"), "{screen}");
+    assert!(screen.contains("Ask agent"), "{screen}");
     let text = screen.lines().position(|l| l.contains("why so loud?")).unwrap();
-    let menu = screen.lines().position(|l| l.contains("Save it and ask agent")).unwrap();
+    let menu = screen.lines().position(|l| l.contains("Ask agent")).unwrap();
     assert!(menu > text, "under it:\n{screen}");
     assert_eq!(cursor, None);
     // Kept writing: the editor again, as it was.
@@ -7135,7 +7393,7 @@ fn pick(app: &mut App, label: &str, pick: &str) {
     }
     for _ in 0..choices_of(app, want).len() {
         let shown = match &app.mode {
-            Mode::Menu(m) => m.items[want].choices.as_ref().map(|c| c.list[c.picked].shown.clone()),
+            Mode::Menu(m) => m.items[want].choices.first().map(|c| c.list[c.picked].shown.clone()),
             _ => None,
         };
         if shown.is_some_and(|s| s.starts_with(pick)) {
@@ -7188,12 +7446,12 @@ fn a_comment_asked_later_waits_in_the_batch() {
     // Later, picked on the row above the ask: the ask says so.
     pick(&mut app, "Send it", "later");
     let all: Vec<String> = items(&app).into_iter().map(|(l, _)| l).collect();
-    assert_eq!(all, ["Save it", "Save it and ask agent later", "Send it", "Attach a reference…", "", "Throw it away", "Keep writing"]);
+    assert_eq!(all, ["Save it", "Ask agent later", "Send it", "Attach a reference…", "", "Throw it away", "Keep writing"]);
     assert_eq!(
         app.help()[0],
         "Press Enter to save the comment and ask the agent (may change the code), later: it waits in the batch, which the banner sends."
     );
-    choose_as(&mut app, "Save it and ask agent later", "answer only");
+    choose_as(&mut app, "Ask agent later", "answer only");
     assert_eq!(batched(&db), [("why so loud?".to_string(), Way::Answer, false)]);
     assert_eq!(app.status, "batched (answer only): 1 ask in the batch, which the banner sends");
     // Nothing is started: it waits for the batch to be sent.
@@ -7204,8 +7462,8 @@ fn a_comment_asked_later_waits_in_the_batch() {
     keys(&mut app, &[KeyCode::Enter]);
     typed(&mut app, "and this?");
     keys(&mut app, &[KeyCode::Esc]);
-    assert!(items(&app).iter().any(|(l, _)| l == "Save it and ask agent later"), "{:?}", items(&app));
-    pick(&mut app, "Save it and ask agent later", "change");
+    assert!(items(&app).iter().any(|(l, _)| l == "Ask agent later"), "{:?}", items(&app));
+    pick(&mut app, "Ask agent later", "change");
     choose(&mut app, "Send it");
     assert_eq!(batched(&db).len(), 2, "{:?}", batched(&db));
     assert!(batched(&db).contains(&("and this?".to_string(), Way::Change, false)));
@@ -7276,7 +7534,7 @@ fn the_banner_sends_the_batch_its_edits_to_one_agent_its_answers_to_one_or_each_
         typed(app, text);
         keys(app, &[KeyCode::Esc]);
         pick(app, "Send it", "later");
-        choose_as(app, "Save it and ask agent later", how);
+        choose_as(app, "Ask agent later", how);
     };
     // Batched: an edit on each patch, two questions on the first; and one
     // not asked yet.
@@ -7321,7 +7579,8 @@ fn the_banner_sends_the_batch_its_edits_to_one_agent_its_answers_to_one_or_each_
     assert!(all[9..14].iter().all(|l| l.starts_with("Go to ")) && all[14].is_empty(), "{all:?}");
     assert!(matches!(&app.mode, Mode::Menu(m) if m.sel == 0));
     assert_eq!(choices_named(&app, "Send 2 answers only to"), ["a single agent", "fan out"]);
-    assert_eq!(app.hint(), "↑↓ choose · enter: do it · esc: close · ?: what it does");
+    // Each sends at an effort of its own: ← → pick it.
+    assert_eq!(app.hint(), "↑↓ choose · ←→: effort · enter: do it · esc: close · ?: what it does");
     // Unchecked, out of the batch; checked again, back as it was. The menu
     // stays, on it.
     keys(&mut app, &[KeyCode::Down, KeyCode::Down, KeyCode::Down]);
@@ -7370,7 +7629,7 @@ fn with_work_landed_and_a_batch_the_banner_s_menu_has_all_of_it() {
     typed(&mut app, "shout less");
     keys(&mut app, &[KeyCode::Esc]);
     pick(&mut app, "Send it", "later");
-    choose_as(&mut app, "Save it and ask agent later", "change");
+    choose_as(&mut app, "Ask agent later", "change");
     // The agent's answer to the first, landed.
     let n = notes_of(&db, "s", 0).into_iter().find(|n| n.text == "why so loud?").unwrap();
     held(&db, "run-answer", &n.change, &n.id, "It is a shout.", false);
@@ -7588,7 +7847,7 @@ fn leaving_a_review_picks_whether_the_asking_comment_closes_above_accept_and_rej
     let row = |app: &App| {
         let Mode::Menu(m) = &app.mode else { panic!("{:?}", app.mode) };
         let at = m.items.iter().position(|i| i.label == "Asking comment").expect("the row");
-        (at, m.sel, m.items[at].choices.as_ref().unwrap().pick(), m.items.iter().map(|i| (i.label.clone(), i.action.clone())).collect::<Vec<_>>())
+        (at, m.sel, m.items[at].choices.first().unwrap().pick(), m.items.iter().map(|i| (i.label.clone(), i.action.clone())).collect::<Vec<_>>())
     };
     let (at, _, pick, all) = row(&app);
     assert_eq!(pick, "close");
@@ -7691,7 +7950,7 @@ fn closing_an_edit_review_moves_head_along_when_it_was_in_sync_with_the_stack() 
     let row = |app: &App| {
         let Mode::Menu(m) = &app.mode else { panic!("{:?}", app.mode) };
         let k = m.items.iter().position(|i| i.label == "HEAD").expect("the row");
-        (k, m.items[k].choices.as_ref().unwrap().pick(), m.items.iter().map(|i| i.label.clone()).collect::<Vec<_>>())
+        (k, m.items[k].choices.first().unwrap().pick(), m.items.iter().map(|i| i.label.clone()).collect::<Vec<_>>())
     };
     // HEAD is in sync with the stack: the row, sync picked, over Accept and
     // Reject all.
@@ -9027,6 +9286,7 @@ fn the_banner_tracks_the_open_comments_and_esc_goes_there_and_back() {
                 stage: stacked::db::Stage::Ready,
                 on: None,
                 was: None,
+                effort: None,
             }),
             ..n
         })

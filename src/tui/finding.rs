@@ -523,7 +523,7 @@ impl App {
     }
 
     /// Whether the database is the tour's, kept in memory.
-    fn in_memory(&self) -> bool {
+    pub(super) fn in_memory(&self) -> bool {
         #[cfg(feature = "demo")]
         if crate::memory::is_file(&self.path) {
             return true;

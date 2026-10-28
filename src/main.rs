@@ -391,6 +391,12 @@ enum Cmd {
         /// With --batch, each answer to an agent of its own, all at once.
         #[arg(long, requires = "batch")]
         fan_out: bool,
+        /// How hard the agent works on them, as claude's --effort takes it:
+        /// low, medium, high, xhigh or max. Unless given, the effort last
+        /// picked in the editor's menus (high until one is); with --batch,
+        /// the effort each comment was batched at.
+        #[arg(long, value_name = "LEVEL", value_parser = effort_arg())]
+        effort: Option<stacked::db::Effort>,
         /// Wait for them to be answered, and print the threads.
         #[arg(long)]
         wait: bool,
@@ -424,6 +430,11 @@ enum Cmd {
         /// review in its place.
         #[arg(long)]
         send_back: bool,
+        /// With --send-back, how hard the agent works on it, as claude's
+        /// --effort takes it: low, medium, high, xhigh or max. Unless given,
+        /// the effort the work was asked at.
+        #[arg(long, value_name = "LEVEL", value_parser = effort_arg())]
+        effort: Option<stacked::db::Effort>,
         /// Close the comments the agent was asked about too, done with,
         /// once their replies are in their threads.
         #[arg(long)]
@@ -629,6 +640,13 @@ fn setup_lines(s: &mut stacked::setup::Setup, dir: &Path, to: &Path, tools: usiz
         },
         &mut |l| eprintln!("{l}"),
     )
+}
+
+/// What `--effort` takes: a level claude takes, as it names them; any
+/// other is refused, with the levels it takes said.
+fn effort_arg() -> impl clap::builder::TypedValueParser<Value = stacked::db::Effort> {
+    use clap::builder::TypedValueParser;
+    clap::builder::PossibleValuesParser::new(stacked::db::Effort::NAMES).map(|s: String| stacked::db::Effort::parse(&s).unwrap_or_default())
 }
 
 /// Whether the process `pid` is gone: exited (reaped now, if it was this
@@ -1366,12 +1384,14 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
                 println!("{short}\t{}", stacked::refs::detached_said(&detached));
             }
         }
-        Cmd::Send { name, ids, all, patch, answer_only, build_and_test, whole_stack, later, batch, fan_out, wait, accept } => {
+        Cmd::Send { name, ids, all, patch, answer_only, build_and_test, whole_stack, later, batch, fan_out, effort, wait, accept } => {
             let way = match (answer_only, build_and_test) {
                 (_, true) => Way::Test,
                 (true, _) => Way::Answer,
                 _ => Way::Change,
             };
+            // Unless given, the effort the editor's menus picked last.
+            let at = effort.or_else(|| stacked::state::effort(&stacked::home::get().state)).unwrap_or_default();
             let db = Db::load(path)?;
             let since = db.last_rev();
             let busy = ask::with_agent(&db);
@@ -1396,7 +1416,7 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
             }
             let ats: Vec<(String, String)> = picked.iter().map(|n| (n.change.clone(), n.id.clone())).collect();
             if later {
-                ask::batch(path, &name, &ats, way, whole_stack)?;
+                ask::batch(path, &name, &ats, way, whole_stack, at)?;
                 let said = if whole_stack { stacked::db::WHOLE } else { way.said() };
                 for (c, i) in &ats {
                     println!("{}\tbatched ({said})", short_id(c, i));
@@ -1406,7 +1426,7 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
             if batch {
                 for way in [Way::Change, Way::Answer, Way::Test] {
                     let sent = ask::batched(&db, &name, way);
-                    if ask::release_batch(path, &name, way, fan_out)? == 0 {
+                    if ask::release_batch(path, &name, way, fan_out, effort)? == 0 {
                         continue;
                     }
                     ask::launch(path)?;
@@ -1441,7 +1461,7 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
             }
             let said = if whole_stack { stacked::db::WHOLE } else { way.said() };
             for (_, these) in batches.iter().filter(|_| !batch) {
-                let waits = ask::send(path, &name, these, way, whole_stack)?;
+                let waits = ask::send(path, &name, these, way, whole_stack, at)?;
                 for (c, i) in these {
                     match &waits {
                         None => println!("{}\tsent ({said})", short_id(c, i)),
@@ -1550,16 +1570,19 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
                 }
             }
         }
-        Cmd::Review { name, run, send_back: true, .. } => {
+        Cmd::Review { name, run, send_back: true, effort, .. } => {
             let db = Db::load(path)?;
             let id = match work_of(&db, &name, run.as_deref())? {
                 Some(id) => id,
                 None => stacked::held::queue(&db, &name).first().map(|r| r.id.clone()).ok_or_else(|| Error(format!("nothing on {name} waits for your review")))?,
             };
             let marks = db.review(&id).map(|v| v.marks.clone()).unwrap_or_default();
-            let said = ask::send_back(path, &name, &id, &marks)?;
+            let said = ask::send_back(path, &name, &id, &marks, effort)?;
             ask::launch(path)?;
             println!("{id}\t{said}");
+        }
+        Cmd::Review { effort: Some(_), .. } => {
+            return err("--effort goes with --send-back: accepting or rejecting the work asks the agent nothing");
         }
         Cmd::Review { name, run, accept_all, close_asking, .. } => {
             let said = Db::edit(path, |db| {

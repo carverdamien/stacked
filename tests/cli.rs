@@ -2768,6 +2768,83 @@ fn what_your_claude_settings_deny_in_the_checkout_is_refused_to_every_ask() {
     assert_eq!(refused(), None);
 }
 
+/// A line of a stand-in's script that adds to `file` the effort it was
+/// given, a line for each ask: what followed each `--effort`, or `none`.
+fn effort_said(file: &Path) -> String {
+    format!(
+        r#"e=; prev=; for a in "$@"; do if test "$prev" = --effort; then e="$e${{e:+ }}$a"; fi; prev=$a; done; echo "${{e:-none}}" >> '{}'"#,
+        file.display()
+    )
+}
+
+#[test]
+fn send_asks_at_the_effort_given_else_at_the_one_the_editor_picked_last() {
+    let e = env();
+    e.ok(&["import", "s", "base"]);
+    let efforts = e.root.join("efforts");
+    let claude = fake_claude(&e, "claude-effort.sh", &effort_said(&efforts), r#"{"replies": {"c1": "Seen."}}"#);
+    let ask = |args: &[&str], env: &[(&str, &Path)]| {
+        let id = comment(&e, &["Why?"]);
+        let mut all = vec![id.as_str(), "--answer-only"];
+        all.extend(args);
+        let (fine, _, err) = send(&e, &claude, &all, env);
+        assert!(fine, "{args:?}: {err}");
+    };
+    // None given, nor picked in the editor: high. Given: that one.
+    ask(&[], &[]);
+    ask(&["--effort", "xhigh"], &[]);
+    // The editor's last pick, kept in the state file of its home.
+    stacked::state::picked_effort(&e.root.join("home/state.json"), stacked::db::Effort::Low);
+    ask(&[], &[]);
+    // The settings' own taken out, the ask's in its place.
+    let settings = e.root.join("settings.toml");
+    std::fs::write(&settings, format!("{SET_UP}args = [\"--effort\", \"max\"]\n")).unwrap();
+    ask(&["--effort", "medium"], &[("STACKED_CONFIG", &settings)]);
+    ask(&[], &[("STACKED_CONFIG", &settings)]);
+    let said: Vec<String> = std::fs::read_to_string(&efforts).unwrap().lines().map(String::from).collect();
+    assert_eq!(said, ["high", "xhigh", "low", "medium", "low"]);
+    // A level claude does not take is refused, the levels it takes said:
+    // nothing is sent.
+    let id = comment(&e, &["Harder?"]);
+    let (fine, _, err) = stacked_in(&e.src, &e.db, &["send", "s", &id, "--effort", "huge"], "", &[("STACKED_CLAUDE", &claude)]);
+    assert!(!fine && err.contains("invalid value 'huge' for '--effort <LEVEL>'"), "{err}");
+    assert!(err.contains("[possible values: low, medium, high, xhigh, max]"), "{err}");
+    let db = Db::load(&e.db).unwrap();
+    assert!(db.runs().len() == 5 && db.stack_notes("s").iter().all(|n| n.queued.is_none()), "{:?}", db.runs());
+}
+
+#[test]
+fn a_batch_and_work_sent_back_go_at_the_effort_they_were_asked_at_unless_another_is_given() {
+    let e = env();
+    e.ok(&["import", "s", "base"]);
+    let efforts = e.root.join("efforts");
+    let claude = fake_claude(&e, "claude-effort.sh", &effort_said(&efforts), r#"{"replies": {"c1": "Seen."}}"#);
+    let env = [("STACKED_CLAUDE", claude.as_path())];
+    let run = |args: &[&str]| {
+        let (fine, out, err) = stacked_in(&e.src, &e.db, args, "", &env);
+        assert!(fine, "{args:?}: {out}{err}");
+    };
+    let said = || std::fs::read_to_string(&efforts).unwrap().lines().map(String::from).collect::<Vec<_>>();
+    // Batched at low, it goes at low, whatever the editor picked since.
+    let id = comment(&e, &["Why?"]);
+    run(&["send", "s", &id, "--later", "--answer-only", "--effort", "low"]);
+    stacked::state::picked_effort(&e.root.join("home/state.json"), stacked::db::Effort::Max);
+    run(&["send", "s", "--batch", "--wait"]);
+    assert_eq!(said(), ["low"]);
+    // Its work answered in its review, it goes back at the effort it was
+    // asked at; at the one given, if one is.
+    run(&["reply", "s", &id, "--answer", "Why", "not?"]);
+    run(&["review", "s", "--send-back"]);
+    landed(&e, 2);
+    run(&["reply", "s", &id, "--answer", "And", "then?"]);
+    run(&["review", "s", "--send-back", "--effort", "xhigh"]);
+    landed(&e, 3);
+    assert_eq!(said(), ["low", "low", "xhigh"]);
+    // Only with --send-back.
+    let (fine, _, err) = e.run(&["review", "s", "--accept-all", "--effort", "low"]);
+    assert!(!fine && err.contains("--send-back"), "{err}");
+}
+
 #[test]
 fn no_ask_goes_before_the_setup_is_done() {
     let e = env();

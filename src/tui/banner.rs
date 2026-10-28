@@ -256,15 +256,18 @@ impl App {
 
     /// The batch's items: what it holds sent, each way (the edits to a
     /// single agent; the answers to a single agent, or fanned out, an agent
-    /// each; each build and test on its own); then every comment the agent
+    /// each; each build and test on its own), each at the effort it was
+    /// batched at unless another is picked; then every comment the agent
     /// can be asked about, checked if it is in the batch, as it is asked.
     fn batch_items(&self) -> Vec<Item> {
         let w = self.read_only().is_none();
         let mut out = Vec::new();
         let count = |way: Way| ask::batched(&self.db, &self.stack, way).len();
+        let effort = |way: Way| self.effort_choices(ask::batched_effort(&self.db, &self.stack, way));
         let (edits, answers, tests) = (count(Way::Change), count(Way::Answer), count(Way::Test));
         if edits > 0 {
-            out.push(Item::new(format!("Send {edits} edit{} to a single agent", plural(edits)), Action::SendBatch(Way::Change, false)).when(w));
+            let label = format!("Send {edits} edit{} to a single agent", plural(edits));
+            out.push(Item::new(label, Action::SendBatch(Way::Change, false)).when(w).with(effort(Way::Change)));
         }
         if answers > 0 {
             let list = vec![
@@ -273,11 +276,11 @@ impl App {
             ];
             let choices = Choices::new("answers", "to whom", list, self.db.choice(&self.stack, "answers"));
             let label = format!("Send {answers} answer{} only to", plural(answers));
-            out.push(Item::new(label, Action::SendBatch(Way::Answer, false)).when(w).with(choices));
+            out.push(Item::new(label, Action::SendBatch(Way::Answer, false)).when(w).with(choices).with(effort(Way::Answer)));
         }
         if tests > 0 {
             let label = format!("Send {tests} build{} and test{}, each on its own", plural(tests), plural(tests));
-            out.push(Item::new(label, Action::SendBatch(Way::Test, true)).when(w));
+            out.push(Item::new(label, Action::SendBatch(Way::Test, true)).when(w).with(effort(Way::Test)));
         }
         let asks = self.asks_list();
         if !out.is_empty() && !asks.is_empty() {

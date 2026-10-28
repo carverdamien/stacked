@@ -308,6 +308,60 @@ fn a_kill_or_its_terminal_closing_leaves_it_as_quit_does() {
 }
 
 #[test]
+fn the_effort_picked_in_a_menu_is_where_the_next_run_starts() {
+    let (tmp, db) = setup();
+    let home = tmp.path().join("home");
+    let file = db.to_str().unwrap();
+    // A comment on the stack, for its menu to ask about.
+    let out = stacked(&home).current_dir(tmp.path()).args(["-f", file, "comment", "s", "Why?"]).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    // `stacked web`, its home the test's; the stack's menu opened on its
+    // header, on `Ask agent about all`. What it said first, where it is.
+    let serve = || {
+        let mut child = stacked(&home)
+            .args(["-f", file, "web", "--no-open"])
+            .current_dir(tmp.path())
+            .stdin(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut said = BufReader::new(child.stderr.take().unwrap());
+        let child = Running(child);
+        let mut line = String::new();
+        said.read_line(&mut line).unwrap();
+        let url = line.split_whitespace().find_map(|w| w.strip_prefix("http://127.0.0.1:")).expect(&line).to_string();
+        let (port, token) = url.split_once("/?t=").unwrap();
+        let (port, token): (u16, String) = (port.parse().unwrap(), token.to_string());
+        let mut events = events(port, &token, 120);
+        until(&mut events, "the patches", |l| l.contains("Bug 2 - add b"));
+        let press = move |k: &str| {
+            ask(port, &format!("127.0.0.1:{port}"), &format!("POST /input?t={token}"), &format!("k {k}\n"));
+        };
+        for k in ["Home -", "c 20 -", "Down -"] {
+            press(k);
+        }
+        (child, events, press)
+    };
+    let asking = |l: &str| text(l).contains("Ask agent about all");
+    // High at first; Tab goes to the effort, → twice picks max.
+    let (mut child, mut events, press) = serve();
+    until(&mut events, "high, at first", |l| asking(l) && text(l).contains("Effort [high]"));
+    for k in ["Tab -", "Right -", "Right -"] {
+        press(k);
+    }
+    until(&mut events, "max, picked", |l| asking(l) && text(l).contains("Effort [max]"));
+    // Quit: kept in the state file of its home, beside the database opened.
+    press("c 63 c");
+    until(&mut events, "bye", |l| l == "data: bye");
+    assert!(child.0.wait().unwrap().success());
+    let state = home.join("state.json");
+    assert_eq!(stacked::state::effort(&state), Some(stacked::db::Effort::Max));
+    // The next run starts at it.
+    let (_child, mut events, _) = serve();
+    until(&mut events, "max, kept", |l| asking(l) && text(l).contains("Effort [max]"));
+}
+
+#[test]
 fn the_database_the_editor_opens_is_on_the_list_stacked_s_open_recent_reads() {
     let (tmp, _) = setup();
     std::fs::copy(tmp.path().join("db.jsonl"), tmp.path().join("other.jsonl")).unwrap();

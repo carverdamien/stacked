@@ -543,13 +543,14 @@ impl App {
     }
 
     /// The work sent back to the agent, with what you wrote in its review:
-    /// another round, from it; the review left.
-    pub(super) fn review_send_back(&mut self) {
+    /// another round, from it, at `effort`, else at the effort the work was
+    /// asked at; the review left.
+    pub(super) fn review_send_back(&mut self, effort: Option<Effort>) {
         let Some(rv) = self.reviewing.clone() else { return };
-        if self.set_up_first(super::Then::SendBack) {
+        if self.set_up_first(super::Then::SendBack(effort)) {
             return;
         }
-        let sent = ask::send_back(&self.path, &self.stack, &rv.run, &rv.marks);
+        let sent = ask::send_back(&self.path, &self.stack, &rv.run, &rv.marks, effort);
         self.reload();
         match sent {
             Ok(said) => {
@@ -1289,7 +1290,7 @@ impl App {
         if comments + answers > 0 {
             let back = if self.review_again(Closing::SendingBack).is_some() { Action::AskSendBack } else { Action::SendBack };
             let items = vec![
-                Item::new("Send it back to the agent", back),
+                Item::new("Send it back to the agent", back).with(self.effort_choices(self.review_effort())),
                 Item::new("Save", Action::ReviewSave),
                 Item::new("Discard", Action::ReviewDiscard),
                 Item::line(),
@@ -1461,11 +1462,20 @@ impl App {
     }
 
     /// What sending the work back asks first: what went on from it, asked
-    /// again; the menu on Keep reviewing.
+    /// again; the menu on Keep reviewing. It goes at the effort the menu
+    /// before picked, unless another is picked here.
     pub(super) fn review_send_back_ask(&self) -> Menu {
-        let mut m = Menu::ask("send the work back to the agent?", Item::new("Send it back", Action::SendBack), "Keep reviewing", true);
+        let back = Item::new("Send it back", Action::SendBack).with(self.effort_choices(self.at_effort.or(self.review_effort())));
+        let mut m = Menu::ask("send the work back to the agent?", back, "Keep reviewing", true);
         m.note = self.review_again(Closing::SendingBack);
         m
+    }
+
+    /// The effort the work reviewed was asked at, which it goes back to the
+    /// agent at unless another is picked: none for work of before.
+    fn review_effort(&self) -> Option<Effort> {
+        let rv = self.reviewing.as_ref()?;
+        ask::info(self.db.run(&rv.run)?)?.effort
     }
 
     /// A question before closing the review, the parts not marked as `rest`

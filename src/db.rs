@@ -516,6 +516,41 @@ impl Way {
     }
 }
 
+/// How hard the agent works on an ask, as claude's `--effort` takes it,
+/// the least first. Unless picked, `high`.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum Effort {
+    Low,
+    Medium,
+    #[default]
+    High,
+    Xhigh,
+    Max,
+}
+
+impl Effort {
+    pub const ALL: [Effort; 5] = [Effort::Low, Effort::Medium, Effort::High, Effort::Xhigh, Effort::Max];
+
+    /// Each level's name, as claude takes it.
+    pub const NAMES: [&'static str; 5] = ["low", "medium", "high", "xhigh", "max"];
+
+    pub fn name(self) -> &'static str {
+        Effort::NAMES[self as usize]
+    }
+
+    /// The level named `name`, if claude takes it.
+    pub fn parse(name: &str) -> Option<Effort> {
+        Effort::ALL.into_iter().find(|e| e.name() == name)
+    }
+
+    /// The levels, said: `low, medium, high, xhigh or max`.
+    pub fn listed() -> String {
+        let (last, rest) = Effort::NAMES.split_last().unwrap();
+        format!("{} or {last}", rest.join(", "))
+    }
+}
+
 /// A comment sent and waiting: how, and the batch it goes in. Comments
 /// sent together go in one ask. A patch's comment may be sent to the whole
 /// stack (`stack`): the agent may then change any patch, as for the
@@ -538,6 +573,12 @@ pub struct Queued {
     /// agent is shown, to reuse what still holds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub was: Option<String>,
+    /// The effort the agent is asked at, as picked when the comment was put
+    /// on the queue or in the batch: it goes at that effort whenever its
+    /// turn comes. None for one queued before efforts were picked, which
+    /// goes at the agent's own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<Effort>,
 }
 
 impl Queued {

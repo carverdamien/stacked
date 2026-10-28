@@ -27,7 +27,7 @@ use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 
 use crate::ask::{self, Scope};
-use crate::db::{Db, Note, Patch, Result, RunState, Stack, Way, err, local_time, short_id, stack_change};
+use crate::db::{Db, Effort, Note, Patch, Result, RunState, Stack, Way, err, local_time, short_id, stack_change};
 use crate::editor::{Editor, Op};
 use crate::ops::{self, edit_text, strip_comments};
 use crate::paint::{color, fit, on_cursor, put, put_parts, window, wrap};
@@ -435,8 +435,10 @@ pub enum Spot {
     NotesHead,
     Note(usize),
     Item(usize),
-    /// Choice `k` of menu item `i`.
-    Choice(usize, usize),
+    /// Choice `k` of dropdown `d` of menu item `i`, the one a click picks:
+    /// the one clicked; on a dropdown drawn as one, `Effort [high]`, the
+    /// one after the one picked.
+    Choice(usize, usize, usize),
     Pick(usize),
     HistRow(usize),
     Box,
@@ -703,14 +705,15 @@ pub struct SettingUp {
     pub then: Then,
 }
 
-/// What sending waits on the setup for: comments asked now, in a way, to
-/// the whole stack or not; the stack's batch of a way sent, fanned out or
-/// not; or the work under review sent back.
+/// What sending waits on the setup for, each at the effort picked to send
+/// it: comments asked now, in a way, to the whole stack or not; the stack's
+/// batch of a way sent, fanned out or not; or the work under review sent
+/// back.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Then {
-    Send(Vec<(String, String)>, Way, bool),
-    Batch(Way, bool),
-    SendBack,
+    Send(Vec<(String, String)>, Way, bool, Effort),
+    Batch(Way, bool, Option<Effort>),
+    SendBack(Option<Effort>),
 }
 
 /// A line being typed, for what `asking` asks: what it gives, said, and
@@ -828,6 +831,10 @@ pub struct Menu {
     /// key has none: it is drawn in the middle, or beside the comment being
     /// written when it asks about that comment.
     pub at: Option<(u16, u16)>,
+    /// Which dropdown of the item selected ← → pick in, when it has more
+    /// than one: Tab and shift-Tab go to the next one and back. The first,
+    /// on an item selected anew.
+    pub choice: usize,
     top: usize,
 }
 
@@ -836,9 +843,10 @@ pub struct Item {
     pub label: String,
     pub action: Action,
     pub enabled: bool,
-    /// Its choices, as radio buttons, one of them picked: ← → pick
-    /// another, and Enter does the item with it.
-    pub choices: Option<Choices>,
+    /// Its dropdowns, after its label, one after the other, each its
+    /// choices with one of them picked: ← → pick another in the one the
+    /// menu is on, and Enter does the item with what is picked.
+    pub choices: Vec<Choices>,
     /// Its label when the agent is asked now, and when later: an ask,
     /// under the row that picks when.
     pub labels: Option<(String, String)>,
@@ -846,17 +854,27 @@ pub struct Item {
     pub check: Option<bool>,
 }
 
-/// An item's choices, drawn as radio buttons after its label, `[x]` on the
-/// one picked. What is picked is kept per stack, in the database.
+/// A dropdown of an item: its choices, drawn as radio buttons after its
+/// label, `[x]` on the one picked; or, named, as one, its name then the
+/// one picked, `Effort [high]`. What is picked is kept per stack, in the
+/// database; the effort, for every ask, in the state kept between runs.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Choices {
-    /// What they are a choice of, as kept: `edit`, `ask`, `write`.
+    /// What they are a choice of, as kept: `edit`, `ask`, `write`,
+    /// `effort`.
     pub of: &'static str,
     /// What is picked, as the bar and `?` say it: `where`, `how`.
     pub what: &'static str,
     pub list: Vec<Choice>,
     pub picked: usize,
+    /// Its name, drawn before the one picked, when it is drawn as one: a
+    /// click on it picks the next.
+    pub named: Option<&'static str>,
 }
+
+/// What the dropdown of the effort an item asks the agent at is a choice
+/// of: `Effort [high]`.
+pub const EFFORT: &str = "effort";
 
 /// One of an item's choices.
 #[derive(Debug, Clone, PartialEq)]
@@ -887,12 +905,26 @@ impl Choices {
     /// the first.
     fn new(of: &'static str, what: &'static str, list: Vec<Choice>, pick: Option<&str>) -> Choices {
         let picked = list.iter().position(|c| Some(c.name) == pick).unwrap_or(0);
-        Choices { of, what, list, picked }
+        Choices {
+            of,
+            what,
+            list,
+            picked,
+            named: None,
+        }
     }
 
     /// The one picked: its name as kept.
     pub fn pick(&self) -> &'static str {
         self.list[self.picked].name
+    }
+
+    /// Another picked, the next (`by` 1) or the one before (-1), round
+    /// past either end: what it is a choice of, and what is picked now.
+    fn turn(&mut self, by: isize) -> (&'static str, &'static str) {
+        let n = self.list.len() as isize;
+        self.picked = (self.picked as isize + by).rem_euclid(n) as usize;
+        (self.of, self.pick())
     }
 }
 
@@ -1342,7 +1374,7 @@ impl Item {
             label: label.into(),
             action,
             enabled: true,
-            choices: None,
+            choices: Vec::new(),
             labels: None,
             check: None,
         }
@@ -1360,9 +1392,9 @@ impl Item {
         self
     }
 
-    /// With `choices`, as radio buttons.
+    /// With `choices`, a dropdown after those it has.
     fn with(mut self, choices: Choices) -> Item {
-        self.choices = Some(choices);
+        self.choices.push(choices);
         self
     }
 
@@ -1371,42 +1403,64 @@ impl Item {
             label: String::new(),
             action: Action::Line,
             enabled: false,
-            choices: None,
+            choices: Vec::new(),
             labels: None,
             check: None,
         }
     }
 
-    /// What its row says: its label, then its choices, which start past
-    /// `pad` columns (the menu's choices in one column); and each choice,
-    /// where it starts in the row and how wide it is.
-    pub fn row(&self, pad: usize) -> (String, Vec<(usize, usize)>) {
+    /// What its row says: its label, then its dropdowns, which start past
+    /// `pad` columns (the menu's first dropdowns in one column); and where
+    /// a click picks in them: for each choice drawn, its dropdown, which
+    /// one it is, where it starts in the row and how wide it is; for a
+    /// dropdown drawn as one, the whole of it, picking the next.
+    pub fn row(&self, pad: usize) -> (String, Vec<(usize, usize, usize, usize)>) {
         let mut text = match self.check {
             Some(on) => format!("{} {}", if on { "[x]" } else { "[ ]" }, self.label),
             None => self.label.clone(),
         };
         let mut at = Vec::new();
-        if let Some(c) = &self.choices {
+        if !self.choices.is_empty() {
             let width = text.chars().count();
             text.extend(std::iter::repeat_n(' ', pad.saturating_sub(width)));
-            text.push_str("  ");
-            for (k, ch) in c.list.iter().enumerate() {
-                text.push_str("  ");
-                let one = format!("{} {}", if k == c.picked { "[x]" } else { "[ ]" }, ch.shown);
-                at.push((text.chars().count(), one.chars().count()));
-                text.push_str(&one);
+        }
+        for (d, c) in self.choices.iter().enumerate() {
+            text.push_str("    ");
+            let start = text.chars().count();
+            match c.named {
+                Some(name) => {
+                    let one = format!("{name} [{}]", c.list[c.picked].shown);
+                    at.push((d, (c.picked + 1) % c.list.len(), start, one.chars().count()));
+                    text.push_str(&one);
+                }
+                None => {
+                    for (k, ch) in c.list.iter().enumerate() {
+                        if k > 0 {
+                            text.push_str("  ");
+                        }
+                        let one = format!("{} {}", if k == c.picked { "[x]" } else { "[ ]" }, ch.shown);
+                        at.push((d, k, text.chars().count(), one.chars().count()));
+                        text.push_str(&one);
+                    }
+                }
             }
         }
         (text, at)
     }
 
-    /// What Enter on it does: its pick's action, if the pick has one, else
-    /// its own.
+    /// What Enter on it does: the action of the first pick that has one,
+    /// else its own.
     pub fn doing(&self) -> Action {
         self.choices
-            .as_ref()
-            .and_then(|c| c.list[c.picked].action.clone())
+            .iter()
+            .find_map(|c| c.list[c.picked].action.clone())
             .unwrap_or_else(|| self.action.clone())
+    }
+
+    /// The effort it asks the agent at, as its dropdown picks it, if it
+    /// asks.
+    pub fn effort(&self) -> Option<Effort> {
+        self.choices.iter().find(|c| c.of == EFFORT).and_then(|c| Effort::parse(c.pick()))
     }
 }
 
@@ -1433,6 +1487,7 @@ impl Menu {
             items: out,
             note: note.filter(|_| blocked),
             at: None,
+            choice: 0,
             top: 0,
         }
     }
@@ -1447,13 +1502,13 @@ impl Menu {
     }
 
     /// Selects the next item that can be chosen, down or up, around the
-    /// ends.
+    /// ends: ← → pick in its first dropdown.
     fn step(&mut self, down: bool) {
         let n = self.items.len();
         for k in 1..=n {
             let i = if down { (self.sel + k) % n } else { (self.sel + n - k) % n };
             if self.items[i].enabled {
-                self.sel = i;
+                (self.sel, self.choice) = (i, 0);
                 return;
             }
         }
@@ -1461,6 +1516,14 @@ impl Menu {
 
     pub fn chosen(&self) -> Option<&Item> {
         self.items.get(self.sel).filter(|i| i.enabled)
+    }
+
+    /// The dropdown of the item selected that ← → pick in, if it has one.
+    fn dropdown_mut(&mut self) -> Option<&mut Choices> {
+        let at = self.choice;
+        let c = &mut self.items.get_mut(self.sel).filter(|i| i.enabled)?.choices;
+        let last = c.len().saturating_sub(1);
+        c.get_mut(at.min(last))
     }
 
     /// Its asks labelled as they ask: `later`, or now.
@@ -1574,6 +1637,12 @@ pub struct App {
     /// The searches of the middle made with `/`, the latest first: kept
     /// between runs too.
     pub finds: Vec<String>,
+    /// The effort last picked in a menu, which the next asks start at:
+    /// kept between runs too; `high` until one is picked.
+    pub effort: Effort,
+    /// While an item of a menu is done, the effort its dropdown picks, for
+    /// the ask it makes.
+    at_effort: Option<Effort>,
     pub focus: Focus,
     /// How the patches are shown, on the left: expanded, listing the files
     /// of the patch picked, or hidden.
@@ -1982,6 +2051,8 @@ impl App {
             searching: None,
             searches: Vec::new(),
             finds: Vec::new(),
+            effort: Effort::default(),
+            at_effort: None,
             focus: Focus::List,
             list: cfg.view.patches,
             file_sel: None,
@@ -2057,6 +2128,7 @@ impl App {
         app.judge();
         app.precreate();
         app.finds = app.kept_finds();
+        app.effort = app.kept_effort();
         Ok(app)
     }
 
@@ -2372,9 +2444,9 @@ impl App {
             crate::setup::Step::Save(chosen) => match crate::config::set_local_all(&su.repo, &chosen.settings()) {
                 Ok(at) => {
                     match su.then {
-                        Then::Send(notes, way, whole) => self.send(notes, way, whole),
-                        Then::Batch(way, fan) => self.send_batch(way, fan),
-                        Then::SendBack => self.review_send_back(),
+                        Then::Send(notes, way, whole, effort) => self.send(notes, way, whole, effort),
+                        Then::Batch(way, fan, effort) => self.send_batch(way, fan, effort),
+                        Then::SendBack(effort) => self.review_send_back(effort),
                     }
                     let saved = format!("the setup is saved in {}", at.display());
                     self.status = if self.status.is_empty() { saved } else { format!("{saved}; {}", self.status) };
@@ -2940,14 +3012,15 @@ impl App {
                         m.sel = i;
                         press(self, KeyCode::Enter)
                     }
-                    // A choice picked, the item not done yet.
-                    Some(Spot::Choice(i, k)) => {
-                        m.sel = i;
+                    // A choice picked, the item not done yet; ← → then
+                    // pick in its dropdown.
+                    Some(Spot::Choice(i, d, k)) => {
+                        (m.sel, m.choice) = (i, d);
                         let picked = m
                             .items
                             .get_mut(i)
                             .filter(|i| i.enabled)
-                            .and_then(|i| i.choices.as_mut())
+                            .and_then(|i| i.choices.get_mut(d))
                             .filter(|c| k < c.list.len())
                             .map(|c| {
                                 c.picked = k;
@@ -3083,8 +3156,11 @@ impl App {
         let Some(spot) = spot else { return };
         match &mut self.mode {
             Mode::Menu(m) => {
-                if let Spot::Item(i) | Spot::Choice(i, _) = spot {
-                    m.sel = i;
+                // Over a dropdown, ← → pick in it.
+                match spot {
+                    Spot::Choice(i, d, _) => (m.sel, m.choice) = (i, d),
+                    Spot::Item(i) if m.sel != i => (m.sel, m.choice) = (i, 0),
+                    _ => {}
                 }
             }
             Mode::Moving { to, .. } => {
@@ -3350,6 +3426,10 @@ impl App {
         } else {
             match self.cfg.keys.translate(&k) {
                 Some(t) => t,
+                // In a menu, Tab and shift-Tab, which the settings give
+                // nothing on the screens: from one dropdown of an item to
+                // the next.
+                None if matches!(self.mode, Mode::Menu(_)) && matches!(k.code, KeyCode::Tab | KeyCode::BackTab) => k,
                 None => {
                     if let Mode::Help { back, .. } = &self.mode {
                         self.mode = (**back).clone();
@@ -4222,9 +4302,21 @@ impl App {
                     };
                     let later = if ask.labels.is_some() && self.later() { ", later: it waits in the batch, which the banner sends" } else { "" };
                     out.push(format!("Press Enter to {}{later}.", self.about_here(&does)));
-                    if let Some(c) = &item.choices {
-                        let each: Vec<String> = c.list.iter().map(|ch| format!("{}, {}", ch.shown, ch.said)).collect();
-                        out.push(format!("Press ← → to pick {}: {}. What is picked is kept for this stack.", c.what, each.join("; ")));
+                    // Each dropdown: ← → pick in the one the menu is on, and
+                    // Tab goes to another.
+                    let on = m.choice.min(item.choices.len().saturating_sub(1));
+                    for (d, c) in item.choices.iter().enumerate() {
+                        let keys = if d == on { "Press ← →" } else { "Press Tab, then ← →," };
+                        out.push(match c.of {
+                            EFFORT => format!(
+                                "{keys} to pick the effort the agent is asked at, as claude's --effort takes it: {}. The effort picked is kept for the next asks, in every stack and in the next runs.",
+                                Effort::listed()
+                            ),
+                            _ => {
+                                let each: Vec<String> = c.list.iter().map(|ch| format!("{}, {}", ch.shown, ch.said)).collect();
+                                format!("{keys} to pick {}: {}. What is picked is kept for this stack.", c.what, each.join("; "))
+                            }
+                        });
                     }
                 }
                 out.push("Press ↑↓ for another item, Esc to close the menu.".into());
@@ -4620,19 +4712,24 @@ impl App {
                 m.sel = 0;
                 m.step(false);
             }
-            // On an item with choices, another one picked, and kept.
+            // On an item with choices, another one picked in the dropdown
+            // the menu is on, and kept.
             KeyCode::Left | KeyCode::Right => {
-                let right = k.code == KeyCode::Right;
-                let picked = m.items.get_mut(m.sel).filter(|i| i.enabled).and_then(|i| i.choices.as_mut()).map(|c| {
-                    let n = c.list.len();
-                    c.picked = if right { (c.picked + 1) % n } else { (c.picked + n - 1) % n };
-                    (c.of, c.pick())
-                });
-                if let Some((of, pick)) = picked {
+                let by = if k.code == KeyCode::Right { 1 } else { -1 };
+                if let Some((of, pick)) = m.dropdown_mut().map(|c| c.turn(by)) {
                     self.picked_choice(of, pick);
                     if of == "when" {
                         m.relabel(pick == "later");
                     }
+                }
+            }
+            // On an item with more than one dropdown, the next one, or the
+            // one before, round past either end: ← → pick in it.
+            KeyCode::Tab | KeyCode::BackTab => {
+                let n = m.chosen().map_or(0, |i| i.choices.len());
+                if n > 1 {
+                    let at = m.choice.min(n - 1);
+                    m.choice = if k.code == KeyCode::Tab { (at + 1) % n } else { (at + n - 1) % n };
                 }
             }
             KeyCode::Esc | KeyCode::Char(' ') => {
@@ -4646,9 +4743,7 @@ impl App {
             // close, and whether HEAD follows the stack: the other pick, the
             // menu staying.
             KeyCode::Enter if m.chosen().is_some_and(|i| matches!(i.action, Action::AskingAll | Action::HeadSync)) => {
-                if let Some(c) = m.items.get_mut(m.sel).and_then(|i| i.choices.as_mut()) {
-                    c.picked = (c.picked + 1) % c.list.len();
-                    let (of, pick) = (c.of, c.pick());
+                if let Some((of, pick)) = m.items.get_mut(m.sel).and_then(|i| i.choices.first_mut()).map(|c| c.turn(1)) {
                     self.picked_choice(of, pick);
                 }
             }
@@ -4660,7 +4755,10 @@ impl App {
                 };
                 return match item {
                     Some(item) => {
+                        // An ask goes at the effort its dropdown picks.
+                        self.at_effort = item.effort();
                         let e = self.perform(item.doing());
+                        self.at_effort = None;
                         // The same menu built again, a box checked in it: it
                         // stays where it was drawn.
                         if let Mode::Menu(again) = &mut self.mode
@@ -4726,20 +4824,17 @@ impl App {
             },
             Item::new("Keep writing", Action::KeepWriting),
         ];
+        // Changed, a comment is saved first, then asked about; left as it
+        // was, asked about as it is.
         if self.answer_only(&e.target) {
             let mut items = vec![];
             if send {
-                let (ask, later) = match changed {
-                    true => (
-                        Item::new("Save it and ask agent, answer only", Action::Save(Some(Way::Answer))).when(w && named),
-                        "Save it and ask agent later, answer only",
-                    ),
-                    false => (
-                        Item::new("Ask agent, answer only", Action::SendAsItIs(Way::Answer)).when(named),
-                        "Ask agent later, answer only",
-                    ),
+                let (does, ok) = match changed {
+                    true => (Action::Save(Some(Way::Answer)), w && named),
+                    false => (Action::SendAsItIs(Way::Answer), named),
                 };
-                self.push_ask(&mut items, ask, later);
+                let ask = Item::new("Ask agent, answer only", does).when(ok).with(self.effort_choices(None));
+                self.push_ask(&mut items, ask, "Ask agent later, answer only");
             }
             if changed {
                 items.push(Item::new("Save it", Action::Save(None)));
@@ -4764,15 +4859,17 @@ impl App {
             };
             let test = matches!(e.target, Target::Stack | Target::Patch(_));
             let mut choices = self.ask_choices(a_patch_s, test, true);
-            if changed {
-                let ask = Item::new("Save it and ask agent", Action::Save(Some(Way::Change))).when(w && named).with(choices);
-                self.push_ask(&mut items, ask, "Save it and ask agent later");
-            } else {
-                for c in &mut choices.list {
-                    c.action = c.action.take().map(as_it_is);
+            let (does, ok) = match changed {
+                true => (Action::Save(Some(Way::Change)), w && named),
+                false => {
+                    for c in &mut choices.list {
+                        c.action = c.action.take().map(as_it_is);
+                    }
+                    (Action::SendAsItIs(Way::Change), named)
                 }
-                self.push_ask(&mut items, Item::new("Ask agent", Action::SendAsItIs(Way::Change)).when(named).with(choices), "Ask agent later");
-            }
+            };
+            let ask = Item::new("Ask agent", does).when(ok).with(choices).with(self.effort_choices(None));
+            self.push_ask(&mut items, ask, "Ask agent later");
         }
         items.extend(refs);
         items.extend(rest);
@@ -5227,6 +5324,41 @@ impl App {
         self.db.choice(&self.stack, "when") == Some("later")
     }
 
+    /// The effort an ask goes at, as a dropdown drawn as one, `Effort
+    /// [high]`: the effort `at`, that of what was asked before, if given;
+    /// else the one picked last.
+    fn effort_choices(&self, at: Option<Effort>) -> Choices {
+        let list = Effort::ALL.iter().map(|e| Choice::new(e.name(), e.name(), format!("claude's --effort {}", e.name()), None)).collect();
+        Choices {
+            named: Some("Effort"),
+            ..Choices::new(EFFORT, "effort", list, Some(at.unwrap_or(self.effort).name()))
+        }
+    }
+
+    /// The effort the ask being made goes at: its item's, picked in its
+    /// dropdown; else, made otherwise than from a menu, the one picked last.
+    fn asked_at(&self) -> Effort {
+        self.at_effort.unwrap_or(self.effort)
+    }
+
+    /// The effort picked last, kept from the runs before: `high` until one
+    /// is, and for the tour, which keeps nothing on disk.
+    fn kept_effort(&self) -> Effort {
+        match self.in_memory() {
+            true => Effort::default(),
+            false => crate::state::effort(&crate::home::get().state).unwrap_or_default(),
+        }
+    }
+
+    /// `effort` picked in a menu: the next asks start at it, in this run and
+    /// in the next (`state`), but for the tour's database.
+    fn pick_effort(&mut self, effort: Effort) {
+        self.effort = effort;
+        if !self.in_memory() {
+            crate::state::picked_effort(&crate::home::get().state, effort);
+        }
+    }
+
     /// Ask `ask`, over the row that picks when it asks, labelled `later`
     /// while it asks later: under it, as it is seldom picked otherwise.
     fn push_ask(&self, items: &mut Vec<Item>, mut ask: Item, later: &str) {
@@ -5261,11 +5393,13 @@ impl App {
 
     /// A choice picked in a menu: kept for the stack; but the review's own
     /// rows, not kept for the stack: the comments that asked marked so in
-    /// the review, and whether HEAD follows the stack kept for the review.
+    /// the review, and whether HEAD follows the stack kept for the review;
+    /// and the effort, kept for every ask.
     fn picked_choice(&mut self, of: &str, pick: &str) {
         match of {
             "asking" => self.mark_all_asking(pick == "close"),
             "head" => self.head_stays(pick == "stay"),
+            EFFORT => self.pick_effort(Effort::parse(pick).unwrap_or_default()),
             _ => self.pick_choice(of, pick),
         }
     }
@@ -5393,7 +5527,9 @@ impl App {
             (Screen::History, _) => {
                 if let Some(e) = self.history().get(self.pick) {
                     title = format!("@{}", e.rev);
-                    items.push(Item::new("Ask agent about this, answer only…", Action::AskAbout(e.rev)));
+                    // The question written first, which its menu asks at
+                    // the effort picked here, unless another is picked there.
+                    items.push(Item::new("Ask agent about this, answer only…", Action::AskAbout(e.rev)).with(self.effort_choices(None)));
                     if !self.about(e.rev).is_empty() {
                         items.push(Item::new("Go to its comments", Action::GoToAbout(e.rev)));
                     }
@@ -5447,7 +5583,8 @@ impl App {
             ));
         }
         let choices = Choices::new("ask", "how", list, self.db.choice(&self.stack, "ask"));
-        items.push(Item::new("Ask agent about all", Action::SendAll(Way::Change)).when(w && (n > 0 || t > 0)).with(choices));
+        let ask = Item::new("Ask agent about all", Action::SendAll(Way::Change)).when(w && (n > 0 || t > 0));
+        items.push(ask.with(choices).with(self.effort_choices(None)));
     }
 
     fn comment_items(&self, c: &Note, items: &mut Vec<Item>, w: bool) {
@@ -5520,21 +5657,23 @@ impl App {
                 let review = if r.is_some_and(crate::held::pulled) { "Review the comments pulled…" } else { "Review the agent's work…" };
                 items.push(Item::new(review, Action::Review(run, Some(crate::held::Part::Reply(k)))));
             }
-            // In the batch: sent now, on its own, or taken out.
+            // In the batch: sent now, on its own, at the effort it was
+            // batched at unless another is picked, or taken out.
             None if c.queued.as_ref().is_some_and(|q| q.batched()) => {
-                let said = c.queued.as_ref().map_or("", |q| q.said());
-                items.push(Item::new(format!("Send it now ({said})"), Action::SendNow).when(w));
+                let (said, at) = c.queued.as_ref().map_or(("", None), |q| (q.said(), q.effort));
+                items.push(Item::new(format!("Send it now ({said})"), Action::SendNow).when(w).with(self.effort_choices(at)));
                 items.push(Item::new("Remove it from the batch", Action::Unbatch));
             }
             None if c.queued.is_some() => items.push(Item::new("Take it back from the agent's queue", Action::Unsend)),
             None if c.about.is_some() => {
                 let ask = Item::new("Ask agent, answer only", Action::Send(Way::Answer)).when(w && ask::sendable(c));
-                self.push_ask(items, ask, "Ask agent later, answer only");
+                self.push_ask(items, ask.with(self.effort_choices(None)), "Ask agent later, answer only");
             }
             None => {
                 let s = ask::sendable(c);
                 let choices = self.ask_choices(!c.on_stack(), ask::can_test(&self.db, c), false);
-                self.push_ask(items, Item::new("Ask agent", Action::Send(Way::Change)).when(w && s).with(choices), "Ask agent later");
+                let ask = Item::new("Ask agent", Action::Send(Way::Change)).when(w && s).with(choices).with(self.effort_choices(None));
+                self.push_ask(items, ask, "Ask agent later");
             }
         }
         if let Some(rev) = c.about {
@@ -5796,7 +5935,7 @@ impl App {
             Action::AskReviewClose(accept) => self.mode = Mode::Menu(self.review_close_ask(accept)),
             Action::ReviewClose(rest) => self.review_close(rest),
             Action::CloseAsking(k, close) => self.mark_asking(k, close),
-            Action::SendBack => self.review_send_back(),
+            Action::SendBack => self.review_send_back(self.at_effort),
             Action::AskClose => {
                 if let Some(m) = self.review_close_menu() {
                     self.mode = Mode::Menu(m);
@@ -5911,12 +6050,12 @@ impl App {
             }
             Action::Send(way) => {
                 if let Some(c) = self.picked() {
-                    self.ask_agent(vec![(c.change, c.id)], way, false);
+                    self.ask_agent(vec![(c.change, c.id)], way, false, self.asked_at());
                 }
             }
             Action::SendWhole => {
                 if let Some(c) = self.picked() {
-                    self.ask_agent(vec![(c.change, c.id)], Way::Change, true);
+                    self.ask_agent(vec![(c.change, c.id)], Way::Change, true, self.asked_at());
                 }
             }
             // Done by the ask under it.
@@ -5925,7 +6064,8 @@ impl App {
                 if let Some(c) = self.picked()
                     && let Some(q) = c.queued.clone()
                 {
-                    self.send(vec![(c.change, c.id)], q.way, q.stack);
+                    let effort = self.at_effort.or(q.effort).unwrap_or(self.effort);
+                    self.send(vec![(c.change, c.id)], q.way, q.stack, effort);
                 }
             }
             Action::Unbatch => {
@@ -5937,11 +6077,11 @@ impl App {
                     self.reload();
                 }
             }
-            Action::SendBatch(way, fan) => self.send_batch(way, fan),
+            Action::SendBatch(way, fan) => self.send_batch(way, fan, self.at_effort),
             Action::Toggle(change, id) => self.toggle_batched(&change, &id),
             Action::SendAll(way) => {
                 let notes = self.listed_sendable(way);
-                self.send(notes, way, false);
+                self.send(notes, way, false, self.asked_at());
             }
             Action::Unsend => {
                 if let Some(c) = self.picked() {
@@ -6272,7 +6412,7 @@ impl App {
                     let text = e.ed.text();
                     let was = self.mine_of(&e.target);
                     match (self.save_attached(&e.target, &text, &e.attached), way) {
-                        (Some(saved), Some(way)) => self.ask_agent(vec![saved], way, false),
+                        (Some(saved), Some(way)) => self.ask_agent(vec![saved], way, false, self.asked_at()),
                         (saved, _) => self.settle_edit(&e, saved.is_some() && was.as_deref() != Some(text.trim())),
                     }
                     self.say_detached();
@@ -6287,7 +6427,7 @@ impl App {
                     }
                     let text = e.ed.text();
                     if let Some(saved) = self.save_attached(&e.target, &text, &e.attached) {
-                        self.ask_agent(vec![saved], Way::Change, true);
+                        self.ask_agent(vec![saved], Way::Change, true, self.asked_at());
                     }
                     self.say_detached();
                 }
@@ -6687,7 +6827,9 @@ impl App {
     /// The ways to make a new stack: by the agent, from the checkout's
     /// commits, from Phabricator's revisions.
     fn new_stack_items(&self, items: &mut Vec<Item>) {
-        items.push(Item::new("Ask the agent to make a stack…", Action::AgentStack));
+        // The comment on it written first, which its menu asks at the
+        // effort picked here, unless another is picked there.
+        items.push(Item::new("Ask the agent to make a stack…", Action::AgentStack).with(self.effort_choices(None)));
         items.push(Item::new("Import from the workspace…", Action::FromWorkspace));
         #[cfg(feature = "moz-phab")]
         if self.cfg.reviews.source != crate::config::Source::None {
@@ -6755,7 +6897,7 @@ impl App {
         self.switch_stack(name);
         self.write(Target::Stack, Focus::List, "");
         self.status = format!(
-            "the stack {name} is made, empty, on HEAD {}: say what the agent should make of it, then Esc and Save it and ask agent",
+            "the stack {name} is made, empty, on HEAD {}: say what the agent should make of it, then press Esc and choose Ask agent",
             &base[..12.min(base.len())]
         );
     }
@@ -7223,20 +7365,20 @@ impl App {
         };
     }
 
-    /// Asks the agent about `notes`, to the whole stack if `whole`: now, or
-    /// later, in the batch, as the stack's menus picked.
-    fn ask_agent(&mut self, notes: Vec<(String, String)>, way: Way, whole: bool) {
+    /// Asks the agent about `notes`, to the whole stack if `whole`, at
+    /// `effort`: now, or later, in the batch, as the stack's menus picked.
+    fn ask_agent(&mut self, notes: Vec<(String, String)>, way: Way, whole: bool, effort: Effort) {
         if self.later() {
-            self.batch(notes, way, whole);
+            self.batch(notes, way, whole, effort);
         } else {
-            self.send(notes, way, whole);
+            self.send(notes, way, whole, effort);
         }
     }
 
-    /// Puts `notes` in the stack's batch, to the whole stack if `whole`:
-    /// they wait there until the banner sends the batch.
-    fn batch(&mut self, notes: Vec<(String, String)>, way: Way, whole: bool) {
-        let done = ask::batch(&self.path, &self.stack, &notes, way, whole);
+    /// Puts `notes` in the stack's batch, to the whole stack if `whole`, at
+    /// `effort`: they wait there until the banner sends the batch.
+    fn batch(&mut self, notes: Vec<(String, String)>, way: Way, whole: bool, effort: Effort) {
+        let done = ask::batch(&self.path, &self.stack, &notes, way, whole, effort);
         self.reload();
         if let Err(e) = done {
             self.status = e.0;
@@ -7248,13 +7390,14 @@ impl App {
     }
 
     /// Sends the batch of what is asked in `way`: together, or with `fan`
-    /// each on its own. They are started away from the screen.
-    fn send_batch(&mut self, way: Way, fan: bool) {
+    /// each on its own; at `effort`, else each at the effort it was batched
+    /// at. They are started away from the screen.
+    fn send_batch(&mut self, way: Way, fan: bool, effort: Option<Effort>) {
         let sent = ask::batched(&self.db, &self.stack, way);
-        if !sent.is_empty() && self.set_up_first(Then::Batch(way, fan)) {
+        if !sent.is_empty() && self.set_up_first(Then::Batch(way, fan, effort)) {
             return;
         }
-        let done = ask::release_batch(&self.path, &self.stack, way, fan);
+        let done = ask::release_batch(&self.path, &self.stack, way, fan, effort);
         self.reload();
         let n = match done {
             Ok(n) => n,
@@ -7279,7 +7422,8 @@ impl App {
     }
 
     /// From the banner's menu: comment (change, id) put in the batch, as the
-    /// stack's asks are made, or taken out; the menu open again on it.
+    /// stack's asks are made, at the effort it was last asked at, else the
+    /// one picked last; or taken out. The menu open again on it.
     fn toggle_batched(&mut self, change: &str, id: &str) {
         let Some(n) = self.db.note(change, id).cloned() else { return };
         let at = [(change.to_string(), id.to_string())];
@@ -7287,7 +7431,8 @@ impl App {
             Some(q) if q.batched() => ask::unsend(&self.path, &at),
             _ => {
                 let (way, whole) = self.way_for(&n);
-                ask::batch(&self.path, &self.stack, &at, way, whole)
+                let effort = self.db.last_queued(change, id).and_then(|q| q.effort).unwrap_or(self.effort);
+                ask::batch(&self.path, &self.stack, &at, way, whole, effort)
             }
         };
         self.reload();
@@ -7324,15 +7469,15 @@ impl App {
         }
     }
 
-    /// Puts `notes` on the agent's queue, to the whole stack if `whole`;
-    /// they are started away from the screen. Before the first ask, once
-    /// the setup of what each kind of ask may use is saved.
-    fn send(&mut self, notes: Vec<(String, String)>, way: Way, whole: bool) {
-        if !notes.is_empty() && self.set_up_first(Then::Send(notes.clone(), way, whole)) {
+    /// Puts `notes` on the agent's queue, to the whole stack if `whole`, at
+    /// `effort`; they are started away from the screen. Before the first
+    /// ask, once the setup of what each kind of ask may use is saved.
+    fn send(&mut self, notes: Vec<(String, String)>, way: Way, whole: bool, effort: Effort) {
+        if !notes.is_empty() && self.set_up_first(Then::Send(notes.clone(), way, whole, effort)) {
             return;
         }
         let n = notes.len();
-        if let Err(e) = ask::queue(&self.path, &self.stack, &notes, way, whole) {
+        if let Err(e) = ask::queue(&self.path, &self.stack, &notes, way, whole, effort) {
             self.status = e.0;
             self.reload();
             return;
@@ -8274,7 +8419,15 @@ impl App {
         match &self.mode {
             Mode::Menu(m) => match m.chosen() {
                 Some(i) if i.check.is_some() => "↑↓ choose · enter: check or uncheck it · esc: close · ?: what it does".into(),
-                Some(Item { choices: Some(c), .. }) => format!("↑↓ choose · ←→: {} · enter: do it · esc: close · ?: what it does", c.what),
+                // With more than one dropdown, where Tab goes too.
+                Some(i) if !i.choices.is_empty() => {
+                    let on = m.choice.min(i.choices.len() - 1);
+                    let tab = match i.choices.len() {
+                        1 => String::new(),
+                        n => format!(" · tab: {}", i.choices[(on + 1) % n].what),
+                    };
+                    format!("↑↓ choose · ←→: {}{tab} · enter: do it · esc: close · ?: what it does", i.choices[on].what)
+                }
                 _ => "↑↓ choose · enter: do it · esc: close · ?: what it does".into(),
             },
             Mode::Moving { .. } => "↑↓ to place it · enter: put it there · esc: leave it where it was".into(),
@@ -8383,8 +8536,9 @@ impl App {
             None => body,
         };
         let (w, h) = (area.width as usize, area.height as usize);
-        // The choices in one column, past the longest label that has them.
-        let pad = m.items.iter().filter(|i| i.choices.is_some()).map(|i| i.label.chars().count()).max().unwrap_or(0);
+        // The first dropdowns in one column, past the longest label that has
+        // one.
+        let pad = m.items.iter().filter(|i| !i.choices.is_empty()).map(|i| i.label.chars().count()).max().unwrap_or(0);
         let widest = m.items.iter().map(|i| i.row(pad).0.chars().count()).max().unwrap_or(0);
         // A note of short lines, as a review's summary, each line in full.
         let note_w = m.note.as_deref().map_or(0, |n| n.lines().map(|l| l.chars().count()).max().unwrap_or(0).min(60));
@@ -8438,10 +8592,21 @@ impl App {
             }
             let (text, choices) = item.row(pad);
             put(buf, area, x + 1, y + 1 + r, bw - 2, &fit(&format!(" {text}"), bw - 2), st);
+            // Of more than one dropdown, the one ← → pick in underlined.
+            if i == m.sel && item.choices.len() > 1 {
+                let on = m.choice.min(item.choices.len() - 1);
+                let span: Vec<(usize, usize)> = choices.iter().filter(|c| c.0 == on).map(|&(_, _, start, width)| (start, start + width)).collect();
+                if let (Some(&(from, _)), Some(&(_, to))) = (span.first(), span.last())
+                    && 1 + from < bw - 2
+                {
+                    let part: String = text.chars().skip(from).take(to - from).collect();
+                    put(buf, area, x + 2 + from, y + 1 + r, (to - from).min(bw - 3 - from), &part, st.add_modifier(Modifier::UNDERLINED));
+                }
+            }
             // Each choice a spot of its own, over the item's: a click picks it.
-            for (k, (start, width)) in choices.into_iter().enumerate() {
+            for (d, k, start, width) in choices {
                 if 1 + start < bw - 2 {
-                    spot_in(&self.spots, area, (x + 2 + start, y + 1 + r, width.min(bw - 3 - start), 1), Spot::Choice(i, k));
+                    spot_in(&self.spots, area, (x + 2 + start, y + 1 + r, width.min(bw - 3 - start), 1), Spot::Choice(i, d, k));
                 }
             }
         }

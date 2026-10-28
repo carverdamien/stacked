@@ -720,7 +720,7 @@ impl Tour {
                 let moved = self.thread(app).is_some_and(|n| n.moved.is_some());
                 let place = if moved { "among the stack's own comments" } else { "on patch 4" };
                 format!(
-                    "The agent rewrote patches 4 and 5: now O blocks the diagonal, and X blocks O's left column. Its reply is the last turn of your comment's thread, {place}: the comments pane, on the right, marks the comment ✓, and the pane's header says 1 to read. Reply with a question: with the cursor on your comment (→ goes to the comments pane, and Enter there goes to the comment), press Enter, write \"Who is winning?\", press Esc, go to Save it and ask agent, pick answer only with ← →, and press Enter. Asked that way, the agent answers, and changes nothing."
+                    "The agent rewrote patches 4 and 5: now O blocks the diagonal, and X blocks O's left column. Its reply is the last turn of your comment's thread, {place}: the comments pane, on the right, marks the comment ✓, and the pane's header says 1 to read. Reply with a question: with the cursor on your comment (→ goes to the comments pane, and Enter there goes to the comment), press Enter, write \"Who is winning?\", press Esc, go to Ask agent, pick answer only with ← →, and press Enter. Asked that way, the agent answers, and changes nothing."
                 )
             }
             Step::Reading => "The agent answered your question, and changed nothing. Next, keep track of what you have read. Press 2 to switch to reading: each patch on the left then counts its changed lines read, as 0/2, and the bar at the top counts them too. In the list of patches (← from the middle), pick patch 1 and press → to read it. Then press Space: it marks the block of code at the cursor read and goes on to the next line not read, and Enter marks it unread again. Mark patch 1 read.".into(),
@@ -738,7 +738,7 @@ impl Tour {
             Step::StackComment if app.screen == Screen::Review => "Accept the agent's change, which adds patch 6, and its reply: press Enter on each part, then press Esc and choose Close review.".into(),
             Step::StackComment if Tour::landed(app).is_some() => "The agent's work has landed: its change adds patch 6, O's next move, and it waits for your review. Review it as before: press Esc to open the banner, press Enter, accept each part with Enter, then press Esc and choose Close review.".into(),
             Step::StackComment if working => "The agent is working on the stack's comment. The stack's own comments show in the middle while the stack's header (≡ game) is picked, and this one says with the agent there.".into(),
-            Step::StackComment => "A comment on the stack is asked about the whole stack: there the agent may change any patch, and add new ones, as for a rebase. On the stack's header (≡ game), press Space and choose Comment on the stack…, write \"Play O's next move.\", press Esc, go to Save it and ask agent, pick change with ← →, and press Enter.".into(),
+            Step::StackComment => "A comment on the stack is asked about the whole stack: there the agent may change any patch, and add new ones, as for a rebase. On the stack's header (≡ game), press Space and choose Comment on the stack…, write \"Play O's next move.\", press Esc, go to Ask agent, pick change with ← →, and press Enter.".into(),
             Step::Runs => "The agent added patch 6: O blocks X's middle row. Runs… lists everything the agent was asked, newest first, and what came of each: press Space and choose Runs…, near the end of any menu. Enter on a run shows all the agent wrote, Esc goes back to the list, and Esc again comes back to the stack.".into(),
             Step::Help => "Press ? anywhere: it says what you can do where the cursor is, and where the arrows go from there. Read it, then press any key to close it. The keys are settings too: `stacked config` prints every setting in the form of stacked's settings file, ~/.stacked/config.toml, and its [keys] can make any key another.".into(),
             Step::End => "That is stacked. In a project of yours, `stacked import NAME main..HEAD` makes a stack of the commits on top of main, `stacked` opens the editor, `stacked web` opens the editor in a browser, `stacked apply NAME` puts the stack's patches in your worktree, and `stacked --help` lists the other commands. Next time, `stacked demo` starts on the list of its sections. Below is board.txt as the stack's patches leave it. Press Enter to leave the tour.".into(),
@@ -802,7 +802,7 @@ impl Tour {
                 if notes.is_empty() {
                     return;
                 }
-                match ask::queue(&path, STACK, &notes, Way::Change, on_patch) {
+                match ask::queue(&path, STACK, &notes, Way::Change, on_patch, app.effort) {
                     Ok(()) => app.launch(),
                     Err(e) => fail(app, e),
                 }
@@ -827,7 +827,7 @@ impl Tour {
                     };
                     asked = Db::edit(&path, |db| db.set_note(note)).map(|_| ());
                 }
-                match asked.and_then(|_| ask::queue(&path, STACK, &[(n.change.clone(), n.id.clone())], Way::Answer, false)) {
+                match asked.and_then(|_| ask::queue(&path, STACK, &[(n.change.clone(), n.id.clone())], Way::Answer, false, app.effort)) {
                     Ok(()) => app.launch(),
                     Err(e) => fail(app, e),
                 }
@@ -938,7 +938,7 @@ impl Tour {
                     ..Default::default()
                 };
                 let asked = (note.change.clone(), note.id.clone());
-                match Db::edit(&path, |db| db.set_note(note)).and_then(|_| ask::queue(&path, STACK, &[asked], Way::Change, false)) {
+                match Db::edit(&path, |db| db.set_note(note)).and_then(|_| ask::queue(&path, STACK, &[asked], Way::Change, false, app.effort)) {
                     Ok(()) => app.launch(),
                     Err(e) => fail(app, e),
                 }

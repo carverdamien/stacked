@@ -521,12 +521,13 @@ pub fn answer(db: &mut Db, id: &str, k: usize, text: &str) -> Result<()> {
 }
 
 /// What goes back to the agent from a review: the comments to ask again,
-/// how, and whether of the whole stack.
+/// how, whether of the whole stack, and at what effort, the work's own.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Round {
     pub notes: Vec<(String, String)>,
     pub way: crate::db::Way,
     pub whole: bool,
+    pub effort: Option<crate::db::Effort>,
     /// How many edits that went on from it are asked again.
     pub dropped: usize,
 }
@@ -586,6 +587,7 @@ pub fn send_back(db: &mut Db, id: &str, marks: &BTreeMap<String, bool>) -> Resul
         notes,
         way: i.way,
         whole,
+        effort: i.effort,
         dropped,
     })
 }
