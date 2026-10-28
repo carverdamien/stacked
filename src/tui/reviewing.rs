@@ -208,10 +208,22 @@ impl App {
         crate::held::parts_left(&self.db, r)
     }
 
-    /// Opens the review of what run `run` brought back, with its marks as
+    /// Opens the review of what run `run` brought back, as `show_review`
+    /// does; not while the commit messages of the stack and of your
+    /// workspace differ, which are synced before any landed work is
+    /// reviewed, whatever opens it.
+    pub(super) fn open_review(&mut self, run: &str, part: Option<Part>) {
+        if let Some(why) = self.sync_first() {
+            self.status = why;
+            return;
+        }
+        self.show_review(run, part);
+    }
+
+    /// Shows the review of what run `run` brought back, with its marks as
     /// last saved; the cursor on `part`, else where it was when the review
     /// was left, else on the first not marked.
-    pub(super) fn open_review(&mut self, run: &str, part: Option<Part>) {
+    pub(super) fn show_review(&mut self, run: &str, part: Option<Part>) {
         let Some((r, _)) = self.work(run) else { return };
         // Gone on from work under review, guessing: that one is reviewed first.
         if ask::guessing(&self.db, r).is_some() {
@@ -589,11 +601,14 @@ impl App {
     /// What Delete does on the banner's line of what run `run` brought
     /// back: asks to reject every part of it not marked yet and close its
     /// review, as the review's "Reject all remaining and Close" does. Not
-    /// while it goes on from work landed before it, which is reviewed
-    /// first, nor with no part left that is not marked, as that item is
-    /// not: why is said.
+    /// before the commit messages are synced, nor while it goes on from
+    /// work landed before it, which is reviewed first, nor with no part
+    /// left that is not marked, as that item is not: why is said.
     pub(super) fn reject_work_here(&self, run: &str) -> std::result::Result<Action, String> {
         let Some((r, _)) = self.work(run) else { return Err("this work is gone".into()) };
+        if let Some(why) = self.sync_first() {
+            return Err(why);
+        }
         if ask::guessing(&self.db, r).is_some() {
             return Err("this work goes on from the work landed before it, which waits for your review: review that one first".into());
         }
@@ -626,8 +641,13 @@ impl App {
 
     /// The review of what run `run` brought back closed from the banner,
     /// every part not marked yet rejected, as from the review; the main
-    /// screen staying, closed or not (the status line says why not).
+    /// screen staying, closed or not (the status line says why not). Not
+    /// before the commit messages are synced.
     pub(super) fn reject_work(&mut self, run: &str) {
+        if let Some(why) = self.sync_first() {
+            self.status = why;
+            return;
+        }
         self.reviewing = Some(self.review_of(run));
         self.review_close(Some(false));
         self.reviewing = None;

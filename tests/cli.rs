@@ -1119,11 +1119,17 @@ fn head_is_said_against_the_stack() {
     git(&e.src, &["add", "c.txt"]);
     git(&e.src, &["commit", "-qm", "Mine"]);
     assert!(e.ok(&["head", "s"]).ends_with("is at patch 3 of s, then 1 commit not in the stack\n"));
-    // The same patch, its message other: still the stack's, by its diff.
+    // The same patch, its message other: still the stack's, by its diff;
+    // its message to sync in the editor, which alone syncs it.
     git(&e.src, &["checkout", "-q", "--detach", "main~1"]);
     git(&e.src, &["commit", "-q", "--amend", "-m", "Bug 3 - other words"]);
     let out = e.ok(&["head", "s"]);
-    assert!(out.ends_with("is at patch 3 of s\nthe message of patch 3 differs here: \"Bug 3 - other words\"\n"), "{out}");
+    let said = "is at patch 3 of s\nthe message of patch 3 differs from its commit's: \"Bug 3 - other words\"\nthe commit messages are synced in stacked's editor, from the first line of its banner\n";
+    assert!(out.ends_with(said), "{out}");
+    for flag in ["--messages-to-stack", "--messages-to-checkout"] {
+        let (fine, _, err) = e.run(&["head", "s", flag]);
+        assert!(!fine && err.contains(&format!("unexpected argument '{flag}'")), "{err}");
+    }
     // Not on the stack's base.
     git(&e.src, &["checkout", "-q", "-b", "other", "base"]);
     std::fs::write(e.src.join("d.txt"), "d\n").unwrap();
@@ -1168,174 +1174,30 @@ fn head_moves_along_the_stack_detached_its_branch_as_it_was() {
     assert_eq!(git(&e.src, &["log", "-1", "--format=%s"]).trim(), "Bug 1 - change two");
 }
 
-#[test]
-fn a_message_that_differs_in_the_checkout_goes_either_way() {
-    let e = env();
-    e.ok(&["import", "s", "base"]);
-    let subject = |rev: &str| git(&e.src, &["log", "-1", "--format=%s", rev]).trim().to_string();
-    let title = "Bug 3 - café, a very long title that format-patch will fold over more than one line";
-    // A branch's top: patch 3 by its diff, its message other.
-    git(&e.src, &["checkout", "-q", "-b", "mine", "main"]);
-    git(&e.src, &["commit", "-q", "--amend", "-m", "Bug 3 - other words"]);
-    let out = e.ok(&["head", "s"]);
-    assert!(out.ends_with("is at patch 3 of s\nthe message of patch 3 differs here: \"Bug 3 - other words\"\n"), "{out}");
-    // Into the checkout: the commit made again on the same files, the
-    // branch moved to it.
-    let tree = git(&e.src, &["rev-parse", "mine^{tree}"]);
-    let out = e.ok(&["head", "s", "--messages-to-checkout"]);
-    assert!(out.starts_with("mine has the stack's message of patch 3: 1 commit made again"), "{out}");
-    assert_eq!((subject("mine"), git(&e.src, &["rev-parse", "mine^{tree}"])), (title.to_string(), tree));
-    assert!(!e.ok(&["head", "s"]).contains("differs"));
-    // Into the stack: an edit by hand, to review; accepted, the patch has it.
-    git(&e.src, &["commit", "-q", "--amend", "-m", "Bug 3 - other words"]);
-    let (fine, _, err) = e.run(&["head", "s", "--messages-to-stack", "3"]);
-    assert!(fine && err.contains("took the message of patch 3 from your checkout: it waits for your review"), "{err}");
-    e.ok(&["review", "s", "--accept-all"]);
-    assert!(e.ok(&["show", "s", "3"]).contains("Bug 3 - other words"));
-    assert!(!e.ok(&["head", "s"]).contains("differs"));
-    let (fine, _, err) = e.run(&["head", "s", "--messages-to-stack"]);
-    assert!(fine && err.contains("no message differs"), "{err}");
-}
-
 /// The trailer moz-phab writes to name revision `d`.
+#[cfg(feature = "moz-phab")]
 fn trailer(d: &str) -> String {
     format!("Differential Revision: https://phabricator.services.mozilla.com/{d}")
 }
 
-/// The message of patch `k` (from 0) of stack `s` in database `db`.
-fn message_of(db: &Path, k: usize) -> String {
-    let d = Db::load(db).unwrap();
-    let id = d.stack("s").unwrap().patches[k].clone();
-    d.patch(&id).message.clone()
-}
-
-/// The title of patch 3 in `env`, which format-patch folds over more than
-/// one line.
-const LONG_TITLE: &str = "Bug 3 - café, a very long title that format-patch will fold over more than one line";
-
 #[cfg(feature = "moz-phab")]
 #[test]
-fn a_differential_revision_moz_phab_gave_the_commit_alone_goes_into_the_stack_one_way_alone() {
+fn head_says_which_revision_each_side_names_when_their_messages_differ_by_it_alone() {
     let e = env();
-    let sha = |rev: &str| git(&e.src, &["rev-parse", rev]).trim().to_string();
+    // The top commit as moz-phab leaves it, its trailer last, imported so; a
+    // title that format-patch folds over more than one line.
+    let title = "Bug 3 - café, a very long title that format-patch will fold over more than one line";
+    git(&e.src, &["commit", "-q", "--amend", "-m", &format!("{title}\n\n{}", trailer("D3"))]);
     e.ok(&["import", "s", "base"]);
-    // moz-phab gives the top commit its trailer: the rest of its message is
-    // the patch's.
-    git(&e.src, &["commit", "-q", "--amend", "-m", &format!("{LONG_TITLE}\n\n{}", trailer("D3"))]);
-    let said = "patch 3 names no revision in the stack and D3 in your workspace's commit";
+    // Reworded by hand without it, the rest of its message the patch's.
+    git(&e.src, &["commit", "-q", "--amend", "-m", title]);
     let out = e.ok(&["head", "s"]);
-    assert!(out.ends_with(&format!("is at patch 3 of s\n{said}: --messages-to-stack takes D3 into the stack\n")), "{out}");
-    // The other way would change no message: no commit is made again.
-    let top = sha("main");
-    let out = e.ok(&["head", "s", "--messages-to-checkout"]);
-    assert_eq!(out, format!("stacked → workspace would change no commit's message, as {said}: nothing changed\n"));
-    assert_eq!(sha("main"), top);
-    // This way: an edit by hand, to review; accepted, the patch names the
-    // revision too, and HEAD is in sync with the stack.
-    let (fine, _, err) = e.run(&["head", "s", "--messages-to-stack"]);
-    assert!(fine && err.contains("took the message of patch 3 from your checkout: it waits for your review"), "{err}");
-    e.ok(&["review", "s", "--accept-all"]);
-    assert_eq!(message_of(&e.db, 2), format!("{LONG_TITLE}\n\n{}", trailer("D3")));
-    assert_eq!(e.ok(&["head", "s"]), format!("HEAD, on main at {}, is at patch 3 of s\n", &top[..12]));
-}
-
-#[cfg(feature = "moz-phab")]
-#[test]
-fn a_differential_revision_the_patch_alone_names_goes_onto_its_commit_one_way_alone() {
-    let e = env();
-    let commit = |rev: &str| git(&e.src, &["log", "-1", "--format=%B", rev]).trim_end().to_string();
-    let patches = || Db::load(&e.db).unwrap().stack("s").unwrap().patches.clone();
-    // Patch 3 as moz-phab leaves it, its trailer last; its commit reworded
-    // by hand without the trailer, the rest as it was.
-    git(&e.src, &["commit", "-q", "--amend", "-m", &format!("{LONG_TITLE}\n\n{}", trailer("D3"))]);
-    e.ok(&["import", "s", "base"]);
-    git(&e.src, &["commit", "-q", "--amend", "-m", LONG_TITLE]);
-    let said = "patch 3 names D3 in the stack and no revision in your workspace's commit";
+    let said = "is at patch 3 of s\npatch 3 names D3 in the stack and no revision in your workspace's commit\nthe commit messages are synced in stacked's editor, from the first line of its banner\n";
+    assert!(out.ends_with(said), "{out}");
+    // Naming another.
+    git(&e.src, &["commit", "-q", "--amend", "-m", &format!("{title}\n\n{}", trailer("D33"))]);
     let out = e.ok(&["head", "s"]);
-    assert!(out.ends_with(&format!("is at patch 3 of s\n{said}: --messages-to-checkout puts D3 on the commit\n")), "{out}");
-    // The other way would change no message: no new version of the patch.
-    let was = patches();
-    let (fine, _, err) = e.run(&["head", "s", "--messages-to-stack", "3"]);
-    assert!(fine && err.contains(&format!("workspace → stacked would change no patch's message, as {said}: nothing changed")), "{err}");
-    assert_eq!(patches(), was);
-    // This way: the commit made again with the trailer, on the same files;
-    // HEAD is in sync with the stack.
-    let tree = git(&e.src, &["rev-parse", "main^{tree}"]);
-    let out = e.ok(&["head", "s", "--messages-to-checkout"]);
-    assert!(out.starts_with("main has the stack's message of patch 3: 1 commit made again") && !out.contains("kept"), "{out}");
-    assert_eq!((commit("main"), git(&e.src, &["rev-parse", "main^{tree}"])), (format!("{LONG_TITLE}\n\n{}", trailer("D3")), tree));
-    assert_eq!(e.ok(&["head", "s"]).lines().count(), 1, "nothing differs");
-}
-
-#[cfg(feature = "moz-phab")]
-#[test]
-fn messages_that_differ_by_the_revisions_they_name_alone_sync_neither_way_and_head_says_why() {
-    let e = env();
-    let sha = |rev: &str| git(&e.src, &["rev-parse", rev]).trim().to_string();
-    let patches = || Db::load(&e.db).unwrap().stack("s").unwrap().patches.clone();
-    git(&e.src, &["commit", "-q", "--amend", "-m", &format!("{LONG_TITLE}\n\n{}", trailer("D3"))]);
-    e.ok(&["import", "s", "base"]);
-    // The commit names another revision, the rest of its message the
-    // patch's.
-    git(&e.src, &["commit", "-q", "--amend", "-m", &format!("{LONG_TITLE}\n\n{}", trailer("D33"))]);
-    let said = "patch 3 names D3 in the stack and D33 in your workspace's commit";
-    let out = e.ok(&["head", "s"]);
-    assert!(out.ends_with(&format!("{said}: neither way of syncing changes a message, so HEAD is not in sync with the stack\n")), "{out}");
-    // Neither way changes a message: no commit made again, no new version
-    // of the patch.
-    let (top, was) = (sha("main"), patches());
-    let out = e.ok(&["head", "s", "--messages-to-checkout"]);
-    assert_eq!(out, format!("stacked → workspace would change no commit's message, as {said}: nothing changed\n"));
-    let (fine, _, err) = e.run(&["head", "s", "--messages-to-stack"]);
-    assert!(fine && err.contains(&format!("workspace → stacked would change no patch's message, as {said}: nothing changed")), "{err}");
-    assert_eq!((sha("main"), patches()), (top, was));
-}
-
-#[cfg(feature = "moz-phab")]
-#[test]
-fn a_sync_of_messages_that_differ_otherwise_keeps_the_revision_of_the_message_written_over() {
-    let e = env();
-    let commit = |rev: &str| git(&e.src, &["log", "-1", "--format=%B", rev]).trim_end().to_string();
-    git(&e.src, &["commit", "-q", "--amend", "-m", &format!("{LONG_TITLE}\n\n{}", trailer("D3"))]);
-    e.ok(&["import", "s", "base"]);
-    git(&e.src, &["checkout", "-q", "-b", "mine", "main"]);
-    // Reworded without the trailer: into the stack, the patch keeps its
-    // own, and the sync says so.
-    git(&e.src, &["commit", "-q", "--amend", "-m", "Bug 3 - other words"]);
-    let (fine, _, err) = e.run(&["head", "s", "--messages-to-stack", "3"]);
-    let said = "took the message of patch 3 from your checkout and kept the Differential Revision D3 the patch had: it waits for your review";
-    assert!(fine && err.contains(said), "{err}");
-    e.ok(&["review", "s", "--accept-all"]);
-    assert_eq!(message_of(&e.db, 2), format!("Bug 3 - other words\n\n{}", trailer("D3")));
-    // Reworded again, naming another revision: into the checkout, the
-    // commit keeps its own, in the place of the patch's, and the sync says
-    // so.
-    git(&e.src, &["commit", "-q", "--amend", "-m", &format!("Bug 3 - more words\n\n{}", trailer("D33"))]);
-    let out = e.ok(&["head", "s", "--messages-to-checkout"]);
-    assert!(out.ends_with("the files as they were; kept the Differential Revision D33 your workspace's commit had\n"), "{out}");
-    assert_eq!(commit("mine"), format!("Bug 3 - other words\n\n{}", trailer("D33")));
-    // The trailer on the side written from alone: written with the rest,
-    // nothing said of it.
-    git(&e.src, &["commit", "-q", "--amend", "-m", "Bug 3 - last words"]);
-    let out = e.ok(&["head", "s", "--messages-to-checkout"]);
-    assert!(out.starts_with("mine has the stack's message of patch 3") && !out.contains("kept"), "{out}");
-    assert_eq!(commit("mine"), format!("Bug 3 - other words\n\n{}", trailer("D3")));
-}
-
-#[cfg(not(feature = "moz-phab"))]
-#[test]
-fn without_moz_phab_a_sync_writes_the_differential_revision_as_any_line() {
-    let e = env();
-    git(&e.src, &["commit", "-q", "--amend", "-m", &format!("{LONG_TITLE}\n\n{}", trailer("D3"))]);
-    e.ok(&["import", "s", "base"]);
-    // The commit without the patch's trailer: it differs, and the stack
-    // takes it without one.
-    git(&e.src, &["commit", "-q", "--amend", "-m", LONG_TITLE]);
-    assert!(e.ok(&["head", "s"]).contains("the message of patch 3 differs here"));
-    let (fine, _, err) = e.run(&["head", "s", "--messages-to-stack", "3"]);
-    assert!(fine && err.contains("took the message of patch 3 from your checkout: it waits for your review"), "{err}");
-    e.ok(&["review", "s", "--accept-all"]);
-    assert_eq!(message_of(&e.db, 2), LONG_TITLE);
+    assert!(out.contains("\npatch 3 names D3 in the stack and D33 in your workspace's commit\n"), "{out}");
 }
 
 #[test]

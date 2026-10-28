@@ -1835,6 +1835,8 @@ mod tests {
         let (screens, search) = (at("\n# screens: on the screens"), at("\n# search: in the search of the middle"));
         assert!(screens < at("\nup = [\"up\"]\n") && at("\nquit = [\"ctrl-c\"]\n") < search, "{keys}");
         assert!(search < at("\nfind_next = [\"tab\"]\n") && search < at("\nfind_previous = [\"shift-tab\"]\n"), "{keys}");
+        let sync = at("\n# sync: in the sync of the commit messages");
+        assert!(search < sync && sync < at("\nkeep_stack = [\"s\"]\n") && sync < at("\nkeep_workspace = [\"w\"]\n"), "{keys}");
         // One key in two contexts is no clash; two things of one are.
         let (c, wrong) = Config::parse("[keys]\nmenu = \"tab\"\n").unwrap();
         assert!(wrong.is_empty(), "{wrong:?}");

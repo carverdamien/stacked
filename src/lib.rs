@@ -35,6 +35,7 @@ pub mod markdown;
 pub mod mbox;
 #[cfg(feature = "demo")]
 pub mod memory;
+pub mod messages;
 pub mod ops;
 pub mod paint;
 pub mod panes;

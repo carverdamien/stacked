@@ -472,26 +472,16 @@ enum Cmd {
     },
     /// Where HEAD of the checkout stacked runs in is, against stack NAME: at
     /// its base, at one of its patches (its commits since the base being the
-    /// stack's patches, by their diff), or elsewhere.
+    /// stack's patches, by their diff), or elsewhere; and the patches whose
+    /// message differs from its commit's, which the editor syncs.
     Head {
         name: String,
         /// HEAD moved there: detached at the stack's base with its first N
         /// patches applied (0, the base), the commits the checkout has that
         /// are those patches taken as they are; the branch it was on as it
         /// was. Not while files git tracks have changes.
-        #[arg(long, value_name = "N", conflicts_with_all = ["messages_to_stack", "messages_to_checkout"])]
+        #[arg(long, value_name = "N")]
         to: Option<usize>,
-        /// The messages of HEAD's commits that are the stack's patches by
-        /// their diff, but not by their message, taken as those patches' own
-        /// (PATCH as `show` names it; every one whose message differs if
-        /// none): an edit by hand, landing for your review.
-        #[arg(long, num_args = 0.., value_name = "PATCH", conflicts_with = "messages_to_checkout")]
-        messages_to_stack: Option<Vec<String>>,
-        /// The other way: those commits made again with the stack's
-        /// messages, and every one above them to HEAD, their files as they
-        /// were; the branch HEAD is on moved to them.
-        #[arg(long, num_args = 0.., value_name = "PATCH")]
-        messages_to_checkout: Option<Vec<String>>,
     },
     /// The lines of the database passed over, if any; and whether each
     /// stack applies.
@@ -821,14 +811,6 @@ fn print_run(r: &stacked::db::Run) {
         format!(" \"{}\"", r.request.split_whitespace().collect::<Vec<_>>().join(" "))
     };
     println!("{}\t{}\t{} {}{req}\t{state}\t{}", r.id, time(r.time), r.what, r.stack, r.summary);
-}
-
-/// The places (from 0) of stack `name`'s patches `specs` names, as `show`
-/// takes them.
-fn places_of(path: &Path, name: &str, specs: &[String]) -> Result<Vec<usize>> {
-    let db = Db::load(path)?;
-    let s = db.stack(name)?;
-    specs.iter().map(|spec| db.resolve(s, spec)).collect()
 }
 
 /// The run of the landed work on stack `name` that `run` starts, waiting
@@ -1797,17 +1779,8 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
                 }
             }
         }
-        Cmd::Head { name, messages_to_stack: Some(specs), .. } => {
-            let places = places_of(path, &name, &specs)?;
-            let done = stacked::head::messages_to_stack(path, &name, &here(), &places)?;
-            edited(path, &name, done, false)?;
-        }
-        Cmd::Head { name, messages_to_checkout: Some(specs), .. } => {
-            let places = places_of(path, &name, &specs)?;
-            println!("{}", stacked::head::messages_to_checkout(path, &name, &here(), &places)?);
-        }
-        Cmd::Head { name, to: Some(n), .. } => println!("{}", stacked::head::move_to(path, &name, &here(), n)?),
-        Cmd::Head { name, .. } => {
+        Cmd::Head { name, to: Some(n) } => println!("{}", stacked::head::move_to(path, &name, &here(), n)?),
+        Cmd::Head { name, to: None } => {
             let db = Db::load(path)?;
             ops::base_of(db.stack(&name)?)?;
             let Some(h) = stacked::head::find(&db, &name, &here())? else {
@@ -1815,13 +1788,16 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
             };
             println!("HEAD, {}, is {}", h.git_said(), h.said(&name));
             if let stacked::head::At::Stack(on) = &h.at {
-                // A message that differs by the revision alone: which way
-                // carries it over, if either does.
+                // A message that differs by the revision alone: what each
+                // names; else the commit's first line.
                 for (k, m, d) in &on.messages {
-                    match d.said(*k, "--messages-to-stack", "--messages-to-checkout") {
+                    match d.revisions(*k) {
                         Some(said) => println!("{said}"),
-                        None => println!("the message of patch {} differs here: \"{}\"", k + 1, m.lines().next().unwrap_or("")),
+                        None => println!("the message of patch {} differs from its commit's: \"{}\"", k + 1, m.lines().next().unwrap_or("")),
                     }
+                }
+                if !on.messages.is_empty() {
+                    println!("the commit messages are synced in stacked's editor, from the first line of its banner");
                 }
             }
         }

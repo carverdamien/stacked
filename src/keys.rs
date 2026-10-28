@@ -5,10 +5,13 @@
 //! space for `menu`), so the rest of it knows only those; a key no action
 //! has does nothing. In the search of the middle, what is typed is typed,
 //! but for the search's own keys: those going from match to match, which
-//! the settings map, and Esc, Enter, ↑ and ↓, which they do not. Two things
-//! of one context on one key clash; of two contexts, they never meet, and
-//! one key can do both. The inline comment editor reads its keys as they
-//! are: they are what is typed.
+//! the settings map, and Esc, Enter, ↑ and ↓, which they do not. In the
+//! sync of the commit messages, its own keys, which pick the message a
+//! patch keeps, are read before the screens' there. Two things of one
+//! context on one key clash; of two contexts, one key can do both: each is
+//! read where it is, and where both are, the sync's or the search's own
+//! first. The inline comment editor reads its keys as they are: they are
+//! what is typed.
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
@@ -20,16 +23,20 @@ pub enum Context {
     Screens,
     /// The search of the middle, while its bar is open.
     Search,
+    /// The sync of the commit messages, no menu over it: its own keys
+    /// first, then the screens'.
+    Sync,
 }
 
 impl Context {
-    pub const ALL: [Context; 2] = [Context::Screens, Context::Search];
+    pub const ALL: [Context; 3] = [Context::Screens, Context::Search, Context::Sync];
 
     /// Its name, as `stacked config` says it.
     pub fn name(self) -> &'static str {
         match self {
             Context::Screens => "screens",
             Context::Search => "search",
+            Context::Sync => "sync",
         }
     }
 
@@ -39,6 +46,9 @@ impl Context {
             Context::Screens => "on the screens and the menus over them, wherever nothing is typed",
             Context::Search => {
                 "in the search of the middle, while its bar is open, which keeps for itself Esc, Enter, ↑, ↓, ctrl-c and the keys that type or edit what is typed"
+            }
+            Context::Sync => {
+                "in the sync of the commit messages, with no menu over it, where these are read before the keys of the screens: a key of both does what it does here"
             }
         }
     }
@@ -79,10 +89,14 @@ pub enum Key {
     /// Each file whole rather than its hunks, or back.
     Whole,
     Quit,
+    /// In the sync of the commit messages, the patch the cursor is on
+    /// keeping the stack's message, or its commit's in your workspace.
+    KeepStack,
+    KeepWorkspace,
 }
 
 impl Key {
-    pub const ALL: [Key; 20] = [
+    pub const ALL: [Key; 22] = [
         Key::Up,
         Key::Down,
         Key::Left,
@@ -103,6 +117,8 @@ impl Key {
         Key::Read,
         Key::Whole,
         Key::Quit,
+        Key::KeepStack,
+        Key::KeepWorkspace,
     ];
 
     /// Its name in the settings.
@@ -128,6 +144,8 @@ impl Key {
             Key::Read => "read",
             Key::Whole => "whole",
             Key::Quit => "quit",
+            Key::KeepStack => "keep_stack",
+            Key::KeepWorkspace => "keep_workspace",
         }
     }
 
@@ -155,6 +173,8 @@ impl Key {
             Key::Read => &["2"],
             Key::Whole => &["3"],
             Key::Quit => &["ctrl-c"],
+            Key::KeepStack => &["s"],
+            Key::KeepWorkspace => &["w"],
         }
     }
 
@@ -181,6 +201,8 @@ impl Key {
             Key::Read => (KeyCode::Char('2'), KeyModifiers::NONE),
             Key::Whole => (KeyCode::Char('3'), KeyModifiers::NONE),
             Key::Quit => (KeyCode::Char('c'), KeyModifiers::CONTROL),
+            Key::KeepStack => (KeyCode::Char('s'), KeyModifiers::NONE),
+            Key::KeepWorkspace => (KeyCode::Char('w'), KeyModifiers::NONE),
         };
         KeyEvent::new(code, mods)
     }
@@ -189,6 +211,7 @@ impl Key {
     pub fn context(self) -> Context {
         match self {
             Key::FindNext | Key::FindPrevious => Context::Search,
+            Key::KeepStack | Key::KeepWorkspace => Context::Sync,
             _ => Context::Screens,
         }
     }
@@ -563,5 +586,27 @@ mod tests {
         assert_eq!(wrong[1], "keys.find_next: the search of the middle keeps Space for itself");
         assert_eq!(wrong[7], "keys.find_next: no key left for it; it keeps its own");
         assert_eq!(map.label(Key::FindNext), "Tab");
+    }
+
+    #[test]
+    fn the_sync_s_keys_pick_in_their_own_context_and_clash_only_there() {
+        // s and w unless the settings say otherwise, read in the sync alone:
+        // nothing on the screens.
+        let map = Keymap::default();
+        let (s, w) = (ev(KeyCode::Char('s'), KeyModifiers::NONE), ev(KeyCode::Char('w'), KeyModifiers::NONE));
+        assert_eq!((map.action_in(Context::Sync, &s), map.action_in(Context::Sync, &w)), (Some(Key::KeepStack), Some(Key::KeepWorkspace)));
+        assert_eq!((map.translate(&s), map.translate(&w)), (None, None));
+        assert_eq!((map.label(Key::KeepStack), map.label(Key::KeepWorkspace)), ("s".to_string(), "w".to_string()));
+        assert_eq!((Key::KeepStack.context(), Context::Sync.name()), (Context::Sync, "sync"));
+        // A key of the screens too, as ← for the stack's, on the left: no
+        // clash, each read where it is.
+        let (map, wrong) = Keymap::from_names(&[("keep_stack".into(), vec!["left".into()]), ("keep_workspace".into(), vec!["right".into()])]);
+        assert!(wrong.is_empty(), "{wrong:?}");
+        let left = ev(KeyCode::Left, KeyModifiers::NONE);
+        assert_eq!((map.action_in(Context::Sync, &left), map.action(&left)), (Some(Key::KeepStack), Some(Key::Left)));
+        // Both on one key: said, and the first does it.
+        let (map, wrong) = Keymap::from_names(&[("keep_workspace".into(), vec!["s".into()])]);
+        assert_eq!(wrong, ["keys: s is keep_stack and keep_workspace; it does the first"]);
+        assert_eq!(map.action_in(Context::Sync, &s), Some(Key::KeepStack));
     }
 }

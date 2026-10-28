@@ -628,20 +628,19 @@ fn testing(db: &Db) -> Option<&Run> {
 /// work you sent back, from the stack as that work left it; so nothing else
 /// may change the stack meanwhile.
 pub fn blocked(db: &Db, name: &str) -> Option<String> {
-    if let Some((_, i)) = asks_going(db, name).into_iter().find(|(_, i)| i.way == Way::Change) {
-        let on = match &i.scope {
-            Scope::Stack => "the stack".to_string(),
-            Scope::Patch(c) => format!("patch {}", position(db, name, c).map_or("?".into(), |p| (p + 1).to_string())),
-        };
-        return Some(format!(
-            "the agent is changing {on}: the stack can be edited by hand again once you have reviewed the agent's work"
-        ));
-    }
-    if round_waiting(db, name) {
-        return Some(
-            "the work you sent back waits to go back to the agent: the stack can be edited by hand again once you have reviewed the agent's new work"
-                .into(),
-        );
+    match changer(db, name) {
+        Some(Changer::Agent(on)) => {
+            return Some(format!(
+                "the agent is changing {on}: the stack can be edited by hand again once you have reviewed the agent's work"
+            ));
+        }
+        Some(Changer::Round) => {
+            return Some(
+                "the work you sent back waits to go back to the agent: the stack can be edited by hand again once you have reviewed the agent's new work"
+                    .into(),
+            );
+        }
+        None => {}
     }
     let r = crate::held::change_waiting(db, name)?;
     let of = r.held.as_ref()?.stack.as_ref()?.of.clone();
@@ -649,6 +648,38 @@ pub fn blocked(db: &Db, name: &str) -> Option<String> {
         "{} of {of} waits for your review: the stack can be edited by hand again once you have reviewed it",
         whose_change(r)
     ))
+}
+
+/// What changes stack `name` from the stack as it was, its work to land:
+/// the agent, at a place (`patch 2`, `the stack`); or, soon, a round sent
+/// back to it.
+enum Changer {
+    Agent(String),
+    Round,
+}
+
+/// What changes stack `name` now, if anything does: the agent changing it
+/// from the stack as it took it, or a round sent back about to.
+fn changer(db: &Db, name: &str) -> Option<Changer> {
+    if let Some((_, i)) = asks_going(db, name).into_iter().find(|(_, i)| i.way == Way::Change) {
+        return Some(Changer::Agent(match &i.scope {
+            Scope::Stack => "the stack".to_string(),
+            Scope::Patch(c) => format!("patch {}", position(db, name, c).map_or("?".into(), |p| (p + 1).to_string())),
+        }));
+    }
+    round_waiting(db, name).then_some(Changer::Round)
+}
+
+/// What changes stack `name` from the stack as it was, its work still to
+/// land, said, if anything does: `the agent is changing patch 2`, or work
+/// you sent back waiting to go back to the agent. Nothing else may change
+/// the stack until that work lands, or its change would be made from a
+/// stack that is no longer.
+pub fn changing(db: &Db, name: &str) -> Option<String> {
+    Some(match changer(db, name)? {
+        Changer::Agent(on) => format!("the agent is changing {on}"),
+        Changer::Round => "the work you sent back waits to go back to the agent".into(),
+    })
 }
 
 /// Whether a round sent back from the review of stack `name`'s landed work,

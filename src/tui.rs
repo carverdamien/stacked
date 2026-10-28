@@ -55,6 +55,8 @@ pub mod reviewing;
 pub use reviewing::Reviewing;
 pub mod searching;
 pub use searching::Searching;
+pub mod syncing;
+pub use syncing::Syncing;
 
 fn by_style(by: Option<&By>) -> Style {
     match by {
@@ -467,6 +469,10 @@ pub enum Spot {
     BannerLine(usize),
     /// Line `i` of a review's list.
     ReviewLine(usize),
+    /// Patch `i` of the list of the sync of the commit messages; the
+    /// message of one side, which a click keeps.
+    SyncLine(usize),
+    SyncSide(crate::head::Keep),
     /// Match `i` of the search's; where it looks, its button.
     Found(usize),
     SearchScope,
@@ -619,6 +625,8 @@ pub enum Screen {
     Text,
     /// The review of what the agent brought back.
     Review,
+    /// The sync of the commit messages of the stack and of your workspace.
+    Sync,
     /// The search: what it looks for, and what it finds.
     Search,
 }
@@ -1055,11 +1063,15 @@ pub enum Action {
     /// HEAD of the checkout stacked runs in picked up to move, shown after
     /// the patch at `0`, else where it is.
     MoveHead(Option<usize>),
-    /// The message of the checkout's commit that is the patch at `0` (each
-    /// one that differs, if none) taken as the patch's own; or the patch's
-    /// put on the commit.
-    MessagesToStack(Option<usize>),
-    MessagesToCheckout(Option<usize>),
+    /// The sync of the commit messages opened, from the banner.
+    OpenSync,
+    /// In the sync: the message the patch the cursor is on keeps; closing
+    /// it, asked first, or what is left to pick said; closed, the messages
+    /// synced; left, the picks kept.
+    SyncKeep(crate::head::Keep),
+    AskSync,
+    SyncNow,
+    LeaveSync,
     EditPatch,
     EditCode,
     EditAgain,
@@ -1309,12 +1321,20 @@ fn about(action: &Action) -> String {
         Action::MoveHead(_) => {
             "pick HEAD of your checkout up: ↑↓ place it, Enter moves the checkout there, detached; your branch as it is".into()
         }
-        Action::MessagesToStack(_) => {
-            "keep your workspace's message and write it over the patch's: a new version of the patch, its diff as it is, for your review".into()
+        Action::OpenSync => {
+            "sync the commit messages of the stack and of your workspace: pick the message each patch keeps, the stack's or your workspace's, before any landed work is reviewed".into()
         }
-        Action::MessagesToCheckout(_) => {
-            "keep the stack's message and write it over your workspace's commit's: that commit and the ones above it are made again, their files as they are, and the branch moves to them".into()
+        Action::SyncKeep(crate::head::Keep::Stack) => {
+            "keep the stack's message for this patch: once synced, its commit in your workspace says it too, made again with the commits above it, the files as they were".into()
         }
+        Action::SyncKeep(crate::head::Keep::Workspace) => {
+            "keep your workspace's message for this patch: once synced, the patch says it too, a new version of it in the stack at once".into()
+        }
+        Action::AskSync => {
+            "sync the commit messages, once every patch has its pick: the message kept goes to each side that lacks it, all at once, once you say so".into()
+        }
+        Action::SyncNow => "sync them: the message kept goes to each side that lacks it, all at once".into(),
+        Action::LeaveSync => "leave the sync: your picks are kept while stacked runs, and the banner's first line opens it again".into(),
         Action::EditPatch => "edit this patch in $EDITOR, as mail, opened where the cursor is".into(),
         Action::EditCode => "edit this file as the patch leaves it, in $EDITOR, opened at this line".into(),
         Action::EditAgain => "edit it again, as you left it; conflicts you resolved since are thrown away".into(),
@@ -1753,6 +1773,12 @@ pub struct App {
     places: places::Places,
     /// The review of what the agent brought back, being made.
     pub reviewing: Option<Reviewing>,
+    /// The sync of the commit messages, open; and the message each patch
+    /// keeps, as picked there, by the patch's version and its commit's
+    /// message: kept while the editor runs, the sync left or not, until
+    /// the messages are synced.
+    pub syncing: Option<Syncing>,
+    sync_picks: HashMap<(String, String), crate::head::Keep>,
     /// The search open, and the searches made before, newest first: kept
     /// for as long as the editor runs.
     pub searching: Option<Searching>,
@@ -2004,6 +2030,9 @@ enum Done {
     /// The agent of run `0` stopped, its ask landed: what the status says
     /// of it, if anything.
     Stopped(String, Option<String>),
+    /// The commit messages synced: what came of it, said; or why nothing
+    /// changed.
+    Synced(std::result::Result<String, String>),
 }
 
 /// What the bar says while the agent is asked what tools it has, for the
@@ -2075,10 +2104,10 @@ impl Background {
     }
 }
 
-/// What the bar says while HEAD of the checkout is being moved, or its
-/// commits made again with the stack's messages.
+/// What the bar says while HEAD of the checkout is being moved, or the
+/// commit messages synced.
 const MOVING_HEAD: &str = "moving HEAD";
-const REWORDING: &str = "rewording";
+const SYNCING: &str = "syncing the commit messages";
 
 /// What the bar says while a web link is being opened in the browser.
 const OPENING: &str = "opening a link";
@@ -2200,6 +2229,8 @@ impl App {
             banner_top: 0,
             places: places::Places::default(),
             reviewing: None,
+            syncing: None,
+            sync_picks: HashMap::new(),
             searching: None,
             searches: Vec::new(),
             finds: Vec::new(),
@@ -2501,9 +2532,8 @@ impl App {
                     self.bg.pull = None;
                 }
                 self.status = said;
-                // Moved, or its commits made again: where HEAD is, looked at
-                // again.
-                if what == MOVING_HEAD || what == REWORDING {
+                // Moved: where HEAD is, looked at again.
+                if what == MOVING_HEAD {
                     self.look_at_head();
                 }
             }
@@ -2535,6 +2565,8 @@ impl App {
                     when: Instant::now(),
                     stale: false,
                 });
+                // The picks of patches that no longer differ, dropped.
+                self.keep_sync_picks();
             }
             // Unless it was left meanwhile: nothing sent, said already. An
             // agent asked for a setup left before serves the next.
@@ -2566,6 +2598,10 @@ impl App {
                     self.status = said;
                 }
                 self.launch();
+            }
+            Done::Synced(done) => {
+                self.bg.doing.retain(|d| *d != SYNCING);
+                self.synced(done);
             }
         }
     }
@@ -3195,6 +3231,10 @@ impl App {
             Spot::Banner => false,
             Spot::BannerLine(i) => self.on_banner && self.banner_sel == i,
             Spot::ReviewLine(i) => self.reviewing.as_ref().is_some_and(|r| r.sel == i && !r.in_main),
+            // A patch of the sync is only picked, a click on it again doing
+            // nothing more: Enter there closes the sync, which is not a
+            // patch's. A side's message is kept by a click (`sync_click`).
+            Spot::SyncLine(_) | Spot::SyncSide(_) => false,
             Spot::Found(i) => self.searching.as_ref().is_some_and(|s| s.sel == i),
             Spot::Item(_) | Spot::Choice(..) | Spot::Box | Spot::Editor | Spot::SearchScope => false,
         }
@@ -3347,6 +3387,10 @@ impl App {
             Mode::Normal => {}
         }
         let Some(spot) = spot else { return Effect::None };
+        // A side of the sync: its message kept, or, a right click, the menu.
+        if let Spot::SyncSide(keep) = spot {
+            return self.sync_click(keep, right);
+        }
         let was = self.on(spot);
         if !self.pick_spot(spot) {
             return Effect::None;
@@ -3437,6 +3481,13 @@ impl App {
                     r.in_main = false;
                 }
             }
+            Spot::SyncLine(i) => {
+                if let Some(sv) = &mut self.syncing {
+                    sv.pick_line(i);
+                }
+            }
+            // Kept by a click alone, not by the mouse going by.
+            Spot::SyncSide(_) => return false,
             Spot::Found(i) => {
                 if let Some(s) = &mut self.searching {
                     s.sel = i;
@@ -3675,6 +3726,18 @@ impl App {
             Mode::Setup(su) => Some(su.screen.as_ref().is_some_and(|s| s.adding.is_some())),
             _ => None,
         };
+        // The sync's own keys on its screen, no menu over it, before the
+        // screens': each the key the editor knows for it.
+        let bare = match &self.mode {
+            Mode::Help { back, .. } => **back == Mode::Normal,
+            m => *m == Mode::Normal,
+        };
+        if self.screen == Screen::Sync
+            && bare
+            && let Some(key) = self.cfg.keys.action_in(crate::keys::Context::Sync, &k)
+        {
+            return self.pressed(key.event());
+        }
         let k = if matches!(self.mode, Mode::Edit(_) | Mode::Lines(_) | Mode::Prompt(_) | Mode::Find(_)) || typed || setting_up == Some(true) {
             k
         } else if setting_up.is_some() {
@@ -3794,6 +3857,7 @@ impl App {
         match self.screen {
             Screen::Main => self.main_key(k),
             Screen::Review => self.review_key(k),
+            Screen::Sync => self.sync_key(k),
             Screen::History => {
                 self.history_key(k);
                 Effect::None
@@ -4935,10 +4999,20 @@ impl App {
         match self.screen {
             Screen::Main if self.on_banner => {
                 let pulling = if cfg!(feature = "moz-phab") { ", then a pull from Phabricator under way, with the revision it reads" } else { "" };
+                let sync = match self.sync_first() {
+                    Some(_) => " First, in a section of its own, the commit messages to sync: the messages of some patches differ from their commits' in your workspace, and no landed work is reviewed before they are synced.",
+                    None => "",
+                };
                 out.push(format!(
-                    "The banner says what waits on you on this stack, a line for each, in three sections. Read only: what landed and changes nothing, the agent's answers and the comments pulled from Phabricator{pulling}. Edits: what changes the stack, the one you review now first, then those going on from it, as if you accept it, which you review after it. Nothing of it is applied before you review it. Then the batch, the comments you asked the agent about later, to send together, and every comment open, the most recently updated first, marked as the comments pane marks it, with where it stands."
+                    "The banner says what waits on you on this stack, a line for each, in sections.{sync} Read only: what landed and changes nothing, the agent's answers and the comments pulled from Phabricator{pulling}. Edits: what changes the stack, the one you review now first, then those going on from it, as if you accept it, which you review after it. Nothing of it is applied before you review it. Then the batch, the comments you asked the agent about later, to send together, and every comment open, the most recently updated first, marked as the comments pane marks it, with where it stands."
                 ));
                 out.push(match self.banner_lines().get(self.banner_sel) {
+                    Some(BannerLine::Sync) => {
+                        "Press Enter to sync the commit messages: you pick the message each patch keeps, the stack's or your workspace's, and the message kept goes to each side that lacks it.".to_string()
+                    }
+                    Some(BannerLine::Landed(_)) if self.sync_first().is_some() => {
+                        "This one waits until the commit messages are synced: press Enter on the banner's first line to sync them.".to_string()
+                    }
                     Some(BannerLine::Landed(_)) => "Press Enter to review this one.".to_string(),
                     #[cfg(feature = "moz-phab")]
                     Some(BannerLine::Pulling) => format!("The pull is under way: {}.", banner::PULL_BRINGS),
@@ -4973,6 +5047,7 @@ impl App {
                     "Press Esc to save your marks, to throw them away, or to close the review: what you accepted is applied then.".into()
                 });
             }
+            Screen::Sync => out.extend(self.sync_help()),
             Screen::Search => {
                 out.push(
                     "The search: on the left, where it looks (all, patch, comment, history) and what it looks for, then what it finds, as it finds it; on the right, the match picked, in its context."
@@ -5817,8 +5892,9 @@ impl App {
     fn common(&self, items: &mut Vec<Item>) {
         let h = self.by_hand().is_none();
         items.push(Item::line());
-        // Nothing is edited from History…, nor from a review: only looked at.
-        let edits = !matches!(self.screen, Screen::History | Screen::Review);
+        // Nothing is edited from History…, nor from a review, nor from the
+        // sync of the commit messages, which changes the stack as it closes.
+        let edits = !matches!(self.screen, Screen::History | Screen::Review | Screen::Sync);
         if edits && (self.current().is_some() || self.db.names().contains(&self.stack.as_str())) {
             if let Some((_, op)) = self.db.undo_target(&self.stack) {
                 items.push(Item::new(format!("Undo: {op}"), Action::Undo).when(h));
@@ -5839,93 +5915,6 @@ impl App {
         }
         items.push(Item::line());
         items.push(Item::new("Quit", Action::Quit));
-    }
-
-    /// Whose message a patch keeps when its commit in the workspace says
-    /// another, as radio buttons: the stack's, put on the commit; or the
-    /// workspace's, taken into the stack. Of the patch at `at`, else of
-    /// every one whose message differs; of the ways, those that change a
-    /// message there (`Head::ways`), and none when neither does.
-    fn sync_choices(&self, at: Option<usize>) -> Option<Choices> {
-        let (to_checkout, to_stack) = self.head_here()?.ways(at);
-        let mut list = Vec::new();
-        if to_checkout {
-            list.push(Choice::new(
-                "stacked",
-                "stacked → workspace",
-                "the stack's message is kept, and written over your workspace's commit's",
-                Some(Action::MessagesToCheckout(at)),
-            ));
-        }
-        if to_stack {
-            list.push(Choice::new(
-                "workspace",
-                "workspace → stacked",
-                "your workspace's message is kept, and written over the patch's in the stack, for your review",
-                Some(Action::MessagesToStack(at)),
-            ));
-        }
-        (!list.is_empty()).then(|| Choices::new("sync", "which way the message goes", list, self.db.choice(&self.stack, "sync")))
-    }
-
-    /// The item that syncs commit messages, `label`: of the patch at `at`,
-    /// else of every one whose message differs. None when no way of syncing
-    /// changes a message there.
-    fn sync_item(&self, label: &str, at: Option<usize>) -> Option<Item> {
-        let choices = self.sync_choices(at)?;
-        let first = choices.list.first()?.action.clone()?;
-        Some(Item::new(label, first).with(choices))
-    }
-
-    /// What the menu says of syncing commit messages: on a patch whose
-    /// message is not its commit's in the workspace, both, from the first
-    /// line they differ by, and what each way does; when they differ by the
-    /// revision they name alone, what each names, and which way carries it
-    /// over, if either does. On the stack's header, which patches differ,
-    /// and the same of those that differ by the revision alone.
-    fn sync_said(&self) -> Option<String> {
-        if self.screen != Screen::Main || self.focus != Focus::List || self.on_banner {
-            return None;
-        }
-        let h = self.head_here()?;
-        let crate::head::At::Stack(on) = &h.at else { return None };
-        let ways = "The message on the left of the arrow is kept, and it is written over the one on the right. \
-                    stacked → workspace makes your workspace's commit again with the stack's message. \
-                    workspace → stacked makes a new version of the patch with your workspace's message, for you to review.";
-        // Of a patch whose message and its commit's differ by the revision
-        // alone: what each names, and which way carries it over, as a
-        // sentence.
-        let revisions = |k: usize, d: &crate::head::Differs| {
-            let said = d.said(k, "workspace → stacked", "stacked → workspace")?;
-            let mut c = said.chars();
-            c.next().map(|f| format!("{}{}.", f.to_uppercase(), c.as_str()))
-        };
-        if self.on_stack {
-            let differ = h.differ();
-            let mut said = Vec::new();
-            if !differ.is_empty() {
-                said.push(format!("The commit messages of {} are not the same in the stack and in your workspace.", crate::head::patches_said(&differ)));
-            }
-            said.extend(on.messages.iter().filter_map(|(k, _, d)| revisions(*k, d)));
-            if !differ.is_empty() {
-                said.push(ways.to_string());
-            }
-            return (!said.is_empty()).then(|| said.join("\n"));
-        }
-        let (_, theirs, d) = on.messages.iter().find(|(k, _, _)| *k == self.sel)?;
-        if let Some(said) = revisions(self.sel, d) {
-            return Some(if d.to_stack() || d.to_checkout() { format!("{said}\n{ways}") } else { said });
-        }
-        let ours = self.db.patch(self.current()?.patches.get(self.sel)?).message.clone();
-        let (a, b): (Vec<&str>, Vec<&str>) = (ours.lines().collect(), theirs.lines().collect());
-        let k = (0..a.len().max(b.len())).find(|&k| a.get(k).map(|l| l.trim_end()) != b.get(k).map(|l| l.trim_end())).unwrap_or(0);
-        let from = if k == 0 { String::new() } else { format!(", from its line {}", k + 1) };
-        let line = |l: Option<&&str>| l.map_or("(no such line)".to_string(), |l| l.trim_end().to_string());
-        Some(format!(
-            "Its commit message is not the same in the stack and in your workspace{from}.\nstacked: {}\nworkspace: {}\n{ways}",
-            line(a.get(k)),
-            line(b.get(k))
-        ))
     }
 
     /// Where a file of a patch is edited by hand, as radio buttons: a copy
@@ -6087,6 +6076,10 @@ impl App {
                 title = "this part of what landed".into();
                 self.review_items(&mut items);
             }
+            (Screen::Sync, _) => {
+                title = "the sync of the commit messages".into();
+                self.sync_items(&mut items);
+            }
             (Screen::Main, Focus::List) if self.on_stack => {
                 title = format!("the stack {}", self.stack);
                 if self.current().is_some() {
@@ -6106,9 +6099,6 @@ impl App {
                     if self.head_here().is_some() {
                         items.push(Item::new("Move HEAD…", Action::MoveHead(None)));
                     }
-                    // The patches whose message differs from their commit's:
-                    // each way syncs those it changes.
-                    items.extend(self.sync_item("Sync commit messages", None));
                     items.push(Item::line());
                 }
                 if self.db.stacks().iter().any(|s| s.name != self.stack) {
@@ -6134,9 +6124,6 @@ impl App {
                 if self.head_here().is_some() {
                     items.push(Item::new("Move HEAD…", Action::MoveHead(Some(self.sel))));
                 }
-                // Its message differs from its commit's in the checkout: the
-                // ways that change one.
-                items.extend(self.sync_item("Sync commit message", Some(self.sel)));
                 items.push(Item::new("Edit this patch in $EDITOR", Action::EditPatch).when(h));
                 items.push(Item::new("Drop this patch…", Action::AskDrop).when(h));
                 items.push(Item::new("Versions of this patch…", Action::Versions));
@@ -6214,16 +6201,16 @@ impl App {
         }
         self.common(&mut items);
         // In a review, what waits is what is reviewed, and edited by hand
-        // from there: nothing it holds back is said.
-        let mut m = Menu::new(title, items, hands.filter(|_| self.screen != Screen::Review));
-        // Its commit message to sync: both said, and which way does what.
-        if let Some(said) = self.sync_said() {
-            m.note = Some(match m.note.take() {
-                Some(n) => format!("{n}\n{said}"),
-                None => said,
-            });
+        // from there: nothing it holds back is said; nor in the sync of the
+        // commit messages, which says what it has to pick. Landed work the
+        // sync holds back: why.
+        let mut why: Vec<String> = hands.filter(|_| !matches!(self.screen, Screen::Review | Screen::Sync)).into_iter().collect();
+        let held = items.iter().any(|i| !i.enabled && matches!(i.action, Action::Review(..) | Action::TakeReply(..)));
+        why.extend(self.sync_first().filter(|_| held));
+        if self.screen == Screen::Sync {
+            why.extend(self.sync_menu_note());
         }
-        m
+        Menu::new(title, items, (!why.is_empty()).then(|| why.join("\n")))
     }
 
     /// The Send all items of a header: the comments listed that can be sent.
@@ -6307,16 +6294,18 @@ impl App {
             }
             // Taken at once into the thread, as enter does, when replies are
             // all its work holds and that work goes on from none under
-            // review; else only reviewed with that work.
+            // review; else only reviewed with that work. Neither before the
+            // commit messages are synced.
             None if held.is_some() => {
                 let (run, k) = held.clone().unwrap();
                 let r = self.db.run(&run);
                 let alone = r.is_some_and(|r| crate::held::can_take(&self.db, r).is_ok());
+                let synced = self.sync_first().is_none();
                 if alone {
-                    items.push(Item::new(format!("Accept {}", self.reply_said(&run, k)), Action::TakeReply(run.clone(), k)));
+                    items.push(Item::new(format!("Accept {}", self.reply_said(&run, k)), Action::TakeReply(run.clone(), k)).when(synced));
                 }
                 let review = if r.is_some_and(crate::held::pulled) { "Review the comments pulled…" } else { "Review the agent's work…" };
-                items.push(Item::new(review, Action::Review(run, Some(crate::held::Part::Reply(k)))));
+                items.push(Item::new(review, Action::Review(run, Some(crate::held::Part::Reply(k)))).when(synced));
             }
             // In the batch: sent now, on its own, at the effort it was
             // batched at unless another is picked, or taken out.
@@ -6417,27 +6406,11 @@ impl App {
                 self.go_to_middle();
             }
             Action::GoToNote => self.go_to_note(),
-            Action::MessagesToStack(at) => {
-                let places: Vec<usize> = at.into_iter().collect();
-                match crate::head::messages_to_stack(&self.path, &self.stack, &self.checkout, &places) {
-                    Ok(done) => self.edited(done, None, None),
-                    Err(e) => self.status = e.0,
-                }
-                self.look_at_head();
-            }
-            Action::MessagesToCheckout(at) => {
-                if self.bg.doing.contains(&REWORDING) {
-                    self.status = "the checkout's commits are being made again already".into();
-                } else {
-                    let places: Vec<usize> = at.into_iter().collect();
-                    self.bg.doing.push(REWORDING);
-                    self.status = "putting the stack's messages on your checkout…".into();
-                    let (path, name, here) = (self.path.clone(), self.stack.clone(), self.checkout.clone());
-                    self.spawn(move || {
-                        Done::Said(REWORDING, crate::head::messages_to_checkout(&path, &name, &here, &places).unwrap_or_else(|e| e.0))
-                    });
-                }
-            }
+            Action::OpenSync => self.open_sync(),
+            Action::SyncKeep(keep) => self.sync_keep(keep),
+            Action::AskSync => self.ask_sync(),
+            Action::SyncNow => self.sync_now(),
+            Action::LeaveSync => self.leave_sync(),
             Action::MoveHead(at) => {
                 let to = at.map(|at| at + 1).or_else(|| self.head_here().and_then(|h| h.patches()));
                 self.mode = Mode::MovingHead {
@@ -6595,6 +6568,9 @@ impl App {
                     return Effect::EditComment(Target::Rewind { change: c.change, id: c.id, from });
                 }
             }
+            // Landed work, as a review: not before the commit messages are
+            // synced.
+            Action::TakeReply(..) if self.sync_first().is_some() => self.status = self.sync_first().unwrap_or_default(),
             Action::TakeReply(run, k) => {
                 let said = self.reply_said(&run, k);
                 if self.edit(|db| crate::held::take(db, &run, k)).is_some() {
@@ -7170,12 +7146,16 @@ impl App {
                             self.edit(|db| crate::held::save(db, &run, &marks));
                         }
                         self.status = format!("{said}: it lands in place of the work you were reviewing, which is rejected");
-                        self.open_review(&run, Some(crate::held::Part::Stack));
+                        // The review goes on: it was open already.
+                        self.show_review(&run, Some(crate::held::Part::Stack));
                     }
-                    None => {
-                        self.status = format!("{said}: it waits for your review");
-                        self.open_review(&run, None);
-                    }
+                    None => match self.sync_first() {
+                        Some(why) => self.status = format!("{said}: it waits for your review; {why}"),
+                        None => {
+                            self.status = format!("{said}: it waits for your review");
+                            self.open_review(&run, None);
+                        }
+                    },
                 }
             }
             ops::Edited::Unchanged(why) => self.status = why,
@@ -8818,6 +8798,7 @@ impl App {
             }
             Screen::Text => self.draw_text(buf, body),
             Screen::Review => cursor = self.draw_review(buf, body),
+            Screen::Sync => self.draw_sync(buf, body),
             Screen::Search => cursor = self.draw_search(buf, body),
             Screen::Tree | Screen::Stacks | Screen::Versions => {
                 let (left, (right, _)) = self.columns(buf, body, (body.width as usize / 4).clamp(20, 40), 0);
@@ -9144,6 +9125,8 @@ impl App {
             Mode::Stream { .. } => "↑↓: scroll · esc: fold it".into(),
             Mode::Normal if self.screen == Screen::Main && self.on_banner => {
                 let enter = match self.banner_lines().get(self.banner_sel) {
+                    Some(BannerLine::Sync) => "sync them",
+                    Some(BannerLine::Landed(_)) if self.sync_first().is_some() => "say why it waits",
                     Some(BannerLine::Landed(_)) => "review it",
                     #[cfg(feature = "moz-phab")]
                     Some(BannerLine::Pulling) => "say what the pull brings",
@@ -9159,6 +9142,7 @@ impl App {
             Mode::Normal if self.screen == Screen::Review => {
                 self.review_hint()
             }
+            Mode::Normal if self.screen == Screen::Sync => self.sync_hint(),
             // Reading, Space marks read and Delete unread; Enter does what it
             // does commenting, and opens the menu where that is nothing, as
             // Space no longer does.
@@ -9465,16 +9449,11 @@ impl App {
         // Each patch's lines: its number, its title whole, folded under
         // itself where the pane is narrower, and its tags at the end of its
         // first.
-        // ✉: its message differs from its commit's in the checkout.
-        let differ = self.head_here().map(|h| h.differ()).unwrap_or_default();
         let lines: Vec<Vec<String>> = order
             .iter()
             .enumerate()
             .map(|(at, &i)| {
-                let (said, mut tag) = self.patch_said(&s.patches[i]);
-                if differ.contains(&i) {
-                    tag += " ✉";
-                }
+                let (said, tag) = self.patch_said(&s.patches[i]);
                 let mark = if moving && at == on { " ↕".to_string() } else { format!("{:>2}", at + 1) };
                 let head = format!(" {mark} ");
                 let (head_w, tag_w) = (head.chars().count(), tag.chars().count());
@@ -9639,13 +9618,9 @@ impl App {
         if let Mode::MovingHead { to } = self.mode {
             return Some((to, format!(" ↕ HEAD {}", h.on())));
         }
-        let sync = match h.differ().len() {
-            0 => String::new(),
-            n => format!(" · {n} to sync"),
-        };
         Some(match &h.at {
-            At::Stack(on) if !on.above.is_empty() => (on.commits.len(), format!(" ▶ HEAD {} +{}{sync}", h.on(), on.above.len())),
-            At::Stack(on) => (on.commits.len(), format!(" ▶ HEAD {}{sync}", h.on())),
+            At::Stack(on) if !on.above.is_empty() => (on.commits.len(), format!(" ▶ HEAD {} +{}", h.on(), on.above.len())),
+            At::Stack(on) => (on.commits.len(), format!(" ▶ HEAD {}", h.on())),
             At::Elsewhere => (0, format!(" ▶ HEAD {}: off the stack", h.on())),
         })
     }

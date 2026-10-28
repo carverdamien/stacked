@@ -379,49 +379,117 @@ changes, nor while the agent works in the checkout. `stacked head NAME
 --to N` moves it to N patches (0, the base).
 
 A commit of the checkout is a patch of the stack when its diff is, but its
-message may say otherwise: then `✉` follows the patch's title, HEAD's line
-says how many are to sync (`▶ HEAD main · 1 to sync`), and the patch's
-menu has `Sync commit message  [x] stacked → workspace  [ ] workspace →
-stacked`: the message on the left of the arrow is kept and written over the
-one on its right (← → pick the way, kept for the stack). The menu says both
-messages, from the first line they differ by. `stacked → workspace` makes
-the commit again with the stack's message, and the commits above it to HEAD
-on the same files, the branch HEAD is on moved to them (its commits are
-signed as git says). `workspace → stacked` makes a new version of the patch
-with the commit's message, which lands as an edit by hand for your review,
-the review opening at once. The stack's menu has `Sync commit messages`,
-the same for every patch whose message differs. `stacked
-head NAME` lists them, and `--messages-to-stack [PATCH…]` and
-`--messages-to-checkout [PATCH…]` do the same, every one if none is named.
+message may say otherwise. While HEAD is on the stack and the messages of
+some patches differ from their commits', the banner (What the agent brings
+back waits for your review, below) says so before anything else: its line
+first (`✉ the commit messages of patches 2 and 3 differ from your
+workspace's: sync them first`), and, open, a section of its own on top,
+`commit messages, to sync first`, with `✉ Sync the commit messages of
+patches 2 and 3: the stack and your workspace differ`; its menu has `Sync
+the commit messages of patches 2 and 3…` first. Until they are synced, no
+landed work is reviewed: the banner still lists it, its items grayed, and
+Enter on it says to sync the commit messages first, as Delete there does,
+and Enter on a comment whose reply waits; a comment's `Accept the agent's
+reply` and `Review the agent's work…` are grayed, its menu saying why. An
+edit by hand lands and waits there. Asks still run and land as they do,
+and a review open before the messages came to differ still closes. While
+the agent makes its changes in your checkout (`agent.worktree = "pwd"`),
+HEAD is the agent's, and nothing is to sync. Nothing else of it is said on
+the main screen: the patches pane and HEAD's line say nothing of messages,
+and no patch's menu syncs one.
 
-With the `moz-phab` feature (on by default), a sync either way keeps the
-trailer moz-phab writes to name the revision, the line of the message's
-last paragraph that Reading (below) says is that trailer (`Differential
-Revision: https://phabricator.services.mozilla.com/D123`). When the
-message written over has that trailer and the message written has another
-or none, the trailer written over is kept, and the sync says so (`kept the
-Differential Revision D123 your workspace's commit had`): in the place of
-the other, else at the end of the message's paragraph of trailers, as after
-`Reviewed-by: ann`, or after an empty line, as moz-phab puts it. A trailer
-that only the message written has is written with the rest of it.
+Enter on that line, or its item, opens the sync of the commit messages. On
+the left is each patch whose message differs, with what it keeps: `to
+pick`, `stacked`, `workspace`, or `nothing to pick` (below). On the right
+are the two messages of the patch the cursor is on, the stack's on the left
+and your workspace's on the right, or, where the pane is narrower than
+`view.split_width` (Settings, below), one over the other, the stack's
+first: each with its own line breaks, a line longer than its column folded,
+`↪` before each piece after the first. Over them, a note says what the
+patch has to pick and what its pick does. The two are compared word by
+word, where their lines wrap aside. A message is cut into sections at its
+empty lines, a fenced block (```` ``` ````, `~~~`) staying whole, its empty
+lines and all; a section is code when one of its lines is a line of a
+fenced block, its fences too, a line indented by a tab or by four spaces or
+more, or a line that starts with a shell's prompt, `$ `, after any indent.
+In prose, the end of a line is a space as any other, and a gap of white
+space is one gap however long, so that a paragraph wrapped otherwise is the
+same. In code, the end of every line counts, as does the white space within
+a line, its indent too; only the white space that ends a line is not read,
+so that a command split over two lines in one message and on one line in
+the other is not the same. Each message is read so on its own, and a
+section that is code in one and prose in the other is not the same either.
+The break between two sections is a word of its own. The words both have,
+in order, are drawn as any text; what only the stack's has, in the colours
+of `removed_word`, and what only your workspace's has, in those of
+`added_word`; a break only one of them has is marked on its line, `↵` at
+the end of a line of code, `¶` on an empty line. Two messages that differ
+only in how they wrap are listed all the same, drawn as any text: HEAD is
+not in sync. White space at the end of a line is no difference, as it is
+not for HEAD.
 
-A way of syncing is offered only when it would change the message it
-writes over, so two messages that differ by the revision they name alone
-are synced one way, or neither. When only the commit names one, as after
-`moz-phab submit`, the menu offers `workspace → stacked` alone, which takes
-the revision into the patch, for your review. When only the patch names
-one, the menu offers `stacked → workspace` alone, which puts the revision
-on the commit. When each names another, neither way would change a
-message: the menu offers no sync, and `✉` does not mark the patch, but
-`stacked head` and the menus say why (`patch 3 names D12 in the stack and
-D34 in your workspace's commit`). On the stack's header, each way syncs
-the patches it changes and passes over the rest, as `--messages-to-stack`
-and `--messages-to-checkout` do; a way that changes no message makes no
-commit again, and says why. While a patch and its commit differ by the
-revision they name, HEAD is not in sync with the stack, so that it does not
-follow the stack as a review closes, which would write the stack's message
-over a revision only the commit names. Built without the feature, the
-trailer is a line of the message as any other.
+`s` keeps the stack's message for the patch the cursor is on, and `w` your
+workspace's (`keep_stack` and `keep_workspace` in `[keys]`, Settings,
+below); so do the sync's menu, `Keep the stack's message` and `Keep your
+workspace's message`, and a click on the message to keep. ↑↓ pick another
+patch; → goes into the messages to scroll them, → again shows them wide,
+the list out of sight, and ← comes back. Enter closes the sync once every
+patch has its pick, asking first, `Keep picking` picked, what it does said:
+`Patches 2 and 3 take your workspace's message. The commit of patch 5
+takes the stack's message. The stack takes the new versions of its patches
+at once: your picks are their review. 3 commits are made again in your
+workspace, the files as they were, and main moves to them.` Before that,
+Enter says which patches are still to pick, and the menu grays its `Sync
+the commit messages…`, saying so too. Esc leaves the sync, the picks kept
+for as long as stacked runs (not in the file), and the banner's line opens
+it again. While it is open, the list follows the stack and HEAD as they
+change, and a pick goes with a patch whose messages no longer differ, or
+whose commit's message changed.
+
+Closing puts the message kept on each side that lacks it, all at once, or
+nothing at all. The patch takes it where its own message differs: a new
+version, in the stack at once, with no review of its own, as your pick is
+its review; the history says it is the sync's (`sync the commit messages
+of patch 2 with your workspace: edit 1a2b3c4d as 5e6f7a8b`). A change of
+the stack waiting for review, made from the stack as it was, goes on from
+the stack the sync leaves, as does what goes on from it: a version it kept
+of one of those patches is the new one, and a version of its own that said
+what the stack's said takes the new message too, so that the change can
+still be accepted. The commit takes it where its own message differs: the
+commits from the first of those up to HEAD are made again, each on the one
+before, their files, authors and dates as they were (`git commit-tree`,
+signed as git says), and the branch HEAD is on, else HEAD, moves to them.
+Nothing changes if the stack or HEAD changed since the sync listed them,
+which it then lists as they are; nor if a commit is to be made again and
+files git tracks have changes, or an agent works in the checkout; nor if a
+patch is to change while the agent changes the stack, or while work sent
+back waits to go back to it: the sync says why. HEAD is then in sync with
+the stack, when it was at its top, and the banner's line is gone.
+
+With the `moz-phab` feature (on by default), the trailer moz-phab writes to
+name the revision, the line of the message's last paragraph that Reading
+(below) says is that trailer (`Differential Revision:
+https://phabricator.services.mozilla.com/D123`), is not lost. Two messages
+that differ by that trailer alone, one naming a revision and the other
+none, as after `moz-phab submit`, have nothing to pick: the message kept is
+the one that names it, as it is, and the side that names none takes it
+(`The stack takes the Differential Revision D123 from your workspace's
+commit.`). A message picked that names no revision, the other naming one,
+takes the other's trailer, at the end of its paragraph of trailers, as
+after `Reviewed-by: ann`, or after an empty line, as moz-phab puts it. Of
+two that name each another, the one picked keeps its own, and the note says
+which the pick drops (`Keeping the stack's message drops D34, which your
+workspace's names.`). While a patch and its commit differ by the revision
+they name, HEAD is not in sync with the stack, so that it does not follow
+the stack as a review closes, which would write the stack's message over a
+revision only the commit names. Built without the feature, the trailer is a
+line of the message as any other, to pick with the rest.
+
+`stacked head NAME` lists the patches whose message differs from its
+commit's (`the message of patch 3 differs from its commit's: "Bug 3 -
+other words"`; with moz-phab, `patch 3 names no revision in the stack and
+D3 in your workspace's commit`), then says that the commit messages are
+synced in the editor, from the first line of its banner: there alone.
 
 The middle shows what the left pane's cursor is on: a patch (its message,
 then its diff, the comments under the
@@ -1509,7 +1577,11 @@ No other review closes by itself: the review of an ask that brought
 nothing back waits until you close it.
 
 In the editor, a banner under the top bar says what waits on you on the
-stack, in a line: what waits for your review (`⟳ 2 landed asks wait for
+stack, in a line: first, while the commit messages of some patches differ
+from their commits' in your workspace, that they are to sync before
+anything else (`✉ the commit messages of patch 2 differ from your
+workspace's: sync them first`, The editor, above); what waits for your
+review (`⟳ 2 landed asks wait for
 your review · the next: a change of patch 2, 1 reply, asked "…"`), a pull
 from Phabricator under way and the revision it reads (`pulling the reviews
 from Phabricator: D12, revision 2 of 3…`), what the asks batched (`3
@@ -1519,9 +1591,12 @@ comments are open (`5 open comments`); it is there while any of it is. Landing w
 on the bottom line. Esc goes to the banner from wherever the cursor is in
 the panes, and ↑ from the stack's header goes there too; a click on it as
 well, but not the mouse going by. With the cursor on it, the banner opens,
-a line for each, in three sections under their titles, and the cursor is in
+a line for each, in sections under their titles, and the cursor is in
 none of the panes: what each has picked shows as in a pane the cursor is
-not in (`picked`), not reversed. `read only, to
+not in (`picked`), not reversed. First, while there is one, `commit
+messages, to sync first`: `✉ Sync the commit messages of patch 2: the
+stack and your workspace differ`, which Enter opens the sync of, and until
+then no line of what landed opens. `read only, to
 review`: `⟳ Review …` for what landed and changes nothing (an answer, an
 ask that brought nothing back, the comments pulled from Phabricator), each
 said by what is left of it to review, the first landed first, then `◌ … after
@@ -1535,9 +1610,11 @@ batch… 2 edits, 1 answer only`; then every comment open on the stack, the
 most recently updated first, marked as the comments pane marks it (`●` with the agent,
 `◇` batched, `◌` waiting its turn, `◆` its reply waiting for review, `✓`
 answered…), with where it is, how it starts, and where it stands (with the
-agent, the last line it wrote). ↑↓ pick one, and Enter reviews what landed,
-or goes to the comment; on the batch, it opens the banner's menu, all of
-it, which Space opens from any line: what landed, to review; the batch, to
+agent, the last line it wrote). ↑↓ pick one, and Enter opens the sync of
+the commit messages, reviews what landed (once they are synced), or goes to
+the comment; on the batch, it opens the banner's menu, all of
+it, which Space opens from any line: the sync of the commit messages, while
+there is one, its items for what landed grayed until then; what landed, to review; the batch, to
 send (`Send 2 edits to a single agent`, `Send 1 answer only to  [x] a single
 agent  [ ] fan out`, `Send 1 build and test, each on its own`); every
 comment the agent can be asked about, in the order they were written, a
@@ -2130,13 +2207,18 @@ settings:
   context, where the editor reads its keys, and the keys are checked
   context by context: two things of one context on one key clash, which
   is said as what else is wrong is (below), and the first does it; one key
-  can do a thing in each context, as the two never meet. The contexts, as
+  can do a thing in each context, each read where it is. The contexts, as
   `stacked config` lists them: `screens`, the screens and the menus over
   them, wherever nothing is typed (`up`, `down`, `left`, `right`,
   `page_up`, `page_down`, `home`, `end`, `enter`, `menu`, `help`, `back`,
-  `delete`, `find`, `view`, `read`, `whole`, `quit`); and `search`, the
+  `delete`, `find`, `view`, `read`, `whole`, `quit`); `search`, the
   search of the middle while its bar is open (`find_next`, Tab, and
-  `find_previous`, shift-Tab). `delete` is `["delete", "backspace"]`
+  `find_previous`, shift-Tab); and `sync`, the sync of the commit
+  messages with no menu over it (`keep_stack`, s, and `keep_workspace`,
+  w), read there before the keys of the screens, so that a key of both
+  does the sync's there: `keep_stack = "left"` and `keep_workspace =
+  "right"` keep the message on the side of the arrow, and ← → then do
+  nothing else in the sync. `delete` is `["delete", "backspace"]`
   unless the settings say otherwise, as a Mac's delete key is Backspace;
   `delete = "d"` makes it d alone, and Delete and Backspace then do
   nothing on the screens. The search keeps for itself Esc, Enter, ↑
@@ -2390,6 +2472,10 @@ is typed: `import.rs`). A fix to one may belong in the other.
   landing, and the folders of the agent's rebase plans; claude's command
   line, its stream and its replies.
 - `held.rs`: what an ask brought back, held for your review.
+- `head.rs`: where HEAD of your checkout is against a stack, HEAD moved
+  along it, and the sync of the commit messages, both sides at once.
+- `messages.rs`: two versions of a commit message compared word by word,
+  where their lines wrap aside, for the sync to colour.
 - `review.rs`, `phab.rs`: Phabricator, built with the `moz-phab` feature
   (on by default).
 - `import.rs`: what a stack made in the editor is imported from: a range of
@@ -2426,8 +2512,9 @@ is typed: `import.rs`). A fix to one may belong in the other.
 - `paint.rs`: colours, and drawing text and boxes.
 - `tui.rs`: the editor, and the work it does away from the screen; what a
   click is on; the views of the code, the middle split in two among them,
-  each half its own (`Half`). `tui/reviewing.rs` and `tui/searching.rs`: its screens for
-  reviewing what the agent brought back, and for searching;
+  each half its own (`Half`). `tui/reviewing.rs`, `tui/syncing.rs` and
+  `tui/searching.rs`: its screens for reviewing what the agent brought
+  back, for syncing the commit messages, and for searching;
   `tui/banner.rs`, the banner of the agent's work; `tui/places.rs`, where
   each pane's cursor was, each half's of the middle split in two;
   `tui/finding.rs`, the search of the middle (`/`).
@@ -2557,14 +2644,10 @@ would go to the other copy (lines added between the two by a patch
 below) and when the agent moved its hunk to the other copy, the stack not
 edited by hand while the agent changes it, failures kept to look at, comments staying on their line
 across versions, a patch edited by hand (as mail and as code, at a line,
-refused and taken up again), a commit message synced either way keeping,
-with moz-phab, the Differential Revision of the message written over and
-saying so (in the place of another, or added), the one of the message
-written alone written with it, and a message that differs by the revision
-it names alone synced the one way that carries the revision over (the
-other way changing no message, no commit made again, no version made), or
-neither way when each names another, `stacked head` saying why; or,
-without moz-phab, the trailer written as any line, trimming, the settings (in ~/.stacked, or the
+refused and taken up again), `stacked head` listing the patches whose
+message differs from its commit's, with moz-phab what each side names when
+they differ by the Differential Revision alone, then that the editor syncs
+them, the flags that synced them before refused as unknown, trimming, the settings (in ~/.stacked, or the
 folder `$STACKED_HOME` names, the folder made by the first written, a file
 `$STACKED_CONFIG` names over it; the files of before moved in by a run of
 yours, said once, never over a file there, and not by the shell's
@@ -2756,7 +2839,29 @@ it as the agent's work does; replies taken with Enter, the last one
 closing their work's review, its comments left open; Enter opening the
 review of work that opened comments too, and saying to review first the
 edit that work goes on from; and work that brought nothing back reviewed
-for its comment alone), the comment editor hiding
+for its comment alone), the sync of the commit messages (its line first in
+the banner, in a section of its own, and first in the banner's line and
+menu, gone once they are synced; no landed work opened, rejected or taken
+meanwhile, from the banner, its menu, a comment's or an edit by hand
+landing, and opened after; a review open before closing all the same, HEAD
+staying; nothing of it in the patches pane nor in a patch's menu or the
+stack's; its patches listed with what each keeps, picked by key, from its
+menu and by a click, and its keys the settings', read there before the
+screens'; what is left to pick said; closing asked first, saying what
+goes where, then both ways at once: new versions in the stack, the
+commits made again on the same files, HEAD in sync after; a change waiting
+for review going on from the new versions, its own versions of a patch
+taking the message too, and accepted after; Esc keeping the picks; nothing
+changed when HEAD changed meanwhile, the pick of a message no longer there
+dropped, nor with a change not committed, nor a patch changed while the
+agent changes the stack, a commit still taking the stack's message then;
+the messages side by side, then one over the other on a narrower pane,
+what one has and the other has not coloured, a paragraph wrapped otherwise
+as any text and a break one alone has marked; with moz-phab, nothing to
+pick of a revision one side alone names, the other taking it, a revision
+carried over to the message picked that names none, and of two, the pick
+keeping its own and the sync saying which it drops; without moz-phab, the
+trailer a line to pick as any other), the comment editor hiding
 nothing in each view of the code, each pane keeping where its cursor
 was, the patch's title kept at the top of the middle, the patches pane's
 states (expanded, files, hidden) and its files (listed under the patch
@@ -2920,7 +3025,27 @@ pane's `compact`, as versions before the files wrote it, read as them,
 and the keys listed by the context they are read in; those in `keys.rs`,
 the keys checked context by context (the defaults with no clash, one key
 in two contexts no clash, two things of one context on one key said),
-and what the search of the middle keeps for itself refused to its own;
+what the search of the middle keeps for itself refused to its own, and
+the sync's own keys, s and w, read in the sync alone, given ← and → of the
+screens with no clash, and given one key both, said; those in
+`messages.rs`, two versions of a commit message compared where their lines
+wrap aside: a paragraph wrapped otherwise the same, a word changed marked
+in each, two words in a row marked as one stretch, a paragraph split or
+joined marking the break alone, white space that ends a line not read in
+prose nor in code, the trailer naming the revision a line as any other
+(another revision, its link alone; one alone naming it, its line and the
+break before it), a command wrapped otherwise not the same while the
+prose over it is, a fenced block one section of code, its empty lines and
+all, a line of code (indented, after a tab, a prompt) making its whole
+paragraph code, the white space within a line of code counting, its
+indent too, and a section of code in one version and prose in the other
+not the same; those in `head.rs`, which messages differ by the revision
+alone and which have nothing to pick, where a trailer is added, the
+message kept as picked (the other's revision taken when it names none, of
+two the other's dropped, of one naming none the one that names it,
+whatever is picked), what a sync's plan changes on each side and how many
+commits it makes again, and, without moz-phab, the trailer compared and
+kept as any line;
 those in `refs.rs`, which references a rewind or an edit detaches, which
 stay (named by another turn, the agent's or by `@r*`, by the reply waiting
 for review, or never named), the agent's turn written again keeping its

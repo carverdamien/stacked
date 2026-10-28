@@ -158,6 +158,62 @@ fn made_from(r: &Run, h: &Held) -> Option<usize> {
     h.stack.as_ref().and_then(|c| c.from).or_else(|| crate::ask::info(r).map(|i| i.from))
 }
 
+/// The changes of stack `name` waiting for review that were made from the
+/// stack at `was`, made from the stack at `now` instead: the one at `was`
+/// with new versions of some of its patches, their messages alone changed,
+/// the sync of the commit messages', `new` mapping each version replaced to
+/// the one in its place. In such a change, a version replaced is replaced
+/// too, and a version of its own of one of those patches that says what
+/// the version replaced said takes the new message as well; what goes on
+/// from such a change, guessing it is accepted, is made from what it makes
+/// the same way. Each change made so, said: `the agent's change of patch
+/// 1`.
+pub fn carry(db: &mut Db, name: &str, was: Option<usize>, now: usize, new: &HashMap<String, String>) -> Result<Vec<String>> {
+    let mut new = new.clone();
+    // By change: what the version replaced said, and what the new one says.
+    let said: HashMap<String, (String, String)> = new
+        .iter()
+        .map(|(old, to)| (db.patch(old).change.clone(), (db.patch(old).message.clone(), db.patch(to).message.clone())))
+        .collect();
+    let runs: Vec<Run> = queue(db, name).into_iter().filter(|r| r.held.as_ref().is_some_and(|h| h.stack.is_some())).cloned().collect();
+    let mut out = Vec::new();
+    for r in runs {
+        let Some(h) = r.held.clone() else { continue };
+        let Some(c) = h.stack.clone() else { continue };
+        let guess = crate::ask::guessing(db, &r).is_some();
+        if !guess && made_from(&r, &h) != was {
+            continue;
+        }
+        let mut patches = c.patches.clone();
+        for id in patches.iter_mut() {
+            if let Some(to) = new.get(id) {
+                *id = to.clone();
+                continue;
+            }
+            let p = db.patch(id).clone();
+            let Some((_, after)) = said.get(&p.change).filter(|(before, _)| *before == p.message) else { continue };
+            let to = db.add_patch(crate::ops::revise(&p, crate::mbox::Draft { message: after.clone(), ..crate::mbox::Draft::from(&p) }))?;
+            new.insert(id.clone(), to.clone());
+            *id = to;
+        }
+        if guess && patches == c.patches {
+            continue;
+        }
+        let from = if guess { c.from } else { Some(now) };
+        if !guess {
+            out.push(format!("{} of {}", crate::ask::whose_change(&r), c.of));
+        }
+        db.add_run(Run {
+            held: Some(Held {
+                stack: Some(Change { patches, from, ..c }),
+                ..h
+            }),
+            ..r
+        })?;
+    }
+    Ok(out)
+}
+
 /// Holds `patches`, what an edit by hand makes of stack `name`, for your
 /// review: nothing changes before it is accepted. `op` is what the history
 /// calls it, `of` what it changes, and `said` what the edit was. Made from
