@@ -104,7 +104,7 @@ const GIT_SUBCOMMANDS: [&str; 16] = [
 const GIT_CONFIG_READS: [&str; 4] = ["--get", "--get-all", "--get-regexp", "--list"];
 
 /// What runs another program (`awk`'s `system`, `fd -x`) is not here.
-const READ_COMMANDS: [&str; 20] = [
+pub const READ_COMMANDS: [&str; 20] = [
     "grep", "rg", "find", "ls", "cat", "head", "tail", "wc", "sort", "uniq", "cut", "tr", "sed", "tree", "which",
     "file", "stat", "dirname", "basename", "realpath",
 ];

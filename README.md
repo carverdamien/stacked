@@ -105,8 +105,8 @@ stacked config > ~/.stacked/config.toml   # every setting, to start a settings f
 stacked config editor hx           # one written in the settings file; KEY alone reads it
 stacked config --unset editor      # ... taken out of it
 stacked config --local editor vim  # ... in this checkout's own settings, over the file's here
-stacked setup agent bug123         # which of the agent's tools every ask may use, asked one by one, for its checkout
-stacked setup agent bug123 --tui   # ... on a screen, a box for each
+stacked setup agent bug123         # what each kind of ask may use, a list each, checked line by line, for its checkout
+stacked setup agent bug123 --tui   # ... on a screen, a box for each, as the editor shows it before the first ask
 ```
 
 `-f FILE` points any command at a database. A first argument that is not a
@@ -838,14 +838,17 @@ ask agent`'s:
   its reply goes in its thread. On the command line, `stacked send NAME ID
   --whole-stack`.
 - `answer only`: read-only, enforced by its tools: it reads the code and
-  the stack, and it may read the web with `curl` (a bug on Bugzilla, a
-  revision on Phabricator, a page of documentation), through `jq` if need
-  be. It may also use what your own claude settings allow, and the tools
-  stacked's `agent.tools` names (the stack's checkout's own, if it sets
-  them: Settings, below), your MCP servers' among them: running in
-  the repository, it has the servers you added there. What it was not let
-  use is said in its stream (`⛔ not allowed: mcp__moz__get_bug: …`) and in
-  its run's summary, to allow it if it should be; every ask, a change's too,
+  the stack, and, unless its list says otherwise (`agent.answer_tools`,
+  below), it may read the web with `curl` (a bug on Bugzilla, a revision on
+  Phabricator, a page of documentation), through `jq` if need be. It may
+  also use what your own claude settings allow, and what its list and
+  stacked's `agent.tools` add (the stack's checkout's own, if it sets them:
+  Settings, below), your MCP servers' tools among them: running in the
+  repository, it has the servers you added there. What it was not let use
+  is said in its stream (`⛔ not allowed: mcp__moz__get_bug: …`) and in its
+  run's summary, with the list that lets its kind of ask use more
+  (`agent.answer_tools`, `agent.change_tools`; for a build and test,
+  `agent.tools`), to allow it if it should be; every ask, a change's too,
   is told to say so in what it writes, the tool not allowed, never that the
   service behind it (Bugzilla, Phabricator) refused. No worktree is made for
   it, which in a big repository takes a while, unless the settings say so
@@ -864,6 +867,34 @@ ask agent`'s:
   (CLAUDE.md), never the user's worktree; it changes nothing in the stack.
   What it found comes back in the reply and on each patch's title, saying which
   stack it tested.
+
+What each kind of ask may use is stacked's to give and yours to add to.
+stacked always gives each what it needs: a change, git's history commands,
+the commands that read, and its own `stacked fits` and `stacked export`,
+none of which reaches the network, so that a change cannot touch a remote
+(below); an answer, `Read`, `Grep`, `Glob`, `LS`, `git show`, `log` and
+`diff`, and stacked's commands that read the stack; a build and test, any
+command. What else each may use is a list of the settings' (Settings,
+below): `agent.change_tools` for the asks that change the stack, nothing
+unless set; `agent.answer_tools` for answer-only asks, `curl` and `jq`
+unless set, as answers could always run them before there were lists; and
+`agent.tools` for every ask, builds and tests too. `stacked setup agent`
+sets the two lists up with you.
+
+No ask goes before that setup is saved, in the settings that apply to the
+stack's checkout (the settings' file, or the checkout's own): `agent.setup`
+says it is. In the editor, asking (`Ask agent`, `Save it and ask agent`,
+`Send it now`, sending the batch, sending work back from its review) opens
+the setup first, the screen `stacked setup agent --tui` shows, over the
+editor; while the agent is asked what tools it has, a box says so, and the
+editor goes on. Saving the setup writes it in the stack's checkout's own
+settings, `.stacked/local.toml`, and the ask goes; Esc sends nothing, and
+the bottom line says why: sending again opens the setup again. On the
+command line, `stacked send` (but `--later`, which only batches) and
+`stacked review --send-back` refuse, saying to run `stacked setup agent
+NAME` first. Once the setup is saved, it is not asked again, unless a later
+stacked's setup is a new version of it (`agent.setup` says which was
+saved). The tour's stand-in for the agent needs none.
 
 Whatever it writes, a reply or a comment it opens, the agent may attach
 references to it: lines of a file, a union of ranges (`120-140,200-210`),
@@ -1023,7 +1054,11 @@ names no git directory, as an older stacked made them, is removed once
 nothing in it has changed for a day. `$STACKED_TODO` names another folder
 to keep the plans in, in place of `$TMPDIR/stacked-todo`.
 
-What a change may run reaches no network. It may run git's history
+What a change may run reaches no network, unless what its list
+(`agent.change_tools`) adds does: stacked suggests nothing for that list,
+and its setup says which of the agent's tools can reach the network (Bash
+at large, `WebFetch`, `WebSearch`), as a change that reaches it could touch
+a remote. It may run git's history
 commands (`status`, `log`, `show`, `diff`, `add`, `restore`, `reset`,
 `commit`, `cherry-pick`, `apply`, `checkout`, `switch`), `git rebase` with
 its plan (`-i`, and `--continue`, `--skip`, `--abort`), git's settings to
@@ -1533,33 +1568,79 @@ settings:
 - `[agent]`: `command`, the program run as the agent; `args`, added to
   every run; `worktree` and `answer_only_worktree`, where a change and an
   answer work: `pwd`, `ondemand` or `precreate` (Asking the agent, above;
-  `ondemand` and `pwd` unless set); `model`; `tools`, tools every ask may use besides its own, as
-  claude names them for `--allowedTools`: all of an MCP server's
+  `ondemand` and `pwd` unless set); `model`. What each kind of ask may use
+  besides what stacked gives it (Asking the agent, above), as claude names
+  the tools for `--allowedTools`: all of an MCP server's
   (`mcp__bugzilla__*`; there is no way to name every server's at once), one
   of its tools (`mcp__bugzilla__get_bug`), a command (`Bash(jq *)`, each
-  command of a pipe needing its own). An answer may use them too, so give
-  only tools that read. `stacked setup agent [NAME]` writes it with you: it
-  starts the agent in the stack's repository (else where it is run), where
-  it has your MCP servers, and stops it as soon as it has said what tools it
-  has; then it asks, for each MCP server, whether every ask may use all its
-  tools (`mcp__moz__*`), none, or which one by one, and for each other tool
-  stacked does not give every ask, whether it may, saying of those that
-  change things (`Bash`, `Edit`, `Write`…) that an answer could change
-  things too. No answer is no. What you let it is added to `tools`, what
-  you did not taken out, in that checkout's own settings (below; with
-  `--global`, in `~/.stacked/config.toml`, for the checkouts without their own),
-  the rest of the file as it was; it says first which file `tools` is in
-  now, and which it writes. Outside a checkout, only `--global` can be
-  written. With `--tui`, on a screen of its own: `tools` as the settings
-  have it now, and the file it is in, at the top; a box for each MCP server
-  (all its tools, those to come too) and for each of its tools, then for
-  each other tool, and for what the settings let that the agent does not
-  say it has (`Bash(jq *)`, a server not there now), to keep or take out;
-  and what `tools` is to be, in the file it writes, at the bottom. Space
-  lets a tool or not, `s` saves. Esc (or `q`) is as in the comment editor:
+  command of a pipe needing its own). `change_tools`, for the asks that
+  change the stack: nothing unless set. `answer_tools`, for answer-only
+  asks: `["Bash(curl *)", "Bash(jq *)"]` unless set, which answers could
+  always run before there were lists; taken out, an answer is no longer
+  told it may read the web with curl. `tools`, for every ask, builds and
+  tests too, as before there were lists: an answer may use them too, so give
+  only tools that read. `setup`, the setup of the two lists done, as the
+  version of it that was: until it is, no ask goes (Asking the agent,
+  above).
+
+  `stacked setup agent [NAME]` sets the two lists up with you, and writes
+  `setup` once you save them. It starts the agent in the stack's repository
+  (else where it is run), where it has your MCP servers, and stops it as
+  soon as it has said what tools it has. Each list is shown ticked as the
+  settings say, else as stacked has it: nothing for changes; for answers,
+  `curl` and `jq`, and what the checkout's own claude settings allow, as you
+  allow it yourself, but for what changes things. Each says first what
+  stacked always gives it, which does not change. Then it lists what the
+  agent says it has (each MCP server, its tools all at once or one by one,
+  and the agent's other tools, but those stacked gives every ask); what the
+  checkout's own claude settings allow, each rule as written
+  (`permissions.allow` of `.claude/settings.local.json`, yours, then of
+  `.claude/settings.json`; their `deny` is left alone), said `allowed in
+  .claude/settings.local.json`: claude applies them when it runs in the
+  checkout, but an agent working in a worktree of the stack's own does not
+  have the first, which git does not track; and the programs the checkout's
+  instructions to the agent name, for either kind, unticked, as stacked
+  cannot know what a program does. Those instructions are `CLAUDE.md`,
+  `.claude/CLAUDE.md`, `AGENTS.md` and `AGENT.md` at the checkout's top, and
+  what a `CLAUDE.md` imports (`@path`), one level down, inside the checkout:
+  a link or an import out of it, as to `~/.claude`, is not read. A program
+  is the first word of what they say in code: a span, a command of a block
+  of shell (past its prompt, `$ `, and what it sets first, `A=b`), or a line
+  of an unmarked block. It is listed as `Bash(PROGRAM *)`, said `named in
+  AGENTS.md`, if it is there to run, on PATH or in the checkout (`./mach`);
+  a block of shell's that is not on PATH is listed too, said `named in
+  AGENTS.md, not found on PATH`, to install and tick if it should be. What
+  stacked gives already (git, grep, rg, cat…), shells and their builtins
+  (cd, echo…) and what stacked refuses are left out, of the instructions
+  and of the claude settings alike. Last come what the settings let that
+  none of these lists, to keep or take out. Of the agent's tools, it says
+  which can reach the network, for a change (Bash at large, `WebFetch`,
+  `WebSearch`), and which change things, for an answer (Bash at large,
+  `Edit`, `Write`…). A tool of `tools` shows ticked in both lists; taken out
+  of one, it leaves `tools` and goes on in the other list alone. A command
+  or a tool of your own goes in either list, typed as claude writes a
+  permission rule: a tool (`WebFetch`), a tool and what it may do between
+  parentheses (`Bash(make check *)`, `WebFetch(domain:example.com)`), all
+  of an MCP server's tools (`mcp__SERVER__*`, `mcp__SERVER`) or one
+  (`mcp__SERVER__TOOL`); what does not read as one is refused, and said why
+  (`make check is not a tool's name: a command is let run as Bash(make
+  check)`). Saving writes both lists, `tools` if it changed, and `setup`, in
+  that checkout's own settings (below; with `--global`, in
+  `~/.stacked/config.toml`, for the checkouts without their own), the rest
+  of the file as it was; saved unchanged, the setup is done all the same.
+  Outside a checkout, only `--global` can be written. Asked line by line, it
+  says what each list holds, to keep as it is (Enter) or to go through one
+  by one, Enter keeping each as it is; then it asks for a command or a tool
+  to add, until a line is left empty. With `--tui`, and in the editor
+  before the first ask, on a screen of its own: what each kind of ask is
+  given and may use, a box each, and what saving writes, in the file it
+  writes, at the bottom. Space lets a tool or not, `a` (or Enter on `+ add
+  a command or a tool…`) opens a line to type one in, for the list the
+  cursor is in, and `s` saves. Esc (or `q`) is as in the comment editor:
   with something changed, a menu, `Save it`, `Throw it away`, `Keep
   choosing` (Esc there keeps choosing too); with nothing changed, out,
   nothing written. Ctrl-c leaves at once, nothing written.
+
   `worktrees`, where the agents' worktrees go, else `.stacked/` at the top
   of the stack's repository. `schema`, whether the agent gives its answer
   as structured output, checked against what the ask asks for (claude's
@@ -1880,7 +1961,10 @@ is typed: `import.rs`). A fix to one may belong in the other.
 - `state.rs`: the databases opened last, by StackED and by stacked's
   editor, and StackED's windows to open again, kept between runs under a
   lock.
-- `setup.rs`: `stacked setup agent --tui`, the agent's tools on a screen.
+- `setup.rs`: `stacked setup agent`, what each kind of ask may use: where
+  what it lists comes from (the agent, the checkout's claude settings and
+  instructions), on a screen (`--tui`, and the editor's before the first
+  ask) or line by line, and what saving writes.
 - `editor.rs`: the inline comment editor.
 - `paint.rs`: colours, and drawing text and boxes.
 - `tui.rs`: the editor, and the work it does away from the screen; what a
@@ -1958,6 +2042,16 @@ removed only once its asks are over, with no process working in the folder
 any more: an ask the test left going would write in the folder as it is
 removed, and leave some of it.
 
+Every test that asks the agent has the setup of what each kind of ask may
+use done, as a user's is once it is saved, so that its asks go. In
+`tests/cli.rs`, the test's home holds a settings' file that says so
+(`[agent] setup = 1`), and a test that names a settings' file of its own
+(`$STACKED_CONFIG`) says so in it too; the editor's tests share settings
+of their own that say so (`settings()` in `tests/tui.rs`). The tests of the
+setup itself, and of an ask before it, start from settings that do not: a
+file of their own, or, for the editor's, the stack's checkout's own
+settings, `agent.setup = 0`, over the tests' own.
+
 With `STACKED_TEST_CHECKPOINTS=1` set, every write writes a checkpoint, and
 every database read from one is read whole too and the two compared, a
 difference a panic: run the suite so too after a change to the database,
@@ -1990,9 +2084,12 @@ folder `$STACKED_HOME` names, the folder made by the first written, a file
 `$STACKED_CONFIG` names over it; the files of before moved in by a run of
 yours, said once, never over a file there, and not by the shell's
 completion; a checkout's own over them, an ask on a stack having its
-checkout's wherever stacked runs, one git tracks not read; and the tools
-every ask may use, set up with the agent, in the checkout's own or with
-`--global`), Phabricator's comments
+checkout's wherever stacked runs, one git tracks not read; and what each
+kind of ask may use, set up with the agent, line by line, from what it
+has, the checkout's claude settings and instructions, in the checkout's own
+or with `--global`; each kind given its own list and every ask's, and the
+refusal of a tool naming its kind's list; no ask sent before the setup is
+saved, and every ask once it is), Phabricator's comments
 held for review then filed (none twice, none rejected again, an edit held
 as an edit of its turn), a stack imported from Phabricator's revisions (by
 number or link, named or not), Phabricator's commands there only when
@@ -2001,7 +2098,10 @@ what does not apply being refused, edited again, or read-only. `tests/tui.rs` dr
 that no letter but 1 and 2 does anything, keys mapped by the settings, the
 menus by place, what `?` says where, writing in every pane, the regions it
 says it drew (its panes, then the boxes over them, inside their borders:
-what StackED's selections keep to), a comment asked
+what StackED's selections keep to), the first ask opening the setup of
+what each kind of ask may use (the agent asked what it has away from the
+screen, Esc sending nothing, saving writing the checkout's own settings
+and sending, the next ask going at once), a comment asked
 about and its stream and answer shown in place, the screen never waiting on
 the agent, redrawing not slowing as the agent writes (a frame timed as the
 time the editor ran to read and draw it, not by the clock, which counts
@@ -2154,8 +2254,13 @@ temporary directory; those in `history.rs`, what the history leaves out
 (comments, runs, a move to where the stack is, a branch put straight back)
 and how a stack diff follows each patch by its change, a move told from a
 shift. Those in
-`setup.rs` show the setup screen's boxes, a server's tools let all at once
-or one by one; those in `search.rs`, which lines of a file a hunk shows
+`setup.rs` show the setup screen's boxes, each kind's own, a server's tools
+let all at once or one by one, a tool of every ask's taken out of one kind;
+what each list starts ticked as, the settings winning; the rules a command
+added is checked against; what the checkout's claude settings allow and
+what its instructions name (a program on PATH, one not, a builtin and a
+tool stacked gives left out, nothing read out of the checkout); and the
+setup asked line by line; those in `search.rs`, which lines of a file a hunk shows
 already; those in `rows.rs`, a web link's line under its comment cut to
 the pane, its start kept; those in `progress.rs`, that a patch whose file has no newline
 at its end leaves nothing to review once its lines removed and added and

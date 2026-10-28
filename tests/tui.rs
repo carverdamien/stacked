@@ -88,15 +88,25 @@ fn setup() -> (tempfile::TempDir, PathBuf, PathBuf) {
     (tmp, db, src)
 }
 
-/// The editor on `db`, with the settings of no file: the tests share their
-/// process, and a developer's own settings must not change them.
+/// The settings of the editor's tests, rather than a file's: the defaults,
+/// with the setup of what each kind of ask may use done, as a user's are
+/// once it is saved, so that their asks go. The tests share their process,
+/// and with it these settings: each one sets them before any reads them.
+fn settings() -> stacked::config::Config {
+    let mut c = stacked::config::Config::default();
+    c.agent.setup = Some(stacked::setup::VERSION);
+    c
+}
+
+/// The editor on `db`, with the tests' settings (`settings`): a
+/// developer's own must not change them.
 fn open(db: &Path) -> stacked::db::Result<Editor> {
-    stacked::config::init(stacked::config::Config::default());
+    stacked::config::init(settings());
     // No agent of the user's is ever asked: the tests' stand-in is. No
     // browser opens a link either: a stand-in does.
     fake_claude();
     fake_opener();
-    App::with_config(db, stacked::config::Config::default()).map(Editor)
+    App::with_config(db, settings()).map(Editor)
 }
 
 /// The editor a test opened (`open`). Once it goes, at the end of the test,
@@ -654,7 +664,7 @@ fn the_keys_are_the_settings() {
     )
     .unwrap();
     assert!(wrong.is_empty(), "{wrong:?}");
-    stacked::config::init(stacked::config::Config::default());
+    stacked::config::init(settings());
     let mut app = App::with_config(&db, cfg).unwrap();
     draw(&mut app);
     keys(&mut app, &[KeyCode::Char('j')]);
@@ -684,7 +694,7 @@ fn what_is_said_names_the_keys_of_the_settings() {
     let (_tmp, db, _src) = setup();
     let (cfg, wrong) = stacked::config::Config::parse("[keys]\nup = [\"k\", \"up\"]\ndown = [\"j\", \"down\"]\n").unwrap();
     assert!(wrong.is_empty(), "{wrong:?}");
-    stacked::config::init(stacked::config::Config::default());
+    stacked::config::init(settings());
     let app = App::with_config(&db, cfg).unwrap();
     // The arrows alone, as in pairs.
     assert_eq!(app.say_keys("press ↓ to pick it, ↑ to go back, ↑↓ for another".into()), "press j to pick it, k to go back, kj for another");
@@ -4195,6 +4205,76 @@ fn a_stream_read_in_place_folds_once_the_agent_is_done() {
     assert!(!screen.contains("● session started · fake"), "{screen}");
     keys(&mut app, &[KeyCode::Char(' ')]);
     assert!(matches!(app.mode, Mode::Menu(_)), "{:?}", app.mode);
+}
+
+#[test]
+fn the_first_ask_opens_the_setup_and_goes_once_it_is_saved() {
+    let (_tmp, db, src) = setup();
+    // The setup not done in the stack's checkout, as its own settings say,
+    // over the tests' own, which have it done.
+    stacked(&src, &db, &["config", "--local", "agent.setup", "0"]);
+    // Where the setup is saved: there, as the stack names its checkout.
+    let local = src.canonicalize().unwrap().join(".stacked/local.toml");
+    let sent = || {
+        let d = Db::load(&db).unwrap();
+        (d.runs().len(), notes_of(&db, "s", 0).iter().filter(|n| n.queued.is_some()).count())
+    };
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Enter]);
+    typed(&mut app, "why so loud?");
+    keys(&mut app, &[KeyCode::Esc]);
+    choose_as(&mut app, "Save it and ask agent", "answer only");
+    // Saved, not sent: the setup first, the agent asked what tools it has
+    // away from the screen, as the screen says.
+    assert!(matches!(&app.mode, Mode::Setup(su) if su.screen.is_none()), "{:?}", app.mode);
+    let screen = draw(&mut app);
+    assert!(screen.contains("is being asked what tools it has") && screen.contains(" · asking the agent what tools it has…"), "{screen}");
+    assert!(screen.contains(" esc: send nothing"), "{screen}");
+    assert_eq!((notes_of(&db, "s", 0).len(), sent()), (1, (0, 0)), "saved, and nothing sent");
+    // Esc while it is asked: nothing sent, the bar saying why.
+    keys(&mut app, &[KeyCode::Esc]);
+    let why = "nothing was sent: what each kind of ask may use is not set up yet, and sending again opens the setup again";
+    assert_eq!((&app.mode, app.status.as_str()), (&Mode::Normal, why));
+    // Asked again: once the agent said what it has, the screen `stacked
+    // setup agent --tui` shows, over all of the editor; Esc there, nothing
+    // changed, sends nothing either, and writes nothing.
+    keys(&mut app, &[KeyCode::Down]);
+    choose_as(&mut app, "Ask agent", "answer only");
+    let screen = wait_for(&mut app, " What each kind of ask may use, besides what stacked always gives it: the agent's tools, in ");
+    assert!(screen.contains(" Answer-only asks: agent.answer_tools") && screen.contains("   [x] Bash(curl *)   stacked's default for answers"), "{screen}");
+    assert!(screen.contains(&format!(" To be, in {}: ", local.display())), "{screen}");
+    let Mode::Setup(su) = &app.mode else { panic!("{:?}", app.mode) };
+    let to_be = su.screen.as_ref().unwrap().chosen();
+    assert_eq!((to_be.change, to_be.answer, to_be.every), (vec![], vec!["Bash(curl *)".to_string(), "Bash(jq *)".to_string()], None));
+    assert!(!screen.contains("why so loud?"), "the editor under it is not drawn: {screen}");
+    keys(&mut app, &[KeyCode::Esc]);
+    assert_eq!((&app.mode, app.status.as_str()), (&Mode::Normal, why));
+    assert_eq!(sent(), (0, 0));
+    assert_eq!(std::fs::read_to_string(&local).unwrap(), "[agent]\nsetup = 0\n");
+    // Saved: written in the checkout's own settings, both lists and the
+    // setup done; and the ask goes.
+    choose_as(&mut app, "Ask agent", "answer only");
+    wait_for(&mut app, " What each kind of ask may use");
+    keys(&mut app, &[KeyCode::Char('s')]);
+    assert_eq!(app.mode, Mode::Normal);
+    let said = format!("the setup is saved in {}; asked the agent about 1 comment (answer only)", local.display());
+    assert!(app.status.starts_with(&said), "{}", app.status);
+    assert_eq!(
+        std::fs::read_to_string(&local).unwrap(),
+        "[agent]\nsetup = 1\nchange_tools = []\nanswer_tools = [\"Bash(curl *)\", \"Bash(jq *)\"]\n"
+    );
+    accept_landed(&mut app, &db);
+    wait_for(&mut app, "agent replied (answer only)");
+    // Never again: the next goes at once.
+    down_to(&mut app, "+LINE 39");
+    keys(&mut app, &[KeyCode::Enter]);
+    typed(&mut app, "and this one?");
+    keys(&mut app, &[KeyCode::Esc]);
+    choose_as(&mut app, "Save it and ask agent", "answer only");
+    assert_eq!(app.mode, Mode::Normal);
+    assert!(app.status.starts_with("asked the agent about 1 comment (answer only)"), "{}", app.status);
 }
 
 #[test]

@@ -323,6 +323,32 @@ fn agent_of(db: &Db, name: &str) -> crate::config::Agent {
     crate::config::of(&dir).0.agent
 }
 
+/// Why stack `name` cannot be asked anything yet, if it cannot: what each
+/// kind of ask may use is not set up in the settings of its checkout
+/// (`agent.setup`, global or the checkout's own), or was set up by an
+/// earlier version of the setup than this stacked's. A stack kept in
+/// memory, the tour's, is answered by a stand-in, with nothing to set up.
+pub fn not_set_up(db: &Db, name: &str) -> Option<String> {
+    #[cfg(feature = "demo")]
+    if db.stack(name).ok().and_then(|s| s.repo.as_deref()).is_some_and(|r| crate::memory::is_repo(Path::new(r))) {
+        return None;
+    }
+    let run = format!("run `stacked setup agent {name}` first");
+    match agent_of(db, name).setup.unwrap_or(0) {
+        n if n >= crate::setup::VERSION => None,
+        0 => Some(format!("the tools each kind of ask may use are not set up yet: {run}, to check them and save them; nothing was sent")),
+        _ => Some(format!("the tools each kind of ask may use were set up by an earlier stacked: {run}, to check them again and save them; nothing was sent")),
+    }
+}
+
+/// As `not_set_up`, an error.
+fn set_up(db: &Db, name: &str) -> Result<()> {
+    match not_set_up(db, name) {
+        Some(why) => err(why),
+        None => Ok(()),
+    }
+}
+
 /// Whether, with `agent`'s settings, a change or an answer goes on from the
 /// change waiting for your review, guessing you accept it: unless the
 /// setting says not, or changes work in your checkout, one at a time.
@@ -607,6 +633,7 @@ pub fn queue(db_path: &Path, name: &str, notes: &[(String, String)], way: Way, w
     }
     check_ahead(db_path, name);
     Db::edit(db_path, |db| {
+        set_up(db, name)?;
         applies(db, name)?;
         enqueue(db, notes, way, whole, Stage::Ready, None)
     })
@@ -619,6 +646,7 @@ pub fn queue(db_path: &Path, name: &str, notes: &[(String, String)], way: Way, w
 pub fn send_back(db_path: &Path, name: &str, id: &str, marks: &std::collections::BTreeMap<String, bool>) -> Result<String> {
     check_ahead(db_path, name);
     Db::edit(db_path, |db| {
+        set_up(db, name)?;
         applies(db, name)?;
         let round = crate::held::send_back(db, id, marks)?;
         enqueue(db, &round.notes, round.way, round.whole, Stage::Ready, Some(id))?;
@@ -753,6 +781,7 @@ pub fn release_batch(db_path: &Path, name: &str, way: Way, fan: bool) -> Result<
         if all.is_empty() {
             return Ok(0);
         }
+        set_up(db, name)?;
         applies(db, name)?;
         if fan || way == Way::Test {
             for (at, whole) in &all {
@@ -1060,22 +1089,70 @@ fn history_part(db: &Db, i: &Info, s: &Stack, cmd: &str) -> String {
     p
 }
 
-/// What an ask to answer only may run, `cmd` being stacked on its
-/// database: it reads the code and the stack, changes nothing, and may read
-/// the web with curl (a bug, a revision, a page of documentation), what it
-/// reads through jq: each command of a pipe must be let run.
-fn answer_tools(cmd: &str) -> String {
+/// What stacked always gives an ask to answer only, `cmd` being stacked on
+/// its database: it reads the code and the stack, and changes nothing.
+/// What else it may run is the settings' (`agent.answer_tools`: curl and
+/// jq unless set, to read the web), each command of a pipe needing its own.
+fn answer_given(cmd: &str) -> String {
     format!(
         "Read,Grep,Glob,LS,Bash(git show *),Bash(git log *),Bash(git diff *),Bash({cmd} export *),\
          Bash({cmd} log *),Bash({cmd} tree *),Bash({cmd} versions *),Bash({cmd} interdiff *),\
-         Bash({cmd} show *),Bash({cmd} comments *),Bash(curl *),Bash(jq *)"
+         Bash({cmd} show *),Bash({cmd} comments *)"
     )
 }
 
-/// What an ask to answer only is told of the web.
+/// What stacked always gives an ask that changes the stack, `cmd` being
+/// stacked on its database: git's history commands and the commands that
+/// read (`allowed_tools`), none that reaches the network, and stacked's
+/// own, to check that the patches above still apply, and to read the stack.
+fn change_given(cmd: &str) -> String {
+    format!("{},Bash({cmd} fits *),Bash({cmd} export *)", allowed_tools())
+}
+
+/// What stacked always gives each kind of ask, said, a line each: as the
+/// setup shows it, beside what the settings add.
+pub const CHANGE_GIVEN: [&str; 3] = [
+    "Read, Grep, Glob, LS, and commands that read: grep, rg, find, cat, sed, sort…",
+    "git's history commands (status, log, show, diff, add, commit, reset, rebase -i…), and git config to read",
+    "stacked's fits and export; none of what is given reaches the network, so a change cannot touch a remote",
+];
+pub const ANSWER_GIVEN: [&str; 2] = [
+    "Read, Grep, Glob, LS, and git show, log and diff",
+    "stacked's commands that read the stack: export, show, log, tree, versions, interdiff, comments",
+];
+
+/// What an ask in `way` may use, `cmd` being stacked on its database, as
+/// claude takes it (`--allowedTools`): what stacked gives that kind of ask,
+/// then what the settings `agent` add for that kind (`change_tools`,
+/// `answer_tools`), then what they add for every ask (`tools`). A build and
+/// test runs what the project needs: Bash at large, and every ask's.
+pub fn tools_for(way: Way, cmd: &str, agent: &crate::config::Agent) -> String {
+    let (mut tools, own): (String, &[String]) = match way {
+        Way::Change => (change_given(cmd), &agent.change_tools),
+        Way::Answer => (answer_given(cmd), &agent.answer_tools),
+        Way::Test => (format!("Bash,{}", allowed_tools()), &[]),
+    };
+    // Its answer given as structured output: with the tool claude gives it
+    // with.
+    if agent.schema {
+        tools.push_str(",StructuredOutput");
+    }
+    for t in own.iter().chain(&agent.tools) {
+        tools.push(',');
+        tools.push_str(t);
+    }
+    tools
+}
+
+/// What an ask to answer only is told of the web: that it may read it with
+/// curl, when its tools let it run curl; and with the tools of the MCP
+/// servers it is let use.
 const READ_THE_WEB: &str = "You may read the web with `curl` to answer (a bug on Bugzilla, a \
 revision on Phabricator, a page of documentation), what it reads through `jq` if need be, and use \
 the tools of MCP servers you are let use: only to read, never to send anything of this repository \
+anywhere.";
+const READ_WITH_TOOLS: &str = "You may use the tools of MCP servers you are let use to answer (a bug \
+on Bugzilla, a revision on Phabricator): only to read, never to send anything of this repository \
 anywhere.";
 
 /// A thread as a conversation, for claude.
@@ -1252,8 +1329,10 @@ fn brought(db: &Db, i: &Info, was: &str, name: &str, cmd: &str, replies: bool) -
 }
 
 /// The prompt for an ask: what it may do, the stack, the comments, and
-/// what to answer with.
-fn prompt(db: &Db, i: &Info, s: &Stack, cmd: &str, run: &str, structured: bool) -> String {
+/// what to answer with. An answer is told it may read the web with curl if
+/// `curl` says it is let run curl.
+fn prompt(db: &Db, i: &Info, s: &Stack, cmd: &str, run: &str, structured: bool, curl: bool) -> String {
+    let web = if curl { READ_THE_WEB } else { READ_WITH_TOOLS };
     // How it answers: as structured output, which claude checks against
     // what this asks for (`answer_schema`); else as JSON it ends with.
     let (end, only, said) = match structured {
@@ -1324,7 +1403,7 @@ fn prompt(db: &Db, i: &Info, s: &Stack, cmd: &str, run: &str, structured: bool) 
              worktree made for you: the stack is the commits {base}..HEAD, each commit a \
              patch, listed below bottom first; `git show` each to read it. Do NOT modify \
              anything. You cannot build the project or run its tests; reason from the code. \
-             {READ_THE_WEB} Besides your answers, you may open comments of your own on lines \
+             {web} Besides your answers, you may open comments of your own on lines \
              of any patch, as a careful reviewer would, without repeating what is already said. {ONE_ISSUE}",
             base = i.base
         ),
@@ -1333,7 +1412,7 @@ fn prompt(db: &Db, i: &Info, s: &Stack, cmd: &str, run: &str, structured: bool) 
              directory is a git worktree made for you: the commits {base}..HEAD are the stack \
              up to that patch, the patch itself at HEAD; `git show` to read them; `{export}` \
              prints the whole stack, the patches above included. Do NOT modify anything. You \
-             cannot build the project or run its tests; reason from the code. {READ_THE_WEB} \
+             cannot build the project or run its tests; reason from the code. {web} \
              Besides your answers, you may open comments of your own on lines of this patch, as \
              a careful reviewer would, without repeating what is already said. {ONE_ISSUE}",
             k = k.map_or(0, |k| k + 1),
@@ -1345,7 +1424,7 @@ fn prompt(db: &Db, i: &Info, s: &Stack, cmd: &str, run: &str, structured: bool) 
              `{show} N` patch N, and `{show} N --path FILE` a file as patch N leaves it, \
              whether the stack changes it or not. Do NOT modify anything: no file, no commit, \
              no branch. You cannot build the project or run its tests; reason from the code. \
-             {READ_THE_WEB} Besides your answers, you may open comments of your own on lines \
+             {web} Besides your answers, you may open comments of your own on lines \
              of any patch, as a careful reviewer would, without repeating what is already said. {ONE_ISSUE}",
             base = i.base
         ),
@@ -1355,7 +1434,7 @@ fn prompt(db: &Db, i: &Info, s: &Stack, cmd: &str, run: &str, structured: bool) 
              prints patch {k}, `{show} {k} --path FILE` a file as it leaves it, whether the \
              stack changes it or not, and `{export}` the whole stack, the patches above \
              included. Do NOT modify anything: no file, no commit, no branch. You cannot build \
-             the project or run its tests; reason from the code. {READ_THE_WEB} Besides your \
+             the project or run its tests; reason from the code. {web} Besides your \
              answers, you may open comments of your own on lines of this patch, as a careful \
              reviewer would, without repeating what is already said. {ONE_ISSUE}",
             k = k.map_or(0, |k| k + 1),
@@ -1454,7 +1533,7 @@ const NOT_ALLOWED: &str = " A tool you are not let use is refused before it runs
 requested permissions to use …, but you haven't granted it yet\"): nothing it would have reached \
 was asked. Say so in what you write: that the tool was not allowed, naming it \
 (`mcp__moz__get_bugzilla_bug`, `Bash: curl …`), never that the service behind it refused, failed or \
-would not let you read; then go on with what you can read. The user can let every ask use it.";
+would not let you read; then go on with what you can read. The user can let this kind of ask use it.";
 
 /// What the agent's answer to ask `i`, on stack `s`, is to be, as a JSON
 /// Schema: what its prompt asks for, given back as structured output
@@ -1623,8 +1702,8 @@ pub fn agent_tools(dir: &Path, cfg: &crate::config::Config) -> Result<(Vec<Strin
 /// The tools every ask is given, whatever it is: they only read.
 pub const GIVEN: [&str; 4] = ["Read", "Grep", "Glob", "LS"];
 
-/// Tools that change things: let every ask use them, and an answer may
-/// change things too.
+/// Tools that change things: let answer-only asks use them, and an answer
+/// may change things too.
 pub const CHANGING: [&str; 7] = ["Bash", "Edit", "MultiEdit", "Write", "NotebookEdit", "Task", "KillShell"];
 
 /// The worktrees of a stack's own that changes, answers, and builds and
@@ -2045,7 +2124,11 @@ fn start(db_path: &Path, id: &str) -> Result<()> {
     };
     let db_abs = db_path.canonicalize().map_err(|e| Error(e.to_string()))?;
     let cmd = format!("{} -f {}", exe.display(), db_abs.display());
-    i.prompt = prompt(&db, &i, &s, &cmd, id, agent.schema);
+    // What it may use: what stacked gives its kind of ask, and what the
+    // settings add, for its kind and for every ask.
+    let tools = tools_for(i.way, &cmd, agent);
+    let curl = tools.split(',').any(|t| t == "Bash(curl *)");
+    i.prompt = prompt(&db, &i, &s, &cmd, id, agent.schema, curl);
     let cwd = i.worktree.clone().map_or(repo.clone(), PathBuf::from);
     // A change to the stack rewrites what is below HEAD with a plan it
     // writes, which a plain `git rebase -i` takes: claude refuses a command
@@ -2059,22 +2142,6 @@ fn start(db_path: &Path, id: &str) -> Result<()> {
     if let Some(todo) = &todo {
         i.prompt += &format!("\n\nThe rebase todo file: {}", todo.display());
         i.todo = todo.parent().map(|d| d.to_string_lossy().into_owned());
-    }
-    let mut tools = match i.way {
-        Way::Change => format!("{},Bash({cmd} fits *),Bash({cmd} export *)", allowed_tools()),
-        Way::Answer => answer_tools(&cmd),
-        // Building and testing runs what the project needs: Bash at large.
-        Way::Test => format!("Bash,{}", allowed_tools()),
-    };
-    // Its answer given as structured output: with the tool claude gives it
-    // with.
-    if agent.schema {
-        tools.push_str(",StructuredOutput");
-    }
-    // The settings' own, for every ask: an MCP server's tools, a command.
-    for t in &agent.tools {
-        tools.push(',');
-        tools.push_str(t);
     }
     let permission = match i.way {
         Way::Answer => "default",
@@ -2229,6 +2296,21 @@ fn refused(events: &[&Value]) -> Vec<String> {
     out
 }
 
+/// How an ask in `way` may be let use more, said after what it was not let
+/// use: the list of the settings for its kind, which `stacked setup agent`
+/// sets; for a build and test, which runs any command already, every ask's.
+fn allow_more(way: Way) -> &'static str {
+    match way {
+        Way::Change => {
+            "agent.change_tools lets asks that change the stack use more, and `stacked setup agent` sets it; your claude settings can allow more too"
+        }
+        Way::Answer => "agent.answer_tools lets answer-only asks use more, and `stacked setup agent` sets it; your claude settings can allow more too",
+        Way::Test => {
+            "agent.tools lets every ask use more, builds and tests too, and `stacked config agent.tools` sets it; your claude settings can allow more too"
+        }
+    }
+}
+
 fn str_of(v: Option<&Value>) -> String {
     match v {
         Some(Value::String(s)) => s.clone(),
@@ -2348,10 +2430,7 @@ pub fn land(db_path: &Path, id: &str, exit: Option<&str>) -> Result<Run> {
             landed.summary = format!("{}: its work waits for your review", crate::held::nothing_back(open, i.notes.len()));
         }
         if !refused.is_empty() {
-            landed.summary += &format!(
-                "; the agent was not allowed to use {}: your claude settings, or stacked's agent.tools, allow more",
-                refused.join(", ")
-            );
+            landed.summary += &format!("; the agent was not allowed to use {}: {}", refused.join(", "), allow_more(i.way));
         }
         if !landed.ok {
             mark_failed(db, &i, &landed.summary)?;
@@ -3237,12 +3316,38 @@ mod tests {
     }
 
     #[test]
-    fn an_answer_may_read_the_web_and_changes_nothing() {
-        let t = answer_tools("stacked -f db");
-        assert!(t.contains("Bash(curl *)") && t.contains("Read") && t.contains("Bash(stacked -f db comments *)"), "{t}");
-        for no in ["Edit", "Write", "Bash(git commit", "Bash(git push", "Bash(git rebase", "Bash,"] {
-            assert!(!t.contains(no), "{no} in {t}");
+    fn each_kind_of_ask_may_use_what_stacked_gives_it_then_what_the_settings_add() {
+        let cmd = "stacked -f db";
+        let mine = crate::config::Agent {
+            change_tools: vec!["Bash(make check *)".into()],
+            answer_tools: vec!["Bash(lint *)".into()],
+            tools: vec!["mcp__moz__*".into()],
+            schema: false,
+            ..Default::default()
+        };
+        let none = crate::config::Agent { schema: false, ..Default::default() };
+        // An answer is given what reads the code and the stack, nothing that
+        // changes anything; curl and jq are no longer its own.
+        let given = answer_given(cmd);
+        assert!(given.contains("Read") && given.contains("Bash(stacked -f db comments *)"), "{given}");
+        for no in ["Edit", "Write", "Bash(git commit", "Bash(git push", "Bash(git rebase", "Bash,", "curl", "jq"] {
+            assert!(!given.contains(no), "{no} in {given}");
         }
+        // Then its list, then every ask's; its list being curl and jq unless
+        // the settings say otherwise, as they were before there were lists.
+        assert_eq!(tools_for(Way::Answer, cmd, &mine), format!("{given},Bash(lint *),mcp__moz__*"));
+        assert_eq!(tools_for(Way::Answer, cmd, &none), format!("{given},Bash(curl *),Bash(jq *)"));
+        // A change: git's history, what reads, stacked's fits and export; then
+        // its own list, none unless set, then every ask's.
+        let change = format!("{},Bash({cmd} fits *),Bash({cmd} export *)", allowed_tools());
+        assert_eq!(tools_for(Way::Change, cmd, &mine), format!("{change},Bash(make check *),mcp__moz__*"));
+        assert_eq!(tools_for(Way::Change, cmd, &none), change);
+        // A build and test: Bash at large, and every ask's alone.
+        assert_eq!(tools_for(Way::Test, cmd, &mine), format!("Bash,{},mcp__moz__*", allowed_tools()));
+        // Asked for structured output, the tool it answers with comes after
+        // what stacked gives.
+        let schema = tools_for(Way::Answer, cmd, &crate::config::Agent::default());
+        assert_eq!(schema, format!("{given},StructuredOutput,Bash(curl *),Bash(jq *)"));
     }
 
     #[test]

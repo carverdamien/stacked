@@ -449,6 +449,9 @@ impl App {
     /// another round, from it; the review left.
     pub(super) fn review_send_back(&mut self) {
         let Some(rv) = self.reviewing.clone() else { return };
+        if self.set_up_first(super::Then::SendBack) {
+            return;
+        }
         let sent = ask::send_back(&self.path, &self.stack, &rv.run, &rv.marks);
         self.reload();
         match sent {

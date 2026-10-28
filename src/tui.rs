@@ -662,6 +662,30 @@ pub enum Mode {
     /// A line to type, what it gives said as it is typed: Enter takes it
     /// once it can be taken, Esc goes back.
     Prompt(Box<Prompt>),
+    /// Before the first ask, the setup of what each kind of ask may use, as
+    /// `stacked setup agent --tui` shows it: saved, the ask goes; left,
+    /// nothing is sent.
+    Setup(Box<SettingUp>),
+}
+
+/// The setup before the first ask, of the stack's checkout `repo`: while
+/// the agent is asked what tools it has, away from the screen, none to show
+/// yet; then its screen. What is to be sent once it is saved.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SettingUp {
+    pub screen: Option<crate::setup::Setup>,
+    pub repo: PathBuf,
+    pub then: Then,
+}
+
+/// What sending waits on the setup for: comments asked now, in a way, to
+/// the whole stack or not; the stack's batch of a way sent, fanned out or
+/// not; or the work under review sent back.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Then {
+    Send(Vec<(String, String)>, Way, bool),
+    Batch(Way, bool),
+    SendBack,
 }
 
 /// A line being typed, for what `asking` asks: what it gives, said, and
@@ -1722,7 +1746,14 @@ enum Done {
         head: Option<crate::head::Head>,
         clean: Option<bool>,
     },
+    /// The setup's screen for the checkout `0`, the agent asked what tools it
+    /// has there; or why it could not be shown.
+    SetUp(PathBuf, std::result::Result<Box<crate::setup::Setup>, String>),
 }
+
+/// What the bar says while the agent is asked what tools it has, for the
+/// setup before the first ask.
+const SETTING_UP: &str = "asking the agent what tools it has";
 
 /// Where HEAD of the checkout stacked runs in was, against stack `name` at
 /// `rev`, when it was last looked at; whether to look again at once.
@@ -2187,7 +2218,111 @@ impl App {
                     stale: false,
                 });
             }
+            // Unless it was left meanwhile: nothing sent, said already. An
+            // agent asked for a setup left before serves the next.
+            Done::SetUp(repo, made) => {
+                if let Some(k) = self.bg.doing.iter().position(|d| *d == SETTING_UP) {
+                    self.bg.doing.remove(k);
+                }
+                let Mode::Setup(su) = &mut self.mode else { return };
+                if su.repo != repo || su.screen.is_some() {
+                    return;
+                }
+                match made {
+                    Ok(screen) => su.screen = Some(*screen),
+                    Err(e) => {
+                        self.mode = Mode::Normal;
+                        self.status = format!("{e}; nothing was sent");
+                    }
+                }
+            }
         }
+    }
+
+    /// Whether what is to be sent, `then`, waits on the setup of what each
+    /// kind of ask may use: not done in the stack's checkout, it opens, the
+    /// agent asked what tools it has away from the screen, and `then` is
+    /// done once it is saved.
+    fn set_up_first(&mut self, then: Then) -> bool {
+        if ask::not_set_up(&self.db, &self.stack).is_none() {
+            return false;
+        }
+        let Some(repo) = self.current().and_then(|s| s.repo.clone()).map(PathBuf::from) else { return false };
+        self.mode = Mode::Setup(Box::new(SettingUp { screen: None, repo: repo.clone(), then }));
+        // Once for each agent asked: the editor waits for each to be done.
+        self.bg.doing.push(SETTING_UP);
+        let path = std::env::var_os("PATH").unwrap_or_default();
+        self.spawn(move || {
+            let made = (|| {
+                let to = crate::config::local_to_write(&repo)?;
+                let (cfg, _) = crate::config::of(&repo);
+                let set = |key: &str| crate::config::set_in(&repo, key).is_some();
+                let lists = (set(crate::setup::Kind::Change.key()), set(crate::setup::Kind::Answer.key()));
+                let start = crate::setup::Start::new(&cfg.agent, lists, Some(&repo), &path);
+                let (tools, servers) = ask::agent_tools(&repo, &cfg).map_err(|e| format!("the agent could not say what tools it has: {}", e.0))?;
+                let said = format!("the agent's tools, in {}", repo.display());
+                Ok(Box::new(crate::setup::Setup::new(&tools, &servers, &start, &to.display().to_string(), &said)))
+            })();
+            Done::SetUp(repo, made)
+        });
+        true
+    }
+
+    /// A key on the setup before the first ask: while the agent is asked,
+    /// Esc leaves; then the screen's own. Saved, it is written in the
+    /// stack's checkout's own settings, and what waited on it is sent; left,
+    /// nothing is, as the bar says.
+    fn setup_key(&mut self, mut su: SettingUp, k: KeyEvent) -> Effect {
+        let step = match &mut su.screen {
+            None if k.code == KeyCode::Esc => crate::setup::Step::Leave,
+            None => crate::setup::Step::Stay,
+            Some(s) => s.key(k),
+        };
+        match step {
+            crate::setup::Step::Stay => self.mode = Mode::Setup(Box::new(su)),
+            crate::setup::Step::Leave => {
+                self.status = "nothing was sent: what each kind of ask may use is not set up yet, and sending again opens the setup again".into();
+            }
+            crate::setup::Step::Save(chosen) => match crate::config::set_local_all(&su.repo, &chosen.settings()) {
+                Ok(at) => {
+                    match su.then {
+                        Then::Send(notes, way, whole) => self.send(notes, way, whole),
+                        Then::Batch(way, fan) => self.send_batch(way, fan),
+                        Then::SendBack => self.review_send_back(),
+                    }
+                    let saved = format!("the setup is saved in {}", at.display());
+                    self.status = if self.status.is_empty() { saved } else { format!("{saved}; {}", self.status) };
+                }
+                Err(e) => self.status = format!("{e}; nothing was sent"),
+            },
+        }
+        Effect::None
+    }
+
+    /// The setup before the first ask, over the screen: its own screen,
+    /// once the agent said what tools it has; until then, a box saying it
+    /// is asked. Where the terminal's cursor goes.
+    fn draw_setup(&mut self, buf: &mut Buffer, area: Rect) -> Option<(u16, u16)> {
+        let Mode::Setup(su) = &mut self.mode else { return None };
+        if let Some(s) = &mut su.screen {
+            return s.draw(buf, area);
+        }
+        let (w, h) = (area.width as usize, area.height as usize);
+        let bw = (w * 2 / 3).clamp(30.min(w), 72.min(w));
+        let said = format!(
+            "Before the first ask, stacked shows what each kind of ask may use, for you to check and save. The agent, in {}, is being asked what tools it has.",
+            su.repo.display()
+        );
+        let lines = wrap(&said, bw.saturating_sub(4));
+        let bh = (lines.len() + 4).min(h);
+        let (x, y) = (w.saturating_sub(bw) / 2, h.saturating_sub(bh) / 2);
+        window(buf, area, x, y, bw, bh, "the setup of the agent's tools", color::meta());
+        spot_in(&self.spots, area, (x, y, bw, bh), Spot::Box);
+        for (k, l) in lines.iter().take(bh.saturating_sub(4)).enumerate() {
+            put(buf, area, x + 2, y + 1 + k, bw - 4, l, Style::new());
+        }
+        put(buf, area, x + 2, y + bh - 2, bw - 4, "esc: send nothing", color::dim());
+        None
     }
 
     /// Reads what the work away from the screen came to; whether it came
@@ -2711,6 +2846,19 @@ impl App {
                 }
                 return Effect::None;
             }
+            // The setup's screen: a row picked, as the arrows would, and
+            // done as Enter does if it was picked already; nothing while a
+            // command is typed or its menu is open, nor while the agent is
+            // asked what tools it has.
+            Mode::Setup(su) => {
+                let Some(s) = su.screen.as_mut().filter(|s| s.adding.is_none() && s.menu.is_none()) else { return Effect::None };
+                let Some(k) = s.row_at(y.into()) else { return Effect::None };
+                if s.sel == k {
+                    return press(self, KeyCode::Enter);
+                }
+                s.pick(k);
+                return Effect::None;
+            }
             // What the agent writes, read in place: folded.
             Mode::Stream { .. } => {
                 self.mode = Mode::Normal;
@@ -2775,6 +2923,15 @@ impl App {
     /// it what Enter does: in a menu, its item; a patch being moved goes
     /// there. Not while a comment is written, nor over what `?` says.
     pub fn hover(&mut self, x: u16, y: u16) {
+        // The setup's screen: the row under the mouse picked.
+        if let Mode::Setup(su) = &mut self.mode {
+            if let Some(s) = su.screen.as_mut().filter(|s| s.adding.is_none() && s.menu.is_none())
+                && let Some(k) = s.row_at(y.into())
+            {
+                s.pick(k);
+            }
+            return;
+        }
         let spot = self.spot_at(x, y);
         let side = |s: &Spot| matches!(s, Spot::Patch(_) | Spot::File(_) | Spot::NotesHead | Spot::Note(_));
         self.hovered = spot.filter(|s| side(s) && matches!(self.mode, Mode::Normal));
@@ -3032,8 +3189,16 @@ impl App {
         // what `?` said.
         // The search reads what is typed too.
         let typed = self.screen == Screen::Search && matches!(self.mode, Mode::Normal);
-        let k = if matches!(self.mode, Mode::Edit(_) | Mode::Lines(_) | Mode::Prompt(_)) || typed {
+        // The setup's screen reads its own letters (s saves, a adds), and
+        // what is typed for a command; the arrows as the settings map them.
+        let setting_up = match &self.mode {
+            Mode::Setup(su) => Some(su.screen.as_ref().is_some_and(|s| s.adding.is_some())),
+            _ => None,
+        };
+        let k = if matches!(self.mode, Mode::Edit(_) | Mode::Lines(_) | Mode::Prompt(_)) || typed || setting_up == Some(true) {
             k
+        } else if setting_up.is_some() {
+            self.cfg.keys.translate(&k).unwrap_or(k)
         } else {
             match self.cfg.keys.translate(&k) {
                 Some(t) => t,
@@ -3072,7 +3237,10 @@ impl App {
             if matches!(k.code, KeyCode::Esc | KeyCode::Char('?')) {
                 return Effect::None;
             }
-        } else if k.code == KeyCode::Char('?') && !matches!(self.mode, Mode::Edit(_) | Mode::Lines(_) | Mode::Prompt(_)) && (self.helps() || self.mode != Mode::Normal) {
+        } else if k.code == KeyCode::Char('?')
+            && !matches!(self.mode, Mode::Edit(_) | Mode::Lines(_) | Mode::Prompt(_) | Mode::Setup(_))
+            && (self.helps() || self.mode != Mode::Normal)
+        {
             self.mode = Mode::Help {
                 lines: self.help(),
                 back: Box::new(self.mode.clone()),
@@ -3087,6 +3255,7 @@ impl App {
             Mode::Edit(e) => return self.edit_key(*e, k),
             Mode::Lines(l) => return self.lines_key(*l, k),
             Mode::Prompt(p) => return self.prompt_key(*p, k),
+            Mode::Setup(su) => return self.setup_key(*su, k),
             Mode::Moving { from, to } => {
                 self.moving_key(from, to, k);
                 return Effect::None;
@@ -6774,6 +6943,9 @@ impl App {
     /// each on its own. They are started away from the screen.
     fn send_batch(&mut self, way: Way, fan: bool) {
         let sent = ask::batched(&self.db, &self.stack, way);
+        if !sent.is_empty() && self.set_up_first(Then::Batch(way, fan)) {
+            return;
+        }
         let done = ask::release_batch(&self.path, &self.stack, way, fan);
         self.reload();
         let n = match done {
@@ -6845,8 +7017,12 @@ impl App {
     }
 
     /// Puts `notes` on the agent's queue, to the whole stack if `whole`;
-    /// they are started away from the screen.
+    /// they are started away from the screen. Before the first ask, once
+    /// the setup of what each kind of ask may use is saved.
     fn send(&mut self, notes: Vec<(String, String)>, way: Way, whole: bool) {
+        if !notes.is_empty() && self.set_up_first(Then::Send(notes.clone(), way, whole)) {
+            return;
+        }
         let n = notes.len();
         if let Err(e) = ask::queue(&self.path, &self.stack, &notes, way, whole) {
             self.status = e.0;
@@ -7447,6 +7623,10 @@ impl App {
         self.edit_box.set(None);
         self.spots.borrow_mut().clear();
         self.areas.borrow_mut().clear();
+        // The setup before the first ask: its screen over all of it.
+        if matches!(&self.mode, Mode::Setup(su) if su.screen.is_some()) {
+            return self.draw_setup(buf, area);
+        }
         // Where the cursor is in a list of its own screen, kept as it goes.
         self.keep_list();
         self.keep_progress();
@@ -7528,6 +7708,8 @@ impl App {
         self.draw_ref_preview(buf, body);
         let cursor = self.draw_lines(buf, body).or(cursor);
         let cursor = self.draw_prompt(buf, body).or(cursor);
+        // The agent asked what tools it has, for the setup: said over it.
+        self.draw_setup(buf, body);
         self.draw_status(buf, area);
         cursor
     }
@@ -7745,8 +7927,11 @@ impl App {
         if ready > 0 {
             text += &format!(" · ready:{ready}");
         }
-        for d in &self.bg.doing {
-            text += &format!(" · {d}…");
+        // Each once, though it is done twice.
+        for (k, d) in self.bg.doing.iter().enumerate() {
+            if !self.bg.doing[..k].contains(d) {
+                text += &format!(" · {d}…");
+            }
         }
         if self.bg.judging.as_ref().is_some_and(|(n, _)| *n == self.stack) {
             text += " · checking…";
@@ -7791,6 +7976,7 @@ impl App {
             Mode::Lines(_) => "enter: attach these lines · esc: back to the comment".into(),
             Mode::Prompt(p) if p.ok => format!("enter: {} · esc: back", p.asking.does()),
             Mode::Prompt(_) => "esc: back".into(),
+            Mode::Setup(_) => "esc: send nothing".into(),
             Mode::Stream { .. } => "↑↓: scroll · esc: fold it".into(),
             Mode::Normal if self.screen == Screen::Main && self.on_banner => {
                 let enter = match self.banner_lines().get(self.banner_sel) {

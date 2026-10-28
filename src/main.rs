@@ -509,7 +509,7 @@ enum Cmd {
         #[arg(long)]
         local: bool,
     },
-    /// Sets something of stacked up, asking you: `agent`, the tools every
+    /// Sets something of stacked up, asking you: `agent`, what each kind of
     /// ask may use.
     Setup {
         #[command(subcommand)]
@@ -570,16 +570,22 @@ enum MozPhabWhat {
 
 #[derive(Subcommand)]
 enum SetupWhat {
-    /// The tools every ask may use besides stacked's own: the agent is
-    /// started (and stopped at once) in the stack's repository, else here,
-    /// where it has your MCP servers, and says what it has; you let every
-    /// ask use each, or not, and what you let it is written as agent.tools
-    /// in that checkout's own settings, .stacked/local.toml at its top,
-    /// which override the others there.
+    /// What each kind of ask may use besides what stacked gives it, a list
+    /// each: asks that change the stack (agent.change_tools), and
+    /// answer-only asks (agent.answer_tools). The agent is started (and
+    /// stopped at once) in the stack's repository, else here, where it has
+    /// your MCP servers, and says what tools it has. Each list is shown
+    /// ticked as the settings say, else as stacked has it: nothing for
+    /// changes; for answers, curl and jq, and what the checkout's own claude
+    /// settings allow. The programs the checkout's instructions to the agent
+    /// name are listed too, unticked. You check them, add to them, and save
+    /// them: saving is the setup done (agent.setup), and until it is, no ask
+    /// goes. They are written in that checkout's own settings,
+    /// .stacked/local.toml at its top, which override the others there.
     Agent {
         name: Option<String>,
-        /// On a screen of its own, a box for each tool, rather than a
-        /// question each.
+        /// On a screen of its own, a box for each tool, rather than asked
+        /// line by line.
         #[arg(long)]
         tui: bool,
         /// Written in the settings' file (~/.stacked/config.toml, or
@@ -588,19 +594,6 @@ enum SetupWhat {
         #[arg(long)]
         global: bool,
     },
-}
-
-/// What `stacked setup agent` works with: the directory the agent is asked
-/// in, as the settings there have it run; the settings' tools now, and the
-/// file they are in, if one sets them; the file they are written in, and
-/// how.
-struct SetUp<'a> {
-    dir: &'a Path,
-    cfg: &'a stacked::config::Config,
-    was: Vec<String>,
-    from: Option<PathBuf>,
-    to: PathBuf,
-    save: &'a dyn Fn(&[String]) -> std::result::Result<(), String>,
 }
 
 /// Says so when `key`, written in (or taken out of) the settings' file
@@ -615,102 +608,25 @@ fn overridden(dir: &Path, key: &str, written: &Path) {
     }
 }
 
-/// What `tools` are said as: each, or none.
-fn listed(tools: &[String]) -> String {
-    if tools.is_empty() { "none".to_string() } else { tools.join(", ") }
-}
-
-/// As `setup_agent`, on a screen of its own: a box for each tool, the
-/// settings' value now and as it is to be.
-fn setup_agent_tui(up: SetUp) -> Result<()> {
-    eprintln!("stacked: asking the agent, in {}, what tools it has…", up.dir.display());
-    let (tools, servers) = stacked::ask::agent_tools(up.dir, up.cfg)?;
-    let from = up.from.as_ref().map(|f| f.display().to_string());
-    let s = stacked::setup::Setup::new(&tools, &servers, &up.was, from.as_deref(), &up.to.display().to_string());
-    match stacked::setup::run(s, &format!("the agent's, in {}", up.dir.display()))? {
-        Some(chosen) => {
-            (up.save)(&chosen).map_err(Error)?;
-            eprintln!("stacked: agent.tools written in {}: {}", up.to.display(), listed(&chosen));
-        }
-        None => eprintln!("stacked: left; nothing written"),
-    }
-    Ok(())
-}
-
-/// Asks the agent what tools it has in its directory, then you, on stdin,
-/// which every ask may use: an MCP server's all at once or one by one,
-/// then each other tool stacked does not give. What you let it is written
-/// as agent.tools, what you did not taken out.
-fn setup_agent(up: SetUp) -> Result<()> {
+/// The setup asked line by line (`setup::ask_lines`): the answers read
+/// from stdin, what is asked and said written on stderr, after how many
+/// `tools` the agent in `dir` has, and where the setup is saved, `to`.
+fn setup_lines(s: &mut stacked::setup::Setup, dir: &Path, to: &Path, tools: usize) -> stacked::setup::Chosen {
     use std::io::BufRead;
-    let dir = up.dir;
-    let (tools, servers) = stacked::ask::agent_tools(dir, up.cfg)?;
-    let mut chosen: Vec<String> = up.was.clone();
-    let mut lines = std::io::stdin().lock().lines();
-    let mut answer = |q: &str| -> String {
-        eprint!("{q} ");
-        lines.next().and_then(|l| l.ok()).unwrap_or_default().trim().to_ascii_lowercase()
-    };
-    let keep = |chosen: &mut Vec<String>, tool: &str, yes: bool| {
-        chosen.retain(|t| t != tool);
-        if yes {
-            chosen.push(tool.to_string());
-        }
-    };
     eprintln!(
-        "stacked: the agent, in {}, has {} tools; every ask has {} already, and the commands stacked lets each kind of ask run.",
+        "stacked: the agent, in {}, has {tools} tools. What each kind of ask may use is saved in {}; Enter keeps what is ticked.",
         dir.display(),
-        tools.len(),
-        stacked::ask::GIVEN.join(", ")
+        to.display()
     );
-    match &up.from {
-        Some(f) => eprintln!("Now, agent.tools in {}: {}.", f.display(), listed(&chosen)),
-        None => eprintln!("Now, agent.tools: {}.", listed(&chosen)),
-    }
-    eprintln!("What you let every ask use is written in {}.", up.to.display());
-    // An MCP server's tools, all at once or one by one.
-    let mut names: Vec<String> = servers.clone();
-    for t in &tools {
-        if let Some(s) = t.strip_prefix("mcp__").and_then(|r| r.split_once("__")).map(|(s, _)| s.to_string())
-            && !names.contains(&s)
-        {
-            names.push(s);
-        }
-    }
-    for server in &names {
-        let prefix = format!("mcp__{server}__");
-        let its: Vec<&String> = tools.iter().filter(|t| t.starts_with(&prefix)).collect();
-        let all = format!("{prefix}*");
-        let short: Vec<&str> = its.iter().map(|t| &t[prefix.len()..]).collect();
-        eprintln!("The MCP server {server}: {}.", if short.is_empty() { "no tools".into() } else { short.join(", ") });
-        match answer(&format!("Let every ask use all of its tools ({all})? [y/N/e: each]")).as_str() {
-            "y" | "yes" => {
-                chosen.retain(|t| !t.starts_with(&prefix));
-                chosen.push(all);
-            }
-            "e" | "each" => {
-                chosen.retain(|t| *t != all);
-                for t in its {
-                    let yes = matches!(answer(&format!("  {t}? [y/N]")).as_str(), "y" | "yes");
-                    keep(&mut chosen, t, yes);
-                }
-            }
-            _ => chosen.retain(|t| !t.starts_with(&prefix)),
-        }
-    }
-    // Any other tool stacked does not give every ask.
-    for t in tools.iter().filter(|t| !t.starts_with("mcp__") && !stacked::ask::GIVEN.contains(&t.as_str())) {
-        let warn = if stacked::ask::CHANGING.contains(&t.as_str()) {
-            " It changes things: an answer could too."
-        } else {
-            ""
-        };
-        let yes = matches!(answer(&format!("Let every ask use {t}?{warn} [y/N]")).as_str(), "y" | "yes");
-        keep(&mut chosen, t, yes);
-    }
-    (up.save)(&chosen).map_err(Error)?;
-    eprintln!("stacked: agent.tools written in {}: {}", up.to.display(), listed(&chosen));
-    Ok(())
+    let mut lines = std::io::stdin().lock().lines();
+    stacked::setup::ask_lines(
+        s,
+        &mut |q| {
+            eprint!("{q} ");
+            lines.next().and_then(|l| l.ok()).unwrap_or_default().trim().to_string()
+        },
+        &mut |l| eprintln!("{l}"),
+    )
 }
 
 /// Whether the process `pid` is gone: exited (reaped now, if it was this
@@ -1780,26 +1696,50 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
             for w in wrong.iter().filter(|w| !stacked::config::warnings().contains(w)) {
                 eprintln!("stacked: {w}");
             }
-            // The tools now: those used there; or the settings' file's own.
-            let (was, from) = match global {
+            // The lists now, and whether a file sets each: as they are used
+            // there; or the settings' file's own.
+            let lists = [stacked::setup::Kind::Change.key(), stacked::setup::Kind::Answer.key()];
+            let (agent, set) = match global {
                 true => {
-                    let set = stacked::config::file_sets(&to, "agent.tools");
-                    (stacked::config::Config::load(&to).0.agent.tools, set.then(|| to.clone()))
+                    let set = |key: &str| stacked::config::file_sets(&to, key);
+                    (stacked::config::Config::load(&to).0.agent, (set(lists[0]), set(lists[1])))
                 }
-                false => (cfg.agent.tools.clone(), stacked::config::set_in(&dir, "agent.tools")),
+                false => {
+                    let set = |key: &str| stacked::config::set_in(&dir, key).is_some();
+                    (cfg.agent.clone(), (set(lists[0]), set(lists[1])))
+                }
             };
-            let save = |chosen: &[String]| match global {
-                true => stacked::config::set(&to, "agent.tools", chosen),
-                false => stacked::config::set_local(&dir, "agent.tools", chosen).map(|_| ()),
-            };
-            let up = SetUp { dir: &dir, cfg: &cfg, was, from, to: to.clone(), save: &save };
+            let top = git::toplevel(&dir).ok().map(PathBuf::from);
+            let path_var = std::env::var_os("PATH").unwrap_or_default();
+            let start = stacked::setup::Start::new(&agent, set, top.as_deref(), &path_var);
             if tui {
-                setup_agent_tui(up)?;
-            } else {
-                setup_agent(up)?;
+                eprintln!("stacked: asking the agent, in {}, what tools it has…", dir.display());
             }
+            let (tools, servers) = ask::agent_tools(&dir, &cfg)?;
+            let said = format!("the agent's tools, in {}", dir.display());
+            let mut s = stacked::setup::Setup::new(&tools, &servers, &start, &to.display().to_string(), &said);
+            let chosen = match tui {
+                true => stacked::setup::run(s)?,
+                false => Some(setup_lines(&mut s, &dir, &to, tools.len())),
+            };
+            let Some(chosen) = chosen else {
+                match agent.setup.unwrap_or(0) < stacked::setup::VERSION {
+                    true => eprintln!("stacked: left; nothing written, and no ask goes until the setup is saved"),
+                    false => eprintln!("stacked: left; nothing written"),
+                }
+                return Ok(());
+            };
+            let settings = chosen.settings();
+            match global {
+                true => stacked::config::set_all(&to, &settings),
+                false => stacked::config::set_local_all(&dir, &settings).map(|_| ()),
+            }
+            .map_err(Error)?;
+            eprintln!("stacked: the setup is saved in {}: {}", to.display(), chosen.said());
             if global {
-                overridden(&dir, "agent.tools", &to);
+                for (key, _) in &settings {
+                    overridden(&dir, key, &to);
+                }
             }
         }
         Cmd::Head { name, messages_to_stack: Some(specs), .. } => {

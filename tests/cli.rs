@@ -65,11 +65,18 @@ fn quiet(dir: &Path) {
 
 const TEN: &str = "one\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nten\n";
 
+/// The settings of a test's home, as a user's are once `stacked setup
+/// agent` is saved: the setup done, so that its asks go.
+const SET_UP: &str = "[agent]\nsetup = 1\n";
+
 /// A repo with a base commit and three on top that apply in any order, the
-/// last with a title that is not ASCII and long enough to be folded.
+/// last with a title that is not ASCII and long enough to be folded. The
+/// test's home holds the settings of one whose setup is done (`SET_UP`).
 fn env() -> Env {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().canonicalize().unwrap();
+    std::fs::create_dir(root.join("home")).unwrap();
+    std::fs::write(root.join("home/config.toml"), SET_UP).unwrap();
     let src = root.join("src");
     std::fs::create_dir(&src).unwrap();
     git(&src, &["init", "-q", "-b", "main"]);
@@ -799,7 +806,7 @@ fn the_agents_work_in_worktrees_of_the_stack_s_own_reused_while_clean() {
     // An answer works in the repository as it is, unless the settings say
     // otherwise: then in the stack's own worktree for answers.
     let settings = e.root.join("settings.toml");
-    std::fs::write(&settings, "[agent]\nanswer_only_worktree = \"ondemand\"\nworktree = \"pwd\"\n").unwrap();
+    std::fs::write(&settings, format!("{SET_UP}answer_only_worktree = \"ondemand\"\nworktree = \"pwd\"\n")).unwrap();
     let id = comment(&e, &["Why?"]);
     assert!(send(&e, &claude, &[&id, "--answer-only"], &[("STACKED_CONFIG", &settings)]).0);
     assert_eq!(pwd(), e.src.join(".stacked/s/answer-only-agent").display().to_string());
@@ -1003,7 +1010,7 @@ fn what_the_agent_brings_back_waits_for_review_and_may_be_rejected() {
     );
     // Unchained: a change waits for the review of the one before it.
     let unchained = e.root.join("unchained.toml");
-    std::fs::write(&unchained, "[agent]\nchain = false\n").unwrap();
+    std::fs::write(&unchained, format!("{SET_UP}chain = false\n")).unwrap();
     let env = [("STACKED_CLAUDE", claude.as_path()), ("STACKED_CONFIG", unchained.as_path())];
     let (fine, out, err) = stacked_in(&e.src, &e.db, &["send", "s", &id, "--wait"], "", &env);
     assert!(fine, "{err}");
@@ -1410,7 +1417,7 @@ fn several_asks_wait_their_turn() {
     );
     // Unchained: each waits for what goes before it, as self-review's do.
     let unchained = e.root.join("unchained.toml");
-    std::fs::write(&unchained, "[agent]\nchain = false\n").unwrap();
+    std::fs::write(&unchained, format!("{SET_UP}chain = false\n")).unwrap();
     let env = [("STACKED_CLAUDE", claude.as_path()), ("STACKED_CONFIG", unchained.as_path())];
     let (fine, out, err) = stacked_in(&e.src, &e.db, &["send", "s", &one], "", &env);
     assert!(fine && out.contains("sent"), "{out}{err}");
@@ -1881,7 +1888,7 @@ fn a_round_sent_back_goes_first_and_the_stack_waits_for_it() {
     );
     // Unchained: a change waits for the review of the one before it.
     let unchained = e.root.join("unchained.toml");
-    std::fs::write(&unchained, "[agent]\nchain = false\n").unwrap();
+    std::fs::write(&unchained, format!("{SET_UP}chain = false\n")).unwrap();
     let env = [("STACKED_CLAUDE", claude.as_path()), ("STACKED_CONFIG", unchained.as_path())];
     let (fine, out, err) = stacked_in(&e.src, &e.db, &["send", "s", &id, "--wait"], "", &env);
     assert!(fine, "{out}{err}");
@@ -2521,7 +2528,7 @@ fn the_agents_answer_is_asked_as_structured_output_and_read_from_it() {
     // Off in the settings: none of it, the answer read from what the agent
     // writes, the prose around it left out.
     let settings = e.root.join("settings.toml");
-    std::fs::write(&settings, "[agent]\nschema = false\n").unwrap();
+    std::fs::write(&settings, format!("{SET_UP}schema = false\n")).unwrap();
     let said = fake_claude(&e, "claude-said.sh", &keeps, r#"Seen `${x}`: {"replies": {"c1": "As said."}}"#);
     let id = comment(&e, &["And?"]);
     let (fine, out, err) = send(&e, &said, &[&id, "--answer-only"], &[("STACKED_CONFIG", &settings)]);
@@ -2665,26 +2672,44 @@ fn a_patch_is_edited_where_the_cursor_is() {
 }
 
 #[test]
-fn every_ask_may_use_the_tools_the_settings_add() {
+fn each_kind_of_ask_may_use_what_the_settings_add_for_it() {
     let e = env();
     e.ok(&["import", "s", "base"]);
     let settings = e.root.join("settings.toml");
-    std::fs::write(&settings, "[agent]\ntools = [\"mcp__bugzilla__*\", \"Bash(jq *)\"]\n").unwrap();
+    std::fs::write(
+        &settings,
+        format!("{SET_UP}tools = [\"mcp__bugzilla__*\"]\nanswer_tools = [\"Bash(jq *)\"]\nchange_tools = [\"Bash(make check *)\"]\n"),
+    )
+    .unwrap();
+    // Its arguments a line each: the one after --allowedTools, the tools.
     let args = e.root.join("args");
-    let claude = fake_claude(&e, "claude-tools.sh", &format!("echo \"$*\" > {}", args.display()), r#"{"replies": {"c1": "Read it."}}"#);
+    let claude = fake_claude(&e, "claude-tools.sh", &format!("printf '%s\\n' \"$@\" > {}", args.display()), r#"{"replies": {"c1": "Read it."}}"#);
+    let said = || std::fs::read_to_string(&args).unwrap();
+    let tools = || said().lines().skip_while(|l| *l != "--allowedTools").nth(1).unwrap().to_string();
     let id = comment(&e, &["What", "does", "bug", "1", "say?"]);
     let (fine, _, err) = send(&e, &claude, &[&id, "--answer-only"], &[("STACKED_CONFIG", &settings)]);
     assert!(fine, "{err}");
-    // An answer's tools, then the settings' own.
-    let said = std::fs::read_to_string(&args).unwrap();
-    let tools = said.split("--allowedTools ").nth(1).unwrap().split(" --").next().unwrap().trim_end();
-    assert!(tools.contains("Read,") && tools.ends_with(",mcp__bugzilla__*,Bash(jq *)"), "{tools}");
-    assert!(!tools.contains("Edit") && !tools.contains("Write"), "{tools}");
-    // Told that a tool refused is not allowed, not a service saying no.
-    assert!(said.contains("Say so in what you write: that the tool was not allowed, naming it"), "{said}");
-    assert!(said.contains("never that the service behind it refused, failed or would not let you read"), "{said}");
+    // An answer's own tools, then its list, then every ask's: no curl, as
+    // its list no longer has it.
+    let t = tools();
+    assert!(t.contains("Read,") && t.ends_with(",Bash(jq *),mcp__bugzilla__*"), "{t}");
+    for no in ["Edit", "Write", "curl", "make check"] {
+        assert!(!t.contains(no), "{no} in {t}");
+    }
+    // Told that a tool refused is not allowed, not a service saying no; and,
+    // as curl is not let run, not to read the web with it.
+    assert!(said().contains("Say so in what you write: that the tool was not allowed, naming it"), "{}", said());
+    assert!(said().contains("never that the service behind it refused, failed or would not let you read"), "{}", said());
+    assert!(!said().contains("read the web with `curl`") && said().contains("You may use the tools of MCP servers you are let use to answer"), "{}", said());
+    // A change: its own list, then every ask's; nothing of the answers'.
+    let id = comment(&e, &["Change", "nothing."]);
+    let (fine, _, err) = send(&e, &claude, &[&id], &[("STACKED_CONFIG", &settings)]);
+    assert!(fine, "{err}");
+    let t = tools();
+    assert!(t.contains("Bash(git commit *)") && t.ends_with(",Bash(make check *),mcp__bugzilla__*"), "{t}");
+    assert!(!t.contains("jq") && !t.contains("curl"), "{t}");
     // What it was not let use is said, in its stream and in its run, with
-    // how to allow it.
+    // the list of its kind that lets it use more.
     let result = serde_json::json!({"type": "result", "result": "{\"replies\": {\"c1\": \"I could not read it.\"}}",
         "permission_denials": [{"tool_name": "mcp__moz__get_bug", "tool_input": {"id": 1}},
             {"tool_name": "Bash", "tool_input": {"command": "curl -s https://bugzilla.mozilla.org/rest/bug/1 | python3 -m json.tool"}}]});
@@ -2696,15 +2721,60 @@ fn every_ask_may_use_the_tools_the_settings_add() {
     let (fine, _, err) = stacked_in(&e.src, &e.db, &["send", "s", &id, "--answer-only", "--wait"], "", &[("STACKED_CLAUDE", &refused)]);
     assert!(fine, "{err}");
     let runs = e.ok(&["runs"]);
-    let said = "the agent was not allowed to use mcp__moz__get_bug, Bash(curl …): your claude settings, or stacked's agent.tools, allow more";
+    let said = "the agent was not allowed to use mcp__moz__get_bug, Bash(curl …): agent.answer_tools lets answer-only asks use more, and `stacked setup agent` sets it; your claude settings can allow more too";
     assert!(runs.contains(said), "{runs}");
     let run = runs.lines().last().unwrap().split('\t').next().unwrap().to_string();
     let transcript = e.ok(&["transcript", &run]);
     assert!(transcript.contains("⛔ not allowed: mcp__moz__get_bug") && transcript.contains("⛔ not allowed: Bash: curl -s"), "{transcript}");
+    let id = comment(&e, &["And", "change", "it."]);
+    let (fine, _, err) = stacked_in(&e.src, &e.db, &["send", "s", &id, "--wait"], "", &[("STACKED_CLAUDE", &refused)]);
+    assert!(fine, "{err}");
+    let said = "the agent was not allowed to use mcp__moz__get_bug, Bash(curl …): agent.change_tools lets asks that change the stack use more, and `stacked setup agent` sets it; your claude settings can allow more too";
+    assert!(e.ok(&["runs"]).contains(said), "{}", e.ok(&["runs"]));
 }
 
 #[test]
-fn the_tools_every_ask_may_use_are_set_up_with_the_agent() {
+fn no_ask_goes_before_the_setup_is_done() {
+    let e = env();
+    e.ok(&["import", "s", "base"]);
+    // The settings of one who never set up what each kind of ask may use.
+    let fresh = e.root.join("fresh.toml");
+    std::fs::write(&fresh, "").unwrap();
+    let claude = fake_claude(&e, "claude-seen.sh", "", r#"{"replies": {"c1": "Seen."}}"#);
+    let env = [("STACKED_CLAUDE", claude.as_path()), ("STACKED_CONFIG", fresh.as_path())];
+    let id = comment(&e, &["Why?"]);
+    let refused = "the tools each kind of ask may use are not set up yet: run `stacked setup agent s` first, to check them and save them; nothing was sent";
+    for args in [&["send", "s", &id][..], &["send", "s", &id, "--answer-only", "--wait"], &["send", "s", &id, "--build-and-test"]] {
+        let (fine, _, err) = stacked_in(&e.src, &e.db, args, "", &env);
+        assert!(!fine && err.contains(refused), "{args:?}: {err}");
+    }
+    // Batched, it goes nowhere yet; the batch sent, it would.
+    let (fine, _, err) = stacked_in(&e.src, &e.db, &["send", "s", &id, "--later"], "", &env);
+    assert!(fine, "{err}");
+    let (fine, _, err) = stacked_in(&e.src, &e.db, &["send", "s", "--batch"], "", &env);
+    assert!(!fine && err.contains(refused), "{err}");
+    assert_eq!(e.ok(&["runs"]), "", "nothing was asked");
+    // Set up, every list kept as it is shown: it goes, and the next too.
+    let init = serde_json::json!({"type": "system", "subtype": "init", "model": "fake", "tools": ["Read", "Bash"], "mcp_servers": []});
+    let agent = e.script("claude-init.sh", &format!("echo '{init}'\nsleep 30\n"));
+    let (fine, _, err) = stacked_in(&e.src, &e.db, &["setup", "agent", "s", "--global"], "", &[("STACKED_CLAUDE", &agent), ("STACKED_CONFIG", &fresh)]);
+    assert!(fine, "{err}");
+    assert!(err.contains(&format!("stacked: the setup is saved in {}: change_tools: none; answer_tools: Bash(curl *), Bash(jq *)", fresh.display())), "{err}");
+    assert_eq!(std::fs::read_to_string(&fresh).unwrap(), "[agent]\nchange_tools = []\nanswer_tools = [\"Bash(curl *)\", \"Bash(jq *)\"]\nsetup = 1\n");
+    let (fine, out, err) = stacked_in(&e.src, &e.db, &["send", "s", "--batch", "--wait", "--accept"], "", &env);
+    assert!(fine && out.contains("Seen."), "{out}{err}");
+    let id = comment(&e, &["And", "now?"]);
+    let (fine, _, err) = send(&e, &claude, &[&id, "--answer-only"], &[("STACKED_CONFIG", &fresh)]);
+    assert!(fine, "{err}");
+    // A setup before any there is: asked again.
+    std::fs::write(&fresh, "[agent]\nsetup = 0\n").unwrap();
+    let id = comment(&e, &["Again?"]);
+    let (fine, _, err) = stacked_in(&e.src, &e.db, &["send", "s", &id], "", &env);
+    assert!(!fine && err.contains(refused), "{err}");
+}
+
+#[test]
+fn what_each_kind_of_ask_may_use_is_set_up_with_the_agent() {
     let e = env();
     e.ok(&["import", "s", "base"]);
     // A claude that says what it has, then would go on: it is stopped once
@@ -2715,48 +2785,72 @@ fn the_tools_every_ask_may_use_are_set_up_with_the_agent() {
         "mcp_servers": [{"name": "moz", "status": "connected"}, {"name": "notes", "status": "connected"}]});
     let pwd = e.root.join("pwd");
     let claude = e.script("claude-init.sh", &format!("pwd > {}\necho '{init}'\nsleep 30\n", pwd.display()));
+    // Settings with every ask let use notes' write, the setup not done.
     let settings = e.root.join("settings.toml");
     std::fs::write(&settings, "[agent]\ntools = [\"mcp__notes__write\"]\n").unwrap();
-    // All of moz's; notes' one by one, the one that reads; of the others,
-    // WebFetch alone.
+    // The checkout's instructions name a program, there on a PATH of the
+    // test's own; its claude settings, yours, allow a command.
+    let bin = e.root.join("bin");
+    std::fs::create_dir(&bin).unwrap();
+    std::fs::write(bin.join("searchfox-cli"), "#!/bin/sh\n").unwrap();
+    Command::new("chmod").arg("+x").arg(bin.join("searchfox-cli")).status().unwrap();
+    let path = PathBuf::from(format!("{}:{}", bin.display(), std::env::var("PATH").unwrap_or_default()));
+    std::fs::write(e.src.join("AGENTS.md"), "Search the code:\n\n```sh\nsearchfox-cli --define Foo\n```\n").unwrap();
+    std::fs::create_dir(e.src.join(".claude")).unwrap();
+    std::fs::write(e.src.join(".claude/settings.local.json"), r#"{"permissions": {"allow": ["Bash(lint:*)"]}}"#).unwrap();
+    let env = [("STACKED_CLAUDE", claude.as_path()), ("STACKED_CONFIG", settings.as_path()), ("PATH", path.as_path())];
+    // For changes, one by one: lint not, searchfox-cli not, all of moz's,
+    // notes' each, the one that reads, write kept, nothing else; then a
+    // command added. For answers, as they are shown.
     let started = std::time::Instant::now();
-    let (fine, _, err) = stacked_in(
-        &e.src,
-        &e.db,
-        &["setup", "agent", "s"],
-        "y\ne\ny\nn\nn\nn\nn\ny\n",
-        &[("STACKED_CLAUDE", &claude), ("STACKED_CONFIG", &settings)],
-    );
+    let (fine, _, err) = stacked_in(&e.src, &e.db, &["setup", "agent", "s"], "n\n\n\ny\ne\ny\n\n\n\n\n\nBash(make check *)\n\n\n\n", &env);
     assert!(fine, "{err}");
     assert!(started.elapsed() < std::time::Duration::from_secs(20), "stopped once it said what it has");
     assert_eq!(std::fs::read_to_string(&pwd).unwrap().trim(), e.src.display().to_string(), "in the stack's repository");
-    assert!(err.contains("The MCP server moz: get_bug, get_revision."), "{err}");
-    assert!(err.contains("Let every ask use Edit? It changes things: an answer could too. [y/N]"), "{err}");
-    // Written in the checkout's own settings, which it said first; the
-    // settings' file as it was.
     let local = e.src.join(".stacked/local.toml");
-    assert!(err.contains(&format!("Now, agent.tools in {}: mcp__notes__write.", settings.display())), "{err}");
-    assert!(err.contains(&format!("What you let every ask use is written in {}.", local.display())), "{err}");
-    let (_, out, _) = stacked_in(&e.src, &e.db, &["config", "agent.tools"], "", &[("STACKED_CONFIG", &settings)]);
-    assert_eq!(out, "mcp__moz__*\nmcp__notes__read\nWebFetch\n", "the write of notes taken out");
-    assert_eq!(std::fs::read_to_string(&local).unwrap(), "[agent]\ntools = [\"mcp__moz__*\", \"mcp__notes__read\", \"WebFetch\"]\n");
+    for line in [
+        format!("stacked: the agent, in {}, has 12 tools. What each kind of ask may use is saved in {}; Enter keeps what is ticked.", e.src.display(), local.display()),
+        "Asks that change the stack, agent.change_tools:".into(),
+        "  Ticked: mcp__notes__write.".into(),
+        "  Let asks that change the stack use Bash(lint:*), allowed in .claude/settings.local.json? [y/N]".into(),
+        "  Let asks that change the stack use Bash(searchfox-cli *), named in AGENTS.md? [y/N]".into(),
+        "  The MCP server moz: get_bug, get_revision.".into(),
+        "  Let asks that change the stack use WebFetch? It can reach the network: a change could touch a remote. [y/N]".into(),
+        "  Bash(make check *): added.".into(),
+        "Answer-only asks, agent.answer_tools:".into(),
+        "  Ticked: Bash(curl *), Bash(jq *), Bash(lint:*), mcp__notes__write.".into(),
+    ] {
+        assert!(err.contains(&line), "{line:?} in:\n{err}");
+    }
+    // Written in the checkout's own settings, both lists and the setup
+    // done, notes' write left to agent.tools as both still let it; the
+    // settings' file as it was.
+    let said = "change_tools: mcp__moz__*, mcp__notes__read, Bash(make check *); answer_tools: Bash(curl *), Bash(jq *), Bash(lint:*)";
+    assert!(err.contains(&format!("stacked: the setup is saved in {}: {said}", local.display())), "{err}");
+    assert_eq!(
+        std::fs::read_to_string(&local).unwrap(),
+        "[agent]\nchange_tools = [\"mcp__moz__*\", \"mcp__notes__read\", \"Bash(make check *)\"]\nanswer_tools = [\"Bash(curl *)\", \"Bash(jq *)\", \"Bash(lint:*)\"]\nsetup = 1\n"
+    );
     assert_eq!(std::fs::read_to_string(&settings).unwrap(), "[agent]\ntools = [\"mcp__notes__write\"]\n");
+    // Again, as it is: the settings' ticks now, the lists set.
+    let (fine, _, err) = stacked_in(&e.src, &e.db, &["setup", "agent", "s"], "", &env);
+    assert!(fine, "{err}");
+    assert!(err.contains("  Ticked: mcp__moz__*, mcp__notes__read, mcp__notes__write, Bash(make check *)."), "{err}");
+    assert!(err.contains(&format!("stacked: the setup is saved in {}: {said}", local.display())), "{err}");
     // With --global, in the settings' file, starting from its own; the
     // checkout's still the one used there, as said.
-    let (fine, _, err) = stacked_in(
-        &e.src,
-        &e.db,
-        &["setup", "agent", "s", "--global"],
-        "n\ne\ny\ny\nn\nn\nn\nn\n",
-        &[("STACKED_CLAUDE", &claude), ("STACKED_CONFIG", &settings)],
-    );
+    let (fine, _, err) = stacked_in(&e.src, &e.db, &["setup", "agent", "s", "--global"], "", &env);
     assert!(fine, "{err}");
-    assert!(err.contains(&format!("What you let every ask use is written in {}.", settings.display())), "{err}");
-    assert!(err.contains("sets agent.tools too, and is the one used in its checkout"), "{err}");
-    assert_eq!(std::fs::read_to_string(&settings).unwrap(), "[agent]\ntools = [\"mcp__notes__read\", \"mcp__notes__write\"]\n");
+    assert!(err.contains(&format!("What each kind of ask may use is saved in {};", settings.display())), "{err}");
+    assert!(err.contains("sets agent.change_tools too, and is the one used in its checkout"), "{err}");
+    assert!(err.contains("sets agent.setup too, and is the one used in its checkout"), "{err}");
+    assert_eq!(
+        std::fs::read_to_string(&settings).unwrap(),
+        "[agent]\ntools = [\"mcp__notes__write\"]\nchange_tools = []\nanswer_tools = [\"Bash(curl *)\", \"Bash(jq *)\", \"Bash(lint:*)\"]\nsetup = 1\n"
+    );
     // Outside a checkout, refused before the agent is asked.
     std::fs::remove_file(&pwd).unwrap();
-    let (fine, _, err) = stacked_in(&e.root, &e.db, &["setup", "agent"], "", &[("STACKED_CLAUDE", &claude), ("STACKED_CONFIG", &settings)]);
+    let (fine, _, err) = stacked_in(&e.root, &e.db, &["setup", "agent"], "", &env);
     assert!(!fine && err.contains("is not in a git checkout"), "{err}");
     assert!(!pwd.exists(), "the agent was not started");
 }
@@ -2766,7 +2860,7 @@ fn a_checkout_s_own_settings_override_the_others_there() {
     let e = env();
     e.ok(&["import", "s", "base"]);
     let settings = e.root.join("settings.toml");
-    std::fs::write(&settings, "[agent]\ntools = [\"mcp__bugzilla__*\"]\n[view]\nlayout = \"compact\"\n").unwrap();
+    std::fs::write(&settings, format!("{SET_UP}tools = [\"mcp__bugzilla__*\"]\n[view]\nlayout = \"compact\"\n")).unwrap();
     let config = |dir: &Path, args: &[&str]| {
         let mut all = vec!["config"];
         all.extend(args);
@@ -3460,9 +3554,10 @@ fn a_run_of_stacked_as_the_tests_run_it_reaches_nothing_in_the_home() {
     let (fine, out, err) = stacked_in(&e.src, &e.db, &["config"], "", &[("HOME", &home)]);
     assert!(fine, "{err}");
     // Where it reads its settings, as it says: the test's folder, beside
-    // the database.
+    // the database, holding the test's own (`SET_UP`).
     let settings = e.root.join("home/config.toml");
-    assert_eq!(out.lines().next(), Some(format!("# none in {}", settings.display()).as_str()), "{out}");
+    assert_eq!(out.lines().next(), Some(format!("# read from {}", settings.display()).as_str()), "{out}");
+    assert_eq!(std::fs::read_to_string(&settings).unwrap(), SET_UP);
     assert!(out.contains("\n# editor = ...") && !out.contains("editor = \"hx\""), "the home's settings not read: {out}");
     // Nothing of the home's read, moved, made or said.
     assert_eq!(listing(&home), before);
@@ -3477,14 +3572,15 @@ fn a_run_of_stacked_as_the_tests_run_it_reaches_nothing_in_the_home() {
 #[test]
 fn the_settings_are_in_stacked_s_folder_the_one_stacked_home_names_else_the_home_s() {
     let e = env();
-    // The tests' folder: made by the first setting written.
-    let folder = e.root.join("home");
+    // A folder of the test's, named: made by the first setting written.
+    let folder = e.root.join("fresh");
+    let run = |args: &[&str]| stacked_in(&e.src, &e.db, args, "", &[("STACKED_HOME", &folder)]);
     assert!(!folder.exists());
-    let (fine, _, err) = e.run(&["config", "editor", "hx"]);
+    let (fine, _, err) = run(&["config", "editor", "hx"]);
     assert!(fine && err.contains(&format!("editor written in {}", folder.join("config.toml").display())), "{err}");
     assert_eq!(std::fs::read_to_string(folder.join("config.toml")).unwrap(), "editor = \"hx\"\n");
-    assert_eq!(e.ok(&["config", "editor"]), "hx\n");
-    assert!(e.ok(&["config"]).starts_with(&format!("# read from {}\n", folder.join("config.toml").display())));
+    assert_eq!(run(&["config", "editor"]).1, "hx\n");
+    assert!(run(&["config"]).1.starts_with(&format!("# read from {}\n", folder.join("config.toml").display())));
     // Another folder, named: its own.
     let other = e.root.join("other");
     let (_, out, _) = stacked_in(&e.src, &e.db, &["config"], "", &[("STACKED_HOME", &other)]);

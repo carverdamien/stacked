@@ -183,6 +183,10 @@ impl Workspace {
     }
 }
 
+/// What answer-only asks may use unless the settings say otherwise: the
+/// web, read with curl, and what curl reads, through jq.
+pub const ANSWER_TOOLS: [&str; 2] = ["Bash(curl *)", "Bash(jq *)"];
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Agent {
     /// The program run as claude; else `$STACKED_CLAUDE`'s, else `claude`.
@@ -191,9 +195,21 @@ pub struct Agent {
     pub args: Vec<String>,
     /// `--model` for every run.
     pub model: Option<String>,
-    /// Tools every ask may use besides its own, as claude names them for
-    /// `--allowedTools`: an MCP server's, a command.
+    /// Tools every ask may use besides its own, build and test asks too,
+    /// as claude names them for `--allowedTools`: an MCP server's, a
+    /// command.
     pub tools: Vec<String>,
+    /// Tools asks that change the stack may use, besides what stacked gives
+    /// them: none unless set, as nothing they are given reaches the network.
+    pub change_tools: Vec<String>,
+    /// Tools answer-only asks may use, besides what stacked gives them:
+    /// unless set, curl and jq, to read the web.
+    pub answer_tools: Vec<String>,
+    /// The setup of what each kind of ask may use, done (`stacked setup
+    /// agent`): the version of it that was. No ask goes before it is done,
+    /// nor once stacked's own version of it (`setup::VERSION`) is a later
+    /// one.
+    pub setup: Option<usize>,
     /// Where a change works.
     pub worktree: Workspace,
     /// Where an answer works.
@@ -219,6 +235,9 @@ impl Default for Agent {
             args: Vec::new(),
             model: None,
             tools: Vec::new(),
+            change_tools: Vec::new(),
+            answer_tools: ANSWER_TOOLS.map(String::from).to_vec(),
+            setup: None,
             worktree: Workspace::OnDemand,
             answer_only_worktree: Workspace::Pwd,
             worktrees: None,
@@ -379,6 +398,9 @@ struct WrittenAgent {
     args: Option<Vec<String>>,
     model: Option<String>,
     tools: Option<Vec<String>>,
+    change_tools: Option<Vec<String>>,
+    answer_tools: Option<Vec<String>>,
+    setup: Option<usize>,
     worktree: Option<String>,
     answer_only_worktree: Option<String>,
     worktrees: Option<String>,
@@ -472,6 +494,15 @@ impl Config {
         }
         if let Some(tools) = a.tools {
             c.agent.tools = tools;
+        }
+        if let Some(tools) = a.change_tools {
+            c.agent.change_tools = tools;
+        }
+        if let Some(tools) = a.answer_tools {
+            c.agent.answer_tools = tools;
+        }
+        if let Some(n) = a.setup {
+            c.agent.setup = Some(n);
         }
         if let Some(d) = a.worktrees {
             c.agent.worktrees = Some(expand(&d));
@@ -690,11 +721,32 @@ impl Config {
         out.push_str(&format!("args = {}\n", list(&self.agent.args)));
         out.push_str(&opt("model", &self.agent.model, "claude's own"));
         out.push_str(
-            "# Tools every ask may use besides its own, as claude names them for --allowedTools:\n\
-             # an MCP server's (\"mcp__bugzilla__*\"), one of its tools (\"mcp__bugzilla__get_bug\"),\n\
-             # a command (\"Bash(jq *)\"). An answer may use them too: give only tools that read.\n",
+            "# Tools every ask may use besides its own, build and test asks too, as claude names\n\
+             # them for --allowedTools: an MCP server's (\"mcp__bugzilla__*\"), one of its tools\n\
+             # (\"mcp__bugzilla__get_bug\"), a command (\"Bash(jq *)\"). An answer may use them\n\
+             # too: give only tools that read.\n",
         );
         out.push_str(&format!("tools = {}\n", list(&self.agent.tools)));
+        out.push_str(
+            "# Tools asks that change the stack may use, besides git's history commands and the\n\
+             # commands that read, which stacked gives them. Nothing they are given reaches the\n\
+             # network, so that a change cannot touch a remote: only what is added here could.\n",
+        );
+        out.push_str(&format!("change_tools = {}\n", list(&self.agent.change_tools)));
+        out.push_str(
+            "# Tools answer-only asks may use, besides what reads the code and the stack, which\n\
+             # stacked gives them: unless this is set, curl and jq, to read the web.\n",
+        );
+        out.push_str(&format!("answer_tools = {}\n", list(&self.agent.answer_tools)));
+        out.push_str(
+            "# The setup of these lists done, as the version of it that was: `stacked setup agent`\n\
+             # writes it once you save what it shows. Until it is written, no ask goes: the editor\n\
+             # opens the setup before the first ask, and the command line says to run it.\n",
+        );
+        out.push_str(&match self.agent.setup {
+            Some(n) => format!("setup = {n}\n"),
+            None => "# setup = ...   (not done)\n".into(),
+        });
         out.push_str(
             "# Where a change works: \"ondemand\", a worktree of the stack's own (.stacked/NAME/agent)\n\
              # made the first time and reused while it holds nothing unfinished; \"precreate\", the\n\
@@ -845,13 +897,16 @@ enum Kind {
 
 /// Every setting there is, as the file names it, and what it holds; the
 /// keys', `keys.NAME`, are lists.
-const SETTINGS: [(&str, Kind); 24] = [
+const SETTINGS: [(&str, Kind); 27] = [
     ("file", Kind::Text),
     ("editor", Kind::Text),
     ("agent.command", Kind::Text),
     ("agent.args", Kind::List),
     ("agent.model", Kind::Text),
     ("agent.tools", Kind::List),
+    ("agent.change_tools", Kind::List),
+    ("agent.answer_tools", Kind::List),
+    ("agent.setup", Kind::Count),
     ("agent.worktree", Kind::Text),
     ("agent.answer_only_worktree", Kind::Text),
     ("agent.worktrees", Kind::Text),
@@ -935,6 +990,9 @@ pub fn value_of(c: &Config, key: &str) -> Result<Vec<String>, String> {
         "agent.args" => c.agent.args.clone(),
         "agent.model" => opt(&c.agent.model),
         "agent.tools" => c.agent.tools.clone(),
+        "agent.change_tools" => c.agent.change_tools.clone(),
+        "agent.answer_tools" => c.agent.answer_tools.clone(),
+        "agent.setup" => c.agent.setup.iter().map(|n| n.to_string()).collect(),
         "agent.worktree" => vec![c.agent.worktree.name().into()],
         "agent.answer_only_worktree" => vec![c.agent.answer_only_worktree.name().into()],
         "agent.worktrees" => path(&c.agent.worktrees),
@@ -973,8 +1031,26 @@ pub fn value_of(c: &Config, key: &str) -> Result<Vec<String>, String> {
 /// with why, for a setting there is not, a value of the wrong kind, or one
 /// stacked would not take; a file stacked cannot read is left as it is.
 pub fn set(path: &Path, key: &str, values: &[String]) -> Result<(), String> {
-    let lit = literal(key, kind_of(key)?, values)?;
-    edit_settings(path, |text| with_setting(text, key, Some(&lit)))
+    set_all(path, &[(key, values.to_vec())])
+}
+
+/// Writes each of `settings`, a key and its values, in the settings' file
+/// at `path`, as `set` writes one: all in one go, or none of them.
+pub fn set_all(path: &Path, settings: &[(&str, Vec<String>)]) -> Result<(), String> {
+    let lits = literals(settings)?;
+    edit_settings(path, |text| with_settings(text, &lits))
+}
+
+/// Each of `settings`, a key and its values, in the file's form: refused,
+/// with why, for one there is not, or a value of the wrong kind.
+fn literals<'a>(settings: &[(&'a str, Vec<String>)]) -> Result<Vec<(&'a str, String)>, String> {
+    settings.iter().map(|(key, values)| Ok((*key, literal(key, kind_of(key)?, values)?))).collect()
+}
+
+/// `text`, a settings' file, with each of `lits` (a key, and its value in
+/// the file's form) written as `with_setting` writes one.
+fn with_settings(text: &str, lits: &[(&str, String)]) -> String {
+    lits.iter().fold(text.to_string(), |text, (key, lit)| with_setting(&text, key, Some(lit)))
 }
 
 /// Takes `key` out of the settings' file at `path`: it is then as it would
@@ -1314,14 +1390,21 @@ pub fn local_to_write(dir: &Path) -> Result<PathBuf, String> {
 /// as `set` writes the settings' file: `.stacked/` made if it is not
 /// there, and kept out of git's sight. Where it wrote.
 pub fn set_local(dir: &Path, key: &str, values: &[String]) -> Result<PathBuf, String> {
-    let lit = literal(key, kind_of(key)?, values)?;
+    set_local_all(dir, &[(key, values.to_vec())])
+}
+
+/// Writes each of `settings` in the local file of the checkout `dir` is
+/// in, as `set_local` writes one: all in one go, or none of them. Where it
+/// wrote.
+pub fn set_local_all(dir: &Path, settings: &[(&str, Vec<String>)]) -> Result<PathBuf, String> {
+    let lits = literals(settings)?;
     let p = local_to_write(dir)?;
     let folder = p.parent().unwrap_or(Path::new("."));
     if let Some(top) = folder.parent() {
         crate::git::exclude(top, "/.stacked/").map_err(|e| e.0)?;
     }
     std::fs::create_dir_all(folder).map_err(|e| format!("{}: {e}", folder.display()))?;
-    edit_settings(&p, |text| with_setting(text, key, Some(&lit)))?;
+    edit_settings(&p, |text| with_settings(text, &lits))?;
     Ok(p)
 }
 
@@ -1663,6 +1746,37 @@ mod tests {
         set(&path, "view.whitespace_needs_review", &["true".to_string()]).unwrap();
         assert!(Config::load(&path).0.view.whitespace_needs_review);
         assert!(set(&path, "view.whitespace_needs_review", &["yes".to_string()]).unwrap_err().contains("true or false"));
+    }
+
+    #[test]
+    fn the_setup_writes_both_lists_and_that_it_was_done_in_one_go() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("settings.toml");
+        let read = || std::fs::read_to_string(&path).unwrap();
+        let vals = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        // Not set: nothing for changes, curl and jq for answers, as before
+        // there were lists; the setup not done.
+        let d = Config::default();
+        assert_eq!(value_of(&d, "agent.change_tools"), Ok(vec![]));
+        assert_eq!(value_of(&d, "agent.answer_tools"), Ok(vals(&["Bash(curl *)", "Bash(jq *)"])));
+        assert_eq!(value_of(&d, "agent.setup"), Ok(vec![]));
+        for line in ["\nchange_tools = []\n", "\nanswer_tools = [\"Bash(curl *)\", \"Bash(jq *)\"]\n", "\n# setup = ...   (not done)\n"] {
+            assert!(d.render().contains(line), "{line:?} in {}", d.render());
+        }
+        // Saved: both lists, and the setup done, the rest as it was.
+        std::fs::write(&path, "# mine\n[agent]\ntools = [\"mcp__moz__*\"]\n").unwrap();
+        let saved = crate::setup::Chosen { change: vec![], answer: vals(&["Bash(curl *)"]), every: None };
+        set_all(&path, &saved.settings()).unwrap();
+        assert_eq!(read(), "# mine\n[agent]\ntools = [\"mcp__moz__*\"]\nchange_tools = []\nanswer_tools = [\"Bash(curl *)\"]\nsetup = 1\n");
+        let (c, wrong) = Config::load(&path);
+        assert!(wrong.is_empty(), "{wrong:?}");
+        assert_eq!((c.agent.change_tools.clone(), c.agent.answer_tools.clone(), c.agent.setup), (vec![], vals(&["Bash(curl *)"]), Some(1)));
+        assert_eq!(value_of(&c, "agent.setup"), Ok(vals(&["1"])));
+        // One of them wrong: none written.
+        let before = read();
+        let e = set_all(&path, &[("agent.change_tools", vals(&["WebFetch"])), ("agent.setup", vals(&["soon"]))]).unwrap_err();
+        assert!(e.contains("agent.setup is a number"), "{e}");
+        assert_eq!(read(), before);
     }
 
     #[test]
