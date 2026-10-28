@@ -464,6 +464,23 @@ fn spot_in(spots: &std::cell::RefCell<Vec<(Rect, Spot)>>, area: Rect, (x, y, w, 
     }
 }
 
+/// Where a box `len` cells long starts, along one side of an area that is
+/// `room` cells long from cell `start` of the screen, to be next to the
+/// screen's cell `at`: just after that cell, where the box fits whole
+/// there; else just before it; else as far along as the box fits whole,
+/// which is the area's start when the box is longer than the area.
+fn next_to(at: u16, start: u16, len: usize, room: usize) -> usize {
+    let (at, start) = (usize::from(at), usize::from(start));
+    let after = (at + 1).saturating_sub(start);
+    if after + len <= room {
+        after
+    } else if at >= start + len && at - start <= room {
+        at - start - len
+    } else {
+        room.saturating_sub(len)
+    }
+}
+
 /// How the code is drawn, as self-review draws it: one column, the two
 /// sides line by line, or the two sides each a pane of its own (compact).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -800,6 +817,11 @@ pub struct Menu {
     pub sel: usize,
     /// Why some items cannot be chosen, when some cannot.
     pub note: Option<String>,
+    /// The cell of the screen that was clicked to open it, when a click
+    /// opened it: the menu is drawn next to that cell. A menu opened by a
+    /// key has none: it is drawn in the middle, or beside the comment being
+    /// written when it asks about that comment.
+    pub at: Option<(u16, u16)>,
     top: usize,
 }
 
@@ -1401,6 +1423,7 @@ impl Menu {
             sel: first.or_else(|| out.iter().position(|i| i.enabled)).unwrap_or(0),
             items: out,
             note: note.filter(|_| blocked),
+            at: None,
             top: 0,
         }
     }
@@ -2855,8 +2878,31 @@ impl App {
     /// the box, Esc there. Else what is there picked, as the arrows would,
     /// and if it was picked already, done as Enter does; or, a right click,
     /// its menu, as Space opens it. Keys as they are, whatever the settings
-    /// map: Enter is Enter.
+    /// map: Enter is Enter. A menu the click opens is drawn next to the cell
+    /// clicked; the menu open before stays where it is, built again or not.
     pub fn click(&mut self, x: u16, y: u16, right: bool) -> Effect {
+        // The menu open before the click, under what `?` says too.
+        let was = match &self.mode {
+            Mode::Help { back, .. } => match &**back {
+                Mode::Menu(m) => Some(m.title.clone()),
+                _ => None,
+            },
+            Mode::Menu(m) => Some(m.title.clone()),
+            _ => None,
+        };
+        let e = self.click_on(x, y, right);
+        // Another menu than that one: opened by the click, next to it.
+        if let Mode::Menu(m) = &mut self.mode
+            && was.as_ref() != Some(&m.title)
+        {
+            m.at = Some((x, y));
+        }
+        e
+    }
+
+    /// What a click at `(x, y)` does, as `click` says, but for where a menu
+    /// it opens is drawn.
+    fn click_on(&mut self, x: u16, y: u16, right: bool) -> Effect {
         let spot = self.spot_at(x, y);
         let press = |app: &mut App, code: KeyCode| app.pressed(KeyEvent::new(code, KeyModifiers::NONE));
         match &mut self.mode {
@@ -4573,7 +4619,17 @@ impl App {
                     chosen => chosen,
                 };
                 return match item {
-                    Some(item) => self.perform(item.doing()),
+                    Some(item) => {
+                        let e = self.perform(item.doing());
+                        // The same menu built again, a box checked in it: it
+                        // stays where it was drawn.
+                        if let Mode::Menu(again) = &mut self.mode
+                            && again.title == m.title
+                        {
+                            again.at = m.at;
+                        }
+                        e
+                    }
                     None => Effect::None,
                 };
             }
@@ -8262,9 +8318,17 @@ impl App {
         put(buf, area, 0, y, w, &fit(&text, w), color::status());
     }
 
-    fn draw_menu(&mut self, buf: &mut Buffer, area: Rect) {
-        let (w, h) = (area.width as usize, area.height as usize);
+    fn draw_menu(&mut self, buf: &mut Buffer, body: Rect) {
         let Mode::Menu(m) = &mut self.mode else { return };
+        // Opened by a click, it may be drawn anywhere between the top bar and
+        // the status line, over the banner too, to be next to the click.
+        // Else it is drawn over the panes.
+        let screen = buf.area;
+        let area = match m.at {
+            Some(_) => Rect::new(screen.x, screen.y + 1, screen.width, screen.height.saturating_sub(2)),
+            None => body,
+        };
+        let (w, h) = (area.width as usize, area.height as usize);
         // The choices in one column, past the longest label that has them.
         let pad = m.items.iter().filter(|i| i.choices.is_some()).map(|i| i.label.chars().count()).max().unwrap_or(0);
         let widest = m.items.iter().map(|i| i.row(pad).0.chars().count()).max().unwrap_or(0);
@@ -8299,6 +8363,13 @@ impl App {
             _ => centered,
         };
         let x = w.saturating_sub(bw) / 2;
+        // Opened by a click: next to the cell clicked instead, over the
+        // comment being written too, as a click out of the menu goes back
+        // to that comment.
+        let (x, y) = match m.at {
+            Some((cx, cy)) => (next_to(cx, area.x, bw, w), next_to(cy, area.y, bh, h)),
+            None => (x, y),
+        };
         window(buf, area, x, y, bw, bh, &m.title, color::meta());
         spot_in(&self.spots, area, (x, y, bw, bh), Spot::Box);
         for (r, (i, item)) in m.items.iter().enumerate().skip(m.top).take(rows).enumerate() {

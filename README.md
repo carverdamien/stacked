@@ -179,12 +179,22 @@ the pane the cursor is in, grey in the other) until a click picks the
 line, and a second click on it is Enter. Elsewhere the cursor follows the
 mouse: what is under it is picked, as the arrows would (a line of the
 patch, an item of a list or of a menu; a patch being moved goes there), so
-a click is Enter on it. A right click is Space, its menu. Outside a menu,
-a click is Esc for the menu: it closes, and the comment it asks about, if
-any, goes on being written. Writing a comment, a click outside its box,
-with either button, is Esc as well, and picks nothing of what is under it:
-the box closes when nothing is written in it, else the menu Esc opens asks
-what to do with the comment. A click in the box puts the cursor where the
+a click is Enter on it. A right click is Space, its menu. A menu opened
+with a click opens next to the click: the top left corner of its box is
+just below and to the right of the cell clicked, or, near the right edge or
+the bottom of the page, the menu opens to the left of that cell or above
+it, to be whole on the page. The menu keeps that place while it is open,
+and when the page is resized it moves only as much as it must to stay
+whole. A menu opened with a key opens in the middle, as in a terminal.
+Outside a menu, a click is Esc for the menu: it closes, and the comment it
+asks about, if any, goes on being written. Writing a comment, a click
+outside its box, with either button, is Esc as well, and picks nothing of
+what is under it: the box closes when nothing is written in it, else the
+menu Esc opens asks what to do with the comment. That menu opens next to
+the click too, even over the comment, and a click outside the menu goes
+back to the comment, with what is written in it. Opened with Esc, the
+menu opens under the comment, or above it, so that the comment stays in
+sight. A click in the box puts the cursor where the
 click is. Writing a comment, or reading what `?` says, the mouse going by
 moves nothing. The wheel is ↑↓, and a paste types what is pasted, into a
 comment being written. The page follows the mouse only while it is the
@@ -233,7 +243,9 @@ The mouse works as in the browser (above): over the patches and the
 comments it marks the line under it, and a click picks the line, a second
 click on it being Enter; elsewhere the cursor follows it, so that a click
 is Enter on what is under it. A right click is Space, its menu, and so is
-ctrl-click on macOS. Writing a comment, a click outside its box is Esc,
+ctrl-click on macOS. A menu opened with a click opens next to the click,
+as in the browser, and stays whole in the window; a menu opened with a key
+opens in the middle. Writing a comment, a click outside its box is Esc,
 and a click in the box puts the cursor where the click is. The wheel and
 the trackpad are ↑↓. Each window
 follows the mouse only while it is the active one, as the page does: over
@@ -2228,10 +2240,15 @@ from Phabricator, its revisions read by a stand-in; or by the agent), a
 comment moved to the stack
 taking the cursor with it, the mouse (a side pane's line marked under it and picked by a click,
 elsewhere the cursor following it, a click as
-Enter, a right click's menu, a menu's item; writing a comment in the middle
+Enter, a right click's menu, a menu's item; a menu opened with a click
+next to the click, to its left or above it by the screen's edges, whole on
+a screen made smaller, and where it was once a box in it is checked, a menu
+opened with a key in the middle; writing a comment in the middle
 in each view of the code, in the patches pane, in the comments pane, or
 between a reply and its references, a click outside the box as Esc,
-picking nothing, a click outside the menu Esc opens going back to the
+picking nothing, the menu that click opens next to it, over the comment
+too, the one Esc opens beside the comment, a click outside either going
+back to the
 comment, and a click in the box putting the cursor there), the comments pane's previews,
 moving a patch, searching (what is in sight first, the patches then the
 files they touch, the history), the agents' worktrees made ahead as the

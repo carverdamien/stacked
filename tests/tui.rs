@@ -458,15 +458,23 @@ fn a_click_picks_and_a_second_does_as_enter() {
 /// The editor that `open` opens, clicked with each button. Out of its box,
 /// on `out`, a click closes it when nothing is written, and picks nothing
 /// of what is under it. With something written, a click out of the box
-/// opens the menu that Esc opens. A click out of that menu, on the box of
-/// what is written as well, goes back to what is written, as Keep writing
-/// does. A click in the box puts the cursor where the click is, and one on
-/// the box's edge does nothing.
+/// opens the menu that Esc opens, next to the click as any menu a click
+/// opens, though it covers what is written there; a click out of that menu
+/// goes back to what is written, as Keep writing does. Opened with Esc, the
+/// menu is beside what is written, which stays in sight, and a click on
+/// what is written goes back to it too. A click in the box puts the cursor
+/// where the click is, and one on the box's edge does nothing.
 fn clicked_in_and_out_of_the_editor(app: &mut App, open: impl Fn(&mut App), out: &str) {
     let picked = |app: &App| (app.focus, app.sel, app.cursor, app.note_sel);
     let writing = |app: &App, text: &str| matches!(&app.mode, Mode::Edit(e) if e.ed.text() == text);
     let was = picked(app);
     for right in [false, true] {
+        // The menu open, drawn where a click on `(x, y)` puts it.
+        let placed = |app: &mut App, (x, y): (u16, u16)| {
+            let screen = draw(app);
+            let (bx, by, w, h) = menu_box(&screen, "the comment");
+            assert_eq!((bx, by), next_to_click((x, y), w, h), "right: {right}:\n{screen}");
+        };
         open(app);
         assert!(writing(app, ""), "{:?}", app.mode);
         let (x, y) = at(&draw(app), out);
@@ -480,19 +488,27 @@ fn clicked_in_and_out_of_the_editor(app: &mut App, open: impl Fn(&mut App), out:
         assert!(matches!(&app.mode, Mode::Menu(m) if m.title == "the comment"), "right: {right}: {:?}", app.mode);
         assert_eq!(picked(app), was, "nothing picked (right: {right})");
         let menu = items(app);
-        // Out of the menu, on the screen's top line, then on what is
-        // written: back to it; out of its box again, the menu again.
-        let on_it = at(&draw(app), "zebra?");
-        for (x, y) in [(0, 0), on_it] {
-            app.click(x, y, right);
-            assert!(writing(app, "a zebra?"), "out of the menu (right: {right}): {:?}", app.mode);
-            draw(app);
-            app.click(0, 0, right);
-            assert_eq!(items(app), menu, "right: {right}");
-        }
+        placed(app, (x, y));
+        // Out of the menu, on the screen's top line: back to what is
+        // written, as it was. Out of its box again, there: the menu again,
+        // next to that click.
+        app.click(0, 0, right);
+        assert!(writing(app, "a zebra?"), "out of the menu (right: {right}): {:?}", app.mode);
+        draw(app);
+        app.click(0, 0, right);
+        assert_eq!(items(app), menu, "right: {right}");
+        placed(app, (0, 0));
         let (x, y) = at(&draw(app), "Keep writing");
         app.click(x, y, right);
         assert!(writing(app, "a zebra?"), "kept writing (right: {right}): {:?}", app.mode);
+        // Opened with Esc, the same menu, beside what is written, which stays
+        // in sight: a click on what is written, out of the menu, goes back to
+        // it.
+        keys(app, &[KeyCode::Esc]);
+        assert_eq!(items(app), menu, "right: {right}");
+        let (x, y) = at(&draw(app), "zebra?");
+        app.click(x, y, right);
+        assert!(writing(app, "a zebra?"), "back to it (right: {right}): {:?}", app.mode);
         // In the box: the cursor where the click is; on its edge, where it
         // was.
         let (x, y) = at(&draw(app), "zebra?");
@@ -551,6 +567,252 @@ fn a_click_out_of_a_reply_is_esc_in_the_comments_pane_and_in_the_middle() {
     keys(&mut app, &[KeyCode::Left, KeyCode::Home]);
     down_to(&mut app, "     ▎   Which one?");
     clicked_in_and_out_of_the_editor(&mut app, reply, "r1 ↗ patch 1 · a.txt: TWO");
+}
+
+/// The title of the menu open.
+fn menu_title(app: &App) -> String {
+    match &app.mode {
+        Mode::Menu(m) => m.title.clone(),
+        other => panic!("no menu open: {other:?}"),
+    }
+}
+
+/// Where the box of the menu titled `title` is on a screen drawn: the
+/// column and the row of its top left corner, then its width and its
+/// height.
+fn menu_box(screen: &str, title: &str) -> (usize, usize, usize, usize) {
+    let (x, y) = at(screen, &format!("┌─ {title} "));
+    let (x, y) = (usize::from(x), usize::from(y));
+    let lines: Vec<Vec<char>> = screen.lines().map(|l| l.chars().collect()).collect();
+    let w = lines[y][x..].iter().position(|&c| c == '┐').unwrap_or_else(|| panic!("no right edge:\n{screen}")) + 1;
+    let h = lines[y..].iter().position(|l| l[x] == '└').unwrap_or_else(|| panic!("no bottom edge:\n{screen}")) + 1;
+    (x, y, w, h)
+}
+
+/// The screen drawn `w` columns wide and `h` rows high.
+fn draw_sized(app: &mut App, w: u16, h: u16) -> String {
+    let mut buf = Buffer::empty(Rect::new(0, 0, w, h));
+    app.draw(&mut buf);
+    (0..h).map(|y| (0..w).map(|x| buf[(x, y)].symbol()).collect::<String>()).collect::<Vec<_>>().join("\n")
+}
+
+/// Where the top left corner of a menu `w` by `h` goes, opened by a click
+/// on cell `(x, y)` of the screen that `draw` draws, between its top bar
+/// and its status line: across and down, just after the cell clicked where
+/// the box fits whole there, else just before it, else as far along as the
+/// box fits whole.
+fn next_to_click((x, y): (u16, u16), w: usize, h: usize) -> (usize, usize) {
+    let side = |at: usize, start: usize, len: usize, room: usize| {
+        let after = (at + 1).saturating_sub(start);
+        if after + len <= room {
+            after
+        } else if at >= start + len && at - start <= room {
+            at - start - len
+        } else {
+            room.saturating_sub(len)
+        }
+    };
+    (side(x.into(), 0, w, 120), 1 + side(y.into(), 1, h, 28))
+}
+
+#[test]
+fn a_menu_opened_by_a_click_is_drawn_next_to_it_and_one_opened_by_a_key_in_the_middle() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "+TWO");
+    // Space, a key: the menu in the middle of the panes, which are the rows
+    // between the top bar and the status line.
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    let title = menu_title(&app);
+    let keyed = menu_box(&draw(&mut app), &title);
+    let (x, y, w, h) = keyed;
+    assert_eq!((x, y), ((120 - w) / 2, 1 + (28 - h) / 2), "in the middle");
+    keys(&mut app, &[KeyCode::Esc]);
+    // A right click on the line: its menu, the top left corner of its box
+    // just below and right of the cell clicked, which stays in sight.
+    let (x, y) = at(&draw(&mut app), "+TWO");
+    let (cx, cy) = (x + 2, y);
+    app.click(cx, cy, true);
+    assert_eq!(menu_title(&app), title);
+    let screen = draw(&mut app);
+    let placed = menu_box(&screen, &title);
+    assert_eq!((placed.0, placed.1), (usize::from(cx) + 1, usize::from(cy) + 1), "{screen}");
+    assert_eq!(at(&screen, "+TWO"), (x, y), "{screen}");
+    // A click on a choice, where the menu is drawn, picks the choice, and
+    // the menu stays where it is; so it does once what `?` says is
+    // clicked away.
+    for (pick, picked) in [("[ ] in $EDITOR", "[ ] here  [x] in $EDITOR"), ("[ ] here", "[x] here  [ ] in $EDITOR")] {
+        let (x, y) = at(&draw(&mut app), pick);
+        app.click(x + 1, y, false);
+        let screen = draw(&mut app);
+        assert!(screen.contains(picked), "{screen}");
+        assert_eq!(menu_box(&screen, &title), placed, "{screen}");
+    }
+    keys(&mut app, &[KeyCode::Char('?')]);
+    app.click(0, 0, false);
+    assert_eq!(menu_box(&draw(&mut app), &title), placed);
+    // A click on an item does the item.
+    let (x, y) = at(&draw(&mut app), "Comment on this line");
+    app.click(x, y, false);
+    assert!(matches!(app.mode, Mode::Edit(_)), "{:?}", app.mode);
+    // Space again, the mouse having gone over the line: in the middle.
+    keys(&mut app, &[KeyCode::Esc]);
+    app.hover(cx, cy);
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    assert_eq!(menu_box(&draw(&mut app), &title), keyed);
+}
+
+#[test]
+fn by_the_edges_of_the_screen_a_menu_opened_by_a_click_goes_left_of_it_or_over_it_whole() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Right]);
+    let screen = draw(&mut app);
+    let ((left, high), (_, low)) = (at(&screen, "+TWO"), at(&screen, " line 40"));
+    // Each time, the box is whole between the top bar and the status line,
+    // and the cell clicked is in sight.
+    let opened = |app: &mut App, x: u16, y: u16| {
+        app.click(x, y, true);
+        let screen = draw(app);
+        let (bx, by, w, h) = menu_box(&screen, &menu_title(app));
+        assert!(bx + w <= 120 && by >= 1 && by + h <= 29, "whole:\n{screen}");
+        let (x, y) = (usize::from(x), usize::from(y));
+        assert!(!(bx..bx + w).contains(&x) || !(by..by + h).contains(&y), "the cell clicked in sight:\n{screen}");
+        keys(app, &[KeyCode::Esc]);
+        (bx, by, w, h)
+    };
+    // By the right edge: left of the cell clicked, under it.
+    let (x, y, w, _) = opened(&mut app, 118, high);
+    assert_eq!((x + w, y), (118, usize::from(high) + 1));
+    // By the bottom: right of it, over it.
+    let (x, y, _, h) = opened(&mut app, left, low);
+    assert_eq!((x, y + h), (usize::from(left) + 1, usize::from(low)));
+    // In the corner: left of it, over it.
+    let (x, y, w, h) = opened(&mut app, 118, low);
+    assert_eq!((x + w, y + h), (118, usize::from(low)));
+}
+
+#[test]
+fn a_menu_opened_by_a_click_stays_whole_on_a_screen_made_smaller() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Right]);
+    let (_, y) = at(&draw_sized(&mut app, 160, 40), " line 40");
+    app.click(150, y, true);
+    let title = menu_title(&app);
+    // By the right edge: left of the cell clicked, under it.
+    let first = menu_box(&draw_sized(&mut app, 160, 40), &title);
+    assert_eq!((first.0 + first.2, first.1), (150, usize::from(y) + 1));
+    // Smaller, the cell clicked off the screen: moved left and up only as
+    // far as the box needs to be whole, against the right edge and the
+    // status line. As large again: where it was.
+    let smaller = |app: &mut App| {
+        let screen = draw_sized(app, 80, 20);
+        let (x, y, w, h) = menu_box(&screen, &title);
+        assert_eq!((x + w, y + h), (80, 19), "{screen}");
+        screen
+    };
+    smaller(&mut app);
+    assert_eq!(menu_box(&draw_sized(&mut app, 160, 40), &title), first);
+    // An item is done by a click where it is drawn.
+    let (x, y) = at(&smaller(&mut app), "Comment on this line");
+    app.click(x, y, false);
+    assert!(matches!(app.mode, Mode::Edit(_)), "{:?}", app.mode);
+}
+
+#[test]
+fn a_menu_that_a_click_on_an_item_opens_is_drawn_next_to_that_click() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    // The stack's header right-clicked: its menu. Show… clicked in that
+    // menu: the menu of which comments the panes show, next to the second
+    // click.
+    let header = at(&draw(&mut app), "≡ s · 2 patches");
+    app.click(header.0, header.1, true);
+    assert_eq!(menu_title(&app), "the stack s");
+    let (x, y) = at(&draw(&mut app), "Show…");
+    app.click(x, y, false);
+    assert_eq!(menu_title(&app), "show the comments");
+    let screen = draw(&mut app);
+    let (bx, by, _, _) = menu_box(&screen, "show the comments");
+    assert_eq!((bx, by), (usize::from(x) + 1, usize::from(y) + 1), "{screen}");
+    // Show… chosen with keys in the menu a click opened: in the middle.
+    keys(&mut app, &[KeyCode::Esc]);
+    app.click(header.0, header.1, true);
+    draw(&mut app);
+    choose(&mut app, "Show…");
+    let (bx, by, w, h) = menu_box(&draw(&mut app), "show the comments");
+    assert_eq!((bx, by), ((120 - w) / 2, 1 + (28 - h) / 2));
+}
+
+#[test]
+fn a_box_checked_in_a_menu_a_click_opened_leaves_the_menu_where_it_is() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Enter]);
+    save(&mut app, "a zebra?");
+    // The banner right-clicked, on the screen's second row: what waits on
+    // you, next to the click, over the banner's lines.
+    draw(&mut app);
+    app.click(10, 1, true);
+    let title = "what waits on you";
+    assert_eq!(menu_title(&app), title);
+    let placed = |app: &mut App| {
+        let (x, y, _, _) = menu_box(&draw(app), title);
+        (x, y)
+    };
+    assert_eq!(placed(&mut app), (11, 2));
+    // The comment checked with a click, then unchecked with Enter: in the
+    // batch, then out of it, and the menu, built again each time, where it
+    // was.
+    let (x, y) = at(&draw(&mut app), "[ ] patch 1");
+    app.click(x, y, false);
+    assert_eq!(batched(&db).len(), 1);
+    assert!(draw(&mut app).contains("[x] patch 1"));
+    assert_eq!(placed(&mut app), (11, 2));
+    keys(&mut app, &[KeyCode::Enter]);
+    assert!(batched(&db).is_empty());
+    assert!(draw(&mut app).contains("[ ] patch 1"));
+    assert_eq!(placed(&mut app), (11, 2));
+}
+
+#[test]
+fn a_click_out_of_a_comment_opens_its_menu_next_to_the_click_over_the_comment_too_and_esc_beside_it() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Enter]);
+    typed(&mut app, "a zebra?");
+    let screen = draw(&mut app);
+    let comment = at(&screen, "a zebra?");
+    // Out of the comment's box, on the line it is on, just over it: the
+    // menu asking what to do with the comment, next to the click, over the
+    // comment.
+    let (x, y) = at(&screen, "+TWO");
+    app.click(x, y, false);
+    assert_eq!(menu_title(&app), "the comment");
+    let screen = draw(&mut app);
+    let (bx, by, _, _) = menu_box(&screen, "the comment");
+    assert_eq!((bx, by), (usize::from(x) + 1, usize::from(y) + 1), "{screen}");
+    assert!(!screen.contains("a zebra?"), "covered:\n{screen}");
+    // A click out of the menu: back to the comment, what is written in it
+    // kept, in sight again.
+    app.click(0, 0, false);
+    assert!(matches!(&app.mode, Mode::Edit(e) if e.ed.text() == "a zebra?"), "{:?}", app.mode);
+    assert_eq!(at(&draw(&mut app), "a zebra?"), comment);
+    // Esc, a key: the menu under the comment, in the middle across, and
+    // the comment in sight.
+    keys(&mut app, &[KeyCode::Esc]);
+    let screen = draw(&mut app);
+    let (_, bottom) = at(&screen, "└─ enter: a new line");
+    let (bx, by, w, _) = menu_box(&screen, "the comment");
+    assert_eq!((bx, by), ((120 - w) / 2, usize::from(bottom) + 1), "{screen}");
+    assert_eq!(at(&screen, "a zebra?"), comment);
+    choose(&mut app, "Throw it away");
 }
 
 #[test]
