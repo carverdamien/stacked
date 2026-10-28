@@ -501,8 +501,9 @@ those:
   of each stack, the runs, each transcript, each review; each half of the
   middle split in two keeps its own. Coming back to
   one, the cursor is where it was, on what it was on if that is still
-  there. The tree of edits, the stacks and the versions open on where the
-  stack is, as before.
+  there, else on the closest row there is (for a comment closed or hidden
+  meanwhile, the line it was on). The tree of edits, the stacks and the
+  versions open on where the stack is, as before.
 - `1` opens the menu of the views of the code, the one the code is drawn
   in marked `●`: Enter or a click picks one, and Esc leaves the view as it
   is. Unified and side by side are self-review's; compact draws the two
@@ -1330,7 +1331,17 @@ count: all, to send, to review, to read (any, from an answer, from a change), in
 progress, failed or moved, gone (on a line the patch no longer has),
 closed, none. It is kept per stack, in the file. A comment you are done
 with is closed, from its menu (`Close this comment…`): it leaves the
-comments shown. It is not lost, as the file only grows: `closed` shows each
+comments shown. When the cursor is on the comment closed, the cursor goes
+to the line the comment was on (a line of the code or of the message, the
+file's name, or the patch's title), on the same line of the screen; a
+comment on the stack, or on a line the patch no longer has, leaves it on
+the row over the comment. A comment that `Show…` hides does the same. When
+a comment is closed from elsewhere (the comments pane, the banner, another
+stacked), the cursor stays where it is, as it does whenever other comments
+come, go or change: hidden, moved to the stack, answered, written on, or
+opened again. The comments pane then picks the next comment, or the one
+before it when the comment closed was the last. A comment closed is not
+lost, as the file only grows: `closed` shows each
 as it was, `closed @12` on its first line, its menu (which Enter opens) to
 `Reopen it` or to read its history. The agent's comments moved to the stack
 are not closed, nor what is moved back. The stack's menu, on its header,
@@ -2586,7 +2597,16 @@ History… draws and the stack diff it shows beside each change, the agent
 asked about a record of the history, a new database started from it, a
 moved comment and an answer's comments, a patch's comment asked of the
 whole stack, every comment of the stack closed at once but those that
-cannot be, what you said last written again (off the queue meanwhile;
+cannot be, a comment closed taking the cursor on it to the line it was on,
+on its line of the screen (from its menu on its first row and on a
+reference, by Delete on a turn; in each view of the code, split in two each
+half on its own, with each file whole, on a line folded, reading too; on
+the stack, the row over it; hidden by `Show…`, from the agent's stream too),
+and leaving the cursor elsewhere where it is (closed from the comments
+pane, which picks the next comment or the one before at the end, from the
+banner, by another stacked; hidden by `Show…` from either header, moved to
+the stack, reopened), a turn written again in its place taking the cursor
+back to it, what you said last written again (off the queue meanwhile;
 left as it was, asked as it is or left so), a reply written in $EDITOR
 under its conversation, its references under it, and a turn written again
 there in its place, the editor in the middle between the last reply and the
@@ -2754,7 +2774,10 @@ the pane, its start kept, each file whole keeping the rows of its hunks'
 lines, a file too long and one past what a patch shows whole shown as
 their hunks, a note saying so, and a row found again in the rows built
 otherwise (whole or in hunks, folded to another width), a line in no hunk
-as the closest line in one, ties above; those in `whole.rs`, how a file's
+as the closest line in one, ties above, and as comments go (a closed
+comment's row on its line; one on a line the patch no longer has, or the
+row saying which line that was, on the closest row over them; the rows
+under them, there still); those in `whole.rs`, how a file's
 hunks go in it whole (a hunk with no line on one side, git's `\ No newline
 at end of file`), a file added, deleted, renamed or not text, and one that
 does not fit its hunks, not shown whole; those in `progress.rs`, that a patch whose file has no newline

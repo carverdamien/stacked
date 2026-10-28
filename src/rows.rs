@@ -1138,6 +1138,56 @@ mod tests {
     }
 
     #[test]
+    fn a_row_is_found_again_as_comments_go_a_comment_s_on_its_line_else_on_the_closest_row() {
+        use super::{Deco, Kind, Row, again, patch_rows};
+        let (p, _, n) = whole_patch();
+        // Two comments on lines this version does not have, under the rows
+        // saying which, after the patch's files.
+        let gone = |id: &str, said: &str| crate::db::Note {
+            change: "c".into(),
+            id: id.into(),
+            line: format!("no such line {id}"),
+            file: "f.txt".into(),
+            preview: format!("was {id}"),
+            text: said.into(),
+            ..Default::default()
+        };
+        let (g1, g2) = (gone("g1", "First."), gone("g2", "Second."));
+        let rows = |notes: &[&crate::db::Note]| patch_rows(&p, notes, 80, &Deco::default());
+        let at = |rows: &[Row], text: &str| rows.iter().position(|r| r.text.ends_with(text)).unwrap_or_else(|| panic!("no {text:?}"));
+        let all = rows(&[&n, &g1, &g2]);
+        let header = "comments on lines this version does not have";
+        // The comment on L2 closed, the cursor on any of its rows: on L2. On
+        // a row of another comment, or under it: there still.
+        let no_n = rows(&[&g1, &g2]);
+        let n_rows: Vec<usize> = (0..all.len()).filter(|&i| all[i].note.as_deref() == Some("n")).collect();
+        assert_eq!(n_rows.len(), 3);
+        for i in n_rows {
+            assert_eq!(no_n[again(&all, i, &no_n).0].text, "+L2", "{:?}", all[i].text);
+        }
+        for text in [" l3", " l20", header, "   f.txt: was g1", "Second."] {
+            assert_eq!(again(&all, at(&all, text), &no_n).0, at(&no_n, text), "{text:?}");
+        }
+        // The second closed, on its turn or on the row saying where it was:
+        // its line is gone too, so the closest row, over them, the first's
+        // last.
+        let no_g2 = rows(&[&n, &g1]);
+        for text in ["Second.", "   f.txt: was g2"] {
+            assert_eq!(again(&all, at(&all, text), &no_g2).0, at(&no_g2, "First."), "{text:?}");
+        }
+        // The first closed: on the second's turn, on the header, there still.
+        let no_g1 = rows(&[&n, &g2]);
+        for text in ["Second.", "   f.txt: was g2", header] {
+            assert_eq!(again(&all, at(&all, text), &no_g1).0, at(&no_g1, text), "{text:?}");
+        }
+        // Both closed, on the header, gone with them: the row over it, the
+        // last there is.
+        let neither = rows(&[&n]);
+        let i = again(&all, at(&all, header), &neither).0;
+        assert_eq!((i, neither[i].kind), (neither.len() - 1, Kind::Blank));
+    }
+
+    #[test]
     fn a_file_too_long_and_one_past_what_a_patch_shows_whole_are_shown_as_their_hunks_a_note_saying_so() {
         use super::{Deco, Kind, Row, patch_rows};
         use crate::whole::{MOST_IN_PATCH, MOST_LINES};
@@ -1262,9 +1312,10 @@ pub fn split_row(line: &SplitLine) -> usize {
     line.span.or(line.right).or(line.left).unwrap_or(0)
 }
 
-/// Where a row of a patch is, to find it again in the patch's rows built
-/// otherwise, as its hunks or each file whole, folded to another width: the
-/// same piece of the same line, the same row of the same comment.
+/// Where a row of a patch, or of the stack, is, to find it again in their
+/// rows built again: otherwise, as the patch's hunks or each file whole,
+/// folded to another width; or as comments come, go and change. The same
+/// piece of the same line, the same row of the same comment.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Place {
     /// Row `k` of comment `id`'s rows that are what `part` says
@@ -1277,10 +1328,13 @@ pub enum Place {
     Diff { at: usize, piece: usize },
     /// Piece `piece` of line `new_no` of file `path`, which is in no hunk.
     Outside { path: String, new_no: usize, piece: usize },
-    /// The message's header, the first row.
+    /// The message's header, the first row; the first row of the stack's.
     Message,
     /// `k` rows over the row at a place, or under it, being at none of its
-    /// own: an empty row, what is said of a file not shown whole.
+    /// own: an empty row, what is said of a file not shown whole, the row
+    /// leading a comment (`lead`), a line of the stack's header. Under it,
+    /// the rows of comments and those leading them are not counted, as
+    /// they come and go.
     Over(Box<Place>, usize),
     Under(Box<Place>, usize),
 }
@@ -1295,9 +1349,33 @@ fn note_part(r: &Row) -> (bool, bool, Option<usize>) {
     }
 }
 
+/// Where the rows that are `part` come among a comment's rows: its first
+/// rows, its turns in order, the agent's stream, its references.
+fn part_order(part: (bool, bool, Option<usize>)) -> (u8, usize) {
+    match part {
+        (true, ..) => (3, 0),
+        (_, true, _) => (2, 0),
+        (_, _, Some(turn)) => (1, turn),
+        _ => (0, 0),
+    }
+}
+
 /// Whether row `r` is at a place of its own.
 fn placed(r: &Row) -> bool {
     r.note.is_some() || r.msg_at.is_some() || r.diff_at.is_some() || r.outside || (r.kind == Kind::File && r.path.as_deref() == Some(MSG_PATH))
+}
+
+/// Whether row `i` of `rows` leads the comment under it, saying what it is
+/// about: the line no longer there that a comment was on, the record of
+/// the history a comment of the stack is about. It goes with the comment.
+fn lead(rows: &[Row], i: usize) -> bool {
+    rows[i].kind == Kind::Meta && !placed(&rows[i]) && rows.get(i + 1).is_some_and(|r| r.head && r.note.is_some())
+}
+
+/// Whether row `i` of `rows` stays as comments come and go: none of their
+/// rows, nor one leading them.
+fn stays(rows: &[Row], i: usize) -> bool {
+    rows[i].note.is_none() && !lead(rows, i)
 }
 
 /// Where row `i` of `rows` is.
@@ -1322,14 +1400,24 @@ pub fn place(rows: &[Row], i: usize) -> Place {
     if placed(r) {
         return Place::Message;
     }
-    // By the next row at a place of its own, else the one before it.
-    if let Some(j) = (i + 1..rows.len()).find(|&j| placed(&rows[j])) {
+    // Leading a comment: over it.
+    if lead(rows, i) {
+        return Place::Over(Box::new(place(rows, i + 1)), 1);
+    }
+    // By the next row at a place of its own when it is no comment's (and
+    // no comment is between them, then); else by the row before at a place
+    // of its own that is no comment's, or else by the first row, the rows
+    // of the comments between not counted.
+    if let Some(j) = (i + 1..rows.len()).find(|&j| placed(&rows[j]))
+        && rows[j].note.is_none()
+    {
         return Place::Over(Box::new(place(rows, j)), j - i);
     }
-    match (0..i).rev().find(|&j| placed(&rows[j])) {
-        Some(j) => Place::Under(Box::new(place(rows, j)), i - j),
-        None => Place::Under(Box::new(Place::Message), i),
-    }
+    let (at, from) = match (0..i).rev().find(|&j| placed(&rows[j]) && rows[j].note.is_none()) {
+        Some(j) => (place(rows, j), j),
+        None => (Place::Message, 0),
+    };
+    Place::Under(Box::new(at), (from + 1..=i).filter(|&j| stays(rows, j)).count())
 }
 
 /// A line in no hunk, found in the rows of the patch's hunks as the line
@@ -1346,39 +1434,98 @@ pub struct Moved {
 /// of the same comment, or as near it as they have. A line in no hunk, in
 /// the rows of the hunks, is the closest line of its file that is in one,
 /// by their numbers, ties going to the line above; then where it was is
-/// said too.
+/// said too. With nothing there (a comment gone), the first row.
 pub fn find(rows: &[Row], at: &Place) -> (usize, Option<Moved>) {
-    let last = rows.len().saturating_sub(1);
+    let (i, moved) = found(rows, at).unwrap_or((0, None));
+    (i.min(rows.len().saturating_sub(1)), moved)
+}
+
+/// The row of `rows` at `at`, as `find` says, if they have what it is at.
+pub fn found(rows: &[Row], at: &Place) -> Option<(usize, Option<Moved>)> {
     // Piece `piece` of the line whose first row is `i`, or its last.
     let piece_of = |i: usize, piece: usize| i + piece.min(rows[i + 1..].iter().take_while(|r| r.cont).count());
-    let found = match at {
+    let i = match at {
         Place::Note { id, part, k } => {
             let mine: Vec<usize> = (0..rows.len()).filter(|&j| rows[j].note.as_ref() == Some(id)).collect();
             let same: Vec<usize> = mine.iter().copied().filter(|&j| note_part(&rows[j]) == *part).collect();
-            same.get(*k).or(same.last()).or(mine.first()).copied()
+            // Those rows gone (its stream, as the agent is done; a turn,
+            // being written again): the comment's row over where they were,
+            // or its first.
+            let over = || mine.iter().rev().copied().find(|&j| part_order(note_part(&rows[j])) < part_order(*part));
+            same.get(*k).or(same.last()).copied().or_else(over).or(mine.first().copied())?
         }
-        Place::Msg { at, piece } => rows.iter().position(|r| r.msg_at == Some(*at) && r.note.is_none()).map(|i| piece_of(i, *piece)),
+        Place::Msg { at, piece } => piece_of(rows.iter().position(|r| r.msg_at == Some(*at) && r.note.is_none())?, *piece),
         Place::Diff { at, piece } => match rows.iter().position(|r| r.diff_at == Some(*at) && r.note.is_none()) {
-            Some(i) => Some(piece_of(i, *piece)),
+            Some(i) => piece_of(i, *piece),
             // A hunk's header, the file whole: the line after it.
-            None => rows.iter().position(|r| r.note.is_none() && r.diff_at.is_some_and(|d| d > *at)),
+            None => rows.iter().position(|r| r.note.is_none() && r.diff_at.is_some_and(|d| d > *at))?,
         },
         Place::Outside { path, new_no, piece } => {
             let of = |r: &Row| r.path.as_deref() == Some(path.as_str()) && r.note.is_none() && !r.cont;
             if let Some(i) = rows.iter().position(|r| of(r) && r.outside && r.new_no == Some(*new_no)) {
-                Some(piece_of(i, *piece))
+                piece_of(i, *piece)
             } else {
                 let near = (0..rows.len())
                     .filter(|&j| of(&rows[j]) && !rows[j].outside && rows[j].hunk.is_some() && matches!(rows[j].kind, Kind::Add | Kind::Del | Kind::Ctx))
                     .min_by_key(|&j| (rows[j].new_no.map_or(usize::MAX, |n| n.abs_diff(*new_no)), j));
                 let name = || rows.iter().position(|r| r.kind == Kind::File && r.path.as_deref() == Some(path.as_str()));
                 let moved = Moved { path: path.clone(), line: *new_no, to: near.and_then(|j| rows[j].new_no) };
-                return (near.or_else(name).unwrap_or(0).min(last), Some(moved));
+                return Some((near.or_else(name).unwrap_or(0), Some(moved)));
             }
         }
-        Place::Message => rows.iter().position(|r| r.kind == Kind::File && r.path.as_deref() == Some(MSG_PATH)),
-        Place::Over(p, k) => Some(find(rows, p).0.saturating_sub(*k)),
-        Place::Under(p, k) => Some(find(rows, p).0 + k),
+        // The stack's rows have no message: their first row.
+        Place::Message => rows.iter().position(|r| r.kind == Kind::File && r.path.as_deref() == Some(MSG_PATH)).unwrap_or(0),
+        Place::Over(p, k) => found(rows, p)?.0.saturating_sub(*k),
+        // As far down as there are rows.
+        Place::Under(p, k) => {
+            let mut i = found(rows, p)?.0;
+            for _ in 0..*k {
+                match (i + 1..rows.len()).find(|&j| stays(rows, j)) {
+                    Some(j) => i = j,
+                    None => break,
+                }
+            }
+            i
+        }
     };
-    (found.unwrap_or(0).min(last), None)
+    Some((i, None))
+}
+
+/// Row `i` of `was`, in `rows`: the rows of the same patch or stack built
+/// again, otherwise or as comments came, went and changed. What it was on
+/// (`find`); with that gone (a comment closed, hidden or moved away), the
+/// closest row of `was` still there (`near`): for a row of a comment, the
+/// line the comment was on.
+pub fn again(was: &[Row], i: usize, rows: &[Row]) -> (usize, Option<Moved>) {
+    let last = rows.len().saturating_sub(1);
+    std::iter::once(i).chain(near(was, i)).find_map(|j| found(rows, &place(was, j))).map_or((0, None), |(j, moved)| (j.min(last), moved))
+}
+
+/// The rows of `rows` to go to once row `i` is gone, the closest first.
+/// For a row of a comment, or the one leading it, the line the comment is
+/// on: its line of code or of the message, the file's name, the patch's
+/// title. Then, as for any row gone, those over what went with it (the
+/// comment's rows and the row leading them, else the row alone), the
+/// nearest first, then those under it.
+pub fn near(rows: &[Row], i: usize) -> impl Iterator<Item = usize> + use<> {
+    let (mut start, mut end) = (i.min(rows.len()), (i + 1).min(rows.len()));
+    let id = match rows.get(i) {
+        Some(r) if r.note.is_some() => r.note.clone(),
+        Some(_) if lead(rows, i) => rows[i + 1].note.clone(),
+        _ => None,
+    };
+    if let Some(id) = &id {
+        while start > 0 && rows[start - 1].note.as_ref() == Some(id) {
+            start -= 1;
+        }
+        if start > 0 && lead(rows, start - 1) {
+            start -= 1;
+        }
+        while end < rows.len() && rows[end].note.as_ref() == Some(id) {
+            end += 1;
+        }
+    }
+    // Its line: over the comments on it, at a place of its own.
+    let line = id.and_then(|_| (0..start).rev().find(|&j| rows[j].note.is_none())).filter(|&j| placed(&rows[j]));
+    line.into_iter().chain((0..start).rev()).chain(end..rows.len())
 }

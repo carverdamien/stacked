@@ -11,18 +11,32 @@ use std::collections::HashMap;
 
 use super::*;
 
-/// Where the middle was on what it showed: its cursor, and what its row is
-/// (a line's key, a comment's id and turn), to find it again; where it is,
-/// for a row with neither (a line in no hunk, its file shown whole), to
-/// find it in the rows built otherwise since; how far down the middle it
-/// was.
+/// What a row of the middle is: a line's key, a comment's id and turn.
+type RowIs = (Option<String>, Option<String>, Option<usize>);
+
+/// What row `r` of the middle is.
+fn row_is(r: &Row) -> RowIs {
+    (r.key.clone(), r.note.clone(), r.turn)
+}
+
+/// Where the middle was on what it showed: its cursor, and what its row is,
+/// to find it again; with it gone since (a comment closed, or hidden), what
+/// the closest rows are (`rows::near`: for a comment's row, the line it is
+/// on); where it is, for a row with neither key nor comment (a line in no
+/// hunk, its file shown whole), to find it in the rows built otherwise
+/// since; how far down the middle it was.
 #[derive(Debug, Clone, Default)]
 struct MiddleAt {
     cursor: usize,
-    row: (Option<String>, Option<String>, Option<usize>),
+    row: RowIs,
+    near: Vec<RowIs>,
     place: Option<crate::rows::Place>,
     down: usize,
 }
+
+/// How many of the rows closest to the middle's cursor are kept, to find
+/// it by once its row is gone.
+const NEAR: usize = 3;
 
 /// Where the comments pane was on what the middle showed: on its header,
 /// or on a comment.
@@ -88,9 +102,11 @@ impl App {
     pub(super) fn keep_panes(&mut self, subject: &str) {
         let Some(place) = self.place_of(subject) else { return };
         let Some(r) = self.rows.get(self.cursor) else { return };
+        let known = |r: &RowIs| r.0.is_some() || r.1.is_some();
         let at = MiddleAt {
             cursor: self.cursor,
-            row: (r.key.clone(), r.note.clone(), r.turn),
+            row: row_is(r),
+            near: crate::rows::near(&self.rows, self.cursor).map(|j| row_is(&self.rows[j])).filter(known).take(NEAR).collect(),
             place: Some(crate::rows::place(&self.rows, self.cursor)),
             down: self.cursor.saturating_sub(self.top),
         };
@@ -115,8 +131,9 @@ impl App {
         let Some(place) = self.place_of(subject) else { return };
         if let Some(at) = self.places.middle[self.middle_places()].get(&place).cloned() {
             let known = at.row.0.is_some() || at.row.1.is_some();
+            let row = |is: &RowIs| self.rows.iter().position(|r| row_is(r) == *is);
             let found = match known {
-                true => self.rows.iter().position(|r| (r.key.clone(), r.note.clone(), r.turn) == at.row),
+                true => row(&at.row).or_else(|| at.near.iter().find_map(row)),
                 false => at.place.as_ref().filter(|_| !self.rows.is_empty()).map(|p| crate::rows::find(&self.rows, p).0),
             };
             self.cursor = found.unwrap_or(at.cursor).min(self.rows.len().saturating_sub(1));

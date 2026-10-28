@@ -9902,7 +9902,6 @@ fn the_banner_tracks_the_open_comments_and_esc_goes_there_and_back() {
     // Esc goes to it, open: the comments, the most recently updated first,
     // each as it stands.
     down_to(&mut app, "+LINE 39");
-    let cursor = app.cursor;
     keys(&mut app, &[KeyCode::Esc]);
     assert!(app.on_banner && app.banner_sel == 0);
     let screen = draw(&mut app);
@@ -9926,7 +9925,7 @@ fn the_banner_tracks_the_open_comments_and_esc_goes_there_and_back() {
     app.hover(10, 8);
     assert!(app.on_banner, "the mouse over the panes leaves it open");
     keys(&mut app, &[KeyCode::Esc]);
-    assert!(!app.on_banner && app.focus == Focus::Diff && app.cursor == cursor, "back where it was");
+    assert!(!app.on_banner && app.focus == Focus::Diff && on_row(&app) == "+LINE 39", "back where it was: {}", on_row(&app));
     app.hover(10, 1);
     assert!(!app.on_banner, "the mouse over it does not open it");
     // Enter on a line goes to its comment.
@@ -11063,4 +11062,487 @@ fn delete_does_nothing_in_a_menu_nor_on_the_history_the_tree_the_versions_or_the
         assert_eq!(app.screen, Screen::Main, "{item}");
     }
     assert_eq!(std::fs::read(&db).unwrap(), before, "nothing written");
+}
+
+/// `a_thread_with_references`'s comments on patch 1, the first, on TWO,
+/// answered at length by the agent, so that the patch is longer than the
+/// screen; the code drawn as `view` (an item of the menu of 1), each file
+/// whole if `whole_files`. The editor, and the comments as they are: the
+/// one on TWO, and the thread on LINE 39, the last, near the end of the
+/// patch.
+fn long_thread(db: &Path, view: &str, whole_files: bool) -> (Editor, Note, Note) {
+    let (mut app, b) = a_thread_with_references(db);
+    let a = notes_of(db, "s", 0).into_iter().find(|n| n.text == "why so loud?").unwrap();
+    let points: String = (1..=12).map(|k| format!("- point {k}\n")).collect();
+    let a = Note {
+        text: append_turn(&a.text, Role::Agent, &points, Some("answer")),
+        ..a
+    };
+    Db::edit(db, |d| d.set_note(a.clone())).unwrap();
+    app.refresh();
+    let b = notes_of(db, "s", 0).into_iter().find(|n| n.id == b.id).unwrap();
+    if view != "Unified" {
+        pick_view(&mut app, view);
+    }
+    if whole_files {
+        whole(&mut app);
+    }
+    draw(&mut app);
+    (app, a, b)
+}
+
+/// `n` open again as it was, as another process would reopen it.
+fn reopened(app: &mut App, db: &Path, n: &Note) {
+    Db::edit(db, |d| d.set_note(n.clone())).unwrap();
+    app.refresh();
+    draw(app);
+}
+
+/// The cursor into the comments pane, from the middle: → as many times as
+/// it takes, through the right half of the middle split in two.
+fn to_comments(app: &mut App) {
+    for _ in 0..3 {
+        if app.focus == Focus::Notes {
+            return;
+        }
+        keys(app, &[KeyCode::Right]);
+    }
+    assert_eq!(app.focus, Focus::Notes);
+}
+
+/// The cursor back into the middle from the comments pane: ← as many times
+/// as it takes, into the left half of the middle split in two.
+fn to_middle(app: &mut App) {
+    for _ in 0..3 {
+        if app.focus == Focus::Diff && app.in_right_half() != Some(true) {
+            return;
+        }
+        keys(app, &[KeyCode::Left]);
+    }
+    assert!(app.focus == Focus::Diff && app.in_right_half() != Some(true), "{:?}", app.focus);
+}
+
+/// The row the middle's cursor is on; split in two, the left half's.
+fn left_row(app: &App) -> String {
+    match (app.in_right_half(), app.other_half()) {
+        (Some(true), Some(h)) => h.rows[h.cursor].text.clone(),
+        _ => on_row(app),
+    }
+}
+
+/// The comment the comments pane has picked: its id.
+fn pane_pick(app: &App) -> String {
+    app.notes().get(app.note_sel).map(|(_, id)| id.clone()).unwrap_or_default()
+}
+
+/// Closing the comment on LINE 39, the last near the end of the patch, its
+/// code drawn as `view`, each file whole if `whole_files`: from its menu
+/// with the cursor on its first row, by Delete on one of its turns, from
+/// its menu on one of its references. Each time the cursor goes to LINE 39,
+/// the line the comment was on, on its line of the screen; reopened, the
+/// comment leaves it there. Closed from the comments pane, this comment,
+/// with the cursor on the line under it, then the other, far over the
+/// cursor on a turn of this one: the cursor stays where it is, on its line
+/// of the screen, and the pane picks the next comment, or the one before
+/// at the end.
+fn closing_keeps_the_place(view: &str, whole_files: bool) {
+    let (_tmp, db, _src) = setup();
+    let (mut app, a, b) = long_thread(&db, view, whole_files);
+    let halves = app.layout == Layout::Halves;
+    for (on, delete) in [("   └ comment", false), ("     ▎   As @r2 shows.", true), ("     ▎   r2 ⇢ a.txt:2", false)] {
+        let what = format!("{view}{}: closed on {on:?}", if whole_files { ", whole" } else { "" });
+        keys(&mut app, &[KeyCode::Home]);
+        down_to(&mut app, "+LINE 39");
+        down_to(&mut app, on);
+        assert_eq!(app.rows[app.cursor].note.as_deref(), Some(b.id.as_str()), "{what}");
+        let mut y = cursor_line_y(&mut app);
+        if delete {
+            keys(&mut app, &[KeyCode::Delete]);
+        } else {
+            choose(&mut app, "Close this comment…");
+        }
+        choose(&mut app, "Close it");
+        assert!(notes_of(&db, "s", 0).iter().all(|n| n.id != b.id), "{what}");
+        assert_eq!(on_row(&app), "+LINE 39", "{what}:\n{}", draw(&mut app));
+        assert!(app.top > 0 || app.compact.top != [0, 0], "{what}: the patch is longer than the screen");
+        kept_on_its_line(&mut app, &mut y, &what);
+        reopened(&mut app, &db, &b);
+        assert_eq!(on_row(&app), "+LINE 39", "{what}, then reopened");
+        kept_on_its_line(&mut app, &mut y, &format!("{what}, then reopened"));
+    }
+    // From the comments pane, with the cursor on the line under it: the
+    // cursor stays there, on its line of the screen; the pane picks the
+    // one before it, as it was the last.
+    keys(&mut app, &[KeyCode::Home]);
+    down_to(&mut app, " line 40");
+    let mut y = cursor_line_y(&mut app);
+    to_comments(&mut app);
+    assert_eq!(pane_pick(&app), b.id);
+    choose(&mut app, "Close this comment…");
+    choose(&mut app, "Close it");
+    assert!(notes_of(&db, "s", 0).iter().all(|n| n.id != b.id), "{view}");
+    assert_eq!(left_row(&app), " line 40", "{view}:\n{}", draw(&mut app));
+    assert_eq!((app.focus, pane_pick(&app)), (Focus::Notes, a.id.clone()), "{view}");
+    if !halves {
+        kept_on_its_line(&mut app, &mut y, &format!("{view}: closed from the comments pane"));
+    }
+    reopened(&mut app, &db, &b);
+    // From the pane, the comment on TWO, far over the cursor on a turn of
+    // this one: the cursor stays on that turn, on its line of the screen;
+    // the pane picks the next comment, this one.
+    to_middle(&mut app);
+    keys(&mut app, &[KeyCode::Home]);
+    down_to(&mut app, "+LINE 39");
+    down_to(&mut app, "     ▎   Which one?");
+    let mut y = cursor_line_y(&mut app);
+    to_comments(&mut app);
+    keys(&mut app, &[KeyCode::Home, KeyCode::Down]);
+    assert_eq!(pane_pick(&app), a.id);
+    choose(&mut app, "Close this comment…");
+    choose(&mut app, "Close it");
+    assert!(notes_of(&db, "s", 0).iter().all(|n| n.id != a.id), "{view}");
+    assert_eq!(left_row(&app), "     ▎   Which one?", "{view}:\n{}", draw(&mut app));
+    assert_eq!((app.focus, pane_pick(&app)), (Focus::Notes, b.id.clone()), "{view}");
+    if !halves {
+        kept_on_its_line(&mut app, &mut y, &format!("{view}: the other closed from the comments pane"));
+    }
+}
+
+#[test]
+fn a_comment_closed_takes_the_cursor_to_its_line_and_one_closed_elsewhere_leaves_it_where_it_is() {
+    closing_keeps_the_place("Unified", false);
+}
+
+#[test]
+fn a_comment_closed_side_by_side_takes_the_cursor_to_its_line() {
+    closing_keeps_the_place("Side by side", false);
+}
+
+#[test]
+fn a_comment_closed_side_by_side_compact_takes_the_cursor_to_its_line() {
+    closing_keeps_the_place("Side by side, compact", false);
+}
+
+#[test]
+fn a_comment_closed_split_in_two_takes_the_cursor_to_its_line() {
+    closing_keeps_the_place("Unified, split in two", false);
+}
+
+#[test]
+fn a_comment_closed_with_each_file_whole_takes_the_cursor_to_its_line() {
+    closing_keeps_the_place("Unified", true);
+    closing_keeps_the_place("Side by side", true);
+}
+
+#[test]
+fn split_in_two_a_comment_closed_takes_the_cursor_of_each_half_on_it_to_its_line() {
+    let (_tmp, db, _src) = setup();
+    let (mut app, _, b) = long_thread(&db, "Unified, split in two", false);
+    // The left half on the comment's turn; the right half on the line
+    // under it.
+    down_to(&mut app, "     ▎   As @r2 shows.");
+    keys(&mut app, &[KeyCode::Right]);
+    assert_eq!(app.in_right_half(), Some(true));
+    down_to(&mut app, " line 40");
+    // Closed by Delete from the right half's line: nothing to close there.
+    // Closed by another process: the right half stays on its line, the
+    // left one goes to the comment's.
+    Db::edit(&db, |d| d.set_note(Note { text: String::new(), ..b.clone() })).unwrap();
+    app.refresh();
+    draw(&mut app);
+    assert_eq!(on_row(&app), " line 40");
+    let left = app.other_half().unwrap();
+    assert_eq!(left.rows[left.cursor].text, "+LINE 39");
+    // Reopened: each where it is.
+    reopened(&mut app, &db, &b);
+    let left = app.other_half().unwrap();
+    assert_eq!((on_row(&app).as_str(), left.rows[left.cursor].text.as_str()), (" line 40", "+LINE 39"));
+}
+
+#[test]
+fn reopening_a_comment_closed_keeps_the_cursor_on_its_line() {
+    let (_tmp, db, _src) = setup();
+    let (mut app, _, b) = long_thread(&db, "Unified", false);
+    down_to(&mut app, "+LINE 39");
+    down_to(&mut app, "     ▎   Which one?");
+    choose(&mut app, "Close this comment…");
+    choose(&mut app, "Close it");
+    assert_eq!(on_row(&app), "+LINE 39");
+    // Show…, closed: the cursor on its line still; on the comment closed,
+    // reopened, it is no longer one of those shown: the cursor on its line
+    // again, and there once all are shown.
+    keys(&mut app, &[KeyCode::Left, KeyCode::Up]);
+    choose(&mut app, "Show…");
+    choose(&mut app, "  closed");
+    keys(&mut app, &[KeyCode::Down, KeyCode::Right]);
+    assert_eq!(on_row(&app), "+LINE 39");
+    down_to(&mut app, "     ▎   Which one?");
+    choose(&mut app, "Reopen it");
+    assert!(app.status.contains("reopened"), "{}", app.status);
+    assert!(notes_of(&db, "s", 0).iter().any(|n| n.id == b.id));
+    assert_eq!(on_row(&app), "+LINE 39", "{}", draw(&mut app));
+    keys(&mut app, &[KeyCode::Left, KeyCode::Up]);
+    choose(&mut app, "Show…");
+    choose(&mut app, "  all");
+    keys(&mut app, &[KeyCode::Down, KeyCode::Right]);
+    assert_eq!(on_row(&app), "+LINE 39", "{}", draw(&mut app));
+}
+
+#[test]
+fn a_comment_hidden_moved_away_or_closed_elsewhere_leaves_the_cursor_where_it_was_or_on_its_line() {
+    let (_tmp, db, _src) = setup();
+    let (mut app, a, b) = long_thread(&db, "Unified", false);
+    // Hidden by the filter, from the comments pane's header, with the
+    // cursor on a turn: the cursor on its line; all shown again, still
+    // there.
+    down_to(&mut app, "+LINE 39");
+    down_to(&mut app, "     ▎   As @r2 shows.");
+    let mut y = cursor_line_y(&mut app);
+    let show = |app: &mut App, filter: &str| {
+        to_comments(app);
+        keys(app, &[KeyCode::Home]);
+        choose(app, "Show…");
+        choose(app, filter);
+    };
+    show(&mut app, "  none");
+    assert_eq!(on_row(&app), "+LINE 39", "{}", draw(&mut app));
+    kept_on_its_line(&mut app, &mut y, "hidden");
+    show(&mut app, "  all");
+    assert_eq!(on_row(&app), "+LINE 39", "{}", draw(&mut app));
+    // From the stack's header, the middle showing the stack meanwhile: back
+    // on the patch, the same.
+    to_middle(&mut app);
+    down_to(&mut app, "     ▎   As @r2 shows.");
+    let show = |app: &mut App, filter: &str| {
+        keys(app, &[KeyCode::Left, KeyCode::Up]);
+        choose(app, "Show…");
+        choose(app, filter);
+        keys(app, &[KeyCode::Down, KeyCode::Right]);
+    };
+    show(&mut app, "  none");
+    assert_eq!(on_row(&app), "+LINE 39", "{}", draw(&mut app));
+    show(&mut app, "  all");
+    assert_eq!(on_row(&app), "+LINE 39", "{}", draw(&mut app));
+    // Moved to the stack's comments by the agent, the one far over the
+    // cursor on a turn of the other: the cursor stays there.
+    down_to(&mut app, "     ▎   Which one?");
+    let mut y = cursor_line_y(&mut app);
+    Db::edit(&db, |d| stacked::ask::promote(d, "s", &a, "patch 2 says two too")).unwrap();
+    app.refresh();
+    let screen = draw(&mut app);
+    assert!(!app.on_stack && !screen.contains("why so loud?"), "{screen}");
+    assert_eq!(on_row(&app), "     ▎   Which one?", "{screen}");
+    kept_on_its_line(&mut app, &mut y, "the other moved away");
+    // Closed by another process, with the cursor on its reference: the
+    // cursor on its line.
+    down_to(&mut app, "     ▎   r2 ⇢");
+    Db::edit(&db, |d| d.set_note(Note { text: String::new(), ..b.clone() })).unwrap();
+    app.refresh();
+    let screen = draw(&mut app);
+    assert!(!screen.contains("Which one?"), "{screen}");
+    assert_eq!(on_row(&app), "+LINE 39", "{screen}");
+}
+
+#[test]
+fn a_comment_closed_from_the_banner_leaves_the_cursor_where_it_was() {
+    let (_tmp, db, _src) = setup();
+    let (mut app, a, _) = long_thread(&db, "Unified", false);
+    down_to(&mut app, "+LINE 39");
+    down_to(&mut app, "     ▎   Which one?");
+    // The banner's first comment, the one updated last: the comment on TWO,
+    // far over the cursor. Closed there by Delete, the cursor back from the
+    // banner is where it was.
+    keys(&mut app, &[KeyCode::Esc]);
+    assert!(app.on_banner && app.banner_sel == 0);
+    let screen = draw(&mut app);
+    assert!(screen.lines().nth(3).is_some_and(|l| l.contains("a.txt: TWO")), "{screen}");
+    keys(&mut app, &[KeyCode::Delete]);
+    choose(&mut app, "Close it");
+    assert!(notes_of(&db, "s", 0).iter().all(|n| n.id != a.id));
+    keys(&mut app, &[KeyCode::Esc]);
+    assert!(!app.on_banner && app.focus == Focus::Diff);
+    assert_eq!(on_row(&app), "     ▎   Which one?", "{}", draw(&mut app));
+}
+
+#[test]
+fn a_comment_hidden_with_the_cursor_on_the_agent_s_stream_takes_it_to_its_line() {
+    let (_tmp, db, _src) = setup();
+    let (mut app, b) = a_thread_with_references(&db);
+    changing(&db, &b.change, &b.id, serde_json::json!({"patch": b.change}));
+    agent_writes(&db, &["Reading the patch.", "Looking at a.txt."]);
+    app.refresh();
+    keys(&mut app, &[KeyCode::Home]);
+    down_to(&mut app, "     ⋯ Looking at a.txt.");
+    assert!(app.rows[app.cursor].stream);
+    to_comments(&mut app);
+    keys(&mut app, &[KeyCode::Home]);
+    choose(&mut app, "Show…");
+    choose(&mut app, "  none");
+    assert_eq!(on_row(&app), "+LINE 39", "{}", draw(&mut app));
+}
+
+#[test]
+fn a_turn_written_again_in_its_place_has_the_cursor_back_on_it_once_written() {
+    let (_tmp, db, _src) = setup();
+    let (mut app, b) = a_thread_with_references(&db);
+    keys(&mut app, &[KeyCode::Home]);
+    down_to(&mut app, "     ▎   As @r2 shows.");
+    // The editor in its place, the turn not shown meanwhile: left as it
+    // was, the cursor back on it.
+    choose_as(&mut app, "Edit the agent's reply", "here");
+    assert!(!draw(&mut app).contains("▎   As @r2 shows."), "in the editor only");
+    keys(&mut app, &[KeyCode::Esc]);
+    choose(&mut app, "Leave it as it is");
+    assert_eq!(app.mode, Mode::Normal);
+    assert_eq!(on_row(&app), "     ▎   As @r2 shows.");
+    // Written and saved: on it, as it is now.
+    choose_as(&mut app, "Edit the agent's reply", "here");
+    typed(&mut app, " See?");
+    keys(&mut app, &[KeyCode::Esc]);
+    choose(&mut app, "Save it");
+    let r = &app.rows[app.cursor];
+    assert!(r.note.as_deref() == Some(b.id.as_str()) && r.turn == Some(1) && !r.who, "{r:?}");
+    assert!(app.rows.iter().any(|r| r.turn == Some(1) && r.text.contains("See?")));
+}
+
+#[test]
+fn the_comments_pane_picks_the_next_comment_shown_once_its_own_is_closed() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Right]);
+    for (line, said) in [("+TWO", "why so loud?"), ("-line 39", "why not?"), ("+LINE 39", "and this?")] {
+        down_to(&mut app, line);
+        keys(&mut app, &[KeyCode::Enter]);
+        save(&mut app, said);
+    }
+    let id = |said: &str| notes_of(&db, "s", 0).into_iter().find(|n| n.text == said).unwrap().id;
+    let (one, two, three) = (id("why so loud?"), id("why not?"), id("and this?"));
+    keys(&mut app, &[KeyCode::Home]);
+    down_to(&mut app, " three");
+    // The middle one, closed from the pane: the pane picks the next one;
+    // the middle's cursor stays where it was.
+    to_comments(&mut app);
+    keys(&mut app, &[KeyCode::Home, KeyCode::Down, KeyCode::Down]);
+    assert_eq!(pane_pick(&app), two);
+    choose(&mut app, "Close this comment…");
+    choose(&mut app, "Close it");
+    assert_eq!((pane_pick(&app), on_row(&app).as_str()), (three.clone(), " three"));
+    // The last one: the one before it.
+    choose(&mut app, "Close this comment…");
+    choose(&mut app, "Close it");
+    assert_eq!((pane_pick(&app), on_row(&app).as_str()), (one.clone(), " three"));
+    // Picking the last one, one over it closed elsewhere: the pick stays
+    // on its comment, the middle's cursor where it was.
+    reopened(&mut app, &db, &notes_of_closed(&db, &two));
+    reopened(&mut app, &db, &notes_of_closed(&db, &three));
+    keys(&mut app, &[KeyCode::End]);
+    assert_eq!(pane_pick(&app), three);
+    let n = notes_of(&db, "s", 0).into_iter().find(|n| n.id == one).unwrap();
+    Db::edit(&db, |d| d.set_note(Note { text: String::new(), ..n })).unwrap();
+    app.refresh();
+    draw(&mut app);
+    assert_eq!((pane_pick(&app), on_row(&app).as_str()), (three, " three"));
+}
+
+/// Comment `id` of stack s's patch 1, closed: as it was.
+fn notes_of_closed(db: &Path, id: &str) -> Note {
+    let d = Db::load(db).unwrap();
+    let change = d.patch(&d.stack("s").unwrap().patches[0]).change.clone();
+    d.deleted_notes("s", &change).into_iter().map(|(_, n)| n).find(|n| n.id == id).unwrap()
+}
+
+#[test]
+fn on_the_stack_a_comment_closed_leaves_the_cursor_where_it_was_or_on_the_closest_line() {
+    let (_tmp, db, _src) = setup();
+    for (k, said) in ["first", "second", "third"].into_iter().enumerate() {
+        Db::edit(&db, |d| {
+            d.set_note(Note {
+                change: stack_change("s"),
+                id: format!("s{k}"),
+                text: append_turn(said, Role::Agent, &format!("About the {said}."), Some("answer")),
+                ..Default::default()
+            })
+        })
+        .unwrap();
+    }
+    let mut app = open(&db).unwrap();
+    draw(&mut app);
+    keys(&mut app, &[KeyCode::Home, KeyCode::Right]);
+    assert!(app.on_stack);
+    // On the third, the second closed from the pane: on the third still.
+    down_to(&mut app, "     ▎   About the third.");
+    to_comments(&mut app);
+    keys(&mut app, &[KeyCode::Home, KeyCode::Down, KeyCode::Down]);
+    assert_eq!(pane_pick(&app), "s1");
+    choose(&mut app, "Close this comment…");
+    choose(&mut app, "Close it");
+    assert_eq!(on_row(&app), "     ▎   About the third.", "{}", draw(&mut app));
+    // The third closed by Delete, the cursor on it: the cursor on the
+    // closest row, the one over it, the first's last.
+    to_middle(&mut app);
+    keys(&mut app, &[KeyCode::Delete]);
+    choose(&mut app, "Close it");
+    assert_eq!(on_row(&app), "     ▎   About the first.", "{}", draw(&mut app));
+    // On a patch's title, the first closed by another process: there still.
+    keys(&mut app, &[KeyCode::Home]);
+    down_to(&mut app, "   2 Bug 2 - add b");
+    let first = Db::load(&db).unwrap().stack_notes("s").into_iter().find(|n| n.id == "s0").cloned().unwrap();
+    Db::edit(&db, |d| d.set_note(Note { text: String::new(), ..first.clone() })).unwrap();
+    app.refresh();
+    let screen = draw(&mut app);
+    assert!(screen.contains("no comments on the stack itself"), "{screen}");
+    assert_eq!(on_row(&app), "   2 Bug 2 - add b", "{screen}");
+    // Reopened, and closed again with the cursor on it, the last of the
+    // stack's: the cursor on the row that was over it, which says now that
+    // the stack has none.
+    reopened(&mut app, &db, &first);
+    down_to(&mut app, "     ▎   About the first.");
+    keys(&mut app, &[KeyCode::Delete]);
+    choose(&mut app, "Close it");
+    assert!(Db::load(&db).unwrap().stack_notes("s").is_empty());
+    assert_eq!(on_row(&app), "  no comments on the stack itself", "{}", draw(&mut app));
+}
+
+#[test]
+fn a_comment_on_a_line_folded_closed_takes_the_cursor_to_the_line_s_last_piece_reading_too() {
+    use stacked::rows::Kind;
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("src");
+    std::fs::create_dir(&src).unwrap();
+    git(&src, &["init", "-q", "-b", "main"]);
+    git(&src, &["config", "commit.gpgsign", "false"]);
+    git(&src, &["config", "tag.gpgsign", "false"]);
+    std::fs::write(src.join("a.txt"), "one\nend\n").unwrap();
+    git(&src, &["add", "."]);
+    git(&src, &["commit", "-qm", "base"]);
+    let long = format!("two{}", " and more".repeat(30));
+    std::fs::write(src.join("a.txt"), format!("one\n{long}\nend\n")).unwrap();
+    let summary = ["A summary typed as one long line, as Phabricator has them."; 4].join(" ");
+    git(&src, &["commit", "-qam", &format!("Bug 1 - add a long line\n\n{summary}")]);
+    let db = tmp.path().join("db.jsonl");
+    stacked(&src, &db, &["import", "s", "HEAD~1"]);
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Right]);
+    let last_piece = |app: &App, kind: Kind| app.rows.iter().rposition(|r| r.kind == kind && r.note.is_none()).unwrap();
+    for reading in [false, true] {
+        if reading {
+            keys(&mut app, &[KeyCode::Char('2')]);
+            app.wait_blocks();
+        }
+        // On the code's line and on the summary: closed with the cursor on
+        // its turn, the cursor on the line's last piece, which it was under.
+        for (line, kind) in [("+two", Kind::Add), ("   A summary", Kind::Msg)] {
+            keys(&mut app, &[KeyCode::Home]);
+            down_to(&mut app, line);
+            keys(&mut app, &[KeyCode::Enter]);
+            save(&mut app, "why so long?");
+            keys(&mut app, &[KeyCode::Home]);
+            down_to(&mut app, "     ▎   why so long?");
+            choose(&mut app, "Close this comment…");
+            choose(&mut app, "Close it");
+            let at = last_piece(&app, kind);
+            assert!(app.rows[at].cont, "folded: {:?}", app.rows[at]);
+            assert_eq!(app.cursor, at, "{line:?}, reading: {reading}: on {:?}", app.rows[app.cursor].text);
+        }
+    }
 }

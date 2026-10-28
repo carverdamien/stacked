@@ -173,6 +173,16 @@ fn top_for(k: usize, y: usize, pinned: impl Fn(usize) -> bool) -> usize {
     if pinned(top) { (k + 1).saturating_sub(y).min(k) } else { top }
 }
 
+/// Where the comment the comments pane picked, the one at `sel` of `was`
+/// (their ids, in order), is in `now`, those it lists once built again;
+/// with it gone, where the next one of `was` still there is, or at the end
+/// the one before it.
+fn pick_again(was: &[String], sel: usize, now: &[String]) -> usize {
+    let at = |id: &String| now.iter().position(|n| n == id);
+    let (before, after) = was.split_at(sel.min(was.len()));
+    after.iter().find_map(at).or_else(|| before.iter().rev().find_map(at)).unwrap_or(0)
+}
+
 /// `text` as parts: the characters `words` says (ranges, as
 /// `rows::changed_words` gives them) in `word`, the rest in `st`.
 fn split_words(text: &str, words: &[(usize, usize)], st: Style, word: Style) -> Parts {
@@ -572,6 +582,7 @@ pub struct Half {
     mid_w: usize,
     mid_h: usize,
     keep: Option<(String, usize, usize)>,
+    hidden: Option<crate::rows::Place>,
     form: Option<(u8, usize, Layout)>,
     panes: Arc<Panes>,
     compact: Compact,
@@ -1826,6 +1837,10 @@ pub struct App {
     /// file's name gone to from the patches pane, drawn on the first line.
     /// With what the rows were built from, as they must still be.
     keep: Option<(String, usize, usize)>,
+    /// Where the middle's cursor was, on a turn of a comment that is being
+    /// written again in the editor, which the middle does not show
+    /// meanwhile: the cursor goes back there once it is written.
+    hidden: Option<crate::rows::Place>,
     /// The line of a side pane the mouse is over, in the browser: a patch
     /// of the list or its header, a comment of the comments pane or its
     /// header. Drawn underlined, and not picked: a click picks it.
@@ -2222,6 +2237,7 @@ impl App {
             drawn_rows: Vec::new(),
             mid_h: 0,
             keep: None,
+            hidden: None,
             hovered: None,
             pick: 0,
             pick_top: 0,
@@ -2906,13 +2922,14 @@ impl App {
             Some(Ok(_)) => "whole",
             Some(Err(_)) => "unread",
         };
+        let written = self.written_turns();
         let want = format!(
             "{subject}\0{width}\0{}\0{streams}\0{:?}\0{stream}\0{}\0{}\0{:?}\0{:?}\0{whole_said}",
             self.db.changes(),
             self.show,
             self.body_h,
             self.reading,
-            self.written_turns(),
+            written,
             attaching
         );
         if self.built.as_deref() == Some(&want) {
@@ -2930,9 +2947,7 @@ impl App {
             deco.whitespace = self.cfg.view.whitespace_needs_review;
         }
         // Built otherwise than last, each file whole or not, for another
-        // view of the code, or to another width (the reading mode's margin):
-        // the cursor is found again on what it was on, on its line of the
-        // screen, rather than as many rows down.
+        // view of the code, or to another width (the reading mode's margin).
         let shape = match &whole {
             None => 0,
             Some(Ok(_)) => 1,
@@ -2940,18 +2955,9 @@ impl App {
         };
         let form = (shape, width, self.drawn_layout(self.mid_w));
         let arrived = self.form.is_some_and(|(was, ..)| was == 0) && shape == 1;
-        let again = (same && self.form.is_some_and(|f| f != form) && !self.rows.is_empty()).then(|| crate::rows::place(&self.rows, self.cursor));
+        let reformed = self.form.is_some_and(|f| f != form);
         deco.whole = whole;
-        // How many rows are over the cursor, the lines of the agents'
-        // streams not counted, and on such a line, which line of its stream
-        // it is: the cursor stays on its row as a stream over it grows,
-        // shrinks or goes (a comment's stream is over its references).
-        let was = self.rows.get(self.cursor).map(|r| {
-            let before = &self.rows[..self.cursor];
-            let down = r.stream.then(|| before.iter().rev().take_while(|r| r.stream).count());
-            (before.iter().filter(|r| !r.stream).count(), down)
-        });
-        self.rows = if self.on_stack {
+        let rows = if self.on_stack {
             match self.current() {
                 Some(s) => {
                     let base = s.base.as_deref().map_or(String::new(), |b| format!(" on {}", &b[..12.min(b.len())]));
@@ -2967,6 +2973,9 @@ impl App {
                 None => vec![],
             }
         };
+        // The rows as they were, to find the cursor and the comments pane's
+        // pick again in those built now.
+        let was = std::mem::replace(&mut self.rows, rows);
         self.built = Some(want);
         self.subject = Some(subject.clone());
         self.form = Some(form);
@@ -2978,34 +2987,62 @@ impl App {
         if !same {
             self.cursor = 0;
             self.top = 0;
+            self.hidden = None;
             if here {
                 self.note_sel = 0;
             }
             self.compact.reset();
             // Back on what they showed before: where they were.
             self.back_to_panes(&subject);
-        } else if let Some(at) = again.filter(|_| !self.rows.is_empty()) {
-            let (i, moved) = crate::rows::find(&self.rows, &at);
-            self.cursor = i;
-            match (self.built.clone(), self.cursor_y) {
-                (Some(built), Some(y)) => self.keep = Some((built, i, y)),
-                _ => self.top = i.saturating_sub(self.body_h / 3),
+        } else if !was.is_empty() && !self.rows.is_empty() {
+            // The same patch or stack, built otherwise, or as its comments
+            // came, went or changed (closed, reopened, hidden, moved away,
+            // written on, answered; the agent's stream growing; lines marked
+            // read): the cursor found again on what it was on, by what it
+            // is, rather than as many rows down. On a comment gone, on the
+            // line it was on (`rows::again`). Moved by that, it stays on its
+            // line of the screen, the line it was drawn on last, if it is
+            // still on the row drawn there.
+            let cursor = self.cursor.min(was.len() - 1);
+            let (mut i, mut moved) = crate::rows::again(&was, cursor, &self.rows);
+            // On a turn the editor writes again, not shown meanwhile: back
+            // on it once it is written, where the editor was.
+            let hides = |r: &Row| {
+                written.as_ref().is_some_and(|(id, (from, to))| {
+                    r.note.as_ref() == Some(id) && !r.is_reference() && r.turn.is_some_and(|t| (*from..*to).contains(&t))
+                })
+            };
+            let mut back = false;
+            if hides(&was[cursor]) {
+                self.hidden = Some(crate::rows::place(&was, cursor));
+            } else if written.is_none()
+                && let Some(at) = self.hidden.take()
+                && let Some(there) = crate::rows::found(&self.rows, &at)
+            {
+                (i, moved) = there;
+                back = true;
             }
+            let y = self.cursor_y.filter(|&y| !back && self.drawn_rows.contains(&(cursor, y)));
+            if reformed || i != cursor {
+                match (self.built.clone(), y) {
+                    (Some(built), Some(y)) => self.keep = Some((built, i, y)),
+                    _ if reformed => self.top = i.saturating_sub(self.body_h / 3),
+                    _ => {}
+                }
+            }
+            self.cursor = i;
             match moved {
                 Some(m) if here => self.status = moved_said(&m),
                 None if here && arrived && self.status == READING_WHOLE => self.status = WHOLE.into(),
                 _ => {}
             }
-        } else if let Some((k, down)) = was {
-            // The row as many rows down, the streams' lines not counted. On
-            // a stream's line, the same line of it, or its last; with the
-            // stream gone, the row over where it was, its comment's.
-            let next = self.rows.iter().enumerate().filter(|(_, r)| !r.stream).nth(k).map_or(self.rows.len(), |(i, _)| i);
-            let over = self.rows[..next].iter().rev().take_while(|r| r.stream).count();
-            self.cursor = match down {
-                Some(j) => (next - over + j).min(next.saturating_sub(1)),
-                None => next,
-            };
+            // The comments pane on the comment it had picked; with that one
+            // gone, on the next one, or the one before at the end. The
+            // middle's cursor stays where it is.
+            if here {
+                let ids = |rows: &[Row]| -> Vec<String> { rows.iter().filter(|r| r.head).filter_map(|r| r.note.clone()).collect() };
+                self.note_sel = pick_again(&ids(&was), self.note_sel, &ids(&self.rows));
+            }
         }
         self.cursor = self.cursor.min(self.rows.len().saturating_sub(1));
         if here {
@@ -3031,6 +3068,8 @@ impl App {
                     self.cursor = i;
                     self.top = i.saturating_sub(self.body_h / 3);
                     self.compact.cursor = None;
+                    // Not on the line of the screen of the row it was on.
+                    self.keep = None;
                     if matches!(w, Want::File(_)) {
                         self.keep = self.built.clone().map(|built| (built, i, 0));
                     }
@@ -4236,6 +4275,7 @@ impl App {
             mid_w: self.mid_w,
             mid_h: self.mid_h,
             keep: self.keep.clone(),
+            hidden: self.hidden.clone(),
             form: self.form,
             panes: self.panes.clone(),
             compact: self.compact.clone(),
@@ -4259,6 +4299,7 @@ impl App {
         swap(&mut self.mid_w, &mut h.mid_w);
         swap(&mut self.mid_h, &mut h.mid_h);
         swap(&mut self.keep, &mut h.keep);
+        swap(&mut self.hidden, &mut h.hidden);
         swap(&mut self.form, &mut h.form);
         swap(&mut self.panes, &mut h.panes);
         swap(&mut self.compact, &mut h.compact);
