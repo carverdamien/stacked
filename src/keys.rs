@@ -63,6 +63,9 @@ pub enum Key {
     Help,
     /// Back: out of a menu, a list, a stream.
     Back,
+    /// What the menu closes, drops, stops or rejects where the cursor is:
+    /// the item's own action, asking first where the item does.
+    Delete,
     /// The search of what the middle shows.
     Find,
     /// In the search, the next match, and the one before.
@@ -79,7 +82,7 @@ pub enum Key {
 }
 
 impl Key {
-    pub const ALL: [Key; 19] = [
+    pub const ALL: [Key; 20] = [
         Key::Up,
         Key::Down,
         Key::Left,
@@ -92,6 +95,7 @@ impl Key {
         Key::Menu,
         Key::Help,
         Key::Back,
+        Key::Delete,
         Key::Find,
         Key::FindNext,
         Key::FindPrevious,
@@ -116,6 +120,7 @@ impl Key {
             Key::Menu => "menu",
             Key::Help => "help",
             Key::Back => "back",
+            Key::Delete => "delete",
             Key::Find => "find",
             Key::FindNext => "find_next",
             Key::FindPrevious => "find_previous",
@@ -141,6 +146,8 @@ impl Key {
             Key::Menu => &["space"],
             Key::Help => &["?"],
             Key::Back => &["esc"],
+            // A Mac's delete key is Backspace; its forward Delete, fn-delete.
+            Key::Delete => &["delete", "backspace"],
             Key::Find => &["/"],
             Key::FindNext => &["tab"],
             Key::FindPrevious => &["shift-tab"],
@@ -166,6 +173,7 @@ impl Key {
             Key::Menu => (KeyCode::Char(' '), KeyModifiers::NONE),
             Key::Help => (KeyCode::Char('?'), KeyModifiers::NONE),
             Key::Back => (KeyCode::Esc, KeyModifiers::NONE),
+            Key::Delete => (KeyCode::Delete, KeyModifiers::NONE),
             Key::Find => (KeyCode::Char('/'), KeyModifiers::NONE),
             Key::FindNext => (KeyCode::Tab, KeyModifiers::NONE),
             Key::FindPrevious => (KeyCode::BackTab, KeyModifiers::NONE),
@@ -489,6 +497,24 @@ mod tests {
         // The same key twice: the first does it, and it is said.
         let (_, wrong) = Keymap::from_names(&[("down".into(), vec!["up".into()])]);
         assert_eq!(wrong, ["keys: ↑ is up and down; it does the first"]);
+    }
+
+    #[test]
+    fn delete_is_delete_and_backspace_unless_the_settings_say_otherwise() {
+        // A Mac's delete key sends Backspace, its fn-delete Delete: either
+        // is the editor's Delete.
+        let map = Keymap::default();
+        for code in [KeyCode::Delete, KeyCode::Backspace] {
+            assert_eq!(map.translate(&ev(code, KeyModifiers::NONE)), Some(Key::Delete.event()), "{code:?}");
+        }
+        assert_eq!((map.label(Key::Delete), map.names(Key::Delete)), ("Delete".to_string(), vec!["delete".to_string(), "backspace".to_string()]));
+        assert_eq!(Key::Delete.context(), Context::Screens);
+        // Another key, and neither of those any more.
+        let (map, wrong) = Keymap::from_names(&[("delete".into(), vec!["x".into()])]);
+        assert!(wrong.is_empty(), "{wrong:?}");
+        assert_eq!(map.translate(&ev(KeyCode::Char('x'), KeyModifiers::NONE)), Some(Key::Delete.event()));
+        assert_eq!(map.translate(&ev(KeyCode::Backspace, KeyModifiers::NONE)), None);
+        assert_eq!(map.label(Key::Delete), "x");
     }
 
     #[test]

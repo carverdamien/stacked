@@ -856,7 +856,7 @@ fn titles_on_the_left_the_patch_in_the_middle() {
     assert!(screen.contains("│✉ message"), "{screen}");
     assert!(screen.contains("-two") && screen.contains("+TWO"), "{screen}");
     assert!(screen.contains("s @") && screen.contains("2 patches on "), "{screen}");
-    assert!(screen.contains("enter: read it · space: menu · 1: view · 2: read · 3: whole · ?: what can I do here"), "{screen}");
+    assert!(screen.contains("enter: read it · space: menu · delete: drop it · 1: view · 2: read · 3: whole · ?: what can I do here"), "{screen}");
     keys(&mut app, &[KeyCode::Down]);
     let screen = draw(&mut app);
     assert!(screen.contains("+bee") && !screen.contains("+TWO"), "{screen}");
@@ -2331,7 +2331,7 @@ fn the_three_keys_combine_each_view_of_the_code_commenting_or_reading_the_hunks_
                 // The comment under its line.
                 assert!(screen.contains("why so loud?"), "{what}:\n{screen}");
                 // Reading: Space marks the hunk read, on the keys the hunks
-                // have, the margin then saying Enter takes the mark back;
+                // have, the margin then saying Delete takes the mark back;
                 // and it does.
                 if reading {
                     keys(&mut app, &[KeyCode::Char(' ')]);
@@ -2339,7 +2339,7 @@ fn the_three_keys_combine_each_view_of_the_code_commenting_or_reading_the_hunks_
                     assert!(app.db.read_keys(&change).contains(&key), "{what}");
                     let screen = draw(&mut app);
                     assert!(app.rows[app.cursor].read && screen.contains("✓→○ +LINE 39"), "{what}:\n{screen}");
-                    keys(&mut app, &[KeyCode::Enter]);
+                    keys(&mut app, &[KeyCode::Delete]);
                     assert!(app.status.starts_with("unread: 2 lines"), "{what}: {}", app.status);
                     assert!(!app.db.read_keys(&change).contains(&key), "{what}");
                     kept_on_its_line(&mut app, &mut y, &format!("{what}, read and unread"));
@@ -2383,7 +2383,7 @@ fn whole_a_line_in_no_hunk_is_folded_takes_no_read_mark_and_the_files_listed_go_
     assert!(r.cont && r.outside && r.new_no == Some(10) && !app.rows[app.cursor - 1].cont, "{r:?}");
     pick_view(&mut app, "Unified");
     // Reading: no read mark goes on it, and Space goes on to the next line
-    // not read, none here; Enter takes none back.
+    // not read, none here; Delete takes none back.
     keys(&mut app, &[KeyCode::Char('2')]);
     app.wait_blocks();
     draw(&mut app);
@@ -2392,7 +2392,7 @@ fn whole_a_line_in_no_hunk_is_folded_takes_no_read_mark_and_the_files_listed_go_
     assert!(help[0].starts_with("Line 10 of g.txt is in no hunk of this patch, so no read mark goes on it."), "{help:?}");
     keys(&mut app, &[KeyCode::Char(' ')]);
     assert_eq!(app.status, "line 10 of g.txt is in no hunk of this patch, so no read mark goes on it, and nothing is left to read below");
-    keys(&mut app, &[KeyCode::Enter]);
+    keys(&mut app, &[KeyCode::Delete]);
     assert_eq!(app.status, "line 10 of g.txt is in no hunk of this patch: no read mark is on it");
     assert!(app.hint().contains("3: hunks"), "{}", app.hint());
 }
@@ -2819,10 +2819,10 @@ fn reading_each_file_listed_says_the_lines_left_to_mark_read() {
     assert!(pane_cell(&mut app, "2 left").modifier.contains(Modifier::REVERSED));
     let said = "Each file listed under the patch says how many of its changed lines are left to mark read, as 7 left, or ✓ once all of them are read.";
     assert!(app.help().iter().any(|l| l == said), "{:?}", app.help());
-    // Enter takes a mark back: a.txt has lines left again.
+    // Delete takes a mark back: a.txt has lines left again.
     keys(&mut app, &[KeyCode::Right, KeyCode::Home]);
     down_to(&mut app, "+LINE 32");
-    keys(&mut app, &[KeyCode::Enter]);
+    keys(&mut app, &[KeyCode::Delete]);
     assert!(app.status.contains("unread: 2 lines"), "{}", app.status);
     assert_eq!(pane_words(&draw(&mut app))[1], "a.txt 2 left");
     // Commenting, the lines the patch adds and removes, as before.
@@ -5397,7 +5397,7 @@ fn landed_work_is_reviewed_from_the_banner_part_by_part() {
     assert!(app.on_banner);
     let screen = draw(&mut app);
     assert!(screen.contains("\n   ⟳ Review a change of the stack, 2 replies, 1 opened comment, asked \"why so loud?\""), "{screen}");
-    assert!(app.hint().contains("enter: review it · space: pick one · esc: back where you were"), "{}", app.hint());
+    assert!(app.hint().contains("enter: review it · delete: reject all remaining · space: pick one · esc: back where you were"), "{}", app.hint());
     keys(&mut app, &[KeyCode::Esc]);
     assert!(!app.on_banner && app.focus == focus && app.cursor == cursor, "back where it was");
     assert!(!draw(&mut app).contains("   ⟳ Review"), "closed again");
@@ -5435,10 +5435,10 @@ fn landed_work_is_reviewed_from_the_banner_part_by_part() {
     }
     assert!(screen.contains("what accepting it does to the stack"), "{screen}");
     // Enter accepts; each comment is shown where it would be.
-    assert_eq!(app.hint(), "↑↓ choose · enter: accept · →: look closer · space: menu · esc: save, discard or close");
+    assert_eq!(app.hint(), "↑↓ choose · enter: accept · delete: reject · →: look closer · space: menu · esc: save, discard or close");
     keys(&mut app, &[KeyCode::Enter]);
     assert!(draw(&mut app).contains("stack operations · accepted"));
-    assert_eq!(app.hint(), "↑↓ choose · enter: to review again · →: look closer · space: menu · esc: save, discard or close");
+    assert_eq!(app.hint(), "↑↓ choose · enter: to review again · delete: reject · →: look closer · space: menu · esc: save, discard or close");
     down_to_review(&mut app, "Patch 2 is");
     assert!(draw(&mut app).contains("a comment it opened, where it would be"));
     keys(&mut app, &[KeyCode::Enter]);
@@ -6091,7 +6091,7 @@ fn two_reads_rather_than_comments() {
     app.wait_blocks();
     down_to(&mut app, "+TWO");
     let screen = draw(&mut app);
-    assert!(screen.contains("space: mark this block read · enter: unread"), "{screen}");
+    assert!(screen.contains("space: mark this block read · delete: unread · enter: comment"), "{screen}");
     assert!(screen.contains("○→✓ +TWO"), "what space would mark, marked:\n{screen}");
     key(&mut app, KeyCode::Char('?'));
     let screen = draw(&mut app);
@@ -6111,9 +6111,9 @@ fn two_reads_rather_than_comments() {
     let screen = draw(&mut app);
     let line = screen.lines().find(|l| l.contains("1 Bug 1 - shout two")).unwrap();
     assert!(line.contains(" 4/6│"), "the code read, its message not: {line}");
-    // Enter takes the mark back.
+    // Delete takes the mark back.
     assert_eq!(app.rows[app.cursor].text, "-line 39", "where the last mark was made");
-    keys(&mut app, &[KeyCode::Enter]);
+    keys(&mut app, &[KeyCode::Delete]);
     assert!(app.status.contains("unread: 2 lines"), "{}", app.status);
     assert!(draw(&mut app).contains("reading 2/6"));
     // Kept in the file.
@@ -6152,11 +6152,11 @@ fn a_patch_s_title_and_message_are_read_as_its_code_is() {
     assert!(app.rows.iter().any(|r| r.text == "✉ message   read 2/2 lines"), "{:?}", app.rows.iter().map(|r| &r.text).collect::<Vec<_>>());
     assert!(app.rows.iter().any(|r| r.text == "   Because." && r.read));
     assert!(screen.contains("reading 2/6") && screen.contains(" 2/6"), "{screen}");
-    // Enter on its header takes back the latest mark in it; Space there
+    // Delete on its header takes back the latest mark in it; Space there
     // reads it whole.
     keys(&mut app, &[KeyCode::Home]);
     assert!(app.rows[app.cursor].text.starts_with("✉ message"), "{}", app.rows[app.cursor].text);
-    keys(&mut app, &[KeyCode::Enter]);
+    keys(&mut app, &[KeyCode::Delete]);
     assert!(app.status.contains("unread: 1 line"), "{}", app.status);
     keys(&mut app, &[KeyCode::Char(' ')]);
     assert!(app.status.contains("read: the message, 1 line"), "{}", app.status);
@@ -6230,7 +6230,7 @@ fn reading_on_the_cursor_goes_down_to_the_middle_then_the_code_comes_up() {
     // Its mark taken back, the cursor on it again.
     let unread = |app: &mut App, h: u16| {
         to_two(app, h);
-        press(app, KeyCode::Enter, h);
+        press(app, KeyCode::Delete, h);
         assert!(app.status.contains("unread"), "{}", app.status);
     };
     for (view, next) in [(Layout::Unified, "Side by side"), (Layout::Split, "Side by side, compact"), (Layout::Compact, "Unified")] {
@@ -6385,7 +6385,7 @@ fn lines_of_white_space_alone_need_no_reading_unless_the_settings_say_so() {
     assert!(screen.contains("reading 3/3") && screen.contains("nothing left to review"), "{screen}");
     let line = screen.lines().find(|l| l.contains("1 Bug 1 - more")).unwrap();
     assert!(line.contains(" ✓│"), "all read: {line}");
-    // Enter would take the mark back from the lines of code; the empty one
+    // Delete would take the mark back from the lines of code; the empty one
     // and the blank one, which need no reading, show nothing.
     assert!(screen.contains("│✓→○ +two") && screen.contains("│✓→○ +three"), "{screen}");
     let bare = screen.lines().filter(|l| l.split('│').nth(1).is_some_and(|m| m.trim_end() == "    +")).count();
@@ -8700,7 +8700,7 @@ fn what_you_wrote_in_a_review_is_in_its_list_to_see_write_again_or_take_back() {
     let (_, line) = at_from(&screen, "+Two", 49);
     let (_, comment) = at_from(&screen, "Not like this either.", 49);
     assert!(comment > line, "under its line:\n{screen}");
-    assert_eq!(app.hint(), "↑↓ choose · enter: edit it · →: look closer · space: menu · esc: send back, save or discard");
+    assert_eq!(app.hint(), "↑↓ choose · enter: edit it · delete: take it back · →: look closer · space: menu · esc: send back, save or discard");
     // Enter writes it again.
     keys(&mut app, &[KeyCode::Enter]);
     assert!(matches!(&app.mode, Mode::Edit(e) if e.ed.text() == "Not like this either."), "{:?}", app.mode);
@@ -8818,13 +8818,13 @@ fn enter_on_a_line_of_the_interdiff_goes_to_that_line_of_the_patch() {
     down_to_review(&mut app, "modify  1 Bug 1 - say two");
     keys(&mut app, &[KeyCode::Right]);
     assert_eq!(work_row(&mut app).as_deref(), Some("-Subject: Bug 1 - shout two"));
-    assert_eq!(app.hint(), "↑↓: a line · enter: go to it in the patch · →: wider · ←: back to the list · esc: save, discard or close");
+    assert_eq!(app.hint(), "↑↓: a line · enter: go to it in the patch · delete: reject · →: wider · ←: back to the list · esc: save, discard or close");
     // Enter: the patch as the work leaves it, the cursor on its title.
     keys(&mut app, &[KeyCode::Enter]);
     let screen = draw(&mut app);
     assert!(screen.contains(" patch 1 as the work leaves it: Bug 1 - say two"), "{screen}");
     assert_eq!(work_row(&mut app).as_deref(), Some("Bug 1 - say two"));
-    assert_eq!(app.hint(), "↑↓: a line · enter: comment · →: wider · ←: back to the stack diff · esc: save, discard or close");
+    assert_eq!(app.hint(), "↑↓: a line · enter: comment · delete: reject · →: wider · ←: back to the stack diff · esc: save, discard or close");
     // ← back to the stack diff, the cursor where it was; on the line of code
     // that took the place of another, Enter goes to it in the patch.
     keys(&mut app, &[KeyCode::Left]);
@@ -9133,7 +9133,7 @@ fn what_you_write_in_the_review_of_the_agent_s_work_sends_it_back_to_the_agent()
     let screen = draw(&mut app);
     assert!(screen.contains(" patch 1 as the work leaves it: Bug 1 - shout two"), "{screen}");
     assert_eq!(work_row(&mut app).as_deref(), Some("+Two"));
-    assert_eq!(app.hint(), "↑↓: a line · enter: comment · →: wider · ←: back to the stack diff · esc: save, discard or close");
+    assert_eq!(app.hint(), "↑↓: a line · enter: comment · delete: reject · →: wider · ←: back to the stack diff · esc: save, discard or close");
     // At its end, the comment on a line it no longer has, its reply in the
     // thread.
     keys(&mut app, &[KeyCode::End]);
@@ -9158,7 +9158,7 @@ fn what_you_write_in_the_review_of_the_agent_s_work_sends_it_back_to_the_agent()
     let (_, line) = at_from(&screen, "+Two", 49);
     let (_, comment) = at_from(&screen, "Not like this either.", 49);
     assert!(comment > line, "under its line:\n{screen}");
-    assert_eq!(app.hint(), "↑↓: a line · enter: comment · →: wider · ←: back to the stack diff · esc: send back, save or discard");
+    assert_eq!(app.hint(), "↑↓: a line · enter: comment · delete: reject · →: wider · ←: back to the stack diff · esc: send back, save or discard");
     // On its reply, Space answers it.
     keys(&mut app, &[KeyCode::Left, KeyCode::Left]);
     down_to_review(&mut app, "Quieter now.");
@@ -9244,7 +9244,7 @@ fn the_comments_that_asked_are_kept_or_closed_from_the_top_of_the_review() {
     // accepted.
     keys(&mut app, &[KeyCode::Home]);
     assert!(selected_line(&mut app).unwrap().contains(&notes[0].text));
-    assert_eq!(app.hint(), "↑↓ choose · enter: close it with the review · →: look closer · space: menu · esc: save, discard or close");
+    assert_eq!(app.hint(), "↑↓ choose · enter: close it with the review · delete: close it with the review · →: look closer · space: menu · esc: save, discard or close");
     assert!(draw(&mut app).contains("the comment that asked, as it is: kept open"));
     keys(&mut app, &[KeyCode::Enter]);
     let marks = |app: &App| app.reviewing.as_ref().unwrap().marks.clone();
@@ -9578,21 +9578,21 @@ fn right_in_a_review_goes_into_its_right_pane_then_makes_it_wide() {
     assert_eq!(app.screen, Screen::Review);
     // Into the pane on the right: the list beside it still.
     keys(&mut app, &[KeyCode::Right]);
-    assert_eq!(app.hint(), "↑↓: a line · enter: go to it in the patch · →: wider · ←: back to the list · esc: save, discard or close");
+    assert_eq!(app.hint(), "↑↓: a line · enter: go to it in the patch · delete: reject · →: wider · ←: back to the list · esc: save, discard or close");
     assert!(draw(&mut app).contains(" stack operations"));
     // Wide: the list out of sight.
     keys(&mut app, &[KeyCode::Right]);
     let screen = draw(&mut app);
     assert!(!screen.contains(" stack operations"), "{screen}");
     assert!(screen.lines().nth(1).unwrap().starts_with(" the change of patch 1: what accepting it does to the stack"), "{screen}");
-    assert_eq!(app.hint(), "↑↓: a line · enter: go to it in the patch · ←: narrower · esc: save, discard or close");
+    assert_eq!(app.hint(), "↑↓: a line · enter: go to it in the patch · delete: reject · ←: narrower · esc: save, discard or close");
     // ← narrower, then back to the list.
     keys(&mut app, &[KeyCode::Left]);
     assert!(draw(&mut app).contains(" stack operations"));
     assert!(app.reviewing.as_ref().unwrap().in_main);
     keys(&mut app, &[KeyCode::Left]);
     assert!(!app.reviewing.as_ref().unwrap().in_main);
-    assert_eq!(app.hint(), "↑↓ choose · enter: accept · →: look closer · space: menu · esc: save, discard or close");
+    assert_eq!(app.hint(), "↑↓ choose · enter: accept · delete: reject · →: look closer · space: menu · esc: save, discard or close");
 }
 
 #[test]
@@ -10206,4 +10206,721 @@ fn reviews_pulled_wait_in_the_banner_as_the_agent_s_work_does() {
     choose(&mut app, "Accept them and close");
     let text = notes_of(&db, "s", 0).remove(0).text;
     assert_eq!(text, "```reviewer ann\nWhy shout at all?\n```\n```reviewer ann\nStill?\n```");
+}
+
+/// The menu open: its title, its items' labels, and the one selected.
+fn asked(app: &App) -> (String, Vec<String>, usize) {
+    match &app.mode {
+        Mode::Menu(m) => (m.title.clone(), m.items.iter().map(|i| i.label.clone()).collect(), m.sel),
+        other => panic!("no menu open: {other:?}"),
+    }
+}
+
+/// The note under the menu open.
+fn menu_note(app: &App) -> String {
+    match &app.mode {
+        Mode::Menu(m) => m.note.clone().unwrap_or_default(),
+        other => panic!("no menu open: {other:?}"),
+    }
+}
+
+/// `all`, as owned strings.
+fn labels(all: &[&str]) -> Vec<String> {
+    all.iter().map(|l| l.to_string()).collect()
+}
+
+#[test]
+fn delete_closes_the_comment_the_cursor_is_on_once_asked() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Enter]);
+    save(&mut app, "why so loud?");
+    down_to(&mut app, "+LINE 39");
+    keys(&mut app, &[KeyCode::Enter]);
+    save(&mut app, "and this?");
+    keys(&mut app, &[KeyCode::Home]);
+    down_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Down]);
+    // Said where the cursor is, in the bar and by `?`.
+    assert!(app.hint().contains(" · space: menu · delete: close it · 1: view"), "{}", app.hint());
+    let said = "Press Delete to close this comment, done with: it leaves the comments shown (Show…, closed, lists it, to reopen). Delete asks first.";
+    assert!(app.help().iter().any(|l| l == said), "{:?}", app.help());
+    // Asked first, as the menu's "Close this comment…" asks, keeping it open
+    // picked; Esc keeps it.
+    keys(&mut app, &[KeyCode::Delete]);
+    assert_eq!(asked(&app), ("close this comment? Show…, closed, can reopen it".to_string(), labels(&["Close it", "Keep it open"]), 1));
+    keys(&mut app, &[KeyCode::Esc]);
+    assert_eq!(app.mode, Mode::Normal);
+    assert_eq!(notes_of(&db, "s", 0).len(), 2, "kept");
+    // Backspace is Delete too: closed, once said.
+    keys(&mut app, &[KeyCode::Backspace]);
+    choose(&mut app, "Close it");
+    assert_eq!(app.status, "closed: Show…, closed, on a header, lists it to reopen");
+    assert_eq!(notes_of(&db, "s", 0).into_iter().map(|n| n.text).collect::<Vec<_>>(), ["and this?"]);
+    // In the comments pane, the same.
+    keys(&mut app, &[KeyCode::Right]);
+    assert_eq!(app.focus, Focus::Notes);
+    keys(&mut app, &[KeyCode::Delete]);
+    assert_eq!(menu_title(&app), "close this comment? Show…, closed, can reopen it");
+    choose(&mut app, "Close it");
+    assert!(notes_of(&db, "s", 0).is_empty());
+    // A comment closed, shown as it was: nothing, the status saying why.
+    // (Its last comment closed, the comments pane is gone: the stack's
+    // header is Home on the patches.)
+    keys(&mut app, &[KeyCode::Left, KeyCode::Left, KeyCode::Home]);
+    assert!(app.focus == Focus::List && app.on_stack, "{:?}", app.focus);
+    choose(&mut app, "Show…");
+    choose(&mut app, "  closed");
+    keys(&mut app, &[KeyCode::Down, KeyCode::Right, KeyCode::Home]);
+    down_to(&mut app, "   └ comment");
+    let before = std::fs::read(&db).unwrap();
+    keys(&mut app, &[KeyCode::Delete]);
+    assert_eq!((app.mode.clone(), app.status.as_str()), (Mode::Normal, "this comment is closed already"));
+    assert_eq!(std::fs::read(&db).unwrap(), before, "nothing written");
+}
+
+#[test]
+fn delete_closes_a_comment_and_those_its_answer_opened_once_asked() {
+    let (_tmp, db, _src) = setup();
+    // The stack's comment, whose answer opened one on patch 1.
+    let d = Db::load(&db).unwrap();
+    let p1 = d.patch(&d.stack("s").unwrap().patches[0]).clone();
+    drop(d);
+    let k = stacked::view::find_line(&stacked::view::note_lines(&p1), "a.txt", '+', "TWO").unwrap();
+    Db::edit(&db, |d| {
+        d.set_note(Note {
+            change: stack_change("s"),
+            id: "s1".into(),
+            text: append_turn("Review it.", Role::Agent, "One thing.", Some("answer")),
+            ..Default::default()
+        })?;
+        d.set_note(Note {
+            change: p1.change.clone(),
+            id: format!("claude:{k}"),
+            line: k.clone(),
+            text: "```claude answer\nWhy shout?\n```".into(),
+            file: "a.txt".into(),
+            preview: "x".into(),
+            by: Some("claude".into()),
+            opened_by: Some((stack_change("s"), "s1".into())),
+            ..Default::default()
+        })
+    })
+    .unwrap();
+    let mut app = open(&db).unwrap();
+    draw(&mut app);
+    keys(&mut app, &[KeyCode::Home, KeyCode::Right]);
+    down_to(&mut app, "   └ comment");
+    assert!(app.hint().contains("delete: close it and those it opened"), "{}", app.hint());
+    keys(&mut app, &[KeyCode::Delete]);
+    let (title, items, sel) = asked(&app);
+    assert_eq!((title.as_str(), sel), ("close this comment and the 1 it opened? Show…, closed, can reopen each", 1));
+    assert_eq!(items, labels(&["Close them", "Keep them open"]));
+    keys(&mut app, &[KeyCode::Esc]);
+    assert_eq!(Db::load(&db).unwrap().stack_notes("s").len(), 2, "kept");
+    keys(&mut app, &[KeyCode::Delete]);
+    choose(&mut app, "Close them");
+    assert!(Db::load(&db).unwrap().stack_notes("s").is_empty());
+}
+
+/// A process standing in for an agent at work, in a process group of its
+/// own, as an agent's is: what stopping its ask stops. Killed once dropped,
+/// if it is still there.
+struct Working(std::process::Child);
+
+impl Working {
+    fn start() -> Working {
+        use std::os::unix::process::CommandExt;
+        Working(Command::new("sleep").arg("600").process_group(0).spawn().unwrap())
+    }
+
+    /// Whether it is stopped, waiting a few seconds for it to be.
+    fn stopped(&mut self) -> bool {
+        for _ in 0..100 {
+            if self.0.try_wait().unwrap().is_some() {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        false
+    }
+
+    /// Whether it still runs, as it is now.
+    fn runs(&mut self) -> bool {
+        self.0.try_wait().unwrap().is_none()
+    }
+}
+
+impl Drop for Working {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+/// Stack s's comment `n` asked about, to answer only: the ask, run `run`,
+/// going in `w`'s process.
+fn answering(db: &Path, run: &str, n: &Note, w: &Working) {
+    Db::edit(db, |d| {
+        let from = d.head("s").unwrap().0;
+        let ask = serde_json::json!({"way": "answer", "scope": {"patch": n.change}, "from": from, "notes": [{"label": "c1", "change": n.change, "id": n.id}]});
+        d.add_run(stacked::db::Run {
+            id: run.into(),
+            what: "answer".into(),
+            stack: "s".into(),
+            state: stacked::db::RunState::Started,
+            pid: Some(w.0.id()),
+            ask: Some(ask),
+            time: stacked::db::now(),
+            ..Default::default()
+        })
+        .map(|_| ())
+    })
+    .unwrap();
+}
+
+#[test]
+fn delete_stops_the_agent_once_asked_on_its_comment_and_on_the_runs() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Enter]);
+    save(&mut app, "why so loud?");
+    down_to(&mut app, "+LINE 39");
+    keys(&mut app, &[KeyCode::Enter]);
+    save(&mut app, "and this?");
+    let notes = notes_of(&db, "s", 0);
+    let said = |text: &str| notes.iter().find(|n| n.text == text).cloned().unwrap();
+    let (mut one, mut two) = (Working::start(), Working::start());
+    answering(&db, "run-one", &said("why so loud?"), &one);
+    app.refresh();
+    // On the comment the agent works on: asked first, as "Stop the
+    // agent…", letting it run picked; Esc lets it run.
+    keys(&mut app, &[KeyCode::Home]);
+    down_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Down]);
+    assert!(app.hint().contains("delete: stop the agent"), "{}", app.hint());
+    keys(&mut app, &[KeyCode::Delete]);
+    assert_eq!(asked(&app), ("stop the agent? the ask lands as failed".to_string(), labels(&["Stop it", "Let it run"]), 1));
+    keys(&mut app, &[KeyCode::Esc]);
+    assert!(one.runs(), "it runs");
+    keys(&mut app, &[KeyCode::Delete]);
+    choose(&mut app, "Stop it");
+    assert_eq!(app.status, "stopped: it lands as failed");
+    assert!(one.stopped(), "stopped");
+    // On the runs, a running ask's line: the same.
+    answering(&db, "run-two", &said("and this?"), &two);
+    app.refresh();
+    choose(&mut app, "Runs");
+    assert_eq!(app.screen, Screen::Runs);
+    assert!(app.hint().contains("delete: stop it"), "{}", app.hint());
+    let said = "Press Delete to stop the agent: the ask lands as failed. Delete asks first.";
+    assert!(app.help().iter().any(|l| l == said), "{:?}", app.help());
+    keys(&mut app, &[KeyCode::Delete]);
+    assert_eq!(menu_title(&app), "stop the agent? the ask lands as failed");
+    keys(&mut app, &[KeyCode::Esc]);
+    assert!(two.runs(), "it runs");
+    keys(&mut app, &[KeyCode::Delete]);
+    choose(&mut app, "Stop it");
+    assert!(two.stopped(), "stopped");
+    // An ask that no longer runs: nothing.
+    keys(&mut app, &[KeyCode::Delete]);
+    assert_eq!((app.screen, app.mode.clone()), (Screen::Runs, Mode::Normal));
+}
+
+#[test]
+fn delete_takes_a_comment_back_from_the_queue_or_out_of_the_batch_at_once() {
+    use stacked::db::{Queued, Stage, Way};
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Enter]);
+    save(&mut app, "why so loud?");
+    keys(&mut app, &[KeyCode::Down]);
+    let queue = |stage: Stage| {
+        let n = notes_of(&db, "s", 0).remove(0);
+        let queued = Queued {
+            way: Way::Answer,
+            batch: "b-waiting".into(),
+            stack: false,
+            stage,
+            on: None,
+            was: None,
+            effort: None,
+        };
+        Db::edit(&db, |d| d.set_note(Note { queued: Some(queued), ..n })).unwrap();
+    };
+    // Waiting its turn on the agent's queue: taken back at once, as "Take it
+    // back from the agent's queue", with no question.
+    queue(Stage::Ready);
+    app.refresh();
+    assert!(app.hint().contains("delete: take it back from the queue"), "{}", app.hint());
+    keys(&mut app, &[KeyCode::Delete]);
+    assert_eq!(app.mode, Mode::Normal);
+    assert!(notes_of(&db, "s", 0)[0].queued.is_none(), "off the queue");
+    // In the batch: taken out at once, as "Remove it from the batch".
+    queue(Stage::Batch);
+    app.refresh();
+    assert!(app.hint().contains("delete: remove it from the batch"), "{}", app.hint());
+    keys(&mut app, &[KeyCode::Backspace]);
+    assert_eq!((app.mode.clone(), app.status.as_str()), (Mode::Normal, "taken out of the batch: it is not sent"));
+    assert!(notes_of(&db, "s", 0)[0].queued.is_none(), "out of the batch");
+    // Then neither: closed, once asked.
+    keys(&mut app, &[KeyCode::Delete]);
+    assert_eq!(menu_title(&app), "close this comment? Show…, closed, can reopen it");
+}
+
+#[test]
+fn reading_enter_comments_and_delete_takes_a_mark_back() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    draw(&mut app);
+    keys(&mut app, &[KeyCode::Char('2'), KeyCode::Enter]);
+    app.wait_blocks();
+    down_to(&mut app, "+TWO");
+    let screen = draw(&mut app);
+    let bar = "space: mark this block read · delete: unread · enter: comment · 1: view · 2: comment · 3: whole · ?: what can I do here";
+    assert!(screen.lines().last().unwrap().contains(bar), "{screen}");
+    // Space marks the hunk read; back on it, Delete takes the mark back, at
+    // once, and so does Backspace.
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    assert!(app.status.contains("read: this hunk, 2 lines"), "{}", app.status);
+    up_to(&mut app, "+TWO");
+    assert!(app.rows[app.cursor].read);
+    let help = app.help();
+    assert!(help.iter().any(|l| l == "Press Delete to mark this block as unread: the latest mark here, 2 lines."), "{help:?}");
+    assert!(help.iter().any(|l| l == "Press Enter to create a comment on this line."), "{help:?}");
+    keys(&mut app, &[KeyCode::Delete]);
+    assert_eq!(app.mode, Mode::Normal);
+    assert!(app.status.contains("unread: 2 lines"), "{}", app.status);
+    assert!(!app.rows[app.cursor].read);
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    up_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Backspace]);
+    assert!(app.status.contains("unread: 2 lines"), "{}", app.status);
+    // Nothing marked there any more: said.
+    keys(&mut app, &[KeyCode::Delete]);
+    assert_eq!(app.status, "nothing here is marked read");
+    // Enter comments on the line, as when commenting, and marks nothing.
+    keys(&mut app, &[KeyCode::Enter]);
+    assert!(matches!(app.mode, Mode::Edit(_)), "{:?}", app.mode);
+    save(&mut app, "why so loud?");
+    assert_eq!(notes_of(&db, "s", 0)[0].text, "why so loud?");
+    assert!(app.reading, "still reading");
+    let d = Db::load(&db).unwrap();
+    assert!(d.read_keys(&d.patch(&d.stack("s").unwrap().patches[0]).change).is_empty(), "nothing read");
+}
+
+#[test]
+fn reading_a_comment_s_rows_have_the_keys_they_have_when_commenting() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Enter]);
+    save(&mut app, "why so loud?");
+    // The agent answered: the last word is not yours, and Enter replies.
+    let n = notes_of(&db, "s", 0).remove(0);
+    Db::edit(&db, |d| d.set_note(Note { text: append_turn(&n.text, Role::Agent, "It is a shout.", Some("answer")), ..n })).unwrap();
+    app.refresh();
+    keys(&mut app, &[KeyCode::Char('2')]);
+    app.wait_blocks();
+    let read = |db: &Path| {
+        let d = Db::load(db).unwrap();
+        d.read_keys(&d.patch(&d.stack("s").unwrap().patches[0]).change).len()
+    };
+    // On the comment's head: as when commenting, said so in the bar and by
+    // `?`, the margin showing no mark to make.
+    keys(&mut app, &[KeyCode::Home]);
+    down_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Down]);
+    assert!(app.rows[app.cursor].head && app.rows[app.cursor].note.is_some(), "{:?}", app.rows[app.cursor]);
+    let screen = draw(&mut app);
+    assert!(screen.contains("reading 0/6"), "{screen}");
+    assert!(!screen.contains("○→✓") && !screen.contains("✓→○"), "{screen}");
+    assert_eq!(app.hint(), "enter: reply · space: menu · delete: close it · 1: view · 2: comment · 3: whole · ?: what can I do here");
+    let help = app.help();
+    assert!(help.iter().any(|l| l == "Press Enter to reply to this comment."), "{help:?}");
+    assert!(help.iter().any(|l| l == "Press Space for all that can be done here."), "{help:?}");
+    assert!(!help.iter().any(|l| l.contains("mark this block")), "{help:?}");
+    // Space: its menu, nothing marked read.
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    assert_eq!(menu_title(&app), "your comment");
+    assert!(items(&app).iter().any(|(l, _)| l == "Close this comment…"), "{:?}", items(&app));
+    assert_eq!(read(&db), 0, "nothing read");
+    assert!(draw(&mut app).contains("reading 0/6"));
+    keys(&mut app, &[KeyCode::Esc]);
+    // Delete: asked to close it.
+    keys(&mut app, &[KeyCode::Delete]);
+    assert_eq!(menu_title(&app), "close this comment? Show…, closed, can reopen it");
+    keys(&mut app, &[KeyCode::Esc]);
+    assert_eq!((notes_of(&db, "s", 0).len(), read(&db)), (1, 0));
+    // Enter: a reply.
+    keys(&mut app, &[KeyCode::Enter]);
+    assert!(matches!(&app.mode, Mode::Edit(e) if matches!(e.target, stacked::tui::Target::Reply { .. })), "{:?}", app.mode);
+    keys(&mut app, &[KeyCode::Esc]);
+    assert_eq!(app.mode, Mode::Normal);
+    // On a turn of it, the same: Space is its menu.
+    down_to(&mut app, "     ▎   It is a shout.");
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    assert_eq!(menu_title(&app), "your comment");
+    keys(&mut app, &[KeyCode::Esc]);
+    assert_eq!(read(&db), 0, "nothing read");
+    // On the code, Space and Delete mark and unmark, as ever.
+    up_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    assert!(app.status.contains("read: this hunk, 2 lines"), "{}", app.status);
+    assert_eq!(read(&db), 2);
+    up_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Delete]);
+    assert!(app.status.contains("unread: 2 lines"), "{}", app.status);
+    assert_eq!(read(&db), 0);
+}
+
+#[test]
+fn delete_drops_a_patch_or_deletes_the_stack_once_asked() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    draw(&mut app);
+    let patches = |db: &Path| Db::load(db).unwrap().stack("s").map(|s| s.patches.len()).unwrap_or(0);
+    // On a patch, as "Drop this patch…": asked first; Esc keeps it.
+    assert!(app.hint().contains(" · space: menu · delete: drop it · "), "{}", app.hint());
+    keys(&mut app, &[KeyCode::Delete]);
+    assert_eq!(asked(&app), ("drop Bug 1 - shout two?".to_string(), labels(&["Drop it", "Keep it"]), 0));
+    keys(&mut app, &[KeyCode::Esc]);
+    assert_eq!(patches(&db), 2, "kept");
+    keys(&mut app, &[KeyCode::Delete]);
+    choose(&mut app, "Drop it");
+    assert_eq!(patches(&db), 1);
+    assert!(!draw(&mut app).contains("shout two"));
+    // On the stack's header, as "Delete this stack…".
+    keys(&mut app, &[KeyCode::Home]);
+    assert!(app.hint().contains("delete: delete the stack"), "{}", app.hint());
+    keys(&mut app, &[KeyCode::Delete]);
+    assert_eq!(asked(&app), ("delete stack s? undo brings it back".to_string(), labels(&["Delete it", "Keep it"]), 0));
+    keys(&mut app, &[KeyCode::Esc]);
+    assert_eq!(patches(&db), 1, "kept");
+    keys(&mut app, &[KeyCode::Delete]);
+    choose(&mut app, "Delete it");
+    assert!(draw(&mut app).contains("s is deleted:"));
+}
+
+/// A database holding stack `s` of two patches, and the repository: patch
+/// 1 changes x.txt and y.txt; patch 2 changes y.txt again, from what patch
+/// 1 made of it.
+fn setup_two_files() -> (tempfile::TempDir, PathBuf, PathBuf) {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("src");
+    std::fs::create_dir(&src).unwrap();
+    git(&src, &["init", "-q", "-b", "main"]);
+    git(&src, &["config", "commit.gpgsign", "false"]);
+    std::fs::write(src.join("x.txt"), "ex\n").unwrap();
+    std::fs::write(src.join("y.txt"), "why\n").unwrap();
+    git(&src, &["add", "."]);
+    git(&src, &["commit", "-qm", "base"]);
+    std::fs::write(src.join("x.txt"), "EX\n").unwrap();
+    std::fs::write(src.join("y.txt"), "WHY\n").unwrap();
+    git(&src, &["commit", "-qam", "Bug 1 - shout both"]);
+    std::fs::write(src.join("y.txt"), "WHY?\n").unwrap();
+    git(&src, &["commit", "-qam", "Bug 2 - ask why"]);
+    let db = tmp.path().join("db.jsonl");
+    stacked(&src, &db, &["import", "s", "HEAD~2"]);
+    (tmp, db, src)
+}
+
+#[test]
+fn delete_on_a_file_listed_drops_its_changes_from_the_patch_for_review() {
+    let (_tmp, db, _src) = setup_two_files();
+    let mut app = open(&db).unwrap();
+    let patch_1 = |db: &Path| {
+        let d = Db::load(db).unwrap();
+        d.patch(&d.stack("s").unwrap().patches[0]).clone()
+    };
+    let was = patch_1(&db);
+    // Patch 1's files listed under it, the cursor on y.txt, which patch 2
+    // goes on from.
+    keys(&mut app, &[KeyCode::Left, KeyCode::Down, KeyCode::Down]);
+    assert_eq!(app.file_on(), Some(1));
+    assert!(app.hint().contains("delete: drop its changes"), "{}", app.hint());
+    let help = app.help();
+    assert!(
+        help.iter().any(|l| l.starts_with("Press Delete to drop this patch's changes to y.txt: the patch without them lands for your review") && l.ends_with(". Delete asks first.")),
+        "{help:?}"
+    );
+    // Asked first, naming the file and the patch, and saying the patches
+    // after it are checked; Esc writes nothing.
+    let before = std::fs::read(&db).unwrap();
+    keys(&mut app, &[KeyCode::Delete]);
+    assert_eq!(asked(&app), ("drop the changes to y.txt from Bug 1 - shout both?".to_string(), labels(&["Drop them", "Keep them"]), 0));
+    assert_eq!(menu_note(&app), "The patch without them lands for your review, as an edit by hand does, once the patches after it are seen to still apply on it.");
+    keys(&mut app, &[KeyCode::Esc]);
+    assert_eq!(std::fs::read(&db).unwrap(), before, "nothing written");
+    // Patch 2 does not apply without them: refused, why said, nothing
+    // written.
+    keys(&mut app, &[KeyCode::Delete]);
+    choose(&mut app, "Drop them");
+    assert!(app.status.starts_with("patch 2 (Bug 2 - ask why) does not apply") && app.status.ends_with("; nothing changed"), "{}", app.status);
+    assert_eq!((app.screen, app.mode.clone()), (Screen::Main, Mode::Normal));
+    assert_eq!(std::fs::read(&db).unwrap(), before, "nothing written");
+    // x.txt's: dropped as an edit by hand, which lands for review, its
+    // review open at once; patch 1 without x.txt's diff, the rest of it as
+    // it was, and the stack as it was until the review accepts it.
+    keys(&mut app, &[KeyCode::Up]);
+    assert_eq!(app.file_on(), Some(0));
+    keys(&mut app, &[KeyCode::Delete]);
+    assert_eq!(menu_title(&app), "drop the changes to x.txt from Bug 1 - shout both?");
+    choose(&mut app, "Drop them");
+    assert_eq!(app.screen, Screen::Review);
+    assert_eq!(app.status, "dropped the changes to x.txt from Bug 1 - shout both: it waits for your review");
+    let d = Db::load(&db).unwrap();
+    let run = d.run(&app.reviewing.as_ref().unwrap().run).unwrap().clone();
+    assert!(stacked::held::by_hand(&run), "{run:?}");
+    let new = d.patch(&run.held.as_ref().unwrap().stack.as_ref().unwrap().patches[0]).clone();
+    assert!(!new.diff.contains("x.txt") && new.diff.contains("+WHY\n"), "{}", new.diff);
+    assert_eq!((new.change.as_str(), new.message.as_str()), (was.change.as_str(), was.message.as_str()));
+    assert_eq!(patch_1(&db).id, was.id, "not before the review");
+    drop(d);
+    keys(&mut app, &[KeyCode::Esc]);
+    choose(&mut app, "Accept all remaining and Close");
+    choose(&mut app, "Accept them and close");
+    assert_eq!(patch_1(&db).id, new.id);
+    // Its only file left: the patch would be empty, said, and dropping the
+    // patch offered instead.
+    assert!(app.screen == Screen::Main && app.focus == Focus::List && app.list == PatchesPane::Files);
+    keys(&mut app, &[KeyCode::Down]);
+    assert_eq!(app.file_on(), Some(0));
+    keys(&mut app, &[KeyCode::Delete]);
+    assert_eq!(asked(&app), ("y.txt is the only file Bug 1 - shout both changes".to_string(), labels(&["Drop this patch…", "Keep it"]), 0));
+    assert_eq!(menu_note(&app), "The patch would be empty without its changes to y.txt: drop the patch instead.");
+    choose(&mut app, "Drop this patch…");
+    assert_eq!(asked(&app), ("drop Bug 1 - shout both?".to_string(), labels(&["Drop it", "Keep it"]), 0));
+    keys(&mut app, &[KeyCode::Esc]);
+    assert_eq!(patch_1(&db).id, new.id, "kept");
+}
+
+#[test]
+fn a_file_s_changes_dropped_go_whole_a_rename_s_and_a_file_s_added_or_deleted() {
+    let (_tmp, db, _src) = setup_whole();
+    stacked::config::init(settings());
+    // Patch 1 adds b.txt, deletes c.txt, renames d.txt to e.txt with a
+    // change: each part of its diff goes whole, the others staying.
+    let parts = |diff: &str| diff.lines().filter(|l| l.starts_with("diff --git ")).map(String::from).collect::<Vec<_>>();
+    for (file, part) in [("b.txt", "new file mode"), ("c.txt", "deleted file mode"), ("e.txt", "rename from d.txt")] {
+        let run = match stacked::ops::drop_file(&db, "w", 0, file).unwrap() {
+            stacked::ops::Edited::Landed { run, .. } => run,
+            other => panic!("{file}: {other:?}"),
+        };
+        let d = Db::load(&db).unwrap();
+        let old = d.patch(&d.stack("w").unwrap().patches[0]).clone();
+        let new = d.patch(&d.run(&run).unwrap().held.as_ref().unwrap().stack.as_ref().unwrap().patches[0]).clone();
+        assert!(old.diff.contains(part) && !new.diff.contains(part), "{file}:\n{}", new.diff);
+        assert_eq!(parts(&new.diff).len(), parts(&old.diff).len() - 1, "{file}:\n{}", new.diff);
+        assert!(!parts(&new.diff).iter().any(|l| l.ends_with(&format!(" b/{file}"))), "{file}:\n{}", new.diff);
+        drop(d);
+        // Rejected, for the next to start from the stack as it was.
+        Db::edit(&db, |d| stacked::held::close(d, &run, &Default::default(), Some(false))).unwrap();
+    }
+    // A file the patch does not change: refused.
+    let e = stacked::ops::drop_file(&db, "w", 1, "nope.txt").unwrap_err();
+    assert_eq!(e.0, "Bug 2 - a.txt again, and g.txt does not change nope.txt");
+}
+
+#[test]
+fn in_a_review_delete_rejects_closes_or_takes_back_as_its_menu_does() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Enter]);
+    save(&mut app, "why so loud?");
+    let n = notes_of(&db, "s", 0).remove(0);
+    agent_changed(&db, "run-agent", &n);
+    app.refresh();
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Enter]);
+    assert_eq!(app.screen, Screen::Review);
+    // A comment written in the review, and an answer to the agent's reply.
+    keys(&mut app, &[KeyCode::Home]);
+    down_to_review(&mut app, "modify  1 Bug 1");
+    keys(&mut app, &[KeyCode::Right, KeyCode::Enter, KeyCode::Enter]);
+    save(&mut app, "Not like this either.");
+    keys(&mut app, &[KeyCode::Left, KeyCode::Left]);
+    down_to_review(&mut app, "Quieter now.");
+    choose(&mut app, "Reply to it");
+    save(&mut app, "Still too loud.");
+    // What you wrote: taken back once asked, which its menu does at once;
+    // Esc keeps it.
+    down_to_review(&mut app, "Not like this either.");
+    assert_eq!(app.hint(), "↑↓ choose · enter: edit it · delete: take it back · →: look closer · space: menu · esc: send back, save or discard");
+    keys(&mut app, &[KeyCode::Delete]);
+    let back = "take your comment back? it does not go back to the agent with the work";
+    assert_eq!(asked(&app), (back.to_string(), labels(&["Take it back", "Keep it"]), 1));
+    keys(&mut app, &[KeyCode::Esc]);
+    assert!(notes_of(&db, "s", 0).iter().any(|m| m.text == "Not like this either."), "kept");
+    keys(&mut app, &[KeyCode::Delete]);
+    choose(&mut app, "Take it back");
+    assert_eq!(app.status, "taken back: it does not go back to the agent with the work");
+    assert!(!notes_of(&db, "s", 0).iter().any(|m| m.text.contains("Not like this either.")));
+    // Your answer, the cursor on it now.
+    assert!(selected_line(&mut app).is_some_and(|l| l.contains("your answer on")), "{:?}", selected_line(&mut app));
+    keys(&mut app, &[KeyCode::Delete]);
+    let back = "take your answer back? it does not go back to the agent with the work";
+    assert_eq!(asked(&app), (back.to_string(), labels(&["Take your answer back", "Keep it"]), 1));
+    keys(&mut app, &[KeyCode::Esc]);
+    let answer = |db: &Path| Db::load(db).unwrap().run("run-agent").unwrap().held.as_ref().unwrap().replies[0].answer.clone();
+    assert_eq!(answer(&db).as_deref(), Some("Still too loud."), "kept");
+    keys(&mut app, &[KeyCode::Delete]);
+    choose(&mut app, "Take your answer back");
+    assert_eq!(answer(&db), None);
+    // A part: rejected at once, as "Mark as rejected"; rejected already,
+    // said.
+    keys(&mut app, &[KeyCode::Home]);
+    down_to_review(&mut app, "stack operations");
+    assert_eq!(app.hint(), "↑↓ choose · enter: accept · delete: reject · →: look closer · space: menu · esc: save, discard or close");
+    let said = "Press Delete to mark this part rejected: it is dropped when the review closes.";
+    assert!(app.help().iter().any(|l| l == said), "{:?}", app.help());
+    keys(&mut app, &[KeyCode::Delete]);
+    assert_eq!(app.mode, Mode::Normal);
+    assert!(draw(&mut app).contains("stack operations · rejected"));
+    keys(&mut app, &[KeyCode::Delete]);
+    assert_eq!(app.status, "this part is rejected already");
+    // The comment the ask was about: closed with the review, at once.
+    keys(&mut app, &[KeyCode::Home]);
+    assert!(selected_line(&mut app).is_some_and(|l| l.contains("keep ") && l.contains("why so loud?")), "{:?}", selected_line(&mut app));
+    assert!(app.hint().contains("delete: close it with the review"), "{}", app.hint());
+    keys(&mut app, &[KeyCode::Delete]);
+    assert_eq!(app.mode, Mode::Normal);
+    assert!(selected_line(&mut app).is_some_and(|l| l.contains("close ") && l.contains("why so loud?")), "{:?}", selected_line(&mut app));
+    keys(&mut app, &[KeyCode::Delete]);
+    assert_eq!(app.status, "this comment closes with the review already");
+}
+
+#[test]
+fn on_the_banner_delete_rejects_what_landed_or_closes_a_comment_once_asked() {
+    let (_tmp, db, mut app) = landed_kinds(&[("run-1", "edit")], false);
+    keys(&mut app, &[KeyCode::Esc]);
+    assert!(app.on_banner);
+    assert!(selected_banner(&mut app).contains("⟳ Review"), "{}", selected_banner(&mut app));
+    // What landed: asked first, as the review's "Reject all remaining and
+    // Close", keeping it for review picked; Esc keeps it.
+    assert!(app.hint().contains("enter: review it · delete: reject all remaining · space: pick one"), "{}", app.hint());
+    keys(&mut app, &[KeyCode::Delete]);
+    let (title, items, sel) = asked(&app);
+    assert_eq!((title.as_str(), sel), ("reject every part of this work not marked yet, then close its review?", 1));
+    assert_eq!(items, labels(&["Reject them and close", "Keep it for review"]));
+    let note = menu_note(&app);
+    assert!(
+        note.starts_with("Not marked yet: the change of the stack, 1 reply. The review closes then: what you rejected is dropped for good, and what you accepted is applied."),
+        "{note}"
+    );
+    keys(&mut app, &[KeyCode::Esc]);
+    assert!(Db::load(&db).unwrap().review("run-1").is_none_or(|v| !v.closed), "kept for review");
+    keys(&mut app, &[KeyCode::Delete]);
+    choose(&mut app, "Reject them and close");
+    assert!(app.status.starts_with("reviewed: its change rejected"), "{}", app.status);
+    assert_eq!(app.screen, Screen::Main);
+    let d = Db::load(&db).unwrap();
+    let v = d.review("run-1").unwrap();
+    assert!(v.closed && v.marks.get("stack") == Some(&false), "{v:?}");
+    drop(d);
+    // A comment's line: as on the comment.
+    assert!(app.on_banner);
+    assert!(selected_banner(&mut app).contains("why so loud?"), "{}", selected_banner(&mut app));
+    assert!(app.hint().contains("enter: go to it · delete: close it · space: pick one"), "{}", app.hint());
+    keys(&mut app, &[KeyCode::Delete]);
+    assert_eq!(menu_title(&app), "close this comment? Show…, closed, can reopen it");
+    choose(&mut app, "Close it");
+    assert!(notes_of(&db, "s", 0).is_empty());
+}
+
+#[test]
+fn on_the_banner_work_going_on_from_an_edit_under_review_is_not_rejected_before_it() {
+    let (_tmp, db, mut app) = landed_kinds(&[("run-1", "edit"), ("run-3", "guess")], false);
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Down]);
+    assert!(selected_banner(&mut app).contains("after the edit under review"), "{}", selected_banner(&mut app));
+    let before = std::fs::read(&db).unwrap();
+    keys(&mut app, &[KeyCode::Delete]);
+    assert_eq!(app.mode, Mode::Normal);
+    assert_eq!(app.status, "this work goes on from the work landed before it, which waits for your review: review that one first");
+    assert_eq!(std::fs::read(&db).unwrap(), before, "nothing written");
+}
+
+#[test]
+fn delete_and_backspace_edit_what_is_typed_in_the_comment_editor_and_the_search_bar() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Enter]);
+    // Backspace takes the character before the cursor, Delete the one under
+    // it.
+    typed(&mut app, "why so loud?!x");
+    keys(&mut app, &[KeyCode::Backspace, KeyCode::Left, KeyCode::Delete]);
+    assert!(matches!(&app.mode, Mode::Edit(e) if e.ed.text() == "why so loud?"), "{:?}", app.mode);
+    keys(&mut app, &[KeyCode::Esc]);
+    choose(&mut app, "Save it");
+    assert_eq!(notes_of(&db, "s", 0)[0].text, "why so loud?");
+    // The search of the middle, the same.
+    keys(&mut app, &[KeyCode::Char('/')]);
+    typed(&mut app, "TWOOx");
+    keys(&mut app, &[KeyCode::Backspace, KeyCode::Left, KeyCode::Delete]);
+    assert_eq!(finding(&app).0, "TWO");
+    keys(&mut app, &[KeyCode::Esc]);
+    assert_eq!(notes_of(&db, "s", 0).len(), 1, "the comment as it was");
+}
+
+#[test]
+fn the_key_for_delete_is_a_setting() {
+    let (_tmp, db, _src) = setup();
+    let (cfg, wrong) = stacked::config::Config::parse("[keys]\ndelete = \"x\"\n").unwrap();
+    assert!(wrong.is_empty(), "{wrong:?}");
+    stacked::config::init(settings());
+    let mut app = App::with_config(&db, cfg).unwrap();
+    draw(&mut app);
+    // Delete and Backspace no longer drop the patch the cursor is on; x does,
+    // as the bar and the help say.
+    for code in [KeyCode::Delete, KeyCode::Backspace] {
+        keys(&mut app, &[code]);
+        assert_eq!(app.mode, Mode::Normal, "{code:?}");
+    }
+    assert!(app.say_keys(app.hint()).contains(" · x: drop it · "), "{}", app.hint());
+    assert!(app.help().iter().any(|l| l.starts_with("Press x to drop this patch") && l.ends_with(" x asks first.")), "{:?}", app.help());
+    keys(&mut app, &[KeyCode::Char('x')]);
+    assert_eq!(menu_title(&app), "drop Bug 1 - shout two?");
+}
+
+#[test]
+fn delete_does_nothing_in_a_menu_nor_on_the_history_the_tree_the_versions_or_the_search() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    draw(&mut app);
+    let before = std::fs::read(&db).unwrap();
+    // In a menu: nothing, its item picked as it was.
+    keys(&mut app, &[KeyCode::Char(' '), KeyCode::Down]);
+    let menu = app.mode.clone();
+    keys(&mut app, &[KeyCode::Delete, KeyCode::Backspace]);
+    assert_eq!(app.mode, menu);
+    keys(&mut app, &[KeyCode::Esc]);
+    // On the screens of their own: nothing, said or done.
+    for (header, item, screen) in [
+        (true, "History…", Screen::History),
+        (true, "Tree of edits…", Screen::Tree),
+        (false, "Versions of this patch…", Screen::Versions),
+        (false, "Search…", Screen::Search),
+    ] {
+        keys(&mut app, &[KeyCode::Home]);
+        if !header {
+            keys(&mut app, &[KeyCode::Down]);
+        }
+        choose(&mut app, item);
+        assert_eq!(app.screen, screen, "{item}");
+        keys(&mut app, &[KeyCode::Delete, KeyCode::Backspace]);
+        assert_eq!((app.screen, app.mode.clone(), app.status.as_str()), (screen, Mode::Normal, ""), "{item}");
+        keys(&mut app, &[KeyCode::Esc]);
+        assert_eq!(app.screen, Screen::Main, "{item}");
+    }
+    assert_eq!(std::fs::read(&db).unwrap(), before, "nothing written");
 }

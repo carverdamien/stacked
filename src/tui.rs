@@ -11,9 +11,11 @@
 //! the patch picked under it, to jump to, then hides the patches; → on the
 //! comments makes them compact, then hides them), enter does what is to be
 //! done where the cursor is, space is the menu of all that can be done
-//! there, `?` says what that is, and esc goes back. Nothing else is a
-//! shortcut: what the menu does, only the menu does. Comments are written
-//! in an editor inline where they will show, and sent to claude from their
+//! there, `?` says what that is, and esc goes back. Delete (Backspace too)
+//! is the one shortcut: the menu's item that closes, drops, stops or
+//! rejects what the cursor is on, asking first as that item does. Nothing
+//! else is: what the menu does, only the menu does. Comments are written in
+//! an editor inline where they will show, and sent to claude from their
 //! menu.
 
 use std::collections::{HashMap, HashSet};
@@ -153,10 +155,10 @@ fn row_style(row: &Row) -> Style {
 }
 
 /// The reading mode's margin: a changed line's check when it is read, or
-/// what Space (Enter) would make of it; three columns, and a space.
+/// what Space (Delete) would make of it; three columns, and a space.
 const MARGIN_W: usize = 4;
 
-/// What the margin's marks say: what Space would read, or Enter unread.
+/// What the margin's marks say: what Space would read, or Delete unread.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Tick {
     ToRead,
@@ -1054,6 +1056,13 @@ pub enum Action {
     ThrowEdit,
     AskDrop,
     Drop,
+    /// The changes the patch picked makes to file `0`, which the patches
+    /// pane lists under it, dropped once asked: the patch without that
+    /// file's part of its diff lands for your review, as an edit by hand
+    /// does. Asked of a patch that changes no other file, its drop offered
+    /// instead.
+    AskDropFile(String),
+    DropFile(String),
     CommentStack,
     CommentPatch,
     CommentLine,
@@ -1100,9 +1109,15 @@ pub enum Action {
     SendBack,
     Answer(usize),
     /// In the review: what you wrote there, on the list's line the cursor
-    /// is on, written again, or taken back.
+    /// is on, written again, or taken back (asked first, from Delete).
     EditYours,
+    AskTakeYoursBack,
     TakeYoursBack,
+    /// From the banner, the review of what run `0` brought back closed once
+    /// asked, every part not marked yet rejected, as the review's "Reject
+    /// all remaining and Close" closes it.
+    AskRejectWork(String),
+    RejectWork(String),
     /// In the review: closing it, or sending the work back, asked first when
     /// it asks something again; closing it and stopping the build and test of
     /// the stack as it was.
@@ -1168,8 +1183,10 @@ pub enum Action {
     AskStop(String),
     Stop(String),
     GoToOpened,
+    /// The comment the cursor is on and those its answer opened closed,
+    /// once asked: comment (change, id), as it was asked about.
     AskCloseOpened,
-    CloseOpened,
+    CloseOpened(String, String),
     GoToOrigin,
     MoveBack,
     NoteHistory,
@@ -1179,7 +1196,9 @@ pub enum Action {
     /// stay open.
     AskCloseAll,
     CloseAll,
-    CloseComment,
+    /// The comment the cursor is on closed, once asked: comment (change,
+    /// id), as it was asked about.
+    CloseComment(String, String),
     /// A closed comment open again, as it was.
     Reopen,
     ShowMenu,
@@ -1292,6 +1311,10 @@ fn about(action: &Action) -> String {
         Action::ThrowEdit => "throw your edit away, and the conflicts you resolved since".into(),
         Action::AskDrop => "drop this patch from the stack (undo brings it back)".into(),
         Action::Drop => "drop it".into(),
+        Action::AskDropFile(file) => format!(
+            "drop this patch's changes to {file}: the patch without them lands for your review, as an edit by hand does, once the patches after it are seen to still apply on it"
+        ),
+        Action::DropFile(_) => "drop them".into(),
         Action::CommentStack => "create a comment on the stack, for the agent to work on the whole stack".into(),
         Action::CommentPatch => "create a comment on this patch as a whole".into(),
         Action::CommentLine => "create a comment on this line".into(),
@@ -1331,7 +1354,10 @@ fn about(action: &Action) -> String {
         }
         Action::Answer(_) => "answer the agent's reply: the work goes back to the agent with your answer after the reply".into(),
         Action::EditYours => "write it again: what you said last in your comment, or your answer to the agent's reply".into(),
-        Action::TakeYoursBack => "take it back: it does not go back to the agent with the work".into(),
+        Action::AskTakeYoursBack | Action::TakeYoursBack => "take it back: it does not go back to the agent with the work".into(),
+        Action::AskRejectWork(_) | Action::RejectWork(_) => {
+            "reject every part of this work not marked yet, then close its review: what you rejected is dropped for good, and what you accepted is applied".into()
+        }
         Action::AskClose => "close the review, once you say so: what you accepted is applied, and what that asks again is said first".into(),
         Action::AskSendBack => "send the work back to the agent, once you say so: what went on from it is asked again".into(),
         Action::ReviewCloseStop(_) => "close the review, and stop the build and test of the stack as it was".into(),
@@ -1392,11 +1418,11 @@ fn about(action: &Action) -> String {
         Action::OpenStream => "read what the agent is writing".into(),
         Action::AskStop(_) | Action::Stop(_) => "stop the agent: the ask lands as failed".into(),
         Action::GoToOpened => "go to the comments its answer opened".into(),
-        Action::AskCloseOpened | Action::CloseOpened => "close it and the comments its answer opened".into(),
+        Action::AskCloseOpened | Action::CloseOpened(..) => "close it and the comments its answer opened".into(),
         Action::GoToOrigin => "go to where it was before it moved to the stack".into(),
         Action::MoveBack => "move it back where it came from".into(),
         Action::NoteHistory => "read every state this comment has been in".into(),
-        Action::AskCloseComment | Action::CloseComment => "close this comment, done with: it leaves the comments shown (Show…, closed, lists it, to reopen)".into(),
+        Action::AskCloseComment | Action::CloseComment(..) => "close this comment, done with: it leaves the comments shown (Show…, closed, lists it, to reopen)".into(),
         Action::Reopen => "reopen this comment, as it was when it was closed".into(),
         Action::AskCloseAll | Action::CloseAll => {
             "close every open comment of the stack, done with, asked first: those with the agent, or whose reply waits for your review, stay open; Show…, closed, lists them, to reopen each".into()
@@ -1754,7 +1780,7 @@ pub struct App {
     pub compact: Compact,
     panes: Arc<Panes>,
     /// Reading rather than commenting: in the middle, Space marks the
-    /// block of code at the cursor read, Enter takes the mark back.
+    /// block of code at the cursor read, Delete takes the mark back.
     pub reading: bool,
     /// Each file of the patch shown whole rather than as its hunks (`3`),
     /// once read; and the files read, by patch.
@@ -3639,6 +3665,11 @@ impl App {
                 return Effect::None;
             }
         }
+        // What the menu closes, drops, stops or rejects where the cursor is,
+        // as the menu's own item does it; reading, the mark taken back.
+        if k.code == KeyCode::Delete {
+            return self.delete();
+        }
         // self-review's two keys: 1 for another view of the code, here the
         // menu of them, 2 to read rather than comment, or comment rather
         // than read; and 3, each file whole rather than its hunks, or its
@@ -4245,7 +4276,7 @@ impl App {
         self.reading = !self.reading;
         self.built = None;
         self.status = if self.reading {
-            "reading: in the code, Space marks a block as read, Enter as unread".into()
+            "reading: in the code, Space marks a block as read, Delete as unread".into()
         } else {
             "commenting: in the code, Enter comments, Space is the menu".into()
         };
@@ -4340,7 +4371,9 @@ impl App {
     }
 
     /// Whether the reading mode has the middle's keys: a patch is there,
-    /// and the cursor is in it.
+    /// and the cursor is in it, on a row of its code. A comment's rows keep
+    /// the keys they have when commenting: Space is the comment's menu,
+    /// Delete closes it, Enter replies; nothing is marked read there.
     pub fn reading_here(&self) -> bool {
         self.reading
             && self.screen == Screen::Main
@@ -4348,6 +4381,13 @@ impl App {
             && !self.on_stack
             && !self.on_banner
             && self.patch_id().is_some()
+            && !self.on_comment_row()
+    }
+
+    /// Whether the middle's cursor is on a row of a comment: its head, a
+    /// turn, the agent's stream under it, a reference.
+    fn on_comment_row(&self) -> bool {
+        self.rows.get(self.cursor).is_some_and(|r| r.note.is_some())
     }
 
     /// The current patch's key for its blocks.
@@ -4381,7 +4421,7 @@ impl App {
         self.finder.wait();
     }
 
-    /// What Space and Enter would do at the cursor, in the reading mode:
+    /// What Space and Delete would do at the cursor, in the reading mode:
     /// None while the patch's blocks are looked for.
     #[allow(clippy::type_complexity)]
     fn reading_at(&self) -> Option<(Option<Block>, Option<(usize, HashSet<String>)>)> {
@@ -4469,7 +4509,7 @@ impl App {
         self.cursor = j;
     }
 
-    /// Enter, reading: takes back the latest mark around the cursor.
+    /// Delete, reading: takes back the latest mark around the cursor.
     fn mark_unread(&mut self) {
         let Some(change) = self.subject_change() else { return };
         if let Some((n, path)) = self.outside_here() {
@@ -4557,7 +4597,7 @@ impl App {
             Focus::List => (self.patch_count() > 0).then_some(Action::Open),
             Focus::Notes if self.notes_head => None,
             Focus::Notes => (!self.notes().is_empty()).then_some(Action::GoToNote),
-            Focus::Diff if self.reading_here() => Some(Action::MarkUnread),
+            // Reading too: Delete, not Enter, takes a mark back.
             Focus::Diff => {
                 // A reference a comment attached: its lines, previewed.
                 if let Some(r) = self.rows.get(self.target_row()).and_then(|row| row.reference.clone()) {
@@ -4603,6 +4643,143 @@ impl App {
                 self.commentable().map(|_| Action::CommentLine)
             }
         }
+    }
+
+    /// What Delete does where the cursor is, when it does something: the
+    /// action of the menu's item that closes, drops, stops or rejects what
+    /// the cursor is on, an item ending with "…" asking first; reading, on
+    /// the code in the middle, the mark around the cursor taken back.
+    pub fn delete_here(&self) -> Option<Action> {
+        self.deleting()?.ok()
+    }
+
+    /// What Delete does where the cursor is: an action, or nothing and why,
+    /// for the status line to say; None where it does nothing to say.
+    fn deleting(&self) -> Option<std::result::Result<Action, String>> {
+        match self.screen {
+            Screen::Main if self.on_banner => match self.banner_lines().get(self.banner_sel)? {
+                BannerLine::Landed(run) => Some(self.reject_work_here(run)),
+                BannerLine::Comment(change, id) => self.comment_deleting(self.db.note(change, id)?),
+                _ => None,
+            },
+            Screen::Main => match self.focus {
+                Focus::List if self.current().is_none() => None,
+                Focus::List => {
+                    let action = if self.on_stack {
+                        Action::AskDeleteStack
+                    } else if let Some(k) = self.file_on() {
+                        Action::AskDropFile(self.files_listed().get(k)?.path.clone())
+                    } else if self.patch_count() > 0 {
+                        Action::AskDrop
+                    } else {
+                        return None;
+                    };
+                    // Not while the agent changes the stack, as the menu says.
+                    Some(match self.by_hand() {
+                        Some(why) => Err(why),
+                        None => Ok(action),
+                    })
+                }
+                Focus::Diff if self.reading_here() => Some(Ok(Action::MarkUnread)),
+                Focus::Notes if self.notes_head => None,
+                Focus::Diff | Focus::Notes => self.comment_deleting(&self.picked()?),
+            },
+            Screen::Review => self.review_deleting(),
+            Screen::Runs => {
+                let r = *self.runs_newest().get(self.pick)?;
+                ask::running(r).then(|| Ok(Action::AskStop(r.id.clone())))
+            }
+            _ => None,
+        }
+    }
+
+    /// What Delete does on comment `c`, as its menu has it: the agent that
+    /// works on it stopped; taken out of the batch, or back from the agent's
+    /// queue; else closed, with the comments its answer opened if it opened
+    /// some. Nothing on one closed, nor on one whose reply waits for your
+    /// review, as the status line says.
+    fn comment_deleting(&self, c: &Note) -> Option<std::result::Result<Action, String>> {
+        if self.is_closed(c) {
+            return Some(Err("this comment is closed already".into()));
+        }
+        let key = (c.change.clone(), c.id.clone());
+        if let Some((_, run)) = self.busy().get(&key) {
+            return Some(Ok(Action::AskStop(run.clone())));
+        }
+        if let Some((run, k)) = self.held_replies().get(&key) {
+            return Some(Err(format!("{} waits for your review: review it before closing this comment", self.reply_said(run, *k))));
+        }
+        Some(Ok(match &c.queued {
+            Some(q) if q.batched() => Action::Unbatch,
+            Some(_) => Action::Unsend,
+            None if !self.db.opened_from(&self.stack, &c.change, &c.id).is_empty() => Action::AskCloseOpened,
+            None => Action::AskCloseComment,
+        }))
+    }
+
+    /// The comment the menu's items for a comment act on: on the banner, its
+    /// line's, which Delete acts on there; else the one picked.
+    fn comment_here(&self) -> Option<Note> {
+        if self.screen == Screen::Main && self.on_banner {
+            return match self.banner_lines().get(self.banner_sel)? {
+                BannerLine::Comment(change, id) => self.db.note(change, id).cloned(),
+                _ => None,
+            };
+        }
+        self.picked()
+    }
+
+    /// Delete: what `deleting` says, done; or why nothing is, said.
+    fn delete(&mut self) -> Effect {
+        match self.deleting() {
+            Some(Ok(action)) => self.perform(action),
+            Some(Err(why)) => {
+                self.status = why;
+                Effect::None
+            }
+            None => Effect::None,
+        }
+    }
+
+    /// What Delete does where the cursor is, as the bottom bar says it.
+    fn delete_hint(&self) -> Option<String> {
+        let said = match self.delete_here()? {
+            Action::AskCloseComment => "close it",
+            Action::AskCloseOpened => "close it and those it opened",
+            Action::AskStop(_) if self.screen == Screen::Runs => "stop it",
+            Action::AskStop(_) => "stop the agent",
+            Action::Unsend => "take it back from the queue",
+            Action::Unbatch => "remove it from the batch",
+            Action::AskDrop => "drop it",
+            Action::AskDeleteStack => "delete the stack",
+            Action::AskDropFile(_) => "drop its changes",
+            Action::MarkUnread => "unread",
+            Action::MarkPart(_) => "reject",
+            Action::CloseAsking(..) => "close it with the review",
+            Action::AskTakeYoursBack => "take it back",
+            Action::AskRejectWork(_) => "reject all remaining",
+            _ => return None,
+        };
+        Some(format!("delete: {said}"))
+    }
+
+    /// What Delete does where the cursor is, as `?` says it, and whether it
+    /// asks first.
+    fn delete_help(&self) -> Option<String> {
+        let a = self.delete_here()?;
+        let asks = matches!(
+            a,
+            Action::AskCloseComment
+                | Action::AskCloseOpened
+                | Action::AskStop(_)
+                | Action::AskDrop
+                | Action::AskDeleteStack
+                | Action::AskDropFile(_)
+                | Action::AskTakeYoursBack
+                | Action::AskRejectWork(_)
+        );
+        let first = if asks { " Delete asks first." } else { "" };
+        Some(format!("Press Delete to {}.{first}", self.about_here(&a)))
     }
 
     /// What can be done where the cursor is, said: what enter does first,
@@ -4679,6 +4856,7 @@ impl App {
                     }
                     _ => "Press Enter to go to this comment.".into(),
                 });
+                out.extend(self.delete_help());
                 out.push("Press ↑↓ for another line, and ↓ past the last for the stack; Space to pick one, to review, send or go to; Esc to go back where you were.".into());
             }
             Screen::Review => {
@@ -4691,11 +4869,12 @@ impl App {
                 } else if self.reviewing.as_ref().is_some_and(|rv| rv.in_main) && self.review_on_diff() {
                     out.push("This is the stack diff of the change, each new version's interdiff under it. Press ↑↓ for a line, and Enter to go to that line in its patch as the work leaves it, to write a comment there.".into());
                 } else {
-                    out.push("Press Enter to accept the part the cursor is on, or, accepted, to put it back to review; Space for its menu, to reject it, or to reply to the agent's reply; → to scroll what it looks like, → again to see it wide, the list out of sight, and ← to come back. On the stack operations, → goes into the stack diff, where Enter on a line goes to it in its patch as the work leaves it, to comment on it.".into());
+                    out.push("Press Enter to accept the part the cursor is on, or, accepted, to put it back to review; Delete to reject it; Space for its menu, to reject it too, or to reply to the agent's reply; → to scroll what it looks like, → again to see it wide, the list out of sight, and ← to come back. On the stack operations, → goes into the stack diff, where Enter on a line goes to it in its patch as the work leaves it, to comment on it.".into());
                 }
+                out.extend(self.delete_help());
                 out.push("What you write in the review of the agent's work sends that work back to the agent: the work is not accepted, and the agent is asked again, starting from this work.".into());
                 if self.review_yours() > (0, 0) {
-                    out.push("On a line of what you wrote, under \"what you wrote, to send back\", press Enter to write it again, and Space to take it back.".into());
+                    out.push("On a line of what you wrote, under \"what you wrote, to send back\", press Enter to write it again, and Delete to take it back.".into());
                 }
                 out.push(if self.review_yours() > (0, 0) {
                     "Press Esc to send the work back to the agent with what you wrote, to save your marks, or to throw them away.".into()
@@ -4734,16 +4913,22 @@ impl App {
                         });
                         out.push(match unmark {
                             Some((_, gone)) => format!(
-                                "Press Enter to mark this block as unread: the latest mark here, {} line{}.",
+                                "Press Delete to mark this block as unread: the latest mark here, {} line{}.",
                                 gone.len(),
                                 plural(gone.len())
                             ),
-                            None => "Enter marks a block as unread: nothing here is marked read.".into(),
+                            None => "Delete marks a block as unread: nothing here is marked read.".into(),
                         });
                     }
                 }
+                // Enter does what it does commenting; where that is
+                // nothing, it is the menu.
+                out.push(match self.enter() {
+                    Some(a) => format!("Press Enter to {}.", self.about_here(&a)),
+                    None => "Press Enter for all that can be done here.".into(),
+                });
                 out.push(format!(
-                    "Press 2 to go back to commenting, where Enter comments and Space is the menu; 1 for another view of the code; {}.",
+                    "Press 2 to go back to commenting, where Space is the menu; 1 for another view of the code; {}.",
                     self.whole_help()
                 ));
                 out.push(THREE_KEYS.into());
@@ -4759,6 +4944,7 @@ impl App {
                 if let Some(a) = self.enter() {
                     out.push(format!("Press Enter to {}.", self.about_here(&a)));
                 }
+                out.extend(self.delete_help());
                 let here = match self.focus {
                     Focus::List if self.on_stack => "on the stack: its comments, sending them, and the stack's own menu",
                     Focus::Notes if self.notes_head => "on the comments listed: sending them all, and what is listed",
@@ -4823,6 +5009,7 @@ impl App {
                     Some(_) => out.push("Press Enter to see how it went.".into()),
                     None => out.push("Nothing has run yet.".into()),
                 }
+                out.extend(self.delete_help());
                 out.push("Press ↑↓ for another run, Esc to go back.".into());
             }
             Screen::Versions => {
@@ -4880,9 +5067,16 @@ impl App {
             ("Enter", l(Key::Enter)),
             ("Space", l(Key::Menu)),
             ("Esc", l(Key::Back)),
+            ("Delete or Backspace", l(Key::Delete)),
+            ("Press Delete", format!("Press {}", l(Key::Delete))),
+            ("; Delete to", format!("; {} to", l(Key::Delete))),
+            ("and Delete to", format!("and {} to", l(Key::Delete))),
+            ("Delete asks first", format!("{} asks first", l(Key::Delete))),
+            ("Delete marks", format!("{} marks", l(Key::Delete))),
             ("enter:", format!("{}:", lower(Key::Enter))),
             ("space:", format!("{}:", lower(Key::Menu))),
             ("esc:", format!("{}:", lower(Key::Back))),
+            ("delete:", format!("{}:", lower(Key::Delete))),
             ("?:", format!("{}:", l(Key::Help))),
             ("Press ?", format!("Press {}", l(Key::Help))),
             ("Press 1 ", format!("Press {} ", l(Key::View))),
@@ -6185,6 +6379,28 @@ impl App {
                     ops::drop_patches(db, &name, &[at])
                 });
             }
+            // The patch's only file: the patch would be empty, so dropping it
+            // is offered instead.
+            Action::AskDropFile(file) => {
+                let title = self.patch_title();
+                let only = self.patch_id().is_some_and(|id| self.files_of(&id).len() <= 1);
+                let mut m = match only {
+                    true => Menu::ask(format!("{file} is the only file {title} changes"), Item::new("Drop this patch…", Action::AskDrop), "Keep it", false),
+                    false => Menu::ask(format!("drop the changes to {file} from {title}?"), Item::new("Drop them", Action::DropFile(file.clone())), "Keep them", false),
+                };
+                m.note = Some(match only {
+                    true => format!("The patch would be empty without its changes to {file}: drop the patch instead."),
+                    false => "The patch without them lands for your review, as an edit by hand does, once the patches after it are seen to still apply on it.".into(),
+                });
+                self.mode = Mode::Menu(m);
+            }
+            Action::DropFile(file) => match ops::drop_file(&self.path, &name, self.sel, &file) {
+                Ok(done) => self.edited(done, None, None),
+                Err(e) => {
+                    self.reload();
+                    self.status = e.0;
+                }
+            },
             Action::CommentStack => self.write(Target::Stack, Focus::List, ""),
             Action::CommentPatch => {
                 if let Some(id) = self.patch_id() {
@@ -6362,11 +6578,18 @@ impl App {
                     self.review_write_yours(y);
                 }
             }
+            Action::AskTakeYoursBack => {
+                if let Some(m) = self.review_take_back_ask() {
+                    self.mode = Mode::Menu(m);
+                }
+            }
             Action::TakeYoursBack => {
                 if let Some(y) = self.review_yours_line() {
                     self.review_take_back(y);
                 }
             }
+            Action::AskRejectWork(run) => self.ask_reject_work(&run),
+            Action::RejectWork(run) => self.reject_work(&run),
             Action::Collapse | Action::Expand => {
                 let collapse = matches!(action, Action::Collapse);
                 if let Some(c) = self.picked()
@@ -6415,7 +6638,7 @@ impl App {
                 }
             }
             Action::Unbatch => {
-                if let Some(c) = self.picked() {
+                if let Some(c) = self.comment_here() {
                     self.status = match ask::unsend(&self.path, &[(c.change, c.id)]) {
                         Ok(()) => "taken out of the batch: it is not sent".into(),
                         Err(e) => e.0,
@@ -6430,7 +6653,7 @@ impl App {
                 self.send(notes, way, false, self.asked_at());
             }
             Action::Unsend => {
-                if let Some(c) = self.picked() {
+                if let Some(c) = self.comment_here() {
                     if let Err(e) = ask::unsend(&self.path, &[(c.change, c.id)]) {
                         self.status = e.0;
                     }
@@ -6464,14 +6687,15 @@ impl App {
                 }
             }
             Action::AskCloseOpened => {
-                if let Some(c) = self.picked() {
+                if let Some(c) = self.comment_here() {
                     let n = self.db.opened_from(&name, &c.change, &c.id).len();
                     let title = format!("close this comment and the {n} it opened? Show…, closed, can reopen each");
-                    self.mode = Mode::Menu(Menu::ask(title, Item::new("Close them", Action::CloseOpened), "Keep them open", true));
+                    let yes = Item::new("Close them", Action::CloseOpened(c.change, c.id));
+                    self.mode = Mode::Menu(Menu::ask(title, yes, "Keep them open", true));
                 }
             }
-            Action::CloseOpened => {
-                if let Some(c) = self.picked() {
+            Action::CloseOpened(change, id) => {
+                if let Some(c) = self.db.note(&change, &id).cloned() {
                     self.edit(|db| {
                         let mut all: Vec<Note> = db.opened_from(&name, &c.change, &c.id).into_iter().cloned().collect();
                         all.push(c.clone());
@@ -6498,12 +6722,14 @@ impl App {
                 }
             }
             Action::AskCloseComment => {
-                self.mode = Mode::Menu(Menu::ask(
-                    "close this comment? Show…, closed, can reopen it",
-                    Item::new("Close it", Action::CloseComment),
-                    "Keep it open",
-                    true,
-                ));
+                if let Some(c) = self.comment_here() {
+                    self.mode = Mode::Menu(Menu::ask(
+                        "close this comment? Show…, closed, can reopen it",
+                        Item::new("Close it", Action::CloseComment(c.change, c.id)),
+                        "Keep it open",
+                        true,
+                    ));
+                }
             }
             Action::AskCloseAll => {
                 let (free, kept) = self.closable();
@@ -6539,8 +6765,8 @@ impl App {
                     self.status = format!("closed {n} comment{}: Show…, closed, lists them to reopen{left}", plural(n));
                 }
             }
-            Action::CloseComment => {
-                if let Some(c) = self.picked()
+            Action::CloseComment(change, id) => {
+                if let Some(c) = self.db.note(&change, &id).cloned()
                     && self.edit(|db| db.set_note(Note { text: String::new(), ..c })).is_some()
                 {
                     self.status = "closed: Show…, closed, on a header, lists it to reopen".into();
@@ -8805,7 +9031,8 @@ impl App {
                     Some(BannerLine::Batch) => "pick what to send",
                     _ => "go to it",
                 };
-                format!("↑↓ choose · enter: {enter} · space: pick one · esc: back where you were · ?: what can I do here")
+                let delete = self.delete_hint().map_or(String::new(), |d| format!("{d} · "));
+                format!("↑↓ choose · enter: {enter} · {delete}space: pick one · esc: back where you were · ?: what can I do here")
             }
             Mode::Normal if self.screen == Screen::Search => {
                 "type what to look for · ←→: where · tab: the search before · ↑↓: pick · enter: go there · esc: back".into()
@@ -8813,36 +9040,20 @@ impl App {
             Mode::Normal if self.screen == Screen::Review => {
                 self.review_hint()
             }
+            // Reading, Space marks read and Delete unread; Enter does what it
+            // does commenting, and opens the menu where that is nothing, as
+            // Space no longer does.
             Mode::Normal if self.reading_here() => {
                 let whole = if self.whole_files { "3: hunks" } else { "3: whole" };
-                format!("space: mark this block read · enter: unread · 1: view · 2: comment · {whole} · ?: what can I do here")
+                let enter = match self.enter() {
+                    Some(_) => self.enter_hint(),
+                    None => "enter: menu · ".into(),
+                };
+                format!("space: mark this block read · delete: unread · {enter}1: view · 2: comment · {whole} · ?: what can I do here")
             }
             Mode::Normal => {
-                let action = self.enter();
-                // On a comment whose reply waits: the reply accepted at
-                // once, or reviewed with the rest of its work.
-                let reply = match &action {
-                    Some(Action::TakeReply(run, k)) => format!("enter: accept {} · ", self.reply_said(run, *k)),
-                    Some(Action::Review(run, Some(crate::held::Part::Reply(k)))) => format!("enter: review {} · ", self.reply_said(run, *k)),
-                    _ => String::new(),
-                };
-                let enter = match (self.screen, action) {
-                    (Screen::Main, Some(Action::Open)) => "enter: read it · ",
-                    (Screen::Main, Some(Action::GoToNote)) => "enter: go to it · ",
-                    (Screen::Main, Some(Action::Reply)) => "enter: reply · ",
-                    (Screen::Main, Some(Action::EditMine)) => "enter: edit it · ",
-                    (Screen::Main, Some(Action::OpenStream)) => "enter: what the agent writes · ",
-                    (Screen::Main, Some(Action::Expand)) => "enter: expand it · ",
-                    (Screen::Main, Some(Action::TakeReply(..) | Action::Review(_, Some(crate::held::Part::Reply(_))))) => reply.as_str(),
-                    (Screen::Main, Some(_)) => "enter: comment · ",
-                    (Screen::Main, None) => "enter or ",
-                    (Screen::Transcript | Screen::Text, _) => "↑↓: scroll · ",
-                    (Screen::History, _) => match self.hist_focus {
-                        HistFocus::List => "enter: go to it · →: its stack diff · ",
-                        HistFocus::Diff => "↑↓: scroll · ←: the history · ",
-                    },
-                    _ => "enter: pick · ",
-                };
+                let enter = self.enter_hint();
+                let delete = self.delete_hint().map_or(String::new(), |d| format!("{d} · "));
                 let keys = match (self.screen, self.reading, self.whole_files) {
                     (Screen::Main, false, false) => "1: view · 2: read · 3: whole · ",
                     (Screen::Main, false, true) => "1: view · 2: read · 3: hunks · ",
@@ -8851,9 +9062,41 @@ impl App {
                     _ => "",
                 };
                 let ask = if self.helps() { "?: what can I do here" } else { "" };
-                format!("{enter}space: menu · {keys}{ask}").trim_end_matches(" · ").to_string()
+                format!("{enter}space: menu · {delete}{keys}{ask}").trim_end_matches(" · ").to_string()
             }
         }
+    }
+
+    /// What Enter does where the cursor is, as the bottom bar says it, from
+    /// the screens' own panes: `enter: reply · `; `enter or ` before what
+    /// Space opens, where Enter opens it too.
+    fn enter_hint(&self) -> String {
+        let action = self.enter();
+        // On a comment whose reply waits: the reply accepted at once, or
+        // reviewed with the rest of its work.
+        if let Some(Action::TakeReply(run, k)) = &action {
+            return format!("enter: accept {} · ", self.reply_said(run, *k));
+        }
+        if let Some(Action::Review(run, Some(crate::held::Part::Reply(k)))) = &action {
+            return format!("enter: review {} · ", self.reply_said(run, *k));
+        }
+        match (self.screen, action) {
+            (Screen::Main, Some(Action::Open)) => "enter: read it · ",
+            (Screen::Main, Some(Action::GoToNote)) => "enter: go to it · ",
+            (Screen::Main, Some(Action::Reply)) => "enter: reply · ",
+            (Screen::Main, Some(Action::EditMine)) => "enter: edit it · ",
+            (Screen::Main, Some(Action::OpenStream)) => "enter: what the agent writes · ",
+            (Screen::Main, Some(Action::Expand)) => "enter: expand it · ",
+            (Screen::Main, Some(_)) => "enter: comment · ",
+            (Screen::Main, None) => "enter or ",
+            (Screen::Transcript | Screen::Text, _) => "↑↓: scroll · ",
+            (Screen::History, _) => match self.hist_focus {
+                HistFocus::List => "enter: go to it · →: its stack diff · ",
+                HistFocus::Diff => "↑↓: scroll · ←: the history · ",
+            },
+            _ => "enter: pick · ",
+        }
+        .into()
     }
 
     fn draw_status(&self, buf: &mut Buffer, area: Rect) {
@@ -9356,12 +9599,13 @@ impl App {
             return None;
         }
         // Reading: what Space would mark read at the cursor, or else what
-        // Enter would unmark, marked in the margin; in the other half, the
+        // Delete would unmark, marked in the margin; nothing with the cursor
+        // on a comment, where they mark nothing; in the other half, the
         // lines read alone.
         let ticks = (margin > 0).then(|| {
             self.blocks();
             match self.reading_at() {
-                _ if beside => (Tick::ToRead, HashSet::new()),
+                _ if beside || self.on_comment_row() => (Tick::ToRead, HashSet::new()),
                 Some((Some(t), _)) => (Tick::ToRead, t.new),
                 Some((None, Some((_, gone)))) => (Tick::ToUnread, gone),
                 _ => (Tick::ToRead, HashSet::new()),
@@ -9597,7 +9841,7 @@ impl App {
     }
 
     /// Row `i` at `(x, y)`, `w` wide: in the reading mode after its margin,
-    /// a check if it is read, or what Space or Enter would make of it.
+    /// a check if it is read, or what Space or Delete would make of it.
     /// `selected`, the cursor's row; in the other half of the middle split
     /// in two, that half's pick, as a pane draws what it has picked while
     /// the cursor is in another.

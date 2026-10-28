@@ -542,6 +542,98 @@ impl App {
         }
     }
 
+    /// What Delete asks first on what you wrote in the review: taking it
+    /// back, which its menu's item does at once.
+    pub(super) fn review_take_back_ask(&self) -> Option<Menu> {
+        let (title, yes) = match self.review_yours_line()? {
+            Yours::Comment(..) => ("take your comment back? it does not go back to the agent with the work", "Take it back"),
+            Yours::Answer(_) => ("take your answer back? it does not go back to the agent with the work", "Take your answer back"),
+        };
+        Some(Menu::ask(title, Item::new(yes, Action::TakeYoursBack), "Keep it", true))
+    }
+
+    /// What Delete does on the review's line the cursor is on, as its menu
+    /// has it: what you wrote taken back, once asked; a comment the ask was
+    /// about closed with the review; a part rejected. Nothing where that is
+    /// so already, as the status line says.
+    pub(super) fn review_deleting(&self) -> Option<std::result::Result<Action, String>> {
+        let rv = self.reviewing.as_ref()?;
+        let lines = self.review_lines();
+        let line = lines.get(rv.sel)?;
+        if line.yours.is_some() {
+            return Some(Ok(Action::AskTakeYoursBack));
+        }
+        if let Some(k) = line.asking {
+            return Some(match rv.marks.get(&crate::held::asking_key(k)) == Some(&true) {
+                true => Err("this comment closes with the review already".into()),
+                false => Ok(Action::CloseAsking(k, true)),
+            });
+        }
+        let p = line.part?;
+        Some(match rv.marks.get(&p.key()) {
+            Some(false) => Err("this part is rejected already".into()),
+            _ => Ok(Action::MarkPart(false)),
+        })
+    }
+
+    /// The review of what run `run` brought back, as it was saved: its
+    /// marks, the cursor on its first line.
+    fn review_of(&self, run: &str) -> Reviewing {
+        Reviewing {
+            run: run.into(),
+            marks: self.db.review(run).map(|v| v.marks.clone()).unwrap_or_default(),
+            ..Default::default()
+        }
+    }
+
+    /// What Delete does on the banner's line of what run `run` brought
+    /// back: asks to reject every part of it not marked yet and close its
+    /// review, as the review's "Reject all remaining and Close" does. Not
+    /// while it goes on from work landed before it, which is reviewed
+    /// first, nor with no part left that is not marked, as that item is
+    /// not: why is said.
+    pub(super) fn reject_work_here(&self, run: &str) -> std::result::Result<Action, String> {
+        let Some((r, _)) = self.work(run) else { return Err("this work is gone".into()) };
+        if ask::guessing(&self.db, r).is_some() {
+            return Err("this work goes on from the work landed before it, which waits for your review: review that one first".into());
+        }
+        let marks = self.review_of(run).marks;
+        if crate::held::parts_left(&self.db, r).iter().all(|p| marks.contains_key(&p.key())) {
+            return Err(self.say_keys("nothing of this work is left to reject: press Enter to review it, and close the review there".into()));
+        }
+        Ok(Action::AskRejectWork(run.into()))
+    }
+
+    /// What rejecting every part not marked yet of what run `run` brought
+    /// back, then closing its review, asks first from the banner, as the
+    /// review asks it: the parts not marked yet, and what closing asks
+    /// again, said; the menu on keeping it for review.
+    pub(super) fn ask_reject_work(&mut self, run: &str) {
+        let was = self.reviewing.replace(self.review_of(run));
+        let mut said = vec![format!(
+            "Not marked yet: {}. The review closes then: what you rejected is dropped for good, and what you accepted is applied.",
+            self.review_left().join(", ")
+        )];
+        // Its change, accepted or rejected as marked, else rejected.
+        let accepting = self.reviewing.as_ref().and_then(|rv| rv.marks.get(&Part::Stack.key()).copied()) == Some(true);
+        said.extend(self.review_again(if accepting { Closing::Accepting } else { Closing::Rejecting }));
+        self.reviewing = was;
+        let yes = Item::new("Reject them and close", Action::RejectWork(run.into()));
+        let mut m = Menu::ask("reject every part of this work not marked yet, then close its review?", yes, "Keep it for review", true);
+        m.note = Some(said.join("\n"));
+        self.mode = Mode::Menu(m);
+    }
+
+    /// The review of what run `run` brought back closed from the banner,
+    /// every part not marked yet rejected, as from the review; the main
+    /// screen staying, closed or not (the status line says why not).
+    pub(super) fn reject_work(&mut self, run: &str) {
+        self.reviewing = Some(self.review_of(run));
+        self.review_close(Some(false));
+        self.reviewing = None;
+        self.screen = Screen::Main;
+    }
+
     /// The work sent back to the agent, with what you wrote in its review:
     /// another round, from it, at `effort`, else at the effort the work was
     /// asked at; the review left.
@@ -1184,19 +1276,22 @@ impl App {
         let enter = self.review_enter();
         // With what you wrote in it, the work goes back to the agent.
         let esc = if self.review_yours() > (0, 0) { "esc: send back, save or discard" } else { "esc: save, discard or close" };
+        // What Delete does to the list's line the cursor is on, wherever the
+        // cursor is, as the menu does.
+        let delete = self.delete_hint().map_or(String::new(), |d| format!("{d} · "));
         match &self.reviewing {
             Some(rv) if rv.in_main && rv.in_patch && self.review_patch().is_some() => {
                 let enter = if self.review_writable() { "enter: comment · " } else { "" };
                 let side = if rv.wide { "←: narrower" } else { "→: wider · ←: back to the stack diff" };
-                format!("↑↓: a line · {enter}{side} · {esc}")
+                format!("↑↓: a line · {enter}{delete}{side} · {esc}")
             }
             Some(rv) if rv.in_main && self.review_on_diff() => {
                 let side = if rv.wide { "←: narrower" } else { "→: wider · ←: back to the list" };
-                format!("↑↓: a line · enter: go to it in the patch · {side} · {esc}")
+                format!("↑↓: a line · enter: go to it in the patch · {delete}{side} · {esc}")
             }
-            Some(rv) if rv.in_main && rv.wide => format!("↑↓: scroll · {enter} · ←: narrower · {esc}"),
-            Some(rv) if rv.in_main => format!("↑↓: scroll · {enter} · →: wider · ←: back to the list · {esc}"),
-            _ => format!("↑↓ choose · {enter} · →: look closer · space: menu · {esc}"),
+            Some(rv) if rv.in_main && rv.wide => format!("↑↓: scroll · {enter} · {delete}←: narrower · {esc}"),
+            Some(rv) if rv.in_main => format!("↑↓: scroll · {enter} · {delete}→: wider · ←: back to the list · {esc}"),
+            _ => format!("↑↓ choose · {enter} · {delete}→: look closer · space: menu · {esc}"),
         }
     }
 

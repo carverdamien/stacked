@@ -842,9 +842,10 @@ impl Config {
         out.push_str(
             "\n[keys]\n# The keys for each thing a key does, outside the comment editor (which reads\n\
              # what is typed): up, down, left, right, pageup, pagedown, home, end, enter,\n\
-             # space, esc, tab, shift-tab, f1..f24, a character, any after ctrl- or alt-.\n\
-             # Nothing else is a key. Each is read in its context, below: two things of one\n\
-             # context on one key clash, and the first does it; of two, each does its own.\n",
+             # space, esc, tab, shift-tab, backspace, delete, f1..f24, a character, any\n\
+             # after ctrl- or alt-. Nothing else is a key. Each is read in its context,\n\
+             # below: two things of one context on one key clash, and the first does it; of\n\
+             # two, each does its own.\n",
         );
         for c in Context::ALL {
             out.push_str(&format!("# {}: {}.\n", c.name(), c.said()));

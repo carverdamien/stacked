@@ -1,7 +1,7 @@
 //! The reading mode's marks, after self-review's view 3 (copied, not
 //! shared): Space marks read the innermost block of code around the cursor
-//! with lines not read yet, and pressed again, the block around that; Enter
-//! takes back the latest mark there. Where a file's blocks cannot be found,
+//! with lines not read yet, and pressed again, the block around that;
+//! Delete takes back the latest mark there. Where a file's blocks cannot be found,
 //! and once its blocks are all read, the block is the hunk.
 
 use std::collections::{HashMap, HashSet};
@@ -199,7 +199,7 @@ impl Reading<'_> {
         whole(hunk, "this hunk".into())
     }
 
-    /// The mark Enter at row `i` takes back: the latest holding its line or
+    /// The mark Delete at row `i` takes back: the latest holding its line or
     /// a line of the innermost block around it (of its hunk, where its file
     /// has no blocks; of the hunk or the file a header heads); with the
     /// lines no other mark holds, which it leaves not read.
@@ -476,7 +476,7 @@ mod tests {
         assert_eq!(r.to_mark(top), None, "its hunk is read");
         let second = r.to_mark(end).unwrap();
         assert_eq!(second.new.len(), 2);
-        // Enter in the first hunk takes back its own mark, not the one made
+        // Delete in the first hunk takes back its own mark, not the one made
         // after it in the other hunk.
         read.extend(second.keys.clone());
         let m1 = Mark { keys: first.keys.into_iter().collect(), ..Default::default() };
@@ -509,7 +509,7 @@ mod tests {
         assert_eq!(r.progress(), (1, 2));
         assert_eq!(r.to_mark(two), None);
         assert_eq!(r.next_unread(two, true), None, "the empty line and the blank one are passed over");
-        // Enter, the hunk marked: the line of code alone is left not read.
+        // Delete, the hunk marked: the line of code alone is left not read.
         let m = Mark { keys: t.keys.iter().cloned().collect(), ..Default::default() };
         let marks = vec![(4, &m)];
         let all: HashSet<String> = t.keys.clone();
@@ -576,7 +576,7 @@ mod tests {
         assert_eq!(r.to_mark(why).map(|t| (t.what, t.new.len())), Some(("the message".into(), 2)));
         assert_eq!(r.to_mark(0).map(|t| (t.what, t.new.len())), Some(("the message".into(), 2)));
         assert_eq!(r.progress(), (2, 6));
-        // Space goes on past the empty line, to the trailer; Enter there
+        // Space goes on past the empty line, to the trailer; Delete there
         // takes back the paragraph's mark.
         let trailer = row(&rows, "   Differential Revision: D1");
         assert_eq!(r.next_unread(why, true), Some(trailer));

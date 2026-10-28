@@ -402,7 +402,7 @@ shows, under a header of its own; with none, it is not there. The top bar
 names the file and the stack, and on its right says how far the stack's
 review is (Reading, below, says how).
 
-There are five keys, and four more for the middle: three of self-review's
+There are six keys, and four more for the middle: three of self-review's
 (Copied from self-review-rs, below, says what it is) and one of stacked's
 own. The settings can make any of them other keys, and the help then names
 those:
@@ -435,11 +435,11 @@ those:
   compact, a line for each (who, and where it is); → again hides them, the
   bar saying how many there are; and → from the middle brings them back
   expanded, each with the first line of what was said last.
-- Enter does what is to be done where the cursor is: on a patch, read it; on
-  a file the patches pane lists, read the patch there; on a line, comment
-  on it; on a comment, reply, or, while the agent works on it, open what it
-  is writing; in the comments pane, go to the comment. Elsewhere it is the
-  menu.
+- Enter does what is to be done where the cursor is, reading or commenting:
+  on a patch, read it; on a file the patches pane lists, read the patch
+  there; on a line, comment on it; on a comment, reply, or, while the agent
+  works on it, open what it is writing; in the comments pane, go to the
+  comment. Elsewhere it is the menu.
 - Space is the menu: all that can be done where the cursor is, then undo,
   redo, `Runs…` and quit, which every menu ends with. The stack's items
   (comment on it, ask about all, `Show…`, the stack as a list, the tree,
@@ -467,6 +467,33 @@ those:
   goes up, from the comments to the middle, to the patches (from a file
   they list, to its patch first), to the stack's
   header. In the comment editor, Esc asks what to do with the comment.
+- Delete, and Backspace too (a Mac's delete key is Backspace, and its
+  forward delete is fn-delete), does what the menu's item that closes,
+  drops, stops or rejects what the cursor is on does. On a comment, in the
+  middle or the comments pane, it is `Close this comment…`, or `Close it
+  and the comments it opened…` when its answer opened some; while the agent
+  works on the comment, it is `Stop the agent…`; while the comment waits
+  its turn, it is `Take it back from the agent's queue`; and while the
+  comment is in the batch, it is `Remove it from the batch`. On a patch, it
+  is `Drop this patch…`; on the stack's header, it is `Delete this
+  stack…`; on a file the patches pane lists under a patch, it drops the
+  patch's changes to that file (Editing a patch by hand, below). In the
+  review of landed work, it is `Mark as rejected` on a part, `Close it with
+  the review` on a comment the ask was about, and `Take it back` or `Take
+  your answer back` on what you wrote there. On the banner, it rejects all
+  that remains of the landed work picked and closes its review, as the
+  review's `Reject all remaining and Close` does; on a comment's line, it
+  does what it does on the comment. On the runs, it stops an ask that
+  runs. An item ending with `…` asks first, and so does Delete; Delete also
+  asks before it takes back what you wrote in a review, and before it
+  rejects landed work from the banner. On a comment closed, it does
+  nothing, and the status line says so. In the reading mode, on the code
+  in the middle, it takes a mark back (Reading, below). It does nothing in a menu,
+  nor in History…, the tree and the versions; and where what is typed is
+  read (the comment editor, a line typed in a box, `/`'s bar, the search's
+  own screen, the setup's `Add a command…`), Delete and Backspace edit it.
+  The bottom bar says what Delete does where it does something (`delete:
+  close it`), and so does `?`.
 - Every pane keeps where its cursor was, while the editor is open: the
   middle and the comments of each patch (whichever its version, so an edit
   keeps the line) and of the stack, the patches of each stack, the history
@@ -919,6 +946,17 @@ turn after the edit; left unresolved, the edit is kept as above, and
 mail at the line the cursor is on: its message, its diff. It comes back
 with why at its top if it does not apply, as an edit by hand does.
 
+On a file the patches pane lists under a patch, Delete drops the patch's
+changes to that file, once asked: the question names the file and the
+patch, and says that the patches above it are checked. The patch without
+that file's part of its diff, its message and author as they were, is its
+new version, and it lands as an edit by hand does, once the patches above
+it are seen to still apply on it; if one does not, nothing changes, and
+the status line says why. A rename, and a file the patch adds or deletes,
+goes whole: the file is then as it was before the patch. On the only file
+of a patch, the patch would be left empty: stacked says so, and offers
+`Drop this patch…` instead.
+
 An edit by hand does not go in the stack at once: it lands, as the agent's
 work does (What the agent brings back waits for your review, below), and
 its review opens as soon as it is saved: the stack operations it makes
@@ -928,7 +966,8 @@ in the history); rejected, nothing changes. Left for later, the banner says
 so (`⟳ 1 edit by hand waits for your review`), and as with the agent's
 change, the stack is not edited by hand again before it is reviewed. So it
 is of `Edit … here in $EDITOR`, `Edit this patch in $EDITOR`, `Edit the
-stack as a list in $EDITOR` and the conflicts resolved after them; moving, dropping,
+stack as a list in $EDITOR`, the conflicts resolved after them, and a
+file's changes dropped with Delete; moving, dropping,
 undo and redo change the stack at once. On the command line, `stacked edit`
 says the run the edit landed as: `stacked review NAME RUN --accept-all`
 takes it, and `stacked edit … --accept` takes it at once.
@@ -1536,9 +1575,16 @@ all of it as soon as it lands, for a script.
 ## Reading
 
 `2` switches to reading, as self-review's view of what is left to review:
-in the middle, Space marks the block of code at the cursor read and goes on
-to the next line not read, and Enter marks it unread again (no menu in the
-code meanwhile: the other panes still have theirs). Going on from above
+in the middle, on the code, Space marks the block at the cursor read and
+goes on to the next line not read, and Delete (or Backspace) marks it
+unread again (no menu in the code meanwhile: the other panes still have
+theirs). On a comment's rows (its head, its turns, the agent's stream, its
+references), the keys are those of commenting: Space is the comment's
+menu, Delete closes the comment, and nothing is marked read there; the
+margin then shows no mark to make. Enter does what it does when
+commenting: on a line it comments, on a comment it replies, on a reference
+it goes there, and where it has nothing else to do, it opens the menu.
+Going on from above
 the middle line of the screen, the cursor goes down to that line where it
 is, the code staying where it is, but no further than the middle line:
 the code comes up from there. From the middle line or below it, the
@@ -1557,9 +1603,10 @@ one marks its run, then the block around it. A mark never reaches past the
 hunk the cursor is in: a block over several hunks, as a long function or a
 namespace is, is read in this hunk alone, the margin and the bar saying
 `in this hunk`. Files with no blocks are read a hunk at a time; Space on a
-hunk's header reads the hunk, on a file's the file. Enter takes back the
-latest mark holding the line or its block, in this hunk. The
-margin shows what Space would mark (`○→✓`), or else what Enter would unmark
+hunk's header reads the hunk, on a file's the file. Delete takes back the
+latest mark holding the line or its block, in this hunk, and says so when
+nothing there is marked. The
+margin shows what Space would mark (`○→✓`), or else what Delete would unmark
 (`✓→○`), and `✓` beside each line read, drawn dim; hunks, files, the
 patches on the left and the top bar count what is read (`reading 5/11`),
 and each file listed under a patch on the left counts what is left of it
@@ -1569,7 +1616,7 @@ A patch's message is read as its code is, its lines lines to review too,
 counted on its header (`✉ message   read 1/3 lines`) and with the rest: a
 paragraph at a time, its lines between empty ones, its title a paragraph of
 its own; Space on a line of it marks its paragraph, once more the whole
-message, as Space on its header does; Enter takes back the latest mark
+message, as Space on its header does; Delete takes back the latest mark
 there. Its empty lines need no reading, as a changed line of white space
 does not. A line of it reworded in a new version is to read again.
 
@@ -1968,9 +2015,12 @@ settings:
   `stacked config` lists them: `screens`, the screens and the menus over
   them, wherever nothing is typed (`up`, `down`, `left`, `right`,
   `page_up`, `page_down`, `home`, `end`, `enter`, `menu`, `help`, `back`,
-  `find`, `view`, `read`, `whole`, `quit`); and `search`, the search of
-  the middle while its bar is open (`find_next`, Tab, and
-  `find_previous`, shift-Tab). The search keeps for itself Esc, Enter, ↑
+  `delete`, `find`, `view`, `read`, `whole`, `quit`); and `search`, the
+  search of the middle while its bar is open (`find_next`, Tab, and
+  `find_previous`, shift-Tab). `delete` is `["delete", "backspace"]`
+  unless the settings say otherwise, as a Mac's delete key is Backspace;
+  `delete = "d"` makes it d alone, and Delete and Backspace then do
+  nothing on the screens. The search keeps for itself Esc, Enter, ↑
   and ↓, ctrl-c, and the keys that type or edit what is typed, and
   neither of its own keys can be one of those. So `menu = "tab"` makes Tab the menu on the
   screens, and Tab still goes to the next match in the search. In a menu,
@@ -2394,10 +2444,22 @@ as an edit of its turn), a stack imported from Phabricator's revisions (by
 number or link, named or not), Phabricator's commands there only when
 built with it, apply, and
 what does not apply being refused, edited again, or read-only. `tests/tui.rs` draws the editor into a buffer and presses keys:
-that no letter but 1, 2, 3 and / does anything, keys mapped by the settings, the
-search of the middle (as it is typed, from any pane; Tab and shift-Tab from
-match to match and round past either end; Esc back where the cursor was, the
-middle scrolled as it was, a click out of the bar too; Enter on the match,
+that no letter but 1, 2, 3 and / does anything, keys mapped by the settings,
+Delete and Backspace as the menus' items that close, drop, stop or reject
+(a comment closed, with those its answer opened, its agent stopped, taken
+back from the queue or out of the batch; a patch dropped and the stack
+deleted; a file's changes dropped from its patch for review, refused when
+a later patch needs them, a rename, an added file and a deleted one
+dropped whole, and the patch's drop offered for its only file; in a
+review, a part rejected, a comment closed with it, what you wrote taken
+back; landed work rejected and a comment closed from the banner; an ask
+stopped from the runs; each asking first where its item does, Esc then
+doing nothing; on a comment closed, the status line saying so), their key
+a setting, and nothing done in a menu, History…, the tree, the versions or
+the search, nor in the comment editor and `/`'s bar, where they edit what is
+typed, the search of the middle (as it is typed, from any pane; Tab and
+shift-Tab from match to match and round past either end; Esc back where the
+cursor was, the middle scrolled as it was, a click out of the bar too; Enter on the match,
 or back with nothing matched, said; the next `/` with the last search,
 selected, what is typed taking its place, ↑↓ through those before; case
 ignored, a line of code without its sign; a comment, the message and a
@@ -2455,7 +2517,9 @@ file's name, each line of a comment, a line read, the patch picked in its
 pane), and the patch picked as `picked` paints it once the cursor is in the
 middle (`paint.rs` tests the cursor so, over each colour, dim or reversed), reading by hunks and by a Rust file's blocks
 (the cursor going down to the middle line, then the code coming up under
-it, in each view), each file whole (its files read away from the screen,
+it, in each view; Enter commenting there, Delete taking a mark back, and
+a comment's rows keeping the keys of commenting, Space its menu, marking
+nothing read), each file whole (its files read away from the screen,
 the status saying so; no hunk's header, each line removed in its place,
 the lines between the hunks in none, keyless and dim, the cursor looking
 the same on them as on any line; a file added, deleted, renamed, not text;

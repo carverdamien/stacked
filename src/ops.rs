@@ -612,6 +612,48 @@ pub fn edit_patch(
     })
 }
 
+/// Drops the changes the patch at `at` of stack `name` makes to `file`:
+/// that file's part of its diff gone whole, a rename's, a file's it adds
+/// or deletes, as any. The patch's new version, its message and author as
+/// they were, lands for your review as an edit by hand does, once the
+/// patches after it are seen to still apply on it; else nothing changes,
+/// and why is the error. A patch changing nothing else is not left empty:
+/// it is to be dropped instead. What came of it.
+pub fn drop_file(path: &std::path::Path, name: &str, at: usize, file: &str) -> Result<Edited> {
+    let db = Db::load(path)?;
+    db.writable(name)?;
+    by_hand(&db, name)?;
+    let s = db.stack(name)?.clone();
+    let Some(old) = s.patches.get(at).map(|id| db.patch(id).clone()) else {
+        return err(format!("{name} has {} patches", s.patches.len()));
+    };
+    let files = crate::diff::parse_diff(&old.diff, "");
+    let Some(k) = files.iter().position(|f| f.path == file) else {
+        return err(format!("{} does not change {file}", old.title()));
+    };
+    let diff = with_section(&old.diff, k, None);
+    if !diff.lines().any(|l| l.starts_with("diff --git ")) {
+        return err(format!("{} changes nothing but {file}: drop the patch instead; nothing changed", old.title()));
+    }
+    let draft = Draft { diff, ..Draft::from(&old) };
+    let new = revise(&old, draft.clone());
+    let mut all: Vec<&Patch> = s.patches.iter().map(|id| db.patch(id)).collect();
+    all[at] = &new;
+    crate::check::stack(&s, &all)?;
+    let said = format!("dropped the changes to {file} from {}", old.title());
+    Db::edit(path, |db| {
+        by_hand(db, name)?;
+        let now = db.stack(name)?.clone();
+        if now.patches.get(at) != Some(&old.id) {
+            return err(format!("{name} changed meanwhile; nothing changed"));
+        }
+        match revised(db, &now.patches, at, draft)? {
+            None => Ok(Edited::Unchanged("nothing changed".into())),
+            Some((patches, op)) => land(db, name, &now.patches, patches, &op, &format!("patch {}", at + 1), &said, None),
+        }
+    })
+}
+
 /// What came of an edit by hand.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Edited {
