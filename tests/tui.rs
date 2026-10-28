@@ -5871,7 +5871,12 @@ fn the_first_ask_opens_the_setup_and_goes_once_it_is_saved() {
     keys(&mut app, &[KeyCode::Down]);
     choose_as(&mut app, "Ask agent", "answer only");
     let screen = wait_for(&mut app, " What each kind of ask may use, besides what stacked always gives it: the agent's tools, in ");
-    assert!(screen.contains(" Answer-only asks: agent.answer_tools") && screen.contains("   [x] Bash(curl *)   stacked's default for answers"), "{screen}");
+    for line in [
+        " read only  change   read only is for answer-only asks; change is for asks that change the stack",
+        "    [x]      [ ]     Bash(curl *)   stacked's default for answers",
+    ] {
+        assert!(screen.lines().any(|l| l.trim_end() == line), "{line:?} in:\n{screen}");
+    }
     assert!(screen.contains(&format!(" To be, in {}: ", local.display())), "{screen}");
     let Mode::Setup(su) = &app.mode else { panic!("{:?}", app.mode) };
     let to_be = su.screen.as_ref().unwrap().chosen();
@@ -5903,6 +5908,64 @@ fn the_first_ask_opens_the_setup_and_goes_once_it_is_saved() {
     choose_as(&mut app, "Ask agent", "answer only");
     assert_eq!(app.mode, Mode::Normal);
     assert!(app.status.starts_with("asked the agent about 1 comment (answer only)"), "{}", app.status);
+}
+
+#[test]
+fn the_setup_before_the_first_ask_ticks_the_box_clicked_or_the_column_s() {
+    let (_tmp, db, src) = setup();
+    stacked(&src, &db, &["config", "--local", "agent.setup", "0"]);
+    let local = src.canonicalize().unwrap().join(".stacked/local.toml");
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Enter]);
+    typed(&mut app, "why so loud?");
+    keys(&mut app, &[KeyCode::Esc]);
+    // Ask agent, answer only, at an effort of its own: the setup first.
+    let ask = items(&app).iter().position(|(l, _)| l == "Ask agent").unwrap();
+    while !matches!(&app.mode, Mode::Menu(m) if m.sel == ask) {
+        key(&mut app, KeyCode::Down);
+    }
+    for _ in 0..3 {
+        if draw(&mut app).contains("[x] answer only") {
+            break;
+        }
+        key(&mut app, KeyCode::Right);
+    }
+    keys(&mut app, &[KeyCode::Tab, KeyCode::Right]);
+    assert!(draw(&mut app).contains("[x] answer only    Effort [xhigh]"), "{}", draw(&mut app));
+    assert_eq!(key(&mut app, KeyCode::Enter), Effect::None);
+    let screen = wait_for(&mut app, " What each kind of ask may use, besides what stacked always gives it");
+    let chosen = |app: &App| {
+        let Mode::Setup(su) = &app.mode else { panic!("{:?}", app.mode) };
+        let c = su.screen.as_ref().unwrap().chosen();
+        (c.change, c.answer)
+    };
+    let jq = screen.lines().position(|l| l.trim_end() == "    [x]      [ ]     Bash(jq *)   stacked's default for answers").unwrap() as u16;
+    // The mouse over jq's change box, then a click on it: ticked.
+    app.hover(13, jq);
+    app.click(13, jq, false);
+    assert_eq!(chosen(&app), (vec!["Bash(jq *)".to_string()], vec!["Bash(curl *)".to_string(), "Bash(jq *)".to_string()]));
+    // ↑ to curl, in the change column still; ← to the read-only one, and
+    // Space takes curl out of the answers' list.
+    keys(&mut app, &[KeyCode::Up, KeyCode::Left, KeyCode::Char(' ')]);
+    assert_eq!(chosen(&app), (vec!["Bash(jq *)".to_string()], vec!["Bash(jq *)".to_string()]));
+    let screen = draw(&mut app);
+    for line in ["    [ ]      [ ]     Bash(curl *)   stacked's default for answers", "    [x]      [x]     Bash(jq *)   stacked's default for answers"] {
+        assert!(screen.lines().any(|l| l.trim_end() == line), "{line:?} in:\n{screen}");
+    }
+    // Saved, as ticked; and the ask goes, at the effort picked before.
+    keys(&mut app, &[KeyCode::Char('s')]);
+    assert_eq!(app.mode, Mode::Normal);
+    let said = format!("the setup is saved in {}; asked the agent about 1 comment (answer only)", local.display());
+    assert!(app.status.starts_with(&said), "{}", app.status);
+    assert_eq!(
+        std::fs::read_to_string(&local).unwrap(),
+        "[agent]\nsetup = 1\nchange_tools = [\"Bash(jq *)\"]\nanswer_tools = [\"Bash(jq *)\"]\n"
+    );
+    assert_eq!(efforts(&mut app, 1), ["xhigh"]);
+    accept_landed(&mut app, &db);
+    wait_for(&mut app, "agent replied (answer only)");
 }
 
 #[test]

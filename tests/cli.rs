@@ -2911,46 +2911,70 @@ fn what_each_kind_of_ask_may_use_is_set_up_with_the_agent() {
     std::fs::create_dir(e.src.join(".claude")).unwrap();
     std::fs::write(e.src.join(".claude/settings.local.json"), r#"{"permissions": {"allow": ["Bash(lint:*)"]}}"#).unwrap();
     let env = [("STACKED_CLAUDE", claude.as_path()), ("STACKED_CONFIG", settings.as_path()), ("PATH", path.as_path())];
-    // For changes, one by one: lint not, searchfox-cli not, all of moz's,
-    // notes' each, the one that reads, write kept, nothing else; then a
-    // command added. For answers, as they are shown.
+    // One list, a row at a time, each asked for both kinds of ask: curl,
+    // jq, the skills, lint and searchfox-cli kept as they are; all of moz's
+    // for changes; notes' each, the one that reads for changes, write kept;
+    // nothing else. Then a command added, for changes.
     let started = std::time::Instant::now();
-    let (fine, _, err) = stacked_in(&e.src, &e.db, &["setup", "agent", "s"], "n\n\n\ny\ne\ny\n\n\n\n\n\nBash(make check *)\n\n\n\n", &env);
+    let input = "n\n\n\n\n\n\nc\ne\nc\n\n\n\n\n\nBash(make check *)\nc\n\n";
+    let (fine, _, err) = stacked_in(&e.src, &e.db, &["setup", "agent", "s"], input, &env);
     assert!(fine, "{err}");
     assert!(started.elapsed() < std::time::Duration::from_secs(20), "stopped once it said what it has");
     assert_eq!(std::fs::read_to_string(&pwd).unwrap().trim(), e.src.display().to_string(), "in the stack's repository");
     let local = e.src.join(".stacked/local.toml");
     for line in [
         format!("stacked: the agent, in {}, has 12 tools. What each kind of ask may use is saved in {}; Enter keeps what is ticked.", e.src.display(), local.display()),
-        "Asks that change the stack, agent.change_tools:".into(),
-        "  Ticked: mcp__notes__write.".into(),
-        "  Let asks that change the stack use Bash(lint:*), allowed in .claude/settings.local.json? [y/N]".into(),
-        "  Let asks that change the stack use Bash(searchfox-cli *), named in AGENTS.md? [y/N]".into(),
-        "  The MCP server moz: get_bug, get_revision.".into(),
-        "  Let asks that change the stack use WebFetch? It can reach the network: a change could touch a remote. [y/N]".into(),
+        " read only  change   read only is for answer-only asks; change is for asks that change the stack".into(),
+        "            always   commands that read: grep, rg, find, cat, sed, sort…".into(),
+        "    [x]      [ ]     Bash(lint *)   allowed in .claude/settings.local.json".into(),
+        "    [x]      [x]       write".into(),
+        "Keep them as they are? [Y/n: one by one] ".into(),
+        "  Which asks may use Bash(lint *), allowed in .claude/settings.local.json? [R: read only, c: change, b: both, n: neither]".into(),
+        "  Which asks may use Bash(searchfox-cli *), named in AGENTS.md? [r: read only, c: change, b: both, N: neither]".into(),
+        "  The MCP server moz has these tools: get_bug, get_revision.".into(),
+        "  Which asks may use WebFetch, one of the agent's tools? It can reach the network: a change could touch a remote. [r: read only, c: change, b: both, N: neither]".into(),
         "  Bash(make check *): added.".into(),
-        "Answer-only asks, agent.answer_tools:".into(),
-        "  Ticked: Bash(curl *), Bash(jq *), Bash(lint:*), mcp__notes__write.".into(),
     ] {
         assert!(err.contains(&line), "{line:?} in:\n{err}");
     }
     // Written in the checkout's own settings, both lists and the setup
-    // done, notes' write left to agent.tools as both still let it; the
+    // done, notes' write left to agent.tools as both still let it; lint the
+    // newer way, though your claude settings write it the older; the
     // settings' file as it was.
-    let said = "change_tools: mcp__moz__*, mcp__notes__read, Bash(make check *); answer_tools: Bash(curl *), Bash(jq *), Bash(lint:*)";
+    let said = "change_tools: mcp__moz__*, mcp__notes__read, Bash(make check *); answer_tools: Bash(curl *), Bash(jq *), Bash(lint *)";
     assert!(err.contains(&format!("stacked: the setup is saved in {}: {said}", local.display())), "{err}");
-    assert_eq!(
-        std::fs::read_to_string(&local).unwrap(),
-        "[agent]\nchange_tools = [\"mcp__moz__*\", \"mcp__notes__read\", \"Bash(make check *)\"]\nanswer_tools = [\"Bash(curl *)\", \"Bash(jq *)\", \"Bash(lint:*)\"]\nsetup = 1\n"
-    );
+    let saved = "[agent]\nchange_tools = [\"mcp__moz__*\", \"mcp__notes__read\", \"Bash(make check *)\"]\nanswer_tools = [\"Bash(curl *)\", \"Bash(jq *)\", \"Bash(lint *)\"]\nsetup = 1\n";
+    assert_eq!(std::fs::read_to_string(&local).unwrap(), saved);
     assert_eq!(std::fs::read_to_string(&settings).unwrap(), "[agent]\ntools = [\"mcp__notes__write\"]\n");
-    // Again, as it is: the settings' ticks now, the lists set.
+    assert_eq!(
+        std::fs::read_to_string(e.src.join(".claude/settings.local.json")).unwrap(),
+        r#"{"permissions": {"allow": ["Bash(lint:*)"]}}"#,
+        "your claude settings never written"
+    );
+    // Again, as it is, the checkout's own list holding lint the older way,
+    // as an earlier stacked saved it: the settings' ticks now, the lists
+    // set. The instructions now name lint too, there on PATH: still one
+    // row, the newer way, and lint saved so.
+    let (fine, _, err) = stacked_in(&e.src, &e.db, &["config", "--local", "agent.answer_tools", "Bash(curl *)", "Bash(jq *)", "Bash(lint:*)"], "", &env);
+    assert!(fine, "{err}");
+    std::fs::write(bin.join("lint"), "#!/bin/sh\n").unwrap();
+    Command::new("chmod").arg("+x").arg(bin.join("lint")).status().unwrap();
+    std::fs::write(e.src.join("AGENTS.md"), "Search the code:\n\n```sh\nsearchfox-cli --define Foo\nlint --all\n```\n").unwrap();
     let (fine, _, err) = stacked_in(&e.src, &e.db, &["setup", "agent", "s"], "", &env);
     assert!(fine, "{err}");
-    assert!(err.contains("  Ticked: mcp__moz__*, mcp__notes__read, mcp__notes__write, Bash(make check *)."), "{err}");
+    for line in [
+        "    [ ]      [x]     all of the MCP server moz's tools, those to come too (mcp__moz__*)",
+        "    [ ]      [x]     Bash(make check *)   in the settings",
+        "    [x]      [ ]     Bash(lint *)   allowed in .claude/settings.local.json; named in AGENTS.md",
+    ] {
+        assert!(err.lines().any(|l| l == line), "{line:?} in:\n{err}");
+    }
+    assert!(!err.contains("Bash(lint:*)"), "{err}");
     assert!(err.contains(&format!("stacked: the setup is saved in {}: {said}", local.display())), "{err}");
-    // With --global, in the settings' file, starting from its own; the
-    // checkout's still the one used there, as said.
+    assert_eq!(std::fs::read_to_string(&local).unwrap(), saved);
+    // With --global, in the settings' file, starting from its own: lint
+    // ticked for answers as your claude settings allow it, the newer way.
+    // The checkout's still the one used there, as said.
     let (fine, _, err) = stacked_in(&e.src, &e.db, &["setup", "agent", "s", "--global"], "", &env);
     assert!(fine, "{err}");
     assert!(err.contains(&format!("What each kind of ask may use is saved in {};", settings.display())), "{err}");
@@ -2958,7 +2982,7 @@ fn what_each_kind_of_ask_may_use_is_set_up_with_the_agent() {
     assert!(err.contains("sets agent.setup too, and is the one used in its checkout"), "{err}");
     assert_eq!(
         std::fs::read_to_string(&settings).unwrap(),
-        "[agent]\ntools = [\"mcp__notes__write\"]\nchange_tools = []\nanswer_tools = [\"Bash(curl *)\", \"Bash(jq *)\", \"Bash(lint:*)\"]\nsetup = 1\n"
+        "[agent]\ntools = [\"mcp__notes__write\"]\nchange_tools = []\nanswer_tools = [\"Bash(curl *)\", \"Bash(jq *)\", \"Bash(lint *)\"]\nsetup = 1\n"
     );
     // Outside a checkout, refused before the agent is asked.
     std::fs::remove_file(&pwd).unwrap();

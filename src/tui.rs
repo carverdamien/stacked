@@ -3180,17 +3180,14 @@ impl App {
                 }
                 return Effect::None;
             }
-            // The setup's screen: a row picked, as the arrows would, and
-            // done as Enter does if it was picked already; nothing while a
-            // command is typed or its menu is open, nor while the agent is
-            // asked what tools it has.
+            // The setup's screen: a box ticked or not, a row picked, or the
+            // line to add a command or a tool opened, as the screen says;
+            // nothing while a command is typed or its menu is open, nor while
+            // the agent is asked what tools it has.
             Mode::Setup(su) => {
-                let Some(s) = su.screen.as_mut().filter(|s| s.adding.is_none() && s.menu.is_none()) else { return Effect::None };
-                let Some(k) = s.row_at(y.into()) else { return Effect::None };
-                if s.sel == k {
-                    return press(self, KeyCode::Enter);
+                if let Some(s) = su.screen.as_mut().filter(|s| s.adding.is_none() && s.menu.is_none()) {
+                    s.click(x.into(), y.into());
                 }
-                s.pick(k);
                 return Effect::None;
             }
             // What the agent writes, read in place: folded.
@@ -3257,12 +3254,11 @@ impl App {
     /// it what Enter does: in a menu, its item; a patch being moved goes
     /// there. Not while a comment is written, nor over what `?` says.
     pub fn hover(&mut self, x: u16, y: u16) {
-        // The setup's screen: the row under the mouse picked.
+        // The setup's screen: the row under the mouse picked, and the column
+        // of the box under it.
         if let Mode::Setup(su) = &mut self.mode {
-            if let Some(s) = su.screen.as_mut().filter(|s| s.adding.is_none() && s.menu.is_none())
-                && let Some(k) = s.row_at(y.into())
-            {
-                s.pick(k);
+            if let Some(s) = su.screen.as_mut().filter(|s| s.adding.is_none() && s.menu.is_none()) {
+                s.hover(x.into(), y.into());
             }
             return;
         }

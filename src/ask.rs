@@ -1136,16 +1136,16 @@ fn change_given(cmd: &str) -> String {
     format!("{},Bash({cmd} fits *),Bash({cmd} export *)", allowed_tools())
 }
 
-/// What stacked always gives each kind of ask, said, a line each: as the
-/// setup shows it, beside what the settings add.
-pub const CHANGE_GIVEN: [&str; 3] = [
-    "Read, Grep, Glob, LS, and commands that read: grep, rg, find, cat, sed, sort…",
-    "git's history commands (status, log, show, diff, add, commit, reset, rebase -i…), and git config to read",
-    "stacked's fits and export; none of what is given reaches the network, so a change cannot touch a remote",
-];
-pub const ANSWER_GIVEN: [&str; 2] = [
-    "Read, Grep, Glob, LS, and git show, log and diff",
-    "stacked's commands that read the stack: export, show, log, tree, versions, interdiff, comments",
+/// What stacked always gives the asks, said, a line each, as the setup
+/// shows it beside what the settings add: what it is, whether answer-only
+/// asks have it (`answer_given`), and whether asks that change the stack
+/// do (`change_given`).
+pub const GIVEN_SAID: [(&str, bool, bool); 5] = [
+    ("Read, Grep, Glob, LS, and git show, log and diff", true, true),
+    ("commands that read: grep, rg, find, cat, sed, sort…", false, true),
+    ("git's other history commands (status, add, commit, reset, rebase -i…), and git config to read", false, true),
+    ("stacked's commands that read the stack: export, show, log, tree, versions, interdiff, comments", true, false),
+    ("stacked's fits and export; nothing a change is given reaches the network", false, true),
 ];
 
 /// What an ask in `way` may use, `cmd` being stacked on its database, as

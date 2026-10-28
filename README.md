@@ -106,8 +106,8 @@ stacked config > ~/.stacked/config.toml   # every setting, to start a settings f
 stacked config editor hx           # one written in the settings file; KEY alone reads it
 stacked config --unset editor      # ... taken out of it
 stacked config --local editor vim  # ... in this checkout's own settings, over the file's here
-stacked setup agent bug123         # what each kind of ask may use, a list each, checked line by line, for its checkout
-stacked setup agent bug123 --tui   # ... on a screen, a box for each, as the editor shows it before the first ask
+stacked setup agent bug123         # what each kind of ask may use, one list of tools, checked line by line, for its checkout
+stacked setup agent bug123 --tui   # ... on a screen, a read-only box and a change box for each, as the editor shows it before the first ask
 ```
 
 `-f FILE` points any command at a database. A first argument that is not a
@@ -1049,7 +1049,8 @@ below): `agent.change_tools` for the asks that change the stack, nothing
 unless set; `agent.answer_tools` for answer-only asks, `curl` and `jq`
 unless set, as answers could always run them before there were lists; and
 `agent.tools` for every ask, builds and tests too. `stacked setup agent`
-sets the two lists up with you. Every ask is refused, too, what the stack's
+sets the two lists up with you, as one list of tools with a box for each
+kind of ask. Every ask is refused, too, what the stack's
 checkout's claude settings of yours deny (`permissions.deny` of
 `.claude/settings.local.json`), wherever it works: claude refuses it in the
 checkout, and stacked has it refused in the agents' worktrees too, which do
@@ -1232,10 +1233,10 @@ nothing in it has changed for a day. `$STACKED_TODO` names another folder
 to keep the plans in, in place of `$TMPDIR/stacked-todo`.
 
 What a change may run reaches no network, unless what its list
-(`agent.change_tools`) adds does: stacked suggests nothing for that list,
-and its setup says which of the agent's tools can reach the network (Bash
-at large, `WebFetch`, `WebSearch`), as a change that reaches it could touch
-a remote. It may run git's history
+(`agent.change_tools`) adds does: stacked ticks nothing in that list's
+column of the setup, and the setup says which of the agent's tools can
+reach the network (Bash at large, `WebFetch`, `WebSearch`), as a change
+that reaches it could touch a remote. It may run git's history
 commands (`status`, `log`, `show`, `diff`, `add`, `restore`, `reset`,
 `commit`, `cherry-pick`, `apply`, `checkout`, `switch`), `git rebase` with
 its plan (`-i`, and `--continue`, `--skip`, `--abort`), git's settings to
@@ -1787,27 +1788,33 @@ settings:
   `stacked setup agent [NAME]` sets the two lists up with you, and writes
   `setup` once you save them. It starts the agent in the stack's repository
   (else where it is run), where it has your MCP servers, and stops it as
-  soon as it has said what tools it has. Each list is shown ticked as the
-  settings say, else as stacked has it: nothing for changes; for answers,
-  `curl` and `jq`, and what the checkout's own claude settings allow, as you
-  allow it yourself, but for what changes things. Each says first what
-  stacked always gives it, which does not change. Then it lists what the
-  agent says it has (each MCP server, its tools all at once or one by one,
-  and the agent's other tools, but those stacked gives every ask); what the
-  checkout's own claude settings allow, each rule as written
-  (`permissions.allow` of `.claude/settings.local.json`, yours, then of
-  `.claude/settings.json`; their `deny` is left alone), said `allowed in
-  .claude/settings.local.json`: claude applies them when it runs in the
+  soon as it has said what tools it has. Both lists are shown as one list
+  of tools, a row each, with two boxes under the columns' headings:
+  `read only`, for answer-only asks (`answer_tools`), and `change`, for
+  the asks that change the stack (`change_tools`). The boxes are ticked as
+  the settings say, else as stacked has it: nothing for changes; for
+  answers, `curl` and `jq`, and what the checkout's own claude settings
+  allow, as you allow it yourself, but for what changes things. First comes
+  what stacked always gives, which does not change: `always` in the column
+  of each kind of ask that has it, greyed, with nothing to tick. Then the
+  list holds what the agent says it has (each MCP server, its tools all at
+  once or one by one, and the agent's other tools, but those stacked gives
+  every ask, said `one of the agent's tools`); what the checkout's own
+  claude settings allow (`permissions.allow` of
+  `.claude/settings.local.json`, yours, then of `.claude/settings.json`;
+  their `deny` is left alone), each rule as written, but for a command's
+  older form (below), said `allowed in .claude/settings.local.json` (or in
+  both files, if both allow it): claude applies them when it runs in the
   checkout, but an agent working in a worktree of the stack's own does not
-  have the first, which git does not track; what the checkout's skills let
-  run, for either kind, unticked, as several skills change things (they
-  commit, rewrite history, file bugs); and the programs the checkout's
-  instructions to the agent name, for either kind, unticked, as stacked
-  cannot know what a program does. A skill's rules are the `allowed-tools`
-  of the header of its `.claude/skills/NAME/SKILL.md`, on that line (a space
-  or a comma between each) or listed under it, each as written, said
-  `allowed by the skill NAME` (or by the skills that allow it, several of
-  them); what is not a rule (`[Agent]`) is left out, and a skill a link
+  have the first, which git does not track; what the checkout's skills let run, unticked,
+  as several skills change things (they commit, rewrite history, file
+  bugs); and the programs the checkout's instructions to the agent name,
+  unticked, as stacked cannot know what a program does. A skill's rules
+  are the `allowed-tools` of the header of its
+  `.claude/skills/NAME/SKILL.md`, on that line (a space or a comma between
+  each) or listed under it, each as written, but for a command's older
+  form, said `allowed by the skill NAME` (or by the skills that allow it,
+  several of them); what is not a rule (`[Agent]`) is left out, and a skill a link
   takes out of the checkout is not read. Those instructions are `CLAUDE.md`,
   `.claude/CLAUDE.md`, `AGENTS.md` and `AGENT.md` at the checkout's top, and
   what a `CLAUDE.md` imports (`@path`), one level down, inside the checkout:
@@ -1815,50 +1822,91 @@ settings:
   is the first word of what they say in code: a span, a command of a block
   of shell (past its prompt, `$ `, and what it sets first, `A=b`), or a line
   of an unmarked block. It is listed as `Bash(PROGRAM *)`, said `named in
-  AGENTS.md`, if it is there to run, on PATH or in the checkout (`./mach`);
+  AGENTS.md` (or in each of the files that name it), if it is there to run,
+  on PATH or in the checkout (`./mach`);
   a block of shell's that is not on PATH is listed too, said `named in
   AGENTS.md, not found on PATH`, to install and tick if it should be. What
   stacked gives already (git, grep, rg, cat…), shells and their builtins
   (cd, echo…) and what stacked refuses are left out, of the instructions,
   the skills and the claude settings alike. Last come what the settings let that
-  none of these lists, to keep or take out. Of the agent's tools, it says
-  which can reach the network, for a change (Bash at large, `WebFetch`,
-  `WebSearch`), and which change things, for an answer (Bash at large,
-  `Edit`, `Write`…). The answers' list has a box of its own, `Let answers
-  use the checkout's skills`, unticked unless the settings say: ticked, it
-  gives answer-only asks claude's `Skill` tool, written in `answer_tools`
-  as `Skill`, and its line says what that lets in: a skill may run what its
-  own allowed-tools let it, commands that change things too (rewriting
-  history, filing a bug), and an answer runs in your checkout itself unless
-  `answer_only_worktree` says otherwise. Whether what stacked refuses still
-  holds against what a skill's allowed-tools let it run, claude's own text
-  does not say, so stacked does not claim it. What the checkout's claude
-  settings of yours deny is said at the top, `denied in
-  .claude/settings.local.json, refused to every ask`, to read, not to tick:
-  every ask is refused it (Asking the agent, above). A tool of `tools` shows ticked in both lists; taken out
-  of one, it leaves `tools` and goes on in the other list alone. A command
-  or a tool of your own goes in either list, typed as claude writes a
-  permission rule: a tool (`WebFetch`), a tool and what it may do between
-  parentheses (`Bash(make check *)`, `WebFetch(domain:example.com)`), all
-  of an MCP server's tools (`mcp__SERVER__*`, `mcp__SERVER`) or one
-  (`mcp__SERVER__TOOL`); what does not read as one is refused, and said why
-  (`make check is not a tool's name: a command is let run as Bash(make
-  check)`). Saving writes both lists, `tools` if it changed, and `setup`, in
-  that checkout's own settings (below; with `--global`, in
-  `~/.stacked/config.toml`, for the checkouts without their own), the rest
-  of the file as it was; saved unchanged, the setup is done all the same.
-  Outside a checkout, only `--global` can be written. Asked line by line, it
-  says what each list holds, to keep as it is (Enter) or to go through one
-  by one, Enter keeping each as it is; then it asks for a command or a tool
-  to add, until a line is left empty. With `--tui`, and in the editor
-  before the first ask, on a screen of its own: what each kind of ask is
-  given and may use, a box each, and what saving writes, in the file it
-  writes, at the bottom. Space lets a tool or not, `a` (or Enter on `+ add
-  a command or a tool…`) opens a line to type one in, for the list the
-  cursor is in, and `s` saves. Esc (or `q`) is as in the comment editor:
-  with something changed, a menu, `Save it`, `Throw it away`, `Keep
-  choosing` (Esc there keeps choosing too); with nothing changed, out,
-  nothing written. Ctrl-c leaves at once, nothing written.
+  none of these lists, said `in the settings`, to keep or take out.
+
+  Rules that mean the same to claude are one row: a command's older prefix
+  form, `Bash(searchfox-cli:*)`, and the newer, `Bash(searchfox-cli *)`,
+  which claude matches alike (the command alone, or followed by a space and
+  more); all of an MCP server's tools, `mcp__SERVER` and `mcp__SERVER__*`;
+  and a rule that several places give. The row says where each comes from
+  (`allowed in .claude/settings.local.json; allowed by the skill
+  spec-trace; named in AGENTS.md`), and its boxes are ticked as for any
+  row: as the settings say, else as stacked has it for any of those
+  places. A command is shown and saved the newer way, which reads better,
+  however its places write it: `Bash(searchfox-cli *)`, in each list it is
+  ticked for. A `Bash(cmd:*)` that stacked's own settings hold (`tools`,
+  `answer_tools`, `change_tools`) is rewritten so the next time the setup
+  is saved, as claude reads the two alike; your claude settings are never
+  written. All of an MCP server's tools are written as the settings write
+  them, if they do, else as all their places do, if they agree, else
+  `mcp__SERVER__*`. Any other rule is shown and saved as it is written.
+  Nothing else is the same: a narrower rule is never merged into a wider
+  one (`Bash(./mach file-info:*)`, shown `Bash(./mach file-info *)`, and
+  `Bash(./mach *)` are two rows), nor the command alone into the command
+  and more (`Bash(make)` and `Bash(make *)`), nor the older form of a
+  command that holds a `*` into the newer (claude reads the `*` of
+  `Bash(git * push:*)` as it is written, so that rule stays as it is).
+
+  Of the agent's tools, the list says which can reach the network, for a
+  change (Bash at large, `WebFetch`, `WebSearch`), and which change things,
+  for an answer (Bash at large, `Edit`, `Write`…). The row of claude's
+  `Skill` tool, `claude's tool for the checkout's skills`, is there whether
+  the agent says it has the tool or not, unticked unless the settings say:
+  its read-only box gives answer-only asks the skills, written in
+  `answer_tools` as `Skill`, and the lines under it say what that lets in:
+  a skill may run what its own allowed-tools let it, commands that change
+  things too (rewriting history, filing a bug), and an answer runs in your
+  checkout itself unless `answer_only_worktree` says otherwise. Its change
+  box gives the skills to changes, written in `change_tools`. Whether what
+  stacked refuses still holds against what a skill's allowed-tools let it
+  run, claude's own text does not say, so stacked does not claim it. What
+  the checkout's claude settings of yours deny is said above the list,
+  `denied in .claude/settings.local.json, refused to every ask`, each rule
+  once however it is written, to read, not to tick: every ask is refused it
+  (Asking the agent, above). A tool of `tools` shows ticked in both
+  columns; taken out of one, it leaves `tools` and goes on in the other
+  list alone. A command or a tool of your own is added as a row, typed as
+  claude writes a permission rule: a tool (`WebFetch`), a tool and what it
+  may do between parentheses (`Bash(make check *)`,
+  `WebFetch(domain:example.com)`), all of an MCP server's tools
+  (`mcp__SERVER__*`, `mcp__SERVER`) or one (`mcp__SERVER__TOOL`); what does
+  not read as one is refused, and said why (`make check is not a tool's
+  name: a command is let run as Bash(make check)`). The row comes last,
+  said `added here`, neither box ticked, the cursor on it, for you to tick
+  what should use it; a rule that a row lets use already, however it is
+  written, is that row, as it is. Saving writes both lists, `tools` if it
+  changed, and `setup`, in that checkout's own settings (below; with
+  `--global`, in `~/.stacked/config.toml`, for the checkouts without their
+  own), the rest of the file as it was; saved unchanged, the setup is done
+  all the same. Outside a checkout, only `--global` can be written.
+
+  Asked line by line, the setup shows the list, a line a row as the screen
+  draws it, to keep as it is (Enter) or to go through a row at a time. Each
+  row is one question for both kinds of ask, `Which asks may use Bash(jq
+  *), stacked's default for answers? [R: read only, c: change, b: both, n:
+  neither]`, the capital letter being what Enter keeps; an MCP server's
+  tools are asked all at once, or each in turn (`e`). Then it asks for a
+  command or a tool to add, until a line is left empty, and asks the same
+  question of each. With `--tui`, and in the editor before the first ask,
+  the setup is a screen of its own, with what saving writes, in the file
+  it writes, at the bottom; once the list scrolls past the columns'
+  heading, the heading stays on its first line. ↑↓ pick a row; ← and →, or
+  Tab and shift-Tab, the column; Space ticks the box of the row picked in
+  that column, or not. In the browser and in StackED, a click on a box
+  ticks it or not, a click on `+ add a command or a tool…` opens the line
+  to type one in, and the mouse over a box picks its row and its column.
+  `a` (or Enter on `+ add a command or a tool…`) opens that line too, and
+  `s` saves. Esc (or `q`) is as in the comment editor: with something
+  changed, a menu, `Save it`, `Throw it away`, `Keep choosing` (Esc there
+  keeps choosing too); with nothing changed, out, nothing written. Ctrl-c
+  leaves at once, nothing written.
 
   `worktrees`, where the agents' worktrees go, else `.stacked/` at the top
   of the stack's repository. `schema`, whether the agent gives its answer
@@ -2199,11 +2247,12 @@ is typed: `import.rs`). A fix to one may belong in the other.
 - `state.rs`: the databases opened last, by StackED and by stacked's
   editor, StackED's windows to open again, and the searches of the middle,
   kept between runs under a lock.
-- `setup.rs`: `stacked setup agent`, what each kind of ask may use: where
-  what it lists comes from (the agent, the checkout's claude settings, its
-  skills and its instructions), what the checkout's claude settings of yours
-  deny, refused to every ask, on a screen (`--tui`, and the editor's before
-  the first ask) or line by line, and what saving writes.
+- `setup.rs`: `stacked setup agent`, what each kind of ask may use, one
+  list with a box for each kind: where what it lists comes from (the agent,
+  the checkout's claude settings, its skills and its instructions), which
+  rules mean the same and are one row, what the checkout's claude settings
+  of yours deny, refused to every ask, on a screen (`--tui`, and the
+  editor's before the first ask) or line by line, and what saving writes.
 - `editor.rs`: the inline comment editor.
 - `paint.rs`: colours, and drawing text and boxes.
 - `tui.rs`: the editor, and the work it does away from the screen; what a
@@ -2331,9 +2380,12 @@ folder `$STACKED_HOME` names, the folder made by the first written, a file
 yours, said once, never over a file there, and not by the shell's
 completion; a checkout's own over them, an ask on a stack having its
 checkout's wherever stacked runs, one git tracks not read; and what each
-kind of ask may use, set up with the agent, line by line, from what it
-has, the checkout's claude settings and instructions, in the checkout's own
-or with `--global`; each kind given its own list and every ask's, and the
+kind of ask may use, set up with the agent, line by line, a row of the
+one list at a time for both kinds, from what it has, the checkout's claude
+settings and instructions, in the checkout's own or with `--global`, a
+command saved the newer way, though your claude settings or the
+checkout's own list write it the older, and your claude settings never
+written; each kind given its own list and every ask's, and the
 refusal of a tool naming its kind's list; what your claude settings deny
 in the checkout refused to a change, an answer and a build and test; no
 ask sent before the setup is saved, and every ask once it is), Phabricator's comments
@@ -2362,7 +2414,8 @@ menus by place, what `?` says where, writing in every pane, the regions it
 says it drew (its panes, then the boxes over them, inside their borders:
 what StackED's selections keep to), the first ask opening the setup of
 what each kind of ask may use (the agent asked what it has away from the
-screen, Esc sending nothing, saving writing the checkout's own settings
+screen, Esc sending nothing, a box ticked with a click or by its column
+with the arrows and Space, saving writing the checkout's own settings
 and sending, the next ask going at once), a comment asked
 about and its stream and answer shown in place, the effort an ask goes at
 (`Ask agent` saving what changed first, and asking about what did not as
@@ -2575,15 +2628,24 @@ temporary directory; those in `history.rs`, what the history leaves out
 (comments, runs, a move to where the stack is, a branch put straight back)
 and how a stack diff follows each patch by its change, a move told from a
 shift. Those in
-`setup.rs` show the setup screen's boxes, each kind's own, a server's tools
-let all at once or one by one, a tool of every ask's taken out of one kind;
-what each list starts ticked as, the settings winning; the rules a command
-added is checked against; what the checkout's claude settings allow and
+`setup.rs` show the setup screen's one list, a read-only box and a change
+box a row, what stacked always gives marked in its columns, Space ticking
+the box of the cursor's column, ←→ and Tab moving between them, a click
+ticking the box under it, and the columns' heading kept on the first line
+once the list scrolls; a server's tools let all at once or one by one, a
+tool of every ask's taken out of one kind; what each list starts ticked
+as, the settings winning; which rules mean the same (a command's older
+prefix form and the newer, a rule from several places), each one row
+saying every place, a command shown and saved the newer way, agent.tools
+rewritten so too, and which do not (a narrower rule and a wider, the command alone, a
+`*` read as written); the rules a command added is checked against, and
+its row, neither box ticked; what the checkout's claude settings allow and
 deny, what its skills let run (their headers' every form, a rule several
 allow, what is no rule left out), and what its instructions name (a
 program on PATH, one not, a builtin and a tool stacked gives left out),
-nothing read out of the checkout; the box letting answers alone use
-skills; and the setup asked line by line; those in `search.rs`, which lines of a file a hunk shows
+nothing read out of the checkout; the row of claude's tool for skills,
+with what it lets an answer do; and the setup asked line by line, a
+question a row for both kinds; those in `search.rs`, which lines of a file a hunk shows
 already; those in `rows.rs`, a web link's line under its comment cut to
 the pane, its start kept, each file whole keeping the rows of its hunks'
 lines, a file too long and one past what a patch shows whole shown as

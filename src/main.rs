@@ -582,23 +582,28 @@ enum MozPhabWhat {
 #[derive(Subcommand)]
 enum SetupWhat {
     /// What each kind of ask may use besides what stacked gives it, a list
-    /// each: asks that change the stack (agent.change_tools), and
-    /// answer-only asks (agent.answer_tools). The agent is started (and
-    /// stopped at once) in the stack's repository, else here, where it has
-    /// your MCP servers, and says what tools it has. Each list is shown
+    /// each: answer-only asks (agent.answer_tools), and asks that change the
+    /// stack (agent.change_tools). Both are shown as one list of tools, each
+    /// with a box for each kind: read only, and change. The agent is started
+    /// (and stopped at once) in the stack's repository, else here, where it
+    /// has your MCP servers, and says what tools it has. The boxes are
     /// ticked as the settings say, else as stacked has it: nothing for
     /// changes; for answers, curl and jq, and what the checkout's own claude
     /// settings allow. What the checkout's skills let run, and the programs
-    /// its instructions to the agent name, are listed too, unticked; what
-    /// its claude settings of yours deny is said, refused to every ask. You
-    /// check them, add to them, and save them: saving is the setup done
-    /// (agent.setup), and until it is, no ask goes. They are written in that
-    /// checkout's own settings, .stacked/local.toml at its top, which
-    /// override the others there.
+    /// its instructions to the agent name, are listed too, unticked. Rules
+    /// that mean the same, as Bash(cmd:*) and Bash(cmd *), are one row,
+    /// which says where each comes from; a command is shown and saved as
+    /// Bash(cmd *), which reads better, an older form in stacked's own
+    /// settings rewritten so. What the checkout's claude settings of
+    /// yours deny is said, refused to every ask. You check them, add to
+    /// them, and save them: saving is the setup done (agent.setup), and
+    /// until it is, no ask goes. They are written in that checkout's own
+    /// settings, .stacked/local.toml at its top, which override the others
+    /// there.
     Agent {
         name: Option<String>,
-        /// On a screen of its own, a box for each tool, rather than asked
-        /// line by line.
+        /// On a screen of its own, two boxes for each tool, rather than
+        /// asked line by line.
         #[arg(long)]
         tui: bool,
         /// Written in the settings' file (~/.stacked/config.toml, or
