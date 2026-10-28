@@ -235,6 +235,10 @@ fn agent(path: &Path, id: &str) -> Result<()> {
     }
     std::thread::sleep(pace(path));
     Db::edit(path, |db| {
+        // Stopped meanwhile, it stays as it landed: failed.
+        if db.run(id).is_none_or(|r| r.state != RunState::Started) {
+            return Ok(());
+        }
         let s = db.stack(STACK)?.clone();
         let has = |db: &Db, title: &str| s.patches.iter().any(|p| db.patch(p).title() == title);
         // Its reply to each comment it was asked about, held for review, as

@@ -1986,11 +1986,17 @@ enum Done {
     /// The setup's screen for the checkout `0`, the agent asked what tools it
     /// has there; or why it could not be shown.
     SetUp(PathBuf, std::result::Result<Box<crate::setup::Setup>, String>),
+    /// The agent of run `0` stopped, its ask landed: what the status says
+    /// of it, if anything.
+    Stopped(String, Option<String>),
 }
 
 /// What the bar says while the agent is asked what tools it has, for the
 /// setup before the first ask.
 const SETTING_UP: &str = "asking the agent what tools it has";
+
+/// What the bar says while an agent is being stopped, its ask landed then.
+const STOPPING: &str = "stopping the agent";
 
 /// Where HEAD of the checkout stacked runs in was, against stack `name` at
 /// `rev`, when it was last looked at; whether to look again at once.
@@ -2029,6 +2035,9 @@ struct Background {
     precreated: Vec<ask::Ahead>,
     /// Where HEAD is is being looked at.
     heading: bool,
+    /// The runs whose agent is being stopped: what landing them says is
+    /// said once they are stopped.
+    stopping: Vec<String>,
 }
 
 impl Background {
@@ -2046,6 +2055,7 @@ impl Background {
             precreating: vec![],
             precreated: vec![],
             heading: false,
+            stopping: vec![],
         }
     }
 }
@@ -2424,7 +2434,9 @@ impl App {
     }
 
     /// Starts what asks may go, and lands those whose agent is gone, away
-    /// from the screen.
+    /// from the screen: the wrappers of the asks started here that have
+    /// exited are waited for first, so that none is left a zombie. Every
+    /// front-end calls it every few seconds.
     pub fn launch(&mut self) {
         if self.bg.launching {
             self.bg.again = true;
@@ -2526,7 +2538,43 @@ impl App {
                     }
                 }
             }
+            // What landed read first, so that what is said of the stop is
+            // the last word; then what waited behind it goes.
+            Done::Stopped(id, said) => {
+                if let Some(k) = self.bg.doing.iter().position(|d| *d == STOPPING) {
+                    self.bg.doing.remove(k);
+                }
+                self.reload();
+                self.bg.stopping.retain(|s| *s != id);
+                if let Some(said) = said {
+                    self.status = said;
+                }
+                self.launch();
+            }
         }
+    }
+
+    /// Stops the agent of run `id`, away from the screen, its ask landed
+    /// as failed at once (`ask::stop`): the status says so once it is done,
+    /// if `say`; what goes wrong, in any case.
+    fn stop(&mut self, id: String, say: bool) {
+        if self.bg.stopping.contains(&id) {
+            if say {
+                self.status = "the agent is being stopped already".into();
+            }
+            return;
+        }
+        self.bg.stopping.push(id.clone());
+        self.bg.doing.push(STOPPING);
+        let path = self.path.clone();
+        self.spawn(move || {
+            let said = match ask::stop(&path, &id) {
+                Ok((_, true)) => say.then(|| "the agent was stopped, and its ask landed as failed".to_string()),
+                Ok((r, false)) => say.then(|| format!("the agent's ask had landed before it could be stopped: {}", r.summary)),
+                Err(e) => Some(e.0),
+            };
+            Done::Stopped(id, said)
+        });
     }
 
     /// Whether what is to be sent, `then`, waits on the setup of what each
@@ -3484,11 +3532,13 @@ impl App {
         }
         self.fold_done();
         // What landed says so, but what waits for review: the banner says
-        // that, not to interrupt.
+        // that, not to interrupt; and what is being stopped, said once it
+        // is.
         for id in std::mem::take(&mut self.going) {
             if let Some(r) = self.db.run(&id)
                 && r.state != RunState::Started
                 && r.held.is_none()
+                && !self.bg.stopping.contains(&id)
             {
                 let state = format!("{:?}", r.state).to_lowercase();
                 self.status = format!("the agent's {} {state}: {}", r.what, r.summary);
@@ -6566,10 +6616,10 @@ impl App {
                 let builds = ask::builds_going(&self.db, &self.stack);
                 self.review_close(rest);
                 if self.reviewing.is_none() && !builds.is_empty() {
-                    for r in &builds {
-                        ask::stop(r);
+                    for r in builds {
+                        self.stop(r.id, false);
                     }
-                    self.status += "; the build and test of the stack as it was is stopped";
+                    self.status += "; the build and test of the stack as it was is being stopped, and lands as failed";
                 }
             }
             Action::Answer(k) => self.review_answer(k),
@@ -6674,10 +6724,8 @@ impl App {
                 self.mode = Mode::Menu(Menu::ask("stop the agent? the ask lands as failed", yes, "Let it run", true));
             }
             Action::Stop(id) => {
-                if let Some(r) = self.db.run(&id) {
-                    ask::stop(r);
-                    self.status = "stopped: it lands as failed".into();
-                }
+                self.status = "stopping the agent: its ask lands as failed".into();
+                self.stop(id, true);
             }
             Action::GoToOpened => {
                 if let Some(c) = self.picked()

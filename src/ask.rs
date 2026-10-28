@@ -43,6 +43,12 @@
 //! comments of its own within the scope, as a review does. Everything is in
 //! the database: the run as it starts, each line claude writes, and what came
 //! of it.
+//!
+//! An ask you stop (`stop`) lands at once, as failed, its agent killed if it
+//! will not exit; one whose agent is gone without landing it lands as
+//! failed too, once seen (`land_orphans`). The wrappers of the asks a
+//! process starts are waited for once they have exited (`reap`), so that
+//! none is left a zombie, which would look as if its agent still ran.
 
 use std::collections::{HashMap, HashSet};
 use std::io::BufRead;
@@ -225,8 +231,60 @@ pub fn busy(r: &Run) -> bool {
     r.state == RunState::Started && r.pid.is_none_or(alive)
 }
 
+/// Whether process `pid` is there, and has not exited. A child of this
+/// process that has exited is gone, though `kill` still finds it until
+/// it is waited for (a zombie): an ask's wrapper this process started is
+/// waited for now (`STARTED`); any other child is left for whoever started
+/// it to wait for, its exit kept for them.
 pub fn alive(pid: u32) -> bool {
-    unsafe { libc::kill(pid as i32, 0) == 0 }
+    let Some(p) = process(pid) else { return false };
+    if let Some(running) = wrapper_running(pid) {
+        return running;
+    }
+    // A child of this process: exited or not, asked without waiting for it
+    // (WNOWAIT). The pid is said only when it has exited.
+    let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+    let options = libc::WEXITED | libc::WNOHANG | libc::WNOWAIT;
+    if unsafe { libc::waitid(libc::P_PID, p as libc::id_t, &mut info, options) } == 0 {
+        return unsafe { info.si_pid() } == 0;
+    }
+    // Not this process's child: there, or not.
+    unsafe { libc::kill(p, 0) == 0 }
+}
+
+/// Pid `pid` as the system takes it, if it can be a process of an ask's:
+/// never 0 nor 1, nor a number `kill` and `waitpid` would read as a group.
+fn process(pid: u32) -> Option<i32> {
+    i32::try_from(pid).ok().filter(|&p| p > 1)
+}
+
+/// The wrappers of the asks this process started (`start`), each kept
+/// until it has exited and been waited for: so that none is left a zombie,
+/// which `kill` finds as if its agent still ran.
+static STARTED: std::sync::Mutex<Vec<std::process::Child>> = std::sync::Mutex::new(Vec::new());
+
+fn started() -> std::sync::MutexGuard<'static, Vec<std::process::Child>> {
+    STARTED.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Whether the wrapper `pid` this process started still runs, if it is
+/// one: waited for, and let go, once it has exited.
+fn wrapper_running(pid: u32) -> Option<bool> {
+    let mut started = started();
+    let k = started.iter().position(|c| c.id() == pid)?;
+    if matches!(started[k].try_wait(), Ok(None)) {
+        return Some(true);
+    }
+    // Waited for already: its handle gives back what it kept of the exit.
+    let _ = started.swap_remove(k).wait();
+    Some(false)
+}
+
+/// Waits for the wrappers this process started that have exited: wherever
+/// orphans are landed, as on each launch tick of the editor, whichever
+/// front-end runs it.
+fn reap() {
+    started().retain_mut(|c| matches!(c.try_wait(), Ok(None)));
 }
 
 /// What leaving the editor says of the asks still running: a line for
@@ -417,7 +475,10 @@ fn drop_run(db: &mut Db, r: &Run, mut i: Info, why: String) -> Result<()> {
         ..r.clone()
     })?;
     if running {
-        stop(r);
+        // Sent SIGTERM only, under the lock: the run is landed already.
+        if let Some(pid) = r.pid {
+            signal(pid, libc::SIGTERM);
+        }
     } else {
         let v = db.review(&r.id).cloned().unwrap_or_default();
         db.set_review(&r.id, crate::held::Review { closed: true, ..v })?;
@@ -999,10 +1060,11 @@ fn first_line(text: &str) -> String {
 }
 
 /// A run that could not start: failed, and its comments with it. The
-/// folder made for its rebase plan, if one was, goes.
+/// folder made for its rebase plan, if one was, goes. One landed
+/// meanwhile (stopped as its worktree was made) stays as it landed.
 fn fail_start(db_path: &Path, id: &str, why: &str) -> Result<()> {
     Db::edit(db_path, |db| {
-        let Some(r) = db.run(id).cloned() else { return Ok(()) };
+        let Some(r) = db.run(id).cloned().filter(|r| r.state == RunState::Started) else { return Ok(()) };
         if let Some(i) = info(&r) {
             mark_failed(db, &i, why)?;
             if let Some(dir) = &i.todo {
@@ -2058,6 +2120,10 @@ fn rebase_todo(base: &Path, dir: &Path, busy: &HashSet<PathBuf>) -> Result<PathB
 fn start(db_path: &Path, id: &str) -> Result<()> {
     let db = Db::load(db_path)?;
     let run = db.run(id).cloned().ok_or_else(|| Error(format!("no run {id}")))?;
+    // Landed already, stopped before it started: nothing to start.
+    if run.state != RunState::Started {
+        return Ok(());
+    }
     let mut i = info(&run).ok_or_else(|| Error(format!("run {id} is not an ask")))?;
     let s = started_from(&db, &i)?;
     let (repo, base) = base_of(&s)?;
@@ -2251,14 +2317,25 @@ fn start(db_path: &Path, id: &str) -> Result<()> {
     unsigned(&mut c);
     std::os::unix::process::CommandExt::process_group(&mut c, 0);
     let child = c.spawn().map_err(|e| Error(format!("sh: {e}")))?;
-    run.pid = Some(child.id());
-    Db::edit(db_path, |db| {
-        // Unless it already landed: claude may be that quick.
-        if db.run(id).is_some_and(|r| r.state == RunState::Started) {
+    let pid = child.id();
+    run.pid = Some(pid);
+    // Kept, to wait for once it has exited (`reap`), before its pid is
+    // written for anyone to ask after.
+    started().push(child);
+    let stopped = Db::edit(db_path, |db| {
+        // Stopped as it started, by a stop that could not know its pid: its
+        // agent is stopped here. Else, unless it already landed (claude may
+        // be that quick), its pid is written.
+        let stopped = db.events(id).iter().any(|e| e.get("type").and_then(Value::as_str) == Some(STOP));
+        if !stopped && db.run(id).is_some_and(|r| r.state == RunState::Started) {
             db.add_run(run)?;
         }
-        Ok(())
-    })
+        Ok(stopped)
+    })?;
+    if stopped {
+        signal(pid, libc::SIGKILL);
+    }
+    Ok(())
 }
 
 /// `args`, the arguments the settings add to claude, with `--effort` at
@@ -2296,16 +2373,26 @@ pub fn record(db_path: &Path, id: &str, input: impl BufRead) -> Result<()> {
     Ok(())
 }
 
+/// The type of the event a run's stream gets as you stop its agent, before
+/// the agent is sent anything: whatever lands the ask then says that you
+/// stopped it, rather than that it was killed.
+const STOP: &str = "stop";
+
+/// How an agent you stopped exited, as `exit_code` says it.
+const STOPPED: &str = "stopped";
+
 /// How run `id`'s agent exited: as its stream says, else `exit` (it was
-/// killed), else unknown.
+/// killed), else unknown. Once you stopped it, it was stopped, unless it
+/// exited before that, or was done as you stopped it.
 fn exit_code(db: &Db, id: &str, exit: Option<&str>) -> String {
-    db.events(id)
-        .iter()
-        .rev()
-        .find(|e| e.get("type").and_then(Value::as_str) == Some("exit"))
-        .map(|e| str_of(e.get("code")))
-        .or(exit.map(String::from))
-        .unwrap_or_else(|| "unknown".into())
+    let events = db.events(id);
+    let last = |kind: &str| events.iter().rposition(|e| e.get("type").and_then(Value::as_str) == Some(kind));
+    match (last("exit"), last(STOP)) {
+        (Some(x), Some(s)) if x > s && str_of(events[x].get("code")) != "0" => STOPPED.into(),
+        (Some(x), _) => str_of(events[x].get("code")),
+        (None, Some(_)) => STOPPED.into(),
+        (None, None) => exit.map_or_else(|| "unknown".into(), String::from),
+    }
 }
 
 /// What the agent answered last: the structured output of its stream's
@@ -2422,6 +2509,13 @@ impl Landed {
 /// says how claude exited when its events cannot (it was killed). Then
 /// starts what was waiting behind it.
 pub fn land(db_path: &Path, id: &str, exit: Option<&str>) -> Result<Run> {
+    let run = file_landed(db_path, id, exit)?;
+    launch(db_path)?;
+    Ok(run)
+}
+
+/// What `land` does, but start what waits.
+fn file_landed(db_path: &Path, id: &str, exit: Option<&str>) -> Result<Run> {
     // What landing does is done once first, on a copy, with no lock held:
     // what takes long (the stack made checked to apply, on a big
     // repository) is then remembered, and under the lock it is only
@@ -2461,7 +2555,12 @@ pub fn land(db_path: &Path, id: &str, exit: Option<&str>) -> Result<Run> {
                 .map(|e| str_of(e.get("text")))
                 .collect();
             let keep = left_work(&i);
-            let mut summary = format!("the agent failed ({code}): {}", said.join("\n").trim());
+            let said = said.join("\n");
+            let mut summary = match (code.as_str(), said.trim()) {
+                (STOPPED, "") => STOPPED_SAID.to_string(),
+                (STOPPED, said) => format!("{STOPPED_SAID}: {said}"),
+                (code, said) => format!("the agent failed ({code}): {said}"),
+            };
             if let Some(why) = ended_badly(&events) {
                 summary += &format!("; {why}");
             }
@@ -2515,7 +2614,6 @@ pub fn land(db_path: &Path, id: &str, exit: Option<&str>) -> Result<Run> {
     if let Some(i) = after {
         leave(&i);
     }
-    launch(db_path)?;
     Ok(run)
 }
 
@@ -3020,8 +3118,10 @@ pub fn fits(db_path: &Path, id: &str) -> Result<String> {
 }
 
 /// Lands every ask whose claude is gone without its wrapper landing it (it
-/// was killed), or that never started; how many.
+/// was killed), or that never started; how many. The wrappers this process
+/// started that have exited are waited for first (`reap`).
 pub fn land_orphans(db_path: &Path, db: &Db) -> usize {
+    reap();
     let stale: Vec<String> = db
         .live_runs()
         .into_iter()
@@ -3078,6 +3178,7 @@ pub fn tail(db: &Db, id: &str, n: usize) -> Vec<String> {
         let lines = match v.get("type").and_then(Value::as_str) {
             Some("text") => vec![str_of(v.get("text"))],
             Some(STARTING) => vec![format!("$ {}", str_of(v.get("text")))],
+            Some(STOP) => vec![format!("■ {STOPPED_SAID}")],
             Some("exit") => vec![format!("exit {}", str_of(v.get("code")))],
             Some("result") if more || (!exit && going) => {
                 let said = if more { "◷ the agent waited" } else { "◷ the agent waits" };
@@ -3117,10 +3218,77 @@ fn works(v: &Value) -> bool {
     }
 }
 
-/// Stops a running ask: its process group, claude and all.
-pub fn stop(r: &Run) {
-    if let Some(pid) = r.pid {
-        unsafe { libc::kill(-(pid as i32), libc::SIGTERM) };
+/// How long a stopped ask's agent is given to exit once sent SIGTERM,
+/// before it is killed (SIGKILL); and then, to be gone.
+const TERM_GRACE: std::time::Duration = std::time::Duration::from_secs(3);
+const KILL_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// What the summary of an ask you stopped starts with.
+const STOPPED_SAID: &str = "you stopped the agent";
+
+/// Stops run `id`'s agent, and lands its ask as failed, at once: said
+/// first in its stream, so that whatever lands it says that you stopped
+/// it; then its process group (its wrapper, claude and all) sent SIGTERM
+/// and given a few seconds to exit, its wrapper waited for if this process
+/// started it, and killed if it has not exited; then the ask landed. What
+/// waits behind it is not started here, but by the caller (`launch`), away
+/// from what it does. The run as it is then, and whether you stopped it:
+/// one that had landed already, or whose agent was done as it was
+/// stopped, stays as it landed.
+pub fn stop(db_path: &Path, id: &str) -> Result<(Run, bool)> {
+    // Said under the lock, its wrapper's pid read with it: an ask whose
+    // wrapper starts after this sees it said, and stops its agent itself.
+    let (landed, pid) = Db::edit(db_path, |db| {
+        let r = db.run(id).cloned().ok_or_else(|| Error(format!("no run {id}")))?;
+        if r.ask.is_none() {
+            return err(format!("run {id} is not an ask: only an ask's agent can be stopped"));
+        }
+        if r.state != RunState::Started {
+            return Ok((Some(r), None));
+        }
+        db.add_event(id, serde_json::json!({"type": STOP}))?;
+        Ok((None, r.pid))
+    })?;
+    if let Some(r) = landed {
+        return Ok((r, false));
+    }
+    if let Some(pid) = pid {
+        signal(pid, libc::SIGTERM);
+        if !gone_within(pid, TERM_GRACE) {
+            signal(pid, libc::SIGKILL);
+            gone_within(pid, KILL_GRACE);
+        }
+    }
+    let run = file_landed(db_path, id, Some("killed"))?;
+    let stopped = run.state == RunState::Failed && run.summary.starts_with(STOPPED_SAID);
+    Ok((run, stopped))
+}
+
+/// Sends `sig` to the process group of ask wrapper `pid`: the wrapper,
+/// claude and all.
+fn signal(pid: u32, sig: libc::c_int) {
+    if let Some(p) = process(pid) {
+        unsafe { libc::kill(-p, sig) };
+    }
+}
+
+/// Whether the process group of ask wrapper `pid` is gone within `within`:
+/// none of its processes left but those that exited, the wrapper waited
+/// for if this process started it. Looked at every few milliseconds.
+fn gone_within(pid: u32, within: std::time::Duration) -> bool {
+    let Some(p) = process(pid) else { return true };
+    let start = std::time::Instant::now();
+    loop {
+        let _ = wrapper_running(pid);
+        if unsafe { libc::kill(-p, 0) } != 0 {
+            // The wrapper too, should it have exited since.
+            let _ = wrapper_running(pid);
+            return true;
+        }
+        if start.elapsed() >= within {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
     }
 }
 
@@ -3558,5 +3726,64 @@ mod tests {
         // In the tests' own processes, which the binary never set up: beside
         // the database.
         assert_eq!(plans(Path::new("/tmp/t/db.jsonl")), Path::new("/tmp/t/stacked-todo"));
+    }
+
+    /// Waits until child `pid` has exited, without waiting for it: a
+    /// zombie, until whoever started it waits for it.
+    fn exited(pid: u32) {
+        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+        assert_eq!(unsafe { libc::waitid(libc::P_PID, pid, &mut info, libc::WEXITED | libc::WNOWAIT) }, 0);
+    }
+
+    #[test]
+    fn a_child_that_has_exited_is_not_alive_its_exit_left_to_who_started_it() {
+        let mut running = Command::new("sleep").arg("60").spawn().unwrap();
+        assert!(alive(running.id()));
+        running.kill().unwrap();
+        exited(running.id());
+        // A zombie: `kill` finds it, but it is not alive.
+        assert_eq!(unsafe { libc::kill(running.id() as i32, 0) }, 0, "a zombie");
+        assert!(!alive(running.id()));
+        // Its exit is still there for who started it, who waits for it.
+        assert!(running.try_wait().unwrap().is_some(), "not waited for by alive");
+        // Never 0, 1, or a pid read as a group.
+        assert!(!alive(0) && !alive(1) && !alive(u32::MAX));
+    }
+
+    #[test]
+    fn a_wrapper_started_here_is_waited_for_once_it_has_exited() {
+        // As `start` keeps the wrapper it starts.
+        let (one, two) = (Command::new("true").spawn().unwrap(), Command::new("true").spawn().unwrap());
+        let (a, b) = (one.id(), two.id());
+        started().extend([one, two]);
+        exited(a);
+        exited(b);
+        assert_eq!(unsafe { libc::kill(a as i32, 0) }, 0, "a zombie");
+        // Asked after: not alive, and waited for, gone.
+        assert!(!alive(a));
+        assert_eq!(unsafe { libc::kill(a as i32, 0) }, -1, "waited for");
+        // Not asked after: waited for all the same, as a launch looks.
+        reap();
+        assert_eq!(unsafe { libc::kill(b as i32, 0) }, -1, "waited for");
+        assert!(!started().iter().any(|c| c.id() == a || c.id() == b));
+    }
+
+    #[test]
+    fn an_agent_you_stopped_lands_said_stopped_unless_it_was_done() {
+        let stop = serde_json::json!({"type": STOP});
+        let exit = |code: i32| serde_json::json!({"type": "exit", "code": code});
+        let code = |events: &[Value], given: Option<&str>| exit_code(&streamed(events), "r", given);
+        // Gone without a word: as said, else unknown.
+        assert_eq!(code(&[], Some("killed")), "killed");
+        assert_eq!(code(&[], None), "unknown");
+        // Stopped: so, however it went, and whatever is said of it.
+        assert_eq!(code(std::slice::from_ref(&stop), Some("killed")), STOPPED);
+        assert_eq!(code(&[stop.clone(), exit(143)], None), STOPPED);
+        // Done as you stopped it, or gone before: as it exited.
+        assert_eq!(code(&[stop.clone(), exit(0)], None), "0");
+        assert_eq!(code(&[exit(1), stop.clone()], None), "1");
+        // Its stream says so.
+        let init = serde_json::json!({"type": "system", "subtype": "init", "model": "m"});
+        assert_eq!(tail(&streamed(&[init, stop]), "r", 10), ["● session started · m", "■ you stopped the agent"]);
     }
 }

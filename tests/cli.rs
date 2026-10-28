@@ -3610,6 +3610,62 @@ fn an_ask_being_started_is_not_taken_for_one_left_behind() {
     assert_eq!(db.run("lost").unwrap().state, RunState::Failed, "who started it is gone");
 }
 
+/// The process group of an ask's wrapper `0`, its agent deaf to SIGTERM:
+/// killed should the test fail, as nothing else would stop it.
+struct Deaf(u32);
+
+impl Drop for Deaf {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            unsafe { libc::kill(-(self.0 as i32), libc::SIGKILL) };
+        }
+    }
+}
+
+#[test]
+fn an_agent_stopped_lands_its_ask_at_once_killed_if_it_will_not_exit() {
+    let e = env();
+    e.ok(&["import", "s", "base"]);
+    let id = comment(&e, &["--patch", "1", "Why", "two?"]);
+    // A claude deaf to SIGTERM, at work until the gate is there, that says
+    // where it runs.
+    let (gate, at) = (e.root.join("gate"), e.root.join("agent.pid"));
+    let body = format!("trap '' TERM\necho $$ > {}\nuntil test -e {}; do sleep 0.1; done", at.display(), gate.display());
+    let claude = fake_claude(&e, "claude-deaf.sh", &body, r#"{"replies": {"c1": "Too late."}}"#);
+    let (fine, out, err) = stacked_in(&e.src, &e.db, &["send", "s", &id, "--answer-only"], "", &[("STACKED_CLAUDE", claude.as_path())]);
+    assert!(fine, "{out}{err}");
+    let mut agent = None;
+    for _ in 0..300 {
+        agent = std::fs::read_to_string(&at).ok().and_then(|p| p.trim().parse::<u32>().ok());
+        if agent.is_some() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    let agent = agent.expect("the agent works");
+    let (run, pid) = Db::load(&e.db).unwrap().runs().iter().find(|r| r.state == RunState::Started).map(|r| (r.id.clone(), r.pid)).unwrap();
+    let _deaf = Deaf(pid.expect("its wrapper runs"));
+    // The shell offers it to stop, as it runs.
+    let offered = e.ok(&["__complete", "--", "stop", ""]);
+    assert_eq!(offered, format!("{run}:answer · running\n"));
+    // Stopped, by the start of its id: killed, as it will not exit, and its
+    // ask landed at once, as failed, said so on its comment.
+    let start = &run[..run.rfind('-').unwrap()];
+    let out = e.ok(&["stop", start]);
+    assert!(out.starts_with(&run) && out.trim_end().ends_with("\tfailed\tyou stopped the agent"), "{out}");
+    assert!(!still_there(agent), "killed");
+    let c = e.ok(&["comments", "s", "--patch", "1"]);
+    assert!(c.contains("ask failed: you stopped the agent"), "{c}");
+    assert!(e.ok(&["transcript", &run]).contains("■ you stopped the agent"));
+    // Nothing to stop any more.
+    let (fine, _, err) = e.run(&["stop", &run]);
+    assert!(!fine && err.contains(&format!("{run} is not running: its ask landed, failed: you stopped the agent")), "{err}");
+    assert_eq!(e.ok(&["__complete", "--", "stop", ""]), "");
+    let (fine, _, err) = e.run(&["stop", "nothing"]);
+    assert!(!fine && err.contains("no run nothing: `stacked runs` lists them"), "{err}");
+    std::fs::write(&gate, "").unwrap();
+}
+
 #[test]
 fn the_settings_are_a_file_in_home() {
     let e = env();

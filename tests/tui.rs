@@ -5835,6 +5835,111 @@ fn a_stream_read_in_place_folds_once_the_agent_is_done() {
     assert!(matches!(app.mode, Mode::Menu(_)), "{:?}", app.mode);
 }
 
+/// What `ps` says of process `pid`'s state (`Z` for a zombie): nothing
+/// once it is gone.
+fn state_of(pid: u32) -> String {
+    let out = Command::new("ps").args(["-o", "stat=", "-p", &pid.to_string()]).output().unwrap();
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+#[test]
+fn an_agent_stopped_lands_its_ask_as_failed_at_once_its_comment_free_again() {
+    let (_tmp, db, _src) = setup();
+    let (mut app, held) = asked_and_streamed(&db);
+    // The ask's wrapper is a child of this process, the editor's here.
+    let run = Db::load(&db).unwrap().runs().last().map(|r| (*r).clone()).unwrap();
+    let pid = run.pid.expect("its agent runs");
+    keys(&mut app, &[KeyCode::Esc]);
+    choose(&mut app, "Stop the agent…");
+    assert_eq!(menu_title(&app), "stop the agent? the ask lands as failed");
+    choose(&mut app, "Stop it");
+    assert_eq!(app.status, "stopping the agent: its ask lands as failed");
+    assert!(draw(&mut app).contains("stopping the agent…"), "the bar says so");
+    // Within a few seconds, held at work as the agent is, it lands, failed,
+    // said so; its stream is folded, and the editor goes on.
+    let screen = wait_for(&mut app, "ask failed: you stopped the agent");
+    assert_eq!(app.status, "the agent was stopped, and its ask landed as failed");
+    assert!(!screen.contains("Reading the patch.") && !screen.contains("stopping the agent…"), "{screen}");
+    assert!(screen.contains("✗ you · a.txt: TWO"), "{screen}");
+    let d = Db::load(&db).unwrap();
+    let r = d.run(&run.id).unwrap();
+    assert_eq!((r.state, r.summary.as_str()), (stacked::db::RunState::Failed, "you stopped the agent"));
+    assert!(stacked::ask::tail(&d, &run.id, 50).contains(&"■ you stopped the agent".to_string()));
+    drop(d);
+    // Its wrapper waited for: no zombie of this process is left.
+    assert_eq!(state_of(pid), "", "the wrapper is gone");
+    // Everything the comment offers is back.
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    let all = items(&app);
+    assert!(all.contains(&("Reply".to_string(), true)), "{all:?}");
+    assert!(all.contains(&("Ask agent".to_string(), true)), "{all:?}");
+    assert!(!all.iter().any(|(l, _)| l.starts_with("Stop the agent") || l.starts_with("Read what the agent")), "{all:?}");
+    drop(held);
+}
+
+#[test]
+fn an_ask_done_leaves_no_zombie_once_the_editor_looks_again() {
+    let (_tmp, db, _src) = setup();
+    let (mut app, held) = asked_and_streamed(&db);
+    let pid = Db::load(&db).unwrap().runs().last().and_then(|r| r.pid).expect("its agent runs");
+    drop(held);
+    wait_for(&mut app, "⟳ 1 landed ask waits for your review");
+    // Its wrapper lands the ask, starts what waits, then exits...
+    for _ in 0..300 {
+        let s = state_of(pid);
+        if s.is_empty() || s.starts_with('Z') {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    // ...and the editor's next look waits for it, as every few seconds.
+    app.launch();
+    app.settle();
+    assert_eq!(state_of(pid), "", "no zombie left");
+}
+
+#[test]
+fn an_ask_whose_agent_is_gone_without_landing_lands_at_the_next_look() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Enter]);
+    save(&mut app, "why so loud?");
+    down_to(&mut app, "+LINE 39");
+    keys(&mut app, &[KeyCode::Enter]);
+    save(&mut app, "and this?");
+    let notes = notes_of(&db, "s", 0);
+    let said = |text: &str| notes.iter().find(|n| n.text == text).cloned().unwrap();
+    // Stopped before stopping landed asks: its agent gone, its process
+    // too, as once the editor that held it as a zombie has exited.
+    let mut gone = Command::new("true").spawn().unwrap();
+    gone.wait().unwrap();
+    // Or a zombie of this process's still, that it never started an ask
+    // with: left for who started it to wait for.
+    let mut zombie = Working::start();
+    zombie.0.kill().unwrap();
+    for _ in 0..300 {
+        if state_of(zombie.0.id()).starts_with('Z') {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    asked_in(&db, "run-gone", &said("why so loud?"), gone.id());
+    asked_in(&db, "run-zombie", &said("and this?"), zombie.0.id());
+    app.refresh();
+    // The next look lands both, as killed.
+    app.launch();
+    app.settle();
+    let d = Db::load(&db).unwrap();
+    for id in ["run-gone", "run-zombie"] {
+        let r = d.run(id).unwrap();
+        assert!(r.state == stacked::db::RunState::Failed && r.summary.starts_with("the agent failed (killed)"), "{r:?}");
+    }
+    assert!(draw(&mut app).contains("ask failed: the agent failed (killed)"));
+    assert!(zombie.0.try_wait().unwrap().is_some(), "its exit left for who started it");
+}
+
 #[test]
 fn the_first_ask_opens_the_setup_and_goes_once_it_is_saved() {
     let (_tmp, db, src) = setup();
@@ -9530,6 +9635,23 @@ fn accepting_an_edit_says_first_the_answers_it_asks_again_and_offers_to_stop_a_b
 }
 
 #[test]
+fn a_build_stopped_as_a_review_closes_lands_at_once_being_started_still() {
+    let (_tmp, db, mut app) = landed_kinds(&[("run-1", "edit"), ("run-2", "answer")], true);
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Down, KeyCode::Enter]);
+    keys(&mut app, &[KeyCode::Esc]);
+    choose(&mut app, "Accept all remaining and Close");
+    // The build has no process yet, its worktree being made: it lands all
+    // the same, stopped, and the review's word stays the last.
+    choose(&mut app, "Accept them and close, and stop the build");
+    let said = "; the build and test of the stack as it was is being stopped, and lands as failed";
+    assert!(app.status.ends_with(said), "{}", app.status);
+    app.settle();
+    assert!(app.status.ends_with(said), "{}", app.status);
+    let r = Db::load(&db).unwrap().run("run-build").cloned().unwrap();
+    assert_eq!((r.state, r.summary.as_str()), (stacked::db::RunState::Failed, "you stopped the agent"));
+}
+
+#[test]
 fn rejecting_or_sending_back_says_first_the_edits_it_asks_again() {
     let (_tmp, _db, mut app) = landed_kinds(&[("run-1", "edit"), ("run-3", "guess")], true);
     keys(&mut app, &[KeyCode::Esc, KeyCode::Enter]);
@@ -10363,6 +10485,12 @@ impl Drop for Working {
 /// Stack s's comment `n` asked about, to answer only: the ask, run `run`,
 /// going in `w`'s process.
 fn answering(db: &Path, run: &str, n: &Note, w: &Working) {
+    asked_in(db, run, n, w.0.id());
+}
+
+/// Stack s's comment `n` asked about, to answer only: the ask, run `run`,
+/// started in process `pid`, as in its wrapper's.
+fn asked_in(db: &Path, run: &str, n: &Note, pid: u32) {
     Db::edit(db, |d| {
         let from = d.head("s").unwrap().0;
         let ask = serde_json::json!({"way": "answer", "scope": {"patch": n.change}, "from": from, "notes": [{"label": "c1", "change": n.change, "id": n.id}]});
@@ -10371,7 +10499,7 @@ fn answering(db: &Path, run: &str, n: &Note, w: &Working) {
             what: "answer".into(),
             stack: "s".into(),
             state: stacked::db::RunState::Started,
-            pid: Some(w.0.id()),
+            pid: Some(pid),
             ask: Some(ask),
             time: stacked::db::now(),
             ..Default::default()
@@ -10409,8 +10537,17 @@ fn delete_stops_the_agent_once_asked_on_its_comment_and_on_the_runs() {
     assert!(one.runs(), "it runs");
     keys(&mut app, &[KeyCode::Delete]);
     choose(&mut app, "Stop it");
-    assert_eq!(app.status, "stopped: it lands as failed");
+    assert_eq!(app.status, "stopping the agent: its ask lands as failed");
     assert!(one.stopped(), "stopped");
+    // Its ask landed at once, as failed, said so: Delete closes the comment
+    // again.
+    app.settle();
+    assert_eq!(app.status, "the agent was stopped, and its ask landed as failed");
+    let run = |id: &str| Db::load(&db).unwrap().run(id).cloned().unwrap();
+    let r = run("run-one");
+    assert_eq!((r.state, r.summary.as_str()), (stacked::db::RunState::Failed, "you stopped the agent"));
+    assert!(draw(&mut app).contains("ask failed: you stopped the agent"));
+    assert!(app.hint().contains("delete: close it"), "{}", app.hint());
     // On the runs, a running ask's line: the same.
     answering(&db, "run-two", &said("and this?"), &two);
     app.refresh();
@@ -10426,6 +10563,9 @@ fn delete_stops_the_agent_once_asked_on_its_comment_and_on_the_runs() {
     keys(&mut app, &[KeyCode::Delete]);
     choose(&mut app, "Stop it");
     assert!(two.stopped(), "stopped");
+    app.settle();
+    assert_eq!(app.status, "the agent was stopped, and its ask landed as failed");
+    assert_eq!(run("run-two").state, stacked::db::RunState::Failed);
     // An ask that no longer runs: nothing.
     keys(&mut app, &[KeyCode::Delete]);
     assert_eq!((app.screen, app.mode.clone()), (Screen::Runs, Mode::Normal));

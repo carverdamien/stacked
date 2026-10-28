@@ -445,6 +445,11 @@ enum Cmd {
     Runs { name: Option<String> },
     /// What a run's agent wrote.
     Transcript { id: String },
+    /// Stop the agent of an ask that runs, by its run (as `runs` lists it,
+    /// or the start of its id): sent SIGTERM, then SIGKILL if it has not
+    /// exited a few seconds later, its ask lands at once, as failed, and
+    /// what waited behind it goes.
+    Stop { id: String },
     /// Phabricator, over Conduit with moz-phab's token: `pull`, a stack's
     /// reviews; `import`, a stack of its revisions. `stacked moz-phab` is
     /// built by default, with the `moz-phab` feature: `--no-default-features
@@ -654,15 +659,10 @@ fn effort_arg() -> impl clap::builder::TypedValueParser<Value = stacked::db::Eff
     clap::builder::PossibleValuesParser::new(stacked::db::Effort::NAMES).map(|s: String| stacked::db::Effort::parse(&s).unwrap_or_default())
 }
 
-/// Whether the process `pid` is gone: exited (reaped now, if it was this
-/// one's child, as an ask's started here is), or not there at all.
+/// Whether the process `pid` is gone: exited (waited for now, if it is
+/// the wrapper of an ask started here), or not there at all.
 fn gone(pid: u32) -> bool {
-    let mut status = 0;
-    match unsafe { libc::waitpid(pid as i32, &mut status, libc::WNOHANG) } {
-        0 => false,
-        p if p == pid as i32 => true,
-        _ => !ask::alive(pid),
-    }
+    !ask::alive(pid)
 }
 
 fn parse_rev(s: &str) -> Result<usize> {
@@ -1628,6 +1628,28 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
             {
                 println!("\n{}", r.output);
             }
+        }
+        Cmd::Stop { id } => {
+            // The run of that id, else the one it starts.
+            let db = Db::load(path)?;
+            let named: Vec<String> = match db.run(&id) {
+                Some(_) => vec![id.clone()],
+                None => db.run_ids().filter(|r| r.starts_with(id.as_str())).map(str::to_string).collect(),
+            };
+            let id = match named.as_slice() {
+                [one] => one.clone(),
+                [] => return err(format!("no run {id}: `stacked runs` lists them")),
+                _ => return err(format!("{id} names more than one run: give more of it")),
+            };
+            drop(db);
+            let (run, stopped) = ask::stop(path, &id)?;
+            // What waited behind it goes.
+            ask::launch(path)?;
+            if !stopped {
+                let state = format!("{:?}", run.state).to_lowercase();
+                return err(format!("{id} is not running: its ask landed, {state}: {}", run.summary));
+            }
+            print_run(&run);
         }
         #[cfg(feature = "moz-phab")]
         Cmd::MozPhab { what: MozPhabWhat::Import { revision, name } } => {

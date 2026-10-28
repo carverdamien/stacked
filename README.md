@@ -96,6 +96,7 @@ stacked send bug123 --all --answer-only   # every comment that can be sent
 stacked send bug123 4f1c2a --later   # in the stack's batch, to go with the rest
 stacked send bug123 --batch --fan-out   # the batch: edits to one agent, answers an agent each
 stacked send bug123 4f1c2a --effort max   # at claude's --effort max, rather than the editor's last pick
+stacked stop 1761650000000-4242    # the agent of that run (stacked runs lists them) stopped: its ask lands as failed at once
 stacked reply bug123 4f1c2a and keep the title
 stacked moz-phab pull bug123       # reviewers' comments from Phabricator, held for your review (moz-phab)
 stacked moz-phab import D123       # a new stack of D123, those it stacks on and those on it (moz-phab)
@@ -1359,6 +1360,27 @@ did not commit, or that could not be filed, is left in place, and the run's
 summary says where; others are removed once landed. `Runs…` lists every
 ask, apply and pull, and shows what the agent wrote.
 
+`Stop the agent…`, in the menu of a comment the agent works on, and on an
+ask that runs in `Runs…` (Delete does the same in both places), asks
+first. Once you say so, the agent's process group is sent SIGTERM, and
+SIGKILL if the agent has not exited three seconds later; the ask then
+lands as failed at once, and what waited behind it goes. Meanwhile the bar
+says `stopping the agent…`; once the ask has landed, the status line says
+that the agent was stopped and its ask landed as failed. The comment is
+free again: its stream is folded, the comment is marked failed (`✗`,
+`ask failed: you stopped the agent`), and its menu offers everything
+again. The run's summary says that you stopped the agent, and its stream
+ends with `■ you stopped the agent`. `stacked stop RUN` does the same from
+the command line, RUN being a run as `stacked runs` lists it, or the start
+of its id. A build and test stopped as a review closes lands the same way.
+
+An ask whose agent is gone without landing it (killed by something other
+than stacked) lands as failed on its own: the editor looks for such asks
+every few seconds, `stacked send --wait` as it waits, and `stacked runs`
+before it lists the runs. The editor also waits for each process it
+started for an ask once that process has exited, so that none is left a
+zombie, which would look as if its agent still ran.
+
 `STACKED_CLAUDE` names a program to run as the agent, over the settings'
 `agent.command`. The tests use it. Whatever it is, it is given claude's
 arguments (`-p PROMPT --output-format stream-json …`) and must answer as
@@ -2416,7 +2438,11 @@ agent's reference by `--edit --turn` (said so), and a rewind keeping one
 never named, a web link attached told the agent as one it need not fetch
 (the prompt asking it to point at the stack first) and listed with its
 comment, the agent's own link kept in its reply (one not of the web left
-out, with its number), asks waiting their turn, the effort each ask goes
+out, with its number), asks waiting their turn, an agent stopped with
+`stacked stop` (by the start of its run's id, the shell offering only the
+runs that run) and killed as it will not exit on SIGTERM, its ask landed
+at once as failed and said so on its comment and in its transcript, a
+second stop refused, the effort each ask goes
 at (`--effort`, else the one the editor picked last, kept in the test's
 home, else `high`; the settings' own taken out; a level claude does not
 take refused, nothing sent; a batch at the effort its comments were
@@ -2446,14 +2472,15 @@ built with it, apply, and
 what does not apply being refused, edited again, or read-only. `tests/tui.rs` draws the editor into a buffer and presses keys:
 that no letter but 1, 2, 3 and / does anything, keys mapped by the settings,
 Delete and Backspace as the menus' items that close, drop, stop or reject
-(a comment closed, with those its answer opened, its agent stopped, taken
+(a comment closed, with those its answer opened, its agent stopped and
+its ask landed at once as failed, taken
 back from the queue or out of the batch; a patch dropped and the stack
 deleted; a file's changes dropped from its patch for review, refused when
 a later patch needs them, a rename, an added file and a deleted one
 dropped whole, and the patch's drop offered for its only file; in a
 review, a part rejected, a comment closed with it, what you wrote taken
 back; landed work rejected and a comment closed from the banner; an ask
-stopped from the runs; each asking first where its item does, Esc then
+stopped from the runs, landed at once too; each asking first where its item does, Esc then
 doing nothing; on a comment closed, the status line saying so), their key
 a setting, and nothing done in a menu, History…, the tree, the versions or
 the search, nor in the comment editor and `/`'s bar, where they edit what is
@@ -2479,7 +2506,15 @@ what each kind of ask may use (the agent asked what it has away from the
 screen, Esc sending nothing, a box ticked with a click or by its column
 with the arrows and Space, saving writing the checkout's own settings
 and sending, the next ask going at once), a comment asked
-about and its stream and answer shown in place, the effort an ask goes at
+about and its stream and answer shown in place, its agent stopped from its
+menu (the ask landed at once as failed, said so, its stream folded, the
+comment's menu whole again, and the agent's wrapper, a child of the
+tests' process, waited for), an ask done leaving no zombie once the
+editor looks again, an ask whose agent is gone without landing it landed
+at the next look (its process gone, or a zombie the editor did not start,
+left for whoever started it to wait for), a build and test stopped as a
+review closes landed at once though it had no process yet, the review's
+word kept, the effort an ask goes at
 (`Ask agent` saving what changed first, and asking about what did not as
 it is; the effort at the end of its line, picked with Tab, ← → and a
 click, as `?` and the bar say, the other dropdown picked each way too; the
@@ -2680,8 +2715,12 @@ room on a middle too narrow, the step waiting for the hunks again;
 `memory.rs` tests its diffs applied as git applies them. The
 stream's thinking is tested in `ask.rs`, with the prompt asking the agent
 to point at the stack before the web and its answer's schema taking a web
-link, and the ask's effort given to claude after the settings' arguments,
-in place of theirs; what is said of landed work left to review is tested
+link, the ask's effort given to claude after the settings' arguments, in
+place of theirs, a child process that has exited not taken for alive
+though `kill` still finds it, its exit left for whoever started it, the
+wrapper of an ask the process started waited for once it has exited, and
+an ask whose agent you stopped landing as stopped, unless the agent was
+done as you stopped it; what is said of landed work left to review is tested
 in `held.rs`. The
 tests in `check.rs` show
 the check's index holds only what the patches touch, that it writes nothing

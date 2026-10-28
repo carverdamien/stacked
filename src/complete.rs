@@ -240,6 +240,8 @@ fn value_of(cmd: &Command, arg: &Arg, given: &[&str], path: &Path) -> Offer {
             .runs()
             .iter()
             .filter(|r| id == "id" || r.stack == stack)
+            // To stop: those that run.
+            .filter(|r| cmd.get_name() != "stop" || r.state == RunState::Started)
             .rev()
             .map(|r| {
                 let state = match r.state {
