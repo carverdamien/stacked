@@ -906,8 +906,8 @@ fn no_letter_is_a_shortcut() {
     let mut app = open(&db).unwrap();
     let before = std::fs::read(&db).unwrap();
     let first = draw(&mut app);
-    // Only 1, 2 and 3 are keys of their own: 1 and 2 as in self-review.
-    for c in ('a'..='z').chain('A'..='Z').chain("0456789!@#$%^&*()-=_+[]{};:'\",.<>/\\|`~".chars()) {
+    // Only 1, 2, 3 and / are keys of their own: 1, 2 and / as in self-review.
+    for c in ('a'..='z').chain('A'..='Z').chain("0456789!@#$%^&*()-=_+[]{};:'\",.<>\\|`~".chars()) {
         assert_eq!(key(&mut app, KeyCode::Char(c)), Effect::None, "{c:?}");
         assert_eq!(app.mode, Mode::Normal, "{c:?} did something");
         assert_eq!(app.screen, Screen::Main, "{c:?}");
@@ -1127,6 +1127,500 @@ fn question_mark_says_what_can_be_done_where_the_cursor_is() {
     assert!(draw(&mut app).contains("Press Enter to reply to this comment."));
     keys(&mut app, &[KeyCode::Char('?')]);
     assert!(matches!(app.mode, Mode::Menu(_)), "back in the menu");
+}
+
+/// The search of the middle open: what is typed, whether it is selected,
+/// and what the bar says of the matches.
+fn finding(app: &App) -> (String, bool, String) {
+    match &app.mode {
+        Mode::Find(f) => (f.ed.line().0, f.selected, f.said.clone()),
+        other => panic!("no search open: {other:?}"),
+    }
+}
+
+/// The row the middle's cursor is on.
+fn on_row(app: &App) -> String {
+    app.rows[app.cursor].text.clone()
+}
+
+/// The screen drawn, 120 wide and `h` high.
+fn drawn(app: &mut App, h: u16) -> Buffer {
+    let mut buf = Buffer::empty(Rect::new(0, 0, 120, h));
+    app.draw(&mut buf);
+    buf
+}
+
+/// What `buf` shows, a line for each of its rows.
+fn text_of(buf: &Buffer) -> String {
+    (0..buf.area.height)
+        .map(|y| (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect::<String>())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// The attributes of each cell of `text`, where the screen in `buf` shows
+/// it from column `from` on.
+fn attrs(buf: &Buffer, text: &str, from: usize) -> Vec<ratatui::style::Modifier> {
+    let (x, y) = at_from(&text_of(buf), text, from);
+    (0..text.chars().count() as u16).map(|k| buf[(x + k, y)].modifier).collect()
+}
+
+/// Where the middle starts on the screens of `setup`: past the patches
+/// pane, expanded.
+const MIDDLE: usize = 31;
+
+#[test]
+fn slash_searches_the_middle_as_it_is_typed_and_tab_goes_round_its_matches() {
+    use ratatui::style::Modifier;
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    draw(&mut app);
+    // From the patches pane: the search is the middle's, the cursor there.
+    assert_eq!((app.focus, app.cursor), (Focus::List, 0));
+    keys(&mut app, &[KeyCode::Char('/')]);
+    assert_eq!(finding(&app), (String::new(), false, String::new()));
+    assert_eq!(app.focus, Focus::Diff);
+    let (screen, cursor) = draw_at(&mut app);
+    assert!(screen.lines().last().unwrap().starts_with(" /   type what to look for · esc: back"), "{screen}");
+    assert_eq!(cursor, Some((2, 29)), "after the /, in the bottom bar");
+    // As it is typed: on the first match from the cursor down.
+    typed(&mut app, "tw");
+    assert_eq!(on_row(&app), "   Bug 1 - shout two");
+    typed(&mut app, "o");
+    assert_eq!(finding(&app), ("two".to_string(), false, "match 1 of 3".to_string()));
+    let (screen, cursor) = draw_at(&mut app);
+    let bar = screen.lines().last().unwrap();
+    assert!(
+        bar.starts_with(" /two   match 1 of 3   tab: the next match · shift-tab: the one before · enter: stay there · esc: back where you were"),
+        "{bar}"
+    );
+    assert_eq!(cursor, Some((5, 29)));
+    // Lit, each match reversed from how its line is drawn: on the cursor's
+    // line, out of the cursor, bold and underlined too.
+    let buf = drawn(&mut app, 30);
+    let other = attrs(&buf, "-two", MIDDLE);
+    assert!(!other[0].contains(Modifier::REVERSED) && other[1..].iter().all(|m| m.contains(Modifier::REVERSED)), "{other:?}");
+    let current = attrs(&buf, "shout two", MIDDLE);
+    assert!(current[..6].iter().all(|m| m.contains(Modifier::REVERSED)), "the cursor's line: {current:?}");
+    assert!(
+        current[6..].iter().all(|m| !m.contains(Modifier::REVERSED) && m.contains(Modifier::BOLD | Modifier::UNDERLINED)),
+        "its match: {current:?}"
+    );
+    // Tab goes on, past the last round to the first; shift-Tab back.
+    for (k, row, said) in [
+        (KeyCode::Tab, "-two", "match 2 of 3"),
+        (KeyCode::Tab, "+TWO", "match 3 of 3"),
+        (KeyCode::Tab, "   Bug 1 - shout two", "match 1 of 3: the search started again at the top"),
+        (KeyCode::BackTab, "+TWO", "match 3 of 3: the search started again at the bottom"),
+        (KeyCode::BackTab, "-two", "match 2 of 3"),
+    ] {
+        keys(&mut app, &[k]);
+        assert_eq!((on_row(&app), finding(&app).2), (row.to_string(), said.to_string()), "{k:?}");
+    }
+    // Enter stays there, the search over, nothing lit; the cursor in the
+    // middle, the bar's keys back.
+    keys(&mut app, &[KeyCode::Enter]);
+    assert_eq!((app.mode.clone(), app.focus, on_row(&app)), (Mode::Normal, Focus::Diff, "-two".to_string()));
+    assert!(app.status.is_empty(), "{}", app.status);
+    let buf = drawn(&mut app, 30);
+    assert!(attrs(&buf, "+TWO", MIDDLE).iter().all(|m| m.is_empty()), "nothing lit");
+    assert!(text_of(&buf).lines().last().unwrap().starts_with(" enter: comment · space: menu"), "{}", text_of(&buf));
+}
+
+#[test]
+fn esc_ends_the_search_of_the_middle_where_the_cursor_was_and_a_click_out_of_it_does_too() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    // Twelve lines high: the middle has ten, the second hunk out of sight.
+    drawn(&mut app, 12);
+    key(&mut app, KeyCode::Right);
+    key(&mut app, KeyCode::Down);
+    drawn(&mut app, 12);
+    let was = (app.cursor, app.top);
+    assert_eq!(was, (1, 0));
+    key(&mut app, KeyCode::Char('/'));
+    typed(&mut app, "line 40");
+    let screen = text_of(&drawn(&mut app, 12));
+    assert_eq!(on_row(&app), " line 40");
+    assert!(app.top > 1 && screen.contains(" line 40"), "scrolled to it: {screen}");
+    // Esc: back where it was, scrolled as it was.
+    key(&mut app, KeyCode::Esc);
+    let screen = text_of(&drawn(&mut app, 12));
+    assert_eq!((app.cursor, app.top, app.focus, app.mode.clone()), (was.0, was.1, Focus::Diff, Mode::Normal));
+    assert!(!screen.contains(" line 40"), "{screen}");
+    assert_eq!(app.status, "the search is cancelled: the cursor is back where it was");
+    // From the patches pane, back there; a click out of the bar is Esc, and
+    // picks nothing.
+    key(&mut app, KeyCode::Left);
+    draw(&mut app);
+    keys(&mut app, &[KeyCode::Char('/')]);
+    typed(&mut app, "LINE 39");
+    let screen = draw(&mut app);
+    assert_eq!(on_row(&app), "-line 39");
+    let (x, y) = at(&screen, "Bug 2 - add b");
+    app.click(x, y, false);
+    assert_eq!((app.mode.clone(), app.focus, app.sel, app.cursor), (Mode::Normal, Focus::List, 0, 1));
+    // A click on the bar: nothing.
+    keys(&mut app, &[KeyCode::Char('/')]);
+    app.click(3, 29, false);
+    assert!(matches!(app.mode, Mode::Find(_)), "{:?}", app.mode);
+}
+
+#[test]
+fn the_next_slash_opens_with_the_last_search_selected_and_up_and_down_go_through_those_before() {
+    use ratatui::style::Modifier;
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    draw(&mut app);
+    keys(&mut app, &[KeyCode::Right]);
+    // Kept as Enter ends them, the latest first: not as Esc does, nor when
+    // nothing matched.
+    for (q, end) in [("two", KeyCode::Enter), ("three", KeyCode::Enter), ("line 40", KeyCode::Esc), ("zebra", KeyCode::Enter)] {
+        keys(&mut app, &[KeyCode::Char('/')]);
+        typed(&mut app, q);
+        keys(&mut app, &[end]);
+    }
+    assert_eq!(app.finds, ["three", "two"]);
+    assert_eq!(on_row(&app), " three");
+    // The next opens with the last, selected, searched at once.
+    keys(&mut app, &[KeyCode::Char('/')]);
+    assert_eq!(finding(&app), ("three".to_string(), true, "match 1 of 1".to_string()));
+    let buf = drawn(&mut app, 30);
+    assert!(text_of(&buf).lines().last().unwrap().starts_with(" /three   match 1 of 1"), "{}", text_of(&buf));
+    assert!((2..7).all(|x| buf[(x, 29)].modifier.contains(Modifier::REVERSED)), "selected");
+    // What is typed takes its place, searched from where the cursor was.
+    typed(&mut app, "line 4");
+    assert_eq!((finding(&app), on_row(&app)), (("line 4".to_string(), false, "match 1 of 1".to_string()), " line 40".to_string()));
+    // ↑ the searches before, each selected and searched; ↓ the later, then
+    // what was typed.
+    for (k, text, selected, row) in [
+        (KeyCode::Up, "three", true, " three"),
+        (KeyCode::Up, "two", true, "   Bug 1 - shout two"),
+        (KeyCode::Up, "two", true, "   Bug 1 - shout two"),
+        (KeyCode::Down, "three", true, " three"),
+        (KeyCode::Down, "line 4", false, " line 40"),
+        (KeyCode::Down, "line 4", false, " line 40"),
+    ] {
+        keys(&mut app, &[k]);
+        assert_eq!((finding(&app).0, finding(&app).1, on_row(&app)), (text.to_string(), selected, row.to_string()), "{k:?}");
+    }
+    keys(&mut app, &[KeyCode::Up, KeyCode::Up]);
+    assert_eq!(finding(&app).2, "match 1 of 3: the search started again at the top", "two, past the cursor's row");
+    // Selected, Backspace takes it away: nothing searched, the cursor
+    // where it was.
+    keys(&mut app, &[KeyCode::Backspace]);
+    assert_eq!((finding(&app), on_row(&app)), ((String::new(), false, String::new()), " three".to_string()));
+    keys(&mut app, &[KeyCode::Esc]);
+    assert_eq!(app.finds, ["three", "two"], "as they were");
+}
+
+#[test]
+fn a_search_of_the_middle_ignores_case_and_the_signs_of_the_code_and_says_when_nothing_matches() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    draw(&mut app);
+    keys(&mut app, &[KeyCode::Right]);
+    // Whatever their case, capitals typed too: as self-review's search.
+    for q in ["TWO", "Two", "two"] {
+        keys(&mut app, &[KeyCode::Char('/')]);
+        typed(&mut app, q);
+        assert_eq!((finding(&app).2, on_row(&app)), ("match 1 of 3".to_string(), "   Bug 1 - shout two".to_string()), "{q}");
+        keys(&mut app, &[KeyCode::Esc]);
+    }
+    // A line of code is read without its sign: no line is -two.
+    keys(&mut app, &[KeyCode::Char('/')]);
+    typed(&mut app, "-two");
+    assert_eq!((finding(&app).2, app.cursor), ("nothing matches".to_string(), 0), "back where it was");
+    let screen = draw(&mut app);
+    assert!(screen.lines().last().unwrap().starts_with(" /-two   nothing matches   enter or esc: back where you were"), "{screen}");
+    // Enter with nothing matched: as Esc, and said.
+    keys(&mut app, &[KeyCode::Enter]);
+    assert_eq!((app.mode.clone(), app.cursor), (Mode::Normal, 0));
+    assert_eq!(app.status, "nothing matches \"-two\": the cursor is back where it was");
+    assert!(app.finds.is_empty(), "{:?}", app.finds);
+}
+
+#[test]
+fn a_search_of_the_middle_finds_a_comment_the_message_and_a_file_s_name() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Enter]);
+    save(&mut app, "why so loud?");
+    keys(&mut app, &[KeyCode::Home]);
+    for (q, row) in [("loud", "     ▎   why so loud?"), ("because", "   Because."), ("a.txt", "a.txt")] {
+        keys(&mut app, &[KeyCode::Char('/')]);
+        typed(&mut app, q);
+        assert_eq!(on_row(&app), row, "{q}");
+        keys(&mut app, &[KeyCode::Esc]);
+    }
+    // From the comments pane, the middle's all the same: Esc goes back to
+    // the comments, Enter leaves the cursor in the middle, on the match.
+    keys(&mut app, &[KeyCode::Right]);
+    assert_eq!(app.focus, Focus::Notes);
+    for (end, focus) in [(KeyCode::Esc, Focus::Notes), (KeyCode::Enter, Focus::Diff)] {
+        keys(&mut app, &[KeyCode::Char('/')]);
+        typed(&mut app, "loud");
+        keys(&mut app, &[end]);
+        assert_eq!(app.focus, focus, "{end:?}");
+    }
+    assert_eq!(on_row(&app), "     ▎   why so loud?");
+}
+
+#[test]
+fn a_search_of_the_middle_side_by_side_goes_to_the_row_of_either_side() {
+    use ratatui::style::Modifier;
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    draw(&mut app);
+    keys(&mut app, &[KeyCode::Right, KeyCode::Char('1')]);
+    assert_eq!(app.layout, Layout::Split);
+    keys(&mut app, &[KeyCode::Char('/')]);
+    typed(&mut app, "two");
+    keys(&mut app, &[KeyCode::Tab]);
+    assert_eq!(on_row(&app), "-two", "the old side's");
+    // Both sides lit, on one line: on the cursor's side, the match gone to.
+    let buf = drawn(&mut app, 30);
+    let screen = text_of(&buf);
+    assert_eq!(at(&screen, "-two").1, at(&screen, "+TWO").1, "{screen}");
+    let (old, new) = (attrs(&buf, "-two", MIDDLE), attrs(&buf, "+TWO", MIDDLE));
+    assert!(old[1..].iter().all(|m| m.contains(Modifier::BOLD | Modifier::UNDERLINED) && !m.contains(Modifier::REVERSED)), "{old:?}");
+    assert!(new[1..].iter().all(|m| m.contains(Modifier::REVERSED) && !m.contains(Modifier::BOLD)), "{new:?}");
+    keys(&mut app, &[KeyCode::Tab]);
+    assert_eq!(on_row(&app), "+TWO", "the new side's");
+    keys(&mut app, &[KeyCode::Esc]);
+    // Compact, each side a pane of its own: the same.
+    keys(&mut app, &[KeyCode::Char('1')]);
+    assert_eq!(app.layout, Layout::Compact);
+    keys(&mut app, &[KeyCode::Char('/')]);
+    typed(&mut app, "two");
+    for row in ["-two", "+TWO", "   Bug 1 - shout two", "-two"] {
+        keys(&mut app, &[KeyCode::Tab]);
+        assert_eq!(on_row(&app), row);
+    }
+    // Both scrolling, the cursor's line is lit across: the other side's
+    // match reversed from it, not bold.
+    let buf = drawn(&mut app, 30);
+    let new = attrs(&buf, "+TWO", MIDDLE);
+    assert!(new[1..].iter().all(|m| !m.contains(Modifier::REVERSED) && !m.contains(Modifier::BOLD)), "{new:?}\n{}", text_of(&buf));
+    assert!(new[0].contains(Modifier::REVERSED), "{new:?}");
+    keys(&mut app, &[KeyCode::Enter]);
+    assert_eq!((app.mode.clone(), on_row(&app)), (Mode::Normal, "-two".to_string()));
+}
+
+#[test]
+fn a_search_of_the_middle_while_reading_types_what_space_would_mark() {
+    use ratatui::style::Modifier;
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    draw(&mut app);
+    keys(&mut app, &[KeyCode::Right, KeyCode::Char('2')]);
+    assert!(app.reading);
+    let before = std::fs::read(&db).unwrap();
+    keys(&mut app, &[KeyCode::Char('/')]);
+    // The second hunk's header, git's line 35 after it, then its lines.
+    typed(&mut app, "line 3");
+    assert_eq!((finding(&app).2, on_row(&app)), ("match 1 of 6".to_string(), "@@ -39,5 +39,5 @@ line 35   read 0/2 lines".to_string()));
+    keys(&mut app, &[KeyCode::Tab]);
+    assert_eq!(on_row(&app), " line 36");
+    // Lit past the margin.
+    let buf = drawn(&mut app, 30);
+    let next = attrs(&buf, "line 37", MIDDLE);
+    assert!(next[..6].iter().all(|m| m.contains(Modifier::REVERSED)) && !next[6].contains(Modifier::REVERSED), "{next:?}");
+    keys(&mut app, &[KeyCode::Tab, KeyCode::Enter]);
+    assert_eq!((app.mode.clone(), on_row(&app)), (Mode::Normal, " line 37".to_string()));
+    assert_eq!(std::fs::read(&db).unwrap(), before, "nothing marked read");
+}
+
+#[test]
+fn the_search_of_the_middle_s_key_is_the_settings_and_its_own_keys_are_as_they_are() {
+    let (_tmp, db, _src) = setup();
+    let (cfg, wrong) = stacked::config::Config::parse("[keys]\nfind = \"f\"\nback = \"q\"\n").unwrap();
+    assert!(wrong.is_empty(), "{wrong:?}");
+    stacked::config::init(settings());
+    let mut app = App::with_config(&db, cfg).unwrap();
+    draw(&mut app);
+    keys(&mut app, &[KeyCode::Char('/')]);
+    assert_eq!(app.mode, Mode::Normal, "/ no longer is");
+    keys(&mut app, &[KeyCode::Char('f')]);
+    assert!(matches!(app.mode, Mode::Find(_)), "f is: {:?}", app.mode);
+    // Its own keys as they are: q and f typed, Esc back, as the bar says.
+    typed(&mut app, "qf");
+    assert_eq!(finding(&app).0, "qf");
+    let screen = draw(&mut app);
+    assert!(screen.lines().last().unwrap().contains("nothing matches   enter or esc: back where you were"), "{screen}");
+    keys(&mut app, &[KeyCode::Esc]);
+    assert_eq!(app.mode, Mode::Normal);
+    // The help names it as the settings do.
+    keys(&mut app, &[KeyCode::Char('?')]);
+    let screen = draw(&mut app);
+    assert!(screen.contains("Press f to search what the middle shows"), "{screen}");
+}
+
+#[test]
+fn the_search_s_keys_from_match_to_match_are_the_settings_and_may_be_keys_of_the_screens_too() {
+    let (_tmp, db, _src) = setup();
+    let ctrl = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL);
+    // Remapped, ctrl-n and ctrl-p go from match to match; Tab no longer.
+    let (cfg, wrong) = stacked::config::Config::parse("[keys]\nfind_next = \"ctrl-n\"\nfind_previous = \"ctrl-p\"\n").unwrap();
+    assert!(wrong.is_empty(), "{wrong:?}");
+    stacked::config::init(settings());
+    let mut app = App::with_config(&db, cfg).unwrap();
+    draw(&mut app);
+    keys(&mut app, &[KeyCode::Right, KeyCode::Char('/')]);
+    typed(&mut app, "two");
+    assert_eq!(app.key(ctrl('n')), Effect::None);
+    assert_eq!(on_row(&app), "-two");
+    assert_eq!(app.key(ctrl('p')), Effect::None);
+    assert_eq!(on_row(&app), "   Bug 1 - shout two");
+    keys(&mut app, &[KeyCode::Tab]);
+    assert_eq!((on_row(&app), finding(&app).0), ("   Bug 1 - shout two".to_string(), "two".to_string()), "Tab does nothing there now");
+    let screen = draw(&mut app);
+    assert!(screen.lines().last().unwrap().contains("ctrl-n: the next match · ctrl-p: the one before"), "{screen}");
+    keys(&mut app, &[KeyCode::Esc]);
+    let said = "In the search, ctrl-n goes to the next match and ctrl-p to the one before";
+    assert!(app.help().iter().any(|l| l.contains(said)), "{:?}", app.help());
+    // Tab on the screens, and in the search still: each its own there.
+    let (cfg, wrong) = stacked::config::Config::parse("[keys]\nmenu = \"tab\"\n").unwrap();
+    assert!(wrong.is_empty(), "{wrong:?}");
+    let mut app = App::with_config(&db, cfg).unwrap();
+    draw(&mut app);
+    keys(&mut app, &[KeyCode::Right, KeyCode::Tab]);
+    assert!(matches!(app.mode, Mode::Menu(_)), "Tab is the menu: {:?}", app.mode);
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Char('/')]);
+    typed(&mut app, "two");
+    keys(&mut app, &[KeyCode::Tab]);
+    assert_eq!((on_row(&app), finding(&app).2), ("-two".to_string(), "match 2 of 3".to_string()), "and the next match in the search");
+    // Space, the menu no longer, is typed there as ever.
+    typed(&mut app, " ");
+    assert_eq!(finding(&app).0, "two ");
+}
+
+#[test]
+fn a_search_of_the_middle_reads_a_line_folded_as_one_and_goes_to_the_piece_of_its_match() {
+    use ratatui::style::Modifier;
+    use stacked::rows::Kind;
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("src");
+    std::fs::create_dir(&src).unwrap();
+    git(&src, &["init", "-q", "-b", "main"]);
+    git(&src, &["config", "commit.gpgsign", "false"]);
+    git(&src, &["config", "tag.gpgsign", "false"]);
+    std::fs::write(src.join("a.txt"), "one\n").unwrap();
+    git(&src, &["add", "."]);
+    git(&src, &["commit", "-qm", "base"]);
+    // A line of code with a zebra far in it, and a summary of words each
+    // there once, both too wide for the middle.
+    let long = format!("two{} zebra{}", " and more".repeat(20), " and more".repeat(10));
+    std::fs::write(src.join("a.txt"), format!("one\n{long}\n")).unwrap();
+    let summary = "alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima mike november oscar papa quebec romeo sierra tango uniform victor whiskey xray yankee zulu";
+    git(&src, &["commit", "-qam", &format!("Bug 1 - add a long line\n\n{summary}")]);
+    let db = tmp.path().join("db.jsonl");
+    stacked(&src, &db, &["import", "s", "HEAD~1"]);
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Right]);
+    // The summary, folded between words: the words either side of the fold
+    // match as one, from its first piece, lit on both.
+    let said: Vec<(usize, String)> = (0..app.rows.len()).filter(|&i| app.rows[i].msg_at == Some(2)).map(|i| (i, app.rows[i].text.trim().to_string())).collect();
+    assert!(said.len() > 1, "{said:?}");
+    let (last, next) = (said[0].1.rsplit(' ').next().unwrap().to_string(), said[1].1.split(' ').next().unwrap().to_string());
+    keys(&mut app, &[KeyCode::Char('/')]);
+    typed(&mut app, &format!("{last} {next}"));
+    assert_eq!((app.cursor, finding(&app).2), (said[0].0, "match 1 of 1".to_string()));
+    let buf = drawn(&mut app, 30);
+    let lit = attrs(&buf, &next, MIDDLE);
+    assert!(lit.iter().all(|m| m.contains(Modifier::BOLD | Modifier::UNDERLINED)), "{lit:?}");
+    keys(&mut app, &[KeyCode::Esc]);
+    // A word of the second piece: the cursor on it.
+    keys(&mut app, &[KeyCode::Char('/')]);
+    typed(&mut app, &next);
+    assert_eq!(app.cursor, said[1].0);
+    keys(&mut app, &[KeyCode::Esc]);
+    // The code: the cursor on the piece holding the match; its line one
+    // match, however many of its pieces hold it.
+    keys(&mut app, &[KeyCode::Char('/')]);
+    typed(&mut app, "zebra");
+    let row = app.rows[app.cursor].clone();
+    assert!(row.kind == Kind::Add && row.cont && row.text.contains("zebra"), "{:?}", row.text);
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Char('/')]);
+    typed(&mut app, "and more");
+    assert_eq!((finding(&app).2, app.rows[app.cursor].cont), ("match 1 of 1".to_string(), false));
+}
+
+#[test]
+fn with_each_file_whole_the_search_finds_the_lines_no_hunk_has_and_goes_there() {
+    use ratatui::style::Modifier;
+    let (_tmp, db, _src) = setup_whole();
+    let mut app = open(&db).unwrap();
+    draw(&mut app);
+    keys(&mut app, &[KeyCode::Enter]);
+    // With the hunks, no hunk has a.txt's line 22.
+    keys(&mut app, &[KeyCode::Char('/')]);
+    typed(&mut app, "line 19");
+    assert_eq!(finding(&app).2, "nothing matches");
+    keys(&mut app, &[KeyCode::Esc]);
+    // Each file whole: there, out of sight, and the cursor goes to it, the
+    // middle scrolled to it, the match lit on its dim line.
+    whole(&mut app);
+    keys(&mut app, &[KeyCode::Char('/')]);
+    typed(&mut app, "line 19");
+    assert_eq!((finding(&app).2, on_row(&app)), ("match 1 of 1".to_string(), " line 19".to_string()));
+    assert!(app.rows[app.cursor].outside, "a line in no hunk");
+    let buf = drawn(&mut app, 30);
+    assert!(attrs(&buf, "line 19", MIDDLE).iter().all(|m| m.contains(Modifier::BOLD | Modifier::UNDERLINED)), "{}", text_of(&buf));
+    // While the bar is open, 3 is typed: the view stays.
+    keys(&mut app, &[KeyCode::Backspace, KeyCode::Char('3')]);
+    assert_eq!((finding(&app).0, app.whole_files), ("line 13".to_string(), true));
+    keys(&mut app, &[KeyCode::Backspace, KeyCode::Char('9')]);
+    // Enter there; then 3, as from any line in no hunk: the closest line
+    // in a hunk, said.
+    keys(&mut app, &[KeyCode::Enter]);
+    assert_eq!((app.mode.clone(), on_row(&app)), (Mode::Normal, " line 19".to_string()));
+    keys(&mut app, &[KeyCode::Char('3')]);
+    assert_eq!((app.whole_files, on_row(&app)), (false, " line 2".to_string()));
+    assert_eq!(app.status, "line 22 of a.txt is in no hunk: the cursor is on the closest line in a hunk, above it");
+    // The search kept: the hunks have it not.
+    keys(&mut app, &[KeyCode::Char('/')]);
+    assert_eq!(finding(&app), ("line 19".to_string(), true, "nothing matches".to_string()));
+    // On a line of a hunk, Enter, then 3: the same line, each file whole.
+    typed(&mut app, "LINE 39");
+    keys(&mut app, &[KeyCode::Enter]);
+    assert_eq!(on_row(&app), "-line 39", "the line removed first, whatever its case");
+    whole(&mut app);
+    assert_eq!((app.whole_files, on_row(&app)), (true, "-line 39".to_string()));
+}
+
+#[test]
+fn the_search_follows_each_file_whole_read_while_it_is_open() {
+    let (_tmp, db, _src) = setup_whole();
+    let mut app = open(&db).unwrap();
+    draw(&mut app);
+    keys(&mut app, &[KeyCode::Enter]);
+    down_to(&mut app, "+TWO");
+    // 3, and the search at once, before the middle is drawn with the files
+    // read: the hunks have it not.
+    key(&mut app, KeyCode::Char('3'));
+    key(&mut app, KeyCode::Char('/'));
+    typed(&mut app, "line 19");
+    assert_eq!(finding(&app).2, "nothing matches");
+    // Read, and drawn: searched again from where / was pressed, as if typed
+    // now, the cursor there.
+    app.wait_files();
+    draw(&mut app);
+    assert!(app.whole_files);
+    assert_eq!((finding(&app).2, on_row(&app)), ("match 1 of 1".to_string(), " line 19".to_string()));
+    // Esc: back where / was pressed, found again in the rows built anew.
+    keys(&mut app, &[KeyCode::Esc]);
+    assert_eq!((app.mode.clone(), on_row(&app)), (Mode::Normal, "+TWO".to_string()));
+    // On a match, the rows built anew under it (narrower): the match
+    // counted again, the cursor on it still.
+    keys(&mut app, &[KeyCode::Char('/')]);
+    typed(&mut app, "TWO");
+    assert_eq!((finding(&app).2, on_row(&app)), ("match 2 of 2".to_string(), "+TWO".to_string()));
+    let mut buf = Buffer::empty(Rect::new(0, 0, 100, 30));
+    app.draw(&mut buf);
+    assert_eq!((finding(&app).2, on_row(&app)), ("match 2 of 2".to_string(), "+TWO".to_string()));
 }
 
 /// A file deep in folders, its path longer than the patches pane is wide.

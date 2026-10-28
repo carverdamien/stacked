@@ -3,8 +3,9 @@
 //! settings, `config.toml` (or the file `$STACKED_CONFIG` names), which
 //! `config` reads and writes; and the state, `state.json` (or the file
 //! `$STACKED_APP_STATE` names), which `state` keeps: the databases opened
-//! last, by StackED and by stacked's editor, and StackED's windows open. A
-//! checkout's own settings stay in the checkout, in `.stacked/local.toml`.
+//! last, by StackED and by stacked's editor, StackED's windows open, and
+//! the searches made in the editor's middle. A checkout's own settings stay
+//! in the checkout, in `.stacked/local.toml`.
 //!
 //! The binary alone works out where the folder is, from its environment,
 //! once as it starts (`resolve`), and sets it here for the whole process

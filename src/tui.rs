@@ -45,6 +45,8 @@ use crate::view::{MSG_PATH, note_keys, title_key};
 
 pub mod banner;
 pub use banner::BannerLine;
+pub mod finding;
+pub use finding::Find;
 pub mod places;
 pub mod reviewing;
 pub use reviewing::Reviewing;
@@ -681,6 +683,10 @@ pub enum Mode {
     /// A line to type, what it gives said as it is typed: Enter takes it
     /// once it can be taken, Esc goes back.
     Prompt(Box<Prompt>),
+    /// The search of the middle, typed in the bottom bar: the cursor on a
+    /// match as it is typed, Tab and shift-Tab from match to match, Enter
+    /// staying on one, Esc going back.
+    Find(Box<Find>),
     /// Before the first ask, the setup of what each kind of ask may use, as
     /// `stacked setup agent --tui` shows it: saved, the ask goes; left,
     /// nothing is sent.
@@ -1561,6 +1567,9 @@ pub struct App {
     /// for as long as the editor runs.
     pub searching: Option<Searching>,
     pub searches: Vec<String>,
+    /// The searches of the middle made with `/`, the latest first: kept
+    /// between runs too.
+    pub finds: Vec<String>,
     pub focus: Focus,
     /// How the patches are shown, on the left: expanded, listing the files
     /// of the patch picked, or hidden.
@@ -1955,6 +1964,7 @@ impl App {
             reviewing: None,
             searching: None,
             searches: Vec::new(),
+            finds: Vec::new(),
             focus: Focus::List,
             list: cfg.view.patches,
             file_sel: None,
@@ -2029,6 +2039,7 @@ impl App {
         }
         app.judge();
         app.precreate();
+        app.finds = app.kept_finds();
         Ok(app)
     }
 
@@ -2955,9 +2966,9 @@ impl App {
                 self.mode = Mode::Normal;
                 return Effect::None;
             }
-            // Lines being named, or a line typed: a click out of their box
-            // goes back.
-            Mode::Lines(_) | Mode::Prompt(_) => {
+            // Lines being named, or a line typed, in a box or in the bottom
+            // bar (the search of the middle): a click out of it goes back.
+            Mode::Lines(_) | Mode::Prompt(_) | Mode::Find(_) => {
                 if !matches!(spot, Some(Spot::Box)) {
                     return press(self, KeyCode::Esc);
                 }
@@ -3312,7 +3323,7 @@ impl App {
             Mode::Setup(su) => Some(su.screen.as_ref().is_some_and(|s| s.adding.is_some())),
             _ => None,
         };
-        let k = if matches!(self.mode, Mode::Edit(_) | Mode::Lines(_) | Mode::Prompt(_)) || typed || setting_up == Some(true) {
+        let k = if matches!(self.mode, Mode::Edit(_) | Mode::Lines(_) | Mode::Prompt(_) | Mode::Find(_)) || typed || setting_up == Some(true) {
             k
         } else if setting_up.is_some() {
             self.cfg.keys.translate(&k).unwrap_or(k)
@@ -3355,7 +3366,7 @@ impl App {
                 return Effect::None;
             }
         } else if k.code == KeyCode::Char('?')
-            && !matches!(self.mode, Mode::Edit(_) | Mode::Lines(_) | Mode::Prompt(_) | Mode::Setup(_))
+            && !matches!(self.mode, Mode::Edit(_) | Mode::Lines(_) | Mode::Prompt(_) | Mode::Find(_) | Mode::Setup(_))
             && (self.helps() || self.mode != Mode::Normal)
         {
             self.mode = Mode::Help {
@@ -3372,6 +3383,7 @@ impl App {
             Mode::Edit(e) => return self.edit_key(*e, k),
             Mode::Lines(l) => return self.lines_key(*l, k),
             Mode::Prompt(p) => return self.prompt_key(*p, k),
+            Mode::Find(f) => return self.find_key(*f, k),
             Mode::Setup(su) => return self.setup_key(*su, k),
             Mode::Moving { from, to } => {
                 self.moving_key(from, to, k);
@@ -3391,6 +3403,11 @@ impl App {
         // file whole rather than its hunks, or its hunks again.
         if self.screen == Screen::Main {
             match k.code {
+                // As self-review's `/`: the search of the middle.
+                KeyCode::Char('/') => {
+                    self.open_find();
+                    return Effect::None;
+                }
                 KeyCode::Char('1') => {
                     self.cycle_layout();
                     return Effect::None;
@@ -4404,7 +4421,13 @@ impl App {
         if self.screen != Screen::Main {
             out.push("Press Space for the menu.".into());
         }
-        out.into_iter().map(|l| self.say_keys(l)).collect()
+        let mut out: Vec<String> = out.into_iter().map(|l| self.say_keys(l)).collect();
+        // The search's keys are its own, whatever the settings map: said
+        // as they are.
+        if self.screen == Screen::Main && !self.on_banner {
+            out.push(self.find_help());
+        }
+        out
     }
 
     /// `text`, which names the keys as they are by default, naming them as
@@ -7967,7 +7990,8 @@ impl App {
         // The agent asked what tools it has, for the setup: said over it.
         self.draw_setup(buf, body);
         self.draw_status(buf, area);
-        cursor
+        // The search of the middle, over the bottom bar.
+        self.draw_find(buf, area).or(cursor)
     }
 
     /// How wide the side panes are, of `w`, as `left` and `right` show
@@ -8235,6 +8259,7 @@ impl App {
             Mode::Lines(_) => "enter: attach these lines · esc: back to the comment".into(),
             Mode::Prompt(p) if p.ok => format!("enter: {} · esc: back", p.asking.does()),
             Mode::Prompt(_) => "esc: back".into(),
+            Mode::Find(f) => self.find_hint(f),
             Mode::Setup(_) => "esc: send nothing".into(),
             Mode::Stream { .. } => "↑↓: scroll · esc: fold it".into(),
             Mode::Normal if self.screen == Screen::Main && self.on_banner => {
@@ -8728,6 +8753,8 @@ impl App {
             _ => half,
         };
         self.rebuild(fold.saturating_sub(margin + 1));
+        // Built anew under the search of the middle: what it found, again.
+        self.find_again();
         if self.rows.is_empty() {
             return None;
         }
@@ -8990,6 +9017,7 @@ impl App {
         }
         let tw = w.saturating_sub(x0 - x);
         put_parts(buf, area, x0, y, tw, &row_parts(row, selected));
+        self.paint_found(buf, area, (x0, y, tw), i);
         self.spot(area, (x, y, w), Spot::Row(i));
     }
 

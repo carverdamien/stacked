@@ -1191,7 +1191,9 @@ impl Tour {
                 }
                 continue;
             }
-            let writing = matches!(app.mode, Mode::Edit(_));
+            // Writing a comment, or searching the middle, Tab and shift-Tab
+            // are the editor's.
+            let writing = matches!(app.mode, Mode::Edit(_) | Mode::Find(_));
             if k.code == KeyCode::BackTab && self.sections && !writing {
                 self.menu = Some((section_of(self.at), true));
                 continue;

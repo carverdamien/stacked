@@ -1,10 +1,48 @@
 //! The editor's keys, as the settings map them: each of the few things a
-//! key does, and the keys that do it. A key pressed is read as the one key
-//! the editor knows for that (↑ for `up`, space for `menu`), so the rest of
-//! it knows only those; a key no action has does nothing. The inline
-//! comment editor reads its keys as they are: they are what is typed.
+//! key does, and the keys that do it, each in the context it is read in.
+//! On the screens and the menus over them, wherever nothing is typed, a key
+//! pressed is read as the one key the editor knows for that (↑ for `up`,
+//! space for `menu`), so the rest of it knows only those; a key no action
+//! has does nothing. In the search of the middle, what is typed is typed,
+//! but for the search's own keys: those going from match to match, which
+//! the settings map, and Esc, Enter, ↑ and ↓, which they do not. Two things
+//! of one context on one key clash; of two contexts, they never meet, and
+//! one key can do both. The inline comment editor reads its keys as they
+//! are: they are what is typed.
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+
+/// Where a key is read, as the settings map it: what the editor's
+/// dispatch of keys tells apart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Context {
+    /// The screens and the menus over them, wherever nothing is typed.
+    Screens,
+    /// The search of the middle, while its bar is open.
+    Search,
+}
+
+impl Context {
+    pub const ALL: [Context; 2] = [Context::Screens, Context::Search];
+
+    /// Its name, as `stacked config` says it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Context::Screens => "screens",
+            Context::Search => "search",
+        }
+    }
+
+    /// Where it is, said.
+    pub fn said(self) -> &'static str {
+        match self {
+            Context::Screens => "on the screens and the menus over them, wherever nothing is typed",
+            Context::Search => {
+                "in the search of the middle, while its bar is open, which keeps for itself Esc, Enter, ↑, ↓, ctrl-c and the keys that type or edit what is typed"
+            }
+        }
+    }
+}
 
 /// What a key does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -25,6 +63,11 @@ pub enum Key {
     Help,
     /// Back: out of a menu, a list, a stream.
     Back,
+    /// The search of what the middle shows.
+    Find,
+    /// In the search, the next match, and the one before.
+    FindNext,
+    FindPrevious,
     /// The next view of the code: unified, side by side, compact.
     View,
     /// Reading rather than commenting, or back.
@@ -35,7 +78,7 @@ pub enum Key {
 }
 
 impl Key {
-    pub const ALL: [Key; 16] = [
+    pub const ALL: [Key; 19] = [
         Key::Up,
         Key::Down,
         Key::Left,
@@ -48,6 +91,9 @@ impl Key {
         Key::Menu,
         Key::Help,
         Key::Back,
+        Key::Find,
+        Key::FindNext,
+        Key::FindPrevious,
         Key::View,
         Key::Read,
         Key::Whole,
@@ -69,6 +115,9 @@ impl Key {
             Key::Menu => "menu",
             Key::Help => "help",
             Key::Back => "back",
+            Key::Find => "find",
+            Key::FindNext => "find_next",
+            Key::FindPrevious => "find_previous",
             Key::View => "view",
             Key::Read => "read",
             Key::Whole => "whole",
@@ -91,6 +140,9 @@ impl Key {
             Key::Menu => &["space"],
             Key::Help => &["?"],
             Key::Back => &["esc"],
+            Key::Find => &["/"],
+            Key::FindNext => &["tab"],
+            Key::FindPrevious => &["shift-tab"],
             Key::View => &["1"],
             Key::Read => &["2"],
             Key::Whole => &["3"],
@@ -113,12 +165,23 @@ impl Key {
             Key::Menu => (KeyCode::Char(' '), KeyModifiers::NONE),
             Key::Help => (KeyCode::Char('?'), KeyModifiers::NONE),
             Key::Back => (KeyCode::Esc, KeyModifiers::NONE),
+            Key::Find => (KeyCode::Char('/'), KeyModifiers::NONE),
+            Key::FindNext => (KeyCode::Tab, KeyModifiers::NONE),
+            Key::FindPrevious => (KeyCode::BackTab, KeyModifiers::NONE),
             Key::View => (KeyCode::Char('1'), KeyModifiers::NONE),
             Key::Read => (KeyCode::Char('2'), KeyModifiers::NONE),
             Key::Whole => (KeyCode::Char('3'), KeyModifiers::NONE),
             Key::Quit => (KeyCode::Char('c'), KeyModifiers::CONTROL),
         };
         KeyEvent::new(code, mods)
+    }
+
+    /// Where it is read.
+    pub fn context(self) -> Context {
+        match self {
+            Key::FindNext | Key::FindPrevious => Context::Search,
+            _ => Context::Screens,
+        }
     }
 }
 
@@ -188,6 +251,23 @@ impl Chord {
             c => c,
         };
         code == self.code && ctrl == self.ctrl && alt == self.alt
+    }
+
+    /// Whether the search of the middle keeps this key for itself, whatever
+    /// the settings: Esc, Enter, ↑ and ↓, which mean there what they mean in
+    /// every line typed; ctrl-c, which quits; and the keys that type, or
+    /// edit what is typed, as the comment editor's line does.
+    pub fn kept_by_search(&self) -> bool {
+        match self.code {
+            KeyCode::Char(c) => match (self.ctrl, self.alt) {
+                (false, false) => true,
+                (true, _) => "acehky".contains(c.to_ascii_lowercase()),
+                (false, true) => "bf".contains(c.to_ascii_lowercase()),
+            },
+            KeyCode::Esc | KeyCode::Enter | KeyCode::Up | KeyCode::Down => true,
+            KeyCode::Left | KeyCode::Right | KeyCode::Home | KeyCode::End | KeyCode::Backspace | KeyCode::Delete => true,
+            _ => false,
+        }
     }
 
     /// As the help says it.
@@ -262,6 +342,9 @@ impl Keymap {
             let mut chords = Vec::new();
             for n in names {
                 match Chord::parse(n) {
+                    Ok(c) if key.context() == Context::Search && c.kept_by_search() => {
+                        wrong.push(format!("keys.{action}: the search of the middle keeps {} for itself", c.label()))
+                    }
                     Ok(c) => chords.push(c),
                     Err(e) => wrong.push(format!("keys.{action}: {e}")),
                 }
@@ -274,12 +357,13 @@ impl Keymap {
                 slot.1 = chords;
             }
         }
-        // A key for two things does the first.
+        // A key for two things of one context does the first. Of two
+        // contexts, each is read where it is: they never meet.
         let named_here = |k: &Key| named.iter().any(|(action, _)| action == k.name());
         let mut seen: Vec<(Chord, Key)> = Vec::new();
         for (key, chords) in &map.keys {
             for c in chords {
-                if let Some((_, other)) = seen.iter().find(|(s, _)| s == c) {
+                if let Some((_, other)) = seen.iter().find(|(s, other)| s == c && other.context() == key.context()) {
                     if named_here(key) || named_here(other) {
                         wrong.push(format!("keys: {} is {} and {}; it does the first", c.label(), other.name(), key.name()));
                     }
@@ -291,18 +375,24 @@ impl Keymap {
         (map, wrong)
     }
 
-    /// What `k` does, if anything.
+    /// What `k` does on the screens, if anything.
     pub fn action(&self, k: &KeyEvent) -> Option<Key> {
+        self.action_in(Context::Screens, k)
+    }
+
+    /// What `k` does in `context`, if anything.
+    pub fn action_in(&self, context: Context, k: &KeyEvent) -> Option<Key> {
         if k.kind == KeyEventKind::Release {
             return None;
         }
         self.keys
             .iter()
+            .filter(|(key, _)| key.context() == context)
             .find(|(_, chords)| chords.iter().any(|c| c.matches(k)))
             .map(|(key, _)| *key)
     }
 
-    /// `k` as the key the editor knows for what it does.
+    /// `k` as the key the editor knows for what it does on the screens.
     pub fn translate(&self, k: &KeyEvent) -> Option<KeyEvent> {
         self.action(k).map(Key::event)
     }
@@ -341,7 +431,7 @@ fn chord_name(c: &Chord) -> String {
         KeyCode::Char(' ') => "space".into(),
         KeyCode::Esc => "esc".into(),
         KeyCode::Tab => "tab".into(),
-        KeyCode::BackTab => "backtab".into(),
+        KeyCode::BackTab => "shift-tab".into(),
         KeyCode::Backspace => "backspace".into(),
         KeyCode::Delete => "delete".into(),
         KeyCode::Insert => "insert".into(),
@@ -398,5 +488,53 @@ mod tests {
         // The same key twice: the first does it, and it is said.
         let (_, wrong) = Keymap::from_names(&[("down".into(), vec!["up".into()])]);
         assert_eq!(wrong, ["keys: ↑ is up and down; it does the first"]);
+    }
+
+    #[test]
+    fn each_key_is_read_in_its_context_and_clashes_only_there() {
+        // The defaults: no two things of one context on one key.
+        let (map, wrong) = Keymap::from_names(&[]);
+        assert!(wrong.is_empty(), "{wrong:?}");
+        for context in Context::ALL {
+            let mut seen: Vec<Chord> = Vec::new();
+            for (_, chords) in map.keys.iter().filter(|(k, _)| k.context() == context) {
+                for c in chords {
+                    assert!(!seen.contains(c), "{} twice in {}", c.label(), context.name());
+                    seen.push(*c);
+                }
+            }
+        }
+        // The search's own: Tab and shift-Tab, read there, and nothing on
+        // the screens.
+        assert_eq!((map.label(Key::FindNext), map.label(Key::FindPrevious)), ("Tab".to_string(), "shift-Tab".to_string()));
+        assert_eq!(map.names(Key::FindPrevious), ["shift-tab"]);
+        assert_eq!(Chord::parse("backtab").unwrap(), Chord::parse("Shift-Tab").unwrap());
+        let tab = ev(KeyCode::Tab, KeyModifiers::NONE);
+        let back = ev(KeyCode::BackTab, KeyModifiers::SHIFT);
+        assert_eq!((map.action_in(Context::Search, &tab), map.action_in(Context::Search, &back)), (Some(Key::FindNext), Some(Key::FindPrevious)));
+        assert_eq!(map.translate(&tab), None, "Tab is nothing on the screens");
+        // One key in two contexts: each does its own there, and no clash is
+        // said.
+        let (map, wrong) = Keymap::from_names(&[("menu".into(), vec!["tab".into()])]);
+        assert!(wrong.is_empty(), "{wrong:?}");
+        assert_eq!(map.translate(&tab).map(|e| e.code), Some(KeyCode::Char(' ')));
+        assert_eq!(map.action_in(Context::Search, &tab), Some(Key::FindNext));
+        let (map, wrong) = Keymap::from_names(&[("find_next".into(), vec!["pagedown".into()])]);
+        assert!(wrong.is_empty(), "{wrong:?}");
+        let page = ev(KeyCode::PageDown, KeyModifiers::NONE);
+        assert_eq!((map.action(&page), map.action_in(Context::Search, &page)), (Some(Key::PageDown), Some(Key::FindNext)));
+        // Two things of one context on one key: said, and the first does it.
+        let (map, wrong) = Keymap::from_names(&[("find_next".into(), vec!["ctrl-n".into()]), ("find_previous".into(), vec!["ctrl-n".into()])]);
+        assert_eq!(wrong, ["keys: ctrl-n is find_next and find_previous; it does the first"]);
+        assert_eq!(map.action_in(Context::Search, &ev(KeyCode::Char('n'), KeyModifiers::CONTROL)), Some(Key::FindNext));
+        // What the search keeps for itself is neither of them: a key that
+        // types or edits what is typed, Esc, ↑, ctrl-c.
+        let all = ["n", "space", "esc", "up", "ctrl-c", "ctrl-k", "left"].map(String::from).to_vec();
+        let (map, wrong) = Keymap::from_names(&[("find_next".into(), all)]);
+        assert_eq!(wrong.len(), 8, "{wrong:?}");
+        assert_eq!(wrong[0], "keys.find_next: the search of the middle keeps n for itself");
+        assert_eq!(wrong[1], "keys.find_next: the search of the middle keeps Space for itself");
+        assert_eq!(wrong[7], "keys.find_next: no key left for it; it keeps its own");
+        assert_eq!(map.label(Key::FindNext), "Tab");
     }
 }

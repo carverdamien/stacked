@@ -20,7 +20,7 @@ use std::sync::OnceLock;
 use ratatui::style::Style;
 use serde::Deserialize;
 
-use crate::keys::{Key, Keymap};
+use crate::keys::{Context, Key, Keymap};
 use crate::paint::{Paint, parse_color};
 
 /// How the code is drawn at the start.
@@ -833,11 +833,15 @@ impl Config {
         out.push_str(
             "\n[keys]\n# The keys for each thing a key does, outside the comment editor (which reads\n\
              # what is typed): up, down, left, right, pageup, pagedown, home, end, enter,\n\
-             # space, esc, tab, f1..f24, a character, any after ctrl- or alt-. Nothing else\n\
-             # is a key.\n",
+             # space, esc, tab, shift-tab, f1..f24, a character, any after ctrl- or alt-.\n\
+             # Nothing else is a key. Each is read in its context, below: two things of one\n\
+             # context on one key clash, and the first does it; of two, each does its own.\n",
         );
-        for k in Key::ALL {
-            out.push_str(&format!("{} = {}\n", k.name(), list(&self.keys.names(k))));
+        for c in Context::ALL {
+            out.push_str(&format!("# {}: {}.\n", c.name(), c.said()));
+            for k in Key::ALL.into_iter().filter(|k| k.context() == c) {
+                out.push_str(&format!("{} = {}\n", k.name(), list(&self.keys.names(k))));
+            }
         }
         out.push_str("\n[demo]\n# The tour, `stacked demo`, was opened before: it starts on the list of its sections.\n");
         out.push_str(&format!("seen = {}\n", self.demo.seen));
@@ -1791,5 +1795,21 @@ mod tests {
         assert_eq!(again, c);
         let (defaults, _) = Config::parse(&Config::default().render()).unwrap();
         assert_eq!(defaults, Config::default());
+    }
+
+    #[test]
+    fn the_keys_are_listed_by_the_context_they_are_read_in() {
+        let text = Config::default().render();
+        let keys = &text[text.find("\n[keys]\n").unwrap()..];
+        let at = |line: &str| keys.find(line).unwrap_or_else(|| panic!("no {line:?} in {keys}"));
+        let (screens, search) = (at("\n# screens: on the screens"), at("\n# search: in the search of the middle"));
+        assert!(screens < at("\nup = [\"up\"]\n") && at("\nquit = [\"ctrl-c\"]\n") < search, "{keys}");
+        assert!(search < at("\nfind_next = [\"tab\"]\n") && search < at("\nfind_previous = [\"shift-tab\"]\n"), "{keys}");
+        // One key in two contexts is no clash; two things of one are.
+        let (c, wrong) = Config::parse("[keys]\nmenu = \"tab\"\n").unwrap();
+        assert!(wrong.is_empty(), "{wrong:?}");
+        assert_eq!((c.keys.label(Key::Menu), c.keys.label(Key::FindNext)), ("Tab".to_string(), "Tab".to_string()));
+        let (_, wrong) = Config::parse("[keys]\nfind_next = \"f5\"\nfind_previous = [\"f5\"]\n").unwrap();
+        assert_eq!(wrong, ["keys: F5 is find_next and find_previous; it does the first"]);
     }
 }

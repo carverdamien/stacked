@@ -400,7 +400,7 @@ shows, under a header of its own; with none, it is not there. The top bar
 names the file and the stack, and on its right says how far the stack's
 review is (Reading, below, says how).
 
-There are five keys, and three more for the code: two of self-review's
+There are five keys, and four more for the middle: three of self-review's
 (Copied from self-review-rs, below, says what it is) and one of stacked's
 own. The settings can make any of them other keys, and the help then names
 those:
@@ -505,6 +505,39 @@ those:
   line in no hunk leaves it on the closest line of its file in a hunk, by
   their numbers, a tie going to the line above, and the status line says
   so.
+- `/` searches what the middle shows, as in self-review, whatever pane the
+  cursor is in. What you type goes in the bottom bar. As you type, the
+  cursor goes to the first line that holds what you typed, from the line
+  it was on down (with none there, from the top), and when that line is
+  out of sight, the middle scrolls to put it a third of the way down. The
+  matches in sight are lit, reversed from how their lines are drawn; those
+  of the line the cursor is on are bold and underlined too. The bar says
+  which match the cursor is on, of how many (`match 2 of 5`), and when the
+  search started again at the top or at the bottom; or it says that
+  nothing matches. Tab goes to the next match, and shift-Tab to the one
+  before (`find_next` and `find_previous` in `[keys]`, Settings, below).
+  Enter ends the search on the match, the cursor in the middle.
+  Esc ends it with the cursor back where it was, in the pane it was in,
+  and the middle scrolled as it was; so does Enter when nothing matches,
+  and the status line says so. A line matches when it holds what you
+  type, whatever its case, as in self-review and in the search's own
+  screen (Searching, below): plain text, the blanks at its ends left out.
+  A line of code is searched without its `+`, `-` or space, and a line
+  folded as the one line it is, the cursor going to the piece that holds
+  the match; the rest is searched as the middle shows it: the files'
+  names, the hunks' headers, the message, the comments. The search works
+  in every view of the code, reading or not, and with the hunks or with
+  each file whole (`3`): it searches the lines the middle shows, so that
+  with each file whole it finds the lines no hunk has too, and the cursor
+  goes to them. The searches that Enter ends on a match are kept, the
+  latest first, twenty at most, in `state.json` (Settings, below), so that
+  the next run has them too. `/` opens with the last one in the bar,
+  selected, its matches lit: what you type takes its place, Tab goes on to
+  its next match, and Enter stays on the match the cursor is on; ↑ and ↓
+  go through the searches before it. While the bar is open, Enter, Esc, ↑
+  and ↓ are those keys whatever the settings make them, and every key but
+  the two going from match to match is typed or edits what is typed:
+  Space, `?`, `1`, `2` and `3` too.
 
 Nothing else is a key. Going through the comments pane does not move the
 patch: the comment is marked where it is if the patch shows it, else its
@@ -1484,6 +1517,9 @@ The searches are remembered while the editor runs, newest first: what you
 type is followed, dim, by the search before that starts the same way, and
 Tab takes it.
 
+To search only what the middle shows, without leaving it, press `/` (The
+editor, above): the cursor goes from match to match in the middle itself.
+
 ## History
 
 The file holds every stack, every version of every patch, every turn of
@@ -1594,7 +1630,8 @@ nothing is written.
 ## Settings
 
 `~/.stacked/config.toml` holds the settings, in stacked's own folder,
-beside the databases opened last (`state.json`, StackED above);
+beside what stacked keeps between runs (`state.json`: the databases opened
+last, StackED above, and the searches of the middle, The editor above);
 `$STACKED_HOME` names another folder than ~/.stacked, and `$STACKED_CONFIG`
 another file. A checkout's own settings, `.stacked/local.toml`, override
 them there (below); each is optional, and `stacked config` prints them all
@@ -1757,11 +1794,23 @@ settings:
   its pick as `cursor` paints it) and `code` (`252
   236`: code in what a comment says, `code` in a line and code blocks, light
   grey on a dark grey). `stacked config colors.you 208` sets one.
-- `[keys]`: for each thing a key does (`up`, `down`, `left`, `right`,
+- `[keys]`: for each thing a key does, its keys: `down = ["down", "j"]`,
+  `menu = "m"`, `find_next = "ctrl-n"`. Each thing is read in one
+  context, where the editor reads its keys, and the keys are checked
+  context by context: two things of one context on one key clash, which
+  is said as what else is wrong is (below), and the first does it; one key
+  can do a thing in each context, as the two never meet. The contexts, as
+  `stacked config` lists them: `screens`, the screens and the menus over
+  them, wherever nothing is typed (`up`, `down`, `left`, `right`,
   `page_up`, `page_down`, `home`, `end`, `enter`, `menu`, `help`, `back`,
-  `view`, `read`, `whole`, `quit`), its keys: `down = ["down", "j"]`,
-  `menu = "m"`.
-  The comment editor reads what is typed, whatever the keys.
+  `find`, `view`, `read`, `whole`, `quit`); and `search`, the search of
+  the middle while its bar is open (`find_next`, Tab, and
+  `find_previous`, shift-Tab). The search keeps for itself Esc, Enter, ↑
+  and ↓, ctrl-c, and the keys that type or edit what is typed, and
+  neither of its own keys can be one of those. So `menu = "tab"` makes Tab the menu on the
+  screens, and Tab still goes to the next match in the search. The comment
+  editor, a line typed in a box, and the search's own screen read what is
+  typed, whatever the keys.
 - `[demo]`: `seen`, written by `stacked demo` the first time it is opened:
   the tour then starts on the list of its sections. `seen = false` shows
   the first tour again.
@@ -2023,13 +2072,13 @@ is typed: `import.rs`). A fix to one may belong in the other.
 - `todo.rs`: the `git rebase -i` style list.
 - `search.rs`: searching what stacked holds, in a thread of its own.
 - `config.rs`, `keys.rs`: the settings (`~/.stacked/config.toml`, and a
-  checkout's own over it), and the keys they map.
+  checkout's own over it), and the keys they map, each in its context.
 - `home.rs`: where stacked keeps what is yours, ~/.stacked, as the binary
   works it out as it starts (nowhere, in the tests' own processes), and
   the files of before moved into it.
 - `state.rs`: the databases opened last, by StackED and by stacked's
-  editor, and StackED's windows to open again, kept between runs under a
-  lock.
+  editor, StackED's windows to open again, and the searches of the middle,
+  kept between runs under a lock.
 - `setup.rs`: `stacked setup agent`, what each kind of ask may use: where
   what it lists comes from (the agent, the checkout's claude settings, its
   skills and its instructions), what the checkout's claude settings of yours
@@ -2041,7 +2090,7 @@ is typed: `import.rs`). A fix to one may belong in the other.
   click is on. `tui/reviewing.rs` and `tui/searching.rs`: its screens for
   reviewing what the agent brought back, and for searching;
   `tui/banner.rs`, the banner of the agent's work; `tui/places.rs`, where
-  each pane's cursor was.
+  each pane's cursor was; `tui/finding.rs`, the search of the middle (`/`).
 - `web.rs`, `web/client.rs`, `web/index.html`, `build.rs`: `stacked web`,
   its server, its wasm and its page; the build script compiles the wasm,
   or, where Rust lacks the wasm target, stops the build and says what to
@@ -2166,7 +2215,20 @@ as an edit of its turn), a stack imported from Phabricator's revisions (by
 number or link, named or not), Phabricator's commands there only when
 built with it, apply, and
 what does not apply being refused, edited again, or read-only. `tests/tui.rs` draws the editor into a buffer and presses keys:
-that no letter but 1, 2 and 3 does anything, keys mapped by the settings, the
+that no letter but 1, 2, 3 and / does anything, keys mapped by the settings, the
+search of the middle (as it is typed, from any pane; Tab and shift-Tab from
+match to match and round past either end; Esc back where the cursor was, the
+middle scrolled as it was, a click out of the bar too; Enter on the match,
+or back with nothing matched, said; the next `/` with the last search,
+selected, what is typed taking its place, ↑↓ through those before; case
+ignored, a line of code without its sign; a comment, the message and a
+file's name; side by side and compact; reading; a line folded matched as
+one, the cursor on the piece of its match; the matches lit; its key the
+settings', and those from match to match, Tab a key of the screens' too,
+its others as they are; with each file whole, a line in no hunk found and
+gone to, 3 typed while the bar is open, 3 after Enter, and the files read
+while it is open searched again, Esc going back to the row found again),
+the
 menus by place, what `?` says where, writing in every pane, the regions it
 says it drew (its panes, then the boxes over them, inside their borders:
 what StackED's selections keep to), the first ask opening the setup of
@@ -2311,7 +2373,8 @@ window closed telling its editor to leave, the last closed
 leaving StackED running, and Quit keeping the windows open for StackED.app
 and waiting for each editor to leave. `state.rs` tests what is kept
 between runs: the recent databases, the latest first, once each and eight
-at most, cleared; those deleted taken off both lists; a file that cannot be
+at most, cleared; the searches of the middle, the latest first, once each
+and twenty at most, kept beside them; those deleted taken off both lists; a file that cannot be
 read; writers at once, each keeping what it wrote (with no lock, some
 would not); a file of another kind (the null device) keeping nothing; and
 the editor's database kept nowhere in a test's own process. On macOS,
@@ -2369,8 +2432,12 @@ does not fit its hunks, not shown whole; those in `progress.rs`, that a patch wh
 at its end leaves nothing to review once its lines removed and added and
 its message are read (git's `\ No newline at end of file` is not a line
 to read); those in `config.rs`, a file of settings over another, a
-checkout's own read and written unless git tracks it, and the patches
-pane's `compact`, as versions before the files wrote it, read as them;
+checkout's own read and written unless git tracks it, the patches
+pane's `compact`, as versions before the files wrote it, read as them,
+and the keys listed by the context they are read in; those in `keys.rs`,
+the keys checked context by context (the defaults with no clash, one key
+in two contexts no clash, two things of one context on one key said),
+and what the search of the middle keeps for itself refused to its own;
 those in `refs.rs`, which references a rewind or an edit detaches, which
 stay (named by another turn, the agent's or by `@r*`, by the reply waiting
 for review, or never named), the agent's turn written again keeping its

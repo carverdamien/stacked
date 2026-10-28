@@ -171,6 +171,13 @@ impl Editor {
         self.text() != self.initial.trim_matches('\n')
     }
 
+    /// The line the cursor is on, as it is written, blanks and all, and
+    /// the cursor's column in it: a line drawn on its own, as the bottom
+    /// bar draws the search of the middle.
+    pub fn line(&self) -> (String, usize) {
+        (self.lines[self.row].iter().collect(), self.col)
+    }
+
     pub fn key(&mut self, k: KeyEvent) -> Op {
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
         let alt = k.modifiers.contains(KeyModifiers::ALT);

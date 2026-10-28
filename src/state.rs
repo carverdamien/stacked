@@ -1,10 +1,11 @@
 //! What stacked keeps between runs, besides the settings: the databases
 //! opened last, for StackED's File → Open Recent, which stacked's editor
-//! adds to as well (in a terminal, in a browser); and those whose windows
-//! StackED.app has open, to open again when it next starts. A file of
-//! JSON, `state.json` in stacked's folder (`home`); never the settings'
-//! file. A database no longer there is taken off both lists whenever the
-//! file is read.
+//! adds to as well (in a terminal, in a browser); those whose windows
+//! StackED.app has open, to open again when it next starts; and the
+//! searches made in the editor's middle with `/`, for its next runs. A
+//! file of JSON, `state.json` in stacked's folder (`home`); never the
+//! settings' file. A database no longer there is taken off both lists
+//! whenever the file is read.
 //!
 //! StackED and a terminal's stacked may change the file at once. Each
 //! change is made under a lock, on the file `state.json.lock` beside it,
@@ -21,6 +22,9 @@ use serde::{Deserialize, Serialize};
 /// How many databases File → Open Recent lists.
 pub const RECENT: usize = 8;
 
+/// How many searches of the middle are kept, as self-review keeps.
+pub const SEARCHES: usize = 20;
+
 /// What the file holds.
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 struct State {
@@ -31,6 +35,9 @@ struct State {
     /// and close, and as it is quit.
     #[serde(default)]
     open: Vec<PathBuf>,
+    /// The searches made in the editor's middle with `/`, the latest first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    searches: Vec<String>,
 }
 
 impl State {
@@ -167,6 +174,21 @@ pub fn reopen(file: &Path) -> Vec<PathBuf> {
     change(file, |s| s.open.clone())
 }
 
+/// The searches made in the editor's middle with `/`, the latest first.
+pub fn searches(file: &Path) -> Vec<String> {
+    change(file, |s| s.searches.clone())
+}
+
+/// `query` searched in the middle: first among the searches kept, and
+/// there once; no more than `SEARCHES` of them.
+pub fn searched(file: &Path, query: &str) {
+    change(file, |s| {
+        s.searches.retain(|q| q != query);
+        s.searches.insert(0, query.to_string());
+        s.searches.truncate(SEARCHES);
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -226,6 +248,34 @@ mod tests {
     }
 
     #[test]
+    fn the_searches_of_the_middle_are_the_latest_first_once_each_and_twenty_at_most() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("state.json");
+        assert!(searches(&file).is_empty());
+        let d = dbs(tmp.path(), &["a.jsonl"]);
+        opened(&file, &d[0]);
+        for q in ["two", "line 3", "two"] {
+            searched(&file, q);
+        }
+        assert_eq!(searches(&file), ["two", "line 3"]);
+        // Kept beside the databases opened, each as it was.
+        assert_eq!(recent(&file), d);
+        opened(&file, &d[0]);
+        assert_eq!(kept(&file).searches, ["two", "line 3"]);
+        // Thirty searched: the latest twenty.
+        for n in 0..30 {
+            searched(&file, &n.to_string());
+        }
+        let latest: Vec<String> = (10..30).rev().map(|n| n.to_string()).collect();
+        assert_eq!(searches(&file), latest);
+        assert_eq!(kept(&file).searches.len(), SEARCHES);
+        // A file of another kind keeps none.
+        let null = Path::new(crate::home::NOWHERE);
+        searched(null, "two");
+        assert!(searches(null).is_empty());
+    }
+
+    #[test]
     fn a_database_no_longer_there_is_taken_off_the_lists_kept() {
         let tmp = tempfile::tempdir().unwrap();
         let file = tmp.path().join("state.json");
@@ -243,7 +293,7 @@ mod tests {
         // which is kept on neither list.
         std::fs::remove_file(&d[2]).unwrap();
         assert_eq!(reopen(&file), [d[0].clone()]);
-        assert_eq!(kept(&file), State { recent: vec![d[0].clone()], open: vec![d[0].clone()] });
+        assert_eq!(kept(&file), State { recent: vec![d[0].clone()], open: vec![d[0].clone()], ..Default::default() });
         // The windows closed: none to open again.
         keep_open(&file, &[]);
         assert_eq!(reopen(&file), Vec::<PathBuf>::new());
