@@ -1,12 +1,15 @@
 //! References an agent attaches to what it writes: lines of a file, as
 //! ranges, or the whole file, as a patch of the stack leaves the file, as
 //! the stack's base has it, or as the whole stack leaves it, which reaches
-//! the files the stack does not touch too; or another comment of the stack.
+//! the files the stack does not touch too; another comment of the stack;
+//! or a page of the web, by its link, for what nothing in the stack says.
 //! Kept in the turn they come with, as a `refs` block, a reference a line:
 //! `path:120-140,200-210 @3` (`path @3` the whole file; `@0` the base; no
-//! `@`, the whole stack), or a comment's change and id as JSON. Under the
-//! comment, a line each; Enter previews a reference's lines, and Enter
-//! again goes there; Enter on a comment goes to it.
+//! `@`, the whole stack), a comment's change and id as JSON, or a link as
+//! it is, `https://…`; neither is ever read as a path. Under the comment, a
+//! line each; Enter previews a reference's lines, and Enter again goes
+//! there; Enter on a comment goes to it; Enter on a link shows it whole,
+//! and Enter again opens it in the browser (`open_link`).
 //!
 //! The references you attach to a comment are the comment's own: each
 //! numbered once and for all, `r1`, `r2`, which what you write names:
@@ -26,6 +29,9 @@
 //! is never given again in a comment, its reference gone or not.
 
 use std::collections::BTreeSet;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -92,6 +98,45 @@ fn ranges_said(ranges: &[(usize, usize)], sep: &str) -> String {
         .join(sep)
 }
 
+/// Whether `s` starts as an address does, a scheme then `://` (`https://`,
+/// `ftp://`): no path of a file does, and none is read as one.
+pub fn addressed(s: &str) -> bool {
+    let s = s.trim_start();
+    s.find("://").is_some_and(|k| {
+        let scheme = &s[..k];
+        scheme.starts_with(|c: char| c.is_ascii_alphabetic()) && scheme.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
+    })
+}
+
+/// The web link `text` writes, if it is one: an address starting with
+/// `https://` or `http://` (in any case), naming a site, with no space in
+/// it, kept whole. Else why it is not, said.
+pub fn link(text: &str) -> std::result::Result<String, String> {
+    let url = text.trim();
+    let whole = "write it whole, as https://example.com/a/b";
+    if url.is_empty() {
+        return Err(format!("write the web link to attach: {whole}"));
+    }
+    let lower = url.to_ascii_lowercase();
+    let Some(scheme) = ["https://", "http://"].into_iter().find(|s| lower.starts_with(s)) else {
+        return Err(format!("a web link starts with https:// or http://: {whole}"));
+    };
+    if url.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        return Err("a web link has no spaces in it: write each one as %20".into());
+    }
+    // Its site: after who logs in to it, before its port.
+    let site = url[scheme.len()..].split(['/', '?', '#']).next().unwrap_or_default();
+    let host = site.rsplit_once('@').map_or(site, |(_, h)| h);
+    let host = match host.strip_prefix('[') {
+        Some(v6) => v6.split(']').next().unwrap_or_default(),
+        None => host.split(':').next().unwrap_or_default(),
+    };
+    if host.is_empty() {
+        return Err(format!("the link names no site after {}: {whole}", &url[..scheme.len()]));
+    }
+    Ok(url.to_string())
+}
+
 impl Ref {
     /// Whether it points at the whole file, not at lines of it.
     pub fn whole(&self) -> bool {
@@ -113,9 +158,12 @@ impl Ref {
     }
 
     /// A line of a `refs` block, if it is one: with no lines (`path @3`,
-    /// `path: @3`), the whole file.
+    /// `path: @3`), the whole file. Not a web link, nor any address.
     pub fn parse(line: &str) -> Option<Ref> {
         let line = line.trim();
+        if addressed(line) {
+            return None;
+        }
         let (spec, at) = match line.rsplit_once(" @") {
             Some((spec, n)) => (
                 spec,
@@ -142,9 +190,10 @@ impl Ref {
 
     /// One the agent gave: `{"file", "lines", "patch"}`, no `"lines"` for
     /// the whole file, `"patch"` 0 for the base, none for the whole stack.
+    /// A file that is an address is none.
     pub fn from_json(v: &Value) -> Option<Ref> {
         let file = v.get("file")?.as_str()?.trim();
-        if file.is_empty() {
+        if file.is_empty() || addressed(file) {
             return None;
         }
         let lines = match v.get("lines") {
@@ -192,24 +241,28 @@ impl Ref {
     }
 }
 
-/// What a line of a `refs` block points at: lines of a file, or a comment
-/// of the stack, by its change and id.
+/// What a line of a `refs` block points at: lines of a file, a comment of
+/// the stack, by its change and id, or a page of the web, by its link.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Pointer {
     Lines(Ref),
     Comment { change: String, id: String },
+    Link(String),
 }
 
 impl Pointer {
-    /// As a line of a `refs` block: a comment's as JSON, which no path is.
+    /// As a line of a `refs` block: a comment's as JSON, a link as it is,
+    /// which no path is.
     pub fn line(&self) -> String {
         match self {
             Pointer::Lines(r) => r.line(),
             Pointer::Comment { change, id } => serde_json::json!({"change": change, "id": id}).to_string(),
+            Pointer::Link(url) => url.clone(),
         }
     }
 
-    /// A line of a `refs` block, if it is one.
+    /// A line of a `refs` block, if it is one: an address is a link, if it
+    /// is one, and never lines.
     pub fn parse(line: &str) -> Option<Pointer> {
         let line = line.trim();
         if line.starts_with('{') {
@@ -218,6 +271,9 @@ impl Pointer {
                 change: v.get("change")?.as_str()?.to_string(),
                 id: v.get("id")?.as_str()?.to_string(),
             });
+        }
+        if addressed(line) {
+            return link(line).ok().map(Pointer::Link);
         }
         Ref::parse(line).map(Pointer::Lines)
     }
@@ -255,22 +311,25 @@ impl Pointing {
 
 /// What the agent pointed at in a `refs` list: lines, as it gave them; a
 /// comment, by the name it gave it, a label of the ask's (`c1`) or an id
-/// as `stacked comments` lists it.
+/// as `stacked comments` lists it; a page of the web, by its link.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Given {
     Lines(Ref),
     Comment(String),
-    /// One that does not read as either: it keeps its place, and its number
-    /// with it.
+    Link(String),
+    /// One that does not read as any of them: it keeps its place, and its
+    /// number with it.
     Unread,
 }
 
 /// The references the agent gave, `v` (a list), each in its place, those
-/// it cannot read too, so that what names the others still does.
+/// it cannot read too, so that what names the others still does: a link
+/// that is not of the web (`{"url": "ftp://…"}`) is one of those.
 pub fn of_json(v: Option<&Value>) -> Vec<Given> {
-    let given = |r: &Value| match r.get("comment") {
-        Some(c) => c.as_str().map(|c| Given::Comment(c.trim().to_string())).filter(|g| *g != Given::Comment(String::new())),
-        None => Ref::from_json(r).map(Given::Lines),
+    let given = |r: &Value| match (r.get("url"), r.get("comment")) {
+        (Some(u), _) => u.as_str().and_then(|u| link(u).ok()).map(Given::Link),
+        (None, Some(c)) => c.as_str().map(|c| Given::Comment(c.trim().to_string())).filter(|g| *g != Given::Comment(String::new())),
+        (None, None) => Ref::from_json(r).map(Given::Lines),
     };
     v.and_then(Value::as_array).map_or(vec![], |a| a.iter().map(|r| given(r).unwrap_or(Given::Unread)).collect())
 }
@@ -302,6 +361,7 @@ pub fn resolved(given: Vec<Given>, first: Option<usize>, comment: &dyn Fn(&str) 
         let to = match g {
             Given::Lines(r) => Some(Pointer::Lines(r)),
             Given::Comment(name) => comment(&name).map(|(change, id)| Pointer::Comment { change, id }),
+            Given::Link(url) => Some(Pointer::Link(url)),
             Given::Unread => None,
         };
         let Some(to) = to else { continue };
@@ -325,7 +385,7 @@ pub fn written_with(v: &Value, first: usize, comment: &dyn Fn(&str) -> Option<(S
 }
 
 /// What an agent wrote, `v`, its references in a `refs` block at its end,
-/// not numbered: lines only, as no comment can be found here.
+/// not numbered: lines and links only, as no comment can be found here.
 pub fn written(v: &Value) -> String {
     let (text, given) = text_and_refs(v);
     attach(&text, &resolved(given, None, &|_| None))
@@ -365,12 +425,15 @@ pub fn split(body: &str) -> (String, Vec<Pointing>) {
 }
 
 /// What a reference you attach to a comment points at: another comment of
-/// the stack, or lines of a file, as a `refs` line says them.
+/// the stack, lines of a file, as a `refs` line says them, or a page of the
+/// web, by its link, whole. Kept as `"comment"`, `"lines"` or `"link"`:
+/// what comments saved before links were kept still reads.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum To {
     Comment { change: String, id: String },
     Lines(String),
+    Link(String),
 }
 
 /// A reference you attach to a comment: its number, which `@r1` names, and
@@ -393,7 +456,7 @@ impl Attached {
     pub fn lines(&self) -> Option<Ref> {
         match &self.to {
             To::Lines(l) => Ref::parse(l),
-            To::Comment { .. } => None,
+            To::Comment { .. } | To::Link(_) => None,
         }
     }
 
@@ -405,6 +468,7 @@ impl Attached {
                 id: id.clone(),
             }),
             To::Lines(_) => self.lines().map(Pointer::Lines),
+            To::Link(url) => link(url).ok().map(Pointer::Link),
         }
     }
 }
@@ -543,7 +607,7 @@ pub fn pointed(n: &Note) -> Vec<(String, String)> {
         .iter()
         .filter_map(|a| match &a.to {
             To::Comment { change, id } => Some((change.clone(), id.clone())),
-            To::Lines(_) => None,
+            To::Lines(_) | To::Link(_) => None,
         })
         .collect();
     for t in crate::thread::thread_turns(&n.text) {
@@ -727,6 +791,83 @@ pub fn find_comment(db: &Db, name: &str, change: &str, id: &str) -> Option<(Note
         return Some((n.clone(), true));
     }
     db.deleted_notes(name, change).into_iter().find(|(_, n)| n.id == id).map(|(_, n)| (n, false))
+}
+
+/// The program that opens web links, when not `$STACKED_OPEN`'s or the
+/// system's: the editor's tests set a stand-in here, as they share their
+/// process and its environment, so that none of them opens a browser.
+static OPENER: std::sync::Mutex<Option<PathBuf>> = std::sync::Mutex::new(None);
+
+/// Opens web links with `program` from now on, run as `program URL`.
+pub fn open_links_with(program: &Path) {
+    *OPENER.lock().unwrap() = Some(program.to_path_buf());
+}
+
+/// The program that opens a web link, run as `program URL`: the tests'
+/// stand-in, else the one `$STACKED_OPEN` names, else the system's, `open`
+/// on macOS and `xdg-open` elsewhere.
+pub fn opener() -> PathBuf {
+    if let Some(p) = OPENER.lock().unwrap().clone() {
+        return p;
+    }
+    match std::env::var_os("STACKED_OPEN").filter(|p| !p.is_empty()) {
+        Some(p) => PathBuf::from(p),
+        None => PathBuf::from(if cfg!(target_os = "macos") { "open" } else { "xdg-open" }),
+    }
+}
+
+/// How long the program opening a link is waited for, to say whether it
+/// could: past that, it runs on (the browser it started, perhaps), and the
+/// link is taken as opened.
+const OPENING: Duration = Duration::from_secs(5);
+
+/// Opens web link `url` with `program`, which reads nothing and writes
+/// nowhere, as the screen is the editor's: what came of it, said for the
+/// status line.
+pub fn open_with(program: &Path, url: &str) -> String {
+    let url = match link(url) {
+        Ok(url) => url,
+        Err(why) => return why,
+    };
+    let name = program.display();
+    let mut c = Command::new(program);
+    c.arg(&url).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    // In a process group of its own: a ctrl-c where stacked was started
+    // does not stop the browser it starts.
+    std::os::unix::process::CommandExt::process_group(&mut c, 0);
+    let mut child = match c.spawn() {
+        Ok(child) => child,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return format!("the link could not be opened: there is no {name} here to open it ($STACKED_OPEN may name a program that does)");
+        }
+        Err(e) => return format!("the link could not be opened: {name} did not run: {e}"),
+    };
+    let started = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(s)) if s.success() => return format!("opened {url} in your browser"),
+            Ok(Some(s)) => {
+                return match s.code() {
+                    Some(code) => format!("the link could not be opened: {name} failed, exiting with {code}"),
+                    None => format!("the link could not be opened: {name} was stopped"),
+                };
+            }
+            Ok(None) if started.elapsed() < OPENING => std::thread::sleep(Duration::from_millis(10)),
+            // Running on: waited for away from here, so that it is not left
+            // a zombie once it is done.
+            Ok(None) => {
+                std::thread::spawn(move || child.wait());
+                return format!("opened {url} in your browser");
+            }
+            Err(e) => return format!("the link could not be opened: {e}"),
+        }
+    }
+}
+
+/// Opens web link `url` with the program that opens links (`opener`):
+/// what came of it, said.
+pub fn open_link(url: &str) -> String {
+    open_with(&opener(), url)
 }
 
 #[cfg(test)]
@@ -1140,5 +1281,157 @@ mod tests {
         };
         assert!(settle(&was, &mut now, None).is_empty());
         assert_eq!((numbers(&now), now.given, next_of(&now)), (vec![1], Some(2), 3));
+    }
+
+    #[test]
+    fn a_web_link_is_a_line_of_its_block_and_never_a_path() {
+        // As a refs line: the link as it is, after its number; and back.
+        let p = Pointing {
+            n: Some(3),
+            to: Pointer::Link("https://example.com/a:12?b=c#d".into()),
+        };
+        assert_eq!(p.line(), "r3 https://example.com/a:12?b=c#d");
+        assert_eq!(Pointing::parse(&p.line()), Some(p.clone()));
+        assert_eq!(Pointer::parse(" HTTP://Example.com/A "), Some(Pointer::Link("HTTP://Example.com/A".into())));
+        // Never lines of a file, nor a file whole, though a colon and a
+        // number end it; an address that is no web link is nothing.
+        for url in ["https://example.com/a:12", "http://example.com", "https://example.com/a.txt @2", "ftp://example.com/a:1"] {
+            assert_eq!(Ref::parse(url), None, "{url}");
+        }
+        for wrong in ["https://", "https:///a", "ftp://example.com/a:1", "https://exa mple.com"] {
+            assert_eq!(Pointer::parse(wrong), None, "{wrong}");
+        }
+        assert_eq!(Pointer::parse("a.txt:12"), Some(Pointer::Lines(Ref::parse("a.txt:12").unwrap())));
+        // In a block, beside lines.
+        let lines = Pointing {
+            n: Some(4),
+            to: Pointer::Lines(Ref::parse("a.txt:2 @1").unwrap()),
+        };
+        let text = attach("See there.", &[p.clone(), lines.clone()]);
+        assert_eq!(text, "See there.\n\n```refs\nr3 https://example.com/a:12?b=c#d\nr4 a.txt:2 @1\n```");
+        assert_eq!(split(&text), ("See there.".to_string(), vec![p, lines]));
+    }
+
+    #[test]
+    fn a_web_link_is_an_address_of_https_or_http_whole() {
+        for url in [
+            "https://example.com",
+            "http://example.com/a/b?c=d&e#f",
+            "HTTPS://Example.COM/A",
+            "https://user:pw@host:8080/p",
+            "http://[::1]:8080/x",
+            "https://bugzilla.mozilla.org/show_bug.cgi?id=1234567",
+        ] {
+            assert_eq!(link(&format!("  {url} ")).as_deref(), Ok(url), "{url}");
+        }
+        let why = |text: &str| link(text).unwrap_err();
+        assert_eq!(why(" "), "write the web link to attach: write it whole, as https://example.com/a/b");
+        for not in ["example.com/a", "ftp://example.com/a", "file:///etc/passwd", "javascript:alert(1)", "mailto:a@b.org", "a.txt:2 @1"] {
+            assert_eq!(why(not), "a web link starts with https:// or http://: write it whole, as https://example.com/a/b", "{not}");
+        }
+        assert_eq!(why("https://exa mple.com"), "a web link has no spaces in it: write each one as %20");
+        for siteless in ["https://", "https:///a", "http://?q", "https://user@/a", "https://:80/a"] {
+            assert!(why(siteless).starts_with("the link names no site after http"), "{siteless}: {}", why(siteless));
+        }
+        assert_eq!(why("HTTPS://"), "the link names no site after HTTPS://: write it whole, as https://example.com/a/b");
+    }
+
+    #[test]
+    fn the_agent_gives_a_web_link_as_a_url_a_link_of_the_web_only() {
+        let v: Value = serde_json::json!({
+            "text": "As @r1 says, not @r2.",
+            "refs": [
+                {"url": "https://bugzilla.mozilla.org/show_bug.cgi?id=1234567"},
+                {"url": "ftp://example.com/a"},
+                {"url": "javascript:alert(1)"},
+                {"url": 7},
+                {"file": "https://example.com/a.txt", "lines": "1"},
+                {"file": "a.txt", "lines": "2", "patch": 1}
+            ]
+        });
+        let bug = "https://bugzilla.mozilla.org/show_bug.cgi?id=1234567";
+        let given = of_json(v.get("refs"));
+        assert_eq!(given[0], Given::Link(bug.into()));
+        // Not of the web, or a file that is an address: none, each keeping
+        // its place.
+        assert_eq!(given[1..5], [Given::Unread, Given::Unread, Given::Unread, Given::Unread]);
+        let text = written_with(&v, 1, &|_| None);
+        assert!(text.ends_with(&format!("```refs\nr1 {bug}\nr6 a.txt:2 @1\n```")), "{text}");
+        assert_eq!(split(&text).1[0].to, Pointer::Link(bug.into()));
+        assert_eq!(written(&serde_json::json!({"text": "See.", "refs": [{"url": bug}]})), format!("See.\n\n```refs\n{bug}\n```"));
+    }
+
+    #[test]
+    fn an_attached_web_link_is_kept_as_its_link_and_comments_saved_before_still_read() {
+        let a = Attached {
+            n: 3,
+            to: To::Link("https://example.com/a/b".into()),
+        };
+        let json = serde_json::to_string(&a).unwrap();
+        assert_eq!(json, r#"{"n":3,"link":"https://example.com/a/b"}"#);
+        assert_eq!(serde_json::from_str::<Attached>(&json).unwrap(), a);
+        assert_eq!((a.lines(), a.pointer()), (None, Some(Pointer::Link("https://example.com/a/b".into()))));
+        // A comment saved before links were kept: what it had attached reads
+        // as it was.
+        let old = r#"{"change":"c","id":"+x","line":"+x","text":"See @r1 and @r2.","attached":[{"n":1,"comment":{"change":"c","id":"+y"}},{"n":2,"lines":"a.txt:2-3 @1"}],"time":1}"#;
+        let n: Note = serde_json::from_str(old).unwrap();
+        assert_eq!(n.attached.iter().map(|a| a.pointer().is_some()).collect::<Vec<_>>(), [true, true]);
+        assert_eq!(numbers(&n), [1, 2]);
+        // A link is one of the comment's references, not a comment pointed
+        // at.
+        let n = Note {
+            text: "See @r3.".into(),
+            attached: vec![a],
+            ..Default::default()
+        };
+        assert!(pointed(&n).is_empty());
+        assert_eq!(references(&n), [(3, Pointer::Link("https://example.com/a/b".into()), false)]);
+        assert!(broken_in(&n).is_empty());
+        assert_eq!(next_of(&n), 4);
+    }
+
+    #[test]
+    fn a_web_link_is_named_and_detached_as_any_reference() {
+        use crate::thread::{Role, append_turn, rewind};
+        let link = |n: usize| Attached {
+            n,
+            to: To::Link(format!("https://example.com/{n}")),
+        };
+        // r1 and r2 attached, links; your reply names r2; the agent's r3 is
+        // a link too, which its reply names.
+        let text = append_turn("Why?", Role::Agent, "See @r3.\n\n```refs\nr3 https://example.com/3\n```", Some("answer"));
+        let was = Note {
+            text: append_turn(&text, Role::You, "And @r2?", None),
+            attached: vec![link(1), link(2)],
+            ..Default::default()
+        };
+        assert_eq!(numbers(&was), [1, 2, 3]);
+        assert_eq!(named(&was, None).into_iter().collect::<Vec<_>>(), [2, 3]);
+        // Rewound from your reply: r2, named there only, is detached; r1,
+        // never named, stays, and so does the agent's r3, its turn standing.
+        let mut now = Note {
+            text: rewind(&was.text, 2, "Thanks.").unwrap(),
+            ..was.clone()
+        };
+        assert_eq!(settle(&was, &mut now, None), [2]);
+        assert_eq!((now.attached.clone(), numbers(&now), next_of(&now)), (vec![link(1)], vec![1, 3], 4));
+    }
+
+    #[test]
+    fn a_web_link_is_opened_by_the_program_that_opens_links_or_said_why_not() {
+        let url = "https://example.com/a/b";
+        assert_eq!(open_with(Path::new("true"), url), "opened https://example.com/a/b in your browser");
+        assert_eq!(open_with(Path::new("false"), url), "the link could not be opened: false failed, exiting with 1");
+        assert_eq!(
+            open_with(Path::new("/nowhere/at/all/open"), url),
+            "the link could not be opened: there is no /nowhere/at/all/open here to open it ($STACKED_OPEN may name a program that does)"
+        );
+        // What is not a web link is not handed to it.
+        assert!(open_with(Path::new("true"), "file:///etc/passwd").starts_with("a web link starts with https://"));
+        // The program the tests set is the one that opens links: never the
+        // system's, which would open a browser.
+        open_links_with(Path::new("true"));
+        assert_eq!(opener(), PathBuf::from("true"));
+        assert_eq!(open_link(url), "opened https://example.com/a/b in your browser");
     }
 }

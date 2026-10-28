@@ -1321,6 +1321,47 @@ fn an_agent_attaches_references_to_its_reply_and_to_the_comments_it_opens() {
 }
 
 #[test]
+fn a_web_link_attached_goes_to_the_agent_as_a_link_and_the_agent_gives_its_own() {
+    use stacked::db::Note;
+    use stacked::refs::{Attached, To};
+    let e = env();
+    e.ok(&["import", "s", "base"]);
+    let id = comment(&e, &["--patch", "1", "Is", "it", "as", "@r1", "says?"]);
+    let bug = "https://bugzilla.mozilla.org/show_bug.cgi?id=1234567";
+    let n = Db::load(&e.db).unwrap().find_note("s", &id).unwrap().clone();
+    let attached = vec![Attached { n: 1, to: To::Link(bug.into()) }];
+    Db::edit(&e.db, |db| db.set_note(Note { attached, ..n.clone() })).unwrap();
+    // Listed with the comment, whole.
+    assert!(e.ok(&["comments", "s"]).contains(&format!("  r1 ⇗ {bug}")));
+    // Sent, the agent is told it as a link it need not fetch, and to point
+    // at the stack first. It gives links of its own, one not of the web.
+    let prompts = e.root.join("prompts.txt");
+    let result = r#"{"replies": {"c1": {"text": "As @r2 says, and @r4.", "refs": [{"url": "https://example.com/spec#a"}, {"url": "ftp://example.com/x"}, {"file": "a.txt", "lines": "2", "patch": 1}]}}}"#;
+    let claude = fake_claude(&e, "claude-links.sh", &format!("printf '%s' \"$2\" > {}", prompts.display()), result);
+    let (fine, out, err) = stacked_in(&e.src, &e.db, &["send", "s", &id, "--answer-only", "--wait"], "", &[("STACKED_CLAUDE", claude.as_path())]);
+    assert!(fine, "{out}{err}");
+    let prompt = std::fs::read_to_string(&prompts).unwrap();
+    for said in [
+        format!("  r1: a web link, {bug} (you need not fetch it, and may not be able to: your tools may not reach the network)\n"),
+        "or, to point at a page of the web, {\"url\": \"https://example.com/a/b\" (its whole address, https or http)}".into(),
+        "Point at the stack first: when the code or the comments of the stack say what you mean".into(),
+        "(The references you attach to your reply to it are numbered from r2 on.)".into(),
+    ] {
+        assert!(prompt.contains(&said), "{said:?} in:\n{prompt}");
+    }
+    // Its reply holds its link whole, numbered after the comment's own; the
+    // one not of the web is left out, with its number.
+    let d = Db::load(&e.db).unwrap();
+    let r = stacked::held::queue(&d, "s")[0].clone();
+    assert_eq!(r.held.as_ref().unwrap().replies[0].text, "As @r2 says, and @r4.\n\n```refs\nr2 https://example.com/spec#a\nr4 a.txt:2 @1\n```");
+    // Accepted, the thread lists it.
+    e.ok(&["review", "s", "--accept-all"]);
+    let listed = e.ok(&["comments", "s"]);
+    assert!(listed.contains("agent: As @r2 says, and @r4.") && listed.contains("  r2 https://example.com/spec#a\n"), "{listed}");
+    assert!(listed.contains(&format!("  r1 ⇗ {bug}")), "{listed}");
+}
+
+#[test]
 fn a_comment_on_a_file_is_on_it_as_a_whole_for_you_and_the_agent() {
     let e = env();
     e.ok(&["import", "s", "base"]);

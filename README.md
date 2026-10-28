@@ -607,12 +607,17 @@ line`, `Reply` and `Edit your reply` each have `[x] here  [ ] in $EDITOR`.
 Nothing is typed at the bottom: the bottom line only says things.
 
 A comment may have references attached to it: other comments of the
-stack, open or closed, and lines of a file. In the editor, Esc, then
-`Attach a reference…`, lists `Lines of a file…` and the stack's comments,
-those closed after those open. Lines are written as a `refs` line says
-them, `a.txt:120-140,200-210 @2` (no lines, `a.txt @2`, the whole file;
-`@0` the base; no `@`, the whole stack); for a comment on a line, they
-start with its file, as its patch leaves it.
+stack, open or closed, lines of a file, and web links. In the editor, Esc,
+then `Attach a reference…`, lists `Lines of a file…`, `A web link…` and
+the stack's comments, those closed after those open. Lines are written as
+a `refs` line says them, `a.txt:120-140,200-210 @2` (no lines, `a.txt @2`,
+the whole file; `@0` the base; no `@`, the whole stack); for a comment on a
+line, they start with its file, as its patch leaves it. A web link is
+written whole on a line of its own, as lines are, `https://example.com/a/b`:
+only an address that starts with `https://` or `http://` and names a site
+is taken, and the status line says why another is not. Attach a web link
+for what nothing in the stack says; the agent is asked to do the same
+(below).
 Each reference takes a number, never given twice in the comment (not even
 once its reference is detached), and what you write names it: `@r1`,
 several `@r{1,2,3}` (or `@r{2-4}`), all of them `@r*`. They show under what
@@ -620,17 +625,26 @@ you write (written in the middle on a comment there, as its lines under
 the editor, those attached meanwhile with them; else in the editor, under
 the text), and under the comment once it is saved, a line each: `r1 ↗
 patch 2 · a.txt: TWO · "why so loud?"`, `r2 ⇢ a.txt:2-3 · as patch 1 leaves
-it`. Enter on a comment's goes to that comment (closed, it opens as it
-was); on lines, it previews them. A mention naming no reference attached
-is drawn in the warning colour, and the agent is not asked until it names
-one: the menu says why, and `stacked send` refuses it. `Detach a
-reference…` takes one off, but not one that another turn of the comment
-names. The references stay with the comment as its turns change, and go
-with it to the agent each time it is asked: each comment as it stands,
-said open or closed (closed, as it was last), each file's lines as the
-version says. The agent reads them for what they say; they are not asked
-of it, and they close only as any comment does. `stacked comments` lists
-them under the comment.
+it`, `r3 ⇗ https://example.com/a/b` (a link too long for the pane is cut
+there, its start kept). Enter on a comment's goes to that comment (closed,
+it opens as it was); on lines, it previews them; on a link, it shows the
+link whole in a box, and Enter there opens it in your browser, with the
+program `$STACKED_OPEN` names, else with `open` on macOS and `xdg-open`
+elsewhere: the program is given the link as its one argument. The status
+line says what was opened, or why it could not be. StackED and `stacked
+web` open it the same way, on the machine stacked runs on. A mention
+naming no reference attached is drawn in the warning colour, and the agent
+is not asked until it names one: the menu says why, and `stacked send`
+refuses it. `Detach a reference…` takes one off, but not one that another
+turn of the comment names. The references stay with the comment as its
+turns change, and go with it to the agent each time it is asked: each
+comment as it stands, said open or closed (closed, as it was last), each
+file's lines as the version says, each link as it is, which the agent is
+told it need not fetch and may not be able to, as its tools may keep it
+off the network. The agent reads them for what they say; they are not
+asked of it, and they close only as any comment does. `stacked comments`
+lists them under the comment. Only the editor attaches them: `stacked
+comment` and `stacked reply` do not.
 
 A reference is named by a mention in a turn of the comment, whoever wrote
 it (you, the agent, a reviewer), and by one in the agent's reply waiting
@@ -645,10 +659,10 @@ nothing yet) stays as it is.
 
 In a comment's thread, a mention is drawn as a link, and one naming no
 reference the comment has in the warning colour, whoever wrote it. Enter
-on a line that names references goes to the one it names: a comment, or
-lines previewed; naming several, it asks which. (Enter on such a line no
-longer opens your comment to write in: Enter on its line, or its menu,
-does.)
+on a line that names references goes to the one it names: a comment,
+lines previewed, or a link shown whole; naming several, it asks which.
+(Enter on such a line no longer opens your comment to write in: Enter on
+its line, or its menu, does.)
 
 A reply written in $EDITOR (`Reply`, or `Comment on this line` on a line
 that has a comment) opens under the conversation it answers, each turn a
@@ -863,16 +877,24 @@ diff has it, else to the file whole, at that line, as it reads (Esc comes
 back). In the box and in the file whole, the numbers of the lines it
 points at are marked, drawn reversed. They are kept in the agent's turn as a `refs` block, a reference a
 line (`a.txt:2-3,10 @1`; `a.txt @1` the whole file; `@0` the base, no `@`
-the whole stack), which
+the whole stack; a web link as it is, which is never read as a path), which
 `stacked comments` shows and the agent reads back in its thread. The agent
 may point at another comment of the stack too, by its label in the ask or
 its id as `stacked comments` lists it: under what it wrote, `↗` and where
-that comment is, Enter going there. The references it attaches take
-numbers too, after those of the comment it writes on, in the order it
-gives them (the prompt says the first free one; a comment it opens
-numbers its own from `r1`), and one it gives that is no reference (a
-comment that is none, lines that are none) leaves its number out, so that
-what names the others still does. In what it writes, and in what you write after, `@r4`
+that comment is, Enter going there. It may point at a page of the web,
+`{"url": "https://…"}`: under what it wrote, `⇗` and the link, which Enter
+shows whole and then opens, as one you attached. The prompt asks it to
+point at the stack first: whenever the code or the comments say what it
+means, at those lines of a file, as a patch, the base or the whole stack
+leaves it, or at that comment. A web link is for what nothing in the
+stack, the repository or its comments says: a bug, a specification, a page
+of documentation. The
+references it attaches take numbers too, after those of the comment it
+writes on, in the order it gives them (the prompt says the first free
+one; a comment it opens numbers its own from `r1`), and one it gives that
+is no reference (a comment that is none, lines that are none, a link not
+of the web) leaves its number out, so that what names the others still
+does. In what it writes, and in what you write after, `@r4`
 names one of them as `@r1` names one you attached. They go with their
 turn when a rewind takes it; when the turn is written again, it keeps
 them, but one it named whose last mention the edit took away (Writing
@@ -1890,7 +1912,9 @@ StackED's too (the web feature needs the wasm target, as in Install).
 stacked built with no feature, and needs no wasm target; `--features` then
 adds the tests of each feature named. No test runs claude: a script stands
 in for it; none reaches Phabricator: its revisions and their comments are
-read by stand-ins; none opens a window. No sleep decides what a test sees:
+read by stand-ins; none opens a window, nor a browser: a script stands in
+for the program that opens a web link, and only writes down the links it
+is given. No sleep decides what a test sees:
 when a test looks at the agent's stand-in at work, the stand-in goes on
 working until the test lets it finish, however busy the machine is.
 
@@ -1927,7 +1951,8 @@ every process shares. In each test file, the function that gives every run
 of the binary its home gives it another folder of the test's as `$TMPDIR`,
 so that what stacked writes in the temporary directory (an edit it could
 not take, kept for `--from`) is removed with the test's folder. The
-editor's tests write their stand-in for claude in the folder Cargo gives
+editor's tests write their stand-ins, for claude and for the program that
+opens a web link (with the links it was given), in the folder Cargo gives
 the tests for their files. The folder of a test that asks the agent is
 removed only once its asks are over, with no process working in the folder
 any more: an ask the test left going would write in the folder as it is
@@ -1954,7 +1979,10 @@ or not, a reply going with a comment the agent opened not taken at once, a
 reply written again, a
 reference no longer named detached by `stacked reply --edit` and the
 agent's reference by `--edit --turn` (said so), and a rewind keeping one
-never named, asks waiting their turn, a rebase, the stack not
+never named, a web link attached told the agent as one it need not fetch
+(the prompt asking it to point at the stack first) and listed with its
+comment, the agent's own link kept in its reply (one not of the web left
+out, with its number), asks waiting their turn, a rebase, the stack not
 edited by hand while the agent changes it, failures kept to look at, comments staying on their line
 across versions, a patch edited by hand (as mail and as code, at a line,
 refused and taken up again), trimming, the settings (in ~/.stacked, or the
@@ -2012,7 +2040,13 @@ without naming them, and those the reply waiting for review names, kept;
 the next one attached taking a number never given), the agent's reply
 written again as its text alone,
 keeping its references but the one it no longer names, a turn deleted the
-first way counting nowhere, a stack made with none there (imported from the workspace, a
+first way counting nowhere, a web link attached from the menu (what is not
+one refused, the status line saying why) and named, its line under the
+comment cut to the pane, shown whole in its box (folded there when longer)
+and opened by the stand-in, never a browser, the status line saying so,
+the agent's own link given through the stand-in for claude, both listed
+in $EDITOR, and the link detached by a rewind of the only turn that names
+it, a stack made with none there (imported from the workspace, a
 range typed and refused until it holds a commit, the changes staged on top;
 from Phabricator, its revisions read by a stand-in; or by the agent), a
 comment moved to the stack
@@ -2108,8 +2142,10 @@ does it: the
 stand-in's fix, the board at its end, nothing made on disk; and the answer
 to the tour's question taken at once with Enter, the tour going on then;
 `memory.rs` tests its diffs applied as git applies them. The
-stream's thinking is tested in `ask.rs`, and what is said of landed work
-left to review in `held.rs`. The tests in `check.rs` show
+stream's thinking is tested in `ask.rs`, with the prompt asking the agent
+to point at the stack before the web and its answer's schema taking a web
+link, and what is said of landed work left to review in `held.rs`. The
+tests in `check.rs` show
 the check's index holds only what the patches touch, that it writes nothing
 to the repository, and how a patch's files are read before and after it;
 those in `ops.rs`, that two code edits saved at once, on two threads, each
@@ -2120,7 +2156,8 @@ and how a stack diff follows each patch by its change, a move told from a
 shift. Those in
 `setup.rs` show the setup screen's boxes, a server's tools let all at once
 or one by one; those in `search.rs`, which lines of a file a hunk shows
-already; those in `progress.rs`, that a patch whose file has no newline
+already; those in `rows.rs`, a web link's line under its comment cut to
+the pane, its start kept; those in `progress.rs`, that a patch whose file has no newline
 at its end leaves nothing to review once its lines removed and added and
 its message are read (git's `\ No newline at end of file` is not a line
 to read); those in `config.rs`, a file of settings over another, a
@@ -2130,7 +2167,12 @@ those in `refs.rs`, which references a rewind or an edit detaches, which
 stay (named by another turn, the agent's or by `@r*`, by the reply waiting
 for review, or never named), the agent's turn written again keeping its
 own, a turn deleted the first way counting nowhere, and no number given
-twice, a reference detached by hand or gone with its turn. The tests in
+twice, a reference detached by hand or gone with its turn; and a web link
+read from its `refs` line and never as a path, kept in the database while
+the comments saved before read as they did, given by the agent as
+`{"url"}` only when it is of the web, named and detached as any
+reference, and opened by the program that opens links, or said why not.
+The tests in
 `diff.rs` show each line's numbers on each side, git's
 `\ No newline at end of file` counting on neither (under the old side's
 last line, under the new side's, under both, or under a line both sides

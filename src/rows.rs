@@ -94,6 +94,9 @@ pub struct Row {
     /// A comment a reference points at, under the comment pointing:
     /// Enter goes to it.
     pub points: Option<(String, String)>,
+    /// A web link a reference points at, whole, under the comment: Enter
+    /// shows it, and Enter again opens it in the browser.
+    pub link: Option<String>,
     /// The numbers of the comment's references its text names on this
     /// line: Enter goes to the one, or picks among them.
     pub names: Vec<usize>,
@@ -108,7 +111,7 @@ pub struct Row {
 impl Row {
     /// Whether it is a line under a comment for one of its references.
     pub fn is_reference(&self) -> bool {
-        self.reference.is_some() || self.points.is_some()
+        self.reference.is_some() || self.points.is_some() || self.link.is_some()
     }
 }
 
@@ -495,25 +498,19 @@ pub fn comment_rows(n: &Note, width: usize, deco: &Deco) -> Vec<Row> {
         });
     }
     // Last, a line for each reference attached to it, by its name, then for
-    // each a turn points at: Enter previews lines, and goes to a comment.
-    let attached = n.attached.iter().filter_map(|a| {
-        let p = match &a.to {
-            crate::refs::To::Comment { change, id } => crate::refs::Pointer::Comment {
-                change: change.clone(),
-                id: id.clone(),
-            },
-            crate::refs::To::Lines(_) => crate::refs::Pointer::Lines(a.lines()?),
-        };
-        Some((None, By::You, format!("{} ", a.name()), p))
-    });
+    // each a turn points at: Enter previews lines, goes to a comment, and
+    // shows a link whole.
+    let attached = n.attached.iter().filter_map(|a| Some((None, By::You, format!("{} ", a.name()), a.pointer()?)));
     let pointed = refs.into_iter().map(|(i, author, p)| (Some(i), author, p.n.map_or(String::new(), |k| format!("r{k} ")), p.to));
     for (turn, author, name, p) in attached.collect::<Vec<_>>().into_iter().chain(pointed) {
-        let (said, reference, points) = match p {
-            crate::refs::Pointer::Lines(r) => (format!("{name}⇢ {}", r.said()), Some(r), None),
+        let (said, reference, points, link) = match p {
+            crate::refs::Pointer::Lines(r) => (format!("{name}⇢ {}", r.said()), Some(r), None, None),
             crate::refs::Pointer::Comment { change, id } => {
                 let what = deco.pointed.get(&(change.clone(), id.clone())).map_or("a comment that is gone", String::as_str);
-                (format!("{name}↗ {what}"), None, Some((change, id)))
+                (format!("{name}↗ {what}"), None, Some((change, id)), None)
             }
+            // Cut to the pane, its start kept: the site, then the page.
+            crate::refs::Pointer::Link(url) => (cut(&format!("{name}⇗ {url}"), width.saturating_sub(9)), None, None, Some(url)),
         };
         out.push(Row {
             turn,
@@ -521,10 +518,20 @@ pub fn comment_rows(n: &Note, width: usize, deco: &Deco) -> Vec<Row> {
             pieces: vec![(said.clone(), crate::markdown::Mark::Link)],
             reference,
             points,
+            link,
             ..row(Kind::Comment, format!("     {BAR}   {said}"), false)
         });
     }
     out
+}
+
+/// `text`, cut to `room` characters, its start kept, `…` last where it is
+/// cut; as it is when it fits, or the room is too small to cut it in.
+fn cut(text: &str, room: usize) -> String {
+    if text.chars().count() <= room || room < 10 {
+        return text.to_string();
+    }
+    text.chars().take(room - 1).chain(['…']).collect()
 }
 
 /// `p`'s diff, parsed: once per patch, as a patch never changes, and the
@@ -933,6 +940,40 @@ mod tests {
         let quiet = comment_rows(&n, 80, &Deco::default());
         assert_eq!(rows.last(), quiet.last());
         assert_eq!(rows.len(), quiet.len() + 2);
+    }
+
+    #[test]
+    fn a_web_link_s_line_is_cut_to_the_pane_its_start_kept() {
+        use super::{Deco, comment_rows};
+        use crate::thread::{Role, append_turn};
+        let long = format!("https://example.com/{}", "a/".repeat(40));
+        // r1 attached, a link; the agent's reply attaches r2, a link too.
+        let n = crate::db::Note {
+            change: "c".into(),
+            id: "n".into(),
+            text: append_turn("See @r1.", Role::Agent, "And @r2.\n\n```refs\nr2 https://example.com/b\n```", Some("answer")),
+            attached: vec![crate::refs::Attached {
+                n: 1,
+                to: crate::refs::To::Link(long.clone()),
+            }],
+            ..Default::default()
+        };
+        let links = |width: usize| -> Vec<(String, Option<String>)> {
+            comment_rows(&n, width, &Deco::default()).into_iter().filter(|r| r.is_reference()).map(|r| (r.text, r.link)).collect()
+        };
+        // Cut to the pane, its start kept; the row holds it whole still, for
+        // Enter to show.
+        let start: String = format!("r1 ⇗ {long}").chars().take(60 - 9 - 1).collect();
+        assert_eq!(
+            links(60),
+            [
+                (format!("     ▎   {start}…"), Some(long.clone())),
+                ("     ▎   r2 ⇗ https://example.com/b".to_string(), Some("https://example.com/b".to_string())),
+            ]
+        );
+        assert!(links(60).iter().all(|(text, _)| text.chars().count() == 60 || text.ends_with("/b")));
+        // Wide enough, whole.
+        assert_eq!(links(200)[0].0, format!("     ▎   r1 ⇗ {long}"));
     }
 
     #[test]

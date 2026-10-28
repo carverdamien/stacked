@@ -813,7 +813,7 @@ fn print_thread(db: &Db, name: &str, n: &Note, state: &str) {
 
 /// Reference `a`, attached to a comment of stack `name`, as a line: a
 /// comment by its id, where it is, and whether it is closed; lines as a
-/// `refs` line says them.
+/// `refs` line says them; a web link whole.
 fn attached_line(db: &Db, name: &str, a: &stacked::refs::Attached) -> String {
     match &a.to {
         stacked::refs::To::Comment { change, id } => match stacked::refs::find_comment(db, name, change, id) {
@@ -824,6 +824,7 @@ fn attached_line(db: &Db, name: &str, a: &stacked::refs::Attached) -> String {
             None => format!("{} ↗ a comment that is gone", a.name()),
         },
         stacked::refs::To::Lines(l) => format!("{} ⇢ {}", a.name(), a.lines().map_or(l.clone(), |r| r.said())),
+        stacked::refs::To::Link(url) => format!("{} ⇗ {url}", a.name()),
     }
 }
 

@@ -1097,6 +1097,7 @@ fn transcript(text: &str) -> String {
                     match &p.to {
                         crate::refs::Pointer::Lines(r) => format!("{name}{}", r.said()),
                         crate::refs::Pointer::Comment { change, id } => format!("{name}the comment [{}]", crate::db::short_id(change, id)),
+                        crate::refs::Pointer::Link(url) => format!("{name}the web link {url}"),
                     }
                 })
                 .collect();
@@ -1114,7 +1115,8 @@ const ATTACHED_LINES: usize = 200;
 
 /// What is attached to comment `n`, as the agent is told it: each reference
 /// by its name, a comment as it stands, open or closed, lines as stack `s`
-/// has them. Nothing if nothing is.
+/// has them, a web link as it is, not to be fetched. Nothing if nothing
+/// is.
 fn attached_part(db: &Db, s: &Stack, n: &Note) -> String {
     if n.attached.is_empty() {
         return String::new();
@@ -1153,10 +1155,14 @@ fn attached_part(db: &Db, s: &Stack, n: &Note) -> String {
                     out += &format!("    … {} lines more\n", wanted.len() - ATTACHED_LINES);
                 }
             }
+            crate::refs::To::Link(url) => out += &format!("  {}: a web link, {url} ({LINK_UNREAD})\n", a.name()),
         }
     }
     out
 }
+
+/// What the agent is told of a web link attached to a comment.
+const LINK_UNREAD: &str = "you need not fetch it, and may not be able to: your tools may not reach the network";
 
 /// The file reference `r` is of, as it says: as a patch of stack `s`
 /// leaves it, as the stack's base has it, or as the whole stack leaves it.
@@ -1455,7 +1461,7 @@ would not let you read; then go on with what you can read. The user can let ever
 /// (`--json-schema`), which claude checks before it is done. Its replies by
 /// the comments' labels, a build and test's findings by the patches'
 /// numbers; what is written a string, or one with the references it
-/// attaches.
+/// attaches: lines of a file, a comment, a web link.
 fn answer_schema(i: &Info, s: &Stack) -> Value {
     use serde_json::json;
     let refs = json!({
@@ -1466,7 +1472,8 @@ fn answer_schema(i: &Info, s: &Stack) -> Value {
                 "file": {"type": "string"},
                 "lines": {"type": "string"},
                 "patch": {"type": "integer"},
-                "comment": {"type": "string"}
+                "comment": {"type": "string"},
+                "url": {"type": "string"}
             },
             "additionalProperties": false
         }
@@ -1516,18 +1523,24 @@ fn answer_schema(i: &Info, s: &Stack) -> Value {
     json!({"type": "object", "properties": props, "required": ["replies"], "additionalProperties": false})
 }
 
-/// What an ask is told of the references it may attach to what it writes.
+/// What an ask is told of the references it may attach to what it writes:
+/// lines of a file, a comment of the stack, a web link, the stack first.
 const REFS: &str = " To point at the code you mean, in the stack or out of it, anything you write \
 there may be an object instead of a string, {\"text\": what you write, \"refs\": [...]}, and a \
 comment you open may have \"refs\" too: each {\"file\": its path, \"lines\": \"120-140,200-210\" \
 (none, the whole file), \"patch\": a patch's number, for the file as that patch leaves it; 0, as \
 the stack's base has it; none, as the whole stack leaves it}; or, to point at a comment of the \
 stack, {\"comment\": its label \
-above ([c1] is \"c1\"), or its id, as `stacked comments` lists it}. The user reads each under what \
-you wrote, and goes there. Each takes a number, in the order you give them: in a reply, from the \
-one its comment above says; in a comment you open, from r1. In what you write, @r1 names \
-reference r1 of the comment you write on, @r{1,2} several, @r* all of them: those attached to \
-it, and those you attach.";
+above ([c1] is \"c1\"), or its id, as `stacked comments` lists it}; or, to point at a page of the \
+web, {\"url\": \"https://example.com/a/b\" (its whole address, https or http)}. Point at the stack \
+first: when the code or the comments of the stack say what you mean, point at those lines of a \
+file, as a patch, the base or the whole stack leaves it, or at that comment, rather than at a page \
+of the web. A web link is for what nothing in the stack, the repository or its comments says (a \
+bug, a specification, a page of documentation). The user reads each under what you wrote, and \
+goes there. Each takes a number, in the order you give them: in a reply, from the one its comment \
+above says; in a comment you open, from r1. In what you write, @r1 names reference r1 of the \
+comment you write on, @r{1,2} several, @r* all of them: those attached to it, and those you \
+attach.";
 
 /// The program run as claude, when not `$STACKED_CLAUDE`'s or `claude`,
 /// and the stacked an ask calls back (`prompt`, `record`, `land`), when not
@@ -3186,6 +3199,41 @@ mod tests {
             tail(&going(&events), "r", 5),
             ["Building.", "◷ the agent waited: The build is still running.", "Built; 3 tests pass.", "✓ the agent finished", "exit 0"]
         );
+    }
+
+    #[test]
+    fn the_agent_is_told_to_point_at_the_stack_before_the_web() {
+        // A web link is one of the references it may give: in the prompt,
+        // as an example, and in its answer's schema.
+        assert!(REFS.contains("or, to point at a page of the web, {\"url\": \"https://example.com/a/b\" (its whole address, https or http)}"), "{REFS}");
+        let s = Stack {
+            name: "s".into(),
+            patches: vec!["p1".into()],
+            base: None,
+            repo: None,
+            parent: None,
+            op: String::new(),
+            time: 0,
+        };
+        let notes = serde_json::json!([{"label": "c1", "change": "x", "id": "1"}]);
+        let i: Info = serde_json::from_value(serde_json::json!({"way": Way::Answer, "scope": Scope::Stack, "from": 0, "notes": notes})).unwrap();
+        let schema = answer_schema(&i, &s);
+        let given = &schema["properties"]["replies"]["properties"]["c1"]["anyOf"][1]["properties"]["refs"]["items"]["properties"];
+        assert_eq!(given.as_object().unwrap().keys().collect::<Vec<_>>(), ["file", "lines", "patch", "comment", "url"]);
+        assert_eq!(schema["properties"]["comments"]["items"]["properties"]["refs"]["items"]["properties"]["url"]["type"], "string");
+        // Told to point at the stack first, at lines or a comment, and at the
+        // web only for what nothing of the stack's says.
+        let first = REFS.find("Point at the stack first: when the code or the comments of the stack say what you mean, point at those lines").expect(REFS);
+        assert!(first > REFS.find("{\"url\"").unwrap(), "{REFS}");
+        assert!(
+            REFS[first..].contains(
+                "or at that comment, rather than at a page of the web. A web link is for what nothing in the stack, the repository or its comments says"
+            ),
+            "{REFS}"
+        );
+        // A link it gave before, said as one in the thread it is told.
+        let text = append_turn("why?", Role::Agent, "See @r1.\n\n```refs\nr1 https://example.com/a\n```", Some("answer"));
+        assert_eq!(transcript(&text), "The user: why?\nYou (the agent, earlier): See @r1.\n(pointing at: r1, the web link https://example.com/a)");
     }
 
     #[test]

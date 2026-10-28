@@ -622,11 +622,14 @@ pub struct Edit {
 }
 
 /// Lines of a file being named, to attach to the comment being written,
-/// `back`: as a `refs` line says them, `a.txt:120-140,200-210 @2`.
+/// `back`: as a `refs` line says them, `a.txt:120-140,200-210 @2`. Or a web
+/// link, whole: `https://example.com/a/b`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Lines {
     pub ed: Editor,
     pub back: Edit,
+    /// A web link is named, not lines.
+    pub link: bool,
 }
 
 /// Where the keys go, over the screen.
@@ -649,10 +652,12 @@ pub enum Mode {
     /// The stream of the comment claude is working on, opened in place;
     /// `up` lines up from its end.
     Stream { change: String, id: String, up: usize },
-    /// The lines a reference points at, previewed: Enter goes there.
+    /// The lines a reference points at, previewed: Enter goes there. Or
+    /// its web link, whole: Enter opens it in the browser.
     Preview(Box<Preview>),
-    /// Lines of a file being named, to attach to the comment being
-    /// written: Enter attaches them, Esc goes back to the comment.
+    /// Lines of a file, or a web link, being named, to attach to the
+    /// comment being written: Enter attaches them, Esc goes back to the
+    /// comment.
     Lines(Box<Lines>),
     /// A line to type, what it gives said as it is typed: Enter takes it
     /// once it can be taken, Esc goes back.
@@ -735,7 +740,8 @@ fn numbered(n: usize, text: &str, referenced: bool) -> Parts {
 }
 
 /// A reference's lines, previewed: `title` says which; `lines` are the
-/// lines, numbered, `top` the first shown; `jump`, where Enter goes.
+/// lines, numbered, `top` the first shown; `jump`, where Enter goes. A web
+/// link's, its link whole, folded to the box, then what Enter does.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Preview {
     pub title: String,
@@ -752,11 +758,13 @@ impl Preview {
 }
 
 /// Where a reference's preview goes: the line in its patch, when the
-/// patch's diff has it; else the file whole, at the line, as it reads.
+/// patch's diff has it; else the file whole, at the line, as it reads. A
+/// web link's, to the browser, which opens it.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Jump {
     Line { change: String, key: String },
     File { title: String, lines: Vec<Parts>, at: usize },
+    Link(String),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -951,6 +959,9 @@ pub enum Action {
     ShowRef(Box<crate::refs::Ref>),
     /// A comment a reference points at: there, or, closed, as it was.
     GoToPointed(String, String),
+    /// A web link a reference points at: shown whole, to open in the
+    /// browser.
+    ShowLink(String),
     /// A line of a comment naming its references: the one it names, or a
     /// menu of them.
     Named,
@@ -960,6 +971,8 @@ pub enum Action {
     AttachComment(String, String),
     /// Lines of a file, to name, attached to the comment being written.
     AttachLines,
+    /// A web link, to write, attached to the comment being written.
+    AttachLink,
     /// In the editor's menu: the references attached, to pick one to
     /// detach.
     DetachRef,
@@ -1164,12 +1177,18 @@ fn about(action: &Action) -> String {
         }
         Action::ShowRef(_) => "preview the lines the agent points at: Enter there goes to them".into(),
         Action::GoToPointed(..) => "go to the comment this points at; closed, read it as it was".into(),
-        Action::Named => "go to the reference this line names (@r1): a comment, or lines previewed; naming several, pick one".into(),
+        Action::ShowLink(_) => "show the web link whole: Enter there opens it in your browser".into(),
+        Action::Named => {
+            "go to the reference this line names (@r1): a comment, or lines or a web link previewed; naming several, pick one".into()
+        }
         Action::AttachRef => {
-            "attach a reference to the comment: another comment of the stack, or lines of a file; what you write names it @r1, several @r{1,2}, all @r*".into()
+            "attach a reference to the comment: another comment of the stack, lines of a file, or a web link; what you write names it @r1, several @r{1,2}, all @r*".into()
         }
         Action::AttachComment(..) => "attach this comment: the agent reads it with yours, open or closed".into(),
         Action::AttachLines => "attach lines of a file, as a patch leaves it, as the base has it, or as the whole stack leaves it".into(),
+        Action::AttachLink => {
+            "attach a web link, https://… or http://…, for what nothing in the stack says: the agent is told it, and need not read it".into()
+        }
         Action::DetachRef => "detach a reference from the comment".into(),
         Action::Detach(_) => "detach this reference: a mention of it then names nothing".into(),
         Action::Send(Way::Change) => "ask the agent, which may change the code within this comment's place".into(),
@@ -1767,6 +1786,9 @@ impl Background {
 /// commits made again with the stack's messages.
 const MOVING_HEAD: &str = "moving HEAD";
 const REWORDING: &str = "rewording";
+
+/// What the bar says while a web link is being opened in the browser.
+const OPENING: &str = "opening a link";
 
 /// Why stack checking said no, as the bar says it.
 fn why_not(e: crate::db::Error) -> String {
@@ -3720,6 +3742,10 @@ impl App {
                 if let Some((change, id)) = self.rows.get(self.target_row()).and_then(|row| row.points.clone()) {
                     return Some(Action::GoToPointed(change, id));
                 }
+                // A web link: shown whole, to open.
+                if let Some(url) = self.rows.get(self.target_row()).and_then(|row| row.link.clone()) {
+                    return Some(Action::ShowLink(url));
+                }
                 // A line naming references: the one it names, or which.
                 if self.rows.get(self.target_row()).is_some_and(|row| !row.names.is_empty()) {
                     return Some(Action::Named);
@@ -5316,6 +5342,7 @@ impl App {
                 }
                 None => self.status = "that comment is gone".into(),
             },
+            Action::ShowLink(url) => self.show_link(url),
             Action::Named => {
                 if let Some(a) = self.named() {
                     return self.perform(a);
@@ -5341,7 +5368,13 @@ impl App {
                     let (text, col) = self.lines_prefill(&e.target);
                     let mut ed = Editor::new(&text).single();
                     ed.set_col(col);
-                    self.mode = Mode::Lines(Box::new(Lines { ed, back: e }));
+                    self.mode = Mode::Lines(Box::new(Lines { ed, back: e, link: false }));
+                }
+            }
+            Action::AttachLink => {
+                if let Some(e) = self.pending.take() {
+                    let ed = Editor::new("").single();
+                    self.mode = Mode::Lines(Box::new(Lines { ed, back: e, link: true }));
                 }
             }
             Action::Detach(n) => {
@@ -5951,6 +5984,7 @@ impl App {
         let go = |p: &crate::refs::Pointer| match p {
             crate::refs::Pointer::Lines(r) => Action::ShowRef(Box::new(r.clone())),
             crate::refs::Pointer::Comment { change, id } => Action::GoToPointed(change.clone(), id.clone()),
+            crate::refs::Pointer::Link(url) => Action::ShowLink(url.clone()),
         };
         let named: Vec<(usize, crate::refs::Pointer)> = crate::refs::references(&n).into_iter().filter(|(k, ..)| names.contains(k)).map(|(k, p, _)| (k, p)).collect();
         if let [(_, p)] = named.as_slice() {
@@ -5981,6 +6015,7 @@ impl App {
         match p {
             crate::refs::Pointer::Comment { change, id } => format!("r{k} ↗ {}", self.pointed_said(change, id)),
             crate::refs::Pointer::Lines(r) => format!("r{k} ⇢ {}", r.said()),
+            crate::refs::Pointer::Link(url) => format!("r{k} ⇗ {url}"),
         }
     }
 
@@ -6017,6 +6052,7 @@ impl App {
         match &a.to {
             crate::refs::To::Comment { change, id } => format!("{} ↗ {}", a.name(), self.pointed_said(change, id)),
             crate::refs::To::Lines(l) => format!("{} ⇢ {}", a.name(), a.lines().map_or(l.clone(), |r| r.said())),
+            crate::refs::To::Link(url) => format!("{} ⇗ {url}", a.name()),
         }
     }
 
@@ -6045,14 +6081,14 @@ impl App {
     }
 
     /// The menu of what may be attached to the comment being written: lines
-    /// of a file, or a comment of the stack, open or closed, but itself and
-    /// those attached already.
+    /// of a file, a web link, or a comment of the stack, open or closed, but
+    /// itself and those attached already.
     fn attach_menu(&mut self) {
         let Some(e) = &self.pending else { return };
         let mut skip: Vec<(String, String)> = self.comment_of(&e.target).into_iter().collect();
         skip.extend(e.attached.iter().filter_map(|a| match &a.to {
             crate::refs::To::Comment { change, id } => Some((change.clone(), id.clone())),
-            crate::refs::To::Lines(_) => None,
+            crate::refs::To::Lines(_) | crate::refs::To::Link(_) => None,
         }));
         let free = |n: &Note| !skip.iter().any(|(c, i)| *c == n.change && *i == n.id);
         let first = |n: &Note| thread_turns(&n.text).first().map(|t| crate::markdown::first_line(&crate::refs::split(&t.body).0)).unwrap_or_default();
@@ -6068,7 +6104,7 @@ impl App {
             let label = format!("{} · \"{}\" · closed", where_on(&self.db, &self.stack, &n), short(&first(&n), 60));
             comments.push(Item::new(label, Action::AttachComment(n.change.clone(), n.id.clone())));
         }
-        let mut items = vec![Item::new("Lines of a file…", Action::AttachLines)];
+        let mut items = vec![Item::new("Lines of a file…", Action::AttachLines), Item::new("A web link…", Action::AttachLink)];
         if !comments.is_empty() {
             items.push(Item::line());
             items.extend(comments);
@@ -6117,6 +6153,9 @@ impl App {
     /// The lines `text` names, as a `refs` line says them, if the file has
     /// them as that version leaves it; else why not.
     fn lines_to_attach(&self, text: &str) -> std::result::Result<crate::refs::Ref, String> {
+        if crate::refs::addressed(text) {
+            return Err("that is a link, not lines of a file: attach it with A web link…".into());
+        }
         let how = "write the file, its lines and which version: a.txt:120-140,200-210 @2 (no lines, the whole file; @0 the base; no @, the whole stack)";
         let r = crate::refs::Ref::parse(text).ok_or_else(|| how.to_string())?;
         let s = self.current().cloned().ok_or_else(|| "there is no stack to read the file of".to_string())?;
@@ -6133,29 +6172,33 @@ impl App {
         }
     }
 
-    /// A key while lines of a file are named: Enter attaches them to the
-    /// comment, if the file has them; Esc goes back to the comment.
+    /// A key while lines of a file, or a web link, are named: Enter
+    /// attaches them to the comment, if the file has them, or if it is a
+    /// web link; Esc goes back to the comment.
     fn lines_key(&mut self, mut l: Lines, k: KeyEvent) -> Effect {
         match k.code {
             KeyCode::Esc => self.mode = Mode::Edit(Box::new(l.back)),
-            KeyCode::Enter => match self.lines_to_attach(&l.ed.text()) {
-                Ok(r) => {
-                    let mut e = l.back;
-                    let n = self.next_number(&e);
-                    e.attached.push(crate::refs::Attached {
-                        n,
-                        to: crate::refs::To::Lines(r.line()),
-                    });
-                    e.given = n;
-                    self.status = format!("attached as r{n}: write @r{n} where you mean it");
-                    self.show_attached(&mut e);
-                    self.mode = Mode::Edit(Box::new(e));
+            KeyCode::Enter => {
+                let to = match l.link {
+                    true => crate::refs::link(&l.ed.text()).map(crate::refs::To::Link),
+                    false => self.lines_to_attach(&l.ed.text()).map(|r| crate::refs::To::Lines(r.line())),
+                };
+                match to {
+                    Ok(to) => {
+                        let mut e = l.back;
+                        let n = self.next_number(&e);
+                        e.attached.push(crate::refs::Attached { n, to });
+                        e.given = n;
+                        self.status = format!("attached as r{n}: write @r{n} where you mean it");
+                        self.show_attached(&mut e);
+                        self.mode = Mode::Edit(Box::new(e));
+                    }
+                    Err(why) => {
+                        self.status = why;
+                        self.mode = Mode::Lines(Box::new(l));
+                    }
                 }
-                Err(why) => {
-                    self.status = why;
-                    self.mode = Mode::Lines(Box::new(l));
-                }
-            },
+            }
             _ => {
                 l.ed.key(k);
                 self.mode = Mode::Lines(Box::new(l));
@@ -6437,15 +6480,19 @@ impl App {
         Some(p.ed.draw(buf, area, x, y, bw, 3, p.asking.title(), &foot))
     }
 
-    /// The lines being named, in a box over the screen; where the cursor
-    /// goes.
+    /// The lines, or the web link, being named, in a box over the screen;
+    /// where the cursor goes.
     fn draw_lines(&self, buf: &mut Buffer, area: Rect) -> Option<(u16, u16)> {
         let Mode::Lines(l) = &self.mode else { return None };
         let (w, h) = (area.width as usize, area.height as usize);
         let bw = (w * 9 / 10).clamp(30.min(w), 100.min(w));
         let (x, y) = (w.saturating_sub(bw) / 2, h.saturating_sub(3) / 2);
         spot_in(&self.spots, area, (x, y, bw, 3), Spot::Box);
-        Some(l.ed.draw(buf, area, x, y, bw, 3, "lines of a file, to attach: a.txt:120-140,200-210 @2", "enter: attach · esc: back"))
+        let title = match l.link {
+            true => "a web link, to attach: https://example.com/a/b",
+            false => "lines of a file, to attach: a.txt:120-140,200-210 @2",
+        };
+        Some(l.ed.draw(buf, area, x, y, bw, 3, title, "enter: attach · esc: back"))
     }
 
     /// Opens the editor for `target`, in `pane`.
@@ -6900,6 +6947,34 @@ impl App {
         self.back_to_list();
     }
 
+    /// Web link `url`, shown whole in the preview's box, with what Enter
+    /// does there: open it in the browser.
+    fn show_link(&mut self, url: String) {
+        self.mode = Mode::Preview(Box::new(Preview {
+            title: "a web link".into(),
+            lines: vec![
+                vec![(url.clone(), Style::new().add_modifier(Modifier::UNDERLINED))],
+                vec![],
+                vec![("Enter opens it in your browser · Esc back".into(), color::dim())],
+            ],
+            top: 0,
+            jump: Jump::Link(url),
+        }));
+    }
+
+    /// Web link `url` opened in the browser, away from the screen, by the
+    /// program that opens links (`refs::opener`): the status line says it
+    /// was, or why it could not be.
+    fn open_link(&mut self, url: String) {
+        if self.bg.doing.contains(&OPENING) {
+            self.status = "a link is being opened already: wait for it".into();
+            return;
+        }
+        self.bg.doing.push(OPENING);
+        self.status = format!("opening {url}…");
+        self.spawn(move || Done::Said(OPENING, crate::refs::open_link(&url)));
+    }
+
     /// Reference `r`, previewed: its lines numbered, the numbers marked,
     /// `⋯` between its ranges; the whole file, every line, the numbers
     /// plain, as it points at them all. Enter there goes to them.
@@ -6990,8 +7065,8 @@ impl App {
         }
     }
 
-    /// A key in a reference's preview: Enter goes there, ↑↓ scroll, Esc
-    /// goes back.
+    /// A key in a reference's preview: Enter goes there (a web link's, to
+    /// the browser), ↑↓ scroll, Esc goes back.
     fn preview_key(&mut self, mut p: Preview, k: KeyEvent) -> Effect {
         let page = (self.body_h / 2).max(1);
         let last = p.lines.len().saturating_sub(1);
@@ -7006,6 +7081,7 @@ impl App {
                             t.scroll = at.saturating_sub(4);
                         }
                     }
+                    Jump::Link(url) => self.open_link(url),
                 }
                 return Effect::None;
             }
@@ -7020,16 +7096,25 @@ impl App {
     }
 
     /// A reference's preview, in a box over the screen: its lines from the
-    /// one shown first, as many as it holds.
+    /// one shown first, as many as it holds. A web link's folded to the
+    /// box, to read whole; lines of code cut at its edge.
     fn draw_ref_preview(&self, buf: &mut Buffer, area: Rect) {
         let Mode::Preview(p) = &self.mode else { return };
         let (w, h) = (area.width as usize, area.height as usize);
         let bw = (w * 9 / 10).clamp(30.min(w), 120.min(w));
-        let bh = (p.lines.len() + 2).min((h * 2 / 3).max(5)).min(h);
+        let folded: Vec<Parts>;
+        let lines = match p.jump {
+            Jump::Link(_) => {
+                folded = p.lines.iter().flat_map(|l| fold_parts(l, bw.saturating_sub(4), 0)).collect();
+                &folded
+            }
+            _ => &p.lines,
+        };
+        let bh = (lines.len() + 2).min((h * 2 / 3).max(5)).min(h);
         let (x, y) = (w.saturating_sub(bw) / 2, h.saturating_sub(bh) / 2);
         window(buf, area, x, y, bw, bh, &p.title, color::meta());
         spot_in(&self.spots, area, (x, y, bw, bh), Spot::Box);
-        for (k, parts) in p.lines.iter().skip(p.top).take(bh.saturating_sub(2)).enumerate() {
+        for (k, parts) in lines.iter().skip(p.top).take(bh.saturating_sub(2)).enumerate() {
             put_parts(buf, area, x + 2, y + 1 + k, bw.saturating_sub(4), parts);
         }
     }
@@ -7700,7 +7785,9 @@ impl App {
             Mode::Edit(e) if e.ed.ghosted() => format!("↑↓: read the last comment closed here · enter: a new line · {}", self.esc_does(e)),
             Mode::Edit(e) => format!("enter: a new line · {}", self.esc_does(e)),
             Mode::Help { .. } => "any key: back, and that key".into(),
+            Mode::Preview(p) if matches!(p.jump, Jump::Link(_)) => "enter: open it in your browser · esc: back".into(),
             Mode::Preview(_) => "↑↓: scroll · enter: go there · esc: back".into(),
+            Mode::Lines(l) if l.link => "enter: attach this link · esc: back to the comment".into(),
             Mode::Lines(_) => "enter: attach these lines · esc: back to the comment".into(),
             Mode::Prompt(p) if p.ok => format!("enter: {} · esc: back", p.asking.does()),
             Mode::Prompt(_) => "esc: back".into(),

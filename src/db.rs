@@ -449,8 +449,8 @@ pub struct Note {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub review: Option<String>,
     /// The references you attached to it, which what you write names
-    /// (`@r1`): other comments of the stack, lines of files. The agent reads
-    /// them with it.
+    /// (`@r1`): other comments of the stack, lines of files, web links. The
+    /// agent reads them with it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attached: Vec<crate::refs::Attached>,
     /// The highest number one of its references was given, once that

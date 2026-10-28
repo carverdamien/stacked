@@ -92,8 +92,10 @@ fn setup() -> (tempfile::TempDir, PathBuf, PathBuf) {
 /// process, and a developer's own settings must not change them.
 fn open(db: &Path) -> stacked::db::Result<Editor> {
     stacked::config::init(stacked::config::Config::default());
-    // No agent of the user's is ever asked: the tests' stand-in is.
+    // No agent of the user's is ever asked: the tests' stand-in is. No
+    // browser opens a link either: a stand-in does.
     fake_claude();
+    fake_opener();
     App::with_config(db, stacked::config::Config::default()).map(Editor)
 }
 
@@ -2334,6 +2336,141 @@ fn a_turn_written_again_keeps_its_references_but_those_no_longer_named_and_a_del
 }
 
 #[test]
+fn a_web_link_is_attached_named_shown_whole_and_opened_by_a_stand_in() {
+    use stacked::refs::{Attached, To};
+    use stacked::tui::Jump;
+    let (tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    // Links of this test's own: the one you attach longer than the middle
+    // is wide, the agent's short.
+    let here = tmp.path().file_name().unwrap().to_string_lossy().to_string();
+    let url = format!("https://example.com/{here}/{}end", "long/".repeat(12));
+    let agents = format!("https://example.com/{here}/agent");
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Enter]);
+    typed(&mut app, "Is it as @r1 says?");
+    keys(&mut app, &[KeyCode::Esc]);
+    // A web link is attached as lines are: written on a line of its own.
+    choose(&mut app, "Attach a reference…");
+    assert_eq!(items(&app)[..2], [("Lines of a file…".to_string(), true), ("A web link…".to_string(), true)]);
+    choose(&mut app, "A web link…");
+    let Mode::Lines(l) = &app.mode else { panic!("{:?}", app.mode) };
+    assert!(l.link && l.ed.text().is_empty(), "{l:?}");
+    assert_eq!(app.hint(), "enter: attach this link · esc: back to the comment");
+    assert!(draw(&mut app).contains("a web link, to attach: https://example.com/a/b"));
+    // What is not a web link is refused, as the status line says; the line
+    // stays to write again.
+    for (wrong, why) in [
+        ("ftp://example.com/a", "a web link starts with https:// or http://: write it whole, as https://example.com/a/b"),
+        ("https://", "the link names no site after https://: write it whole, as https://example.com/a/b"),
+    ] {
+        typed(&mut app, wrong);
+        keys(&mut app, &[KeyCode::Enter]);
+        assert_eq!(app.status, why);
+        assert!(matches!(&app.mode, Mode::Lines(l) if l.ed.text() == wrong), "{:?}", app.mode);
+        ctrl(&mut app, KeyCode::Char('a'));
+        ctrl(&mut app, KeyCode::Char('k'));
+    }
+    typed(&mut app, &url);
+    keys(&mut app, &[KeyCode::Enter]);
+    assert_eq!(app.status, "attached as r1: write @r1 where you mean it");
+    let Mode::Edit(e) = &app.mode else { panic!("{:?}", app.mode) };
+    assert!(e.ed.broken().is_empty(), "@r1 names it");
+    // Saved and asked: the agent answers, attaching a web link of its own.
+    answer_with(&db, &serde_json::json!({"replies": {"c1": {"text": "It is: see @r2.", "refs": [{"url": agents}]}}}));
+    keys(&mut app, &[KeyCode::Esc]);
+    choose_as(&mut app, "Save it and ask agent", "answer only");
+    let n = notes_of(&db, "s", 0).remove(0);
+    assert_eq!(n.attached, [Attached { n: 1, to: To::Link(url.clone()) }]);
+    accept_landed(&mut app, &db);
+    wait_for(&mut app, "agent replied (answer only)");
+    // Under the comment, a line each: yours cut to the middle, its start
+    // kept; the agent's whole.
+    let under = references_under(&mut app);
+    assert_eq!(under.len(), 2, "{under:?}");
+    let start = under[0].strip_prefix("r1 ⇗ ").and_then(|s| s.strip_suffix('…')).unwrap_or_else(|| panic!("{under:?}"));
+    assert!(url.starts_with(start) && start.starts_with("https://example.com/"), "{under:?}");
+    assert_eq!(under[1], format!("r2 ⇗ {agents}"));
+    let row = |app: &App, text: &str| app.rows.iter().find(|r| r.text.contains(text)).cloned().unwrap_or_else(|| panic!("no {text:?}"));
+    assert_eq!(row(&app, "Is it as @r1 says?").names, [1]);
+    assert_eq!(row(&app, "It is: see @r2.").names, [2]);
+    // A reply written in $EDITOR lists them under it, whole.
+    let seen = std::rc::Rc::new(std::cell::RefCell::new(String::new()));
+    let kept = seen.clone();
+    stacked::ops::stand_in(Some(Box::new(move |file: &Path, _| {
+        *kept.borrow_mut() = std::fs::read_to_string(file).unwrap();
+        Ok(())
+    })));
+    keys(&mut app, &[KeyCode::Home]);
+    down_to(&mut app, "     ▎   It is: see @r2.");
+    let e = choose_as(&mut app, "Reply", "in $EDITOR");
+    app.effect(e).unwrap();
+    stacked::ops::stand_in(None);
+    assert!(seen.borrow().contains(&format!("\n#   r1 ⇗ {url}\n#   r2 ⇗ {agents} (the agent's)\n")), "{}", seen.borrow());
+    // Enter on the line naming it, or on its own: the link shown whole, with
+    // what Enter does there.
+    for at in ["     ▎   Is it as @r1 says?", "     ▎   r1 ⇗"] {
+        keys(&mut app, &[KeyCode::Home]);
+        down_to(&mut app, at);
+        keys(&mut app, &[KeyCode::Enter]);
+        let Mode::Preview(p) = &app.mode else { panic!("{at:?}: {:?}", app.mode) };
+        assert_eq!((p.title.as_str(), p.jump.clone()), ("a web link", Jump::Link(url.clone())));
+        assert_eq!(p.texts(), [url.as_str(), "", "Enter opens it in your browser · Esc back"]);
+        assert_eq!(app.hint(), "enter: open it in your browser · esc: back");
+        let screen = draw(&mut app);
+        assert!(screen.contains(&url) && screen.contains("Enter opens it in your browser · Esc back"), "{screen}");
+        keys(&mut app, &[KeyCode::Esc]);
+        assert_eq!(app.mode, Mode::Normal);
+    }
+    // Too long for the box, it is folded there, whole still.
+    keys(&mut app, &[KeyCode::Enter]);
+    let mut buf = Buffer::empty(Rect::new(0, 0, 60, 30));
+    app.draw(&mut buf);
+    let lines: Vec<String> = (0..30u16).map(|y| (0..60u16).map(|x| buf[(x, y)].symbol()).collect()).collect();
+    let (top, bottom) = url.split_at(50);
+    let at = lines.iter().position(|l| l.contains(top)).unwrap_or_else(|| panic!("{lines:#?}"));
+    assert!(lines[at + 1].contains(bottom), "{lines:#?}");
+    // Enter there opens it with the stand-in, never a browser: the status
+    // line says so.
+    assert_eq!(stacked::refs::opener(), fake_opener());
+    keys(&mut app, &[KeyCode::Enter]);
+    app.settle();
+    assert_eq!(app.status, format!("opened {url} in your browser"));
+    assert!(opened(&url) && !opened(&agents));
+    assert_eq!(app.mode, Mode::Normal);
+    // The agent's, too.
+    keys(&mut app, &[KeyCode::Home]);
+    down_to(&mut app, "     ▎   r2 ⇗");
+    keys(&mut app, &[KeyCode::Enter, KeyCode::Enter]);
+    app.settle();
+    assert!(opened(&agents), "{}", app.status);
+    // Rewound from your comment, the only turn naming r1: r1 is detached,
+    // the agent's r2 gone with its reply; neither number is given again.
+    keys(&mut app, &[KeyCode::Home]);
+    down_to(&mut app, "     ▎   Is it as @r1 says?");
+    choose_as(&mut app, "Rewind the conversation from your comment", "here");
+    typed(&mut app, "Thanks.");
+    keys(&mut app, &[KeyCode::Esc]);
+    choose(&mut app, "Save it");
+    assert_eq!(app.status, "r1 is no longer named: it is detached");
+    assert!(references_under(&mut app).is_empty());
+    let n = notes_of(&db, "s", 0).remove(0);
+    assert_eq!((n.attached.len(), stacked::refs::next_of(&n)), (0, 3));
+    keys(&mut app, &[KeyCode::Home]);
+    down_to(&mut app, "     ▎   Thanks.");
+    choose_as(&mut app, "Edit your comment", "here");
+    keys(&mut app, &[KeyCode::Esc]);
+    choose(&mut app, "Attach a reference…");
+    choose(&mut app, "A web link…");
+    typed(&mut app, &agents);
+    keys(&mut app, &[KeyCode::Enter]);
+    assert_eq!(app.status, "attached as r3: write @r3 where you mean it");
+    keys(&mut app, &[KeyCode::Esc]);
+    choose(&mut app, "Throw the changes away");
+}
+
+#[test]
 fn a_comment_holding_a_fence_of_a_turn_is_yours_whole() {
     let (_tmp, db, _src) = setup();
     let mut app = open(&db).unwrap();
@@ -2539,14 +2676,16 @@ fn the_comments_pane_previews_without_moving_the_patch() {
 /// holds it (`hold`), it goes on working on that test's asks, so that what
 /// the editor shows while the agent works stays to be seen, however busy
 /// the machine is: it answers once there is no file `hold` beside the
-/// repository it works in, where `setup` puts the test's database too.
+/// repository it works in, where `setup` puts the test's database too. It
+/// answers `Seen.`, or what the file `answer` there holds (`answer_with`).
 fn fake_claude() -> PathBuf {
     static FAKE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
     FAKE.get_or_init(|| {
         let result = serde_json::to_string(&serde_json::json!({"type": "result", "result": r#"{"replies": {"c1": "Seen."}}"#})).unwrap();
         let script = format!(
             "#!/bin/sh\necho '{{\"type\":\"system\",\"subtype\":\"init\",\"model\":\"fake\"}}'\necho '{{\"type\":\"assistant\",\"message\":{{\"content\":[{{\"type\":\"text\",\"text\":\"Reading the patch.\"}}]}}}}'\n\
-             git=$(git rev-parse --path-format=absolute --git-common-dir)\nwhile test -e \"$git/../../hold\"; do sleep 0.1; done\ncat <<'EOF'\n{result}\nEOF\n"
+             git=$(git rev-parse --path-format=absolute --git-common-dir)\nwhile test -e \"$git/../../hold\"; do sleep 0.1; done\n\
+             if test -e \"$git/../../answer\"; then cat \"$git/../../answer\"; else cat <<'EOF'\n{result}\nEOF\nfi\n"
         );
         // Written in the folder Cargo gives the tests for their files, not in
         // the temporary directory, where it would be left: the same script
@@ -2579,6 +2718,39 @@ fn hold(db: &Path) -> Held {
     let at = db.with_file_name("hold");
     std::fs::write(&at, "").unwrap();
     Held(at)
+}
+
+/// Has the stand-in answer the asks on `db` (`fake_claude`) with
+/// `answer`, as claude ends its turn with it, in place of `Seen.`.
+fn answer_with(db: &Path, answer: &serde_json::Value) {
+    let result = serde_json::json!({"type": "result", "result": answer.to_string()});
+    std::fs::write(db.with_file_name("answer"), format!("{result}\n")).unwrap();
+}
+
+/// The program the editor opens web links with in the tests, for every
+/// test as they share their process: a stand-in that opens nothing, and
+/// writes each link it is given on a line of `tui-opened.txt` beside it, in
+/// the folder Cargo gives the tests for their files (`opened`). No test
+/// opens a browser.
+fn fake_opener() -> PathBuf {
+    static FAKE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    FAKE.get_or_init(|| {
+        let dir = Path::new(env!("CARGO_TARGET_TMPDIR"));
+        let (path, part) = (dir.join("tui-open.sh"), dir.join(format!("tui-open-{}.sh", std::process::id())));
+        std::fs::write(&part, "#!/bin/sh\nprintf '%s\\n' \"$1\" >> \"$(dirname \"$0\")/tui-opened.txt\"\n").unwrap();
+        Command::new("chmod").arg("+x").arg(&part).status().unwrap();
+        std::fs::rename(&part, &path).unwrap();
+        stacked::refs::open_links_with(&path);
+        path
+    })
+    .clone()
+}
+
+/// Whether the stand-in that opens links (`fake_opener`) was given `url`,
+/// by this run of the tests or another: each test's links are its own.
+fn opened(url: &str) -> bool {
+    let log = Path::new(env!("CARGO_TARGET_TMPDIR")).join("tui-opened.txt");
+    std::fs::read_to_string(log).unwrap_or_default().lines().any(|l| l == url)
 }
 
 #[test]
