@@ -32,9 +32,10 @@ pub struct Reading<'a> {
     pub blocks: &'a Blocks,
     pub read: &'a HashSet<String>,
     pub marks: &'a [(usize, &'a Mark)],
-    /// Whether changed lines that are empty or white space alone need
-    /// reading too: when not, no mark is needed on them, and nothing
-    /// counts them; a mark of the block they are in still holds them.
+    /// Whether blank lines (`Row::blank`: changed lines that are empty or
+    /// white space alone, and the message's blank lines) need reading too:
+    /// when not, no mark is needed on them, and nothing counts them; a mark
+    /// of the block they are in still holds them.
     pub whitespace: bool,
 }
 
@@ -47,12 +48,12 @@ fn changed(r: &Row) -> bool {
 impl Reading<'_> {
     /// Whether row `r` is a changed line that needs reading.
     fn needs(&self, r: &Row) -> bool {
-        changed(r) && (self.whitespace || !crate::diff::white_space(&r.text))
+        changed(r) && (self.whitespace || !r.blank)
     }
 
-    /// The changed lines that need no reading, by key: white space alone,
-    /// unless they need it. A line folded is white space alone when no
-    /// piece of it needs reading.
+    /// The changed lines that need no reading, by key: the blank ones,
+    /// unless they need it. A line folded needs no reading when no piece of
+    /// it needs reading.
     fn free(&self) -> HashSet<&str> {
         if self.whitespace {
             return HashSet::new();
@@ -576,7 +577,8 @@ mod tests {
         assert_eq!(r.to_mark(why).map(|t| (t.what, t.new.len())), Some(("the message".into(), 2)));
         assert_eq!(r.to_mark(0).map(|t| (t.what, t.new.len())), Some(("the message".into(), 2)));
         assert_eq!(r.progress(), (2, 6));
-        // Space goes on past the empty line, to the trailer; Delete there
+        // Space goes on past the empty line, to the trailer, a line to read
+        // as its bare `D1` is not the link moz-phab writes; Delete there
         // takes back the paragraph's mark.
         let trailer = row(&rows, "   Differential Revision: D1");
         assert_eq!(r.next_unread(why, true), Some(trailer));
@@ -588,6 +590,84 @@ mod tests {
         // Its empty lines need reading when the settings say white space does.
         let r = Reading { rows: &rows, blocks: &none, read: &HashSet::new(), marks: &[], whitespace: true };
         assert_eq!(r.progress(), (0, 8));
+    }
+
+    /// The trailer moz-phab writes.
+    const TRAILER: &str = "Differential Revision: https://phabricator.services.mozilla.com/D123456";
+
+    /// The rows, as `deco` has them, of a patch whose message ends with the
+    /// trailer moz-phab writes, and whose diff adds a line saying the same.
+    fn trailed(deco: &Deco) -> Vec<Row> {
+        let diff = format!("diff --git a/f.txt b/f.txt\n--- a/f.txt\n+++ b/f.txt\n@@ -1 +1 @@\n-a\n+{TRAILER}\n");
+        let message = format!("Bug 1 - a title\n\nWhy it is so.\n\n{TRAILER}");
+        patch_rows(&Patch::new("c".into(), None, None, message, diff), &[], 80, deco)
+    }
+
+    #[cfg(feature = "moz-phab")]
+    #[test]
+    fn the_trailer_moz_phab_writes_needs_no_mark_as_an_empty_line_unless_the_settings_say_so() {
+        let rows = trailed(&Deco::default());
+        let none = Blocks::new();
+        let unread = HashSet::new();
+        let r = Reading { rows: &rows, blocks: &none, read: &unread, marks: &[], whitespace: false };
+        // The title, the line of prose, and the change's two lines, the line
+        // of the diff saying what the trailer says among them.
+        assert_eq!(r.progress(), (0, 4));
+        let (why, trailer, code) = (row(&rows, "   Why it is so."), row(&rows, &format!("   {TRAILER}")), row(&rows, "-a"));
+        let key = |i: usize| rows[i].key.clone().unwrap();
+        // From the line of prose, the next line to read is in the code, past
+        // the empty line and the trailer; from the code back up, the line of
+        // prose.
+        assert_eq!(r.next_unread(why, true), Some(code));
+        assert_eq!(r.next_unread(code, false), Some(why));
+        // Space on the trailer, as on an empty line, marks the whole message,
+        // and asks to mark only the title and the line of prose. On the
+        // message's header, it does the same.
+        let t = r.to_mark(trailer).unwrap();
+        assert_eq!((t.what.as_str(), t.keys.len(), t.new.len()), ("the message", 5, 2));
+        assert!(t.keys.contains(&key(trailer)) && !t.new.contains(&key(trailer)));
+        assert_eq!(r.to_mark(0), Some(t.clone()));
+        // That mark made, Delete on the trailer takes it back, which leaves
+        // the title and the line of prose not read, and not the trailer.
+        let m = Mark { keys: t.keys.iter().cloned().collect(), ..Default::default() };
+        let marks = vec![(3, &m)];
+        let read = t.keys.clone();
+        let r = Reading { rows: &rows, blocks: &none, read: &read, marks: &marks, whitespace: false };
+        let (rev, gone) = r.to_unmark(trailer).unwrap();
+        assert_eq!((rev, gone.len()), (3, 2));
+        assert!(!gone.contains(&key(trailer)));
+        // The message read: the code is left, from the top.
+        assert_eq!(r.progress(), (2, 4));
+        assert_eq!(r.next_unread(0, true), Some(code));
+        // When the settings say white space needs reading, the trailer is a
+        // line to read, as the empty lines are.
+        let r = Reading { rows: &rows, blocks: &none, read: &unread, marks: &[], whitespace: true };
+        assert_eq!(r.progress(), (0, 7));
+        assert_eq!(r.next_unread(why, true), Some(why + 1));
+        assert_eq!(r.next_unread(why + 1, true), Some(trailer));
+        assert_eq!(r.to_mark(trailer).map(|t| (t.what, t.new.len())), Some(("line 5 of the message".into(), 1)));
+        // Reading, the message's header counts the two lines that need
+        // reading, the file's its two, and the trailer is drawn as the empty
+        // lines are, as a line that needs nothing.
+        let rows = trailed(&Deco { read: Some(HashSet::new()), ..Default::default() });
+        assert!(rows.iter().any(|r| r.text == "✉ message   read 0/2 lines"), "{rows:#?}");
+        assert!(rows.iter().any(|r| r.text == "f.txt   read 0/2 lines"), "{rows:#?}");
+        assert_eq!(rows.iter().filter(|r| r.free).map(|r| r.text.trim()).collect::<Vec<_>>(), ["", "", TRAILER]);
+        let rows = trailed(&Deco { read: Some(HashSet::new()), whitespace: true, ..Default::default() });
+        assert!(rows.iter().any(|r| r.text == "✉ message   read 0/5 lines"), "{rows:#?}");
+        assert!(!rows.iter().any(|r| r.free));
+    }
+
+    #[cfg(not(feature = "moz-phab"))]
+    #[test]
+    fn without_moz_phab_the_trailer_is_a_line_to_read() {
+        let rows = trailed(&Deco::default());
+        let r = Reading { rows: &rows, blocks: &Blocks::new(), read: &HashSet::new(), marks: &[], whitespace: false };
+        assert_eq!(r.progress(), (0, 5));
+        let why = row(&rows, "   Why it is so.");
+        assert_eq!(r.next_unread(why, true), Some(row(&rows, &format!("   {TRAILER}"))), "past the empty line, to the trailer");
+        let rows = trailed(&Deco { read: Some(HashSet::new()), ..Default::default() });
+        assert!(rows.iter().any(|r| r.text == "✉ message   read 0/3 lines"), "{rows:#?}");
     }
 
     #[test]

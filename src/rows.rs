@@ -82,9 +82,13 @@ pub struct Row {
     pub new_no: Option<usize>,
     /// A changed line marked read, in the reading mode: drawn dim.
     pub read: bool,
-    /// A changed line that needs no reading, in the reading mode: empty or
-    /// white space alone, as the settings have it. Drawn dim, and counted
-    /// in nothing.
+    /// A changed line or a line of the message that is blank, which needs
+    /// no reading unless the settings say white space does: a line of the
+    /// diff when it is white space alone, a line of the message as
+    /// `progress::blank_lines` says.
+    pub blank: bool,
+    /// A changed line that needs no reading, in the reading mode: a blank
+    /// one, as the settings have it. Drawn dim, and counted in nothing.
     pub free: bool,
     /// A line of a turn of a comment, as markdown reads it: what it says
     /// after the bar's indent, piece by piece, each with what it is.
@@ -554,10 +558,17 @@ pub fn parsed(p: &Patch) -> std::sync::Arc<Vec<crate::diff::FileDiff>> {
         .clone()
 }
 
+/// Whether a line that is blank or not, as `blank` says, needs no reading
+/// as `deco` has it: reading, a blank line needs none unless the settings
+/// say white space does.
+fn free(blank: bool, deco: &Deco) -> bool {
+    blank && deco.read.is_some() && !deco.whitespace
+}
+
 /// Whether line `l` of a diff is a changed line that needs no reading, as
 /// `deco` has it: white space alone.
 fn free_line(l: &crate::diff::Line, deco: &Deco) -> bool {
-    deco.read.is_some() && !deco.whitespace && crate::diff::white_space(&l.text)
+    free(crate::diff::white_space(&l.text), deco)
 }
 
 /// Line `l` of hunk `hunk` of file `fd`, as its row: keyed, but git's `\`
@@ -572,13 +583,15 @@ fn hunk_line(fd: &crate::diff::FileDiff, hunk: &crate::diff::Hunk, l: &crate::di
         _ => Kind::Meta,
     };
     let changed_line = matches!(kind, Kind::Add | Kind::Del);
+    let blank = changed_line && crate::diff::white_space(&l.text);
     Row {
         key: (kind != Kind::Meta).then(|| l.key.clone()),
         path: Some(fd.path.clone()),
         preview: Some(l.text.chars().skip(1).collect::<String>().trim().chars().take(80).collect()),
         hunk: Some(hunk.hid.clone()),
         read: changed_line && deco.read.as_ref().is_some_and(|r| r.contains(&l.key)),
-        free: changed_line && free_line(l, deco),
+        blank,
+        free: free(blank, deco),
         diff_at: Some(l.at),
         new_no: Some(l.new_no.max(1)),
         words,
@@ -634,23 +647,24 @@ pub fn patch_rows(p: &Patch, notes: &[&Note], width: usize, deco: &Deco) -> Vec<
     };
     let keys = message_keys(p);
     // Reading: the message's lines are read as the diff's changed lines
-    // are, its title first; an empty one needs no reading.
-    let msg_free = |text: &str| deco.read.is_some() && !deco.whitespace && text.trim().is_empty();
+    // are, its title first; a blank one needs no reading.
+    let blank = crate::progress::blank_lines(&p.message);
     let mut label = MSG_PATH.to_string();
     if let Some(read) = &deco.read {
-        let to_read: Vec<String> = p.message.split('\n').zip(&keys).filter(|(t, _)| !msg_free(t)).map(|(_, k)| k.clone()).collect();
-        label += &format!("   read {} lines", read_of(&to_read, read));
+        let to_read: Vec<&String> = keys.iter().zip(&blank).filter(|(_, b)| !free(**b, deco)).map(|(k, _)| k).collect();
+        label += &format!("   read {} lines", read_of(to_read, read));
     }
     rows.push(Row {
         path: Some(MSG_PATH.into()),
         ..Row::new(Kind::File, label)
     });
-    for (i, (text, key)) in p.message.split('\n').zip(keys).enumerate() {
+    for (i, ((text, key), blank)) in p.message.split('\n').zip(keys).zip(blank).enumerate() {
         line(
             &mut rows,
             Row {
                 read: deco.read.as_ref().is_some_and(|r| r.contains(&key)),
-                free: msg_free(text),
+                blank,
+                free: free(blank, deco),
                 key: Some(key),
                 path: Some(MSG_PATH.into()),
                 preview: Some(text.trim().chars().take(80).collect()),

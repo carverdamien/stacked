@@ -6508,6 +6508,69 @@ fn lines_of_white_space_alone_need_no_reading_unless_the_settings_say_so() {
     assert!(!all.rows.iter().any(|r| r.free));
 }
 
+#[cfg(feature = "moz-phab")]
+#[test]
+fn the_trailer_moz_phab_writes_needs_no_reading_unless_the_settings_say_so() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("src");
+    std::fs::create_dir(&src).unwrap();
+    git(&src, &["init", "-q", "-b", "main"]);
+    git(&src, &["config", "commit.gpgsign", "false"]);
+    std::fs::write(src.join("f.txt"), "one\n").unwrap();
+    git(&src, &["add", "."]);
+    git(&src, &["commit", "-qm", "base"]);
+    // A line added, and a message that ends with the trailer moz-phab writes.
+    std::fs::write(src.join("f.txt"), "one\ntwo\n").unwrap();
+    git(&src, &["commit", "-qam", "Bug 1 - more\n\nBecause.\n\nDifferential Revision: https://phabricator.services.mozilla.com/D123456"]);
+    let db = tmp.path().join("db.jsonl");
+    stacked(&src, &db, &["import", "s", "HEAD~1"]);
+    let mut app = open(&db).unwrap();
+    // The line added, the title and the line of prose are the lines to
+    // review: the empty lines and the trailer are not.
+    assert!(draw(&mut app).contains("3/3 lines to review"));
+    keys(&mut app, &[KeyCode::Char('2'), KeyCode::Enter]);
+    app.wait_blocks();
+    let screen = draw(&mut app);
+    assert!(screen.contains("reading 0/3") && screen.contains("read 0/2 lines") && screen.contains(" 0/3"), "{screen}");
+    // On the message's header, the margin asks to mark the title and the
+    // line of prose, and no mark on the trailer.
+    keys(&mut app, &[KeyCode::Home]);
+    assert!(app.rows[app.cursor].text.starts_with("✉ message"), "{}", app.rows[app.cursor].text);
+    let screen = draw(&mut app);
+    let margin = |screen: &str, text: &str| screen.lines().find_map(|l| l.split('│').nth(1).filter(|m| m.contains(text)).map(|m| m.chars().take(4).collect::<String>()));
+    assert_eq!(margin(&screen, "Bug 1 - more").as_deref(), Some("○→✓ "), "{screen}");
+    assert_eq!(margin(&screen, "Because.").as_deref(), Some("○→✓ "), "{screen}");
+    assert_eq!(margin(&screen, "Differential Revision:").as_deref(), Some("    "), "{screen}");
+    assert!(app.rows.iter().any(|r| r.free && r.text.contains("Differential Revision:")), "drawn dim");
+    // The title read, Space goes on to the line of prose, then past the
+    // empty line and the trailer to the code, as past an empty line alone.
+    down_to(&mut app, "   Bug 1 - more");
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    assert!(app.status.contains("read: the title, 1 line"), "{}", app.status);
+    assert_eq!(app.rows[app.cursor].text, "   Because.");
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    assert!(app.status.contains("read: line 3 of the message, 1 line"), "{}", app.status);
+    assert_eq!(app.rows[app.cursor].text, "+two");
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    assert!(app.status.contains("nothing left to read below"), "{}", app.status);
+    // All of it read but the trailer: the patch's tick, and nothing left
+    // to review on the top bar.
+    let screen = draw(&mut app);
+    assert!(screen.contains("reading 3/3") && screen.contains("nothing left to review"), "{screen}");
+    let line = screen.lines().find(|l| l.contains("1 Bug 1 - more")).unwrap();
+    assert!(line.contains(" ✓│"), "all read: {line}");
+    // When the settings say white space needs review, the trailer is a line
+    // to read, as the two empty lines are.
+    let mut cfg = stacked::config::Config::default();
+    cfg.view.whitespace_needs_review = true;
+    let mut all = App::with_config(&db, cfg).unwrap();
+    keys(&mut all, &[KeyCode::Char('2'), KeyCode::Enter]);
+    all.wait_blocks();
+    let screen = draw(&mut all);
+    assert!(screen.contains("reading 3/6") && screen.contains("3/6 lines to review"), "{screen}");
+    assert!(!all.rows.iter().any(|r| r.free));
+}
+
 #[test]
 fn the_history_of_the_stack_its_patches_and_comments() {
     let (_tmp, db, _src) = setup();

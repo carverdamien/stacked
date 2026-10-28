@@ -39,8 +39,10 @@ demo`, below).
 
 The `moz-phab` feature adds Phabricator (below): the reviews pulled from
 its revisions, and stacks imported from them, over Conduit with the token
-moz-phab (or arc) keeps, which `curl` calls. Built without it, stacked has
-none of it, but reads a database that holds reviews pulled.
+moz-phab (or arc) keeps, which `curl` calls. With it, the reading mode
+takes the trailer moz-phab writes in a message as an empty line, which
+needs no reading (Reading). Built without it, stacked has none of it, but
+reads a database that holds reviews pulled.
 
 The `app` feature adds StackED, the editor in a window of its own
 (`stacked app`, below). Its window is drawn by eframe (egui), on OpenGL,
@@ -1692,7 +1694,20 @@ message, as Space on its header does; Delete takes back the latest mark
 there. Its empty lines need no reading, as a changed line of white space
 does not. A line of it reworded in a new version is to read again.
 
-A changed line that is empty or white space alone needs no review, unless
+With the `moz-phab` feature (on by default), the trailer moz-phab writes to
+name the patch's revision needs no reading either, as an empty line needs
+none. That trailer is a line of the message's last paragraph, after an
+empty line, that is exactly, once trimmed, `Differential Revision: `, then
+`http://` or `https://`, a host, and a path ending in `/D` and the
+revision's number, as in `Differential Revision:
+https://phabricator.services.mozilla.com/D123456`. A line that only comes
+close is a line to read: one that says more than the link, one with no link
+or a link that ends otherwise, the same line in the title's paragraph or in
+the middle of the message, and a line of the diff that says it. Built
+without the feature, the trailer is a line to read as any other.
+
+A changed line that is empty or white space alone needs no review, nor do
+the message's empty lines and moz-phab's trailer, unless
 `whitespace_needs_review` (in `[view]`) is `true`: Space marks no such line
 as one to read, the cursor going on to the next line not read passes it
 over, no count of lines read or left to review holds it, and it is drawn
@@ -2044,8 +2059,9 @@ settings:
 - `[view]`: `layout` at the start (`unified`, `side-by-side`, `compact`,
   `unified-split`);
   `reading`, to start reading; `whitespace_needs_review`, whether changed
-  lines that are empty or white space alone need review in the reading mode
-  (`false`: they need no mark, and no count holds them); `patches`, the
+  lines that are empty or white space alone, the message's empty lines and
+  moz-phab's trailer need review in the reading mode (`false`: they need no
+  mark, and no count holds them); `patches`, the
   patches pane at the start, `"expanded"`, `"files"` (the files of the
   patch picked listed under it; `"compact"`, as versions before the files
   wrote it, is read as them) or `"hidden"`; `comments`, the comments pane
@@ -2614,7 +2630,11 @@ middle (`paint.rs` tests the cursor so, over each colour, dim or reversed), read
 (the cursor going down to the middle line, then the code coming up under
 it, in each view; Enter commenting there, Delete taking a mark back, and
 a comment's rows keeping the keys of commenting, Space its menu, marking
-nothing read), each file whole (its files read away from the screen,
+nothing read; with moz-phab, the trailer moz-phab writes at the end of a
+message passed over by Space, the margin asking no mark on it, the patch
+ticked and nothing left to review once all but the trailer is read, and
+the trailer counted when the settings say white space needs review), each
+file whole (its files read away from the screen,
 the status saying so; no hunk's header, each line removed in its place,
 the lines between the hunks in none, keyless and dim, the cursor looking
 the same on them as on any line; a file added, deleted, renamed, not text;
@@ -2845,7 +2865,18 @@ at end of file`), a file added, deleted, renamed or not text, and one that
 does not fit its hunks, not shown whole; those in `progress.rs`, that a patch whose file has no newline
 at its end leaves nothing to review once its lines removed and added and
 its message are read (git's `\ No newline at end of file` is not a line
-to read); those in `config.rs`, a file of settings over another, a
+to read), and, with moz-phab, that a patch whose message ends with the
+trailer moz-phab writes leaves nothing to review once all of it but the
+trailer is read, the trailer left to review as the empty lines are when
+the settings say white space needs review, which lines are that trailer
+(its link to any host) and which are not (a line that says more, a link
+that ends otherwise, no link, the line in the title's paragraph or in the
+middle of the message), that a line of the diff saying the same is a line
+to review, and that without moz-phab the trailer is a line to review;
+those in `reading.rs`, Space and Delete on that trailer marking and
+unmarking the message as on an empty line, the next line to read found
+past the trailer, and the trailer drawn as a line that needs nothing, or
+without moz-phab a line to read; those in `config.rs`, a file of settings over another, a
 checkout's own read and written unless git tracks it, the patches
 pane's `compact`, as versions before the files wrote it, read as them,
 and the keys listed by the context they are read in; those in `keys.rs`,

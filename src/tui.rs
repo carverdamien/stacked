@@ -4630,7 +4630,7 @@ impl App {
     }
 
     /// The changed lines of patch `id`: each one's key, and whether it is
-    /// white space alone.
+    /// blank (`progress::changed_lines`).
     fn changed_lines(&mut self, id: &str) -> Arc<Vec<(String, bool)>> {
         if let Some(c) = self.changed.get(id) {
             return c.clone();
