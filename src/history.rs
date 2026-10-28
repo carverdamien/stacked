@@ -328,7 +328,7 @@ pub fn stacks_diff(db: &Db, before: Option<&Stack>, after: Option<&Stack>, code:
 fn put(out: &mut Vec<Diffed>, j: usize, p: &Patch, old: Option<&Patch>, was: Option<usize>, code: bool) {
     let changed = old.is_some_and(|o| o.id != p.id);
     // Its message alone changed: reworded.
-    let reworded = changed && old.is_some_and(|o| o.message != p.message && crate::ops::same_diff(&o.diff, &p.diff));
+    let reworded = changed && old.is_some_and(|o| o.message != p.message && crate::ops::same_effect(&o.diff, &p.diff));
     out.push(Diffed::Patch {
         at: j + 1,
         title: p.title().to_string(),
@@ -509,7 +509,9 @@ mod tests {
     #[test]
     fn a_new_version_moved_down_its_file_its_message_other_is_reworded() {
         let a1 = patch("a", "A", "a1");
-        let moved = a1.diff.replace("@@ -1 +1 @@", "@@ -2 +2 @@");
+        // A line more above it, and a heading after its `@@`, as git
+        // writes one.
+        let moved = a1.diff.replace("@@ -1 +1 @@", "@@ -2 +2 @@ fn g()");
         let a2 = Patch::new("a".into(), None, None, "A, said otherwise".into(), moved);
         let d = db(vec![Record::Patch(a1.clone()), Record::Patch(a2.clone())]);
         let s = |p: &Patch| Stack {

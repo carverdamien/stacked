@@ -223,6 +223,22 @@ impl Index {
             .collect())
     }
 
+    /// What the index holds at `paths`: each file's mode and blob, by its
+    /// path, a path it holds nothing at left out.
+    fn entries(&self, repo: &Path, paths: &[String]) -> Result<HashMap<String, String>> {
+        let mut args = vec!["--literal-pathspecs", "ls-files", "-s", "-z", "--"];
+        args.extend(paths.iter().map(String::as_str));
+        let listed = git_env(repo, &args, None, &self.env())?;
+        Ok(listed
+            .split('\0')
+            .filter_map(|entry| {
+                let (meta, path) = entry.split_once('\t')?;
+                let mut meta = meta.split(' ');
+                Some((path.to_string(), format!("{} {}", meta.next()?, meta.next()?)))
+            })
+            .collect())
+    }
+
     /// What the index holds at `paths`, as text: None where it holds
     /// nothing, or something not text.
     fn texts(&self, repo: &Path, paths: &[String]) -> Result<Vec<Option<String>>> {
@@ -367,6 +383,38 @@ impl Pad {
     pub fn text(&self, path: &str) -> Result<Option<String>> {
         Ok(self.ix.texts(&self.repo, &[path.to_string()])?.pop().flatten())
     }
+}
+
+/// Where diffs `planned`, applied in turn on `base` in `repo`, first do
+/// otherwise than `drafts`, the diffs they stand for, one for one, applied
+/// in turn in an index of their own: the first planned diff that does not
+/// apply, or after which a file it or its draft touches is not the same in
+/// both (its mode, its blob). None when each does what its draft does. A
+/// diff of another text than its draft's but of the same effect does so
+/// unless git applies one of its hunks at another copy of the hunk's lines
+/// than the draft's: git puts a hunk where its lines are nearest to the
+/// line its header names. Both are applied as the check applies a stack,
+/// the repository only read. The drafts not applying is an error: nothing
+/// can then be told.
+pub fn astray(repo: &Path, base: &str, planned: &[&str], drafts: &[&str]) -> Result<Option<usize>> {
+    let all: Vec<&str> = planned.iter().chain(drafts).copied().collect();
+    let (mine, theirs) = (Pad::new(repo, base, &all, &[])?, Pad::new(repo, base, &all, &[])?);
+    for (k, (p, d)) in planned.iter().zip(drafts).enumerate() {
+        if !theirs.apply(d) {
+            return err(format!("draft {} does not apply on the ones before it", k + 1));
+        }
+        if !mine.apply(p) {
+            return Ok(Some(k));
+        }
+        // The same diff on the same files does the same.
+        if p != d {
+            let paths: Vec<String> = touched_by(repo, &[p, d]).into_iter().collect();
+            if mine.ix.entries(repo, &paths)? != theirs.ix.entries(repo, &paths)? {
+                return Ok(Some(k));
+            }
+        }
+    }
+    Ok(None)
 }
 
 /// The file the last of `patches` changes, as it is before it (at
@@ -603,6 +651,30 @@ mod tests {
         // What no longer applies on it is not taken, nothing of it.
         assert!(!pad.would_apply(two) && !pad.apply(&p.diff));
         assert_eq!(pad.text("a.txt").unwrap().as_deref(), Some("one\n2\n"));
+    }
+
+    #[test]
+    fn a_diff_is_astray_where_git_applies_it_at_another_copy_of_its_lines_than_its_draft() {
+        // The same three lines twice, at lines 1 and 16 of f.txt.
+        let tmp = tempfile::tempdir().unwrap();
+        let r = tmp.path().canonicalize().unwrap();
+        git_ok(&r, &["init", "-q", "-b", "main"]);
+        git_ok(&r, &["config", "commit.gpgsign", "false"]);
+        let filler: String = (1..=12).map(|n| format!("filler {n}\n")).collect();
+        std::fs::write(r.join("f.txt"), format!("x1\nx2\nend\n{filler}x1\nx2\nend\n")).unwrap();
+        git_ok(&r, &["add", "."]);
+        git_ok(&r, &["commit", "-qm", "base"]);
+        let base = git_ok(&r, &["rev-parse", "HEAD"]).trim().to_string();
+        // `NEW` added in a copy, its hunk said to start at line `at`.
+        let at = |n: usize| format!("diff --git a/f.txt b/f.txt\n--- a/f.txt\n+++ b/f.txt\n@@ -{n},3 +{n},4 @@\n x1\n x2\n+NEW\n end\n");
+        let other = "diff --git a/g.txt b/g.txt\nnew file mode 100644\n--- /dev/null\n+++ b/g.txt\n@@ -0,0 +1 @@\n+g\n";
+        // Said nearer the second copy than the first, as the draft says.
+        assert_eq!(astray(&r, &base, &[other, &at(12)], &[other, &at(16)]).unwrap(), None);
+        // Said nearer the first: git applies it there.
+        assert_eq!(astray(&r, &base, &[other, &at(6)], &[other, &at(16)]).unwrap(), Some(1));
+        // One that does not apply; drafts that do not, nothing told.
+        assert_eq!(astray(&r, &base, &[&at(16).replace(" end", " END")], &[&at(16)]).unwrap(), Some(0));
+        assert!(astray(&r, &base, &[&at(16)], &[&at(16).replace(" end", " END")]).is_err());
     }
 
     #[test]

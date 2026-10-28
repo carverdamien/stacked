@@ -67,7 +67,7 @@ use crate::db::{
 use crate::git;
 use crate::held::Held;
 use crate::mbox::{format_mbox, parse_mbox};
-use crate::ops::{base_of, plan_drafts};
+use crate::ops::{base_of, plan_checked};
 use crate::thread::{Role, append_turn, fenced, last_reply_way, last_role, thread_turns};
 use crate::view::{MSG_PATH, find_line, mode, note_lines, title_key};
 
@@ -2811,7 +2811,9 @@ fn land_patch(db: &mut Db, run: &Run, i: &Info, result: &str, replies: &Map<Stri
 
 /// The patches the commits after `parent` in `wt` are: the one keeping its
 /// commit, its diff or its title, else the first, a new version of
-/// `old_id`; the rest new.
+/// `old_id`, or `old_id` itself when nothing but where its lines are has
+/// changed and its diff as stored leaves its files as that commit does
+/// (`plan_checked`); the rest new.
 fn pieces_since(db: &Db, wt: &Path, parent: &str, old_id: &str, i: &Info) -> Result<Vec<Patch>> {
     let mail = git::git(
         wt,
@@ -2820,7 +2822,7 @@ fn pieces_since(db: &Db, wt: &Path, parent: &str, old_id: &str, i: &Info) -> Res
     let drafts = parse_mbox(&mail)?;
     let by_commit: HashMap<String, String> = i.commits.iter().cloned().collect();
     let old = db.patch(old_id).clone();
-    let mut pieces = plan_drafts(std::slice::from_ref(&old), drafts, &by_commit);
+    let mut pieces = plan_checked(std::slice::from_ref(&old), drafts, &by_commit, Some((wt, parent)));
     // Neither its commit, its diff nor its title kept: the first commit is
     // the patch's new version all the same, the ask being on that patch.
     if !pieces.iter().any(|p| p.change == old.change)
@@ -2870,7 +2872,7 @@ fn land_stack(db: &mut Db, run: &Run, i: &Info, result: &str, replies: &Map<Stri
     let drafts = parse_mbox(&mail)?;
     let olds: Vec<Patch> = start.patches.iter().map(|id| db.patch(id).clone()).collect();
     let by_commit: HashMap<String, String> = i.commits.iter().cloned().collect();
-    let planned = plan_drafts(&olds, drafts, &by_commit);
+    let planned = plan_checked(&olds, drafts, &by_commit, Some((&wt, &base)));
     let ids: Vec<String> = planned.iter().map(|p| p.id.clone()).collect();
     let replies = held_replies(db, i, replies);
     // Nothing changed of the stack it went on from: a guess's, the stack the

@@ -1304,6 +1304,45 @@ and `Move it back to patch 2` are in its menu. Comments on lines follow a
 split or merged patch to the piece that has their line. A rebase says onto
 what (the agent adds `"base"` to its answer): the stack's base moves there.
 
+When a change lands, stacked reads the agent's commits back as mail (`git
+format-patch`) and matches each commit to the patch it comes from: by the
+commit stacked made of that patch, if the agent left that commit as it
+was; else by the effect of its diff and its title, then by that effect
+alone, then by its title alone. A commit matched so is a new version of
+its patch, unless it has the patch's message and author and a diff with
+the same effect: then it is the patch itself, unchanged, its diff kept as
+stored, and no new version is made, whatever date the commit has. Two
+diffs have the same effect when they change the same files, in the same
+order, with the same paths and modes, in the same hunks, each hunk
+holding the same lines, kept, added and removed. What git writes
+differently once lines have moved does not count: the line numbers in a
+hunk's header, the heading git writes after its second `@@`, the blobs an
+`index` line names, and the white space a header's line ends with. So
+when the agent rebases the stack to reword patch 2, patch 3 keeps its
+version even when a later version of patch 1 moved the lines that patch 3
+changes, and git now writes patch 3's hunks with other numbers: only
+patch 2 is a new version (`~`). A commit with a line added, removed or
+kept that its patch does not have, a file more or fewer, a mode changed,
+or its hunks split or merged otherwise, is a new version.
+
+A diff kept as stored is checked before the change lands. git puts a
+hunk where the hunk's lines are nearest to the line its header names, so
+a diff stored before its lines moved could go to another copy of the
+same lines in the file, and a hunk the agent moved to lines like its own
+would go back to where it was. So stacked applies the patches it would
+land, the diffs kept as stored and the new versions, in turn on the
+commit that the agent's commits start from, in an index of the check's
+own, nothing written in the repository; beside it, in another such index,
+it applies the agent's commits as it read them back. After each patch
+whose diff is kept as stored, the files that the patch touches must be
+the same in both. A patch whose files are not the same is a new version
+after all, its diff the agent's commit's, and the check goes on up the
+stack from there. When the check cannot be made, every patch that would
+keep its diff as stored is a new version instead. `stacked import NAME
+RANGE --replace` matches the commits it imports to the stack's patches in
+the same way, and checks the patches it keeps against those commits on
+the stack's base.
+
 Where it stands shows on the comment's first line, or under it when that is
 too long: ready (and on what), with the agent (and the last lines of its
 stream under the comment's turns, over its references: what it says and
@@ -2431,7 +2470,10 @@ difference a panic: run the suite so too after a change to the database,
 or to what reads it, as `STACKED_TEST_CHECKPOINTS=1 cargo test`.
 
 `tests/cli.rs` builds a repo and drives the binary. It covers a round trip
-through `git am`, the tree, recovery from broken lines, comments on the
+through `git am`, a stack imported again (a patch whose lines a new
+version of a patch below moved keeping its own version, and its diff as
+stored; a patch whose hunk moved to another copy of its lines a new
+version), the tree, recovery from broken lines, comments on the
 stack, a patch and a line, every way of asking about them (a script stands
 in for the agent and rewrites commits with git, with a plain `git rebase
 -i` that takes the plan written to the todo file the prompt names, and
@@ -2458,7 +2500,14 @@ at (`--effort`, else the one the editor picked last, kept in the test's
 home, else `high`; the settings' own taken out; a level claude does not
 take refused, nothing sent; a batch at the effort its comments were
 batched at, and work sent back at the effort it was asked at unless
-`--effort` says otherwise), a rebase, the stack not
+`--effort` says otherwise), a rebase, a patch whose lines a new version of
+a patch below moved keeping its version and its diff as stored when the
+agent's rebase rewords another patch (the stack diff marking only the
+reworded one), the agent's change of such a patch, its commit left as it
+was or made again, landing with nothing to accept, a patch with two
+copies of its lines in its file a new version when its diff as stored
+would go to the other copy (lines added between the two by a patch
+below) and when the agent moved its hunk to the other copy, the stack not
 edited by hand while the agent changes it, failures kept to look at, comments staying on their line
 across versions, a patch edited by hand (as mail and as code, at a line,
 refused and taken up again), trimming, the settings (in ~/.stacked, or the
@@ -2744,13 +2793,26 @@ done as you stopped it; what is said of landed work left to review is tested
 in `held.rs`. The
 tests in `check.rs` show
 the check's index holds only what the patches touch, that it writes nothing
-to the repository, and how a patch's files are read before and after it;
+to the repository, how a patch's files are read before and after it, and
+where a diff of the same effect as its draft does otherwise (git applying
+it at another copy of its lines, it not applying), the drafts not
+applying an error;
 those in `ops.rs`, that two code edits saved at once, on two threads, each
 make their diff in a folder of their own and leave nothing in the
-temporary directory; those in `history.rs`, what the history leaves out
-(comments, runs, a move to where the stack is, a branch put straight back)
-and how a stack diff follows each patch by its change, a move told from a
-shift. Those in
+temporary directory, which diffs have the same effect (a hunk moved down
+its file, under another heading or none, other blobs, a rename's
+similarity, a header's line ending in a tab or not, an empty line in a
+hunk for an empty context line) and which do not (another line added,
+removed or kept, a file more or fewer, the files in another order, a mode
+changed, a hunk split in two), and that a draft with its patch's message,
+author and effect is that patch, its diff as stored, whatever its date,
+while one with another message, author or effect is a new version, as is
+one that nothing can be checked on; those
+in `history.rs`, what the history leaves out (comments, runs, a move to
+where the stack is, a branch put straight back), how a stack diff follows
+each patch by its change, a move told from a shift, and a new version
+reworded when its message alone changed, its hunk moved under another
+heading. Those in
 `setup.rs` show the setup screen's one list, a read-only box and a change
 box a row, what stacked always gives marked in its columns, Space ticking
 the box of the cursor's column, ←→ and Tab moving between them, a click

@@ -364,6 +364,49 @@ fn reimport_keeps_changes() {
 }
 
 #[test]
+fn reimport_keeps_a_patch_whose_lines_a_change_below_moved() {
+    let e = env();
+    e.ok(&["import", "s", "base"]);
+    let ids = e.column(2);
+    let stored = e.ok(&["show", "s", "3"]);
+    // Three lines added on top of a.txt by patch 1, in git, the patches
+    // above it made again on it: git writes patch 3's hunk three lines
+    // lower, its `index` line naming other blobs.
+    let one = git(&e.src, &["rev-parse", "main~2"]);
+    git(&e.src, &["checkout", "-q", "--detach", one.trim()]);
+    std::fs::write(e.src.join("a.txt"), format!("zero\nzero\nzero\n{}", TEN.replace("two", "2"))).unwrap();
+    git(&e.src, &["commit", "-q", "--amend", "-a", "--no-edit"]);
+    git(&e.src, &["cherry-pick", "main~1", "main"]);
+    let moved = git(&e.src, &["format-patch", "-1", "--stdout", "HEAD"]);
+    assert!(stored.contains("\n@@ -6,5 +6,5 @@") && moved.contains("\n@@ -9,5 +9,5 @@"), "{stored}{moved}");
+    e.ok(&["import", "--replace", "s", "base"]);
+    // Imported again, only patch 1 is a new version: patch 3 is the patch
+    // it was, its diff as stored.
+    let now = e.column(2);
+    assert_ne!(now[0], ids[0]);
+    assert_eq!(now[1..], ids[1..]);
+    assert_eq!(e.ok(&["show", "s", "3"]), stored);
+}
+
+#[test]
+fn reimport_makes_a_new_version_of_a_patch_whose_hunk_moved_to_lines_like_its_own() {
+    let e = env();
+    two_copies_stack(&e, 1);
+    let ids = e.column(2);
+    // In git, patch 3's line moved from the first copy to the second: its
+    // diff has the same lines, and says another place.
+    git(&e.src, &["checkout", "-q", "copies"]);
+    let moved = two_copies(Some(2)).replace("    filler 2\n", "    FILLER 2\n");
+    std::fs::write(e.src.join("t.txt"), &moved).unwrap();
+    git(&e.src, &["commit", "-q", "--amend", "-a", "--no-edit"]);
+    e.ok(&["import", "--replace", "s", "tbase"]);
+    let now = e.column(2);
+    assert_eq!(now[..2], ids[..2]);
+    assert_ne!(now[2], ids[2]);
+    assert_eq!(e.ok(&["show", "s", "3", "--path", "t.txt"]), moved);
+}
+
+#[test]
 fn a_broken_line_is_passed_over_never_cut() {
     let (tmp, repo, base) = tiny();
     let repo = repo.to_str().unwrap();
@@ -2236,6 +2279,215 @@ fn the_agent_rebases_reviews_and_tests() {
     assert!(!fine && err.contains("1 of them failed"), "{err}");
     assert!(out.contains("ask failed: the agent failed (7): oops"), "{out}");
     assert!(e.ok(&["comments", "s", "--show", "to-send"]).contains(&id));
+}
+
+/// Stack s on `tbase`, a commit adding t.txt (thirty lines, none starting
+/// as git's headings do, with a letter): patch 1 adds `top` under line 2,
+/// patch 2 adds c.txt, patch 3 changes line 25. Then patch 1's new version
+/// adds twelve lines under `top`, and patch 3 keeps the diff it was stored
+/// with, as a patch above an edited one does: git applies it twelve lines
+/// down, where it would write its hunk with other numbers, under another
+/// heading, and with other blobs on its `index` line. What `show s 3` says
+/// of it, as stored.
+fn lines_moved_below_patch_3(e: &Env) -> String {
+    let t: String = (1..=30).map(|n| format!("    line {n}\n")).collect();
+    git(&e.src, &["checkout", "-q", "-b", "moved", "base"]);
+    std::fs::write(e.src.join("t.txt"), &t).unwrap();
+    git(&e.src, &["add", "t.txt"]);
+    git(&e.src, &["commit", "-qm", "t"]);
+    git(&e.src, &["tag", "tbase"]);
+    let top = t.replace("    line 2\n", "    line 2\ntop\n");
+    std::fs::write(e.src.join("t.txt"), &top).unwrap();
+    git(&e.src, &["commit", "-qam", "Bug 11 - top"]);
+    std::fs::write(e.src.join("c.txt"), "c\n").unwrap();
+    git(&e.src, &["add", "c.txt"]);
+    git(&e.src, &["commit", "-qm", "Bug 12 - add c"]);
+    std::fs::write(e.src.join("t.txt"), top.replace("    line 25\n", "    LINE 25\n")).unwrap();
+    git(&e.src, &["commit", "-qam", "Bug 13 - line 25"]);
+    e.ok(&["import", "s", "tbase"]);
+    // Patch 1's new version, as git writes it.
+    git(&e.src, &["checkout", "-q", "--detach", "tbase"]);
+    let more: String = (1..=12).map(|n| format!("more {n}\n")).collect();
+    std::fs::write(e.src.join("t.txt"), t.replace("    line 2\n", &format!("    line 2\ntop\n{more}"))).unwrap();
+    git(&e.src, &["commit", "-qam", "Bug 11 - top"]);
+    let mail = git(&e.src, &["format-patch", "-1", "--stdout", "HEAD"]);
+    git(&e.src, &["checkout", "-q", "main"]);
+    let draft = parse_mbox(&mail).unwrap().remove(0);
+    Db::edit(&e.db, |db| ops::replace(db, "s", 0, draft, "edit")).unwrap();
+    let stored = e.ok(&["show", "s", "3"]);
+    assert!(stored.contains("@@ -23,7 +23,7 @@ top\n"), "{stored}");
+    stored
+}
+
+#[test]
+fn a_patch_the_agent_s_rebase_only_moved_keeps_its_version() {
+    let e = env();
+    let stored = lines_moved_below_patch_3(&e);
+    let before = e.column(2);
+    // Patch 2 reworded, every commit made again on the way, as a rebase of
+    // the whole stack makes them: patch 3's diff comes back as git writes
+    // it now, `@@ -35,7 +35,7 @@ more 12`.
+    let claude = fake_claude(
+        &e,
+        "claude-reword.sh",
+        r#"set -e
+todo=$(printf '%s\n' "$2" | sed -n 's/^The rebase todo file: //p')
+a=$(git rev-parse HEAD~2) b=$(git rev-parse HEAD~1) c=$(git rev-parse HEAD)
+printf 'pick %s\nedit %s\npick %s\n' $a $b $c > "$todo"
+git -c user.name=C -c user.email=c@x rebase -q -i --force-rebase HEAD~3 >&2
+git -c user.name=C -c user.email=c@x commit -q --amend -m "Bug 12 - add c, said otherwise"
+git -c user.name=C -c user.email=c@x rebase --continue >&2
+git format-patch -1 --stdout HEAD | grep -q '^@@ -35,7 +35,7 @@ more 12$'"#,
+        r#"{"replies": {"c1": "Reworded patch 2."}}"#,
+    );
+    let id = comment(&e, &["Reword", "patch", "2."]);
+    let (fine, out, err) = send(&e, &claude, &[&id], &[]);
+    assert!(fine, "{out}{err}");
+    assert!(e.ok(&["runs"]).contains("reviewed: its change accepted; 1 reply accepted"));
+    // Only patch 2 is a new version: patch 3 is the patch it was, its diff
+    // as stored.
+    let after = e.column(2);
+    assert_eq!([after[0] == before[0], after[1] == before[1], after[2] == before[2]], [true, false, true], "{before:?} {after:?}");
+    assert_eq!(e.column(3)[1], "Bug 12 - add c, said otherwise");
+    assert_eq!(e.ok(&["versions", "s", "3"]).lines().count(), 1);
+    assert_eq!(e.ok(&["show", "s", "3"]), stored);
+    // The stack diff of the change marks patch 2 alone, reworded.
+    let db = Db::load(&e.db).unwrap();
+    let diff = stacked::history::what_changed(&db, db.head("s").unwrap().0);
+    assert_eq!(stacked::history::summary(&diff), "~1");
+    let changed: Vec<(usize, bool)> = diff
+        .iter()
+        .filter_map(|d| match d {
+            stacked::history::Diffed::Patch { at, changed: true, reworded, .. } => Some((*at, *reworded)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(changed, [(2, true)]);
+}
+
+#[test]
+fn an_agent_s_change_of_a_patch_that_only_moves_its_lines_changes_nothing() {
+    let e = env();
+    let stored = lines_moved_below_patch_3(&e);
+    let before = e.column(2);
+    // Patch 3's commit left as it was, then made again at another time:
+    // either way, its diff comes back as git writes it now, and the change
+    // holds nothing that accepting it would change.
+    for (name, body) in [
+        ("claude-leave.sh", ""),
+        ("claude-amend.sh", "git -c user.name=C -c user.email=c@x commit -q --amend --no-edit --date=now"),
+    ] {
+        let claude = fake_claude(&e, name, body, r#"{"replies": {"c1": "Nothing to change."}}"#);
+        let id = comment(&e, &["--patch", "3", "Fine?"]);
+        let (fine, out, err) = send(&e, &claude, &[&id], &[]);
+        assert!(fine, "{name}: {out}{err}");
+        let runs = e.ok(&["runs"]);
+        assert!(runs.lines().last().is_some_and(|l| l.ends_with("\treviewed: 1 reply accepted")), "{name}: {runs}");
+        assert_eq!(e.column(2), before, "{name}");
+        assert_eq!(e.ok(&["versions", "s", "3"]).lines().count(), 1, "{name}");
+        assert_eq!(e.ok(&["show", "s", "3"]), stored, "{name}");
+    }
+}
+
+/// t.txt with the same six lines twice, eight lines apart: `head`, the
+/// first copy, eight lines of filler, the second copy, three more. With
+/// `new_in`, `NEW` is added in that copy (1 or 2), after its `c`.
+fn two_copies(new_in: Option<usize>) -> String {
+    let copy = |n: usize| {
+        let new = if new_in == Some(n) { "    NEW\n" } else { "" };
+        format!("    a\n    b\n    c\n{new}    d\n    e\n    f\n")
+    };
+    let filler: String = (1..=8).map(|n| format!("    filler {n}\n")).collect();
+    format!("    head\n{}{filler}{}    tail 1\n    tail 2\n    tail 3\n", copy(1), copy(2))
+}
+
+/// Stack s on `tbase`, a commit adding `two_copies(None)` as t.txt: patch
+/// 1 changes its second line of filler, patch 2 adds c.txt, and patch 3
+/// adds `NEW` in copy `new_in`. The checkout is left on main, the commits
+/// on branch `copies`.
+fn two_copies_stack(e: &Env, new_in: usize) {
+    let t = two_copies(None);
+    git(&e.src, &["checkout", "-q", "-b", "copies", "base"]);
+    std::fs::write(e.src.join("t.txt"), &t).unwrap();
+    git(&e.src, &["add", "t.txt"]);
+    git(&e.src, &["commit", "-qm", "t"]);
+    git(&e.src, &["tag", "tbase"]);
+    let filler = |t: String| t.replace("    filler 2\n", "    FILLER 2\n");
+    std::fs::write(e.src.join("t.txt"), filler(t)).unwrap();
+    git(&e.src, &["commit", "-qam", "Bug 21 - filler two"]);
+    std::fs::write(e.src.join("c.txt"), "c\n").unwrap();
+    git(&e.src, &["add", "c.txt"]);
+    git(&e.src, &["commit", "-qm", "Bug 22 - add c"]);
+    std::fs::write(e.src.join("t.txt"), filler(two_copies(Some(new_in)))).unwrap();
+    git(&e.src, &["commit", "-qam", "Bug 23 - new"]);
+    e.ok(&["import", "s", "tbase"]);
+    git(&e.src, &["checkout", "-q", "main"]);
+}
+
+#[test]
+fn a_kept_diff_that_git_would_apply_at_another_copy_of_its_lines_is_a_new_version() {
+    let e = env();
+    two_copies_stack(&e, 2);
+    let before = e.column(2);
+    // Patch 1 made again with thirty lines more between the two copies,
+    // the patches above rebased on it: git takes patch 3's line into the
+    // second copy, now thirty lines lower. Patch 3's diff is of the same
+    // effect, but as stored it says the second copy's old place, nearer
+    // the first copy now, where git would apply it.
+    let more: String = (1..=30).map(|n| format!("    more {n}\n")).collect();
+    let longer = |t: String| t.replace("    filler 2\n", "    FILLER 2\n").replace("    filler 4\n", &format!("    filler 4\n{more}"));
+    let one = e.root.join("one.txt");
+    std::fs::write(&one, longer(two_copies(None))).unwrap();
+    let claude = fake_claude(
+        &e,
+        "claude-longer.sh",
+        &format!(
+            r#"set -e
+todo=$(printf '%s\n' "$2" | sed -n 's/^The rebase todo file: //p')
+a=$(git rev-parse HEAD~2) b=$(git rev-parse HEAD~1) c=$(git rev-parse HEAD)
+printf 'edit %s\npick %s\npick %s\n' $a $b $c > "$todo"
+git -c user.name=C -c user.email=c@x rebase -q -i HEAD~3 >&2
+cp {} t.txt
+git -c user.name=C -c user.email=c@x commit -q --amend -a --no-edit
+git -c user.name=C -c user.email=c@x rebase --continue >&2"#,
+            one.display()
+        ),
+        r#"{"replies": {"c1": "Patch 1 is longer."}}"#,
+    );
+    let id = comment(&e, &["Make", "patch", "1", "longer."]);
+    let (fine, out, err) = send(&e, &claude, &[&id], &[]);
+    assert!(fine, "{out}{err}");
+    // Patch 1 and patch 3 are new versions, patch 2 is as it was: the stack
+    // leaves t.txt as the agent left it, the line in the second copy.
+    let after = e.column(2);
+    assert_eq!([after[0] == before[0], after[1] == before[1], after[2] == before[2]], [false, true, false], "{before:?} {after:?}");
+    assert_eq!(e.ok(&["versions", "s", "3"]).lines().count(), 2);
+    assert_eq!(e.ok(&["show", "s", "3", "--path", "t.txt"]), longer(two_copies(Some(2))));
+}
+
+#[test]
+fn a_hunk_the_agent_moved_to_lines_like_its_own_is_a_new_version() {
+    let e = env();
+    two_copies_stack(&e, 1);
+    let before = e.column(2);
+    // Patch 3's line moved from the first copy to the second: the same
+    // lines around it, kept and added, in another place.
+    let moved = e.root.join("moved.txt");
+    std::fs::write(&moved, two_copies(Some(2)).replace("    filler 2\n", "    FILLER 2\n")).unwrap();
+    let claude = fake_claude(
+        &e,
+        "claude-move.sh",
+        &format!("cp {} t.txt && git -c user.name=C -c user.email=c@x commit -q --amend -a --no-edit", moved.display()),
+        r#"{"replies": {"c1": "Moved to the second copy."}}"#,
+    );
+    let id = comment(&e, &["--patch", "3", "In", "the", "second", "copy."]);
+    let (fine, out, err) = send(&e, &claude, &[&id], &[]);
+    assert!(fine, "{out}{err}");
+    assert!(e.ok(&["runs"]).contains("reviewed: its change accepted; 1 reply accepted"));
+    let after = e.column(2);
+    assert_eq!(after[..2], before[..2]);
+    assert_ne!(after[2], before[2]);
+    assert_eq!(e.ok(&["show", "s", "3", "--path", "t.txt"]), std::fs::read_to_string(&moved).unwrap());
 }
 
 #[test]

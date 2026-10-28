@@ -29,12 +29,16 @@ pub fn revise(old: &Patch, d: Draft) -> Patch {
 }
 
 /// The patches `drafts` are, given the ones they replace: a draft from a
-/// commit in `by_commit` is that patch unless it changed; else one with the
-/// diff of a patch it replaces is a new version of it, its message alone
-/// changed if any (of several with that diff, the one with its title);
-/// else one with its title; else it is new. A diff of nothing is no
-/// patch's own. Nothing is stored.
-pub fn plan_drafts(olds: &[Patch], drafts: Vec<Draft>, by_commit: &HashMap<String, String>) -> Vec<Patch> {
+/// commit in `by_commit` replaces that patch; else one with the effect of
+/// a patch's diff (`same_effect`) replaces it, its message alone changed if
+/// any (of several with that effect, the one with its title); else one
+/// with its title; else it is new. A draft with the message, the author and
+/// the effect of the patch it replaces is that patch, unchanged, its diff
+/// as stored: a rebase that only moved the patch's lines makes no new
+/// version of it. Any other draft is a new version of the patch it
+/// replaces. A diff of nothing is no patch's own. Nothing is stored, and
+/// nothing is checked: `plan_checked` checks the patches kept so.
+fn plan_drafts(olds: &[Patch], drafts: Vec<Draft>, by_commit: &HashMap<String, String>) -> Vec<Patch> {
     let mut left: Vec<&Patch> = olds.iter().collect();
     let mut out = Vec::new();
     for d in drafts {
@@ -44,7 +48,7 @@ pub fn plan_drafts(olds: &[Patch], drafts: Vec<Draft>, by_commit: &HashMap<Strin
             .and_then(|c| by_commit.get(c))
             .and_then(|id| left.iter().position(|o| &o.id == id));
         // Its code as it was, whatever its commit: reworded, or rebased.
-        let code = |o: &Patch| !d.diff.trim().is_empty() && same_diff(&o.diff, &d.diff);
+        let code = |o: &Patch| !d.diff.trim().is_empty() && same_effect(&o.diff, &d.diff);
         let at = from_commit
             .or_else(|| left.iter().position(|o| code(o) && o.title() == d.title()))
             .or_else(|| left.iter().position(|o| code(o)))
@@ -56,7 +60,7 @@ pub fn plan_drafts(olds: &[Patch], drafts: Vec<Draft>, by_commit: &HashMap<Strin
                 if d.author.is_none() {
                     d.author = old.author.clone();
                 }
-                revise(old, d)
+                if unchanged(old, &d) { old.clone() } else { revise(old, d) }
             }
             None => new_patch(d),
         });
@@ -64,50 +68,120 @@ pub fn plan_drafts(olds: &[Patch], drafts: Vec<Draft>, by_commit: &HashMap<Strin
     out
 }
 
-/// Whether diffs `a` and `b` make the same change, whatever blobs their
-/// `index` lines name and wherever their hunks start: a commit reworded,
-/// rebased as it was, or moved down its files by a change below it.
-pub fn same_diff(a: &str, b: &str) -> bool {
-    fn change(d: &str) -> impl Iterator<Item = std::borrow::Cow<'_, str>> {
-        d.lines().filter(|l| !l.starts_with("index ")).map(unplaced)
-    }
-    change(a).eq(change(b))
+/// Whether draft `d` is patch `old` as it was: the same message, the same
+/// author, and a diff of the same effect, however git writes it now and
+/// whatever date the draft has (`git am` gives a patch with none the time
+/// it ran, and a rebase may give a commit a new one).
+fn unchanged(old: &Patch, d: &Draft) -> bool {
+    d.message == old.message && d.author == old.author && same_effect(&old.diff, &d.diff)
 }
 
-/// Line `l` of a diff, a hunk's header without where the hunk starts:
-/// `@@ -336,6 +336,43 @@ f()` as `@@ -,6 +,43 @@ f()`.
-fn unplaced(l: &str) -> std::borrow::Cow<'_, str> {
-    let Some((ranges, rest)) = l.strip_prefix("@@ ").and_then(|r| r.split_once(" @@")) else {
-        return std::borrow::Cow::Borrowed(l);
+/// Whether diffs `a` and `b` have the same effect, whatever else their
+/// text says: the same files in the same order, with the same paths and
+/// modes, and the same hunks, each with the same lines (kept, added,
+/// removed). Where a hunk starts, the heading git writes after its second
+/// `@@`, the blobs an `index` line names, the similarity of a rename and
+/// the white space a header's line ends with do not count. So a commit
+/// reworded, rebased as it was, or moved down its files by a change below
+/// it, has the effect it had; one whose hunks git splits or merges
+/// otherwise has another.
+pub fn same_effect(a: &str, b: &str) -> bool {
+    effect(a).eq(effect(b))
+}
+
+/// The lines of diff `d` that make its effect, as `same_effect` compares
+/// them: a file's header without its `index` line and its similarity, each
+/// line of it without the white space it ends with (git ends `--- a/x y`
+/// with a tab, as the name holds a space); a hunk's header as `@@` alone,
+/// numbers and heading left out; a hunk's lines as they are, an empty one
+/// the empty context line that git applies it as.
+fn effect(d: &str) -> impl Iterator<Item = &str> {
+    let mut in_hunk = false;
+    d.split_terminator('\n').filter_map(move |l| {
+        if l.starts_with("diff --git ") {
+            in_hunk = false;
+        } else if l.starts_with("@@") {
+            in_hunk = true;
+            return Some("@@");
+        } else if in_hunk {
+            return Some(if l.is_empty() { " " } else { l });
+        }
+        let l = l.trim_end();
+        let derived = ["index ", "similarity index ", "dissimilarity index "].iter().any(|p| l.starts_with(p));
+        (!derived).then_some(l)
+    })
+}
+
+/// As `plan_drafts`, each patch it keeps with its diff as stored checked
+/// on `on`, a repository and the commit the drafts apply to: the patches
+/// applied in turn in the check's own index (`check::astray`), a kept patch
+/// must leave its files as its draft does, and so as the commit the draft
+/// was read from has them. One that does not is its draft's new version
+/// instead: its diff, written before its lines moved, applied at another
+/// copy of them, or a hunk moved to lines like its own, as git puts a hunk
+/// where its lines are nearest to where its header says. Then the check
+/// goes on up the stack. Where nothing can be checked, every patch kept so
+/// is its draft's new version.
+pub fn plan_checked(
+    olds: &[Patch],
+    drafts: Vec<Draft>,
+    by_commit: &HashMap<String, String>,
+    on: Option<(&std::path::Path, &str)>,
+) -> Vec<Patch> {
+    let theirs = drafts.clone();
+    let mut planned = plan_drafts(olds, drafts, by_commit);
+    // Kept, a patch has its diff as stored, not its draft's.
+    let kept = |planned: &[Patch], k: usize| planned[k].diff != theirs[k].diff;
+    let taken = |old: &Patch, k: usize| {
+        let mut d = theirs[k].clone();
+        if d.author.is_none() {
+            d.author = old.author.clone();
+        }
+        revise(old, d)
     };
-    let ranges: Vec<String> = ranges
-        .split(' ')
-        .map(|r| {
-            let (side, at) = r.split_at(r.len().min(1));
-            at.split_once(',').map_or(side.to_string(), |(_, n)| format!("{side},{n}"))
-        })
-        .collect();
-    std::borrow::Cow::Owned(format!("@@ {} @@{rest}", ranges.join(" ")))
+    while (0..planned.len()).any(|k| kept(&planned, k)) {
+        let astray = on.ok_or_else(|| Error("nothing to check on".into())).and_then(|(repo, base)| {
+            let mine: Vec<&str> = planned.iter().map(|p| p.diff.as_str()).collect();
+            let drafts: Vec<&str> = theirs.iter().map(|d| d.diff.as_str()).collect();
+            crate::check::astray(repo, base, &mine, &drafts)
+        });
+        match astray {
+            Ok(None) => break,
+            Ok(Some(k)) if kept(&planned, k) => planned[k] = taken(&planned[k], k),
+            _ => {
+                for k in 0..planned.len() {
+                    if kept(&planned, k) {
+                        planned[k] = taken(&planned[k], k);
+                    }
+                }
+            }
+        }
+    }
+    planned
 }
 
-/// As `plan_drafts`, the patches stored: their ids.
+/// As `plan_checked`, the patches stored: their ids.
 pub fn match_drafts(
     db: &mut Db,
     olds: &[Patch],
     drafts: Vec<Draft>,
     by_commit: &HashMap<String, String>,
+    on: Option<(&std::path::Path, &str)>,
 ) -> Result<Vec<String>> {
-    plan_drafts(olds, drafts, by_commit)
+    plan_checked(olds, drafts, by_commit, on)
         .into_iter()
         .map(|p| db.add_patch(p))
         .collect()
 }
 
 /// Puts `drafts` on top of `name`, making it if need be. With `replace`,
-/// they are the whole stack instead, and a draft with the diff or the title
-/// of a patch it held is a new version of that patch: so importing a stack
-/// again after rebasing it, or rewording its commits, keeps each patch's
-/// history.
+/// they are the whole stack instead, and a draft with the effect of a
+/// patch's diff, or its title, is a new version of that patch, or that
+/// patch itself when its message and author are the same too, and its
+/// diff as stored does on the stack's new base what the draft does
+/// (`plan_checked`): so importing a stack again after rebasing it, or
+/// rewording its commits, keeps each patch's history, and a patch the
+/// rebase only moved down its files keeps its version.
 pub fn import(
     db: &mut Db,
     name: &str,
@@ -125,10 +199,12 @@ pub fn import(
     } else {
         vec![]
     };
-    patches.extend(match_drafts(db, &olds, drafts, &HashMap::new())?);
     if replace || on.is_none() {
         on = base.or(on);
     }
+    // Replacing the stack, the drafts apply to its base.
+    let at = on.as_ref().filter(|_| replace).map(|(b, r)| (std::path::Path::new(r.as_str()), b.as_str()));
+    patches.extend(match_drafts(db, &olds, drafts, &HashMap::new(), at)?);
     let op = if replace {
         format!("import {n} patches, replacing")
     } else {
@@ -1485,22 +1561,89 @@ mod tests {
         format!("diff --git a/f b/f\nindex 1..2 100644\n--- a/f\n+++ b/f\n@@ -0,0 +1 @@\n+{line}\n")
     }
 
+    /// A diff of two files: f, `d` added in a hunk at line `start`, under
+    /// the heading `fn f()`; then g, a line changed.
+    fn hunk_at(start: usize) -> String {
+        format!(
+            "diff --git a/f b/f\nindex 1..2 100644\n--- a/f\n+++ b/f\n@@ -{start},6 +{start},7 @@ fn f()\n a\n b\n c\n+d\n e\n f\n g\n\
+             diff --git a/g b/g\nindex 3..4 100644\n--- a/g\n+++ b/g\n@@ -1 +1 @@\n-x\n+y\n"
+        )
+    }
+
     #[test]
-    fn a_diff_moved_down_its_file_by_a_change_below_is_the_same_change() {
-        let at = |start: usize| {
-            format!("diff --git a/f b/f\nindex 1..2 100644\n--- a/f\n+++ b/f\n@@ -{start},6 +{start},7 @@ fn f()\n a\n b\n c\n+d\n e\n f\n g\n")
-        };
-        // A line more above it, from a patch below: the same change.
-        assert!(same_diff(&at(336), &at(337)));
-        assert!(same_diff(&at(336), &at(336).replace("index 1..2", "index 3..4")));
-        // Its lines, its sizes, or the function it is in, other: not.
-        assert!(!same_diff(&at(336), &at(336).replace("+d", "+D")));
-        assert!(!same_diff(&at(336), &at(336).replace(",7 @@", ",8 @@")));
-        assert!(!same_diff(&at(336), &at(336).replace("fn f()", "fn g()")));
+    fn a_diff_moved_down_its_file_by_a_change_below_has_the_same_effect() {
+        let at = hunk_at(336);
+        // Lines more above it, from a patch below: its hunk starts lower,
+        // under another heading or none, and its blobs are others.
+        assert!(same_effect(&at, &hunk_at(348)));
+        assert!(same_effect(&at, &at.replace("@@ fn f()", "@@ fn helper()")));
+        assert!(same_effect(&at, &at.replace(" @@ fn f()", " @@")));
+        assert!(same_effect(&at, &at.replace("index 1..2 100644", "index 5..6 100644")));
+        assert!(same_effect(&at, &at.replace("index 3..4 100644\n", "")));
+        // A header's line ending in white space or not, as git ends `---`
+        // and `+++` with a tab for a name holding a space; an empty line in
+        // a hunk, the empty context line git applies it as; the similarity
+        // of a rename.
+        let spaced = |end: &str| format!("diff --git a/f g b/f g\n--- a/f g{end}\n+++ b/f g{end}\n@@ -1,3 +1,3 @@\n a\n-b\n+B\n \n");
+        assert!(same_effect(&spaced("\t"), &spaced("")));
+        assert!(same_effect(&spaced(""), &spaced("").replace("+B\n \n", "+B\n\n")));
+        let renamed = |n: u32| format!("diff --git a/f b/h\nsimilarity index {n}%\nrename from f\nrename to h\nindex 1..2 100644\n--- a/f\n+++ b/h\n@@ -1 +1 @@\n-x\n+y\n");
+        assert!(same_effect(&renamed(90), &renamed(92)));
+        // A line added, removed or kept other (it would apply elsewhere),
+        // white space a line added ends with too.
+        assert!(!same_effect(&at, &at.replace("+d", "+D")));
+        assert!(!same_effect(&at, &at.replace("-x", "-X")));
+        assert!(!same_effect(&at, &at.replace(" e\n", " E\n")));
+        assert!(!same_effect(&at, &at.replace("+d\n", "+d \n")));
+        // A file fewer, one more, or the two in another order.
+        let (f, g) = at.split_at(at.find("diff --git a/g").unwrap());
+        assert!(!same_effect(&at, f));
+        assert!(!same_effect(&at, &format!("{at}diff --git a/h b/h\nnew file mode 100644\nindex 0..5\n--- /dev/null\n+++ b/h\n@@ -0,0 +1 @@\n+h\n")));
+        assert!(!same_effect(&at, &format!("{g}{f}")));
+        // A file's mode changed too, or a file added with another mode.
+        assert!(!same_effect(&at, &at.replace("index 1..2 100644\n", "old mode 100644\nnew mode 100755\nindex 1..2\n")));
+        let added = |mode: &str| format!("diff --git a/h b/h\nnew file mode {mode}\nindex 0..5\n--- /dev/null\n+++ b/h\n@@ -0,0 +1 @@\n+h\n");
+        assert!(!same_effect(&added("100644"), &added("100755")));
+        // The same lines, its hunk split in two.
+        let merged = "diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -1,8 +1,10 @@\n a\n+b\n c\n d\n e\n f\n g\n+h\n i\n j\n";
+        let split = "diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -1,4 +1,5 @@\n a\n+b\n c\n d\n@@ -5,4 +6,5 @@\n e\n f\n g\n+h\n i\n j\n";
+        assert!(!same_effect(merged, split));
         // A draft so moved, its title other, is its patch's new version.
-        let old = Patch::new("a".into(), Some("T <t@x>".into()), None, "Bug XXXXXXX - A\n".into(), at(336));
-        let planned = plan_drafts(std::slice::from_ref(&old), vec![draft("Bug 2084269 - A", &at(337))], &HashMap::new());
+        let old = Patch::new("a".into(), Some("T <t@x>".into()), None, "Bug XXXXXXX - A\n".into(), at.clone());
+        let planned = plan_drafts(std::slice::from_ref(&old), vec![draft("Bug 2084269 - A", &hunk_at(348))], &HashMap::new());
         assert_eq!(planned[0].change, "a");
+    }
+
+    #[test]
+    fn a_draft_with_the_message_author_and_effect_of_its_patch_is_that_patch_as_stored() {
+        let old = Patch::new("a".into(), Some("T <t@x>".into()), Some("Mon, 2 Mar 2026 10:00:00 +0000".into()), "A\n".into(), hunk_at(336));
+        // Moved down its file under another heading, its commit made again
+        // at another time: the patch, its id and its diff as they were.
+        let moved = Draft {
+            date: Some("Tue, 3 Mar 2026 11:00:00 +0000".into()),
+            ..draft("A", &hunk_at(348).replace("@@ fn f()", "@@ fn helper()"))
+        };
+        let planned = plan_drafts(std::slice::from_ref(&old), vec![moved.clone()], &HashMap::new());
+        assert_eq!(planned, std::slice::from_ref(&old));
+        // From the commit it was given, read back as git writes it now: the
+        // same.
+        let by_commit = HashMap::from([("c1".to_string(), old.id.clone())]);
+        let from = Draft { commit: Some("c1".into()), ..moved.clone() };
+        assert_eq!(plan_drafts(std::slice::from_ref(&old), vec![from], &by_commit), std::slice::from_ref(&old));
+        // Its message other, its author, or its effect: its new version,
+        // with the diff as git writes it now.
+        for d in [
+            Draft { message: "A, said otherwise\n".into(), ..moved.clone() },
+            Draft { author: Some("U <u@x>".into()), ..moved.clone() },
+            draft("A", &hunk_at(336).replace("+d", "+D")),
+        ] {
+            let p = plan_drafts(std::slice::from_ref(&old), vec![d.clone()], &HashMap::new()).remove(0);
+            assert!(p.change == "a" && p.id != old.id && p.diff == d.diff, "{d:?}");
+        }
+        // With nothing to check its diff as stored on, it is its draft's
+        // new version too.
+        let p = plan_checked(std::slice::from_ref(&old), vec![moved.clone()], &HashMap::new(), None).remove(0);
+        assert!(p.change == "a" && p.id != old.id && p.diff == moved.diff, "{p:?}");
     }
 
     #[test]

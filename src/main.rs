@@ -158,7 +158,10 @@ enum Cmd {
         name: String,
         range: Option<String>,
         /// Make them the whole stack. A patch with the diff or the title of
-        /// one the stack held is a new version of it.
+        /// one the stack held is a new version of it, or that patch itself
+        /// when its message, its author and its diff's lines are the same,
+        /// wherever its hunks start, and its diff as stored still leaves the
+        /// files as the commit does.
         #[arg(long)]
         replace: bool,
         /// The commit mail on stdin applies to, when it does not say
