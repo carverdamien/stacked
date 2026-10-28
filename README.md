@@ -142,8 +142,9 @@ useful first, and takes about fifteen minutes:
 5. Reply to the agent with a question, asked answer only, its answer
    accepted at once with Enter on the comment.
 6. Keep track of what you have read, in reading.
-7. Switch how the code is drawn: unified, side by side, compact; and each
-   file whole rather than its hunks.
+7. Pick how the code is drawn in the menu of `1`: unified, side by side,
+   compact, or unified split in two; and each file whole rather than its
+   hunks.
 8. The history of the stack, and the versions of a patch.
 9. Move a patch: stacked refuses, because each patch only applies to the
    board that the patches before it leave; Esc stops moving it.
@@ -409,7 +410,9 @@ those:
 - The arrows move. ↑↓ go through the patches (the header is above the
   first), the lines of the patch, or the comments (their header above the
   first); pgup, pgdn, home and end go further. ← and → go from pane to
-  pane, and past the side panes cycle what they show. ← on the expanded
+  pane, and past the side panes cycle what they show; in the unified view
+  split in two (`1`, below), each half of the middle is a pane of its own
+  for them. ← on the expanded
   patches (each its number and title, whole, folded under itself when the
   pane is too narrow) lists the files of the patch picked under it, in the
   order the middle shows them: a line for each file, its path, cut to its
@@ -467,14 +470,30 @@ those:
 - Every pane keeps where its cursor was, while the editor is open: the
   middle and the comments of each patch (whichever its version, so an edit
   keeps the line) and of the stack, the patches of each stack, the history
-  of each stack, the runs, each transcript, each review. Coming back to
+  of each stack, the runs, each transcript, each review; each half of the
+  middle split in two keeps its own. Coming back to
   one, the cursor is where it was, on what it was on if that is still
   there. The tree of edits, the stacks and the versions open on where the
   stack is, as before.
-- `1` cycles the views of the code, as in self-review: unified, side by
-  side, and compact, the two sides each a pane of its own with no gaps,
-  scrolled together or one alone (← → turn which, and past the old side or
-  the new one go on to the pane beyond). Two sides need 60 columns. In
+- `1` opens the menu of the views of the code, the one the code is drawn
+  in marked `●`: Enter or a click picks one, and Esc leaves the view as it
+  is. Unified and side by side are self-review's; compact draws the two
+  sides each in a pane of its own with no gaps, scrolled together or one
+  alone (← → turn which, and past the old side or the new one go on to
+  the pane beyond); unified split in two is below. Every view but unified
+  needs a middle of 60 columns (`split_width`). Picked on a narrower
+  middle, a view makes its room, hiding as little as it can: it makes the
+  comments compact, else hides them, else hides the patches (listing
+  their files gives no room), the comments as they were, then compact,
+  then hidden too. The status line says what was hidden and how to show
+  it again (`the patches are hidden to make room for side by side: ← out
+  of the middle shows them again`), and what was hidden stays so once the
+  view is left. On a screen too narrow even with both side panes hidden,
+  the view's item in the menu says so, and the view is not taken. A middle
+  made too narrow later (a side pane shown again, the window made
+  narrower) shows the code unified, and the top bar says that the view is
+  too narrow (`· side-by-side: too narrow`) until there is room: picking
+  the view again makes it. In
   every view, a line removed and the line added in its place (paired as the
   two sides pair them), when the two are almost the same, at least half of
   what they say, show what changed in them in the colours for words
@@ -485,6 +504,28 @@ those:
   first sign. Made
   shorter than the cursor's line, the screen keeps the cursor's line in
   sight, on its last line, in every view.
+- Unified split in two shows the patch picked twice, side by side, each
+  half a unified view of its own with a line between them, to read one
+  place of the patch while going through another: a function's definition
+  in one half and its callers, searched, in the other. Each half has its
+  own cursor and scroll, its own search (`/`), its own reading (`2`) and
+  its own hunks or files whole (`3`); `1`, `2`, `3` and `/` act on the
+  half the cursor is in, and the other half draws its cursor as a pane
+  draws what it has picked (`picked`). ← and → go from half to half as
+  from pane to pane: from the patches to the left half, then to the right
+  half, then to the comments, and back; Esc in the right half goes to the
+  left one, as ← does. The left half is beside the patches and the right
+  one beside the comments: what a side pane does in the middle (a file
+  gone to, a comment gone to, the search opened there), it does in the
+  half beside it. A click in a half, or the mouse over it, puts the cursor
+  there, on the row under it. Comments, replies and read marks are made
+  from the cursor's half, and Enter, Space and the menu act on its row;
+  what is written shows in both halves, and what is read in each half
+  that is reading. Another patch picked shows in both halves, each where
+  it was on that patch, else from its top. Another view picked keeps the
+  half the cursor is in as the middle, its cursor and its reading and
+  files whole with it. `view.layout = "unified-split"` starts in it
+  (Settings, below).
 - `2` switches between commenting and reading (below).
 - `3` switches between the hunks and each file whole: every file the patch
   changes as the patch leaves it, the lines it removes in their place, with
@@ -505,7 +546,8 @@ those:
   patch past 50000 lines shown whole, show as their hunks, a line over them
   saying so.
 - `1`, `2` and `3` go together: each view of the code works in commenting
-  and in reading, with the hunks or with each file whole. Pressed in any
+  and in reading, with the hunks or with each file whole, and split in
+  two, each half on its own. Pressed in any
   order, they leave the cursor on its line, on its line of the screen (as
   far down as the rows over it reach). Into each file whole, a hunk's
   header leaves the cursor on the hunk's first line; back to the hunks, a
@@ -534,7 +576,9 @@ those:
   the match; the rest is searched as the middle shows it: the files'
   names, the hunks' headers, the message, the comments. The search works
   in every view of the code, reading or not, and with the hunks or with
-  each file whole (`3`): it searches the lines the middle shows, so that
+  each file whole (`3`); split in two, in the half the cursor is in, and
+  Esc puts that half back where it was. It searches the lines the middle
+  shows, so that
   with each file whole it finds the lines no hunk has too, and the cursor
   goes to them. The searches that Enter ends on a match are kept, the
   latest first, twenty at most, in `state.json` (Settings, below), so that
@@ -555,7 +599,8 @@ A line too wide for the middle is folded, as comments are: a line of the
 message between words, its indent kept and a bullet's lines under what
 follows the bullet; a line of code where the pane ends, each piece after
 the first `↪` in place of its `+`, `-` or space. Side by side, each side
-folds in its half. A line folded is still one line: the cursor goes
+folds in its half; split in two, each half as wide as it is. A line folded
+is still one line: the cursor goes
 through its pieces, its comments go under its last piece, reading marks
 and counts it once, and side by side its pieces go beside the line the
 other side has there.
@@ -1829,7 +1874,8 @@ settings:
   `D123` trailer is on; `arcrc`, where the tokens are; `token`, one for
   `url` instead; `trailer`, the trailer naming a revision
   (`Differential Revision`).
-- `[view]`: `layout` at the start (`unified`, `side-by-side`, `compact`);
+- `[view]`: `layout` at the start (`unified`, `side-by-side`, `compact`,
+  `unified-split`);
   `reading`, to start reading; `whitespace_needs_review`, whether changed
   lines that are empty or white space alone need review in the reading mode
   (`false`: they need no mark, and no count holds them); `patches`, the
@@ -1839,7 +1885,7 @@ settings:
   at the start, `"expanded"`, `"compact"` or `"hidden"` (for both, `true`
   and `false`, as before, are expanded and hidden); `stream_lines`, the
   agent's lines under a comment; and
-  `split_width`, the columns two sides need.
+  `split_width`, the columns two sides, or two halves, need.
 - `[colors]`: what paints each part of the screen, as git writes a colour
   (`git config color.diff.new "green bold"`): a foreground, then a
   background, each a name (`black`, `red`, `green`, `yellow`, `blue`,
@@ -2161,10 +2207,12 @@ is typed: `import.rs`). A fix to one may belong in the other.
 - `editor.rs`: the inline comment editor.
 - `paint.rs`: colours, and drawing text and boxes.
 - `tui.rs`: the editor, and the work it does away from the screen; what a
-  click is on. `tui/reviewing.rs` and `tui/searching.rs`: its screens for
+  click is on; the views of the code, the middle split in two among them,
+  each half its own (`Half`). `tui/reviewing.rs` and `tui/searching.rs`: its screens for
   reviewing what the agent brought back, and for searching;
   `tui/banner.rs`, the banner of the agent's work; `tui/places.rs`, where
-  each pane's cursor was; `tui/finding.rs`, the search of the middle (`/`).
+  each pane's cursor was, each half's of the middle split in two;
+  `tui/finding.rs`, the search of the middle (`/`).
 - `web.rs`, `web/client.rs`, `web/index.html`, `build.rs`: `stacked web`,
   its server, its wasm and its page; the build script compiles the wasm,
   or, where Rust lacks the wasm target, stops the build and says what to
@@ -2301,7 +2349,9 @@ middle scrolled as it was, a click out of the bar too; Enter on the match,
 or back with nothing matched, said; the next `/` with the last search,
 selected, what is typed taking its place, ↑↓ through those before; case
 ignored, a line of code without its sign; a comment, the message and a
-file's name; side by side and compact; reading; a line folded matched as
+file's name; side by side and compact; split in two, the cursor's half
+alone, the other's lines not lit, Esc putting that half back; reading; a
+line folded matched as
 one, the cursor on the piece of its match; the matches lit; its key the
 settings', and those from match to match, Tab a key of the screens' too,
 its others as they are; with each file whole, a line in no hunk found and
@@ -2327,7 +2377,19 @@ effort it was asked at, unless another is picked), the screen never waiting on
 the agent, redrawing not slowing as the agent writes (a frame timed as the
 time the editor ran to read and draw it, not by the clock, which counts
 too the time a busy machine gives to other work), the filter kept in
-the file, the three views, what changed in a line almost the same as the
+the file, the views of the code (the menu of 1, the view drawn marked,
+Enter or a click picking one and Esc none, its key a setting, each view
+drawn; a view picked on a middle too narrow making its room, the comments
+compact, else hidden, else the patches hidden too, as little as it can,
+said and left so once the view is; on a screen too narrow even then, the
+item saying so and the view not taken; split in two: both halves drawn,
+each a region of its own, each its own cursor and scroll, search, reading
+and files whole, and its place on each patch, the other half's cursor as a
+pick, ← → from half to half and pane to pane, a click and the mouse taking
+the cursor into a half, a patch clicked taking it into the left one, a
+comment and a read mark made from the cursor's half and shown in both,
+another view keeping the cursor's half, a middle too narrow drawn as one
+and said, and the layout a setting), what changed in a line almost the same as the
 one removed painted as words (and lines quite other, not), in the code, in
 a version's interdiff and in the history's stack diff, none of the room after
 a word last in its line, and the words keeping their own colours under the
@@ -2352,11 +2414,13 @@ line saying why; a line in no hunk folded, two sides keeping its piece, and
 taking no read mark; the files listed in the patches pane gone to; the key
 a setting; on the stack's own view, said, and on another screen, no key;
 with no base to read the files on, the hunks under a line saying why),
-the cursor through 1, 2 and 3 (on its line and its line of the screen; back
+the cursor through 1, 2 and 3 (on its line and its line of the screen,
+through each view, split in two too; back
 to the hunks from a line in no hunk, on the closest line in a hunk, ties
 above; a hunk's header, whole, on its first line), and the twelve ways the
-three keys combine (each view, commenting or reading, the hunks or each
-file whole: the view drawn, the old side beside the new, a comment shown, a
+three keys combine (unified, side by side or compact, commenting or
+reading, the hunks or each file whole: the view drawn, the old side beside
+the new, a comment shown, a
 read mark made on the hunks' keys and taken back, the cursor kept),
 editing a patch by hand at the cursor (a line added after git's
 `\ No newline at end of file` opened at its own number, and a reference
@@ -2494,7 +2558,8 @@ the `demo` feature, `tests/demo.rs` takes the tour, each step done as Tab
 does it: the
 stand-in's fix, the board at its end, nothing made on disk; the answer
 to the tour's question taken at once with Enter, the tour going on then;
-and the views taught with 3, the step waiting for the hunks again;
+and the views taught with 3, picked in the menu of 1 and making their
+room on a middle too narrow, the step waiting for the hunks again;
 `memory.rs` tests its diffs applied as git applies them. The
 stream's thinking is tested in `ask.rs`, with the prompt asking the agent
 to point at the stack before the web and its answer's schema taking a web

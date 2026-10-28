@@ -347,31 +347,50 @@ fn a_patch_goes_nowhere_but_where_it_was_played() {
     assert_eq!(app.db.stack("game").unwrap().patches, played);
 }
 
+/// 1, then the view whose name starts with `name`, past the mark of the
+/// one the code is drawn in: ↓ to it, and Enter.
+fn view(app: &mut App, name: &str) {
+    press(app, KeyCode::Char('1'));
+    let all: Vec<String> = match &app.mode {
+        Mode::Menu(m) => m.items.iter().map(|i| i.label.clone()).collect(),
+        _ => vec![],
+    };
+    let want = all
+        .iter()
+        .position(|l| l.trim_start_matches(['●', ' ']).starts_with(name))
+        .unwrap_or_else(|| panic!("no view {name:?} in {all:?}"));
+    for _ in 0..all.len() * 2 {
+        match &app.mode {
+            Mode::Menu(m) if m.sel == want => break,
+            _ => press(app, KeyCode::Down),
+        }
+    }
+    press(app, KeyCode::Enter);
+}
+
 #[test]
-fn the_views_say_how_to_widen_a_middle_too_narrow_for_two_sides() {
+fn the_views_make_the_room_a_middle_too_narrow_for_them_lacks() {
     let (mut app, mut tour) = Tour::new().unwrap();
     tour.forward(&mut app, place(Step::Views)).unwrap();
     // On patch 4, its comments beside it: 120 columns leave too narrow a
-    // middle for two sides, and the step says how to widen it.
+    // middle for two sides, and the step says that the view picked makes
+    // its room.
     app.on_stack = false;
     app.sel = 3;
     app.focus = Focus::Diff;
     for _ in 0..2 {
         screen(&mut app, &tour);
     }
-    assert!(tour.say(&app).0.contains("needs a wider middle than this one"), "{}", tour.say(&app).0);
-    // ← to the patches, ← again to list the files of the patch picked, and
-    // ← once more to hide the patches: the middle has the room.
-    press(&mut app, KeyCode::Left);
-    press(&mut app, KeyCode::Left);
-    press(&mut app, KeyCode::Left);
-    for _ in 0..2 {
-        screen(&mut app, &tour);
-    }
+    let said = tour.say(&app).0;
+    assert!(said.contains("needs a wider middle than this one: picking one makes its room"), "{said}");
+    // Side by side: the comments made compact for it, which is said.
+    view(&mut app, "Side by side");
+    screen(&mut app, &tour);
+    assert_eq!(app.status, "the comments are made compact to make room for side by side");
     assert!(!tour.say(&app).0.contains("wider middle"), "{}", tour.say(&app).0);
-    // Through the three views, and back to unified: done.
-    for _ in 0..3 {
-        press(&mut app, KeyCode::Char('1'));
+    // Through the other views, and back to unified: done.
+    for name in ["Side by side, compact", "Unified, split in two", "Unified"] {
+        view(&mut app, name);
         screen(&mut app, &tour);
         app.refresh();
         tour.tick(&mut app);
@@ -399,9 +418,10 @@ fn the_views_teach_three_each_file_whole_and_wait_for_the_hunks_again() {
     let shown = screen(&mut app, &tour);
     assert!(app.whole_files && !app.rows.iter().any(|r| r.text.starts_with("@@")), "{shown}");
     assert!(shown.contains("+  .  |  X  |  ."), "{shown}");
-    // Through the three views, back to unified: the step waits for the hunks.
-    for _ in 0..3 {
-        press(&mut app, KeyCode::Char('1'));
+    // Through the four views, back to unified: the step waits for the
+    // hunks.
+    for name in ["Side by side", "Side by side, compact", "Unified, split in two", "Unified"] {
+        view(&mut app, name);
         screen(&mut app, &tour);
         app.refresh();
         tour.tick(&mut app);

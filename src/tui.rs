@@ -1,7 +1,8 @@
 //! The editor: the current stack's patches on the left, under a header that
 //! is the stack's own place; in the middle, the selected patch (unified or
-//! side by side, comments under their lines) or, from the header, the stack
-//! as a whole; on the right, the comments of what the middle shows, under a
+//! side by side, or unified in each half of the middle split in two,
+//! comments under their lines) or, from the header, the stack as a whole;
+//! on the right, the comments of what the middle shows, under a
 //! header of their own, when there are any. Every change is appended to the
 //! database; claude's asks run on their own and what they did shows up when
 //! it lands.
@@ -422,16 +423,19 @@ pub enum HistFocus {
 
 /// What a cell of the screen shows, for a click there: the stack's header,
 /// a patch of the list by its place, or a file of the patch picked; a row
-/// of the middle; the comments pane's header, or a comment; an item of a
-/// menu, or of a list screen; a line of History…'s stack diff; or a box
-/// over the rest (a menu, a line to type, help), where a click is on
-/// nothing but what is in it.
+/// of the middle, or of its other half; the comments pane's header, or a
+/// comment; an item of a menu, or of a list screen; a line of History…'s
+/// stack diff; or a box over the rest (a menu, a line to type, help),
+/// where a click is on nothing but what is in it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Spot {
     Patch(Option<usize>),
     /// File `k` of the patch picked, as the patches pane lists them.
     File(usize),
     Row(usize),
+    /// Row `i` of the half of the middle split in two that the cursor is
+    /// not in.
+    Beside(usize),
     NotesHead,
     Note(usize),
     Item(usize),
@@ -485,31 +489,101 @@ fn next_to(at: u16, start: u16, len: usize, room: usize) -> usize {
     }
 }
 
-/// How the code is drawn, as self-review draws it: one column, the two
-/// sides line by line, or the two sides each a pane of its own (compact).
+/// How the code is drawn: as self-review draws it, one column, the two
+/// sides line by line, or the two sides each a pane of its own (compact);
+/// or the one column twice, the middle split in two halves, each with its
+/// own cursor and scroll (`Half`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Layout {
     Unified,
     Split,
     Compact,
+    Halves,
 }
 
 impl Layout {
+    /// Each, in the order the menu of 1 lists them.
+    pub const ALL: [Layout; 4] = [Layout::Unified, Layout::Split, Layout::Compact, Layout::Halves];
+
+    /// As the top bar says it.
     pub fn label(self) -> &'static str {
         match self {
             Layout::Unified => "unified",
             Layout::Split => "side-by-side",
             Layout::Compact => "side-by-side, compact",
+            Layout::Halves => "unified, split in two",
         }
     }
 
-    fn next(self) -> Layout {
+    /// As the menu of 1 lists it.
+    fn item(self) -> &'static str {
         match self {
-            Layout::Unified => Layout::Split,
-            Layout::Split => Layout::Compact,
-            Layout::Compact => Layout::Unified,
+            Layout::Unified => "Unified",
+            Layout::Split => "Side by side",
+            Layout::Compact => "Side by side, compact",
+            Layout::Halves => "Unified, split in two",
         }
     }
+
+    /// As the status line names it, saying what room it needs.
+    fn named(self) -> &'static str {
+        match self {
+            Layout::Unified => "the unified view",
+            Layout::Split => "side by side",
+            Layout::Compact => "the compact view",
+            Layout::Halves => "two halves",
+        }
+    }
+
+    /// What the status line says once it is picked.
+    fn said(self) -> String {
+        match self {
+            Layout::Halves => "unified view, split in two: each half has its own cursor, and ← → go from one half to the other".into(),
+            l => format!("{} view", l.label()),
+        }
+    }
+
+    /// Whether it needs a wide middle, `split_width` at least: for two
+    /// sides, or for two halves.
+    fn wide(self) -> bool {
+        self != Layout::Unified
+    }
+}
+
+/// What the middle shows, and where: its rows and what they were built
+/// from, its cursor and scroll, where it was drawn; and how it shows the
+/// code, reading or not, each file whole or not. The middle's own are
+/// `App`'s fields of the same names. In the unified view split in two,
+/// each half has its own: `App`'s are those of the half the cursor is in,
+/// and the other half's are kept aside (`Halves`), the two swapped as the
+/// cursor goes from one half to the other.
+#[derive(Debug, Clone, Default)]
+pub struct Half {
+    pub rows: Vec<Row>,
+    built: Option<String>,
+    subject: Option<String>,
+    want: Option<Want>,
+    pub cursor: usize,
+    pub top: usize,
+    cursor_y: Option<usize>,
+    drawn_rows: Vec<(usize, usize)>,
+    mid_w: usize,
+    mid_h: usize,
+    keep: Option<(String, usize, usize)>,
+    form: Option<(u8, usize, Layout)>,
+    panes: Arc<Panes>,
+    compact: Compact,
+    pub reading: bool,
+    pub whole_files: bool,
+}
+
+/// The unified view split in two, while it is the view: the half the
+/// cursor is not in, and which half the cursor is in.
+#[derive(Debug, Clone, Default)]
+struct Halves {
+    /// The cursor is in the right half.
+    right: bool,
+    other: Box<Half>,
 }
 
 /// What the screen is showing, over the panes.
@@ -1110,6 +1184,8 @@ pub enum Action {
     Reopen,
     ShowMenu,
     SetShow(Show),
+    /// The code drawn as `0` from now on, picked in the menu of 1.
+    View(Layout),
     Undo,
     Redo,
     EditList,
@@ -1327,6 +1403,16 @@ fn about(action: &Action) -> String {
         }
         Action::ShowMenu => "pick which comments the panes show".into(),
         Action::SetShow(s) => format!("show the comments {}", s.name()),
+        Action::View(Layout::Unified) => "draw the code unified: in one column, the lines removed over the lines added in their place".into(),
+        Action::View(Layout::Split) => {
+            "draw the code side by side: the old side on the left and the new side on the right, line by line".into()
+        }
+        Action::View(Layout::Compact) => {
+            "draw the code side by side, compact: each side a pane of its own, with no gap where the other side has more, the two scrolled together or one alone".into()
+        }
+        Action::View(Layout::Halves) => {
+            "draw the patch twice, unified in each half of the middle: each half has its own cursor and scroll, its own search, reading and whole files, and ← → go from one half to the other".into()
+        }
         Action::Undo => "go back to the stack before this edit".into(),
         Action::Redo => "make that edit again".into(),
         Action::EditList => "edit the stack as `git rebase -i` does, in $EDITOR".into(),
@@ -1658,6 +1744,12 @@ pub struct App {
     /// The comments pane's cursor is on its header.
     pub notes_head: bool,
     pub layout: Layout,
+    /// The unified view split in two, while it is the view: the middle's
+    /// fields are the half the cursor is in, and this holds the other.
+    halves: Option<Halves>,
+    /// The other half is being drawn, its own swapped into the middle's
+    /// fields meanwhile: nothing of it is the cursor's.
+    drawing_beside: bool,
     /// The compact layout's panes.
     pub compact: Compact,
     panes: Arc<Panes>,
@@ -1681,8 +1773,10 @@ pub struct App {
     /// How far the review of the stack is, and what that was worked out
     /// from: the stack's name, and how many changes the database had.
     progress: Option<((String, usize), crate::progress::Progress)>,
-    /// How wide the middle was last drawn.
+    /// How wide the middle was last drawn; split in two, the half.
     mid_w: usize,
+    /// How wide the middle was last drawn, whole.
+    middle_w: usize,
     pub screen: Screen,
     pub mode: Mode,
     pub rows: Vec<Row>,
@@ -1946,6 +2040,12 @@ const WHOLE: &str = "whole files: each file this patch changes is shown as the p
 /// What the help says of the three keys of the code, together.
 const THREE_KEYS: &str = "1, 2 and 3 go together: each view of the code works in commenting and in reading, with the hunks or with each file whole.";
 
+/// The views of the code the menu of 1 has, as the help says them.
+const VIEWS: &str = "unified, side by side, side by side compact, or unified split in two";
+
+/// What the help says of the middle split in two.
+const HALVES: &str = "The middle is split in two, the patch in each half: each half has its own cursor and scroll, its own search, reading and whole files, and the half the cursor is not in draws its cursor as a pane draws what it has picked. 1, 2, 3 and / act on the half the cursor is in, and ← → go from one half to the other as from pane to pane. Comments are written and code is marked read from the cursor's half: a comment shows in both halves, and what is read shows in each half that is reading.";
+
 /// What the status says of a line in no hunk the cursor was on, the hunks
 /// shown again: where the cursor is now.
 fn moved_said(m: &crate::rows::Moved) -> String {
@@ -2036,6 +2136,7 @@ impl App {
             crate::config::Layout::Unified => Layout::Unified,
             crate::config::Layout::Split => Layout::Split,
             crate::config::Layout::Compact => Layout::Compact,
+            crate::config::Layout::Halves => Layout::Halves,
         };
         let show = db.view(&stack).and_then(Show::parse).unwrap_or(Show::All);
         let mut app = App {
@@ -2059,7 +2160,9 @@ impl App {
             comments: cfg.view.comments,
             note_sel: 0,
             notes_head: false,
-            layout,
+            layout: Layout::Unified,
+            halves: None,
+            drawing_beside: false,
             compact: Compact::default(),
             panes: Arc::new(Panes::default()),
             reading: cfg.view.reading,
@@ -2070,6 +2173,7 @@ impl App {
             changed: HashMap::new(),
             progress: None,
             mid_w: 0,
+            middle_w: 0,
             screen: Screen::Main,
             mode: Mode::Normal,
             rows: vec![],
@@ -2125,6 +2229,8 @@ impl App {
         if app.patch_count() == 0 {
             app.on_stack = true;
         }
+        // The view the settings say; split in two, its other half made.
+        app.set_layout(layout);
         app.judge();
         app.precreate();
         app.finds = app.kept_finds();
@@ -2791,10 +2897,16 @@ impl App {
         self.subject = Some(subject.clone());
         self.form = Some(form);
         self.panes = Arc::new(pane_streams(&self.rows));
+        // The comments pane and the status line go with the half of the
+        // middle the cursor is in: the other half, drawn, leaves them as
+        // they are.
+        let here = !self.drawing_beside;
         if !same {
             self.cursor = 0;
             self.top = 0;
-            self.note_sel = 0;
+            if here {
+                self.note_sel = 0;
+            }
             self.compact.reset();
             // Back on what they showed before: where they were.
             self.back_to_panes(&subject);
@@ -2805,10 +2917,10 @@ impl App {
                 (Some(built), Some(y)) => self.keep = Some((built, i, y)),
                 _ => self.top = i.saturating_sub(self.body_h / 3),
             }
-            if let Some(m) = moved {
-                self.status = moved_said(&m);
-            } else if arrived && self.status == READING_WHOLE {
-                self.status = WHOLE.into();
+            match moved {
+                Some(m) if here => self.status = moved_said(&m),
+                None if here && arrived && self.status == READING_WHOLE => self.status = WHOLE.into(),
+                _ => {}
             }
         } else if let Some((k, down)) = was {
             // The row as many rows down, the streams' lines not counted. On
@@ -2822,7 +2934,9 @@ impl App {
             };
         }
         self.cursor = self.cursor.min(self.rows.len().saturating_sub(1));
-        self.note_sel = self.note_sel.min(self.notes().len().saturating_sub(1));
+        if here {
+            self.note_sel = self.note_sel.min(self.notes().len().saturating_sub(1));
+        }
         if let Some(w) = self.want.take() {
             let at = match &w {
                 Want::Note(id) => self.rows.iter().position(|r| r.head && r.note.as_deref() == Some(id)),
@@ -2958,6 +3072,8 @@ impl App {
             Spot::Patch(Some(i)) => panes && self.focus == Focus::List && !self.on_stack && self.sel == i && self.file_on().is_none(),
             Spot::File(k) => panes && self.file_on() == Some(k),
             Spot::Row(i) => panes && self.focus == Focus::Diff && self.cursor == i,
+            // The half the cursor is not in.
+            Spot::Beside(_) => false,
             Spot::NotesHead => panes && self.focus == Focus::Notes && self.notes_head,
             Spot::Note(i) => panes && self.focus == Focus::Notes && !self.notes_head && self.note_sel == i,
             Spot::Pick(i) => self.pick == i && (self.screen != Screen::History || self.hist_focus == HistFocus::List),
@@ -3219,16 +3335,19 @@ impl App {
             }
             Spot::SearchScope => self.step_scope(),
             Spot::Patch(None) => {
+                self.half_beside(Focus::List);
                 self.focus = Focus::List;
                 self.on_stack = true;
             }
             // As the arrows would: a file clicked shows in the middle, and
             // its patch, clicked from it, from the patch's start.
             Spot::Patch(Some(i)) => {
+                self.half_beside(Focus::List);
                 self.list_to(i, None);
                 self.focus = Focus::List;
             }
             Spot::File(k) => {
+                self.half_beside(Focus::List);
                 self.list_to(self.sel, Some(k));
                 self.focus = Focus::List;
             }
@@ -3236,11 +3355,23 @@ impl App {
                 self.focus = Focus::Diff;
                 self.cursor = i;
             }
+            // Into the other half of the middle split in two, its cursor
+            // there.
+            Spot::Beside(i) => {
+                if self.halves.is_none() {
+                    return false;
+                }
+                self.cross_halves();
+                self.focus = Focus::Diff;
+                self.cursor = i;
+            }
             Spot::NotesHead => {
+                self.half_beside(Focus::Notes);
                 self.focus = Focus::Notes;
                 self.notes_head = true;
             }
             Spot::Note(i) => {
+                self.half_beside(Focus::Notes);
                 self.focus = Focus::Notes;
                 self.notes_head = false;
                 self.note_sel = i;
@@ -3272,6 +3403,20 @@ impl App {
         match action {
             Action::CommentLine if on_file => "create a comment on this file, as a whole".into(),
             Action::Open if self.file_on().is_some() => "read this file".into(),
+            // A view this middle is too narrow for: the room it takes.
+            Action::View(l) => match self.room_for(*l) {
+                Ok(Some(_)) => format!(
+                    "{}. The middle is too narrow for this view: picked, the view makes the comments compact, or hides them or the patches, as little as gives the middle {} columns",
+                    about(action),
+                    self.cfg.view.split_width
+                ),
+                Ok(None) => about(action),
+                Err(()) => format!(
+                    "{}. The screen is too narrow for this view: the middle needs {} columns, even with the patches and the comments hidden",
+                    about(action),
+                    self.cfg.view.split_width
+                ),
+            },
             _ => about(action),
         }
     }
@@ -3498,9 +3643,11 @@ impl App {
                 return Effect::None;
             }
         }
-        // self-review's two keys: 1 for another view of the code, 2 to read
-        // rather than comment, or comment rather than read; and 3, each
-        // file whole rather than its hunks, or its hunks again.
+        // self-review's two keys: 1 for another view of the code, here the
+        // menu of them, 2 to read rather than comment, or comment rather
+        // than read; and 3, each file whole rather than its hunks, or its
+        // hunks again. In the middle split in two, each acts on the half
+        // the cursor is in, as `/` does.
         if self.screen == Screen::Main {
             match k.code {
                 // As self-review's `/`: the search of the middle.
@@ -3509,7 +3656,7 @@ impl App {
                     return Effect::None;
                 }
                 KeyCode::Char('1') => {
-                    self.cycle_layout();
+                    self.mode = Mode::Menu(self.views_menu());
                     return Effect::None;
                 }
                 KeyCode::Char('2') => {
@@ -3608,6 +3755,10 @@ impl App {
                     self.focus = Focus::Diff;
                 }
             }
+            // The middle split in two: from one half into the other, as from
+            // pane to pane, each half's cursor where it was.
+            (Focus::Diff, KeyCode::Left | KeyCode::Esc) if self.halves_drawn() && self.in_right() => self.cross_halves(),
+            (Focus::Diff, KeyCode::Right) if self.halves_drawn() && !self.in_right() => self.cross_halves(),
             // To the patches; hidden, they are shown again, expanded. Listing
             // files, on the one the middle's cursor is in.
             (Focus::Diff, KeyCode::Left | KeyCode::Esc) => {
@@ -3855,12 +4006,13 @@ impl App {
         Some(Effect::None)
     }
 
-    /// The layout the middle is drawn in, `w` wide: a stack has no sides.
+    /// The layout the middle is drawn in, `w` wide: a stack has no sides,
+    /// and each half of the middle split in two is unified.
     fn drawn_layout(&self, w: usize) -> Layout {
-        if self.on_stack || (self.layout != Layout::Unified && w < self.cfg.view.split_width) {
-            Layout::Unified
-        } else {
-            self.layout
+        match self.layout {
+            Layout::Halves => Layout::Unified,
+            l if self.on_stack || (l != Layout::Unified && w < self.cfg.view.split_width) => Layout::Unified,
+            l => l,
         }
     }
 
@@ -3868,59 +4020,228 @@ impl App {
         self.drawn_layout(self.mid_w) == Layout::Compact
     }
 
-    /// Whether the middle, as last drawn, is wide enough for two sides.
+    /// Whether the middle, as last drawn, is wide enough for two sides, or
+    /// two halves.
     pub fn sides_fit(&self) -> bool {
-        self.mid_w == 0 || self.mid_w >= self.cfg.view.split_width
+        self.middle_w == 0 || self.middle_w >= self.cfg.view.split_width
     }
 
-    /// 1: unified, side-by-side, compact, in turn; two sides when the
-    /// middle is wide enough for them.
-    fn cycle_layout(&mut self) {
-        let next = self.layout.next();
-        if next != Layout::Unified && !self.sides_fit() {
-            let need = self.cfg.view.split_width;
-            self.status = self.say_keys(match self.room_said() {
-                Some(how) => format!("side-by-side needs {need} columns: {how}"),
-                None => format!("side-by-side needs {need} columns, more than the screen has"),
-            });
+    /// The menu of 1: the views of the code, the one the code is drawn in
+    /// marked and picked; one the screen is too narrow for, even with both
+    /// side panes out of sight, saying so.
+    fn views_menu(&self) -> Menu {
+        let items = Layout::ALL
+            .iter()
+            .map(|&l| {
+                let mark = if l == self.layout { "● " } else { "  " };
+                let narrow = if self.room_for(l).is_err() { ": the screen is too narrow" } else { "" };
+                Item::new(format!("{mark}{}{narrow}", l.item()), Action::View(l))
+            })
+            .collect();
+        let mut m = Menu::new("the view", items, None);
+        m.sel = Layout::ALL.iter().position(|&l| l == self.layout).unwrap_or(0);
+        m
+    }
+
+    /// View `l`, picked in the menu of 1: the code drawn so from now on,
+    /// the side panes first making the room it needs (`room_for`), as the
+    /// status line says; not taken when the screen is too narrow for it
+    /// even with both side panes out of sight, and that said.
+    fn pick_view(&mut self, l: Layout) {
+        let Ok(room) = self.room_for(l) else {
+            self.status = format!("the screen is too narrow for {}: the middle needs {} columns", l.named(), self.cfg.view.split_width);
             return;
+        };
+        if l != self.layout {
+            self.set_layout(l);
         }
-        self.set_layout(next);
-        self.status = format!("{} view", next.label());
+        self.status = match room {
+            Some(room) => self.make_room(l, room),
+            None => l.said(),
+        };
     }
 
-    /// What gives the middle more room, as the side panes are shown now:
-    /// hiding the patches (listing their files gives none), making the
-    /// comments compact or hiding them. None when both are out of sight.
-    fn room_said(&self) -> Option<String> {
-        let patches = match self.list {
-            PatchesPane::Expanded => Some("press ← twice on the patches to hide them"),
-            PatchesPane::Files => Some("press ← on the patches to hide them"),
-            PatchesPane::Hidden => None,
+    /// How wide the middle would be on the screen as last drawn, the
+    /// patches shown as `list` and the comments, when there are any, as
+    /// `comments`.
+    fn middle_with(&self, list: PatchesPane, comments: Pane) -> usize {
+        let right = if self.notes_shown() { comments } else { Pane::Hidden };
+        let (l, r) = self.side_widths(self.body_w, list, right, self.writing().map(|e| e.pane));
+        let taken = |w: usize| if w > 0 { w + 1 } else { 0 };
+        self.body_w.saturating_sub(taken(l) + taken(r))
+    }
+
+    /// The side panes as they would leave view `l` the room it needs, when
+    /// it needs a wide middle and this one is not: of the comments made
+    /// compact, the comments hidden, the patches hidden (listing their
+    /// files gives no room), then the patches hidden and the comments
+    /// compact, then both hidden, the first that gives the room, so that as
+    /// little is hidden as can be. None when the middle has the room, or
+    /// was never drawn; Err when the screen is too narrow for `l` even with
+    /// both out of sight.
+    fn room_for(&self, l: Layout) -> std::result::Result<Option<(PatchesPane, Pane)>, ()> {
+        let need = self.cfg.view.split_width;
+        if !l.wide() || self.middle_w == 0 || self.middle_with(self.list, self.comments) >= need {
+            return Ok(None);
+        }
+        let comments: &[Pane] = match self.comments {
+            _ if !self.notes_shown() => &[],
+            Pane::Expanded => &[Pane::Compact, Pane::Hidden],
+            Pane::Compact => &[Pane::Hidden],
+            Pane::Hidden => &[],
         };
-        let comments = match self.comments {
-            _ if !self.notes_shown() => None,
-            Pane::Expanded => Some("→ on the comments to make them compact"),
-            Pane::Compact => Some("→ on the comments to hide them"),
-            Pane::Hidden => None,
-        };
-        match (patches, comments) {
-            (Some(p), Some(c)) => Some(format!("{p}, or {c}")),
-            (Some(p), None) => Some(p.to_string()),
-            (None, Some(c)) => Some(format!("press {c}")),
-            (None, None) => None,
+        let mut tries: Vec<(PatchesPane, Pane)> = comments.iter().map(|&c| (self.list, c)).collect();
+        if self.list.shown() {
+            tries.push((PatchesPane::Hidden, self.comments));
+            tries.extend(comments.iter().map(|&c| (PatchesPane::Hidden, c)));
+        }
+        tries.into_iter().find(|&(p, c)| self.middle_with(p, c) >= need).map(Some).ok_or(())
+    }
+
+    /// The side panes made `(list, comments)`, to make room for view `l`:
+    /// the cursor, in a pane hidden, goes into the middle, as it does when
+    /// the arrow hides that pane. What was done, said, and how the panes
+    /// hidden are shown again.
+    fn make_room(&mut self, l: Layout, (list, comments): (PatchesPane, Pane)) -> String {
+        let hides_list = self.list.shown() && !list.shown();
+        let hides_notes = self.comments.shown() && !comments.shown();
+        let compact = self.comments == Pane::Expanded && comments == Pane::Compact;
+        if (hides_list && self.focus == Focus::List) || (hides_notes && self.focus == Focus::Notes) {
+            self.focus = Focus::Diff;
+        }
+        self.list = list;
+        self.comments = comments;
+        let view = l.named();
+        match (hides_list, hides_notes, compact) {
+            (false, false, _) => format!("the comments are made compact to make room for {view}"),
+            (false, true, _) => format!("the comments are hidden to make room for {view}: → out of the middle shows them again"),
+            (true, false, false) => format!("the patches are hidden to make room for {view}: ← out of the middle shows them again"),
+            (true, false, true) => {
+                format!("the patches are hidden and the comments made compact to make room for {view}: ← out of the middle shows the patches again")
+            }
+            (true, true, _) => format!("the patches and the comments are hidden to make room for {view}: ← and → out of the middle show them again"),
         }
     }
 
-    /// The code drawn as `l` from now on; two sides once the middle has room
-    /// for them.
+    /// The code drawn as `l` from now on; two sides, or two halves, once
+    /// the middle has room for them. Split in two, the other half starts as
+    /// the middle is, the cursor in the half beside the pane it is in; no
+    /// longer split, the middle is the half the cursor was in.
     pub fn set_layout(&mut self, l: Layout) {
         self.layout = l;
+        self.halves = match (l, self.halves.take()) {
+            (Layout::Halves, Some(h)) => Some(h),
+            (Layout::Halves, None) => Some(Halves {
+                right: self.focus == Focus::Notes,
+                other: Box::new(self.half_here()),
+            }),
+            _ => None,
+        };
         if l == Layout::Compact {
             self.compact.scroll = Scroll::Both;
             self.compact.cursor = None;
         }
         self.built = None;
+    }
+
+    /// The middle's own, as a half of it: the other half's, as the view is
+    /// split in two.
+    fn half_here(&self) -> Half {
+        Half {
+            rows: self.rows.clone(),
+            built: self.built.clone(),
+            subject: self.subject.clone(),
+            want: self.want.clone(),
+            cursor: self.cursor,
+            top: self.top,
+            cursor_y: self.cursor_y,
+            drawn_rows: self.drawn_rows.clone(),
+            mid_w: self.mid_w,
+            mid_h: self.mid_h,
+            keep: self.keep.clone(),
+            form: self.form,
+            panes: self.panes.clone(),
+            compact: self.compact.clone(),
+            reading: self.reading,
+            whole_files: self.whole_files,
+        }
+    }
+
+    /// The middle's own given for `h`'s, and `h` given the middle's: what
+    /// the cursor going into the other half swaps.
+    fn swap_half(&mut self, h: &mut Half) {
+        use std::mem::swap;
+        swap(&mut self.rows, &mut h.rows);
+        swap(&mut self.built, &mut h.built);
+        swap(&mut self.subject, &mut h.subject);
+        swap(&mut self.want, &mut h.want);
+        swap(&mut self.cursor, &mut h.cursor);
+        swap(&mut self.top, &mut h.top);
+        swap(&mut self.cursor_y, &mut h.cursor_y);
+        swap(&mut self.drawn_rows, &mut h.drawn_rows);
+        swap(&mut self.mid_w, &mut h.mid_w);
+        swap(&mut self.mid_h, &mut h.mid_h);
+        swap(&mut self.keep, &mut h.keep);
+        swap(&mut self.form, &mut h.form);
+        swap(&mut self.panes, &mut h.panes);
+        swap(&mut self.compact, &mut h.compact);
+        swap(&mut self.reading, &mut h.reading);
+        swap(&mut self.whole_files, &mut h.whole_files);
+    }
+
+    /// Whether the middle is split in two, as last drawn: the unified view
+    /// split in two, with the room it needs, on a patch (the stack's own
+    /// view is one).
+    fn halves_drawn(&self) -> bool {
+        self.halves.is_some() && !self.on_stack && self.screen == Screen::Main && self.middle_w >= self.cfg.view.split_width
+    }
+
+    /// Whether the cursor is in the right half of the middle split in two.
+    fn in_right(&self) -> bool {
+        self.halves.as_ref().is_some_and(|h| h.right)
+    }
+
+    /// Whether the middle's fields hold the right half's own: the half the
+    /// cursor is in, or the other one while it is drawn.
+    fn right_half_here(&self) -> bool {
+        self.halves.as_ref().is_some_and(|h| h.right != self.drawing_beside)
+    }
+
+    /// The cursor into the other half of the middle split in two: the half
+    /// it leaves keeps its own cursor and scroll, and the one it goes into
+    /// has its own again.
+    fn cross_halves(&mut self) {
+        let Some(mut h) = self.halves.take() else { return };
+        self.swap_half(&mut h.other);
+        h.right = !h.right;
+        self.halves = Some(h);
+    }
+
+    /// The cursor's half of the middle split in two, for the cursor in
+    /// `pane`: the half beside it, the left one beside the patches, the
+    /// right one beside the comments. What such a pane does in the middle
+    /// (a file gone to, a comment, the search), it does in that half, and
+    /// the arrows go from it into that half.
+    fn half_beside(&mut self, pane: Focus) {
+        let right = match pane {
+            Focus::List => false,
+            Focus::Notes => true,
+            Focus::Diff => return,
+        };
+        if self.halves_drawn() && self.in_right() != right {
+            self.cross_halves();
+        }
+    }
+
+    /// In the unified view split in two, whether the cursor is in the right
+    /// half; None in another view.
+    pub fn in_right_half(&self) -> Option<bool> {
+        self.halves.as_ref().map(|h| h.right)
+    }
+
+    /// In the unified view split in two, the half the cursor is not in.
+    pub fn other_half(&self) -> Option<&Half> {
+        self.halves.as_ref().map(|h| &*h.other)
     }
 
     /// 2: reading, or commenting.
@@ -3976,7 +4297,8 @@ impl App {
             (Some(repo), Some(base)) => Ok((PathBuf::from(repo), base.clone(), s.patches[..=sel].iter().map(|id| db.patch(id).clone()).collect())),
             _ => Err(format!("the stack {} has no base commit to read them on", s.name)),
         });
-        if got.is_none() && starting {
+        // Said of the half of the middle the cursor is in alone.
+        if got.is_none() && starting && !self.drawing_beside {
             self.status = READING_WHOLE.into();
         }
         got
@@ -4429,6 +4751,7 @@ impl App {
                     self.whole_help()
                 ));
                 out.push(THREE_KEYS.into());
+                out.extend(self.view_help());
                 out.push(self.arrows_help());
             }
             Screen::Main => {
@@ -4467,14 +4790,14 @@ impl App {
                             .into(),
                     ),
                 }
-                let next = self.layout.next().label();
                 let whole = self.whole_help();
                 out.push(if self.reading {
-                    format!("Press 1 for the {next} view of the code; 2 to comment rather than read; {whole}.")
+                    format!("Press 1 to pick the view of the code: {VIEWS}; 2 to comment rather than read; {whole}.")
                 } else {
-                    format!("Press 1 for the {next} view of the code; 2 to read: to mark the code read, a block at a time; {whole}.")
+                    format!("Press 1 to pick the view of the code: {VIEWS}; 2 to read: to mark the code read, a block at a time; {whole}.")
                 });
                 out.push(THREE_KEYS.into());
+                out.extend(self.view_help());
                 if let Some(why) = self.read_only() {
                     out.push(format!("This stack is {why}. Comments can still be added."));
                 }
@@ -4573,6 +4896,7 @@ impl App {
             ("Press 3 ", format!("Press {} ", l(Key::Whole))),
             ("; 3 to", format!("; {} to", l(Key::Whole))),
             ("1, 2 and 3 go", format!("{}, {} and {} go", l(Key::View), l(Key::Read), l(Key::Whole))),
+            ("1, 2, 3 and / act", format!("{}, {}, {} and {} act", l(Key::View), l(Key::Read), l(Key::Whole), l(Key::Find))),
             ("1: view", format!("{}: view", l(Key::View))),
             ("2: read", format!("{}: read", l(Key::Read))),
             ("2: comment", format!("{}: comment", l(Key::Read))),
@@ -4597,11 +4921,37 @@ impl App {
             return format!("{keys}.");
         }
         let mut keys = "Press ↑↓ (pgup pgdn home end) to move".to_string();
-        keys += if self.list.shown() { ", ← for the patches" } else { ", ← to show the patches" };
-        if !self.subject_notes().is_empty() {
+        // The middle split in two: ← → from one half to the other first.
+        let halves = self.halves_drawn();
+        keys += match (halves && self.in_right(), self.list.shown()) {
+            (true, _) => ", ← for the left half",
+            (false, true) => ", ← for the patches",
+            (false, false) => ", ← to show the patches",
+        };
+        if halves && !self.in_right() {
+            keys += ", → for the right half";
+        } else if !self.subject_notes().is_empty() {
             keys += if self.comments.shown() { ", → for the comments" } else { ", → to show the comments" };
         }
         format!("{keys}.")
+    }
+
+    /// What the help says of the view of the code, when it is more than one
+    /// column: the middle too narrow for it, that the code is unified
+    /// meanwhile, and how the room is made; split in two, what each half
+    /// has of its own. A stack has no sides, nor halves.
+    fn view_help(&self) -> Option<String> {
+        if self.on_stack || !self.layout.wide() {
+            return None;
+        }
+        if !self.sides_fit() {
+            return Some(format!(
+                "The middle is under {} columns, too narrow for {}: the code is unified until the middle has room. Press 1 and pick the view again to make the room.",
+                self.cfg.view.split_width,
+                self.layout.named()
+            ));
+        }
+        (self.layout == Layout::Halves).then(|| HALVES.to_string())
     }
 
     /// History…'s keys: ↑↓ in the pane the cursor is in, ← → from one to
@@ -6227,6 +6577,7 @@ impl App {
                 let show = s.name();
                 self.edit(|db| db.set_view(&name, show));
             }
+            Action::View(l) => self.pick_view(l),
             Action::Undo => {
                 self.edit(|db| {
                     ops::by_hand(db, &name)?;
@@ -8146,7 +8497,7 @@ impl App {
                 let (left_w, right_w) = self.side_widths(body.width as usize, self.list, right, wide);
                 let (left, (middle, right)) = self.columns(buf, body, left_w, right_w);
                 // The middle first: the comments pane lists its rows.
-                cursor = self.draw_patch(buf, middle).or(cursor);
+                cursor = self.draw_middle(buf, middle).or(cursor);
                 if let Some(left) = left {
                     cursor = self.draw_list(buf, left).or(cursor);
                 }
@@ -8272,10 +8623,12 @@ impl App {
     /// line whole, of every patch of the stack, so that it keeps its width
     /// as the cursor goes from patch to patch. Reading, each file's tag is
     /// counted as wide as it gets, so that the width stays as lines are
-    /// read too.
+    /// read too; in the middle split in two, reading in either half, so
+    /// that it stays as the cursor goes from one half to the other.
     fn files_wants(&self) -> usize {
         let Some(s) = self.current() else { return 0 };
-        let whitespace = self.reading.then_some(self.cfg.view.whitespace_needs_review);
+        let reading = self.reading || self.other_half().is_some_and(|h| h.reading);
+        let whitespace = reading.then_some(self.cfg.view.whitespace_needs_review);
         let widest = s.patches.iter().filter_map(|id| self.files_of(id).iter().map(|f| file_said_w(f, whitespace)).max()).max();
         widest.map_or(0, |n| FILE_INDENT + n + 1)
     }
@@ -8363,6 +8716,10 @@ impl App {
                         text += &format!(" · {}", self.layout.label());
                         if self.compact_drawn() {
                             text += &format!(" {}", self.compact.scroll.mark());
+                        }
+                        // The middle too narrow for it: unified meanwhile.
+                        if !self.sides_fit() {
+                            text += ": too narrow";
                         }
                     }
                     if self.whole_files && !self.on_stack {
@@ -8935,6 +9292,50 @@ impl App {
         })
     }
 
+    /// The middle at `area`: the patch, or the stack. In the unified view
+    /// split in two, with the room it needs, the patch in each half, a line
+    /// between them: the half the cursor is in first, as the comments pane
+    /// lists its rows; then the other.
+    fn draw_middle(&mut self, buf: &mut Buffer, area: Rect) -> Option<(u16, u16)> {
+        self.middle_w = area.width as usize;
+        if !self.halves_drawn() {
+            return self.draw_patch(buf, area);
+        }
+        // The cursor in a side pane: the half beside that pane is the
+        // cursor's.
+        self.half_beside(self.focus);
+        let w = area.width as usize;
+        let left_w = (w - 1) / 2;
+        let left = Rect::new(area.x, area.y, left_w as u16, area.height);
+        let right = Rect::new(area.x + left_w as u16 + 1, area.y, (w - 1 - left_w) as u16, area.height);
+        for y in 0..area.height {
+            buf.set_string(area.x + left_w as u16, area.y + y, "│", color::meta());
+        }
+        // Each half a region of its own, for text selected in StackED.
+        self.areas.borrow_mut().extend([left, right]);
+        let (here, there) = if self.in_right() { (right, left) } else { (left, right) };
+        let cursor = self.draw_patch(buf, here);
+        self.draw_beside(buf, there);
+        cursor
+    }
+
+    /// The half of the middle split in two that the cursor is not in, at
+    /// `area`: its own rows, built and drawn as the middle's are, its
+    /// cursor drawn as a pane's pick; its own in the middle's fields
+    /// meanwhile.
+    fn draw_beside(&mut self, buf: &mut Buffer, area: Rect) {
+        let Some(h) = self.halves.as_mut() else { return };
+        let mut other = std::mem::take(&mut *h.other);
+        self.swap_half(&mut other);
+        self.drawing_beside = true;
+        self.draw_patch(buf, area);
+        self.drawing_beside = false;
+        self.swap_half(&mut other);
+        if let Some(h) = self.halves.as_mut() {
+            *h.other = other;
+        }
+    }
+
     fn draw_patch(&mut self, buf: &mut Buffer, area: Rect) -> Option<(u16, u16)> {
         let (w, h) = (area.width as usize, area.height as usize);
         self.mid_w = w;
@@ -8946,17 +9347,25 @@ impl App {
             Layout::Unified => w,
             _ => half,
         };
+        // The other half of the middle split in two, drawn: its cursor is
+        // not the cursor, and neither the search of the middle nor the
+        // comment being written is in it.
+        let beside = self.drawing_beside;
         self.rebuild(fold.saturating_sub(margin + 1));
         // Built anew under the search of the middle: what it found, again.
-        self.find_again();
+        if !beside {
+            self.find_again();
+        }
         if self.rows.is_empty() {
             return None;
         }
         // Reading: what Space would mark read at the cursor, or else what
-        // Enter would unmark, marked in the margin.
+        // Enter would unmark, marked in the margin; in the other half, the
+        // lines read alone.
         let ticks = (margin > 0).then(|| {
             self.blocks();
             match self.reading_at() {
+                _ if beside => (Tick::ToRead, HashSet::new()),
                 Some((Some(t), _)) => (Tick::ToRead, t.new),
                 Some((None, Some((_, gone)))) => (Tick::ToUnread, gone),
                 _ => (Tick::ToRead, HashSet::new()),
@@ -8966,21 +9375,23 @@ impl App {
         // Where a comment being written here goes: under its line, or the
         // comment it answers, which then shows. Its box takes `gap` lines
         // there, and what it would hide comes after it.
-        let anchor = self.editor_anchor();
+        let anchor = if beside { None } else { self.editor_anchor() };
         let gap = if anchor.is_some() { self.editor_height(area, Focus::Diff) } else { 0 };
         let mut editor_y: Option<usize> = None;
         // Read on with Space: the row the cursor went on to, on the line it
         // was on, as long as the rows are those it was in.
         let keep = self.keep.take().filter(|(built, ..)| anchor.is_none() && self.built.as_ref() == Some(built)).map(|(_, j, y)| (j, y));
-        // Not while the cursor is on the banner: it comes back there.
-        let lit = |i: usize, app: &App| i == app.cursor && app.focus != Focus::List && !app.on_banner;
+        // Not while the cursor is on the banner: it comes back there. The
+        // other half draws its pick wherever the cursor is.
+        let lit = |i: usize, app: &App| i == app.cursor && (app.drawing_beside || (app.focus != Focus::List && !app.on_banner));
         // A patch's title, its message's first line: on the first line of
         // the middle once it is scrolled past, the rows under it.
         let title = if self.on_stack { None } else { self.rows.iter().position(|r| r.msg_at == Some(0) && r.note.is_none()) };
         // Each row drawn: the line of the pane it is on, and where it starts.
         let mut drawn: Vec<(usize, usize, usize)> = Vec::new();
         match layout {
-            Layout::Unified => {
+            // A half of the middle split in two is unified too.
+            Layout::Unified | Layout::Halves => {
                 let pinned = |top: usize| h > 2 && title.is_some_and(|t| top > t);
                 if let Some((j, y)) = keep {
                     self.top = top_for(j, y, pinned);
@@ -9170,19 +9581,30 @@ impl App {
         if anchor.is_some() {
             return self.draw_editor(buf, area, editor_y.unwrap_or(h / 3), Focus::Diff);
         }
-        self.draw_preview(buf, area, &drawn);
+        if !beside {
+            self.draw_preview(buf, area, &drawn);
+        }
         None
+    }
+
+    /// What a click on row `i` of the middle is on: in the other half of
+    /// the middle split in two, while it is drawn, its row.
+    fn row_spot(&self, i: usize) -> Spot {
+        if self.drawing_beside { Spot::Beside(i) } else { Spot::Row(i) }
     }
 
     /// The patch's title, row `t`, on the first line of the middle at
     /// `area`, `w` wide: its row is scrolled past. A click on it goes to it.
     fn draw_title(&self, buf: &mut Buffer, area: Rect, w: usize, t: usize) {
         put(buf, area, 0, 0, w, &fit(&self.rows[t].text, w), color::header());
-        self.spot(area, (0, 0, w), Spot::Row(t));
+        self.spot(area, (0, 0, w), self.row_spot(t));
     }
 
     /// Row `i` at `(x, y)`, `w` wide: in the reading mode after its margin,
     /// a check if it is read, or what Space or Enter would make of it.
+    /// `selected`, the cursor's row; in the other half of the middle split
+    /// in two, that half's pick, as a pane draws what it has picked while
+    /// the cursor is in another.
     fn draw_row(
         &self,
         buf: &mut Buffer,
@@ -9210,9 +9632,16 @@ impl App {
             x0 += MARGIN_W;
         }
         let tw = w.saturating_sub(x0 - x);
-        put_parts(buf, area, x0, y, tw, &row_parts(row, selected));
-        self.paint_found(buf, area, (x0, y, tw), i);
-        self.spot(area, (x, y, w), Spot::Row(i));
+        let parts = match selected && self.drawing_beside {
+            true => row_parts(row, false).into_iter().map(|(text, st)| (text, st.patch(color::picked()))).collect(),
+            false => row_parts(row, selected),
+        };
+        put_parts(buf, area, x0, y, tw, &parts);
+        // The search of the middle is the cursor's half's alone.
+        if !self.drawing_beside {
+            self.paint_found(buf, area, (x0, y, tw), i);
+        }
+        self.spot(area, (x, y, w), self.row_spot(i));
     }
 
     /// The last row of what a comment being written in the middle goes

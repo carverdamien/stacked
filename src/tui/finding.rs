@@ -344,7 +344,8 @@ impl App {
         // A line less, for the title pinned on the first.
         let (h, third) = (self.mid_h.saturating_sub(1).max(1), self.mid_h / 3);
         match self.drawn_layout(self.mid_w) {
-            Layout::Unified => {
+            // A half of the middle split in two is unified too.
+            Layout::Unified | Layout::Halves => {
                 if i < self.top || i >= self.top + h {
                     self.top = i.saturating_sub(third);
                 }

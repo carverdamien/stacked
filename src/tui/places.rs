@@ -4,23 +4,30 @@
 //! history of each stack, the runs, each transcript and each review. Coming
 //! back to one, the cursor is where it was: on what it was on (a line, a
 //! comment, a patch, a record, a run), found again, else at the same place.
+//! In the unified view split in two, each half of the middle keeps its own:
+//! the left half the middle's, the right half one of its own.
 
 use std::collections::HashMap;
 
 use super::*;
 
-/// Where the middle and the comments pane were on what they showed.
+/// Where the middle was on what it showed: its cursor, and what its row is
+/// (a line's key, a comment's id and turn), to find it again; where it is,
+/// for a row with neither (a line in no hunk, its file shown whole), to
+/// find it in the rows built otherwise since; how far down the middle it
+/// was.
 #[derive(Debug, Clone, Default)]
-struct PanesAt {
-    /// The middle's cursor, and what its row is (a line's key, a comment's
-    /// id and turn), to find it again; where it is, for a row with neither
-    /// (a line in no hunk, its file shown whole), to find it in the rows
-    /// built otherwise since; how far down the middle it was.
+struct MiddleAt {
     cursor: usize,
     row: (Option<String>, Option<String>, Option<usize>),
     place: Option<crate::rows::Place>,
     down: usize,
-    /// The comments pane's: on its header, or on a comment.
+}
+
+/// Where the comments pane was on what the middle showed: on its header,
+/// or on a comment.
+#[derive(Debug, Clone, Default)]
+struct NotesAt {
     notes_head: bool,
     note_sel: usize,
     note: Option<String>,
@@ -45,8 +52,10 @@ pub struct Places {
     /// its change.
     list: HashMap<String, Option<String>>,
     /// The middle and the comments pane, by what they show: the stack
-    /// (`stack:NAME`), or a patch, by its change.
-    panes: HashMap<String, PanesAt>,
+    /// (`stack:NAME`), or a patch, by its change. The middle's, then the
+    /// right half's of the middle split in two.
+    middle: [HashMap<String, MiddleAt>; 2],
+    notes: HashMap<String, NotesAt>,
     /// The history, by stack; the runs.
     lists: HashMap<String, ListAt>,
     /// How far up each run's transcript was scrolled.
@@ -66,35 +75,57 @@ impl App {
         }
     }
 
+    /// Which of the middle's places the middle's fields keep theirs in:
+    /// the middle's own, or the right half's of the middle split in two.
+    fn middle_places(&self) -> usize {
+        usize::from(self.right_half_here())
+    }
+
     /// Where the middle and the comments pane are on `subject`, what their
-    /// rows show, kept: they are to show something else.
+    /// rows show, kept: they are to show something else. The other half of
+    /// the middle split in two, drawn, keeps its own place alone: the
+    /// comments pane goes with the half the cursor is in.
     pub(super) fn keep_panes(&mut self, subject: &str) {
         let Some(place) = self.place_of(subject) else { return };
         let Some(r) = self.rows.get(self.cursor) else { return };
-        let notes = self.notes();
-        let at = PanesAt {
+        let at = MiddleAt {
             cursor: self.cursor,
             row: (r.key.clone(), r.note.clone(), r.turn),
             place: Some(crate::rows::place(&self.rows, self.cursor)),
             down: self.cursor.saturating_sub(self.top),
+        };
+        let k = self.middle_places();
+        self.places.middle[k].insert(place.clone(), at);
+        if self.drawing_beside {
+            return;
+        }
+        let notes = self.notes();
+        let at = NotesAt {
             notes_head: self.notes_head,
             note_sel: self.note_sel,
             note: notes.get(self.note_sel).map(|(_, id)| id.clone()),
         };
-        self.places.panes.insert(place, at);
+        self.places.notes.insert(place, at);
     }
 
     /// The middle and the comments pane on `subject` again, its rows built:
-    /// their cursors where they were, if they were on it before.
+    /// their cursors where they were, if they were on it before; the other
+    /// half of the middle split in two, its own alone.
     pub(super) fn back_to_panes(&mut self, subject: &str) {
-        let Some(at) = self.place_of(subject).and_then(|p| self.places.panes.get(&p).cloned()) else { return };
-        let known = at.row.0.is_some() || at.row.1.is_some();
-        let found = match known {
-            true => self.rows.iter().position(|r| (r.key.clone(), r.note.clone(), r.turn) == at.row),
-            false => at.place.as_ref().filter(|_| !self.rows.is_empty()).map(|p| crate::rows::find(&self.rows, p).0),
-        };
-        self.cursor = found.unwrap_or(at.cursor).min(self.rows.len().saturating_sub(1));
-        self.top = self.cursor.saturating_sub(at.down);
+        let Some(place) = self.place_of(subject) else { return };
+        if let Some(at) = self.places.middle[self.middle_places()].get(&place).cloned() {
+            let known = at.row.0.is_some() || at.row.1.is_some();
+            let found = match known {
+                true => self.rows.iter().position(|r| (r.key.clone(), r.note.clone(), r.turn) == at.row),
+                false => at.place.as_ref().filter(|_| !self.rows.is_empty()).map(|p| crate::rows::find(&self.rows, p).0),
+            };
+            self.cursor = found.unwrap_or(at.cursor).min(self.rows.len().saturating_sub(1));
+            self.top = self.cursor.saturating_sub(at.down);
+        }
+        if self.drawing_beside {
+            return;
+        }
+        let Some(at) = self.places.notes.get(&place).cloned() else { return };
         let notes = self.notes();
         self.notes_head = at.notes_head;
         let note = at.note.as_ref().and_then(|id| notes.iter().position(|(_, n)| n == id));

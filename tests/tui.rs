@@ -232,6 +232,34 @@ fn choose(app: &mut App, label: &str) -> Effect {
     e
 }
 
+/// Opens the menu of the views (1), and picks the view whose name starts
+/// with `name`, past the mark of the one the code is drawn in: ↓ to it,
+/// and Enter.
+fn pick_view(app: &mut App, name: &str) {
+    pick_view_at(app, name, 120);
+}
+
+/// As `pick_view`, the screen drawn `w` columns wide after each key.
+fn pick_view_at(app: &mut App, name: &str, w: u16) {
+    assert_eq!(key(app, KeyCode::Char('1')), Effect::None);
+    draw_sized(app, w, 30);
+    let all = items(app);
+    let want = all
+        .iter()
+        .position(|(l, _)| l.trim_start_matches(['●', ' ']).starts_with(name))
+        .unwrap_or_else(|| panic!("no view {name:?} in {all:?}"));
+    for _ in 0..all.len() * 2 {
+        match &app.mode {
+            Mode::Menu(m) if m.sel == want => break,
+            _ => {
+                key(app, KeyCode::Down);
+            }
+        }
+    }
+    assert_eq!(key(app, KeyCode::Enter), Effect::None);
+    draw_sized(app, w, 30);
+}
+
 /// Writes `text` in the editor open, and saves it.
 fn save(app: &mut App, text: &str) {
     assert!(matches!(app.mode, Mode::Edit(_)), "{:?}", app.mode);
@@ -533,13 +561,14 @@ fn clicked_in_and_out_of_the_editor(app: &mut App, open: impl Fn(&mut App), out:
 fn a_click_out_of_the_comment_being_written_is_esc_and_one_in_it_puts_the_cursor_there() {
     let (_tmp, db, _src) = setup();
     let mut app = open(&db).unwrap();
-    // A comment on a line, in the middle, in each of the three views of the
-    // code; out of its box, a patch.
+    // A comment on a line, in the middle, in each of the four views of the
+    // code (split in two, in the half the cursor is in); out of its box, a
+    // patch.
     keys(&mut app, &[KeyCode::Right]);
     down_to(&mut app, "+TWO");
-    for _ in 0..3 {
+    for next in ["Side by side", "Side by side, compact", "Unified, split in two", "Unified"] {
         clicked_in_and_out_of_the_editor(&mut app, |app| keys(app, &[KeyCode::Enter]), "Bug 2 - add b");
-        keys(&mut app, &[KeyCode::Char('1')]);
+        pick_view(&mut app, next);
     }
     // A comment on the patch, under its title in the patches pane; out of
     // its box, a line of the patch.
@@ -843,7 +872,8 @@ fn the_compact_panes_keep_the_cursor_in_sight_on_a_shorter_screen() {
     let (_tmp, db, _src) = setup();
     let mut app = open(&db).unwrap();
     draw(&mut app);
-    keys(&mut app, &[KeyCode::Enter, KeyCode::Char('1'), KeyCode::Char('1')]);
+    keys(&mut app, &[KeyCode::Enter]);
+    pick_view(&mut app, "Side by side, compact");
     assert_eq!(app.layout, Layout::Compact);
     down_to(&mut app, "+TWO");
     // Drawn 10 lines high, the cursor's line past the panes: its row comes
@@ -859,21 +889,75 @@ fn the_compact_panes_keep_the_cursor_in_sight_on_a_shorter_screen() {
 }
 
 #[test]
-fn one_cycles_the_views_of_the_code() {
+fn one_opens_the_menu_of_the_views_the_one_drawn_marked() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    draw(&mut app);
+    keys(&mut app, &[KeyCode::Enter]);
+    // 1: the menu of the views, the one the code is drawn in marked and
+    // picked.
+    keys(&mut app, &[KeyCode::Char('1')]);
+    assert_eq!(menu_title(&app), "the view");
+    let labels = |app: &App| items(app).into_iter().map(|(l, _)| l).collect::<Vec<_>>();
+    assert_eq!(labels(&app), ["● Unified", "  Side by side", "  Side by side, compact", "  Unified, split in two"]);
+    assert!(matches!(&app.mode, Mode::Menu(m) if m.sel == 0), "{:?}", app.mode);
+    // Esc leaves things as they are.
+    keys(&mut app, &[KeyCode::Esc]);
+    assert_eq!((app.mode.clone(), app.layout, app.status.as_str()), (Mode::Normal, Layout::Unified, ""));
+    // Enter picks: side by side, marked and picked the next time.
+    keys(&mut app, &[KeyCode::Char('1'), KeyCode::Down, KeyCode::Enter]);
+    assert_eq!((app.mode.clone(), app.layout, app.status.as_str()), (Mode::Normal, Layout::Split, "side-by-side view"));
+    keys(&mut app, &[KeyCode::Char('1')]);
+    assert_eq!(labels(&app)[..2], ["  Unified", "● Side by side"]);
+    assert!(matches!(&app.mode, Mode::Menu(m) if m.sel == 1), "{:?}", app.mode);
+    // ? says what an item draws.
+    keys(&mut app, &[KeyCode::Down, KeyCode::Down, KeyCode::Char('?')]);
+    let help = draw(&mut app);
+    assert!(help.contains("Press Enter to draw the patch twice, unified in each half"), "{help}");
+    keys(&mut app, &[KeyCode::Char('?')]);
+    // A click picks: unified, split in two.
+    let screen = draw(&mut app);
+    let (x, y) = at(&screen, "Unified, split in two");
+    assert_eq!(app.click(x, y, false), Effect::None);
+    assert_eq!((app.mode.clone(), app.layout), (Mode::Normal, Layout::Halves));
+    assert!(app.status.starts_with("unified view, split in two: each half has its own cursor"), "{}", app.status);
+    assert!(draw(&mut app).contains("· unified, split in two"), "the bar says so");
+    // Esc from the menu, again: split in two still.
+    keys(&mut app, &[KeyCode::Char('1'), KeyCode::Up, KeyCode::Esc]);
+    assert_eq!(app.layout, Layout::Halves);
+    // The view is 1's: it is not in the menu Space opens.
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    assert!(!items(&app).iter().any(|(l, _)| l.contains("view")), "{:?}", items(&app));
+    keys(&mut app, &[KeyCode::Esc]);
+    // 1 is the settings' `view`: another key opens the menu, and 1 does
+    // nothing.
+    let (cfg, wrong) = stacked::config::Config::parse("[keys]\nview = \"v\"\n").unwrap();
+    assert!(wrong.is_empty(), "{wrong:?}");
+    stacked::config::init(settings());
+    let mut app = App::with_config(&db, cfg).unwrap();
+    draw(&mut app);
+    keys(&mut app, &[KeyCode::Char('1')]);
+    assert_eq!(app.mode, Mode::Normal);
+    keys(&mut app, &[KeyCode::Char('v')]);
+    assert_eq!(menu_title(&app), "the view");
+}
+
+#[test]
+fn each_view_of_the_code_is_drawn_as_it_says() {
     let (_tmp, db, _src) = setup();
     let mut app = open(&db).unwrap();
     draw(&mut app);
     keys(&mut app, &[KeyCode::Enter]);
     assert_eq!(app.focus, Focus::Diff);
     // Side by side: the old line on the left, the new on the right.
-    keys(&mut app, &[KeyCode::Char('1')]);
+    pick_view(&mut app, "Side by side");
     assert_eq!(app.layout, Layout::Split);
     let screen = draw(&mut app);
     let line = screen.lines().find(|l| l.contains("-two")).unwrap();
     assert!(line.contains("+TWO"), "{line}");
     assert!(screen.contains("· side-by-side"), "{screen}");
     // Compact: each side a pane of its own, scrolled together, or one alone.
-    keys(&mut app, &[KeyCode::Char('1')]);
+    pick_view(&mut app, "Side by side, compact");
     assert_eq!(app.layout, Layout::Compact);
     let screen = draw(&mut app);
     assert!(screen.contains("side-by-side, compact <>"), "{screen}");
@@ -893,11 +977,266 @@ fn one_cycles_the_views_of_the_code() {
     keys(&mut app, &[KeyCode::Left, KeyCode::Left, KeyCode::Left]);
     assert_eq!(app.focus, Focus::List);
     // And back to one column.
-    keys(&mut app, &[KeyCode::Char('1')]);
+    pick_view(&mut app, "Unified");
     assert_eq!(app.layout, Layout::Unified);
-    // The view is 1's: it is not in the menu.
+}
+
+#[test]
+fn split_in_two_each_half_has_its_own_cursor_and_scroll_and_the_arrows_go_from_pane_to_pane() {
+    use ratatui::style::{Color, Modifier};
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    draw(&mut app);
+    keys(&mut app, &[KeyCode::Enter]);
+    pick_view(&mut app, "Unified, split in two");
+    assert_eq!((app.layout, app.in_right_half(), app.focus), (Layout::Halves, Some(false), Focus::Diff));
+    // Both halves drawn, the patch in each: from column 31, 44 columns each
+    // side of a line at column 75, each a region of its own (StackED keeps
+    // a selection to one).
+    let screen = draw(&mut app);
+    assert_eq!((at_from(&screen, "✉ message", 31).0, at_from(&screen, "✉ message", 32).0), (31, 76), "{screen}");
+    assert!(screen.lines().skip(1).take(28).all(|l| l.chars().nth(75) == Some('│')), "{screen}");
+    let regions = app.regions();
+    assert!(regions.contains(&Rect::new(31, 1, 44, 28)) && regions.contains(&Rect::new(76, 1, 44, 28)), "{regions:?}");
+    // Each half its own cursor: down in the left one, the right one where
+    // it was; → into the right half, and ← back, each where it was.
+    down_to(&mut app, "+TWO");
+    let two = app.cursor;
+    assert_eq!(app.other_half().unwrap().cursor, 0);
+    keys(&mut app, &[KeyCode::Right]);
+    assert_eq!((app.in_right_half(), app.focus, app.cursor), (Some(true), Focus::Diff, 0));
+    assert_eq!(app.other_half().unwrap().cursor, two);
+    // The left half's cursor drawn as a pane draws what it has picked, on a
+    // grey background; the right half's as the cursor.
+    let buf = drawn(&mut app, 30);
+    let (x, y) = at_from(&text_of(&buf), "+TWO", 31);
+    assert!(buf[(x + 1, y)].bg == Color::Indexed(238) && !buf[(x + 1, y)].modifier.contains(Modifier::REVERSED), "{:?}", buf[(x + 1, y)]);
+    let (x, y) = at_from(&text_of(&buf), "✉ message", 76);
+    assert!(buf[(x + 1, y)].modifier.contains(Modifier::REVERSED), "{:?}", buf[(x + 1, y)]);
+    keys(&mut app, &[KeyCode::Left]);
+    assert_eq!((app.in_right_half(), app.cursor), (Some(false), two));
+    // A click in the other half: the cursor into it, on the row clicked.
+    // The mouse over the other half, the same: the cursor follows the mouse
+    // in the middle.
+    let screen = draw(&mut app);
+    let (x, y) = at_from(&screen, "-two", 76);
+    assert_eq!(app.click(x, y, false), Effect::None);
+    assert_eq!((app.in_right_half(), app.focus, on_row(&app).as_str()), (Some(true), Focus::Diff, "-two"));
+    let screen = draw(&mut app);
+    let (x, y) = at_from(&screen, " three", 31);
+    app.hover(x, y);
+    assert_eq!((app.in_right_half(), on_row(&app).as_str()), (Some(false), " three"));
+    // Scrolled apart, on a short screen: the right half to its end, the
+    // left one where it was.
+    keys(&mut app, &[KeyCode::Right]);
+    draw_sized(&mut app, 120, 12);
+    let left_top = app.other_half().unwrap().top;
+    key(&mut app, KeyCode::End);
+    draw_sized(&mut app, 120, 12);
+    assert!(app.top > 0 && app.cursor + 1 == app.rows.len(), "{}", app.top);
+    assert_eq!(app.other_half().unwrap().top, left_top);
+    // ← → as from pane to pane: from the right half to the left one, then
+    // to the patches; and back. Esc in the right half is ← too.
+    keys(&mut app, &[KeyCode::Left, KeyCode::Left]);
+    assert_eq!((app.focus, app.in_right_half()), (Focus::List, Some(false)));
+    keys(&mut app, &[KeyCode::Right]);
+    assert_eq!((app.focus, app.in_right_half()), (Focus::Diff, Some(false)));
+    keys(&mut app, &[KeyCode::Right]);
+    assert_eq!((app.focus, app.in_right_half()), (Focus::Diff, Some(true)));
+    keys(&mut app, &[KeyCode::Right]);
+    assert_eq!((app.focus, app.in_right_half()), (Focus::Diff, Some(true)), "no comments to go to");
+    keys(&mut app, &[KeyCode::Esc]);
+    assert_eq!((app.focus, app.in_right_half()), (Focus::Diff, Some(false)));
+    // A patch clicked from the right half: the cursor's half is the left
+    // one, beside the patches; the patch in both halves, from its top.
+    keys(&mut app, &[KeyCode::Right]);
+    let screen = draw(&mut app);
+    let (x, y) = at(&screen, "Bug 2 - add b");
+    app.click(x, y, false);
+    assert_eq!((app.focus, app.in_right_half(), app.sel), (Focus::List, Some(false), 1));
+    draw(&mut app);
+    assert_eq!((app.cursor, app.other_half().unwrap().cursor), (0, 0));
+    assert!(app.other_half().unwrap().rows.iter().any(|r| r.text.starts_with("+bee")));
+    // ? says where the arrows go, and what each half has of its own.
+    keys(&mut app, &[KeyCode::Right]);
+    let help = app.help();
+    assert!(help.iter().any(|l| l == "Press ↑↓ (pgup pgdn home end) to move, ← for the patches, → for the right half."), "{help:?}");
+    assert!(help.iter().any(|l| l.starts_with("The middle is split in two, the patch in each half: each half has its own cursor")), "{help:?}");
+}
+
+#[test]
+fn split_in_two_comments_and_read_marks_are_made_from_the_cursor_s_half_and_show_in_both() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    draw(&mut app);
+    // The patches hidden: the halves have their room beside the comments
+    // too, the middle 89 columns from column 0, a half of 44 each side of
+    // a line at column 44.
+    keys(&mut app, &[KeyCode::Left, KeyCode::Left]);
+    assert_eq!((app.list, app.focus), (PatchesPane::Hidden, Focus::Diff));
+    pick_view(&mut app, "Unified, split in two");
+    let halves = |app: &mut App| {
+        let screen = draw(app);
+        let cut = |from: usize| screen.lines().map(|l| l.chars().skip(from).take(44).collect::<String>()).collect::<Vec<_>>().join("\n");
+        (cut(0), cut(45))
+    };
+    // A comment written from the right half: on the line its cursor is on,
+    // shown in both halves under that line.
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "+TWO");
+    let line = app.rows[app.cursor].key.clone().unwrap();
+    keys(&mut app, &[KeyCode::Enter]);
+    save(&mut app, "why so loud?");
+    assert_eq!(notes_of(&db, "s", 0)[0].line, line);
+    assert_eq!((app.layout, app.in_right_half()), (Layout::Halves, Some(true)));
+    let (left, right) = halves(&mut app);
+    assert!(left.contains("why so loud?") && right.contains("why so loud?"), "{left}\n{right}");
+    // Space opens the menu of the row of the cursor's half: in the right
+    // half, the line's; in the left one, on its first row, another.
+    keys(&mut app, &[KeyCode::Home]);
+    down_to(&mut app, "+TWO");
     keys(&mut app, &[KeyCode::Char(' ')]);
-    assert!(!items(&app).iter().any(|(l, _)| l.contains("view")), "{:?}", items(&app));
+    let there = menu_title(&app);
+    assert!(there.starts_with("line: "), "{there}");
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Left, KeyCode::Char(' ')]);
+    assert_ne!(menu_title(&app), there);
+    keys(&mut app, &[KeyCode::Esc]);
+    // The comment clicked in the comments pane (from column 90), from the
+    // left half: the cursor's half is the right one, beside the comments;
+    // clicked again, the comment is gone to there.
+    assert_eq!(app.in_right_half(), Some(false));
+    let (x, y) = at_from(&draw(&mut app), "why so loud?", 90);
+    app.click(x, y, false);
+    assert_eq!((app.focus, app.in_right_half()), (Focus::Notes, Some(true)));
+    app.click(x, y, false);
+    assert_eq!((app.focus, app.in_right_half()), (Focus::Diff, Some(true)));
+    assert!(app.rows[app.cursor].note.is_some(), "{:?}", app.rows[app.cursor]);
+    // Reading in the right half alone: Space marks the block at its cursor
+    // read; the left half, commenting, shows no mark; reading too, the
+    // same mark.
+    keys(&mut app, &[KeyCode::Char('2')]);
+    assert!(app.reading && !app.other_half().unwrap().reading);
+    app.wait_blocks();
+    keys(&mut app, &[KeyCode::Home]);
+    down_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    assert!(app.status.starts_with("read: this hunk, 2 lines"), "{}", app.status);
+    assert!(app.db.read_keys(&app.subject_change().unwrap()).contains(&line));
+    let (left, right) = halves(&mut app);
+    assert!(right.contains("  ✓ +TWO") && !left.contains('✓'), "{left}\n{right}");
+    keys(&mut app, &[KeyCode::Left, KeyCode::Char('2')]);
+    app.wait_blocks();
+    let (left, _) = halves(&mut app);
+    assert!(app.reading && left.contains("  ✓ +TWO"), "{left}");
+}
+
+#[test]
+fn split_in_two_the_search_and_each_file_whole_are_the_cursor_s_half_s_and_each_half_keeps_its_place() {
+    use ratatui::style::Modifier;
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    draw(&mut app);
+    keys(&mut app, &[KeyCode::Enter]);
+    pick_view(&mut app, "Unified, split in two");
+    keys(&mut app, &[KeyCode::Right]);
+    assert_eq!(app.in_right_half(), Some(true));
+    // / in the right half: its cursor on the match, the left half's where
+    // it was, its own lines not lit.
+    keys(&mut app, &[KeyCode::Char('/')]);
+    typed(&mut app, "line 39");
+    draw(&mut app);
+    assert_eq!((on_row(&app).as_str(), app.other_half().unwrap().cursor), ("-line 39", 0));
+    let buf = drawn(&mut app, 30);
+    let left = attrs(&buf, "-line 39", MIDDLE);
+    assert!(left.iter().all(|m| !m.contains(Modifier::REVERSED) && !m.contains(Modifier::BOLD)), "{left:?}");
+    let right = attrs(&buf, "-line 39", 76);
+    assert!(right[1..].iter().all(|m| m.contains(Modifier::BOLD | Modifier::UNDERLINED)), "{right:?}");
+    // Esc: the right half back where it was. Enter: on the match.
+    keys(&mut app, &[KeyCode::Esc]);
+    assert_eq!((app.in_right_half(), app.cursor, app.top), (Some(true), 0, 0));
+    keys(&mut app, &[KeyCode::Char('/')]);
+    typed(&mut app, "line 39");
+    keys(&mut app, &[KeyCode::Enter]);
+    assert_eq!((app.mode.clone(), on_row(&app).as_str(), app.other_half().unwrap().cursor), (Mode::Normal, "-line 39", 0));
+    // 3 in the right half: its files whole, the left half's hunks as they
+    // were; the bar says the cursor's half's.
+    keys(&mut app, &[KeyCode::Char('3')]);
+    app.wait_files();
+    let screen = draw(&mut app);
+    assert!(app.whole_files && !app.rows.iter().any(|r| r.text.starts_with("@@")), "{screen}");
+    let left = app.other_half().unwrap();
+    assert!(!left.whole_files && left.rows.iter().any(|r| r.text.starts_with("@@")));
+    assert!(screen.contains("· whole files"), "{screen}");
+    assert_eq!(on_row(&app), "-line 39", "the cursor on its line");
+    keys(&mut app, &[KeyCode::Left]);
+    assert!(!app.whole_files && !draw(&mut app).contains("· whole files"));
+    // Another patch: in both halves, from its top, neither having been on
+    // it. Back on the first, each half where it was.
+    down_to(&mut app, "+LINE 39");
+    keys(&mut app, &[KeyCode::Left, KeyCode::Down]);
+    assert_eq!((app.focus, app.sel), (Focus::List, 1));
+    draw(&mut app);
+    assert_eq!((app.cursor, app.other_half().unwrap().cursor), (0, 0));
+    assert!(app.rows.iter().any(|r| r.text.starts_with("+bee")));
+    keys(&mut app, &[KeyCode::Up]);
+    app.wait_files();
+    draw(&mut app);
+    assert_eq!(on_row(&app), "+LINE 39");
+    let right = app.other_half().unwrap();
+    assert!(right.whole_files && right.rows[right.cursor].text == "-line 39", "{:?}", right.rows[right.cursor].text);
+    // Out of the split view: the middle is the cursor's half, its cursor
+    // and its files whole with it.
+    keys(&mut app, &[KeyCode::Right, KeyCode::Right]);
+    assert_eq!(app.in_right_half(), Some(true));
+    pick_view(&mut app, "Unified");
+    assert_eq!((app.layout, app.in_right_half(), on_row(&app).as_str(), app.whole_files), (Layout::Unified, None, "-line 39", true));
+}
+
+#[test]
+fn split_in_two_is_a_layout_of_the_settings_as_the_others_are() {
+    let (_tmp, db, _src) = setup();
+    let (cfg, wrong) = stacked::config::Config::parse("[view]\nlayout = \"unified-split\"\n").unwrap();
+    assert!(wrong.is_empty(), "{wrong:?}");
+    stacked::config::init(settings());
+    let mut app = App::with_config(&db, cfg).unwrap();
+    assert_eq!((app.layout, app.in_right_half()), (Layout::Halves, Some(false)));
+    keys(&mut app, &[KeyCode::Enter]);
+    let screen = draw(&mut app);
+    assert!(screen.contains("· unified, split in two"), "{screen}");
+    assert_eq!((at_from(&screen, "✉ message", 31).0, at_from(&screen, "✉ message", 32).0), (31, 76), "{screen}");
+    keys(&mut app, &[KeyCode::Char('1')]);
+    assert_eq!(items(&app)[3].0, "● Unified, split in two");
+}
+
+#[test]
+fn split_in_two_on_a_middle_too_narrow_is_one_view_and_says_so() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Enter]);
+    save(&mut app, "why so loud?");
+    pick_view(&mut app, "Unified, split in two");
+    assert_eq!((app.layout, app.comments), (Layout::Halves, Pane::Compact));
+    // The comments expanded again (from the right half, → on them hides
+    // them, and → again shows them expanded): the middle 58 columns, too
+    // narrow for two halves; the cursor's half alone, unified, the bar and
+    // ? saying so.
+    keys(&mut app, &[KeyCode::Right, KeyCode::Right, KeyCode::Right, KeyCode::Right]);
+    assert_eq!((app.comments, app.focus, app.in_right_half()), (Pane::Expanded, Focus::Notes, Some(true)));
+    let screen = draw(&mut app);
+    assert!(screen.contains("· unified, split in two: too narrow"), "{screen}");
+    assert!(screen.lines().all(|l| l.matches("+TWO").count() < 2), "one view:\n{screen}");
+    keys(&mut app, &[KeyCode::Left]);
+    assert_eq!(app.focus, Focus::Diff);
+    let help = app.help();
+    let said = "The middle is under 60 columns, too narrow for two halves: the code is unified until the middle has room. Press 1 and pick the view again to make the room.";
+    assert!(help.iter().any(|l| l == said), "{help:?}");
+    // Picked again: the room made again, the halves drawn.
+    pick_view(&mut app, "Unified, split in two");
+    assert_eq!((app.comments, app.status.as_str()), (Pane::Compact, "the comments are made compact to make room for two halves"));
+    let screen = draw(&mut app);
+    assert!(!screen.contains("too narrow") && screen.lines().any(|l| l.matches("+TWO").count() == 2), "{screen}");
 }
 
 #[test]
@@ -1110,7 +1449,9 @@ fn question_mark_says_what_can_be_done_where_the_cursor_is() {
     key(&mut app, KeyCode::Char('?'));
     let screen = draw(&mut app);
     assert!(screen.contains("Press Enter to create a comment on this line."), "{screen}");
-    assert!(screen.contains("Press 1 for the side-by-side view of the code; 2 to read"), "{screen}");
+    assert!(screen.contains("Press 1 to pick the view of the code: unified, side by"), "{screen}");
+    let one = "Press 1 to pick the view of the code: unified, side by side, side by side compact, or unified split in two; 2 to read";
+    assert!(app.help().iter().any(|l| l.starts_with(one)), "{:?}", app.help());
     // Enter after reading it does just that.
     keys(&mut app, &[KeyCode::Enter]);
     save(&mut app, "why so loud?");
@@ -1374,7 +1715,8 @@ fn a_search_of_the_middle_side_by_side_goes_to_the_row_of_either_side() {
     let (_tmp, db, _src) = setup();
     let mut app = open(&db).unwrap();
     draw(&mut app);
-    keys(&mut app, &[KeyCode::Right, KeyCode::Char('1')]);
+    keys(&mut app, &[KeyCode::Right]);
+    pick_view(&mut app, "Side by side");
     assert_eq!(app.layout, Layout::Split);
     keys(&mut app, &[KeyCode::Char('/')]);
     typed(&mut app, "two");
@@ -1391,7 +1733,7 @@ fn a_search_of_the_middle_side_by_side_goes_to_the_row_of_either_side() {
     assert_eq!(on_row(&app), "+TWO", "the new side's");
     keys(&mut app, &[KeyCode::Esc]);
     // Compact, each side a pane of its own: the same.
-    keys(&mut app, &[KeyCode::Char('1')]);
+    pick_view(&mut app, "Side by side, compact");
     assert_eq!(app.layout, Layout::Compact);
     keys(&mut app, &[KeyCode::Char('/')]);
     typed(&mut app, "two");
@@ -1917,14 +2259,19 @@ fn three_keeps_the_cursor_on_its_line_and_out_of_the_whole_files_goes_to_the_clo
     whole(&mut app);
     assert_eq!(app.rows[app.cursor].text, " line 36");
     // 1, 2 and 3 in any order: the cursor on its line, on its line of the
-    // screen.
+    // screen; 1 picking each view in turn, split in two too, where 2 and 3
+    // are the left half's, then back to unified.
     down_to(&mut app, "+LINE 39");
     let mut y = cursor_line_y(&mut app);
     keys(&mut app, &[KeyCode::Left, KeyCode::Left, KeyCode::Left]);
     assert!(app.focus == Focus::Diff && !app.list.shown(), "the patches hidden, for two sides to fit");
     kept_on_its_line(&mut app, &mut y, "the patches hidden");
-    for k in ['1', '2', '3', '1', '3', '2', '1', '3', '2', '3'] {
-        keys(&mut app, &[KeyCode::Char(k)]);
+    let mut views = ["Side by side", "Side by side, compact", "Unified, split in two", "Unified"].into_iter();
+    for k in ['1', '2', '3', '1', '3', '2', '1', '3', '2', '1', '3'] {
+        match k {
+            '1' => pick_view(&mut app, views.next().unwrap()),
+            k => keys(&mut app, &[KeyCode::Char(k)]),
+        }
         app.wait_files();
         app.wait_blocks();
         draw(&mut app);
@@ -1959,7 +2306,7 @@ fn the_three_keys_combine_each_view_of_the_code_commenting_or_reading_the_hunks_
     keys(&mut app, &[KeyCode::Left, KeyCode::Left, KeyCode::Left]);
     let mut y = cursor_line_y(&mut app);
     let mut seen = Vec::new();
-    for layout in [Layout::Unified, Layout::Split, Layout::Compact] {
+    for (layout, next) in [(Layout::Unified, "Side by side"), (Layout::Split, "Side by side, compact"), (Layout::Compact, "Unified")] {
         for reading in [false, true] {
             for whole in [false, true] {
                 app.wait_files();
@@ -2002,7 +2349,7 @@ fn the_three_keys_combine_each_view_of_the_code_commenting_or_reading_the_hunks_
             }
             keys(&mut app, &[KeyCode::Char('2')]);
         }
-        keys(&mut app, &[KeyCode::Char('1')]);
+        pick_view(&mut app, next);
     }
     assert_eq!(seen.len(), 12, "{seen:?}");
 }
@@ -2029,11 +2376,12 @@ fn whole_a_line_in_no_hunk_is_folded_takes_no_read_mark_and_the_files_listed_go_
     keys(&mut app, &[KeyCode::Down]);
     let piece = app.rows[app.cursor].clone();
     assert!(piece.cont && piece.outside && piece.new_no == Some(10), "{piece:?}");
-    keys(&mut app, &[KeyCode::Left, KeyCode::Left, KeyCode::Char('1')]);
+    keys(&mut app, &[KeyCode::Left, KeyCode::Left]);
+    pick_view(&mut app, "Side by side");
     assert_eq!(app.layout, Layout::Split);
     let r = &app.rows[app.cursor];
     assert!(r.cont && r.outside && r.new_no == Some(10) && !app.rows[app.cursor - 1].cont, "{r:?}");
-    keys(&mut app, &[KeyCode::Char('1'), KeyCode::Char('1')]);
+    pick_view(&mut app, "Unified");
     // Reading: no read mark goes on it, and Space goes on to the next line
     // not read, none here; Enter takes none back.
     keys(&mut app, &[KeyCode::Char('2')]);
@@ -2333,15 +2681,15 @@ fn listing_files_the_comments_pane_and_the_compact_view_are_as_they_were() {
     assert!(draw(&mut app).contains("you · a.txt: TWO"));
     keys(&mut app, &[KeyCode::Right]);
     assert!(!app.notes_shown() && app.focus == Focus::Diff);
-    // 1: side by side, then the compact view, each side a pane.
-    keys(&mut app, &[KeyCode::Char('1'), KeyCode::Char('1')]);
+    // 1: the compact view, each side a pane.
+    pick_view(&mut app, "Side by side, compact");
     assert_eq!(app.layout, Layout::Compact);
     assert!(draw(&mut app).contains("side-by-side, compact <>"));
     assert_eq!(app.list, PatchesPane::Files, "the patches as they were");
 }
 
 #[test]
-fn side_by_side_too_narrow_says_what_gives_the_middle_room() {
+fn a_view_of_two_sides_or_halves_makes_its_room_hiding_as_little_as_it_can() {
     let (_tmp, db, _src) = setup();
     let mut app = open(&db).unwrap();
     // A comment beside patch 1: on 120 columns, the patches and the
@@ -2350,33 +2698,90 @@ fn side_by_side_too_narrow_says_what_gives_the_middle_room() {
     down_to(&mut app, "+TWO");
     keys(&mut app, &[KeyCode::Enter]);
     save(&mut app, "why so loud?");
-    // What 1 says fits on the status line, as long as the screen is wide.
-    let one = |app: &mut App| {
-        keys(app, &[KeyCode::Char('1')]);
-        assert!(app.status.chars().count() < 120, "{}", app.status);
-        app.status.clone()
-    };
-    let said = one(&mut app);
-    assert_eq!(said, "side-by-side needs 60 columns: press ← twice on the patches to hide them, or → on the comments to make them compact");
-    assert_eq!(app.layout, Layout::Unified);
-    // Listing the files gives no room: ← once more hides the patches.
-    keys(&mut app, &[KeyCode::Left, KeyCode::Left]);
-    assert_eq!(app.list, PatchesPane::Files);
-    let said = one(&mut app);
-    assert_eq!(said, "side-by-side needs 60 columns: press ← on the patches to hide them, or → on the comments to make them compact");
-    // The comments compact: the middle has the room.
-    keys(&mut app, &[KeyCode::Right, KeyCode::Right, KeyCode::Right]);
-    assert_eq!(app.comments, Pane::Compact);
-    let said = one(&mut app);
-    assert_eq!((app.layout, said.as_str()), (Layout::Split, "side-by-side view"));
-    // Both out of sight on a screen narrower than two sides: nothing gives
-    // more room.
-    let mut app = open(&db).unwrap();
-    keys(&mut app, &[KeyCode::Left, KeyCode::Left, KeyCode::Right, KeyCode::Right, KeyCode::Right]);
-    assert!(app.list == PatchesPane::Hidden && !app.notes_shown());
-    app.draw(&mut Buffer::empty(Rect::new(0, 0, 50, 30)));
+    keys(&mut app, &[KeyCode::Char('1')]);
+    assert!(!items(&app).iter().any(|(l, _)| l.contains("too narrow")), "the screen has the room: {:?}", items(&app));
+    keys(&mut app, &[KeyCode::Esc]);
+    // Each view on a screen narrower each time, the panes expanded first:
+    // the comments made compact, else hidden, else the patches hidden too,
+    // as little as gives the middle its 60 columns; what was done said, and
+    // how to show the panes again.
+    let cases = [
+        (120, "Side by side", Layout::Split, PatchesPane::Expanded, Pane::Compact, "the comments are made compact to make room for side by side"),
+        (
+            100,
+            "Side by side, compact",
+            Layout::Compact,
+            PatchesPane::Expanded,
+            Pane::Hidden,
+            "the comments are hidden to make room for the compact view: → out of the middle shows them again",
+        ),
+        (
+            80,
+            "Unified, split in two",
+            Layout::Halves,
+            PatchesPane::Hidden,
+            Pane::Compact,
+            "the patches are hidden and the comments made compact to make room for two halves: ← out of the middle shows the patches again",
+        ),
+        (
+            70,
+            "Side by side",
+            Layout::Split,
+            PatchesPane::Hidden,
+            Pane::Hidden,
+            "the patches and the comments are hidden to make room for side by side: ← and → out of the middle show them again",
+        ),
+    ];
+    for (w, name, layout, list, comments, said) in cases {
+        app.set_layout(Layout::Unified);
+        (app.list, app.comments, app.focus) = (PatchesPane::Expanded, Pane::Expanded, Focus::Diff);
+        // The cursor in the comments pane, hidden: it goes into the middle.
+        keys(&mut app, &[KeyCode::Right]);
+        assert_eq!(app.focus, Focus::Notes);
+        draw_sized(&mut app, w, 30);
+        pick_view_at(&mut app, name, w);
+        assert_eq!((app.layout, app.list, app.comments, app.status.as_str()), (layout, list, comments, said), "{w} columns");
+        assert_eq!(app.focus, if comments.shown() { Focus::Notes } else { Focus::Diff }, "{w} columns");
+        // Two sides drawn, or two halves, the bar saying no more.
+        let screen = draw_sized(&mut app, w, 30);
+        let two = |l: &&str| if layout == Layout::Halves { l.matches("+TWO").count() == 2 } else { l.contains("-two") && l.contains("+TWO") };
+        assert!(screen.lines().any(|l| two(&l)), "{w} columns:\n{screen}");
+        assert!(!screen.contains("too narrow"), "{w} columns:\n{screen}");
+    }
+    // Left, the view keeps hidden what it hid.
+    pick_view_at(&mut app, "Unified", 70);
+    assert_eq!((app.layout, app.list, app.comments), (Layout::Unified, PatchesPane::Hidden, Pane::Hidden));
+    // With no comments on the patch, the patches alone.
+    app.set_layout(Layout::Unified);
+    (app.list, app.comments, app.focus) = (PatchesPane::Expanded, Pane::Expanded, Focus::List);
+    keys(&mut app, &[KeyCode::Down]);
+    assert!(!app.notes_shown());
+    draw_sized(&mut app, 80, 30);
+    pick_view_at(&mut app, "Side by side", 80);
+    assert_eq!((app.layout, app.list, app.focus), (Layout::Split, PatchesPane::Hidden, Focus::Diff));
+    assert_eq!(app.status, "the patches are hidden to make room for side by side: ← out of the middle shows them again");
+    // A screen too narrow even with both out of sight: each view of two
+    // sides or halves says so in the menu, and picked, is not taken.
+    app.set_layout(Layout::Unified);
+    app.list = PatchesPane::Expanded;
+    draw_sized(&mut app, 50, 30);
     key(&mut app, KeyCode::Char('1'));
-    assert_eq!(app.status, "side-by-side needs 60 columns, more than the screen has");
+    let labels: Vec<String> = items(&app).into_iter().map(|(l, _)| l).collect();
+    assert_eq!(
+        labels,
+        [
+            "● Unified",
+            "  Side by side: the screen is too narrow",
+            "  Side by side, compact: the screen is too narrow",
+            "  Unified, split in two: the screen is too narrow"
+        ]
+    );
+    key(&mut app, KeyCode::Esc);
+    for (name, said) in [("Side by side", "side by side"), ("Side by side, compact", "the compact view"), ("Unified, split in two", "two halves")] {
+        pick_view_at(&mut app, name, 50);
+        assert_eq!(app.status, format!("the screen is too narrow for {said}: the middle needs 60 columns"));
+        assert_eq!((app.layout, app.list), (Layout::Unified, PatchesPane::Expanded), "nothing hidden");
+    }
 }
 
 #[test]
@@ -4557,9 +4962,9 @@ fn lines_too_wide_for_the_pane_are_folded_each_the_same_line() {
     for l in &said {
         assert!(screen.contains(l.as_str()), "{l:?}\n{screen}");
     }
-    // Side by side: folded in the half of the pane each side has; then
-    // back to the one view.
-    keys(&mut app, &[KeyCode::Char('1')]);
+    // Side by side: folded in the half of the pane each side has; split in
+    // two, in each half, the same in both; then back to the one view.
+    pick_view(&mut app, "Side by side");
     assert_eq!(app.layout, Layout::Split);
     let screen = draw(&mut app);
     let halves = pieces(&app);
@@ -4567,7 +4972,20 @@ fn lines_too_wide_for_the_pane_are_folded_each_the_same_line() {
     for p in &halves {
         assert!(screen.contains(p.trim_end()), "{p:?}\n{screen}");
     }
-    keys(&mut app, &[KeyCode::Char('1'), KeyCode::Char('1')]);
+    pick_view(&mut app, "Unified, split in two");
+    let screen = draw(&mut app);
+    let halves = pieces(&app);
+    assert!(halves.len() > unified.len(), "{halves:?}");
+    // The middle from column 31, 89 wide: a half of 44 each side of its
+    // line.
+    let cut = |from: usize| screen.lines().map(|l| l.chars().skip(from).take(44).collect::<String>()).collect::<Vec<_>>().join("\n");
+    let (left, right) = (cut(31), cut(76));
+    for p in &halves {
+        assert!(left.contains(p.trim_end()) && right.contains(p.trim_end()), "{p:?} in each half:\n{screen}");
+    }
+    let other: Vec<String> = app.other_half().unwrap().rows.iter().filter(|r| r.kind == Kind::Add).map(|r| r.text.clone()).collect();
+    assert_eq!(other, halves);
+    pick_view(&mut app, "Unified");
     assert_eq!(app.layout, Layout::Unified);
     // A comment on the line folded: under its last piece.
     down_to(&mut app, "+two");
@@ -5752,7 +6170,7 @@ fn reading_on_the_cursor_goes_down_to_the_middle_then_the_code_comes_up() {
         press(app, KeyCode::Enter, h);
         assert!(app.status.contains("unread"), "{}", app.status);
     };
-    for view in [Layout::Unified, Layout::Split, Layout::Compact] {
+    for (view, next) in [(Layout::Unified, "Side by side"), (Layout::Split, "Side by side, compact"), (Layout::Compact, "Unified")] {
         assert_eq!(app.layout, view);
         // Above the middle line: the cursor goes down to the next line not
         // read, where it is, the code staying where it is.
@@ -5779,7 +6197,8 @@ fn reading_on_the_cursor_goes_down_to_the_middle_then_the_code_comes_up() {
         assert_eq!(line_of(&screen, "-line 39"), Some(y), "{view:?}: on the line the cursor was on:\n{screen}");
         // Read again from the start, in the next view.
         unread(&mut app, 30);
-        keys(&mut app, &[KeyCode::Home, KeyCode::Char('1')]);
+        keys(&mut app, &[KeyCode::Home]);
+        pick_view(&mut app, next);
     }
 }
 
@@ -9368,7 +9787,7 @@ fn the_comment_editor_hides_nothing_what_it_would_cover_comes_after_it() {
     down_to(&mut app, "+TWO");
     // In each view of the code: the line, the box under it, and after the
     // box the line it would have covered, ` three`.
-    for view in ["unified", "side by side", "compact"] {
+    for (view, next) in [("unified", "Side by side"), ("side by side", "Side by side, compact"), ("compact", "Unified")] {
         keys(&mut app, &[KeyCode::Enter]);
         typed(&mut app, "why so loud?");
         let lines = wide(&mut app);
@@ -9383,7 +9802,7 @@ fn the_comment_editor_hides_nothing_what_it_would_cover_comes_after_it() {
         }
         keys(&mut app, &[KeyCode::Esc]);
         choose(&mut app, "Throw it away");
-        keys(&mut app, &[KeyCode::Char('1')]);
+        pick_view(&mut app, next);
     }
 }
 
@@ -9467,7 +9886,7 @@ fn the_patch_s_title_stays_at_the_top_of_the_middle() {
         (0..12).map(|y| (0..120).map(|x| buf[(x, y)].symbol()).collect::<String>()).collect::<Vec<_>>().join("\n")
     };
     keys(&mut app, &[KeyCode::Right]);
-    for view in ["unified", "side by side", "compact"] {
+    for (view, next) in [("unified", "Side by side"), ("side by side", "Side by side, compact"), ("compact", "Unified")] {
         // At the top, the title is its own row, under ✉ message.
         keys(&mut app, &[KeyCode::Home]);
         let screen = small(&mut app);
@@ -9486,7 +9905,7 @@ fn the_patch_s_title_stays_at_the_top_of_the_middle() {
         assert!(right_of_list(lines[1]).starts_with("   Bug 1 - shout two"), "{view}: pinned:\n{screen}");
         assert_eq!(lines.iter().filter(|l| right_of_list(l).contains("Bug 1 - shout two")).count(), 1, "{view}: once:\n{screen}");
         assert!(lines[2..lines.len() - 1].iter().any(|l| l.contains("LINE 39")), "{view}: the cursor's row:\n{screen}");
-        keys(&mut app, &[KeyCode::Char('1')]);
+        pick_view(&mut app, next);
     }
     // A click on it goes to its row.
     keys(&mut app, &[KeyCode::End]);

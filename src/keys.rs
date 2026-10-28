@@ -68,7 +68,8 @@ pub enum Key {
     /// In the search, the next match, and the one before.
     FindNext,
     FindPrevious,
-    /// The next view of the code: unified, side by side, compact.
+    /// The menu of the views of the code, to pick one: unified, side by
+    /// side, compact, unified split in two.
     View,
     /// Reading rather than commenting, or back.
     Read,

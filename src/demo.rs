@@ -61,9 +61,10 @@ const NEXT: (char, usize, &str, &str) = (
 /// Why O's fix needs more than its patch, as the agent says it.
 const MORE: &str = "if O takes the bottom left corner in patch 4, X can no longer win there in patch 5, so patch 5 has to change too";
 
-/// What the step on the views of the code says of 3, each file whole, and
-/// of going back.
-const VIEWS_WHOLE: &str = "Press 3 in any of them to see each file whole rather than its hunks: here each hunk holds the whole board already, so only its @@ line goes. Press 3 again for the hunks. Press 1 until the code is unified again, with its hunks.";
+/// What the step on the views of the code says of them, first; then of 3,
+/// each file whole, and of going back.
+const VIEWS: &str = "Press 1 for the menu of the views of the code, and pick one: unified, side by side, side by side compact, or unified split in two. Split in two, the middle shows the patch unified in each half, each half with a cursor of its own, and ← → go from one half to the other.";
+const VIEWS_WHOLE: &str = "Press 3 in any of them to see each file whole rather than its hunks: here each hunk holds the whole board already, so only its @@ line goes. Press 3 again for the hunks. Then press 1 and pick Unified, to see the code unified again, with its hunks.";
 
 /// The question the tour asks the agent for you, answer only.
 const QUESTION: &str = "Who is winning?";
@@ -725,8 +726,8 @@ impl Tour {
             }
             Step::Reading => "The agent answered your question, and changed nothing. Next, keep track of what you have read. Press 2 to switch to reading: each patch on the left then counts its changed lines read, as 0/2, and the bar at the top counts them too. In the list of patches (← from the middle), pick patch 1 and press → to read it. Then press Space: it marks the block of code at the cursor read and goes on to the next line not read, and Enter marks it unread again. Mark patch 1 read.".into(),
             Step::Commenting => "Patch 1 is read: the list marks it ✓. Read marks are kept by the lines' content, so a new version of a patch keeps them on the lines it did not change. Press 2 again to switch back to commenting, where Enter on a line comments on it.".into(),
-            Step::Views if !app.sides_fit() => format!("Press 1 to switch how the code is drawn: unified, side by side, then compact. Side by side needs a wider middle than this one: press ← on the patches, and they list the files of the patch picked under it, then ← again hides them; → on the comments makes them compact, then → again hides them, and ← from the middle brings the patches back. Go through the three views. {VIEWS_WHOLE}"),
-            Step::Views => format!("Press 1 to switch how the code is drawn: unified, side by side, then compact. Go through the three views. {VIEWS_WHOLE}"),
+            Step::Views if !app.sides_fit() => format!("{VIEWS} Every view but unified needs a wider middle than this one: picking one makes its room, the comments made compact or hidden first, then the patches hidden, and the status line says how to show them again. Pick each view in turn. {VIEWS_WHOLE}"),
+            Step::Views => format!("{VIEWS} Pick each view in turn. {VIEWS_WHOLE}"),
             Step::History => "Every change of the stack is kept. History… shows them: press ← to go to the patches and ↑ until the stack's header (≡ game) is picked, then press Space and choose History….".into(),
             Step::InHistory => "This is the history of the stack, game, newest change first. Beside the picked change is its stack diff: the patches before and after that change, and under each new version of a patch, what changed in it. Press ↑↓ to pick another change, and Esc to leave the history.".into(),
             Step::Versions => "A patch's versions are kept too. In the list, pick patch 4, O blocks the diagonal at the bottom left, press Space and choose Versions of this patch…: every version of patch 4, oldest first, and beside the picked one, what changed from the version before it. Press Esc to come back.".into(),

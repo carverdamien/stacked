@@ -23,13 +23,15 @@ use serde::Deserialize;
 use crate::keys::{Context, Key, Keymap};
 use crate::paint::{Paint, parse_color};
 
-/// How the code is drawn at the start.
+/// How the code is drawn at the start: unified, side by side, compact, or
+/// unified in each half of the middle split in two.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Layout {
     #[default]
     Unified,
     Split,
     Compact,
+    Halves,
 }
 
 impl Layout {
@@ -38,14 +40,18 @@ impl Layout {
             Layout::Unified => "unified",
             Layout::Split => "side-by-side",
             Layout::Compact => "compact",
+            Layout::Halves => "unified-split",
         }
     }
 
+    /// The layout `s` names. `split`, as side by side was named before, is
+    /// read as it still.
     fn parse(s: &str) -> Option<Layout> {
         match s {
             "unified" => Some(Layout::Unified),
             "side-by-side" | "split" => Some(Layout::Split),
             "compact" => Some(Layout::Compact),
+            "unified-split" => Some(Layout::Halves),
             _ => None,
         }
     }
@@ -275,7 +281,7 @@ pub struct View {
     pub comments: Pane,
     /// The lines of claude's stream under a comment it works on.
     pub stream_lines: usize,
-    /// The columns the middle needs for two sides.
+    /// The columns the middle needs for two sides, or for two halves.
     pub split_width: usize,
 }
 
@@ -547,7 +553,7 @@ impl Config {
         if let Some(l) = v.layout {
             match Layout::parse(&l) {
                 Some(l) => c.view.layout = l,
-                None => wrong.push(format!("view.layout: {l:?} is not unified, side-by-side or compact")),
+                None => wrong.push(format!("view.layout: {l:?} is not unified, side-by-side, compact or unified-split")),
             }
         }
         c.view.reading = v.reading.unwrap_or(c.view.reading);
@@ -801,7 +807,10 @@ impl Config {
             out.push_str(&format!("trailer = {}\n", q(&self.reviews.trailer)));
         }
         let v = &self.view;
-        out.push_str("\n[view]\n# How code is drawn at the start: \"unified\", \"side-by-side\" or \"compact\" (1 cycles them).\n");
+        out.push_str(
+            "\n[view]\n# How code is drawn at the start: \"unified\", \"side-by-side\", \"compact\" or\n\
+             # \"unified-split\", the patch unified in each half of the middle (1 picks one).\n",
+        );
         out.push_str(&format!("layout = {}\n", q(v.layout.name())));
         out.push_str("# Reading rather than commenting, at the start (2 switches).\n");
         out.push_str(&format!("reading = {}\n", v.reading));
@@ -819,7 +828,7 @@ impl Config {
         out.push_str(&format!("patches = {}\ncomments = {}\n", q(v.patches.name()), q(v.comments.name())));
         out.push_str("# The lines of claude's stream under a comment it works on.\n");
         out.push_str(&format!("stream_lines = {}\n", v.stream_lines));
-        out.push_str("# The columns the middle needs for two sides.\n");
+        out.push_str("# The columns the middle needs for two sides, or for two halves.\n");
         out.push_str(&format!("split_width = {}\n", v.split_width));
         out.push_str(
             "\n[colors]\n# What paints each part of the screen, as git writes a colour: a foreground,\n\
@@ -1734,6 +1743,26 @@ mod tests {
         assert!(set(&path, "view.comments", &vals(&["files"])).unwrap_err().contains("expanded, compact or hidden"));
         // → on the comments cycles them.
         assert_eq!([Pane::Expanded.next(), Pane::Compact.next(), Pane::Hidden.next()], [Pane::Compact, Pane::Hidden, Pane::Expanded]);
+    }
+
+    #[test]
+    fn the_layout_is_unified_side_by_side_compact_or_unified_split_in_two() {
+        let (c, wrong) = Config::parse("[view]\nlayout = \"unified-split\"\n").unwrap();
+        assert!(wrong.is_empty(), "{wrong:?}");
+        assert_eq!(c.view.layout, Layout::Halves);
+        assert!(c.render().contains("\nlayout = \"unified-split\"\n"), "{}", c.render());
+        // Side by side, as it was named before.
+        let (c, wrong) = Config::parse("[view]\nlayout = \"split\"\n").unwrap();
+        assert!(wrong.is_empty() && c.view.layout == Layout::Split, "{wrong:?}");
+        let (c, wrong) = Config::parse("[view]\nlayout = \"halves\"\n").unwrap();
+        assert_eq!(c.view.layout, Layout::Unified, "what is wrong keeps its default");
+        assert_eq!(wrong, ["view.layout: \"halves\" is not unified, side-by-side, compact or unified-split"]);
+        // Written and read as any setting is.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("settings.toml");
+        set(&path, "view.layout", &["unified-split".to_string()]).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "[view]\nlayout = \"unified-split\"\n");
+        assert_eq!(value_of(&Config::load(&path).0, "view.layout"), Ok(vec!["unified-split".to_string()]));
     }
 
     #[test]
