@@ -5844,29 +5844,45 @@ impl App {
     /// Whose message a patch keeps when its commit in the workspace says
     /// another, as radio buttons: the stack's, put on the commit; or the
     /// workspace's, taken into the stack. Of the patch at `at`, else of
-    /// every one whose message differs.
-    fn sync_choices(&self, at: Option<usize>) -> Choices {
-        let list = vec![
-            Choice::new(
+    /// every one whose message differs; of the ways, those that change a
+    /// message there (`Head::ways`), and none when neither does.
+    fn sync_choices(&self, at: Option<usize>) -> Option<Choices> {
+        let (to_checkout, to_stack) = self.head_here()?.ways(at);
+        let mut list = Vec::new();
+        if to_checkout {
+            list.push(Choice::new(
                 "stacked",
                 "stacked → workspace",
                 "the stack's message is kept, and written over your workspace's commit's",
                 Some(Action::MessagesToCheckout(at)),
-            ),
-            Choice::new(
+            ));
+        }
+        if to_stack {
+            list.push(Choice::new(
                 "workspace",
                 "workspace → stacked",
                 "your workspace's message is kept, and written over the patch's in the stack, for your review",
                 Some(Action::MessagesToStack(at)),
-            ),
-        ];
-        Choices::new("sync", "which way the message goes", list, self.db.choice(&self.stack, "sync"))
+            ));
+        }
+        (!list.is_empty()).then(|| Choices::new("sync", "which way the message goes", list, self.db.choice(&self.stack, "sync")))
     }
 
-    /// What the menu says of syncing commit messages, where it has the item
-    /// to: on a patch whose message is not its commit's in the workspace,
-    /// both, from the first line they differ by, and what each way does; on
-    /// the stack's header, which patches differ.
+    /// The item that syncs commit messages, `label`: of the patch at `at`,
+    /// else of every one whose message differs. None when no way of syncing
+    /// changes a message there.
+    fn sync_item(&self, label: &str, at: Option<usize>) -> Option<Item> {
+        let choices = self.sync_choices(at)?;
+        let first = choices.list.first()?.action.clone()?;
+        Some(Item::new(label, first).with(choices))
+    }
+
+    /// What the menu says of syncing commit messages: on a patch whose
+    /// message is not its commit's in the workspace, both, from the first
+    /// line they differ by, and what each way does; when they differ by the
+    /// revision they name alone, what each names, and which way carries it
+    /// over, if either does. On the stack's header, which patches differ,
+    /// and the same of those that differ by the revision alone.
     fn sync_said(&self) -> Option<String> {
         if self.screen != Screen::Main || self.focus != Focus::List || self.on_banner {
             return None;
@@ -5876,13 +5892,30 @@ impl App {
         let ways = "The message on the left of the arrow is kept, and it is written over the one on the right. \
                     stacked → workspace makes your workspace's commit again with the stack's message. \
                     workspace → stacked makes a new version of the patch with your workspace's message, for you to review.";
+        // Of a patch whose message and its commit's differ by the revision
+        // alone: what each names, and which way carries it over, as a
+        // sentence.
+        let revisions = |k: usize, d: &crate::head::Differs| {
+            let said = d.said(k, "workspace → stacked", "stacked → workspace")?;
+            let mut c = said.chars();
+            c.next().map(|f| format!("{}{}.", f.to_uppercase(), c.as_str()))
+        };
         if self.on_stack {
             let differ = h.differ();
-            return (!differ.is_empty()).then(|| {
-                format!("The commit messages of {} are not the same in the stack and in your workspace.\n{ways}", crate::head::patches_said(&differ))
-            });
+            let mut said = Vec::new();
+            if !differ.is_empty() {
+                said.push(format!("The commit messages of {} are not the same in the stack and in your workspace.", crate::head::patches_said(&differ)));
+            }
+            said.extend(on.messages.iter().filter_map(|(k, _, d)| revisions(*k, d)));
+            if !differ.is_empty() {
+                said.push(ways.to_string());
+            }
+            return (!said.is_empty()).then(|| said.join("\n"));
         }
-        let (_, theirs) = on.messages.iter().find(|(k, _)| *k == self.sel)?;
+        let (_, theirs, d) = on.messages.iter().find(|(k, _, _)| *k == self.sel)?;
+        if let Some(said) = revisions(self.sel, d) {
+            return Some(if d.to_stack() || d.to_checkout() { format!("{said}\n{ways}") } else { said });
+        }
         let ours = self.db.patch(self.current()?.patches.get(self.sel)?).message.clone();
         let (a, b): (Vec<&str>, Vec<&str>) = (ours.lines().collect(), theirs.lines().collect());
         let k = (0..a.len().max(b.len())).find(|&k| a.get(k).map(|l| l.trim_end()) != b.get(k).map(|l| l.trim_end())).unwrap_or(0);
@@ -6073,10 +6106,9 @@ impl App {
                     if self.head_here().is_some() {
                         items.push(Item::new("Move HEAD…", Action::MoveHead(None)));
                     }
-                    // The patches whose message differs from their commit's.
-                    if self.head_here().is_some_and(|hd| !hd.differ().is_empty()) {
-                        items.push(Item::new("Sync commit messages", Action::MessagesToCheckout(None)).with(self.sync_choices(None)));
-                    }
+                    // The patches whose message differs from their commit's:
+                    // each way syncs those it changes.
+                    items.extend(self.sync_item("Sync commit messages", None));
                     items.push(Item::line());
                 }
                 if self.db.stacks().iter().any(|s| s.name != self.stack) {
@@ -6102,11 +6134,9 @@ impl App {
                 if self.head_here().is_some() {
                     items.push(Item::new("Move HEAD…", Action::MoveHead(Some(self.sel))));
                 }
-                // Its message differs from its commit's in the checkout.
-                if self.head_here().is_some_and(|hd| hd.differ().contains(&self.sel)) {
-                    let at = Some(self.sel);
-                    items.push(Item::new("Sync commit message", Action::MessagesToCheckout(at)).with(self.sync_choices(at)));
-                }
+                // Its message differs from its commit's in the checkout: the
+                // ways that change one.
+                items.extend(self.sync_item("Sync commit message", Some(self.sel)));
                 items.push(Item::new("Edit this patch in $EDITOR", Action::EditPatch).when(h));
                 items.push(Item::new("Drop this patch…", Action::AskDrop).when(h));
                 items.push(Item::new("Versions of this patch…", Action::Versions));

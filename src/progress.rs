@@ -73,20 +73,37 @@ pub fn changed_lines(p: &Patch) -> Vec<(String, bool)> {
 /// Each line of `message`, a patch's: whether the reading mode takes it as
 /// a blank line, which needs no reading unless the settings say white space
 /// does (`view.whitespace_needs_review`). A line is blank when it is empty
-/// or white space alone; with the moz-phab feature, the trailer moz-phab
-/// writes (`revision_trailer`) is blank too, in the message's last
-/// paragraph, after an empty line, where trailers go, and so never in the
-/// title's paragraph. This is the one place that says which lines of a
-/// message are blank: the counts, the reading mode's marks and the rows
-/// all ask here.
+/// or white space alone, or, with the moz-phab feature, when it is the
+/// trailer moz-phab writes (`revision_trailers`). This is the one place
+/// that says which lines of a message are blank: the counts, the reading
+/// mode's marks and the rows all ask here.
 pub fn blank_lines(message: &str) -> Vec<bool> {
+    let trailers = revision_trailers(message);
+    message.split('\n').enumerate().map(|(i, l)| l.trim().is_empty() || trailers.contains(&i)).collect()
+}
+
+/// The lines of `message`, a patch's, from 0, that are the trailer moz-phab
+/// writes to name the patch's revision (`revision_trailer`), in the
+/// message's last paragraph, after an empty line, where trailers go, and so
+/// never in the title's paragraph. This is the one place that says which
+/// lines of a message are that trailer: the reading mode asks here, and so
+/// does the sync of a patch's message with its commit's (`head`).
+#[cfg(feature = "moz-phab")]
+pub fn revision_trailers(message: &str) -> Vec<usize> {
     let lines: Vec<&str> = message.split('\n').collect();
     let empty = |l: &&str| l.trim().is_empty();
     // The first line of the last paragraph, past the end when that
     // paragraph is the title's.
     let last = lines.iter().rposition(|l| !empty(l)).unwrap_or(0);
-    let trailers = lines[..last].iter().rposition(empty).map_or(lines.len(), |e| e + 1);
-    lines.iter().enumerate().map(|(i, l)| empty(l) || (i >= trailers && revision_trailer(l))).collect()
+    let start = lines[..last].iter().rposition(empty).map_or(lines.len(), |e| e + 1);
+    (start..lines.len()).filter(|&i| revision_trailer(lines[i])).collect()
+}
+
+/// Without the moz-phab feature, no line of a message is moz-phab's
+/// trailer: the line naming the revision is a line as any other.
+#[cfg(not(feature = "moz-phab"))]
+pub fn revision_trailers(_: &str) -> Vec<usize> {
+    Vec::new()
 }
 
 /// Whether `line` is the trailer moz-phab writes to name the patch's
@@ -109,13 +126,6 @@ fn revision_trailer(line: &str) -> bool {
     let host = before.split('/').next().unwrap_or_default();
     let number = last.strip_prefix('D').unwrap_or_default();
     !host.is_empty() && !number.is_empty() && number.bytes().all(|b| b.is_ascii_digit()) && !rest.contains(char::is_whitespace)
-}
-
-/// Without the moz-phab feature, no line is moz-phab's trailer: the line
-/// naming the revision is a line of the message to read as any other.
-#[cfg(not(feature = "moz-phab"))]
-fn revision_trailer(_: &str) -> bool {
-    false
 }
 
 fn keys_of(db: &Db, memo: &mut Memo, id: &str) -> Arc<Vec<(String, bool)>> {

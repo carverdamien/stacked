@@ -1488,10 +1488,10 @@ impl App {
     /// Whether HEAD of your checkout can move safely to the stack as the
     /// review leaves it: the work changes the stack, its change not
     /// rejected; HEAD was in sync with the stack as it is, when last looked
-    /// at (on its top, each patch a commit with the patch's message, no
-    /// commit above), and nothing is uncommitted there; and no agent works
-    /// in your checkout, nor makes its changes there (`agent.worktree =
-    /// "pwd"`), which moves HEAD itself.
+    /// at (on its top, each patch a commit with the patch's message, the
+    /// revision it names too, no commit above), and nothing is uncommitted
+    /// there; and no agent works in your checkout, nor makes its changes
+    /// there (`agent.worktree = "pwd"`), which moves HEAD itself.
     fn head_can_follow(&self) -> bool {
         let Some(rv) = &self.reviewing else { return false };
         let Some((now, _)) = self.review_stacks() else { return false };

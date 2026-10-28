@@ -393,6 +393,36 @@ the review opening at once. The stack's menu has `Sync commit messages`,
 the same for every patch whose message differs. `stacked
 head NAME` lists them, and `--messages-to-stack [PATCH…]` and
 `--messages-to-checkout [PATCH…]` do the same, every one if none is named.
+
+With the `moz-phab` feature (on by default), a sync either way keeps the
+trailer moz-phab writes to name the revision, the line of the message's
+last paragraph that Reading (below) says is that trailer (`Differential
+Revision: https://phabricator.services.mozilla.com/D123`). When the
+message written over has that trailer and the message written has another
+or none, the trailer written over is kept, and the sync says so (`kept the
+Differential Revision D123 your workspace's commit had`): in the place of
+the other, else at the end of the message's paragraph of trailers, as after
+`Reviewed-by: ann`, or after an empty line, as moz-phab puts it. A trailer
+that only the message written has is written with the rest of it.
+
+A way of syncing is offered only when it would change the message it
+writes over, so two messages that differ by the revision they name alone
+are synced one way, or neither. When only the commit names one, as after
+`moz-phab submit`, the menu offers `workspace → stacked` alone, which takes
+the revision into the patch, for your review. When only the patch names
+one, the menu offers `stacked → workspace` alone, which puts the revision
+on the commit. When each names another, neither way would change a
+message: the menu offers no sync, and `✉` does not mark the patch, but
+`stacked head` and the menus say why (`patch 3 names D12 in the stack and
+D34 in your workspace's commit`). On the stack's header, each way syncs
+the patches it changes and passes over the rest, as `--messages-to-stack`
+and `--messages-to-checkout` do; a way that changes no message makes no
+commit again, and says why. While a patch and its commit differ by the
+revision they name, HEAD is not in sync with the stack, so that it does not
+follow the stack as a review closes, which would write the stack's message
+over a revision only the commit names. Built without the feature, the
+trailer is a line of the message as any other.
+
 The middle shows what the left pane's cursor is on: a patch (its message,
 then its diff, the comments under the
 lines they are on), from a file's name when the cursor is on one of the
@@ -1568,8 +1598,9 @@ stack as the review leaves it, `HEAD  [x] sync  [ ] no sync` picks whether
 HEAD moves there once the change is accepted: detached at the stack's
 top, the branch it was on as it was, as `Move HEAD…` moves it, the status
 line saying where it went. HEAD can move safely when it was in sync with
-the stack (on its top, each patch a commit with the patch's message, no
-commit above), nothing is uncommitted in the checkout, and no agent works
+the stack (on its top, each patch a commit with the patch's message, its
+`Differential Revision:` trailer too, no commit above), nothing is
+uncommitted in the checkout, and no agent works
 there or makes its changes there (`agent.worktree = "pwd"`). `sync` is
 picked unless you picked otherwise in this review, and the pick is not
 kept for the stack. A reply that goes with a change of the stack
@@ -2526,7 +2557,14 @@ would go to the other copy (lines added between the two by a patch
 below) and when the agent moved its hunk to the other copy, the stack not
 edited by hand while the agent changes it, failures kept to look at, comments staying on their line
 across versions, a patch edited by hand (as mail and as code, at a line,
-refused and taken up again), trimming, the settings (in ~/.stacked, or the
+refused and taken up again), a commit message synced either way keeping,
+with moz-phab, the Differential Revision of the message written over and
+saying so (in the place of another, or added), the one of the message
+written alone written with it, and a message that differs by the revision
+it names alone synced the one way that carries the revision over (the
+other way changing no message, no commit made again, no version made), or
+neither way when each names another, `stacked head` saying why; or,
+without moz-phab, the trailer written as any line, trimming, the settings (in ~/.stacked, or the
 folder `$STACKED_HOME` names, the folder made by the first written, a file
 `$STACKED_CONFIG` names over it; the files of before moved in by a run of
 yours, said once, never over a file there, and not by the shell's

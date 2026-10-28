@@ -1815,8 +1815,13 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
             };
             println!("HEAD, {}, is {}", h.git_said(), h.said(&name));
             if let stacked::head::At::Stack(on) = &h.at {
-                for (k, m) in &on.messages {
-                    println!("the message of patch {} differs here: \"{}\"", k + 1, m.lines().next().unwrap_or(""));
+                // A message that differs by the revision alone: which way
+                // carries it over, if either does.
+                for (k, m, d) in &on.messages {
+                    match d.said(*k, "--messages-to-stack", "--messages-to-checkout") {
+                        Some(said) => println!("{said}"),
+                        None => println!("the message of patch {} differs here: \"{}\"", k + 1, m.lines().next().unwrap_or("")),
+                    }
                 }
             }
         }

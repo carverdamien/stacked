@@ -5094,6 +5094,84 @@ fn a_patch_whose_message_differs_in_the_checkout_is_marked_and_made_the_same_eit
     assert_eq!(app.status, "took the message of patch 2 from your checkout: it waits for your review");
 }
 
+#[cfg(feature = "moz-phab")]
+#[test]
+fn a_differential_revision_one_side_alone_names_is_synced_the_one_way_that_carries_it_over() {
+    let (_tmp, db, src) = setup();
+    let mut app = open(&db).unwrap();
+    let message = || {
+        let out = Command::new("git").args(["log", "-1", "--format=%B"]).current_dir(&src).output().unwrap();
+        String::from_utf8_lossy(&out.stdout).trim_end().to_string()
+    };
+    let patch = || {
+        let d = Db::load(&db).unwrap();
+        let id = d.stack("s").unwrap().patches[1].clone();
+        d.patch(&id).message.clone()
+    };
+    let trailer = |d: &str| format!("Differential Revision: https://phabricator.services.mozilla.com/{d}");
+    let marked = |app: &mut App| draw(app).lines().any(|l| l.contains("  2 Bug 2") && l.contains("✉"));
+    // The patch's menu, on patch 2 of the patches pane.
+    let menu = |app: &mut App| {
+        (app.focus, app.on_stack, app.sel) = (Focus::List, false, 1);
+        keys(app, &[KeyCode::Char(' ')]);
+        let Mode::Menu(m) = &app.mode else { panic!("{:?}", app.mode) };
+        m.note.clone().unwrap_or_default()
+    };
+    // moz-phab gives the branch's top, patch 2, its trailer: it is marked
+    // and to sync, and its menu offers workspace → stacked alone, saying
+    // why.
+    git(&src, &["commit", "-q", "--amend", "-m", &format!("Bug 2 - add b\n\n{}", trailer("D2"))]);
+    app.checkout = src.clone();
+    app.look_at_head();
+    app.settle();
+    assert!(marked(&mut app) && draw(&mut app).contains("▶ HEAD main · 1 to sync"), "{}", draw(&mut app));
+    let note = menu(&mut app);
+    assert!(note.contains("Patch 2 names no revision in the stack and D2 in your workspace's commit: workspace → stacked takes D2 into the stack.\n"), "{note}");
+    assert_eq!(choices_named(&app, "Sync commit message"), ["workspace → stacked"]);
+    // Taken: an edit by hand, its review open at once. Accepted, the patch
+    // has the trailer, and HEAD is in sync with the stack.
+    choose(&mut app, "Sync commit message");
+    assert_eq!(app.screen, Screen::Review);
+    assert_eq!(app.status, "took the message of patch 2 from your checkout: it waits for your review");
+    keys(&mut app, &[KeyCode::Esc]);
+    choose(&mut app, "Accept all remaining and Close");
+    choose(&mut app, "Accept them and close");
+    app.settle();
+    assert_eq!(patch(), format!("Bug 2 - add b\n\n{}", trailer("D2")));
+    app.look_at_head();
+    app.settle();
+    assert!(app.head_here().is_some_and(|h| h.in_sync(2)), "{:?}", app.head_here());
+    assert!(!marked(&mut app) && !draw(&mut app).contains("to sync"));
+    // The commit reworded by hand without it: stacked → workspace alone
+    // puts it back.
+    git(&src, &["commit", "-q", "--amend", "-m", "Bug 2 - add b"]);
+    app.look_at_head();
+    app.settle();
+    let note = menu(&mut app);
+    assert!(note.contains("Patch 2 names D2 in the stack and no revision in your workspace's commit: stacked → workspace puts D2 on the commit.\n"), "{note}");
+    assert_eq!(choices_named(&app, "Sync commit message"), ["stacked → workspace"]);
+    choose(&mut app, "Sync commit message");
+    app.settle();
+    assert_eq!(app.status, "main has the stack's message of patch 2: 1 commit made again, the files as they were");
+    assert_eq!(message(), format!("Bug 2 - add b\n\n{}", trailer("D2")));
+    // Another revision on the commit: no mark, nothing to sync, no item;
+    // the patch's menu and the stack's say why.
+    git(&src, &["commit", "-q", "--amend", "-m", &format!("Bug 2 - add b\n\n{}", trailer("D22"))]);
+    app.look_at_head();
+    app.settle();
+    assert!(!marked(&mut app) && !draw(&mut app).contains("to sync"), "{}", draw(&mut app));
+    let why = "Patch 2 names D2 in the stack and D22 in your workspace's commit: neither way of syncing changes a message, so HEAD is not in sync with the stack.";
+    let note = menu(&mut app);
+    assert!(note.contains(why) && !items(&app).iter().any(|(l, _)| l.starts_with("Sync commit message")), "{note}\n{:?}", items(&app));
+    keys(&mut app, &[KeyCode::Esc]);
+    app.on_stack = true;
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    let Mode::Menu(m) = &app.mode else { panic!("{:?}", app.mode) };
+    assert!(m.note.as_deref().is_some_and(|n| n.contains(why)), "{:?}", m.note);
+    assert!(!items(&app).iter().any(|(l, _)| l.starts_with("Sync commit messages")), "{:?}", items(&app));
+    assert!(!app.head_here().is_some_and(|h| h.in_sync(2)));
+}
+
 #[test]
 fn the_agent_s_reply_waits_for_review_and_enter_takes_it() {
     let (_tmp, db, _src) = setup();
@@ -8695,6 +8773,24 @@ fn closing_an_edit_review_leaves_head_where_it_is_when_picked_so_or_when_it_cann
     app.settle();
     keys(&mut app, &[KeyCode::Esc]);
     assert!(!labels(&app).contains(&"HEAD".to_string()), "{:?}", labels(&app));
+}
+
+#[cfg(feature = "moz-phab")]
+#[test]
+fn closing_an_edit_review_leaves_head_where_it_is_when_a_commit_has_a_differential_revision_its_patch_has_not() {
+    let labels = |app: &App| items(app).into_iter().map(|(l, _)| l).collect::<Vec<_>>();
+    // The top commit given the trailer moz-phab writes, its patch without
+    // it: nothing to sync, but HEAD is not in sync either, and no row.
+    let message = "Bug 2 - add b\n\nDifferential Revision: https://phabricator.services.mozilla.com/D2";
+    let (_tmp, _db, src, mut app) = reviewing_with_head(|src| git(src, &["commit", "-q", "--amend", "-m", message]));
+    let was = rev_in(&src, "HEAD");
+    keys(&mut app, &[KeyCode::Esc]);
+    assert!(!labels(&app).contains(&"HEAD".to_string()), "{:?}", labels(&app));
+    // Accepted: HEAD stays, its trailer with it.
+    choose(&mut app, "Accept all remaining and Close");
+    choose(&mut app, "Accept them and close");
+    app.settle();
+    assert_eq!(rev_in(&src, "HEAD"), was);
 }
 
 #[test]
