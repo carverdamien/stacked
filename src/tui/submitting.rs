@@ -7,7 +7,10 @@
 //! code, each file as Phabricator's latest diff leaves it, then as the
 //! patch does, both on the patches below it, as the other diffs are shown.
 //! Enter sends it, once the revision is read again and seen to be as it
-//! was; Esc sends nothing. Built with the `moz-phab` feature.
+//! was; Esc sends nothing. While HEAD is on the stack, a patch whose
+//! commit in the workspace names a revision it does not is held back, its
+//! item grayed, before anything is read. Built with the `moz-phab`
+//! feature.
 
 use super::*;
 use crate::submit::{Prepared, and};
@@ -190,14 +193,30 @@ fn review_rows(p: &Prepared, w: usize) -> Vec<Row> {
 }
 
 impl App {
+    /// Why the patch at `at` is not to be submitted now, if it is not:
+    /// HEAD, as last seen for the stack as it is, has its commit naming a
+    /// revision the patch does not (`submit::held_by_head`). None when HEAD
+    /// is elsewhere, or not known for the stack as it is: then nothing is
+    /// guessed.
+    pub(super) fn submit_held(&self, at: usize) -> Option<String> {
+        let rev = self.db.head(&self.stack).map(|(r, _)| r);
+        let seen = self.head.as_ref().filter(|h| h.name == self.stack && h.rev == rev && !h.stale)?;
+        crate::submit::held_by_head(seen.head.as_ref()?, at)
+    }
+
     /// Submit to Phabricator as WIP, from the patch's menu: what sending
     /// the patch picked sends, read away from the screen; nothing is sent.
+    /// Not while its commit in the workspace names a revision it does not.
     pub(super) fn submit_patch(&mut self) {
         if self.bg.doing.contains(&SUBMITTING) {
             self.status = "a patch is being submitted to Phabricator already: submit this one once that is done".into();
             return;
         }
         let at = self.sel;
+        if let Some(why) = self.submit_held(at) {
+            self.status = format!("{why} Nothing was sent.");
+            return;
+        }
         self.bg.doing.push(SUBMITTING);
         self.status = format!("reading Phabricator to show what submitting patch {} sends: nothing is sent yet", at + 1);
         let (path, name) = (self.path.clone(), self.stack.clone());
@@ -267,6 +286,14 @@ impl App {
         }
         if self.bg.doing.contains(&SUBMITTING) {
             self.status = "a patch is being submitted to Phabricator already, so nothing was sent: submit this one again once that is done".into();
+            return;
+        }
+        // HEAD seen meanwhile with the patch's commit naming another
+        // revision: not sent either.
+        if sub.ready.stack == self.stack
+            && let Some(why) = self.submit_held(sub.ready.at)
+        {
+            self.status = format!("{why} Nothing was sent.");
             return;
         }
         self.bg.doing.push(SUBMITTING);

@@ -2447,7 +2447,14 @@ same effect, or leaving the same files once both are applied on the
 patches below, so that a diff moz-phab sent with more context is still the
 version it was made from. Else it came from elsewhere, and nothing is sent
 (`D123's latest diff is not a version of patch 3 that stacked knows: it
-came from elsewhere, and nothing was sent.`).
+came from elsewhere, and nothing was sent.`). And while HEAD is on the
+stack, a patch whose commit in your workspace names a revision the patch
+does not, none or another, as after `moz-phab submit` there, is not
+submitted before anything is read: its menu grays the item and says to
+sync the commit messages first, so that no second revision is made
+(`Patch 3 names no revision in the stack and D34 in your workspace's
+commit: sync the commit messages first, so that no second revision is
+made.`); the other patches, and other differences, are not held back.
 
 For a new revision, a dialog then says what is sent and where (`Patch 3 is
 sent to Phabricator, at https://phabricator.services.mozilla.com, as a new

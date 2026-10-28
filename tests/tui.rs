@@ -12517,3 +12517,99 @@ fn a_revision_whose_code_is_the_patch_s_already_is_reviewed_for_its_message_alon
     assert_eq!(phab.lock().unwrap().writes().len(), 1);
     stacked::submit::stand_in(None);
 }
+
+/// The submit item of the menu open: whether it can be chosen.
+#[cfg(feature = "moz-phab")]
+fn submit_offered(app: &App) -> Option<bool> {
+    items(app).into_iter().find(|(l, _)| l == "Submit to Phabricator as WIP").map(|(_, on)| on)
+}
+
+#[cfg(feature = "moz-phab")]
+#[test]
+fn a_patch_whose_commit_names_a_revision_it_does_not_is_held_back_and_the_others_are_not() {
+    let (tmp, db) = phab_setup(["Bug 1 - one", "Bug 2 - two", "Bug 3 - three"]);
+    let src = tmp.path().join("src");
+    // moz-phab submitted the top commit from the workspace: it names D34,
+    // the stack's patch none.
+    git(&src, &["commit", "--amend", "-qm", &format!("Bug 3 - three\n\n{LINK}34")]);
+    let phab = std::sync::Arc::new(std::sync::Mutex::new(Phab { next: 124, ..Default::default() }));
+    let _one = phab_stand_in(&phab);
+    // The menu opened while HEAD is not known yet: offered.
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Down, KeyCode::Down, KeyCode::Char(' ')]);
+    assert_eq!(submit_offered(&app), Some(true));
+    // HEAD seen meanwhile, on the stack: the submit, chosen, is refused
+    // before anything is asked of Phabricator.
+    app.checkout = src.clone();
+    app.look_at_head();
+    app.settle();
+    choose(&mut app, "Submit to Phabricator as WIP");
+    let held = "Patch 3 names no revision in the stack and D34 in your workspace's commit: sync the commit messages first, so that no second revision is made.";
+    assert_eq!(app.status, format!("{held} Nothing was sent."));
+    assert!(phab.lock().unwrap().calls.is_empty(), "no call at all");
+    // The menu knows it now: grayed, and why said.
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    assert_eq!(submit_offered(&app), Some(false));
+    assert!(menu_note(&app).contains(held), "{}", menu_note(&app));
+    // Another patch of the stack submits as ever.
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Up, KeyCode::Up, KeyCode::Char(' ')]);
+    assert_eq!(submit_offered(&app), Some(true));
+    choose(&mut app, "Submit to Phabricator as WIP");
+    app.settle();
+    assert_eq!(menu_title(&app), "send patch 1 to Phabricator as a new revision?");
+    let p = phab.lock().unwrap();
+    assert!(!p.calls.is_empty() && p.writes().is_empty(), "read, nothing sent yet");
+    drop(p);
+    stacked::submit::stand_in(None);
+}
+
+#[cfg(feature = "moz-phab")]
+#[test]
+fn a_commit_naming_another_revision_than_its_patch_holds_back_the_submit_and_the_patch_s_alone_does_not() {
+    let (tmp, db) = phab_setup(["Bug 1 - one", "Bug 2 - two", &format!("Bug 3 - three\n\n{LINK}13")]);
+    let src = tmp.path().join("src");
+    git(&src, &["commit", "--amend", "-qm", &format!("Bug 3 - three\n\n{LINK}34")]);
+    let p = Phab::default().with(13, "changes-planned", "WIP: Bug 3 - three", &patch_of(&db, 2).diff);
+    let phab = std::sync::Arc::new(std::sync::Mutex::new(p));
+    let _one = phab_stand_in(&phab);
+    let mut app = open_in(&db, &src);
+    keys(&mut app, &[KeyCode::Down, KeyCode::Down, KeyCode::Char(' ')]);
+    assert_eq!(submit_offered(&app), Some(false));
+    let held = "Patch 3 names D13 in the stack and D34 in your workspace's commit: sync the commit messages first, so that its diff goes to the revision you keep.";
+    assert!(menu_note(&app).contains(held), "{}", menu_note(&app));
+    assert!(phab.lock().unwrap().calls.is_empty());
+    // The stack's patch alone names its revision: not held back.
+    keys(&mut app, &[KeyCode::Esc]);
+    git(&src, &["commit", "--amend", "-qm", "Bug 3 - three"]);
+    app.look_at_head();
+    app.settle();
+    choose(&mut app, "Submit to Phabricator as WIP");
+    app.settle();
+    assert!(app.status.starts_with("D13 is patch 3 as it is already"), "{}", app.status);
+    assert!(!phab.lock().unwrap().calls.is_empty());
+    stacked::submit::stand_in(None);
+}
+
+#[cfg(feature = "moz-phab")]
+#[test]
+fn a_commit_naming_a_revision_holds_back_no_submit_while_head_is_elsewhere() {
+    let (tmp, db) = phab_setup(["Bug 1 - one", "Bug 2 - two", "Bug 3 - three"]);
+    let src = tmp.path().join("src");
+    git(&src, &["commit", "--amend", "-qm", &format!("Bug 3 - three\n\n{LINK}34")]);
+    // HEAD on a branch of its own, off the stack's base.
+    git(&src, &["checkout", "-q", "-b", "elsewhere", "HEAD~3"]);
+    std::fs::write(src.join("x.txt"), "x\n").unwrap();
+    git(&src, &["add", "."]);
+    git(&src, &["commit", "-qm", "Something else"]);
+    let phab = std::sync::Arc::new(std::sync::Mutex::new(Phab { next: 124, ..Default::default() }));
+    let _one = phab_stand_in(&phab);
+    let mut app = open_in(&db, &src);
+    assert!(app.head_here().is_some_and(|h| h.patches().is_none()), "known, and not on the stack");
+    keys(&mut app, &[KeyCode::Down, KeyCode::Down, KeyCode::Char(' ')]);
+    assert_eq!(submit_offered(&app), Some(true));
+    choose(&mut app, "Submit to Phabricator as WIP");
+    app.settle();
+    assert_eq!(menu_title(&app), "send patch 3 to Phabricator as a new revision?");
+    assert!(!phab.lock().unwrap().calls.is_empty());
+    stacked::submit::stand_in(None);
+}

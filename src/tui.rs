@@ -6125,6 +6125,9 @@ impl App {
         let n = self.patch_count();
         let mut title = self.stack.clone();
         let mut items = Vec::new();
+        // Why the patch's submit is grayed, if it is.
+        #[cfg(feature = "moz-phab")]
+        let mut held_submit: Option<String> = None;
         match (self.screen, self.focus) {
             // What landed, to review; the comments open, to go to.
             (Screen::Main, _) if self.on_banner => {
@@ -6190,7 +6193,8 @@ impl App {
                 #[cfg(feature = "moz-phab")]
                 if self.cfg.reviews.source != crate::config::Source::None {
                     items.push(Item::line());
-                    items.push(Item::new("Submit to Phabricator as WIP", Action::Submit).when(w));
+                    held_submit = self.submit_held(self.sel);
+                    items.push(Item::new("Submit to Phabricator as WIP", Action::Submit).when(w && held_submit.is_none()));
                 }
             }
             #[cfg(feature = "moz-phab")]
@@ -6277,6 +6281,8 @@ impl App {
         let mut why: Vec<String> = hands.filter(|_| !matches!(self.screen, Screen::Review | Screen::Sync)).into_iter().collect();
         let held = items.iter().any(|i| !i.enabled && matches!(i.action, Action::Review(..) | Action::TakeReply(..)));
         why.extend(self.sync_first().filter(|_| held));
+        #[cfg(feature = "moz-phab")]
+        why.extend(held_submit);
         if self.screen == Screen::Sync {
             why.extend(self.sync_menu_note());
         }
