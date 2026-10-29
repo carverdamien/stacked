@@ -912,17 +912,13 @@ fn code_change(db: &Db, s: &Stack, at: usize, k: &Known, raw: &str, mine: &str) 
 /// Why the patch at `at` (from 0) is not to be submitted while HEAD is
 /// where `head` says, if it is not: HEAD on the stack, the patch's commit
 /// in your workspace names a revision the patch does not, none or another,
-/// as after `moz-phab submit` there. Submitted, the patch would make a
-/// second revision, or send its diff to another revision than the
-/// commit's. Any other patch, and any other difference, is not held back.
+/// as after `moz-phab submit` there: the commit is marked `!`. Submitted,
+/// the patch would make a second revision, or send its diff to another
+/// revision than the commit's. Any other patch, and any other difference,
+/// is not held back.
 pub fn held_by_head(head: &crate::head::Head, at: usize) -> Option<String> {
-    let crate::head::At::Stack(on) = &head.at else { return None };
-    let (k, _, d) = on.messages.iter().find(|(k, _, _)| *k == at)?;
-    let crate::head::Differs::Revision(ours, Some(theirs)) = d else { return None };
-    if ours.as_ref() == Some(theirs) {
-        return None;
-    }
-    let said = d.revisions(*k)?;
+    let crate::head::Mark::Revision { theirs, ours } = head.mark(at)? else { return None };
+    let said = format!("patch {} names {} in the stack and {theirs} in your workspace's commit", at + 1, ours.as_deref().unwrap_or("no revision"));
     let first = match ours {
         None => format!("give the patch's message {theirs} first, with an edit by hand, so that no second revision is made"),
         Some(_) => "make the patch and its commit name the same revision first, the patch with an edit by hand or the commit in your checkout, so that its diff goes to the revision you keep".into(),
@@ -2121,32 +2117,32 @@ mod tests {
 
     #[test]
     fn a_patch_whose_commit_names_a_revision_it_does_not_is_held_back_alone() {
-        use crate::head::{At, Differs, Head, OnStack};
-        let head = |d: Differs, k: usize| Head {
+        use crate::head::{At, Head, Mark, OnStack};
+        let head = |d: Mark, k: usize| Head {
             dir: PathBuf::from("/checkout"),
             branch: Some("main".into()),
             commit: "c".repeat(40),
             at: At::Stack(OnStack {
                 commits: vec!["a".into(), "b".into(), "c".into()],
-                messages: vec![(k, "its commit's message".into(), d)],
+                marks: vec![(k, "its commit's message".into(), d)],
                 above: vec![],
             }),
         };
-        let names = |ours: Option<&str>, theirs: Option<&str>| Differs::Revision(ours.map(String::from), theirs.map(String::from));
+        let names = |ours: Option<&str>, theirs: &str| Mark::Revision { theirs: theirs.into(), ours: ours.map(String::from) };
         assert_eq!(
-            held_by_head(&head(names(None, Some("D34")), 2), 2).as_deref(),
+            held_by_head(&head(names(None, "D34"), 2), 2).as_deref(),
             Some("Patch 3 names no revision in the stack and D34 in your workspace's commit: give the patch's message D34 first, with an edit by hand, so that no second revision is made.")
         );
         assert_eq!(
-            held_by_head(&head(names(Some("D13"), Some("D34")), 2), 2).as_deref(),
+            held_by_head(&head(names(Some("D13"), "D34"), 2), 2).as_deref(),
             Some("Patch 3 names D13 in the stack and D34 in your workspace's commit: make the patch and its commit name the same revision first, the patch with an edit by hand or the commit in your checkout, so that its diff goes to the revision you keep.")
         );
-        // The stack's patch alone names one; what they say differs; another
-        // patch of the stack; HEAD elsewhere: not held back.
-        assert_eq!(held_by_head(&head(names(Some("D13"), None), 2), 2), None);
-        assert_eq!(held_by_head(&head(Differs::Text, 2), 2), None);
-        assert_eq!(held_by_head(&head(names(None, Some("D34")), 2), 0), None);
-        let elsewhere = Head { at: At::Elsewhere, ..head(names(None, Some("D34")), 2) };
+        // Its commit's message other than the patch's, the patch alone
+        // naming a revision or not; another patch of the stack; HEAD
+        // elsewhere: not held back.
+        assert_eq!(held_by_head(&head(Mark::Message, 2), 2), None);
+        assert_eq!(held_by_head(&head(names(None, "D34"), 2), 0), None);
+        let elsewhere = Head { at: At::Elsewhere, ..head(names(None, "D34"), 2) };
         assert_eq!(held_by_head(&elsewhere, 2), None);
     }
 

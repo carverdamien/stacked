@@ -1395,19 +1395,24 @@ fn head_is_said_against_the_stack() {
     assert_eq!(e.ok(&["head", "s"]), format!("HEAD, detached at {}, is at patch 2 of s\n", short("main~1")));
     git(&e.src, &["checkout", "-q", "base"]);
     assert!(e.ok(&["head", "s"]).ends_with("is at the base of s\n"));
-    // A commit on top that is not the stack's.
+    // A commit on top that is not the stack's: Move HEAD would not move
+    // HEAD, and why is said.
     git(&e.src, &["checkout", "-q", "main"]);
     std::fs::write(e.src.join("c.txt"), "c\n").unwrap();
     git(&e.src, &["add", "c.txt"]);
     git(&e.src, &["commit", "-qm", "Mine"]);
-    assert!(e.ok(&["head", "s"]).ends_with("is at patch 3 of s, then 1 commit not in the stack\n"));
+    let out = e.ok(&["head", "s"]);
+    assert!(
+        out.ends_with("is at patch 3 of s, then 1 commit not in the stack\n--to N is refused: HEAD has commits stacked did not make, as 1 commit after patch 3 is not the stack's: Move HEAD is offered only when HEAD is on the stack with no marks, or as stacked last left it\n"),
+        "{out}"
+    );
     // The same patch, its message other: still the stack's, by its diff;
     // its message said, and nothing of it goes into the stack.
     git(&e.src, &["checkout", "-q", "--detach", "main~1"]);
     git(&e.src, &["commit", "-q", "--amend", "-m", "Bug 3 - other words"]);
     let out = e.ok(&["head", "s"]);
-    let said = "is at patch 3 of s\nthe message of patch 3 differs from its commit's: \"Bug 3 - other words\"\n";
-    assert!(out.ends_with(said), "{out}");
+    let said = "is at patch 3 of s\nthe message of patch 3 differs from its commit's: \"Bug 3 - other words\"\n--to N is refused: ";
+    assert!(out.contains(said), "{out}");
     for flag in ["--messages-to-stack", "--messages-to-checkout"] {
         let (fine, _, err) = e.run(&["head", "s", flag]);
         assert!(!fine && err.contains(&format!("unexpected argument '{flag}'")), "{err}");
@@ -1449,11 +1454,108 @@ fn head_moves_along_the_stack_detached_its_branch_as_it_was() {
     assert!(!fine && err.contains("has uncommitted changes: commit or stash them first; HEAD did not move"), "{err}");
     assert_eq!(sha("HEAD"), sha("base"));
     git(&e.src, &["checkout", "-q", "--", "a.txt"]);
-    // A commit whose message is not the patch's is not taken: the patch is.
+    // A commit whose message is not the patch's, reworded outside stacked:
+    // it might be yours, and HEAD does not move.
     git(&e.src, &["checkout", "-q", "--detach", "main~2"]);
     git(&e.src, &["commit", "-q", "--amend", "-m", "Bug 1 - other words"]);
-    e.ok(&["head", "s", "--to", "1"]);
-    assert_eq!(git(&e.src, &["log", "-1", "--format=%s"]).trim(), "Bug 1 - change two");
+    let reworded = sha("HEAD");
+    let (fine, _, err) = e.run(&["head", "s", "--to", "2"]);
+    assert!(
+        !fine && err.contains("HEAD has commits stacked did not make, as the commit of patch 1 has a message other than the stack's: Move HEAD is offered only when HEAD is on the stack with no marks, or as stacked last left it; HEAD did not move"),
+        "{err}"
+    );
+    assert_eq!(sha("HEAD"), reworded);
+}
+
+/// The commit message of patch `k` (from 0) of stack `s`, `message` as a
+/// new version: as stacked's own submit gives a patch its revision.
+fn reword(db: &Path, k: usize, message: &str) {
+    Db::edit(db, |d| {
+        let mut patches = d.stack("s")?.patches.clone();
+        let old = d.patch(&patches[k]).clone();
+        let draft = stacked::mbox::Draft { message: message.into(), ..stacked::mbox::Draft::from(&old) };
+        patches[k] = d.add_patch(stacked::ops::revise(&old, draft))?;
+        d.set_stack("s", patches, "reword").map(|_| ())
+    })
+    .unwrap();
+}
+
+#[test]
+fn head_moves_only_as_stacked_left_it_or_on_the_stack_with_no_mark() {
+    let e = env();
+    e.ok(&["import", "s", "base"]);
+    let sha = |rev: &str| git(&e.src, &["rev-parse", rev]).trim().to_string();
+    let top = e.src.canonicalize().unwrap();
+    let left = || Db::load(&e.db).unwrap().moved("s", &top).map(String::from);
+    // On the stack with no mark: moved; where stacked left it, remembered.
+    assert_eq!(left(), None);
+    assert_eq!(e.ok(&["head", "s", "--to", "2"]), "HEAD is at patch 2 of s, detached: main is as it was\n");
+    assert_eq!(left(), Some(sha("HEAD")));
+    // A commit of yours on top: refused, said by `stacked head` too.
+    std::fs::write(e.src.join("c.txt"), "c\n").unwrap();
+    git(&e.src, &["add", "c.txt"]);
+    git(&e.src, &["commit", "-qm", "Mine"]);
+    let mine = sha("HEAD");
+    let why = "HEAD has commits stacked did not make, as 1 commit after patch 2 is not the stack's: Move HEAD is offered only when HEAD is on the stack with no marks, or as stacked last left it";
+    let (fine, _, err) = e.run(&["head", "s", "--to", "3"]);
+    assert!(!fine && err.contains(&format!("{why}; HEAD did not move")), "{err}");
+    assert_eq!(sha("HEAD"), mine);
+    assert!(e.ok(&["head", "s"]).ends_with(&format!("is at patch 2 of s, then 1 commit not in the stack\n--to N is refused: {why}\n")));
+    // Back where stacked left it: the stack as it is now, whatever it has
+    // become since, patch 1 reworded in the stack.
+    git(&e.src, &["checkout", "-q", "--detach", "HEAD~1"]);
+    reword(&e.db, 0, "Bug 1 - change two, reworded");
+    let said = e.ok(&["head", "s"]);
+    assert!(said.ends_with("is at patch 2 of s\nthe message of patch 1 differs from its commit's: \"Bug 1 - change two\"\n"), "{said}");
+    assert_eq!(e.ok(&["head", "s", "--to", "3"]), "HEAD is at patch 3 of s, detached\n");
+    assert_eq!(git(&e.src, &["log", "-3", "--format=%s"]).lines().nth(2), Some("Bug 1 - change two, reworded"));
+    assert_eq!(left(), Some(sha("HEAD")));
+    // Left there, a new stacked run remembers it: patch 2 reworded, HEAD
+    // follows it to patch 1 again, the commit made again from its patch.
+    reword(&e.db, 1, "Bug 2 - add b, reworded");
+    assert_eq!(e.ok(&["head", "s", "--to", "1"]), "HEAD is at patch 1 of s, detached\n");
+    assert_eq!(e.ok(&["head", "s", "--to", "3"]), "HEAD is at patch 3 of s, detached\n");
+    assert_eq!(git(&e.src, &["log", "-2", "--format=%s"]).lines().nth(1), Some("Bug 2 - add b, reworded"));
+    // Reworded outside stacked: no longer where stacked left it, refused.
+    git(&e.src, &["commit", "-q", "--amend", "-m", "Bug 3 - mine"]);
+    let (fine, _, err) = e.run(&["head", "s", "--to", "2"]);
+    assert!(!fine && err.contains("as the commit of patch 3 has a message other than the stack's"), "{err}");
+}
+
+#[cfg(feature = "moz-phab")]
+#[test]
+fn head_goes_nowhere_below_a_commit_that_names_a_revision_its_patch_does_not() {
+    let e = env();
+    e.ok(&["import", "s", "base"]);
+    let sha = |rev: &str| git(&e.src, &["rev-parse", rev]).trim().to_string();
+    // Patch 2 names D34, as stacked's own submit leaves it; HEAD moved there
+    // with it, then the stack's patch 2 reworded without it.
+    reword(&e.db, 1, &format!("Bug 2 - add b\n\nA body.\n\nMore body.\n\n{}", trailer("D34")));
+    git(&e.src, &["checkout", "-q", "--detach", "base"]);
+    e.ok(&["head", "s", "--to", "3"]);
+    let named = sha("HEAD~1");
+    reword(&e.db, 1, "Bug 2 - add b, reworded");
+    // Locked below patch 2: said, and refused there.
+    let lock = "HEAD is locked below patch 2: the commit of patch 2 names D34, which the patch does not name";
+    let said = e.ok(&["head", "s"]);
+    assert!(said.ends_with(&format!("is at patch 3 of s\npatch 2 names no revision in the stack and D34 in your workspace's commit\n{lock}\n")), "{said}");
+    for n in ["0", "1"] {
+        let (fine, _, err) = e.run(&["head", "s", "--to", n]);
+        assert!(!fine && err.contains(&format!("{lock}, and Move HEAD keeps every commit up to it as it is; HEAD did not move")), "{n}: {err}");
+    }
+    // At patch 2 and above: every commit up to it kept as it is, its
+    // revision with it; patch 3 applied on it.
+    assert_eq!(e.ok(&["head", "s", "--to", "2"]), "HEAD is at patch 2 of s, detached\n");
+    assert_eq!(sha("HEAD"), named);
+    assert_eq!(e.ok(&["head", "s", "--to", "3"]), "HEAD is at patch 3 of s, detached\n");
+    assert_eq!(sha("HEAD~1"), named);
+    assert!(git(&e.src, &["log", "-1", "--format=%B", "HEAD~1"]).contains(&trailer("D34")));
+    // A revision named outside stacked, as `moz-phab submit` names it:
+    // HEAD not where stacked left it, refused, and nothing lets it.
+    git(&e.src, &["checkout", "-q", "main"]);
+    git(&e.src, &["commit", "-q", "--amend", "-m", &format!("Bug 3 - café, a very long title that format-patch will fold over more than one line\n\n{}", trailer("D35"))]);
+    let (fine, _, err) = e.run(&["head", "s", "--to", "3"]);
+    assert!(!fine && err.contains("the commit of patch 3 names D35, which the patch does not name: Move HEAD is offered only when"), "{err}");
 }
 
 /// The trailer moz-phab writes to name revision `d`.
@@ -1474,8 +1576,8 @@ fn head_says_which_revision_each_side_names_when_their_messages_differ_by_it_alo
     // Reworded by hand without it, the rest of its message the patch's.
     git(&e.src, &["commit", "-q", "--amend", "-m", title]);
     let out = e.ok(&["head", "s"]);
-    let said = "is at patch 3 of s\npatch 3 names D3 in the stack and no revision in your workspace's commit\n";
-    assert!(out.ends_with(said), "{out}");
+    let said = "is at patch 3 of s\npatch 3 names D3 in the stack and no revision in your workspace's commit\n--to N is refused: ";
+    assert!(out.contains(said), "{out}");
     // Naming another.
     git(&e.src, &["commit", "-q", "--amend", "-m", &format!("{title}\n\n{}", trailer("D33"))]);
     let out = e.ok(&["head", "s"]);
@@ -4035,15 +4137,27 @@ fn a_file_is_edited_in_the_stack_s_worktree_or_in_this_checkout() {
     assert_eq!(last(), format!("+1 {} Bug 2 - add b", kept.display()));
     assert_eq!(git(&e.src, &["worktree", "list"]).lines().count(), 2);
 
-    // In this checkout: moved to patch 2 for the edit, then back on main,
-    // the files of yours git does not track left alone.
-    std::fs::write(e.src.join("notes.txt"), "mine\n").unwrap();
+    // In this checkout: not while Move HEAD would not move HEAD, which on
+    // main is no longer on the stack the edits made.
     script("sed -i '' 's/^newer$/fresh/' \"$file\"");
+    let (fine, _, err) = edit(&["2", "--path", "b.txt", "--line", "1", "--in", "pwd"]);
+    assert!(
+        !fine && err.contains("this checkout is not offered for edits by hand: HEAD is not on the stack, nor where stacked last left it: Move HEAD is offered only when"),
+        "{err}"
+    );
+    assert_eq!((head(), branch()), (top.clone(), "main".to_string()));
+    // Put on the stack's base, then moved to its top by stacked: moved to
+    // patch 2 for the edit, then back there, the files of yours git does
+    // not track left alone.
+    git(&e.src, &["checkout", "-q", "--detach", "base"]);
+    e.ok(&["head", "s", "--to", "3"]);
+    let top = head();
+    std::fs::write(e.src.join("notes.txt"), "mine\n").unwrap();
     let (fine, _, err) = edit(&["2", "--path", "b.txt", "--line", "1", "--in", "pwd"]);
     assert!(fine && err.contains("edited b.txt in Bug 2 - add b"), "{err}");
     assert_eq!(last(), format!("+1 {} Bug 2 - add b", e.src.display()));
     assert!(e.ok(&["show", "s", "2"]).contains("+fresh"));
-    assert_eq!((head(), branch()), (top.clone(), "main".to_string()));
+    assert_eq!(head(), top);
     assert_eq!(git(&e.src, &["status", "--porcelain"]), "?? notes.txt\n");
     // Not over changes of yours to what git tracks.
     std::fs::write(e.src.join("a.txt"), "mine\n").unwrap();
@@ -4059,7 +4173,7 @@ fn a_file_is_edited_in_the_stack_s_worktree_or_in_this_checkout() {
         assert!(fine && err.contains("saved as it was: nothing changed"), "{w}: {err}");
     }
     assert_eq!(std::fs::metadata(&e.db).unwrap().len(), size);
-    assert_eq!((head(), branch()), (top.clone(), "main".to_string()));
+    assert_eq!(head(), top);
 
     // Without --in, where the stack's menus picked. One the patch above
     // cannot take is not taken: it is kept in a commit, and taken up again

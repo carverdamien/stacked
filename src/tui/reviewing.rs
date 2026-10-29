@@ -2095,7 +2095,9 @@ impl App {
             marks.retain(|k, _| !k.starts_with("asking "));
         }
         // HEAD to follow: moving from now on, before the stack takes the
-        // change, which HEAD has only once it has moved.
+        // change, which HEAD has only once it has moved; from the commit it
+        // was seen in sync with the stack at.
+        let seen = self.head_here().map(|h| h.commit.clone()).unwrap_or_default();
         let moving = follow && self.head_to_move();
         let closed = self.edit(|db| {
             let said = crate::held::close(db, &rv.run, &marks, rest)?;
@@ -2113,8 +2115,7 @@ impl App {
             }
             self.leave_review();
             if moving {
-                let n = self.patch_count();
-                self.head_moves(n, format!("reviewed: {said}; "));
+                self.head_follows(format!("reviewed: {said}; "), seen);
             } else if follow {
                 self.status = format!("reviewed: {said}; HEAD is being moved already");
             }

@@ -390,8 +390,8 @@ meanwhile, and Enter moves it there, Esc leaving it where it was. HEAD is
 then detached at the stack's base with the patches up to there applied as
 commits, those the checkout has already, message too, taken as they are;
 the branch it was on stays where it was. Not while files git tracks have
-changes, nor while the agent works in the checkout. `stacked head NAME
---to N` moves it to N patches (0, the base).
+changes, and only as below. `stacked head NAME --to N` moves it to N
+patches (0, the base).
 
 With the `moz-phab` feature (on by default), a patch whose message names a
 revision (its `Differential Revision:` trailer, Phabricator below) has that
@@ -434,15 +434,43 @@ makes one as HEAD is moved. With the `moz-phab` feature (on by default),
 the trailer moz-phab writes to name the revision, the line of the message's
 last paragraph that Reading (below) says is that trailer (`Differential
 Revision: https://phabricator.services.mozilla.com/D123`), is told apart:
+a commit that names a revision its patch does not name, none or another,
+as `moz-phab submit` leaves it in your checkout, is locked (below), and
 while a patch and its commit differ by the revision they name, HEAD is not
 in sync with the stack, so that it does not follow the stack as a review
-closes, which would write the stack's message over a revision only the
-commit names. Built without the feature, the trailer is a line of the
-message as any other. `stacked head NAME` lists the patches whose message
+closes. Built without the feature, the trailer is a line of the message as
+any other.
+
+Move HEAD replaces the commits of your checkout with the stack's, and
+those commits might be yours: commits the stack does not have, or ones
+amended outside stacked. So stacked remembers where it left HEAD: the
+commit HEAD is at right after stacked last moved it, by Move HEAD or by
+HEAD following a review, in that checkout on that stack, each move
+replacing it, in the database (One file, only appended to, below). Move
+HEAD replaces commits only when HEAD is exactly that commit, whatever the
+stack has become since (its patches edited, reworded, the commits of HEAD
+then other than the stack's): stacked made them; or when HEAD is on the
+stack, its commits the stack's first patches, with nothing above them and
+the same messages. Else `Move HEAD…` is grayed, and its menu says why
+(`Move HEAD is grayed: HEAD has commits stacked did not make, as 1 commit
+after patch 2 is not the stack's: Move HEAD is offered only when HEAD is
+on the stack with no marks, or as stacked last left it.`); `--to` is
+refused with the same reason. Everything else of HEAD is read from the
+commits, by their diffs, never from what was remembered.
+
+A commit that names a revision its patch does not name is never rewritten
+nor dropped: everything up to and including the last such commit is kept
+as it is, and HEAD goes nowhere below it. Moving HEAD, ↑ and Home stop at
+it, a click below it says why (`HEAD is locked below patch 2: the commit
+of patch 2 names D34, which the patch does not name`), and `--to` there is
+refused with that reason. From it up to the stack's top, HEAD may go
+anywhere: the stack's patches apply on it, as those commits have their
+patches' diffs. `stacked head NAME` lists the patches whose message
 differs from its commit's (`the message of patch 3 differs from its
 commit's: "Bug 3 - other words"`; with moz-phab, when the two differ by the
-trailer alone, `patch 3 names no revision in the stack and D3 in your
-workspace's commit`).
+revision they name, or would but for it, `patch 3 names no revision in the
+stack and D3 in your workspace's commit`), then where HEAD is locked, and
+why `--to` would be refused, when it would.
 
 The middle shows what the left pane's cursor is on: a patch (its message,
 then its diff, the comments under the
@@ -990,7 +1018,12 @@ choice, `[x] tmp/file  [ ] pwd  [ ] .stacked/NAME/user`, kept for the stack:
   base with the patches up to this one applied (as commits, not signed),
   the editor runs there, and then the checkout goes back to the branch or
   commit it was on. The editor, its language server, and your build there
-  see the whole project as the patch leaves it.
+  see the whole project as the patch leaves it. Only while `Move HEAD…`
+  would move HEAD there and no commit is locked (The editor, above): else
+  `pwd` is grayed, ← → go past it, the menu says why, and an edit there,
+  as the stack's menus last picked it or from the command line, is
+  refused with the reason (`this checkout is not offered for edits by
+  hand: HEAD is locked below patch 2: …; nothing changed`).
 - `.stacked/NAME/user`: your worktree of the stack, at the top of its
   repository, made the first time and kept (`.stacked/` goes in the
   repository's `info/exclude`, out of `git status`'s sight). Each edit moves
@@ -2750,6 +2783,12 @@ bytes long, padded with spaces.
   record holds the marks saved for a run's review,
   the replies taken already, and whether it is closed; the last one is
   what stands.
+- A moved record says where stacked left HEAD of a checkout on a stack
+  (`{"t":"moved","stack":"s","checkout":"/path/to/top","commit":"…"}`):
+  the commit HEAD was at right after Move HEAD, or HEAD following a review,
+  moved it. The last one of a stack and checkout is what stands. A file a
+  stacked of before wrote has none, and reads as if stacked had left HEAD
+  nowhere.
 - A crash can only cut the last line short. A line that cannot be read is
   passed over with a warning (`stacked check` lists them, by line) and
   keeps its rev, so every rev after it stays the same. The next write ends
@@ -2768,7 +2807,9 @@ bytes long, padded with spaces.
   takes no rev, saying where in the file the records are that the state
   stands on (each stack's head, the stacks one undo and one redo go to,
   the comments open, the asks going or waiting for your review and what
-  they need, what is chosen and marked read), and how the indexes stood.
+  they need, what is chosen and marked read, where stacked last left HEAD
+  of each checkout), and how the indexes stood; a checkpoint of before,
+  with no index of where stacked left HEAD, reads as one with none.
   stacked reads the header, that checkpoint, the records it says, and the
   lines after it: not the whole file. What needs the history (an older
   stack, the log and the tree, the versions of a patch, a comment's
@@ -2870,8 +2911,8 @@ version it was made from. Else it came from elsewhere, and nothing is sent
 (`D123's latest diff is not a version of patch 3 that stacked knows: it
 came from elsewhere, and nothing was sent.`). And while HEAD is on the
 stack, a patch whose commit in your workspace names a revision the patch
-does not, none or another, as after `moz-phab submit` there, is not
-submitted before anything is read: its menu grays the item and says to
+does not, none or another, as after `moz-phab submit` there, whatever else
+the two messages say, is not submitted before anything is read: its menu grays the item and says to
 give the patch that revision first, so that no second revision is made
 (`Patch 3 names no revision in the stack and D34 in your workspace's
 commit: give the patch's message D34 first, with an edit by hand, so that
@@ -2925,7 +2966,9 @@ new version taken at once, which the history says (`submitted patch 3 as
 D124, in work`). Its trailer goes where moz-phab puts one: at the end of
 the message's last paragraph when that paragraph is trailers
 (`Reviewed-by: …`), else after an empty line. The workspace's commits are
-not touched. When HEAD is
+not touched: the patch's commit there then has a message other than the
+stack's, and `Move HEAD…` writes the stack's message, the trailer with it,
+there, while HEAD is where stacked last left it. When HEAD is
 on the stack and has the patch's commit, the diff is said to be that
 commit, made on the commit below it (on the stack's base for the bottom
 patch), with that commit's tree, as moz-phab says it. Else the diff is
@@ -3144,7 +3187,11 @@ settings, `agent.setup = 0`, over the tests' own.
 With `STACKED_TEST_CHECKPOINTS=1` set, every write writes a checkpoint, and
 every database read from one is read whole too and the two compared, a
 difference a panic: run the suite so too after a change to the database,
-or to what reads it, as `STACKED_TEST_CHECKPOINTS=1 cargo test`.
+or to what reads it, as `STACKED_TEST_CHECKPOINTS=1 cargo test`. The tests
+in `db.rs` show where stacked left HEAD kept per stack and checkout, each
+move replacing it and the same again writing nothing, read from a
+checkpoint as when read whole, and a checkpoint of before, with no index
+of them, read all the same, as one with none.
 
 `tests/cli.rs` builds a repo and drives the binary. It covers a round trip
 through `git am`, a stack imported again (a patch whose lines a new
@@ -3206,10 +3253,18 @@ would go to the other copy (lines added between the two by a patch
 below) and when the agent moved its hunk to the other copy, the stack not
 edited by hand while the agent changes it, failures kept to look at, comments staying on their line
 across versions, a patch edited by hand (as mail and as code, at a line,
-refused and taken up again), `stacked head` listing the patches whose
-message differs from its commit's, with moz-phab what each side names when
-they differ by the Differential Revision alone, the flags that synced them
-once refused as unknown, trimming, the settings (in ~/.stacked, or the
+refused and taken up again; in this checkout, refused while Move HEAD
+would not move HEAD, and taken once stacked has put HEAD on the stack),
+`stacked head` listing the patches whose message differs from its
+commit's, with moz-phab what each side names when they differ by the
+Differential Revision, then why `--to` would be refused, the flags that
+synced them once refused as unknown, `stacked head NAME --to N` moving
+HEAD only as stacked last left it or on the stack with no mark, where it
+left HEAD remembered from one run to the next, the stack as it is now put
+there whatever it has become, and refused with why otherwise (a commit of
+yours on top, one reworded outside stacked), and, with moz-phab, never
+below a commit that names a revision its patch does not, every commit up
+to it kept as it is, a revision named outside stacked refused, trimming, the settings (in ~/.stacked, or the
 folder `$STACKED_HOME` names, the folder made by the first written, a file
 `$STACKED_CONFIG` names over it; the files of before moved in by a run of
 yours, said once, never over a file there, and not by the shell's
@@ -3433,7 +3488,16 @@ holding back nothing (none of it in the banner, landed work reviewed and a
 reply taken at once meanwhile, the stack and the commit each keeping its
 own message, s and w doing nothing), HEAD shown where it was while stacked
 moves it and where it went once the move is over, a message whose empty
-lines in a row `git am` made one leaving HEAD in sync, the comment editor hiding
+lines in a row `git am` made one leaving HEAD in sync, `Move HEAD…` grayed
+with why unless HEAD is as stacked last left it or on the stack with no
+mark (a commit of yours on top, one reworded outside stacked) and offered
+after a restart from what the database remembers, the stack moved on
+since, its place never below a commit that names a revision its patch does
+not (↑, Home and a click stopping there, `?` saying why), HEAD following
+a review remembered where it went, this checkout grayed for edits by hand
+meanwhile (dim, ← → going past it, a click picking nothing, the menu and
+`?` saying why, an edit there as the stack's menus last picked it
+refused), the comment editor hiding
 nothing in each view of the code, each pane keeping where its cursor
 was, the patch's title kept at the top of the middle, the patches pane's
 states (expanded, files, hidden) and its files (listed under the patch
@@ -3784,9 +3848,14 @@ word changed a run that differs, the word alone marked; a paragraph split,
 one put in or taken out, a command wrapped otherwise, runs that differ;
 empty lines before every section or after the same as the other's there;
 and what a section says the same however it wraps, code line by line;
-those in `head.rs`, which messages differ by the revision
-alone and what each names, empty lines in a row one as `git am` leaves
-them, and, without moz-phab, the trailer compared as any line;
+those in `head.rs`, which commits are marked, `!` for one that names a
+revision its patch does not, whatever else differs, and `≠` for a
+message other than the patch's, empty lines in a row one as `git am`
+leaves them, what `stacked head` says of each, when Move HEAD replaces
+commits (as stacked left them, or on the stack with no mark) and why it
+does not, and that it keeps every commit up to the last one marked `!`,
+and those after it that are their patches, HEAD going nowhere below it;
+and, without moz-phab, the trailer compared as any line;
 those in `refs.rs`, which references a rewind or an edit detaches, which
 stay (named by another turn, the agent's or by `@r*`, by the reply waiting
 for review, or never named), the agent's turn written again keeping its

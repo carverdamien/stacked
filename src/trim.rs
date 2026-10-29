@@ -7,7 +7,8 @@
 //! The start holds each stack as it was (and any earlier state a later
 //! record names: the parent of a later edit, where an undo goes, where an
 //! ask started), the patches they need, the comments as they stood, the
-//! read marks standing, each stack's filter, and the runs still going (with
+//! read marks standing, each stack's filter, where stacked last left HEAD
+//! of each checkout, and the runs still going (with
 //! what their agent had written). Runs that had landed, earlier states no
 //! one names, earlier versions of comments: that is the history left out.
 
@@ -280,6 +281,17 @@ pub fn trim(src: &Path, dst: &Path, from: Option<usize>) -> Result<Trimmed> {
                     stack: name.clone(),
                     of: of.to_string(),
                     pick: pick.to_string(),
+                },
+                None,
+            );
+        }
+        // Where stacked last left HEAD of each checkout.
+        for (checkout, commit) in before.moved_all(name) {
+            new.push(
+                Record::Moved {
+                    stack: name.clone(),
+                    checkout: checkout.to_string(),
+                    commit: commit.to_string(),
                 },
                 None,
             );

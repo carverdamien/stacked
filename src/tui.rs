@@ -1086,6 +1086,9 @@ pub struct Choice {
     pub said: String,
     /// What Enter does with it picked, if not the item's own action.
     pub action: Option<Action>,
+    /// Whether it can be picked: grayed, ← → go past it, a click on it
+    /// picks nothing, and the menu says why.
+    pub enabled: bool,
 }
 
 impl Choice {
@@ -1095,7 +1098,13 @@ impl Choice {
             shown: shown.into(),
             said: said.into(),
             action,
+            enabled: true,
         }
+    }
+
+    /// Grayed unless `ok`.
+    fn when(self, ok: bool) -> Choice {
+        Choice { enabled: ok, ..self }
     }
 }
 
@@ -1119,10 +1128,16 @@ impl Choices {
     }
 
     /// Another picked, the next (`by` 1) or the one before (-1), round
-    /// past either end: what it is a choice of, and what is picked now.
+    /// past either end, past those grayed: what it is a choice of, and what
+    /// is picked now.
     fn turn(&mut self, by: isize) -> (&'static str, &'static str) {
         let n = self.list.len() as isize;
-        self.picked = (self.picked as isize + by).rem_euclid(n) as usize;
+        for _ in 0..n {
+            self.picked = (self.picked as isize + by).rem_euclid(n) as usize;
+            if self.list[self.picked].enabled {
+                break;
+            }
+        }
         (self.of, self.pick())
     }
 }
@@ -1769,7 +1784,8 @@ impl Menu {
         while out.last().is_some_and(|l| l.action == Action::Line) {
             out.pop();
         }
-        let blocked = out.iter().any(|i| !i.enabled && i.action != Action::Line);
+        // An item grayed, or a choice of one: the note says why.
+        let blocked = out.iter().any(|i| (!i.enabled && i.action != Action::Line) || i.choices.iter().any(|c| c.list.iter().any(|ch| !ch.enabled)));
         // Not on the row picking when an ask goes: on the ask.
         let first = out.iter().position(|i| i.enabled && i.action != Action::When);
         Menu {
@@ -2673,6 +2689,31 @@ impl App {
     /// stack, as last looked at: if it is a checkout of its repository.
     pub fn head_here(&self) -> Option<&crate::head::Head> {
         self.head.as_ref().filter(|h| h.name == self.stack).and_then(|h| h.head.as_ref())
+    }
+
+    /// What Move HEAD may do from HEAD as last looked at (`head::Moves`),
+    /// stacked having left HEAD where the database says, in that checkout
+    /// on this stack: none without HEAD.
+    pub fn head_moves_here(&self) -> Option<crate::head::Moves> {
+        let h = self.head_here()?;
+        Some(h.moves(self.db.moved(&self.stack, &h.dir)))
+    }
+
+    /// Why a file is not edited by hand in this checkout now, if it is
+    /// not: Move HEAD would not move HEAD, or a commit is marked `!`
+    /// (`Moves::edits_here`).
+    fn here_edits_why(&self) -> Option<String> {
+        let (h, m) = (self.head_here()?, self.head_moves_here()?);
+        if m.edits_here() {
+            return None;
+        }
+        h.lock_said().or(m.case.err())
+    }
+
+    /// Why Move HEAD is grayed, if it is, said as the menu says it.
+    fn move_head_why(&self) -> Option<String> {
+        let why = self.head_moves_here()?.case.err()?;
+        Some(format!("Move HEAD is grayed: {why}."))
     }
 
     /// Runs `work` in a thread of its own; what it comes to is read when
@@ -3663,6 +3704,10 @@ impl App {
     fn click_on(&mut self, x: u16, y: u16, right: bool) -> Effect {
         let spot = self.spot_at(x, y);
         let press = |app: &mut App, code: KeyCode| app.pressed(KeyEvent::new(code, KeyModifiers::NONE));
+        // Where HEAD being moved may not go: below its last commit marked
+        // `!`, which is why.
+        let low = self.head_here().map_or(0, crate::head::Head::locked);
+        let lock = self.head_here().and_then(crate::head::Head::lock_said).unwrap_or_default();
         match &mut self.mode {
             Mode::Menu(m) => {
                 return match spot {
@@ -3679,7 +3724,7 @@ impl App {
                             .get_mut(i)
                             .filter(|i| i.enabled)
                             .and_then(|i| i.choices.get_mut(d))
-                            .filter(|c| k < c.list.len())
+                            .filter(|c| c.list.get(k).is_some_and(|ch| ch.enabled))
                             .map(|c| {
                                 c.picked = k;
                                 (c.of, c.pick())
@@ -3749,10 +3794,15 @@ impl App {
                 return Effect::None;
             }
             // HEAD being moved goes under the patch clicked (under the
-            // header, at the base), and is put down there with a click on it.
+            // header, at the base), and is put down there with a click on it;
+            // not below its last commit marked `!`, which is said.
             Mode::MovingHead { to } => {
                 if let Some(Spot::Patch(at)) = spot {
                     let there = at.map_or(0, |at| at + 1);
+                    if there < low {
+                        self.status = lock;
+                        return Effect::None;
+                    }
                     if *to == there {
                         return press(self, KeyCode::Enter);
                     }
@@ -3808,6 +3858,7 @@ impl App {
         let side = |s: &Spot| matches!(s, Spot::Patch(_) | Spot::File(_) | Spot::NotesHead | Spot::Note(_));
         self.hovered = spot.filter(|s| side(s) && matches!(self.mode, Mode::Normal));
         let Some(spot) = spot else { return };
+        let low = self.head_here().map_or(0, crate::head::Head::locked);
         match &mut self.mode {
             Mode::Menu(m) => {
                 // Over a dropdown, ← → pick in it.
@@ -3824,7 +3875,7 @@ impl App {
             }
             Mode::MovingHead { to } => {
                 if let Spot::Patch(at) = spot {
-                    *to = at.map_or(0, |at| at + 1);
+                    *to = at.map_or(0, |at| at + 1).max(low);
                 }
             }
             // Not onto the banner, nor off it: it opens and closes under a
@@ -5438,6 +5489,9 @@ impl App {
                     crate::head::place(&self.stack, *to)
                 ));
                 out.push("Press ↑↓ to place it elsewhere, Esc to leave it where it was.".into());
+                if let Some(lock) = self.head_here().and_then(crate::head::Head::lock_said) {
+                    out.push(format!("{lock}. Move HEAD keeps every commit up to it as it is, so no place below it is offered."));
+                }
                 return out;
             }
             Mode::Stream { change, id, .. } if self.pushing(change, id) => {
@@ -6190,14 +6244,16 @@ impl App {
         self.launch();
     }
 
-    /// A key while HEAD is being moved: ↑↓ place it, and only Enter moves
-    /// the checkout, once the mode is left; Esc leaves it where it was.
+    /// A key while HEAD is being moved: ↑↓ place it, past the places below
+    /// its last commit marked `!`, and only Enter moves the checkout, once
+    /// the mode is left; Esc leaves it where it was.
     fn head_key(&mut self, to: usize, k: KeyEvent) {
         let last = self.patch_count();
+        let low = self.head_here().map_or(0, crate::head::Head::locked);
         let to = match k.code {
             KeyCode::Down => (to + 1).min(last),
-            KeyCode::Up => to.saturating_sub(1),
-            KeyCode::Home => 0,
+            KeyCode::Up => to.saturating_sub(1).max(low),
+            KeyCode::Home => low,
             KeyCode::End => last,
             KeyCode::Esc => return,
             KeyCode::Enter => return self.move_head(to),
@@ -6238,6 +6294,15 @@ impl App {
         self.status = format!("{said}moving HEAD to {}…", crate::head::place(&self.stack, n));
         let (path, name, here) = (self.path.clone(), self.stack.clone(), self.checkout.clone());
         self.spawn(move || Done::Said(MOVING_HEAD, format!("{said}{}", crate::head::move_to(&path, &name, &here, n).unwrap_or_else(|e| e.0))));
+    }
+
+    /// HEAD following the stack to its top as a review closes, once
+    /// `head_to_move` said it may be: from `seen`, the commit it was seen
+    /// in sync with the stack at (`head::follow`).
+    pub(super) fn head_follows(&mut self, said: String, seen: String) {
+        self.status = format!("{said}moving HEAD to {}…", crate::head::place(&self.stack, self.patch_count()));
+        let (path, name, here) = (self.path.clone(), self.stack.clone(), self.checkout.clone());
+        self.spawn(move || Done::Said(MOVING_HEAD, format!("{said}{}", crate::head::follow(&path, &name, &here, &seen).unwrap_or_else(|e| e.0))));
     }
 
     fn moving_key(&mut self, from: usize, mut to: usize, k: KeyEvent) {
@@ -6416,11 +6481,17 @@ impl App {
     }
 
     /// Where a file of a patch is edited by hand, as radio buttons: a copy
-    /// of it alone, this checkout, or the stack's own worktree.
+    /// of it alone, this checkout, or the stack's own worktree. This
+    /// checkout grayed while Move HEAD would not move HEAD, or a commit is
+    /// marked `!` (`here_edits_why`).
     fn edit_choices(&self) -> Choices {
+        let pwd = match self.here_edits_why() {
+            None => "this checkout, moved to the patch for the edit, then back where it was".to_string(),
+            Some(why) => format!("this checkout, moved to the patch for the edit, then back where it was: grayed, as {why}"),
+        };
         let list = vec![
             Choice::new("tmp", "tmp/file", "a copy of the file alone, in a temporary folder", None),
-            Choice::new("pwd", "pwd", "this checkout, moved to the patch for the edit, then back where it was", None),
+            Choice::new("pwd", "pwd", pwd, None).when(self.here_edits_why().is_none()),
             Choice::new(
                 "worktree",
                 format!(".stacked/{}/user", self.stack),
@@ -6598,6 +6669,8 @@ impl App {
         let mut wraps: Option<String> = None;
         // Why the stack's lint is grayed, but for what edits by hand say.
         let mut lint_why: Option<String> = None;
+        // Why Move HEAD is grayed, if it is.
+        let mut move_why: Option<String> = None;
         match (self.screen, self.focus) {
             // What landed, to review; the comments open, to go to.
             (Screen::Main, _) if self.on_banner => {
@@ -6632,7 +6705,8 @@ impl App {
                         items.push(Item::new("Pull reviews from Phabricator", Action::Pull));
                     }
                     if self.head_here().is_some() {
-                        items.push(Item::new("Move HEAD…", Action::MoveHead(None)));
+                        items.push(Item::new("Move HEAD…", Action::MoveHead(None)).when(self.move_head_why().is_none()));
+                        move_why = self.move_head_why();
                     }
                     items.push(Item::line());
                 }
@@ -6657,7 +6731,8 @@ impl App {
                 items.push(Item::new("Comment on this patch…", Action::CommentPatch));
                 items.push(Item::new("Move this patch…", Action::MovePatch).when(h && n > 1));
                 if self.head_here().is_some() {
-                    items.push(Item::new("Move HEAD…", Action::MoveHead(Some(self.sel))));
+                    items.push(Item::new("Move HEAD…", Action::MoveHead(Some(self.sel))).when(self.move_head_why().is_none()));
+                    move_why = self.move_head_why();
                 }
                 items.push(Item::new("Edit this patch in $EDITOR", Action::EditPatch).when(h));
                 if let Some((item, said)) = self.wrap_item([self.sel], |_, w| format!("Wrap the long lines of this patch's message at {w} columns")) {
@@ -6766,6 +6841,11 @@ impl App {
         // from there: nothing it holds back is said.
         let mut why: Vec<String> = hands.filter(|_| self.screen != Screen::Review).into_iter().collect();
         why.extend(lint_why);
+        why.extend(move_why);
+        // An edit by hand in this checkout grayed: why.
+        if items.iter().any(|i| i.enabled && i.choices.iter().any(|c| c.of == "edit" && c.list.iter().any(|ch| !ch.enabled))) {
+            why.extend(self.here_edits_why().map(|w| format!("Editing in this checkout (pwd) is grayed: {w}.")));
+        }
         #[cfg(feature = "moz-phab")]
         why.extend(held_submit);
         let mut m = Menu::new(title, items, (!why.is_empty()).then(|| why.join("\n")));
@@ -7027,12 +7107,17 @@ impl App {
                 self.go_to_middle();
             }
             Action::GoToNote => self.go_to_note(),
-            Action::MoveHead(at) => {
-                let to = at.map(|at| at + 1).or_else(|| self.head_here().and_then(|h| h.patches()));
-                self.mode = Mode::MovingHead {
-                    to: to.unwrap_or(self.patch_count()),
-                };
-            }
+            // Not while it would not move HEAD; from the place picked, or
+            // HEAD's, never below its last commit marked `!`.
+            Action::MoveHead(at) => match self.head_moves_here() {
+                Some(m) if m.case.is_err() => self.status = m.case.err().unwrap_or_default(),
+                m => {
+                    let to = at.map(|at| at + 1).or_else(|| self.head_here().and_then(|h| h.patches()));
+                    self.mode = Mode::MovingHead {
+                        to: to.unwrap_or(self.patch_count()).max(m.map_or(0, |m| m.locked)),
+                    };
+                }
+            },
             Action::MovePatch => match self.by_hand() {
                 Some(why) => self.status = why,
                 None => {
@@ -10129,9 +10214,15 @@ impl App {
                 }
             }
             // Each choice a spot of its own, over the item's: a click picks it.
+            // One grayed, dim, but under the cursor, which looks the same on
+            // every line.
             for (d, k, start, width) in choices {
                 if 1 + start < bw - 2 {
                     spot_in(&self.spots, area, (x + 2 + start, y + 1 + r, width.min(bw - 3 - start), 1), Spot::Choice(i, d, k));
+                    if i != m.sel && item.choices[d].list.get(k).is_some_and(|ch| !ch.enabled) {
+                        let part: String = text.chars().skip(start).take(width).collect();
+                        put(buf, area, x + 2 + start, y + 1 + r, width.min(bw - 3 - start), &part, color::dim());
+                    }
                 }
             }
         }

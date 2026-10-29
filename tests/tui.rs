@@ -5434,6 +5434,174 @@ fn head_is_moved_along_the_stack_only_once_enter_leaves_the_mode() {
     assert_eq!(row(&screen, &format!("▶ HEAD {}", &rev("HEAD")[..8])), row(&screen, "  1 Bug 1") + 1, "{screen}");
 }
 
+/// Whether the menu open has `label`, and whether it can be chosen.
+fn offered(app: &App, label: &str) -> Option<bool> {
+    items(app).into_iter().find(|(l, _)| l == label).map(|(_, ok)| ok)
+}
+
+#[test]
+fn move_head_is_grayed_with_why_unless_head_is_as_stacked_left_it_or_on_the_stack_with_no_mark() {
+    let (_tmp, db, src) = setup();
+    let mut app = open_in(&db, &src);
+    let top = app.head_here().unwrap().dir.clone();
+    let left = |db: &Path| Db::load(db).unwrap().moved("s", &top).map(String::from);
+    // On the stack, no mark: offered, from the stack's menu and a patch's.
+    for at_top in [true, false] {
+        (app.focus, app.on_stack) = (Focus::List, at_top);
+        keys(&mut app, &[KeyCode::Char(' ')]);
+        assert_eq!(offered(&app, "Move HEAD…"), Some(true));
+        keys(&mut app, &[KeyCode::Esc]);
+    }
+    // A commit of yours on top: grayed, the menu saying why.
+    std::fs::write(src.join("c.txt"), "c\n").unwrap();
+    git(&src, &["add", "c.txt"]);
+    git(&src, &["commit", "-qm", "Mine"]);
+    app.look_at_head();
+    app.settle();
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    assert_eq!(offered(&app, "Move HEAD…"), Some(false));
+    let why = "HEAD has commits stacked did not make, as 1 commit after patch 2 is not the stack's: Move HEAD is offered only when HEAD is on the stack with no marks, or as stacked last left it";
+    assert!(menu_note(&app).contains(&format!("Move HEAD is grayed: {why}.")), "{}", menu_note(&app));
+    keys(&mut app, &[KeyCode::Esc]);
+    // Moved by stacked from the stack: where it left HEAD, remembered.
+    git(&src, &["checkout", "-q", "--detach", "HEAD~1"]);
+    app.look_at_head();
+    app.settle();
+    choose(&mut app, "Move HEAD…");
+    keys(&mut app, &[KeyCode::Enter]);
+    app.settle();
+    assert_eq!(app.status, "HEAD is at patch 1 of s, detached");
+    assert_eq!(left(&db), Some(rev_in(&src, "HEAD")));
+    // The stack moved on, patch 1 reworded: HEAD is as stacked left it, and
+    // Move HEAD is offered, after a restart too, from the database.
+    reword(&db, 0, "Bug 1 - shout two, reworded\n\nBecause.", None);
+    let mut app = open_in(&db, &src);
+    assert!(app.head_here().is_some_and(|h| h.mark(0).is_some()), "{:?}", app.head_here());
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    assert_eq!(offered(&app, "Move HEAD…"), Some(true));
+    keys(&mut app, &[KeyCode::Esc]);
+    choose(&mut app, "Move HEAD…");
+    keys(&mut app, &[KeyCode::End, KeyCode::Enter]);
+    app.settle();
+    assert_eq!(app.status, "HEAD is at patch 2 of s, detached");
+    assert_eq!(commit_message(&src, "HEAD~1"), "Bug 1 - shout two, reworded\n\nBecause.");
+    assert_eq!(left(&db), Some(rev_in(&src, "HEAD")));
+    // Reworded outside stacked: grayed, and refused if asked all the same.
+    git(&src, &["commit", "-q", "--amend", "-m", "Bug 2 - mine"]);
+    app.look_at_head();
+    app.settle();
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    assert_eq!(offered(&app, "Move HEAD…"), Some(false));
+    assert!(menu_note(&app).contains("as the commit of patch 2 has a message other than the stack's"), "{}", menu_note(&app));
+    keys(&mut app, &[KeyCode::Esc]);
+    let was = rev_in(&src, "HEAD");
+    let said = stacked(&src, &db, &["head", "s"]);
+    assert!(said.contains("\n--to N is refused: HEAD has commits stacked did not make"), "{said}");
+    assert_eq!(rev_in(&src, "HEAD"), was);
+}
+
+#[cfg(feature = "moz-phab")]
+#[test]
+fn heads_place_is_never_below_its_last_commit_that_names_a_revision_its_patch_does_not() {
+    let (_tmp, db, src) = setup();
+    let trailer = "Differential Revision: https://phabricator.services.mozilla.com/D34";
+    let mut app = open_in(&db, &src);
+    // Moved by stacked to patch 1, then to patch 2 as the stack names D34,
+    // as stacked's own submit leaves it; then patch 2 without it again.
+    (app.focus, app.on_stack, app.sel) = (Focus::List, false, 0);
+    choose(&mut app, "Move HEAD…");
+    keys(&mut app, &[KeyCode::Enter]);
+    app.settle();
+    reword(&db, 1, &format!("Bug 2 - add b\n\n{trailer}"), None);
+    app.refresh();
+    choose(&mut app, "Move HEAD…");
+    keys(&mut app, &[KeyCode::End, KeyCode::Enter]);
+    app.settle();
+    assert_eq!(app.status, "HEAD is at patch 2 of s, detached");
+    reword(&db, 1, "Bug 2 - add b", None);
+    app.refresh();
+    app.look_at_head();
+    app.settle();
+    let lock = "HEAD is locked below patch 2: the commit of patch 2 names D34, which the patch does not name";
+    assert_eq!(app.head_here().and_then(|h| h.lock_said()).as_deref(), Some(lock));
+    // From patch 1's menu: put at patch 2, the lowest place it may go; ↑
+    // and Home go nowhere below.
+    keys(&mut app, &[KeyCode::Home, KeyCode::Down]);
+    choose(&mut app, "Move HEAD…");
+    assert!(matches!(app.mode, Mode::MovingHead { to: 2 }), "{:?}", app.mode);
+    for k in [KeyCode::Up, KeyCode::Home] {
+        keys(&mut app, &[k]);
+        assert!(matches!(app.mode, Mode::MovingHead { to: 2 }), "{k:?}: {:?}", app.mode);
+    }
+    let screen = draw(&mut app);
+    assert_eq!(at(&screen, "↕ HEAD").1, at(&screen, "  2 Bug 2").1 + 1, "{screen}");
+    // ? says why.
+    keys(&mut app, &[KeyCode::Char('?')]);
+    let screen = draw(&mut app);
+    assert!(screen.contains("HEAD is locked below patch 2: the commit of patch"), "{screen}");
+    keys(&mut app, &[KeyCode::Esc]);
+    // A click on the stack's header, the base: said why, HEAD kept there.
+    let screen = draw(&mut app);
+    let (x, y) = at(&screen, "≡ s");
+    app.click(x, y, false);
+    assert_eq!(app.status, lock);
+    assert!(matches!(app.mode, Mode::MovingHead { to: 2 }), "{:?}", app.mode);
+    // Put there: HEAD is there already.
+    keys(&mut app, &[KeyCode::Enter]);
+    app.settle();
+    assert!(app.status.starts_with("HEAD is at patch 2 of s already"), "{}", app.status);
+    assert!(commit_message(&src, "HEAD").contains(trailer));
+}
+
+#[test]
+fn this_checkout_is_grayed_for_edits_by_hand_while_move_head_would_not_move_head() {
+    let (_tmp, db, src) = setup();
+    // A commit of yours on top: Move HEAD would not move HEAD.
+    std::fs::write(src.join("c.txt"), "c\n").unwrap();
+    git(&src, &["add", "c.txt"]);
+    git(&src, &["commit", "-qm", "Mine"]);
+    let mut app = open_in(&db, &src);
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "+TWO");
+    key(&mut app, KeyCode::Char(' '));
+    // Drawn dim, away from the cursor, as the cursor looks the same on
+    // every line; ← → go past it; the menu says why.
+    let buf = drawn(&mut app, 30);
+    let screen = text_of(&buf);
+    let (x, y) = at(&screen, "[ ] pwd");
+    let dim = ratatui::style::Modifier::DIM;
+    assert!(buf[(x + 4, y)].modifier.contains(dim) && !buf[(x - 9, y)].modifier.contains(dim), "{screen}");
+    let want = items(&app).iter().position(|(l, _)| l.starts_with("Edit a.txt here")).unwrap();
+    while !matches!(&app.mode, Mode::Menu(m) if m.sel == want) {
+        key(&mut app, KeyCode::Down);
+    }
+    let why = "HEAD has commits stacked did not make, as 1 commit after patch 2 is not the stack's: Move HEAD is offered only when HEAD is on the stack with no marks, or as stacked last left it";
+    assert!(menu_note(&app).contains(&format!("Editing in this checkout (pwd) is grayed: {why}.")), "{}", menu_note(&app));
+    key(&mut app, KeyCode::Right);
+    assert!(draw(&mut app).contains("[ ] tmp/file  [ ] pwd  [x] .stacked/s"));
+    key(&mut app, KeyCode::Left);
+    assert!(draw(&mut app).contains("[x] tmp/file  [ ] pwd  [ ] .stacked/s"));
+    // A click on it picks nothing.
+    let screen = draw(&mut app);
+    let (y, line) = screen.lines().enumerate().find(|(_, l)| l.contains("[ ] pwd")).unwrap();
+    app.click(column(line, "[ ] pwd") as u16 + 1, y as u16, false);
+    assert!(draw(&mut app).contains("[x] tmp/file  [ ] pwd  [ ] .stacked/s"));
+    assert_eq!(Db::load(&db).unwrap().choice("s", "edit"), Some("tmp"), "as ← → left it");
+    // ? says why too.
+    key(&mut app, KeyCode::Char('?'));
+    let Mode::Help { lines, .. } = &app.mode else { panic!("{:?}", app.mode) };
+    assert!(lines.iter().any(|l| l.contains("pwd, this checkout, moved to the patch for the edit, then back where it was: grayed, as HEAD has commits stacked did not make")), "{lines:?}");
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Esc]);
+    // Picked before, as the stack's menus kept it: refused, and why said.
+    Db::edit(&db, |d| d.set_choice("s", "edit", "pwd")).unwrap();
+    app.refresh();
+    key(&mut app, KeyCode::Char(' '));
+    let e = choose(&mut app, "Edit a.txt here in $EDITOR");
+    let err = app.effect(e).unwrap_err().0;
+    assert_eq!(err, format!("this checkout is not offered for edits by hand: {why}; nothing changed"));
+    assert_eq!(commit_message(&src, "HEAD"), "Mine");
+}
+
 /// The message of commit `rev` in the checkout at `src`.
 fn commit_message(src: &Path, rev: &str) -> String {
     let out = Command::new("git").args(["log", "-1", "--format=%B", rev]).current_dir(src).output().unwrap();
@@ -5591,7 +5759,7 @@ fn empty_lines_in_a_row_that_git_am_makes_one_leave_head_in_sync_once_it_has_mov
     app.settle();
     assert!(app.head_here().is_some_and(|h| !h.in_sync(1)), "{:?}", app.head_here());
     let said = stacked(&src, &db, &["head", "s"]);
-    assert!(said.ends_with(", is at patch 1 of s\nthe message of patch 1 differs from its commit's: \"Bug 1 - shout TWO\"\n"), "{said}");
+    assert!(said.contains(", is at patch 1 of s\nthe message of patch 1 differs from its commit's: \"Bug 1 - shout TWO\"\n--to N is refused: "), "{said}");
 }
 
 #[test]
@@ -9401,6 +9569,9 @@ fn closing_an_edit_review_moves_head_along_when_it_was_in_sync_with_the_stack() 
     assert_eq!(app.status, "reviewed: its change accepted; HEAD is at patch 2 of s, detached: main is as it was");
     assert_eq!(rev_in(&src, "main"), was);
     assert!(std::fs::read_to_string(src.join("a.txt")).unwrap().starts_with("one\nTwo\nthree\n"));
+    // Where it left HEAD, remembered.
+    let top = app.head_here().unwrap().dir.clone();
+    assert_eq!(Db::load(&db).unwrap().moved("s", &top), Some(rev_in(&src, "HEAD").as_str()));
     // In sync with it again.
     app.look_at_head();
     app.settle();

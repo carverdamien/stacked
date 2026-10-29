@@ -31,7 +31,8 @@
 //! The header points at the last checkpoint: a line that takes no rev,
 //! saying where the records are that the state stands on (each stack's
 //! head and the stacks one undo and one redo go to, the comments open, the
-//! runs under way and what they name, what is chosen and marked read) and
+//! runs under way and what they name, what is chosen and marked read, where
+//! stacked last left HEAD of each checkout) and
 //! how the indexes stood. A reader reads the header, the checkpoint, those
 //! records and the lines after it, not the whole file; the records it did
 //! not read are `Unloaded`. What needs the history (an older stack, the
@@ -156,6 +157,11 @@ struct Checkpoint {
     note_lines: Vec<(String, String, Vec<String>)>,
     views: Vec<(String, usize)>,
     choices: Vec<(String, String, usize)>,
+    /// Where stacked last left HEAD: the stack, the checkout, and the rev
+    /// of its latest record. None in a checkpoint a stacked of before
+    /// wrote, as such a stacked wrote none of them.
+    #[serde(default)]
+    moved: Vec<(String, String, usize)>,
     collapsed: Vec<(String, String)>,
     reviews: Vec<(String, usize)>,
     marks: Vec<(String, Vec<usize>)>,
@@ -311,6 +317,11 @@ pub enum Record {
     Collapse { change: String, id: String, collapsed: bool },
     /// The review of what run `run` brought back, as saved, until changed.
     Review { run: String, review: crate::held::Review },
+    /// The commit HEAD of the checkout at `checkout` (its top) was at right
+    /// after stacked last moved it on stack `stack`, by Move HEAD or
+    /// following a review: each move replaces it. A database a stacked of
+    /// before wrote has none.
+    Moved { stack: String, checkout: String, commit: String },
     /// Lines of a patch marked read, in the reading mode; or a mark taken
     /// back.
     Read(Mark),
@@ -813,6 +824,9 @@ pub struct Db {
     /// (stack name, what the choice is of) to the index of its latest
     /// choice record.
     choices: BTreeMap<(String, String), usize>,
+    /// (stack name, checkout) to the index of its latest record of where
+    /// stacked left HEAD.
+    moved: BTreeMap<(String, String), usize>,
     /// The comments collapsed: (change, comment id).
     collapsed: HashSet<(String, String)>,
     /// Run id to the index of its latest review record.
@@ -1105,6 +1119,13 @@ impl Db {
             }
             self.choices.insert((stack, of), i);
         }
+        for (stack, checkout, rev) in cp.moved {
+            let i = ix(rev)?;
+            if !matches!(&self.records[i], Record::Moved { stack: s, checkout: c, .. } if *s == stack && *c == checkout) {
+                return None;
+            }
+            self.moved.insert((stack, checkout), i);
+        }
         self.collapsed = cp.collapsed.into_iter().collect();
         for (run, rev) in cp.reviews {
             let i = ix(rev)?;
@@ -1167,7 +1188,7 @@ impl Db {
         }
         same!(len, lines, torn, torn_slot, tail, saved, version, fixed, changes, warnings, last_cp);
         same!(patches, latest, heads, stacks, on, notes, note_first, last_queued, note_lines);
-        same!(views, choices, collapsed, reviews, marks, runs, run_order);
+        same!(views, choices, moved, collapsed, reviews, marks, runs, run_order);
         if self.records.len() != whole.records.len() {
             return Some(format!("{} records, read whole {}", self.records.len(), whole.records.len()));
         }
@@ -1224,6 +1245,7 @@ impl Db {
             note_lines: HashMap::new(),
             views: HashMap::new(),
             choices: BTreeMap::new(),
+            moved: BTreeMap::new(),
             collapsed: HashSet::new(),
             reviews: HashMap::new(),
             marks: HashMap::new(),
@@ -1496,6 +1518,9 @@ impl Db {
             }
             Record::Choice { stack, of, .. } => {
                 self.choices.insert((stack.clone(), of.clone()), at);
+            }
+            Record::Moved { stack, checkout, .. } => {
+                self.moved.insert((stack.clone(), checkout.clone()), at);
             }
             Record::Collapse { change, id, collapsed } => {
                 let key = (change.clone(), id.clone());
@@ -1823,6 +1848,7 @@ impl Db {
         }
         need.extend(self.views.values().copied());
         need.extend(self.choices.values().copied());
+        need.extend(self.moved.values().copied());
         need.extend(self.marks.values().flatten().copied());
         for s in stacks {
             let Some(Record::Stack(st)) = self.records.get(s) else { return None };
@@ -1872,6 +1898,7 @@ impl Db {
             note_lines: sorted(self.note_lines.iter().map(|((c, i), l)| (c.clone(), i.clone(), l.clone())).collect()),
             views: sorted(self.views.iter().map(|(s, i)| (s.clone(), i + 1)).collect()),
             choices: self.choices.iter().map(|((s, o), i)| (s.clone(), o.clone(), i + 1)).collect(),
+            moved: self.moved.iter().map(|((s, c), i)| (s.clone(), c.clone(), i + 1)).collect(),
             collapsed: sorted(self.collapsed.iter().cloned().collect()),
             reviews: sorted(self.reviews.iter().map(|(r, i)| (r.clone(), i + 1)).collect()),
             marks: sorted(self.marks.iter().map(|(c, at)| (c.clone(), revs(at))).collect()),
@@ -2435,6 +2462,41 @@ impl Db {
                 stack: name.into(),
                 of: of.into(),
                 pick: pick.into(),
+            })?;
+        }
+        Ok(())
+    }
+
+    /// The commit stacked last left HEAD at in the checkout whose top is
+    /// `dir`, on stack `name`, if it ever moved HEAD there.
+    pub fn moved(&self, name: &str, dir: &Path) -> Option<&str> {
+        match self.at(*self.moved.get(&(name.to_string(), dir.to_string_lossy().into_owned()))?) {
+            Record::Moved { commit, .. } => Some(commit),
+            _ => None,
+        }
+    }
+
+    /// Every checkout of stack `name` stacked left HEAD in, and the commit
+    /// it left it at.
+    pub fn moved_all(&self, name: &str) -> Vec<(&str, &str)> {
+        self.moved
+            .range((name.to_string(), String::new())..)
+            .take_while(|((s, _), _)| s == name)
+            .filter_map(|(_, &at)| match self.at(at) {
+                Record::Moved { checkout, commit, .. } => Some((checkout.as_str(), commit.as_str())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Remembers that stacked left HEAD of the checkout whose top is `dir`
+    /// at `commit`, on stack `name`, in place of where it left it before.
+    pub fn set_moved(&mut self, name: &str, dir: &Path, commit: &str) -> Result<()> {
+        if self.moved(name, dir) != Some(commit) {
+            self.push(Record::Moved {
+                stack: name.into(),
+                checkout: dir.to_string_lossy().into_owned(),
+                commit: commit.into(),
             })?;
         }
         Ok(())
@@ -3188,6 +3250,69 @@ mod tests {
         assert_ne!(pointer(), Some(first));
         assert!(db.cp.is_some());
         assert_eq!(db.head("s").map(|(r, _)| r), Some(3));
+    }
+
+    #[test]
+    fn where_stacked_left_head_is_kept_each_move_replacing_it_and_read_from_a_checkpoint() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("db.jsonl");
+        history(&path);
+        let (co, other) = (Path::new("/checkout"), Path::new("/other"));
+        // Each move in place of the one before, per stack and checkout; the
+        // same again, nothing written.
+        Db::edit(&path, |db| {
+            db.set_moved("s", co, "a1")?;
+            db.set_moved("s", co, "b2")?;
+            db.set_moved("s", other, "c3")?;
+            db.set_moved("t", co, "d4")
+        })
+        .unwrap();
+        let n = Db::load(&path).unwrap().last_rev();
+        Db::edit(&path, |db| db.set_moved("s", co, "b2")).unwrap();
+        let db = Db::load(&path).unwrap();
+        assert_eq!(db.last_rev(), n, "nothing written");
+        assert_eq!((db.moved("s", co), db.moved("s", other), db.moved("t", co), db.moved("t", other)), (Some("b2"), Some("c3"), Some("d4"), None));
+        assert_eq!(db.moved_all("s"), [("/checkout", "b2"), ("/other", "c3")]);
+        // Read from a checkpoint: the same, the records it stands on read.
+        checkpoint(&path);
+        let whole = Db::from_bytes(&path, &std::fs::read(&path).unwrap()).unwrap();
+        let db = Db::load(&path).unwrap();
+        assert!(db.cp.is_some(), "read from its checkpoint");
+        assert_eq!(db.differs(&whole), None);
+        assert_eq!((db.moved("s", co), db.moved("s", other), db.moved("t", co)), (Some("b2"), Some("c3"), Some("d4")));
+        assert!(db.shadow.get().is_none(), "nothing has read the whole history");
+        // Written as a record of its own.
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains(r#"{"t":"moved","stack":"s","checkout":"/checkout","commit":"b2"}"#), "{text}");
+    }
+
+    #[test]
+    fn a_checkpoint_of_before_where_stacked_left_head_reads_as_none() {
+        // A database a stacked of before wrote: no record of where stacked
+        // left HEAD, and a checkpoint without their index.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("db.jsonl");
+        history(&path);
+        checkpoint(&path);
+        let good = std::fs::read(&path).unwrap();
+        let ptr = serde_json::from_slice::<Header>(&good[..HEADER - 1]).unwrap().checkpoint.unwrap();
+        let mut v: serde_json::Value = serde_json::from_slice(&good[ptr.at as usize..(ptr.at + ptr.len) as usize]).unwrap();
+        assert!(v.as_object_mut().unwrap().remove("moved").is_some());
+        // In its place, the file's last line.
+        let line = serde_json::to_string(&v).unwrap();
+        assert_eq!(good.len() as u64, ptr.at + ptr.len + 1);
+        let mut b = good[..ptr.at as usize].to_vec();
+        b.extend_from_slice(line.as_bytes());
+        b.push(b'\n');
+        b[..HEADER - 1].copy_from_slice(header_with(Some(&Pointer::new(ptr.at, ptr.rev, line.as_bytes()))).unwrap().as_bytes());
+        std::fs::write(&path, &b).unwrap();
+        // Read from it all the same, as read whole; then a move kept.
+        let whole = Db::from_bytes(&path, &b).unwrap();
+        let db = Db::load(&path).unwrap();
+        assert!(db.cp.is_some(), "read from its checkpoint");
+        assert_eq!((db.differs(&whole), db.moved("s", Path::new("/checkout"))), (None, None));
+        Db::edit(&path, |db| db.set_moved("s", Path::new("/checkout"), "a1")).unwrap();
+        assert_eq!(Db::load(&path).unwrap().moved("s", Path::new("/checkout")), Some("a1"));
     }
 
     #[test]

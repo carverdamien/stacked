@@ -1232,7 +1232,10 @@ fn edit_in(
         return err(format!("{name} has {} patches", s.patches.len()));
     };
     let dir = match place {
-        Place::Checkout(d) => crate::git::checkout_of(&repo, d)?,
+        Place::Checkout(d) => {
+            here_edits(&db, name, d)?;
+            crate::git::checkout_of(&repo, d)?
+        }
         Place::Worktree => crate::git::kept_worktree(&repo, name, &base)?,
         Place::Copy => return err("a copy is not a checkout"),
     };
@@ -1296,6 +1299,19 @@ fn edit_in(
             }
         }),
     }
+}
+
+/// Whether a file of stack `name` may be edited by hand in the checkout
+/// at `here`, which is moved to the patch for the edit and back: only while
+/// Move HEAD would move HEAD there, and no commit of HEAD's is marked `!`
+/// (`head::Moves::edits_here`); else refused, with why.
+fn here_edits(db: &Db, name: &str, here: &std::path::Path) -> Result<()> {
+    let Some((h, m)) = crate::head::moves_of(db, name, here)? else { return Ok(()) };
+    if m.edits_here() {
+        return Ok(());
+    }
+    let why = h.lock_said().or(m.case.err()).unwrap_or_default();
+    err(format!("this checkout is not offered for edits by hand: {why}; nothing changed"))
 }
 
 /// What an edit in a checkout came to, before anything is written.

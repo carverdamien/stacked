@@ -466,14 +466,19 @@ enum Cmd {
     },
     /// Where HEAD of the checkout stacked runs in is, against stack NAME: at
     /// its base, at one of its patches (its commits since the base being the
-    /// stack's patches, by their diff), or elsewhere; and the patches whose
-    /// message differs from its commit's.
+    /// stack's patches, by their diff), or elsewhere; the patches whose
+    /// message differs from its commit's; and where --to may not go, and
+    /// why it may not move HEAD.
     Head {
         name: String,
         /// HEAD moved there: detached at the stack's base with its first N
         /// patches applied (0, the base), the commits the checkout has that
         /// are those patches taken as they are; the branch it was on as it
-        /// was. Not while files git tracks have changes.
+        /// was. Only when HEAD is where stacked last left it, or on the
+        /// stack, its commits the stack's first patches with nothing above
+        /// them and the same messages; never below a commit that names a
+        /// revision its patch does not, which is kept as it is, with every
+        /// commit under it. Not while files git tracks have changes.
         #[arg(long, value_name = "N")]
         to: Option<usize>,
     },
@@ -1900,20 +1905,25 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
         Cmd::Head { name, to: Some(n) } => println!("{}", stacked::head::move_to(path, &name, &here(), n)?),
         Cmd::Head { name, to: None } => {
             let db = Db::load(path)?;
-            ops::base_of(db.stack(&name)?)?;
-            let Some(h) = stacked::head::find(&db, &name, &here())? else {
+            let s = db.stack(&name)?;
+            ops::base_of(s)?;
+            let Some((h, moves)) = stacked::head::moves_of(&db, &name, &here())? else {
                 return err(format!("{} is not a checkout of {name}'s repository", here().display()));
             };
             println!("HEAD, {}, is {}", h.git_said(), h.said(&name));
+            // Each commit marked: what the two name, when they differ by the
+            // revision, or would but for it; else the commit's first line.
             if let stacked::head::At::Stack(on) = &h.at {
-                // A message that differs by the revision alone: what each
-                // names; else the commit's first line.
-                for (k, m, d) in &on.messages {
-                    match d.revisions(*k) {
-                        Some(said) => println!("{said}"),
-                        None => println!("the message of patch {} differs from its commit's: \"{}\"", k + 1, m.lines().next().unwrap_or("")),
-                    }
+                for (k, theirs, m) in &on.marks {
+                    println!("{}", stacked::head::mark_said(*k, &db.patch(&s.patches[*k]).message, theirs, m));
                 }
+            }
+            // Where Move HEAD may not go, and why it may not move HEAD.
+            if let Some(lock) = h.lock_said() {
+                println!("{lock}");
+            }
+            if let Err(why) = &moves.case {
+                println!("--to N is refused: {why}");
             }
         }
         Cmd::Check => {
