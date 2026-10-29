@@ -825,6 +825,10 @@ pub enum Target {
     /// Your answer to reply `k` of the work run `run` holds, in its review:
     /// it goes back to the agent with it.
     Answer { run: String, k: usize },
+    /// Your answer to why the agent selected task `k` of the try push run
+    /// `run` holds, in its review: it goes back to the agent with it.
+    #[cfg(feature = "try-push")]
+    TaskAnswer { run: String, k: usize },
 }
 
 /// A comment being written, in the pane it is written in.
@@ -1241,6 +1245,13 @@ pub enum Action {
     /// in it; your answer to its reply `0` written.
     SendBack,
     Answer(usize),
+    /// In the review of a try push's work: your answer to why the agent
+    /// selected its task `0` written; every task marked accepted (true), or
+    /// rejected.
+    #[cfg(feature = "try-push")]
+    AnswerTask(usize),
+    #[cfg(feature = "try-push")]
+    MarkTasks(bool),
     /// In the review: what you wrote there, on the list's line the cursor
     /// is on, written again, or taken back (asked first, from Delete).
     EditYours,
@@ -1518,6 +1529,14 @@ fn about(action: &Action) -> String {
             "send the work back to the agent with what you wrote in this review: the work is not accepted, and the agent is asked again, starting from this work; the agent's new work lands for review in place of this one".into()
         }
         Action::Answer(_) => "answer the agent's reply: the work goes back to the agent with your answer after the reply".into(),
+        #[cfg(feature = "try-push")]
+        Action::AnswerTask(_) => {
+            "answer why the agent selected this task: the work goes back to the agent with your answer, and the agent selects the tasks again".into()
+        }
+        #[cfg(feature = "try-push")]
+        Action::MarkTasks(true) => "mark every task the agent selected accepted: each is pushed to try when the review closes".into(),
+        #[cfg(feature = "try-push")]
+        Action::MarkTasks(false) => "mark every task the agent selected rejected: none of them is pushed to try".into(),
         Action::EditYours => "write it again: what you said last in your comment, or your answer to the agent's reply".into(),
         Action::AskTakeYoursBack | Action::TakeYoursBack => "take it back: it does not go back to the agent with the work".into(),
         Action::AskRejectWork(_) | Action::RejectWork(_) => {
@@ -1550,12 +1569,18 @@ fn about(action: &Action) -> String {
         Action::Send(Way::Change) => "ask the agent, which may change the code within this comment's place".into(),
         Action::Send(Way::Answer) => "ask the agent, to answer only: nothing changes".into(),
         Action::Send(Way::Test) => "ask the agent to build and test, in the stack's build worktree, .stacked/NAME/build".into(),
+        #[cfg(feature = "try-push")]
+        Action::Send(Way::Try) => {
+            "ask the agent to select the CI tasks the comment asks for, for a try push: it pushes nothing, and the tasks wait for your review, each to accept or reject".into()
+        }
         Action::SendWhole => {
             "ask the agent, which may change the whole stack, as for the stack's own comments: any patch, new patches anywhere, their order".into()
         }
         Action::SendAll(Way::Change) => "ask the agent about every comment listed; it may change the code".into(),
         Action::SendAll(Way::Answer) => "ask the agent about every comment listed, to answer only".into(),
         Action::SendAll(Way::Test) => "ask the agent to build and test, for every comment listed".into(),
+        #[cfg(feature = "try-push")]
+        Action::SendAll(Way::Try) => "ask the agent to select the CI tasks of a try push, for every comment listed, each its own push".into(),
         Action::Unsend => "take it back from the agent's queue".into(),
         Action::When => {
             "pick when the agent is asked: now, or later, the comment waiting in the batch, which the banner sends with the rest; enter asks".into()
@@ -1580,6 +1605,10 @@ fn about(action: &Action) -> String {
         Action::SendBatch(Way::Answer, false) => "send the batched questions to a single agent, in one ask, to answer only".into(),
         Action::SendBatch(Way::Answer, true) => "send each batched question to an agent of its own, all at once, to answer only".into(),
         Action::SendBatch(Way::Test, _) => "send each batched build and test, each an ask of its own, one after the other".into(),
+        #[cfg(feature = "try-push")]
+        Action::SendBatch(Way::Try, _) => {
+            "send each batched try push, each an ask of its own: the agent selects its CI tasks, which wait for your review".into()
+        }
         Action::Toggle(..) => "put this comment in the batch, to be sent with it, or take it out".into(),
         Action::OpenStream => "read what the agent is writing".into(),
         Action::AskStop(_) | Action::Stop(_) => "stop the agent: the ask lands as failed".into(),
@@ -2832,7 +2861,12 @@ impl App {
     /// agent asked what tools it has away from the screen, and `then` is
     /// done once it is saved.
     fn set_up_first(&mut self, then: Then) -> bool {
-        if ask::not_set_up(&self.db, &self.stack).is_none() {
+        // The kind of ask it waits on: the work sent back's own.
+        let way = match &then {
+            Then::Send(_, way, ..) | Then::Batch(way, ..) => *way,
+            Then::SendBack(_) => self.reviewing.as_ref().and_then(|rv| ask::way_of(&self.db, &rv.run)).unwrap_or(Way::Change),
+        };
+        if ask::not_set_up(&self.db, &self.stack, way).is_none() {
             return false;
         }
         let Some(repo) = self.current().and_then(|s| s.repo.clone()).map(PathBuf::from) else { return false };
@@ -2844,8 +2878,7 @@ impl App {
             let made = (|| {
                 let to = crate::config::local_to_write(&repo)?;
                 let (cfg, _) = crate::config::of(&repo);
-                let set = |key: &str| crate::config::set_in(&repo, key).is_some();
-                let lists = (set(crate::setup::Kind::Change.key()), set(crate::setup::Kind::Answer.key()));
+                let lists = crate::setup::Kind::ALL.map(|k| crate::config::set_in(&repo, k.key()).is_some());
                 let start = crate::setup::Start::new(&cfg.agent, lists, Some(&repo), &path);
                 let (tools, servers) = ask::agent_tools(&repo, &cfg).map_err(|e| format!("the agent could not say what tools it has: {}", e.0))?;
                 let said = format!("the agent's tools, in {}", repo.display());
@@ -5256,6 +5289,11 @@ impl App {
                     out.push("Press Enter to accept the part the cursor is on, or, accepted, to put it back to review; Delete to reject it; Space for its menu, to reject it too, or to reply to the agent's reply; → to scroll what it looks like, → again to see it wide, the list out of sight, and ← to come back. On the stack operations, → goes into the stack diff, where Enter on a line goes to it in its patch as the work leaves it, to comment on it.".into());
                 }
                 out.extend(self.delete_help());
+                // A try push's: its tasks, and what closing does with them.
+                #[cfg(feature = "try-push")]
+                if self.reviewing.as_ref().and_then(|rv| self.work(&rv.run)).is_some_and(|(_, h)| !h.tasks.is_empty()) {
+                    out.push("The tasks are the CI tasks the agent selected for a try push, as the comment asked: accept those to push, and reject the others. On a task, the right pane shows why the agent selected it, as its comment, and Space has Reply to it: your answer sends the work back to the agent, which selects the tasks again. Closing the review with tasks accepted is where they are pushed to try; with none accepted, nothing is pushed.".into());
+                }
                 out.push("What you write in the review of the agent's work sends that work back to the agent: the work is not accepted, and the agent is asked again, starting from this work.".into());
                 if self.review_yours() > (0, 0) {
                     out.push("On a line of what you wrote, under \"what you wrote, to send back\", press Enter to write it again, and Delete to take it back.".into());
@@ -6178,8 +6216,9 @@ impl App {
 
     /// How the agent is asked about a comment, as radio buttons: to change
     /// the code (and `whole`, for a patch's: the whole stack), to answer
-    /// only, or (`test`) to build and test. Each asks, or, `saving` a
-    /// comment being written, saves it and asks.
+    /// only, (`test`) to build and test, or, built with the `try-push`
+    /// feature, to select the CI tasks of a try push. Each asks, or,
+    /// `saving` a comment being written, saves it and asks.
     fn ask_choices(&self, whole: bool, test: bool, saving: bool) -> Choices {
         let act = |way: Way| Some(if saving { Action::Save(Some(way)) } else { Action::Send(way) });
         let mut list = vec![Choice::new("change", "change", "it may change the code within the comment's place", act(Way::Change))];
@@ -6199,6 +6238,16 @@ impl App {
                 "build and test",
                 "it builds and tests in the stack's build worktree, and changes nothing",
                 act(Way::Test),
+            ));
+        }
+        // Not in the tour, whose game has no CI to push to.
+        #[cfg(feature = "try-push")]
+        if !self.in_memory() {
+            list.push(Choice::new(
+                "try",
+                "try push",
+                "it selects the CI tasks the comment asks for, for a try push, each with why: it pushes nothing and changes nothing, and the tasks wait for your review",
+                act(Way::Try),
             ));
         }
         Choices::new("ask", "how", list, self.db.choice(&self.stack, "ask"))
@@ -7003,6 +7052,10 @@ impl App {
                 }
             }
             Action::Answer(k) => self.review_answer(k),
+            #[cfg(feature = "try-push")]
+            Action::AnswerTask(k) => self.review_task_answer(k),
+            #[cfg(feature = "try-push")]
+            Action::MarkTasks(accept) => self.mark_tasks(accept),
             Action::EditYours => {
                 if let Some(y) = self.review_yours_line() {
                     self.review_write_yours(y);
@@ -7537,6 +7590,8 @@ impl App {
     fn attachable(&self, target: &Target) -> bool {
         match target {
             Target::Answer { .. } => false,
+            #[cfg(feature = "try-push")]
+            Target::TaskAnswer { .. } => false,
             Target::Turn { change, id, turn } => {
                 self.db.note(change, id).and_then(|n| all_turns(&n.text).into_iter().nth(*turn)).is_some_and(|t| t.role == Role::You)
             }
@@ -8341,6 +8396,15 @@ impl App {
                     let rp = db.run(run).and_then(|r| r.held.as_ref()?.replies.get(*k).cloned());
                     return rp.map(|rp| (rp.change, rp.id)).ok_or_else(|| crate::db::Error("the reply is gone".into()));
                 }
+                // Your answer to why a task was selected, in its review: held
+                // with the task. The comment it goes back with, the first that
+                // asked.
+                #[cfg(feature = "try-push")]
+                Target::TaskAnswer { run, k } => {
+                    crate::held::answer_task(db, run, *k, &text)?;
+                    let asked = db.run(run).and_then(|r| crate::held::asking_of(r).into_iter().next());
+                    return Ok(asked.unwrap_or_else(|| (stack_change(&name), format!("task {k}"))));
+                }
             };
             let mut note = Note {
                 review: review.clone().or(note.review),
@@ -8424,6 +8488,8 @@ impl App {
         let said = if whole && way == Way::Change { crate::db::WHOLE } else { way.said() };
         let how = match (way, fan) {
             (Way::Test, _) => format!("{n} build{} and test{}, each on its own", plural(n), plural(n)),
+            #[cfg(feature = "try-push")]
+            (Way::Try, _) => format!("{n} try push{}, each on its own", if n == 1 { "" } else { "es" }),
             (_, true) => format!("{n} question{}, an agent each", plural(n)),
             _ => format!("{n} comment{} to a single agent", plural(n)),
         };
@@ -8468,7 +8534,7 @@ impl App {
         if n.about.is_some() {
             return (Way::Answer, false);
         }
-        let fits = |way: Way, whole: bool| (way != Way::Test || ask::can_test(&self.db, n)) && !(whole && n.on_stack());
+        let fits = |way: Way, whole: bool| ask::fits_way(&self.db, n, way) && !(whole && n.on_stack());
         if let Some(q) = self.db.last_queued(&n.change, &n.id).cloned()
             && fits(q.way, q.stack)
         {
@@ -8478,6 +8544,8 @@ impl App {
             Some("whole") if !n.on_stack() => (Way::Change, true),
             Some("answer") => (Way::Answer, false),
             Some("test") if ask::can_test(&self.db, n) => (Way::Test, false),
+            #[cfg(feature = "try-push")]
+            Some("try") => (Way::Try, false),
             _ => (Way::Change, false),
         }
     }
@@ -9853,6 +9921,8 @@ impl App {
             }
             Target::About(rev) => format!("a question on @{rev}, for the agent to answer"),
             Target::Answer { .. } => "your answer to the agent's reply".to_string(),
+            #[cfg(feature = "try-push")]
+            Target::TaskAnswer { .. } => "your answer to why the agent selected this task".to_string(),
         };
         spot_in(&self.spots, area, (0, y, w, bh), Spot::Editor);
         self.edit_box.set(Some(Rect::new(area.x, area.y + y as u16, w as u16, bh as u16)));
@@ -11040,7 +11110,8 @@ pub fn shows(show: Show, n: &Note, busy: &Busy, held: &Held, gone: bool) -> bool
         Show::ToSend => !with && !waits && ask::sendable(n),
         Show::ToReview => waits,
         Show::ToRead => to_read,
-        Show::ToReadAnswer => to_read && last_reply_way(&n.text).as_deref() == Some("answer"),
+        // A try push's reply is read-only, as an answer is.
+        Show::ToReadAnswer => to_read && matches!(last_reply_way(&n.text).as_deref(), Some("answer" | "try")),
         Show::ToReadChange => to_read && last_reply_way(&n.text).as_deref() == Some("change"),
         Show::InProgress => with || n.queued.is_some(),
         Show::Failed => n.failed.is_some() || n.moved.is_some(),

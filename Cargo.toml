@@ -14,11 +14,11 @@ path = "src/main.rs"
 
 [features]
 # Every feature is on by default: `cargo build`, `cargo install --path .` and
-# `cargo test` build all four. `--no-default-features` builds stacked with
+# `cargo test` build all five. `--no-default-features` builds stacked with
 # none of them, and `--features` then names those to keep:
-# `--no-default-features --features demo,moz-phab` leaves out the browser
-# and StackED.
-default = ["web", "demo", "moz-phab", "app"]
+# `--no-default-features --features demo,moz-phab` leaves out the browser,
+# StackED and the try push.
+default = ["web", "demo", "moz-phab", "app", "try-push"]
 # `stacked web`: the editor in a browser. Its browser half is built to wasm
 # by build.rs, with Rust's wasm32-unknown-unknown target
 # (`rustup target add wasm32-unknown-unknown`). Without that target, the
@@ -39,6 +39,11 @@ demo = []
 # import`, the editor's `Import from Phabricator…`), and a patch submitted
 # as work in progress (the editor's `Submit to Phabricator as WIP`).
 moz-phab = []
+# A try push of Firefox's CI: the agent asked which tasks the comment asks
+# for, each with why, for your review; then the tasks you accept pushed to
+# try with the checkout's `./mach try fuzzy`, and the push followed on
+# Treeherder until its tasks are done, its summary a reply to review.
+try-push = []
 
 [dependencies]
 clap = { version = "4.6.7", features = ["derive"] }

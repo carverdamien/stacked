@@ -54,6 +54,7 @@ pub fn way_said(tag: &str) -> &'static str {
         "change" => "change",
         "answer" => "answer only",
         "test" => "build and test",
+        "try" => "try push",
         _ => "earlier",
     }
 }

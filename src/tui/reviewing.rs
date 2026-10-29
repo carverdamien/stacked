@@ -16,6 +16,8 @@ use super::*;
 use crate::db::Run;
 use crate::held::{Held as Work, Part};
 use crate::history::Diffed;
+#[cfg(feature = "try-push")]
+use crate::try_push::thousands;
 
 /// What the review's right pane shows of a part: what it is, said; its
 /// lines; and the lines that are the part, the first to show first.
@@ -123,11 +125,14 @@ pub struct Reviewing {
 }
 
 /// What you wrote in the review a line of its list is: a comment you opened
-/// there, by (change, id); or your answer to the work's reply `0`.
+/// there, by (change, id); your answer to the work's reply `0`; or your
+/// answer to why the agent selected a try push's task `0`.
 #[derive(Debug, Clone, PartialEq)]
 pub(super) enum Yours {
     Comment(String, String),
     Answer(usize),
+    #[cfg(feature = "try-push")]
+    TaskAnswer(usize),
 }
 
 /// A line of the review's list: what it says, how, and the part it is of
@@ -532,6 +537,21 @@ impl App {
         self.write(Target::Answer { run, k }, Focus::Diff, &was);
     }
 
+    /// Your answer to why the agent selected task `k` of the try push work,
+    /// written in the review: again, if you wrote one. The cursor goes on
+    /// that task, for its comment to show where the answer is written.
+    #[cfg(feature = "try-push")]
+    pub(super) fn review_task_answer(&mut self, k: usize) {
+        let Some(run) = self.reviewing.as_ref().map(|rv| rv.run.clone()) else { return };
+        let was = self.work(&run).and_then(|(_, h)| h.tasks.get(k)?.answer.clone()).unwrap_or_default();
+        if let Some(at) = self.review_lines().iter().position(|l| l.part == Some(Part::Task(k)))
+            && let Some(rv) = self.reviewing.as_mut()
+        {
+            (rv.sel, rv.in_main, rv.in_patch) = (at, false, false);
+        }
+        self.write(Target::TaskAnswer { run, k }, Focus::Diff, &was);
+    }
+
     /// What you wrote in the review on the list's line the cursor is on, if
     /// it is.
     pub(super) fn review_yours_line(&self) -> Option<Yours> {
@@ -545,6 +565,8 @@ impl App {
         match y {
             Yours::Comment(change, id) => self.edit_mine(change, id, Focus::Diff),
             Yours::Answer(k) => self.review_answer(k),
+            #[cfg(feature = "try-push")]
+            Yours::TaskAnswer(k) => self.review_task_answer(k),
         }
     }
 
@@ -559,6 +581,8 @@ impl App {
                 db.set_note(Note { text: String::new(), ..n }).map(|_| ())
             }),
             Yours::Answer(k) => self.edit(|db| crate::held::answer(db, &run, k, "")),
+            #[cfg(feature = "try-push")]
+            Yours::TaskAnswer(k) => self.edit(|db| crate::held::answer_task(db, &run, k, "")),
         };
         if done.is_none() {
             return;
@@ -579,6 +603,8 @@ impl App {
         let (title, yes) = match self.review_yours_line()? {
             Yours::Comment(..) => ("take your comment back? it does not go back to the agent with the work", "Take it back"),
             Yours::Answer(_) => ("take your answer back? it does not go back to the agent with the work", "Take your answer back"),
+            #[cfg(feature = "try-push")]
+            Yours::TaskAnswer(_) => ("take your answer back? it does not go back to the agent with the work", "Take your answer back"),
         };
         Some(Menu::ask(title, Item::new(yes, Action::TakeYoursBack), "Keep it", true))
     }
@@ -651,6 +677,9 @@ impl App {
         // Its change, accepted or rejected as marked, else rejected.
         let accepting = self.reviewing.as_ref().and_then(|rv| rv.marks.get(&Part::Stack.key()).copied()) == Some(true);
         said.extend(self.review_again(if accepting { Closing::Accepting } else { Closing::Rejecting }));
+        // A try push's: what closing pushes, of the tasks accepted already.
+        #[cfg(feature = "try-push")]
+        said.extend(self.push_said(Some(false)));
         self.reviewing = was;
         let yes = Item::new("Reject them and close", Action::RejectWork(run.into()));
         let mut m = Menu::ask("reject every part of this work not marked yet, then close its review?", yes, "Keep it for review", true);
@@ -781,6 +810,28 @@ impl App {
                 });
             }
         }
+        // A try push's tasks, each by its label, how many times each runs
+        // said over them.
+        #[cfg(feature = "try-push")]
+        {
+            let tasks: Vec<Part> = parts.iter().copied().filter(|p| matches!(p, Part::Task(_))).collect();
+            if !tasks.is_empty() {
+                let each = h.rebuild.map_or(String::new(), |n| format!(" · each runs {n} times"));
+                out.push(title(&format!(" tasks to push to try{each}")));
+                for p in tasks {
+                    let Part::Task(k) = p else { continue };
+                    let (m, st) = mark_of(mark(p));
+                    out.push(Line {
+                        text: format!("   {m} {}", h.tasks[k].label),
+                        style: st,
+                        part: Some(p),
+                        entry: None,
+                        asking: None,
+                        yours: None,
+                    });
+                }
+            }
+        }
         let replies: Vec<Part> = parts.iter().copied().filter(|p| matches!(p, Part::Reply(_))).collect();
         if !replies.is_empty() {
             out.push(title(" replies"));
@@ -820,6 +871,11 @@ impl App {
             let at = self.db.note(&rp.change, &rp.id).map_or("a comment".to_string(), |n| n.where_said());
             let text = format!("   ✎ your answer on {at} · {}", crate::markdown::first_line(rp.answer.as_deref().unwrap_or("")));
             yours.push((text, Yours::Answer(k)));
+        }
+        #[cfg(feature = "try-push")]
+        for (k, t) in h.tasks.iter().enumerate().filter(|(_, t)| t.answer.is_some()) {
+            let text = format!("   ✎ your answer on {} · {}", t.label, crate::markdown::first_line(t.answer.as_deref().unwrap_or("")));
+            yours.push((text, Yours::TaskAnswer(k)));
         }
         if !yours.is_empty() {
             out.push(title(" what you wrote, to send back"));
@@ -869,6 +925,9 @@ impl App {
                 let first = line.entry.and_then(|e| v.of_entry.get(e)).map_or(0, |&k| v.spans[k].start);
                 (v.said, v.lines, first..first)
             }
+            // A try push's task: why the agent selected it, as its comment.
+            #[cfg(feature = "try-push")]
+            Some(Part::Task(k)) => self.task_view(h, k, w),
             Some(p) => {
                 let (n, said) = match p {
                     Part::Reply(k) => {
@@ -887,6 +946,8 @@ impl App {
                     Part::Opened(k) if crate::held::pulled(r) => (h.opened[k].clone(), " a reviewer's comment, where it would be".to_string()),
                     Part::Opened(k) => (h.opened[k].clone(), " a comment it opened, where it would be".to_string()),
                     Part::Stack => unreachable!(),
+                    #[cfg(feature = "try-push")]
+                    Part::Task(_) => unreachable!(),
                 };
                 self.comment_view(r, &n, said, w)
             }
@@ -948,7 +1009,41 @@ impl App {
                 let n = Note { text: rp.after(&n.text), ..n.clone() };
                 self.comment_view(r, &n, " your answer, after the work's reply, as it would be in its thread".into(), w)
             }
+            #[cfg(feature = "try-push")]
+            Yours::TaskAnswer(k) => self.task_view(h, *k, w),
         }
+    }
+
+    /// Why the agent selected task `k` of the try push work `h`, `w` wide,
+    /// as its comment on the task, by its label; your answer to it after,
+    /// if you wrote one. And the lines that are the comment.
+    #[cfg(feature = "try-push")]
+    fn task_view(&self, h: &Work, k: usize, w: usize) -> View {
+        let Some(t) = h.tasks.get(k) else { return (String::new(), vec![], 0..0) };
+        let why = if t.why.trim().is_empty() { "The agent did not say why." } else { t.why.as_str() };
+        let mut text = append_turn("", Role::Agent, why, Some("try"));
+        if let Some(a) = &t.answer {
+            text = append_turn(&text, Role::You, a, None);
+        }
+        let n = Note {
+            change: stack_change(&self.stack),
+            id: format!("task {k}"),
+            text,
+            by: Some("agent".into()),
+            ..Default::default()
+        };
+        let said = match &t.answer {
+            Some(_) => " why the agent selected this task, and your answer, which sends the work back to the agent",
+            None => " why the agent selected this task, as its comment: a reply to it sends the work back to the agent",
+        };
+        let mut rows = vec![Row {
+            kind: Kind::File,
+            text: t.label.clone(),
+            ..Default::default()
+        }];
+        rows.extend(crate::rows::comment_rows(&n, w, &Deco::default()));
+        let end = rows.len();
+        (said.to_string(), rows.iter().map(|row| row_parts(row, false)).collect(), 1..end)
     }
 
     /// The review: its list on the left, what the cursor's part would be on
@@ -1362,9 +1457,20 @@ impl App {
                 Part::Reply(_) => replies,
                 Part::Opened(_) => !replies,
                 Part::Stack => false,
+                #[cfg(feature = "try-push")]
+                Part::Task(_) => false,
             })
             .collect();
         for p in these {
+            self.mark(p, accept);
+        }
+    }
+
+    /// Every task of the try push work reviewed marked accepted, or
+    /// rejected.
+    #[cfg(feature = "try-push")]
+    pub(super) fn mark_tasks(&mut self, accept: bool) {
+        for p in self.review_parts().into_iter().filter(|p| matches!(p, Part::Task(_))) {
             self.mark(p, accept);
         }
     }
@@ -1400,8 +1506,17 @@ impl App {
                 }
             ));
         }
-        for (what, of) in [("comments opened", 0), ("replies", 1)] {
-            let these: Vec<&Part> = parts.iter().filter(|p| matches!((of, p), (0, Part::Opened(_)) | (1, Part::Reply(_)))).collect();
+        // Each kind of part apart: a try push's tasks, the comments
+        // opened, the replies.
+        let group = |p: &Part| match p {
+            Part::Opened(_) => 0,
+            Part::Reply(_) => 1,
+            #[cfg(feature = "try-push")]
+            Part::Task(_) => 2,
+            Part::Stack => 3,
+        };
+        for (what, of) in [("tasks", 2), ("comments opened", 0), ("replies", 1)] {
+            let these: Vec<&Part> = parts.iter().filter(|p| group(p) == of).collect();
             if these.is_empty() {
                 continue;
             }
@@ -1434,7 +1549,16 @@ impl App {
             ];
             let mut m = Menu::new("your review of the agent's work", items, None);
             let mut what = Vec::new();
-            for (n, one, many) in [(comments, "1 comment", "comments"), (answers, "1 answer to the agent's replies", "answers to the agent's replies")] {
+            // A try push's: your answers to why it selected its tasks, apart.
+            #[cfg(feature = "try-push")]
+            let tasks = self.reviewing.as_ref().and_then(|rv| self.work(&rv.run)).map_or(0, |(_, h)| h.tasks.iter().filter(|t| t.answer.is_some()).count());
+            #[cfg(not(feature = "try-push"))]
+            let tasks = 0;
+            for (n, one, many) in [
+                (comments, "1 comment", "comments"),
+                (answers.saturating_sub(tasks), "1 answer to the agent's replies", "answers to the agent's replies"),
+                (tasks, "1 answer to why the agent selected a task", "answers to why the agent selected its tasks"),
+            ] {
                 match n {
                     0 => {}
                     1 => what.push(one.to_string()),
@@ -1581,12 +1705,15 @@ impl App {
         let builds = accepting.then(|| self.review_builds()).flatten();
         let stop = builds.is_some();
         said.extend(builds);
+        // A try push's: what closing pushes.
+        #[cfg(feature = "try-push")]
+        said.extend(self.push_said(Some(accept)));
         self.close_choices(title, yes, Some(accept), said, stop)
     }
 
     /// What closing the review with every part marked asks first, if it asks
-    /// something again or leaves a build and test behind; the menu on Keep
-    /// reviewing.
+    /// something again, leaves a build and test behind, or decides what a
+    /// try push pushes; the menu on Keep reviewing.
     pub(super) fn review_close_menu(&self) -> Option<Menu> {
         let rv = self.reviewing.as_ref()?;
         let accepting = rv.marks.get(&Part::Stack.key()) == Some(&true);
@@ -1594,7 +1721,56 @@ impl App {
         let builds = accepting.then(|| self.review_builds()).flatten();
         let stop = builds.is_some();
         said.extend(builds);
+        #[cfg(feature = "try-push")]
+        said.extend(self.push_said(None));
         (!said.is_empty()).then(|| self.close_choices("close the review?", "Close it", None, said, stop))
+    }
+
+    /// What closing the review of a try push's work does with its tasks,
+    /// those not marked yet as `rest` says, if the work has tasks: none
+    /// accepted, nothing is pushed; else which are pushed to try, and how,
+    /// those past mach's threshold at the lowest priority, as mach runs them
+    /// once told yes.
+    #[cfg(feature = "try-push")]
+    pub(super) fn push_said(&self, rest: Option<bool>) -> Option<String> {
+        let rv = self.reviewing.as_ref()?;
+        let (r, h) = self.work(&rv.run)?;
+        if h.tasks.is_empty() {
+            return None;
+        }
+        let accepted = crate::held::accepted_tasks(h, &rv.marks, rest);
+        if accepted.is_empty() {
+            return Some("No task is accepted: closing the review pushes nothing to try.".into());
+        }
+        let n = accepted.len();
+        let tasks = if n == 1 { "the task you accepted".to_string() } else { format!("the {} tasks you accepted", thousands(n)) };
+        let what = match ask::run_scope(&self.db, &r.id) {
+            Some(Scope::Patch(c)) => {
+                let at = self.db.stack(&r.stack).ok().and_then(|s| s.patches.iter().position(|p| self.db.patch(p).change == c));
+                match at {
+                    Some(0) => "patch 1 alone".to_string(),
+                    Some(k) => format!("patches 1 to {}", k + 1),
+                    None => "the patches up to its own".to_string(),
+                }
+            }
+            _ => "every patch of the stack".to_string(),
+        };
+        let mut out = format!(
+            "Closing the review pushes {tasks} to try, with {what}: first `./mach try fuzzy --no-push`, to see that it selects them, then the push."
+        );
+        let total = crate::try_push::scheduled(n, h.rebuild);
+        if total > crate::try_push::THRESHOLD {
+            let these = match h.rebuild {
+                Some(k) => format!("These {} tasks, each run {k} times, are {} tasks,", thousands(n), thousands(total)),
+                None => format!("These {} tasks are", thousands(n)),
+            };
+            out += &format!(
+                " {these} more than the {} mach pushes without asking: they would run at the lowest priority, as mach does when you say yes.",
+                thousands(crate::try_push::THRESHOLD)
+            );
+        }
+        out += " Pushing to try is not built yet in this stacked: closing the review now pushes nothing.";
+        Some(out)
     }
 
     /// What sending the work back asks first: what went on from it, asked
@@ -1688,7 +1864,11 @@ impl App {
         }
         let opened = left.iter().filter(|p| matches!(p, Part::Opened(_))).count();
         let replies = left.iter().filter(|p| matches!(p, Part::Reply(_))).count();
-        for (n, one, many) in [(opened, "opened comment", "opened comments"), (replies, "reply", "replies")] {
+        #[cfg(feature = "try-push")]
+        let tasks = left.iter().filter(|p| matches!(p, Part::Task(_))).count();
+        #[cfg(not(feature = "try-push"))]
+        let tasks = 0;
+        for (n, one, many) in [(tasks, "task", "tasks"), (opened, "opened comment", "opened comments"), (replies, "reply", "replies")] {
             match n {
                 0 => {}
                 1 => out.push(format!("1 {one}")),
@@ -1723,6 +1903,8 @@ impl App {
             let (edit, back) = match y {
                 Yours::Comment(..) => ("Edit it", "Take it back"),
                 Yours::Answer(_) => ("Edit your answer to it", "Take your answer back"),
+                #[cfg(feature = "try-push")]
+                Yours::TaskAnswer(_) => ("Edit your answer to it", "Take your answer back"),
             };
             items.push(Item::new(edit, Action::EditYours));
             items.push(Item::new(back, Action::TakeYoursBack));
@@ -1733,6 +1915,15 @@ impl App {
         {
             let answered = self.work(&rv.run).is_some_and(|(_, h)| h.replies.get(k).is_some_and(|rp| rp.answer.is_some()));
             items.push(Item::new(if answered { "Edit your answer to it" } else { "Reply to it" }, Action::Answer(k)));
+        }
+        // A try push's task: why the agent selected it, answered, the work
+        // goes back to the agent.
+        #[cfg(feature = "try-push")]
+        if self.review_writable()
+            && let Some(Part::Task(k)) = lines.get(rv.sel).and_then(|l| l.part)
+        {
+            let answered = self.work(&rv.run).is_some_and(|(_, h)| h.tasks.get(k).is_some_and(|t| t.answer.is_some()));
+            items.push(Item::new(if answered { "Edit your answer to it" } else { "Reply to it" }, Action::AnswerTask(k)));
         }
         // A comment that asked: closed with the review, or kept.
         if let Some(k) = lines.get(rv.sel).and_then(|l| l.asking) {
@@ -1756,6 +1947,11 @@ impl App {
         if parts.iter().any(|p| matches!(p, Part::Opened(_))) {
             items.push(Item::new("Mark all opened comments accepted", Action::MarkOpened(true)).when(!rejected));
             items.push(Item::new("Mark all opened comments rejected", Action::MarkOpened(false)));
+        }
+        #[cfg(feature = "try-push")]
+        if parts.iter().any(|p| matches!(p, Part::Task(_))) {
+            items.push(Item::new("Mark all tasks accepted", Action::MarkTasks(true)));
+            items.push(Item::new("Mark all tasks rejected", Action::MarkTasks(false)));
         }
         if parts.iter().any(|p| matches!(p, Part::Reply(_))) {
             items.push(Item::new("Mark all replies accepted", Action::MarkReplies(true)).when(!rejected));
@@ -1845,12 +2041,19 @@ impl App {
         let Some(rv) = self.reviewing.clone() else { return };
         let accepted = rv.marks.get(&Part::Stack.key()).copied().or(rest) == Some(true);
         let follow = accepted && !rv.stay && self.head_can_follow();
+        // A try push's tasks accepted, to push once the review closes.
+        #[cfg(feature = "try-push")]
+        let pushed = self.work(&rv.run).map(|(_, h)| crate::held::accepted_tasks(h, &rv.marks, rest)).unwrap_or_default();
         // HEAD to follow: moving from now on, before the stack takes the
         // change, which HEAD has only once it has moved; the sync of the
         // commit messages waits meanwhile.
         let moving = follow && self.head_to_move();
         if let Some(said) = self.edit(|db| crate::held::close(db, &rv.run, &rv.marks, rest)) {
             self.status = format!("reviewed: {said}");
+            #[cfg(feature = "try-push")]
+            if !pushed.is_empty() {
+                self.status += "; pushing to try is not built yet in this stacked, so nothing was pushed";
+            }
             self.leave_review();
             if moving {
                 let n = self.patch_count();

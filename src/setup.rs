@@ -1,11 +1,14 @@
 //! `stacked setup agent`: what each kind of ask may use besides what
 //! stacked always gives it, set up with you. Answer-only asks have a list
 //! of their own, agent.answer_tools; asks that change the stack have
-//! theirs, agent.change_tools; agent.tools, which every ask may use, goes on
-//! as it was. The setup shows them as one list, a tool a row, with a box
-//! for each kind of ask: `read only` for answers, `change` for changes.
-//! Each column starts ticked as the settings say, else as stacked has it
-//! (`Start`): nothing for changes, curl and jq for answers. The list holds
+//! theirs, agent.change_tools; with the `try-push` feature, the asks that
+//! select a try push's tasks have theirs too, agent.try_tools; agent.tools,
+//! which every ask may use, goes on as it was. The setup shows them as one
+//! list, a tool a row, with a box for each kind of ask: `read only` for
+//! answers, `change` for changes, `try push` for try pushes. Each column
+//! starts ticked as the settings say, else as stacked has it (`Start`):
+//! nothing for changes, curl and jq for answers and for try pushes, which
+//! read only too. The list holds
 //! what the agent says it has (`ask::agent_tools`: its own tools, and its
 //! MCP servers'); what the checkout's own claude settings allow
 //! (`allowed`), ticked for answers, as you allow it yourself; what the
@@ -17,7 +20,7 @@
 //! `Bash(PROGRAM *)`, however it was written (`shown`). What the checkout's
 //! claude settings of yours deny (`denied`) is said, and refused to every
 //! ask. A command or a tool may be added too, as claude writes a permission
-//! rule (`rule`). Saving is the setup done: both lists are written, with
+//! rule (`rule`). Saving is the setup done: each list is written, with
 //! agent.setup, the version of the setup that was done, without which no
 //! ask goes. On a screen of its own (`Setup`, for `--tui`, and in the
 //! editor before its first ask), or asked line by line (`ask_lines`).
@@ -37,10 +40,12 @@ use crate::db::{Error, Result};
 use crate::editor::Editor;
 use crate::paint::{color, fit, on_cursor, put, window};
 
-/// The version of the setup this stacked asks for: a setup done with an
-/// earlier one (`agent.setup`) is asked again, as what the setup shows may
-/// have changed since.
-pub const VERSION: usize = 1;
+/// The version of the setup this stacked shows: a setup done with an
+/// earlier one (`agent.setup`) is asked again before an ask of a kind its
+/// column was not in (`Kind::since`), as what the setup shows changed
+/// since. With the `try-push` feature, the setup has a column for try
+/// pushes: version 2.
+pub const VERSION: usize = if cfg!(feature = "try-push") { 2 } else { 1 };
 
 /// The agent's tools that read the web, of what a change may be let use,
 /// with Bash at large: said to reach the network, as nothing a change is
@@ -556,26 +561,47 @@ pub enum Kind {
     Change,
     /// Asks to answer only: the column `read only`.
     Answer,
+    /// Asks that select the CI tasks of a try push: the column `try push`,
+    /// read-only as an answer is.
+    #[cfg(feature = "try-push")]
+    Try,
 }
+
+/// How many kinds of ask the setup has a column for: with the `try-push`
+/// feature, try pushes too.
+pub const KINDS: usize = if cfg!(feature = "try-push") { 3 } else { 2 };
+
+/// A row's boxes, a column each, from the left (`Kind::ALL`).
+type Boxes = [bool; KINDS];
 
 impl Kind {
     /// The columns, from the left.
-    pub const BOTH: [Kind; 2] = [Kind::Answer, Kind::Change];
+    pub const ALL: [Kind; KINDS] = [
+        Kind::Answer,
+        Kind::Change,
+        #[cfg(feature = "try-push")]
+        Kind::Try,
+    ];
 
     /// Its column, from the left: where its box is among a row's.
     fn col(self) -> usize {
         match self {
             Kind::Answer => 0,
             Kind::Change => 1,
+            #[cfg(feature = "try-push")]
+            Kind::Try => 2,
         }
     }
 
-    /// The other column's.
-    fn other(self) -> Kind {
-        match self {
-            Kind::Answer => Kind::Change,
-            Kind::Change => Kind::Answer,
-        }
+    /// The next column's, past the last the first (`by` 1), or the one
+    /// before's, past the first the last (`by` -1).
+    fn next(self, by: isize) -> Kind {
+        Kind::ALL[(self.col() as isize + by).rem_euclid(KINDS as isize) as usize]
+    }
+
+    /// The next column's, `by` 1 or -1, but none past either end.
+    fn beside(self, by: isize) -> Kind {
+        Kind::ALL[(self.col() as isize + by).clamp(0, KINDS as isize - 1) as usize]
     }
 
     /// Its column's heading.
@@ -583,14 +609,18 @@ impl Kind {
         match self {
             Kind::Answer => "read only",
             Kind::Change => "change",
+            #[cfg(feature = "try-push")]
+            Kind::Try => "try push",
         }
     }
 
     /// Its asks, said within a sentence.
-    fn named(self) -> &'static str {
+    pub fn named(self) -> &'static str {
         match self {
             Kind::Answer => "read-only asks",
             Kind::Change => "changes",
+            #[cfg(feature = "try-push")]
+            Kind::Try => "try pushes",
         }
     }
 
@@ -599,33 +629,67 @@ impl Kind {
         match self {
             Kind::Change => "agent.change_tools",
             Kind::Answer => "agent.answer_tools",
+            #[cfg(feature = "try-push")]
+            Kind::Try => "agent.try_tools",
+        }
+    }
+
+    /// The version of the setup that first had its column: no ask of its
+    /// kind goes before a setup that has it is saved.
+    pub fn since(self) -> usize {
+        match self {
+            Kind::Change | Kind::Answer => 1,
+            #[cfg(feature = "try-push")]
+            Kind::Try => 2,
         }
     }
 
     /// Why what `rule` lets use is to think twice about for its asks, if it
     /// is: what reaches the network (Bash at large, the web's tools), for a
     /// change; what changes things (Bash at large, Edit, Write…), for an
-    /// answer.
+    /// answer, and for a try push's selection, which is read-only too.
     fn warn(self, rule: &str) -> Option<&'static str> {
         let (tool, any) = (tool_of(rule), rule == "Bash");
+        let changes = any || (tool != "Bash" && CHANGING.contains(&tool));
         match self {
             Kind::Change if any || WEB.contains(&tool) => Some("it can reach the network: a change could touch a remote"),
-            Kind::Answer if any || (tool != "Bash" && CHANGING.contains(&tool)) => Some("it changes things: an answer could too"),
+            Kind::Answer if changes => Some("it changes things: an answer could too"),
+            #[cfg(feature = "try-push")]
+            Kind::Try if changes => Some("it changes things: an answer could too"),
             _ => None,
         }
     }
 }
 
+/// The kind of ask asked in `way`, whose list its tools are: a build and
+/// test's, every ask's alone, has none of its own, and is set up as
+/// changes are.
+pub fn kind_of(way: crate::db::Way) -> Kind {
+    match way {
+        crate::db::Way::Answer => Kind::Answer,
+        crate::db::Way::Change | crate::db::Way::Test => Kind::Change,
+        #[cfg(feature = "try-push")]
+        crate::db::Way::Try => Kind::Try,
+    }
+}
+
 /// Why what `rule` lets use is to think twice about, for each kind of ask
-/// it would be for (`Kind::warn`): an answer's, then a change's.
+/// it would be for (`Kind::warn`), each once: an answer's, then a
+/// change's.
 fn warnings(rule: &str) -> Vec<&'static str> {
-    Kind::BOTH.iter().filter_map(|k| k.warn(rule)).collect()
+    let mut out: Vec<&'static str> = Vec::new();
+    for w in Kind::ALL.iter().filter_map(|k| k.warn(rule)) {
+        if !out.contains(&w) {
+            out.push(w);
+        }
+    }
+    out
 }
 
 /// What the setup starts from: the tools ticked for each kind of ask, and
-/// whether the settings set each list (change_tools, then answer_tools)
-/// rather than stacked's defaults; what the settings let every ask use
-/// (agent.tools), ticked for both; what the checkout's own claude settings
+/// whether the settings set each list rather than stacked's defaults (by
+/// its column, `Kind::ALL`); what the settings let every ask use
+/// (agent.tools), ticked for each; what the checkout's own claude settings
 /// allow, what its skills let run, and the programs its instructions name;
 /// what its claude settings of yours deny, refused to every ask; and the
 /// version of the setup done, if one was.
@@ -633,7 +697,11 @@ fn warnings(rule: &str) -> Vec<&'static str> {
 pub struct Start {
     pub change: Vec<String>,
     pub answer: Vec<String>,
-    pub set: (bool, bool),
+    /// What try pushes may use: as the read-only column starts, unless the
+    /// settings set agent.try_tools.
+    #[cfg(feature = "try-push")]
+    pub try_push: Vec<String>,
+    pub set: Boxes,
     pub every: Vec<String>,
     pub allowed: Vec<Allowed>,
     pub skilled: Vec<Skilled>,
@@ -644,17 +712,17 @@ pub struct Start {
 
 impl Start {
     /// What the setup starts from, the settings being `agent`, `set` saying
-    /// which of their lists a file sets (change_tools's, then
-    /// answer_tools's), for the checkout `top`, with PATH `path`. A list a
-    /// file sets is ticked as it says. One no file sets is ticked as stacked
-    /// has it: for changes, nothing; for answers, curl and jq, and what the
-    /// checkout's own claude settings allow, as you allow it yourself, but
-    /// what changes things. What its skills let run, the skills themselves,
-    /// and the programs its instructions name are ticked only as the
-    /// settings say.
-    pub fn new(agent: &Agent, set: (bool, bool), top: Option<&Path>, path: &OsStr) -> Start {
+    /// which of their lists a file sets (by its column), for the checkout
+    /// `top`, with PATH `path`. A list a file sets is ticked as it says.
+    /// One no file sets is ticked as stacked has it: for changes, nothing;
+    /// for answers, curl and jq, and what the checkout's own claude
+    /// settings allow, as you allow it yourself, but what changes things;
+    /// for try pushes, read-only too, as the column for answers starts.
+    /// What its skills let run, the skills themselves, and the programs its
+    /// instructions name are ticked only as the settings say.
+    pub fn new(agent: &Agent, set: Boxes, top: Option<&Path>, path: &OsStr) -> Start {
         let allowed = top.map(allowed).unwrap_or_default();
-        let answer = match set.1 {
+        let answer = match set[Kind::Answer.col()] {
             true => agent.answer_tools.clone(),
             false => {
                 let mut out: Vec<String> = ANSWER_TOOLS.iter().map(|t| t.to_string()).collect();
@@ -667,7 +735,9 @@ impl Start {
             }
         };
         Start {
-            change: if set.0 { agent.change_tools.clone() } else { Vec::new() },
+            change: if set[Kind::Change.col()] { agent.change_tools.clone() } else { Vec::new() },
+            #[cfg(feature = "try-push")]
+            try_push: if set[Kind::Try.col()] { agent.try_tools.clone() } else { answer.clone() },
             answer,
             set,
             every: agent.tools.clone(),
@@ -678,24 +748,49 @@ impl Start {
             done: agent.setup,
         }
     }
+
+    /// The list `kind`'s column starts ticked as.
+    fn of(&self, kind: Kind) -> &[String] {
+        match kind {
+            Kind::Change => &self.change,
+            Kind::Answer => &self.answer,
+            #[cfg(feature = "try-push")]
+            Kind::Try => &self.try_push,
+        }
+    }
 }
 
 /// What saving the setup writes: each kind's list, and what is left of
 /// agent.tools if that is to change (a tool of it taken out of one kind's
-/// list is kept in the other's alone).
-#[derive(Debug, Clone, PartialEq)]
+/// list is kept in the others' alone).
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct Chosen {
     pub change: Vec<String>,
     pub answer: Vec<String>,
+    #[cfg(feature = "try-push")]
+    pub try_push: Vec<String>,
     pub every: Option<Vec<String>>,
 }
 
 impl Chosen {
-    /// The settings saving writes, as `config::set_all` takes them: both
-    /// lists, agent.tools if it changes, and the setup done, as this
+    /// `kind`'s list, as it is to be.
+    pub fn of(&self, kind: Kind) -> &[String] {
+        match kind {
+            Kind::Change => &self.change,
+            Kind::Answer => &self.answer,
+            #[cfg(feature = "try-push")]
+            Kind::Try => &self.try_push,
+        }
+    }
+
+    /// The settings saving writes, as `config::set_all` takes them: each
+    /// list, agent.tools if it changes, and the setup done, as this
     /// stacked's version of it.
     pub fn settings(&self) -> Vec<(&'static str, Vec<String>)> {
-        let mut out = vec![(Kind::Change.key(), self.change.clone()), (Kind::Answer.key(), self.answer.clone())];
+        let mut out: Vec<(&'static str, Vec<String>)> = [Kind::Change, Kind::Answer, #[cfg(feature = "try-push")] Kind::Try]
+            .into_iter()
+            .map(|k| (k.key(), self.of(k).to_vec()))
+            .collect();
         if let Some(every) = &self.every {
             out.push(("agent.tools", every.clone()));
         }
@@ -706,6 +801,10 @@ impl Chosen {
     /// What saving writes, said: each list as it is to be.
     pub fn said(&self) -> String {
         let mut out = format!("change_tools: {}; answer_tools: {}", listed(&self.change), listed(&self.answer));
+        #[cfg(feature = "try-push")]
+        {
+            out += &format!("; try_tools: {}", listed(&self.try_push));
+        }
         if let Some(every) = &self.every {
             out += &format!("; tools: {}", listed(every));
         }
@@ -719,7 +818,7 @@ fn listed(tools: &[String]) -> String {
 }
 
 /// A row of the screen. A row's boxes, and the marks of what stacked always
-/// gives, are read only's, then change's (`Kind::BOTH`).
+/// gives, are read only's, then change's, then try push's (`Kind::ALL`).
 #[derive(Debug, Clone, PartialEq)]
 enum Row {
     Heading(String),
@@ -730,14 +829,14 @@ enum Row {
     Columns,
     /// What stacked always gives, said: `always` in the column of each kind
     /// of ask that has it, nothing to let or not.
-    Always { said: &'static str, given: [bool; 2] },
+    Always { said: &'static str, given: Boxes },
     /// An MCP server: all its tools let, now and to come, or not, in each
     /// column; that written as the settings write it (`mcp__NAME__*`,
     /// `mcp__NAME`); where else it comes from.
-    Server { name: String, form: String, all: [bool; 2], from: Vec<Source> },
+    Server { name: String, form: String, all: Boxes, from: Vec<Source> },
     /// A tool, or a command, as it is written: let or not in each column;
     /// of a server, or not; where it comes from.
-    Tool { name: String, server: Option<String>, on: [bool; 2], from: Vec<Source> },
+    Tool { name: String, server: Option<String>, on: Boxes, from: Vec<Source> },
     /// Where a command or a tool is added, typed.
     Add,
     /// A warning of the row above it, to read: nothing to let or not.
@@ -820,13 +919,35 @@ const SKILLS_SAID: [&str; 3] = [
     "unless agent.answer_only_worktree says otherwise",
 ];
 
+/// What the setup says of agent.tools, what every ask may use: ticked in
+/// each column.
+#[cfg(not(feature = "try-push"))]
+const EVERY_SAID: &str = "ticked in both columns below; taken out of one, a tool is kept in the other's list alone";
+#[cfg(feature = "try-push")]
+const EVERY_SAID: &str = "ticked in each column below; taken out of one, a tool is kept in the others' lists alone";
+
+/// What the setup says when it was saved by this stacked already.
+#[cfg(not(feature = "try-push"))]
+const SAVED_SAID: &str = "Ticked as the settings say now. Saving writes both lists again.";
+#[cfg(feature = "try-push")]
+const SAVED_SAID: &str = "Ticked as the settings say now. Saving writes each list again.";
+
 /// What the columns' heading says each is for.
+#[cfg(not(feature = "try-push"))]
 const COLUMNS_SAID: &str = "read only is for answer-only asks; change is for asks that change the stack";
+#[cfg(feature = "try-push")]
+const COLUMNS_SAID: &str = "read only is for answer-only asks; change is for asks that change the stack; try push is for asks that select a try push's tasks";
 
 /// Where each column starts on a line, and how wide it is, as wide as its
-/// heading: read only's, then change's. What a row says starts at `TEXT`.
-const COLUMNS: [(usize, usize); 2] = [(1, 9), (12, 6)];
-const TEXT: usize = 21;
+/// heading: read only's, then change's, then try push's. What a row says
+/// starts at `TEXT`.
+const COLUMNS: [(usize, usize); KINDS] = [
+    (1, 9),
+    (12, 6),
+    #[cfg(feature = "try-push")]
+    (20, 8),
+];
+const TEXT: usize = if cfg!(feature = "try-push") { 30 } else { 21 };
 
 impl Row {
     /// What it lets use, written as for every rule that means the same
@@ -1034,7 +1155,8 @@ impl Setup {
         }
         // What the settings let that is none of those: kept, unless taken
         // out.
-        for t in start.answer.iter().chain(&start.change).chain(&start.every) {
+        let lists: Vec<&String> = Kind::ALL.iter().flat_map(|k| start.of(*k)).chain(&start.every).collect();
+        for t in lists {
             let key = same(t);
             if !items.all().any(|i| i.key == key) {
                 items.after.push(Item::new(t, Some(Source::Settings), None, false));
@@ -1043,27 +1165,15 @@ impl Setup {
         // How the settings write what they let: agent.tools first, then each
         // list they set. A row's rule but an MCP server's is its key, as
         // `shown` writes it.
-        let written: Vec<&String> = start
-            .every
-            .iter()
-            .chain(start.answer.iter().filter(|_| start.set.1))
-            .chain(start.change.iter().filter(|_| start.set.0))
-            .collect();
+        let written: Vec<&String> =
+            start.every.iter().chain(Kind::ALL.iter().filter(|k| start.set[k.col()]).flat_map(|k| start.of(*k))).collect();
         let form = |i: &Item| match written.iter().find(|w| same(w) == i.key) {
             _ if !i.key.starts_with("mcp__") => i.key.clone(),
             Some(w) => w.to_string(),
             None if i.forms.iter().all(|f| *f == i.forms[0]) => i.forms[0].clone(),
             None => i.key.clone(),
         };
-        let ticked = |key: &str| {
-            Kind::BOTH.map(|kind| {
-                let list = match kind {
-                    Kind::Change => &start.change,
-                    Kind::Answer => &start.answer,
-                };
-                list.iter().chain(&start.every).any(|t| same(t) == key)
-            })
-        };
+        let ticked = |key: &str| Kind::ALL.map(|kind| start.of(kind).iter().chain(&start.every).any(|t| same(t) == key));
         // What every ask is refused, said once however it is written.
         let mut denied: Vec<&String> = Vec::new();
         for d in &start.denied {
@@ -1078,15 +1188,14 @@ impl Setup {
         }
         if !start.every.is_empty() {
             rows.push(Row::Heading("Every ask, builds and tests too: agent.tools".into()));
-            rows.push(Row::Given(format!(
-                "{}: ticked in both columns below; taken out of one, a tool is kept in the other's list alone",
-                start.every.join(", ")
-            )));
+            rows.push(Row::Given(format!("{}: {EVERY_SAID}", start.every.join(", "))));
         }
         rows.push(Row::Columns);
-        rows.extend(GIVEN_SAID.iter().map(|&(said, answer, change)| Row::Always { said, given: [answer, change] }));
+        // What a try push is given, as an answer is.
+        let given = |answer: bool, change: bool| Kind::ALL.map(|k| if k == Kind::Change { change } else { answer });
+        rows.extend(GIVEN_SAID.iter().map(|&(said, answer, change)| Row::Always { said, given: given(answer, change) }));
         // The boxes of the server last listed, all its tools let.
-        let mut whole = [false; 2];
+        let mut whole: Boxes = [false; KINDS];
         for i in items.before.iter().chain(&items.served).chain(&items.after) {
             let mut on = ticked(&i.key);
             match &i.server {
@@ -1095,7 +1204,7 @@ impl Setup {
                     rows.push(Row::Server { name: name.clone(), form: form(i), all: on, from: i.from.clone() });
                     continue;
                 }
-                Some(_) => on = [on[0] || whole[0], on[1] || whole[1]],
+                Some(_) => on = Kind::ALL.map(|k| on[k.col()] || whole[k.col()]),
                 None => {}
             }
             rows.push(Row::Tool { name: form(i), server: i.server.clone(), on, from: i.from.clone() });
@@ -1106,7 +1215,7 @@ impl Setup {
         rows.push(Row::Add);
         let sel = rows.iter().position(Row::picks).unwrap_or(0);
         let now = match start.done.unwrap_or(0) {
-            n if n >= VERSION => "Ticked as the settings say now. Saving writes both lists again.",
+            n if n >= VERSION => SAVED_SAID,
             0 => "Not set up yet: ticked as stacked has it, and as the settings say. Saving it lets the asks go.",
             _ => "An earlier stacked's setup was done: ticked as the settings say. Saving it lets the asks go.",
         };
@@ -1118,7 +1227,7 @@ impl Setup {
             room: 0,
             pinned: false,
             every: start.every.clone(),
-            start: Chosen { change: vec![], answer: vec![], every: None },
+            start: Chosen::default(),
             to: to.to_string(),
             said: said.to_string(),
             now: now.to_string(),
@@ -1159,12 +1268,12 @@ impl Setup {
     }
 
     /// What saving is to write: each kind's list, what agent.tools lets
-    /// every ask use left out of both while both still let it; what is left
+    /// every ask use left out of each while each still lets it; what is left
     /// of agent.tools, if a tool of it is no longer let one kind's asks, or
     /// if one of its rules is to be written as its row writes it, not as
     /// agent.tools does now (a command's older prefix form, `shown`).
     pub fn chosen(&self) -> Chosen {
-        let (change, answer) = (self.ticked(Kind::Change), self.ticked(Kind::Answer));
+        let lists = Kind::ALL.map(|k| self.ticked(k));
         let mut kept: Vec<String> = Vec::new();
         for t in &self.every {
             let key = same(t);
@@ -1173,13 +1282,16 @@ impl Setup {
                 _ => None,
             });
             let t = written.unwrap_or_else(|| t.clone());
-            if change.contains(&t) && answer.contains(&t) && !kept.contains(&t) {
+            if lists.iter().all(|l| l.contains(&t)) && !kept.contains(&t) {
                 kept.push(t);
             }
         }
+        let list = |k: Kind| lists[k.col()].iter().filter(|t| !kept.contains(t)).cloned().collect();
         Chosen {
-            change: change.into_iter().filter(|t| !kept.contains(t)).collect(),
-            answer: answer.into_iter().filter(|t| !kept.contains(t)).collect(),
+            change: list(Kind::Change),
+            answer: list(Kind::Answer),
+            #[cfg(feature = "try-push")]
+            try_push: list(Kind::Try),
             every: (kept != self.every).then_some(kept),
         }
     }
@@ -1219,12 +1331,12 @@ impl Setup {
         }
     }
 
-    /// Row `k`'s boxes ticked as `to` says, read only's then change's, each
-    /// as Space would tick it.
-    fn set(&mut self, k: usize, to: [bool; 2]) {
+    /// Row `k`'s boxes ticked as `to` says, by their column, each as Space
+    /// would tick it.
+    fn set(&mut self, k: usize, to: Boxes) {
         let (sel, col) = (self.sel, self.col);
         self.sel = k;
-        for kind in Kind::BOTH {
+        for kind in Kind::ALL {
             let now = match &self.rows[k] {
                 Row::Server { all: on, .. } | Row::Tool { on, .. } => on[kind.col()],
                 _ => continue,
@@ -1252,7 +1364,7 @@ impl Setup {
             return false;
         }
         let at = self.rows.iter().position(|r| *r == Row::Add).unwrap_or(self.rows.len());
-        self.rows.insert(at, Row::Tool { name: shown(rule), server: None, on: [false; 2], from: vec![Source::Added] });
+        self.rows.insert(at, Row::Tool { name: shown(rule), server: None, on: [false; KINDS], from: vec![Source::Added] });
         self.sel = at;
         true
     }
@@ -1276,7 +1388,8 @@ impl Setup {
     }
 
     /// A key. ↑↓ (and PageUp, PageDown, Home, End) pick a row; ← and →, or
-    /// Tab and shift-Tab, the column, read only or change; Space (or Enter)
+    /// Tab and shift-Tab, the column: read only, change, or try push, built
+    /// with the `try-push` feature; Space (or Enter)
     /// ticks the box of the row picked in that column, or not. Esc (or q),
     /// as in the comment editor: with something changed, a menu, to save it,
     /// throw it away or keep choosing; with nothing, out. `a` (or Enter on
@@ -1333,9 +1446,10 @@ impl Setup {
             KeyCode::PageDown => self.step(true, 10),
             KeyCode::Home => self.step(false, self.rows.len()),
             KeyCode::End => self.step(true, self.rows.len()),
-            KeyCode::Left => self.col = Kind::BOTH[0],
-            KeyCode::Right => self.col = Kind::BOTH[1],
-            KeyCode::Tab | KeyCode::BackTab => self.col = self.col.other(),
+            KeyCode::Left => self.col = self.col.beside(-1),
+            KeyCode::Right => self.col = self.col.beside(1),
+            KeyCode::Tab => self.col = self.col.next(1),
+            KeyCode::BackTab => self.col = self.col.next(-1),
             KeyCode::Char(' ') | KeyCode::Enter => self.toggle(),
             KeyCode::Char('a') => self.open_adding(),
             KeyCode::Char('s') => return Step::Save(self.chosen()),
@@ -1353,7 +1467,7 @@ impl Setup {
         let first = 2 + usize::from(self.pinned);
         let k = y.checked_sub(first).filter(|&k| k + usize::from(self.pinned) < self.room)? + self.top;
         let row = self.rows.get(k).filter(|r| r.picks())?;
-        let col = Kind::BOTH.into_iter().find(|kind| {
+        let col = Kind::ALL.into_iter().find(|kind| {
             let (at, w) = COLUMNS[kind.col()];
             row.boxes() && (at..at + w).contains(&x)
         });
@@ -1392,17 +1506,17 @@ impl Setup {
         }
     }
 
-    /// Row `k` as drawn: what it shows in each column, read only's then
-    /// change's, if it has columns; and what it says after them, or across
-    /// the line if it has none.
-    fn cells(&self, k: usize) -> (Option<[String; 2]>, String) {
-        let empty = || Some([String::new(), String::new()]);
-        let boxes = |on: &[bool; 2]| Some(on.map(|o| mark(o).to_string()));
+    /// Row `k` as drawn: what it shows in each column, by its column, if it
+    /// has columns; and what it says after them, or across the line if it
+    /// has none.
+    fn cells(&self, k: usize) -> (Option<[String; KINDS]>, String) {
+        let empty = || Some(Kind::ALL.map(|_| String::new()));
+        let boxes = |on: &Boxes| Some(on.map(|o| mark(o).to_string()));
         let after = |all: Vec<String>| if all.is_empty() { String::new() } else { format!("   {}", all.join("; ")) };
         match &self.rows[k] {
             Row::Heading(t) => (None, format!(" {t}")),
             Row::Given(t) => (None, format!("   {t}")),
-            Row::Columns => (Some(Kind::BOTH.map(|kind| kind.label().to_string())), COLUMNS_SAID.to_string()),
+            Row::Columns => (Some(Kind::ALL.map(|kind| kind.label().to_string())), COLUMNS_SAID.to_string()),
             Row::Always { said, given } => (Some(given.map(|g| if g { "always".to_string() } else { String::new() })), said.to_string()),
             Row::Server { name, form, all, from } => {
                 (boxes(all), format!("all of the MCP server {name}'s tools, those to come too ({form}){}", after(said(from))))
@@ -1426,7 +1540,7 @@ impl Setup {
         let (cells, text) = self.cells(k);
         let Some(cells) = cells else { return text };
         let mut out = String::new();
-        for (kind, cell) in Kind::BOTH.into_iter().zip(&cells) {
+        for (kind, cell) in Kind::ALL.into_iter().zip(&cells) {
             let (at, w) = COLUMNS[kind.col()];
             out += &" ".repeat(at - out.chars().count());
             out += &centred(cell, w);
@@ -1519,7 +1633,7 @@ impl Setup {
         put(buf, area, 0, y, w, &fit(&line, w), st);
         let picked = k == self.sel;
         if let (Some(cells), true) = (self.cells(k).0, row.boxes()) {
-            for kind in Kind::BOTH {
+            for kind in Kind::ALL {
                 let (at, cw) = COLUMNS[kind.col()];
                 let dim = matches!(row, Row::Tool { server: Some(s), .. } if self.all(kind, s));
                 let bst = if dim { color::dim() } else { Style::new() };
@@ -1564,7 +1678,7 @@ impl Setup {
     }
 
     /// Row `k`, a server's or a tool's, asked line by line: which kinds of
-    /// ask may use what it names, both at once, Enter keeping it as it is;
+    /// ask may use what it names, all at once, Enter keeping it as it is;
     /// for a server, all its tools at once, or each.
     fn ask_row(&mut self, k: usize, ask: &mut dyn FnMut(&str) -> String, say: &mut dyn FnMut(&str)) {
         match self.rows[k].clone() {
@@ -1572,7 +1686,7 @@ impl Setup {
                 let its: Vec<usize> = (0..self.rows.len()).filter(|&i| matches!(&self.rows[i], Row::Tool { server: Some(s), .. } if *s == name)).collect();
                 let on = |s: &Setup, i: usize| match &s.rows[i] {
                     Row::Tool { on, .. } => *on,
-                    _ => [false; 2],
+                    _ => [false; KINDS],
                 };
                 let short: Vec<String> = its.iter().map(|&i| self.short(i)).collect();
                 say(&match short.is_empty() {
@@ -1581,14 +1695,11 @@ impl Setup {
                 });
                 // What Enter keeps: in each column, all of its tools, or
                 // none; else each as it is.
-                let now = Kind::BOTH.map(|kind| match all[kind.col()] {
+                let now = Kind::ALL.map(|kind| match all[kind.col()] {
                     true => Some(true),
                     false => (!its.iter().any(|&i| on(self, i)[kind.col()])).then_some(false),
                 });
-                let now = match now {
-                    [Some(a), Some(c)] => Some([a, c]),
-                    _ => None,
-                };
+                let now = now.iter().all(Option::is_some).then(|| now.map(|b| b.unwrap_or(false)));
                 let a = ask(&format!("  Which asks may use all of the MCP server {name}'s tools, those to come too ({form})? {}", options(now, true)));
                 match (chosen_of(&a), a.trim().to_ascii_lowercase().as_str()) {
                     (Some(to), _) => self.set(k, to),
@@ -1635,15 +1746,21 @@ fn sentence(text: &str) -> String {
 }
 
 /// The answers to a row's question asked line by line, and the boxes each
-/// ticks, read only's then change's.
-const CHOICES: [(char, &str, [bool; 2]); 4] =
-    [('r', "read only", [true, false]), ('c', "change", [false, true]), ('b', "both", [true, true]), ('n', "neither", [false, false])];
+/// ticks, by their column. With the `try-push` feature, `read only` lets
+/// both the read-only kinds use it, answers and try pushes, as the screen's
+/// own column for try pushes can tell them apart.
+const CHOICES: [(char, &str, Boxes); 4] = [
+    ('r', "read only", [true, false, #[cfg(feature = "try-push")] true]),
+    ('c', "change", [false, true, #[cfg(feature = "try-push")] false]),
+    ('b', "both", [true; KINDS]),
+    ('n', "neither", [false; KINDS]),
+];
 
 /// The answers a row's question takes, said for it, the one Enter gives in
 /// capitals: the one ticking the boxes as they are `now`. With `each`, a
 /// server's question, the answer that asks of each of its tools too, Enter's
 /// when its tools are as no other answer ticks them (`now` being none).
-fn options(now: Option<[bool; 2]>, each: bool) -> String {
+fn options(now: Option<Boxes>, each: bool) -> String {
     let mut out: Vec<String> = CHOICES
         .iter()
         .map(|&(letter, label, to)| match now == Some(to) {
@@ -1659,7 +1776,7 @@ fn options(now: Option<[bool; 2]>, each: bool) -> String {
 
 /// The boxes answer `a` ticks, if it is one of `CHOICES`, by its letter or
 /// in full.
-fn chosen_of(a: &str) -> Option<[bool; 2]> {
+fn chosen_of(a: &str) -> Option<Boxes> {
     let a = a.trim().to_ascii_lowercase();
     CHOICES.iter().find(|(letter, label, _)| a == letter.to_string() || a == *label).map(|&(_, _, to)| to)
 }
@@ -1697,9 +1814,10 @@ pub fn run(mut s: Setup) -> Result<Option<Chosen>> {
 /// The setup asked line by line: `ask` says what it asks and reads the
 /// answer (a line, as typed), `say` says the rest. First the list, a line a
 /// row as the screen shows it, to keep as it is or to go through a row at a
-/// time, each asked for both kinds of ask in one question, Enter keeping it
-/// as it was; then any command or tool to add, until a line is left empty,
-/// each asked so in turn. What is to be saved.
+/// time, each asked for every kind of ask in one question (read only, with
+/// the `try-push` feature, for answers and try pushes both), Enter keeping
+/// it as it was; then any command or tool to add, until a line is left
+/// empty, each asked so in turn. What is to be saved.
 pub fn ask_lines(s: &mut Setup, ask: &mut dyn FnMut(&str) -> String, say: &mut dyn FnMut(&str)) -> Chosen {
     for k in 0..s.rows.len() {
         if s.rows[k] != Row::Add {
@@ -1791,7 +1909,60 @@ mod tests {
 
     /// What nothing set starts from, no checkout read.
     fn fresh() -> Start {
-        Start::new(&Agent::default(), (false, false), None, OsStr::new(""))
+        Start::new(&Agent::default(), [false; KINDS], None, OsStr::new(""))
+    }
+
+    /// Which lists a file sets: those of `kinds`.
+    fn sets(kinds: &[Kind]) -> Boxes {
+        Kind::ALL.map(|k| kinds.contains(&k))
+    }
+
+    /// A row as the screen draws it: `cells`, at `cols`, then `text`, from
+    /// column `at`; its end trimmed, as `screen` trims it.
+    fn layout(cells: &[&str], cols: &[(usize, usize)], at: usize, text: &str) -> String {
+        let mut out = String::new();
+        for (cell, (start, w)) in cells.iter().zip(cols) {
+            out += &" ".repeat(start - out.chars().count());
+            out += &centred(cell, *w);
+        }
+        out += &" ".repeat(at - out.chars().count());
+        out += text;
+        out.trim_end().to_string()
+    }
+
+    /// The columns of a setup with two, read only's and change's, and
+    /// where what a row says starts.
+    const TWO: [(usize, usize); 2] = [(1, 9), (12, 6)];
+    const TWO_TEXT: usize = 21;
+
+    /// `line`, a row as a setup with two columns draws it (read only's,
+    /// change's), as this one draws it: built with the `try-push` feature,
+    /// its try push cell as its read-only one, and the columns' heading
+    /// with what it says its own. A line that is no such row, as it is.
+    fn two(line: &str) -> String {
+        let chars: Vec<char> = line.chars().collect();
+        let cell = |at: usize, w: usize| chars.iter().skip(at).take(w).collect::<String>().trim().to_string();
+        let (r, c) = (cell(1, 9), cell(12, 6));
+        let text: String = chars.iter().skip(TWO_TEXT).collect();
+        if layout(&[&r, &c], &TWO, TWO_TEXT, &text) != line {
+            return line.to_string();
+        }
+        if r == "read only" {
+            return layout(&Kind::ALL.map(Kind::label), &COLUMNS, TEXT, COLUMNS_SAID);
+        }
+        three(&r, &c, &r, &text)
+    }
+
+    /// A row as this setup draws it: read only's cell `r`, change's `c`,
+    /// with the `try-push` feature try push's `t`, then `text`.
+    fn three(r: &str, c: &str, t: &str, text: &str) -> String {
+        layout(&[r, c, t][..KINDS], &COLUMNS, TEXT, text)
+    }
+
+    /// What saving says it writes in try_tools, after the other lists:
+    /// `tools`, with the `try-push` feature; nothing without.
+    fn try_said(tools: &str) -> String {
+        if cfg!(feature = "try-push") { format!("; try_tools: {tools}") } else { String::new() }
     }
 
     /// Where the row for `name` is, a tool's or a server's.
@@ -1856,7 +2027,9 @@ mod tests {
     fn the_lists_start_as_stacked_has_them_the_settings_winning() {
         // Nothing set: no tool for changes; curl and jq for answers.
         let s = fresh();
-        assert_eq!((s.change, s.answer, s.set, s.done), (vec![], strings(&["Bash(curl *)", "Bash(jq *)"]), (false, false), None));
+        #[cfg(feature = "try-push")]
+        assert_eq!(s.try_push, s.answer, "try pushes, as answers");
+        assert_eq!((s.change, s.answer, s.set, s.done), (vec![], strings(&["Bash(curl *)", "Bash(jq *)"]), [false; KINDS], None));
         // A list a file sets is as it says; agent.tools, every ask's, kept
         // apart.
         let agent = Agent {
@@ -1866,13 +2039,23 @@ mod tests {
             setup: Some(VERSION),
             ..Agent::default()
         };
-        let s = Start::new(&agent, (true, true), None, OsStr::new(""));
+        let s = Start::new(&agent, sets(&[Kind::Change, Kind::Answer]), None, OsStr::new(""));
+        // A try push's list not set: as the answers' starts, the settings'.
+        #[cfg(feature = "try-push")]
+        assert_eq!(s.try_push, strings(&["Bash(curl *)"]));
         assert_eq!(
             (s.change, s.answer, s.every, s.set, s.done),
-            (strings(&["Bash(make check *)"]), strings(&["Bash(curl *)"]), strings(&["mcp__moz__*"]), (true, true), Some(VERSION))
+            (strings(&["Bash(make check *)"]), strings(&["Bash(curl *)"]), strings(&["mcp__moz__*"]), sets(&[Kind::Change, Kind::Answer]), Some(VERSION))
         );
         // One a file does not set, as stacked has it: the change list, here.
-        assert!(Start::new(&agent, (false, true), None, OsStr::new("")).change.is_empty());
+        assert!(Start::new(&agent, sets(&[Kind::Answer]), None, OsStr::new("")).change.is_empty());
+        // A try push's list a file sets: as it says.
+        #[cfg(feature = "try-push")]
+        {
+            let agent = Agent { try_tools: strings(&["mcp__moz__*"]), ..agent.clone() };
+            let s = Start::new(&agent, sets(&[Kind::Answer, Kind::Try]), None, OsStr::new(""));
+            assert_eq!((s.answer, s.try_push), (strings(&["Bash(curl *)"]), strings(&["mcp__moz__*"])));
+        }
         // What is on PATH: a file there that may be run.
         let tmp = tempfile::tempdir().unwrap();
         executable(&tmp.path().join("bin/lint"));
@@ -1891,7 +2074,7 @@ mod tests {
         // change list's own, kept as it is.
         let start = Start {
             change: strings(&["Bash(make check *)"]),
-            set: (true, false),
+            set: sets(&[Kind::Change]),
             every: strings(&["mcp__notes__write"]),
             ..fresh()
         };
@@ -1901,7 +2084,7 @@ mod tests {
             " What each kind of ask may use, besides what stacked always gives it: the agent's tools, in repo",
             " Not set up yet: ticked as stacked has it, and as the settings say. Saving it lets the asks go.",
             " Every ask, builds and tests too: agent.tools",
-            "   mcp__notes__write: ticked in both columns below; taken out of one, a tool is kept in the other's list alone",
+            &format!("   mcp__notes__write: {EVERY_SAID}"),
             " read only  change   read only is for answer-only asks; change is for asks that change the stack",
             "  always    always   Read, Grep, Glob, LS, and git show, log and diff",
             "            always   commands that read: grep, rg, find, cat, sed, sort…",
@@ -1920,16 +2103,21 @@ mod tests {
             "    [ ]      [ ]     WebFetch   one of the agent's tools; it can reach the network: a change could touch a remote",
             "    [ ]      [x]     Bash(make check *)   in the settings",
             "                     + add a command or a tool…",
-            " To be, in local.toml: change_tools: Bash(make check *); answer_tools: Bash(curl *), Bash(jq *)",
-        ];
+            &format!(
+                " To be, in local.toml: change_tools: Bash(make check *); answer_tools: Bash(curl *), Bash(jq *){}",
+                try_said("Bash(curl *), Bash(jq *)")
+            ),
+        ]
+        .map(two);
         // Each once, in that order: one list.
         let at: Vec<usize> = lines.iter().map(|l| line_of(&shown, l)).collect();
         assert!(at.windows(2).all(|w| w[0] < w[1]), "{at:?} in:\n{shown}");
-        for l in lines {
+        for l in &lines {
             assert_eq!(times(&shown, l), 1, "{l:?} in:\n{shown}");
         }
         assert!(!shown.contains("Read   one of"), "given already: {shown}");
-        assert_eq!(shown.matches("Bash(curl *)").count(), 2, "on its row, and in what saving writes: {shown}");
+        let curls = 2 + usize::from(cfg!(feature = "try-push"));
+        assert_eq!(shown.matches("Bash(curl *)").count(), curls, "on its row, and in what saving writes: {shown}");
         // The cursor starts on the first box: read only's, of curl.
         assert_eq!((s.sel, s.col), (row_of(&s, "Bash(curl *)"), Kind::Answer));
         // moz let changes, all of it at once: its change box.
@@ -1937,7 +2125,7 @@ mod tests {
         press(&mut s, KeyCode::Right);
         assert_eq!(press(&mut s, KeyCode::Char(' ')), Step::Stay);
         assert_eq!(s.chosen().change, ["mcp__moz__*", "Bash(make check *)"]);
-        assert!(screen(&mut s).contains("\n    [ ]      [x]     all of the MCP server moz's tools, those to come too (mcp__moz__*)\n"));
+        assert!(screen(&mut s).contains(&format!("\n{}\n", two("    [ ]      [x]     all of the MCP server moz's tools, those to come too (mcp__moz__*)"))));
         // One of its tools taken back: moz is no longer let whole.
         press(&mut s, KeyCode::Down);
         press(&mut s, KeyCode::Char(' '));
@@ -1958,16 +2146,25 @@ mod tests {
         press(&mut s, KeyCode::Left);
         press(&mut s, KeyCode::Char(' '));
         let Step::Save(c) = press(&mut s, KeyCode::Char('s')) else { panic!() };
-        assert_eq!(
-            c.settings(),
-            [
-                ("agent.change_tools", strings(&["mcp__moz__get_revision"])),
-                ("agent.answer_tools", strings(&["Bash(jq *)", "mcp__notes__write"])),
-                ("agent.tools", vec![]),
-                ("agent.setup", vec![VERSION.to_string()]),
-            ]
+        // Try pushes keep curl and notes' write, as their column was not
+        // touched.
+        let try_push = strings(&["Bash(curl *)", "Bash(jq *)", "mcp__notes__write"]);
+        let mut settings = vec![
+            ("agent.change_tools", strings(&["mcp__moz__get_revision"])),
+            ("agent.answer_tools", strings(&["Bash(jq *)", "mcp__notes__write"])),
+            ("agent.try_tools", try_push),
+            ("agent.tools", vec![]),
+            ("agent.setup", vec![VERSION.to_string()]),
+        ];
+        if !cfg!(feature = "try-push") {
+            settings.remove(2);
+        }
+        assert_eq!(c.settings(), settings);
+        let said = format!(
+            "change_tools: mcp__moz__get_revision; answer_tools: Bash(jq *), mcp__notes__write{}; tools: none",
+            try_said("Bash(curl *), Bash(jq *), mcp__notes__write")
         );
-        assert_eq!(c.said(), "change_tools: mcp__moz__get_revision; answer_tools: Bash(jq *), mcp__notes__write; tools: none");
+        assert_eq!(c.said(), said);
     }
 
     #[test]
@@ -1985,33 +2182,39 @@ mod tests {
         assert!(screen(&mut s).ends_with("\n ↑↓←→: pick · space: let changes use it or not · a: add a command or a tool · s: save · esc: save or throw away"));
         press(&mut s, KeyCode::Char(' '));
         assert_eq!(s.chosen().change, ["WebFetch"]);
-        assert!(screen(&mut s).contains("\n    [x]      [x]     WebFetch   one of the agent's tools; it can reach the network: a change could touch a remote\n"));
+        let web = "WebFetch   one of the agent's tools; it can reach the network: a change could touch a remote";
+        assert!(screen(&mut s).contains(&format!("\n{}\n", three("[x]", "[x]", "[ ]", web))));
         // ← back, Space takes it out of the answers' list; → at the right
-        // stays there; Tab and shift-Tab, each the other column.
+        // stays there; Tab and shift-Tab, each the next column and the one
+        // before, round past either end.
         press(&mut s, KeyCode::Left);
         press(&mut s, KeyCode::Char(' '));
         assert_eq!((s.chosen().answer, s.chosen().change), (strings(&["Bash(curl *)", "Bash(jq *)"]), strings(&["WebFetch"])));
         press(&mut s, KeyCode::Left);
         assert_eq!(s.col, Kind::Answer);
-        for (code, then) in [(KeyCode::Right, Kind::Change), (KeyCode::Right, Kind::Change), (KeyCode::Tab, Kind::Answer), (KeyCode::BackTab, Kind::Change)] {
+        let last = Kind::ALL[KINDS - 1];
+        for (code, then) in [(KeyCode::Right, Kind::Change), (KeyCode::Right, last), (KeyCode::Right, last), (KeyCode::Tab, Kind::Answer), (KeyCode::BackTab, last)] {
             press(&mut s, code);
             assert_eq!(s.col, then, "{code:?}");
         }
-        // ↑↓ keep to the column.
+        // Tab and shift-Tab come back to change; ↑↓ keep to the column.
+        while s.col != Kind::Change {
+            press(&mut s, KeyCode::BackTab);
+        }
         press(&mut s, KeyCode::Up);
         assert_eq!((s.sel, s.col), (row_of(&s, "Skill"), Kind::Change));
         // A click on a box ticks it or not, the cursor going there; one on
         // what a row says picks the row; one between the boxes, the same.
         let shown = screen(&mut s);
-        let jq = line_of(&shown, "    [x]      [ ]     Bash(jq *)   stacked's default for answers");
+        let jq = line_of(&shown, &two("    [x]      [ ]     Bash(jq *)   stacked's default for answers"));
         s.click(5, jq);
         assert_eq!((s.sel, s.col), (row_of(&s, "Bash(jq *)"), Kind::Answer));
         assert_eq!(s.chosen().answer, ["Bash(curl *)"]);
         s.click(14, jq);
         assert_eq!((s.chosen().change, s.col), (strings(&["Bash(jq *)", "WebFetch"]), Kind::Change));
         let before = s.chosen();
-        let curl = line_of(&shown, "    [x]      [ ]     Bash(curl *)   stacked's default for answers");
-        for x in [30, 10] {
+        let curl = line_of(&shown, &two("    [x]      [ ]     Bash(curl *)   stacked's default for answers"));
+        for x in [TEXT + 9, 10] {
             s.click(x, curl);
             assert_eq!((s.sel, s.chosen()), (row_of(&s, "Bash(curl *)"), before.clone()), "{x}");
         }
@@ -2020,13 +2223,76 @@ mod tests {
         assert_eq!((s.sel, s.col, s.chosen()), (row_of(&s, "Bash(jq *)"), Kind::Answer, before.clone()));
         // What stacked always gives has no box, and no row of it is picked;
         // nor is the top line, nor the keys'.
-        let given = line_of(&shown, "  always    always   Read, Grep, Glob, LS, and git show, log and diff");
+        let given = line_of(&shown, &two("  always    always   Read, Grep, Glob, LS, and git show, log and diff"));
         for (x, y) in [(3, given), (13, given), (5, 0), (5, 39)] {
             assert_eq!(s.at(x, y), None, "{x}, {y}");
         }
         // A click on the row to add one opens the line to type it in.
-        s.click(25, line_of(&shown, "                     + add a command or a tool…"));
+        s.click(TEXT + 4, line_of(&shown, &two("                     + add a command or a tool…")));
         assert!(s.adding.is_some());
+    }
+
+    /// Built with the `try-push` feature: the column of try pushes, ticked
+    /// at first as the read-only one, and its own once a box of it is.
+    #[cfg(feature = "try-push")]
+    #[test]
+    fn the_try_push_column_starts_as_the_read_only_one_and_is_its_own() {
+        let tmp = tempfile::tempdir().unwrap();
+        let top = tmp.path().join("repo");
+        std::fs::create_dir_all(top.join(".claude")).unwrap();
+        std::fs::write(top.join(".claude/settings.local.json"), r#"{"permissions": {"allow": ["Bash(searchfox-cli:*)"]}}"#).unwrap();
+        let start = Start::new(&Agent::default(), [false; KINDS], Some(&top), OsStr::new(""));
+        assert_eq!(start.try_push, start.answer);
+        let mut s = Setup::new(&strings(&["WebFetch"]), &[], &start, "local.toml", "here");
+        let shown = screen(&mut s);
+        let heading = " read only  change  try push  read only is for answer-only asks; change is for asks that change the stack; try push is for asks that select a try push's tasks";
+        assert_eq!(times(&shown, heading), 1, "{shown}");
+        let curl = three("[x]", "[ ]", "[x]", "Bash(curl *)   stacked's default for answers");
+        assert_eq!(curl, "    [x]      [ ]      [x]     Bash(curl *)   stacked's default for answers", "the try push column at 20, 8 wide");
+        for line in [
+            three("always", "always", "always", "Read, Grep, Glob, LS, and git show, log and diff"),
+            three("", "always", "", "commands that read: grep, rg, find, cat, sed, sort…"),
+            three("always", "", "always", "stacked's commands that read the stack: export, show, log, tree, versions, interdiff, comments"),
+            curl.clone(),
+            three("[x]", "[ ]", "[x]", "Bash(searchfox-cli *)   allowed in .claude/settings.local.json"),
+            three("[ ]", "[ ]", "[ ]", "WebFetch   one of the agent's tools; it can reach the network: a change could touch a remote"),
+        ] {
+            assert_eq!(times(&shown, &line), 1, "{line:?} in:\n{shown}");
+        }
+        // Its own column: → twice, Space lets try pushes use WebFetch, and
+        // them alone; a click on its box takes curl out of its list alone.
+        s.pick(row_of(&s, "WebFetch"));
+        press(&mut s, KeyCode::Right);
+        press(&mut s, KeyCode::Right);
+        assert_eq!(s.col, Kind::Try);
+        assert!(screen(&mut s).ends_with("\n ↑↓←→: pick · space: let try pushes use it or not · a: add a command or a tool · s: save · esc: close"));
+        press(&mut s, KeyCode::Char(' '));
+        let curl = line_of(&screen(&mut s), &curl);
+        s.click(23, curl);
+        let c = s.chosen();
+        assert_eq!(c.answer, strings(&["Bash(curl *)", "Bash(jq *)", "Bash(searchfox-cli *)"]));
+        assert_eq!(c.try_push, strings(&["Bash(jq *)", "Bash(searchfox-cli *)", "WebFetch"]));
+        assert_eq!(c.change, Vec::<String>::new());
+        // Saved: its list too, and the setup of this version, which has
+        // its column.
+        let settings = c.settings();
+        assert!(settings.contains(&("agent.try_tools", strings(&["Bash(jq *)", "Bash(searchfox-cli *)", "WebFetch"]))), "{settings:?}");
+        assert_eq!(settings.last(), Some(&("agent.setup", vec!["2".to_string()])));
+        assert!(c.said().contains("; try_tools: Bash(jq *), Bash(searchfox-cli *), WebFetch"), "{}", c.said());
+        // agent.tools ticked in all three columns: taken out of one, kept in
+        // the two others' alone.
+        let start = Start { every: strings(&["mcp__notes__read"]), ..fresh() };
+        let mut s = Setup::new(&strings(&["mcp__notes__read"]), &[], &start, "local.toml", "here");
+        assert!(screen(&mut s).contains(&format!("\n{}\n", three("[x]", "[x]", "[x]", "  read"))), "{}", screen(&mut s));
+        s.pick(row_of(&s, "mcp__notes__read"));
+        press(&mut s, KeyCode::Right);
+        press(&mut s, KeyCode::Char(' '));
+        let c = s.chosen();
+        assert_eq!((c.every.clone(), c.change.clone()), (Some(vec![]), vec![]));
+        assert!(c.answer.contains(&"mcp__notes__read".to_string()) && c.try_push.contains(&"mcp__notes__read".to_string()), "{c:?}");
+        // Line by line, read only lets both the read-only kinds use it.
+        assert_eq!(chosen_of("r"), Some([true, false, true]));
+        assert_eq!(chosen_of("b"), Some([true, true, true]));
     }
 
     #[test]
@@ -2051,13 +2317,15 @@ mod tests {
         // One row, saying each source; ticked for answers, as what your
         // claude settings allow is; written the newer way, as no setting
         // writes it.
-        let start = Start::new(&Agent::default(), (false, false), Some(&top), &path);
+        let start = Start::new(&Agent::default(), [false; KINDS], Some(&top), &path);
         let mut s = Setup::new(&[], &[], &start, "local.toml", "here");
         let shown = screen(&mut s);
-        let row = "    [x]      [ ]     Bash(searchfox-cli *)   allowed in .claude/settings.local.json; allowed by the skills spec-trace, xref; named in AGENTS.md";
+        let row = &two("    [x]      [ ]     Bash(searchfox-cli *)   allowed in .claude/settings.local.json; allowed by the skills spec-trace, xref; named in AGENTS.md");
         assert_eq!(times(&shown, row), 1, "{shown}");
-        assert_eq!(times(&shown, "    [ ]      [ ]     Bash(searchfox-cli query *)   allowed by the skill xref"), 1, "narrower, apart: {shown}");
-        assert_eq!(shown.matches("searchfox-cli").count(), 3, "and in what saving writes: {shown}");
+        assert_eq!(times(&shown, &two("    [ ]      [ ]     Bash(searchfox-cli query *)   allowed by the skill xref")), 1, "narrower, apart: {shown}");
+        let rows = shown.lines().filter(|l| l.contains("searchfox-cli") && !l.starts_with(" To be")).count();
+        assert_eq!(rows, 2, "a row each: {shown}");
+        assert!(shown.lines().any(|l| l.starts_with(" To be") && l.contains("Bash(searchfox-cli *)")), "and in what saving writes: {shown}");
         assert_eq!(s.chosen().answer, ["Bash(curl *)", "Bash(jq *)", "Bash(searchfox-cli *)"]);
         // Let changes use it too: written the same way in both lists.
         s.pick(row_of(&s, "Bash(searchfox-cli *)"));
@@ -2068,7 +2336,7 @@ mod tests {
         // The settings writing it the older way: the row the same, ticked as
         // they say; saved the newer way, in each list it is ticked for.
         let agent = Agent { answer_tools: strings(&["Bash(curl *)", "Bash(searchfox-cli:*)"]), ..Agent::default() };
-        let start = Start::new(&agent, (false, true), Some(&top), &path);
+        let start = Start::new(&agent, sets(&[Kind::Answer]), Some(&top), &path);
         let mut s = Setup::new(&[], &[], &start, "local.toml", "here");
         let shown = screen(&mut s);
         assert_eq!(times(&shown, row), 1, "{shown}");
@@ -2082,8 +2350,9 @@ mod tests {
         // agent.tools writing it the older way: the row ticked in both
         // columns; agent.tools saved with it written the newer way.
         let agent = Agent { tools: strings(&["mcp__moz", "Bash(searchfox-cli:*)"]), ..Agent::default() };
-        let mut s = Setup::new(&[], &[], &Start::new(&agent, (false, false), Some(&top), &path), "local.toml", "here");
-        assert!(screen(&mut s).contains("\n    [x]      [x]     Bash(searchfox-cli *)   allowed in"), "{}", screen(&mut s));
+        let mut s = Setup::new(&[], &[], &Start::new(&agent, [false; KINDS], Some(&top), &path), "local.toml", "here");
+        let both = format!("\n{}", two("    [x]      [x]     Bash(searchfox-cli *)   allowed in"));
+        assert!(screen(&mut s).contains(&both), "{}", screen(&mut s));
         let c = s.chosen();
         assert_eq!((c.change, c.answer, c.every), (vec![], strings(&["Bash(curl *)", "Bash(jq *)"]), Some(strings(&["mcp__moz", "Bash(searchfox-cli *)"]))));
         // What is denied twice, each way: said once.
@@ -2102,7 +2371,13 @@ mod tests {
             named: vec![Named { rule: "Bash(make *)".into(), file: "AGENTS.md".into(), found: true }],
             ..fresh()
         };
-        let start = Start { answer: strings(&["mcp__moz"]), set: (false, true), ..start };
+        let start = Start {
+            answer: strings(&["mcp__moz"]),
+            #[cfg(feature = "try-push")]
+            try_push: strings(&["mcp__moz"]),
+            set: sets(&[Kind::Answer]),
+            ..start
+        };
         let mut s = Setup::new(&strings(&["mcp__moz__get_bug"]), &[], &start, "local.toml", "here");
         let shown = screen(&mut s);
         // A row each: the narrower command written the newer way, as every
@@ -2113,8 +2388,8 @@ mod tests {
         }
         assert!(!shown.contains("file-info:*"), "{shown}");
         // All of moz's tools, as the settings write them, on the server's row.
-        assert_eq!(times(&shown, "    [x]      [ ]     all of the MCP server moz's tools, those to come too (mcp__moz)"), 1, "{shown}");
-        assert_eq!(times(&shown, "    [x]      [ ]       get_bug"), 1, "{shown}");
+        assert_eq!(times(&shown, &two("    [x]      [ ]     all of the MCP server moz's tools, those to come too (mcp__moz)")), 1, "{shown}");
+        assert_eq!(times(&shown, &two("    [x]      [ ]       get_bug")), 1, "{shown}");
         assert_eq!(s.chosen().answer, ["mcp__moz"]);
     }
 
@@ -2157,7 +2432,7 @@ mod tests {
         // Listed once each, unticked, where they are named said; the
         // settings ticking one win.
         let agent = Agent { change_tools: strings(&["Bash(./tools/run.sh *)"]), ..Agent::default() };
-        let start = Start::new(&agent, (true, false), Some(&top), &path);
+        let start = Start::new(&agent, sets(&[Kind::Change]), Some(&top), &path);
         assert_eq!(start.named, found);
         let mut s = Setup::new(&[], &[], &start, "local.toml", "here");
         let shown = screen(&mut s);
@@ -2165,17 +2440,19 @@ mod tests {
             "    [ ]      [ ]     Bash(searchfox-cli *)   named in AGENTS.md",
             "    [ ]      [ ]     Bash(notthere *)   named in AGENTS.md, not found on PATH",
             "    [ ]      [x]     Bash(./tools/run.sh *)   named in AGENTS.md",
-        ] {
-            assert_eq!(times(&shown, line), 1, "{line:?} in:\n{shown}");
+        ]
+        .map(two)
+        {
+            assert_eq!(times(&shown, &line), 1, "{line:?} in:\n{shown}");
         }
         assert_eq!(s.chosen().change, ["Bash(./tools/run.sh *)"]);
         assert_eq!(s.chosen().answer, ["Bash(curl *)", "Bash(jq *)"]);
         // Named by two files: once, each file said.
         std::fs::write(top.join("CLAUDE.md"), "Build with `./tools/run.sh`.\n").unwrap();
-        let start = Start::new(&Agent::default(), (false, false), Some(&top), &path);
+        let start = Start::new(&Agent::default(), [false; KINDS], Some(&top), &path);
         assert_eq!(start.named.iter().filter(|n| n.rule == "Bash(./tools/run.sh *)").count(), 2, "{:?}", start.named);
         let shown = screen(&mut Setup::new(&[], &[], &start, "local.toml", "here"));
-        assert_eq!(times(&shown, "    [ ]      [ ]     Bash(./tools/run.sh *)   named in CLAUDE.md, AGENTS.md"), 1, "{shown}");
+        assert_eq!(times(&shown, &two("    [ ]      [ ]     Bash(./tools/run.sh *)   named in CLAUDE.md, AGENTS.md")), 1, "{shown}");
         // A checkout with none of those files names nothing.
         assert!(named(tmp.path(), &path).is_empty());
     }
@@ -2214,7 +2491,7 @@ mod tests {
         );
         // Ticked for answers, as you allow them yourself; not for changes,
         // which reach no network unless ticked.
-        let start = Start::new(&Agent::default(), (false, false), Some(&top), OsStr::new(""));
+        let start = Start::new(&Agent::default(), [false; KINDS], Some(&top), OsStr::new(""));
         assert_eq!(start.answer, ["Bash(curl *)", "Bash(jq *)", "Bash(searchfox-cli:*)", "WebFetch(domain:example.com)"]);
         assert!(start.change.is_empty());
         let mut s = Setup::new(&[], &[], &start, "local.toml", "here");
@@ -2224,8 +2501,10 @@ mod tests {
             "   Bash(rm:*): denied in .claude/settings.local.json, refused to every ask",
             "    [x]      [ ]     Bash(searchfox-cli *)   allowed in .claude/settings.local.json, .claude/settings.json; named in AGENTS.md, not found on PATH",
             "    [x]      [ ]     WebFetch(domain:example.com)   allowed in .claude/settings.json; it can reach the network: a change could touch a remote",
-        ] {
-            assert_eq!(times(&shown, line), 1, "{line:?} in:\n{shown}");
+        ]
+        .map(two)
+        {
+            assert_eq!(times(&shown, &line), 1, "{line:?} in:\n{shown}");
         }
         assert!(!shown.contains("grep:*") && !shown.contains("tracked"), "{shown}");
         // What is denied is said, not let or not: no box of its own; and it
@@ -2235,11 +2514,11 @@ mod tests {
         assert!(!s.chosen().answer.iter().chain(&s.chosen().change).any(|t| t.contains("rm:*")));
         // What changes things is not ticked for answers, allowed or not.
         std::fs::write(top.join(".claude/settings.json"), r#"{"permissions": {"allow": ["Edit(src/**)", "Bash"]}}"#).unwrap();
-        let start = Start::new(&Agent::default(), (false, false), Some(&top), OsStr::new(""));
+        let start = Start::new(&Agent::default(), [false; KINDS], Some(&top), OsStr::new(""));
         assert_eq!(start.answer, ["Bash(curl *)", "Bash(jq *)", "Bash(searchfox-cli:*)"]);
         // The settings setting the answers' list win.
         let agent = Agent { answer_tools: strings(&["Bash(curl *)"]), ..Agent::default() };
-        assert_eq!(Start::new(&agent, (false, true), Some(&top), OsStr::new("")).answer, ["Bash(curl *)"]);
+        assert_eq!(Start::new(&agent, sets(&[Kind::Answer]), Some(&top), OsStr::new("")).answer, ["Bash(curl *)"]);
         // A link out of the checkout is not read.
         std::fs::write(tmp.path().join("theirs.json"), r#"{"permissions": {"allow": ["Bash(theirs:*)"], "deny": ["Bash(theirs:*)"]}}"#).unwrap();
         std::fs::remove_file(top.join(".claude/settings.local.json")).unwrap();
@@ -2294,7 +2573,7 @@ mod tests {
         );
         // Listed once, unticked in both columns, the skills that allow it
         // said; a command the newer way, however a skill writes it.
-        let start = Start::new(&Agent::default(), (false, false), Some(&top), OsStr::new(""));
+        let start = Start::new(&Agent::default(), [false; KINDS], Some(&top), OsStr::new(""));
         let mut s = Setup::new(&[], &[], &start, "local.toml", "here");
         let shown = screen(&mut s);
         for line in [
@@ -2302,15 +2581,19 @@ mod tests {
             "    [ ]      [ ]     Bash(jj log *)   allowed by the skills jj-commit, file-bug",
             "    [ ]      [ ]     Bash(./tools/file-bug.py *)   allowed by the skill file-bug",
             "    [ ]      [ ]     Bash(./tools/lint *)   allowed by the skill lint",
-        ] {
-            assert_eq!(times(&shown, line), 1, "{line:?} in:\n{shown}");
+        ]
+        .map(two)
+        {
+            assert_eq!(times(&shown, &line), 1, "{line:?} in:\n{shown}");
         }
         assert!(!shown.contains("theirs") && !shown.contains("nope") && !shown.contains("Agent]"), "{shown}");
         assert_eq!((s.chosen().change, s.chosen().answer), (vec![], strings(&["Bash(curl *)", "Bash(jq *)"])));
-        // The settings ticking one win.
+        // The settings ticking one win: the try pushes', as the answers'
+        // start.
         let agent = Agent { answer_tools: strings(&["Bash(jj log:*)"]), ..Agent::default() };
-        let mut s = Setup::new(&[], &[], &Start::new(&agent, (false, true), Some(&top), OsStr::new("")), "local.toml", "here");
-        assert!(screen(&mut s).contains("\n    [x]      [ ]     Bash(jj log *)   allowed by the skills jj-commit, file-bug\n"), "{}", screen(&mut s));
+        let mut s = Setup::new(&[], &[], &Start::new(&agent, sets(&[Kind::Answer]), Some(&top), OsStr::new("")), "local.toml", "here");
+        let log = two("    [x]      [ ]     Bash(jj log *)   allowed by the skills jj-commit, file-bug");
+        assert!(screen(&mut s).contains(&format!("\n{log}\n")), "{}", screen(&mut s));
         // The skills' folder a link takes out of the checkout: none read.
         let other = tmp.path().join("other");
         std::fs::create_dir_all(other.join(".claude")).unwrap();
@@ -2329,8 +2612,9 @@ mod tests {
             "                       a skill may run what its own allowed-tools let it, commands that change things too",
             "                       (rewriting history, filing a bug), and an answer runs in your checkout itself,",
             "                       unless agent.answer_only_worktree says otherwise",
-        ];
-        let at = line_of(&shown, lines[0]);
+        ]
+        .map(two);
+        let at = line_of(&shown, &lines[0]);
         for (k, line) in lines.iter().enumerate() {
             assert_eq!(line_of(&shown, line), at + k, "{shown}");
         }
@@ -2348,7 +2632,8 @@ mod tests {
         // tick it, unticked else.
         let start = Start { answer: strings(&["Skill"]), ..fresh() };
         let mut s = Setup::new(&[], &[], &start, "local.toml", "here");
-        assert!(screen(&mut s).contains("\n    [x]      [ ]     Skill   claude's tool for the checkout's skills\n"), "{}", screen(&mut s));
+        let skill = three("[x]", "[ ]", "[ ]", "Skill   claude's tool for the checkout's skills");
+        assert!(screen(&mut s).contains(&format!("\n{skill}\n")), "{}", screen(&mut s));
         // Added by hand: its row, as it is.
         let mut s = Setup::new(&[], &[], &fresh(), "local.toml", "here");
         assert!(!s.add("Skill"));
@@ -2380,7 +2665,12 @@ mod tests {
         assert!(s.adding.is_none());
         assert_eq!((s.sel, s.chosen().change, s.chosen().answer), (row_of(&s, "Bash(make check *)"), vec![], strings(&["Bash(curl *)", "Bash(jq *)"])));
         let shown = screen(&mut s);
-        assert!(shown.contains("\n    [ ]      [ ]     Bash(make check *)   added here\n                     + add a command or a tool…\n"), "{shown}");
+        let added = format!(
+            "\n{}\n{}\n",
+            two("    [ ]      [ ]     Bash(make check *)   added here"),
+            two("                     + add a command or a tool…")
+        );
+        assert!(shown.contains(&added), "{shown}");
         press(&mut s, KeyCode::Right);
         press(&mut s, KeyCode::Char(' '));
         assert_eq!(s.chosen().change, ["Bash(make check *)"]);
@@ -2393,7 +2683,8 @@ mod tests {
         typed(&mut s, "Bash(jq:*)");
         press(&mut s, KeyCode::Enter);
         assert_eq!((s.sel, s.chosen().answer), (row_of(&s, "Bash(jq *)"), strings(&["Bash(curl *)", "Bash(jq *)"])));
-        assert_eq!(screen(&mut s).matches("jq").count(), 2, "its row, and what saving writes: {}", screen(&mut s));
+        let jqs = 2 + usize::from(cfg!(feature = "try-push"));
+        assert_eq!(screen(&mut s).matches("jq").count(), jqs, "its row, and what saving writes: {}", screen(&mut s));
         // Esc goes back, nothing added.
         press(&mut s, KeyCode::Char('a'));
         typed(&mut s, "WebFetch");
@@ -2418,7 +2709,13 @@ mod tests {
         // Saved as it is: the setup done all the same.
         let mut s = open();
         let Step::Save(c) = press(&mut s, KeyCode::Char('s')) else { panic!() };
-        assert_eq!(c, Chosen { change: vec![], answer: strings(&["Bash(curl *)", "Bash(jq *)"]), every: None });
+        let chosen = Chosen {
+            answer: strings(&["Bash(curl *)", "Bash(jq *)"]),
+            #[cfg(feature = "try-push")]
+            try_push: strings(&["Bash(curl *)", "Bash(jq *)"]),
+            ..Chosen::default()
+        };
+        assert_eq!(c, chosen);
         assert_eq!(c.settings().last(), Some(&("agent.setup", vec![VERSION.to_string()])));
         // Changed: a menu, on saving it; ↑↓ past the line between its items.
         let mut s = open();
@@ -2461,19 +2758,27 @@ mod tests {
     #[test]
     fn a_long_list_keeps_the_columns_heading_on_its_first_line() {
         let tools: Vec<String> = (1..=30).map(|k| format!("mcp__moz__tool_{k}")).collect();
-        let start = Start { answer: strings(&["mcp__moz__*"]), denied: strings(&["Bash(rm:*)"]), done: Some(VERSION), ..fresh() };
+        let start = Start {
+            answer: strings(&["mcp__moz__*"]),
+            #[cfg(feature = "try-push")]
+            try_push: strings(&["mcp__moz__*"]),
+            denied: strings(&["Bash(rm:*)"]),
+            done: Some(VERSION),
+            ..fresh()
+        };
         let mut s = Setup::new(&tools, &[], &start, "settings.toml", "here");
         let shown = screen_of(&mut s, 20);
-        assert!(shown.contains(" Ticked as the settings say now. Saving writes both lists again."), "{shown}");
-        assert!(shown.contains("\n    [x]      [ ]     all of the MCP server moz's tools, those to come too (mcp__moz__*)\n"), "{shown}");
+        assert!(shown.contains(&format!(" {SAVED_SAID}")), "{shown}");
+        let moz = two("    [x]      [ ]     all of the MCP server moz's tools, those to come too (mcp__moz__*)");
+        assert!(shown.contains(&format!("\n{moz}\n")), "{shown}");
         // Scrolled down: the heading of the columns on the first line of the
         // list, the row picked shown, and the mouse on the rows as drawn.
         press(&mut s, KeyCode::End);
         press(&mut s, KeyCode::Up);
         let shown = screen_of(&mut s, 20);
         let lines: Vec<&str> = shown.lines().collect();
-        assert!(lines[2].starts_with(" read only  change   "), "{shown}");
-        assert_eq!(lines[17], "    [x]      [ ]       tool_30", "{shown}");
+        assert!(lines[2].starts_with(" read only  change  "), "{shown}");
+        assert_eq!(lines[17], two("    [x]      [ ]       tool_30"), "{shown}");
         assert_eq!(s.at(5, 17), Some((s.sel, Some(Kind::Answer))));
         assert_eq!(s.at(5, 2), None, "the heading");
         assert_eq!(s.at(5, 3).map(|(k, _)| s.short(k)), Some("tool_16".to_string()), "{shown}");
@@ -2514,10 +2819,11 @@ mod tests {
             " Refused to every ask, whatever the lists say",
             "   Bash(rm:*): denied in .claude/settings.local.json, refused to every ask",
             " Every ask, builds and tests too: agent.tools",
-            "   mcp__moz__get_bug: ticked in both columns below; taken out of one, a tool is kept in the other's list alone",
+            &format!("   mcp__moz__get_bug: {EVERY_SAID}"),
             " read only  change   read only is for answer-only asks; change is for asks that change the stack",
             "  always    always   Read, Grep, Glob, LS, and git show, log and diff",
         ]
+        .map(two)
         .iter()
         .enumerate()
         {
@@ -2531,8 +2837,10 @@ mod tests {
             "  make check is not a tool's name: a command is let run as Bash(make check).",
             "  Bash(make check:*): added, as Bash(make check *).",
             "  Bash(jq:*): listed already, as Bash(jq *).",
-        ] {
-            assert!(said.contains(&line.to_string()), "{line:?} in {said:#?}");
+        ]
+        .map(two)
+        {
+            assert!(said.contains(&line), "{line:?} in {said:#?}");
         }
         assert!(!said.iter().any(|l| l.contains("rm *")), "{said:#?}");
         assert_eq!(asked[0], "Keep them as they are? [Y/n: one by one]");
@@ -2552,6 +2860,9 @@ mod tests {
         }
         assert_eq!(c.change, ["Bash(lint *)", "mcp__moz__get_revision", "Bash(make check *)"]);
         assert_eq!(c.answer, ["Bash(curl *)", "Bash(jq *)", "Skill", "Bash(lint *)"]);
+        // Read only, line by line, is for try pushes too.
+        #[cfg(feature = "try-push")]
+        assert_eq!(c.try_push, c.answer);
         assert_eq!(c.every, None, "moz's get_bug is let both, as it was");
         // Kept as they are, Enter: nothing asked of the rows.
         let mut s = Setup::new(&tools, &strings(&["moz"]), &start, "local.toml", "here");

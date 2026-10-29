@@ -490,11 +490,19 @@ fn where_said(line: &str, file: &str, preview: &str) -> String {
 pub enum Way {
     /// Answer, and change the code within the comment's scope.
     Change,
-    /// Answer only: read-only.
+    /// Answer only: read-only. Built without the `try-push` feature, an ask
+    /// that a stacked built with it made a try push's is read as one of
+    /// these, which changes nothing either: the database reads all the same.
+    #[cfg_attr(not(feature = "try-push"), serde(alias = "try"))]
     Answer,
     /// Build and test, in the stack's build worktree; changes nothing in
     /// the stack.
     Test,
+    /// The CI tasks the comment asks for, selected for a try push: it
+    /// changes nothing, and the tasks wait for your review, to be pushed
+    /// once you accept them.
+    #[cfg(feature = "try-push")]
+    Try,
 }
 
 impl Way {
@@ -503,6 +511,8 @@ impl Way {
             Way::Change => "change",
             Way::Answer => "answer",
             Way::Test => "test",
+            #[cfg(feature = "try-push")]
+            Way::Try => "try",
         }
     }
 
@@ -512,6 +522,8 @@ impl Way {
             Way::Change => "may change the code",
             Way::Answer => "answer only",
             Way::Test => "build and test",
+            #[cfg(feature = "try-push")]
+            Way::Try => "try push",
         }
     }
 }

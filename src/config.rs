@@ -211,10 +211,15 @@ pub struct Agent {
     /// Tools answer-only asks may use, besides what stacked gives them:
     /// unless set, curl and jq, to read the web.
     pub answer_tools: Vec<String>,
+    /// Tools the asks that select a try push's tasks may use, besides what
+    /// stacked gives them, which is what it gives answers: unless set, curl
+    /// and jq, to read the web, as answers.
+    #[cfg(feature = "try-push")]
+    pub try_tools: Vec<String>,
     /// The setup of what each kind of ask may use, done (`stacked setup
     /// agent`): the version of it that was. No ask goes before it is done,
-    /// nor once stacked's own version of it (`setup::VERSION`) is a later
-    /// one.
+    /// nor an ask of a kind its version had no column for
+    /// (`setup::Kind::since`).
     pub setup: Option<usize>,
     /// Where a change works.
     pub worktree: Workspace,
@@ -243,6 +248,8 @@ impl Default for Agent {
             tools: Vec::new(),
             change_tools: Vec::new(),
             answer_tools: ANSWER_TOOLS.map(String::from).to_vec(),
+            #[cfg(feature = "try-push")]
+            try_tools: ANSWER_TOOLS.map(String::from).to_vec(),
             setup: None,
             worktree: Workspace::OnDemand,
             answer_only_worktree: Workspace::Pwd,
@@ -417,6 +424,10 @@ struct WrittenAgent {
     tools: Option<Vec<String>>,
     change_tools: Option<Vec<String>>,
     answer_tools: Option<Vec<String>>,
+    /// Read built without the `try-push` feature too, to be passed over
+    /// there: a file a stacked built with it wrote reads in any.
+    #[cfg_attr(not(feature = "try-push"), allow(dead_code))]
+    try_tools: Option<Vec<String>>,
     setup: Option<usize>,
     worktree: Option<String>,
     answer_only_worktree: Option<String>,
@@ -519,6 +530,10 @@ impl Config {
         }
         if let Some(tools) = a.answer_tools {
             c.agent.answer_tools = tools;
+        }
+        #[cfg(feature = "try-push")]
+        if let Some(tools) = a.try_tools {
+            c.agent.try_tools = tools;
         }
         if let Some(n) = a.setup {
             c.agent.setup = Some(n);
@@ -771,6 +786,15 @@ impl Config {
              # stacked gives them: unless this is set, curl and jq, to read the web.\n",
         );
         out.push_str(&format!("answer_tools = {}\n", list(&self.agent.answer_tools)));
+        #[cfg(feature = "try-push")]
+        {
+            out.push_str(
+                "# Tools the asks that select a try push's tasks may use, besides what reads the code\n\
+                 # and the stack, which stacked gives them as it gives answers: unless this is set,\n\
+                 # curl and jq, to read the web.\n",
+            );
+            out.push_str(&format!("try_tools = {}\n", list(&self.agent.try_tools)));
+        }
         out.push_str(
             "# The setup of these lists done, as the version of it that was: `stacked setup agent`\n\
              # writes it once you save what it shows. Until it is written, no ask goes: the editor\n\
@@ -945,7 +969,7 @@ enum Kind {
 
 /// Every setting there is, as the file names it, and what it holds; the
 /// keys', `keys.NAME`, are lists.
-const SETTINGS: [(&str, Kind); 29] = [
+const SETTINGS: &[(&str, Kind)] = &[
     ("file", Kind::Text),
     ("editor", Kind::Text),
     ("agent.command", Kind::Text),
@@ -954,6 +978,8 @@ const SETTINGS: [(&str, Kind); 29] = [
     ("agent.tools", Kind::List),
     ("agent.change_tools", Kind::List),
     ("agent.answer_tools", Kind::List),
+    #[cfg(feature = "try-push")]
+    ("agent.try_tools", Kind::List),
     ("agent.setup", Kind::Count),
     ("agent.worktree", Kind::Text),
     ("agent.answer_only_worktree", Kind::Text),
@@ -1042,6 +1068,8 @@ pub fn value_of(c: &Config, key: &str) -> Result<Vec<String>, String> {
         "agent.tools" => c.agent.tools.clone(),
         "agent.change_tools" => c.agent.change_tools.clone(),
         "agent.answer_tools" => c.agent.answer_tools.clone(),
+        #[cfg(feature = "try-push")]
+        "agent.try_tools" => c.agent.try_tools.clone(),
         "agent.setup" => c.agent.setup.iter().map(|n| n.to_string()).collect(),
         "agent.worktree" => vec![c.agent.worktree.name().into()],
         "agent.answer_only_worktree" => vec![c.agent.answer_only_worktree.name().into()],
@@ -1883,15 +1911,29 @@ mod tests {
         for line in ["\nchange_tools = []\n", "\nanswer_tools = [\"Bash(curl *)\", \"Bash(jq *)\"]\n", "\n# setup = ...   (not done)\n"] {
             assert!(d.render().contains(line), "{line:?} in {}", d.render());
         }
-        // Saved: both lists, and the setup done, the rest as it was.
+        // Saved: each list, and the setup done, the rest as it was.
         std::fs::write(&path, "# mine\n[agent]\ntools = [\"mcp__moz__*\"]\n").unwrap();
-        let saved = crate::setup::Chosen { change: vec![], answer: vals(&["Bash(curl *)"]), every: None };
+        let saved = crate::setup::Chosen {
+            answer: vals(&["Bash(curl *)"]),
+            #[cfg(feature = "try-push")]
+            try_push: vals(&["Bash(jq *)"]),
+            ..Default::default()
+        };
         set_all(&path, &saved.settings()).unwrap();
-        assert_eq!(read(), "# mine\n[agent]\ntools = [\"mcp__moz__*\"]\nchange_tools = []\nanswer_tools = [\"Bash(curl *)\"]\nsetup = 1\n");
+        let (tried, version) = if cfg!(feature = "try-push") { ("try_tools = [\"Bash(jq *)\"]\n", 2) } else { ("", 1) };
+        assert_eq!(
+            read(),
+            format!("# mine\n[agent]\ntools = [\"mcp__moz__*\"]\nchange_tools = []\nanswer_tools = [\"Bash(curl *)\"]\n{tried}setup = {version}\n")
+        );
         let (c, wrong) = Config::load(&path);
         assert!(wrong.is_empty(), "{wrong:?}");
-        assert_eq!((c.agent.change_tools.clone(), c.agent.answer_tools.clone(), c.agent.setup), (vec![], vals(&["Bash(curl *)"]), Some(1)));
-        assert_eq!(value_of(&c, "agent.setup"), Ok(vals(&["1"])));
+        assert_eq!((c.agent.change_tools.clone(), c.agent.answer_tools.clone(), c.agent.setup), (vec![], vals(&["Bash(curl *)"]), Some(version)));
+        #[cfg(feature = "try-push")]
+        assert_eq!(value_of(&c, "agent.try_tools"), Ok(vals(&["Bash(jq *)"])));
+        assert_eq!(value_of(&c, "agent.setup"), Ok(vals(&[&version.to_string()])));
+        // A file a stacked built with the try push wrote reads in any.
+        let (_, wrong) = Config::parse("[agent]\ntry_tools = [\"Bash(curl *)\"]\n").unwrap();
+        assert!(wrong.is_empty(), "{wrong:?}");
         // One of them wrong: none written.
         let before = read();
         let e = set_all(&path, &[("agent.change_tools", vals(&["WebFetch"])), ("agent.setup", vals(&["soon"]))]).unwrap_err();

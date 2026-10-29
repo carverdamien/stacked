@@ -388,7 +388,7 @@ enum Cmd {
         /// The stack's batch sent: its changes to one agent, in one ask (to
         /// the whole stack when they are on more than one patch); its
         /// answers to one agent too, unless --fan-out; each build and test
-        /// on its own.
+        /// on its own, and each try push the editor batched.
         #[arg(long, conflicts_with_all = ["ids", "all", "answer_only", "build_and_test", "whole_stack"])]
         batch: bool,
         /// With --batch, each answer to an agent of its own, all at once.
@@ -580,28 +580,30 @@ enum MozPhabWhat {
 #[derive(Subcommand)]
 enum SetupWhat {
     /// What each kind of ask may use besides what stacked gives it, a list
-    /// each: answer-only asks (agent.answer_tools), and asks that change the
-    /// stack (agent.change_tools). Both are shown as one list of tools, each
-    /// with a box for each kind: read only, and change. The agent is started
-    /// (and stopped at once) in the stack's repository, else here, where it
-    /// has your MCP servers, and says what tools it has. The boxes are
-    /// ticked as the settings say, else as stacked has it: nothing for
-    /// changes; for answers, curl and jq, and what the checkout's own claude
-    /// settings allow. What the checkout's skills let run, and the programs
-    /// its instructions to the agent name, are listed too, unticked. Rules
-    /// that mean the same, as Bash(cmd:*) and Bash(cmd *), are one row,
-    /// which says where each comes from; a command is shown and saved as
-    /// Bash(cmd *), which reads better, an older form in stacked's own
-    /// settings rewritten so. What the checkout's claude settings of
-    /// yours deny is said, refused to every ask. You check them, add to
-    /// them, and save them: saving is the setup done (agent.setup), and
-    /// until it is, no ask goes. They are written in that checkout's own
-    /// settings, .stacked/local.toml at its top, which override the others
-    /// there.
+    /// each: answer-only asks (agent.answer_tools), asks that change the
+    /// stack (agent.change_tools), and, built with the try-push feature,
+    /// asks that select a try push's tasks (agent.try_tools). They are
+    /// shown as one list of tools, each with a box for each kind: read
+    /// only, change, try push. The agent is started (and stopped at once)
+    /// in the stack's repository, else here, where it has your MCP servers,
+    /// and says what tools it has. The boxes are ticked as the settings
+    /// say, else as stacked has it: nothing for changes; for answers, curl
+    /// and jq, and what the checkout's own claude settings allow; for try
+    /// pushes, as for answers. What the checkout's skills let run, and the
+    /// programs its instructions to the agent name, are listed too,
+    /// unticked. Rules that mean the same, as Bash(cmd:*) and Bash(cmd *),
+    /// are one row, which says where each comes from; a command is shown
+    /// and saved as Bash(cmd *), which reads better, an older form in
+    /// stacked's own settings rewritten so. What the checkout's claude
+    /// settings of yours deny is said, refused to every ask. You check
+    /// them, add to them, and save them: saving is the setup done
+    /// (agent.setup), and until it is, no ask goes. They are written in
+    /// that checkout's own settings, .stacked/local.toml at its top, which
+    /// override the others there.
     Agent {
         name: Option<String>,
-        /// On a screen of its own, two boxes for each tool, rather than
-        /// asked line by line.
+        /// On a screen of its own, a box for each kind of ask and each
+        /// tool, rather than asked line by line.
         #[arg(long)]
         tui: bool,
         /// Written in the settings' file (~/.stacked/config.toml, or
@@ -1414,7 +1416,16 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
                 return Ok(());
             }
             if batch {
-                for way in [Way::Change, Way::Answer, Way::Test] {
+                // A try push batched in the editor too, built with the
+                // try-push feature: each on its own.
+                let ways = [
+                    Way::Change,
+                    Way::Answer,
+                    Way::Test,
+                    #[cfg(feature = "try-push")]
+                    Way::Try,
+                ];
+                for way in ways {
                     let sent = ask::batched(&db, &name, way);
                     if ask::release_batch(path, &name, way, fan_out, effort)? == 0 {
                         continue;
@@ -1554,6 +1565,11 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
                             let n = &h.opened[k];
                             let first = stacked::thread::thread_turns(&n.text).first().map(|t| t.body.lines().next().unwrap_or("").to_string());
                             format!("opened\t{}\t{}", n.where_said(), first.unwrap_or_default())
+                        }
+                        #[cfg(feature = "try-push")]
+                        stacked::held::Part::Task(k) => {
+                            let t = &h.tasks[k];
+                            format!("task\t{}\t{}", t.label, stacked::refs::split(&t.why).0.lines().next().unwrap_or(""))
                         }
                     };
                     println!("  {what}{mark}");
@@ -1735,16 +1751,10 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
             }
             // The lists now, and whether a file sets each: as they are used
             // there; or the settings' file's own.
-            let lists = [stacked::setup::Kind::Change.key(), stacked::setup::Kind::Answer.key()];
+            let kinds = stacked::setup::Kind::ALL;
             let (agent, set) = match global {
-                true => {
-                    let set = |key: &str| stacked::config::file_sets(&to, key);
-                    (stacked::config::Config::load(&to).0.agent, (set(lists[0]), set(lists[1])))
-                }
-                false => {
-                    let set = |key: &str| stacked::config::set_in(&dir, key).is_some();
-                    (cfg.agent.clone(), (set(lists[0]), set(lists[1])))
-                }
+                true => (stacked::config::Config::load(&to).0.agent, kinds.map(|k| stacked::config::file_sets(&to, k.key()))),
+                false => (cfg.agent.clone(), kinds.map(|k| stacked::config::set_in(&dir, k.key()).is_some())),
             };
             let top = git::toplevel(&dir).ok().map(PathBuf::from);
             let path_var = std::env::var_os("PATH").unwrap_or_default();

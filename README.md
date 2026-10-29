@@ -22,11 +22,11 @@ or, in a clone of this repository, `cargo install --path .`; or run it in
 place with `target/release/stacked` after `cargo build --release`. It needs
 `git`, and an agent for asks (`claude`, unless the settings name another).
 
-The four features below are on by default, so that a build has them all.
+The five features below are on by default, so that a build has them all.
 `--no-default-features` builds stacked with none of them, and `--features`
 then names those to keep: `cargo install --path . --no-default-features
 --features demo,moz-phab`, for instance, builds stacked with the tour and
-Phabricator, but without the editor in a browser or StackED.
+Phabricator, but without the editor in a browser, StackED or the try push.
 
 The `web` feature adds the editor in a browser (`stacked web`, below). Its
 browser half is compiled to wasm, with Rust's wasm32-unknown-unknown
@@ -44,6 +44,14 @@ which `curl` calls. With it, the reading mode
 takes the trailer moz-phab writes in a message as an empty line, which
 needs no reading (Reading). Built without it, stacked has none of it, but
 reads a database that holds reviews pulled.
+
+The `try-push` feature adds the try push of Firefox's CI (Try push,
+below): a comment asked as a try push has the agent select the CI tasks it
+asks for, each with why, and those tasks wait for your review, to accept,
+reject or answer. Built without it, stacked has none of it, but reads a
+database and a settings' file that a build with it wrote: an ask of a try
+push is read as one to answer only, and the try push's list of tools is
+passed over.
 
 The `app` feature adds StackED, the editor in a window of its own
 (`stacked app`, below). Its window is drawn by eframe (egui), on OpenGL,
@@ -111,7 +119,7 @@ stacked config editor hx           # one written in the settings file; KEY alone
 stacked config --unset editor      # ... taken out of it
 stacked config --local editor vim  # ... in this checkout's own settings, over the file's here
 stacked setup agent bug123         # what each kind of ask may use, one list of tools, checked line by line, for its checkout
-stacked setup agent bug123 --tui   # ... on a screen, a read-only box and a change box for each, as the editor shows it before the first ask
+stacked setup agent bug123 --tui   # ... on a screen, a box for each kind of ask on each tool, as the editor shows it before the first ask
 ```
 
 `-f FILE` points any command at a database. A first argument that is not a
@@ -887,9 +895,10 @@ Asking the agent, below). The menu opens under the comment (above it when
 there is no room under), and the comment stays where it was written, to
 read again before it is saved. How the agent is asked is the choice of `Ask
 agent`, `[x] change  [ ] the whole stack  [ ] answer only  [ ] build and
-test` (the whole stack for a patch's comment, build and test for the
-stack's or a patch's as a whole), as it is of a comment's own `Ask agent`:
-one pick, kept for the stack. Its line ends with the effort the agent is
+test  [ ] try push` (the whole stack for a patch's comment, build and test
+for the stack's or a patch's as a whole, try push built with the `try-push`
+feature), as it is of a comment's own `Ask agent`: one pick, kept for the
+stack. Its line ends with the effort the agent is
 asked at, `Effort [high]`, which Tab goes to (Asking the agent, below). Esc
 asks even when nothing changed, so that what you wrote earlier can be sent
 as it is: as nothing would be saved or thrown away, the menu is then `Ask
@@ -1215,6 +1224,14 @@ comment editor's `Ask agent`:
   (CLAUDE.md), never the user's worktree; it changes nothing in the stack.
   What it found comes back in the reply and on each patch's title, saying which
   stack it tested.
+- `try push`, built with the `try-push` feature, on any comment but one on
+  the history: it selects the CI tasks the comment asks for, for a try push
+  of the patches up to the comment's (all of them, for the stack's), as few
+  or as many as the comment says, each by its exact label and with why it
+  is relevant. It reads as an answer reads, where an answer works, and is
+  given what an answer is given and its own list (`agent.try_tools`); it
+  pushes nothing and changes nothing. What it selects waits for your
+  review (Try push, below).
 
 How hard the agent works on an ask is its effort, as claude's `--effort`
 takes it: `low`, `medium`, `high`, `xhigh` or `max`. Every item that asks
@@ -1261,14 +1278,16 @@ What each kind of ask may use is stacked's to give and yours to add to.
 stacked always gives each what it needs: a change, git's history commands,
 the commands that read, and its own `stacked fits` and `stacked export`,
 none of which reaches the network, so that a change cannot touch a remote
-(below); an answer, `Read`, `Grep`, `Glob`, `LS`, `git show`, `log` and
-`diff`, and stacked's commands that read the stack; a build and test, any
-command. What else each may use is a list of the settings' (Settings,
-below): `agent.change_tools` for the asks that change the stack, nothing
-unless set; `agent.answer_tools` for answer-only asks, `curl` and `jq`
-unless set, as answers could always run them before there were lists; and
+(below); an answer, and a try push's selection, `Read`, `Grep`, `Glob`,
+`LS`, `git show`, `log` and `diff`, and stacked's commands that read the
+stack; a build and test, any command. What else each may use is a list of
+the settings' (Settings, below): `agent.change_tools` for the asks that
+change the stack, nothing unless set; `agent.answer_tools` for answer-only
+asks, `curl` and `jq` unless set, as answers could always run them before
+there were lists; with the `try-push` feature, `agent.try_tools` for the
+asks that select a try push's tasks, `curl` and `jq` unless set; and
 `agent.tools` for every ask, builds and tests too. `stacked setup agent`
-sets the two lists up with you, as one list of tools with a box for each
+sets those lists up with you, as one list of tools with a box for each
 kind of ask. Every ask is refused, too, what the stack's
 checkout's claude settings of yours deny (`permissions.deny` of
 `.claude/settings.local.json`), wherever it works: claude refuses it in the
@@ -1289,7 +1308,12 @@ command line, `stacked send` (but `--later`, which only batches) and
 `stacked review --send-back` refuse, saying to run `stacked setup agent
 NAME` first. Once the setup is saved, it is not asked again, unless a later
 stacked's setup is a new version of it (`agent.setup` says which was
-saved). The tour's stand-in for the agent needs none.
+saved) with a column for a kind of ask the one saved had none for: built
+with the `try-push` feature, the setup is version 2, whose column `try
+push` version 1 had not, so that a try push is asked only once a setup
+showing that column is saved; the other kinds of ask go on as before,
+their columns checked already. The tour's stand-in for the agent needs
+none.
 
 Whatever it writes, a reply or a comment it opens, the agent may attach
 references to it: lines of a file, a union of ranges (`120-140,200-210`),
@@ -1339,12 +1363,13 @@ it is then. The banner sends the batch (below), as you pick: its edits to a
 single agent, in one ask, of the whole stack when they are on more than one
 patch or one was batched so; its answers to a single agent too, in one ask
 with the whole stack in view, or fanned out, an agent each, all at once;
-each build and test on its own. Each of these items ends with the effort it
-sends at, the highest its comments were batched at unless another is
-picked. On the command line, `stacked send NAME ID
---later` batches (how, as `send` says it: `--answer-only` and the rest), and
-`stacked send NAME --batch` sends the batch, the answers an agent each with
-`--fan-out`.
+each build and test on its own, and each try push on its own too (Try push,
+below). Each of these items ends with the effort it sends at, the highest
+its comments were batched at unless another is picked. On the command
+line, `stacked send NAME ID --later` batches (how, as `send` says it:
+`--answer-only` and the rest), and `stacked send NAME --batch` sends the
+batch, the answers an agent each with `--fan-out`, and the try pushes the
+editor batched, each on its own.
 
 Where an agent works costs time and space: a worktree is a checkout of
 every file. So the stack has worktrees of its own, `.stacked/NAME/agent`
@@ -1638,7 +1663,8 @@ first landed first; the reviews pulled from Phabricator wait in it too
 (Phabricator, below). One landed ask may hold three kinds of parts: its
 change of the stack, if it changed it; its replies to the comments it was
 asked about; and the comments it opened (an answer's, or a build and
-test's findings on each patch's title). An ask that brought none of them
+test's findings on each patch's title). A try push's ask holds a fourth,
+the tasks it selected (Try push, below). An ask that brought none of them
 back waits for your review all the same while a comment it was asked
 about is still open: its review has no part, only those comments, to
 close or keep. If every comment it was asked about was closed or deleted
@@ -1850,6 +1876,62 @@ was asked at unless `--effort LEVEL` says otherwise (`--accept-all`
 refuses while you wrote in it). `stacked send NAME ID --wait`
 says what waits for your review once it lands; `--wait --accept` accepts
 all of it as soon as it lands, for a script.
+
+## Try push
+
+What follows is built by default, with the `try-push` feature:
+`--no-default-features --features app,demo,moz-phab,web` builds stacked
+without it (Install). A comment, on the stack or on a patch, asks which of
+Firefox's CI tasks to run on a try push: `Run the tests a.txt touches, on
+Linux and Windows`, or `as many as you see fit`. Asked as a try push
+(`Ask agent`, `[x] try push`; or later, in the batch, whose `Send 2 try
+pushes, each on its own` sends each in an ask of its own), the agent
+selects the tasks the comment asks for, as few or as many as it says, each
+by its exact label in the task graph (`test-linux2404-64/opt-xpcshell-1`;
+a chunked test is a task for each chunk, its label ending with the chunk's
+number, and no label is a pattern), with why it is relevant to what the
+patches change and to what the comment asks; and, when the comment asks
+for repeated runs (an intermittent failure), how many times each runs,
+from 2 to 20, as mach's `--rebuild` takes it. It reads as an answer does,
+where an answer works, with the tools of its own list (`agent.try_tools`,
+Settings, below), and pushes nothing, nor runs `./mach`. When it may run
+curl, it is told where the labels of the tasks of mozilla-central's latest
+push are listed, and autoland's. It gives the tasks with its replies, as
+structured output, else in the JSON it ends with, whatever prose is around
+it; a label given twice is taken once, and one with white space in it,
+which could not select its task alone, is left out.
+
+What it selects lands for your review, as any of its work does: the banner
+says so (`the next: 6 tasks to push to try, 1 reply`), in its section of
+read-only work. The review lists the tasks on the left, under `tasks to
+push to try` (`· each runs 3 times`, when they run more than once), each
+marked as a part is: `·` to review, `✓` accepted, `✗` rejected. Enter
+accepts the task the cursor is on, or puts it back to review; Space has
+`Mark as accepted` and `Mark as rejected`, `Mark all tasks accepted` and
+`Mark all tasks rejected`; Delete rejects it. On the right is why the
+agent selected it, as the agent's comment under the task's label. Space's
+`Reply to it` answers that comment: your answer shows under it, and on the
+left under `what you wrote, to send back`, where Enter writes it again and
+Delete takes it back. With an answer of yours, the work is not accepted:
+Esc has `Send it back to the agent`, which puts the agent's reply in the
+thread of the comment that asked, then your answers, a turn of yours (`On
+the tasks the agent selected:`, then each task's label with what you
+said), and asks the comment again. That round is told the tasks it
+selected, each as you marked it, with why and what you answered, and
+selects them again; its tasks land for review in place of those sent back.
+
+Closing the review with tasks accepted is where they are pushed to try,
+with the patches up to the comment's (`patch 1 alone`, `patches 1 to 3`,
+or every patch of the stack, for a comment on the stack): the question
+before closing says which, and that `./mach try fuzzy --no-push` checks
+first that it selects them. Past the 1,000 tasks mach pushes without
+asking (push.py's threshold, each task counted as many times as it runs),
+it says so too: `These 1,240 tasks are more than the 1,000 mach pushes
+without asking: they would run at the lowest priority, as mach does when
+you say yes.` Closing with no task accepted pushes nothing, as a
+rejection does: the question says so. Pushing to try is not built yet:
+this stacked closes the review as any other, and the status line says that
+nothing was pushed.
 
 ## Reading
 
@@ -2146,22 +2228,29 @@ settings:
   change the stack: nothing unless set. `answer_tools`, for answer-only
   asks: `["Bash(curl *)", "Bash(jq *)"]` unless set, which answers could
   always run before there were lists; taken out, an answer is no longer
-  told it may read the web with curl. `tools`, for every ask, builds and
+  told it may read the web with curl. `try_tools` (built with the
+  `try-push` feature; read either way, so one file serves both builds),
+  for the asks that select a try push's tasks: `["Bash(curl *)", "Bash(jq
+  *)"]` unless set, as for answers. `tools`, for every ask, builds and
   tests too, as before there were lists: an answer may use them too, so give
-  only tools that read. `setup`, the setup of the two lists done, as the
+  only tools that read. `setup`, the setup of the lists done, as the
   version of it that was: until it is, no ask goes (Asking the agent,
   above).
 
-  `stacked setup agent [NAME]` sets the two lists up with you, and writes
+  `stacked setup agent [NAME]` sets the lists up with you, and writes
   `setup` once you save them. It starts the agent in the stack's repository
   (else where it is run), where it has your MCP servers, and stops it as
-  soon as it has said what tools it has. Both lists are shown as one list
-  of tools, a row each, with two boxes under the columns' headings:
-  `read only`, for answer-only asks (`answer_tools`), and `change`, for
-  the asks that change the stack (`change_tools`). The boxes are ticked as
-  the settings say, else as stacked has it: nothing for changes; for
-  answers, `curl` and `jq`, and what the checkout's own claude settings
-  allow, as you allow it yourself, but for what changes things. First comes
+  soon as it has said what tools it has. The lists are shown as one list
+  of tools, a row each, with a box for each list under the columns'
+  headings: `read only`, for answer-only asks (`answer_tools`); `change`,
+  for the asks that change the stack (`change_tools`); and, built with the
+  `try-push` feature, `try push`, for the asks that select a try push's
+  tasks (`try_tools`). The boxes are ticked as the settings say, else as
+  stacked has it: nothing for changes; for answers, `curl` and `jq`, and
+  what the checkout's own claude settings allow, as you allow it yourself,
+  but for what changes things; for try pushes, as the column for answers
+  starts, as both only read, for you to check before the first try push.
+  First comes
   what stacked always gives, which does not change: `always` in the column
   of each kind of ask that has it, greyed, with nothing to tick. Then the
   list holds what the agent says it has (each MCP server, its tools all at
@@ -2237,9 +2326,9 @@ settings:
   the checkout's claude settings of yours deny is said above the list,
   `denied in .claude/settings.local.json, refused to every ask`, each rule
   once however it is written, to read, not to tick: every ask is refused it
-  (Asking the agent, above). A tool of `tools` shows ticked in both
-  columns; taken out of one, it leaves `tools` and goes on in the other
-  list alone. A command or a tool of your own is added as a row, typed as
+  (Asking the agent, above). A tool of `tools` shows ticked in every
+  column; taken out of one, it leaves `tools` and goes on in the other
+  lists alone. A command or a tool of your own is added as a row, typed as
   claude writes a permission rule: a tool (`WebFetch`), a tool and what it
   may do between parentheses (`Bash(make check *)`,
   `WebFetch(domain:example.com)`), all of an MCP server's tools
@@ -2248,7 +2337,7 @@ settings:
   name: a command is let run as Bash(make check)`). The row comes last,
   said `added here`, neither box ticked, the cursor on it, for you to tick
   what should use it; a rule that a row lets use already, however it is
-  written, is that row, as it is. Saving writes both lists, `tools` if it
+  written, is that row, as it is. Saving writes each list, `tools` if it
   changed, and `setup`, in that checkout's own settings (below; with
   `--global`, in `~/.stacked/config.toml`, for the checkouts without their
   own), the rest of the file as it was; saved unchanged, the setup is done
@@ -2256,9 +2345,12 @@ settings:
 
   Asked line by line, the setup shows the list, a line a row as the screen
   draws it, to keep as it is (Enter) or to go through a row at a time. Each
-  row is one question for both kinds of ask, `Which asks may use Bash(jq
+  row is one question for every kind of ask, `Which asks may use Bash(jq
   *), stacked's default for answers? [R: read only, c: change, b: both, n:
-  neither]`, the capital letter being what Enter keeps; an MCP server's
+  neither]`, the capital letter being what Enter keeps; built with the
+  `try-push` feature, `read only` is for answers and try pushes both, as
+  both only read, and `both` for every kind (the screen's own column tells
+  try pushes apart); an MCP server's
   tools are asked all at once, or each in turn (`e`). Then it asks for a
   command or a tool to add, until a line is left empty, and asks the same
   question of each. With `--tui`, and in the editor before the first ask,
@@ -2703,6 +2795,9 @@ is typed: `import.rs`). A fix to one may belong in the other.
 - `review.rs`, `phab.rs`, `submit.rs`: Phabricator, built with the
   `moz-phab` feature (on by default): the reviews pulled, the stacks
   imported, a patch submitted as work in progress.
+- `try_push.rs`: the try push, built with the `try-push` feature (on by
+  default): what an ask of a try push is told and answers with, its tasks
+  read from its answer, and what a round asked again is told of them.
 - `import.rs`: what a stack made in the editor is imported from: a range of
   the checkout, its uncommitted changes on top if asked.
 - `mbox.rs`: reading `git format-patch` mail, writing mail for `git am`.
@@ -2763,8 +2858,9 @@ is typed: `import.rs`). A fix to one may belong in the other.
 ## Tests
 
 Run `cargo test` after any change. With every feature on by default,
-`cargo test` runs every test: the browser's, the tour's, Phabricator's and
-StackED's too (the web feature needs the wasm target, as in Install).
+`cargo test` runs every test: the browser's, the tour's, Phabricator's,
+StackED's and the try push's too (the web feature needs the wasm target,
+as in Install).
 `cargo test --no-default-features` runs the minimal set, the tests of
 stacked built with no feature, and needs no wasm target; `--features` then
 adds the tests of each feature named. No test runs claude: a script stands
@@ -2896,7 +2992,7 @@ yours, said once, never over a file there, and not by the shell's
 completion; a checkout's own over them, an ask on a stack having its
 checkout's wherever stacked runs, one git tracks not read; and what each
 kind of ask may use, set up with the agent, line by line, a row of the
-one list at a time for both kinds, from what it has, the checkout's claude
+one list at a time for every kind, from what it has, the checkout's claude
 settings and instructions, in the checkout's own or with `--global`, a
 command saved the newer way, though your claude settings or the
 checkout's own list write it the older, and your claude settings never
@@ -3219,7 +3315,33 @@ stand-in's fix, the board at its end, nothing made on disk; the answer
 to the tour's question taken at once with Enter, the tour going on then;
 and the views taught with 3, picked in the menu of 1 and making their
 room on a middle too narrow, the step waiting for the hunks again;
-`memory.rs` tests its diffs applied as git applies them. The
+`memory.rs` tests its diffs applied as git applies them. With the
+`try-push` feature, `tests/try_push.rs` drives the editor as
+`tests/tui.rs` does, a stand-in of its own for claude: a comment asked as
+a try push, `try push` among the comment's choices of how, its prompt
+asking for the tasks the comment asks for, as few or as many as it says,
+exact labels, why each, nothing pushed or changed; its tasks landing in
+the banner as read-only work, listed in the review, why each was selected
+shown as the agent's comment, marked by Enter and from the menu, answered
+there and sent back, the answer a turn of yours in the thread, the next
+round told what it selected before as you marked it, and its tasks in
+place of the others; closing with tasks accepted saying what it pushes,
+and that pushing is not built yet, with none accepted that nothing is
+pushed, and past mach's 1,000 tasks, each task counted as many times as it
+runs, that they would run at the lowest priority; the setup asked again
+before a try push alone when a setup without its column was saved, an
+answer going at once meanwhile, the column then written; and a try push
+batched, sent from the banner on its own, and with the batch that
+`stacked send NAME --batch` sends. `try_push.rs` tests its tasks
+read from the answer (each label once, the first reason kept, one with a
+space or none left out, a reason with references), how many times each
+runs, from 2 to 20, the prompt, and what a round asked again is told;
+`ask.rs`, that a try push's ask is given what an answer is and its own
+list, and is asked for its tasks and their runs; `setup.rs`, the column of
+try pushes, ticked at first as the read-only one, its own once ticked, in
+what saving writes with the setup's version 2, and line by line `read
+only` for both read-only kinds; `config.rs`, `try_tools` written and read
+back, and read built without the feature too. The
 stream's thinking is tested in `ask.rs`, with the prompt asking the agent
 to point at the stack before the web and its answer's schema taking a web
 link, the ask's effort given to claude after the settings' arguments, in
@@ -3282,7 +3404,7 @@ allow, what is no rule left out), and what its instructions name (a
 program on PATH, one not, a builtin and a tool stacked gives left out),
 nothing read out of the checkout; the row of claude's tool for skills,
 with what it lets an answer do; and the setup asked line by line, a
-question a row for both kinds; those in `search.rs`, which lines of a file a hunk shows
+question a row for every kind; those in `search.rs`, which lines of a file a hunk shows
 already; those in `rows.rs`, a web link's line under its comment cut to
 the pane, its start kept, each file whole keeping the rows of its hunks'
 lines, a file too long and one past what a patch shows whole shown as
@@ -3399,6 +3521,8 @@ a test's own process.
   are still read, only to be left out. Once no database holds them, that
   code goes, and with it the split of a thread's turns between those that
   stand and all of them.
+- The tasks a try push's review accepts are not pushed to try yet: closing
+  the review says that nothing was pushed (Try push, above).
 - How apply picks a branch, which belongs to publishing: the editor applies
   on no branch, `stacked apply --branch` on one.
 - A stack-wide review runs one agent; one per patch is not done.

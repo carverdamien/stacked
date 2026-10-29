@@ -308,6 +308,14 @@ impl App {
             let label = format!("Send {tests} build{} and test{}, each on its own", plural(tests), plural(tests));
             out.push(Item::new(label, Action::SendBatch(Way::Test, true)).when(w).with(effort(Way::Test)));
         }
+        #[cfg(feature = "try-push")]
+        {
+            let tries = count(Way::Try);
+            if tries > 0 {
+                let label = format!("Send {tries} try push{}, each on its own", if tries == 1 { "" } else { "es" });
+                out.push(Item::new(label, Action::SendBatch(Way::Try, true)).when(w).with(effort(Way::Try)));
+            }
+        }
         let asks = self.asks_list();
         if !out.is_empty() && !asks.is_empty() {
             out.push(Item::line());
@@ -344,10 +352,15 @@ impl App {
     fn batch_said(&self) -> String {
         let count = |way: Way| ask::batched(&self.db, &self.stack, way).len();
         let mut parts = Vec::new();
+        #[cfg(feature = "try-push")]
+        let tries = count(Way::Try);
+        #[cfg(not(feature = "try-push"))]
+        let tries = 0;
         for (n, one, many) in [
             (count(Way::Change), "edit", "edits"),
             (count(Way::Answer), "answer only", "answers only"),
             (count(Way::Test), "build and test", "builds and tests"),
+            (tries, "try push", "try pushes"),
         ] {
             if n > 0 {
                 parts.push(format!("{n} {}", if n == 1 { one } else { many }));

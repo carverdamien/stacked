@@ -57,6 +57,8 @@ pub mod thread;
 pub mod todo;
 pub mod tree;
 pub mod trim;
+#[cfg(feature = "try-push")]
+pub mod try_push;
 pub mod tui;
 pub mod view;
 #[cfg(feature = "web")]

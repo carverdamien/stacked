@@ -226,6 +226,27 @@ pub fn can_test(db: &Db, n: &Note) -> bool {
             && db.latest_version(&n.change).is_some_and(|p| title_key(p) == n.line))
 }
 
+/// Whether `n` may be asked as a try push: any comment of the stack's or
+/// of a patch's, on a line or not, but one on the stack's history, which is
+/// asked about to answer only. Its push is of the patches up to its own,
+/// or of all of them for the stack's.
+#[cfg(feature = "try-push")]
+pub fn can_try(n: &Note) -> bool {
+    n.about.is_none()
+}
+
+/// Whether `n` may be asked in `way`, of those the comment's own choices
+/// have: a build and test, on the stack or a patch as a whole; a try push,
+/// of what is not on the history.
+pub fn fits_way(db: &Db, n: &Note, way: Way) -> bool {
+    match way {
+        Way::Test => can_test(db, n),
+        #[cfg(feature = "try-push")]
+        Way::Try => can_try(n),
+        _ => true,
+    }
+}
+
 /// Is run `r` still going: started, and its process there, or about to be?
 pub fn busy(r: &Run) -> bool {
     r.state == RunState::Started && r.pid.is_none_or(alive)
@@ -344,12 +365,24 @@ pub fn with_agent(db: &Db) -> HashMap<(String, String), (Way, String)> {
     out
 }
 
+/// Whether what is asked in `way` only reads: an answer, or a try push's
+/// selection. Such asks run together, and alongside the changes when
+/// chained.
+pub fn reads(way: Way) -> bool {
+    match way {
+        Way::Answer => true,
+        #[cfg(feature = "try-push")]
+        Way::Try => true,
+        _ => false,
+    }
+}
+
 /// What a comment sent on stack `name` in `way` would wait on, if anything.
 pub fn waits_on(db: &Db, name: &str, way: Way) -> Option<String> {
     let going = asks_going(db, name);
     let chain = chains(&agent_of(db, name));
     // Chained, an answer runs alongside a change, on the stack as it is.
-    let change = going.iter().find(|(_, i)| i.way == Way::Change).filter(|_| !(chain && way == Way::Answer));
+    let change = going.iter().find(|(_, i)| i.way == Way::Change).filter(|_| !(chain && reads(way)));
     if let Some((_, i)) = change {
         let on = match &i.scope {
             Scope::Stack => "the stack".to_string(),
@@ -367,9 +400,7 @@ pub fn waits_on(db: &Db, name: &str, way: Way) -> Option<String> {
         return Some(format!("once you have reviewed {} of {}", whose_change(r), c.of));
     }
     match way {
-        Way::Change if !chain && going.iter().any(|(_, i)| i.way == Way::Answer) => {
-            Some("once the running answers land".into())
-        }
+        Way::Change if !chain && going.iter().any(|(_, i)| reads(i.way)) => Some("once the running answers land".into()),
         // One build and test at a time, of every stack.
         Way::Test => testing(db).map(|r| match r.stack == name {
             true => "once the running build and test lands".to_string(),
@@ -386,27 +417,32 @@ fn agent_of(db: &Db, name: &str) -> crate::config::Agent {
     crate::config::of(&dir).0.agent
 }
 
-/// Why stack `name` cannot be asked anything yet, if it cannot: what each
-/// kind of ask may use is not set up in the settings of its checkout
-/// (`agent.setup`, global or the checkout's own), or was set up by an
-/// earlier version of the setup than this stacked's. A stack kept in
-/// memory, the tour's, is answered by a stand-in, with nothing to set up.
-pub fn not_set_up(db: &Db, name: &str) -> Option<String> {
+/// Why stack `name` cannot be asked anything in `way` yet, if it cannot:
+/// what each kind of ask may use is not set up in the settings of its
+/// checkout (`agent.setup`, global or the checkout's own), or was set up by
+/// a version of the setup that had no column for `way`'s kind
+/// (`setup::Kind::since`). A stack kept in memory, the tour's, is answered
+/// by a stand-in, with nothing to set up.
+pub fn not_set_up(db: &Db, name: &str, way: Way) -> Option<String> {
     #[cfg(feature = "demo")]
     if db.stack(name).ok().and_then(|s| s.repo.as_deref()).is_some_and(|r| crate::memory::is_repo(Path::new(r))) {
         return None;
     }
     let run = format!("run `stacked setup agent {name}` first");
+    let kind = crate::setup::kind_of(way);
     match agent_of(db, name).setup.unwrap_or(0) {
-        n if n >= crate::setup::VERSION => None,
+        n if n >= kind.since() => None,
         0 => Some(format!("the tools each kind of ask may use are not set up yet: {run}, to check them and save them; nothing was sent")),
-        _ => Some(format!("the tools each kind of ask may use were set up by an earlier stacked: {run}, to check them again and save them; nothing was sent")),
+        _ => Some(format!(
+            "the tools {} may use are not set up yet, as the setup was saved by a stacked that had no column for them: {run}, to check them and save them; nothing was sent",
+            kind.named()
+        )),
     }
 }
 
 /// As `not_set_up`, an error.
-fn set_up(db: &Db, name: &str) -> Result<()> {
-    match not_set_up(db, name) {
+fn set_up(db: &Db, name: &str, way: Way) -> Result<()> {
+    match not_set_up(db, name, way) {
         Some(why) => err(why),
         None => Ok(()),
     }
@@ -513,12 +549,13 @@ pub fn guesses_after(db: &Db, id: &str) -> (usize, usize) {
     out
 }
 
-/// The answer-only asks of stack `name`, but run `but`, still running or
-/// waiting for your review: made on the stack as it was.
+/// The asks of stack `name` that only read (answers, and a try push's
+/// selection), but run `but`, still running or waiting for your review:
+/// made on the stack as it was.
 fn answers_in_flight(db: &Db, name: &str, but: &str) -> Vec<Run> {
     db.live_runs()
         .into_iter()
-        .filter(|r| r.stack == name && r.id != but && info(r).is_some_and(|i| i.way == Way::Answer && !i.dropped))
+        .filter(|r| r.stack == name && r.id != but && info(r).is_some_and(|i| reads(i.way) && !i.dropped))
         .filter(|r| r.state == RunState::Started || crate::held::waiting(db, r))
         .cloned()
         .collect()
@@ -733,10 +770,16 @@ pub fn queue(db_path: &Path, name: &str, notes: &[(String, String)], way: Way, w
     }
     check_ahead(db_path, name);
     Db::edit(db_path, |db| {
-        set_up(db, name)?;
+        set_up(db, name, way)?;
         applies(db, name)?;
         enqueue(db, notes, way, whole, Stage::Ready, None, Some(effort))
     })
+}
+
+/// The way the work run `id` holds was asked in, if it is an ask's: the
+/// way it goes back to the agent in.
+pub fn way_of(db: &Db, id: &str) -> Option<Way> {
+    light(db.run(id)?).map(|l| l.way)
 }
 
 /// Sends the work run `id` holds back to the agent, as what you wrote in
@@ -747,7 +790,7 @@ pub fn queue(db_path: &Path, name: &str, notes: &[(String, String)], way: Way, w
 pub fn send_back(db_path: &Path, name: &str, id: &str, marks: &std::collections::BTreeMap<String, bool>, effort: Option<Effort>) -> Result<String> {
     check_ahead(db_path, name);
     Db::edit(db_path, |db| {
-        set_up(db, name)?;
+        set_up(db, name, way_of(db, id).unwrap_or(Way::Change))?;
         applies(db, name)?;
         let round = crate::held::send_back(db, id, marks)?;
         enqueue(db, &round.notes, round.way, round.whole, Stage::Ready, Some(id), effort.or(round.effort))?;
@@ -790,6 +833,10 @@ fn enqueue(db: &mut Db, notes: &[(String, String)], way: Way, whole: bool, stage
     }
     if whole && way == Way::Test {
         return err("a build and test is not asked of the whole stack");
+    }
+    #[cfg(feature = "try-push")]
+    if whole && way == Way::Try {
+        return err("a try push is not asked of the whole stack: a comment on the stack pushes all of its patches");
     }
     let batch = format!("b{}", crate::db::unique());
     let busy = with_agent(db);
@@ -880,13 +927,25 @@ pub fn batched_effort(db: &Db, name: &str, way: Way) -> Option<Effort> {
         .max()
 }
 
+/// Whether what is asked in `way` goes from the batch each comment in an
+/// ask of its own, whatever is picked: a build and test, of its own place;
+/// a try push, of the patches up to its own place.
+pub fn each_on_its_own(way: Way) -> bool {
+    match way {
+        Way::Test => true,
+        #[cfg(feature = "try-push")]
+        Way::Try => true,
+        _ => false,
+    }
+}
+
 /// Sends stack `name`'s batch of what is asked in `way`: its comments turn
 /// ready together, as one ask, or with `fan` (as builds and tests always
-/// do) each as an ask of its own. Together, comments from more than one
-/// place (the stack, or a patch) go to the whole stack, as do those
-/// batched so. Each ask goes at `effort`; else at the effort its comments
-/// were batched at, the highest of them for an ask of several. `launch`
-/// starts them. How many were sent.
+/// do, and try pushes, each of its own place) each as an ask of its own.
+/// Together, comments from more than one place (the stack, or a patch) go
+/// to the whole stack, as do those batched so. Each ask goes at `effort`;
+/// else at the effort its comments were batched at, the highest of them for
+/// an ask of several. `launch` starts them. How many were sent.
 pub fn release_batch(db_path: &Path, name: &str, way: Way, fan: bool, effort: Option<Effort>) -> Result<usize> {
     check_ahead(db_path, name);
     Db::edit(db_path, |db| {
@@ -894,10 +953,10 @@ pub fn release_batch(db_path: &Path, name: &str, way: Way, fan: bool, effort: Op
         if all.is_empty() {
             return Ok(0);
         }
-        set_up(db, name)?;
+        set_up(db, name, way)?;
         applies(db, name)?;
         let own = |db: &Db, (c, i): &(String, String)| db.note(c, i).and_then(|n| n.queued.as_ref()?.effort);
-        if fan || way == Way::Test {
+        if fan || each_on_its_own(way) {
             for (at, whole) in &all {
                 let at_effort = effort.or(own(db, at));
                 enqueue(db, std::slice::from_ref(at), way, *whole, Stage::Ready, None, at_effort)?;
@@ -987,7 +1046,7 @@ fn claim(db: &mut Db) -> Result<Vec<String>> {
             let going = asks_going(db, &name);
             Going {
                 change: going.iter().any(|(_, i)| i.way == Way::Change),
-                answers: going.iter().filter(|(_, i)| i.way == Way::Answer).count(),
+                answers: going.iter().filter(|(_, i)| reads(i.way)).count(),
                 change_waits: false,
                 reviewing: crate::held::change_waiting(db, &name).is_some(),
                 chain: chains(&agent_of(db, &name)),
@@ -1009,8 +1068,17 @@ fn claim(db: &mut Db) -> Result<Vec<String>> {
                 }
             }
             // Chained, an answer runs alongside the changes, on the stack as
-            // it is: accepting a change asks it again.
+            // it is: accepting a change asks it again. So does a try push's
+            // selection, which reads only too.
             Way::Answer => {
+                let go = st.chain || (!st.change && !st.change_waits);
+                if go {
+                    st.answers += 1;
+                }
+                go
+            }
+            #[cfg(feature = "try-push")]
+            Way::Try => {
                 let go = st.chain || (!st.change && !st.change_waits);
                 if go {
                     st.answers += 1;
@@ -1244,13 +1312,16 @@ pub const GIVEN_SAID: [(&str, bool, bool); 5] = [
 /// What an ask in `way` may use, `cmd` being stacked on its database, as
 /// claude takes it (`--allowedTools`): what stacked gives that kind of ask,
 /// then what the settings `agent` add for that kind (`change_tools`,
-/// `answer_tools`), then what they add for every ask (`tools`). A build and
-/// test runs what the project needs: Bash at large, and every ask's.
+/// `answer_tools`, `try_tools`), then what they add for every ask (`tools`).
+/// A build and test runs what the project needs: Bash at large, and every
+/// ask's. A try push's selection is given what an answer is: it reads only.
 pub fn tools_for(way: Way, cmd: &str, agent: &crate::config::Agent) -> String {
     let (mut tools, own): (String, &[String]) = match way {
         Way::Change => (change_given(cmd), &agent.change_tools),
         Way::Answer => (answer_given(cmd), &agent.answer_tools),
         Way::Test => (format!("Bash,{}", allowed_tools()), &[]),
+        #[cfg(feature = "try-push")]
+        Way::Try => (answer_given(cmd), &agent.try_tools),
     };
     // Its answer given as structured output: with the tool claude gives it
     // with.
@@ -1410,6 +1481,11 @@ fn before(db: &Db, i: &Info, was: &str, name: &str, cmd: &str) -> String {
                         accepted; what was answered then is below. Answer again on the stack as it is \
                         now: keep what still holds, and say what the edit changes."
             .to_string(),
+        #[cfg(feature = "try-push")]
+        Way::Try => " This was asked before, on the stack as it was before an edit of it was \
+                     accepted; what was selected then is below. Select the tasks again on the stack \
+                     as it is now: keep what still holds, and say what the edit changes."
+            .to_string(),
         _ => format!(
             " This was asked before, going on from an edit that was then dropped; what was \
              made then is below, and `{cmd} export {name} --work {was}` prints the stack it \
@@ -1433,6 +1509,14 @@ fn brought(db: &Db, i: &Info, was: &str, name: &str, cmd: &str, replies: bool) -
     }
     for n in &h.opened {
         out += &format!("\n\nA comment opened then, on {}: {}", n.preview, crate::thread::thread_turns(&n.text).last().map_or("", |t| t.body.as_str()));
+    }
+    // A try push's: the tasks selected then, as the review marked them, and
+    // what the user answered to why each was.
+    #[cfg(feature = "try-push")]
+    {
+        let marks = db.review(was).map(|v| v.marks.clone()).unwrap_or_default();
+        let mark = |k: usize| marks.get(&crate::held::Part::Task(k).key()).copied();
+        out += &crate::try_push::chosen_said(&h.tasks, h.rebuild, &mark);
     }
     // A change: what it changed, from the stack it went on from.
     if let (Some(_), Some(old)) = (&h.stack, info(r))
@@ -1580,6 +1664,34 @@ fn prompt(db: &Db, i: &Info, s: &Stack, cmd: &str, run: &str, structured: bool, 
                  change a branch of the user's. Do not push."
             )
         }
+        // The CI tasks of a try push, selected as the comments ask: pushed
+        // once the user accepts them, by stacked.
+        #[cfg(feature = "try-push")]
+        (Way::Try, scope) => {
+            let what = match scope {
+                Scope::Stack => format!("the stack's patches, listed below bottom first, which apply to commit {}", i.base),
+                Scope::Patch(_) => format!(
+                    "patch {k} of {n} with the patches below it, listed below with the others, bottom first, \
+                     which apply to commit {}: the patches above it are not pushed",
+                    i.base,
+                    k = k.map_or(0, |k| k + 1)
+                ),
+            };
+            let here = match i.worktree.is_some() {
+                true => format!(
+                    "The current directory is a git worktree made for you: the commits {}..HEAD are \
+                     what is pushed, each commit a patch; `git show` to read them; `{export}` prints \
+                     the whole stack.",
+                    i.base
+                ),
+                false => format!(
+                    "{HERE} `{export}` prints the stack's patches as mail, `{show} N` patch N, and \
+                     `{show} N --path FILE` a file as patch N leaves it, whether the stack changes it \
+                     or not."
+                ),
+            };
+            crate::try_push::prompt(&what, &here, web, curl)
+        }
     };
     // Another round: what it brought back was sent back. What it changed
     // then, and the comments it opened, shown, as to a round asked again;
@@ -1594,6 +1706,10 @@ fn prompt(db: &Db, i: &Info, s: &Stack, cmd: &str, run: &str, structured: bool, 
                  stack you made.",
                 s.name
             ),
+            #[cfg(feature = "try-push")]
+            Way::Try => " This is another round: the user reviewed the tasks you selected, and asks again in \
+                         the comments below: select them again as they ask, keeping those that still hold."
+                .to_string(),
             _ => " This is another round: the user read what you answered, and asks again in the comments below."
                 .to_string(),
         });
@@ -1640,6 +1756,8 @@ fn prompt(db: &Db, i: &Info, s: &Stack, cmd: &str, run: &str, structured: bool, 
             "\n{end}: {{\"replies\": {{label: what you found, with the commands run}}, \
              \"patches\": {{its number: what building and testing it found}}}}."
         ),
+        #[cfg(feature = "try-push")]
+        Way::Try => crate::try_push::answer_said(end),
     });
     p.push_str(REFS);
     p.push_str(NOT_ALLOWED);
@@ -1717,6 +1835,14 @@ fn answer_schema(i: &Info, s: &Stack) -> Value {
         }
         (Way::Test, _) => {
             props.insert("patches".into(), keyed((1..=s.patches.len()).map(|n| n.to_string()).collect()));
+        }
+        // A try push's tasks, each its label and why, and how many times
+        // each runs.
+        #[cfg(feature = "try-push")]
+        (Way::Try, _) => {
+            for (key, schema) in crate::try_push::schema(&written) {
+                props.insert(key.into(), schema);
+            }
         }
     }
     json!({"type": "object", "properties": props, "required": ["replies"], "additionalProperties": false})
@@ -2195,6 +2321,9 @@ fn start(db_path: &Path, id: &str) -> Result<()> {
     let mbox = format_mbox(&patches);
     match (i.way, agent.worktree, agent.answer_only_worktree) {
         (Way::Answer, _, Workspace::Pwd) => {}
+        // A try push's selection works where an answer does.
+        #[cfg(feature = "try-push")]
+        (Way::Try, _, Workspace::Pwd) => {}
         (Way::Change, Workspace::Pwd, _) => {
             if git::unfinished_tracked(&repo)? {
                 return err(format!(
@@ -2216,6 +2345,8 @@ fn start(db_path: &Path, id: &str) -> Result<()> {
                 Way::Change => AGENT,
                 Way::Answer => ANSWERING,
                 Way::Test => BUILD,
+                #[cfg(feature = "try-push")]
+                Way::Try => ANSWERING,
             };
             let dir = agents_dir(&repo, &s.name, agent.worktrees.as_deref())?;
             let slot = take_slot(db_path, id, &dir, kind)?;
@@ -2267,10 +2398,7 @@ fn start(db_path: &Path, id: &str) -> Result<()> {
         i.prompt += &format!("\n\nThe rebase todo file: {}", todo.display());
         i.todo = todo.parent().map(|d| d.to_string_lossy().into_owned());
     }
-    let permission = match i.way {
-        Way::Answer => "default",
-        _ => "acceptEdits",
-    };
+    let permission = if reads(i.way) { "default" } else { "acceptEdits" };
     let mut run = Run {
         ask: Some(serde_json::to_value(&i).unwrap()),
         ..run
@@ -2480,6 +2608,10 @@ fn allow_more(way: Way) -> &'static str {
         Way::Answer => "agent.answer_tools lets answer-only asks use more, and `stacked setup agent` sets it; your claude settings can allow more too",
         Way::Test => {
             "agent.tools lets every ask use more, builds and tests too, and `stacked config agent.tools` sets it; your claude settings can allow more too"
+        }
+        #[cfg(feature = "try-push")]
+        Way::Try => {
+            "agent.try_tools lets the asks that select a try push's tasks use more, and `stacked setup agent` sets it; your claude settings can allow more too"
         }
     }
 }
@@ -2746,6 +2878,18 @@ fn file(db: &mut Db, run: &Run, i: &Info, result: &str) -> Result<Landed> {
             opened: test_notes(db, run, i, result)?,
             ..Default::default()
         })),
+        // The tasks it selected, found whatever prose is around its answer,
+        // each to accept or reject.
+        #[cfg(feature = "try-push")]
+        (Way::Try, _) => {
+            let (tasks, rebuild) = crate::try_push::tasks_of(last_object(result).as_ref());
+            Ok(Landed::held(Held {
+                replies: held_replies(db, i, &replies),
+                tasks,
+                rebuild,
+                ..Default::default()
+            }))
+        }
     }
 }
 
@@ -3394,6 +3538,44 @@ mod tests {
         // What is written: a string, or one with its references.
         let written = &test["properties"]["replies"]["properties"]["c1"]["anyOf"];
         assert_eq!((written[0]["type"].clone(), written[1]["required"].clone()), (serde_json::json!("string"), serde_json::json!(["text"])));
+    }
+
+    /// A try push's ask: given what an answer is, and its own list; asked
+    /// for its tasks, each its label and why, and how many times each runs;
+    /// reading only, it runs as answers do, and from the batch each on its
+    /// own.
+    #[cfg(feature = "try-push")]
+    #[test]
+    fn a_try_push_ask_reads_only_with_its_own_list_and_is_asked_for_its_tasks() {
+        let s = Stack {
+            name: "s".into(),
+            patches: vec!["p1".into()],
+            base: None,
+            repo: None,
+            parent: None,
+            op: String::new(),
+            time: 0,
+        };
+        let i: Info = serde_json::from_value(serde_json::json!({"way": "try", "scope": "stack", "from": 0, "notes": [{"label": "c1", "change": "x", "id": "1"}]})).unwrap();
+        let schema = answer_schema(&i, &s);
+        let keys: Vec<&String> = schema["properties"].as_object().unwrap().keys().collect();
+        assert_eq!(keys, ["replies", "tasks", "rebuild"]);
+        let task = &schema["properties"]["tasks"]["items"];
+        assert_eq!(task["required"], serde_json::json!(["label", "why"]));
+        assert_eq!(task["properties"]["why"]["anyOf"][1]["required"], serde_json::json!(["text"]), "why written as anything is, with references");
+        assert_eq!((schema["properties"]["rebuild"]["minimum"].clone(), schema["properties"]["rebuild"]["maximum"].clone()), (serde_json::json!(2), serde_json::json!(20)));
+        let agent = crate::config::Agent {
+            answer_tools: vec!["Bash(curl *)".into()],
+            try_tools: vec!["mcp__moz__*".into()],
+            ..Default::default()
+        };
+        let cmd = "stacked -f db";
+        let tools = tools_for(Way::Try, cmd, &agent);
+        assert!(tools.starts_with(&answer_given(cmd)), "what an answer is given: {tools}");
+        assert!(tools.contains("mcp__moz__*") && !tools.contains("Bash(curl *)"), "its own list, not the answers': {tools}");
+        assert!(allow_more(Way::Try).starts_with("agent.try_tools lets the asks that select a try push's tasks use more"));
+        assert!(reads(Way::Try) && each_on_its_own(Way::Try) && !reads(Way::Test));
+        assert_eq!(Way::Try.said(), "try push");
     }
 
     #[test]

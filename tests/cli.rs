@@ -69,6 +69,59 @@ const TEN: &str = "one\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nten\n";
 /// agent` is saved: the setup done, so that its asks go.
 const SET_UP: &str = "[agent]\nsetup = 1\n";
 
+/// The version of the setup this stacked saves: with the `try-push`
+/// feature, the one with a column for try pushes.
+const VERSION: usize = if cfg!(feature = "try-push") { 2 } else { 1 };
+
+/// `line`, a row of the setup as one with two columns draws it (read only's
+/// box from column 1, change's from 12, what the row says from 21), as this
+/// stacked draws it: with the `try-push` feature, a column for try pushes
+/// at 20, ticked as the read-only one, what the row says from 30, and the
+/// columns' heading its own. Any other line, as it is.
+fn two(line: &str) -> String {
+    let chars: Vec<char> = line.chars().collect();
+    let cell = |at: usize, w: usize| chars.iter().skip(at).take(w).collect::<String>().trim().to_string();
+    let (r, c, text) = (cell(1, 9), cell(12, 6), chars.iter().skip(21).collect::<String>());
+    let centred = |t: &str, w: usize| {
+        let left = (w - t.chars().count()) / 2;
+        format!("{}{t}{}", " ".repeat(left), " ".repeat(w - t.chars().count() - left))
+    };
+    let lay = |cells: &[&str], cols: &[(usize, usize)], at: usize, text: &str| {
+        let mut out = String::new();
+        for (t, (start, w)) in cells.iter().zip(cols) {
+            out += &" ".repeat(start - out.chars().count());
+            out += &centred(t, *w);
+        }
+        out += &" ".repeat(at - out.chars().count());
+        (out + text).trim_end().to_string()
+    };
+    if !cfg!(feature = "try-push") || lay(&[&r, &c], &[(1, 9), (12, 6)], 21, &text) != line {
+        return line.to_string();
+    }
+    let cols = [(1, 9), (12, 6), (20, 8)];
+    match r.as_str() {
+        "read only" => lay(
+            &["read only", "change", "try push"],
+            &cols,
+            30,
+            "read only is for answer-only asks; change is for asks that change the stack; try push is for asks that select a try push's tasks",
+        ),
+        _ => lay(&[&r, &c, &r], &cols, 30, &text),
+    }
+}
+
+/// What the setup says it saves in try_tools, `tools`, after the other
+/// lists: nothing without the `try-push` feature.
+fn try_said(tools: &str) -> String {
+    if cfg!(feature = "try-push") { format!("; try_tools: {tools}") } else { String::new() }
+}
+
+/// The line the setup writes for try_tools, `tools` as the file writes
+/// them: none without the `try-push` feature.
+fn try_line(tools: &str) -> String {
+    if cfg!(feature = "try-push") { format!("try_tools = [{tools}]\n") } else { String::new() }
+}
+
 /// A repo with a base commit and three on top that apply in any order, the
 /// last with a title that is not ASCII and long enough to be folded. The
 /// test's home holds the settings of one whose setup is done (`SET_UP`).
@@ -3338,7 +3391,13 @@ fn no_ask_goes_before_the_setup_is_done() {
     let (fine, _, err) = stacked_in(&e.src, &e.db, &["setup", "agent", "s", "--global"], "", &[("STACKED_CLAUDE", &agent), ("STACKED_CONFIG", &fresh)]);
     assert!(fine, "{err}");
     assert!(err.contains(&format!("stacked: the setup is saved in {}: change_tools: none; answer_tools: Bash(curl *), Bash(jq *)", fresh.display())), "{err}");
-    assert_eq!(std::fs::read_to_string(&fresh).unwrap(), "[agent]\nchange_tools = []\nanswer_tools = [\"Bash(curl *)\", \"Bash(jq *)\"]\nsetup = 1\n");
+    assert_eq!(
+        std::fs::read_to_string(&fresh).unwrap(),
+        format!(
+            "[agent]\nchange_tools = []\nanswer_tools = [\"Bash(curl *)\", \"Bash(jq *)\"]\n{}setup = {VERSION}\n",
+            try_line("\"Bash(curl *)\", \"Bash(jq *)\"")
+        )
+    );
     let (fine, out, err) = stacked_in(&e.src, &e.db, &["send", "s", "--batch", "--wait", "--accept"], "", &env);
     assert!(fine && out.contains("Seen."), "{out}{err}");
     let id = comment(&e, &["And", "now?"]);
@@ -3390,10 +3449,10 @@ fn what_each_kind_of_ask_may_use_is_set_up_with_the_agent() {
     let local = e.src.join(".stacked/local.toml");
     for line in [
         format!("stacked: the agent, in {}, has 12 tools. What each kind of ask may use is saved in {}; Enter keeps what is ticked.", e.src.display(), local.display()),
-        " read only  change   read only is for answer-only asks; change is for asks that change the stack".into(),
-        "            always   commands that read: grep, rg, find, cat, sed, sort…".into(),
-        "    [x]      [ ]     Bash(lint *)   allowed in .claude/settings.local.json".into(),
-        "    [x]      [x]       write".into(),
+        two(" read only  change   read only is for answer-only asks; change is for asks that change the stack"),
+        two("            always   commands that read: grep, rg, find, cat, sed, sort…"),
+        two("    [x]      [ ]     Bash(lint *)   allowed in .claude/settings.local.json"),
+        two("    [x]      [x]       write"),
         "Keep them as they are? [Y/n: one by one] ".into(),
         "  Which asks may use Bash(lint *), allowed in .claude/settings.local.json? [R: read only, c: change, b: both, n: neither]".into(),
         "  Which asks may use Bash(searchfox-cli *), named in AGENTS.md? [r: read only, c: change, b: both, N: neither]".into(),
@@ -3407,9 +3466,16 @@ fn what_each_kind_of_ask_may_use_is_set_up_with_the_agent() {
     // done, notes' write left to agent.tools as both still let it; lint the
     // newer way, though your claude settings write it the older; the
     // settings' file as it was.
-    let said = "change_tools: mcp__moz__*, mcp__notes__read, Bash(make check *); answer_tools: Bash(curl *), Bash(jq *), Bash(lint *)";
+    // Try pushes, line by line, as read only: what answers may use.
+    let said = format!(
+        "change_tools: mcp__moz__*, mcp__notes__read, Bash(make check *); answer_tools: Bash(curl *), Bash(jq *), Bash(lint *){}",
+        try_said("Bash(curl *), Bash(jq *), Bash(lint *)")
+    );
     assert!(err.contains(&format!("stacked: the setup is saved in {}: {said}", local.display())), "{err}");
-    let saved = "[agent]\nchange_tools = [\"mcp__moz__*\", \"mcp__notes__read\", \"Bash(make check *)\"]\nanswer_tools = [\"Bash(curl *)\", \"Bash(jq *)\", \"Bash(lint *)\"]\nsetup = 1\n";
+    let saved = format!(
+        "[agent]\nchange_tools = [\"mcp__moz__*\", \"mcp__notes__read\", \"Bash(make check *)\"]\nanswer_tools = [\"Bash(curl *)\", \"Bash(jq *)\", \"Bash(lint *)\"]\n{}setup = {VERSION}\n",
+        try_line("\"Bash(curl *)\", \"Bash(jq *)\", \"Bash(lint *)\"")
+    );
     assert_eq!(std::fs::read_to_string(&local).unwrap(), saved);
     assert_eq!(std::fs::read_to_string(&settings).unwrap(), "[agent]\ntools = [\"mcp__notes__write\"]\n");
     assert_eq!(
@@ -3432,7 +3498,9 @@ fn what_each_kind_of_ask_may_use_is_set_up_with_the_agent() {
         "    [ ]      [x]     all of the MCP server moz's tools, those to come too (mcp__moz__*)",
         "    [ ]      [x]     Bash(make check *)   in the settings",
         "    [x]      [ ]     Bash(lint *)   allowed in .claude/settings.local.json; named in AGENTS.md",
-    ] {
+    ]
+    .map(two)
+    {
         assert!(err.lines().any(|l| l == line), "{line:?} in:\n{err}");
     }
     assert!(!err.contains("Bash(lint:*)"), "{err}");
@@ -3448,7 +3516,10 @@ fn what_each_kind_of_ask_may_use_is_set_up_with_the_agent() {
     assert!(err.contains("sets agent.setup too, and is the one used in its checkout"), "{err}");
     assert_eq!(
         std::fs::read_to_string(&settings).unwrap(),
-        "[agent]\ntools = [\"mcp__notes__write\"]\nchange_tools = []\nanswer_tools = [\"Bash(curl *)\", \"Bash(jq *)\", \"Bash(lint *)\"]\nsetup = 1\n"
+        format!(
+            "[agent]\ntools = [\"mcp__notes__write\"]\nchange_tools = []\nanswer_tools = [\"Bash(curl *)\", \"Bash(jq *)\", \"Bash(lint *)\"]\n{}setup = {VERSION}\n",
+            try_line("\"Bash(curl *)\", \"Bash(jq *)\", \"Bash(lint *)\"")
+        )
     );
     // Outside a checkout, refused before the agent is asked.
     std::fs::remove_file(&pwd).unwrap();

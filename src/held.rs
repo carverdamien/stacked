@@ -48,6 +48,16 @@ pub struct Held {
     /// an edit by hand's own, and yours of the agent's work.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub edits: Vec<String>,
+    /// A try push ask's: the tasks it selected, each to accept or reject,
+    /// those accepted pushed to try as the review closes.
+    #[cfg(feature = "try-push")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tasks: Vec<crate::try_push::Task>,
+    /// How many times each of those tasks is to run, when it asked for
+    /// more than once (mach's `--rebuild`).
+    #[cfg(feature = "try-push")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rebuild: Option<u32>,
 }
 
 /// A change of the stack held: the stack it makes from the one the ask
@@ -285,6 +295,9 @@ pub fn hold_by_hand(db: &mut Db, name: &str, patches: Vec<String>, op: &str, of:
 pub enum Part {
     Stack,
     Opened(usize),
+    /// A task a try push ask selected, by its place among them.
+    #[cfg(feature = "try-push")]
+    Task(usize),
     Reply(usize),
 }
 
@@ -294,6 +307,8 @@ impl Part {
         match self {
             Part::Stack => "stack".into(),
             Part::Opened(k) => format!("opened {k}"),
+            #[cfg(feature = "try-push")]
+            Part::Task(k) => format!("task {k}"),
             Part::Reply(k) => format!("reply {k}"),
         }
     }
@@ -303,6 +318,8 @@ impl Part {
         match key.split_once(' ') {
             None if key == "stack" => Some(Part::Stack),
             Some(("opened", n)) => k(n).map(Part::Opened),
+            #[cfg(feature = "try-push")]
+            Some(("task", n)) => k(n).map(Part::Task),
             Some(("reply", n)) => k(n).map(Part::Reply),
             _ => None,
         }
@@ -324,19 +341,30 @@ pub struct Review {
 
 impl Held {
     /// Its parts in the order they are reviewed: the change of the stack,
-    /// the comments opened, the replies.
+    /// the comments opened, a try push's tasks, the replies.
     pub fn parts(&self) -> Vec<Part> {
         let mut out = Vec::new();
         if self.stack.is_some() {
             out.push(Part::Stack);
         }
         out.extend((0..self.opened.len()).map(Part::Opened));
+        #[cfg(feature = "try-push")]
+        out.extend((0..self.tasks.len()).map(Part::Task));
         out.extend((0..self.replies.len()).map(Part::Reply));
         out
     }
 
     pub fn is_empty(&self) -> bool {
-        self.stack.is_none() && self.replies.is_empty() && self.opened.is_empty()
+        self.stack.is_none() && self.replies.is_empty() && self.opened.is_empty() && self.no_tasks()
+    }
+
+    /// Whether it holds no task of a try push's: it never does, built
+    /// without the `try-push` feature.
+    fn no_tasks(&self) -> bool {
+        #[cfg(feature = "try-push")]
+        return self.tasks.is_empty();
+        #[cfg(not(feature = "try-push"))]
+        return true;
     }
 
     /// What it holds, said: `a change of patch 2, 2 replies`.
@@ -360,6 +388,11 @@ impl Held {
         }
         if !self.opened.is_empty() {
             out.push(count(self.opened.len(), "opened comment", "opened comments"));
+        }
+        // A try push's tasks first, as they are what it brings.
+        #[cfg(feature = "try-push")]
+        if !self.tasks.is_empty() {
+            out.insert(0, count(self.tasks.len(), "task to push to try", "tasks to push to try"));
         }
         out.join(", ")
     }
@@ -513,6 +546,9 @@ pub fn can_take(db: &Db, r: &Run) -> Result<()> {
         let opened = if pulled(r) { "the new comments pulled with it" } else { "the comments the agent opened" };
         return err(format!("this reply goes with {opened}: review them together"));
     }
+    if !h.no_tasks() {
+        return err("this reply goes with the tasks the agent selected for a try push: review them together");
+    }
     if crate::ask::guessing(db, r).is_some() {
         return err("this reply goes on from the work landed before it, which waits for your review: review that one first");
     }
@@ -554,8 +590,9 @@ pub fn save(db: &mut Db, id: &str, marks: &BTreeMap<String, bool>) -> Result<()>
 }
 
 /// What you wrote in the review of work `r`: the comments you opened
-/// there, still open, and your answers to its replies. With any, the work
-/// is not accepted: it goes back to the agent.
+/// there, still open, and your answers to its replies, and to the reasons
+/// of a try push's tasks. With any, the work is not accepted: it goes back
+/// to the agent.
 pub fn yours_in(db: &Db, r: &Run) -> (Vec<(String, String)>, usize) {
     let opened = db
         .stack_notes(&r.stack)
@@ -563,8 +600,19 @@ pub fn yours_in(db: &Db, r: &Run) -> (Vec<(String, String)>, usize) {
         .filter(|n| n.review.as_deref() == Some(r.id.as_str()) && n.by.is_none())
         .map(|n| (n.change.clone(), n.id.clone()))
         .collect();
-    let answers = r.held.as_ref().map_or(0, |h| h.replies.iter().filter(|rp| rp.answer.is_some()).count());
+    let answers = r.held.as_ref().map_or(0, |h| h.replies.iter().filter(|rp| rp.answer.is_some()).count() + h.task_answers());
     (opened, answers)
+}
+
+impl Held {
+    /// How many of a try push's tasks you answered the reason of, in their
+    /// review: none, built without the `try-push` feature.
+    fn task_answers(&self) -> usize {
+        #[cfg(feature = "try-push")]
+        return self.tasks.iter().filter(|t| t.answer.is_some()).count();
+        #[cfg(not(feature = "try-push"))]
+        return 0;
+    }
 }
 
 /// Writes `text`, your answer to reply `k` of the work run `id` holds, in
@@ -573,6 +621,16 @@ pub fn answer(db: &mut Db, id: &str, k: usize, text: &str) -> Result<()> {
     let (r, mut h, _) = under_review(db, id)?;
     let rp = h.replies.get_mut(k).ok_or_else(|| Error(format!("run {id} holds no reply {k}")))?;
     rp.answer = Some(text.trim().to_string()).filter(|t| !t.is_empty());
+    db.add_run(Run { held: Some(h), ..r }).map(|_| ())
+}
+
+/// Writes `text`, your answer to why the agent selected task `k` of the
+/// try push run `id` holds, in its review: empty, it takes it back.
+#[cfg(feature = "try-push")]
+pub fn answer_task(db: &mut Db, id: &str, k: usize, text: &str) -> Result<()> {
+    let (r, mut h, _) = under_review(db, id)?;
+    let t = h.tasks.get_mut(k).ok_or_else(|| Error(format!("run {id} holds no task {k}")))?;
+    t.answer = Some(text.trim().to_string()).filter(|t| !t.is_empty());
     db.add_run(Run { held: Some(h), ..r }).map(|_| ())
 }
 
@@ -613,6 +671,19 @@ pub fn send_back(db: &mut Db, id: &str, marks: &BTreeMap<String, bool>) -> Resul
         if marks.get(&Part::Opened(k).key()) != Some(&false) {
             db.set_note(Note { time: now(), ..n.clone() })?;
         }
+    }
+    // A try push's: your answers to the reasons of its tasks, a turn of
+    // yours in the thread of the first comment that asked, still open;
+    // and how you marked each, which the next round is told.
+    #[cfg(feature = "try-push")]
+    {
+        let first: Option<Note> = asking_open(db, &r).first().map(|(_, n)| (*n).clone());
+        if let Some(said) = crate::try_push::answers_turn(&h.tasks)
+            && let Some(n) = first
+        {
+            db.set_note(Note { text: append_turn(&n.text, Role::You, &said, None), ..n })?;
+        }
+        v.marks.extend(marks.iter().filter(|(k, _)| matches!(Part::of_key(k), Some(Part::Task(_)))).map(|(k, m)| (k.clone(), *m)));
     }
     let mut notes: Vec<(String, String)> = Vec::new();
     for at in i.notes.iter().map(|sh| (sh.change.clone(), sh.id.clone())).chain(opened) {
@@ -786,6 +857,13 @@ pub fn close_with(db: &mut Db, id: &str, marks: &BTreeMap<String, bool>, rest: O
     Ok(said)
 }
 
+/// The tasks of the try push work `h` that `marks` accepts, those it does
+/// not mark as `rest` says, in their order.
+#[cfg(feature = "try-push")]
+pub fn accepted_tasks(h: &Held, marks: &BTreeMap<String, bool>, rest: Option<bool>) -> Vec<crate::try_push::Task> {
+    h.tasks.iter().enumerate().filter(|(k, _)| marks.get(&Part::Task(*k).key()).copied().or(rest) == Some(true)).map(|(_, t)| t.clone()).collect()
+}
+
 /// What a review made of the work held, by its marks: `its change
 /// accepted; 2 replies accepted, 1 rejected`.
 pub fn said(h: &Held, marks: &BTreeMap<String, bool>) -> String {
@@ -798,7 +876,12 @@ pub fn said(h: &Held, marks: &BTreeMap<String, bool>) -> String {
         });
     }
     let replies = |edits: bool| (0..h.replies.len()).filter(|&k| h.replies[k].was.is_some() == edits).map(Part::Reply).collect::<Vec<_>>();
+    #[cfg(feature = "try-push")]
+    let tasks: Vec<Part> = (0..h.tasks.len()).map(Part::Task).collect();
+    #[cfg(not(feature = "try-push"))]
+    let tasks: Vec<Part> = Vec::new();
     for (one, many, parts) in [
+        ("task", "tasks", tasks),
         ("opened comment", "opened comments", (0..h.opened.len()).map(Part::Opened).collect::<Vec<_>>()),
         ("reply", "replies", replies(false)),
         ("edited comment", "edited comments", replies(true)),
