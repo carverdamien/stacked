@@ -370,6 +370,25 @@ impl App {
         Some((at, p, row))
     }
 
+    /// The line of a commit message the review's cursor is on, as it is
+    /// written: on a patch looked at closer, a line of its message; on the
+    /// stack diff looked at closer, a line of the message part of an
+    /// interdiff (`message_line_of`). None elsewhere.
+    pub(super) fn review_message_line(&self) -> Option<String> {
+        let rv = self.reviewing.as_ref().filter(|rv| rv.in_main)?;
+        if rv.in_patch {
+            let (_, p, row) = self.review_row()?;
+            let at = row.msg_at.filter(|_| row.kind == Kind::Msg && row.note.is_none())?;
+            return p.message.split('\n').nth(at).map(String::from);
+        }
+        if !self.review_on_diff() {
+            return None;
+        }
+        let (now, next) = self.review_stacks()?;
+        let diff = crate::history::stacks_diff(&self.db, Some(&now), Some(&next), true);
+        message_line_of(&self.db, &diff, &next, rv.entry.min(diff.len().saturating_sub(1)))
+    }
+
     /// The comment of its own that Enter writes on row `row` of patch `p`,
     /// looked at closer: on a line, or a file's name, that has no comment of
     /// the work's nor of yours.
@@ -1299,15 +1318,17 @@ impl App {
         // What Delete does to the list's line the cursor is on, wherever the
         // cursor is, as the menu does.
         let delete = self.delete_hint().map_or(String::new(), |d| format!("{d} · "));
+        // On a line of a message that has links: the key that opens them.
+        let open = self.open_hint();
         match &self.reviewing {
             Some(rv) if rv.in_main && rv.in_patch && self.review_patch().is_some() => {
                 let enter = if self.review_writable() { "enter: comment · " } else { "" };
                 let side = if rv.wide { "←: narrower" } else { "→: wider · ←: back to the stack diff" };
-                format!("↑↓: a line · {enter}{delete}{side} · {esc}")
+                format!("↑↓: a line · {enter}{open}{delete}{side} · {esc}")
             }
             Some(rv) if rv.in_main && self.review_on_diff() => {
                 let side = if rv.wide { "←: narrower" } else { "→: wider · ←: back to the list" };
-                format!("↑↓: a line · enter: go to it in the patch · {delete}{side} · {esc}")
+                format!("↑↓: a line · enter: go to it in the patch · {open}{delete}{side} · {esc}")
             }
             Some(rv) if rv.in_main && rv.wide => format!("↑↓: scroll · {enter} · {delete}←: narrower · {esc}"),
             Some(rv) if rv.in_main => format!("↑↓: scroll · {enter} · {delete}→: wider · ←: back to the list · {esc}"),
@@ -1682,6 +1703,10 @@ impl App {
         let lines = self.review_lines();
         let Some(rv) = &self.reviewing else { return };
         let rejected = rv.marks.get(&Part::Stack.key()) == Some(&false);
+        // On a line of a message, each of its links, to open in your browser:
+        // after the comment on the line, as in the middle; else after the
+        // rest, Space then Enter doing what it does without them.
+        let mut links = Some(self.link_items());
         // On a line of a patch looked at closer where Enter writes a comment
         // of its own: that comment, here or in $EDITOR, as in the middle.
         if self.review_writable()
@@ -1690,6 +1715,7 @@ impl App {
         {
             let label = if row.kind == Kind::File { "Comment on this file" } else { "Comment on this line" };
             items.push(Item::new(label, Action::CommentLine).with(self.write_choices(Action::CommentLine, Action::CommentInEditor)));
+            items.extend(links.take().unwrap_or_default());
             items.push(Item::line());
         }
         // What you wrote: written again, or taken back.
@@ -1750,6 +1776,10 @@ impl App {
                 items.push(Item::new("Edit this patch in $EDITOR", Action::EditWorkPatch(w.at, w.mail)));
             }
             items.push(Item::new("Edit the stack as a list in $EDITOR", Action::EditWorkList));
+        }
+        if let Some(links) = links {
+            items.push(Item::line());
+            items.extend(links);
         }
     }
 

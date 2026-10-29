@@ -12,8 +12,10 @@
 //! comments makes them compact, then hides them), enter does what is to be
 //! done where the cursor is, space is the menu of all that can be done
 //! there, `?` says what that is, and esc goes back. Delete (Backspace too)
-//! is the one shortcut: the menu's item that closes, drops, stops or
-//! rejects what the cursor is on, asking first as that item does. Nothing
+//! and `o` are the shortcuts: Delete the menu's item that closes, drops,
+//! stops or rejects what the cursor is on, asking first as that item does;
+//! `o`, on a line of a commit message, its item that opens the line's link
+//! in the browser, or the menu of them when the line has several. Nothing
 //! else is: what the menu does, only the menu does. Comments are written in
 //! an editor inline where they will show, and sent to claude from their
 //! menu.
@@ -338,6 +340,45 @@ fn diff_parts(diff: &[Diffed]) -> Vec<Parts> {
         }
     }
     out
+}
+
+/// The line of a commit message that line `k` of stack diff `diff` is, if it
+/// is one, as it is written: a line of the interdiff under a new version of
+/// a patch of `after`, the stack the diff goes to, in the part of the two
+/// mails that is their messages, from the title (its `Subject: ` taken off)
+/// to the end of the body; its sign taken off. A line taken out is the old
+/// version's, at the place in the new one's mail where it was.
+fn message_line_of(db: &Db, diff: &[Diffed], after: &Stack, k: usize) -> Option<String> {
+    let code = |d: &Diffed| matches!(d, Diffed::Code(_));
+    if !code(diff.get(k)?) {
+        return None;
+    }
+    // The interdiff the line is of, under the line of its patch.
+    let start = diff[..k].iter().rposition(|d| !code(d))? + 1;
+    let end = diff[k..].iter().position(|d| !code(d)).map_or(diff.len(), |n| k + n);
+    let Diffed::Patch { at, .. } = &diff[start - 1] else { return None };
+    let p = db.patch(after.patches.get(at.checked_sub(1)?)?);
+    // Each line as written, without the indent `Diffed::text` gives it.
+    let indent = Diffed::Code(Default::default()).text().chars().count();
+    let lines: Vec<String> = diff[start..end].iter().map(|d| d.text().chars().skip(indent).collect()).collect();
+    let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
+    let m = *ops::interdiff_places(&refs).get(k - start)?;
+    let line = &lines[k - start];
+    let sign = line.chars().next()?;
+    // The message in the new version's mail: from its `Subject:` line to the
+    // `---` under its body, where a line taken out at the end of the body
+    // was.
+    let rendered = ops::render(p);
+    let mail: Vec<&str> = rendered.lines().collect();
+    let subject = mail.iter().position(|l| l.starts_with("Subject: "))?;
+    let sep = mail.len().checked_sub(p.diff.lines().count() + 1)?;
+    let inside = match sign {
+        '-' => (subject..=sep).contains(&m),
+        ' ' | '+' => (subject..sep).contains(&m),
+        _ => false,
+    };
+    let text = &line[sign.len_utf8()..];
+    inside.then(|| text.strip_prefix("Subject: ").unwrap_or(text).to_string())
 }
 
 /// A stack diff's line under the cursor: each of its parts in the cursor's
@@ -1229,6 +1270,9 @@ pub enum Action {
     /// A web link a reference points at: shown whole, to open in the
     /// browser.
     ShowLink(String),
+    /// A link of the line of a commit message the cursor is on: opened in
+    /// the browser at once.
+    OpenLink(String),
     /// A line of a comment naming its references: the one it names, or a
     /// menu of them.
     Named,
@@ -1489,6 +1533,7 @@ fn about(action: &Action) -> String {
         Action::ShowRef(_) => "preview the lines the agent points at: Enter there goes to them".into(),
         Action::GoToPointed(..) => "go to the comment this points at; closed, read it as it was".into(),
         Action::ShowLink(_) => "show the web link whole: Enter there opens it in your browser".into(),
+        Action::OpenLink(url) => format!("open {url} in your browser"),
         Action::Named => {
             "go to the reference this line names (@r1): a comment, or lines or a web link previewed; naming several, pick one".into()
         }
@@ -1990,6 +2035,9 @@ pub struct App {
     /// made of: the stacks diffed, the width.
     pub hist_rows: Vec<Parts>,
     hist_built: Option<(Option<usize>, Option<usize>, usize)>,
+    /// That stack diff, and the line of it each of those is, folded.
+    hist_diff: Vec<Diffed>,
+    hist_of: Vec<usize>,
     /// The run a transcript is of, and how far it is scrolled up.
     transcript: Option<String>,
     scroll: usize,
@@ -2408,6 +2456,8 @@ impl App {
             hist_top: 0,
             hist_rows: vec![],
             hist_built: None,
+            hist_diff: vec![],
+            hist_of: vec![],
             transcript: None,
             scroll: 0,
             versions: None,
@@ -3977,6 +4027,12 @@ impl App {
         if k.code == KeyCode::Delete {
             return self.delete();
         }
+        // On a line of a commit message, the link of the line opened in your
+        // browser, as its item in the menu opens it; of several, the menu of
+        // them.
+        if k.code == crate::keys::Key::OpenLink.event().code {
+            return self.open_here();
+        }
         // self-review's two keys: 1 for another view of the code, here the
         // menu of them, 2 to read rather than comment, or comment rather
         // than read; and 3, each file whole rather than its hunks, or its
@@ -5256,6 +5312,7 @@ impl App {
                     Some(a) => format!("Press Enter to {}.", self.about_here(&a)),
                     None => "Press Enter for all that can be done here.".into(),
                 });
+                out.extend(self.open_help());
                 out.push(format!(
                     "Press 2 to go back to commenting, where Space is the menu; 1 for another view of the code; {}.",
                     self.whole_help()
@@ -5273,6 +5330,7 @@ impl App {
                 if let Some(a) = self.enter() {
                     out.push(format!("Press Enter to {}.", self.about_here(&a)));
                 }
+                out.extend(self.open_help());
                 out.extend(self.delete_help());
                 let here = match self.focus {
                     Focus::List if self.on_stack => "on the stack: its comments, sending them, and the stack's own menu",
@@ -5364,7 +5422,10 @@ impl App {
             #[cfg(feature = "moz-phab")]
             Screen::Submit => out.extend(self.submit_help()),
         }
+        // On a line of a commit message: the key that opens its links, said
+        // after Enter in the middle, and here elsewhere.
         if self.screen != Screen::Main {
+            out.extend(self.open_help());
             out.push("Press Space for the menu.".into());
         }
         let mut out: Vec<String> = out.into_iter().map(|l| self.say_keys(l)).collect();
@@ -6348,6 +6409,10 @@ impl App {
             (Screen::Submit, _) => {
                 title = "what is sent to Phabricator".into();
                 self.submit_items(&mut items);
+                // On a line of the title and summary: its links, after the
+                // rest, Space then Enter sending it as before.
+                items.push(Item::line());
+                items.extend(self.link_items());
             }
             (Screen::Main, Focus::Notes) if self.notes_head => {
                 title = "the comments listed".into();
@@ -6375,6 +6440,9 @@ impl App {
                         let label = if file { "Comment on this file" } else { "Comment on this line" };
                         items.push(Item::new(label, Action::CommentLine).with(choices));
                     }
+                    // A line of the message: each of its links, to open in
+                    // your browser.
+                    items.extend(self.link_items());
                     // Edited by hand, where the cursor is.
                     if self.focus == Focus::Diff && !self.on_stack && self.patch_id().is_some() {
                         items.push(Item::line());
@@ -6404,6 +6472,10 @@ impl App {
                     }
                     items.push(Item::line());
                     items.push(Item::new("Start a new database here…", Action::AskTrim(e.rev)));
+                    // On a line of a message in its stack diff: the line's
+                    // links, after the rest, to open in your browser.
+                    items.push(Item::line());
+                    items.extend(self.link_items());
                 }
             }
             (Screen::Versions, _) => {
@@ -6873,6 +6945,7 @@ impl App {
                 None => self.status = "that comment is gone".into(),
             },
             Action::ShowLink(url) => self.show_link(url),
+            Action::OpenLink(url) => self.open_link(url),
             Action::Named => {
                 if let Some(a) = self.named() {
                     return self.perform(a);
@@ -8544,6 +8617,125 @@ impl App {
         self.spawn(move || Done::Said(OPENING, crate::refs::open_link(&url)));
     }
 
+    /// The lines of a commit message the cursor is on, each as it is written,
+    /// wherever a screen puts its cursor on one: in the middle, a line of the
+    /// patch's message, commenting or reading; in the review of landed work,
+    /// one of a patch looked at closer, or of the message part of an
+    /// interdiff in the stack diff; in the history's stack diff, the same; in
+    /// what a submit sends, one of the title and summary, both sides' when
+    /// they are side by side. None elsewhere: the versions of a patch have
+    /// their cursor on a version, and the sync of the commit messages
+    /// scrolls them.
+    fn message_lines_here(&self) -> Vec<String> {
+        match self.screen {
+            Screen::Main => self.middle_message_line().into_iter().collect(),
+            Screen::Review => self.review_message_line().into_iter().collect(),
+            Screen::History => self.history_message_line().into_iter().collect(),
+            #[cfg(feature = "moz-phab")]
+            Screen::Submit => self.submit_message_lines(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// The line of the patch's message the middle's cursor is on, as it is
+    /// written.
+    fn middle_message_line(&self) -> Option<String> {
+        if self.on_banner || self.on_stack || self.focus != Focus::Diff {
+            return None;
+        }
+        let row = self.rows.get(self.cursor).filter(|r| r.kind == Kind::Msg && r.note.is_none())?;
+        let id = self.patch_id().filter(|id| self.middle_on(id))?;
+        self.db.patch(&id).message.split('\n').nth(row.msg_at?).map(String::from)
+    }
+
+    /// The line of a message the cursor is on in the history's stack diff,
+    /// as it is written (`message_line_of`).
+    fn history_message_line(&self) -> Option<String> {
+        if self.hist_focus != HistFocus::Diff {
+            return None;
+        }
+        let (_, to, _) = self.hist_built?;
+        let after = self.db.node(to?).ok()?;
+        message_line_of(&self.db, &self.hist_diff, after, *self.hist_of.get(self.hist_cursor)?)
+    }
+
+    /// The links of the lines of a commit message the cursor is on, each
+    /// once, as the settings say where bugs and revisions are
+    /// (`links::of_line`).
+    pub fn links_here(&self) -> Vec<crate::links::Link> {
+        let mut out: Vec<crate::links::Link> = Vec::new();
+        for line in self.message_lines_here() {
+            for l in crate::links::of_line(&line, &self.cfg.reviews) {
+                if !out.iter().any(|o| o.url == l.url) {
+                    out.push(l);
+                }
+            }
+        }
+        out
+    }
+
+    /// The menu's item for link `l`: `Open bug 1234567 in your browser`,
+    /// `Open D123 in your browser`, or the web link, shortened to fit the
+    /// screen.
+    fn link_item(&self, l: &crate::links::Link) -> Item {
+        let shown = match l.what {
+            crate::links::What::Web => short(&l.url, self.body_w.saturating_sub(28).clamp(16, 60)),
+            _ => l.said.clone(),
+        };
+        Item::new(format!("Open {shown} in your browser"), Action::OpenLink(l.url.clone()))
+    }
+
+    /// The menu's items for the links of the line of a commit message the
+    /// cursor is on: one for each, which opens it in your browser.
+    fn link_items(&self) -> Vec<Item> {
+        self.links_here().iter().map(|l| self.link_item(l)).collect()
+    }
+
+    /// The key that opens links (`o`): on a line of a commit message, its
+    /// link opened in your browser, as its item does; of several, the menu
+    /// of them; of none, said. Elsewhere, nothing.
+    fn open_here(&mut self) -> Effect {
+        if self.message_lines_here().is_empty() {
+            return Effect::None;
+        }
+        let items = self.link_items();
+        match items.as_slice() {
+            [] => {
+                self.status = match cfg!(feature = "moz-phab") {
+                    true => "this line of the message names no bug, no revision and no web link to open in your browser".into(),
+                    false => "this line of the message has no web link to open in your browser".into(),
+                };
+            }
+            [one] => return self.perform(one.action.clone()),
+            _ => self.mode = Mode::Menu(Menu::new("the links of this line", items, None)),
+        }
+        Effect::None
+    }
+
+    /// What the bottom bar says of the key that opens links, on a line of a
+    /// commit message that has some: `o: open bug 1234567 · `.
+    fn open_hint(&self) -> String {
+        let o = self.cfg.keys.label(crate::keys::Key::OpenLink);
+        match self.links_here().as_slice() {
+            [] => String::new(),
+            [l] if l.what == crate::links::What::Web => format!("{o}: open the link · "),
+            [l] => format!("{o}: open {} · ", l.said),
+            _ => format!("{o}: open a link · "),
+        }
+    }
+
+    /// What `?` says of the key that opens links, on a line of a commit
+    /// message that has some.
+    fn open_help(&self) -> Option<String> {
+        let o = self.cfg.keys.label(crate::keys::Key::OpenLink);
+        let links = self.links_here();
+        match links.iter().map(|l| l.said.as_str()).collect::<Vec<_>>().as_slice() {
+            [] => None,
+            [one] => Some(format!("Press {o} to open {one} in your browser.")),
+            [rest @ .., last] => Some(format!("Press {o} to pick a link of this line to open in your browser: {} or {last}.", rest.join(", "))),
+        }
+    }
+
     /// Reference `r`, previewed: its lines numbered, the numbers marked,
     /// `⋯` between its ranges; the whole file, every line, the numbers
     /// plain, as it points at them all. Enter there goes to them.
@@ -9424,10 +9616,12 @@ impl App {
                     Some(_) => self.enter_hint(),
                     None => "enter: menu · ".into(),
                 };
-                format!("space: mark this block read · delete: unread · {enter}1: view · 2: comment · {whole} · ?: what can I do here")
+                let open = self.open_hint();
+                format!("space: mark this block read · delete: unread · {enter}{open}1: view · 2: comment · {whole} · ?: what can I do here")
             }
             Mode::Normal => {
                 let enter = self.enter_hint();
+                let open = self.open_hint();
                 let delete = self.delete_hint().map_or(String::new(), |d| format!("{d} · "));
                 let keys = match (self.screen, self.reading, self.whole_files) {
                     (Screen::Main, false, false) => "1: view · 2: read · 3: whole · ",
@@ -9437,7 +9631,7 @@ impl App {
                     _ => "",
                 };
                 let ask = if self.helps() { "?: what can I do here" } else { "" };
-                format!("{enter}space: menu · {delete}{keys}{ask}").trim_end_matches(" · ").to_string()
+                format!("{enter}space: menu · {open}{delete}{keys}{ask}").trim_end_matches(" · ").to_string()
             }
         }
     }
@@ -10630,7 +10824,11 @@ impl App {
             // Made, or deleted, its header says.
             let mut diff = crate::history::stack_diff(&self.db, e.from, e.to, true);
             diff.retain(|d| !matches!(d, Diffed::Made | Diffed::Deleted));
-            self.hist_rows = diff_parts(&diff).into_iter().flat_map(|parts| fold_parts(&parts, w.saturating_sub(1), 6)).collect();
+            // Each line folded to the pane, with the line each row is of.
+            let folded: Vec<Vec<Parts>> = diff_parts(&diff).into_iter().map(|parts| fold_parts(&parts, w.saturating_sub(1), 6)).collect();
+            self.hist_of = folded.iter().enumerate().flat_map(|(k, rows)| std::iter::repeat_n(k, rows.len())).collect();
+            self.hist_rows = folded.into_iter().flatten().collect();
+            self.hist_diff = diff;
             self.hist_built = Some(want);
             self.hist_cursor = self.hist_cursor.min(self.hist_rows.len().saturating_sub(1));
         }

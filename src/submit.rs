@@ -24,6 +24,10 @@ use serde_json::{Value, json};
 
 use crate::check::Left;
 use crate::db::{Db, Patch, Stack};
+// A word character as Python's `re` reads `\w`, and the first bug of a
+// title as moz-phab reads it: a line of a message is read so too, for the
+// bugs it names to open in the browser (`links`).
+use crate::links::{bug_in, word};
 use crate::phab::Call;
 
 /// What answers the calls a submit makes in place of Phabricator: the
@@ -80,11 +84,6 @@ impl Via {
 }
 
 // -- the title, as moz-phab reads it -------------------------------------- //
-
-/// A word character, as Python's `re` reads `\w` in a pattern of text.
-fn word(c: char) -> bool {
-    c.is_alphanumeric() || c == '_'
-}
 
 /// moz-phab's IRC_NICK_CHARS: `a-zA-Z0-9\-\_!`.
 fn nick_char(c: char) -> bool {
@@ -273,33 +272,6 @@ fn replace_reviewers(t: &str, request: &[String], granted: &[String]) -> String 
     }
     out.extend(&c[at..]);
     without_marks(&out).trim().to_string()
-}
-
-/// moz-phab's BUG_ID_RE, `(?:(?:bug|b=)(?:\s*)(\d+)(?=\b))` in any case: its
-/// first match in `s`, where it starts and ends, and the bug's number.
-fn bug_in(s: &[char]) -> Option<(usize, usize, String)> {
-    for i in 0..s.len() {
-        let low = |k: usize| s.get(i + k).map(char::to_ascii_lowercase);
-        let after = if (low(0), low(1), low(2)) == (Some('b'), Some('u'), Some('g')) {
-            i + 3
-        } else if low(0) == Some('b') && s.get(i + 1) == Some(&'=') {
-            i + 2
-        } else {
-            continue;
-        };
-        let mut j = after;
-        while j < s.len() && s[j].is_whitespace() {
-            j += 1;
-        }
-        let digits = j;
-        while j < s.len() && s[j].is_ascii_digit() {
-            j += 1;
-        }
-        if j > digits && s.get(j).is_none_or(|c| !word(*c)) {
-            return Some((i, j, s[digits..j].iter().collect()));
-        }
-    }
-    None
 }
 
 /// What moz-phab makes of a commit's title (its message's first line) to

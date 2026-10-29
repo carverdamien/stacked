@@ -287,6 +287,63 @@ fn a_message_s_long_lines_are_wrapped_from_its_patch_s_menu_in_the_window_too() 
     assert!(queue.len() == 1 && stacked::held::by_hand(queue[0]), "{queue:?}");
 }
 
+/// The links a stand-in for the program that opens web links, in `dir`,
+/// writes once it was given `n` of them, or the wait given up: the editor
+/// of this process opens them with it from now on. It opens nothing: no test
+/// opens a browser.
+fn opened_by_stand_in(dir: &Path) -> impl Fn(usize) -> Vec<String> {
+    use std::os::unix::fs::PermissionsExt;
+    let path = dir.join("open.sh");
+    std::fs::write(&path, "#!/bin/sh\nprintf '%s\\n' \"$1\" >> \"$(dirname \"$0\")/opened.txt\"\n").unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    stacked::refs::open_links_with(&path);
+    let log = dir.join("opened.txt");
+    move |n| {
+        let started = Instant::now();
+        loop {
+            let all: Vec<String> = std::fs::read_to_string(&log).unwrap_or_default().lines().map(String::from).collect();
+            if all.len() >= n || started.elapsed() > Duration::from_secs(20) {
+                return all;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+}
+
+#[test]
+fn a_link_of_a_line_of_a_message_opens_from_its_menu_and_with_o_in_the_window_too() {
+    let (tmp, db) = setup();
+    let here = tmp.path().file_name().unwrap().to_string_lossy().to_string();
+    let why = format!("https://example.com/{here}/why");
+    // Patch 1's message says where to read why.
+    stacked::db::Db::edit(&db, |d| {
+        let old = d.patch(&d.stack("s")?.patches[0]).clone();
+        let draft = stacked::mbox::Draft {
+            message: format!("Bug 1 - shout two\n\nSee {why}"),
+            ..stacked::mbox::Draft::from(&old)
+        };
+        stacked::ops::replace(d, "s", 0, draft, "reword").map(|_| ())
+    })
+    .unwrap();
+    let opened = opened_by_stand_in(tmp.path());
+    let s = Session::open(&db, tmp.path()).unwrap();
+    s.send(Input::Size(100, 30));
+    // A right click on the line of the message opens its menu, and a click
+    // on its item opens the link, the status line saying so.
+    let buf = screen(&s, "the line", |b| find(b, "See https://").is_some());
+    let (x, y) = find(&buf, "See https://").unwrap();
+    s.send(Input::Click { x, y, right: true });
+    let item = format!("Open {why} in your browser");
+    let menu = screen(&s, "the line's menu", |b| find(b, &item).is_some());
+    let (x, y) = find(&menu, &item).unwrap();
+    s.send(Input::Click { x, y, right: false });
+    screen(&s, "the link opened", |b| text(b).contains(&format!("opened {why} in your browser")));
+    assert_eq!(opened(1), std::slice::from_ref(&why));
+    // o, the cursor on the line, opens it again.
+    press(&s, KeyCode::Char('o'));
+    assert_eq!(opened(2), [why.clone(), why]);
+}
+
 /// The File menu's panels and alerts, as the test answers them: the
 /// databases picked to open, the new database named, and what is said.
 #[derive(Default)]

@@ -408,10 +408,42 @@ impl App {
         }
     }
 
-    /// What the review's bar says: how to send it, how to send nothing.
+    /// What the review's bar says: how to send it, how to send nothing; on a
+    /// line of the title and summary that has links, how to open them.
     pub(super) fn submit_hint(&self) -> String {
         let side = if self.submitting.as_ref().is_some_and(|s| s.side) { "1: unified" } else { "1: side by side" };
-        format!("↑↓: scroll · enter: send it to Phabricator · esc: send nothing · {side} · space: menu · ?: what can I do here")
+        let open = self.open_hint();
+        format!("↑↓: scroll · enter: send it to Phabricator · esc: send nothing · {side} · {open}space: menu · ?: what can I do here")
+    }
+
+    /// The lines of the title and summary the review's cursor is on, each as
+    /// it is written, its pieces joined and its sign taken off: one, or side
+    /// by side, those of the two sides. None elsewhere in the review.
+    pub(super) fn submit_message_lines(&self) -> Vec<String> {
+        let Some(sub) = self.submitting.as_ref() else { return Vec::new() };
+        let rows = &sub.rows;
+        // Under their heading, as `review_rows` writes it, up to the empty
+        // row after them.
+        let heading = "the title and summary: Phabricator's, then what is sent";
+        let Some(head) = rows.iter().position(|r| r.kind == Kind::File && r.text == heading) else { return Vec::new() };
+        let end = rows[head..].iter().position(|r| r.kind == Kind::Blank).map_or(rows.len(), |k| head + k);
+        let under: Vec<usize> = match sub.built {
+            Some((_, true)) => split_lines(rows).0.get(sub.cursor).map_or(Vec::new(), |l| l.span.into_iter().chain(l.left).chain(l.right).collect()),
+            _ => vec![sub.cursor],
+        };
+        let mut out: Vec<String> = Vec::new();
+        for i in under.into_iter().filter(|&i| head < i && i < end) {
+            let Some(first) = (head + 1..=i).rev().find(|&k| !rows[k].cont) else { continue };
+            let last = (first + 1..end).find(|&k| !rows[k].cont).unwrap_or(end);
+            let line: String = rows[first..last].iter().map(|r| r.text.strip_prefix(crate::rows::FOLDED).filter(|_| r.cont).unwrap_or(r.text.as_str())).collect();
+            let mut text = line.chars();
+            text.next();
+            let text = text.as_str().to_string();
+            if !out.contains(&text) {
+                out.push(text);
+            }
+        }
+        out
     }
 
     /// What `?` says on the review.

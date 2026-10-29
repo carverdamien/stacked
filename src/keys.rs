@@ -88,6 +88,9 @@ pub enum Key {
     Read,
     /// Each file whole rather than its hunks, or back.
     Whole,
+    /// The link of the line of a commit message the cursor is on, opened in
+    /// the browser; of several, the menu of them.
+    OpenLink,
     Quit,
     /// In the sync of the commit messages, the patch the cursor is on
     /// keeping the stack's message, or its commit's in your workspace.
@@ -96,7 +99,7 @@ pub enum Key {
 }
 
 impl Key {
-    pub const ALL: [Key; 22] = [
+    pub const ALL: [Key; 23] = [
         Key::Up,
         Key::Down,
         Key::Left,
@@ -116,6 +119,7 @@ impl Key {
         Key::View,
         Key::Read,
         Key::Whole,
+        Key::OpenLink,
         Key::Quit,
         Key::KeepStack,
         Key::KeepWorkspace,
@@ -143,6 +147,7 @@ impl Key {
             Key::View => "view",
             Key::Read => "read",
             Key::Whole => "whole",
+            Key::OpenLink => "open_link",
             Key::Quit => "quit",
             Key::KeepStack => "keep_stack",
             Key::KeepWorkspace => "keep_workspace",
@@ -172,6 +177,7 @@ impl Key {
             Key::View => &["1"],
             Key::Read => &["2"],
             Key::Whole => &["3"],
+            Key::OpenLink => &["o"],
             Key::Quit => &["ctrl-c"],
             Key::KeepStack => &["s"],
             Key::KeepWorkspace => &["w"],
@@ -200,6 +206,7 @@ impl Key {
             Key::View => (KeyCode::Char('1'), KeyModifiers::NONE),
             Key::Read => (KeyCode::Char('2'), KeyModifiers::NONE),
             Key::Whole => (KeyCode::Char('3'), KeyModifiers::NONE),
+            Key::OpenLink => (KeyCode::Char('o'), KeyModifiers::NONE),
             Key::Quit => (KeyCode::Char('c'), KeyModifiers::CONTROL),
             Key::KeepStack => (KeyCode::Char('s'), KeyModifiers::NONE),
             Key::KeepWorkspace => (KeyCode::Char('w'), KeyModifiers::NONE),
@@ -538,6 +545,29 @@ mod tests {
         assert_eq!(map.translate(&ev(KeyCode::Char('x'), KeyModifiers::NONE)), Some(Key::Delete.event()));
         assert_eq!(map.translate(&ev(KeyCode::Backspace, KeyModifiers::NONE)), None);
         assert_eq!(map.label(Key::Delete), "x");
+    }
+
+    #[test]
+    fn a_link_opens_with_o_unless_the_settings_say_otherwise_and_clashes_on_the_screens_alone() {
+        // o, read on the screens.
+        let map = Keymap::default();
+        let o = ev(KeyCode::Char('o'), KeyModifiers::NONE);
+        assert_eq!((map.translate(&o), Key::OpenLink.context()), (Some(Key::OpenLink.event()), Context::Screens));
+        assert_eq!((map.label(Key::OpenLink), map.names(Key::OpenLink)), ("o".to_string(), vec!["o".to_string()]));
+        // Another key, and o no longer.
+        let (map, wrong) = Keymap::from_names(&[("open_link".into(), vec!["b".into()])]);
+        assert!(wrong.is_empty(), "{wrong:?}");
+        assert_eq!(map.translate(&ev(KeyCode::Char('b'), KeyModifiers::NONE)), Some(Key::OpenLink.event()));
+        assert_eq!(map.translate(&o), None);
+        // A key of the screens already: said, and the first does it.
+        let (map, wrong) = Keymap::from_names(&[("open_link".into(), vec!["space".into()])]);
+        assert_eq!(wrong, ["keys: Space is menu and open_link; it does the first"]);
+        assert_eq!(map.translate(&ev(KeyCode::Char(' '), KeyModifiers::NONE)), Some(Key::Menu.event()));
+        // One of the sync's: no clash, each read where it is.
+        let (map, wrong) = Keymap::from_names(&[("open_link".into(), vec!["s".into()])]);
+        assert!(wrong.is_empty(), "{wrong:?}");
+        let s = ev(KeyCode::Char('s'), KeyModifiers::NONE);
+        assert_eq!((map.action(&s), map.action_in(Context::Sync, &s)), (Some(Key::OpenLink), Some(Key::KeepStack)));
     }
 
     #[test]

@@ -633,8 +633,9 @@ pub fn revision_of(message: &str) -> Option<(String, String)> {
 
 /// As `revision_of`, the trailer named `trailer`, a bare `D123` on `url`:
 /// the last line that says one, trailers being last, the message above it
-/// free to name another revision.
-fn revision_in(message: &str, trailer: &str, url: Option<&str>) -> Option<(String, String)> {
+/// free to name another revision. Of one line, the revision it names, if it
+/// does: what a line of a message opens in the browser (`links`).
+pub(crate) fn revision_in(message: &str, trailer: &str, url: Option<&str>) -> Option<(String, String)> {
     let trailer = format!("{trailer}:");
     message.lines().rev().find_map(|line| {
         let rest = line.strip_prefix(&trailer)?.trim();

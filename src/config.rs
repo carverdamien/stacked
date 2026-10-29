@@ -264,7 +264,13 @@ pub struct Reviews {
     pub token: Option<String>,
     /// The trailer naming a patch's revision.
     pub trailer: String,
+    /// The Bugzilla that a bug a commit message names (`Bug 123`) is
+    /// opened on, in the browser.
+    pub bugzilla: String,
 }
+
+/// The Bugzilla a bug is opened on unless the settings say otherwise.
+pub const BUGZILLA: &str = "https://bugzilla.mozilla.org";
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct View {
@@ -371,6 +377,7 @@ impl Default for Config {
                 arcrc: home().join(".arcrc"),
                 token: None,
                 trailer: "Differential Revision".into(),
+                bugzilla: BUGZILLA.into(),
             },
             view: View::default(),
             colors: Colors::default(),
@@ -426,6 +433,7 @@ struct WrittenReviews {
     arcrc: Option<String>,
     token: Option<String>,
     trailer: Option<String>,
+    bugzilla: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -553,6 +561,13 @@ impl Config {
         }
         if let Some(t) = w.reviews.trailer {
             c.reviews.trailer = t.trim_end_matches(':').to_string();
+        }
+        if let Some(b) = w.reviews.bugzilla {
+            let b = b.trim().trim_end_matches('/').to_string();
+            match crate::refs::link(&b) {
+                Ok(_) => c.reviews.bugzilla = b,
+                Err(_) => wrong.push(format!("reviews.bugzilla: {b:?} is not a web link to a site, https://… or http://…")),
+            }
         }
         let v = w.view;
         if let Some(l) = v.layout {
@@ -817,6 +832,8 @@ impl Config {
             });
             out.push_str("# The trailer naming a patch's revision.\n");
             out.push_str(&format!("trailer = {}\n", q(&self.reviews.trailer)));
+            out.push_str("# The Bugzilla that a bug a commit message names (Bug 123) is opened on, in your browser.\n");
+            out.push_str(&format!("bugzilla = {}\n", q(&self.reviews.bugzilla)));
         }
         let v = &self.view;
         out.push_str(
@@ -928,7 +945,7 @@ enum Kind {
 
 /// Every setting there is, as the file names it, and what it holds; the
 /// keys', `keys.NAME`, are lists.
-const SETTINGS: [(&str, Kind); 28] = [
+const SETTINGS: [(&str, Kind); 29] = [
     ("file", Kind::Text),
     ("editor", Kind::Text),
     ("agent.command", Kind::Text),
@@ -948,6 +965,7 @@ const SETTINGS: [(&str, Kind); 28] = [
     ("reviews.arcrc", Kind::Text),
     ("reviews.token", Kind::Text),
     ("reviews.trailer", Kind::Text),
+    ("reviews.bugzilla", Kind::Text),
     ("view.layout", Kind::Text),
     ("view.reading", Kind::Flag),
     ("view.whitespace_needs_review", Kind::Flag),
@@ -1038,6 +1056,7 @@ pub fn value_of(c: &Config, key: &str) -> Result<Vec<String>, String> {
         "reviews.arcrc" => vec![c.reviews.arcrc.display().to_string()],
         "reviews.token" => opt(&c.reviews.token),
         "reviews.trailer" => vec![c.reviews.trailer.clone()],
+        "reviews.bugzilla" => vec![c.reviews.bugzilla.clone()],
         "view.layout" => vec![c.view.layout.name().into()],
         "view.reading" => vec![c.view.reading.to_string()],
         "view.whitespace_needs_review" => vec![c.view.whitespace_needs_review.to_string()],
@@ -1597,6 +1616,30 @@ mod tests {
         assert!(e.contains("view.layout") && e.contains("nothing written"), "{e}");
         assert!(set(&path, "keys.menu", &vals(&["ctrl-nothing-at-all"])).unwrap_err().contains("keys.menu"));
         assert_eq!(read(), before);
+    }
+
+    #[test]
+    fn the_bugzilla_a_bug_opens_on_is_a_web_link_to_a_site() {
+        assert_eq!(Config::default().reviews.bugzilla, "https://bugzilla.mozilla.org");
+        let (c, wrong) = Config::parse("[reviews]\nbugzilla = \"https://bugzilla.example.com/\"\n").unwrap();
+        assert!(wrong.is_empty(), "{wrong:?}");
+        assert_eq!(c.reviews.bugzilla, "https://bugzilla.example.com", "its last slash taken off");
+        assert_eq!(value_of(&c, "reviews.bugzilla"), Ok(vec!["https://bugzilla.example.com".to_string()]));
+        // What is not one keeps the default, and is said.
+        let (c, wrong) = Config::parse("[reviews]\nbugzilla = \"bugzilla.example.com\"\n").unwrap();
+        assert_eq!(c.reviews.bugzilla, BUGZILLA);
+        assert_eq!(wrong, ["reviews.bugzilla: \"bugzilla.example.com\" is not a web link to a site, https://… or http://…"]);
+        // Printed with Phabricator's settings, when stacked is built with them.
+        assert_eq!(Config::default().render().contains("\nbugzilla = \"https://bugzilla.mozilla.org\"\n"), cfg!(feature = "moz-phab"));
+        // Written, or refused with the file as it was.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("settings.toml");
+        set(&path, "reviews.bugzilla", &["https://bz.example.com".to_string()]).unwrap();
+        assert_eq!(Config::load(&path).0.reviews.bugzilla, "https://bz.example.com");
+        let before = std::fs::read_to_string(&path).unwrap();
+        let e = set(&path, "reviews.bugzilla", &["nowhere".to_string()]).unwrap_err();
+        assert!(e.contains("\"nowhere\" is not a web link") && e.ends_with("nothing written"), "{e}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
     }
 
     #[test]

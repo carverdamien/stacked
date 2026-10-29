@@ -304,6 +304,79 @@ fn a_patch_is_submitted_to_phabricator_from_its_menu_in_the_browser_too() {
     stacked::submit::stand_in(None);
 }
 
+/// Patch 1 of stack `s` in `db` given a new version whose message is
+/// `message`, at once.
+fn reworded(db: &Path, message: &str) {
+    stacked::db::Db::edit(db, |d| {
+        let old = d.patch(&d.stack("s")?.patches[0]).clone();
+        let draft = stacked::mbox::Draft {
+            message: message.into(),
+            ..stacked::mbox::Draft::from(&old)
+        };
+        stacked::ops::replace(d, "s", 0, draft, "reword").map(|_| ())
+    })
+    .unwrap();
+}
+
+/// The program the editor served from this process opens web links with: a
+/// stand-in, in `dir`, that opens nothing and writes each link it is given
+/// on a line of the file this gives. No test opens a browser.
+fn stand_in_opener(dir: &Path) -> PathBuf {
+    let path = dir.join("open.sh");
+    std::fs::write(&path, "#!/bin/sh\nprintf '%s\\n' \"$1\" >> \"$(dirname \"$0\")/opened.txt\"\n").unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    stacked::refs::open_links_with(&path);
+    dir.join("opened.txt")
+}
+
+/// The links the stand-in (`stand_in_opener`) wrote in `log`, once it wrote
+/// `n` of them, or gave up waiting.
+fn links_opened(log: &Path, n: usize) -> Vec<String> {
+    let started = Instant::now();
+    loop {
+        let all: Vec<String> = std::fs::read_to_string(log).unwrap_or_default().lines().map(String::from).collect();
+        if all.len() >= n || started.elapsed() > Duration::from_secs(20) {
+            return all;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// A cell of `said` in row event `l`, the second of it: its column and its
+/// row.
+fn cell_of(l: &str, said: &str) -> (usize, String) {
+    let y = l.strip_prefix("data: r ").and_then(|r| r.split(' ').next()).unwrap().to_string();
+    let line = text(l);
+    (line[..line.find(said).unwrap()].chars().count() + 1, y)
+}
+
+#[test]
+fn a_link_of_a_line_of_a_message_opens_from_its_menu_and_with_o_in_the_browser_too() {
+    let (tmp, db) = setup();
+    let here = tmp.path().file_name().unwrap().to_string_lossy().to_string();
+    let why = format!("https://example.com/{here}/why");
+    reworded(&db, &format!("Bug 1 - shout two\n\nSee {why}"));
+    let log = stand_in_opener(tmp.path());
+    stacked::config::init(stacked::config::Config::default());
+    let (port, token) = stacked::web::start(db).unwrap();
+    let (host, input) = (format!("127.0.0.1:{port}"), format!("POST /input?t={token}"));
+    let mut events = events(port, &token, 100);
+    // A right click on the line of the message opens its menu, and its item
+    // opens the link, the status line saying so.
+    let seen = until(&mut events, "the line", |l| text(l).contains("See https://"));
+    let (x, y) = cell_of(seen.last().unwrap(), "See https://");
+    ask(port, &host, &input, &format!("m {x} {y} r\n"));
+    let item = format!("Open {why} in your browser");
+    let seen = until(&mut events, "the line's menu", |l| text(l).contains(&item));
+    let (x, y) = cell_of(seen.last().unwrap(), &item);
+    ask(port, &host, &input, &format!("m {x} {y} l\n"));
+    until(&mut events, "the link opened", |l| text(l).contains(&format!("opened {why} in your browser")));
+    assert_eq!(links_opened(&log, 1), std::slice::from_ref(&why));
+    // o, the cursor on the line, opens it again.
+    ask(port, &host, &input, "k c 6f -\n");
+    assert_eq!(links_opened(&log, 2), [why.clone(), why]);
+}
+
 #[test]
 fn a_message_s_long_lines_are_wrapped_from_its_patch_s_menu_in_the_browser_too() {
     let long = "Bug 1 - shout two\n\nThe parser read the whole file before it checked the header, which made it slow on the big files we have.";

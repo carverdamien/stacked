@@ -1246,7 +1246,8 @@ fn no_letter_is_a_shortcut() {
     let mut app = open(&db).unwrap();
     let before = std::fs::read(&db).unwrap();
     let first = draw(&mut app);
-    // Only 1, 2, 3 and / are keys of their own: 1, 2 and / as in self-review.
+    // Only 1, 2, 3, / and o are keys of their own: 1, 2 and / as in
+    // self-review; o on a line of a commit message alone, which this is not.
     for c in ('a'..='z').chain('A'..='Z').chain("0456789!@#$%^&*()-=_+[]{};:'\",.<>\\|`~".chars()) {
         assert_eq!(key(&mut app, KeyCode::Char(c)), Effect::None, "{c:?}");
         assert_eq!(app.mode, Mode::Normal, "{c:?} did something");
@@ -4376,6 +4377,368 @@ fn fake_opener() -> PathBuf {
 fn opened(url: &str) -> bool {
     let log = Path::new(env!("CARGO_TARGET_TMPDIR")).join("tui-opened.txt");
     std::fs::read_to_string(log).unwrap_or_default().lines().any(|l| l == url)
+}
+
+/// A database holding stack `s` of one patch, `TWO` for `two` in a.txt,
+/// whose message `message` makes of the name of the test's folder (which
+/// the test's links take, to be its own); and that name.
+fn with_message(message: impl FnOnce(&str) -> String) -> (tempfile::TempDir, PathBuf, String) {
+    let tmp = tempfile::tempdir().unwrap();
+    let here = tmp.path().file_name().unwrap().to_string_lossy().to_string();
+    let src = tmp.path().join("src");
+    std::fs::create_dir(&src).unwrap();
+    git(&src, &["init", "-q", "-b", "main"]);
+    git(&src, &["config", "commit.gpgsign", "false"]);
+    std::fs::write(src.join("a.txt"), "one\ntwo\n").unwrap();
+    git(&src, &["add", "."]);
+    git(&src, &["commit", "-qm", "base"]);
+    std::fs::write(src.join("a.txt"), "one\nTWO\n").unwrap();
+    git(&src, &["commit", "-qam", &message(&here)]);
+    let db = tmp.path().join("db.jsonl");
+    stacked(&src, &db, &["import", "s", "HEAD~1"]);
+    (tmp, db, here)
+}
+
+/// A bug's number of the test's own, from `here`, the name of its folder:
+/// no other test's links name it.
+#[cfg(feature = "moz-phab")]
+fn number_of(here: &str) -> u64 {
+    here.bytes().fold(7u64, |h, b| h.wrapping_mul(31).wrapping_add(u64::from(b))) % 9_000_000 + 1_000_000
+}
+
+/// The editor on `db`, as `open` gives it, its settings changed as `set`
+/// says.
+fn open_set(db: &Path, set: impl FnOnce(&mut stacked::config::Config)) -> Editor {
+    stacked::config::init(settings());
+    fake_claude();
+    fake_opener();
+    let mut c = settings();
+    set(&mut c);
+    Editor(App::with_config(db, c).unwrap())
+}
+
+/// The items of the menu open that open a link in the browser.
+fn link_items(app: &App) -> Vec<String> {
+    items(app).into_iter().map(|(l, _)| l).filter(|l| l.starts_with("Open ")).collect()
+}
+
+/// How many items of the menu open open a link, once it is seen that its
+/// first item is still `first`, which Space then Enter does, and that they
+/// all come after its item `last`.
+fn links_after(app: &App, first: &str, last: &str) -> usize {
+    let labels: Vec<String> = items(app).into_iter().map(|(l, _)| l).collect();
+    assert_eq!(labels.first().map(String::as_str), Some(first), "{labels:?}");
+    let at = labels.iter().position(|l| l == last).unwrap_or_else(|| panic!("no {last:?} in {labels:?}"));
+    let links: Vec<usize> = labels.iter().enumerate().filter(|(_, l)| l.starts_with("Open ")).map(|(i, _)| i).collect();
+    assert!(links.iter().all(|&i| i > at), "{labels:?}");
+    links.len()
+}
+
+/// `c` pressed, and the link it opens waited for, away from the screen:
+/// what the status line says then.
+fn opened_with(app: &mut App, c: char) -> String {
+    keys(app, &[KeyCode::Char(c)]);
+    app.settle();
+    app.status.clone()
+}
+
+/// What the status line says on a line of a message with no link, where
+/// `o` opens none.
+fn no_link() -> &'static str {
+    if cfg!(feature = "moz-phab") {
+        "this line of the message names no bug, no revision and no web link to open in your browser"
+    } else {
+        "this line of the message has no web link to open in your browser"
+    }
+}
+
+#[test]
+fn a_web_link_in_a_line_of_a_message_opens_in_the_browser_from_the_line_s_menu_and_with_o() {
+    let (_tmp, db, here) = with_message(|here| {
+        format!("Bug 7 - shout two\n\nRead https://example.com/{here}/why first.\n\nBoth https://example.com/{here}/a and (https://example.com/{here}/b).\nBecause.")
+    });
+    let link = |end: &str| format!("https://example.com/{here}/{end}");
+    let (why, a, b) = (link("why"), link("a"), link("b"));
+    assert!(!opened(&why) && !opened(&a) && !opened(&b));
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Right]);
+    // A line of the message with a link: its item in the line's menu, after
+    // the comment on the line, and what Enter does there said.
+    down_to(&mut app, "   Read https://");
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    let labels: Vec<String> = items(&app).into_iter().map(|(l, _)| l).collect();
+    assert_eq!(labels[..2], ["Comment on this line".to_string(), format!("Open {why} in your browser")], "{labels:?}");
+    keys(&mut app, &[KeyCode::Down]);
+    assert_eq!(app.help()[0], format!("Press Enter to open {why} in your browser."));
+    // Chosen, it is opened away from the screen, by the stand-in and never
+    // a browser, and the status line says what came of it.
+    assert_eq!(key(&mut app, KeyCode::Enter), Effect::None);
+    assert_eq!(app.status, format!("opening {why}…"));
+    app.settle();
+    assert_eq!(app.status, format!("opened {why} in your browser"));
+    assert!(opened(&why) && !opened(&a));
+    // The bar and ? say the key that opens it, and it does; reading too.
+    assert_eq!(app.hint(), "enter: comment · space: menu · o: open the link · 1: view · 2: read · 3: whole · ?: what can I do here");
+    assert!(app.help().contains(&format!("Press o to open {why} in your browser.")), "{:?}", app.help());
+    assert_eq!(opened_with(&mut app, 'o'), format!("opened {why} in your browser"));
+    keys(&mut app, &[KeyCode::Char('2')]);
+    assert!(app.hint().contains("· o: open the link · "), "{}", app.hint());
+    assert!(app.help().contains(&format!("Press o to open {why} in your browser.")), "{:?}", app.help());
+    assert_eq!(opened_with(&mut app, 'o'), format!("opened {why} in your browser"));
+    keys(&mut app, &[KeyCode::Char('2')]);
+    // A line with two: o opens the menu of them, an item each, the brackets
+    // around the second not of it.
+    down_to(&mut app, "   Both https://");
+    assert!(app.hint().contains("· o: open a link · "), "{}", app.hint());
+    assert!(app.help().contains(&format!("Press o to pick a link of this line to open in your browser: {a} or {b}.")), "{:?}", app.help());
+    keys(&mut app, &[KeyCode::Char('o')]);
+    assert_eq!(menu_title(&app), "the links of this line");
+    let both = [format!("Open {a} in your browser"), format!("Open {b} in your browser")];
+    assert_eq!(link_items(&app), both);
+    assert_eq!(items(&app).len(), 2, "{:?}", items(&app));
+    choose(&mut app, &both[1]);
+    app.settle();
+    assert_eq!(app.status, format!("opened {b} in your browser"));
+    assert!(opened(&b) && !opened(&a));
+    // A right click on the line opens its menu, with them. A click on it
+    // opens no browser: picked already, it is Enter, a comment on it.
+    let (x, y) = at(&draw(&mut app), "Both https://");
+    assert_eq!(app.click(x, y, true), Effect::None);
+    assert_eq!(link_items(&app), both);
+    keys(&mut app, &[KeyCode::Esc]);
+    assert_eq!(app.click(x, y, false), Effect::None);
+    assert!(matches!(app.mode, Mode::Edit(_)), "{:?}", app.mode);
+    keys(&mut app, &[KeyCode::Esc]);
+    assert!(!opened(&a));
+    // A line of the message with none: no item, and o says so. A line of
+    // the code: o does nothing.
+    down_to(&mut app, "   Because.");
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    assert!(link_items(&app).is_empty(), "{:?}", items(&app));
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Char('o')]);
+    assert_eq!(app.status, no_link());
+    assert!(!app.hint().contains("o: open"), "{}", app.hint());
+    down_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Char('o')]);
+    assert_eq!((app.status.as_str(), &app.mode), ("", &Mode::Normal));
+    // The title names a bug: one to open with moz-phab, none without.
+    keys(&mut app, &[KeyCode::Home]);
+    down_to(&mut app, "   Bug 7 - shout two");
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    let bug: Vec<String> = if cfg!(feature = "moz-phab") { vec!["Open bug 7 in your browser".into()] } else { vec![] };
+    assert_eq!(link_items(&app), bug);
+}
+
+#[test]
+fn the_key_that_opens_a_link_is_a_setting() {
+    let (_tmp, db, here) = with_message(|here| format!("Bug 7 - shout two\n\nSee https://example.com/{here}/why."));
+    let why = format!("https://example.com/{here}/why");
+    let (cfg, wrong) = stacked::config::Config::parse("[keys]\nopen_link = \"b\"\n").unwrap();
+    assert!(wrong.is_empty(), "{wrong:?}");
+    let mut app = open_set(&db, |c| c.keys = cfg.keys);
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "   See https://");
+    assert!(app.say_keys(app.hint()).contains("· b: open the link · "), "{}", app.hint());
+    assert!(app.help().contains(&format!("Press b to open {why} in your browser.")), "{:?}", app.help());
+    keys(&mut app, &[KeyCode::Char('o')]);
+    assert_eq!(app.mode, Mode::Normal, "o is no key now");
+    assert!(!app.status.starts_with("opening"), "{}", app.status);
+    assert_eq!(opened_with(&mut app, 'b'), format!("opened {why} in your browser"));
+}
+
+#[cfg(feature = "moz-phab")]
+#[test]
+fn with_moz_phab_the_bug_and_the_revision_a_message_names_open_on_the_settings_bugzilla_and_phabricator() {
+    let (_tmp, db, here) = with_message(|here| {
+        let n = number_of(here);
+        format!("Bug {n} - shout two\n\nDifferential Revision: https://phabricator.example.com/{here}/D{n}")
+    });
+    let n = number_of(&here);
+    let bug = format!("https://bugzilla.mozilla.org/show_bug.cgi?id={n}");
+    let revision = format!("https://phabricator.example.com/{here}/D{n}");
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Right]);
+    // The title's bug, on Bugzilla unless the settings say otherwise.
+    down_to(&mut app, &format!("   Bug {n} - shout two"));
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    assert_eq!(link_items(&app), [format!("Open bug {n} in your browser")]);
+    keys(&mut app, &[KeyCode::Esc]);
+    assert!(app.hint().contains(&format!("· o: open bug {n} · ")), "{}", app.hint());
+    assert!(app.help().contains(&format!("Press o to open bug {n} in your browser.")), "{:?}", app.help());
+    assert_eq!(opened_with(&mut app, 'o'), format!("opened {bug} in your browser"));
+    assert!(opened(&bug));
+    // The trailer: the revision at its link, said as the revision, once.
+    down_to(&mut app, "   Differential Revision: ");
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    assert_eq!(link_items(&app), [format!("Open D{n} in your browser")]);
+    keys(&mut app, &[KeyCode::Esc]);
+    assert!(app.hint().contains(&format!("· o: open D{n} · ")), "{}", app.hint());
+    assert_eq!(opened_with(&mut app, 'o'), format!("opened {revision} in your browser"));
+    assert!(opened(&revision));
+    // The settings' Bugzilla.
+    let bugzilla = format!("https://bugzilla.example.com/{here}");
+    let mut app = open_set(&db, |c| c.reviews.bugzilla = bugzilla.clone());
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, &format!("   Bug {n} - shout two"));
+    let theirs = format!("{bugzilla}/show_bug.cgi?id={n}");
+    assert_eq!(opened_with(&mut app, 'o'), format!("opened {theirs} in your browser"));
+    assert!(opened(&theirs));
+}
+
+#[cfg(feature = "moz-phab")]
+#[test]
+fn with_moz_phab_a_bare_revision_opens_on_the_settings_phabricator_and_with_none_is_no_link() {
+    let (_tmp, db, here) = with_message(|here| format!("Bug 2 - add b\n\nDifferential Revision: D{}", number_of(here)));
+    let n = number_of(&here);
+    let phabricator = format!("https://phabricator.example.com/{here}");
+    let mut app = open_set(&db, |c| c.reviews.url = Some(phabricator.clone()));
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "   Differential Revision: D");
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    assert_eq!(link_items(&app), [format!("Open D{n} in your browser")]);
+    keys(&mut app, &[KeyCode::Esc]);
+    assert_eq!(opened_with(&mut app, 'o'), format!("opened {phabricator}/D{n} in your browser"));
+    assert!(opened(&format!("{phabricator}/D{n}")));
+    // No Phabricator in the settings: no link to open.
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "   Differential Revision: D");
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    assert!(link_items(&app).is_empty(), "{:?}", items(&app));
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Char('o')]);
+    assert_eq!(app.status, no_link());
+}
+
+#[cfg(not(feature = "moz-phab"))]
+#[test]
+fn without_moz_phab_a_message_opens_its_web_links_alone() {
+    let (_tmp, db, here) = with_message(|here| format!("Bug 5 - shout two\n\nDifferential Revision: https://phabricator.example.com/{here}/D5"));
+    let revision = format!("https://phabricator.example.com/{here}/D5");
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Right]);
+    // No bug, nor revision: the trailer's link a web link as any.
+    down_to(&mut app, "   Bug 5 - shout two");
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    assert!(link_items(&app).is_empty(), "{:?}", items(&app));
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Char('o')]);
+    assert_eq!(app.status, no_link());
+    down_to(&mut app, "   Differential Revision: ");
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    assert_eq!(link_items(&app), [format!("Open {revision} in your browser")]);
+    keys(&mut app, &[KeyCode::Esc]);
+    assert_eq!(opened_with(&mut app, 'o'), format!("opened {revision} in your browser"));
+    assert!(opened(&revision));
+}
+
+#[test]
+fn in_the_review_of_landed_work_a_line_of_a_message_opens_its_links_too() {
+    let (tmp, db, _src) = setup();
+    let here = tmp.path().file_name().unwrap().to_string_lossy().to_string();
+    let why = format!("https://example.com/{here}/why");
+    let bugzilla = format!("https://bugzilla.example.com/{here}");
+    let mut app = open_set(&db, |c| c.reviews.bugzilla = bugzilla.clone());
+    // Reworded by hand, the new version's message has a link.
+    let message = format!("Bug 1 - shout two\n\nBecause {why} says so.");
+    let run = Db::edit(&db, |d| {
+        let s = d.stack("s")?.patches.clone();
+        let old = d.patch(&s[0]).clone();
+        let draft = stacked::mbox::Draft {
+            message: message.clone(),
+            ..stacked::mbox::Draft::from(&old)
+        };
+        let mut patches = s.clone();
+        patches[0] = d.add_patch(stacked::ops::revise(&old, draft))?;
+        stacked::held::hold_by_hand(d, "s", patches, "reword", "patch 1", "reworded Bug 1", None)
+    })
+    .unwrap();
+    app.edited(stacked::ops::Edited::Landed { said: "reworded Bug 1".into(), run }, None, None);
+    assert_eq!(app.screen, Screen::Review);
+    // In the stack diff, the line of the message the new version puts in:
+    // its link the first item of its menu, and o opens it.
+    keys(&mut app, &[KeyCode::Right]);
+    down_to_work_row(&mut app, "+Because https://");
+    assert!(app.hint().contains("· o: open the link · "), "{}", app.hint());
+    assert!(app.help().contains(&format!("Press o to open {why} in your browser.")), "{:?}", app.help());
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    assert_eq!(link_items(&app), [format!("Open {why} in your browser")]);
+    assert_eq!(links_after(&app, "Mark as accepted", "Edit the stack as a list in $EDITOR"), 1);
+    keys(&mut app, &[KeyCode::Esc]);
+    assert_eq!(opened_with(&mut app, 'o'), format!("opened {why} in your browser"));
+    assert!(opened(&why));
+    // The line it takes out has none, and o says so; the title it keeps
+    // names its bug, with moz-phab; a line of the diff, nothing.
+    keys(&mut app, &[KeyCode::Home]);
+    down_to_work_row(&mut app, "-Because.");
+    keys(&mut app, &[KeyCode::Char('o')]);
+    assert_eq!(app.status, no_link());
+    keys(&mut app, &[KeyCode::Home]);
+    down_to_work_row(&mut app, "Subject: Bug 1 - shout two");
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    let bug: Vec<String> = if cfg!(feature = "moz-phab") { vec!["Open bug 1 in your browser".into()] } else { vec![] };
+    assert_eq!(link_items(&app), bug);
+    keys(&mut app, &[KeyCode::Esc]);
+    #[cfg(feature = "moz-phab")]
+    {
+        let theirs = format!("{bugzilla}/show_bug.cgi?id=1");
+        assert_eq!(opened_with(&mut app, 'o'), format!("opened {theirs} in your browser"));
+        assert!(opened(&theirs));
+    }
+    down_to_work_row(&mut app, "diff --git");
+    keys(&mut app, &[KeyCode::Char('o')]);
+    assert_eq!(app.status, "");
+    // From the line it puts in, the patch looked at closer: that line of its
+    // message opens the link too.
+    keys(&mut app, &[KeyCode::Home]);
+    down_to_work_row(&mut app, "+Because https://");
+    keys(&mut app, &[KeyCode::Enter]);
+    assert_eq!(work_row(&mut app), Some(format!("Because {why} says so.")));
+    assert!(app.hint().contains("· o: open the link · "), "{}", app.hint());
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    assert_eq!(link_items(&app), [format!("Open {why} in your browser")]);
+    assert_eq!(links_after(&app, "Mark as accepted", "Edit the stack as a list in $EDITOR"), 1);
+    keys(&mut app, &[KeyCode::Esc]);
+    assert_eq!(opened_with(&mut app, 'o'), format!("opened {why} in your browser"));
+}
+
+#[test]
+fn in_the_history_a_line_of_a_message_in_a_stack_diff_opens_its_links() {
+    let (tmp, db, _src) = setup();
+    let here = tmp.path().file_name().unwrap().to_string_lossy().to_string();
+    let why = format!("https://example.com/{here}/why");
+    Db::edit(&db, |d| {
+        let old = d.patch(&d.stack("s")?.patches[0]).clone();
+        let draft = stacked::mbox::Draft {
+            message: format!("Bug 1 - shout two\n\nBecause {why} says so."),
+            ..stacked::mbox::Draft::from(&old)
+        };
+        stacked::ops::replace(d, "s", 0, draft, "reword").map(|_| ())
+    })
+    .unwrap();
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Up]);
+    choose(&mut app, "History…");
+    assert_eq!(app.screen, Screen::History);
+    // Its newest record's stack diff, down to the line the new version puts
+    // in its message.
+    keys(&mut app, &[KeyCode::Right]);
+    let row = |app: &App| app.hist_rows.get(app.hist_cursor).map(|p| p.iter().map(|(t, _)| t.as_str()).collect::<String>().trim().to_string()).unwrap_or_default();
+    for _ in 0..40 {
+        if row(&app).starts_with("+Because https://") {
+            break;
+        }
+        keys(&mut app, &[KeyCode::Down]);
+    }
+    assert!(row(&app).starts_with("+Because https://"), "{}", draw(&mut app));
+    assert!(app.hint().contains("o: open the link · "), "{}", app.hint());
+    assert!(app.help().contains(&format!("Press o to open {why} in your browser.")), "{:?}", app.help());
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    assert_eq!(links_after(&app, "Ask agent about this, answer only…", "Start a new database here…"), 1);
+    keys(&mut app, &[KeyCode::Esc]);
+    assert_eq!(opened_with(&mut app, 'o'), format!("opened {why} in your browser"));
+    assert!(opened(&why));
+    // On the history's list, o does nothing.
+    keys(&mut app, &[KeyCode::Left, KeyCode::Char('o')]);
+    assert_eq!((app.status.as_str(), app.screen), ("", Screen::History));
 }
 
 #[test]
@@ -9950,13 +10313,15 @@ fn enter_on_a_line_of_the_interdiff_goes_to_that_line_of_the_patch() {
     down_to_review(&mut app, "modify  1 Bug 1 - say two");
     keys(&mut app, &[KeyCode::Right]);
     assert_eq!(work_row(&mut app).as_deref(), Some("-Subject: Bug 1 - shout two"));
-    assert_eq!(app.hint(), "↑↓: a line · enter: go to it in the patch · delete: reject · →: wider · ←: back to the list · esc: save, discard or close");
+    // With moz-phab, the title names its bug, which o opens.
+    let bug = if cfg!(feature = "moz-phab") { "o: open bug 1 · " } else { "" };
+    assert_eq!(app.hint(), format!("↑↓: a line · enter: go to it in the patch · {bug}delete: reject · →: wider · ←: back to the list · esc: save, discard or close"));
     // Enter: the patch as the work leaves it, the cursor on its title.
     keys(&mut app, &[KeyCode::Enter]);
     let screen = draw(&mut app);
     assert!(screen.contains(" patch 1 as the work leaves it: Bug 1 - say two"), "{screen}");
     assert_eq!(work_row(&mut app).as_deref(), Some("Bug 1 - say two"));
-    assert_eq!(app.hint(), "↑↓: a line · enter: comment · delete: reject · →: wider · ←: back to the stack diff · esc: save, discard or close");
+    assert_eq!(app.hint(), format!("↑↓: a line · enter: comment · {bug}delete: reject · →: wider · ←: back to the stack diff · esc: save, discard or close"));
     // ← back to the stack diff, the cursor where it was; on the line of code
     // that took the place of another, Enter goes to it in the patch.
     keys(&mut app, &[KeyCode::Left]);
@@ -13326,6 +13691,71 @@ fn the_title_and_summary_sent_are_compared_as_the_sync_compares_two_messages_sid
     assert!(beside(" Because.", " Because."), "{screen}");
     check(&mut app);
     keys(&mut app, &[KeyCode::Esc]);
+    assert!(phab.lock().unwrap().writes().is_empty());
+    stacked::submit::stand_in(None);
+}
+
+#[cfg(feature = "moz-phab")]
+#[test]
+fn in_what_a_submit_sends_a_line_of_the_title_and_summary_opens_its_links() {
+    let (tmp, db) = phab_setup(["Bug 1 - one", &format!("Bug 2 - two\n\n{LINK}12"), &format!("Bug 3 - three\n\nWhy.\n\n{LINK}13")]);
+    let here = tmp.path().file_name().unwrap().to_string_lossy().to_string();
+    let why = format!("https://example.com/{here}/why");
+    let bugzilla = format!("https://bugzilla.example.com/{here}");
+    // Phabricator has the code as it is, the summary not.
+    let diff = patch_of(&db, 2).diff;
+    next_version(&db, 2, &format!("Bug 3 - three\n\nWhy: {why}\n\n{LINK}13"), &diff);
+    let mut p = Phab::default().with(12, "needs-review", "Bug 2 - two", "").with(13, "changes-planned", "WIP: Bug 3 - three", &diff);
+    let r = p.revisions.get_mut(&13).unwrap();
+    (r.summary, r.parents) = ("Why.".into(), vec!["PHID-DREV-12".into()]);
+    let phab = std::sync::Arc::new(std::sync::Mutex::new(p));
+    let _one = phab_stand_in(&phab);
+    let mut app = open_set(&db, |c| c.reviews.bugzilla = bugzilla.clone());
+    keys(&mut app, &[KeyCode::Down, KeyCode::Down]);
+    choose(&mut app, "Submit to Phabricator as WIP");
+    app.settle();
+    assert_eq!(app.screen, Screen::Submit);
+    // On the summary's line sent: its link, in the menu after the submit's
+    // own items, and o opens it.
+    let rows = submitted(&mut app);
+    let at = rows.iter().position(|r| r.starts_with("+Why: https://")).unwrap_or_else(|| panic!("{rows:#?}"));
+    for _ in 0..at {
+        key(&mut app, KeyCode::Down);
+    }
+    draw(&mut app);
+    assert_eq!(app.hint(), "↑↓: scroll · enter: send it to Phabricator · esc: send nothing · 1: side by side · o: open the link · space: menu · ?: what can I do here");
+    assert!(app.help().contains(&format!("Press o to open {why} in your browser.")), "{:?}", app.help());
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    assert_eq!(link_items(&app), [format!("Open {why} in your browser")]);
+    assert_eq!(links_after(&app, "Send it to Phabricator", "Show the code side by side"), 1);
+    keys(&mut app, &[KeyCode::Esc]);
+    assert_eq!(app.screen, Screen::Submit, "Esc closed the menu alone");
+    assert_eq!(opened_with(&mut app, 'o'), format!("opened {why} in your browser"));
+    assert!(opened(&why));
+    // The title names its bug, on the settings' Bugzilla.
+    for _ in 0..at {
+        key(&mut app, KeyCode::Up);
+        draw(&mut app);
+        if app.links_here().iter().any(|l| l.said == "bug 3") {
+            break;
+        }
+    }
+    let bug = format!("{bugzilla}/show_bug.cgi?id=3");
+    assert_eq!(opened_with(&mut app, 'o'), format!("opened {bug} in your browser"));
+    assert!(opened(&bug));
+    // Side by side: the line of both sides, Phabricator's with no link.
+    keys(&mut app, &[KeyCode::Char('1')]);
+    for _ in 0..rows.len() {
+        if app.links_here().iter().any(|l| l.url == why) {
+            break;
+        }
+        keys(&mut app, &[KeyCode::Down]);
+    }
+    let screen = draw(&mut app);
+    assert!(screen.lines().any(|l| l.contains("-Why.") && l.contains("│+Why: https://")), "{screen}");
+    assert_eq!(app.links_here().len(), 1, "{:?}", app.links_here());
+    assert_eq!(opened_with(&mut app, 'o'), format!("opened {why} in your browser"));
+    // Nothing was sent.
     assert!(phab.lock().unwrap().writes().is_empty());
     stacked::submit::stand_in(None);
 }
