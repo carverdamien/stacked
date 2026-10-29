@@ -90,15 +90,58 @@ pub fn dirty(dir: &Path) -> Result<bool> {
     Ok(!git(dir, &["status", "--porcelain", "--untracked-files=no"])?.trim().is_empty())
 }
 
-/// Anything not committed, untracked files too.
+/// Anything not committed, untracked files too, or a git operation stopped
+/// midway (`under_way`).
 pub fn unfinished(dir: &Path) -> Result<bool> {
     let status = git(dir, &["status", "--porcelain"])?;
-    let gitdir = git(dir, &["rev-parse", "--git-dir"])?;
-    let gitdir = Path::new(gitdir.trim());
-    let busy = ["rebase-merge", "rebase-apply", "MERGE_HEAD", "CHERRY_PICK_HEAD"]
-        .iter()
-        .any(|f| dir.join(gitdir).join(f).exists());
-    Ok(!status.trim().is_empty() || busy)
+    Ok(!status.trim().is_empty() || under_way(dir)?.is_some())
+}
+
+/// A git operation stopped midway in a checkout, as git's own state says.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Operation {
+    Rebase,
+    Am,
+    CherryPick,
+    Revert,
+    Merge,
+}
+
+impl Operation {
+    /// What it is, said: `a rebase`, `git am`.
+    pub fn said(self) -> &'static str {
+        match self {
+            Operation::Rebase => "a rebase",
+            Operation::Am => "git am",
+            Operation::CherryPick => "a cherry-pick",
+            Operation::Revert => "a revert",
+            Operation::Merge => "a merge",
+        }
+    }
+}
+
+/// The git operation stopped midway in the checkout at `dir`, by anyone, if
+/// one is: a rebase, `git am`, a cherry-pick, a revert or a merge, as git's
+/// own state says, where `git rev-parse --git-path` finds it (a worktree's
+/// own).
+pub fn under_way(dir: &Path) -> Result<Option<Operation>> {
+    const STATE: [(&str, Operation); 5] = [
+        ("rebase-merge", Operation::Rebase),
+        ("rebase-apply", Operation::Am),
+        ("CHERRY_PICK_HEAD", Operation::CherryPick),
+        ("REVERT_HEAD", Operation::Revert),
+        ("MERGE_HEAD", Operation::Merge),
+    ];
+    let mut args = vec!["rev-parse", "--path-format=absolute"];
+    args.extend(STATE.iter().flat_map(|(name, _)| ["--git-path", *name]));
+    let paths = git(dir, &args)?;
+    let found = paths.lines().map(|p| dir.join(p)).zip(STATE).find(|(p, _)| p.exists());
+    Ok(found.map(|(p, (_, op))| match op {
+        // `rebase-apply` is `git am`'s, which marks it `applying`, or a
+        // rebase's that applies patches.
+        Operation::Am if !p.join("applying").exists() => Operation::Rebase,
+        op => op,
+    }))
 }
 
 /// The top of the checkout at `dir`, if it is a checkout of the same
@@ -198,17 +241,10 @@ pub fn exclude(repo: &Path, pattern: &str) -> Result<()> {
     std::fs::write(&file, text).map_err(say)
 }
 
-/// Changes to the files git tracks at `dir`, or a rebase, merge or
-/// cherry-pick under way there: what moving the checkout would lose.
+/// Changes to the files git tracks at `dir`, or a git operation stopped
+/// midway there (`under_way`): what moving the checkout would lose.
 pub fn unfinished_tracked(dir: &Path) -> Result<bool> {
-    if dirty(dir)? {
-        return Ok(true);
-    }
-    let gitdir = git(dir, &["rev-parse", "--absolute-git-dir"])?;
-    let gitdir = Path::new(gitdir.trim());
-    Ok(["rebase-merge", "rebase-apply", "MERGE_HEAD", "CHERRY_PICK_HEAD"]
-        .iter()
-        .any(|f| gitdir.join(f).exists()))
+    Ok(dirty(dir)? || under_way(dir)?.is_some())
 }
 
 /// Where a checkout is: on a branch, or at a commit.
@@ -295,4 +331,65 @@ pub fn apply(repo: &Path, base: &str, mbox: &str, branch: Option<&str>) -> Resul
         return err(format!("{}; the worktree is left at the base", e.0));
     }
     Ok(git(repo, &["rev-parse", "--short", "HEAD"])?.trim().to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// git run at `dir`, as a test runs it, its author and committer its own.
+    fn run(dir: &Path, args: &[&str]) -> String {
+        let out = Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .env("GIT_AUTHOR_NAME", "a")
+            .env("GIT_AUTHOR_EMAIL", "a@b")
+            .env("GIT_COMMITTER_NAME", "a")
+            .env("GIT_COMMITTER_EMAIL", "a@b")
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        String::from_utf8(out.stdout).unwrap()
+    }
+
+    #[test]
+    fn a_git_operation_stopped_midway_is_found_in_each_checkout_s_own_state() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().canonicalize().unwrap().join("repo");
+        std::fs::create_dir(&repo).unwrap();
+        run(&repo, &["init", "-q", "-b", "main"]);
+        run(&repo, &["config", "commit.gpgsign", "false"]);
+        std::fs::write(repo.join("a.txt"), "a\n").unwrap();
+        run(&repo, &["add", "."]);
+        run(&repo, &["commit", "-qm", "base"]);
+        let head = run(&repo, &["rev-parse", "HEAD"]);
+        let wt = repo.with_file_name("wt");
+        run(&repo, &["worktree", "add", "-q", "--detach", &wt.to_string_lossy()]);
+        assert_eq!((under_way(&repo).unwrap(), under_way(&wt).unwrap()), (None, None));
+        assert!(!unfinished_tracked(&repo).unwrap() && !unfinished(&repo).unwrap());
+        // Each as git leaves it in the repository's git directory: there,
+        // and not in the worktree, which has its own; a revert too, which
+        // moving the checkout would lose as well.
+        let gitdir = repo.join(".git");
+        for (name, op) in [
+            ("CHERRY_PICK_HEAD", Operation::CherryPick),
+            ("REVERT_HEAD", Operation::Revert),
+            ("MERGE_HEAD", Operation::Merge),
+        ] {
+            std::fs::write(gitdir.join(name), &head).unwrap();
+            assert_eq!((under_way(&repo).unwrap(), under_way(&wt).unwrap()), (Some(op), None), "{name}");
+            assert!(unfinished_tracked(&repo).unwrap() && unfinished(&repo).unwrap(), "{name}");
+            std::fs::remove_file(gitdir.join(name)).unwrap();
+        }
+        // rebase-apply: git am's when git marks it so, else a rebase's.
+        std::fs::create_dir(gitdir.join("rebase-apply")).unwrap();
+        assert_eq!(under_way(&repo).unwrap(), Some(Operation::Rebase));
+        std::fs::write(gitdir.join("rebase-apply/applying"), "").unwrap();
+        assert_eq!(under_way(&repo).unwrap(), Some(Operation::Am));
+        std::fs::remove_dir_all(gitdir.join("rebase-apply")).unwrap();
+        // The worktree's own, in its git directory: not the repository's.
+        std::fs::create_dir(gitdir.join("worktrees/wt/rebase-merge")).unwrap();
+        assert_eq!((under_way(&wt).unwrap(), under_way(&repo).unwrap()), (Some(Operation::Rebase), None));
+        assert!(unfinished_tracked(&wt).unwrap() && !unfinished_tracked(&repo).unwrap());
+    }
 }

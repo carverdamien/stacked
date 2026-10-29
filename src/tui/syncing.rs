@@ -86,6 +86,33 @@ impl Syncing {
     }
 }
 
+/// Why the sync of the commit messages waits, HEAD of your checkout not
+/// settled (`App::sync_waits`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) enum Waits {
+    /// stacked moves HEAD, or is about to.
+    Moving,
+    /// The sync itself is under way.
+    Syncing,
+    /// stacked moved HEAD, which is being looked at again.
+    Looking,
+    /// A git operation is stopped midway in your checkout.
+    Stopped(crate::git::Operation),
+}
+
+impl Waits {
+    /// Why the sync waits, and until when, said.
+    pub(super) fn said(self) -> String {
+        let settled = "picks wait until HEAD has settled and has been looked at again";
+        match self {
+            Waits::Moving => format!("HEAD of your checkout is moving: {settled}"),
+            Waits::Syncing => format!("the commit messages are being synced: {settled}"),
+            Waits::Looking => "HEAD of your checkout is being looked at again: picks wait until that is done".into(),
+            Waits::Stopped(op) => format!("{} is stopped midway in your checkout: picks wait until it is finished or aborted", op.said()),
+        }
+    }
+}
+
 /// What each side's message is called.
 fn whose(k: Keep) -> &'static str {
     match k {
@@ -118,10 +145,34 @@ fn message_rows(lines: &[Marked], word: Style, w: usize) -> Vec<Parts> {
 
 impl App {
     /// Where HEAD was when last looked at, if it was looked at on this
-    /// stack as it is now.
+    /// stack as it is now, and has settled since (`sync_waits`).
     fn fresh_head(&self) -> Option<&HeadSeen> {
+        if self.sync_waits().is_some() {
+            return None;
+        }
         let rev = self.db.head(&self.stack).map(|(r, _)| r);
         self.head.as_ref().filter(|h| h.name == self.stack && h.rev == rev)
+    }
+
+    /// Why the sync of the commit messages waits, if it does: while stacked
+    /// moves HEAD of your checkout, or is about to (`Move HEAD…`, HEAD
+    /// following the stack as a review closes, an apply, the sync itself),
+    /// until HEAD has been looked at again since; and while a git operation
+    /// is stopped midway there, by anyone, as HEAD was last looked at.
+    /// Meanwhile no patch is to sync: the banner says nothing of it, and
+    /// holds back no review.
+    pub(super) fn sync_waits(&self) -> Option<Waits> {
+        if self.bg.doing.contains(&SYNCING) {
+            return Some(Waits::Syncing);
+        }
+        if self.bg.doing.iter().any(|d| [MOVING_HEAD, APPLYING].contains(d)) {
+            return Some(Waits::Moving);
+        }
+        let seen = self.head.as_ref().filter(|h| h.name == self.stack)?;
+        if seen.moves != self.bg.moved {
+            return Some(Waits::Looking);
+        }
+        seen.stopped.map(Waits::Stopped)
     }
 
     /// HEAD as last looked at, on this stack as it is now, and what it has
@@ -137,7 +188,8 @@ impl App {
     /// The patches whose message differs from its commit's in your
     /// workspace, HEAD as last looked at on the stack as it is: none while
     /// HEAD is not on it, nor while the agent works in your checkout, HEAD
-    /// its own then.
+    /// its own then, nor while the sync waits for HEAD to settle
+    /// (`sync_waits`).
     pub(super) fn differing(&self) -> Vec<Differing> {
         let Some((h, on)) = self.listed() else { return vec![] };
         let Some(s) = self.current() else { return vec![] };
@@ -194,7 +246,8 @@ impl App {
 
     /// The picks kept only for the patches that still differ, HEAD looked
     /// at on the stack as it is: not while the agent works in your
-    /// checkout, HEAD its own then.
+    /// checkout, HEAD its own then, nor while the sync waits for HEAD to
+    /// settle, the picks kept meanwhile.
     pub(super) fn keep_sync_picks(&mut self) {
         let Some(seen) = self.fresh_head() else { return };
         if seen.head.as_ref().is_some_and(|h| crate::head::agent_in(&self.db, &h.dir)) {
@@ -209,7 +262,10 @@ impl App {
     pub(super) fn open_sync(&mut self) {
         let list = self.differing();
         if list.is_empty() {
-            self.status = "the commit messages are the same in the stack and in your workspace: nothing is left to sync".into();
+            self.status = match self.sync_waits() {
+                Some(w) => w.said(),
+                None => "the commit messages are the same in the stack and in your workspace: nothing is left to sync".into(),
+            };
             return;
         }
         let sel = list.iter().position(|d| self.stand(d) == Stand::ToPick).unwrap_or(0);
@@ -239,6 +295,10 @@ impl App {
     pub(super) fn sync_keep(&mut self, keep: Keep) {
         if self.bg.doing.contains(&SYNCING) {
             self.status = "the commit messages are being synced: wait for it to be done".into();
+            return;
+        }
+        if let Some(w) = self.sync_waits() {
+            self.status = w.said();
             return;
         }
         let (list, at) = self.sync_here();
@@ -284,6 +344,10 @@ impl App {
     /// Closing the sync: once every patch has its pick, asked first, what
     /// it does said; else what is left, said.
     pub(super) fn ask_sync(&mut self) {
+        if let Some(w) = self.sync_waits() {
+            self.status = w.said();
+            return;
+        }
         let (list, _) = self.sync_here();
         if list.is_empty() {
             self.status = "nothing is left to sync: the commit messages are the same in the stack and in your workspace".into();
@@ -389,7 +453,10 @@ impl App {
             return;
         }
         let Some((rev, Some(head))) = self.fresh_head().map(|h| (h.rev, h.head.clone())) else {
-            self.status = "HEAD of your checkout is being looked at again: sync once it has been".into();
+            self.status = match self.sync_waits() {
+                Some(w) => w.said(),
+                None => "HEAD of your checkout is being looked at again: sync once it has been".into(),
+            };
             return;
         };
         let picks: Vec<(usize, Keep)> = self.differing().iter().filter_map(|d| Some((d.at, self.pick_of(d)?))).collect();
@@ -417,11 +484,12 @@ impl App {
         self.look_at_head();
     }
 
-    /// What the sync's menu says, when an item of it cannot be chosen: of
-    /// the patch the cursor is on, what it keeps; what is left to pick.
+    /// What the sync's menu says, when an item of it cannot be chosen: why
+    /// the sync waits, if it does; of the patch the cursor is on, what it
+    /// keeps; what is left to pick.
     fn sync_note(&self) -> Vec<String> {
         let (list, at) = self.sync_here();
-        let mut out = Vec::new();
+        let mut out: Vec<String> = self.sync_waits().into_iter().map(|w| format!("{}.", capitalized(&w.said()))).collect();
         if let Some(d) = at.and_then(|i| list.get(i)) {
             match (self.stand(d), d.differs.taken()) {
                 (Stand::Nothing(_), Some((_, rev))) => out.push(format!(
@@ -622,6 +690,7 @@ impl App {
             let area = Rect::new(body.x, body.y, list_w as u16, body.height);
             let left = list.iter().filter(|d| self.stand(d) == Stand::ToPick).count();
             let title = match (list.len(), left) {
+                (0, _) if self.sync_waits().is_some() => " commit messages: picks wait".to_string(),
                 (0, _) => " commit messages: none to sync".to_string(),
                 (_, 0) => " commit messages: all picked".to_string(),
                 (_, left) => format!(" commit messages: {left} to pick"),
@@ -664,6 +733,20 @@ impl App {
             head = head.add_modifier(Modifier::UNDERLINED);
         }
         let Some(d) = list.get(sv.sel) else {
+            // Waiting for HEAD to settle: why, and until when, in as many
+            // lines as it takes.
+            if let Some(w) = self.sync_waits() {
+                let then = match w {
+                    Waits::Syncing => "Esc leaves the sync meanwhile.",
+                    _ => "Any picks you made are kept, and Esc leaves the sync.",
+                };
+                let said = self.say_keys(format!("{}. {then}", w.said()));
+                for (y, line) in wrap(&said, main_w.saturating_sub(2).max(1)).iter().take(h).enumerate() {
+                    put(buf, main, 1, y, main_w.saturating_sub(1), line, head);
+                }
+                self.syncing = Some(sv);
+                return;
+            }
             let said = match self.fresh_head() {
                 None => " HEAD of your checkout is being looked at again…".to_string(),
                 Some(_) => self.say_keys(" nothing is left to sync: the commit messages are the same in the stack and in your workspace. Esc leaves.".into()),

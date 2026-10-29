@@ -395,9 +395,15 @@ reply` and `Review the agent's work…` are grayed, its menu saying why. An
 edit by hand lands and waits there. Asks still run and land as they do,
 and a review open before the messages came to differ still closes. While
 the agent makes its changes in your checkout (`agent.worktree = "pwd"`),
-HEAD is the agent's, and nothing is to sync. Nothing else of it is said on
-the main screen: the patches pane and HEAD's line say nothing of messages,
-and no patch's menu syncs one.
+HEAD is the agent's, and nothing is to sync. Nor is anything to sync while
+stacked moves HEAD (`Move HEAD…`, HEAD following the stack as a review
+closes, `Apply the stack to the worktree…`, the sync itself) until HEAD has
+been looked at again after the move, nor while a rebase, `git am`, a
+cherry-pick, a revert or a merge is stopped midway in the checkout: the
+banner says nothing of the sync and holds back no review meanwhile, and its
+line comes back once HEAD has settled, if the messages still differ.
+Nothing else of it is said on the main screen: the patches pane and HEAD's
+line say nothing of messages, and no patch's menu syncs one.
 
 Enter on that line, or its item, opens the sync of the commit messages. On
 the left is each patch whose message differs, with what it keeps: `to

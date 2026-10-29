@@ -2125,12 +2125,16 @@ enum Done {
     /// Where HEAD of the checkout stacked runs in is, against stack `name`
     /// at `rev`: none if the checkout is not of its repository. And, looked
     /// at in a review with HEAD in sync with the stack, whether nothing is
-    /// uncommitted there.
+    /// uncommitted there; looked at while commit messages differ, the git
+    /// operation stopped midway there, if one is; and how many moves of
+    /// HEAD by stacked had ended when it was looked at (`Background::moved`).
     Head {
         name: String,
         rev: Option<usize>,
         head: Option<crate::head::Head>,
         clean: Option<bool>,
+        stopped: Option<crate::git::Operation>,
+        moves: usize,
     },
     /// The setup's screen for the checkout `0`, the agent asked what tools it
     /// has there; or why it could not be shown.
@@ -2159,6 +2163,14 @@ struct HeadSeen {
     /// Whether nothing is uncommitted in the checkout: looked at only in a
     /// review, with HEAD in sync with the stack, for HEAD to follow it.
     clean: Option<bool>,
+    /// The git operation stopped midway in the checkout, by anyone, if one
+    /// was: looked at only while some commit messages differ from their
+    /// patches', for their sync to wait meanwhile.
+    stopped: Option<crate::git::Operation>,
+    /// How many moves of HEAD by stacked had ended when it was looked at
+    /// (`Background::moved`): another ended since, it is not where HEAD
+    /// settled.
+    moves: usize,
     when: Instant,
     stale: bool,
 }
@@ -2187,6 +2199,11 @@ struct Background {
     precreated: Vec<ask::Ahead>,
     /// Where HEAD is is being looked at.
     heading: bool,
+    /// How many moves of HEAD of the checkout by stacked have ended (`Move
+    /// HEAD…`, HEAD following the stack as a review closes, an apply, the
+    /// sync of the commit messages): where HEAD was looked at before the
+    /// last ended is not where it settled.
+    moved: usize,
     /// The runs whose agent is being stopped: what landing them says is
     /// said once they are stopped.
     stopping: Vec<String>,
@@ -2207,15 +2224,18 @@ impl Background {
             precreating: vec![],
             precreated: vec![],
             heading: false,
+            moved: 0,
             stopping: vec![],
         }
     }
 }
 
 /// What the bar says while HEAD of the checkout is being moved, or the
-/// commit messages synced.
+/// commit messages synced; and while the stack is applied to the worktree
+/// of its repository, which moves HEAD there.
 const MOVING_HEAD: &str = "moving HEAD";
 const SYNCING: &str = "syncing the commit messages";
+const APPLYING: &str = "applying";
 
 /// What the bar says while a web link is being opened in the browser.
 const OPENING: &str = "opening a link";
@@ -2530,16 +2550,17 @@ impl App {
 
     /// Where HEAD of the checkout stacked runs in is, against the current
     /// stack: looked at away from the screen, again as the stack changes,
-    /// and every few seconds, as HEAD moves outside stacked too.
+    /// once stacked has moved it, and every few seconds, as HEAD moves
+    /// outside stacked too.
     fn check_head(&mut self) {
         let rev = self.db.head(&self.stack).map(|(r, _)| r);
+        let moves = self.bg.moved;
         // In a review, HEAD in sync with the stack seen without whether the
         // checkout is clean is seen again.
         let unsure = |h: &HeadSeen| self.reviewing.is_some() && h.clean.is_none() && h.head.as_ref().is_some_and(|hd| hd.in_sync(self.patch_count()));
-        let seen = self
-            .head
-            .as_ref()
-            .is_some_and(|h| h.name == self.stack && h.rev == rev && !h.stale && h.when.elapsed() < Duration::from_secs(3) && !unsure(h));
+        let seen = self.head.as_ref().is_some_and(|h| {
+            h.name == self.stack && h.rev == rev && h.moves == moves && !h.stale && h.when.elapsed() < Duration::from_secs(3) && !unsure(h)
+        });
         if self.bg.heading || seen {
             return;
         }
@@ -2562,7 +2583,13 @@ impl App {
                 .as_ref()
                 .filter(|h| review && h.in_sync(n))
                 .map(|h| !crate::git::unfinished_tracked(&h.dir).unwrap_or(true));
-            Done::Head { name, rev, head, clean }
+            // With commit messages to sync, a rebase, a merge… stopped
+            // midway there: their sync waits for it.
+            let stopped = head
+                .as_ref()
+                .filter(|h| !h.differ().is_empty())
+                .and_then(|h| crate::git::under_way(&h.dir).ok().flatten());
+            Done::Head { name, rev, head, clean, stopped, moves }
         });
     }
 
@@ -2645,7 +2672,8 @@ impl App {
                 }
                 self.status = said;
                 // Moved: where HEAD is, looked at again.
-                if what == MOVING_HEAD {
+                if what == MOVING_HEAD || what == APPLYING {
+                    self.bg.moved += 1;
                     self.look_at_head();
                 }
             }
@@ -2667,18 +2695,25 @@ impl App {
                     Err(e) => self.status = format!("the agents' worktrees could not be made ahead: {e}"),
                 }
             }
-            Done::Head { name, rev, head, clean } => {
+            Done::Head { name, rev, head, clean, stopped, moves } => {
                 self.bg.heading = false;
                 self.head = Some(HeadSeen {
                     name,
                     rev,
                     head,
                     clean,
+                    stopped,
+                    moves,
                     when: Instant::now(),
                     stale: false,
                 });
                 // The picks of patches that no longer differ, dropped.
                 self.keep_sync_picks();
+                // Looked at before a move of HEAD ended: looked at again, at
+                // once.
+                if moves != self.bg.moved {
+                    self.check_head();
+                }
             }
             // Unless it was left meanwhile: nothing sent, said already. An
             // agent asked for a setup left before serves the next.
@@ -2713,6 +2748,7 @@ impl App {
             }
             Done::Synced(done) => {
                 self.bg.doing.retain(|d| *d != SYNCING);
+                self.bg.moved += 1;
                 self.synced(done);
             }
         }
@@ -5862,12 +5898,28 @@ impl App {
     }
 
     /// As `move_head`, the status line saying `said` first.
-    pub(super) fn move_head_after(&mut self, n: usize, said: String) {
-        if self.bg.doing.contains(&MOVING_HEAD) {
+    fn move_head_after(&mut self, n: usize, said: String) {
+        if !self.head_to_move() {
             self.status = format!("{said}HEAD is being moved already");
             return;
         }
+        self.head_moves(n, said);
+    }
+
+    /// HEAD of the checkout about to be moved: moving from now on, as the
+    /// bar says, and the sync of the commit messages waits; false if it is
+    /// being moved already.
+    pub(super) fn head_to_move(&mut self) -> bool {
+        if self.bg.doing.contains(&MOVING_HEAD) {
+            return false;
+        }
         self.bg.doing.push(MOVING_HEAD);
+        true
+    }
+
+    /// HEAD moved, once `head_to_move` said it may be, as `move_head_after`
+    /// moves it.
+    pub(super) fn head_moves(&mut self, n: usize, said: String) {
         self.status = format!("{said}moving HEAD to {}…", crate::head::place(&self.stack, n));
         let (path, name, here) = (self.path.clone(), self.stack.clone(), self.checkout.clone());
         self.spawn(move || Done::Said(MOVING_HEAD, format!("{said}{}", crate::head::move_to(&path, &name, &here, n).unwrap_or_else(|e| e.0))));
@@ -7204,15 +7256,15 @@ impl App {
                 self.mode = Mode::Menu(Menu::ask(title, Item::new("Apply it", Action::Apply), "Cancel", true));
             }
             Action::Apply => {
-                if self.bg.doing.contains(&"applying") {
+                if self.bg.doing.contains(&APPLYING) {
                     self.status = "already applying".into();
                 } else {
-                    self.bg.doing.push("applying");
+                    self.bg.doing.push(APPLYING);
                     self.status = "applying the stack to the worktree…".into();
                     let path = self.path.clone();
                     self.spawn(move || {
                         Done::Said(
-                            "applying",
+                            APPLYING,
                             match ops::apply_stack(&path, &name, None) {
                                 Ok(r) => r.summary,
                                 Err(e) => e.0,

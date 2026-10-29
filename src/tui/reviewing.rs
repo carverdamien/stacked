@@ -1815,15 +1815,24 @@ impl App {
         let Some(rv) = self.reviewing.clone() else { return };
         let accepted = rv.marks.get(&Part::Stack.key()).copied().or(rest) == Some(true);
         let follow = accepted && !rv.stay && self.head_can_follow();
+        // HEAD to follow: moving from now on, before the stack takes the
+        // change, which HEAD has only once it has moved; the sync of the
+        // commit messages waits meanwhile.
+        let moving = follow && self.head_to_move();
         if let Some(said) = self.edit(|db| crate::held::close(db, &rv.run, &rv.marks, rest)) {
             self.status = format!("reviewed: {said}");
             self.leave_review();
-            if follow {
+            if moving {
                 let n = self.patch_count();
-                self.move_head_after(n, format!("reviewed: {said}; "));
+                self.head_moves(n, format!("reviewed: {said}; "));
+            } else if follow {
+                self.status = format!("reviewed: {said}; HEAD is being moved already");
             }
             // What waited on the review may go.
             self.launch();
+        } else if moving {
+            // Not closed: HEAD stays where it is.
+            self.bg.doing.retain(|d| *d != MOVING_HEAD);
         }
     }
 
