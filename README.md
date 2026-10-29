@@ -48,10 +48,12 @@ reads a database that holds reviews pulled.
 The `try-push` feature adds the try push of Firefox's CI (Try push,
 below): a comment asked as a try push has the agent select the CI tasks it
 asks for, each with why, and those tasks wait for your review, to accept,
-reject or answer. Built without it, stacked has none of it, but reads a
-database and a settings' file that a build with it wrote: an ask of a try
-push is read as one to answer only, and the try push's list of tools is
-passed over.
+reject or answer; those you accept are pushed to try with `./mach try
+fuzzy`, its link a reply on the comment. Built without it, stacked has none
+of it, but reads a database and a settings' file that a build with it
+wrote: an ask of a try push is read as one to answer only, the try push's
+list of tools is passed over, and so is what a push's run keeps (it reads
+as a run of its own, `try-push`).
 
 The `app` feature adds StackED, the editor in a window of its own
 (`stacked app`, below). Its window is drawn by eframe (egui), on OpenGL,
@@ -1231,7 +1233,7 @@ comment editor's `Ask agent`:
   is relevant. It reads as an answer reads, where an answer works, and is
   given what an answer is given and its own list (`agent.try_tools`); it
   pushes nothing and changes nothing. What it selects waits for your
-  review (Try push, below).
+  review, and stacked pushes what you accept (Try push, below).
 
 How hard the agent works on an ask is its effort, as claude's `--effort`
 takes it: `low`, `medium`, `high`, `xhigh` or `max`. Every item that asks
@@ -1929,9 +1931,78 @@ asking (push.py's threshold, each task counted as many times as it runs),
 it says so too: `These 1,240 tasks are more than the 1,000 mach pushes
 without asking: they would run at the lowest priority, as mach does when
 you say yes.` Closing with no task accepted pushes nothing, as a
-rejection does: the question says so. Pushing to try is not built yet:
-this stacked closes the review as any other, and the status line says that
-nothing was pushed.
+rejection does: the question says so. The comment that asked stays open,
+even marked to close with the review: the push's replies go there.
+
+mach pushes every commit of HEAD that none of the remotes it takes as
+Firefox's has (those fetching from github.com/mozilla-firefox/, and, in a
+git-cinnabar clone, from hg.mozilla.org but its try; with none of those,
+every remote), so the stack's base must be on one of them, for the push to
+hold the stack's patches alone. A base that is not keeps the review open,
+as the question and the status line say: `the stack's base, commit
+1a2b3c4d5e6f, is not on origin, the remote mach takes as Firefox's: mach
+would push 3 commits of the base's besides the stack's patches. Fetch that
+remote (`git fetch`), or put the stack on a commit that it has.`
+
+The push is made away from the screen, by a stacked of its own (`stacked
+try-push RUN`, which the editor starts), from a worktree of the stack's
+own, `.stacked/NAME/try` (`try-2`… while another push is made from it; under
+`agent.worktrees` when that is set): the stack's patches as commits on its
+base, up to the comment's. The commits mach would push are checked there
+to be those patches alone. Then `./mach try fuzzy --no-push` runs, each
+task its own exact query (`-q '^LABEL$'`), the labels with their chunk
+numbers (`--show-chunk-numbers`), from every task of the graph
+(`--all-tasks`), with `--rebuild N` when each runs more than once; what it
+says it would push (its try_task_config.json) is compared with what you
+accepted: the tasks, how many times each runs, and the priority. Anything
+that differs is said, and nothing is pushed: `This task you accepted is
+not in what mach would push, as the task graph it reads does not have it:
+`test-linux2404-64/opt-not-a-task-1`.` Then `./mach try fuzzy` pushes, the
+same way. Past the threshold, mach is given the lowest priority
+beforehand, as it sets it itself once told yes: a preset of stacked's
+(`--preset stacked-lowest`), in a presets file of its own that
+`MACH_TRY_PRESET_PATHS` names, in `stacked-try/RUN` beside the database,
+which is gone once the push is done with it. Your own presets are not
+read then, and nothing is written in ~/.mozbuild by stacked.
+
+mach reads nothing: its stdin is closed, and the push runs in a session of
+its own, with no terminal, so that nothing mach runs (ssh, git) asks
+anything on yours either. A question mach asks stops it there, before
+anything is pushed (each of them comes before the push), and the reply
+says so, the question quoted, with what to change: `mach asked a question that stacked cannot answer, "Do you have an
+@mozilla.com address? [Y/n]", and stopped, as stacked gives it nothing to
+read. Nothing was pushed.` That one comes with Pernosco asked for
+(`MOZ_USE_PERNOSCO` set, or `--pernosco`) when `ssh -G hg.mozilla.org` names
+no user of yours: set your hg.mozilla.org user in ~/.ssh/config, or unset
+`MOZ_USE_PERNOSCO`. mach asks the other when it finds no fzf: install fzf,
+or run `./mach try fuzzy` once in a terminal, where it asks to install it.
+
+What mach writes is the comment's stream, as an agent's is, each command
+stacked runs as `$ …`: under the comment, the last lines, and `Read what
+mach writes for the try push` on its menu, all of them. The comment is
+locked meanwhile, as one the agent works on (`try push: mach checks the
+tasks`, `try push: mach waits for your login`, `try push: pushed`). Its
+login (Auth0's device code) shows where you see it: the page to open and
+the code to enter in the status line (`mach waits for you to log in to
+push to try: open https://… and enter the code ABCD-EFGH`) and in the
+stream, and the comment's menu has `Open the login page…`, which shows the
+page's link, for Enter to open it in your browser. mach opens the page in
+the browser itself too, unless its `try.nobrowser` setting is on; once you
+are logged in, it caches its token in ~/.mozbuild, which stacked never
+reads, and asks for no login until it expires.
+
+Pushed, the push's link is a reply on the comment that asked, a web link
+under it: `stacked pushed the 3 tasks you accepted to try, with patch 1
+alone. Treeherder shows the push: @r1.` The comment stays locked while the
+push is followed; its menu has `Open the try push on Treeherder…` and
+`Stop following the try push…`, which cannot stop the push in CI: it
+unlocks the comment, a reply saying `stacked stopped following the try
+push: it goes on in CI, and Treeherder shows it: @r2.`, the link again.
+Before mach says it pushed, the menu has `Stop the try push…`, which stops
+mach (`nothing was pushed`, unless mach had started to send the push to
+Lando, which it says). A push that fails says why in a reply, with mach's
+last lines, and the comment unlocks: reply, and ask for the try push
+again, for the agent to select the tasks again.
 
 ## Reading
 
@@ -2797,7 +2868,13 @@ is typed: `import.rs`). A fix to one may belong in the other.
   imported, a patch submitted as work in progress.
 - `try_push.rs`: the try push, built with the `try-push` feature (on by
   default): what an ask of a try push is told and answers with, its tasks
-  read from its answer, and what a round asked again is told of them.
+  read from its answer, and what a round asked again is told of them; the
+  push of the tasks a review accepts (its run's `push`), made by `stacked
+  try-push` in the stack's worktree for it, its base checked against the
+  remotes mach takes as Firefox's, `./mach try fuzzy --no-push` compared
+  with what was accepted, then the push, mach's lines in its stream, its
+  login and its link kept, its replies, the lock of its comment, and its
+  stop.
 - `import.rs`: what a stack made in the editor is imported from: a range of
   the checkout, its uncommitted changes on top if asked.
 - `mbox.rs`: reading `git format-patch` mail, writing mail for `git am`.
@@ -3326,16 +3403,37 @@ shown as the agent's comment, marked by Enter and from the menu, answered
 there and sent back, the answer a turn of yours in the thread, the next
 round told what it selected before as you marked it, and its tasks in
 place of the others; closing with tasks accepted saying what it pushes,
-and that pushing is not built yet, with none accepted that nothing is
-pushed, and past mach's 1,000 tasks, each task counted as many times as it
-runs, that they would run at the lowest priority; the setup asked again
-before a try push alone when a setup without its column was saved, an
-answer going at once meanwhile, the column then written; and a try push
-batched, sent from the banner on its own, and with the batch that
-`stacked send NAME --batch` sends. `try_push.rs` tests its tasks
-read from the answer (each label once, the first reason kept, one with a
-space or none left out, a reason with references), how many times each
-runs, from 2 to 20, the prompt, and what a round asked again is told;
+with none accepted that nothing is pushed, and past mach's 1,000 tasks,
+each task counted as many times as it runs, that they would run at the
+lowest priority; the setup asked again before a try push alone when a
+setup without its column was saved, an answer going at once meanwhile,
+the column then written; and a try push batched, sent from the banner on
+its own, and with the batch that `stacked send NAME --batch` sends. The
+push runs a stand-in for mach (`$STACKED_MACH`, which a stacked that keeps
+nothing, as the tests' own, needs, never running a mach of a worktree's),
+the repository's remote of Firefox's a name and a ref, never fetched: the
+push checked with `--no-push`, then made, mach's stdin closed and its
+output not held back, each task its own exact query, the commits it would
+push the patch alone; its login's page and code in the status line and
+the comment's stream, the page opened from the comment's menu; its link a
+reply, a web link, the comment locked until you stop following it, which
+says so with the link; past the threshold, both runs given the preset of
+the lowest priority from a presets file of stacked's own, gone once the
+push is done; a check that would push another task, a question mach asks
+(quoted, with what to change), and a push that fails (mach's last lines)
+each said in a reply, nothing pushed, the comment unlocked; a push
+stopped as mach waits for the login; and a base none of the remotes of
+Firefox's has, or no remote at all, keeping the review open, mach never
+run. `try_push.rs` tests its tasks read from the answer (each label once,
+the first reason kept, one with a space or none left out, a reason with
+references), how many times each runs, from 2 to 20, the prompt, and what
+a round asked again is told; mach's arguments and how the stream says
+them; what `--no-push` says it would push, read and compared (the tasks,
+the runs, the priority); a question mach stopped on, its login, its link
+and Lando's job read from what it writes; that a process keeping nothing
+runs only a stand-in for mach; and the remotes mach takes as Firefox's (on
+GitHub, and hg.mozilla.org's but try in a git-cinnabar clone), a base none
+of them has, and the commits mach would push;
 `ask.rs`, that a try push's ask is given what an answer is and its own
 list, and is asked for its tasks and their runs; `setup.rs`, the column of
 try pushes, ticked at first as the read-only one, its own once ticked, in
@@ -3521,8 +3619,9 @@ a test's own process.
   are still read, only to be left out. Once no database holds them, that
   code goes, and with it the split of a thread's turns between those that
   stand and all of them.
-- The tasks a try push's review accepts are not pushed to try yet: closing
-  the review says that nothing was pushed (Try push, above).
+- A try push, once pushed, is not followed yet: its comment stays locked
+  until you stop following it, and no reply says how its tasks ended (Try
+  push, above).
 - How apply picks a branch, which belongs to publishing: the editor applies
   on no branch, `stacked apply --branch` on one.
 - A stack-wide review runs one agent; one per patch is not done.

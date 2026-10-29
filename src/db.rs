@@ -250,6 +250,11 @@ fn named_by(r: &Run) -> (Vec<usize>, Vec<String>, Vec<String>) {
             runs.extend(a.get(k).and_then(|v| v.as_str()).map(str::to_string));
         }
     }
+    // A try push: the stack it pushes, which it reads as it was.
+    #[cfg(feature = "try-push")]
+    if let Some(p) = &r.push {
+        revs.push(p.rev);
+    }
     (revs, patches, runs)
 }
 
@@ -666,6 +671,11 @@ pub fn short_id(change: &str, id: &str) -> String {
     sha1_smol::Sha1::from(format!("{change}\0{id}")).digest().to_string()[..6].to_string()
 }
 
+/// What a try push's run is (`Run::what`): one a stacked built with the
+/// `try-push` feature makes. Known by any, which says nothing of it as the
+/// agent's.
+pub const TRY_PUSH: &str = "try-push";
+
 /// An operation's start or result: an ask of claude's, putting a stack in
 /// the worktree, a pull from Phabricator. The latest record of an id is
 /// where it stands.
@@ -701,6 +711,12 @@ pub struct Run {
     /// For an ask landed: what it brought back, held until it is reviewed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub held: Option<crate::held::Held>,
+    /// For a try push (`try-push`), built with the `try-push` feature: what
+    /// it pushes, and where it stands. Built without it, the run reads all
+    /// the same, this passed over.
+    #[cfg(feature = "try-push")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub push: Option<crate::try_push::Push>,
     pub time: i64,
 }
 

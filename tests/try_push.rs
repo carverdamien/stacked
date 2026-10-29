@@ -1,8 +1,12 @@
 //! The try push, built with the `try-push` feature: a comment asked as a
 //! try push, the agent's stand-in selecting its tasks, each with why; the
 //! tasks landing for review, marked, answered and sent back; and closing
-//! the review with them. The editor is drawn into a buffer and driven by
-//! keys, as in `tests/tui.rs`; no test reaches an agent, mach, Lando or
+//! the review with them, which pushes them: `./mach try fuzzy --no-push`
+//! checked, then the push, its login shown, its link a reply, and the
+//! comment locked until you stop following it. The editor is drawn into a
+//! buffer and driven by keys, as in `tests/tui.rs`; a stand-in answers for
+//! mach (`fake_mach`), and the repository's remote of Firefox's is a name
+//! and a ref, never fetched: no test reaches an agent, mach, Lando or
 //! Treeherder.
 
 #![cfg(feature = "try-push")]
@@ -57,7 +61,9 @@ fn stacked_with(dir: &Path, db: &Path, args: &[&str], env: &[(&str, &Path)]) -> 
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
-/// A database holding stack `s` of two patches, and the repository.
+/// A database holding stack `s` of two patches, and the repository: its
+/// base on `origin`, a remote mach takes as Firefox's, by its address, as
+/// if fetched (a ref of it at the base), never reached.
 fn setup() -> (tempfile::TempDir, PathBuf, PathBuf) {
     let tmp = tempfile::tempdir().unwrap();
     let src = tmp.path().join("src");
@@ -69,6 +75,8 @@ fn setup() -> (tempfile::TempDir, PathBuf, PathBuf) {
     std::fs::write(src.join("a.txt"), format!("one\ntwo\nthree\n{lines}")).unwrap();
     git(&src, &["add", "."]);
     git(&src, &["commit", "-qm", "base"]);
+    git(&src, &["remote", "add", "origin", "https://github.com/mozilla-firefox/firefox"]);
+    git(&src, &["update-ref", "refs/remotes/origin/main", "HEAD"]);
     std::fs::write(src.join("a.txt"), format!("one\nTWO\nthree\n{}", lines.replace("line 39\n", "LINE 39\n"))).unwrap();
     git(&src, &["commit", "-qam", "Bug 1 - shout two\n\nBecause."]);
     std::fs::write(src.join("b.txt"), "bee\n").unwrap();
@@ -88,12 +96,172 @@ fn settings() -> stacked::config::Config {
 }
 
 /// The editor on `db`, with the tests' settings and the stand-ins for
-/// claude and for the program that opens links.
+/// claude, for mach and for the program that opens links.
 fn open(db: &Path) -> Editor {
     stacked::config::init(settings());
     fake_claude();
+    fake_mach();
     fake_opener();
     Editor(App::with_config(db, settings()).unwrap())
+}
+
+/// The stand-in for mach, for every test of this file, run as `./mach try
+/// fuzzy` would be in the push's worktree. It writes what it is run with in
+/// `mach-calls` beside the test's database: its arguments; whether it could
+/// read anything; whether its output is held back; how many commits mach
+/// would push; the presets file it is given, and what that holds. Then it
+/// says what mach says: with `--no-push`, the try_task_config.json of the
+/// tasks its queries name, how many times each runs, and the priority the
+/// preset gives; else its login's page and code, waiting while `mach-hold`
+/// is there, then the push's link. `mach-mode` beside the database has it
+/// leave the last task out (`drop`), ask a question (`ask`), or fail as it
+/// pushes (`fail`).
+fn fake_mach() -> PathBuf {
+    static FAKE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    FAKE.get_or_init(|| {
+        let script = r#"#!/bin/sh
+git=$(git rev-parse --path-format=absolute --git-common-dir)
+dir="$git/../.."
+mode=$(cat "$dir/mach-mode" 2>/dev/null)
+{
+  printf 'args:'
+  for a in "$@"; do printf ' %s' "$a"; done
+  echo
+  if read -r line; then echo "stdin: open"; else echo "stdin: closed"; fi
+  echo "unbuffered: ${PYTHONUNBUFFERED:-}"
+  echo "commits: $(git rev-list --count HEAD --not --remotes=origin)"
+  if [ -n "$MACH_TRY_PRESET_PATHS" ]; then
+    echo "presets: $MACH_TRY_PRESET_PATHS"
+    tr -d '\n' < "$MACH_TRY_PRESET_PATHS"
+    echo
+  fi
+} >> "$dir/mach-calls"
+check=no; rebuild=""; preset=""; labels=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --no-push) check=yes ;;
+    --rebuild) shift; rebuild="$1" ;;
+    --preset) shift; preset="$1" ;;
+    -q) shift; labels="$labels$1
+" ;;
+  esac
+  shift
+done
+if [ "$mode" = ask ]; then
+  echo "warning: failed to detect current user for 'hg.mozilla.org'"
+  echo "Pernosco requires a Mozilla e-mail address to view its reports."
+  printf 'Do you have an @mozilla.com address? [Y/n]: '
+  if ! read -r answer; then
+    echo 'Traceback (most recent call last):' >&2
+    echo 'EOFError: EOF when reading a line' >&2
+    exit 1
+  fi
+fi
+if [ "$check" = yes ]; then
+  echo "Commit message:"
+  echo "Fuzzy query=..."
+  echo
+  echo 'Pushed via `mach try fuzzy`'
+  echo "Calculated try_task_config.json:"
+  tasks=$(printf '%s' "$labels" | sed 's/^\^//; s/\$$//' | sort)
+  if [ "$mode" = drop ]; then tasks=$(printf '%s\n' "$tasks" | sed '$d'); fi
+  priority=""
+  if [ -n "$preset" ] && grep -q '"lowest"' "$MACH_TRY_PRESET_PATHS"; then priority=lowest; fi
+  echo "{"
+  echo '    "parameters": {'
+  echo '        "optimize_target_tasks": false,'
+  echo '        "try_task_config": {'
+  echo '            "env": {"TRY_SELECTOR": "fuzzy"},'
+  if [ -n "$priority" ]; then echo "            \"priority\": \"$priority\","; fi
+  if [ -n "$rebuild" ]; then echo "            \"rebuild\": $rebuild,"; fi
+  echo '            "tasks": ['
+  printf '%s\n' "$tasks" | sed '/^$/d; s/.*/                "&",/; $ s/,$//'
+  echo '            ]'
+  echo '        }'
+  echo '    },'
+  echo '    "version": 2'
+  echo "}"
+  exit 0
+fi
+echo "Pushing to try..."
+if [ "$mode" = fail ]; then
+  echo "abort: error submitting patches to Lando."
+  echo "Lando returned HTTP 503 (Service Unavailable)."
+  exit 1
+fi
+echo "1. On your computer or mobile device navigate to: https://auth.example.com/activate?user_code=WXYZ-1234"
+echo "2. Enter the following code: WXYZ-1234"
+printf 'Waiting...'
+while [ -e "$dir/mach-hold" ]; do sleep 0.1; printf '.'; done
+echo
+echo "Submitting stack of $(git rev-list --count HEAD --not --remotes=origin) nodes and the try commit."
+echo "try submission success in 2.0s:"
+echo " https://treeherder.mozilla.org/jobs?repo=try&landoInstance=lando-prod-new&landoCommitID=4242"
+"#;
+        let dir = Path::new(env!("CARGO_TARGET_TMPDIR"));
+        let (path, part) = (dir.join("try-mach.sh"), dir.join(format!("try-mach-{}.sh", std::process::id())));
+        std::fs::write(&part, script).unwrap();
+        Command::new("chmod").arg("+x").arg(&part).status().unwrap();
+        std::fs::rename(&part, &path).unwrap();
+        stacked::try_push::stand_in(&path);
+        path
+    })
+    .clone()
+}
+
+/// What the stand-in for mach was run with, as `fake_mach` wrote it beside
+/// `db`: each run's arguments.
+fn mach_args(db: &Path) -> Vec<String> {
+    mach_calls(db).lines().filter_map(|l| l.strip_prefix("args: ")).map(String::from).collect()
+}
+
+/// All that the stand-in for mach wrote of how it was run, beside `db`.
+fn mach_calls(db: &Path) -> String {
+    std::fs::read_to_string(db.with_file_name("mach-calls")).unwrap_or_default()
+}
+
+/// The try push's run on `db`, the last one.
+fn push_run(db: &Path) -> Option<stacked::db::Run> {
+    let d = Db::load(db).unwrap();
+    d.runs().into_iter().rev().find(|r| r.what == stacked::db::TRY_PUSH).cloned()
+}
+
+/// Waits for the try push on `db` to be where `there` says, the editor
+/// looking meanwhile: its run then.
+fn wait_push(app: &mut App, db: &Path, there: impl Fn(&stacked::db::Run) -> bool) -> stacked::db::Run {
+    for _ in 0..300 {
+        app.refresh();
+        if let Some(r) = push_run(db).filter(|r| there(r)) {
+            app.refresh();
+            return r;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    panic!("the try push never got there: {:?}\n{}", push_run(db), mach_calls(db));
+}
+
+/// The cursor moved onto the head of comment `id`, in the middle.
+fn to_comment(app: &mut App, id: &str) {
+    if app.focus != stacked::tui::Focus::Diff {
+        app.focus = stacked::tui::Focus::Diff;
+    }
+    draw(app);
+    let at = app.rows.iter().position(|r| r.note.as_deref() == Some(id) && r.head).unwrap_or_else(|| panic!("no comment {id}"));
+    for _ in 0..app.rows.len() {
+        match app.cursor.cmp(&at) {
+            std::cmp::Ordering::Less => key(app, KeyCode::Down),
+            std::cmp::Ordering::Greater => key(app, KeyCode::Up),
+            std::cmp::Ordering::Equal => break,
+        };
+        draw(app);
+    }
+    assert_eq!(app.cursor, at);
+}
+
+/// Whether comment `id` of patch 1 is locked, as one the agent works on.
+fn locked(db: &Path, id: &str) -> bool {
+    let d = Db::load(db).unwrap();
+    stacked::ask::with_agent(&d).keys().any(|(_, i)| i == id)
 }
 
 /// The editor a test opened: once it goes, it waits for the asks the test
@@ -213,6 +381,21 @@ fn keys(app: &mut App, codes: &[KeyCode]) {
 fn typed(app: &mut App, text: &str) {
     for c in text.chars() {
         key(app, KeyCode::Char(c));
+    }
+}
+
+/// What git says in `dir`, run with `args`, trimmed.
+fn git_out(dir: &Path, args: &[&str]) -> String {
+    let out = Command::new("git").args(args).current_dir(dir).output().unwrap();
+    assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+/// The title of the menu open.
+fn menu_title(app: &App) -> String {
+    match &app.mode {
+        Mode::Menu(m) => m.title.clone(),
+        other => panic!("no menu open: {other:?}"),
     }
 }
 
@@ -349,6 +532,13 @@ fn notes_of(db: &Path, k: usize) -> Vec<Note> {
     d.notes(&d.patch(&s.patches[k]).change).into_iter().cloned().collect()
 }
 
+/// The last turn of the thread of patch 1's first comment, as written,
+/// the agent's or a try push's.
+fn last_turn(db: &Path) -> String {
+    let n = notes_of(db, 0).remove(0);
+    stacked::thread::thread_turns(&n.text).pop().map(|t| t.body).unwrap_or_default()
+}
+
 /// The prompt the try push's last ask was given.
 fn last_prompt(db: &Path) -> String {
     let d = Db::load(db).unwrap();
@@ -460,8 +650,8 @@ fn a_try_push_asked_lands_the_tasks_the_comment_asks_for_each_with_why() {
     assert!(prompt.contains("This is another round: the user reviewed the tasks you selected"), "{prompt}");
     assert!(prompt.contains("- `test-linux2404-64/opt-xpcshell-1` (accepted): It runs the tests of a.txt.\n  The user answered: Run it on Windows too."), "{prompt}");
     assert!(prompt.contains("- `build-linux64/debug` (rejected): The build the tests need."), "{prompt}");
-    // Its tasks, in place of those sent back; all accepted, then closed: the
-    // push comes next, and nothing is pushed yet.
+    // Its tasks, in place of those sent back; all accepted, then closed:
+    // they are pushed.
     keys(&mut app, &[KeyCode::Esc]);
     keys(&mut app, &[KeyCode::Enter]);
     assert_eq!(app.screen, Screen::Review);
@@ -473,10 +663,344 @@ fn a_try_push_asked_lands_the_tasks_the_comment_asks_for_each_with_why() {
         note.contains("Closing the review pushes the 3 tasks you accepted to try, with patch 1 alone: first `./mach try fuzzy --no-push`, to see that it selects them, then the push."),
         "{note}"
     );
-    assert!(note.contains("Pushing to try is not built yet in this stacked: closing the review now pushes nothing."), "{note}");
+    assert!(!note.contains("not built yet"), "{note}");
     choose(&mut app, "Accept them and close");
-    assert_eq!(app.status, "reviewed: 3 tasks accepted; 1 reply accepted; pushing to try is not built yet in this stacked, so nothing was pushed");
+    assert!(
+        app.status.starts_with("reviewed: 3 tasks accepted; 1 reply accepted; the try push has started: the comment that asked shows what mach writes"),
+        "{}",
+        app.status
+    );
     assert!(stacked::held::queue(&Db::load(&db).unwrap(), "s").is_empty());
+    let r = wait_push(&mut app, &db, |r| r.push.as_ref().is_some_and(|p| p.link.is_some()));
+    assert_eq!(r.push.unwrap().labels.len(), 3);
+}
+
+#[test]
+fn a_try_push_accepted_is_checked_then_pushed_its_login_shown_its_link_a_reply_until_you_stop_following_it() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db);
+    tasks_answer(
+        &db,
+        &[("test-linux2404-64/opt-xpcshell-1", "It runs the tests of a.txt."), ("build-linux64/debug", "The build the tests need.")],
+        "Two tasks.",
+    );
+    ask_try(&mut app, "Run the tests of a.txt.");
+    landed(&mut app, &db, 1);
+    let id = notes_of(&db, 0)[0].id.clone();
+    // mach to wait at its login, for it to be seen.
+    std::fs::write(db.with_file_name("mach-hold"), "").unwrap();
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Enter]);
+    assert_eq!(app.screen, Screen::Review);
+    keys(&mut app, &[KeyCode::Esc]);
+    choose(&mut app, "Accept all remaining and Close");
+    choose(&mut app, "Accept them and close");
+    assert!(app.status.contains("the try push has started"), "{}", app.status);
+    // Checked with --no-push, then pushed: the login waited for, its page
+    // and code in the status line and in the comment's stream.
+    let r = wait_push(&mut app, &db, |r| r.push.as_ref().is_some_and(|p| p.login.is_some()));
+    let login = r.push.as_ref().unwrap().login.clone().unwrap();
+    assert_eq!((login.url.as_str(), login.code.as_str()), ("https://auth.example.com/activate?user_code=WXYZ-1234", "WXYZ-1234"));
+    assert_eq!(
+        app.status,
+        "mach waits for you to log in to push to try: open https://auth.example.com/activate?user_code=WXYZ-1234 and enter the code WXYZ-1234 (the comment's menu has Open the login page)"
+    );
+    let labels = "-q ^test-linux2404-64/opt-xpcshell-1$ -q ^build-linux64/debug$";
+    assert_eq!(
+        mach_args(&db),
+        [format!("try fuzzy --no-push --show-chunk-numbers --all-tasks {labels}"), format!("try fuzzy --show-chunk-numbers --all-tasks {labels}")]
+    );
+    let calls = mach_calls(&db);
+    for said in ["stdin: closed", "unbuffered: 1", "commits: 1"] {
+        assert_eq!(calls.lines().filter(|l| *l == said).count(), 2, "{said:?} in {calls}");
+    }
+    assert!(!calls.contains("presets:"), "no preset under the threshold: {calls}");
+    to_comment(&mut app, &id);
+    let screen = draw(&mut app);
+    for said in ["try push: mach waits for your login", "2. Enter the following code: WXYZ-1234"] {
+        assert!(screen.contains(said), "{said:?} in:\n{screen}");
+    }
+    assert!(locked(&db, &id), "locked while pushed");
+    // Its menu: what mach writes, the login page to open, the push to stop.
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    let all = items(&app);
+    for label in ["Read what mach writes for the try push", "Open the login page…", "Stop the try push…"] {
+        assert!(all.iter().any(|(l, ok)| l == label && *ok), "{label:?} in {all:?}");
+    }
+    choose(&mut app, "Open the login page…");
+    assert!(draw(&mut app).contains("https://auth.example.com/activate?user_code=WXYZ-1234"), "{}", draw(&mut app));
+    keys(&mut app, &[KeyCode::Enter]);
+    app.settle();
+    assert_eq!(app.status, "opened https://auth.example.com/activate?user_code=WXYZ-1234 in your browser");
+    // Logged in: pushed, its link a reply, a web link, the comment still
+    // locked.
+    std::fs::remove_file(db.with_file_name("mach-hold")).unwrap();
+    let r = wait_push(&mut app, &db, |r| r.push.as_ref().is_some_and(|p| p.link.is_some()) && r.pid.is_none());
+    let p = r.push.clone().unwrap();
+    let link = "https://treeherder.mozilla.org/jobs?repo=try&landoInstance=lando-prod-new&landoCommitID=4242";
+    assert_eq!(p.link.as_deref(), Some(link));
+    assert_eq!(p.lando.as_ref().map(|l| (l.instance.as_str(), l.job)), Some(("lando-prod-new", 4242)));
+    assert_eq!(app.status, "the try push is made: its link is a reply on the comment that asked for it");
+    assert_eq!(
+        last_turn(&db),
+        format!("stacked pushed the 2 tasks you accepted to try, with patch 1 alone. Treeherder shows the push: @r1.\n\n```refs\nr1 {link}\n```")
+    );
+    assert!(locked(&db, &id), "locked while followed");
+    to_comment(&mut app, &id);
+    assert!(draw(&mut app).contains("try push: pushed"), "{}", draw(&mut app));
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    let all = items(&app);
+    for label in ["Open the try push on Treeherder…", "Stop following the try push…"] {
+        assert!(all.iter().any(|(l, ok)| l == label && *ok), "{label:?} in {all:?}");
+    }
+    // Followed no more: unlocked, a reply saying so, with the link.
+    choose(&mut app, "Stop following the try push…");
+    choose(&mut app, "Stop following it");
+    app.settle();
+    assert_eq!(app.status, "stopped following the try push: it goes on in CI, and the comment is unlocked");
+    assert_eq!(
+        last_turn(&db),
+        format!("stacked stopped following the try push: it goes on in CI, and Treeherder shows it: @r2.\n\n```refs\nr2 {link}\n```")
+    );
+    assert!(!locked(&db, &id));
+    assert_eq!(push_run(&db).map(|r| (r.state, r.summary)), Some((stacked::db::RunState::Done, "stopped following".to_string())));
+}
+
+#[test]
+fn a_try_push_whose_check_would_push_other_tasks_pushes_nothing_and_says_what_differs() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db);
+    tasks_answer(&db, &[("test-linux2404-64/opt-not-a-task-1", "Not a task."), ("build-linux64/debug", "A build.")], "Two tasks.");
+    ask_try(&mut app, "Build it, test it.");
+    landed(&mut app, &db, 1);
+    let id = notes_of(&db, 0)[0].id.clone();
+    // The task graph mach reads has no such task.
+    std::fs::write(db.with_file_name("mach-mode"), "drop").unwrap();
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Enter]);
+    keys(&mut app, &[KeyCode::Esc]);
+    choose(&mut app, "Accept all remaining and Close");
+    choose(&mut app, "Accept them and close");
+    let r = wait_push(&mut app, &db, |r| r.state != stacked::db::RunState::Started);
+    assert_eq!(r.state, stacked::db::RunState::Failed);
+    // Checked only: nothing pushed.
+    assert_eq!(mach_args(&db).len(), 1, "{}", mach_calls(&db));
+    let said = "The try push was not made: `./mach try fuzzy --no-push` would push other than what you accepted. This task you accepted is not in what mach would push, as the task graph it reads does not have it: `test-linux2404-64/opt-not-a-task-1`. Nothing was pushed: reply to say what to select instead, and ask for the try push again, for the agent to select the tasks again.";
+    let thread = notes_of(&db, 0)[0].text.clone();
+    assert!(thread.contains(said), "{thread}");
+    assert!(app.status.starts_with("the try push was not made: `./mach try fuzzy --no-push` would push other than what you accepted"), "{}", app.status);
+    // Unlocked, to reply and ask again.
+    assert!(!locked(&db, &id));
+    to_comment(&mut app, &id);
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    assert!(items(&app).iter().any(|(l, ok)| l == "Reply" && *ok), "{:?}", items(&app));
+}
+
+#[test]
+fn a_try_push_past_the_threshold_is_given_the_lowest_priority_in_a_preset_mach_reads() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db);
+    // 1,001 tasks, one more than mach pushes without asking.
+    let labels: Vec<String> = (1..=1001).map(|k| format!("test-linux2404-64/opt-mochitest-plain-{k}")).collect();
+    let tasks: Vec<(&str, &str)> = labels.iter().map(|l| (l.as_str(), "As many as you asked.")).collect();
+    tasks_answer(&db, &tasks, "All of them.");
+    ask_try(&mut app, "Run them all.");
+    landed(&mut app, &db, 1);
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Enter]);
+    keys(&mut app, &[KeyCode::Esc]);
+    choose(&mut app, "Accept all remaining and Close");
+    let note = menu_note(&app);
+    assert!(
+        note.contains("These 1,001 tasks are more than the 1,000 mach pushes without asking: they would run at the lowest priority, as mach does when you say yes."),
+        "{note}"
+    );
+    choose(&mut app, "Accept them and close");
+    let r = wait_push(&mut app, &db, |r| r.state != stacked::db::RunState::Started || r.push.as_ref().is_some_and(|p| p.link.is_some()) && r.pid.is_none());
+    assert!(r.push.as_ref().is_some_and(|p| p.lowest && p.link.is_some()), "{r:?}\n{}", mach_calls(&db));
+    // Both runs of mach given the preset, from a presets file of stacked's
+    // own, which the check found the lowest priority in; that file gone
+    // once the push is done with it.
+    let args = mach_args(&db);
+    assert_eq!(args.len(), 2);
+    assert!(args.iter().all(|a| a.contains("--show-chunk-numbers --all-tasks --preset stacked-lowest -q ^test-linux2404-64/opt-mochitest-plain-1$")), "{args:?}");
+    let calls = mach_calls(&db);
+    let presets: Vec<&str> = calls.lines().filter_map(|l| l.strip_prefix("presets: ")).collect();
+    assert_eq!(presets.len(), 2, "{calls}");
+    let scratch = db.canonicalize().unwrap().with_file_name("stacked-try");
+    assert!(presets[0].starts_with(&scratch.to_string_lossy().into_owned()), "{presets:?}");
+    for said in [r#""stacked-lowest": {"#, r#""selector": "fuzzy""#, r#""try_task_config": {"#, r#""priority": "lowest""#] {
+        assert!(calls.contains(said), "{said:?} in {calls}");
+    }
+    assert!(!Path::new(presets[0]).exists() && !db.with_file_name("stacked-try").exists(), "the presets file removed");
+    let thread = notes_of(&db, 0)[0].text.clone();
+    assert!(thread.contains("stacked pushed the 1,001 tasks you accepted to try, with patch 1 alone, at the lowest priority."), "{thread}");
+}
+
+#[test]
+fn a_try_push_that_mach_asks_a_question_of_stops_quotes_it_and_says_what_to_change() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db);
+    tasks_answer(&db, &[("build-linux64/debug", "A build.")], "One task.");
+    ask_try(&mut app, "Build it.");
+    landed(&mut app, &db, 1);
+    let id = notes_of(&db, 0)[0].id.clone();
+    std::fs::write(db.with_file_name("mach-mode"), "ask").unwrap();
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Enter]);
+    keys(&mut app, &[KeyCode::Esc]);
+    choose(&mut app, "Accept all remaining and Close");
+    choose(&mut app, "Accept them and close");
+    let r = wait_push(&mut app, &db, |r| r.state != stacked::db::RunState::Started);
+    assert_eq!(r.state, stacked::db::RunState::Failed);
+    assert_eq!(mach_args(&db).len(), 1, "stopped at the check: {}", mach_calls(&db));
+    let thread = notes_of(&db, 0)[0].text.clone();
+    for said in [
+        "The try push was not made: mach asked a question that stacked cannot answer, \"Do you have an @mozilla.com address? [Y/n]\", and stopped, as stacked gives it nothing to read. Nothing was pushed.",
+        "set your hg.mozilla.org user in ~/.ssh/config",
+        "or unset MOZ_USE_PERNOSCO",
+    ] {
+        assert!(thread.contains(said), "{said:?} in {thread}");
+    }
+    assert!(!locked(&db, &id));
+}
+
+#[test]
+fn a_try_push_failing_as_mach_pushes_says_why_with_mach_s_last_lines() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db);
+    tasks_answer(&db, &[("build-linux64/debug", "A build.")], "One task.");
+    ask_try(&mut app, "Build it.");
+    landed(&mut app, &db, 1);
+    std::fs::write(db.with_file_name("mach-mode"), "fail").unwrap();
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Enter]);
+    keys(&mut app, &[KeyCode::Esc]);
+    choose(&mut app, "Accept all remaining and Close");
+    choose(&mut app, "Accept them and close");
+    let r = wait_push(&mut app, &db, |r| r.state != stacked::db::RunState::Started);
+    assert_eq!((r.state, r.summary.as_str()), (stacked::db::RunState::Failed, "`./mach try fuzzy` failed, exiting with 1, before it said it pushed"));
+    let thread = notes_of(&db, 0)[0].text.clone();
+    assert!(
+        thread.contains("The try push failed: `./mach try fuzzy` failed, exiting with 1, before it said it pushed. Its last lines:\n\n```text\nPushing to try...\nabort: error submitting patches to Lando.\nLando returned HTTP 503 (Service Unavailable).\n```\n\nNothing was pushed."),
+        "{thread}"
+    );
+}
+
+#[test]
+fn a_try_push_stopped_as_mach_waits_for_the_login_pushes_nothing_and_unlocks_the_comment() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db);
+    tasks_answer(&db, &[("build-linux64/debug", "A build.")], "One task.");
+    ask_try(&mut app, "Build it.");
+    landed(&mut app, &db, 1);
+    let id = notes_of(&db, 0)[0].id.clone();
+    std::fs::write(db.with_file_name("mach-hold"), "").unwrap();
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Enter]);
+    keys(&mut app, &[KeyCode::Esc]);
+    choose(&mut app, "Accept all remaining and Close");
+    choose(&mut app, "Accept them and close");
+    wait_push(&mut app, &db, |r| r.push.as_ref().is_some_and(|p| p.login.is_some()));
+    to_comment(&mut app, &id);
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    choose(&mut app, "Stop the try push…");
+    assert!(menu_title(&app).starts_with("stop the try push? mach is stopped with it"), "{}", menu_title(&app));
+    choose(&mut app, "Stop it");
+    app.settle();
+    assert_eq!(app.status, "the try push was stopped: nothing was pushed.");
+    let r = push_run(&db).unwrap();
+    assert_eq!((r.state, r.summary.as_str()), (stacked::db::RunState::Failed, "stopped before mach said it pushed"));
+    let thread = notes_of(&db, 0)[0].text.clone();
+    assert!(thread.contains("The try push was stopped while mach ran, before it said it pushed: nothing was pushed."), "{thread}");
+    assert!(!locked(&db, &id));
+}
+
+#[test]
+fn a_try_push_whose_process_is_gone_before_mach_said_it_pushed_ends_as_failed() {
+    let (_tmp, db, _src) = setup();
+    let app = open(&db);
+    // A comment, and a push of it checking, its process gone.
+    let mut gone = Command::new("true").spawn().unwrap();
+    let dead = gone.id();
+    gone.wait().unwrap();
+    let d = Db::load(&db).unwrap();
+    let change = d.patch(&d.stack("s").unwrap().patches[0]).change.clone();
+    let rev = d.head("s").unwrap().0;
+    drop(d);
+    Db::edit(&db, |d| {
+        d.set_note(Note { change: change.clone(), id: "c".into(), text: "Which tasks?".into(), ..Default::default() })?;
+        d.add_run(stacked::db::Run {
+            id: "p".into(),
+            what: stacked::db::TRY_PUSH.into(),
+            stack: "s".into(),
+            state: stacked::db::RunState::Started,
+            pid: Some(dead),
+            push: Some(stacked::try_push::Push {
+                change: change.clone(),
+                id: "c".into(),
+                rev,
+                patches: 1,
+                labels: vec!["build-linux64/debug".into()],
+                step: stacked::try_push::Step::Checking,
+                ..Default::default()
+            }),
+            ..Default::default()
+        })
+        .map(|_| ())
+    })
+    .unwrap();
+    assert!(locked(&db, "c"), "locked while it seems to go");
+    assert_eq!(stacked::ask::land_orphans(&db, &Db::load(&db).unwrap()), 1);
+    let r = push_run(&db).unwrap();
+    assert_eq!((r.state, r.summary.as_str()), (stacked::db::RunState::Failed, "the process pushing it is gone"));
+    assert!(!locked(&db, "c"));
+    let n = Db::load(&db).unwrap().note(&change, "c").cloned().unwrap();
+    assert_eq!(
+        stacked::thread::thread_turns(&n.text).pop().unwrap().body,
+        "The try push stopped before mach said it pushed: the process pushing it is gone, and stacked does not know whether mach sent the push."
+    );
+    // Pushed, it needs no process: followed, it stays.
+    Db::edit(&db, |d| {
+        let mut r = d.run("p").unwrap().clone();
+        r.id = "q".into();
+        r.state = stacked::db::RunState::Started;
+        r.pid = None;
+        r.push.as_mut().unwrap().step = stacked::try_push::Step::Pushed;
+        r.push.as_mut().unwrap().link = Some("https://treeherder.mozilla.org/jobs?repo=try&landoInstance=i&landoCommitID=1".into());
+        d.add_run(r).map(|_| ())
+    })
+    .unwrap();
+    assert_eq!(stacked::ask::land_orphans(&db, &Db::load(&db).unwrap()), 0);
+    assert!(locked(&db, "c"));
+    drop(app);
+}
+
+#[test]
+fn a_try_push_on_a_base_no_remote_of_firefox_s_has_keeps_the_review_open() {
+    let (_tmp, db, src) = setup();
+    let mut app = open(&db);
+    tasks_answer(&db, &[("build-linux64/debug", "A build.")], "One task.");
+    ask_try(&mut app, "Build it.");
+    landed(&mut app, &db, 1);
+    // origin, as if never fetched: its base on no remote's.
+    git(&src, &["update-ref", "-d", "refs/remotes/origin/main"]);
+    let base = git_out(&src, &["rev-parse", "HEAD~2"]);
+    let why = format!(
+        "the stack's base, commit {}, is not on origin, the remote mach takes as Firefox's: mach would push 1 commit of the base's besides the stack's patches. Fetch that remote (`git fetch`), or put the stack on a commit that it has",
+        &base[..12]
+    );
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Enter]);
+    keys(&mut app, &[KeyCode::Esc]);
+    choose(&mut app, "Accept all remaining and Close");
+    assert!(menu_note(&app).contains(&format!("Closing the review with the task you accepted keeps it open, as nothing could be pushed: {why}.")), "{}", menu_note(&app));
+    choose(&mut app, "Accept them and close");
+    assert_eq!(app.status, format!("the review stays open: {why}"));
+    assert_eq!(app.screen, Screen::Review);
+    // No remote at all: mach would push the whole history.
+    git(&src, &["remote", "remove", "origin"]);
+    keys(&mut app, &[KeyCode::Esc]);
+    choose(&mut app, "Accept all remaining and Close");
+    choose(&mut app, "Accept them and close");
+    assert_eq!(
+        app.status,
+        "the review stays open: the repository has no remote, and mach pushes every commit that no remote has: it would push the stack's whole history"
+    );
+    assert!(push_run(&db).is_none() && mach_calls(&db).is_empty(), "mach never ran");
 }
 
 #[test]

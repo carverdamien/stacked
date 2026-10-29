@@ -2284,6 +2284,10 @@ struct Background {
     /// The runs whose agent is being stopped: what landing them says is
     /// said once they are stopped.
     stopping: Vec<String>,
+    /// Where each try push under way was when the screen last looked, by
+    /// its run: what the status line said of it last. None until it looks.
+    #[cfg(feature = "try-push")]
+    pushes: Option<HashMap<String, String>>,
 }
 
 impl Background {
@@ -2303,6 +2307,8 @@ impl Background {
             heading: false,
             moved: 0,
             stopping: vec![],
+            #[cfg(feature = "try-push")]
+            pushes: None,
         }
     }
 }
@@ -2836,6 +2842,60 @@ impl App {
     /// Stops the agent of run `id`, away from the screen, its ask landed
     /// as failed at once (`ask::stop`): the status says so once it is done,
     /// if `say`; what goes wrong, in any case.
+    /// Whether comment (change, id) is locked by its try push under way.
+    fn pushing(&self, change: &str, id: &str) -> bool {
+        self.busy().get(&(change.to_string(), id.to_string())).is_some_and(|(_, run)| self.push_stop_said(run).is_some())
+    }
+
+    /// What stopping run `run` stops, when it is a try push's: following
+    /// it, once it is pushed; else the push. None for any other run.
+    fn push_stop_said(&self, run: &str) -> Option<&'static str> {
+        #[cfg(feature = "try-push")]
+        if let Some(p) = self.db.run(run).and_then(|r| r.push.as_ref()) {
+            return Some(if p.link.is_some() { "stop following the try push" } else { "stop the try push" });
+        }
+        let _ = run;
+        None
+    }
+
+    /// What stopping try push `run` asks first, if the run is one.
+    fn push_stop_menu(&self, run: &str) -> Option<Menu> {
+        #[cfg(feature = "try-push")]
+        if let Some(p) = self.db.run(run).and_then(|r| r.push.as_ref()) {
+            let (title, yes) = match p.link {
+                Some(_) => (
+                    "stop following the try push? it goes on in CI; the comment unlocks, and a reply on it says that stacked stopped following it",
+                    "Stop following it",
+                ),
+                None => (
+                    "stop the try push? mach is stopped with it, and the comment unlocks: nothing is pushed, unless mach had sent the push already",
+                    "Stop it",
+                ),
+            };
+            return Some(Menu::ask(title, Item::new(yes, Action::Stop(run.to_string())), "Let it go on", true));
+        }
+        let _ = run;
+        None
+    }
+
+    /// Try push `id` stopped away from the screen: following it, or the
+    /// push; the status line says what came of it once it is.
+    #[cfg(feature = "try-push")]
+    fn stop_try_push(&mut self, id: String) {
+        if self.bg.stopping.contains(&id) {
+            self.status = "the try push is being stopped already".into();
+            return;
+        }
+        self.bg.stopping.push(id.clone());
+        self.bg.doing.push(STOPPING);
+        self.status = "stopping the try push…".into();
+        let path = self.path.clone();
+        self.spawn(move || {
+            let said = crate::try_push::stop(&path, &id).unwrap_or_else(|e| e.0);
+            Done::Stopped(id, Some(said))
+        });
+    }
+
     fn stop(&mut self, id: String, say: bool) {
         if self.bg.stopping.contains(&id) {
             if say {
@@ -3140,6 +3200,12 @@ impl App {
                         let room = (self.body_h / 2).max(5);
                         let end = all.len().saturating_sub(*up);
                         all[end.saturating_sub(room)..end].to_vec()
+                    }
+                    // A try push's: the last lines of what it runs and of
+                    // what mach writes, each step's command as `$ …`.
+                    _ if self.push_stop_said(run).is_some() => {
+                        let lines = ask::tail(&self.db, run, self.cfg.view.stream_lines);
+                        if lines.is_empty() { vec!["the try push is starting…".into()] } else { lines }
                     }
                     // Starting, one line says what it runs: the command
                     // first, cut where the line ends.
@@ -3862,22 +3928,69 @@ impl App {
         // What landed says so, but what waits for review: the banner says
         // that, not to interrupt; and what is being stopped, said once it
         // is.
-        for id in std::mem::take(&mut self.going) {
-            if let Some(r) = self.db.run(&id)
+        let was = std::mem::take(&mut self.going);
+        for id in &was {
+            if let Some(r) = self.db.run(id)
                 && r.state != RunState::Started
                 && r.held.is_none()
-                && !self.bg.stopping.contains(&id)
+                && r.what != crate::db::TRY_PUSH
+                && !self.bg.stopping.contains(id)
             {
                 let state = format!("{:?}", r.state).to_lowercase();
                 self.status = format!("the agent's {} {state}: {}", r.what, r.summary);
             }
         }
+        #[cfg(feature = "try-push")]
+        self.try_push_news(&was);
         self.going = going(&self.db);
         if let Some((change, id)) = on {
             self.follow(&change, &id);
         }
         self.clamp();
         self.judge();
+    }
+
+    /// What the try pushes came to since the screen last looked, `was` the
+    /// runs under way then, said in the status line: mach waiting for your
+    /// login, with its page and code; pushed; or not made, and why. As the
+    /// screen first looks, only a login waiting is said.
+    #[cfg(feature = "try-push")]
+    fn try_push_news(&mut self, was: &[String]) {
+        for id in was {
+            if let Some(r) = self.db.run(id)
+                && r.what == crate::db::TRY_PUSH
+                && r.state == RunState::Failed
+                && !self.bg.stopping.contains(id)
+            {
+                self.status = format!("the try push was not made: {}", r.summary);
+            }
+        }
+        let first = self.bg.pushes.is_none();
+        let mut seen = self.bg.pushes.take().unwrap_or_default();
+        for r in self.db.live_runs() {
+            let Some(p) = r.push.as_ref().filter(|_| r.state == RunState::Started) else { continue };
+            let (key, said) = match (&p.link, &p.login) {
+                (Some(link), _) => (
+                    format!("pushed {link}"),
+                    (!first).then(|| "the try push is made: its link is a reply on the comment that asked for it".to_string()),
+                ),
+                (None, Some(l)) => (
+                    format!("login {}", l.code),
+                    Some(format!(
+                        "mach waits for you to log in to push to try: open {} and enter the code {} (the comment's menu has Open the login page)",
+                        l.url, l.code
+                    )),
+                ),
+                _ => continue,
+            };
+            if seen.get(&r.id) != Some(&key) {
+                if let Some(said) = said {
+                    self.status = said;
+                }
+                seen.insert(r.id.clone(), key);
+            }
+        }
+        self.bg.pushes = Some(seen);
     }
 
     /// The comment the cursor was on, (change, id), moved to the stack's
@@ -3933,8 +4046,10 @@ impl App {
         }
     }
 
+    /// How many agents are at work: the asks running, not a try push's
+    /// process, which runs mach.
     fn running(&self) -> usize {
-        self.db.live_runs().iter().filter(|r| ask::running(r)).count()
+        self.db.live_runs().iter().filter(|r| ask::running(r) && r.what != crate::db::TRY_PUSH).count()
     }
 
     fn ready(&self) -> usize {
@@ -5154,7 +5269,7 @@ impl App {
             Action::AskCloseComment => "close it",
             Action::AskCloseOpened => "close it and those it opened",
             Action::AskStop(_) if self.screen == Screen::Runs => "stop it",
-            Action::AskStop(_) => "stop the agent",
+            Action::AskStop(run) => self.push_stop_said(&run).unwrap_or("stop the agent"),
             Action::Unsend => "take it back from the queue",
             Action::Unbatch => "remove it from the batch",
             Action::AskDrop => "drop it",
@@ -5235,6 +5350,10 @@ impl App {
                     crate::head::place(&self.stack, *to)
                 ));
                 out.push("Press ↑↓ to place it elsewhere, Esc to leave it where it was.".into());
+                return out;
+            }
+            Mode::Stream { change, id, .. } if self.pushing(change, id) => {
+                out.push("Press ↑↓ (pgup pgdn home end) to scroll what mach wrote for the try push, Esc to fold it. Once the try push is over, the stream folds on its own.".into());
                 return out;
             }
             Mode::Stream { .. } => {
@@ -6662,6 +6781,21 @@ impl App {
         }
         items.push(Item::line());
         match with {
+            // Its try push under way: what mach writes, the page its login
+            // waits on, the push once made; and the way to stop it.
+            #[cfg(feature = "try-push")]
+            Some((_, run)) if self.push_stop_said(run).is_some() => {
+                items.push(Item::new("Read what mach writes for the try push", Action::OpenStream));
+                let p = self.db.run(run).and_then(|r| r.push.clone()).unwrap_or_default();
+                if let Some(l) = &p.login {
+                    items.push(Item::new("Open the login page…", Action::ShowLink(l.url.clone())));
+                }
+                if let Some(link) = &p.link {
+                    items.push(Item::new("Open the try push on Treeherder…", Action::ShowLink(link.clone())));
+                }
+                let stop = if p.link.is_some() { "Stop following the try push…" } else { "Stop the try push…" };
+                items.push(Item::new(stop, Action::AskStop(run.clone())));
+            }
             Some((_, run)) => {
                 items.push(Item::new("Read what the agent is writing", Action::OpenStream));
                 items.push(Item::new("Stop the agent…", Action::AskStop(run.clone())));
@@ -7152,10 +7286,16 @@ impl App {
                     };
                 }
             }
-            Action::AskStop(id) => {
-                let yes = Item::new("Stop it", Action::Stop(id));
-                self.mode = Mode::Menu(Menu::ask("stop the agent? the ask lands as failed", yes, "Let it run", true));
-            }
+            Action::AskStop(id) => match self.push_stop_menu(&id) {
+                Some(m) => self.mode = Mode::Menu(m),
+                None => {
+                    let yes = Item::new("Stop it", Action::Stop(id));
+                    self.mode = Mode::Menu(Menu::ask("stop the agent? the ask lands as failed", yes, "Let it run", true));
+                }
+            },
+            // A try push's: following it, or the push.
+            #[cfg(feature = "try-push")]
+            Action::Stop(id) if self.push_stop_said(&id).is_some() => self.stop_try_push(id),
             Action::Stop(id) => {
                 self.status = "stopping the agent: its ask lands as failed".into();
                 self.stop(id, true);
@@ -8252,7 +8392,10 @@ impl App {
     /// the agent is working on it, and its reply is to what it was asked.
     fn locked(&self, change: &str, id: &str) -> Option<String> {
         let key = (change.to_string(), id.to_string());
-        if self.busy().contains_key(&key) {
+        if let Some((_, run)) = self.busy().get(&key) {
+            if let Some(stop) = self.push_stop_said(run) {
+                return Some(format!("this comment's try push is under way: {stop} first, from the comment's menu, to write on it"));
+            }
             return Some("the agent is working on this comment: wait for its reply to land".into());
         }
         self.held_replies()
@@ -9000,9 +9143,13 @@ impl App {
                     return;
                 };
                 if ask::running(&r) {
+                    let (show, stop) = match self.push_stop_said(&r.id) {
+                        Some(_) => ("Show what mach wrote for the try push", "Stop the try push…"),
+                        None => ("Show what the agent wrote", "Stop the agent…"),
+                    };
                     let items = vec![
-                        Item::new("Show what the agent wrote", Action::Transcript(r.id.clone())),
-                        Item::new("Stop the agent…", Action::AskStop(r.id.clone())),
+                        Item::new(show, Action::Transcript(r.id.clone())),
+                        Item::new(stop, Action::AskStop(r.id.clone())),
                     ];
                     self.mode = Mode::Menu(Menu::new(format!("{} {}", r.what, r.stack), items, None));
                 } else {
@@ -9722,6 +9869,7 @@ impl App {
             (Screen::Main, Some(Action::GoToNote)) => "enter: go to it · ",
             (Screen::Main, Some(Action::Reply)) => "enter: reply · ",
             (Screen::Main, Some(Action::EditMine)) => "enter: edit it · ",
+            (Screen::Main, Some(Action::OpenStream)) if self.picked().is_some_and(|c| self.pushing(&c.change, &c.id)) => "enter: what mach writes · ",
             (Screen::Main, Some(Action::OpenStream)) => "enter: what the agent writes · ",
             (Screen::Main, Some(Action::Expand)) => "enter: expand it · ",
             (Screen::Main, Some(_)) => "enter: comment · ",
@@ -11160,7 +11308,7 @@ pub fn note_state(db: &Db, name: &str, n: &Note, busy: &Busy) -> String {
     if let Some((way, run)) = busy.get(&(n.change.clone(), n.id.clone())) {
         // A patch's comment, asked of the whole stack.
         let whole = *way == Way::Change && !n.on_stack() && ask::run_scope(db, run) == Some(Scope::Stack);
-        parts.push(format!("with the agent ({})", if whole { crate::db::WHOLE } else { way.said() }));
+        parts.push(push_state(db, run).unwrap_or_else(|| format!("with the agent ({})", if whole { crate::db::WHOLE } else { way.said() })));
     } else if let Some(q) = n.queued.as_ref().filter(|q| q.batched()) {
         parts.push(format!("batched ({})", q.said()));
     } else if let Some(q) = &n.queued {
@@ -11188,6 +11336,18 @@ pub fn note_state(db: &Db, name: &str, n: &Note, busy: &Busy) -> String {
         parts.push(t);
     }
     parts.join(" · ")
+}
+
+/// Where run `run` is, when it is a try push's, said for its comment: `try
+/// push: mach checks the tasks`. None for any other run.
+fn push_state(db: &Db, run: &str) -> Option<String> {
+    #[cfg(feature = "try-push")]
+    return db.run(run).and_then(|r| r.push.as_ref()).map(crate::try_push::state_said);
+    #[cfg(not(feature = "try-push"))]
+    {
+        let _ = (db, run);
+        None
+    }
 }
 
 /// Where a run's scope is, said: for the transcript's title.

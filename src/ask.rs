@@ -288,6 +288,34 @@ fn started() -> std::sync::MutexGuard<'static, Vec<std::process::Child>> {
     STARTED.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
+/// `child`, a process this one started for a run (a try push's), kept to
+/// wait for once it has exited, as an ask's wrapper is.
+#[cfg(feature = "try-push")]
+pub(crate) fn keep_started(child: std::process::Child) {
+    started().push(child);
+}
+
+/// The stacked that a run started from here calls back, or that runs it:
+/// the tests' own binary when they set one (`stand_in`), else this one.
+pub(crate) fn stacked_exe() -> Result<PathBuf> {
+    match CLAUDE.lock().unwrap().clone() {
+        Some((_, stacked)) => Ok(stacked),
+        None => std::env::current_exe().map_err(|e| Error(e.to_string())),
+    }
+}
+
+/// The process group of `pid` stopped, as an ask's agent is: sent SIGTERM,
+/// then SIGKILL if it is not gone within a few seconds. Whether it is gone.
+#[cfg(feature = "try-push")]
+pub(crate) fn stop_group(pid: u32) -> bool {
+    signal(pid, libc::SIGTERM);
+    if gone_within(pid, TERM_GRACE) {
+        return true;
+    }
+    signal(pid, libc::SIGKILL);
+    gone_within(pid, KILL_GRACE)
+}
+
 /// Whether the wrapper `pid` this process started still runs, if it is
 /// one: waited for, and let go, once it has exited.
 fn wrapper_running(pid: u32) -> Option<bool> {
@@ -322,6 +350,11 @@ pub fn still_running(db: &Db) -> Vec<String> {
                 n if n > 60 => format!(" \"{}…\"", words.chars().take(59).collect::<String>()),
                 _ => format!(" \"{words}\""),
             };
+            // A try push: where it pushes from, once its worktree is taken.
+            #[cfg(feature = "try-push")]
+            if let Some(w) = r.push.as_ref().and_then(|p| p.worktree.as_deref()) {
+                return format!("{} {} {}{asked} pushes to try from {w}", r.id, r.what, r.stack);
+            }
             let at = match info(r) {
                 Some(Info { worktree: Some(w), .. }) => format!("works in {w}"),
                 Some(i) if r.pid.is_some() && !i.repo.is_empty() => format!("works in {}", i.repo),
@@ -361,6 +394,12 @@ pub fn with_agent(db: &Db) -> HashMap<(String, String), (Way, String)> {
                 out.insert((n.change.clone(), n.id.clone()), (i.way, r.id.clone()));
             }
         }
+    }
+    // A comment whose try push is under way is locked as one the agent
+    // works on, until the push is over or no longer followed.
+    #[cfg(feature = "try-push")]
+    for (at, run) in crate::try_push::locks(db) {
+        out.entry(at).or_insert((Way::Try, run));
     }
     out
 }
@@ -1962,7 +2001,7 @@ pub const BUILD: &str = "build";
 /// Where stack `name`'s agents' worktrees are: `.stacked/NAME` in its
 /// repository, else under `under` (the settings' `agent.worktrees`), in a
 /// folder of the repository's own.
-fn agents_dir(repo: &Path, name: &str, under: Option<&Path>) -> Result<PathBuf> {
+pub(crate) fn agents_dir(repo: &Path, name: &str, under: Option<&Path>) -> Result<PathBuf> {
     match under {
         Some(d) => {
             let top = git::toplevel(repo)?;
@@ -1975,7 +2014,7 @@ fn agents_dir(repo: &Path, name: &str, under: Option<&Path>) -> Result<PathBuf> 
 }
 
 /// `kind`'s worktrees in `dir`, as named: KIND, then KIND-2, KIND-3…
-fn slot(dir: &Path, kind: &str, k: usize) -> PathBuf {
+pub(crate) fn slot(dir: &Path, kind: &str, k: usize) -> PathBuf {
     dir.join(if k == 1 { kind.to_string() } else { format!("{kind}-{k}") })
 }
 
@@ -2373,10 +2412,7 @@ fn start(db_path: &Path, id: &str) -> Result<()> {
         }
         i.commits = shas.into_iter().zip(s.patches[..upto].iter().cloned()).collect();
     }
-    let exe = match CLAUDE.lock().unwrap().clone() {
-        Some((_, stacked)) => stacked,
-        None => std::env::current_exe().map_err(|e| Error(e.to_string()))?,
-    };
+    let exe = stacked_exe()?;
     let db_abs = db_path.canonicalize().map_err(|e| Error(e.to_string()))?;
     let cmd = format!("{} -f {}", exe.display(), db_abs.display());
     // What it may use: what stacked gives its kind of ask, and what the
@@ -3325,10 +3361,19 @@ pub fn land_orphans(db_path: &Path, db: &Db) -> usize {
         })
         .map(|r| r.id.clone())
         .collect();
-    stale
-        .iter()
-        .filter(|id| land(db_path, id, Some("killed")).is_ok())
-        .count()
+    stale.iter().filter(|id| land(db_path, id, Some("killed")).is_ok()).count() + pushes_orphaned(db_path, db)
+}
+
+/// The try pushes whose process is gone before mach said it pushed, ended
+/// as failed: how many. None, built without the `try-push` feature.
+fn pushes_orphaned(db_path: &Path, db: &Db) -> usize {
+    #[cfg(feature = "try-push")]
+    return crate::try_push::orphans(db_path, db);
+    #[cfg(not(feature = "try-push"))]
+    {
+        let _ = (db_path, db);
+        0
+    }
 }
 
 /// The type of the events a run's stream starts with: the commands run to

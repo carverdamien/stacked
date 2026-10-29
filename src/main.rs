@@ -537,6 +537,22 @@ enum Cmd {
     /// patch has in its worktree (for the agent).
     #[command(hide = true)]
     Fits { id: String },
+    /// Push the tasks a try push's review accepted to try (for the editor,
+    /// which starts it as the review closes).
+    #[cfg(feature = "try-push")]
+    #[command(name = "try-push", hide = true)]
+    TryPush { id: String },
+}
+
+/// Whether `cmd` is one that stacked runs itself, never you: an ask's
+/// (`prompt`, `record`, `land`, `fits`), git's (`__plan`), the shell's
+/// completion, and a try push's.
+fn internal(cmd: &Option<Cmd>) -> bool {
+    #[cfg(feature = "try-push")]
+    if matches!(cmd, Some(Cmd::TryPush { .. })) {
+        return true;
+    }
+    matches!(cmd, Some(Cmd::Prompt { .. } | Cmd::Record { .. } | Cmd::Land { .. } | Cmd::Fits { .. } | Cmd::Plan { .. } | Cmd::Complete { .. }))
 }
 
 fn die(msg: &str) -> ! {
@@ -1837,6 +1853,8 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
         Cmd::Record { id } => ask::record(path, &id, std::io::stdin().lock())?,
         Cmd::Land { id } => print_run(&ask::land(path, &id, None)?),
         Cmd::Fits { id } => println!("{}", ask::fits(path, &id)?),
+        #[cfg(feature = "try-push")]
+        Cmd::TryPush { id } => stacked::try_push::push(path, &id)?,
     }
     Ok(())
 }
@@ -1921,10 +1939,7 @@ fn main() {
     // The files of before moved by a run of yours, which says so; not by
     // those stacked runs itself (an ask's, git's, the shell's completion),
     // which could not say so.
-    let by_you = !matches!(
-        cli.cmd,
-        Some(Cmd::Prompt { .. } | Cmd::Record { .. } | Cmd::Land { .. } | Cmd::Fits { .. } | Cmd::Plan { .. } | Cmd::Complete { .. })
-    );
+    let by_you = !internal(&cli.cmd);
     for said in settle(by_you) {
         eprintln!("stacked: {said}");
     }
@@ -1938,19 +1953,7 @@ fn main() {
         .unwrap_or_else(|| PathBuf::from("stacked.jsonl"));
     // What is wrong with the settings is said: by the editor in its bar,
     // here for the commands, but those asks run by themselves.
-    let quiet = matches!(
-        cli.cmd,
-        Some(
-            Cmd::Open { .. }
-                | Cmd::Prompt { .. }
-                | Cmd::Record { .. }
-                | Cmd::Land { .. }
-                | Cmd::Fits { .. }
-                | Cmd::Config { .. }
-                | Cmd::Complete { .. }
-                | Cmd::Plan { .. }
-        ) | None
-    );
+    let quiet = internal(&cli.cmd) || matches!(cli.cmd, Some(Cmd::Open { .. } | Cmd::Config { .. }) | None);
     if !quiet {
         for w in stacked::config::warnings() {
             eprintln!("stacked: {w}");

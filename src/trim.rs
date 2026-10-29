@@ -89,6 +89,9 @@ fn named(rec: &Record) -> Vec<usize> {
             if let Some(from) = r.ask.as_ref().and_then(|a| a.get("from")).and_then(|f| f.as_u64()) {
                 out.push(from as usize);
             }
+            // A try push: the stack it pushes.
+            #[cfg(feature = "try-push")]
+            out.extend(r.push.as_ref().map(|p| p.rev));
             out
         }
         Record::Read(m) => m.undo.into_iter().collect(),
@@ -121,6 +124,12 @@ fn run_now(r: &Run, new: &New) -> Run {
         && let Some(to) = new.rev(from as usize)
     {
         a.insert("from".into(), to.into());
+    }
+    #[cfg(feature = "try-push")]
+    if let Some(p) = &mut r.push
+        && let Some(to) = new.rev(p.rev)
+    {
+        p.rev = to;
     }
     r
 }

@@ -1743,18 +1743,22 @@ impl App {
             return Some("No task is accepted: closing the review pushes nothing to try.".into());
         }
         let n = accepted.len();
-        let tasks = if n == 1 { "the task you accepted".to_string() } else { format!("the {} tasks you accepted", thousands(n)) };
+        let tasks = crate::try_push::tasks_said(n);
         let what = match ask::run_scope(&self.db, &r.id) {
             Some(Scope::Patch(c)) => {
                 let at = self.db.stack(&r.stack).ok().and_then(|s| s.patches.iter().position(|p| self.db.patch(p).change == c));
                 match at {
-                    Some(0) => "patch 1 alone".to_string(),
-                    Some(k) => format!("patches 1 to {}", k + 1),
+                    Some(k) => crate::try_push::patches_said(k + 1, false),
                     None => "the patches up to its own".to_string(),
                 }
             }
-            _ => "every patch of the stack".to_string(),
+            _ => crate::try_push::patches_said(0, true),
         };
+        // mach would push more than the stack's patches on its base: the
+        // review stays open until that is fixed.
+        if let Some(why) = self.push_base_problem() {
+            return Some(format!("Closing the review with {tasks} keeps it open, as nothing could be pushed: {why}."));
+        }
         let mut out = format!(
             "Closing the review pushes {tasks} to try, with {what}: first `./mach try fuzzy --no-push`, to see that it selects them, then the push."
         );
@@ -1769,7 +1773,11 @@ impl App {
                 thousands(crate::try_push::THRESHOLD)
             );
         }
-        out += " Pushing to try is not built yet in this stacked: closing the review now pushes nothing.";
+        // The comment that asked, marked to close: open all the same.
+        let asking = self.asking_open();
+        if asking.iter().any(|(k, _)| rv.marks.get(&crate::held::asking_key(*k)) == Some(&true)) {
+            out += " The comment that asked stays open all the same: the push's link goes there as a reply.";
+        }
         Some(out)
     }
 
@@ -2041,18 +2049,42 @@ impl App {
         let Some(rv) = self.reviewing.clone() else { return };
         let accepted = rv.marks.get(&Part::Stack.key()).copied().or(rest) == Some(true);
         let follow = accepted && !rv.stay && self.head_can_follow();
-        // A try push's tasks accepted, to push once the review closes.
+        // A try push's tasks accepted, pushed once the review closes: not
+        // on a base that mach would push more than the patches on, which
+        // the review stays open to fix. The comment that asked stays open,
+        // the push's link to go there.
         #[cfg(feature = "try-push")]
-        let pushed = self.work(&rv.run).map(|(_, h)| crate::held::accepted_tasks(h, &rv.marks, rest)).unwrap_or_default();
+        let (pushed, rebuild) = self
+            .work(&rv.run)
+            .map(|(_, h)| (crate::held::accepted_tasks(h, &rv.marks, rest), h.rebuild))
+            .unwrap_or_default();
+        #[allow(unused_mut)]
+        let mut marks = rv.marks.clone();
+        #[cfg(feature = "try-push")]
+        if !pushed.is_empty() {
+            if let Some(why) = self.push_base_problem() {
+                self.status = format!("the review stays open: {why}");
+                return;
+            }
+            marks.retain(|k, _| !k.starts_with("asking "));
+        }
         // HEAD to follow: moving from now on, before the stack takes the
         // change, which HEAD has only once it has moved; the sync of the
         // commit messages waits meanwhile.
         let moving = follow && self.head_to_move();
-        if let Some(said) = self.edit(|db| crate::held::close(db, &rv.run, &rv.marks, rest)) {
-            self.status = format!("reviewed: {said}");
+        let closed = self.edit(|db| {
+            let said = crate::held::close(db, &rv.run, &marks, rest)?;
             #[cfg(feature = "try-push")]
             if !pushed.is_empty() {
-                self.status += "; pushing to try is not built yet in this stacked, so nothing was pushed";
+                let id = crate::try_push::begin(db, &rv.run, &pushed, rebuild)?;
+                return Ok((said, Some(id)));
+            }
+            Ok((said, None::<String>))
+        });
+        if let Some((said, push)) = closed {
+            self.status = format!("reviewed: {said}");
+            if let Some(id) = push {
+                self.start_try_push(&id);
             }
             self.leave_review();
             if moving {
@@ -2067,6 +2099,34 @@ impl App {
             // Not closed: HEAD stays where it is.
             self.bg.doing.retain(|d| *d != MOVING_HEAD);
         }
+    }
+
+    /// Try push `id`, begun as the review closed, started away from here:
+    /// the status line says so, or why it could not be, then the push
+    /// ended.
+    #[cfg(feature = "try-push")]
+    fn start_try_push(&mut self, id: &str) {
+        match crate::try_push::launch(&self.path, id) {
+            Ok(()) => self.status += "; the try push has started: the comment that asked shows what mach writes",
+            Err(e) => {
+                crate::try_push::not_started(&self.path, id, &e.0);
+                self.status += &format!("; the try push could not start: {}", e.0);
+            }
+        }
+        self.reload();
+    }
+
+    #[cfg(not(feature = "try-push"))]
+    fn start_try_push(&mut self, _: &str) {}
+
+    /// Why mach would push more than the stack's patches on its base, if it
+    /// would: the review of a try push's work is not closed with tasks
+    /// accepted then.
+    #[cfg(feature = "try-push")]
+    pub(super) fn push_base_problem(&self) -> Option<String> {
+        let s = self.current()?;
+        let (repo, base) = crate::ops::base_of(s).ok()?;
+        crate::try_push::base_problem(&repo, &base)
     }
 
     /// The landed asks waiting for review on this stack, the first landed
