@@ -2392,6 +2392,192 @@ fn an_agent_s_change_of_a_patch_that_only_moves_its_lines_changes_nothing() {
     }
 }
 
+/// Messages that git writes otherwise than stacked stores them, each a
+/// patch's, bottom first, with an author of its own for some: two empty
+/// lines under the title, as the user's had once a sync took them from the
+/// checkout (patch 2 is the one the agent rewords, patch 1 is below it);
+/// empty lines in a row, before the trailer moz-phab writes too; white
+/// space at the end of lines and of the title; a first paragraph of two
+/// lines, which git takes for a title and a body; carriage returns; a
+/// prefix, and runs of spaces, in the title; a newline and empty lines at
+/// the end; a line of three dashes, where `git am` ends the message; a
+/// line of the body that it takes for the author; an author's name that
+/// format-patch quotes. Then two that git writes as they are: lines that
+/// start with `#`, and a title that is not ASCII, long enough to be folded.
+const AS_GIT_WRITES: &[(&str, Option<&str>)] = &[
+    ("Bug 1 - below the reworded patch\n\n\nTwo empty lines under the title.", None),
+    ("Bug 2 - to reword\n\n\nTwo empty lines under the title, here too.", None),
+    ("Bug 3 - two empty lines under the title\n\n\nAs the user's messages had them, taken from the checkout by a sync.", None),
+    (
+        "Bug 4 - empty lines in a row\n\nThe first paragraph.\n\n\n\nThe second, three empty lines above it.\n\n\nDifferential Revision: https://phabricator.services.mozilla.com/D1234",
+        None,
+    ),
+    ("Bug 5 - white space at the end of lines  \n\nTwo spaces end this line.  \nA tab ends this one.\t\n   \nAbove, a line of spaces.", None),
+    ("Bug 6 - a first paragraph\nof two lines\n\nThen the body.", None),
+    ("Bug 7 - carriage returns\r\n\r\nEach line ends with one.\r\nThis one too.\r\n", None),
+    ("[PATCH v2] Bug 8 - a title after a prefix\n\nAnd a body.", None),
+    ("Bug 9 -  runs  of   spaces\n\nIn the title.", None),
+    ("Bug 10 - a newline and empty lines at the end\n\nThe body.\n\n\n", None),
+    ("Bug 11 - three dashes\n\nAbove them.\n---\nBelow them, which git am leaves out.", None),
+    ("Bug 12 - a line taken for the author\n\nFrom: Someone Else <else@example.com>\nThe line above starts the body.", None),
+    ("Bug 13 - an author's name that format-patch quotes\n\nThe body.", Some("Thor, A. U. <author@example.com>")),
+    ("Bug 14 - lines starting with a hash\n\n# Not a comment.\n#Nor this one.", None),
+    ("Bug 15 - café, a title that is not ASCII, long enough that format-patch folds it over more than one line\n\nÜnïcödé.", None),
+];
+
+/// Stack s on `base`, a patch for each of `messages` adding a file of its
+/// own, with that message, and that author if one is given: the ids of its
+/// patches.
+fn stack_of_messages(e: &Env, messages: &[(&str, Option<&str>)]) -> Vec<String> {
+    git(&e.src, &["checkout", "-q", "-b", "messages", "base"]);
+    for k in 0..messages.len() {
+        std::fs::write(e.src.join(format!("m{}.txt", k + 1)), format!("{}\n", k + 1)).unwrap();
+        git(&e.src, &["add", "."]);
+        git(&e.src, &["commit", "-qm", &format!("Bug {} - m{}", k + 1, k + 1)]);
+    }
+    e.ok(&["import", "s", "base"]);
+    git(&e.src, &["checkout", "-q", "main"]);
+    Db::edit(&e.db, |db| {
+        for (k, (message, author)) in messages.iter().enumerate() {
+            let old = db.patch(&db.stack("s")?.patches[k]).clone();
+            let author = author.map(String::from).or(old.author.clone());
+            ops::replace(db, "s", k, Draft { message: message.to_string(), author, ..Draft::from(&old) }, "edit")?;
+        }
+        Ok(())
+    })
+    .unwrap();
+    let db = Db::load(&e.db).unwrap();
+    db.stack("s").unwrap().patches.clone()
+}
+
+/// The patches the stack diff of stack s's last change marks as changed:
+/// their places (from 1), and whether each was reworded.
+fn changed_by_the_last_change(e: &Env) -> (String, Vec<(usize, bool)>) {
+    let db = Db::load(&e.db).unwrap();
+    let diff = stacked::history::what_changed(&db, db.head("s").unwrap().0);
+    let changed = diff
+        .iter()
+        .filter_map(|d| match d {
+            stacked::history::Diffed::Patch { at, changed: true, reworded, .. } => Some((*at, *reworded)),
+            _ => None,
+        })
+        .collect();
+    (stacked::history::summary(&diff), changed)
+}
+
+#[test]
+fn patches_the_agent_s_rebase_did_not_touch_keep_their_versions_whatever_git_makes_of_their_messages() {
+    let e = env();
+    let before = stack_of_messages(&e, AS_GIT_WRITES);
+    let n = AS_GIT_WRITES.len();
+    // Patch 2 reworded in a rebase of the whole stack, as the user's agent
+    // reworded patches in the middle of theirs: patch 1's commit left as it
+    // was, those above made again on the new one. Each message comes back
+    // as git wrote it, from `git am` on.
+    let claude = fake_claude(
+        &e,
+        "claude-reword.sh",
+        &format!(
+            r#"set -e
+todo=$(printf '%s\n' "$2" | sed -n 's/^The rebase todo file: //p')
+git rev-list --reverse HEAD~{n}..HEAD | sed '2s/^/edit /;2!s/^/pick /' > "$todo"
+git -c user.name=C -c user.email=c@x rebase -q -i HEAD~{n} >&2
+git -c user.name=C -c user.email=c@x commit -q --amend -m "Bug 2 - reworded" -m "Two empty lines under the title, here too."
+git -c user.name=C -c user.email=c@x rebase --continue >&2
+git log -1 --format=%an HEAD~3 | grep -qx 'Someone Else'"#
+        ),
+        r#"{"replies": {"c1": "Reworded patch 2."}}"#,
+    );
+    let id = comment(&e, &["Reword", "patch", "2."]);
+    let (fine, out, err) = send(&e, &claude, &[&id], &[]);
+    assert!(fine, "{out}{err}");
+    assert!(e.ok(&["runs"]).contains("reviewed: its change accepted; 1 reply accepted"));
+    // Only patch 2 is a new version: every other patch is the patch it was,
+    // below the reworded one or above it, its message and author as stored.
+    let db = Db::load(&e.db).unwrap();
+    let after = db.stack("s").unwrap().patches.clone();
+    let kept: Vec<bool> = before.iter().zip(&after).map(|(b, a)| b == a).collect();
+    let mut want = vec![true; n];
+    want[1] = false;
+    assert_eq!(kept, want, "{before:?} {after:?}");
+    for (k, (message, author)) in AS_GIT_WRITES.iter().enumerate().filter(|(k, _)| *k != 1) {
+        let p = db.patch(&after[k]);
+        assert_eq!(p.message, *message, "patch {}", k + 1);
+        assert_eq!(p.author.as_deref(), Some(author.unwrap_or("A U Thor <author@example.com>")), "patch {}", k + 1);
+    }
+    assert_eq!(db.patch(&after[1]).message, "Bug 2 - reworded\n\nTwo empty lines under the title, here too.");
+    // The stack diff of the change marks patch 2 alone, reworded.
+    assert_eq!(changed_by_the_last_change(&e), ("~1".to_string(), vec![(2, true)]));
+}
+
+#[test]
+fn a_message_the_agent_changed_in_its_white_space_alone_is_a_new_version_reworded() {
+    let e = env();
+    e.ok(&["import", "s", "base"]);
+    let before = e.column(2);
+    // An empty line more between the two paragraphs of patch 2, its message
+    // committed verbatim: git gives the message as stored back with one
+    // empty line there, not two.
+    let claude = fake_claude(
+        &e,
+        "claude-space.sh",
+        r#"set -e
+todo=$(printf '%s\n' "$2" | sed -n 's/^The rebase todo file: //p')
+git rev-list --reverse HEAD~3..HEAD | sed '2s/^/edit /;2!s/^/pick /' > "$todo"
+git -c user.name=C -c user.email=c@x rebase -q -i HEAD~3 >&2
+printf 'Bug 2 - add b\n\nA body.\n\n\nMore body.\n' | git -c user.name=C -c user.email=c@x commit -q --amend --cleanup=verbatim -F -
+git -c user.name=C -c user.email=c@x rebase --continue >&2"#,
+        r#"{"replies": {"c1": "Spaced patch 2."}}"#,
+    );
+    let id = comment(&e, &["Space", "patch", "2."]);
+    let (fine, out, err) = send(&e, &claude, &[&id], &[]);
+    assert!(fine, "{out}{err}");
+    let after = e.column(2);
+    assert_eq!([after[0] == before[0], after[1] == before[1], after[2] == before[2]], [true, false, true], "{before:?} {after:?}");
+    let db = Db::load(&e.db).unwrap();
+    let s = db.stack("s").unwrap();
+    assert_eq!(db.patch(&s.patches[1]).message, "Bug 2 - add b\n\nA body.\n\n\nMore body.");
+    assert_eq!(changed_by_the_last_change(&e), ("~1".to_string(), vec![(2, true)]));
+}
+
+#[test]
+fn a_patch_the_agent_left_keeps_its_message_as_stored_and_one_whose_code_it_changed_too() {
+    let e = env();
+    let messages = [
+        ("Bug 1 - one\n\n\nTwo empty lines under the title.", None),
+        ("Bug 2 - two  \n\n\nSpaces end the title, and two empty lines are under it.\n\nSo do spaces this line.  \nThe end.", None),
+        ("Bug 3 - three\n\n\nTwo empty lines under the title.", None),
+    ];
+    let before = stack_of_messages(&e, &messages);
+    // Patch 2's commit left as it was: nothing that accepting the change
+    // would change.
+    let claude = fake_claude(&e, "claude-leave.sh", "", r#"{"replies": {"c1": "Nothing to change."}}"#);
+    let id = comment(&e, &["--patch", "2", "Fine?"]);
+    let (fine, out, err) = send(&e, &claude, &[&id], &[]);
+    assert!(fine, "{out}{err}");
+    let runs = e.ok(&["runs"]);
+    assert!(runs.lines().last().is_some_and(|l| l.ends_with("\treviewed: 1 reply accepted")), "{runs}");
+    assert_eq!(Db::load(&e.db).unwrap().stack("s").unwrap().patches, before);
+    // Its code changed, its message as git gave it back: its new version,
+    // with the message as stored, changed and not reworded.
+    let claude = fake_claude(
+        &e,
+        "claude-code.sh",
+        "echo more >> m2.txt\ngit -c user.name=C -c user.email=c@x commit -q --amend -a --no-edit",
+        r#"{"replies": {"c1": "More in m2.txt."}}"#,
+    );
+    let id = comment(&e, &["--patch", "2", "More?"]);
+    let (fine, out, err) = send(&e, &claude, &[&id], &[]);
+    assert!(fine, "{out}{err}");
+    let db = Db::load(&e.db).unwrap();
+    let after = db.stack("s").unwrap().patches.clone();
+    assert_eq!([after[0] == before[0], after[1] == before[1], after[2] == before[2]], [true, false, true], "{before:?} {after:?}");
+    let p = db.patch(&after[1]);
+    assert_eq!((p.message.as_str(), p.author.as_deref()), (messages[1].0, Some("A U Thor <author@example.com>")));
+    assert!(p.diff.contains("+more\n"), "{}", p.diff);
+    assert_eq!(changed_by_the_last_change(&e), ("~1".to_string(), vec![(2, false)]));
+}
+
 /// t.txt with the same six lines twice, eight lines apart: `head`, the
 /// first copy, eight lines of filler, the second copy, three more. With
 /// `new_in`, `NEW` is added in that copy (1 or 2), after its `c`.

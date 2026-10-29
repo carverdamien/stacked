@@ -28,44 +28,82 @@ pub fn revise(old: &Patch, d: Draft) -> Patch {
     Patch::new(old.change.clone(), d.author, d.date, d.message, d.diff)
 }
 
+/// What stacked wrote of a stack into the worktree where the agent changes
+/// it: the commit it made of each patch, as that commit's patch (`commits`,
+/// by the commit's sha, the patch's id), and that commit read back as the
+/// agent's commits are, what git gives back of the patch (`drafts`, by the
+/// patch's id). Empty for drafts read from commits stacked did not make, as
+/// an import's are.
+#[derive(Debug, Clone, Default)]
+pub struct Written {
+    pub commits: HashMap<String, String>,
+    pub drafts: HashMap<String, Draft>,
+}
+
 /// The patches `drafts` are, given the ones they replace: a draft from a
-/// commit in `by_commit` replaces that patch; else one with the effect of
-/// a patch's diff (`same_effect`) replaces it, its message alone changed if
-/// any (of several with that effect, the one with its title); else one
-/// with its title; else it is new. A draft with the message, the author and
-/// the effect of the patch it replaces is that patch, unchanged, its diff
-/// as stored: a rebase that only moved the patch's lines makes no new
-/// version of it. Any other draft is a new version of the patch it
-/// replaces. A diff of nothing is no patch's own. Nothing is stored, and
-/// nothing is checked: `plan_checked` checks the patches kept so.
-fn plan_drafts(olds: &[Patch], drafts: Vec<Draft>, by_commit: &HashMap<String, String>) -> Vec<Patch> {
+/// commit stacked made of a patch (`written`) replaces that patch; else one
+/// with the effect of a patch's diff (`same_effect`) replaces it, its
+/// message alone changed if any (of several with that effect, the one with
+/// its title); else one with its title; else it is new. A patch's title is
+/// its own, or the one git gave back of it. A draft takes the message and
+/// the author of the patch it replaces, as stored, where they are what git
+/// gave back of them (`as_stored`). A draft with the message, the author
+/// and the effect of the patch it replaces is that patch, unchanged, its
+/// diff as stored: a rebase that only moved the patch's lines, or that made
+/// its commit again as it rewords another, makes no new version of it. Any
+/// other draft is a new version of the patch it replaces. A diff of
+/// nothing is no patch's own. Nothing is stored, and nothing is checked:
+/// `plan_checked` checks the patches kept so.
+fn plan_drafts(olds: &[Patch], drafts: Vec<Draft>, written: &Written) -> Vec<Patch> {
     let mut left: Vec<&Patch> = olds.iter().collect();
     let mut out = Vec::new();
     for d in drafts {
         let from_commit = d
             .commit
             .as_ref()
-            .and_then(|c| by_commit.get(c))
+            .and_then(|c| written.commits.get(c))
             .and_then(|id| left.iter().position(|o| &o.id == id));
         // Its code as it was, whatever its commit: reworded, or rebased.
         let code = |o: &Patch| !d.diff.trim().is_empty() && same_effect(&o.diff, &d.diff);
+        // Its title as stored, or as git gave it back.
+        let titled = |o: &Patch| o.title() == d.title() || written.drafts.get(&o.id).is_some_and(|w| w.title() == d.title());
         let at = from_commit
-            .or_else(|| left.iter().position(|o| code(o) && o.title() == d.title()))
+            .or_else(|| left.iter().position(|o| code(o) && titled(o)))
             .or_else(|| left.iter().position(|o| code(o)))
-            .or_else(|| left.iter().position(|o| o.title() == d.title()));
+            .or_else(|| left.iter().position(|o| titled(o)));
         out.push(match at {
             Some(i) => {
                 let old = left.remove(i);
-                let mut d = d;
-                if d.author.is_none() {
-                    d.author = old.author.clone();
-                }
+                let d = as_stored(old, d, written);
                 if unchanged(old, &d) { old.clone() } else { revise(old, d) }
             }
             None => new_patch(d),
         });
     }
     out
+}
+
+/// Draft `d` of patch `old`, its author the patch's if it has none; and its
+/// message, and its author, the patch's as stored where they are what git
+/// gave back of the patch's own (`written`): what the agent left as it was.
+/// git does not give every message back as stored: `git am` keeps no empty
+/// line twice in a row, no white space at the end of a line and no carriage
+/// return, and takes a prefix and runs of spaces out of a title;
+/// format-patch quotes a name that holds a comma or a dot. A message or an
+/// author changed otherwise, if only in its white space, is the draft's.
+pub(crate) fn as_stored(old: &Patch, mut d: Draft, written: &Written) -> Draft {
+    if d.author.is_none() {
+        d.author = old.author.clone();
+    }
+    if let Some(w) = written.drafts.get(&old.id) {
+        if d.message == w.message {
+            d.message = old.message.clone();
+        }
+        if d.author == w.author {
+            d.author = old.author.clone();
+        }
+    }
+    d
 }
 
 /// Whether draft `d` is patch `old` as it was: the same message, the same
@@ -117,28 +155,23 @@ fn effect(d: &str) -> impl Iterator<Item = &str> {
 /// applied in turn in the check's own index (`check::astray`), a kept patch
 /// must leave its files as its draft does, and so as the commit the draft
 /// was read from has them. One that does not is its draft's new version
-/// instead: its diff, written before its lines moved, applied at another
-/// copy of them, or a hunk moved to lines like its own, as git puts a hunk
-/// where its lines are nearest to where its header says. Then the check
-/// goes on up the stack. Where nothing can be checked, every patch kept so
-/// is its draft's new version.
+/// instead (its message and author as `as_stored` gives them): its diff,
+/// written before its lines moved, applied at another copy of them, or a
+/// hunk moved to lines like its own, as git puts a hunk where its lines
+/// are nearest to where its header says. Then the check goes on up the
+/// stack. Where nothing can be checked, every patch kept so is its draft's
+/// new version.
 pub fn plan_checked(
     olds: &[Patch],
     drafts: Vec<Draft>,
-    by_commit: &HashMap<String, String>,
+    written: &Written,
     on: Option<(&std::path::Path, &str)>,
 ) -> Vec<Patch> {
     let theirs = drafts.clone();
-    let mut planned = plan_drafts(olds, drafts, by_commit);
+    let mut planned = plan_drafts(olds, drafts, written);
     // Kept, a patch has its diff as stored, not its draft's.
     let kept = |planned: &[Patch], k: usize| planned[k].diff != theirs[k].diff;
-    let taken = |old: &Patch, k: usize| {
-        let mut d = theirs[k].clone();
-        if d.author.is_none() {
-            d.author = old.author.clone();
-        }
-        revise(old, d)
-    };
+    let taken = |old: &Patch, k: usize| revise(old, as_stored(old, theirs[k].clone(), written));
     while (0..planned.len()).any(|k| kept(&planned, k)) {
         let astray = on.ok_or_else(|| Error("nothing to check on".into())).and_then(|(repo, base)| {
             let mine: Vec<&str> = planned.iter().map(|p| p.diff.as_str()).collect();
@@ -165,10 +198,10 @@ pub fn match_drafts(
     db: &mut Db,
     olds: &[Patch],
     drafts: Vec<Draft>,
-    by_commit: &HashMap<String, String>,
+    written: &Written,
     on: Option<(&std::path::Path, &str)>,
 ) -> Result<Vec<String>> {
-    plan_checked(olds, drafts, by_commit, on)
+    plan_checked(olds, drafts, written, on)
         .into_iter()
         .map(|p| db.add_patch(p))
         .collect()
@@ -204,7 +237,7 @@ pub fn import(
     }
     // Replacing the stack, the drafts apply to its base.
     let at = on.as_ref().filter(|_| replace).map(|(b, r)| (std::path::Path::new(r.as_str()), b.as_str()));
-    patches.extend(match_drafts(db, &olds, drafts, &HashMap::new(), at)?);
+    patches.extend(match_drafts(db, &olds, drafts, &Written::default(), at)?);
     let op = if replace {
         format!("import {n} patches, replacing")
     } else {
@@ -1610,7 +1643,7 @@ mod tests {
         assert!(!same_effect(merged, split));
         // A draft so moved, its title other, is its patch's new version.
         let old = Patch::new("a".into(), Some("T <t@x>".into()), None, "Bug XXXXXXX - A\n".into(), at.clone());
-        let planned = plan_drafts(std::slice::from_ref(&old), vec![draft("Bug 2084269 - A", &hunk_at(348))], &HashMap::new());
+        let planned = plan_drafts(std::slice::from_ref(&old), vec![draft("Bug 2084269 - A", &hunk_at(348))], &Written::default());
         assert_eq!(planned[0].change, "a");
     }
 
@@ -1623,13 +1656,16 @@ mod tests {
             date: Some("Tue, 3 Mar 2026 11:00:00 +0000".into()),
             ..draft("A", &hunk_at(348).replace("@@ fn f()", "@@ fn helper()"))
         };
-        let planned = plan_drafts(std::slice::from_ref(&old), vec![moved.clone()], &HashMap::new());
+        let planned = plan_drafts(std::slice::from_ref(&old), vec![moved.clone()], &Written::default());
         assert_eq!(planned, std::slice::from_ref(&old));
         // From the commit it was given, read back as git writes it now: the
         // same.
-        let by_commit = HashMap::from([("c1".to_string(), old.id.clone())]);
+        let written = Written {
+            commits: HashMap::from([("c1".to_string(), old.id.clone())]),
+            ..Default::default()
+        };
         let from = Draft { commit: Some("c1".into()), ..moved.clone() };
-        assert_eq!(plan_drafts(std::slice::from_ref(&old), vec![from], &by_commit), std::slice::from_ref(&old));
+        assert_eq!(plan_drafts(std::slice::from_ref(&old), vec![from], &written), std::slice::from_ref(&old));
         // Its message other, its author, or its effect: its new version,
         // with the diff as git writes it now.
         for d in [
@@ -1637,12 +1673,12 @@ mod tests {
             Draft { author: Some("U <u@x>".into()), ..moved.clone() },
             draft("A", &hunk_at(336).replace("+d", "+D")),
         ] {
-            let p = plan_drafts(std::slice::from_ref(&old), vec![d.clone()], &HashMap::new()).remove(0);
+            let p = plan_drafts(std::slice::from_ref(&old), vec![d.clone()], &Written::default()).remove(0);
             assert!(p.change == "a" && p.id != old.id && p.diff == d.diff, "{d:?}");
         }
         // With nothing to check its diff as stored on, it is its draft's
         // new version too.
-        let p = plan_checked(std::slice::from_ref(&old), vec![moved.clone()], &HashMap::new(), None).remove(0);
+        let p = plan_checked(std::slice::from_ref(&old), vec![moved.clone()], &Written::default(), None).remove(0);
         assert!(p.change == "a" && p.id != old.id && p.diff == moved.diff, "{p:?}");
     }
 
@@ -1662,11 +1698,59 @@ mod tests {
             // A diff of nothing, its title other: not E.
             draft("F", ""),
         ];
-        let planned = plan_drafts(&olds, drafts, &HashMap::new());
+        let planned = plan_drafts(&olds, drafts, &Written::default());
         let changes: Vec<&str> = planned.iter().map(|p| p.change.as_str()).collect();
         assert_eq!(changes[..3], ["c", "a", "b"]);
         assert!(!["a", "b", "c", "e"].contains(&changes[3]), "{changes:?}");
         assert_eq!(planned[0].id, olds[2].id);
+    }
+
+    #[test]
+    fn a_draft_with_what_git_gave_back_of_its_patch_s_message_and_author_has_them_as_stored() {
+        // Two empty lines under the title, two spaces at its end, and a name
+        // that format-patch quotes: git gives them back otherwise from the
+        // commit stacked made of the patch, c1.
+        let old = Patch::new("a".into(), Some("Thor, A. <t@x>".into()), None, "A  \n\n\nOne.\n\nTwo.".into(), adds("x"));
+        let back = Draft {
+            author: Some("\"Thor, A.\" <t@x>".into()),
+            message: "A\n\nOne.\n\nTwo.".into(),
+            ..draft("A", &adds("x"))
+        };
+        let written = Written {
+            commits: HashMap::from([("c1".to_string(), old.id.clone())]),
+            drafts: HashMap::from([(old.id.clone(), Draft { commit: Some("c1".into()), ..back.clone() })]),
+        };
+        // That commit as it was, or made again as a rebase that rewords
+        // another makes it: the patch itself, as stored.
+        for commit in ["c1", "c2"] {
+            let d = Draft { commit: Some(commit.into()), ..back.clone() };
+            assert_eq!(plan_drafts(std::slice::from_ref(&old), vec![d], &written), std::slice::from_ref(&old), "{commit}");
+        }
+        // Its code changed, its commit made again: found by the title git
+        // gave back, its new version, with the message and the author as
+        // stored.
+        let d = Draft { commit: Some("c2".into()), diff: adds("y"), ..back.clone() };
+        let p = plan_drafts(std::slice::from_ref(&old), vec![d], &written).remove(0);
+        assert!(p.change == "a" && p.diff == adds("y") && p.message == old.message && p.author == old.author, "{p:?}");
+        // Its diff as stored kept, then nothing to check it on: its draft's
+        // new version, with the message and the author as stored too.
+        let moved = Draft { diff: adds("x").replace("index 1..2", "index 3..4"), ..back.clone() };
+        let p = plan_checked(std::slice::from_ref(&old), vec![moved.clone()], &written, None).remove(0);
+        assert!(p.change == "a" && p.diff == moved.diff && p.message == old.message && p.author == old.author, "{p:?}");
+        // Its message changed otherwise, if only in its white space (an empty
+        // line more, spaces at the end of a line, as a commit made with its
+        // message verbatim may have them): its new version, with that
+        // message, the author as stored.
+        for message in ["A\n\nOne, said otherwise.\n\nTwo.", "A\n\nOne.\n\n\nTwo.", "A\n\nOne.  \n\nTwo."] {
+            let d = Draft { message: message.into(), ..back.clone() };
+            let p = plan_drafts(std::slice::from_ref(&old), vec![d], &written).remove(0);
+            assert!(p.change == "a" && p.id != old.id && p.message == message && p.author == old.author, "{p:?}");
+        }
+        // Another author: its new version, with that author, the message as
+        // stored.
+        let d = Draft { author: Some("U <u@x>".into()), ..back.clone() };
+        let p = plan_drafts(std::slice::from_ref(&old), vec![d], &written).remove(0);
+        assert!(p.change == "a" && p.id != old.id && p.message == old.message && p.author.as_deref() == Some("U <u@x>"), "{p:?}");
     }
 
     #[test]

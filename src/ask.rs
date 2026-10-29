@@ -66,8 +66,8 @@ use crate::db::{
 };
 use crate::git;
 use crate::held::Held;
-use crate::mbox::{format_mbox, parse_mbox};
-use crate::ops::{base_of, plan_checked};
+use crate::mbox::{Draft, format_mbox, parse_mbox};
+use crate::ops::{Written, base_of, plan_checked};
 use crate::thread::{Role, append_turn, fenced, last_reply_way, last_role, thread_turns};
 use crate::view::{MSG_PATH, find_line, mode, note_lines, title_key};
 
@@ -2844,24 +2844,44 @@ fn land_patch(db: &mut Db, run: &Run, i: &Info, result: &str, replies: &Map<Stri
 /// commit, its diff or its title, else the first, a new version of
 /// `old_id`, or `old_id` itself when nothing but where its lines are has
 /// changed and its diff as stored leaves its files as that commit does
-/// (`plan_checked`); the rest new.
+/// (`plan_checked`), its message and author as stored where the agent left
+/// them as git gave them back (`written`); the rest new.
 fn pieces_since(db: &Db, wt: &Path, parent: &str, old_id: &str, i: &Info) -> Result<Vec<Patch>> {
-    let mail = git::git(
-        wt,
-        &["format-patch", "--stdout", "--no-signature", "--keep-subject", &format!("{parent}..HEAD")],
-    )?;
-    let drafts = parse_mbox(&mail)?;
-    let by_commit: HashMap<String, String> = i.commits.iter().cloned().collect();
+    let drafts = read_back(wt, &format!("{parent}..HEAD"))?;
+    let written = written(wt, i);
     let old = db.patch(old_id).clone();
-    let mut pieces = plan_checked(std::slice::from_ref(&old), drafts, &by_commit, Some((wt, parent)));
+    let mut pieces = plan_checked(std::slice::from_ref(&old), drafts, &written, Some((wt, parent)));
     // Neither its commit, its diff nor its title kept: the first commit is
     // the patch's new version all the same, the ask being on that patch.
     if !pieces.iter().any(|p| p.change == old.change)
         && let Some(first) = pieces.first_mut()
     {
-        *first = crate::ops::revise(&old, crate::mbox::Draft::from(&*first));
+        *first = crate::ops::revise(&old, crate::ops::as_stored(&old, Draft::from(&*first), &written));
     }
     Ok(pieces)
+}
+
+/// The commits of `range` in `wt` read back as patches: their mail, as
+/// `git format-patch` writes it.
+fn read_back(wt: &Path, range: &str) -> Result<Vec<Draft>> {
+    parse_mbox(&git::git(wt, &["format-patch", "--stdout", "--no-signature", "--keep-subject", range])?)
+}
+
+/// What stacked wrote into `wt` for ask `i` to change (`Written`): the
+/// commit it made of each patch, and that commit read back as the agent's
+/// are, so what git gives back of the patch's message and author. Should
+/// git no longer have those commits, only which patch each was is known.
+fn written(wt: &Path, i: &Info) -> Written {
+    let commits: HashMap<String, String> = i.commits.iter().cloned().collect();
+    let made = match i.commits.last() {
+        Some((top, _)) => read_back(wt, &format!("{}..{top}", i.base)).unwrap_or_default(),
+        None => vec![],
+    };
+    let drafts = made
+        .into_iter()
+        .filter_map(|d| Some((commits.get(d.commit.as_deref()?)?.clone(), d)))
+        .collect();
+    Written { commits, drafts }
 }
 
 /// A stack change landing, held: the commits read back as a stack made from
@@ -2896,14 +2916,9 @@ fn land_stack(db: &mut Db, run: &Run, i: &Info, result: &str, replies: &Map<Stri
             true,
         ));
     }
-    let mail = git::git(
-        &wt,
-        &["format-patch", "--stdout", "--no-signature", "--keep-subject", &format!("{base}..HEAD")],
-    )?;
-    let drafts = parse_mbox(&mail)?;
+    let drafts = read_back(&wt, &format!("{base}..HEAD"))?;
     let olds: Vec<Patch> = start.patches.iter().map(|id| db.patch(id).clone()).collect();
-    let by_commit: HashMap<String, String> = i.commits.iter().cloned().collect();
-    let planned = plan_checked(&olds, drafts, &by_commit, Some((&wt, &base)));
+    let planned = plan_checked(&olds, drafts, &written(&wt, i), Some((&wt, &base)));
     let ids: Vec<String> = planned.iter().map(|p| p.id.clone()).collect();
     let replies = held_replies(db, i, replies);
     // Nothing changed of the stack it went on from: a guess's, the stack the

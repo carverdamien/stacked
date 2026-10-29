@@ -1426,6 +1426,21 @@ patch 2 is a new version (`~`). A commit with a line added, removed or
 kept that its patch does not have, a file more or fewer, a mode changed,
 or its hunks split or merged otherwise, is a new version.
 
+git does not give every message back as stored: `git am`, which puts the
+stack into the agent's worktree, keeps no empty line twice in a row, no
+white space at the end of a line and no carriage return, and takes a
+prefix and runs of spaces out of a title; `git format-patch` quotes a
+name that holds a comma or a dot. So stacked also reads back the commits
+it made of the patches, as it reads the agent's, and a commit whose
+message or author is what git gave back of its patch's has the patch's
+own, as stored: the agent left it as it was. The title git gave back
+finds the patch as its own does. A message the agent changed otherwise,
+if only in its white space, is the commit's: a new version of the patch,
+reworded when its diff has the same effect. So when the agent rewords
+patch 2 of a stack whose messages have two empty lines under their
+titles, the patches below it and above it keep their versions, and only
+patch 2 is a new version.
+
 A diff kept as stored is checked before the change lands. git puts a
 hunk where the hunk's lines are nearest to the line its header names, so
 a diff stored before its lines moved could go to another copy of the
@@ -1441,8 +1456,9 @@ after all, its diff the agent's commit's, and the check goes on up the
 stack from there. When the check cannot be made, every patch that would
 keep its diff as stored is a new version instead. `stacked import NAME
 RANGE --replace` matches the commits it imports to the stack's patches in
-the same way, and checks the patches it keeps against those commits on
-the stack's base.
+the same way, their messages and authors compared as they are, as
+stacked did not make those commits, and checks the patches it keeps
+against those commits on the stack's base.
 
 Where it stands shows on the comment's first line, or under it when that is
 too long: ready (and on what), with the agent (and the last lines of its
@@ -2720,7 +2736,18 @@ batched at, and work sent back at the effort it was asked at unless
 a patch below moved keeping its version and its diff as stored when the
 agent's rebase rewords another patch (the stack diff marking only the
 reworded one), the agent's change of such a patch, its commit left as it
-was or made again, landing with nothing to accept, a patch with two
+was or made again, landing with nothing to accept, the patches below and
+above the one the agent's rebase rewords keeping their versions, their
+messages and authors as stored, when git gives those back otherwise
+(empty lines in a row, under the title as a sync of the user's had taken
+them from the checkout, white space at the end of a line or of the
+title, a first paragraph of two lines, carriage returns, a prefix or
+runs of spaces in the title, a newline and empty lines at the end, a
+line of three dashes, a line `git am` takes for the author, a name
+format-patch quotes), a message the agent changed in its white space
+alone a new version, reworded, a patch with such a message that the
+agent left as it was landing with nothing to accept, and one whose code
+it changed keeping its message as stored, a patch with two
 copies of its lines in its file a new version when its diff as stored
 would go to the other copy (lines added between the two by a patch
 below) and when the agent moved its hunk to the other copy, the stack not
@@ -3052,7 +3079,12 @@ removed or kept, a file more or fewer, the files in another order, a mode
 changed, a hunk split in two), and that a draft with its patch's message,
 author and effect is that patch, its diff as stored, whatever its date,
 while one with another message, author or effect is a new version, as is
-one that nothing can be checked on; those
+one that nothing can be checked on, and that a draft with the message and
+the author git gave back of its patch's has them as stored, from its
+commit as it was or made again, its code changed (the title git gave
+back finding its patch) or nothing to check on, while one whose message
+changed otherwise, if only in its white space, or with another author,
+is a new version with the draft's message or author; those
 in `history.rs`, what the history leaves out (comments, runs, a move to
 where the stack is, a branch put straight back), how a stack diff follows
 each patch by its change, a move told from a shift, and a new version
