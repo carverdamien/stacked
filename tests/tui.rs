@@ -12431,7 +12431,8 @@ fn the_stack_s_menu_wraps_every_message_with_long_lines_as_one_edit_by_hand() {
     keys(&mut app, &[KeyCode::Home, KeyCode::Char(' ')]);
     assert_eq!(menu_title(&app), "the stack s");
     assert!(items(&app).contains(&("Wrap the long lines of 1 message at 85 columns".to_string(), true)), "{:?}", items(&app));
-    assert_eq!(menu_note(&app), "Patch 1's message has 1 line of prose longer than 85 columns.");
+    // After why the stack's lint is grayed: its checkout has no linter.
+    assert_eq!(menu_note(&app), format!("{}\nPatch 1's message has 1 line of prose longer than 85 columns.", stacked::lint::NO_LINTER));
     keys(&mut app, &[KeyCode::Esc]);
     // At 72, patches 1 and 3.
     app.cfg.view.message_width = 72;
@@ -12440,7 +12441,7 @@ fn the_stack_s_menu_wraps_every_message_with_long_lines_as_one_edit_by_hand() {
     let all = items(&app);
     let at = all.iter().position(|(l, _)| l == item).unwrap_or_else(|| panic!("{all:?}"));
     assert_eq!(all[at - 1], ("Edit the stack as a list in $EDITOR".to_string(), true));
-    assert_eq!(menu_note(&app), "Patch 1's message has 1 line of prose longer than 72 columns and patch 3's has 2.");
+    assert_eq!(menu_note(&app), format!("{}\nPatch 1's message has 1 line of prose longer than 72 columns and patch 3's has 2.", stacked::lint::NO_LINTER));
     choose(&mut app, item);
     // One edit, of both: patch 2 as it was.
     assert_eq!(app.screen, Screen::Review);

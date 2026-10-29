@@ -3600,6 +3600,67 @@ fn a_checkout_s_own_settings_override_the_others_there() {
 }
 
 #[test]
+fn the_linter_is_set_in_the_checkout_s_own_settings_alone() {
+    let e = env();
+    e.ok(&["import", "s", "base"]);
+    let local = e.src.join(".stacked/local.toml");
+    let global = e.root.join("home/config.toml");
+    // None set, and no ./mach: said how to set one.
+    let (fine, _, err) = e.run(&["setup", "lint"]);
+    assert!(!fine && err.contains("no linter is set for this checkout: `stacked setup lint COMMAND…` sets one"), "{err}");
+    // Set: in the checkout's own settings, kept out of git's sight, never in
+    // the settings' file; the words as given, quoted where they need it.
+    let (fine, _, err) = e.run(&["setup", "lint", "./lint.sh", "--fix", "my file"]);
+    assert!(fine, "{err}");
+    assert!(err.contains(&format!("the linter of this checkout is `./lint.sh --fix 'my file'`, written in {}", local.display())), "{err}");
+    assert_eq!(std::fs::read_to_string(&local).unwrap(), "[lint]\ncommand = \"./lint.sh --fix 'my file'\"\n");
+    assert_eq!(std::fs::read_to_string(&global).unwrap(), SET_UP);
+    assert_eq!(git(&e.src, &["status", "--porcelain"]), "");
+    // Printed, with where it comes from; read as any setting is.
+    let (fine, out, err) = e.run(&["setup", "lint"]);
+    assert!(fine && out == "./lint.sh --fix 'my file'\n", "{out}{err}");
+    assert!(err.contains(&format!("this checkout's linter, as {} sets it", local.display())), "{err}");
+    assert_eq!(e.ok(&["config", "lint.command"]), "./lint.sh --fix 'my file'\n");
+    assert_eq!(e.ok(&["config", "--local", "lint.command"]), "./lint.sh --fix 'my file'\n");
+    // Written by `setup lint` alone: `config` refuses, the checkout's own or
+    // the settings' file, nothing written.
+    for args in [&["config", "lint.command", "x"][..], &["config", "--local", "lint.command", "x"]] {
+        let (fine, _, err) = e.run(args);
+        assert!(!fine && err.contains("lint.command is written by `stacked setup lint COMMAND…`"), "{args:?}: {err}");
+    }
+    assert_eq!(std::fs::read_to_string(&global).unwrap(), SET_UP);
+    // Turned off: an empty command, said so.
+    let (fine, _, err) = e.run(&["setup", "lint", "--off"]);
+    assert!(fine && err.contains("lint is turned off in this checkout: command = \"\" is written in"), "{err}");
+    assert_eq!(std::fs::read_to_string(&local).unwrap(), "[lint]\ncommand = \"\"\n");
+    let (fine, out, err) = e.run(&["setup", "lint"]);
+    assert!(fine && out.is_empty() && err.contains("lint is turned off in this checkout"), "{out}{err}");
+    // A checkout whose top has ./mach: Firefox's by default, nothing
+    // written; off as it was set, until the setting is taken out.
+    std::fs::write(e.src.join("mach"), "#!/bin/sh\nexit 2\n").unwrap();
+    let (_, out, _) = e.run(&["setup", "lint"]);
+    assert!(out.is_empty(), "off is kept over the default: {out}");
+    e.ok(&["config", "--local", "--unset", "lint.command"]);
+    let (fine, out, err) = e.run(&["setup", "lint"]);
+    assert!(fine && out == "./mach lint --fix\n", "{out}{err}");
+    assert!(err.contains("as ./mach is at its top") && err.contains("nothing is written"), "{err}");
+    let (fine, _, err) = e.run(&["config", "--local", "lint.command"]);
+    assert!(!fine && err.contains("lint.command is not set in"), "nothing written: {err}");
+    // A settings' file that sets one: passed over, and said.
+    let settings = e.root.join("settings.toml");
+    std::fs::write(&settings, format!("{SET_UP}[lint]\ncommand = \"rm -rf\"\n")).unwrap();
+    let (fine, out, err) = stacked_in(&e.src, &e.db, &["setup", "lint"], "", &[("STACKED_CONFIG", &settings)]);
+    assert!(fine && out == "./mach lint --fix\n", "{out}{err}");
+    assert!(err.contains("lint.command is a checkout's own setting, read only from its .stacked/local.toml"), "{err}");
+    // One git tracks is not written; nor is one outside a checkout.
+    git(&e.src, &["add", "-f", ".stacked/local.toml"]);
+    let (fine, _, err) = e.run(&["setup", "lint", "./lint.sh"]);
+    assert!(!fine && err.contains("git tracks it") && err.contains("nothing written"), "{err}");
+    let (fine, _, err) = stacked_in(&e.root, &e.db, &["setup", "lint", "./lint.sh"], "", &[]);
+    assert!(!fine && err.contains("is not in a git checkout"), "{err}");
+}
+
+#[test]
 fn a_file_is_shown_as_a_patch_leaves_it() {
     let e = env();
     e.ok(&["import", "s", "base"]);

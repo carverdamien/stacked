@@ -16,7 +16,9 @@
 //! ask lands, so what waits goes on its own. A comment may be batched
 //! instead, as in self-review too: it waits for you to send the batch, and
 //! then goes with the rest asked the same way, in one ask (the changes, and
-//! the answers unless they fan out, an ask each).
+//! the answers unless they fan out, an ask each). A lint job of a stack
+//! takes its turn in the same queue as a change does, one at a time of
+//! every stack (`lint`): the changes asked after it wait for it.
 //!
 //! A change works in a git worktree of the stack's own, `.stacked/NAME/agent`
 //! (`agent-2`… when it is busy, or holds what an agent left unfinished),
@@ -297,9 +299,8 @@ fn started() -> std::sync::MutexGuard<'static, Vec<std::process::Child>> {
     STARTED.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// `child`, a process this one started for a run (a try push's), kept to
-/// wait for once it has exited, as an ask's wrapper is.
-#[cfg(feature = "try-push")]
+/// `child`, a process this one started for a run (a try push's, a lint
+/// job's), kept to wait for once it has exited, as an ask's wrapper is.
 pub(crate) fn keep_started(child: std::process::Child) {
     started().push(child);
 }
@@ -363,6 +364,13 @@ pub fn still_running(db: &Db) -> Vec<String> {
             #[cfg(feature = "try-push")]
             if let Some(w) = r.push.as_ref().and_then(|p| p.worktree.as_deref()) {
                 return format!("{} {} {}{asked} pushes to try from {w}", r.id, r.what, r.stack);
+            }
+            // A lint job: where it lints, once its worktree is taken.
+            if let Some(j) = &r.lint {
+                return match &j.worktree {
+                    Some(w) => format!("{} {} {}{asked} lints in {w}", r.id, r.what, r.stack),
+                    None => format!("{} {} {}{asked} is being started, its worktree being made", r.id, r.what, r.stack),
+                };
             }
             let at = match info(r) {
                 Some(Info { worktree: Some(w), .. }) => format!("works in {w}"),
@@ -429,6 +437,13 @@ pub fn reads(way: Way) -> bool {
 pub fn waits_on(db: &Db, name: &str, way: Way) -> Option<String> {
     let going = asks_going(db, name);
     let chain = chains(&agent_of(db, name));
+    // A lint job takes its turn as a change does: a change waits for it, a
+    // build and test for one that runs, and, unchained, an answer.
+    if let Some(j) = crate::lint::pending(db, name).and_then(|r| r.lint.as_deref())
+        && (way == Way::Change || (way == Way::Test && j.step == crate::lint::Step::Running) || (!chain && reads(way)))
+    {
+        return Some("once the linter's work on the stack lands".into());
+    }
     // Chained, an answer runs alongside a change, on the stack as it is.
     let change = going.iter().find(|(_, i)| i.way == Way::Change).filter(|_| !(chain && reads(way)));
     if let Some((_, i)) = change {
@@ -700,6 +715,9 @@ struct Going {
     chain: bool,
     /// The work under review they go on from: the last landed.
     tail: Option<String>,
+    /// A lint job of the stack waits its turn ahead: the changes after it
+    /// go once it has landed.
+    lint: bool,
 }
 
 /// The build and test in flight, of whichever stack: one at a time, as
@@ -725,6 +743,12 @@ pub fn blocked(db: &Db, name: &str) -> Option<String> {
                     .into(),
             );
         }
+        Some(Changer::Lint(said)) => {
+            return Some(format!(
+                "the linter {said} ({}): the stack can be edited by hand again once the linter is done and you have reviewed what it fixed, if it fixed anything",
+                crate::lint::pending(db, name).map(|r| r.request.as_str()).unwrap_or_default()
+            ));
+        }
         None => {}
     }
     let r = crate::held::change_waiting(db, name)?;
@@ -737,20 +761,26 @@ pub fn blocked(db: &Db, name: &str) -> Option<String> {
 
 /// What changes stack `name` from the stack as it was, its work to land:
 /// the agent, at a place (`patch 2`, `the stack`); or, soon, a round sent
-/// back to it.
+/// back to it; or a lint job, where it is said (`lints patch 2 of 5`,
+/// `waits its turn to lint the stack`).
 enum Changer {
     Agent(String),
     Round,
+    Lint(String),
 }
 
 /// What changes stack `name` now, if anything does: the agent changing it
-/// from the stack as it took it, or a round sent back about to.
+/// from the stack as it took it, a round sent back about to, or a lint job
+/// waiting its turn or running.
 fn changer(db: &Db, name: &str) -> Option<Changer> {
     if let Some((_, i)) = asks_going(db, name).into_iter().find(|(_, i)| i.way == Way::Change) {
         return Some(Changer::Agent(match &i.scope {
             Scope::Stack => "the stack".to_string(),
             Scope::Patch(c) => format!("patch {}", position(db, name, c).map_or("?".into(), |p| (p + 1).to_string())),
         }));
+    }
+    if let Some(j) = crate::lint::pending(db, name).and_then(|r| r.lint.as_deref()) {
+        return Some(Changer::Lint(j.said()));
     }
     round_waiting(db, name).then_some(Changer::Round)
 }
@@ -764,6 +794,7 @@ pub fn changing(db: &Db, name: &str) -> Option<String> {
     Some(match changer(db, name)? {
         Changer::Agent(on) => format!("the agent is changing {on}"),
         Changer::Round => "the work you sent back waits to go back to the agent".into(),
+        Changer::Lint(said) => format!("the linter {said}"),
     })
 }
 
@@ -776,7 +807,13 @@ fn round_waiting(db: &Db, name: &str) -> bool {
 /// Whose change of the stack run `r` holds, said: `your edit by hand`,
 /// `the agent's change`.
 pub fn whose_change(r: &Run) -> &'static str {
-    if crate::held::by_hand(r) { "your edit by hand" } else { "the agent's change" }
+    if crate::held::by_hand(r) {
+        "your edit by hand"
+    } else if crate::held::linted(r) {
+        "the linter's change"
+    } else {
+        "the agent's change"
+    }
 }
 
 /// Where the patch of `change` is in stack `name`, from 0.
@@ -1067,23 +1104,39 @@ pub fn unsend(db_path: &Path, notes: &[(String, String)]) -> Result<()> {
     })
 }
 
-/// Starts every ask that may go now; the runs started.
+/// Starts every ask that may go now, and the lint job whose turn it is;
+/// the runs started.
 pub fn launch(db_path: &Path) -> Result<Vec<String>> {
     if !Db::exists(db_path) {
         return Ok(vec![]);
     }
-    let claimed = Db::edit(db_path, claim)?;
+    let (claimed, lints) = Db::edit(db_path, claim)?;
     for id in &claimed {
         if let Err(e) = start(db_path, id) {
             fail_start(db_path, id, &e.0)?;
         }
     }
-    Ok(claimed)
+    for id in &lints {
+        if let Err(e) = crate::lint::start(db_path, id) {
+            crate::lint::not_started(db_path, id, &e.0);
+        }
+    }
+    Ok(claimed.into_iter().chain(lints).collect())
+}
+
+/// What `claim` goes through, in their turn: a batch of comments, by its
+/// key; a lint job waiting, by its run, and its stack.
+enum Turn {
+    Batch(String),
+    Lint(String, String),
 }
 
 /// Under the lock: the ready batches that may go now, each a run begun,
-/// its comments taken off the queue. Their run ids.
-fn claim(db: &mut Db) -> Result<Vec<String>> {
+/// its comments taken off the queue; and the lint job whose turn it is, if
+/// one's is, running from now on. A lint job takes its turn as a change
+/// does, among the batches, the first asked first: one at a time of every
+/// stack. Their run ids: the asks', and the lint job's.
+fn claim(db: &mut Db) -> Result<(Vec<String>, Vec<String>)> {
     // The ready batches: stack, way, scope, comments, the landed work a
     // round sent back starts from, the run asked before it, and the effort
     // they were sent at (the highest, should they differ).
@@ -1115,34 +1168,70 @@ fn claim(db: &mut Db) -> Result<Vec<String>> {
         db.set_note(Note { queued: None, failed: Some(TRY_OF_A_PATCH.into()), ..n })?;
     }
     // A round sent back first, as it goes on from the work just reviewed,
-    // the stack still that work's; then the rest, oldest first.
-    order.sort_by(|a, b| (batches[a].4.is_none(), a).cmp(&(batches[b].4.is_none(), b)));
+    // the stack still that work's; then the rest, oldest first, the lint
+    // jobs waiting among them, each by when it was asked.
+    let mut turns: Vec<Turn> = order.into_iter().map(Turn::Batch).collect();
+    turns.extend(crate::lint::waiting(db).into_iter().map(|(id, name)| Turn::Lint(id, name)));
+    // A batch's key is `b` and when it was made; a lint job's id, when it
+    // was asked.
+    let key = |t: &Turn| match t {
+        Turn::Batch(b) => (batches[b].4.is_none(), b.clone()),
+        Turn::Lint(id, _) => (true, format!("b{id}")),
+    };
+    turns.sort_by_key(key);
     let mut started = Vec::new();
+    let mut lints = Vec::new();
     // Per stack: what is going, as the batches are started; whether a change
     // waits for its review; and, chained, what the next goes on from. Of
-    // every stack: whether a build and test is going.
+    // every stack: whether a build and test is going, and a lint job.
     let mut state: HashMap<String, Going> = HashMap::new();
     let mut test = testing(db).is_some();
-    for b in &order {
-        let (name, way, scope, notes, on, was, effort) = batches[b].clone();
-        let st = state.entry(name.clone()).or_insert_with(|| {
-            let going = asks_going(db, &name);
-            Going {
-                change: going.iter().any(|(_, i)| i.way == Way::Change),
-                answers: going.iter().filter(|(_, i)| reads(i.way)).count(),
-                change_waits: false,
-                reviewing: crate::held::change_waiting(db, &name).is_some(),
-                chain: chains(&agent_of(db, &name)),
-                tail: guessed_from(db, &name),
+    let mut linting = crate::lint::running(db);
+    let going_of = |db: &Db, name: &str| {
+        let going = asks_going(db, name);
+        let lint_runs = crate::lint::pending(db, name).and_then(|r| r.lint.as_deref()).is_some_and(|j| j.step == crate::lint::Step::Running);
+        Going {
+            change: going.iter().any(|(_, i)| i.way == Way::Change) || lint_runs,
+            answers: going.iter().filter(|(_, i)| reads(i.way)).count(),
+            change_waits: false,
+            reviewing: crate::held::change_waiting(db, name).is_some(),
+            chain: chains(&agent_of(db, name)),
+            tail: guessed_from(db, name),
+            lint: false,
+        }
+    };
+    for t in &turns {
+        let b = match t {
+            Turn::Batch(b) => b,
+            // A lint job, as a change: once nothing changes the stack and no
+            // change of it waits for review, nor, unchained, does an answer
+            // run; and while no other lint job runs.
+            Turn::Lint(id, name) => {
+                let st = state.entry(name.clone()).or_insert_with(|| going_of(db, name));
+                if !linting && !st.change && !st.lint && !st.reviewing && (st.chain || st.answers == 0) {
+                    crate::lint::claim(db, id)?;
+                    linting = true;
+                    st.change = true;
+                    lints.push(id.clone());
+                } else {
+                    // The changes behind it wait for it, and, unchained,
+                    // the answers behind them.
+                    st.lint = true;
+                    st.change_waits |= st.chain || !st.reviewing;
+                }
+                continue;
             }
-        });
+        };
+        let (name, way, scope, notes, on, was, effort) = batches[b].clone();
+        let st = state.entry(name.clone()).or_insert_with(|| going_of(db, &name));
         let go = match way {
             // A change has the stack to itself, from the stack as the change
             // before it left it, reviewed; chained, while that change waits
             // for review, from the stack it makes, as if accepted. One waiting
             // for what runs holds back the answers behind it, so it goes next.
+            // Not before a lint job asked before it.
             Way::Change => {
-                if !st.change && (st.chain || (!st.reviewing && st.answers == 0)) {
+                if !st.change && !st.lint && (st.chain || (!st.reviewing && st.answers == 0)) {
                     st.change = true;
                     true
                 } else {
@@ -1231,7 +1320,7 @@ fn claim(db: &mut Db) -> Result<Vec<String>> {
         }
         started.push(id);
     }
-    Ok(started)
+    Ok((started, lints))
 }
 
 fn first_line(text: &str) -> String {
@@ -1965,6 +2054,13 @@ pub fn stand_in(claude: &Path, stacked: &Path) {
     *CLAUDE.lock().unwrap() = Some((claude.to_path_buf(), stacked.to_path_buf()));
 }
 
+/// The program the tests run as claude, if they set one (`stand_in`): what
+/// a process this one starts is told to run as claude in turn
+/// (`$STACKED_CLAUDE`), for the asks it starts.
+pub(crate) fn claude_stand_in() -> Option<PathBuf> {
+    CLAUDE.lock().unwrap().as_ref().map(|(claude, _)| claude.clone())
+}
+
 /// Has the git commands `c` runs make commits and tags unsigned, whatever
 /// the user's git config says: settings added to those of `GIT_CONFIG_COUNT`.
 fn unsigned(c: &mut Command) {
@@ -2243,7 +2339,7 @@ pub fn plans_in(dir: PathBuf) -> bool {
 /// binary set it as it started; else beside the database. Only the tests'
 /// own processes are never set up so: their plans are kept in the test's
 /// own folder, and they never touch the one that every stacked shares.
-fn plans(db: &Path) -> PathBuf {
+pub(crate) fn plans(db: &Path) -> PathBuf {
     PLANS.get().cloned().unwrap_or_else(|| db.with_file_name("stacked-todo"))
 }
 
@@ -3435,7 +3531,7 @@ pub fn land_orphans(db_path: &Path, db: &Db) -> usize {
         })
         .map(|r| r.id.clone())
         .collect();
-    stale.iter().filter(|id| land(db_path, id, Some("killed")).is_ok()).count() + pushes_orphaned(db_path, db)
+    stale.iter().filter(|id| land(db_path, id, Some("killed")).is_ok()).count() + pushes_orphaned(db_path, db) + crate::lint::orphans(db_path, db)
 }
 
 /// The try pushes whose process is gone before mach said it pushed, ended

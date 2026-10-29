@@ -92,6 +92,8 @@ fn named(rec: &Record) -> Vec<usize> {
             // A try push: the stack it pushes.
             #[cfg(feature = "try-push")]
             out.extend(r.push.as_ref().map(|p| p.rev));
+            // A lint job: the stack it lints, once it runs.
+            out.extend(r.lint.as_ref().and_then(|j| j.rev));
             out
         }
         Record::Read(m) => m.undo.into_iter().collect(),
@@ -130,6 +132,11 @@ fn run_now(r: &Run, new: &New) -> Run {
         && let Some(to) = new.rev(p.rev)
     {
         p.rev = to;
+    }
+    if let Some(j) = &mut r.lint
+        && let Some(to) = j.rev.and_then(|old| new.rev(old))
+    {
+        j.rev = Some(to);
     }
     r
 }

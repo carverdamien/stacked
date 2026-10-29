@@ -350,6 +350,17 @@ impl Colors {
     }
 }
 
+/// A checkout's linter, which `Lint the stack` runs (`stacked setup
+/// lint`): a checkout's own setting alone, read only from its local file,
+/// never from the settings' file.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Lint {
+    /// The command, as the local file writes it: a program and its
+    /// arguments, the files to lint after them. Empty, lint is off; unset,
+    /// a checkout whose top has `./mach` lints with `./mach lint --fix`.
+    pub command: Option<String>,
+}
+
 /// The tour, `stacked demo`.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Demo {
@@ -369,6 +380,7 @@ pub struct Config {
     pub view: View,
     pub colors: Colors,
     pub keys: Keymap,
+    pub lint: Lint,
     pub demo: Demo,
 }
 
@@ -389,6 +401,7 @@ impl Default for Config {
             view: View::default(),
             colors: Colors::default(),
             keys: Keymap::default(),
+            lint: Lint::default(),
             demo: Demo::default(),
         }
     }
@@ -406,7 +419,14 @@ struct Written {
     view: WrittenView,
     colors: BTreeMap<String, String>,
     keys: BTreeMap<String, OneOrMore>,
+    lint: WrittenLint,
     demo: WrittenDemo,
+}
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(default, deny_unknown_fields)]
+struct WrittenLint {
+    command: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -650,6 +670,9 @@ impl Config {
         let (keys, bad) = c.keys.with_names(&named);
         c.keys = keys;
         wrong.extend(bad);
+        if let Some(command) = w.lint.command {
+            c.lint.command = Some(command.trim().to_string());
+        }
         if let Some(seen) = w.demo.seen {
             c.demo.seen = seen;
         }
@@ -911,6 +934,20 @@ impl Config {
                 out.push_str(&format!("{} = {}\n", k.name(), list(&self.keys.names(k))));
             }
         }
+        // A checkout's own setting alone: said, never written as one, so
+        // that this, kept as the settings' file, sets no linter there.
+        out.push_str(
+            "\n[lint]\n# The linter of a checkout, which the editor's `Lint the stack` runs: a program and\n\
+             # its arguments, the files of each patch after them. A checkout's own setting alone,\n\
+             # read only from its .stacked/local.toml, which `stacked setup lint COMMAND…` writes;\n\
+             # `stacked setup lint --off` writes command = \"\", lint turned off. Unset, a checkout\n\
+             # whose top has ./mach lints with ./mach lint --fix.\n",
+        );
+        out.push_str(&match &self.lint.command {
+            Some(c) if c.is_empty() => "# command = \"\"   (this checkout's own: lint is off)\n".to_string(),
+            Some(c) => format!("# command = {}   (this checkout's own, as `stacked setup lint` wrote it)\n", q(c)),
+            None => "# command = ...   (none set: ./mach lint --fix where ./mach is at the checkout's top)\n".into(),
+        });
         out.push_str("\n[demo]\n# The tour, `stacked demo`, was opened before: it starts on the list of its sections.\n");
         out.push_str(&format!("seen = {}\n", self.demo.seen));
         out
@@ -1000,6 +1037,7 @@ const SETTINGS: &[(&str, Kind)] = &[
     ("view.stream_lines", Kind::Count),
     ("view.split_width", Kind::Count),
     ("view.message_width", Kind::Count),
+    ("lint.command", Kind::Text),
     ("demo.seen", Kind::Flag),
 ];
 
@@ -1093,6 +1131,7 @@ pub fn value_of(c: &Config, key: &str) -> Result<Vec<String>, String> {
         "view.stream_lines" => vec![c.view.stream_lines.to_string()],
         "view.split_width" => vec![c.view.split_width.to_string()],
         "view.message_width" => vec![c.view.message_width.to_string()],
+        "lint.command" => opt(&c.lint.command),
         "demo.seen" => vec![c.demo.seen.to_string()],
         k if k.starts_with("colors.") => match Paint::named(&k["colors.".len()..]) {
             Some(p) => vec![c.colors.spec(p).to_string()],
@@ -1117,8 +1156,37 @@ pub fn set(path: &Path, key: &str, values: &[String]) -> Result<(), String> {
 /// Writes each of `settings`, a key and its values, in the settings' file
 /// at `path`, as `set` writes one: all in one go, or none of them.
 pub fn set_all(path: &Path, settings: &[(&str, Vec<String>)]) -> Result<(), String> {
+    if let Some((key, _)) = settings.iter().find(|(key, _)| local_only(key)) {
+        return Err(only_local(key));
+    }
     let lits = literals(settings)?;
     edit_settings(path, |text| with_settings(text, &lits))
+}
+
+/// Whether `key` is a checkout's own setting alone, never read from the
+/// settings' file: the linter's.
+pub fn local_only(key: &str) -> bool {
+    key.starts_with("lint.")
+}
+
+/// Why the settings' file does not take `key`, a checkout's own setting
+/// alone.
+fn only_local(key: &str) -> String {
+    format!("{key} is a checkout's own setting, read only from its .stacked/local.toml: `stacked setup lint` writes it there; nothing written")
+}
+
+/// The settings' file's settings, and what is wrong with it: a checkout's
+/// own setting it sets passed over, and said.
+fn global() -> (Config, Vec<String>) {
+    let p = path();
+    let (mut c, mut wrong) = Config::load(&p);
+    if c.lint.command.take().is_some() {
+        wrong.push(format!(
+            "{}: lint.command is a checkout's own setting, read only from its .stacked/local.toml (`stacked setup lint` writes it there): here it is passed over",
+            p.display()
+        ));
+    }
+    (c, wrong)
 }
 
 /// Each of `settings`, a key and its values, in the file's form: refused,
@@ -1292,7 +1360,7 @@ pub fn path() -> PathBuf {
 
 fn loaded() -> &'static Loaded {
     LOADED.get_or_init(|| {
-        let (global, mut wrong) = Config::load(&path());
+        let (global, mut wrong) = global();
         let here = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         let (config, more) = with_local(&global, &here);
         wrong.extend(more);
@@ -1325,7 +1393,7 @@ pub fn init(c: Config) {
 /// a change to either file counts from the next ask.
 pub fn of(dir: &Path) -> (Config, Vec<String>) {
     let l = loaded();
-    let (global, mut wrong) = if l.given { (l.config.clone(), vec![]) } else { Config::load(&path()) };
+    let (global, mut wrong) = if l.given { (l.config.clone(), vec![]) } else { global() };
     let (config, more) = with_local(&global, dir);
     wrong.extend(more);
     (config, wrong)

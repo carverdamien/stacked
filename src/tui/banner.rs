@@ -29,6 +29,9 @@ pub(super) fn landed_how(r: &crate::db::Run, room: usize) -> String {
     if crate::held::by_hand(r) {
         return format!(", by hand: {}", short(&r.request, room));
     }
+    if crate::held::linted(r) {
+        return format!(", by the linter: {}", short(&r.request, room));
+    }
     let mut out = if r.request.is_empty() { String::new() } else { format!(", asked \"{}\"", short(&r.request, room)) };
     if r.held.as_ref().is_some_and(|h| !h.edits.is_empty()) {
         out.push_str(", edited by hand");
@@ -64,6 +67,8 @@ pub enum BannerLine {
     /// A try push under way, followed: its run.
     #[cfg(feature = "try-push")]
     Push(String),
+    /// The stack's lint job, waiting its turn or running: its run.
+    Lint(String),
     /// The batch: the comments asked about later, to send.
     Batch,
     /// A comment open on the stack: (change, id).
@@ -105,6 +110,8 @@ impl App {
                 out.push(BannerLine::Pulling);
             }
         }
+        // The stack's lint job, waiting or running.
+        out.extend(crate::lint::pending(&self.db, &self.stack).map(|r| BannerLine::Lint(r.id.clone())));
         // The try pushes of the stack under way, the first started first.
         #[cfg(feature = "try-push")]
         out.extend(self.pushes().into_iter().map(BannerLine::Push));
@@ -127,8 +134,8 @@ impl App {
 
     /// The section of the banner line `l` is in: 0, the commit messages to
     /// sync; 1, read only, what landed and changes nothing; 2, edits, what
-    /// changes the stack; 4, the try pushes under way; 3, the batch and the
-    /// comments.
+    /// changes the stack; 5, the stack's lint job; 4, the try pushes under
+    /// way; 3, the batch and the comments.
     fn banner_section(&self, l: &BannerLine) -> usize {
         match l {
             BannerLine::Sync => 0,
@@ -137,8 +144,16 @@ impl App {
             BannerLine::Pulling => 1,
             #[cfg(feature = "try-push")]
             BannerLine::Push(_) => 4,
+            BannerLine::Lint(_) => 5,
             _ => 3,
         }
+    }
+
+    /// Where the stack's lint job `run` is, said on its banner line and in
+    /// the banner's head: `lints patch 2 of 5`, `waits its turn to lint the
+    /// stack`.
+    fn lint_progress(&self, run: &str) -> String {
+        self.db.run(run).and_then(|r| r.lint.as_deref()).map(crate::lint::Job::said).unwrap_or_default()
     }
 
     /// The try pushes of the stack under way: their runs, the first started
@@ -198,11 +213,12 @@ impl App {
             let kind = |is: fn(&crate::db::Run) -> bool| {
                 lines.iter().filter(|l| matches!(l, BannerLine::Landed(run) if self.db.run(run).is_some_and(is))).count()
             };
-            let (pulls, hands) = (kind(crate::held::pulled), kind(crate::held::by_hand));
+            let (pulls, hands, lints) = (kind(crate::held::pulled), kind(crate::held::by_hand), kind(crate::held::linted));
             let mut kinds = Vec::new();
             for (n, one, many) in [
-                (landed - pulls - hands, "landed ask", "landed asks"),
+                (landed - pulls - hands - lints, "landed ask", "landed asks"),
                 (hands, "edit by hand", "edits by hand"),
+                (lints, "lint of the stack", "lints of the stack"),
                 (pulls, "pull from Phabricator", "pulls from Phabricator"),
             ] {
                 if n > 0 {
@@ -251,6 +267,12 @@ impl App {
         };
         #[cfg(not(feature = "try-push"))]
         let pushes = 0;
+        // The stack's lint job: where it is.
+        let lint = crate::lint::pending(&self.db, &self.stack);
+        if let Some(r) = lint {
+            said.push(format!("the linter {}", self.lint_progress(&r.id)));
+        }
+        let linting = usize::from(lint.and_then(|r| r.lint.as_deref()).is_some_and(|j| j.step == crate::lint::Step::Running));
         if batched > 0 {
             said.push(of(batched, "batched ask", "batched asks"));
         }
@@ -268,7 +290,9 @@ impl App {
         }
         // As its lines mark them, and the top bar the agents going (●): the
         // commit messages to sync first.
-        let going = going + pushes;
+        let going = going + pushes + linting;
+        // A lint job waiting its turn, as a comment waiting its turn is.
+        let ready = ready + usize::from(lint.is_some()) - linting;
         let mark = match (landed, going, pulling, ready, batched) {
             _ if sync.is_some() => "✉",
             (0, 0, false, 0, 0) => "○",
@@ -451,6 +475,19 @@ impl App {
                     .map_or(String::new(), |n| format!(" of {}", self.comment_said(n)));
                 format!("   ⇡ Try push{of}: {}", self.push_progress(run))
             }
+            // The stack's lint job: where it is, then, running, the last line
+            // of its stream.
+            BannerLine::Lint(run) => {
+                let Some(r) = self.db.run(run) else { return String::new() };
+                let running = r.lint.as_deref().is_some_and(|j| j.step == crate::lint::Step::Running);
+                let mark = if running { "●" } else { "◌" };
+                let doing = ask::tail(&self.db, run, 1)
+                    .pop()
+                    .map(|l| l.trim().to_string())
+                    .filter(|l| running && !l.is_empty())
+                    .map_or(String::new(), |l| format!(" · {l}"));
+                format!("   {mark} The linter {} ({}){doing}", self.lint_progress(run), r.request)
+            }
             BannerLine::Batch => format!("   ◇ Send the batch… {}", self.batch_said()),
             BannerLine::Comment(change, id) => {
                 let Some(n) = self.db.note(change, id) else { return String::new() };
@@ -513,6 +550,11 @@ impl App {
                         self.go_to(&p.change, &p.id);
                     }
                 }
+                // The stack's lint job: what the linter writes.
+                Some(BannerLine::Lint(run)) => {
+                    self.on_banner = false;
+                    return self.perform(Action::Transcript(run));
+                }
                 None => {}
             },
             KeyCode::Esc => self.on_banner = false,
@@ -562,6 +604,7 @@ impl App {
                     1 => " read only, to review",
                     2 => " edits, to review",
                     4 => " try pushes, followed",
+                    5 => " the linter",
                     _ => " open comments",
                 };
                 put(buf, area, 0, 2 + y, w, &fit(title, w), color::file());

@@ -58,6 +58,11 @@ pub struct Held {
     #[cfg(feature = "try-push")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rebuild: Option<u32>,
+    /// A lint job's: what the linter did, patch by patch, and what it
+    /// reported that it did not fix, its own lines; shown in the review, to
+    /// read. With no change of the stack, it is all the work holds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lint: Option<crate::lint::Report>,
 }
 
 /// A change of the stack held: the stack it makes from the one the ask
@@ -161,6 +166,12 @@ pub fn pulled(r: &Run) -> bool {
 /// Whether run `r` holds an edit by hand: yours, for your review.
 pub fn by_hand(r: &Run) -> bool {
     r.what == "hand"
+}
+
+/// Whether run `r` is a lint job's: the linter's work, its fixes of the
+/// stack and what it reported.
+pub fn linted(r: &Run) -> bool {
+    r.what == crate::db::LINT
 }
 
 /// The stack the change of work `r` was made from, which alone takes it.
@@ -355,7 +366,7 @@ impl Held {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.stack.is_none() && self.replies.is_empty() && self.opened.is_empty() && self.no_tasks()
+        self.stack.is_none() && self.replies.is_empty() && self.opened.is_empty() && self.no_tasks() && self.lint.is_none()
     }
 
     /// Whether it holds no task of a try push's: it never does, built
@@ -393,6 +404,10 @@ impl Held {
         #[cfg(feature = "try-push")]
         if !self.tasks.is_empty() {
             out.insert(0, count(self.tasks.len(), "task to push to try", "tasks to push to try"));
+        }
+        // What the linter reported that it did not fix, last.
+        if self.lint.as_ref().is_some_and(|l| !l.errors.is_empty()) {
+            out.push("what the linter reported".to_string());
         }
         out.join(", ")
     }
@@ -841,8 +856,13 @@ pub fn close_with(db: &mut Db, id: &str, marks: &BTreeMap<String, bool>, rest: O
     v.marks.extend(marks.iter().filter(|(k, _)| k.starts_with("asking ")).map(|(k, m)| (k.clone(), *m)));
     v.closed = true;
     db.set_review(id, v.clone())?;
-    // Nothing brought back: no part to say.
-    let mut said = if h.is_empty() { NOTHING_BACK.to_string() } else { said(&h, &v.marks) };
+    // Nothing brought back: no part to say. What the linter reported and
+    // fixed nothing of is only read.
+    let mut said = match (h.is_empty(), said(&h, &v.marks)) {
+        (true, _) => NOTHING_BACK.to_string(),
+        (false, s) if s.is_empty() && h.lint.is_some() => "what the linter reported, read".to_string(),
+        (false, s) => s,
+    };
     if closed > 0 {
         said += &format!("; {}", count(closed, "asking comment closed", "asking comments closed"));
     }

@@ -255,6 +255,10 @@ fn named_by(r: &Run) -> (Vec<usize>, Vec<String>, Vec<String>) {
     if let Some(p) = &r.push {
         revs.push(p.rev);
     }
+    // A lint job: the stack it lints, once it runs.
+    if let Some(j) = &r.lint {
+        revs.extend(j.rev);
+    }
     (revs, patches, runs)
 }
 
@@ -676,6 +680,10 @@ pub fn short_id(change: &str, id: &str) -> String {
 /// agent's.
 pub const TRY_PUSH: &str = "try-push";
 
+/// What a lint job's run is (`Run::what`): the linter of the stack's
+/// checkout, run by stacked on the stack, patch by patch (`lint`).
+pub const LINT: &str = "lint";
+
 /// An operation's start or result: an ask of claude's, putting a stack in
 /// the worktree, a pull from Phabricator. The latest record of an id is
 /// where it stands.
@@ -717,6 +725,10 @@ pub struct Run {
     #[cfg(feature = "try-push")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub push: Option<Box<crate::try_push::Push>>,
+    /// For a lint job (`lint`): the linter it runs, and where it stands,
+    /// waiting its turn or running.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lint: Option<Box<crate::lint::Job>>,
     pub time: i64,
 }
 

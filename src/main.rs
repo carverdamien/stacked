@@ -518,8 +518,8 @@ enum Cmd {
         #[arg(long)]
         local: bool,
     },
-    /// Sets something of stacked up, asking you: `agent`, what each kind of
-    /// ask may use.
+    /// Sets something of stacked up: `agent`, what each kind of ask may
+    /// use, asking you; `lint`, the linter of this checkout.
     Setup {
         #[command(subcommand)]
         what: SetupWhat,
@@ -542,17 +542,24 @@ enum Cmd {
     #[cfg(feature = "try-push")]
     #[command(name = "try-push", hide = true)]
     TryPush { id: String },
+    /// Lint a stack as its lint job says, patch by patch, and land what the
+    /// linter fixed (for the editor, which starts it when its turn comes).
+    #[command(name = "lint-job", hide = true)]
+    LintJob { id: String },
 }
 
 /// Whether `cmd` is one that stacked runs itself, never you: an ask's
 /// (`prompt`, `record`, `land`, `fits`), git's (`__plan`), the shell's
-/// completion, and a try push's.
+/// completion, a try push's, and a lint job's.
 fn internal(cmd: &Option<Cmd>) -> bool {
     #[cfg(feature = "try-push")]
     if matches!(cmd, Some(Cmd::TryPush { .. })) {
         return true;
     }
-    matches!(cmd, Some(Cmd::Prompt { .. } | Cmd::Record { .. } | Cmd::Land { .. } | Cmd::Fits { .. } | Cmd::Plan { .. } | Cmd::Complete { .. }))
+    matches!(
+        cmd,
+        Some(Cmd::Prompt { .. } | Cmd::Record { .. } | Cmd::Land { .. } | Cmd::Fits { .. } | Cmd::Plan { .. } | Cmd::Complete { .. } | Cmd::LintJob { .. })
+    )
 }
 
 fn die(msg: &str) -> ! {
@@ -627,6 +634,25 @@ enum SetupWhat {
         /// than in the checkout's own.
         #[arg(long)]
         global: bool,
+    },
+    /// The linter of the checkout it is run in, which the editor's `Lint
+    /// the stack` runs on a stack of it: COMMAND, a program and its
+    /// arguments, the files of each patch after them, run by stacked with
+    /// no shell. Written in that checkout's own settings alone,
+    /// .stacked/local.toml at its top (`[lint] command`), never in the
+    /// settings' file. Unset, a checkout whose top has ./mach lints with
+    /// `./mach lint --fix`, nothing written. With no COMMAND, the linter in
+    /// use is printed, and where it comes from. This lints nothing: the
+    /// stack's menu does.
+    Lint {
+        /// The linter: a program, then its arguments (`eslint --fix`),
+        /// split again as a shell splits words when it is run.
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true, value_name = "COMMAND")]
+        command: Vec<String>,
+        /// Lint turned off in this checkout, ./mach or not: `command = ""`
+        /// written.
+        #[arg(long, conflicts_with = "command")]
+        off: bool,
     },
 }
 
@@ -1603,6 +1629,17 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
                     };
                     println!("  {what}{mark}");
                 }
+                // What the linter reported and did not fix, to read: where
+                // each run of it that did ran, then its lines.
+                if let Some(l) = &h.lint {
+                    let stopped = l.stopped.as_ref().map(|s| s.at);
+                    for e in &l.errors {
+                        println!("  reported\t{} ({})", e.said(stopped), l.command);
+                        for line in &e.lines {
+                            println!("    {line}");
+                        }
+                    }
+                }
             }
         }
         Cmd::Review { name, run, send_back: true, effort, .. } => {
@@ -1725,6 +1762,13 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
                 Err(e) => return err(format!("{}: {e}", l.display())),
             }
         }
+        // The linter is written by `stacked setup lint` alone, in a
+        // checkout's own settings; read as any setting is.
+        Cmd::Config { key: Some(key), values, unset: false, .. } if !values.is_empty() && stacked::config::local_only(&key) => {
+            return err(format!(
+                "{key} is written by `stacked setup lint COMMAND…`, in the checkout's own settings (.stacked/local.toml): `stacked config` reads it; nothing written"
+            ));
+        }
         Cmd::Config { key: Some(key), values, unset, local: true } => {
             let dir = here();
             if unset {
@@ -1818,6 +1862,43 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
                 }
             }
         }
+        Cmd::Setup { what: SetupWhat::Lint { command, off } } => {
+            let dir = here();
+            if off {
+                let l = stacked::config::set_local(&dir, "lint.command", &[String::new()]).map_err(Error)?;
+                eprintln!(
+                    "stacked: lint is turned off in this checkout: command = \"\" is written in {}, and `Lint the stack` is grayed on its stacks (`stacked setup lint COMMAND…` sets a linter again)",
+                    l.display()
+                );
+            } else if command.is_empty() {
+                // The linter in use, and where it comes from.
+                let l = stacked::config::local_file(&dir).map_err(Error)?;
+                match stacked::lint::Linter::of(&dir) {
+                    stacked::lint::Linter::Set(c) => {
+                        println!("{c}");
+                        eprintln!("stacked: this checkout's linter, as {} sets it (`stacked setup lint --off` turns lint off)", l.display());
+                    }
+                    stacked::lint::Linter::Mach => {
+                        println!("{}", stacked::lint::MACH);
+                        eprintln!(
+                            "stacked: this checkout's linter by default, as ./mach is at its top and {} sets none; nothing is written (`stacked setup lint COMMAND…` sets another, `--off` turns lint off)",
+                            l.display()
+                        );
+                    }
+                    stacked::lint::Linter::Off => {
+                        eprintln!("stacked: lint is turned off in this checkout, as {} sets command = \"\" (`stacked setup lint COMMAND…` sets a linter)", l.display());
+                    }
+                    stacked::lint::Linter::None => {
+                        return err("no linter is set for this checkout: `stacked setup lint COMMAND…` sets one, a program and its arguments, the files to lint after them");
+                    }
+                }
+            } else {
+                let c = stacked::lint::quoted(&command);
+                let l = stacked::config::set_local(&dir, "lint.command", std::slice::from_ref(&c)).map_err(Error)?;
+                eprintln!("stacked: the linter of this checkout is `{c}`, written in {}: the editor's `Lint the stack ({c})` runs it on a stack of this checkout", l.display());
+            }
+        }
+        Cmd::LintJob { id } => stacked::lint::run(path, &id)?,
         Cmd::Head { name, to: Some(n) } => println!("{}", stacked::head::move_to(path, &name, &here(), n)?),
         Cmd::Head { name, to: None } => {
             let db = Db::load(path)?;

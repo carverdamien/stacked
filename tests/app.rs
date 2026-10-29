@@ -287,6 +287,22 @@ fn a_message_s_long_lines_are_wrapped_from_its_patch_s_menu_in_the_window_too() 
     assert!(queue.len() == 1 && stacked::held::by_hand(queue[0]), "{queue:?}");
 }
 
+#[test]
+fn the_stack_s_lint_is_offered_on_its_menu_in_the_window_too() {
+    let (tmp, db) = setup();
+    let src = tmp.path().join("src");
+    std::fs::create_dir_all(src.join(".stacked")).unwrap();
+    std::fs::write(src.join(".stacked/local.toml"), "[lint]\ncommand = \"./lint.sh --fix\"\n").unwrap();
+    let s = Session::open(&db, tmp.path()).unwrap();
+    s.send(Input::Size(100, 30));
+    screen(&s, "the patches", |b| row(b, 3).contains("Bug 2 - add b"));
+    // The stack's menu, from its header, names the linter of the stack's
+    // checkout. Nothing is linted here: the item is not chosen.
+    press(&s, KeyCode::Up);
+    press(&s, KeyCode::Char(' '));
+    screen(&s, "the stack's menu", |b| find(b, "Lint the stack (./lint.sh --fix)").is_some());
+}
+
 /// The links a stand-in for the program that opens web links, in `dir`,
 /// writes once it was given `n` of them, or the wait given up: the editor
 /// of this process opens them with it from now on. It opens nothing: no test

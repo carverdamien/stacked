@@ -411,6 +411,24 @@ fn a_message_s_long_lines_are_wrapped_from_its_patch_s_menu_in_the_browser_too()
 }
 
 #[test]
+fn the_stack_s_lint_is_offered_on_its_menu_in_the_browser_too() {
+    let (tmp, db) = setup();
+    let src = tmp.path().join("src");
+    std::fs::create_dir_all(src.join(".stacked")).unwrap();
+    std::fs::write(src.join(".stacked/local.toml"), "[lint]\ncommand = \"./lint.sh --fix\"\n").unwrap();
+    stacked::config::init(stacked::config::Config::default());
+    let (port, token) = stacked::web::start(db).unwrap();
+    let (host, input) = (format!("127.0.0.1:{port}"), format!("POST /input?t={token}"));
+    let mut events = events(port, &token, 100);
+    until(&mut events, "the patches", |l| l.starts_with("data: r 3 ") && l.contains("Bug 2 - add b"));
+    // The stack's menu, opened with a right click on its header, names the
+    // linter of the stack's checkout. Nothing is linted here: the item is
+    // not clicked.
+    ask(port, &host, &input, "m 5 1 r\n");
+    until(&mut events, "the stack's menu", |l| text(l).contains("Lint the stack (./lint.sh --fix)"));
+}
+
+#[test]
 fn quitting_in_the_page_removes_the_worktrees_made_ahead() {
     let (tmp, db) = setup();
     let made = made_ahead(tmp.path());

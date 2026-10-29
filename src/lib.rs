@@ -32,6 +32,7 @@ pub mod icon;
 pub mod import;
 pub mod keys;
 pub mod links;
+pub mod lint;
 pub mod markdown;
 pub mod mbox;
 #[cfg(feature = "demo")]

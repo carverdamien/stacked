@@ -124,6 +124,8 @@ stacked config --unset editor      # ... taken out of it
 stacked config --local editor vim  # ... in this checkout's own settings, over the file's here
 stacked setup agent bug123         # what each kind of ask may use, one list of tools, checked line by line, for its checkout
 stacked setup agent bug123 --tui   # ... on a screen, a box for each kind of ask on each tool, as the editor shows it before the first ask
+stacked setup lint eslint --fix    # the linter of this checkout, which the stack's menu runs: Lint the stack (eslint --fix)
+stacked setup lint                 # ... the one in use, and where it comes from (./mach lint --fix where ./mach is)
 ```
 
 `-f FILE` points any command at a database. A first argument that is not a
@@ -1422,7 +1424,8 @@ build asked on another stack meanwhile says it goes `once the running build
 and test of s lands`); a change waiting holds back the answers asked after
 it. An asked comment that cannot go yet waits as ready, says what it waits
 on, and goes on its own when that lands. Nothing is asked on a stack that
-does not apply.
+does not apply. A lint job of the stack takes its turn as a change does,
+the changes asked after it waiting for it (Linting, below).
 
 Chained (`agent.chain`, on unless changes work in your checkout), a change
 does not wait for the review of the change before it: it goes at once, from
@@ -2063,6 +2066,107 @@ comment, Enter there putting it in the thread, or reviewed with the rest.
 A push that Lando does not push to try (`FAILED`, `CANCELLED`, `ABORTED`)
 lands a summary saying so, with what Lando says and its page there.
 
+## Linting
+
+`Lint the stack (./mach lint --fix)`, on the stack's header (Space there),
+lints every patch of the stack with the linter of the stack's checkout,
+away from the screen; what the linter fixes lands for your review, as an
+edit by hand does. Nothing else lints: no patch's menu, no command, and
+nothing is linted unless you choose it.
+
+The linter is the checkout's own setting, `[lint] command` in its
+`.stacked/local.toml`, which `stacked setup lint COMMAND…`, run in the
+checkout, writes: a program and its arguments (`stacked setup lint eslint
+--fix`), the files to lint after them. stacked runs it itself, never the
+agent, and with no shell: the command is split into words as a shell
+splits them, quotes and all, and nothing else of a shell's is read, no
+pipe and no variable. A checkout whose top has `./mach`, as Firefox's has,
+and whose own settings set no linter, lints with `./mach lint --fix`,
+nothing written. `stacked setup lint --off` writes `command = ""`: lint is
+off there, `./mach` or not, until `stacked setup lint COMMAND…` sets a
+linter again, or `stacked config --local --unset lint.command` takes the
+setting out. With no command, `stacked setup lint` prints the linter in
+use and says where it comes from, the checkout's own settings or the
+default of `./mach`; with none, it says how to set one, and fails. The
+setting is never written in `~/.stacked/config.toml`, nor read from it,
+which says so if it sets one; `stacked config lint.command VALUE` refuses,
+with `--local` too, and says that `stacked setup lint` writes it, while
+`stacked config lint.command` reads it as any setting.
+
+The item names the command in use; with none, it reads `Lint the stack`,
+grayed, and the menu says why: `No linter is set for this checkout:
+`stacked setup lint COMMAND` sets one.` It is grayed too, the menu saying
+why, where lint is turned off, while the stack may not be edited by hand
+(the agent changing it, a change of it waiting for your review), on a
+read-only stack, and while a lint job of the stack waits or runs. So it is
+in the browser and in StackED, as in the terminal.
+
+The lint job runs in a process of its own (`stacked lint-job RUN`), in a
+session of its own, at a low priority (`nice`), the linter's stdin closed,
+so that nothing it runs has a terminal to ask anything on; and in a
+worktree of the stack's own, `.stacked/NAME/lint` (under `agent.worktrees`
+when that is set), kept for the next job, never in your checkout. It goes
+patch by patch, from the bottom: the worktree holds the stack up to the
+patch, with the fixes kept so far, and the linter is run as `COMMAND
+FILE…` on the patch's files that are there. What it changes is folded into
+the patch, as its new version, its message and author as they were, so
+that each fix lands in the earliest patch it shows in; but only once each
+patch above, as stored, is seen to still apply on it, in turn, in an index
+of the check's own (the repository only read), and the new version leaves
+its files as the linter did. At the first patch whose fixes would keep a
+patch above from applying, none of its fixes is kept, and the patches from
+it on are not linted one by one: with them as they are, the linter is run
+once at the top of the stack, on their files, and what it changes goes in
+a patch of its own at the end, `Lint fixes to fold into the stack`, by
+you, its message saying which command made them, on which patches' files,
+and why they were not folded in. A fix that adds or deletes a file, or
+changes a file that is not text, a file's mode, or a file its patch
+renames, is not folded in either: it stops the patches' run there the same
+way, and goes in that patch at the end. That patch comes with a comment on
+it, yours, ready to send but not sent: `Fold these lint fixes into the
+patches they belong to, keeping every patch applying, then drop this
+patch.` Asked of the whole stack, as usual, the agent folds them in.
+
+What lands is one change of the stack, for your review: the new versions
+of the patches that took fixes, and the patch at the end if there is one,
+its comment one the work opened. The history calls it, as the banner and
+the review do, `lint fixes in patches 1, 2 and 4, and a patch on top from
+patch 5 on (./mach lint --fix)`. The linter's exit says whether it
+reported something it did not fix: each run of it that exits otherwise
+than with 0 is listed with the landed work, in the review under `what the
+linter reported, to read`, a line for each (the patch it ran at, its files
+and how it exited), what it wrote shown on the right; and under it in
+`stacked landed NAME`. With nothing fixed and nothing reported, nothing
+lands, and the status line says so. With nothing fixed and something
+reported, that alone lands, read only, in the banner's section of what
+changes nothing: its review is to read, then close. The rest is as for an
+edit by hand: accepted, it goes in; rejected, nothing changes; edited by
+hand from its review, it lands again with your edit.
+
+A lint job takes its turn as a change of the agent's does, in the same
+queue: once nothing changes the stack and no change of it waits for review;
+and one at a time of every stack of the database, another waiting its turn.
+While it waits or runs, the stack is not edited by hand, the menus saying
+why (`the linter lints patch 2 of 5 (./mach lint --fix): …`), and the sync
+of the commit messages makes no new version of a patch (it may still make
+commits again), as while the agent changes the stack. An edit asked of the
+agent meanwhile waits for it (`ready (may change the code), it goes once
+the linter's work on the stack lands`), then goes on from the stack the
+linter made, without waiting for its review, as chained edits go on from
+one another (Asking the agent, above): the linter's work rejected, it is
+asked again. Answers go at once, as ever. The banner shows the job in a
+section of its own, `the linter`, with where it is (`● The linter lints
+patch 2 of 5 (./mach lint --fix)`, the last line it wrote after it; `◌ The
+linter waits its turn to lint the stack`); Enter there shows what it
+writes, all of which its run keeps (`Runs…`, `stacked transcript RUN`). A
+job whose process is gone, killed, lands as failed once seen, as an ask
+whose agent is gone does, and the stack is free again.
+
+`$STACKED_LINT` names a program run in place of the linter's own, given
+the command's arguments and the files: the tests' stand-in. From a process
+that keeps nothing, as the tests' own, only that runs, never the command,
+so never a `./mach`.
+
 ## Reading
 
 `2` switches to reading, as self-review's view of what is left to review:
@@ -2582,6 +2686,12 @@ settings:
   The comment
   editor, a line typed in a box, and the search's own screen read what is
   typed, whatever the keys.
+- `[lint]`: `command`, the linter of a checkout, which the stack's `Lint the
+  stack` runs (Linting, above): a checkout's own setting alone, read only
+  from its `.stacked/local.toml`, which `stacked setup lint` writes; `""`,
+  lint turned off there; unset, `./mach lint --fix` where `./mach` is at the
+  checkout's top. `stacked config` shows it as a comment, so that what it
+  prints, kept as `~/.stacked/config.toml`, sets no linter there.
 - `[demo]`: `seen`, written by `stacked demo` the first time it is opened:
   the tour then starts on the list of its sections. `seen = false` shows
   the first tour again.
@@ -2685,7 +2795,10 @@ bytes long, padded with spaces.
   stack its change makes (its patches stored already, by their content),
   each reply, each comment it opened. Nothing of it is applied before its
   review closes. Bringing nothing back, it holds none of them, and is held
-  all the same while a comment it was asked about is still open. A review
+  all the same while a comment it was asked about is still open. A lint
+  job's run holds the command it runs and where it stands, waiting its turn
+  or running, and the stack it lints once it runs; landed, what it brought
+  back, as an ask's does, with what the linter reported. A review
   record holds the marks saved for a run's review,
   the replies taken already, and whether it is closed; the last one is
   what stands.
@@ -2944,6 +3057,14 @@ is typed: `import.rs`). A fix to one may belong in the other.
   stop; then the push followed on Lando and Treeherder (`follow`), its
   tasks counted as Treeherder shows them, and its summary, held for
   review once it is done.
+- `lint.rs`: linting a stack: the linter of a checkout (its own setting,
+  else `./mach lint --fix` where `./mach` is), its command split as a
+  shell splits words; a lint job (its run's `lint`), its turn in the queue
+  taken as a change's (`ask::claim`), run by `stacked lint-job` in the
+  stack's lint worktree, patch by patch, each patch's fixes folded into it
+  once the patches above still apply, the rest in a patch at the end with a
+  comment to send; what the linter reported; what lands for your review;
+  and a job whose process is gone.
 - `import.rs`: what a stack made in the editor is imported from: a range of
   the checkout, its uncommitted changes on top if asked.
 - `mbox.rs`: reading `git format-patch` mail, writing mail for `git am`.
@@ -3010,7 +3131,8 @@ as in Install).
 `cargo test --no-default-features` runs the minimal set, the tests of
 stacked built with no feature, and needs no wasm target; `--features` then
 adds the tests of each feature named. No test runs claude: a script stands
-in for it; none reaches Phabricator: its revisions and their comments are
+in for it; nor a linter of yours, nor any `./mach`: a script stands in for
+the linter; none reaches Phabricator: its revisions and their comments are
 read by stand-ins, and what a submit sends is answered by one, which keeps
 every call made to it, so that a test can see that a refusal wrote
 nothing, and which, as Phabricator does, makes no revision of a diff whose
@@ -3527,7 +3649,44 @@ list, and is asked for its tasks and their runs; `setup.rs`, the column of
 try pushes, ticked at first as the read-only one, its own once ticked, in
 what saving writes with the setup's version 2, and line by line `read
 only` for both read-only kinds; `config.rs`, `try_tools` written and read
-back, and read built without the feature too. The
+back, and read built without the feature too. `tests/lint.rs` drives the
+editor as `tests/tui.rs` does, a stand-in run in place of the linter
+(`lint::stand_in`, `$STACKED_LINT` to the job's process, which keeps
+nothing and so runs no other) that takes out the white space lines end
+with and reports the lines it cannot fix, exiting with 1, and a stand-in
+for claude: `Lint the stack` on the stack's header alone, grayed with why
+where there is no linter, where lint is off, while an edit by hand waits
+for review, and on a read-only stack, and named once set; a checkout with
+`./mach` at its top linting with `./mach lint --fix`, the stand-in given
+mach's arguments, nothing written; each patch linted at its place, on its
+files, in the stack's lint worktree, its stdin closed, the checkout not
+touched, each fix folded into the earliest patch it shows in, the change
+landing for review as one, named so in the banner, the review and the
+history; a fix that would keep the patch above from applying stopping the
+patches' run, the linter run once at the top, its fixes in a patch at the
+end with your comment on it, ready to send and sent to no one; nothing
+landing when the linter fixes and reports nothing, said quietly; what it
+reports listed in the review and by `stacked landed`, and landing alone,
+read only, to read and close; an edit asked while the linter runs
+waiting for it, the stack not edited by hand meanwhile (the menus and the
+commands saying why), the sync of the commit messages told so, an answer
+going at once, then the edit going on from the stack the linter made;
+one lint job at a time of every stack, the next waiting its turn; and a
+job whose process is gone landed as failed, the stack free again.
+`tests/cli.rs` sets the linter up: in the checkout's own settings alone,
+kept out of git's sight, never in the settings' file, which is passed over
+and said if it sets one; printed with where it comes from; turned off,
+and that kept over the default of `./mach`; `stacked config` refusing to
+write it but reading it; refused in a settings file git tracks and outside
+a checkout. `tests/web.rs` and `tests/app.rs` show the item in the
+browser and in StackED. `lint.rs` tests a command split as a shell's
+words and written back, only a stand-in run from a process that keeps
+nothing, what the history says of the fixes, a patch's sections spliced
+with those written again, and the patches' run itself on a repository of
+its own: each fix in the earliest patch it shows in, a fix that would keep
+a patch above from applying stopping it with the rest in a patch at the
+end (its message wrapped), a clean stack left as it is with what is
+reported kept, and a fix that adds a file going at the end. The
 stream's thinking is tested in `ask.rs`, with the prompt asking the agent
 to point at the stack before the web and its answer's schema taking a web
 link, the ask's effort given to claude after the settings' arguments, in

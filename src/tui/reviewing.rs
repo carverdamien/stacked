@@ -148,13 +148,16 @@ pub(super) struct Line {
     /// What you wrote in the review it is: to see where it would be, to
     /// write again, or to take back.
     yours: Option<Yours>,
+    /// What a run of the linter reported and did not fix, by its place
+    /// among those the work holds: to read.
+    report: Option<usize>,
 }
 
 impl Line {
-    /// Whether the cursor goes on it: a part, a comment that asked, or what
-    /// you wrote; not a section's title.
+    /// Whether the cursor goes on it: a part, a comment that asked, what
+    /// you wrote, or what the linter reported; not a section's title.
     fn selectable(&self) -> bool {
-        self.part.is_some() || self.asking.is_some() || self.yours.is_some()
+        self.part.is_some() || self.asking.is_some() || self.yours.is_some() || self.report.is_some()
     }
 }
 
@@ -197,6 +200,30 @@ fn operation(d: &Diffed) -> Option<(String, Style)> {
 /// A comment's first words.
 pub(super) fn first_words(text: &str) -> String {
     thread_turns(text).first().map(|t| crate::markdown::first_line(&t.body)).unwrap_or_default()
+}
+
+/// What a run of the linter of the lint job's work `l` reported and did
+/// not fix, `e`, as the right pane shows it, `w` wide: where it ran and how
+/// it exited, said; then each line it wrote, as it wrote it, a line too long
+/// for the pane going on under it. All of it is the part.
+fn report_view(l: &crate::lint::Report, e: &crate::lint::Errors, w: usize) -> View {
+    let said = format!(" {} at {}: what it reported, and did not fix", l.command, e.said(l.stopped.as_ref().map(|s| s.at)));
+    let w = w.max(20);
+    let mut lines: Vec<Vec<(String, Style)>> = Vec::new();
+    for text in &e.lines {
+        let chars: Vec<char> = text.chars().collect();
+        if chars.is_empty() {
+            lines.push(vec![(String::new(), Style::new())]);
+        }
+        for piece in chars.chunks(w) {
+            lines.push(vec![(piece.iter().collect(), Style::new())]);
+        }
+    }
+    if lines.is_empty() {
+        lines.push(vec![("It wrote nothing.".to_string(), color::dim())]);
+    }
+    let n = lines.len();
+    (said, lines, 0..n)
 }
 
 impl App {
@@ -291,7 +318,9 @@ impl App {
     /// list's cursor on the stack operations.
     pub(super) fn review_on_diff(&self) -> bool {
         let Some(rv) = &self.reviewing else { return false };
-        self.review_lines().get(rv.sel).is_some_and(|l| l.asking.is_none() && l.yours.is_none() && matches!(l.part, Some(Part::Stack) | None))
+        self.review_lines()
+            .get(rv.sel)
+            .is_some_and(|l| l.asking.is_none() && l.yours.is_none() && l.report.is_none() && matches!(l.part, Some(Part::Stack) | None))
             && self.review_stacks().is_some()
     }
 
@@ -724,21 +753,25 @@ impl App {
 
     /// The review's list: on top, the comments that asked, each kept or
     /// closed with the review; then its three sections, each part a line,
-    /// the change of the stack a line for each patch.
+    /// the change of the stack a line for each patch; then, of a lint job's
+    /// work, what the linter reported and did not fix, a line for each run
+    /// of it that did.
     pub(super) fn review_lines(&self) -> Vec<Line> {
         let mut out = Vec::new();
         let Some(rv) = &self.reviewing else { return out };
         let Some((_, h)) = self.work(&rv.run) else { return out };
+        let line = |text: String, style: Style| Line {
+            text,
+            style,
+            part: None,
+            entry: None,
+            asking: None,
+            yours: None,
+            report: None,
+        };
         let asking = self.asking_open();
         if !asking.is_empty() {
-            out.push(Line {
-                text: (if asking.len() == 1 { " asking comment" } else { " asking comments" }).into(),
-                style: color::file(),
-                part: None,
-                entry: None,
-                asking: None,
-                yours: None,
-            });
+            out.push(line((if asking.len() == 1 { " asking comment" } else { " asking comments" }).into(), color::file()));
             for (k, n) in asking {
                 let at = if n.on_stack() { "the stack".to_string() } else { n.where_said() };
                 let (m, st) = match rv.marks.get(&crate::held::asking_key(k)) {
@@ -746,25 +779,14 @@ impl App {
                     _ => ("keep ", Style::new()),
                 };
                 out.push(Line {
-                    text: format!("   {m} {at} · {}", first_words(&n.text)),
-                    style: st,
-                    part: None,
-                    entry: None,
                     asking: Some(k),
-                    yours: None,
+                    ..line(format!("   {m} {at} · {}", first_words(&n.text)), st)
                 });
             }
         }
         let parts = self.review_parts();
         let mark = |p: Part| rv.marks.get(&p.key()).copied();
-        let title = |text: &str| Line {
-            text: text.into(),
-            style: color::file(),
-            part: None,
-            entry: None,
-            asking: None,
-            yours: None,
-        };
+        let title = |text: &str| line(text.into(), color::file());
         if let Some((now, next)) = self.review_stacks() {
             let said = match mark(Part::Stack) {
                 Some(true) => "accepted",
@@ -772,23 +794,16 @@ impl App {
                 None => "to review",
             };
             out.push(Line {
-                text: format!(" stack operations · {said}"),
-                style: color::file(),
                 part: Some(Part::Stack),
-                entry: None,
-                asking: None,
-                yours: None,
+                ..line(format!(" stack operations · {said}"), color::file())
             });
             let diff = crate::history::stacks_diff(&self.db, Some(&now), Some(&next), false);
             for (k, d) in diff.iter().enumerate() {
                 if let Some((text, style)) = operation(d) {
                     out.push(Line {
-                        text: format!("   {text}"),
-                        style,
                         part: Some(Part::Stack),
                         entry: Some(k),
-                        asking: None,
-                        yours: None,
+                        ..line(format!("   {text}"), style)
                     });
                 }
             }
@@ -801,12 +816,8 @@ impl App {
                 let n = &h.opened[k];
                 let (m, st) = mark_of(mark(p));
                 out.push(Line {
-                    text: format!("   {m} {} · {}", n.where_said(), first_words(&n.text)),
-                    style: st,
                     part: Some(p),
-                    entry: None,
-                    asking: None,
-                    yours: None,
+                    ..line(format!("   {m} {} · {}", n.where_said(), first_words(&n.text)), st)
                 });
             }
         }
@@ -822,12 +833,8 @@ impl App {
                     let Part::Task(k) = p else { continue };
                     let (m, st) = mark_of(mark(p));
                     out.push(Line {
-                        text: format!("   {m} {}", h.tasks[k].label),
-                        style: st,
                         part: Some(p),
-                        entry: None,
-                        asking: None,
-                        yours: None,
+                        ..line(format!("   {m} {}", h.tasks[k].label), st)
                     });
                 }
             }
@@ -846,12 +853,20 @@ impl App {
                 let (m, st) = mark_of(mark(p));
                 let edit = if rp.was.is_some() { format!("{}: ", rp.said()) } else { String::new() };
                 out.push(Line {
-                    text: format!("   {m} {at} · {edit}{}", crate::markdown::first_line(&rp.text)),
-                    style: st,
                     part: Some(p),
-                    entry: None,
-                    asking: None,
-                    yours: None,
+                    ..line(format!("   {m} {at} · {edit}{}", crate::markdown::first_line(&rp.text)), st)
+                });
+            }
+        }
+        // What the linter reported and did not fix: each run of it that did,
+        // to read, nothing to accept or reject.
+        if let Some(l) = h.lint.as_ref().filter(|l| !l.errors.is_empty()) {
+            out.push(title(" what the linter reported, to read"));
+            let stopped = l.stopped.as_ref().map(|s| s.at);
+            for (k, e) in l.errors.iter().enumerate() {
+                out.push(Line {
+                    report: Some(k),
+                    ..line(format!("   {}", e.said(stopped)), Style::new())
                 });
             }
         }
@@ -881,12 +896,8 @@ impl App {
             out.push(title(" what you wrote, to send back"));
             for (text, y) in yours {
                 out.push(Line {
-                    text,
-                    style: color::you(),
-                    part: None,
-                    entry: None,
-                    asking: None,
                     yours: Some(y),
+                    ..line(text, color::you())
                 });
             }
         }
@@ -915,6 +926,12 @@ impl App {
         // What you wrote: where it would be.
         if let Some(y) = &line.yours {
             return self.yours_view(r, h, y, w);
+        }
+        // What the linter reported and did not fix: its lines, to read.
+        if let Some(l) = h.lint.as_ref()
+            && let Some(e) = line.report.and_then(|k| l.errors.get(k))
+        {
+            return report_view(l, e, w);
         }
         match line.part {
             Some(Part::Stack) | None => {
@@ -966,11 +983,17 @@ impl App {
             let titles: Vec<String> = s.patches.iter().map(|id| self.db.patch(id).title().to_string()).collect();
             stack_rows(&format!("the stack {}", r.stack), &titles, &[n], w, &deco)
         } else {
+            // On a patch of the stack; or on one the work adds, as the work
+            // makes it (the linter's patch on top).
             let p = self
                 .db
                 .stack(&r.stack)
                 .ok()
-                .and_then(|s| s.patches.iter().map(|id| self.db.patch(id)).find(|p| p.change == n.change));
+                .and_then(|s| s.patches.iter().map(|id| self.db.patch(id)).find(|p| p.change == n.change))
+                .or_else(|| {
+                    let (_, next) = self.review_stacks()?;
+                    next.patches.iter().map(|id| self.db.patch(id)).find(|p| p.change == n.change)
+                });
             let Some(p) = p else { return (said, vec![], 0..0) };
             patch_rows(p, &[n], w, &deco)
         };
@@ -1066,6 +1089,15 @@ impl App {
                 }
                 if crate::held::by_hand(r) {
                     return format!(" your edit by hand: {left} · {}", h.edits.join(", then "));
+                }
+                // The linter's: what it did, said as the history says it, or
+                // what it reported alone.
+                if crate::held::linted(r) {
+                    let did = match h.stack.as_ref() {
+                        Some(_) => h.edits.join(", then "),
+                        None => format!("{} fixed nothing", r.request),
+                    };
+                    return format!(" the linter's work: {left} · {did}");
                 }
                 let asked = if r.request.is_empty() { String::new() } else { format!(" · asked \"{}\"", r.request) };
                 let edited = if h.edits.is_empty() { String::new() } else { format!(" · then you {}", h.edits.join(", then ")) };
@@ -1334,6 +1366,7 @@ impl App {
     /// goes with is rejected.
     pub(super) fn mark(&mut self, p: Part, accept: bool) {
         let comments: Vec<Part> = self.review_parts().into_iter().filter(|p| *p != Part::Stack).collect();
+        let whose = self.reviewing.as_ref().and_then(|rv| self.db.run(&rv.run)).map_or("the agent's change", ask::whose_change);
         let Some(rv) = self.reviewing.as_mut() else { return };
         let rejected = rv.marks.get(&Part::Stack.key()) == Some(&false);
         if p == Part::Stack {
@@ -1353,7 +1386,7 @@ impl App {
                 }
             }
         } else if accept && rejected {
-            self.status = "the agent's change of the stack is rejected, and the comments with it: accept the change first".into();
+            self.status = format!("{whose} of the stack is rejected, and the comments with it: accept the change first");
             return;
         }
         rv.marks.insert(p.key(), accept);
@@ -1439,6 +1472,9 @@ impl App {
         if line.yours.is_some() {
             return "enter: edit it";
         }
+        if line.report.is_some() {
+            return "enter: nothing, what the linter reported is to read";
+        }
         match (line.asking, line.part) {
             (Some(k), _) if rv.marks.get(&crate::held::asking_key(k)) == Some(&true) => "enter: keep it open",
             (Some(_), _) => "enter: close it with the review",
@@ -1484,6 +1520,10 @@ impl App {
         // Nothing brought back: only the comments that asked, to say.
         if self.work(&rv.run).is_some_and(|(_, h)| h.is_empty()) {
             out.push(crate::held::NOTHING_BACK.to_string());
+        }
+        // What the linter reported and did not fix: read, not marked.
+        if self.work(&rv.run).is_some_and(|(_, h)| h.lint.as_ref().is_some_and(|l| !l.errors.is_empty())) {
+            out.push("what the linter reported: to read, nothing to accept or reject".to_string());
         }
         let asking = self.asking_open();
         if !asking.is_empty() {
@@ -1596,6 +1636,7 @@ impl App {
         let of = match run {
             Some(r) if crate::held::pulled(r) => "the comments pulled",
             Some(r) if crate::held::by_hand(r) => "your edit by hand",
+            Some(r) if crate::held::linted(r) => "the linter's work",
             _ => "the agent's work",
         };
         let mut m = Menu::new(format!("your review of {of}"), items, None);

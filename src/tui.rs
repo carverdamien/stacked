@@ -1200,6 +1200,9 @@ pub enum Action {
     /// 0, wrapped at the width the settings give (`view.message_width`):
     /// their new versions land for your review, as an edit by hand does.
     WrapMessages(Vec<usize>),
+    /// The stack linted with its checkout's linter, patch by patch, away
+    /// from the screen: what it fixes lands for your review.
+    Lint,
     CommentStack,
     CommentPatch,
     CommentLine,
@@ -1490,6 +1493,9 @@ fn about(action: &Action) -> String {
                 "wrap the long lines of the {messages} of {}: each paragraph of prose with a line longer than the width is filled again to it, its words in their order, and the title, code, quoted lines and trailers stay as they are; {lands} for your review, as an edit by hand does",
                 crate::head::patches_said(at)
             )
+        }
+        Action::Lint => {
+            "lint the stack with its checkout's linter, patch by patch from the bottom, away from the screen, in a worktree of the stack's own: each patch's fixes are folded into it; from the first patch whose fixes would keep one above from applying, they go in a patch at the end instead; all of it lands for your review as one change, with what the linter reported and did not fix".into()
         }
         Action::CommentStack => "create a comment on the stack, for the agent to work on the whole stack".into(),
         Action::CommentPatch => "create a comment on this patch as a whole".into(),
@@ -3994,8 +4000,12 @@ impl App {
                 && r.what != crate::db::TRY_PUSH
                 && !self.bg.stopping.contains(id)
             {
-                let state = format!("{:?}", r.state).to_lowercase();
-                self.status = format!("the agent's {} {state}: {}", r.what, r.summary);
+                // A lint job that landed nothing: quietly said.
+                self.status = match (crate::held::linted(r), r.state) {
+                    (true, RunState::Failed) => format!("the linter could not lint the stack {}: {}", r.stack, r.summary),
+                    (true, _) => format!("{}: {}", r.request, r.summary),
+                    (false, state) => format!("the agent's {} {}: {}", r.what, format!("{state:?}").to_lowercase(), r.summary),
+                };
             }
         }
         #[cfg(feature = "try-push")]
@@ -4105,9 +4115,9 @@ impl App {
     }
 
     /// How many agents are at work: the asks running, not a try push's
-    /// process, which runs mach.
+    /// process, which runs mach, nor a lint job's.
     fn running(&self) -> usize {
-        self.db.live_runs().iter().filter(|r| ask::running(r) && r.what != crate::db::TRY_PUSH).count()
+        self.db.live_runs().iter().filter(|r| ask::running(r) && r.what != crate::db::TRY_PUSH && !crate::held::linted(r)).count()
     }
 
     fn ready(&self) -> usize {
@@ -5270,7 +5280,7 @@ impl App {
             Screen::Review => self.review_deleting(),
             Screen::Runs => {
                 let r = *self.runs_newest().get(self.pick)?;
-                ask::running(r).then(|| Ok(Action::AskStop(r.id.clone())))
+                (ask::running(r) && !crate::held::linted(r)).then(|| Ok(Action::AskStop(r.id.clone())))
             }
             _ => None,
         }
@@ -5443,7 +5453,7 @@ impl App {
                     ""
                 };
                 out.push(format!(
-                    "The banner says what waits on you on this stack, a line for each, in sections.{sync} Read only: what landed and changes nothing, the agent's answers and the comments pulled from Phabricator{pulling}. Edits: what changes the stack, the one you review now first, then those going on from it, as if you accept it, which you review after it. Nothing of it is applied before you review it.{pushes} Then the batch, the comments you asked the agent about later, to send together, and every comment open, the most recently updated first, marked as the comments pane marks it, with where it stands."
+                    "The banner says what waits on you on this stack, a line for each, in sections.{sync} Read only: what landed and changes nothing, the agent's answers and the comments pulled from Phabricator{pulling}. Edits: what changes the stack, the one you review now first, then those going on from it, as if you accept it, which you review after it. Nothing of it is applied before you review it. The linter: the stack's lint, waiting its turn or running, with where it is.{pushes} Then the batch, the comments you asked the agent about later, to send together, and every comment open, the most recently updated first, marked as the comments pane marks it, with where it stands."
                 ));
                 out.push(match self.banner_lines().get(self.banner_sel) {
                     Some(BannerLine::Sync) => {
@@ -5461,6 +5471,9 @@ impl App {
                     #[cfg(feature = "try-push")]
                     Some(BannerLine::Push(_)) => {
                         "This try push is followed on Lando, then on Treeherder, every few minutes while stacked runs: once its tasks are done, its summary lands here for your review. Press Enter to go to the comment that asked for it.".into()
+                    }
+                    Some(BannerLine::Lint(_)) => {
+                        "The linter lints the stack, patch by patch, away from the screen, one lint at a time of every stack: what it fixes lands here for your review. Press Enter to read what it writes.".into()
                     }
                     _ => "Press Enter to go to this comment.".into(),
                 });
@@ -6581,6 +6594,8 @@ impl App {
         let mut held_submit: Option<String> = None;
         // What the menu says of the messages its item wraps, if it has one.
         let mut wraps: Option<String> = None;
+        // Why the stack's lint is grayed, but for what edits by hand say.
+        let mut lint_why: Option<String> = None;
         match (self.screen, self.focus) {
             // What landed, to review; the comments open, to go to.
             (Screen::Main, _) if self.on_banner => {
@@ -6609,6 +6624,9 @@ impl App {
                         items.push(item);
                         wraps = Some(said);
                     }
+                    let (item, why) = self.lint_item();
+                    items.push(item);
+                    lint_why = why;
                     items.push(Item::new("Tree of edits…", Action::Tree));
                     items.push(Item::new("History…", Action::History));
                     #[cfg(feature = "moz-phab")]
@@ -6752,6 +6770,7 @@ impl App {
         // commit messages, which says what it has to pick. Landed work the
         // sync holds back: why.
         let mut why: Vec<String> = hands.filter(|_| !matches!(self.screen, Screen::Review | Screen::Sync)).into_iter().collect();
+        why.extend(lint_why);
         let held = items.iter().any(|i| !i.enabled && matches!(i.action, Action::Review(..) | Action::TakeReply(..)));
         why.extend(self.sync_first().filter(|_| held));
         #[cfg(feature = "moz-phab")]
@@ -6790,6 +6809,26 @@ impl App {
         let action = Action::WrapMessages(long.iter().map(|&(at, _)| at).collect());
         let item = Item::new(label(long.len(), width), action).when(self.by_hand().is_none());
         Some((item, crate::wrap::said(&long, width)))
+    }
+
+    /// The item that lints the stack, naming the command of its checkout's
+    /// linter (`Lint the stack (./mach lint --fix)`), and, grayed, why, but
+    /// for what edits by hand being refused says, which the menu says: the
+    /// stack has no patch, its checkout has no linter, or lint is off there.
+    /// Grayed too while the stack may not be edited by hand, a lint job of
+    /// it waiting or running among the reasons.
+    fn lint_item(&self) -> (Item, Option<String>) {
+        let linter = crate::lint::linter_of(&self.db, &self.stack);
+        let label = match linter.command() {
+            Some(c) => format!("Lint the stack ({c})"),
+            None => "Lint the stack".to_string(),
+        };
+        let why = match self.patch_count() {
+            0 => Some(crate::lint::EMPTY),
+            _ => linter.why_not(),
+        };
+        let ok = why.is_none() && self.by_hand().is_none();
+        (Item::new(label, Action::Lint).when(ok), why.map(String::from))
     }
 
     /// The Send all items of a header: the comments listed that can be sent.
@@ -7091,6 +7130,18 @@ impl App {
             },
             Action::WrapMessages(places) => match ops::wrap_messages(&self.path, &name, &places, self.cfg.view.message_width) {
                 Ok(done) => self.edited(done, None, None),
+                Err(e) => {
+                    self.reload();
+                    self.status = e.0;
+                }
+            },
+            // Queued, it goes in its turn, away from the screen.
+            Action::Lint => match crate::lint::ask(&self.path, &name) {
+                Ok(said) => {
+                    self.reload();
+                    self.status = said;
+                    self.launch();
+                }
                 Err(e) => {
                     self.reload();
                     self.status = e.0;
@@ -9246,7 +9297,8 @@ impl App {
                 let Some(r) = self.runs_newest().get(self.pick).map(|r| (*r).clone()) else {
                     return;
                 };
-                if ask::running(&r) {
+                // A lint job: what the linter wrote, which nothing stops.
+                if ask::running(&r) && !crate::held::linted(&r) {
                     let (show, stop) = match self.push_stop_said(&r.id) {
                         Some(_) => ("Show what mach wrote for the try push", "Stop the try push…"),
                         None => ("Show what the agent wrote", "Stop the agent…"),
@@ -9912,6 +9964,7 @@ impl App {
                     #[cfg(feature = "moz-phab")]
                     Some(BannerLine::Pulling) => "say what the pull brings",
                     Some(BannerLine::Batch) => "pick what to send",
+                    Some(BannerLine::Lint(_)) => "read what the linter writes",
                     _ => "go to it",
                 };
                 let delete = self.delete_hint().map_or(String::new(), |d| format!("{d} · "));
