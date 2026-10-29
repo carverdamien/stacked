@@ -1431,6 +1431,7 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
                 }
                 return Ok(());
             }
+            let mut not_sent = 0;
             if batch {
                 // A try push batched in the editor too, built with the
                 // try-push feature: each on its own.
@@ -1443,13 +1444,20 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
                 ];
                 for way in ways {
                     let sent = ask::batched(&db, &name, way);
-                    if ask::release_batch(path, &name, way, fan_out, effort)? == 0 {
+                    let (n, refused) = ask::release_batch(path, &name, way, fan_out, effort)?;
+                    // Those it refused, said: each stays a comment, its ask
+                    // failed.
+                    for ((c, i), why) in &refused {
+                        println!("{}\tnot sent ({}): {why}", short_id(c, i), way.said());
+                    }
+                    not_sent += refused.len();
+                    if n == 0 {
                         continue;
                     }
                     ask::launch(path)?;
                     let db = Db::load(path)?;
                     let busy = ask::with_agent(&db);
-                    for ((c, i), _) in &sent {
+                    for ((c, i), _) in sent.iter().filter(|(at, _)| !refused.iter().any(|(r, _)| r == at)) {
                         let Some(n) = db.note(c, i) else { continue };
                         match (&n.queued, busy.get(&(c.clone(), i.clone()))) {
                             (Some(q), _) => {
@@ -1553,6 +1561,11 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
                     }
                     break;
                 }
+            }
+            // What the batch refused fails the command, as said above; waited
+            // for, it is counted with the comments whose ask failed.
+            if not_sent > 0 {
+                return err(format!("{not_sent} of them {} not sent", if not_sent == 1 { "was" } else { "were" }));
             }
         }
         Cmd::Landed { name } => {

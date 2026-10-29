@@ -899,9 +899,10 @@ Asking the agent, below). The menu opens under the comment (above it when
 there is no room under), and the comment stays where it was written, to
 read again before it is saved. How the agent is asked is the choice of `Ask
 agent`, `[x] change  [ ] the whole stack  [ ] answer only  [ ] build and
-test  [ ] try push` (the whole stack for a patch's comment, build and test
-for the stack's or a patch's as a whole, try push built with the `try-push`
-feature), as it is of a comment's own `Ask agent`: one pick, kept for the
+test  [ ] try push` (the whole stack for a patch's comment; build and test,
+and try push, which is built with the `try-push` feature, for the stack's
+or a patch's as a whole, as you write it, reply to it or write it again),
+as it is of a comment's own `Ask agent`: one pick, kept for the
 stack. Its line ends with the effort the agent is
 asked at, `Effort [high]`, which Tab goes to (Asking the agent, below). Esc
 asks even when nothing changed, so that what you wrote earlier can be sent
@@ -1228,14 +1229,16 @@ comment editor's `Ask agent`:
   (CLAUDE.md), never the user's worktree; it changes nothing in the stack.
   What it found comes back in the reply and on each patch's title, saying which
   stack it tested.
-- `try push`, built with the `try-push` feature, on any comment but one on
-  the history: it selects the CI tasks the comment asks for, for a try push
-  of the patches up to the comment's (all of them, for the stack's), as few
-  or as many as the comment says, each by its exact label and with why it
-  is relevant. It reads as an answer reads, where an answer works, and is
-  given what an answer is given and its own list (`agent.try_tools`); it
-  pushes nothing and changes nothing. What it selects waits for your
-  review, and stacked pushes what you accept (Try push, below).
+- `try push`, built with the `try-push` feature, on the stack's comments
+  and a patch's as a whole, as `build and test` is, never on a line or a
+  file, nor on the history: it selects the CI tasks the comment asks for,
+  for a try push of the patches up to the comment's (all of them, for the
+  stack's), as few or as many as the comment says, each by its exact label
+  and with why it is relevant. It reads as an answer reads, where an
+  answer works, and is given what an answer is given and its own list
+  (`agent.try_tools`); it pushes nothing and changes nothing. What it
+  selects waits for your review, and stacked pushes what you accept (Try
+  push, below).
 
 How hard the agent works on an ask is its effort, as claude's `--effort`
 takes it: `low`, `medium`, `high`, `xhigh` or `max`. Every item that asks
@@ -1887,11 +1890,19 @@ all of it as soon as it lands, for a script.
 
 What follows is built by default, with the `try-push` feature:
 `--no-default-features --features app,demo,moz-phab,web` builds stacked
-without it (Install). A comment, on the stack or on a patch, asks which of
-Firefox's CI tasks to run on a try push: `Run the tests a.txt touches, on
-Linux and Windows`, or `as many as you see fit`. Asked as a try push
-(`Ask agent`, `[x] try push`; or later, in the batch, whose `Send 2 try
-pushes, each on its own` sends each in an ask of its own), the agent
+without it (Install). A comment on the stack, or on a patch as a whole
+(its title), asks which of Firefox's CI tasks to run on a try push: `Run
+the tests a.txt touches, on Linux and Windows`, or `as many as you see
+fit`. A comment on a line or a file is not asked as a try push, as it is
+not sent to build and test: its `Ask agent` has no `try push`. One that an
+older stacked batched or queued as a try push is refused as it would go,
+from the banner's batch, from `stacked send NAME --batch` or from the
+queue, saying why: `A try push is asked of a patch as a whole or of the
+stack, not of a line or a file: comment on the patch's title or on the
+stack.` It stays a comment, its ask failed with that reason, and the rest
+of the batch goes. Asked as a try push (`Ask agent`, `[x] try push`; or
+later, in the batch, whose `Send 2 try pushes, each on its own` sends each
+in an ask of its own), the agent
 selects the tasks the comment asks for, as few or as many as it says, each
 by its exact label in the task graph (`test-linux2404-64/opt-xpcshell-1`;
 a chunked test is a task for each chunk, its label ending with the chunk's

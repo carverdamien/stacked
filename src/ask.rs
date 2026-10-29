@@ -228,23 +228,30 @@ pub fn can_test(db: &Db, n: &Note) -> bool {
             && db.latest_version(&n.change).is_some_and(|p| title_key(p) == n.line))
 }
 
-/// Whether `n` may be asked as a try push: any comment of the stack's or
-/// of a patch's, on a line or not, but one on the stack's history, which is
-/// asked about to answer only. Its push is of the patches up to its own,
-/// or of all of them for the stack's.
+/// Whether `n` may be asked as a try push: as it may be sent to build and
+/// test (`can_test`), a comment on the stack, or on a patch as a whole (its
+/// title), never one on a line or a file; nor one on the stack's history,
+/// which is asked about to answer only. Its push is of the patches up to
+/// its own, or of all of them for the stack's.
 #[cfg(feature = "try-push")]
-pub fn can_try(n: &Note) -> bool {
-    n.about.is_none()
+pub fn can_try(db: &Db, n: &Note) -> bool {
+    n.about.is_none() && can_test(db, n)
 }
 
+/// Why a comment on a line or a file is not asked as a try push, as every
+/// way of asking one says it: the comment's own choices do not offer it.
+#[cfg(feature = "try-push")]
+pub const TRY_OF_A_PATCH: &str = "A try push is asked of a patch as a whole or of the stack, not of a line or a file: \
+comment on the patch's title or on the stack.";
+
 /// Whether `n` may be asked in `way`, of those the comment's own choices
-/// have: a build and test, on the stack or a patch as a whole; a try push,
-/// of what is not on the history.
+/// have: a build and test, and a try push, on the stack or a patch as a
+/// whole, a try push not on the history.
 pub fn fits_way(db: &Db, n: &Note, way: Way) -> bool {
     match way {
         Way::Test => can_test(db, n),
         #[cfg(feature = "try-push")]
-        Way::Try => can_try(n),
+        Way::Try => can_try(db, n),
         _ => true,
     }
 }
@@ -905,6 +912,10 @@ fn enqueue(db: &mut Db, notes: &[(String, String)], way: Way, whole: bool, stage
         if way != Way::Answer && n.about.is_some() {
             return err("a comment on the history is asked about to answer only: it changes nothing");
         }
+        #[cfg(feature = "try-push")]
+        if way == Way::Try && !can_try(db, &n) {
+            return err(TRY_OF_A_PATCH);
+        }
         let reach = if whole { Scope::Stack } else { scope_of(&n) };
         match &scope {
             None => scope = Some(reach),
@@ -980,25 +991,43 @@ pub fn each_on_its_own(way: Way) -> bool {
     }
 }
 
+/// The comments of a batch that were not sent, each with why: they stay
+/// comments, out of the batch, their ask failed with that reason.
+pub type Refused = Vec<((String, String), String)>;
+
 /// Sends stack `name`'s batch of what is asked in `way`: its comments turn
 /// ready together, as one ask, or with `fan` (as builds and tests always
 /// do, and try pushes, each of its own place) each as an ask of its own.
 /// Together, comments from more than one place (the stack, or a patch) go
 /// to the whole stack, as do those batched so. Each ask goes at `effort`;
 /// else at the effort its comments were batched at, the highest of them for
-/// an ask of several. `launch` starts them. How many were sent.
-pub fn release_batch(db_path: &Path, name: &str, way: Way, fan: bool, effort: Option<Effort>) -> Result<usize> {
+/// an ask of several. `launch` starts them. How many were sent, and those
+/// refused: a try push of a line, batched as an older stacked let it be.
+pub fn release_batch(db_path: &Path, name: &str, way: Way, fan: bool, effort: Option<Effort>) -> Result<(usize, Refused)> {
     check_ahead(db_path, name);
     Db::edit(db_path, |db| {
         let all = batched(db, name, way);
         if all.is_empty() {
-            return Ok(0);
+            return Ok((0, Vec::new()));
         }
         set_up(db, name, way)?;
         applies(db, name)?;
         let own = |db: &Db, (c, i): &(String, String)| db.note(c, i).and_then(|n| n.queued.as_ref()?.effort);
+        // A try push of a line, batched as an older stacked let it be: out
+        // of the batch as it goes, a comment still, its ask failed saying
+        // why; the rest go.
+        #[cfg_attr(not(feature = "try-push"), allow(unused_mut))]
+        let mut refused: Refused = Vec::new();
         if fan || each_on_its_own(way) {
             for (at, whole) in &all {
+                #[cfg(feature = "try-push")]
+                if way == Way::Try
+                    && let Some(n) = db.note(&at.0, &at.1).filter(|n| !can_try(db, n)).cloned()
+                {
+                    db.set_note(Note { queued: None, failed: Some(TRY_OF_A_PATCH.into()), ..n })?;
+                    refused.push((at.clone(), TRY_OF_A_PATCH.into()));
+                    continue;
+                }
                 let at_effort = effort.or(own(db, at));
                 enqueue(db, std::slice::from_ref(at), way, *whole, Stage::Ready, None, at_effort)?;
             }
@@ -1009,7 +1038,7 @@ pub fn release_batch(db_path: &Path, name: &str, way: Way, fan: bool, effort: Op
             let at_effort = effort.or(batched_effort(db, name, way));
             enqueue(db, &notes, way, whole, Stage::Ready, None, at_effort)?;
         }
-        Ok(all.len())
+        Ok((all.len() - refused.len(), refused))
     })
 }
 
@@ -1061,9 +1090,18 @@ fn claim(db: &mut Db) -> Result<Vec<String>> {
     let mut order: Vec<String> = Vec::new();
     type Batch = (String, Way, Scope, Vec<Note>, Option<String>, Option<String>, Option<Effort>);
     let mut batches: HashMap<String, Batch> = HashMap::new();
+    // A try push of a line, queued as an older stacked let it be: refused
+    // as it would go, a comment still, its ask failed saying why.
+    #[cfg(feature = "try-push")]
+    let mut refused: Vec<Note> = Vec::new();
     for s in db.stacks() {
         for n in db.stack_notes(&s.name) {
             let Some(q) = n.queued.as_ref().filter(|q| !q.batched()) else { continue };
+            #[cfg(feature = "try-push")]
+            if q.way == Way::Try && !can_try(db, n) {
+                refused.push(n.clone());
+                continue;
+            }
             let entry = batches.entry(q.batch.clone()).or_insert_with(|| {
                 order.push(q.batch.clone());
                 (s.name.clone(), q.way, asked_scope(n), Vec::new(), q.on.clone(), q.was.clone(), q.effort)
@@ -1071,6 +1109,10 @@ fn claim(db: &mut Db) -> Result<Vec<String>> {
             entry.3.push(n.clone());
             entry.6 = entry.6.max(q.effort);
         }
+    }
+    #[cfg(feature = "try-push")]
+    for n in refused {
+        db.set_note(Note { queued: None, failed: Some(TRY_OF_A_PATCH.into()), ..n })?;
     }
     // A round sent back first, as it goes on from the work just reviewed,
     // the stack still that work's; then the rest, oldest first.

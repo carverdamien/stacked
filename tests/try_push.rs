@@ -521,6 +521,13 @@ fn menu_title(app: &App) -> String {
     }
 }
 
+/// The choices of how the agent is asked, of the menu open's `Ask agent`.
+fn hows(app: &App) -> Vec<String> {
+    let Mode::Menu(m) = &app.mode else { panic!("no menu open: {:?}", app.mode) };
+    let ask = m.items.iter().find(|i| i.label == "Ask agent").unwrap_or_else(|| panic!("no Ask agent in {:?}", items(app)));
+    ask.choices[0].list.iter().map(|c| c.shown.clone()).collect()
+}
+
 /// The menu's items: label, and whether it can be chosen.
 fn items(app: &App) -> Vec<(String, bool)> {
     match &app.mode {
@@ -668,20 +675,9 @@ fn last_prompt(db: &Path) -> String {
     stacked::ask::info(&r).unwrap().prompt
 }
 
-/// A comment written on patch 1's line `+TWO`, `text`, then asked as a try
-/// push from its menu.
-fn ask_try(app: &mut App, text: &str) {
-    keys(app, &[KeyCode::Right]);
-    down_to(app, "+TWO");
-    keys(app, &[KeyCode::Enter]);
-    save(app, text);
-    keys(app, &[KeyCode::Down]);
-    choose_as(app, "Ask agent", "try push");
-}
-
 /// A comment on patch 1 as a whole, `text`, written from the patches pane,
 /// and asked as a try push as it is saved.
-fn ask_try_on_patch(app: &mut App, text: &str) {
+fn ask_try(app: &mut App, text: &str) {
     keys(app, &[KeyCode::Home, KeyCode::Down]);
     choose(app, "Comment on this patch…");
     typed(app, text);
@@ -743,16 +739,14 @@ fn a_try_push_asked_lands_the_tasks_the_comment_asks_for_each_with_why() {
         &[("test-linux2404-64/opt-xpcshell-1", "It runs the tests of a.txt."), ("build-linux64/debug", "The build the tests need.")],
         "Two tasks.",
     );
-    // The comment's how: try push, beside the others.
-    keys(&mut app, &[KeyCode::Right]);
-    down_to(&mut app, "+TWO");
-    keys(&mut app, &[KeyCode::Enter]);
+    // The how of a comment on patch 1 as a whole: try push, beside the
+    // others.
+    keys(&mut app, &[KeyCode::Home, KeyCode::Down]);
+    choose(&mut app, "Comment on this patch…");
     save(&mut app, "Run what tests a.txt, as many as you see fit.");
-    keys(&mut app, &[KeyCode::Down, KeyCode::Char(' ')]);
-    let Mode::Menu(m) = &app.mode else { panic!("{:?}", app.mode) };
-    let ask = m.items.iter().find(|i| i.label == "Ask agent").unwrap();
-    let hows: Vec<&str> = ask.choices[0].list.iter().map(|c| c.shown.as_str()).collect();
-    assert_eq!(hows, ["change", "the whole stack", "answer only", "try push"]);
+    to_comment(&mut app, &notes_of(&db, 0)[0].id);
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    assert_eq!(hows(&app), ["change", "the whole stack", "answer only", "build and test", "try push"]);
     keys(&mut app, &[KeyCode::Esc]);
     choose_as(&mut app, "Ask agent", "try push");
     assert!(app.status.starts_with("asked the agent about 1 comment (try push)"), "{}", app.status);
@@ -860,7 +854,7 @@ fn each_try_push_ask_downloads_the_task_graph_into_a_folder_of_its_own_gone_once
     // Two asks at once, held as they go: patch 1's and the stack's.
     let hold = db.with_file_name("hold");
     std::fs::write(&hold, "").unwrap();
-    ask_try_on_patch(&mut app, "Run the build.");
+    ask_try(&mut app, "Run the build.");
     assert!(app.status.starts_with("asked the agent about 1 comment (try push)"), "{}", app.status);
     ask_try_on_stack(&mut app, "Run the build of the stack.");
     assert!(app.status.starts_with("asked the agent about 1 comment (try push)"), "{}", app.status);
@@ -903,6 +897,90 @@ fn each_try_push_ask_downloads_the_task_graph_into_a_folder_of_its_own_gone_once
     assert!(!going[0].1.exists(), "{}", going[0].1.display());
     std::fs::remove_file(&hold).unwrap();
     assert_eq!(git_out(&src, &["status", "--porcelain"]), "");
+}
+
+/// Comment `id` of patch 1 put on the queue as a try push, as an older
+/// stacked let a comment on a line be: in the batch (`Stage::Batch`), or
+/// ready to go (`Stage::Ready`).
+fn queued_as_try(db: &Path, id: &str, stage: stacked::db::Stage) {
+    let n = notes_of(db, 0).into_iter().find(|n| n.id == id).unwrap();
+    let queued = stacked::db::Queued {
+        way: stacked::db::Way::Try,
+        batch: format!("b-{id}"),
+        stack: false,
+        stage,
+        on: None,
+        was: None,
+        effort: None,
+    };
+    Db::edit(db, |d| d.set_note(Note { queued: Some(queued), failed: None, ..n })).unwrap();
+}
+
+#[test]
+fn a_try_push_is_asked_of_the_stack_or_a_patch_as_a_whole_never_of_a_line() {
+    let (_tmp, db, src) = setup();
+    // The command line's settings: the setup done, as the editor's is.
+    stacked(&src, &db, &["config", "--local", "agent.setup", &stacked::setup::VERSION.to_string()]);
+    let mut app = open(&db);
+    // A comment on the stack, or on patch 1 as a whole, may be asked as a
+    // try push, as it may be sent to build and test.
+    keys(&mut app, &[KeyCode::Home]);
+    choose(&mut app, "Comment on the stack…");
+    typed(&mut app, "Run it all.");
+    keys(&mut app, &[KeyCode::Esc]);
+    assert_eq!(hows(&app), ["change", "answer only", "build and test", "try push"]);
+    choose(&mut app, "Save it");
+    keys(&mut app, &[KeyCode::Home, KeyCode::Down]);
+    choose(&mut app, "Comment on this patch…");
+    typed(&mut app, "Run its tests.");
+    keys(&mut app, &[KeyCode::Esc]);
+    assert_eq!(hows(&app), ["change", "the whole stack", "answer only", "build and test", "try push"]);
+    choose(&mut app, "Save it");
+    // One on a line may not: neither as it is written, nor on its menu.
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Enter]);
+    typed(&mut app, "Test this line.");
+    keys(&mut app, &[KeyCode::Esc]);
+    assert_eq!(hows(&app), ["change", "the whole stack", "answer only"]);
+    choose(&mut app, "Save it");
+    keys(&mut app, &[KeyCode::Down, KeyCode::Char(' ')]);
+    assert_eq!(hows(&app), ["change", "the whole stack", "answer only"]);
+    keys(&mut app, &[KeyCode::Esc]);
+    // Batched as a try push, as an older stacked let it be: sent from the
+    // banner, it is refused, saying why. It stays a comment, out of the
+    // batch, its ask failed with that reason.
+    let line = notes_of(&db, 0).into_iter().find(|n| n.text == "Test this line.").unwrap();
+    let why = stacked::ask::TRY_OF_A_PATCH;
+    let refused = |db: &Path| notes_of(db, 0).into_iter().find(|n| n.id == line.id).map(|n| (n.queued.is_none(), n.failed));
+    queued_as_try(&db, &line.id, stacked::db::Stage::Batch);
+    app.refresh();
+    keys(&mut app, &[KeyCode::Esc]);
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    choose(&mut app, "Send 1 try push, each on its own");
+    assert_eq!(app.status, format!("1 comment not sent: {why}"));
+    assert_eq!(refused(&db), Some((true, Some(why.to_string()))));
+    // Checked in the batch again, as it was batched last: refused so too.
+    app.on_banner = true;
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    let toggle = items(&app).into_iter().map(|(l, _)| l).find(|l| l.contains("\"Test this line.\"")).unwrap();
+    choose(&mut app, &toggle);
+    assert_eq!(app.status, why);
+    assert_eq!(refused(&db), Some((true, Some(why.to_string()))));
+    keys(&mut app, &[KeyCode::Esc]);
+    // Ready to go: refused as it would go.
+    queued_as_try(&db, &line.id, stacked::db::Stage::Ready);
+    stacked::ask::launch(&db).unwrap();
+    assert_eq!(refused(&db), Some((true, Some(why.to_string()))));
+    // The command line's batch refuses it too, saying why, and fails.
+    queued_as_try(&db, &line.id, stacked::db::Stage::Batch);
+    let out = stacked_out(&src, &db, &["send", "s", "--batch"], &[]);
+    let (said, err) = (String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    assert!(!out.status.success() && err.contains("1 of them was not sent"), "{err}");
+    assert!(said.contains(&format!("\tnot sent (try push): {why}")), "{said}");
+    assert_eq!(refused(&db), Some((true, Some(why.to_string()))));
+    // Nothing was asked.
+    assert!(Db::load(&db).unwrap().runs().iter().all(|r| r.what != "try"));
 }
 
 #[test]
@@ -1472,12 +1550,10 @@ fn a_try_push_asks_its_own_setup_first_as_its_column_is_new() {
     choose_as(&mut app, "Ask agent", "answer only");
     assert!(app.status.starts_with("asked the agent about 1 comment (answer only)"), "{}", app.status);
     landed(&mut app, &db, 1);
-    // A try push: the setup first, its column there to check.
-    down_to(&mut app, "+LINE 39");
-    keys(&mut app, &[KeyCode::Enter]);
-    save(&mut app, "Which tasks?");
-    keys(&mut app, &[KeyCode::Down]);
-    choose_as(&mut app, "Ask agent", "try push");
+    // A try push, of patch 1 as a whole: the setup first, its column there
+    // to check.
+    keys(&mut app, &[KeyCode::Left]);
+    ask_try(&mut app, "Which tasks?");
     assert!(matches!(&app.mode, Mode::Setup(_)), "{:?}", app.mode);
     let mut screen = draw(&mut app);
     for _ in 0..300 {
@@ -1497,14 +1573,13 @@ fn a_try_push_asks_its_own_setup_first_as_its_column_is_new() {
     landed(&mut app, &db, 2);
 }
 
-/// A comment written on patch 1's line `+TWO`, `text`, then put in the
-/// batch as a try push from its menu, to be asked later.
+/// A comment on patch 1 as a whole, `text`, written from the patches pane,
+/// then put in the batch as a try push as it is saved, to be asked later.
 fn batch_try(app: &mut App, text: &str) {
-    keys(app, &[KeyCode::Right]);
-    down_to(app, "+TWO");
-    keys(app, &[KeyCode::Enter]);
-    save(app, text);
-    keys(app, &[KeyCode::Down, KeyCode::Char(' ')]);
+    keys(app, &[KeyCode::Home, KeyCode::Down]);
+    choose(app, "Comment on this patch…");
+    typed(app, text);
+    keys(app, &[KeyCode::Esc]);
     // Later: in the batch.
     let Mode::Menu(m) = &app.mode else { panic!("{:?}", app.mode) };
     let when = m.items.iter().position(|i| i.label == "Send it").unwrap();

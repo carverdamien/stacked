@@ -6018,7 +6018,16 @@ impl App {
                 }
                 _ => false,
             };
-            let test = matches!(e.target, Target::Stack | Target::Patch(_));
+            // A build and test, and a try push, of the stack or of a patch as
+            // a whole: a comment written there, or one there replied to or
+            // written again, as its own menu has them.
+            let test = match &e.target {
+                Target::Stack | Target::Patch(_) => true,
+                Target::Reply { change, id } | Target::Edit { change, id } | Target::Turn { change, id, .. } | Target::Rewind { change, id, .. } => {
+                    self.db.note(change, id).is_some_and(|n| ask::can_test(&self.db, n))
+                }
+                _ => false,
+            };
             let mut choices = self.ask_choices(a_patch_s, test, true);
             let (does, ok) = match changed {
                 true => (Action::Save(Some(Way::Change)), w && named),
@@ -6351,7 +6360,9 @@ impl App {
             .filter_map(|(_, id)| self.db.note(&self.subject_change()?, id))
             .filter(|n| ask::sendable(n) && !busy.contains_key(&(n.change.clone(), n.id.clone())))
             .filter(|n| !held.contains_key(&(n.change.clone(), n.id.clone())))
-            .filter(|n| way != Way::Test || ask::can_test(&self.db, n))
+            // A build and test, and a try push, of the stack or a patch as
+            // a whole.
+            .filter(|n| ask::fits_way(&self.db, n, way))
             // On the history: asked about to answer only.
             .filter(|n| way == Way::Answer || n.about.is_none())
             .map(|n| (n.change.clone(), n.id.clone()))
@@ -6407,9 +6418,10 @@ impl App {
 
     /// How the agent is asked about a comment, as radio buttons: to change
     /// the code (and `whole`, for a patch's: the whole stack), to answer
-    /// only, (`test`) to build and test, or, built with the `try-push`
-    /// feature, to select the CI tasks of a try push. Each asks, or,
-    /// `saving` a comment being written, saves it and asks.
+    /// only, and, for one on the stack or a patch as a whole (`test`), to
+    /// build and test, or, built with the `try-push` feature, to select the
+    /// CI tasks of a try push. Each asks, or, `saving` a comment being
+    /// written, saves it and asks.
     fn ask_choices(&self, whole: bool, test: bool, saving: bool) -> Choices {
         let act = |way: Way| Some(if saving { Action::Save(Some(way)) } else { Action::Send(way) });
         let mut list = vec![Choice::new("change", "change", "it may change the code within the comment's place", act(Way::Change))];
@@ -6431,9 +6443,11 @@ impl App {
                 act(Way::Test),
             ));
         }
-        // Not in the tour, whose game has no CI to push to.
+        // Where a build and test is: of the stack, or of a patch as a whole,
+        // never of a line (`ask::can_try`). Not in the tour, whose game has
+        // no CI to push to.
         #[cfg(feature = "try-push")]
-        if !self.in_memory() {
+        if test && !self.in_memory() {
             list.push(Choice::new(
                 "try",
                 "try push",
@@ -8691,13 +8705,21 @@ impl App {
         }
         let done = ask::release_batch(&self.path, &self.stack, way, fan, effort);
         self.reload();
-        let n = match done {
-            Ok(n) => n,
+        let (n, refused) = match done {
+            Ok(done) => done,
             Err(e) => {
                 self.status = e.0;
                 return;
             }
         };
+        // Those it refused, said: each stays a comment, its ask failed.
+        let not_sent = refused.first().map(|(_, why)| format!("{} comment{} not sent: {why}", refused.len(), plural(refused.len())));
+        if n == 0
+            && let Some(said) = &not_sent
+        {
+            self.status = said.clone();
+            return;
+        }
         // As they went: the whole stack, if any of them did.
         let whole = sent.iter().any(|((c, i), _)| self.db.note(c, i).and_then(|n| n.queued.as_ref()).is_some_and(|q| q.stack));
         let said = if whole && way == Way::Change { crate::db::WHOLE } else { way.said() };
@@ -8712,6 +8734,9 @@ impl App {
             None => format!("sent the batch ({said}): {how}"),
             Some(w) => format!("sent the batch ({said}): {how}, ready, it goes {w}"),
         };
+        if let Some(said) = not_sent {
+            self.status = format!("{}; {said}", self.status);
+        }
         self.launch();
     }
 
@@ -8743,24 +8768,31 @@ impl App {
     /// How comment `n` is asked once checked in the banner's menu: as it was
     /// last batched or asked, if it was; else as the stack's menus last
     /// asked, if that fits it (the whole stack, for a patch's; build and
-    /// test, for the stack's or a patch's as a whole), else to change the
-    /// code; on the history, to answer only.
+    /// test, and a try push, for the stack's or a patch's as a whole), else
+    /// to change the code; on the history, to answer only. One on a line
+    /// last batched as a try push, as an older stacked let it be, is asked
+    /// so again: the batch refuses it, saying why.
     fn way_for(&self, n: &Note) -> (Way, bool) {
         if n.about.is_some() {
             return (Way::Answer, false);
         }
         let fits = |way: Way, whole: bool| ask::fits_way(&self.db, n, way) && !(whole && n.on_stack());
-        if let Some(q) = self.db.last_queued(&n.change, &n.id).cloned()
+        let last = self.db.last_queued(&n.change, &n.id).cloned();
+        if let Some(q) = &last
             && fits(q.way, q.stack)
         {
             return (q.way, q.stack);
+        }
+        #[cfg(feature = "try-push")]
+        if last.is_some_and(|q| q.way == Way::Try) {
+            return (Way::Try, false);
         }
         match self.db.choice(&self.stack, "ask") {
             Some("whole") if !n.on_stack() => (Way::Change, true),
             Some("answer") => (Way::Answer, false),
             Some("test") if ask::can_test(&self.db, n) => (Way::Test, false),
             #[cfg(feature = "try-push")]
-            Some("try") => (Way::Try, false),
+            Some("try") if ask::can_try(&self.db, n) => (Way::Try, false),
             _ => (Way::Change, false),
         }
     }

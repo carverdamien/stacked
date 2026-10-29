@@ -89,20 +89,6 @@ fn setup() -> (tempfile::TempDir, PathBuf, PathBuf) {
     (tmp, db, src)
 }
 
-/// What the menus' choices of how the agent is asked hold after answer
-/// only and build and test, with the `try-push` feature: the try push.
-const TRY: &str = if cfg!(feature = "try-push") { "  [ ] try push" } else { "" };
-
-/// The choices of how the agent is asked about a comment, `these`, then,
-/// with the `try-push` feature, the try push.
-fn hows(these: &[&str]) -> Vec<String> {
-    let mut out: Vec<String> = these.iter().map(|s| s.to_string()).collect();
-    if cfg!(feature = "try-push") {
-        out.push("try push".into());
-    }
-    out
-}
-
 /// A row of the setup's screen as this stacked draws it: read only's cell
 /// `r`, change's `c`, with the `try-push` feature try push's `t`, then
 /// `text`; its end trimmed.
@@ -856,17 +842,15 @@ fn a_click_out_of_a_comment_opens_its_menu_next_to_the_click_over_the_comment_to
     let comment = at(&screen, "a zebra?");
     // Out of the comment's box, on the line it is on, just over it: the
     // menu asking what to do with the comment, next to the click (as far
-    // along as it fits whole, wider with the try push's choice), over the
-    // comment.
+    // along as it fits whole: a line's comment has no try push to widen
+    // it), over the comment.
     let (x, y) = at(&screen, "+TWO");
     app.click(x, y, false);
     assert_eq!(menu_title(&app), "the comment");
     let screen = draw(&mut app);
     let (bx, by, bw, bh) = menu_box(&screen, "the comment");
     assert_eq!((bx, by), next_to_click((x, y), bw, bh), "{screen}");
-    if !cfg!(feature = "try-push") {
-        assert_eq!((bx, by), (usize::from(x) + 1, usize::from(y) + 1), "{screen}");
-    }
+    assert_eq!((bx, by), (usize::from(x) + 1, usize::from(y) + 1), "{screen}");
     assert!(!screen.contains("a zebra?"), "covered:\n{screen}");
     // A click out of the menu: back to the comment, what is written in it
     // kept, in sight again.
@@ -3110,7 +3094,7 @@ fn comments_are_written_where_they_will_show() {
     assert_eq!(choices_named(&app, "Send it"), ["now", "later"]);
     // How it is asked, a choice of its item; a line's comment, of a patch,
     // may be asked of the whole stack.
-    assert_eq!(choices_named(&app, "Ask agent"), hows(&["change", "the whole stack", "answer only"]));
+    assert_eq!(choices_named(&app, "Ask agent"), ["change", "the whole stack", "answer only"]);
     // Esc keeps writing too.
     keys(&mut app, &[KeyCode::Esc]);
     assert!(matches!(app.mode, Mode::Edit(_)));
@@ -4819,7 +4803,7 @@ fn what_you_said_last_may_be_written_again() {
     keys(&mut app, &[KeyCode::Esc]);
     let labels: Vec<String> = items(&app).into_iter().map(|(l, _)| l).collect();
     assert_eq!(labels, ["Ask agent", "Send it", "Attach a reference…", "", "Leave it as it is", "Keep writing"]);
-    assert_eq!(choices_named(&app, "Ask agent"), hows(&["change", "the whole stack", "answer only"]));
+    assert_eq!(choices_named(&app, "Ask agent"), ["change", "the whole stack", "answer only"]);
     assert_eq!(app.help()[0], "Press Enter to ask the agent about the comment as it is (may change the code).");
     choose(&mut app, "Leave it as it is");
     assert_eq!(app.mode, Mode::Normal);
@@ -7132,7 +7116,7 @@ fn the_setup_before_the_first_ask_ticks_the_box_clicked_or_the_column_s() {
         key(&mut app, KeyCode::Right);
     }
     keys(&mut app, &[KeyCode::Tab, KeyCode::Right]);
-    assert!(draw(&mut app).contains(&format!("[x] answer only{TRY}    Effort [xhigh]")), "{}", draw(&mut app));
+    assert!(draw(&mut app).contains("[x] answer only    Effort [xhigh]"), "{}", draw(&mut app));
     assert_eq!(key(&mut app, KeyCode::Enter), Effect::None);
     let screen = wait_for(&mut app, " What each kind of ask may use, besides what stacked always gives it");
     let chosen = |app: &App| {
@@ -8783,7 +8767,7 @@ fn how_the_agent_is_asked_is_one_pick_kept_for_the_stack() {
     while !matches!(&app.mode, Mode::Menu(m) if m.sel == at) {
         key(&mut app, KeyCode::Down);
     }
-    assert!(draw(&mut app).contains(&format!("Ask agent    [x] change  [ ] the whole stack  [ ] answer only{TRY}    Effort [high]")));
+    assert!(draw(&mut app).contains("Ask agent    [x] change  [ ] the whole stack  [ ] answer only    Effort [high]"));
     key(&mut app, KeyCode::Right);
     assert_eq!(Db::load(&db).unwrap().choice("s", "ask"), Some("whole"));
     // Saved without asking; on the comment, Ask agent starts on the same
@@ -8821,7 +8805,7 @@ fn ask_agent_saves_what_changed_first_and_asks_at_the_effort_its_line_ends_with(
     while !matches!(&app.mode, Mode::Menu(m) if m.sel == ask) {
         key(&mut app, KeyCode::Down);
     }
-    assert!(draw(&mut app).contains(&format!("Ask agent    [x] change  [ ] the whole stack  [ ] answer only{TRY}    Effort [high]")));
+    assert!(draw(&mut app).contains("Ask agent    [x] change  [ ] the whole stack  [ ] answer only    Effort [high]"));
     assert_eq!(app.help()[0], "Press Enter to save the comment and ask the agent (may change the code).");
     assert_eq!(app.hint(), "↑↓ choose · ←→: how · tab: effort · enter: do it · esc: close · ?: what it does");
     // ← → pick how; Tab goes to the effort, underlined, which they pick
@@ -8833,11 +8817,11 @@ fn ask_agent_saves_what_changed_first_and_asks_at_the_effort_its_line_ends_with(
     keys(&mut app, &[KeyCode::Right, KeyCode::Right, KeyCode::Right]);
     assert_eq!(app.effort, Effort::Low, "round past the last");
     keys(&mut app, &[KeyCode::Left, KeyCode::Left]);
-    assert!(draw(&mut app).contains(&format!("[ ] change  [x] the whole stack  [ ] answer only{TRY}    Effort [xhigh]")));
+    assert!(draw(&mut app).contains("[ ] change  [x] the whole stack  [ ] answer only    Effort [xhigh]"));
     assert_eq!(app.effort, Effort::Xhigh);
     assert_eq!(Db::load(&db).unwrap().choice("s", "ask"), Some("whole"));
     keys(&mut app, &[KeyCode::BackTab, KeyCode::Left]);
-    assert!(draw(&mut app).contains(&format!("[x] change  [ ] the whole stack  [ ] answer only{TRY}    Effort [xhigh]")));
+    assert!(draw(&mut app).contains("[x] change  [ ] the whole stack  [ ] answer only    Effort [xhigh]"));
     // `?` says both, and how to go from one to the other.
     let help = app.help();
     assert!(help[1].starts_with("Press ← → to pick how: change, it may change the code"), "{help:?}");
@@ -8855,7 +8839,7 @@ fn ask_agent_saves_what_changed_first_and_asks_at_the_effort_its_line_ends_with(
     assert_eq!((app.effort, app.hint().contains("←→: effort")), (Effort::Low, true));
     let (x, y) = at(&draw(&mut app), "[ ] answer only");
     app.click(x, y, false);
-    assert!(draw(&mut app).contains(&format!("[ ] change  [ ] the whole stack  [x] answer only{TRY}    Effort [low]")));
+    assert!(draw(&mut app).contains("[ ] change  [ ] the whole stack  [x] answer only    Effort [low]"));
     keys(&mut app, &[KeyCode::Tab, KeyCode::Right, KeyCode::Right, KeyCode::Right, KeyCode::Right]);
     assert_eq!(app.effort, Effort::Max);
     // Enter saves it, then asks: the agent is started at that effort.
@@ -8876,7 +8860,7 @@ fn ask_agent_saves_what_changed_first_and_asks_at_the_effort_its_line_ends_with(
     let all: Vec<String> = items(&app).into_iter().map(|(l, _)| l).collect();
     assert_eq!(all, ["Ask agent", "Send it", "Attach a reference…", "", "Leave it as it is", "Keep writing"]);
     assert_eq!(app.help()[0], "Press Enter to ask the agent about the comment as it is (answer only).");
-    assert!(draw(&mut app).contains(&format!("Ask agent    [ ] change  [ ] the whole stack  [x] answer only{TRY}    Effort [max]")));
+    assert!(draw(&mut app).contains("Ask agent    [ ] change  [ ] the whole stack  [x] answer only    Effort [max]"));
     keys(&mut app, &[KeyCode::Tab, KeyCode::Left, KeyCode::Left]);
     keys(&mut app, &[KeyCode::Enter]);
     assert!(app.status.contains("asked the agent about 1 comment (answer only)"), "{}", app.status);
