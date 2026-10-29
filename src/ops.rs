@@ -1008,6 +1008,47 @@ pub fn drop_file(path: &std::path::Path, name: &str, at: usize, file: &str) -> R
     })
 }
 
+/// Wraps the long lines of the messages of the patches at `places` (from
+/// 0) of stack `name` at `width` columns, as `wrap::wrapped` does: their
+/// new versions, their diffs and authors as they were, land together for
+/// your review, as an edit by hand does, the history calling it `wrap the
+/// long lines of the messages of patches 2 and 3 at 72 columns`. Of those,
+/// a patch with nothing to wrap is left as it is; none having any, nothing
+/// changes. What came of it.
+pub fn wrap_messages(path: &std::path::Path, name: &str, places: &[usize], width: usize) -> Result<Edited> {
+    let mut places = places.to_vec();
+    places.sort_unstable();
+    places.dedup();
+    Db::edit(path, |db| {
+        db.writable(name)?;
+        by_hand(db, name)?;
+        let was = db.stack(name)?.patches.clone();
+        let mut patches = was.clone();
+        let mut done = Vec::new();
+        for &at in &places {
+            let Some(id) = was.get(at) else {
+                return err(format!("{name} has {} patches", was.len()));
+            };
+            let old = db.patch(id).clone();
+            let Some(w) = crate::wrap::wrapped(&old.message, width) else { continue };
+            if let Some((p, _)) = revised(db, &patches, at, Draft { message: w.message, ..Draft::from(&old) })? {
+                patches = p;
+                done.push(at);
+            }
+        }
+        let messages = |n: usize| if n == 1 { "message" } else { "messages" };
+        if done.is_empty() {
+            let has = if places.len() == 1 { "has" } else { "have" };
+            let of = crate::head::patches_said(&places);
+            return Ok(Edited::Unchanged(format!("nothing changed: the {} of {of} {has} no long lines to wrap at {width} columns", messages(places.len()))));
+        }
+        let of = crate::head::patches_said(&done);
+        let op = format!("wrap the long lines of the {} of {of} at {width} columns", messages(done.len()));
+        let said = format!("wrapped the long lines of the {} of {of} at {width} columns", messages(done.len()));
+        land(db, name, &was, patches, &op, &of, &said, None)
+    })
+}
+
 /// What came of an edit by hand.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Edited {

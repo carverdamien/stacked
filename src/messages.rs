@@ -54,7 +54,7 @@ type At = (usize, usize, usize);
 
 /// The sections of a message of `lines`, each its lines and whether it is
 /// code, as this module says them.
-fn sections(lines: &[&str]) -> Vec<(Range<usize>, bool)> {
+pub(crate) fn sections(lines: &[&str]) -> Vec<(Range<usize>, bool)> {
     // The lines of fenced blocks, their fences too: a fence is closed by
     // one of its kind, else the block goes on to the end.
     let mut fenced = vec![false; lines.len()];

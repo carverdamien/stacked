@@ -1062,6 +1062,40 @@ goes whole: the file is then as it was before the patch. On the only file
 of a patch, the patch would be left empty: stacked says so, and offers
 `Drop this patch…` instead.
 
+A patch whose message has lines of prose longer than 72 columns has `Wrap
+the long lines of this patch's message at 72 columns` in its menu, after
+`Edit this patch in $EDITOR`; the stack's header has `Wrap the long lines
+of 2 messages at 72 columns`, for every patch whose message has some, as
+one edit. The menu's note says how many lines of which patches are longer
+(`Patch 2's message has 3 lines of prose longer than 72 columns and patch
+4's has 1.`). Each paragraph of prose with a line longer than the width is
+filled again: as many words on each line as the width lets, the words in
+their order, a gap of white space one space. A list item (`- `, `* `, `+ `,
+`1. `, `1) `) is a paragraph of its own: it keeps its marker, and its next
+lines go under its text, indented by three spaces at most (four would make
+them code). A word longer than the width, a link say, stays whole, on a
+line of its own; a word that would make the line it starts something else
+(a list's marker, `>`, `$`, a fence, or `#`, which git reads as a comment)
+goes on the line before. Never wrapped: the title, the first line, however
+long; code, as the sync of the commit messages reads it: a fenced block
+(```` ``` ```` or `~~~`), its empty lines and all, and a paragraph with a
+line indented by a tab or by four spaces or more, or with a line starting
+with a `$ ` prompt; a quoted line (`> `); the trailers, the last
+paragraph from its first `Key: value` line on (`Reviewed-by: ann`,
+`Differential Revision: …`); and a paragraph whose lines all fit, its short
+lines not joined. So nothing but where the lines break changes: the sync of
+the commit messages, which compares them where their lines wrap aside,
+finds the two the same, and so does the interdiff of the edit's review,
+where each paragraph wrapped is there once, as the new version writes it,
+none of its lines a change (History, below). The width is the settings' `view.message_width`, 72
+unless set (Settings, below). The new versions, their diffs and authors as
+they were, land for your review as an edit by hand does (below), the
+history calling the edit `wrap the long lines of the messages of patches 2
+and 4 at 72 columns`. On a read-only stack, and while the stack is not to
+be edited by hand, the items are offered but cannot be chosen, and the
+menu says why. No command wraps messages: the editor's menus do, in the
+terminal, in the browser and in StackED.
+
 An edit by hand does not go in the stack at once: it lands, as the agent's
 work does (What the agent brings back waits for your review, below), and
 its review opens as soon as it is saved: the stack operations it makes
@@ -1071,8 +1105,8 @@ in the history); rejected, nothing changes. Left for later, the banner says
 so (`⟳ 1 edit by hand waits for your review`), and as with the agent's
 change, the stack is not edited by hand again before it is reviewed. So it
 is of `Edit … here in $EDITOR`, `Edit this patch in $EDITOR`, `Edit the
-stack as a list in $EDITOR`, the conflicts resolved after them, and a
-file's changes dropped with Delete; moving, dropping,
+stack as a list in $EDITOR`, the conflicts resolved after them, a file's
+changes dropped with Delete, and the long lines of messages wrapped; moving, dropping,
 undo and redo change the stack at once. On the command line, `stacked edit`
 says the run the edit landed as: `stacked review NAME RUN --accept-all`
 takes it, and `stacked edit … --accept` takes it at once.
@@ -2225,8 +2259,11 @@ settings:
   wrote it, is read as them) or `"hidden"`; `comments`, the comments pane
   at the start, `"expanded"`, `"compact"` or `"hidden"` (for both, `true`
   and `false`, as before, are expanded and hidden); `stream_lines`, the
-  agent's lines under a comment; and
-  `split_width`, the columns two sides, or two halves, need.
+  agent's lines under a comment;
+  `split_width`, the columns two sides, or two halves, need; and
+  `message_width`, the columns the menus wrap a commit message's long
+  lines at (Editing a patch by hand, above): 72 unless set, and 20 at
+  least.
 - `[colors]`: what paints each part of the screen, as git writes a colour
   (`git config color.diff.new "green bold"`): a foreground, then a
   background, each a name (`black`, `red`, `green`, `yellow`, `blue`,
@@ -2610,6 +2647,8 @@ is typed: `import.rs`). A fix to one may belong in the other.
   where their lines wrap aside, for the sync to colour; and so as a diff
   of their lines, for the interdiffs and the submit's review; and what
   each section of a message says, for the reading marks to hold.
+- `wrap.rs`: a commit message's long lines wrapped at a width, its
+  paragraphs of prose filled again, for the menus to offer.
 - `review.rs`, `phab.rs`, `submit.rs`: Phabricator, built with the
   `moz-phab` feature (on by default): the reviews pulled, the stacks
   imported, a patch submitted as work in progress.
@@ -2995,7 +3034,13 @@ picking nothing, the menu that click opens next to it, over the comment
 too, the one Esc opens beside the comment, a click outside either going
 back to the
 comment, and a click in the box putting the cursor there), the comments pane's previews,
-moving a patch, searching (what is in sight first, the patches then the
+moving a patch, the long lines of messages wrapped (a patch's menu
+offering it only when its message has some at the settings' width, the
+note saying how many lines of which patches; the edit landing for review,
+the stack as it was until it is accepted, then the new messages, as the
+history says; the stack's header wrapping every message that has some, as
+one edit; offered but not to be chosen, the menu saying why, on a
+read-only stack and while an edit by hand waits for review), searching (what is in sight first, the patches then the
 files they touch, the history), the agents' worktrees made ahead as the
 stack's checkout says, the banner of the agent's work (Esc to it and
 back, open a line for each, Enter on each; the reviews pulled waiting in
@@ -3043,9 +3088,10 @@ and the editor left, the worktree made ahead removed (Quit in the page;
 `stacked web` itself sent SIGINT, SIGTERM or SIGHUP, the first while
 `$EDITOR` runs left to `$EDITOR`, the second waiting for it), and two
 `stacked web` at once, each putting its database, named from where it
-runs, on the list StackED's Open Recent shows, and the effort picked in a
+runs, on the list StackED's Open Recent shows, the effort picked in a
 menu kept in the state file of its home, where the next `stacked web`
-starts; and
+starts, and a message's long lines wrapped from its patch's menu, the
+edit landing for review; and
 `web.rs` tests the rows and the lines both ways, with the client's own tests
 (`web/client.rs`, compiled to the machine as well as to wasm), which also
 test the mouse followed only while the page has the focus: the cell where
@@ -3059,7 +3105,8 @@ the mouse over a patch then gone, a window too small, the wait while
 `$EDITOR` runs (an editor that edits nothing, set in the test's settings),
 quit, the command there, and a database that cannot be read said before
 any window; two editors in one process, as two windows, each in its own
-folder (HEAD said in the checkout's, none elsewhere); and the File menu,
+folder (HEAD said in the checkout's, none elsewhere); a message's long
+lines wrapped from its patch's menu, the edit landing for review; and the File menu,
 its panels answered by the test: Open… opening each database picked in a
 window of its own (one picked twice, one that cannot be read said, the
 panel cancelled), New… making an empty database that stacked reads and
@@ -3203,7 +3250,18 @@ past the trailer, and the trailer drawn as a line that needs nothing, or
 without moz-phab a line to read; those in `config.rs`, a file of settings over another, a
 checkout's own read and written unless git tracks it, the patches
 pane's `compact`, as versions before the files wrote it, read as them,
-and the keys listed by the context they are read in; those in `keys.rs`,
+the width messages are wrapped at, one too narrow refused, and the keys
+listed by the context they are read in; those in `wrap.rs`, a message's
+long lines wrapped: a paragraph of prose filled to the width (lines broken
+by hand, gaps of white space), one within it left as it is, its short
+lines unjoined, a list's items each a paragraph under its marker (three
+spaces at most), a word longer than the width alone on its line, code (a
+fenced block with an empty line, an indented command, a `$ ` line), the
+title, the trailers and a quoted line left as they are, a word that would
+start a line as something else kept on the line before and such a word
+alone on its line kept so, a wide character two columns, what the menus
+say, and messages made up of lines of every kind wrapped to the same words
+as `messages.rs` compares them, with nothing more to wrap after; those in `keys.rs`,
 the keys checked context by context (the defaults with no clash, one key
 in two contexts no clash, two things of one context on one key said),
 what the search of the middle keeps for itself refused to its own, and

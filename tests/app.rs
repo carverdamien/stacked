@@ -62,6 +62,11 @@ fn stacked(home: &Path) -> Command {
 
 /// A database holding stack `s` of two patches.
 fn setup() -> (tempfile::TempDir, PathBuf) {
+    setup_with("Bug 1 - shout two")
+}
+
+/// As `setup`, the first patch's message `first`.
+fn setup_with(first: &str) -> (tempfile::TempDir, PathBuf) {
     settings();
     let tmp = tempfile::tempdir().unwrap();
     let src = tmp.path().join("src");
@@ -72,7 +77,7 @@ fn setup() -> (tempfile::TempDir, PathBuf) {
     git(&src, &["add", "."]);
     git(&src, &["commit", "-qm", "base"]);
     std::fs::write(src.join("a.txt"), "one\nTWO\n").unwrap();
-    git(&src, &["commit", "-qam", "Bug 1 - shout two"]);
+    git(&src, &["commit", "-qam", first]);
     std::fs::write(src.join("b.txt"), "bee\n").unwrap();
     git(&src, &["add", "."]);
     git(&src, &["commit", "-qm", "Bug 2 - add b"]);
@@ -252,6 +257,34 @@ fn a_patch_is_submitted_to_phabricator_from_its_menu_in_the_window_too() {
     screen(&s, "the dialog closed", |b| !text(b).contains("send patch 1 to Phabricator"));
     assert_eq!(*asked.lock().unwrap(), ["diffusion.repository.search"]);
     stacked::submit::stand_in(None);
+}
+
+#[test]
+fn a_message_s_long_lines_are_wrapped_from_its_patch_s_menu_in_the_window_too() {
+    let long = "Bug 1 - shout two\n\nThe parser read the whole file before it checked the header, which made it slow on the big files we have.";
+    let (tmp, db) = setup_with(long);
+    let message = |db: &Path| {
+        let d = stacked::db::Db::load(db).unwrap();
+        d.patch(&d.stack("s").unwrap().patches[0]).message.clone()
+    };
+    let before = message(&db);
+    assert!(before.contains("which made it slow"), "{before}");
+    let s = Session::open(&db, tmp.path()).unwrap();
+    s.send(Input::Size(100, 30));
+    screen(&s, "the patches", |b| row(b, 3).contains("Bug 2 - add b"));
+    // The first patch's menu offers it; its item clicked, the edit lands
+    // for review, its review open at once.
+    press(&s, KeyCode::Char(' '));
+    let item = "Wrap the long lines of this patch's message at 72 columns";
+    let menu = screen(&s, "the patch's menu", |b| find(b, item).is_some());
+    let (x, y) = find(&menu, item).unwrap();
+    s.send(Input::Click { x, y, right: false });
+    screen(&s, "the edit landed", |b| text(b).contains("at 72 columns: it waits for your review"));
+    // Nothing changes in the stack before the review accepts it.
+    assert_eq!(message(&db), before);
+    let d = stacked::db::Db::load(&db).unwrap();
+    let queue = stacked::held::queue(&d, "s");
+    assert!(queue.len() == 1 && stacked::held::by_hand(queue[0]), "{queue:?}");
 }
 
 /// The File menu's panels and alerts, as the test answers them: the

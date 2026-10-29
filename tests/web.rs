@@ -37,6 +37,11 @@ fn stacked(home: &Path) -> Command {
 
 /// A database holding stack `s` of two patches.
 fn setup() -> (tempfile::TempDir, PathBuf) {
+    setup_with("Bug 1 - shout two")
+}
+
+/// As `setup`, the first patch's message `first`.
+fn setup_with(first: &str) -> (tempfile::TempDir, PathBuf) {
     let tmp = tempfile::tempdir().unwrap();
     let src = tmp.path().join("src");
     std::fs::create_dir(&src).unwrap();
@@ -46,7 +51,7 @@ fn setup() -> (tempfile::TempDir, PathBuf) {
     git(&src, &["add", "."]);
     git(&src, &["commit", "-qm", "base"]);
     std::fs::write(src.join("a.txt"), "one\nTWO\n").unwrap();
-    git(&src, &["commit", "-qam", "Bug 1 - shout two"]);
+    git(&src, &["commit", "-qam", first]);
     std::fs::write(src.join("b.txt"), "bee\n").unwrap();
     git(&src, &["add", "."]);
     git(&src, &["commit", "-qm", "Bug 2 - add b"]);
@@ -297,6 +302,39 @@ fn a_patch_is_submitted_to_phabricator_from_its_menu_in_the_browser_too() {
     until(&mut events, "the dialog closed", |l| l.starts_with(&format!("data: r {row} ")) && !text(l).contains(title));
     assert_eq!(*asked.lock().unwrap(), ["diffusion.repository.search"]);
     stacked::submit::stand_in(None);
+}
+
+#[test]
+fn a_message_s_long_lines_are_wrapped_from_its_patch_s_menu_in_the_browser_too() {
+    let long = "Bug 1 - shout two\n\nThe parser read the whole file before it checked the header, which made it slow on the big files we have.";
+    let (_tmp, db) = setup_with(long);
+    let message = |db: &Path| {
+        let d = stacked::db::Db::load(db).unwrap();
+        d.patch(&d.stack("s").unwrap().patches[0]).message.clone()
+    };
+    let before = message(&db);
+    assert!(before.contains("which made it slow"), "{before}");
+    stacked::config::init(stacked::config::Config::default());
+    let (port, token) = stacked::web::start(db.clone()).unwrap();
+    let (host, input) = (format!("127.0.0.1:{port}"), format!("POST /input?t={token}"));
+    let mut events = events(port, &token, 100);
+    until(&mut events, "the patches", |l| l.starts_with("data: r 3 ") && l.contains("Bug 2 - add b"));
+    // The first patch's menu, opened with a right click, offers it; its item
+    // clicked, the edit lands for review, its review open at once.
+    ask(port, &host, &input, "m 5 2 r\n");
+    let item = "Wrap the long lines of this patch's message at 72 columns";
+    let seen = until(&mut events, "the patch's menu", |l| text(l).contains(item));
+    let row = seen.last().unwrap();
+    let y = row.strip_prefix("data: r ").and_then(|r| r.split(' ').next()).unwrap();
+    let line = text(row);
+    let x = line[..line.find(item).unwrap()].chars().count() + 1;
+    ask(port, &host, &input, &format!("m {x} {y} l\n"));
+    until(&mut events, "the edit landed", |l| text(l).contains("at 72 columns: it waits for your review"));
+    // Nothing changes in the stack before the review accepts it.
+    assert_eq!(message(&db), before);
+    let d = stacked::db::Db::load(&db).unwrap();
+    let queue = stacked::held::queue(&d, "s");
+    assert!(queue.len() == 1 && stacked::held::by_hand(queue[0]), "{queue:?}");
 }
 
 #[test]

@@ -1151,6 +1151,10 @@ pub enum Action {
     /// instead.
     AskDropFile(String),
     DropFile(String),
+    /// The long lines of the messages of the patches at these places, from
+    /// 0, wrapped at the width the settings give (`view.message_width`):
+    /// their new versions land for your review, as an edit by hand does.
+    WrapMessages(Vec<usize>),
     CommentStack,
     CommentPatch,
     CommentLine,
@@ -1422,6 +1426,16 @@ fn about(action: &Action) -> String {
             "drop this patch's changes to {file}: the patch without them lands for your review, as an edit by hand does, once the patches after it are seen to still apply on it"
         ),
         Action::DropFile(_) => "drop them".into(),
+        Action::WrapMessages(at) => {
+            let (messages, lands) = match at.len() {
+                1 => ("message", "the patch's new version lands"),
+                _ => ("messages", "the patches' new versions land together"),
+            };
+            format!(
+                "wrap the long lines of the {messages} of {}: each paragraph of prose with a line longer than the width is filled again to it, its words in their order, and the title, code, quoted lines and trailers stay as they are; {lands} for your review, as an edit by hand does",
+                crate::head::patches_said(at)
+            )
+        }
         Action::CommentStack => "create a comment on the stack, for the agent to work on the whole stack".into(),
         Action::CommentPatch => "create a comment on this patch as a whole".into(),
         Action::CommentLine => "create a comment on this line".into(),
@@ -6198,6 +6212,8 @@ impl App {
         // Why the patch's submit is grayed, if it is.
         #[cfg(feature = "moz-phab")]
         let mut held_submit: Option<String> = None;
+        // What the menu says of the messages its item wraps, if it has one.
+        let mut wraps: Option<String> = None;
         match (self.screen, self.focus) {
             // What landed, to review; the comments open, to go to.
             (Screen::Main, _) if self.on_banner => {
@@ -6221,6 +6237,11 @@ impl App {
                     items.push(Item::new("Close all comments…", Action::AskCloseAll).when(!self.closable().0.is_empty()));
                     items.push(Item::line());
                     items.push(Item::new("Edit the stack as a list in $EDITOR", Action::EditList).when(h && n > 0));
+                    let label = |k: usize, w: usize| format!("Wrap the long lines of {k} {} at {w} columns", if k == 1 { "message" } else { "messages" });
+                    if let Some((item, said)) = self.wrap_item(0..n, label) {
+                        items.push(item);
+                        wraps = Some(said);
+                    }
                     items.push(Item::new("Tree of edits…", Action::Tree));
                     items.push(Item::new("History…", Action::History));
                     #[cfg(feature = "moz-phab")]
@@ -6257,6 +6278,10 @@ impl App {
                     items.push(Item::new("Move HEAD…", Action::MoveHead(Some(self.sel))));
                 }
                 items.push(Item::new("Edit this patch in $EDITOR", Action::EditPatch).when(h));
+                if let Some((item, said)) = self.wrap_item([self.sel], |_, w| format!("Wrap the long lines of this patch's message at {w} columns")) {
+                    items.push(item);
+                    wraps = Some(said);
+                }
                 items.push(Item::new("Drop this patch…", Action::AskDrop).when(h));
                 items.push(Item::new("Versions of this patch…", Action::Versions));
                 // This patch alone; not while reviews come from nowhere.
@@ -6356,7 +6381,37 @@ impl App {
         if self.screen == Screen::Sync {
             why.extend(self.sync_menu_note());
         }
-        Menu::new(title, items, (!why.is_empty()).then(|| why.join("\n")))
+        let mut m = Menu::new(title, items, (!why.is_empty()).then(|| why.join("\n")));
+        // What the item wrapping messages wraps, said whether or not an item
+        // is grayed.
+        if let Some(w) = wraps {
+            m.note = Some(match m.note.take() {
+                Some(n) => format!("{n}\n{w}"),
+                None => w,
+            });
+        }
+        m
+    }
+
+    /// The item that wraps the long lines of the messages of the patches at
+    /// `places` (from 0) that have some to wrap, at the width the settings
+    /// give (`wrap::wrapped`), its label made by `label` from how many
+    /// messages have some and the width; offered while the stack may be
+    /// edited by hand. With it, what the menu says of those messages. None
+    /// when none has any.
+    fn wrap_item(&self, places: impl IntoIterator<Item = usize>, label: impl Fn(usize, usize) -> String) -> Option<(Item, String)> {
+        let width = self.cfg.view.message_width;
+        let s = self.current()?;
+        let long: Vec<(usize, usize)> = places
+            .into_iter()
+            .filter_map(|at| Some((at, crate::wrap::wrapped(&self.db.patch(s.patches.get(at)?).message, width)?.long)))
+            .collect();
+        if long.is_empty() {
+            return None;
+        }
+        let action = Action::WrapMessages(long.iter().map(|&(at, _)| at).collect());
+        let item = Item::new(label(long.len(), width), action).when(self.by_hand().is_none());
+        Some((item, crate::wrap::said(&long, width)))
     }
 
     /// The Send all items of a header: the comments listed that can be sent.
@@ -6635,6 +6690,13 @@ impl App {
                 self.mode = Mode::Menu(m);
             }
             Action::DropFile(file) => match ops::drop_file(&self.path, &name, self.sel, &file) {
+                Ok(done) => self.edited(done, None, None),
+                Err(e) => {
+                    self.reload();
+                    self.status = e.0;
+                }
+            },
+            Action::WrapMessages(places) => match ops::wrap_messages(&self.path, &name, &places, self.cfg.view.message_width) {
                 Ok(done) => self.edited(done, None, None),
                 Err(e) => {
                     self.reload();

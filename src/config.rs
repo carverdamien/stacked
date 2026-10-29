@@ -283,6 +283,9 @@ pub struct View {
     pub stream_lines: usize,
     /// The columns the middle needs for two sides, or for two halves.
     pub split_width: usize,
+    /// The columns a commit message's lines are wrapped at, when a menu
+    /// offers to wrap its long lines (`wrap`).
+    pub message_width: usize,
 }
 
 impl Default for View {
@@ -295,6 +298,7 @@ impl Default for View {
             comments: Pane::Expanded,
             stream_lines: 3,
             split_width: 60,
+            message_width: 72,
         }
     }
 }
@@ -434,6 +438,7 @@ struct WrittenView {
     comments: Option<WrittenPane>,
     stream_lines: Option<usize>,
     split_width: Option<usize>,
+    message_width: Option<usize>,
 }
 
 /// A side pane as the file writes it: its mode, or, as before there were
@@ -580,6 +585,13 @@ impl Config {
                 wrong.push(format!("view.split_width: {n} is too narrow for two sides"));
             } else {
                 c.view.split_width = n;
+            }
+        }
+        if let Some(n) = v.message_width {
+            if n < 20 {
+                wrong.push(format!("view.message_width: {n} is too narrow for the lines of a message"));
+            } else {
+                c.view.message_width = n;
             }
         }
         for (name, spec) in &w.colors {
@@ -831,6 +843,11 @@ impl Config {
         out.push_str("# The columns the middle needs for two sides, or for two halves.\n");
         out.push_str(&format!("split_width = {}\n", v.split_width));
         out.push_str(
+            "# The columns a commit message's lines are wrapped at, when a menu offers to wrap\n\
+             # its long lines: its paragraphs of prose, not its title, code, quoted lines or trailers.\n",
+        );
+        out.push_str(&format!("message_width = {}\n", v.message_width));
+        out.push_str(
             "\n[colors]\n# What paints each part of the screen, as git writes a colour: a foreground,\n\
              # then a background, each a name (black, red, green, yellow, blue, magenta,\n\
              # cyan, white, any of these after bright, default, normal), a number from 0 to\n\
@@ -911,7 +928,7 @@ enum Kind {
 
 /// Every setting there is, as the file names it, and what it holds; the
 /// keys', `keys.NAME`, are lists.
-const SETTINGS: [(&str, Kind); 27] = [
+const SETTINGS: [(&str, Kind); 28] = [
     ("file", Kind::Text),
     ("editor", Kind::Text),
     ("agent.command", Kind::Text),
@@ -938,6 +955,7 @@ const SETTINGS: [(&str, Kind); 27] = [
     ("view.comments", Kind::Pane),
     ("view.stream_lines", Kind::Count),
     ("view.split_width", Kind::Count),
+    ("view.message_width", Kind::Count),
     ("demo.seen", Kind::Flag),
 ];
 
@@ -1027,6 +1045,7 @@ pub fn value_of(c: &Config, key: &str) -> Result<Vec<String>, String> {
         "view.comments" => vec![c.view.comments.name().into()],
         "view.stream_lines" => vec![c.view.stream_lines.to_string()],
         "view.split_width" => vec![c.view.split_width.to_string()],
+        "view.message_width" => vec![c.view.message_width.to_string()],
         "demo.seen" => vec![c.demo.seen.to_string()],
         k if k.starts_with("colors.") => match Paint::named(&k["colors.".len()..]) {
             Some(p) => vec![c.colors.spec(p).to_string()],
@@ -1780,6 +1799,30 @@ mod tests {
         set(&path, "view.whitespace_needs_review", &["true".to_string()]).unwrap();
         assert!(Config::load(&path).0.view.whitespace_needs_review);
         assert!(set(&path, "view.whitespace_needs_review", &["yes".to_string()]).unwrap_err().contains("true or false"));
+    }
+
+    #[test]
+    fn messages_are_wrapped_at_72_columns_unless_set_otherwise() {
+        assert_eq!(Config::default().view.message_width, 72);
+        assert!(Config::default().render().contains("\nmessage_width = 72\n"));
+        let (c, wrong) = Config::parse("[view]\nmessage_width = 80\n").unwrap();
+        assert!(wrong.is_empty(), "{wrong:?}");
+        assert_eq!(c.view.message_width, 80);
+        assert_eq!(value_of(&c, "view.message_width"), Ok(vec!["80".to_string()]));
+        // Too narrow to wrap at: said, and the default kept.
+        let (c, wrong) = Config::parse("[view]\nmessage_width = 10\n").unwrap();
+        assert_eq!(c.view.message_width, 72, "what is wrong keeps its default");
+        assert_eq!(wrong, ["view.message_width: 10 is too narrow for the lines of a message"]);
+        // Written, read and refused as any setting is.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("settings.toml");
+        set(&path, "view.message_width", &["100".to_string()]).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "[view]\nmessage_width = 100\n");
+        assert_eq!(Config::load(&path).0.view.message_width, 100);
+        assert!(set(&path, "view.message_width", &["wide".to_string()]).unwrap_err().contains("a number"));
+        let e = set(&path, "view.message_width", &["5".to_string()]).unwrap_err();
+        assert!(e.contains("too narrow") && e.ends_with("nothing written"), "{e}");
+        assert_eq!(Config::load(&path).0.view.message_width, 100);
     }
 
     #[test]

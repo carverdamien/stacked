@@ -412,18 +412,20 @@ fn with_trailer(source: &str, _: &str) -> (String, Option<String>) {
 }
 
 /// Whether the lines of a message, `lines`, end in a paragraph of trailers
-/// after an empty line: each of its lines a key, `: ` and a value, the key
-/// a letter, then letters, digits, hyphens and spaces, as in `Reviewed-by:
-/// ann`.
+/// after an empty line: each of its lines a trailer (`trailer`).
 #[cfg(feature = "moz-phab")]
 fn ends_in_trailers(lines: &[&str]) -> bool {
-    let trailer = |l: &&str| {
-        l.split_once(": ").is_some_and(|(key, _)| {
-            key.starts_with(|c: char| c.is_ascii_alphabetic()) && key.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == ' ')
-        })
-    };
     let start = lines.iter().rposition(|l| l.trim().is_empty()).map(|e| e + 1);
-    start.is_some_and(|s| s < lines.len() && lines[s..].iter().all(trailer))
+    start.is_some_and(|s| s < lines.len() && lines[s..].iter().all(|l| trailer(l)))
+}
+
+/// Whether `line` of a message is a trailer: a key, `: ` and a value, the
+/// key a letter, then letters, digits, hyphens and spaces, as in
+/// `Reviewed-by: ann`.
+pub(crate) fn trailer(line: &str) -> bool {
+    line.split_once(": ").is_some_and(|(key, _)| {
+        key.starts_with(|c: char| c.is_ascii_alphabetic()) && key.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == ' ')
+    })
 }
 
 /// What patch message `ours` and its commit's, `theirs`, differing as `d`

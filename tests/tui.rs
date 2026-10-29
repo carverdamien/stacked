@@ -11626,6 +11626,245 @@ fn a_file_s_changes_dropped_go_whole_a_rename_s_and_a_file_s_added_or_deleted() 
     assert_eq!(e.0, "Bug 2 - a.txt again, and g.txt does not change nope.txt");
 }
 
+/// The message of patch 1 of `setup_long`'s stack, a line of its prose
+/// longer than 72 columns; and as it is wrapped at 72 columns.
+const LONG_1: &str = "Bug 1 - shout one\n\nThe parser read the whole file before it checked the header, which made it slow on the big files we have.";
+const WRAPPED_1: &str = "Bug 1 - shout one\n\nThe parser read the whole file before it checked the header, which made\nit slow on the big files we have.";
+
+/// The message of patch 3: two lines of its prose longer than 72 columns,
+/// then a trailer; and as it is wrapped.
+const LONG_3: &str = "Bug 3 - add c\n\nA first line of prose that goes on for longer than seventy-two columns, as some do.\nA second one, as long as the first one is, and longer than the width is too.\n\nReviewed-by: ann";
+const WRAPPED_3: &str = "Bug 3 - add c\n\nA first line of prose that goes on for longer than seventy-two columns,\nas some do. A second one, as long as the first one is, and longer than\nthe width is too.\n\nReviewed-by: ann";
+
+/// A database holding stack `s` of three patches, and the repository: the
+/// messages of patches 1 and 3 have long lines (`LONG_1`, `LONG_3`); patch
+/// 2's has none.
+fn setup_long() -> (tempfile::TempDir, PathBuf, PathBuf) {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("src");
+    std::fs::create_dir(&src).unwrap();
+    git(&src, &["init", "-q", "-b", "main"]);
+    git(&src, &["config", "commit.gpgsign", "false"]);
+    std::fs::write(src.join("a.txt"), "one\n").unwrap();
+    git(&src, &["add", "."]);
+    git(&src, &["commit", "-qm", "base"]);
+    for (file, text, message) in [("a.txt", "ONE\n", LONG_1), ("b.txt", "bee\n", "Bug 2 - add b"), ("c.txt", "sea\n", LONG_3)] {
+        std::fs::write(src.join(file), text).unwrap();
+        git(&src, &["add", "."]);
+        git(&src, &["commit", "-qm", message]);
+    }
+    let db = tmp.path().join("db.jsonl");
+    stacked(&src, &db, &["import", "s", "HEAD~3"]);
+    (tmp, db, src)
+}
+
+/// The messages of stack `s`'s patches, as the database at `db` has them.
+fn messages_of(db: &Path) -> Vec<String> {
+    let d = Db::load(db).unwrap();
+    d.stack("s").unwrap().patches.iter().map(|id| d.patch(id).message.clone()).collect()
+}
+
+/// Whether the menu open offers to wrap the long lines of messages.
+fn offers_to_wrap(app: &App) -> bool {
+    items(app).iter().any(|(l, _)| l.starts_with("Wrap the long lines"))
+}
+
+#[test]
+fn a_patch_s_menu_offers_to_wrap_its_message_only_when_it_has_long_lines_the_note_saying_how_many() {
+    let (_tmp, db, _src) = setup_long();
+    let mut app = open(&db).unwrap();
+    assert_eq!(messages_of(&db), [LONG_1, "Bug 2 - add b", LONG_3]);
+    let item = "Wrap the long lines of this patch's message at 72 columns";
+    // Patch 1: a line of its prose longer than 72 columns, which the note
+    // says; the item after the edit in $EDITOR.
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    assert_eq!(menu_title(&app), "Bug 1 - shout one");
+    let all = items(&app);
+    let at = all.iter().position(|(l, _)| l == item).unwrap_or_else(|| panic!("{all:?}"));
+    assert_eq!(all[at - 1], ("Edit this patch in $EDITOR".to_string(), true));
+    assert!(all[at].1, "{all:?}");
+    assert_eq!(menu_note(&app), "Patch 1's message has 1 line of prose longer than 72 columns.");
+    keys(&mut app, &[KeyCode::Esc]);
+    // Patch 2: nothing to wrap, no item and no note.
+    keys(&mut app, &[KeyCode::Down, KeyCode::Char(' ')]);
+    assert_eq!(menu_title(&app), "Bug 2 - add b");
+    assert!(!offers_to_wrap(&app), "{:?}", items(&app));
+    assert_eq!(menu_note(&app), "");
+    keys(&mut app, &[KeyCode::Esc]);
+    // Patch 3: two lines of its prose, its trailer not one of them.
+    keys(&mut app, &[KeyCode::Down, KeyCode::Char(' ')]);
+    assert_eq!(menu_title(&app), "Bug 3 - add c");
+    assert!(items(&app).contains(&(item.to_string(), true)), "{:?}", items(&app));
+    assert_eq!(menu_note(&app), "Patch 3's message has 2 lines of prose longer than 72 columns.");
+    keys(&mut app, &[KeyCode::Esc]);
+    // At the width the settings give: wider than its lines, nothing to wrap;
+    // narrower, at that width.
+    app.cfg.view.message_width = 90;
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    assert!(!offers_to_wrap(&app), "{:?}", items(&app));
+    keys(&mut app, &[KeyCode::Esc]);
+    app.cfg.view.message_width = 60;
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    assert!(items(&app).contains(&("Wrap the long lines of this patch's message at 60 columns".to_string(), true)), "{:?}", items(&app));
+    assert_eq!(menu_note(&app), "Patch 3's message has 2 lines of prose longer than 60 columns.");
+}
+
+#[test]
+fn a_message_wrapped_lands_for_review_and_is_the_stack_s_once_accepted() {
+    let (_tmp, db, _src) = setup_long();
+    let mut app = open(&db).unwrap();
+    let before = Db::load(&db).unwrap().stack("s").unwrap().patches.clone();
+    let old = Db::load(&db).unwrap().patch(&before[0]).clone();
+    choose(&mut app, "Wrap the long lines of this patch's message");
+    // Landed as an edit by hand, its review open at once: its message alone
+    // changed, the stack as it was until the review accepts it.
+    assert_eq!(app.screen, Screen::Review);
+    assert_eq!(app.status, "wrapped the long lines of the message of patch 1 at 72 columns: it waits for your review");
+    let screen = draw(&mut app);
+    assert!(screen.contains("reword  1 Bug 1 - shout one") && !screen.contains("modify  1"), "{screen}");
+    let d = Db::load(&db).unwrap();
+    let run = d.run(&app.reviewing.as_ref().unwrap().run).unwrap().clone();
+    assert!(stacked::held::by_hand(&run), "{run:?}");
+    let change = run.held.as_ref().unwrap().stack.clone().unwrap();
+    assert_eq!((change.op.as_str(), change.of.as_str()), ("wrap the long lines of the message of patch 1 at 72 columns", "patch 1"));
+    assert_eq!(change.patches[1..], before[1..]);
+    let new = d.patch(&change.patches[0]).clone();
+    assert_eq!(new.message, WRAPPED_1);
+    assert_eq!((&new.change, &new.diff, &new.author, &new.date), (&old.change, &old.diff, &old.author, &old.date));
+    assert_eq!(d.stack("s").unwrap().patches, before, "nothing changed before the review");
+    drop(d);
+    // Accepted: the new message is the stack's, the history saying what it
+    // was.
+    keys(&mut app, &[KeyCode::Esc]);
+    choose(&mut app, "Accept all remaining and Close");
+    choose(&mut app, "Accept them and close");
+    assert_eq!(app.status, "reviewed: its change accepted");
+    assert_eq!(messages_of(&db), [WRAPPED_1, "Bug 2 - add b", LONG_3]);
+    let d = Db::load(&db).unwrap();
+    let s = d.stack("s").unwrap();
+    assert_eq!(s.patches[0], new.id);
+    assert_eq!(s.op, "wrap the long lines of the message of patch 1 at 72 columns");
+    assert_eq!(stacked::history::entries(&d, "s")[0].op, s.op);
+    drop(d);
+    // Nothing more to wrap in it: the item is gone.
+    assert_eq!(app.screen, Screen::Main);
+    keys(&mut app, &[KeyCode::Home, KeyCode::Down, KeyCode::Char(' ')]);
+    assert_eq!(menu_title(&app), "Bug 1 - shout one");
+    assert!(!offers_to_wrap(&app), "{:?}", items(&app));
+}
+
+#[test]
+fn the_stack_s_menu_wraps_every_message_with_long_lines_as_one_edit_by_hand() {
+    let (_tmp, db, _src) = setup_long();
+    let mut app = open(&db).unwrap();
+    let before = Db::load(&db).unwrap().stack("s").unwrap().patches.clone();
+    // At 85 columns, patch 1's message alone has lines to wrap: said so.
+    app.cfg.view.message_width = 85;
+    keys(&mut app, &[KeyCode::Home, KeyCode::Char(' ')]);
+    assert_eq!(menu_title(&app), "the stack s");
+    assert!(items(&app).contains(&("Wrap the long lines of 1 message at 85 columns".to_string(), true)), "{:?}", items(&app));
+    assert_eq!(menu_note(&app), "Patch 1's message has 1 line of prose longer than 85 columns.");
+    keys(&mut app, &[KeyCode::Esc]);
+    // At 72, patches 1 and 3.
+    app.cfg.view.message_width = 72;
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    let item = "Wrap the long lines of 2 messages at 72 columns";
+    let all = items(&app);
+    let at = all.iter().position(|(l, _)| l == item).unwrap_or_else(|| panic!("{all:?}"));
+    assert_eq!(all[at - 1], ("Edit the stack as a list in $EDITOR".to_string(), true));
+    assert_eq!(menu_note(&app), "Patch 1's message has 1 line of prose longer than 72 columns and patch 3's has 2.");
+    choose(&mut app, item);
+    // One edit, of both: patch 2 as it was.
+    assert_eq!(app.screen, Screen::Review);
+    assert_eq!(app.status, "wrapped the long lines of the messages of patches 1 and 3 at 72 columns: it waits for your review");
+    let screen = draw(&mut app);
+    assert!(screen.contains("reword  1 Bug 1 - shout one") && screen.contains("reword  3 Bug 3 - add c"), "{screen}");
+    let d = Db::load(&db).unwrap();
+    let change = d.run(&app.reviewing.as_ref().unwrap().run).unwrap().held.clone().unwrap().stack.unwrap();
+    assert_eq!(change.op, "wrap the long lines of the messages of patches 1 and 3 at 72 columns");
+    assert_eq!(change.of, "patches 1 and 3");
+    let held: Vec<&str> = change.patches.iter().map(|id| d.patch(id).message.as_str()).collect();
+    assert_eq!(held, [WRAPPED_1, "Bug 2 - add b", WRAPPED_3]);
+    assert_eq!(change.patches[1], before[1], "patch 2 as it was");
+    assert_eq!(d.stack("s").unwrap().patches, before, "nothing changed before the review");
+    drop(d);
+    keys(&mut app, &[KeyCode::Esc]);
+    choose(&mut app, "Accept all remaining and Close");
+    choose(&mut app, "Accept them and close");
+    assert_eq!(messages_of(&db), [WRAPPED_1, "Bug 2 - add b", WRAPPED_3]);
+    let d = Db::load(&db).unwrap();
+    assert_eq!(stacked::history::entries(&d, "s")[0].op, "wrap the long lines of the messages of patches 1 and 3 at 72 columns");
+    drop(d);
+    // Nothing more to wrap; undone as any edit is.
+    keys(&mut app, &[KeyCode::Home, KeyCode::Char(' ')]);
+    assert!(!offers_to_wrap(&app), "{:?}", items(&app));
+    let undo = "Undo: wrap the long lines of the messages of patches 1 and 3 at 72 columns";
+    assert!(items(&app).contains(&(undo.to_string(), true)), "{:?}", items(&app));
+}
+
+#[test]
+fn messages_are_not_wrapped_where_the_stack_is_not_edited_by_hand_and_the_menu_says_why() {
+    let (_tmp, db, _src) = setup_long();
+    let mut app = open(&db).unwrap();
+    // An edit by hand waits for review: patch 1's message wrapped, its
+    // review left for later.
+    choose(&mut app, "Wrap the long lines of this patch's message");
+    keys(&mut app, &[KeyCode::Esc]);
+    choose(&mut app, "Save");
+    assert_eq!(app.screen, Screen::Main);
+    // Patch 3's item and the stack's are offered, but cannot be chosen; the
+    // menu says why, and how many lines are long.
+    let why = "your edit by hand of patch 1 waits for your review: the stack can be edited by hand again once you have reviewed it";
+    (app.on_banner, app.focus, app.on_stack, app.sel) = (false, Focus::List, false, 2);
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    assert_eq!(menu_title(&app), "Bug 3 - add c");
+    assert!(items(&app).contains(&("Wrap the long lines of this patch's message at 72 columns".to_string(), false)), "{:?}", items(&app));
+    assert_eq!(menu_note(&app), format!("{why}\nPatch 3's message has 2 lines of prose longer than 72 columns."));
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Home, KeyCode::Char(' ')]);
+    assert_eq!(menu_title(&app), "the stack s");
+    assert!(items(&app).contains(&("Wrap the long lines of 2 messages at 72 columns".to_string(), false)), "{:?}", items(&app));
+    keys(&mut app, &[KeyCode::Esc]);
+    // Nor are they wrapped otherwise: refused, why said, nothing written.
+    let before = std::fs::read(&db).unwrap();
+    let e = stacked::ops::wrap_messages(&db, "s", &[2], 72).unwrap_err();
+    assert_eq!(e.0, why);
+    assert_eq!(std::fs::read(&db).unwrap(), before, "nothing written");
+}
+
+#[test]
+fn a_read_only_stack_s_messages_are_not_wrapped_and_the_menu_says_why() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = tmp.path().join("db.jsonl");
+    // As a stacked from before the check wrote it: no base.
+    let p = stacked::ops::new_patch(stacked::mbox::Draft {
+        message: LONG_1.into(),
+        diff: "diff --git a/one b/one\nnew file mode 100644\n--- /dev/null\n+++ b/one\n@@ -0,0 +1 @@\n+one\n".into(),
+        author: Some("A <a@b>".into()),
+        ..Default::default()
+    });
+    let s = stacked::db::Stack {
+        name: "s".into(),
+        patches: vec![p.id.clone()],
+        base: None,
+        repo: None,
+        parent: None,
+        op: "from before".into(),
+        time: 0,
+    };
+    Db::append(&db, &[stacked::db::Record::Patch(p), stacked::db::Record::Stack(s)]).unwrap();
+    let before = std::fs::read(&db).unwrap();
+    let mut app = open(&db).unwrap();
+    assert!(app.read_only().is_some());
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    assert!(items(&app).contains(&("Wrap the long lines of this patch's message at 72 columns".to_string(), false)), "{:?}", items(&app));
+    let note = menu_note(&app);
+    assert!(note.starts_with("read-only: it has no base commit") && note.ends_with("\nPatch 1's message has 1 line of prose longer than 72 columns."), "{note}");
+    keys(&mut app, &[KeyCode::Esc]);
+    let e = stacked::ops::wrap_messages(&db, "s", &[0], 72).unwrap_err();
+    assert!(e.0.starts_with("s is read-only: it has no base commit"), "{}", e.0);
+    assert_eq!(std::fs::read(&db).unwrap(), before, "nothing written");
+}
+
 #[test]
 fn in_a_review_delete_rejects_closes_or_takes_back_as_its_menu_does() {
     let (_tmp, db, _src) = setup();
