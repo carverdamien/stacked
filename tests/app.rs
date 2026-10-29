@@ -261,25 +261,41 @@ fn a_patch_is_submitted_to_phabricator_from_its_menu_in_the_window_too() {
 
 #[cfg(feature = "moz-phab")]
 #[test]
-fn the_status_of_each_patch_s_revision_shows_in_the_window_too() {
+fn the_status_of_each_patch_s_revision_and_its_phabricator_line_show_in_the_window_too() {
     let (tmp, db) = setup_with("Bug 1 - shout two\n\nDifferential Revision: https://phabricator.example.com/D11");
     // A stand-in for Phabricator, answering the statuses' searches of the
-    // editors of this database alone: D11 needs review.
+    // editors of this database alone, and what their Phabricator line
+    // reads: D11 needs review, its latest diff the first patch's, but `Two`
+    // where the patch says `TWO`.
+    let d = stacked::db::Db::load(&db).unwrap();
+    let raw = d.patch(&d.stack("s").unwrap().patches[0]).diff.replace("+TWO", "+Two");
     stacked::phab::statuses_stand_in(
         &db,
-        Some(Box::new(|m, _| match m {
-            "differential.revision.search" => Ok(serde_json::json!({"data": [{"id": 11, "fields": {"status": {"value": "needs-review"}}}]})),
+        Some(Box::new(move |m, _| match m {
+            "differential.revision.search" => Ok(serde_json::json!({"data": [{"id": 11, "phid": "PHID-DREV-11",
+                "fields": {"status": {"value": "needs-review"}, "title": "Bug 1 - shout two", "summary": ""}}]})),
+            "differential.diff.search" => Ok(serde_json::json!({"data": [{"id": 5}]})),
+            "differential.getrawdiff" => Ok(serde_json::Value::String(raw.clone())),
+            "transaction.search" => Ok(serde_json::json!({"data": [], "cursor": {"after": null}})),
             _ => Err(format!("{m}: not asked in this test")),
         })),
     );
     let s = Session::open(&db, tmp.path()).unwrap();
     s.send(Input::Size(100, 30));
-    // Expanded, in words after the number; the patch naming no revision
-    // blank, its title after the column all the same.
-    screen(&s, "the status", |b| row(b, 2).starts_with("  1 [Needs Review] Bug 1 - shout two") && row(b, 3).starts_with("  2                Bug 2 - add b"));
-    // Listing files, a letter.
+    // A letter after the number; the patch naming no revision blank, its
+    // title after the column all the same. The Phabricator line over the
+    // message, in the middle.
+    let line = "Phabricator: D11 · Needs Review · the diff differs · no new comments";
+    screen(&s, "the status", |b| row(b, 2).starts_with("  1 [R] Bug 1 - shout two") && row(b, 3).starts_with("  2     Bug 2 - add b"));
+    screen(&s, "the Phabricator line", |b| find(b, line).is_some());
+    // Listing files, a letter too.
     press(&s, KeyCode::Left);
     screen(&s, "the letter", |b| row(b, 2).starts_with("  1 [R] Bug 1 - shout two"));
+    // Space on the line: what differs, under it.
+    for k in [KeyCode::Right, KeyCode::Up, KeyCode::Char(' ')] {
+        press(&s, k);
+    }
+    screen(&s, "what differs", |b| find(b, "the code: Phabricator's, then this version's").is_some() && find(b, "│-Two").is_some());
     stacked::phab::statuses_stand_in(&db, None);
 }
 

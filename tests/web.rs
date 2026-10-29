@@ -305,13 +305,21 @@ fn a_patch_is_submitted_to_phabricator_from_its_menu_in_the_browser_too() {
 }
 
 /// A stand-in for Phabricator, answering the statuses' searches of the
-/// editors of `db` alone: D11 needs review.
+/// editors of `db` alone, and what their Phabricator line reads: D11 needs
+/// review, its latest diff the first patch's, but `Two` where the patch
+/// says `TWO`.
 #[cfg(feature = "moz-phab")]
 fn d11_needs_review(db: &Path) {
+    let d = stacked::db::Db::load(db).unwrap();
+    let raw = d.patch(&d.stack("s").unwrap().patches[0]).diff.replace("+TWO", "+Two");
     stacked::phab::statuses_stand_in(
         db,
-        Some(Box::new(|m, _| match m {
-            "differential.revision.search" => Ok(serde_json::json!({"data": [{"id": 11, "fields": {"status": {"value": "needs-review"}}}]})),
+        Some(Box::new(move |m, _| match m {
+            "differential.revision.search" => Ok(serde_json::json!({"data": [{"id": 11, "phid": "PHID-DREV-11",
+                "fields": {"status": {"value": "needs-review"}, "title": "Bug 1 - shout two", "summary": ""}}]})),
+            "differential.diff.search" => Ok(serde_json::json!({"data": [{"id": 5}]})),
+            "differential.getrawdiff" => Ok(serde_json::Value::String(raw.clone())),
+            "transaction.search" => Ok(serde_json::json!({"data": [], "cursor": {"after": null}})),
             _ => Err(format!("{m}: not asked in this test")),
         })),
     );
@@ -319,19 +327,29 @@ fn d11_needs_review(db: &Path) {
 
 #[cfg(feature = "moz-phab")]
 #[test]
-fn the_status_of_each_patch_s_revision_shows_in_the_browser_too() {
+fn the_status_of_each_patch_s_revision_and_its_phabricator_line_show_in_the_browser_too() {
     let (_tmp, db) = setup_with("Bug 1 - shout two\n\nDifferential Revision: https://phabricator.example.com/D11");
     d11_needs_review(&db);
     stacked::config::init(stacked::config::Config::default());
     let (port, token) = stacked::web::start(db.clone()).unwrap();
+    let (host, input) = (format!("127.0.0.1:{port}"), format!("POST /input?t={token}"));
     let mut events = events(port, &token, 100);
-    // Expanded, in words after the number; the patch naming no revision
-    // blank, its title after the column all the same.
-    until(&mut events, "the status", |l| l.starts_with("data: r 2 ") && text(l).starts_with("  1 [Needs Review] Bug 1 - shout two"));
-    until(&mut events, "the title after it", |l| l.starts_with("data: r 3 ") && text(l).starts_with("  2                Bug 2 - add b"));
-    // Listing files, a letter.
-    ask(port, &format!("127.0.0.1:{port}"), &format!("POST /input?t={token}"), "k Left -\n");
+    // A letter after the number; the patch naming no revision blank, its
+    // title after the column all the same.
+    until(&mut events, "the status", |l| l.starts_with("data: r 2 ") && text(l).starts_with("  1 [R] Bug 1 - shout two"));
+    until(&mut events, "the title after it", |l| l.starts_with("data: r 3 ") && text(l).starts_with("  2     Bug 2 - add b"));
+    // The Phabricator line over the message, in the middle.
+    let line = "Phabricator: D11 · Needs Review · the diff differs · no new comments";
+    until(&mut events, "the Phabricator line", |l| text(l).contains(line));
+    // Listing files, a letter too.
+    ask(port, &host, &input, "k Left -\n");
     until(&mut events, "the letter", |l| l.starts_with("data: r 2 ") && text(l).starts_with("  1 [R] Bug 1 - shout two"));
+    // Space on the line: what differs, under it.
+    for k in ["k Right -\n", "k Up -\n", "k c 20 -\n"] {
+        ask(port, &host, &input, k);
+    }
+    until(&mut events, "what differs", |l| text(l).contains("the code: Phabricator's, then this version's"));
+    until(&mut events, "the line of Phabricator's diff", |l| text(l).contains("│-Two"));
     stacked::phab::statuses_stand_in(&db, None);
 }
 

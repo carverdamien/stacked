@@ -58,7 +58,7 @@ impl Submitting {
 }
 
 /// A row of `kind` saying `text`.
-fn row(kind: Kind, text: impl Into<String>) -> Row {
+pub(super) fn row(kind: Kind, text: impl Into<String>) -> Row {
     Row {
         kind,
         text: text.into(),
@@ -67,7 +67,7 @@ fn row(kind: Kind, text: impl Into<String>) -> Row {
 }
 
 /// `text`, a sentence, as rows of `kind` folded to `w`, each indented.
-fn said_rows(rows: &mut Vec<Row>, kind: Kind, text: &str, w: usize) {
+pub(super) fn said_rows(rows: &mut Vec<Row>, kind: Kind, text: &str, w: usize) {
     for (k, piece) in wrap(text, w.saturating_sub(3).max(10)).into_iter().enumerate() {
         rows.push(Row {
             cont: k > 0,
@@ -143,29 +143,13 @@ fn review_rows(p: &Prepared, w: usize) -> Vec<Row> {
     for s in p.said() {
         said_rows(&mut rows, Kind::Meta, &s, w);
     }
-    // The title and summary, as an interdiff compares two messages: a
-    // section the same in both once, as it is sent; one that differs,
-    // Phabricator's lines then those sent.
+    // The title and summary, as an interdiff compares two messages.
     let before = p.message_before().unwrap_or_default();
     let after = p.message_after();
     if before != after {
         rows.push(row(Kind::Blank, ""));
         rows.push(row(Kind::File, "the title and summary: Phabricator's, then what is sent"));
-        let d = crate::messages::diff(&before, &after);
-        for run in &d.runs {
-            let (was, is) = (d.ours.get(run.ours.clone()).unwrap_or_default(), d.theirs.get(run.theirs.clone()).unwrap_or_default());
-            if run.same {
-                for l in is {
-                    diff_rows(&mut rows, &format!(" {}", l.text), &[], w);
-                }
-                continue;
-            }
-            for (sign, lines) in [('-', was), ('+', is)] {
-                for l in lines {
-                    compared_rows(&mut rows, sign, l, w);
-                }
-            }
-        }
+        message_rows(&mut rows, &before, &after, w);
     }
     // What else changes, before then after; the status, always.
     rows.push(row(Kind::Blank, ""));
@@ -196,13 +180,54 @@ fn review_rows(p: &Prepared, w: usize) -> Vec<Row> {
         let said = format!("Each file as the latest diff of {id} leaves it, then as patch {n} leaves it, both on the patches below patch {n}.");
         said_rows(&mut rows, Kind::Meta, p.code_said.as_deref().unwrap_or(&said), w);
         rows.push(row(Kind::Blank, ""));
-        let code = Patch::new(p.change.clone(), None, None, String::new(), code.clone());
-        let all = patch_rows(&code, &[], w, &Deco::default());
-        // Its message's rows, empty, left out.
-        let from = all.iter().position(|r| r.kind == Kind::Blank).map_or(0, |k| k + 1);
-        rows.extend(all.into_iter().skip(from));
+        rows.extend(code_rows(&p.change, code, w));
     }
     rows
+}
+
+/// Two versions of a title and summary, `before` then `after`, as rows
+/// folded to `w`, compared as an interdiff compares two messages, where
+/// their lines wrap aside (`messages::diff`): a section the same in both
+/// once, as `after` has it; one that differs, the lines of `before` then
+/// those of `after`, what only each has marked.
+pub(super) fn message_rows(rows: &mut Vec<Row>, before: &str, after: &str, w: usize) {
+    let d = crate::messages::diff(before, after);
+    for run in &d.runs {
+        let (was, is) = (d.ours.get(run.ours.clone()).unwrap_or_default(), d.theirs.get(run.theirs.clone()).unwrap_or_default());
+        if run.same {
+            for l in is {
+                diff_rows(rows, &format!(" {}", l.text), &[], w);
+            }
+            continue;
+        }
+        for (sign, lines) in [('-', was), ('+', is)] {
+            for l in lines {
+                compared_rows(rows, sign, l, w);
+            }
+        }
+    }
+}
+
+/// `code`, a diff of change `change`'s files from one version to another,
+/// as the rows the middle draws a patch's files in, folded to `w`: each
+/// file's name, its hunks and their lines, what changed in a line marked.
+/// Drawn only: no row is a line of a patch, so none takes a comment nor a
+/// read mark, nor is found again as one.
+pub(super) fn code_rows(change: &str, code: &str, w: usize) -> Vec<Row> {
+    let code = Patch::new(change.to_string(), None, None, String::new(), code.to_string());
+    let all = patch_rows(&code, &[], w, &Deco::default());
+    // Its message's rows, empty, left out.
+    let from = all.iter().position(|r| r.kind == Kind::Blank).map_or(0, |k| k + 1);
+    all.into_iter()
+        .skip(from)
+        .map(|r| Row {
+            kind: r.kind,
+            text: r.text,
+            cont: r.cont,
+            words: r.words,
+            ..Default::default()
+        })
+        .collect()
 }
 
 impl App {

@@ -431,25 +431,24 @@ patches (0, the base).
 
 With the `moz-phab` feature (on by default), a patch whose message names a
 revision (its `Differential Revision:` trailer, Phabricator below) has that
-revision's status on Phabricator after its number, in brackets. Listing
-files, the status is a letter: `[D]` Draft, `[W]` Changes Planned, `[R]`
+revision's status on Phabricator after its number, a letter in brackets,
+expanded and listing files alike: `[D]` Draft, `[W]` Changes Planned, `[R]`
 Needs Review, `[C]` Needs Revision, `[A]` Accepted, `[L]` Closed (landed),
-`[X]` Abandoned, and `[?]` a status stacked does not know. Expanded, it is
-a word or two: `[Draft]`, `[WIP]` (work in progress, shorter than Changes
-Planned), `[Needs Review]`, `[Needs Revision]`, `[Accepted]`, `[Landed]`,
-`[Abandoned]` and `[unknown]` (`  2 [WIP] Bug 2 - add b`). The statuses are
-a column of their own, as wide as the widest of the stack's, so that the
-titles start together: a patch that names no revision, or whose revision's
-status is not read yet, has its column blank, and while no status is known
-there is no column at all. Expanded, the pane is wider by the column, up to
-half the screen, so that each title keeps the room it had and folds as it
-did. The tags at the end of a patch's first line (`[2]`, and `✓` or `3/7`
-in the reading mode) are where they were. A revision is a draft when its
-status is Draft: one in Changes Planned that was never sent for review, as
-`Submit to Phabricator as WIP` makes one, is `[W]`, though Phabricator says
-it is a draft too (`isDraft`, as it says of every revision it has not sent
-to reviewers yet). The statuses are read away from the screen, over Conduit
-with the token a pull uses, all of the stack's revisions in one search
+`[X]` Abandoned, and `[?]` a status stacked does not know (`  2 [W] Bug 2 -
+add b`). The Phabricator line over the patch's message says it in full
+(below). The statuses are a column of their own, as wide as the widest of
+the stack's, so that the titles start together: a patch that names no
+revision, or whose revision's status is not read yet, has its column
+blank, and while no status is known there is no column at all. Expanded,
+the pane is wider by the column, up to half the screen, so that each title
+keeps the room it had and folds as it did. The tags at the end of a
+patch's first line (`[2]`, and `✓` or `3/7` in the reading mode) are where
+they were. A revision is a draft when its status is Draft: one in Changes
+Planned that was never sent for review, as `Submit to Phabricator as WIP`
+makes one, is `[W]`, though Phabricator says it is a draft too (`isDraft`,
+as it says of every revision it has not sent to reviewers yet). The
+statuses are read away from the screen, over Conduit with the token a pull
+uses, all of the stack's revisions in one search
 (differential.revision.search; one for each Phabricator, should their
 links name more than one): as the stack is shown, again when the
 revisions its patches name change and right after a submit, and every three
@@ -551,6 +550,65 @@ shows, under a header of its own; with none, it is not there. The top bar
 names the file and the stack, and on its right says how far the stack's
 review is (Reading, below, says how).
 
+With the `moz-phab` feature, a patch that names a revision has the
+Phabricator line over its message, in every view of the code, reading or
+not, its hunks or each file whole:
+
+```
+Phabricator: D123456 · Needs Review · the diff differs · 2 new comments to pull
+✉ message
+   Bug 123 - the parser skips the blank lines
+```
+
+It says the revision; its status, by its full name: Draft, Changes
+Planned, Needs Review, Needs Revision, Accepted, Landed (Closed, as
+Phabricator names it), Abandoned, or `status unknown`; whether Phabricator
+has this version of the patch, `in sync` when the revision's latest diff
+does what the patch does (the same effect, or each file the same once both
+are applied on the patches below it, as a submit's check takes them) and
+its title and summary say what the patch's message does, as a submit
+sends them (`WIP: ` first or not, as the revision's title is; the summary
+without the lines naming a revision; their lines wrapped otherwise the
+same), else `the diff differs`, `the title or summary differs`, or `the
+diff and the title or summary differ`, always against the patch as it is,
+never its older versions; and how many of the revision's comments are not
+pulled yet: `2 new comments to pull`, `1 edited comment to pull` (edited on
+Phabricator since it was filed), `no new comments`. Those are counted from
+what the database holds as it stands, never from its history: a comment is
+pulled when a comment open holds it, on the patch or moved to the stack's,
+or when a pull's review waiting holds it; one in a thread of the patch
+closed since is passed over, as a pull passes it over; but one you
+rejected in a pull's review counts as new, as only that pull's record, in
+the history, holds it. What is not read yet is `…` (`Phabricator: D123 ·
+Needs Review · …`); a revision Phabricator does not have is said so,
+alone (`Phabricator: D123 · not found on Phabricator`). The line is a row
+of the patch, over its message's header, and folds between words where
+the middle is narrower; it is not pinned, and scrolls away with the rows,
+the title pinned in its place. The cursor comes to a patch on its
+message's header, the line over it in sight; ↑ goes onto it. There, Space
+shows what differs, under the line, as a submit's review shows it: the
+title and summary, Phabricator's then this version's, compared where their
+lines wrap aside, when they differ; and the code, each file as the latest
+diff leaves it, then as this version leaves it, both on the patches below
+it (the two diffs diffed as text when the files cannot be read so). Space
+again, on the line or on what it shows, hides it. In sync, Space says so on
+the bottom line (`Phabricator has this exact version of patch 1: …`). Space
+there marks nothing read, even in the reading mode, and opens no menu:
+Enter opens it, and `?` says what the line says and what Space does.
+
+The latest diff (differential.diff.search, the newest alone, then
+differential.getrawdiff) and the comments (transaction.search) are read
+away from the screen, with the token the statuses use, for the patch the
+middle shows alone: once each time the statuses are read, every three
+minutes, and again right after a submit and after a pull. They are kept in
+memory by revision as long as the editor runs, so that a patch shown again
+is not read again before then, and the raw diff by its id, not read again
+while it is the latest; the comparison is worked out once for each version
+of the patch, away from the screen too. A read that fails keeps what was
+known, and the bottom line says nothing more than the statuses' read
+says. Nothing is read, and no line drawn, while reviews come from nowhere,
+nor in the tour. In the browser and in StackED, the same.
+
 There are six keys, four more for the middle: three of self-review's
 (Copied from self-review-rs, below, says what it is) and one of stacked's
 own; and `o`, on a line of a commit message. The settings can make any of
@@ -594,8 +652,11 @@ them other keys, and the help then names those:
   (comment on it, ask about all, `Show…`, the stack as a list, the tree,
   the history, Phabricator, `Move HEAD…`, switch, delete) are on the left header
   only; a patch's on a patch; a line's on a line; a comment's on a comment.
-  ↑↓ and enter; ↑ from the top is Quit. What a read-only stack cannot do is
-  shown dimmed, and the menu says why. An item may have choices, radio
+  ↑↓ and enter; ↑ from the top is Quit. On the Phabricator line over a
+  patch's message (with moz-phab, above), Space shows what differs from
+  Phabricator under the line, or hides it, and Enter is the menu. What a
+  read-only stack cannot do is shown dimmed, and the menu says why. An
+  item may have choices, radio
   buttons after its label (`[x] tmp/file  [ ] pwd`): ← → pick one, a click
   on one picks it, and Enter does the item with the one picked, which is
   kept for the stack in the database. An item that asks the agent ends
@@ -2962,8 +3023,12 @@ line's `Open bug 123 in your browser` (The editor, above), the bug on
 Bugzilla, `reviews.bugzilla` (Settings, below).
 
 The patches pane shows the status of each patch's revision after its number
-(`[W]`, `[Needs Review]`: The editor, above), read over Conduit with the
-same token, all of the stack's revisions in one search.
+(`[W]`: The editor, above), read over Conduit with the same token, all of
+the stack's revisions in one search; and the Phabricator line over the
+message of the patch the middle shows says it by name, whether the
+revision's latest diff and its title and summary are the patch's, and how
+many of its comments are not pulled yet, what differs shown under it with
+Space (The editor, above).
 
 ### Submitting a patch
 
@@ -3104,7 +3169,8 @@ is typed: `import.rs`). A fix to one may belong in the other.
 - `review.rs`, `phab.rs`, `submit.rs`: Phabricator, built with the
   `moz-phab` feature (on by default): the reviews pulled, the stacks
   imported, a patch submitted as work in progress, the statuses of
-  revisions read.
+  revisions read, and what the Phabricator line over a patch's message
+  reads and counts.
 - `try_push.rs`: the try push, built with the `try-push` feature (on by
   default): what an ask of a try push is told and answers with, its tasks
   read from its answer, and what a round asked again is told of them; the
@@ -3164,7 +3230,9 @@ is typed: `import.rs`). A fix to one may belong in the other.
   `tui/submitting.rs`, what a submit to Phabricator sends, said in a
   dialog, or reviewed on a screen of its own, before it is sent;
   `tui/revisions.rs`, the status on Phabricator of each patch's revision,
-  which the patches pane shows, and when it is read;
+  which the patches pane shows, and the Phabricator line over the message
+  of the patch the middle shows, what differs under it, and when each is
+  read;
   `tui/banner.rs`, the banner of the agent's work; `tui/places.rs`, where
   each pane's cursor was, each half's of the middle split in two;
   `tui/finding.rs`, the search of the middle (`/`).
@@ -3197,9 +3265,10 @@ the linter; none reaches Phabricator: its revisions and their comments are
 read by stand-ins, and what a submit sends is answered by one, which keeps
 every call made to it, so that a test can see that a refusal wrote
 nothing, and which, as Phabricator does, makes no revision of a diff whose
-commit has no tree; the statuses of a stack's revisions are answered by one
-set for the test's database alone, as every editor reads the statuses of the
-stack it shows, so that no test's stand-in answers another's editors; and
+commit has no tree; the statuses of a stack's revisions, and what the
+Phabricator line reads, are answered by one set for the test's database
+alone, as every editor reads the statuses of the stack it shows, so that no
+test's stand-in answers another's editors; and
 in a test's own process, which keeps nothing, an editor with no stand-in
 reads none. None opens a window, nor a browser: a script stands in
 for the program that opens a web link, and only writes down the links it
@@ -3608,19 +3677,38 @@ made and taken back, those of white space alone counted only as the
 settings say, a file with no newline at its end ticked once read whole,
 its patch too, the pane keeping its width from patch to patch), the
 statuses of the revisions there (with moz-phab, each status after its
-patch's number, a letter listing files and words expanded, `[?]` and
-`[unknown]` for one stacked does not know; none before it is read, nor
-for a patch naming no revision or one Phabricator does not have; the
-titles starting together, those folded folding as they did, the pane
-wider by the column, and the tags where they were; the stack's revisions
-read in one search, no other call made, not again while they are the
-same, again once its patches name others and right after a submit, a new
-revision's status shown at once; Changes Planned shown as such though
+patch's number, a letter listing files and expanded alike, `[?]` for one
+stacked does not know, no words; none before it is read, nor for a patch
+naming no revision or one Phabricator does not have; the titles starting
+together, those folded folding as they did, the pane wider by the column,
+and the tags where they were; the stack's revisions read in one search,
+no other call made but the Phabricator line's, not again while they are
+the same, again once its patches name others and right after a submit, a
+new revision's status shown at once; Changes Planned shown as such though
 Phabricator says it is a draft; a read that fails keeping those known and
 saying so once, again only after one that worked; none read while reviews
-come from nowhere; built without moz-phab, none shown), and the
-comments pane's states (expanded, compact, hidden) and the compact view
-of the code as they were. With the `web` feature, `tests/web.rs`
+come from nowhere; built without moz-phab, none shown, nor a Phabricator
+line), the Phabricator line (with moz-phab, over the message's header,
+the cursor coming to the header: the revision alone and `…` before
+anything is read; in sync; the diff differing, the title or summary, and
+both; a status stacked does not know, and a revision Phabricator does not
+have; the comments to pull, none once a pull holds them for review, nor
+once they are filed, one edited and one new once the revision is read
+again, none once their thread is closed; over the message in every view
+of the code, in each half of the middle split in two, reading and with
+each file whole; none over a patch naming no revision, nor while reviews
+come from nowhere, nor without a stand-in in the tests' own process;
+scrolled away with the rows, the title pinned in its place; Space on it
+showing what differs under it, the code and the title and summary, Space
+again hiding it, on the line or on what it shows, the cursor back on the
+line; in sync, Space saying so; reading, Space marking nothing read and
+Delete taking no mark back; Enter opening the menu, and the bar and `?`
+saying what Space does; the revision of the patch shown read alone, once,
+its diff by its PHID, not again as patches are shown again, again after
+a submit and after a pull, the raw diff not read again while it is the
+latest; a read that fails keeping what was known and saying nothing more
+than the statuses' read), and the comments pane's states (expanded,
+compact, hidden) and the compact view of the code as they were. With the `web` feature, `tests/web.rs`
 serves the editor and asks it over HTTP as a browser would: the token
 needed, the page, the wasm, the rows as they change, a key and a click,
 and the editor left, the worktree made ahead removed (Quit in the page;
@@ -3632,8 +3720,9 @@ menu kept in the state file of its home, where the next `stacked web`
 starts, a message's long lines wrapped from its patch's menu, the edit
 landing for review, and a link of a line of a message opened from the
 menu of a right click on it and with `o`, by a stand-in, and, with
-moz-phab, the status of a patch's revision after its number, in words and
-in a letter, read by a stand-in for its database; and
+moz-phab, the status of a patch's revision after its number, a letter,
+and the Phabricator line over its message, Space on it showing what
+differs under it, read by a stand-in for its database; and
 `web.rs` tests the rows and the lines both ways, with the client's own tests
 (`web/client.rs`, compiled to the machine as well as to wasm), which also
 test the mouse followed only while the page has the focus: the cell where
@@ -3651,8 +3740,9 @@ that cannot be read said before any window; two editors in one process,
 as two windows, each in its own
 folder (HEAD said in the checkout's, none elsewhere); a message's long
 lines wrapped from its patch's menu, the edit landing for review; with
-moz-phab, the status of a patch's revision after its number, in words and
-in a letter, read by a stand-in for its database; and the File menu,
+moz-phab, the status of a patch's revision after its number, a letter,
+and the Phabricator line over its message, Space on it showing what
+differs under it, read by a stand-in for its database; and the File menu,
 its panels answered by the test: Open… opening each database picked in a
 window of its own (one picked twice, one that cannot be read said, the
 panel cancelled), New… making an empty database that stacked reads and
@@ -3982,12 +4072,25 @@ file there, a link moved as a link, and nothing moved that an override
 names the place of; what stacked runs told the same places; and nowhere in
 a test's own process. Those in `phab.rs` show a revision's status read from
 its value alone, whatever Phabricator says of drafts, with its letter and
-its words; the statuses of revisions read in one search, those it does not
-find not known, and a search refused said; and an editor's read by the
-stand-in for its database alone, one search for each Phabricator the links
-name, never from a process that keeps nothing without one. Those in
+its name; the statuses of revisions read in one search, those it does not
+find not known, each with its title, summary and PHID, and a search
+refused said; an editor's read by the stand-in for its database alone, one
+search for each Phabricator the links name, never from a process that
+keeps nothing without one; and a revision's latest diff read by its PHID,
+the newest alone, raw unless it is the one read before, and its comments
+from every page of its transactions, their authors and lines not read, a
+revision with no diff said. Those in `review.rs` show the comments not
+pulled yet counted from the comments open, the threads by their ids and
+the pulls waiting: those filed or waiting not counted, one edited since
+it was filed counted as edited, a thread closed passed over but for one
+moved to the stack's comments, another stack's pull not this one's, and
+one rejected in a review counted, as only the history holds it. Those in
 `tui/revisions.rs` show when the statuses are due a read: never read, other
-revisions, a submit ended since, or three minutes gone by.
+revisions, a submit ended since, or three minutes gone by; a title in work
+as moz-phab reads it; the title and summary compared as a submit sends
+them, in work or not as the revision's title is, however their lines
+wrap; the comments to pull and what differs said in plain words; and the
+line folded between words, its pieces under its first.
 
 ## Not done yet
 

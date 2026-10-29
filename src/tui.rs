@@ -11,7 +11,9 @@
 //! the patch picked under it, to jump to, then hides the patches; → on the
 //! comments makes them compact, then hides them), enter does what is to be
 //! done where the cursor is, space is the menu of all that can be done
-//! there, `?` says what that is, and esc goes back. Delete (Backspace too)
+//! there (on the Phabricator line over a patch's message, what differs from
+//! Phabricator, shown under it or hidden, enter being the menu there), `?`
+//! says what that is, and esc goes back. Delete (Backspace too)
 //! and `o` are the shortcuts: Delete the menu's item that closes, drops,
 //! stops or rejects what the cursor is on, asking first as that item does;
 //! `o`, on a line of a commit message, its item that opens the line's link
@@ -2246,9 +2248,17 @@ enum Done {
     #[cfg(feature = "moz-phab")]
     Submitting(std::result::Result<Box<crate::submit::Prepared>, String>),
     /// The statuses of the stack's revisions read from Phabricator, by
-    /// link: or what was wrong.
+    /// link, each with what else its search says: or what was wrong.
     #[cfg(feature = "moz-phab")]
-    Statuses(std::result::Result<HashMap<String, crate::phab::Status>, String>),
+    Statuses(std::result::Result<HashMap<String, crate::phab::Searched>, String>),
+    /// The latest diff and the comments of revision `0`, by its link, read
+    /// for the Phabricator line: or what was wrong.
+    #[cfg(feature = "moz-phab")]
+    Latest(String, std::result::Result<crate::phab::Latest, String>),
+    /// What differs in the code between a revision's latest diff and a
+    /// version of its patch, worked out from `0` (`revisions::compare_key`).
+    #[cfg(feature = "moz-phab")]
+    Compared(String, revisions::Code),
     /// Whether stack `name` at `rev` applies: why not, if not.
     Judged {
         name: String,
@@ -3002,11 +3012,18 @@ impl App {
             Done::Submitting(read) => self.submit_read(read),
             #[cfg(feature = "moz-phab")]
             Done::Statuses(read) => self.statuses_read(read),
+            #[cfg(feature = "moz-phab")]
+            Done::Latest(link, read) => self.latest_read(link, read),
+            #[cfg(feature = "moz-phab")]
+            Done::Compared(key, code) => self.code_compared(key, code),
             Done::Said(what, said) => {
                 self.bg.doing.retain(|d| *d != what);
+                // Pulled: the comments the Phabricator line counts, read
+                // again with the revision's latest diff.
                 #[cfg(feature = "moz-phab")]
                 if what == "pulling" {
                     self.bg.pull = None;
+                    self.line_again();
                 }
                 self.status = said;
                 // Moved: where HEAD is, looked at again.
@@ -3349,11 +3366,12 @@ impl App {
         return false;
     }
 
-    /// Whether the statuses of the stack's revisions are being read from
-    /// Phabricator: never, built without the `moz-phab` feature.
+    /// Whether what Phabricator has of the stack's revisions is being read,
+    /// or compared with the patch shown: never, built without the
+    /// `moz-phab` feature.
     fn reading_statuses(&self) -> bool {
         #[cfg(feature = "moz-phab")]
-        return self.statuses.reading;
+        return self.reading_phabricator();
         #[cfg(not(feature = "moz-phab"))]
         return false;
     }
@@ -3598,8 +3616,13 @@ impl App {
             Some(Err(_)) => "unread",
         };
         let written = self.written_turns();
+        // The Phabricator line over the patch's message, as it changes.
+        #[cfg(feature = "moz-phab")]
+        let line = self.line_seq();
+        #[cfg(not(feature = "moz-phab"))]
+        let line = 0;
         let want = format!(
-            "{subject}\0{width}\0{}\0{streams}\0{:?}\0{stream}\0{}\0{}\0{:?}\0{:?}\0{whole_said}",
+            "{subject}\0{width}\0{}\0{streams}\0{:?}\0{stream}\0{}\0{}\0{:?}\0{:?}\0{whole_said}\0{line}",
             self.db.changes(),
             self.show,
             self.body_h,
@@ -3631,6 +3654,9 @@ impl App {
         let form = (shape, width, self.drawn_layout(self.mid_w));
         let arrived = self.form.is_some_and(|(was, ..)| was == 0) && shape == 1;
         let reformed = self.form.is_some_and(|f| f != form);
+        // The view of the code the rows were last built for, to tell
+        // whether the middle was at its top.
+        let was_layout = self.form.map_or(form.2, |f| f.2);
         deco.whole = whole;
         let rows = if self.on_stack {
             match self.current() {
@@ -3644,7 +3670,13 @@ impl App {
             }
         } else {
             match self.patch_id() {
-                Some(id) => patch_rows(self.db.patch(&id), &refs, width, &deco),
+                // The Phabricator line over the message, first.
+                Some(id) => {
+                    let p = self.db.patch(&id);
+                    let mut rows = self.phab_rows(p, width);
+                    rows.extend(patch_rows(p, &refs, width, &deco));
+                    rows
+                }
                 None => vec![],
             }
         };
@@ -3660,7 +3692,9 @@ impl App {
         // they are.
         let here = !self.drawing_beside;
         if !same {
-            self.cursor = 0;
+            // On the message's header, the Phabricator line over it in
+            // sight.
+            self.cursor = self.rows.iter().position(|r| !r.phab).unwrap_or(0);
             self.top = 0;
             self.hidden = None;
             if here {
@@ -3697,7 +3731,16 @@ impl App {
                 (i, moved) = there;
                 back = true;
             }
-            let y = self.cursor_y.filter(|&y| !back && self.drawn_rows.contains(&(cursor, y)));
+            // The Phabricator line over the message grown or shrunk, the
+            // middle at its top: it stays at its top, the line whole in
+            // sight, rather than the cursor on its line of the screen.
+            let at_top = match was_layout {
+                Layout::Compact => self.compact.top == [0, 0],
+                _ => self.top == 0,
+            };
+            let phab = |rows: &[Row]| rows.iter().take_while(|r| r.phab).count();
+            let line_moved = at_top && phab(&was) != phab(&self.rows);
+            let y = self.cursor_y.filter(|&y| !back && !line_moved && self.drawn_rows.contains(&(cursor, y)));
             if reformed || i != cursor {
                 match (self.built.clone(), y) {
                     (Some(built), Some(y)) => self.keep = Some((built, i, y)),
@@ -4250,7 +4293,8 @@ impl App {
     /// Reads what someone appended to the database, if anything, and what
     /// the work away from the screen came to; and starts what is due away
     /// from it: where HEAD is looked at, the statuses of the stack's
-    /// revisions read.
+    /// revisions read, and what the Phabricator line of the patch shown
+    /// needs.
     pub fn refresh(&mut self) {
         self.poll_search();
         let polled = self.poll();
@@ -4260,7 +4304,10 @@ impl App {
         }
         self.check_head();
         #[cfg(feature = "moz-phab")]
-        self.check_statuses();
+        {
+            self.check_statuses();
+            self.check_line();
+        }
     }
 
     /// Reads what was appended: what an edit just wrote, or another
@@ -4545,6 +4592,13 @@ impl App {
                 }
                 KeyCode::Char('3') => {
                     self.toggle_whole();
+                    return Effect::None;
+                }
+                // On the Phabricator line: what differs from Phabricator,
+                // shown under it or hidden; nothing else, reading or not.
+                #[cfg(feature = "moz-phab")]
+                KeyCode::Char(' ') if self.on_line() => {
+                    self.toggle_line();
                     return Effect::None;
                 }
                 KeyCode::Char(' ') if self.reading_here() => return self.perform(Action::MarkRead),
@@ -5272,7 +5326,8 @@ impl App {
     /// Whether the reading mode has the middle's keys: a patch is there,
     /// and the cursor is in it, on a row of its code. A comment's rows keep
     /// the keys they have when commenting: Space is the comment's menu,
-    /// Delete closes it, Enter replies; nothing is marked read there.
+    /// Delete closes it, Enter replies; nothing is marked read there. Nor
+    /// on the Phabricator line, where Space shows what differs.
     pub fn reading_here(&self) -> bool {
         self.reading
             && self.screen == Screen::Main
@@ -5281,12 +5336,39 @@ impl App {
             && !self.on_banner
             && self.patch_id().is_some()
             && !self.on_comment_row()
+            && !self.on_line_row()
     }
 
     /// Whether the middle's cursor is on a row of a comment: its head, a
     /// turn, the agent's stream under it, a reference.
     fn on_comment_row(&self) -> bool {
         self.rows.get(self.cursor).is_some_and(|r| r.note.is_some())
+    }
+
+    /// Whether the middle's cursor is on a row of the Phabricator line over
+    /// the patch's message: the line, or what differs, shown under it.
+    fn on_line_row(&self) -> bool {
+        self.rows.get(self.cursor).is_some_and(|r| r.phab)
+    }
+
+    /// Whether the cursor is there, in the middle of the main screen, where
+    /// Space shows what differs from Phabricator, or hides it: never, built
+    /// without the `moz-phab` feature, as no row is the line's.
+    pub fn on_line(&self) -> bool {
+        self.screen == Screen::Main && self.focus == Focus::Diff && !self.on_banner && !self.on_stack && self.on_line_row()
+    }
+
+    /// The rows over patch `p`'s message, `w` wide: the Phabricator line,
+    /// and what differs when it is shown under it (`line_rows`); none built
+    /// without the `moz-phab` feature.
+    fn phab_rows(&self, p: &Patch, w: usize) -> Vec<Row> {
+        #[cfg(feature = "moz-phab")]
+        return self.line_rows(p, w);
+        #[cfg(not(feature = "moz-phab"))]
+        {
+            let _ = (p, w);
+            Vec::new()
+        }
     }
 
     /// The current patch's key for its blocks.
@@ -5875,6 +5957,18 @@ impl App {
                 out.push(THREE_KEYS.into());
                 out.extend(self.view_help());
                 out.push(self.arrows_help());
+            }
+            // On the Phabricator line: what it says, and what Space does
+            // there; Enter is the menu.
+            #[cfg(feature = "moz-phab")]
+            Screen::Main if self.on_line() => {
+                out.extend(self.line_help());
+                out.push(self.arrows_help());
+                let whole = self.whole_help();
+                let read = if self.reading { "2 to comment rather than read" } else { "2 to read: to mark the code read, a block at a time" };
+                out.push(format!("Press 1 to pick the view of the code: {VIEWS}; {read}; {whole}."));
+                out.push(THREE_KEYS.into());
+                out.extend(self.view_help());
             }
             Screen::Main => {
                 // On a patch marked, or on HEAD's row: what that is, first.
@@ -10006,7 +10100,7 @@ impl App {
             PatchesPane::Files => self.files_wants().clamp(expanded, (w / 3).max(expanded)),
             // Wider by the column of the revisions' statuses, half the width
             // at most, so that the titles keep the room they had.
-            PatchesPane::Expanded => (expanded + self.status_room(left)).min((w / 2).max(expanded)),
+            PatchesPane::Expanded => (expanded + self.status_room()).min((w / 2).max(expanded)),
         };
         let mut right_w = match right {
             Pane::Hidden => 0,
@@ -10094,33 +10188,34 @@ impl App {
         (p.title().to_string(), tag)
     }
 
-    /// What the patches pane shows after patch `id`'s number, shown as
-    /// `mode`: the status on Phabricator of the revision it names, in
-    /// brackets, a letter listing files (`[W]`), a word or two expanded
-    /// (`[WIP]`). None when it names no revision, or its status is not
-    /// known yet; always, built without the `moz-phab` feature.
-    fn status_said(&self, id: &str, mode: PatchesPane) -> Option<&'static str> {
+    /// What the patches pane shows after patch `id`'s number, listing files
+    /// or expanded: the status on Phabricator of the revision it names, a
+    /// letter in brackets (`[W]`); the Phabricator line over the patch's
+    /// message says it in full. None when it names no revision, or its
+    /// status is not known yet; always, built without the `moz-phab`
+    /// feature.
+    fn status_said(&self, id: &str) -> Option<&'static str> {
         #[cfg(feature = "moz-phab")]
-        return self.revision_status(id).map(|s| if mode == PatchesPane::Files { s.letter() } else { s.word() });
+        return self.revision_status(id).map(|s| s.letter());
         #[cfg(not(feature = "moz-phab"))]
         {
-            let _ = (id, mode);
+            let _ = id;
             None
         }
     }
 
-    /// How wide the column of the statuses is in the patches pane shown as
-    /// `mode`: as the widest of the stack's patches', so that their titles
-    /// start together; 0, no column, while none is known.
-    fn status_col(&self, mode: PatchesPane) -> usize {
+    /// How wide the column of the statuses is in the patches pane: as the
+    /// widest of the stack's patches', so that their titles start together;
+    /// 0, no column, while none is known.
+    fn status_col(&self) -> usize {
         let Some(s) = self.current() else { return 0 };
-        s.patches.iter().filter_map(|id| self.status_said(id, mode)).map(|t| t.chars().count()).max().unwrap_or(0)
+        s.patches.iter().filter_map(|id| self.status_said(id)).map(|t| t.chars().count()).max().unwrap_or(0)
     }
 
-    /// The room the column of the statuses takes on a patch's line, the
-    /// pane shown as `mode`: its width and a space after it, or none.
-    fn status_room(&self, mode: PatchesPane) -> usize {
-        match self.status_col(mode) {
+    /// The room the column of the statuses takes on a patch's line: its
+    /// width and a space after it, or none.
+    fn status_room(&self) -> usize {
+        match self.status_col() {
             0 => 0,
             n => n + 1,
         }
@@ -10329,6 +10424,10 @@ impl App {
             }
             #[cfg(feature = "moz-phab")]
             Mode::Normal if self.screen == Screen::Submit => self.submit_hint(),
+            // On the Phabricator line, Space shows what differs, or hides
+            // it, reading or not; Enter opens the menu, as Space does not.
+            #[cfg(feature = "moz-phab")]
+            Mode::Normal if self.on_line() => self.line_hint(),
             // Reading, Space marks read and Delete unread; Enter does what it
             // does commenting, and opens the menu where that is nothing, as
             // Space no longer does.
@@ -10656,7 +10755,7 @@ impl App {
         // (blank where none is known; no column while none is), its title
         // whole, folded under itself where the pane is narrower, and its
         // tags at the end of its first.
-        let col = self.status_col(self.list);
+        let col = self.status_col();
         let lines: Vec<Vec<String>> = order
             .iter()
             .enumerate()
@@ -10665,7 +10764,7 @@ impl App {
                 let mark = if moving && at == on { " ↕".to_string() } else { format!("{:>2}", at + 1) };
                 let status = match col {
                     0 => String::new(),
-                    _ => format!("{} ", fit(self.status_said(&s.patches[i], self.list).unwrap_or_default(), col)),
+                    _ => format!("{} ", fit(self.status_said(&s.patches[i]).unwrap_or_default(), col)),
                 };
                 let (first, next) = lead(at);
                 let head = format!("{first}{mark} {status}");
@@ -11012,7 +11111,7 @@ impl App {
         let ticks = (margin > 0).then(|| {
             self.blocks();
             match self.reading_at() {
-                _ if beside || self.on_comment_row() => (Tick::ToRead, HashSet::new()),
+                _ if beside || self.on_comment_row() || self.on_line_row() => (Tick::ToRead, HashSet::new()),
                 Some((Some(t), _)) => (Tick::ToRead, t.new),
                 Some((None, Some((_, gone)))) => (Tick::ToUnread, gone),
                 _ => (Tick::ToRead, HashSet::new()),

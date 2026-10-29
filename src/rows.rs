@@ -122,6 +122,12 @@ pub struct Row {
     /// it, nor a read mark. Drawn dim, as self-review draws the lines it
     /// adds around a hunk.
     pub outside: bool,
+    /// A row of the Phabricator line over a patch's message, with the
+    /// `moz-phab` feature: the line, which says what Phabricator has of the
+    /// patch, or what differs from it, shown under the line. Drawn only: no
+    /// comment goes on it, nor a read mark; Space there shows or hides what
+    /// differs.
+    pub phab: bool,
 }
 
 impl Row {
@@ -1351,6 +1357,9 @@ pub enum Place {
     Outside { path: String, new_no: usize, piece: usize },
     /// The message's header, the first row; the first row of the stack's.
     Message,
+    /// Row `k` of the Phabricator line over the message, from 0: the line,
+    /// its pieces folded, then what differs, shown under it.
+    Phab(usize),
     /// `k` rows over the row at a place, or under it, being at none of its
     /// own: an empty row, what is said of a file not shown whole, the row
     /// leading a comment (`lead`), a line of the stack's header. Under it,
@@ -1383,7 +1392,7 @@ fn part_order(part: (bool, bool, Option<usize>)) -> (u8, usize) {
 
 /// Whether row `r` is at a place of its own.
 fn placed(r: &Row) -> bool {
-    r.note.is_some() || r.msg_at.is_some() || r.diff_at.is_some() || r.outside || (r.kind == Kind::File && r.path.as_deref() == Some(MSG_PATH))
+    r.note.is_some() || r.msg_at.is_some() || r.diff_at.is_some() || r.outside || r.phab || (r.kind == Kind::File && r.path.as_deref() == Some(MSG_PATH))
 }
 
 /// Whether row `i` of `rows` leads the comment under it, saying what it is
@@ -1417,6 +1426,9 @@ pub fn place(rows: &[Row], i: usize) -> Place {
     }
     if r.outside {
         return Place::Outside { path: r.path.clone().unwrap_or_default(), new_no: r.new_no.unwrap_or(0), piece };
+    }
+    if r.phab {
+        return Place::Phab(rows[..i].iter().filter(|x| x.phab).count());
     }
     if placed(r) {
         return Place::Message;
@@ -1496,6 +1508,11 @@ pub fn found(rows: &[Row], at: &Place) -> Option<(usize, Option<Moved>)> {
         }
         // The stack's rows have no message: their first row.
         Place::Message => rows.iter().position(|r| r.kind == Kind::File && r.path.as_deref() == Some(MSG_PATH)).unwrap_or(0),
+        // What differs hidden again: the line's last row.
+        Place::Phab(k) => {
+            let all: Vec<usize> = (0..rows.len()).filter(|&j| rows[j].phab).collect();
+            all.get(*k).or(all.last()).copied()?
+        }
         Place::Over(p, k) => found(rows, p)?.0.saturating_sub(*k),
         // As far down as there are rows.
         Place::Under(p, k) => {

@@ -884,11 +884,29 @@ fn file_diff(path: &str, a: &Left, b: &Left) -> Option<String> {
 fn code_diff(db: &Db, s: &Stack, at: usize, theirs: &str, mine: &str) -> Option<Option<String>> {
     let (repo, base) = (Path::new(s.repo.as_deref()?), s.base.as_deref()?);
     let below: Vec<&str> = s.patches[..at].iter().map(|id| db.patch(id).diff.as_str()).collect();
+    files_diff(repo, base, &below, theirs, mine)
+}
+
+/// As `code_diff`, the patches below the patch `below`, applied in turn on
+/// `base` in the repository at `repo`: the code from `theirs` to `mine`,
+/// each file either touches as each leaves it there, as a diff; none when
+/// no file differs. None of it when either does not apply there, or the
+/// files cannot be read.
+pub(crate) fn files_diff(repo: &Path, base: &str, below: &[&str], theirs: &str, mine: &str) -> Option<Option<String>> {
     let paths: Vec<String> = crate::check::paths_of(repo, &[theirs, mine]).into_iter().collect();
-    let a = crate::check::left_by(repo, base, &below, theirs, &paths).ok()??;
-    let b = crate::check::left_by(repo, base, &below, mine, &paths).ok()??;
+    let a = crate::check::left_by(repo, base, below, theirs, &paths).ok()??;
+    let b = crate::check::left_by(repo, base, below, mine, &paths).ok()??;
     let out: String = paths.iter().zip(a.iter().zip(&b)).filter_map(|(p, (a, b))| file_diff(p, a, b)).collect();
     Some((!out.is_empty()).then_some(out))
+}
+
+/// Two diffs of the patch at `at`, `theirs` then `mine`, diffed as text:
+/// as a diff of a file of their own, `patch-N.diff`.
+pub(crate) fn diffs_diffed(at: usize, theirs: &str, mine: &str) -> String {
+    let name = format!("patch-{}.diff", at + 1);
+    let d = similar::TextDiff::from_lines(theirs, mine);
+    let text = d.unified_diff().context_radius(3).header(&format!("a/{name}"), &format!("b/{name}")).to_string();
+    format!("diff --git a/{name} b/{name}\n{text}")
 }
 
 /// The code the review shows, from the revision's latest diff, `raw`,
@@ -902,11 +920,8 @@ fn code_change(db: &Db, s: &Stack, at: usize, k: &Known, raw: &str, mine: &str) 
             return (code, None);
         }
     }
-    let name = format!("patch-{}.diff", at + 1);
-    let d = similar::TextDiff::from_lines(raw, mine);
-    let text = d.unified_diff().context_radius(3).header(&format!("a/{name}"), &format!("b/{name}")).to_string();
     let said = "The files could not be read as what is below the patch leaves them, so this is Phabricator's latest diff against the diff that is sent, as text.";
-    (Some(format!("diff --git a/{name} b/{name}\n{text}")), Some(said.into()))
+    (Some(diffs_diffed(at, raw, mine)), Some(said.into()))
 }
 
 /// Why the patch at `at` (from 0) is not to be submitted while HEAD is

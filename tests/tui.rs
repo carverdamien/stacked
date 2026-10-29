@@ -11778,7 +11778,7 @@ fn a_pull_from_phabricator_says_in_the_banner_where_it_is_until_it_is_done() {
     git(&src, &["commit", "-qm", "Bug 2 - add b\n\nDifferential Revision: https://phabricator.example.com/D12"]);
     let db = tmp.path().join("db.jsonl");
     stacked(&src, &db, &["import", "s", "HEAD~2"]);
-    stacked::phab::stand_in(Some(phabricator));
+    let _one = pull_stand_in(phabricator);
     let mut app = open(&db).unwrap();
     keys(&mut app, &[KeyCode::Left, KeyCode::Home]);
     choose(&mut app, "Pull reviews from Phabricator");
@@ -13407,7 +13407,8 @@ const ARCCONFIG: &str = r#"{"phabricator.uri": "https://phabricator.example.com/
 const LINK: &str = "Differential Revision: https://phabricator.example.com/D";
 
 /// A revision as the stand-in for Phabricator has it: a draft when it was
-/// never sent for review (`isDraft`).
+/// never sent for review (`isDraft`); its comments, as transaction.search
+/// gives them (`said`).
 #[cfg(feature = "moz-phab")]
 #[derive(Clone, Default)]
 struct Rev {
@@ -13418,6 +13419,23 @@ struct Rev {
     bug: String,
     diffs: Vec<u64>,
     parents: Vec<String>,
+    comments: Vec<serde_json::Value>,
+}
+
+/// The stand-in for Phabricator, shared by the editor's reads and the test.
+#[cfg(feature = "moz-phab")]
+type Shared = std::sync::Arc<std::sync::Mutex<Phab>>;
+
+/// A comment of a revision, as transaction.search gives it: `phid`, ann's,
+/// replying to `reply_to` if it does.
+#[cfg(feature = "moz-phab")]
+fn said(phid: &str, reply_to: Option<&str>) -> serde_json::Value {
+    let mut fields = serde_json::json!({});
+    if let Some(r) = reply_to {
+        fields["replyToCommentPHID"] = r.into();
+    }
+    serde_json::json!({"type": "comment", "authorPHID": "PHID-USER-ann", "fields": fields,
+        "comments": [{"phid": phid, "version": 1, "dateCreated": 1, "content": {"raw": format!("Comment {phid}.")}}]})
 }
 
 /// Phabricator as the tests of a submit have it, never the real one: its
@@ -13510,6 +13528,16 @@ impl Phab {
             "differential.querydiffs" => {
                 let n = p["revisionIDs"][0].as_u64().unwrap();
                 serde_json::Value::Object(self.revisions[&n].diffs.iter().map(|d| (d.to_string(), json!({}))).collect())
+            }
+            // The latest diff of a revision alone, newest first.
+            "differential.diff.search" => {
+                let n = num(&p["constraints"]["revisionPHIDs"][0]).unwrap();
+                let latest = self.revisions.get(&n).and_then(|r| r.diffs.last().copied());
+                json!({"data": latest.map(|id| vec![json!({"id": id})]).unwrap_or_default()})
+            }
+            "transaction.search" => {
+                let n = num(&p["objectIdentifier"]).unwrap();
+                json!({"data": self.revisions.get(&n).map(|r| r.comments.clone()).unwrap_or_default(), "cursor": {"after": null}})
             }
             "differential.getrawdiff" => json!(self.diffs[&p["diffID"].as_u64().unwrap()]),
             "diffusion.repository.search" => json!({"data": [{"phid": "PHID-REPO-1", "fields": {"vcs": "git"}}]}),
@@ -14107,9 +14135,9 @@ fn a_commit_naming_a_revision_holds_back_no_submit_while_head_is_elsewhere() {
 // -- the statuses of the stack's revisions, in the patches pane ------------ //
 
 /// `phab` the stand-in for Phabricator in the statuses' searches of the
-/// editors of `db` alone (`phab::statuses_stand_in`): the revisions each
-/// search asks for kept in its `searched`, each refused while it is
-/// `down`.
+/// editors of `db` alone (`phab::statuses_stand_in`), and in what their
+/// Phabricator line reads: the revisions each search asks for kept in its
+/// `searched`, each call refused while it is `down`.
 #[cfg(feature = "moz-phab")]
 fn statuses_from(db: &Path, phab: &std::sync::Arc<std::sync::Mutex<Phab>>) {
     let p = phab.clone();
@@ -14120,10 +14148,19 @@ fn statuses_from(db: &Path, phab: &std::sync::Arc<std::sync::Mutex<Phab>>) {
             if p.down {
                 return Err(format!("{m}: Phabricator is down"));
             }
-            p.searched.push(v["constraints"]["ids"].clone());
+            if m == "differential.revision.search" {
+                p.searched.push(v["constraints"]["ids"].clone());
+            }
             p.call(m, v)
         })),
     );
+}
+
+/// The calls the Phabricator line made of `phab`: those but the statuses'
+/// searches.
+#[cfg(feature = "moz-phab")]
+fn line_calls(phab: &std::sync::Arc<std::sync::Mutex<Phab>>) -> Vec<String> {
+    phab.lock().unwrap().calls.iter().map(|(m, _)| m.clone()).filter(|m| m != "differential.revision.search").collect()
 }
 
 /// The lines of the patches pane under its header, the screen drawn, as
@@ -14158,7 +14195,7 @@ fn stack_of(messages: &[String]) -> (tempfile::TempDir, PathBuf) {
 
 #[cfg(feature = "moz-phab")]
 #[test]
-fn each_revision_s_status_follows_its_patch_s_number_a_letter_listing_files_and_words_expanded() {
+fn each_revision_s_status_follows_its_patch_s_number_a_letter_listing_files_and_expanded() {
     // A patch for each status Phabricator gives, then one stacked does not
     // know; one naming a revision Phabricator does not have; one naming
     // none.
@@ -14180,19 +14217,21 @@ fn each_revision_s_status_follows_its_patch_s_number_a_letter_listing_files_and_
     app.refresh();
     assert_eq!(pane_lines(&draw(&mut app))[0], "  1 Bug 1 - one");
     app.settle();
-    let line = |n: usize, status: &str, w: usize| format!(" {n:>2} {status:<w$} Bug {n} - {}", words[n - 1]);
-    let expanded = ["[Draft]", "[WIP]", "[Needs Review]", "[Needs Revision]", "[Accepted]", "[Landed]", "[Abandoned]", "[unknown]", "", ""];
+    let line = |n: usize, status: &str| format!(" {n:>2} {status:<3} Bug {n} - {}", words[n - 1]);
+    // Expanded: a letter each, as listing files; the words are the
+    // Phabricator line's, over the message.
+    let letters = ["[D]", "[W]", "[R]", "[C]", "[A]", "[L]", "[X]", "[?]", "", ""];
     let screen = draw(&mut app);
-    let want: Vec<String> = expanded.iter().enumerate().map(|(k, s)| line(k + 1, s, 16)).collect();
+    let want: Vec<String> = letters.iter().enumerate().map(|(k, s)| line(k + 1, s)).collect();
     assert_eq!(pane_lines(&screen), want, "{screen}");
-    // The pane wider by the column: a quarter of the screen, and 17.
-    assert_eq!(screen.lines().nth(2).unwrap().chars().position(|c| c == '│'), Some(30 + 17), "{screen}");
+    assert!(!screen.contains("[Draft]") && !screen.contains("[WIP]"), "{screen}");
+    // The pane wider by the column: a quarter of the screen, and 4.
+    assert_eq!(screen.lines().nth(2).unwrap().chars().position(|c| c == '│'), Some(30 + 4), "{screen}");
     // Listing files: a letter each, the files of the patch picked under it.
     keys(&mut app, &[KeyCode::Left]);
-    let letters = ["[D]", "[W]", "[R]", "[C]", "[A]", "[L]", "[X]", "[?]", "", ""];
     let mut lines = pane_lines(&draw(&mut app));
     assert!(lines.remove(1).trim_start().starts_with("f1.txt"), "{lines:?}");
-    assert_eq!(lines, letters.iter().enumerate().map(|(k, s)| line(k + 1, s, 3)).collect::<Vec<_>>());
+    assert_eq!(lines, want);
     // Hidden, then expanded again: drawn from what was read, read once.
     keys(&mut app, &[KeyCode::Left, KeyCode::Left]);
     assert_eq!(pane_lines(&draw(&mut app)), want);
@@ -14217,14 +14256,14 @@ fn the_titles_start_together_with_a_status_or_none_and_fold_under_themselves_as_
     assert!(before[0].starts_with("  1 Bug 1 - one") && before[0].ends_with(" [1]"), "{before:#?}");
     app.refresh();
     app.settle();
-    // Expanded: the column as wide as `[Needs Revision]`, each title after
-    // it, and the pane wider by as much, so that each title folds as it
-    // did, under itself, and its tag stays where it was.
+    // Expanded: the column of letters, each title after it, and the pane
+    // wider by as much, so that each title folds as it did, under itself,
+    // and its tag stays where it was.
     let after = under_header(&draw(&mut app));
-    let with = |l: &String, status: &str| format!("{}{status:<16} {}", &l[..4], &l[4..]);
-    let mut want = vec![with(&before[0], "[Needs Revision]")];
+    let with = |l: &String, status: &str| format!("{}{status:<3} {}", &l[..4], &l[4..]);
+    let mut want = vec![with(&before[0], "[C]")];
     want.extend(before[1..5].iter().map(|l| with(l, "")));
-    want.push(with(&before[5], "[WIP]"));
+    want.push(with(&before[5], "[W]"));
     assert_eq!(after, want);
     // Listing files: each title after the letters.
     keys(&mut app, &[KeyCode::Left]);
@@ -14246,21 +14285,23 @@ fn the_stack_s_revisions_are_read_in_one_search_as_it_is_shown_and_again_once_it
     let mut app = open(&db).unwrap();
     app.refresh();
     app.settle();
-    assert_eq!(pane_lines(&draw(&mut app)), ["  1 [Needs Review] Bug 1 - one", "  2 [Accepted]     Bug 2 - two", "  3                Bug 3 - three"]);
-    // One search, for both, and no other call; none again while the
-    // stack's revisions are the same.
+    assert_eq!(pane_lines(&draw(&mut app)), ["  1 [R] Bug 1 - one", "  2 [A] Bug 2 - two", "  3     Bug 3 - three"]);
+    // One search, for both, and no other call but those of the Phabricator
+    // line of the patch shown, D11's; none again while the stack's
+    // revisions are the same.
     for _ in 0..3 {
         app.refresh();
         app.settle();
     }
     assert_eq!(phab.lock().unwrap().searched, [serde_json::json!([11, 12])]);
-    assert_eq!(phab.lock().unwrap().calls.iter().map(|(m, _)| m.as_str()).collect::<Vec<_>>(), ["differential.revision.search"]);
+    let calls = |phab: &std::sync::Arc<std::sync::Mutex<Phab>>| phab.lock().unwrap().calls.iter().map(|(m, _)| m.clone()).collect::<Vec<_>>();
+    assert_eq!(calls(&phab), ["differential.revision.search", "differential.diff.search", "differential.getrawdiff", "transaction.search"]);
     // Patch 3 names D13 now: all three read again, in one search.
     next_version(&db, 2, &format!("Bug 3 - three\n\n{LINK}13"), &patch_of(&db, 2).diff);
     app.refresh();
     app.settle();
     assert_eq!(phab.lock().unwrap().searched, [serde_json::json!([11, 12]), serde_json::json!([11, 12, 13])]);
-    assert_eq!(pane_lines(&draw(&mut app))[2], "  3 [Abandoned]    Bug 3 - three");
+    assert_eq!(pane_lines(&draw(&mut app))[2], "  3 [X] Bug 3 - three");
     stacked::phab::statuses_stand_in(&db, None);
 }
 
@@ -14277,10 +14318,16 @@ fn the_statuses_are_read_again_right_after_a_submit() {
     let mut app = open(&db).unwrap();
     app.refresh();
     app.settle();
-    assert_eq!(pane_lines(&draw(&mut app))[2], "  3 [Draft] Bug 3 - three");
+    assert_eq!(pane_lines(&draw(&mut app))[2], "  3 [D] Bug 3 - three");
     // Submitted, it is Changes Planned, though Phabricator still says it
-    // is a draft, never sent for review: read again at once, `[WIP]`.
+    // is a draft, never sent for review: read again at once, `[W]`; and
+    // what the Phabricator line of the patch reads too.
     keys(&mut app, &[KeyCode::Down, KeyCode::Down]);
+    app.refresh();
+    app.settle();
+    assert_eq!(phab_line(&mut app).as_deref(), Some("Phabricator: D13 · Draft · in sync · no new comments"));
+    let comments_read = |phab: &std::sync::Arc<std::sync::Mutex<Phab>>| line_calls(phab).iter().filter(|m| *m == "transaction.search").count();
+    assert_eq!(comments_read(&phab), 1);
     choose(&mut app, "Submit to Phabricator as WIP");
     app.settle();
     assert_eq!(app.screen, Screen::Submit);
@@ -14290,7 +14337,9 @@ fn the_statuses_are_read_again_right_after_a_submit() {
     let r = phab.lock().unwrap().revisions[&13].clone();
     assert_eq!((r.status.as_str(), r.draft), ("changes-planned", true));
     assert_eq!(phab.lock().unwrap().searched, [serde_json::json!([13]), serde_json::json!([13])]);
-    assert_eq!(pane_lines(&draw(&mut app))[2], "  3 [WIP] Bug 3 - three");
+    assert_eq!(pane_lines(&draw(&mut app))[2], "  3 [W] Bug 3 - three");
+    assert_eq!(comments_read(&phab), 2);
+    assert_eq!(phab_line(&mut app).as_deref(), Some("Phabricator: D13 · Changes Planned · in sync · no new comments"));
     // A new revision, of patch 1: its status at once, with its link.
     keys(&mut app, &[KeyCode::Up, KeyCode::Up]);
     choose(&mut app, "Submit to Phabricator as WIP");
@@ -14299,7 +14348,7 @@ fn the_statuses_are_read_again_right_after_a_submit() {
     app.settle();
     assert!(app.status.starts_with("Patch 1 is D124 on Phabricator now"), "{}", app.status);
     assert_eq!(phab.lock().unwrap().searched.last(), Some(&serde_json::json!([124, 13])));
-    assert_eq!(pane_lines(&draw(&mut app))[0], "  1 [WIP] Bug 1 - one");
+    assert_eq!(pane_lines(&draw(&mut app))[0], "  1 [W] Bug 1 - one");
     stacked::phab::statuses_stand_in(&db, None);
     stacked::submit::stand_in(None);
 }
@@ -14314,7 +14363,7 @@ fn a_read_that_fails_keeps_the_statuses_known_and_says_so_once() {
     let mut app = open(&db).unwrap();
     app.refresh();
     app.settle();
-    let known = ["  1 [Needs Review] Bug 1 - one", "  2 [Accepted]     Bug 2 - two"];
+    let known = ["  1 [R] Bug 1 - one", "  2 [A] Bug 2 - two"];
     assert_eq!(pane_lines(&draw(&mut app))[..2], known);
     // Patch 3 names revision `rev` now: read at once, as the stack's
     // revisions are others.
@@ -14327,7 +14376,7 @@ fn a_read_that_fails_keeps_the_statuses_known_and_says_so_once() {
     // Phabricator down: those known kept, D13's not known, and why said.
     phab.lock().unwrap().down = true;
     names(&mut app, 13);
-    assert_eq!(pane_lines(&draw(&mut app)), [known[0], known[1], "  3                Bug 3 - three"]);
+    assert_eq!(pane_lines(&draw(&mut app)), [known[0], known[1], "  3     Bug 3 - three"]);
     let again = "The statuses of the stack's revisions could not be read from Phabricator again, so the patches pane shows them as they were: differential.revision.search: Phabricator is down";
     assert_eq!(app.status, again);
     // Failing again, nothing more is said.
@@ -14338,7 +14387,7 @@ fn a_read_that_fails_keeps_the_statuses_known_and_says_so_once() {
     // Up again, read; down once more, said once more.
     phab.lock().unwrap().down = false;
     names(&mut app, 13);
-    assert_eq!(pane_lines(&draw(&mut app))[2], "  3 [Abandoned]    Bug 3 - three");
+    assert_eq!(pane_lines(&draw(&mut app))[2], "  3 [X] Bug 3 - three");
     assert_eq!(app.status, "");
     phab.lock().unwrap().down = true;
     names(&mut app, 14);
@@ -14383,4 +14432,419 @@ fn without_moz_phab_the_patches_pane_shows_no_status() {
     app.refresh();
     app.settle();
     assert_eq!(pane_lines(&draw(&mut app)), ["  1 Bug 1 - one"]);
+    // Nor a Phabricator line over the message: its header first.
+    assert_eq!(app.rows[0].text, "✉ message");
+    assert!(app.rows.iter().all(|r| !r.phab));
+}
+
+// -- the Phabricator line over the patch's message ------------------------- //
+
+/// The Phabricator line over the message of the patch the middle shows, its
+/// pieces joined, the screen drawn: none without one.
+#[cfg(feature = "moz-phab")]
+fn phab_line(app: &mut App) -> Option<String> {
+    draw(app);
+    let first = app.rows.first().filter(|r| r.phab)?;
+    let mut said = first.text.clone();
+    for r in app.rows[1..].iter().take_while(|r| r.phab && r.cont) {
+        said += " ";
+        said += r.text.trim_start();
+    }
+    Some(said)
+}
+
+/// What the Phabricator line shows under it, row by row, the screen drawn.
+#[cfg(feature = "moz-phab")]
+fn under_line(app: &mut App) -> Vec<String> {
+    draw(app);
+    let rows: Vec<&stacked::rows::Row> = app.rows.iter().take_while(|r| r.phab).collect();
+    let line = 1 + rows.iter().skip(1).take_while(|r| r.cont).count();
+    rows.iter().skip(line).map(|r| r.text.clone()).collect()
+}
+
+/// A stack of three patches naming D11, D12 and D13 (`phab_setup`), and the
+/// stand-in for Phabricator answering for its database: D11 as patch 1 is,
+/// in review; D12 in work, its diff adding b.txt otherwise, and two
+/// comments, the second answering the first; D13 accepted, its title an
+/// older one. The diffs of the patches.
+#[cfg(feature = "moz-phab")]
+fn three_revisions() -> (tempfile::TempDir, PathBuf, Shared, Vec<String>) {
+    let (tmp, db) = phab_setup([&format!("Bug 1 - one\n\n{LINK}11"), &format!("Bug 2 - two\n\n{LINK}12"), &format!("Bug 3 - three\n\n{LINK}13")]);
+    let diffs: Vec<String> = (0..3).map(|k| patch_of(&db, k).diff).collect();
+    let mut p = Phab::default()
+        .with(11, "needs-review", "Bug 1 - one", &diffs[0])
+        .with(12, "changes-planned", "WIP: Bug 2 - two", &diffs[1].replace("+bee", "+bea"))
+        .with(13, "accepted", "Bug 3 - an older title", &diffs[2]);
+    p.revisions.get_mut(&12).unwrap().comments = vec![said("c1", None), said("c2", Some("c1"))];
+    let phab = std::sync::Arc::new(std::sync::Mutex::new(p));
+    statuses_from(&db, &phab);
+    (tmp, db, phab, diffs)
+}
+
+/// The patch below the one picked, its Phabricator line read.
+#[cfg(feature = "moz-phab")]
+fn next_patch(app: &mut App) {
+    keys(app, &[KeyCode::Down]);
+    app.refresh();
+    app.settle();
+}
+
+#[cfg(feature = "moz-phab")]
+#[test]
+fn the_phabricator_line_says_the_revision_its_status_whether_it_is_in_sync_and_the_comments_to_pull() {
+    let (_tmp, db, phab, diffs) = three_revisions();
+    let mut app = open(&db).unwrap();
+    // Nothing read yet: the revision alone, … for the rest.
+    assert_eq!(phab_line(&mut app).as_deref(), Some("Phabricator: D11 · …"));
+    app.refresh();
+    app.settle();
+    let in_sync = "Phabricator: D11 · Needs Review · in sync · no new comments";
+    assert_eq!(phab_line(&mut app).as_deref(), Some(in_sync));
+    // Over the message's header, the middle's first line; the cursor on
+    // the header.
+    let screen = draw(&mut app);
+    let (x, y) = at(&screen, in_sync);
+    assert_eq!(at_from(&screen, "✉ message", x as usize), (x, y + 1), "{screen}");
+    assert_eq!((app.rows[1].text.as_str(), app.cursor), ("✉ message", 1));
+    // D12: its diff otherwise, in work, its title as moz-phab sends it in
+    // work; its comments not pulled yet.
+    next_patch(&mut app);
+    assert_eq!(phab_line(&mut app).as_deref(), Some("Phabricator: D12 · Changes Planned · the diff differs · 2 new comments to pull"));
+    // D13: an older title.
+    next_patch(&mut app);
+    assert_eq!(phab_line(&mut app).as_deref(), Some("Phabricator: D13 · Accepted · the title or summary differs · no new comments"));
+    // Patch 3 names D15 now, of a status stacked does not know, its diff
+    // patch 2's and its title another: both differ.
+    {
+        let mut p = phab.lock().unwrap();
+        *p = std::mem::take(&mut *p).with(15, "something-new", "Bug 3 - three, then", &diffs[1]);
+    }
+    next_version(&db, 2, &format!("Bug 3 - three\n\n{LINK}15"), &diffs[2]);
+    app.refresh();
+    app.settle();
+    assert_eq!(phab_line(&mut app).as_deref(), Some("Phabricator: D15 · status unknown · the diff and the title or summary differ · no new comments"));
+    // One that Phabricator does not have: said, and nothing else.
+    next_version(&db, 2, &format!("Bug 3 - three\n\n{LINK}16"), &diffs[2]);
+    app.refresh();
+    app.settle();
+    assert_eq!(phab_line(&mut app).as_deref(), Some("Phabricator: D16 · not found on Phabricator"));
+    stacked::phab::statuses_stand_in(&db, None);
+}
+
+#[cfg(feature = "moz-phab")]
+#[test]
+fn the_phabricator_line_is_over_the_message_in_every_view_of_the_code() {
+    let (_tmp, db, _phab, _) = three_revisions();
+    let mut app = open(&db).unwrap();
+    let line = "Phabricator: D11 · Needs Review · in sync · no new comments";
+    // Side by side, the middle's columns half as wide: read, the line folds
+    // in two over the cursor, and stays whole in sight at the middle's top.
+    pick_view(&mut app, "Side by side, compact");
+    keys(&mut app, &[KeyCode::Right]);
+    assert_eq!((phab_line(&mut app).as_deref(), app.rows[app.cursor].text.as_str()), (Some("Phabricator: D11 · …"), "✉ message"));
+    app.refresh();
+    app.settle();
+    let screen = draw(&mut app);
+    assert_eq!(phab_line(&mut app).as_deref(), Some(line));
+    let (x, y) = at(&screen, "Phabricator: D11 · Needs Review");
+    assert_eq!(at_from(&screen, "✉ message", x as usize), (x, y + 2), "{screen}");
+    assert_eq!(app.rows[app.cursor].text, "✉ message");
+    // Each view, the line across the middle, folded where the middle's
+    // columns are narrower; in the middle split in two, over each half.
+    for (view, halves) in [("Side by side, compact", 1), ("Side by side", 1), ("Unified, split in two", 2), ("Unified", 1)] {
+        pick_view(&mut app, view);
+        let screen = draw(&mut app);
+        assert_eq!(phab_line(&mut app).as_deref(), Some(line), "{view}");
+        assert_eq!(screen.matches("Phabricator: D11 · Needs Review").count(), halves, "{view}: {screen}");
+        assert!(app.rows[0].phab && app.rows.iter().position(|r| !r.phab).is_some_and(|k| app.rows[k].text == "✉ message"), "{view}");
+    }
+    // Reading, each file whole: the same.
+    keys(&mut app, &[KeyCode::Char('2'), KeyCode::Char('3')]);
+    app.wait_files();
+    assert_eq!(phab_line(&mut app).as_deref(), Some(line));
+    assert!(draw(&mut app).contains(line));
+    stacked::phab::statuses_stand_in(&db, None);
+}
+
+#[cfg(feature = "moz-phab")]
+#[test]
+fn the_phabricator_line_counts_against_the_patch_s_comments_those_pulled_waiting_filed_or_closed() {
+    let (_tmp, db, phab, _) = three_revisions();
+    let mut app = open(&db).unwrap();
+    next_patch(&mut app);
+    let line = |app: &mut App| phab_line(app).unwrap().rsplit(" · ").next().unwrap().to_string();
+    assert_eq!(line(&mut app), "2 new comments to pull");
+    // Pulled, the two wait for your review: none is new any more.
+    let change = patch_of(&db, 1).change;
+    let c = |phid: &str, reply_to: Option<&str>| stacked::phab::Remote {
+        phid: phid.into(),
+        author: "ann".into(),
+        text: format!("Comment {phid}."),
+        created: 1,
+        reply_to: reply_to.map(String::from),
+        ..Default::default()
+    };
+    let pulled = stacked::phab::Pulled {
+        revisions: vec![stacked::phab::RevisionComments { revision: "D12".into(), source: change.clone(), comments: vec![c("c1", None), c("c2", Some("c1"))] }],
+    };
+    let run = Db::edit(&db, |d| stacked::review::file(d, "s", "pull-1", 3, &Ok(pulled.clone()))).unwrap();
+    app.refresh();
+    assert_eq!(line(&mut app), "no new comments");
+    // Accepted, filed: none either.
+    Db::edit(&db, |d| stacked::held::close(d, &run.id, &Default::default(), Some(true))).unwrap();
+    app.refresh();
+    assert_eq!(line(&mut app), "no new comments");
+    assert_eq!(notes_of(&db, "s", 1).iter().map(|n| n.remote.clone()).collect::<Vec<_>>(), [vec!["c1".to_string(), "c2".to_string()]]);
+    // On Phabricator, the second edited since it was filed, and answered:
+    // one edited and one new, read again once the statuses are (patch 3
+    // naming another revision).
+    {
+        let mut p = phab.lock().unwrap();
+        let comments = &mut p.revisions.get_mut(&12).unwrap().comments;
+        comments[1]["comments"] = serde_json::json!([
+            {"phid": "c2b", "version": 2, "dateCreated": 2, "content": {"raw": "Comment c2, edited."}},
+            {"phid": "c2", "version": 1, "dateCreated": 1, "content": {"raw": "Comment c2."}},
+        ]);
+        comments.push(said("c3", Some("c2b")));
+    }
+    next_version(&db, 2, &format!("Bug 3 - three\n\n{LINK}14"), &patch_of(&db, 2).diff);
+    app.refresh();
+    app.settle();
+    assert_eq!(line(&mut app), "1 new comment and 1 edited comment to pull");
+    // The thread closed: its comments are passed over, as a pull passes
+    // them over.
+    let n = notes_of(&db, "s", 1).remove(0);
+    Db::edit(&db, |d| d.set_note(Note { text: String::new(), ..n })).unwrap();
+    app.refresh();
+    assert_eq!(line(&mut app), "no new comments");
+    stacked::phab::statuses_stand_in(&db, None);
+}
+
+#[cfg(feature = "moz-phab")]
+#[test]
+fn no_phabricator_line_over_a_patch_naming_no_revision_nor_while_phabricator_is_not_read() {
+    let (_tmp, db) = phab_setup([&format!("Bug 1 - one\n\n{LINK}11"), "Bug 2 - two", "Bug 3 - three"]);
+    let phab = std::sync::Arc::new(std::sync::Mutex::new(Phab::default().with(11, "needs-review", "Bug 1 - one", &patch_of(&db, 0).diff)));
+    statuses_from(&db, &phab);
+    let mut app = open(&db).unwrap();
+    app.refresh();
+    app.settle();
+    assert!(phab_line(&mut app).is_some());
+    // Patch 2 names no revision: no line, its message's header first, and
+    // nothing read for it.
+    let read = line_calls(&phab);
+    next_patch(&mut app);
+    assert_eq!((phab_line(&mut app), app.rows[0].text.as_str()), (None, "✉ message"));
+    assert_eq!(line_calls(&phab), read);
+    // Reviews from nowhere: no line, and nothing read.
+    let mut none = open_set(&db, |c| c.reviews.source = stacked::config::Source::None);
+    none.refresh();
+    none.settle();
+    assert_eq!(phab_line(&mut none), None);
+    assert_eq!(line_calls(&phab), read);
+    // In the tests' own process, which keeps nothing, with no stand-in:
+    // no line either.
+    stacked::phab::statuses_stand_in(&db, None);
+    let mut app = open(&db).unwrap();
+    app.refresh();
+    app.settle();
+    assert_eq!(phab_line(&mut app), None);
+}
+
+#[cfg(feature = "moz-phab")]
+#[test]
+fn the_phabricator_line_scrolls_away_with_the_message_the_title_pinned_in_its_place() {
+    let (_tmp, db, _phab, _) = three_revisions();
+    let mut app = open(&db).unwrap();
+    app.refresh();
+    app.settle();
+    // A screen of a few lines: the line first in the middle.
+    let small = |app: &mut App| draw_sized(app, 120, 10);
+    key(&mut app, KeyCode::Right);
+    let screen = small(&mut app);
+    let (x, y) = at(&screen, "Phabricator: D11 · Needs Review");
+    // Down the patch: the line scrolls away, and the title, scrolled past,
+    // takes the middle's first line, as ever.
+    for _ in 0..12 {
+        key(&mut app, KeyCode::Down);
+        small(&mut app);
+    }
+    let screen = small(&mut app);
+    assert!(app.top > 2 && !screen.contains("Phabricator:"), "{screen}");
+    assert_eq!(at_from(&screen, "Bug 1 - one", x as usize).1, y, "{screen}");
+    // Back at the top: the line again, and the cursor on it.
+    key(&mut app, KeyCode::Home);
+    let screen = small(&mut app);
+    assert_eq!(at(&screen, "Phabricator: D11 · Needs Review"), (x, y), "{screen}");
+    assert!(app.rows[app.cursor].phab && app.on_line());
+    stacked::phab::statuses_stand_in(&db, None);
+}
+
+#[cfg(feature = "moz-phab")]
+#[test]
+fn space_on_the_phabricator_line_shows_what_differs_under_it_and_hides_it_again() {
+    let (_tmp, db, _phab, _) = three_revisions();
+    let mut app = open(&db).unwrap();
+    app.refresh();
+    app.settle();
+    // On the line of D11, in sync: Space says so, nothing shown under it,
+    // no menu.
+    keys(&mut app, &[KeyCode::Right, KeyCode::Up]);
+    assert!(app.on_line());
+    assert_eq!(app.hint(), "space: show what differs · enter: menu · 1: view · 2: read · 3: whole · ?: what can I do here");
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    assert_eq!(
+        app.status,
+        "Phabricator has this exact version of patch 1: the latest diff of D11 does what this version does, and the title and summary of D11 are those of this version."
+    );
+    assert!(under_line(&mut app).is_empty() && app.mode == Mode::Normal);
+    // `o` opens nothing there: the line is no line of the message.
+    app.status.clear();
+    keys(&mut app, &[KeyCode::Char('o')]);
+    assert_eq!((app.status.as_str(), &app.mode), ("", &Mode::Normal));
+    // D12: the code, each file as Phabricator's diff leaves it, then as
+    // this version does.
+    keys(&mut app, &[KeyCode::Left]);
+    next_patch(&mut app);
+    keys(&mut app, &[KeyCode::Right, KeyCode::Up, KeyCode::Char(' ')]);
+    let under = under_line(&mut app);
+    assert_eq!(under[0], "the code: Phabricator's, then this version's");
+    let said: String = under.iter().skip(1).take_while(|l| !l.is_empty()).map(|l| l.trim()).collect::<Vec<_>>().join(" ");
+    assert_eq!(said, "Each file as the latest diff of D12 leaves it, then as this version of patch 2 leaves it, both on the patches below patch 2.");
+    let code: Vec<&str> = under.iter().map(String::as_str).skip_while(|l| !l.is_empty()).skip(1).collect();
+    assert_eq!(code, ["b.txt", "@@ -1 +1 @@", "-bea", "+bee", ""]);
+    // The rest as it was: the message's header after it, the cursor still
+    // on the line, and the bar saying how to hide it.
+    let at = app.rows.iter().position(|r| !r.phab).unwrap();
+    assert_eq!((app.rows[at].text.as_str(), app.cursor), ("✉ message", 0));
+    assert_eq!(app.hint(), "space: hide what differs · enter: menu · 1: view · 2: read · 3: whole · ?: what can I do here");
+    // `?` says what the line says, and what Space does.
+    keys(&mut app, &[KeyCode::Char('?')]);
+    let Mode::Help { lines, .. } = &app.mode else { panic!("{:?}", app.mode) };
+    assert!(lines[0].starts_with("This line says what Phabricator has of patch 2: its revision, D12;"), "{lines:#?}");
+    assert_eq!(lines[1], "Under this line is what differs: press Space to hide it.");
+    assert_eq!(lines[2], "Press Enter for all that can be done here.");
+    keys(&mut app, &[KeyCode::Esc]);
+    // On a row of what differs, Space hides it too: the cursor back on the
+    // line.
+    keys(&mut app, &[KeyCode::Down, KeyCode::Down, KeyCode::Down]);
+    assert!(app.rows[app.cursor].phab && app.cursor > 0);
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    assert!(under_line(&mut app).is_empty());
+    assert_eq!(app.cursor, 0);
+    // Reading: Space on the line still shows what differs, and marks
+    // nothing read; Delete takes no mark back.
+    keys(&mut app, &[KeyCode::Char('2')]);
+    assert_eq!(app.hint(), "space: show what differs · enter: menu · 1: view · 2: comment · 3: whole · ?: what can I do here");
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    assert!(!under_line(&mut app).is_empty());
+    keys(&mut app, &[KeyCode::Delete]);
+    assert!(Db::load(&db).unwrap().read_keys(&patch_of(&db, 1).change).is_empty());
+    assert!(!under_line(&mut app).is_empty() && app.rows[app.cursor].phab);
+    keys(&mut app, &[KeyCode::Char(' '), KeyCode::Char('2')]);
+    // Enter: the menu, as Space is not there.
+    keys(&mut app, &[KeyCode::Enter]);
+    assert!(matches!(app.mode, Mode::Menu(_)), "{:?}", app.mode);
+    keys(&mut app, &[KeyCode::Esc]);
+    // D13: the title and summary, Phabricator's then this version's.
+    keys(&mut app, &[KeyCode::Left]);
+    next_patch(&mut app);
+    keys(&mut app, &[KeyCode::Right, KeyCode::Up, KeyCode::Char(' ')]);
+    assert_eq!(under_line(&mut app), ["the title and summary: Phabricator's, then this version's", "-Bug 3 - an older title", "+Bug 3 - three", ""]);
+    stacked::phab::statuses_stand_in(&db, None);
+}
+
+/// `fetch` the stand-in for Phabricator in the pulls made while the guard it
+/// gives lives: the tests of a pull share it, so they go one at a time.
+#[cfg(feature = "moz-phab")]
+fn pull_stand_in(fetch: stacked::phab::Fetch) -> std::sync::MutexGuard<'static, ()> {
+    static ONE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let one = ONE.lock().unwrap_or_else(|e| e.into_inner());
+    stacked::phab::stand_in(Some(fetch));
+    one
+}
+
+/// The stand-in for Phabricator in the pull of `the_phabricator_line_reads_…`:
+/// D11's two comments, the second answering the first.
+#[cfg(feature = "moz-phab")]
+fn two_on_d11(source: &str, rev: &str, _url: &str) -> Result<stacked::phab::RevisionComments, String> {
+    let c = |phid: &str, reply_to: Option<&str>| stacked::phab::Remote {
+        phid: phid.into(),
+        author: "ann".into(),
+        text: format!("Comment {phid}."),
+        created: 1,
+        reply_to: reply_to.map(String::from),
+        ..Default::default()
+    };
+    let comments = if rev == "D11" { vec![c("c1", None), c("c2", Some("c1"))] } else { vec![] };
+    Ok(stacked::phab::RevisionComments { revision: rev.into(), source: source.into(), comments })
+}
+
+#[cfg(feature = "moz-phab")]
+#[test]
+fn the_phabricator_line_reads_the_patch_shown_alone_once_and_again_after_a_pull() {
+    let (_tmp, db, phab, _) = three_revisions();
+    phab.lock().unwrap().revisions.get_mut(&11).unwrap().comments = vec![said("c1", None), said("c2", Some("c1"))];
+    let mut app = open(&db).unwrap();
+    app.refresh();
+    app.settle();
+    // D11's latest diff and comments alone, for the patch shown; its diff
+    // by its PHID.
+    let d11 = ["differential.diff.search", "differential.getrawdiff", "transaction.search"];
+    assert_eq!(line_calls(&phab), d11);
+    let asked = phab.lock().unwrap().calls.iter().find(|(m, _)| m == "differential.diff.search").map(|(_, p)| p.clone()).unwrap();
+    assert_eq!(asked["constraints"]["revisionPHIDs"], serde_json::json!(["PHID-DREV-11"]));
+    assert_eq!(phab_line(&mut app).unwrap(), "Phabricator: D11 · Needs Review · in sync · 2 new comments to pull");
+    // Patch 2 shown: D12's read; back on patch 1, kept, not read again, nor
+    // as the editor goes on.
+    next_patch(&mut app);
+    keys(&mut app, &[KeyCode::Up]);
+    for _ in 0..3 {
+        app.refresh();
+        app.settle();
+    }
+    assert_eq!(line_calls(&phab), [d11, d11].concat());
+    // Pulled: what was read is read again, once shown, the diff it had not
+    // again; the two comments wait for review now, none new.
+    let _one = pull_stand_in(two_on_d11);
+    keys(&mut app, &[KeyCode::Home]);
+    choose(&mut app, "Pull reviews from Phabricator");
+    app.settle();
+    assert_eq!(app.status, "2 new comments from 3 revisions: they wait for your review");
+    keys(&mut app, &[KeyCode::Down]);
+    app.refresh();
+    app.settle();
+    assert_eq!(line_calls(&phab), [&d11[..], &d11[..], &["differential.diff.search", "transaction.search"]].concat());
+    assert_eq!(phab_line(&mut app).unwrap(), "Phabricator: D11 · Needs Review · in sync · no new comments");
+    stacked::phab::stand_in(None);
+    stacked::phab::statuses_stand_in(&db, None);
+}
+
+#[cfg(feature = "moz-phab")]
+#[test]
+fn a_read_of_the_phabricator_line_that_fails_keeps_what_was_known_and_says_nothing_more() {
+    let (_tmp, db, phab, diffs) = three_revisions();
+    let mut app = open(&db).unwrap();
+    app.refresh();
+    app.settle();
+    let in_sync = "Phabricator: D11 · Needs Review · in sync · no new comments";
+    assert_eq!(phab_line(&mut app).as_deref(), Some(in_sync));
+    // Phabricator down as all is read again (patch 3 names another
+    // revision): the line as it was, and the bar says only what the
+    // statuses' read says.
+    phab.lock().unwrap().down = true;
+    next_version(&db, 2, &format!("Bug 3 - three\n\n{LINK}14"), &diffs[2]);
+    app.refresh();
+    app.settle();
+    assert_eq!(phab_line(&mut app).as_deref(), Some(in_sync));
+    assert_eq!(
+        app.status,
+        "The statuses of the stack's revisions could not be read from Phabricator again, so the patches pane shows them as they were: differential.revision.search: Phabricator is down"
+    );
+    // A patch never read: what is known of it, … for the rest.
+    app.status.clear();
+    next_patch(&mut app);
+    assert_eq!(phab_line(&mut app).as_deref(), Some("Phabricator: D12 · Changes Planned · …"));
+    assert_eq!(app.status, "");
+    stacked::phab::statuses_stand_in(&db, None);
 }

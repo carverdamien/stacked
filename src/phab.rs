@@ -187,8 +187,9 @@ fn diff_lines(conduit: &Conduit, diff: u64) -> HashMap<(String, usize), String> 
     out
 }
 
-/// Reads every comment on `revision`.
-pub fn fetch(conduit: &Conduit, revision: &str, source: &str) -> Result<RevisionComments, String> {
+/// Every transaction of `revision` (`D123`), as transaction.search gives
+/// them, page after page, Conduit called with `call`.
+fn transactions(call: &mut Call, revision: &str) -> Result<Vec<Value>, String> {
     let mut txns: Vec<Value> = Vec::new();
     let mut after: Option<String> = None;
     loop {
@@ -196,7 +197,7 @@ pub fn fetch(conduit: &Conduit, revision: &str, source: &str) -> Result<Revision
         if let Some(a) = &after {
             params["after"] = a.clone().into();
         }
-        let r = conduit.call("transaction.search", params)?;
+        let r = call("transaction.search", params)?;
         txns.extend(
             r.get("data")
                 .and_then(Value::as_array)
@@ -211,6 +212,12 @@ pub fn fetch(conduit: &Conduit, revision: &str, source: &str) -> Result<Revision
             break;
         }
     }
+    Ok(txns)
+}
+
+/// Reads every comment on `revision`.
+pub fn fetch(conduit: &Conduit, revision: &str, source: &str) -> Result<RevisionComments, String> {
+    let txns = transactions(&mut |m, v| conduit.call(m, v), revision)?;
     let mut authors: Vec<String> = txns
         .iter()
         .filter_map(|t| {
@@ -689,7 +696,8 @@ impl Status {
         }
     }
 
-    /// The patches pane's status listing files: a letter, in brackets.
+    /// The patches pane's status, after the patch's number: a letter, in
+    /// brackets.
     pub fn letter(self) -> &'static str {
         match self {
             Status::Draft => "[D]",
@@ -703,37 +711,86 @@ impl Status {
         }
     }
 
-    /// The patches pane's status expanded: a word or two, in brackets;
-    /// Changes Planned the shorter `WIP`, work in progress.
-    pub fn word(self) -> &'static str {
+    /// The status by its full name, as the Phabricator line over a patch's
+    /// message says it: Closed, as Phabricator names it, Landed.
+    pub fn name(self) -> &'static str {
         match self {
-            Status::Draft => "[Draft]",
-            Status::ChangesPlanned => "[WIP]",
-            Status::NeedsReview => "[Needs Review]",
-            Status::NeedsRevision => "[Needs Revision]",
-            Status::Accepted => "[Accepted]",
-            Status::Published => "[Landed]",
-            Status::Abandoned => "[Abandoned]",
-            Status::Unknown => "[unknown]",
+            Status::Draft => "Draft",
+            Status::ChangesPlanned => "Changes Planned",
+            Status::NeedsReview => "Needs Review",
+            Status::NeedsRevision => "Needs Revision",
+            Status::Accepted => "Accepted",
+            Status::Published => "Landed",
+            Status::Abandoned => "Abandoned",
+            Status::Unknown => "status unknown",
         }
     }
 }
 
+/// A revision as the statuses' search finds it: its status, its title and
+/// summary, and its PHID, which the Phabricator line over a patch's message
+/// reads the revision's latest diff by.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Searched {
+    pub status: Status,
+    pub title: String,
+    pub summary: String,
+    pub phid: String,
+}
+
 /// The statuses of revisions `ids` (`D123`), Conduit called with `call`:
-/// one search for all of them. By revision, those Phabricator has.
-pub(crate) fn statuses_over(call: &mut Call, ids: &[String]) -> Result<HashMap<String, Status>, String> {
+/// one search for all of them. By revision, those Phabricator has, each
+/// with its title, summary and PHID.
+pub(crate) fn statuses_over(call: &mut Call, ids: &[String]) -> Result<HashMap<String, Searched>, String> {
     let numbers: Vec<u64> = ids.iter().filter_map(|d| d.strip_prefix('D')?.parse().ok()).collect();
     if numbers.is_empty() {
         return Ok(HashMap::new());
     }
     let found = call("differential.revision.search", json!({"constraints": {"ids": numbers}}))?;
+    let text = |r: &Value, k: &str| r.pointer(&format!("/fields/{k}")).and_then(Value::as_str).unwrap_or_default().to_string();
     Ok(found
         .get("data")
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
-        .filter_map(|r| Some((format!("D{}", r.get("id")?.as_u64()?), Status::of(r))))
+        .filter_map(|r| {
+            let searched = Searched {
+                status: Status::of(r),
+                title: text(r, "title"),
+                summary: text(r, "summary"),
+                phid: r.get("phid").and_then(Value::as_str).unwrap_or_default().to_string(),
+            };
+            Some((format!("D{}", r.get("id")?.as_u64()?), searched))
+        })
         .collect())
+}
+
+/// What the Phabricator line over a patch's message reads of its revision
+/// beyond what the statuses' search says: the id of its latest diff, and
+/// that diff, raw; and its comments, each as it was last edited, what it
+/// was before kept with it, as a pull reads them (`comments_of`), but for
+/// their authors and the lines they are on, which are not read.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Latest {
+    pub diff: u64,
+    pub raw: String,
+    pub comments: Vec<Remote>,
+}
+
+/// As `latest`, Conduit called with `call`: the latest diff of revision
+/// `rev` (`D123`), of PHID `phid`, by differential.diff.search, the newest
+/// alone; that diff, raw, unless `had` is it, as read before; then every
+/// transaction of the revision, for its comments.
+pub(crate) fn latest_over(call: &mut Call, rev: &str, phid: &str, had: Option<(u64, String)>) -> Result<Latest, String> {
+    let found = call("differential.diff.search", json!({"constraints": {"revisionPHIDs": [phid]}, "order": "newest", "limit": 1}))?;
+    let diff = found.pointer("/data/0/id").and_then(Value::as_u64).ok_or(format!("{rev} has no diff"))?;
+    let raw = match had {
+        Some((id, raw)) if id == diff => raw,
+        _ => call("differential.getrawdiff", json!({"diffID": diff}))?.as_str().unwrap_or_default().to_string(),
+    };
+    let txns = transactions(call, rev)?;
+    let comments = comments_of(&txns, &HashMap::new(), |_, _, _| None);
+    Ok(Latest { diff, raw, comments })
 }
 
 /// A stand-in for Phabricator, answering Conduit's calls as a submit's does
@@ -772,15 +829,31 @@ pub fn statuses_read(db: &Path) -> bool {
     status_stand_in(db).is_some() || crate::home::get().dir != Path::new(crate::home::NOWHERE)
 }
 
+/// What `f` comes to, Conduit called with what it is given for the editors
+/// of the database at `db`, on the Phabricator of revision link `link`: the
+/// stand-in set for that database, if one is; else Conduit, with the token
+/// for that Phabricator, never from a process that keeps nothing.
+fn calling<T>(db: &Path, link: &str, f: impl FnOnce(&mut Call) -> Result<T, String>) -> Result<T, String> {
+    if let Some(p) = status_stand_in(db) {
+        let mut p = p.lock().unwrap_or_else(|e| e.into_inner());
+        return f(&mut |m, v| p(m, v));
+    }
+    if crate::home::get().dir == Path::new(crate::home::NOWHERE) {
+        return Err("Phabricator is not reached from a process that keeps nothing, as the tests' own".into());
+    }
+    let conduit = Conduit::for_url(Some(link))?;
+    f(&mut |m, v| conduit.call(m, v))
+}
+
 /// The statuses of revisions `revisions` (`D123`, and its link) on
-/// Phabricator, by link: one search for those of each Phabricator, as
-/// their links name it (`statuses_over`). Through the stand-in set for the
-/// database at `db`, if one is; else over Conduit, with the token for
-/// that Phabricator, never from a process that keeps nothing. What is
-/// wrong, said, when a search fails.
-pub fn statuses(db: &Path, revisions: &[(String, String)]) -> Result<HashMap<String, Status>, String> {
-    let stand_in = status_stand_in(db);
-    if stand_in.is_none() && crate::home::get().dir == Path::new(crate::home::NOWHERE) {
+/// Phabricator, by link, each with what else the search says of it: one
+/// search for those of each Phabricator, as their links name it
+/// (`statuses_over`). Through the stand-in set for the database at `db`, if
+/// one is; else over Conduit, with the token for that Phabricator, never
+/// from a process that keeps nothing. What is wrong, said, when a search
+/// fails.
+pub fn statuses(db: &Path, revisions: &[(String, String)]) -> Result<HashMap<String, Searched>, String> {
+    if status_stand_in(db).is_none() && crate::home::get().dir == Path::new(crate::home::NOWHERE) {
         return Err("Phabricator is not reached from a process that keeps nothing, as the tests' own".into());
     }
     // By Phabricator, as `pull` reads the comments.
@@ -795,23 +868,24 @@ pub fn statuses(db: &Path, revisions: &[(String, String)]) -> Result<HashMap<Str
     let mut out = HashMap::new();
     for (_, these) in by_host {
         let ids: Vec<String> = these.iter().map(|(d, _)| d.clone()).collect();
-        let found = match &stand_in {
-            Some(p) => {
-                let mut p = p.lock().unwrap_or_else(|e| e.into_inner());
-                statuses_over(&mut |m, v| p(m, v), &ids)?
-            }
-            None => {
-                let conduit = Conduit::for_url(Some(&these[0].1))?;
-                statuses_over(&mut |m, v| conduit.call(m, v), &ids)?
-            }
-        };
+        let found = calling(db, &these[0].1, |call| statuses_over(call, &ids))?;
         for (d, link) in these {
             if let Some(s) = found.get(d) {
-                out.insert(link.clone(), *s);
+                out.insert(link.clone(), s.clone());
             }
         }
     }
     Ok(out)
+}
+
+/// What the Phabricator line over a patch's message reads of revision
+/// `rev` (`D123`), of PHID `phid`, at `link`, beyond its search: its latest
+/// diff, raw, but when `had` is that diff, as read before; and its comments
+/// (`latest_over`). Through the stand-in set for the database at `db`, as
+/// the statuses are read, else over Conduit; never from a process that
+/// keeps nothing. What is wrong, said, when a call fails.
+pub fn latest(db: &Path, rev: &str, phid: &str, link: &str, had: Option<(u64, String)>) -> Result<Latest, String> {
+    calling(db, link, |call| latest_over(call, rev, phid, had))
 }
 
 #[cfg(test)]
@@ -987,18 +1061,18 @@ mod tests {
     #[test]
     fn a_revision_s_status_is_its_value_whatever_phabricator_says_of_drafts() {
         let all = [
-            ("draft", Status::Draft, "[D]", "[Draft]"),
-            ("changes-planned", Status::ChangesPlanned, "[W]", "[WIP]"),
-            ("needs-review", Status::NeedsReview, "[R]", "[Needs Review]"),
-            ("needs-revision", Status::NeedsRevision, "[C]", "[Needs Revision]"),
-            ("accepted", Status::Accepted, "[A]", "[Accepted]"),
-            ("published", Status::Published, "[L]", "[Landed]"),
-            ("abandoned", Status::Abandoned, "[X]", "[Abandoned]"),
-            ("something-new", Status::Unknown, "[?]", "[unknown]"),
+            ("draft", Status::Draft, "[D]", "Draft"),
+            ("changes-planned", Status::ChangesPlanned, "[W]", "Changes Planned"),
+            ("needs-review", Status::NeedsReview, "[R]", "Needs Review"),
+            ("needs-revision", Status::NeedsRevision, "[C]", "Needs Revision"),
+            ("accepted", Status::Accepted, "[A]", "Accepted"),
+            ("published", Status::Published, "[L]", "Landed"),
+            ("abandoned", Status::Abandoned, "[X]", "Abandoned"),
+            ("something-new", Status::Unknown, "[?]", "status unknown"),
         ];
-        for (value, status, letter, word) in all {
+        for (value, status, letter, name) in all {
             assert_eq!(Status::of(&revision(1, Some(value), false)), status, "{value}");
-            assert_eq!((status.letter(), status.word()), (letter, word), "{value}");
+            assert_eq!((status.letter(), status.name()), (letter, name), "{value}");
         }
         // Never sent for review: Phabricator says each is a draft, Changes
         // Planned as a submit in work leaves it, and abandoned so. Its
@@ -1014,13 +1088,22 @@ mod tests {
         let mut asked = Vec::new();
         let mut call = |method: &str, params: Value| -> Result<Value, String> {
             asked.push((method.to_string(), params.clone()));
-            Ok(json!({"data": [revision(12, Some("accepted"), false), revision(11, Some("changes-planned"), true)]}))
+            let mut d12 = revision(12, Some("accepted"), false);
+            d12["fields"]["title"] = json!("Bug 12 - twelve");
+            d12["fields"]["summary"] = json!("Why.");
+            Ok(json!({"data": [d12, revision(11, Some("changes-planned"), true)]}))
         };
         let ids = ["D11", "D12", "D13"].map(String::from);
         let found = statuses_over(&mut call, &ids).unwrap();
         assert_eq!(asked, [("differential.revision.search".to_string(), json!({"constraints": {"ids": [11, 12, 13]}}))]);
-        // D13, not given: not known.
-        let want: HashMap<String, Status> = [("D11".to_string(), Status::ChangesPlanned), ("D12".to_string(), Status::Accepted)].into();
+        // D13, not given: not known. Each with its title, summary and PHID,
+        // none when the search gives none.
+        let searched = |status: Status, title: &str, summary: &str, n: u64| Searched { status, title: title.into(), summary: summary.into(), phid: format!("PHID-DREV-{n}") };
+        let want: HashMap<String, Searched> = [
+            ("D11".to_string(), searched(Status::ChangesPlanned, "", "", 11)),
+            ("D12".to_string(), searched(Status::Accepted, "Bug 12 - twelve", "Why.", 12)),
+        ]
+        .into();
         assert_eq!(found, want);
         // No revision, no search.
         let mut none = |_: &str, _: Value| -> Result<Value, String> { panic!("nothing to search") };
@@ -1057,13 +1140,48 @@ mod tests {
         assert!(statuses_read(&db) && !statuses_read(&other), "for that database alone");
         let found = statuses(&db, &revisions).unwrap();
         assert_eq!(*searched.lock().unwrap(), [json!([11, 12]), json!([11])], "one search for each Phabricator");
-        let by_link = |l: &str| found.get(l).copied();
+        let by_link = |l: &str| found.get(l).map(|s| s.status);
         assert_eq!(
             (by_link("https://a.example/D11"), by_link("https://a.example/D12"), by_link("https://b.example/D11")),
             (Some(Status::NeedsReview), Some(Status::NeedsReview), Some(Status::Abandoned))
         );
         statuses_stand_in(&db, None);
         assert!(!statuses_read(&db));
+    }
+
+    #[test]
+    fn a_revision_s_latest_diff_is_read_raw_once_and_its_comments_each_time() {
+        let comment = |phid: &str, text: &str| json!({"type": "comment", "authorPHID": "PHID-USER-ann", "fields": {}, "comments": [{"phid": phid, "version": 1, "dateCreated": 5, "content": {"raw": text}}]});
+        let asked = std::cell::RefCell::new(Vec::new());
+        let mut call = |method: &str, params: Value| -> Result<Value, String> {
+            asked.borrow_mut().push(method.to_string());
+            Ok(match method {
+                "differential.diff.search" => {
+                    assert_eq!(params, json!({"constraints": {"revisionPHIDs": ["PHID-DREV-11"]}, "order": "newest", "limit": 1}));
+                    json!({"data": [{"id": 7}]})
+                }
+                "differential.getrawdiff" => json!(format!("raw {}", params["diffID"])),
+                // Two pages of transactions, a comment on each.
+                "transaction.search" => match params.get("after") {
+                    None => json!({"data": [comment("c1", "Why?")], "cursor": {"after": "1"}}),
+                    Some(_) => json!({"data": [comment("c2", "Because."), {"type": "accept", "fields": {}}], "cursor": {"after": null}}),
+                },
+                m => return Err(format!("not as Phabricator is asked: {m}")),
+            })
+        };
+        let read = latest_over(&mut call, "D11", "PHID-DREV-11", None).unwrap();
+        assert_eq!((read.diff, read.raw.as_str()), (7, "raw 7"));
+        assert_eq!(read.comments.iter().map(|c| (c.phid.as_str(), c.text.as_str())).collect::<Vec<_>>(), [("c1", "Why?"), ("c2", "Because.")]);
+        // Its authors and lines are not read: no user.search, no diff's lines.
+        assert_eq!(*asked.borrow(), ["differential.diff.search", "differential.getrawdiff", "transaction.search", "transaction.search"]);
+        // That diff read before: not read again; another, read.
+        asked.borrow_mut().clear();
+        let again = latest_over(&mut call, "D11", "PHID-DREV-11", Some((7, "as before".into()))).unwrap();
+        assert_eq!((again.raw.as_str(), asked.borrow().contains(&"differential.getrawdiff".to_string())), ("as before", false));
+        assert_eq!(latest_over(&mut call, "D11", "PHID-DREV-11", Some((6, "older".into()))).unwrap().raw, "raw 7");
+        // No diff: said.
+        let mut none = |_: &str, _: Value| -> Result<Value, String> { Ok(json!({"data": []})) };
+        assert_eq!(latest_over(&mut none, "D11", "PHID-DREV-11", None), Err("D11 has no diff".to_string()));
     }
 
     #[test]
