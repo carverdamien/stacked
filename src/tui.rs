@@ -1190,6 +1190,9 @@ pub enum Action {
     /// HEAD of the checkout stacked runs in picked up to move, shown after
     /// the patch at `0`, else where it is.
     MoveHead(Option<usize>),
+    /// Reconcile with HEAD: each patch whose commit is marked takes its
+    /// commit's message, as one edit stacked makes, queued as edits are.
+    Reconcile,
     EditPatch,
     EditCode,
     EditAgain,
@@ -1464,6 +1467,9 @@ fn about(action: &Action) -> String {
         Action::MovePatch => "pick this patch up and put it elsewhere in the stack".into(),
         Action::MoveHead(_) => {
             "pick HEAD of your checkout up: ↑↓ place it, never below a commit marked !, and Enter moves the checkout there, detached; your branch as it is".into()
+        }
+        Action::Reconcile => {
+            "give each patch whose commit in your checkout is marked ≠ or ! that commit's whole message, as a new version: one edit, made by stacked with no agent, which joins the queue as an edit does and waits for your review in turn; the edits asked after it wait until you have reviewed it".into()
         }
         Action::EditPatch => "edit this patch in $EDITOR, as mail, opened where the cursor is".into(),
         Action::EditCode => "edit this file as the patch leaves it, in $EDITOR, opened at this line".into(),
@@ -2773,6 +2779,30 @@ impl App {
         h.lock_said().or(m.case.err())
     }
 
+    /// Why Reconcile with HEAD is grayed, if it is, said as the menu says
+    /// it: no commit is marked, the stack cannot change, or one is under
+    /// way already.
+    fn reconcile_why(&self) -> Option<String> {
+        let why = match self.head_here() {
+            Some(h) if matches!(&h.at, crate::head::At::Stack(on) if !on.marks.is_empty()) => crate::reconcile::not_now(&self.db, &self.stack)?,
+            _ => crate::reconcile::NOTHING.to_string(),
+        };
+        Some(format!("Reconcile with HEAD is grayed: {why}."))
+    }
+
+    /// Reconcile with HEAD asked (`reconcile::ask`), away from the screen
+    /// as asks are started: what it does, said.
+    fn reconcile(&mut self) {
+        match crate::reconcile::ask(&self.path, &self.stack, &self.checkout) {
+            Ok(_) => {
+                self.status = "Reconcile with HEAD asked: at its turn, stacked gives each patch marked its commit's message, in one edit that then waits for your review".into();
+                self.reload();
+                self.launch();
+            }
+            Err(e) => self.status = e.0,
+        }
+    }
+
     /// Why Move HEAD is grayed, if it is, said as the menu says it.
     fn move_head_why(&self) -> Option<String> {
         let why = self.head_moves_here()?.case.err()?;
@@ -2822,7 +2852,7 @@ impl App {
                 vec![
                     format!("Patch {n} is marked ≠: its commit in your checkout has the patch's diff, but its message says something other than the patch's."),
                     moves,
-                    "The mark clears once the two messages say the same: reword the commit in your checkout to the patch's message, or let Move HEAD make the commit again from the patch.".into(),
+                    "The mark clears once the two messages say the same: Reconcile with HEAD, in this patch's menu, gives the patch its commit's message, for your review; or reword the commit in your checkout to the patch's message, or let Move HEAD make the commit again from the patch.".into(),
                 ]
             }
             crate::head::Mark::Revision { theirs, ours } => {
@@ -2834,7 +2864,7 @@ impl App {
                 vec![
                     format!("Patch {n} is marked !: its commit in your checkout {names}."),
                     format!("Move HEAD never rewrites nor drops that commit: HEAD is locked below patch {locked}, every commit up to it kept as it is in your checkout. Editing in this checkout (pwd) is grayed meanwhile, and the patch is not submitted to Phabricator, so that {so}."),
-                    format!("The mark clears once the patch names {theirs} too, or the commit no longer names it: give the patch {theirs} with an edit by hand, or reword the commit in your checkout."),
+                    format!("The mark clears once the patch names {theirs} too, or the commit no longer names it: Reconcile with HEAD, in this patch's menu, gives the patch its commit's message, {theirs} with it, for your review; or reword the commit in your checkout."),
                 ]
             }
         }
@@ -2884,7 +2914,10 @@ impl App {
             Ok(Case::OnStack) => "HEAD is on the stack with no marks: Move HEAD may put it at any patch, the commits it has taken as they are.".into(),
             Err(why) => format!("{why}."),
         });
-        out.push("Press Enter or Space for HEAD's menu, with Move HEAD…; ↑↓ for a patch, or the stack's header.".into());
+        if matches!(&h.at, At::Stack(o) if !o.marks.is_empty()) {
+            out.push("Reconcile with HEAD, in HEAD's menu, gives each patch marked its commit's message, in one edit for your review: accepted, the marks are gone.".into());
+        }
+        out.push("Press Enter or Space for HEAD's menu, with Move HEAD… and Reconcile with HEAD; ↑↓ for a patch, or the stack's header.".into());
         out
     }
 
@@ -4254,6 +4287,7 @@ impl App {
                 // dropped, as it was.
                 let stopped = r.summary == crate::lint::STOPPED || r.summary == crate::lint::DROPPED;
                 self.status = match (crate::held::linted(r), r.state) {
+                    _ if crate::reconcile::is(r) => r.summary.clone(),
                     (true, RunState::Failed) if !stopped => format!("the linter could not lint the stack {}: {}", r.stack, r.summary),
                     (true, _) => format!("{}: {}", r.request, r.summary),
                     (false, state) => format!("the agent's {} {}: {}", r.what, format!("{state:?}").to_lowercase(), r.summary),
@@ -5754,6 +5788,7 @@ impl App {
                     Some(BannerLine::Lint(_)) => {
                         "The linter lints the stack, patch by patch, away from the screen, one lint at a time of every stack: what it fixes lands here for your review. Press Enter to read what it writes.".into()
                     }
+                    Some(BannerLine::Reconcile(_)) => format!("{}.", self.reconcile_waits()),
                     _ => "Press Enter to go to this comment.".into(),
                 });
                 out.extend(self.delete_help());
@@ -6891,8 +6926,9 @@ impl App {
         let mut wraps: Option<String> = None;
         // Why the stack's lint is grayed, but for what edits by hand say.
         let mut lint_why: Option<String> = None;
-        // Why Move HEAD is grayed, if it is.
+        // Why Move HEAD is grayed, if it is, and Reconcile with HEAD.
         let mut move_why: Option<String> = None;
+        let mut reconcile_why: Option<String> = None;
         match (self.screen, self.focus) {
             // What landed, to review; the comments open, to go to.
             (Screen::Main, _) if self.on_banner => {
@@ -6909,6 +6945,8 @@ impl App {
                 title = self.head_here().map_or("HEAD".into(), |h| format!("HEAD {}", h.on()));
                 items.push(Item::new("Move HEAD…", Action::MoveHead(None)).when(self.move_head_why().is_none()));
                 move_why = self.move_head_why();
+                items.push(Item::new("Reconcile with HEAD", Action::Reconcile).when(self.reconcile_why().is_none()));
+                reconcile_why = self.reconcile_why();
             }
             (Screen::Main, Focus::List) if self.on_stack => {
                 title = format!("the stack {}", self.stack);
@@ -6962,6 +7000,12 @@ impl App {
                 if self.head_here().is_some() {
                     items.push(Item::new("Move HEAD…", Action::MoveHead(Some(self.sel))).when(self.move_head_why().is_none()));
                     move_why = self.move_head_why();
+                }
+                // Its commit marked: its message, and every other marked,
+                // taken into the stack.
+                if self.mark_here().is_some() {
+                    items.push(Item::new("Reconcile with HEAD", Action::Reconcile).when(self.reconcile_why().is_none()));
+                    reconcile_why = self.reconcile_why();
                 }
                 items.push(Item::new("Edit this patch in $EDITOR", Action::EditPatch).when(h));
                 if let Some((item, said)) = self.wrap_item([self.sel], |_, w| format!("Wrap the long lines of this patch's message at {w} columns")) {
@@ -7071,6 +7115,7 @@ impl App {
         let mut why: Vec<String> = hands.filter(|_| self.screen != Screen::Review).into_iter().collect();
         why.extend(lint_why);
         why.extend(move_why);
+        why.extend(reconcile_why);
         // An edit by hand in this checkout grayed: why.
         if items.iter().any(|i| i.enabled && i.choices.iter().any(|c| c.of == "edit" && c.list.iter().any(|ch| !ch.enabled))) {
             why.extend(self.here_edits_why().map(|w| format!("Editing in this checkout (pwd) is grayed: {w}.")));
@@ -7336,6 +7381,7 @@ impl App {
                 self.go_to_middle();
             }
             Action::GoToNote => self.go_to_note(),
+            Action::Reconcile => self.reconcile(),
             // Not while it would not move HEAD; from the place picked, or
             // HEAD's, never below its last commit marked `!`.
             Action::MoveHead(at) => match self.head_moves_here() {
@@ -10269,6 +10315,7 @@ impl App {
                     Some(BannerLine::Pulling) => "say what the pull brings",
                     Some(BannerLine::Batch) => "pick what to send",
                     Some(BannerLine::Lint(_)) => "read what the linter writes",
+                    Some(BannerLine::Reconcile(_)) => "say what it waits for",
                     _ => "go to it",
                 };
                 let delete = self.delete_hint().map_or(String::new(), |d| format!("{d} · "));

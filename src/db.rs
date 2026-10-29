@@ -265,6 +265,10 @@ fn named_by(r: &Run) -> (Vec<usize>, Vec<String>, Vec<String>) {
     if let Some(j) = &r.lint {
         revs.extend(j.rev);
     }
+    // A reconcile: the work it went on from.
+    if let Some(j) = &r.reconcile {
+        runs.extend(j.after.clone());
+    }
     (revs, patches, runs)
 }
 
@@ -740,6 +744,10 @@ pub struct Run {
     /// waiting its turn or running.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lint: Option<Box<crate::lint::Job>>,
+    /// For a reconcile with HEAD (`reconcile`): the commits' messages it
+    /// takes, and the work it went on from, if it is chained on some.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reconcile: Option<Box<crate::reconcile::Job>>,
     pub time: i64,
 }
 

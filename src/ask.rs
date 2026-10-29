@@ -435,6 +435,19 @@ pub fn reads(way: Way) -> bool {
 
 /// What a comment sent on stack `name` in `way` would wait on, if anything.
 pub fn waits_on(db: &Db, name: &str, way: Way) -> Option<String> {
+    waits_for(db, name, way, true)
+}
+
+/// What the reconcile with HEAD of stack `name`, waiting its turn, waits
+/// for, if anything: what a change asked now would wait for, but for that
+/// reconcile.
+pub fn reconcile_waits_on(db: &Db, name: &str) -> Option<String> {
+    waits_for(db, name, Way::Change, false)
+}
+
+/// What `waits_on` says, a reconcile with HEAD under way counted if
+/// `reconciles`.
+fn waits_for(db: &Db, name: &str, way: Way, reconciles: bool) -> Option<String> {
     let going = asks_going(db, name);
     let chain = chains(&agent_of(db, name));
     // A lint job takes its turn as a change does: a change waits for it, a
@@ -443,6 +456,17 @@ pub fn waits_on(db: &Db, name: &str, way: Way) -> Option<String> {
         && (way == Way::Change || (way == Way::Test && j.step == crate::lint::Step::Running) || (!chain && reads(way)))
     {
         return Some("once the linter's work on the stack lands".into());
+    }
+    // A reconcile with HEAD, as a change: a change waits until it is
+    // reviewed; an answer goes at once.
+    if way == Way::Change
+        && reconciles
+        && let Some(r) = crate::reconcile::pending(db, name)
+    {
+        return Some(match r.state {
+            RunState::Started => "once the reconcile with HEAD before it is made and you have reviewed it".into(),
+            _ => "once you have reviewed the reconcile with HEAD".into(),
+        });
     }
     // Chained, an answer runs alongside a change, on the stack as it is.
     let change = going.iter().find(|(_, i)| i.way == Way::Change).filter(|_| !(chain && reads(way)));
@@ -525,9 +549,11 @@ fn guessed_from(db: &Db, name: &str) -> Option<String> {
 }
 
 /// The work run `r` goes on from, guessing you accept it, while that work
-/// waits for your review: it is reviewed first.
+/// waits for your review: it is reviewed first. An ask's, or a reconcile
+/// with HEAD's (`reconcile::after`).
 pub fn guessing(db: &Db, r: &Run) -> Option<String> {
-    info(r)?.after.filter(|a| db.run(a).is_some_and(|w| crate::held::waiting(db, w)))
+    let after = info(r).and_then(|i| i.after).or_else(|| crate::reconcile::after(r).map(String::from))?;
+    db.run(&after).is_some_and(|w| crate::held::waiting(db, w)).then_some(after)
 }
 
 /// The runs going on from landed work `id`, guessing it is accepted, that
@@ -552,7 +578,7 @@ pub fn guessed_right(db: &mut Db, id: &str, rev: usize) -> Result<()> {
             ..r
         })?;
     }
-    Ok(())
+    crate::reconcile::followed(db, id, rev)
 }
 
 /// Run `r`, of ask `i`, dropped (`why`): its agent stopped if it still
@@ -591,7 +617,9 @@ pub fn guessed_wrong(db: &mut Db, id: &str, why: &str) -> Result<usize> {
         drop_run(db, &r, i, format!("dropped: the work it went on from was {why}; asked again"))?;
         n += 1 + guessed_wrong(db, &r.id, "dropped")?;
     }
-    Ok(n)
+    // A reconcile with HEAD gone on from it: dropped, and made again at its
+    // next turn.
+    Ok(n + crate::reconcile::dropped(db, id, why)?)
 }
 
 /// What rejecting landed work `id`, or sending it back, drops: what went on
@@ -603,7 +631,7 @@ pub fn guesses_after(db: &Db, id: &str) -> (usize, usize) {
         let own = usize::from(r.state == RunState::Started);
         out = (out.0 + own + running, out.1 + (1 - own) + waiting);
     }
-    out
+    (out.0, out.1 + crate::reconcile::going_on_from(db, id).len())
 }
 
 /// The asks of stack `name` that only read (answers, and a try push's
@@ -712,6 +740,9 @@ struct Going {
     /// A lint job of the stack waits its turn ahead: the changes after it
     /// go once it has landed.
     lint: bool,
+    /// A reconcile with HEAD waits its turn ahead, or for your review: the
+    /// changes after it go once it is accepted or rejected.
+    reconciling: bool,
 }
 
 /// The build and test in flight, of whichever stack: one at a time, as
@@ -811,6 +842,8 @@ pub fn whose_change(r: &Run) -> &'static str {
         "your edit by hand"
     } else if crate::held::linted(r) {
         "the linter's change"
+    } else if crate::reconcile::is(r) {
+        "the reconcile with HEAD"
     } else {
         "the agent's change"
     }
@@ -1125,17 +1158,21 @@ pub fn launch(db_path: &Path) -> Result<Vec<String>> {
 }
 
 /// What `claim` goes through, in their turn: a batch of comments, by its
-/// key; a lint job waiting, by its run, and its stack.
+/// key; a lint job or a reconcile with HEAD waiting, by its run, and its
+/// stack.
 enum Turn {
     Batch(String),
     Lint(String, String),
+    Reconcile(String, String),
 }
 
 /// Under the lock: the ready batches that may go now, each a run begun,
 /// its comments taken off the queue; and the lint job whose turn it is, if
 /// one's is, running from now on. A lint job takes its turn as a change
 /// does, among the batches, the first asked first: one at a time of every
-/// stack. Their run ids: the asks', and the lint job's.
+/// stack. So does a reconcile with HEAD, made at once at its turn, chained
+/// as a change is; the changes after it wait until it is reviewed. Their
+/// run ids: the asks', and the lint job's.
 fn claim(db: &mut Db) -> Result<(Vec<String>, Vec<String>)> {
     // The ready batches: stack, way, scope, comments, the landed work a
     // round sent back starts from, the run asked before it, and the effort
@@ -1172,11 +1209,12 @@ fn claim(db: &mut Db) -> Result<(Vec<String>, Vec<String>)> {
     // jobs waiting among them, each by when it was asked.
     let mut turns: Vec<Turn> = order.into_iter().map(Turn::Batch).collect();
     turns.extend(crate::lint::waiting(db).into_iter().map(|(id, name)| Turn::Lint(id, name)));
-    // A batch's key is `b` and when it was made; a lint job's id, when it
-    // was asked.
+    turns.extend(crate::reconcile::waiting(db).into_iter().map(|(id, name)| Turn::Reconcile(id, name)));
+    // A batch's key is `b` and when it was made; a lint job's id, and a
+    // reconcile's, when it was asked.
     let key = |t: &Turn| match t {
         Turn::Batch(b) => (batches[b].4.is_none(), b.clone()),
-        Turn::Lint(id, _) => (true, format!("b{id}")),
+        Turn::Lint(id, _) | Turn::Reconcile(id, _) => (true, format!("b{id}")),
     };
     turns.sort_by_key(key);
     let mut started = Vec::new();
@@ -1198,6 +1236,7 @@ fn claim(db: &mut Db) -> Result<(Vec<String>, Vec<String>)> {
             chain: chains(&agent_of(db, name)),
             tail: guessed_from(db, name),
             lint: false,
+            reconciling: crate::reconcile::reviewing(db, name),
         }
     };
     for t in &turns {
@@ -1208,7 +1247,7 @@ fn claim(db: &mut Db) -> Result<(Vec<String>, Vec<String>)> {
             // run; and while no other lint job runs.
             Turn::Lint(id, name) => {
                 let st = state.entry(name.clone()).or_insert_with(|| going_of(db, name));
-                if !linting && !st.change && !st.lint && !st.reviewing && (st.chain || st.answers == 0) {
+                if !linting && !st.change && !st.lint && !st.reviewing && !st.reconciling && (st.chain || st.answers == 0) {
                     crate::lint::claim(db, id)?;
                     linting = true;
                     st.change = true;
@@ -1221,6 +1260,21 @@ fn claim(db: &mut Db) -> Result<(Vec<String>, Vec<String>)> {
                 }
                 continue;
             }
+            // A reconcile with HEAD, as a change: made at once, chained on
+            // the change under review, if any. The changes behind it wait
+            // until it is reviewed, made or not.
+            Turn::Reconcile(id, name) => {
+                let st = state.entry(name.clone()).or_insert_with(|| going_of(db, name));
+                if !st.change && !st.lint && !st.reconciling && (st.chain || (!st.reviewing && st.answers == 0)) {
+                    let after = if st.chain { st.tail.clone() } else { None };
+                    crate::reconcile::make(db, id, after)?;
+                    st.reviewing = true;
+                } else {
+                    st.change_waits |= st.chain || !st.reviewing;
+                }
+                st.reconciling = true;
+                continue;
+            }
         };
         let (name, way, scope, notes, on, was, effort) = batches[b].clone();
         let st = state.entry(name.clone()).or_insert_with(|| going_of(db, &name));
@@ -1231,7 +1285,7 @@ fn claim(db: &mut Db) -> Result<(Vec<String>, Vec<String>)> {
             // for what runs holds back the answers behind it, so it goes next.
             // Not before a lint job asked before it.
             Way::Change => {
-                if !st.change && !st.lint && (st.chain || (!st.reviewing && st.answers == 0)) {
+                if !st.change && !st.lint && !st.reconciling && (st.chain || (!st.reviewing && st.answers == 0)) {
                     st.change = true;
                     true
                 } else {

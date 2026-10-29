@@ -28,6 +28,9 @@ pub(super) fn landed_how(r: &crate::db::Run, room: usize) -> String {
     if crate::held::linted(r) {
         return format!(", by the linter: {}", short(&r.request, room));
     }
+    if crate::reconcile::is(r) {
+        return ", reconciled with HEAD: its commits' messages".into();
+    }
     let mut out = if r.request.is_empty() { String::new() } else { format!(", asked \"{}\"", short(&r.request, room)) };
     if r.held.as_ref().is_some_and(|h| !h.edits.is_empty()) {
         out.push_str(", edited by hand");
@@ -62,6 +65,8 @@ pub enum BannerLine {
     Push(String),
     /// The stack's lint job, waiting its turn or running: its run.
     Lint(String),
+    /// The stack's reconcile with HEAD, waiting its turn: its run.
+    Reconcile(String),
     /// The batch: the comments asked about later, to send.
     Batch,
     /// A comment open on the stack: (change, id).
@@ -99,6 +104,8 @@ impl App {
                 out.push(BannerLine::Pulling);
             }
         }
+        // The stack's reconcile with HEAD waiting its turn, among the edits.
+        out.extend(crate::reconcile::pending(&self.db, &self.stack).filter(|r| r.state == crate::db::RunState::Started).map(|r| BannerLine::Reconcile(r.id.clone())));
         // The stack's lint job, waiting or running.
         out.extend(crate::lint::pending(&self.db, &self.stack).map(|r| BannerLine::Lint(r.id.clone())));
         // The try pushes of the stack under way, the first started first.
@@ -132,6 +139,7 @@ impl App {
             #[cfg(feature = "try-push")]
             BannerLine::Push(_) => 4,
             BannerLine::Lint(_) => 5,
+            BannerLine::Reconcile(_) => 2,
             _ => 3,
         }
     }
@@ -141,6 +149,13 @@ impl App {
     /// stack`.
     fn lint_progress(&self, run: &str) -> String {
         self.db.run(run).and_then(|r| r.lint.as_deref()).map(crate::lint::Job::said).unwrap_or_default()
+    }
+
+    /// What the stack's reconcile with HEAD, waiting its turn, waits for,
+    /// said.
+    pub(super) fn reconcile_waits(&self) -> String {
+        let on = crate::ask::reconcile_waits_on(&self.db, &self.stack).unwrap_or_else(|| "next".into());
+        format!("Reconcile with HEAD waits its turn: stacked makes it {on}, and it then waits for your review")
     }
 
     /// The try pushes of the stack under way: their runs, the first started
@@ -198,11 +213,13 @@ impl App {
                 lines.iter().filter(|l| matches!(l, BannerLine::Landed(run) if self.db.run(run).is_some_and(is))).count()
             };
             let (pulls, hands, lints) = (kind(crate::held::pulled), kind(crate::held::by_hand), kind(crate::held::linted));
+            let reconciles = kind(crate::reconcile::is);
             let mut kinds = Vec::new();
             for (n, one, many) in [
-                (landed - pulls - hands - lints, "landed ask", "landed asks"),
+                (landed - pulls - hands - lints - reconciles, "landed ask", "landed asks"),
                 (hands, "edit by hand", "edits by hand"),
                 (lints, "lint of the stack", "lints of the stack"),
+                (reconciles, "reconcile with HEAD", "reconciles with HEAD"),
                 (pulls, "pull from Phabricator", "pulls from Phabricator"),
             ] {
                 if n > 0 {
@@ -257,6 +274,10 @@ impl App {
             said.push(format!("the linter {}", self.lint_progress(&r.id)));
         }
         let linting = usize::from(lint.and_then(|r| r.lint.as_deref()).is_some_and(|j| j.step == crate::lint::Step::Running));
+        // The reconcile with HEAD waiting its turn.
+        if lines.iter().any(|l| matches!(l, BannerLine::Reconcile(_))) {
+            said.push("Reconcile with HEAD waits its turn".into());
+        }
         if batched > 0 {
             said.push(of(batched, "batched ask", "batched asks"));
         }
@@ -461,6 +482,10 @@ impl App {
                     .map_or(String::new(), |l| format!(" · {l}"));
                 format!("   {mark} The linter {} ({}){doing}", self.lint_progress(run), r.request)
             }
+            BannerLine::Reconcile(run) => {
+                let of = self.db.run(run).map_or(String::new(), |r| r.request.clone());
+                format!("   ◌ Reconcile with HEAD, waiting its turn: {of}")
+            }
             BannerLine::Batch => format!("   ◇ Send the batch… {}", self.batch_said()),
             BannerLine::Comment(change, id) => {
                 let Some(n) = self.db.note(change, id) else { return String::new() };
@@ -526,6 +551,8 @@ impl App {
                     self.on_banner = false;
                     return self.perform(Action::Transcript(run));
                 }
+                // A reconcile with HEAD waiting its turn: what it waits for.
+                Some(BannerLine::Reconcile(_)) => self.status = self.reconcile_waits(),
                 None => {}
             },
             KeyCode::Esc => self.on_banner = false,

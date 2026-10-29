@@ -442,6 +442,12 @@ fn compared(m: &str) -> String {
     lines.join("\n")
 }
 
+/// Whether two messages are the same, as compared (`compared`): what a
+/// commit marked has, taken into its patch, unmarks it.
+pub fn same_message(a: &str, b: &str) -> bool {
+    compared(a) == compared(b)
+}
+
 /// The mark of a commit whose message is `theirs`, its patch's `ours`, if
 /// it has one: `!` when it names a revision the patch does not, else `≠`
 /// when the two say otherwise, as compared (`compared`).

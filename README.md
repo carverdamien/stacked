@@ -463,8 +463,8 @@ same.
 
 A commit of the checkout is a patch of the stack when its diff is, but its
 message may say otherwise. stacked never writes a commit's message into the
-stack: the banner, the reviews and the menus are as they are whatever the
-commits' messages say. Two messages are the same when they differ only by
+stack, but as `Reconcile with HEAD` (below) asks it: the banner, the
+reviews and the menus are as they are whatever the commits' messages say. Two messages are the same when they differ only by
 white space at the end of a line or by empty lines in a row, which `git am`
 makes one as HEAD is moved. With the `moz-phab` feature (on by default),
 the trailer moz-phab writes to name the revision, the line of the message's
@@ -507,6 +507,37 @@ commit's: "Bug 3 - other words"`; with moz-phab, when the two differ by the
 revision they name, or would but for it, `patch 3 names no revision in the
 stack and D3 in your workspace's commit`), then where HEAD is locked, and
 why `--to` would be refused, when it would.
+
+`Reconcile with HEAD`, in the menu of each patch marked and of HEAD's
+line, takes the commits' messages into the stack: each patch marked, `≠` or
+`!`, takes its commit's whole message as a new version, all of them in one
+edit stacked makes, with no agent. It joins the queue as an edit of the
+agent's does (Asking the agent, below), and is made at its turn, at once:
+from the stack the edits before it make, chained on the last of them that
+waits for your review, as chained edits are. It then waits for your review
+in the banner, in turn (`⟳ Review a change of patch 2, reconciled with
+HEAD: its commits' messages`); while it waits its turn, the banner says so
+(`◌ Reconcile with HEAD, waiting its turn: the commit messages of patch 2
+taken from HEAD`), and Enter on that line says what it waits for. Edits
+asked after it do not start before it is accepted or rejected, and then go
+on from the stack that leaves (`ready (may change the code), it goes once
+you have reviewed the reconcile with HEAD`); answers go at once, as ever.
+The work it went on from accepted, it goes on from the stack that made;
+rejected, sent back or edited by hand, it is dropped and made again at its
+next turn, from the stack as it then is. One at a time: while one is under
+way, the item is grayed, its menu saying why, as it is when no commit is
+marked or the stack cannot change.
+
+Its review shows what it takes from your checkout: the stack operations
+(`reword  2 Bug 2 - …`) and each new version's interdiff, its message
+compared with the patch's where their lines wrap aside (History, below).
+Under them, `stacked's comment, to read`, nothing to accept or reject,
+says what to run in your checkout should you reject it, to give the
+commits the stack's messages instead, from the top down: `git commit
+--amend` for HEAD's own commit, `git rebase -i COMMIT^` for one below,
+marked `reword`, each reworded to its patch's message as the diff shows
+it. Accepted, the patches have their commits' messages, and the marks are
+gone; rejected, nothing changes in the stack, and the marks stay.
 
 The middle shows what the left pane's cursor is on: a patch (its message,
 then its diff, the comments under the
@@ -1424,7 +1455,9 @@ and test of s lands`); a change waiting holds back the answers asked after
 it. An asked comment that cannot go yet waits as ready, says what it waits
 on, and goes on its own when that lands. Nothing is asked on a stack that
 does not apply. A lint job of the stack takes its turn as a change does,
-the changes asked after it waiting for it (Linting, below).
+the changes asked after it waiting for it (Linting, below); so does a
+reconcile with HEAD (The editor, above), the changes asked after it
+waiting until it is reviewed.
 
 Chained (`agent.chain`, on unless set to false), a change
 does not wait for the review of the change before it: it goes at once, from
@@ -1709,7 +1742,9 @@ nothing back waits until you close it.
 
 In the editor, a banner under the top bar says what waits on you on the
 stack, in a line: what waits for your review (`⟳ 2 landed asks wait for
-your review · the next: a change of patch 2, 1 reply, asked "…"`), a pull
+your review · the next: a change of patch 2, 1 reply, asked "…"`; edits by
+hand, lints and reconciles with HEAD counted apart), a reconcile with HEAD
+waiting its turn (`Reconcile with HEAD waits its turn`), a pull
 from Phabricator under way and the revision it reads (`pulling the reviews
 from Phabricator: D12, revision 2 of 3…`), what the asks batched (`3
 batched asks`), what the agent works on (`the agent works on 1 ask`), the
@@ -2819,6 +2854,9 @@ bytes long, padded with spaces.
   record holds the marks saved for a run's review,
   the replies taken already, and whether it is closed; the last one is
   what stands.
+- A reconcile with HEAD's run holds what it takes, each patch's change,
+  its commit and that commit's message, and the work it went on from, if it
+  was chained; made, its change of the stack, as an ask's.
 - A moved record says where stacked left HEAD of a checkout on a stack
   (`{"t":"moved","stack":"s","checkout":"/path/to/top","commit":"…"}`):
   the commit HEAD was at right after Move HEAD, or HEAD following a review,
@@ -2951,8 +2989,8 @@ does not, none or another, as after `moz-phab submit` there, whatever else
 the two messages say, is not submitted before anything is read: its menu grays the item and says to
 give the patch that revision first, so that no second revision is made
 (`Patch 3 names no revision in the stack and D34 in your workspace's
-commit: give the patch's message D34 first, with an edit by hand, so that
-no second revision is made.`); the other patches, and other differences, are not held back.
+commit: give the patch D34 first, with Reconcile with HEAD on its menu, so
+that no second revision is made.`); the other patches, and other differences, are not held back.
 
 For a new revision, a dialog then says what is sent and where (`Patch 3 is
 sent to Phabricator, at https://phabricator.services.mozilla.com, as a new
@@ -3050,8 +3088,10 @@ is typed: `import.rs`). A fix to one may belong in the other.
   landing, and the folders of the agent's rebase plans; claude's command
   line, its stream and its replies.
 - `held.rs`: what an ask brought back, held for your review.
-- `head.rs`: where HEAD of your checkout is against a stack, and HEAD
-  moved along it.
+- `head.rs`: where HEAD of your checkout is against a stack, its commits
+  marked, and HEAD moved along it, only as stacked left it or with no mark.
+- `reconcile.rs`: Reconcile with HEAD, the commits' messages taken into the
+  stack, queued and reviewed as an edit is.
 - `messages.rs`: two versions of a commit message compared word by word,
   where their lines wrap aside, and so as a diff of their lines, for the
   interdiffs and the submit's review to colour; and what
@@ -3542,7 +3582,19 @@ mark (a commit of yours on top, one reworded outside stacked) and offered
 after a restart from what the database remembers, the stack moved on
 since, its place never below a commit that names a revision its patch does
 not (↑, Home and a click stopping there, `?` saying why), HEAD following
-a review remembered where it went, this checkout grayed for edits by hand
+a review remembered where it went, Reconcile with HEAD (on the menus of
+the patches marked and of HEAD's row, not of another, `?` saying what it
+does; made at once, waiting for review in the banner, grayed while it is
+under way; its review saying what it takes, stacked's comment saying what
+to run from the top down, `git commit --amend` for HEAD's own commit and
+`git rebase -i` for one below; accepted, the messages taken and the marks
+gone; rejected, nothing changed and the marks there; asked while the
+agent changes the stack, waiting its turn, the banner and Enter there
+saying so, made once that change lands, going on from it, then from the
+stack its acceptance made, an edit asked after it waiting until it is
+reviewed and an answer going at once; going on from an edit by hand
+rejected, dropped and made again from the stack as it is; grayed with no
+commit marked), this checkout grayed for edits by hand
 meanwhile (dim, ← → going past it, a click picking nothing, the menu and
 `?` saying why, an edit there as the stack's menus last picked it
 refused), the comment editor hiding

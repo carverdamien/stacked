@@ -5409,7 +5409,7 @@ fn the_marks_of_head_s_commits_are_in_a_margin_and_question_mark_says_each() {
         [
             "Patch 1 is marked ≠: its commit in your checkout has the patch's diff, but its message says something other than the patch's.",
             "Move HEAD writes the patch's message over the commit's only while HEAD is as stacked last left it, as the commit may be yours, amended outside stacked: until then Move HEAD is grayed, and so is editing in this checkout (pwd).",
-            "The mark clears once the two messages say the same: reword the commit in your checkout to the patch's message, or let Move HEAD make the commit again from the patch.",
+            "The mark clears once the two messages say the same: Reconcile with HEAD, in this patch's menu, gives the patch its commit's message, for your review; or reword the commit in your checkout to the patch's message, or let Move HEAD make the commit again from the patch.",
         ]
     );
     // On patch 2.
@@ -5421,7 +5421,7 @@ fn the_marks_of_head_s_commits_are_in_a_margin_and_question_mark_says_each() {
         [
             "Patch 2 is marked !: its commit in your checkout names D34, which the patch does not name.",
             "Move HEAD never rewrites nor drops that commit: HEAD is locked below patch 2, every commit up to it kept as it is in your checkout. Editing in this checkout (pwd) is grayed meanwhile, and the patch is not submitted to Phabricator, so that no second revision is made.",
-            "The mark clears once the patch names D34 too, or the commit no longer names it: give the patch D34 with an edit by hand, or reword the commit in your checkout.",
+            "The mark clears once the patch names D34 too, or the commit no longer names it: Reconcile with HEAD, in this patch's menu, gives the patch its commit's message, D34 with it, for your review; or reword the commit in your checkout.",
         ]
     );
     // On patch 3, no mark: as ever.
@@ -5434,14 +5434,15 @@ fn the_marks_of_head_s_commits_are_in_a_margin_and_question_mark_says_each() {
     assert!(app.on_head());
     assert!(app.hint().starts_with("enter or space: menu") && app.hint().ends_with("?: why HEAD is locked below patch 2"), "{}", app.hint());
     assert_eq!(
-        said(&mut app)[..6],
+        said(&mut app)[..7],
         [
             format!("HEAD of your checkout, {h}, has the stack's first 3 patches by their diffs, then 1 commit the stack does not have: it forks from the stack after patch 3."),
             "Patch 1 is marked ≠: its commit's message is not the patch's.".to_string(),
             "Patch 2 is marked !: the commit of patch 2 names D34, which the patch does not name.".to_string(),
             "HEAD is locked below patch 2: the commit of patch 2 names D34, which the patch does not name. Move HEAD keeps every commit up to it as it is, and puts HEAD nowhere below it; editing in this checkout (pwd) is grayed meanwhile.".to_string(),
             "HEAD has commits stacked did not make, as 1 commit after patch 3 is not the stack's, the commit of patch 1 has a message other than the stack's and the commit of patch 2 names D34, which the patch does not name: Move HEAD is offered only when HEAD is on the stack with no marks, or as stacked last left it.".to_string(),
-            "Press Enter or Space for HEAD's menu, with Move HEAD…; ↑↓ for a patch, or the stack's header.".to_string(),
+            "Reconcile with HEAD, in HEAD's menu, gives each patch marked its commit's message, in one edit for your review: accepted, the marks are gone.".to_string(),
+            "Press Enter or Space for HEAD's menu, with Move HEAD… and Reconcile with HEAD; ↑↓ for a patch, or the stack's header.".to_string(),
         ]
     );
     keys(&mut app, &[KeyCode::Enter]);
@@ -5855,6 +5856,300 @@ fn this_checkout_is_grayed_for_edits_by_hand_while_move_head_would_not_move_head
     let err = app.effect(e).unwrap_err().0;
     assert_eq!(err, format!("this checkout is not offered for edits by hand: {why}; nothing changed"));
     assert_eq!(commit_message(&src, "HEAD"), "Mine");
+}
+
+/// HEAD of the checkout at `src`, from main's two commits, the patches of
+/// `s`: detached, the first reworded to `message`, the second as it was.
+fn first_reworded(src: &Path, message: &str) {
+    git(src, &["checkout", "-q", "--detach", "main~1"]);
+    git(src, &["commit", "-q", "--amend", "-m", message]);
+    git(src, &["cherry-pick", "main"]);
+}
+
+/// A comment on stack `s`, `id`, saying `text`.
+fn stack_note(db: &Path, id: &str, text: &str) -> (String, String) {
+    let n = Note {
+        change: stack_change("s"),
+        id: id.into(),
+        text: text.into(),
+        ..Default::default()
+    };
+    Db::edit(db, |d| d.set_note(n.clone())).unwrap();
+    (n.change, n.id)
+}
+
+/// The patches pane's cursor on patch `k` (from 0).
+fn on_patch(app: &mut App, k: usize) {
+    (app.focus, app.on_stack, app.on_banner) = (Focus::List, false, false);
+    keys(app, &[KeyCode::Home]);
+    for _ in 0..=k {
+        keys(app, &[KeyCode::Down]);
+    }
+    if app.on_head() {
+        keys(app, &[KeyCode::Down]);
+    }
+    assert_eq!((app.sel, app.on_head()), (k, false));
+}
+
+#[test]
+fn reconcile_with_head_takes_the_commits_messages_into_the_stack_once_accepted() {
+    let (_tmp, db, src) = setup();
+    let loud = "Bug 1 - shout TWO\n\nBecause it is loud.";
+    first_reworded(&src, loud);
+    let mut app = open_in(&db, &src);
+    assert!(app.head_here().is_some_and(|h| h.mark(0).is_some() && h.mark(1).is_none()), "{:?}", app.head_here());
+    // On the menu of the patch marked, and of HEAD's row; not on another's.
+    on_patch(&mut app, 1);
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    assert_eq!(offered(&app, "Reconcile with HEAD"), None);
+    keys(&mut app, &[KeyCode::Esc]);
+    on_patch(&mut app, 0);
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    assert_eq!(offered(&app, "Reconcile with HEAD"), Some(true));
+    // ? says what it does.
+    let want = items(&app).iter().position(|(l, _)| l == "Reconcile with HEAD").unwrap();
+    while !matches!(&app.mode, Mode::Menu(m) if m.sel == want) {
+        key(&mut app, KeyCode::Down);
+    }
+    keys(&mut app, &[KeyCode::Char('?')]);
+    let Mode::Help { lines, .. } = &app.mode else { panic!("{:?}", app.mode) };
+    assert!(lines[0].starts_with("Press Enter to give each patch whose commit in your checkout is marked ≠ or ! that commit's whole message"), "{lines:?}");
+    keys(&mut app, &[KeyCode::Esc]);
+    // Asked: made at once, nothing before it, and waiting for review in
+    // the banner, among the edits. Not asked again meanwhile.
+    choose(&mut app, "Reconcile with HEAD");
+    app.settle();
+    app.refresh();
+    let screen = draw(&mut app);
+    assert!(screen.contains(" ⟳ 1 reconcile with HEAD waits for your review · the next: a change of patch 1, reconciled with HEAD"), "{screen}");
+    assert_eq!(patch_message(&db, 0), "Bug 1 - shout two\n\nBecause.", "nothing changed yet");
+    on_patch(&mut app, 0);
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    assert_eq!(offered(&app, "Reconcile with HEAD"), Some(false));
+    assert!(menu_note(&app).contains("Reconcile with HEAD is grayed: Reconcile with HEAD waits for your review already: review it first."), "{}", menu_note(&app));
+    keys(&mut app, &[KeyCode::Esc]);
+    // Its review: what it takes, as the stack operations and the interdiff
+    // say, and stacked's comment, to read, what to run if you reject it.
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Enter]);
+    assert_eq!(app.screen, Screen::Review);
+    app.settle();
+    let screen = draw(&mut app);
+    for said in [" the reconcile with HEAD: a change of patch 1 ·", "reword  1 Bug 1 - shout TWO", " stacked's comment, to read"] {
+        assert!(screen.contains(said), "{said:?}:\n{screen}");
+    }
+    down_to_review(&mut app, "what to run if you reject it");
+    let screen = draw(&mut app);
+    let c1 = rev_in(&src, "HEAD~1")[..12].to_string();
+    assert!(screen.contains("stacked's comment: if you reject it, what to run in your checkout"), "{screen}");
+    let said = crate_comment(&app);
+    assert_eq!(
+        said[1..],
+        [
+            format!("Patch 1, commit {c1}: `git rebase -i {c1}^`, mark the commit `reword`, then write the stack's message of patch 1."),
+            format!("Run them in {}. Once the messages are the same, the marks are gone.", app.head_here().unwrap().dir.display()),
+        ]
+    );
+    assert_eq!(app.hint().split(" · ").find(|h| h.starts_with("enter")), Some("enter: nothing, stacked's comment is to read"));
+    // Accepted: the patch takes the commit's message, and the mark is gone.
+    keys(&mut app, &[KeyCode::Esc]);
+    choose(&mut app, "Accept all remaining and Close");
+    choose(&mut app, "Accept them and close");
+    app.settle();
+    assert!(app.status.starts_with("reviewed: its change accepted"), "{}", app.status);
+    assert_eq!(patch_message(&db, 0), loud);
+    let d = Db::load(&db).unwrap();
+    assert!(d.head("s").unwrap().1.op.starts_with("take the commit messages of patch 1 from HEAD: edit "), "{}", d.head("s").unwrap().1.op);
+    drop(d);
+    app.look_at_head();
+    app.settle();
+    assert!(app.head_here().is_some_and(|h| h.in_sync(2)), "{:?}", app.head_here());
+    on_patch(&mut app, 0);
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    assert_eq!(offered(&app, "Reconcile with HEAD"), None);
+}
+
+/// Stacked's comment in the review open, as `reconcile::comment` says it.
+fn crate_comment(app: &App) -> Vec<String> {
+    let rv = app.reviewing.as_ref().expect("a review open");
+    let d = Db::load(&app.path).unwrap();
+    let job = d.run(&rv.run).and_then(|r| r.reconcile.clone()).expect("a reconcile");
+    stacked::reconcile::comment(&job)
+}
+
+#[test]
+fn rejected_a_reconcile_changes_nothing_and_its_comment_says_what_to_run_from_the_top() {
+    let (_tmp, db, src) = setup();
+    first_reworded(&src, "Bug 1 - shout TWO\n\nBecause it is loud.");
+    git(&src, &["commit", "-q", "--amend", "-m", "Bug 2 - add a bee"]);
+    let mut app = open_in(&db, &src);
+    // From HEAD's row: both patches.
+    let (_, before) = Db::load(&db).unwrap().head("s").map(|(r, s)| (r, s.patches.clone())).unwrap();
+    keys(&mut app, &[KeyCode::Home]);
+    while !app.on_head() {
+        keys(&mut app, &[KeyCode::Down]);
+    }
+    keys(&mut app, &[KeyCode::Enter]);
+    assert_eq!(offered(&app, "Reconcile with HEAD"), Some(true));
+    choose(&mut app, "Reconcile with HEAD");
+    app.settle();
+    app.refresh();
+    // An edit asked while it waits for review waits too, until it is
+    // reviewed, accepted or rejected.
+    let edit = stack_note(&db, "s-c2", "Make it shorter.");
+    let waits = stacked::ask::send(&db, "s", std::slice::from_ref(&edit), stacked::db::Way::Change, false, stacked::db::Effort::High).unwrap();
+    assert_eq!(waits.as_deref(), Some("once you have reviewed the reconcile with HEAD"));
+    let asked = |db: &Path, id: &str| Db::load(db).unwrap().runs().iter().any(|r| stacked::ask::info(r).is_some_and(|i| i.notes.iter().any(|n| n.id == id)));
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Enter]);
+    assert_eq!(app.screen, Screen::Review);
+    app.settle();
+    assert!(draw(&mut app).contains(" the reconcile with HEAD: a change of patches 1"), "{}", draw(&mut app));
+    // The top commit, HEAD itself, first: amended; then the one under it.
+    let (c1, c2) = (rev_in(&src, "HEAD~1")[..12].to_string(), rev_in(&src, "HEAD")[..12].to_string());
+    assert_eq!(
+        crate_comment(&app)[1..3],
+        [
+            format!("Patch 2, commit {c2}, HEAD itself: `git commit --amend`, then write the stack's message of patch 2."),
+            format!("Patch 1, commit {c1}: `git rebase -i {c1}^`, mark the commit `reword`, then write the stack's message of patch 1."),
+        ]
+    );
+    // Rejected: the stack as it was, the marks there still, and it may be
+    // asked again. The edit asked meanwhile goes now, from the stack as it
+    // was.
+    app.launch();
+    app.settle();
+    assert!(!asked(&db, "s-c2"), "the edit waits for the reconcile's review");
+    keys(&mut app, &[KeyCode::Esc]);
+    choose(&mut app, "Reject all remaining and Close");
+    choose(&mut app, "Reject them and close");
+    app.settle();
+    assert!(app.status.starts_with("reviewed: its change rejected"), "{}", app.status);
+    assert!(asked(&db, "s-c2"), "the edit went");
+    assert_eq!(Db::load(&db).unwrap().stack("s").unwrap().patches, before);
+    app.look_at_head();
+    app.settle();
+    assert!(app.head_here().is_some_and(|h| h.mark(0).is_some() && h.mark(1).is_some()), "{:?}", app.head_here());
+    on_patch(&mut app, 1);
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    assert_eq!(offered(&app, "Reconcile with HEAD"), Some(true));
+}
+
+#[test]
+fn reconcile_with_head_waits_its_turn_as_an_edit_and_the_edits_after_it_wait_for_its_review() {
+    use stacked::db::{Effort, RunState, Way};
+    let (_tmp, db, src) = setup();
+    let loud = "Bug 1 - shout TWO\n\nBecause it is loud.";
+    first_reworded(&src, loud);
+    // The agent changes the stack, asked by a comment on it.
+    let (change, id) = stack_note(&db, "s-c1", "Make it better.");
+    changing(&db, &change, &id, serde_json::json!("stack"));
+    let mut app = open_in(&db, &src);
+    // Asked meanwhile: it waits its turn, the banner says so.
+    on_patch(&mut app, 0);
+    choose(&mut app, "Reconcile with HEAD");
+    app.settle();
+    app.refresh();
+    let screen = draw(&mut app);
+    assert!(screen.contains("Reconcile with HEAD waits its turn"), "{screen}");
+    keys(&mut app, &[KeyCode::Esc]);
+    let line = app.banner_lines().iter().position(|l| matches!(l, stacked::tui::BannerLine::Reconcile(_))).expect("its line");
+    app.banner_sel = line;
+    let screen = draw(&mut app);
+    assert!(screen.contains("   ◌ Reconcile with HEAD, waiting its turn: the commit messages of patch 1 taken from HEAD"), "{screen}");
+    keys(&mut app, &[KeyCode::Enter]);
+    assert_eq!(app.status, "Reconcile with HEAD waits its turn: stacked makes it once the agent's change on the stack lands, and it then waits for your review");
+    keys(&mut app, &[KeyCode::Esc]);
+    // An edit asked after it waits until it is reviewed; an answer goes at
+    // once.
+    let edit = stack_note(&db, "s-c2", "Make it shorter.");
+    let waits = stacked::ask::send(&db, "s", std::slice::from_ref(&edit), Way::Change, false, Effort::High).unwrap();
+    assert_eq!(waits.as_deref(), Some("once the reconcile with HEAD before it is made and you have reviewed it"));
+    let answer = stack_note(&db, "s-c3", "What does it do?");
+    assert_eq!(stacked::ask::send(&db, "s", &[answer], Way::Answer, false, Effort::High).unwrap(), None);
+    let asked = |db: &Path, id: &str| Db::load(db).unwrap().runs().iter().any(|r| stacked::ask::info(r).is_some_and(|i| i.notes.iter().any(|n| n.id == id)));
+    assert!(asked(&db, "s-c3"), "the answer went");
+    // The agent's change lands: the reconcile is made, going on from it,
+    // guessing it is accepted, reviewed after it; the edit still waits.
+    held(&db, "run-changing", &change, &id, "Better now.", true);
+    app.refresh();
+    app.launch();
+    app.settle();
+    app.refresh();
+    let d = Db::load(&db).unwrap();
+    let r = stacked::reconcile::pending(&d, "s").cloned().expect("a reconcile");
+    assert_eq!((r.state, r.reconcile.as_ref().and_then(|j| j.after.clone())), (RunState::Done, Some("run-changing".into())));
+    assert_eq!(stacked::ask::guessing(&d, &r).as_deref(), Some("run-changing"));
+    drop(d);
+    assert!(!asked(&db, "s-c2"), "the edit waits");
+    // The agent's change accepted: the reconcile goes on from the stack it
+    // made; the edit waits still, until the reconcile is reviewed.
+    Db::edit(&db, |d| stacked::held::close(d, "run-changing", &Default::default(), Some(true)).map(|_| ())).unwrap();
+    app.launch();
+    app.settle();
+    assert!(!asked(&db, "s-c2"), "the edit waits for the reconcile's review");
+    let rev = Db::load(&db).unwrap().head("s").unwrap().0;
+    let d = Db::load(&db).unwrap();
+    let r = stacked::reconcile::pending(&d, "s").cloned().unwrap();
+    assert_eq!((r.held.as_ref().and_then(|h| h.stack.as_ref()).and_then(|c| c.from), stacked::ask::guessing(&d, &r)), (Some(rev), None));
+    drop(d);
+    // Accepted: the edit goes, from the stack the reconcile made.
+    Db::edit(&db, |d| stacked::held::close(d, &r.id, &Default::default(), Some(true)).map(|_| ())).unwrap();
+    assert_eq!(patch_message(&db, 0), loud);
+    app.launch();
+    app.settle();
+    assert!(asked(&db, "s-c2"), "the edit went");
+}
+
+#[test]
+fn a_reconcile_going_on_from_work_rejected_is_made_again_from_the_stack_as_it_is() {
+    use stacked::db::RunState;
+    let (_tmp, db, src) = setup();
+    first_reworded(&src, "Bug 1 - shout TWO\n\nBecause it is loud.");
+    // An edit by hand of patch 1's code waits for review: the reconcile goes
+    // on from it.
+    let hand = hand_edit(&db, None);
+    let mut app = open_in(&db, &src);
+    on_patch(&mut app, 0);
+    choose(&mut app, "Reconcile with HEAD");
+    app.settle();
+    app.refresh();
+    let first = stacked::reconcile::pending(&Db::load(&db).unwrap(), "s").map(|r| r.id.clone()).unwrap();
+    let d = Db::load(&db).unwrap();
+    assert_eq!(stacked::ask::guessing(&d, d.run(&first).unwrap()).as_deref(), Some(hand.as_str()));
+    // Its own version of patch 1, the code edited too.
+    let c = d.run(&first).and_then(|r| r.held.clone()).and_then(|h| h.stack).unwrap();
+    assert!(d.patch(&c.patches[0]).diff.contains("+Two"), "made from the edit's stack");
+    drop(d);
+    // The edit rejected: the reconcile dropped, then made again from the
+    // stack as it is, waiting for review.
+    Db::edit(&db, |d| stacked::held::close(d, &hand, &Default::default(), Some(false)).map(|_| ())).unwrap();
+    let d = Db::load(&db).unwrap();
+    assert!(d.run(&first).is_some_and(|r| r.summary.starts_with("dropped: the work it went on from was rejected")), "{:?}", d.run(&first));
+    drop(d);
+    app.launch();
+    app.settle();
+    let d = Db::load(&db).unwrap();
+    let again = stacked::reconcile::pending(&d, "s").cloned().unwrap();
+    assert_ne!(again.id, first);
+    assert_eq!((again.state, stacked::ask::guessing(&d, &again)), (RunState::Done, None));
+    let c = again.held.as_ref().and_then(|h| h.stack.clone()).unwrap();
+    assert!(d.patch(&c.patches[0]).diff.contains("+TWO") && c.from == Some(d.head("s").unwrap().0), "made from the stack as it is");
+}
+
+#[test]
+fn reconcile_with_head_is_grayed_with_no_commit_marked() {
+    let (_tmp, db, src) = setup();
+    let mut app = open_in(&db, &src);
+    keys(&mut app, &[KeyCode::Home]);
+    while !app.on_head() {
+        keys(&mut app, &[KeyCode::Down]);
+    }
+    keys(&mut app, &[KeyCode::Enter]);
+    assert_eq!(offered(&app, "Reconcile with HEAD"), Some(false));
+    assert!(menu_note(&app).contains("Reconcile with HEAD is grayed: no commit of HEAD's is marked: each has its patch's message."), "{}", menu_note(&app));
+    assert_eq!(
+        stacked::reconcile::ask(&db, "s", &src).unwrap_err().0,
+        "no commit of HEAD's is marked: each has its patch's message"
+    );
 }
 
 /// The message of commit `rev` in the checkout at `src`.
@@ -13730,7 +14025,7 @@ fn a_patch_whose_commit_names_a_revision_it_does_not_is_held_back_and_the_others
     app.look_at_head();
     app.settle();
     choose(&mut app, "Submit to Phabricator as WIP");
-    let held = "Patch 3 names no revision in the stack and D34 in your workspace's commit: give the patch's message D34 first, with an edit by hand, so that no second revision is made.";
+    let held = "Patch 3 names no revision in the stack and D34 in your workspace's commit: give the patch D34 first, with Reconcile with HEAD on its menu, so that no second revision is made.";
     assert_eq!(app.status, format!("{held} Nothing was sent."));
     assert!(phab.lock().unwrap().calls.is_empty(), "no call at all");
     // The menu knows it now: grayed, and why said.
@@ -13770,7 +14065,7 @@ fn a_commit_naming_another_revision_than_its_patch_holds_back_the_submit_and_the
     let mut app = open_in(&db, &src);
     keys(&mut app, &[KeyCode::Down, KeyCode::Down, KeyCode::Char(' ')]);
     assert_eq!(submit_offered(&app), Some(false));
-    let held = "Patch 3 names D13 in the stack and D34 in your workspace's commit: make the patch and its commit name the same revision first, the patch with an edit by hand or the commit in your checkout, so that its diff goes to the revision you keep.";
+    let held = "Patch 3 names D13 in the stack and D34 in your workspace's commit: make the patch and its commit name the same revision first, the patch with Reconcile with HEAD on its menu or the commit in your checkout, so that its diff goes to the revision you keep.";
     assert!(menu_note(&app).contains(held), "{}", menu_note(&app));
     assert!(phab.lock().unwrap().calls.is_empty());
     // The stack's patch alone names its revision: not held back.

@@ -920,8 +920,8 @@ pub fn held_by_head(head: &crate::head::Head, at: usize) -> Option<String> {
     let crate::head::Mark::Revision { theirs, ours } = head.mark(at)? else { return None };
     let said = format!("patch {} names {} in the stack and {theirs} in your workspace's commit", at + 1, ours.as_deref().unwrap_or("no revision"));
     let first = match ours {
-        None => format!("give the patch's message {theirs} first, with an edit by hand, so that no second revision is made"),
-        Some(_) => "make the patch and its commit name the same revision first, the patch with an edit by hand or the commit in your checkout, so that its diff goes to the revision you keep".into(),
+        None => format!("give the patch {theirs} first, with Reconcile with HEAD on its menu, so that no second revision is made"),
+        Some(_) => "make the patch and its commit name the same revision first, the patch with Reconcile with HEAD on its menu or the commit in your checkout, so that its diff goes to the revision you keep".into(),
     };
     Some(format!("{}{}: {first}.", said[..1].to_uppercase(), &said[1..]))
 }
@@ -2132,11 +2132,11 @@ mod tests {
         let names = |ours: Option<&str>, theirs: &str| Mark::Revision { theirs: theirs.into(), ours: ours.map(String::from) };
         assert_eq!(
             held_by_head(&head(names(None, "D34"), 2), 2).as_deref(),
-            Some("Patch 3 names no revision in the stack and D34 in your workspace's commit: give the patch's message D34 first, with an edit by hand, so that no second revision is made.")
+            Some("Patch 3 names no revision in the stack and D34 in your workspace's commit: give the patch D34 first, with Reconcile with HEAD on its menu, so that no second revision is made.")
         );
         assert_eq!(
             held_by_head(&head(names(Some("D13"), "D34"), 2), 2).as_deref(),
-            Some("Patch 3 names D13 in the stack and D34 in your workspace's commit: make the patch and its commit name the same revision first, the patch with an edit by hand or the commit in your checkout, so that its diff goes to the revision you keep.")
+            Some("Patch 3 names D13 in the stack and D34 in your workspace's commit: make the patch and its commit name the same revision first, the patch with Reconcile with HEAD on its menu or the commit in your checkout, so that its diff goes to the revision you keep.")
         );
         // Its commit's message other than the patch's, the patch alone
         // naming a revision or not; another patch of the stack; HEAD

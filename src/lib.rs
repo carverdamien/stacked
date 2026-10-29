@@ -45,6 +45,7 @@ pub mod panes;
 pub mod phab;
 pub mod progress;
 pub mod reading;
+pub mod reconcile;
 pub mod refs;
 #[cfg(feature = "moz-phab")]
 pub mod review;

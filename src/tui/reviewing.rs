@@ -151,13 +151,17 @@ pub(super) struct Line {
     /// What a run of the linter reported and did not fix, by its place
     /// among those the work holds: to read.
     report: Option<usize>,
+    /// Of a reconcile with HEAD's work, stacked's comment: what to run in
+    /// your checkout should you reject it, to read.
+    stacked: bool,
 }
 
 impl Line {
     /// Whether the cursor goes on it: a part, a comment that asked, what
-    /// you wrote, or what the linter reported; not a section's title.
+    /// you wrote, what the linter reported, or stacked's comment; not a
+    /// section's title.
     fn selectable(&self) -> bool {
-        self.part.is_some() || self.asking.is_some() || self.yours.is_some() || self.report.is_some()
+        self.part.is_some() || self.asking.is_some() || self.yours.is_some() || self.report.is_some() || self.stacked
     }
 }
 
@@ -200,6 +204,21 @@ fn operation(d: &Diffed) -> Option<(String, Style)> {
 /// A comment's first words.
 pub(super) fn first_words(text: &str) -> String {
     thread_turns(text).first().map(|t| crate::markdown::first_line(&t.body)).unwrap_or_default()
+}
+
+/// Stacked's comment in the review of reconcile `job`, as the right pane
+/// shows it, `w` wide: what to run in your checkout should you reject it,
+/// each sentence folded between words. All of it is the part.
+fn stacked_view(job: &crate::reconcile::Job, w: usize) -> View {
+    let mut lines: Vec<Vec<(String, Style)>> = Vec::new();
+    for (k, said) in crate::reconcile::comment(job).iter().enumerate() {
+        if k > 0 {
+            lines.push(vec![(String::new(), Style::new())]);
+        }
+        lines.extend(wrap(said, w.max(20)).into_iter().map(|l| vec![(l, Style::new())]));
+    }
+    let n = lines.len();
+    (" stacked's comment: if you reject it, what to run in your checkout".into(), lines, 0..n)
 }
 
 /// What a run of the linter of the lint job's work `l` reported and did
@@ -314,7 +333,7 @@ impl App {
         let Some(rv) = &self.reviewing else { return false };
         self.review_lines()
             .get(rv.sel)
-            .is_some_and(|l| l.asking.is_none() && l.yours.is_none() && l.report.is_none() && matches!(l.part, Some(Part::Stack) | None))
+            .is_some_and(|l| l.asking.is_none() && l.yours.is_none() && l.report.is_none() && !l.stacked && matches!(l.part, Some(Part::Stack) | None))
             && self.review_stacks().is_some()
     }
 
@@ -754,6 +773,7 @@ impl App {
             asking: None,
             yours: None,
             report: None,
+            stacked: false,
         };
         let asking = self.asking_open();
         if !asking.is_empty() {
@@ -856,6 +876,15 @@ impl App {
                 });
             }
         }
+        // A reconcile with HEAD's: stacked's comment, what to run in your
+        // checkout should you reject it, to read.
+        if self.work(&rv.run).is_some_and(|(r, _)| r.reconcile.is_some()) {
+            out.push(title(" stacked's comment, to read"));
+            out.push(Line {
+                stacked: true,
+                ..line("   what to run if you reject it".into(), Style::new())
+            });
+        }
         // What you wrote in it, which sends it back to the agent: each line
         // to see where it would be, write again, or take back.
         let mut yours: Vec<(String, Yours)> = Vec::new();
@@ -918,6 +947,12 @@ impl App {
             && let Some(e) = line.report.and_then(|k| l.errors.get(k))
         {
             return report_view(l, e, w);
+        }
+        // Stacked's comment on a reconcile with HEAD: its sentences, to read.
+        if line.stacked
+            && let Some(job) = r.reconcile.as_deref()
+        {
+            return stacked_view(job, w);
         }
         match line.part {
             Some(Part::Stack) | None => {
@@ -1075,6 +1110,10 @@ impl App {
                 }
                 if crate::held::by_hand(r) {
                     return format!(" your edit by hand: {left} · {}", h.edits.join(", then "));
+                }
+                // A reconcile with HEAD's: what it takes from your checkout.
+                if crate::reconcile::is(r) {
+                    return format!(" the reconcile with HEAD: {left} · {}", r.request);
                 }
                 // The linter's: what it did, said as the history says it, or
                 // what it reported alone.
@@ -1461,6 +1500,9 @@ impl App {
         if line.report.is_some() {
             return "enter: nothing, what the linter reported is to read";
         }
+        if line.stacked {
+            return "enter: nothing, stacked's comment is to read";
+        }
         match (line.asking, line.part) {
             (Some(k), _) if rv.marks.get(&crate::held::asking_key(k)) == Some(&true) => "enter: keep it open",
             (Some(_), _) => "enter: close it with the review",
@@ -1510,6 +1552,9 @@ impl App {
         // What the linter reported and did not fix: read, not marked.
         if self.work(&rv.run).is_some_and(|(_, h)| h.lint.as_ref().is_some_and(|l| !l.errors.is_empty())) {
             out.push("what the linter reported: to read, nothing to accept or reject".to_string());
+        }
+        if self.work(&rv.run).is_some_and(|(r, _)| r.reconcile.is_some()) {
+            out.push("stacked's comment: to read, nothing to accept or reject".to_string());
         }
         let asking = self.asking_open();
         if !asking.is_empty() {
@@ -1623,6 +1668,7 @@ impl App {
             Some(r) if crate::held::pulled(r) => "the comments pulled",
             Some(r) if crate::held::by_hand(r) => "your edit by hand",
             Some(r) if crate::held::linted(r) => "the linter's work",
+            Some(r) if crate::reconcile::is(r) => "the reconcile with HEAD",
             _ => "the agent's work",
         };
         let mut m = Menu::new(format!("your review of {of}"), items, None);
