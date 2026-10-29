@@ -114,8 +114,8 @@ fn diff_rows(rows: &mut Vec<Row>, line: &str, words: &[(usize, usize)], w: usize
 
 /// A line of the title and summary, `l`, compared with the other
 /// version's (`messages::diff`), after its sign, as rows folded to `w`:
-/// what only its version has marked on each piece, as the sync of the
-/// commit messages marks it, and a break only it has on the last.
+/// what only its version has marked on each piece, as an interdiff marks
+/// it, and a break only it has on the last.
 fn compared_rows(rows: &mut Vec<Row>, sign: char, l: &crate::messages::Marked, w: usize) {
     let words: Vec<(usize, usize)> = l.words.iter().map(|&(s, e)| (s + 1, e + 1)).collect();
     let from = rows.len();
@@ -143,9 +143,9 @@ fn review_rows(p: &Prepared, w: usize) -> Vec<Row> {
     for s in p.said() {
         said_rows(&mut rows, Kind::Meta, &s, w);
     }
-    // The title and summary, as the sync of the commit messages compares
-    // two messages: a section the same in both once, as it is sent; one
-    // that differs, Phabricator's lines then those sent.
+    // The title and summary, as an interdiff compares two messages: a
+    // section the same in both once, as it is sent; one that differs,
+    // Phabricator's lines then those sent.
     let before = p.message_before().unwrap_or_default();
     let after = p.message_after();
     if before != after {

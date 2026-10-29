@@ -381,8 +381,7 @@ pub fn interdiff(old: &Patch, new: &Patch) -> String {
 
 /// A line of an interdiff (`interdiff_lines`), as it is written, its sign
 /// first. On a line of the message taken out or put in, what of it the
-/// other version has not, as the sync of the commit messages marks it
-/// (`messages::compare`): ranges of its characters, the sign the first of
+/// other version has not, compared word by word (`messages::compare`): ranges of its characters, the sign the first of
 /// them; and whether a break only it has follows it. The rest of such a
 /// line is what both versions say.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -400,8 +399,8 @@ impl From<&str> for InterLine {
 /// What changed from `old` to `new`, a line at a time: their mails diffed,
 /// with three lines around each change. Their headers, and what follows
 /// the `---` before the diff, line by line. Their titles, then the bodies
-/// of their messages, each with the other's as the sync of the commit
-/// messages compares two messages (`messages::diff`): a section the same in
+/// of their messages, each with the other's, compared word by word where
+/// their lines wrap aside (`messages::diff`): a section the same in
 /// both, though wrapped otherwise or ending its lines in other white space,
 /// is there once, as the new version writes it, unchanged; written
 /// otherwise, it is around a change of its own, though none of its lines

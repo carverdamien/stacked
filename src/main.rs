@@ -467,7 +467,7 @@ enum Cmd {
     /// Where HEAD of the checkout stacked runs in is, against stack NAME: at
     /// its base, at one of its patches (its commits since the base being the
     /// stack's patches, by their diff), or elsewhere; and the patches whose
-    /// message differs from its commit's, which the editor syncs.
+    /// message differs from its commit's.
     Head {
         name: String,
         /// HEAD moved there: detached at the stack's base with its first N
@@ -1913,9 +1913,6 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
                         Some(said) => println!("{said}"),
                         None => println!("the message of patch {} differs from its commit's: \"{}\"", k + 1, m.lines().next().unwrap_or("")),
                     }
-                }
-                if !on.messages.is_empty() {
-                    println!("the commit messages are synced in stacked's editor, from the first line of its banner");
                 }
             }
         }

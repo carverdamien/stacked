@@ -5,13 +5,11 @@
 //! space for `menu`), so the rest of it knows only those; a key no action
 //! has does nothing. In the search of the middle, what is typed is typed,
 //! but for the search's own keys: those going from match to match, which
-//! the settings map, and Esc, Enter, ↑ and ↓, which they do not. In the
-//! sync of the commit messages, its own keys, which pick the message a
-//! patch keeps, are read before the screens' there. Two things of one
-//! context on one key clash; of two contexts, one key can do both: each is
-//! read where it is, and where both are, the sync's or the search's own
-//! first. The inline comment editor reads its keys as they are: they are
-//! what is typed.
+//! the settings map, and Esc, Enter, ↑ and ↓, which they do not. Two things
+//! of one context on one key clash; of two contexts, one key can do both:
+//! each is read where it is, and where both are, the search's own first.
+//! The inline comment editor reads its keys as they are: they are what is
+//! typed.
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
@@ -23,20 +21,16 @@ pub enum Context {
     Screens,
     /// The search of the middle, while its bar is open.
     Search,
-    /// The sync of the commit messages, no menu over it: its own keys
-    /// first, then the screens'.
-    Sync,
 }
 
 impl Context {
-    pub const ALL: [Context; 3] = [Context::Screens, Context::Search, Context::Sync];
+    pub const ALL: [Context; 2] = [Context::Screens, Context::Search];
 
     /// Its name, as `stacked config` says it.
     pub fn name(self) -> &'static str {
         match self {
             Context::Screens => "screens",
             Context::Search => "search",
-            Context::Sync => "sync",
         }
     }
 
@@ -46,9 +40,6 @@ impl Context {
             Context::Screens => "on the screens and the menus over them, wherever nothing is typed",
             Context::Search => {
                 "in the search of the middle, while its bar is open, which keeps for itself Esc, Enter, ↑, ↓, ctrl-c and the keys that type or edit what is typed"
-            }
-            Context::Sync => {
-                "in the sync of the commit messages, with no menu over it, where these are read before the keys of the screens: a key of both does what it does here"
             }
         }
     }
@@ -92,14 +83,18 @@ pub enum Key {
     /// the browser; of several, the menu of them.
     OpenLink,
     Quit,
-    /// In the sync of the commit messages, the patch the cursor is on
-    /// keeping the stack's message, or its commit's in your workspace.
-    KeepStack,
-    KeepWorkspace,
 }
 
+/// The keys that once were and are no longer, by their names in the
+/// settings, each with why: a settings' file that still names one is told
+/// so, and the key is passed over.
+pub const GONE: [(&str, &str); 2] = [
+    ("keep_stack", "the sync of the commit messages it picked in is gone"),
+    ("keep_workspace", "the sync of the commit messages it picked in is gone"),
+];
+
 impl Key {
-    pub const ALL: [Key; 23] = [
+    pub const ALL: [Key; 21] = [
         Key::Up,
         Key::Down,
         Key::Left,
@@ -121,8 +116,6 @@ impl Key {
         Key::Whole,
         Key::OpenLink,
         Key::Quit,
-        Key::KeepStack,
-        Key::KeepWorkspace,
     ];
 
     /// Its name in the settings.
@@ -149,8 +142,6 @@ impl Key {
             Key::Whole => "whole",
             Key::OpenLink => "open_link",
             Key::Quit => "quit",
-            Key::KeepStack => "keep_stack",
-            Key::KeepWorkspace => "keep_workspace",
         }
     }
 
@@ -179,8 +170,6 @@ impl Key {
             Key::Whole => &["3"],
             Key::OpenLink => &["o"],
             Key::Quit => &["ctrl-c"],
-            Key::KeepStack => &["s"],
-            Key::KeepWorkspace => &["w"],
         }
     }
 
@@ -208,8 +197,6 @@ impl Key {
             Key::Whole => (KeyCode::Char('3'), KeyModifiers::NONE),
             Key::OpenLink => (KeyCode::Char('o'), KeyModifiers::NONE),
             Key::Quit => (KeyCode::Char('c'), KeyModifiers::CONTROL),
-            Key::KeepStack => (KeyCode::Char('s'), KeyModifiers::NONE),
-            Key::KeepWorkspace => (KeyCode::Char('w'), KeyModifiers::NONE),
         };
         KeyEvent::new(code, mods)
     }
@@ -218,7 +205,6 @@ impl Key {
     pub fn context(self) -> Context {
         match self {
             Key::FindNext | Key::FindPrevious => Context::Search,
-            Key::KeepStack | Key::KeepWorkspace => Context::Sync,
             _ => Context::Screens,
         }
     }
@@ -343,6 +329,12 @@ impl Chord {
     }
 }
 
+/// Why the settings no longer take `keys.NAME`, a key that is gone, as
+/// `why` says.
+pub fn gone(name: &str, why: &str) -> String {
+    format!("keys.{name} is no longer supported: {why}")
+}
+
 /// Each action's keys.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Keymap {
@@ -375,7 +367,10 @@ impl Keymap {
         let mut wrong = Vec::new();
         for (action, names) in named {
             let Some(key) = Key::ALL.iter().find(|k| k.name() == action) else {
-                wrong.push(format!("keys: there is no {action:?}"));
+                match GONE.iter().find(|(name, _)| name == action) {
+                    Some((_, why)) => wrong.push(format!("{}; it is passed over", gone(action, why))),
+                    None => wrong.push(format!("keys: there is no {action:?}")),
+                }
                 continue;
             };
             let mut chords = Vec::new();
@@ -563,11 +558,6 @@ mod tests {
         let (map, wrong) = Keymap::from_names(&[("open_link".into(), vec!["space".into()])]);
         assert_eq!(wrong, ["keys: Space is menu and open_link; it does the first"]);
         assert_eq!(map.translate(&ev(KeyCode::Char(' '), KeyModifiers::NONE)), Some(Key::Menu.event()));
-        // One of the sync's: no clash, each read where it is.
-        let (map, wrong) = Keymap::from_names(&[("open_link".into(), vec!["s".into()])]);
-        assert!(wrong.is_empty(), "{wrong:?}");
-        let s = ev(KeyCode::Char('s'), KeyModifiers::NONE);
-        assert_eq!((map.action(&s), map.action_in(Context::Sync, &s)), (Some(Key::OpenLink), Some(Key::KeepStack)));
     }
 
     #[test]
@@ -619,24 +609,22 @@ mod tests {
     }
 
     #[test]
-    fn the_sync_s_keys_pick_in_their_own_context_and_clash_only_there() {
-        // s and w unless the settings say otherwise, read in the sync alone:
-        // nothing on the screens.
-        let map = Keymap::default();
-        let (s, w) = (ev(KeyCode::Char('s'), KeyModifiers::NONE), ev(KeyCode::Char('w'), KeyModifiers::NONE));
-        assert_eq!((map.action_in(Context::Sync, &s), map.action_in(Context::Sync, &w)), (Some(Key::KeepStack), Some(Key::KeepWorkspace)));
-        assert_eq!((map.translate(&s), map.translate(&w)), (None, None));
-        assert_eq!((map.label(Key::KeepStack), map.label(Key::KeepWorkspace)), ("s".to_string(), "w".to_string()));
-        assert_eq!((Key::KeepStack.context(), Context::Sync.name()), (Context::Sync, "sync"));
-        // A key of the screens too, as ← for the stack's, on the left: no
-        // clash, each read where it is.
-        let (map, wrong) = Keymap::from_names(&[("keep_stack".into(), vec!["left".into()]), ("keep_workspace".into(), vec!["right".into()])]);
-        assert!(wrong.is_empty(), "{wrong:?}");
-        let left = ev(KeyCode::Left, KeyModifiers::NONE);
-        assert_eq!((map.action_in(Context::Sync, &left), map.action(&left)), (Some(Key::KeepStack), Some(Key::Left)));
-        // Both on one key: said, and the first does it.
-        let (map, wrong) = Keymap::from_names(&[("keep_workspace".into(), vec!["s".into()])]);
-        assert_eq!(wrong, ["keys: s is keep_stack and keep_workspace; it does the first"]);
-        assert_eq!(map.action_in(Context::Sync, &s), Some(Key::KeepStack));
+    fn a_key_that_is_gone_is_said_so_and_passed_over() {
+        // The sync's keys, gone with it: said, with why, and passed over;
+        // the other keys named as they say.
+        let named = vec![("keep_stack".to_string(), vec!["s".to_string()]), ("keep_workspace".to_string(), vec!["w".to_string()]), ("menu".to_string(), vec!["m".to_string()])];
+        let (map, wrong) = Keymap::from_names(&named);
+        assert_eq!(
+            wrong,
+            [
+                "keys.keep_stack is no longer supported: the sync of the commit messages it picked in is gone; it is passed over",
+                "keys.keep_workspace is no longer supported: the sync of the commit messages it picked in is gone; it is passed over",
+            ]
+        );
+        assert_eq!(map.label(Key::Menu), "m");
+        for c in ['s', 'w'] {
+            assert_eq!(map.translate(&ev(KeyCode::Char(c), KeyModifiers::NONE)), None, "{c}");
+        }
+        assert!(Key::ALL.iter().all(|k| GONE.iter().all(|(name, _)| k.name() != *name)));
     }
 }

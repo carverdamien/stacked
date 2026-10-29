@@ -5457,101 +5457,38 @@ fn open_in(db: &Path, src: &Path) -> Editor {
 }
 
 #[test]
-fn the_commit_messages_to_sync_are_the_banner_s_first_line_and_landed_work_waits_for_them() {
+fn a_commit_message_that_differs_holds_back_nothing_and_none_of_it_goes_into_the_stack() {
     use stacked::tui::BannerLine;
     let (_tmp, db, src) = setup();
-    // An edit by hand of patch 1 waits for review; the top commit, patch 2
-    // by its diff, is reworded in the workspace.
-    hand_edit(&db, None);
+    // An edit by hand of patch 1 waits for review, and an answer's reply;
+    // the top commit, patch 2 by its diff, is reworded in the workspace.
+    let run = hand_edit(&db, None);
     git(&src, &["commit", "-q", "--amend", "-m", "Bug 2 - add a bee"]);
     let mut app = open_in(&db, &src);
-    // Said first in the banner's line; first when it is open, in a section
-    // of its own.
-    let screen = draw(&mut app);
-    assert!(screen.contains(" ✉ the commit messages of patch 2 differ from your workspace's: sync them first · 1 edit by hand waits"), "{screen}");
-    keys(&mut app, &[KeyCode::Esc]);
-    assert_eq!(app.banner_lines()[0], BannerLine::Sync);
-    let screen = draw(&mut app);
-    let title = at(&screen, " commit messages, to sync first").1;
-    assert_eq!(at(&screen, "   ✉ Sync the commit messages of patch 2: the stack and your workspace differ").1, title + 1, "{screen}");
-    assert!(at(&screen, " edits, to review").1 > title + 1, "{screen}");
-    assert!(app.hint().starts_with("↑↓ choose · enter: sync them ·"), "{}", app.hint());
-    // The landed work waits: Enter on it says why; its item in the banner's
-    // menu is grayed, the menu saying why too.
-    let why = "the commit messages of patch 2 differ from your workspace's: sync them first, from the banner's first line, then review what landed";
-    keys(&mut app, &[KeyCode::Down, KeyCode::Enter]);
-    assert_eq!((app.screen, app.status.as_str()), (Screen::Main, why));
-    // Nor rejected from there.
-    keys(&mut app, &[KeyCode::Delete]);
-    assert_eq!((app.mode.clone(), app.status.as_str()), (Mode::Normal, why));
-    keys(&mut app, &[KeyCode::Char(' ')]);
-    let all = items(&app);
-    assert_eq!(all[0], ("Sync the commit messages of patch 2…".to_string(), true), "{all:?}");
-    assert!(all.iter().any(|(l, ok)| l.starts_with("Review a change of patch 1") && !ok), "{all:?}");
-    assert!(menu_note(&app).contains(why), "{}", menu_note(&app));
-    // Nothing of it in the patches pane, and no sync in its menus.
-    keys(&mut app, &[KeyCode::Esc, KeyCode::Esc]);
-    let screen = draw(&mut app);
-    let pane: Vec<String> = screen.lines().skip(2).map(|l| l.chars().take(30).collect()).collect();
-    assert!(pane.iter().all(|l| !l.contains('✉') && !l.contains("to sync")), "{screen}");
-    assert!(pane.iter().any(|l| l.trim() == "▶ HEAD main"), "{screen}");
-    for at_top in [false, true] {
-        (app.focus, app.on_stack) = (Focus::List, at_top);
-        keys(&mut app, &[KeyCode::Char(' ')]);
-        assert!(!items(&app).iter().any(|(l, _)| l.starts_with("Sync")), "{:?}", items(&app));
-        keys(&mut app, &[KeyCode::Esc]);
-    }
-    // Opened from the banner: the patch, still to pick, its two messages.
-    keys(&mut app, &[KeyCode::Esc, KeyCode::Enter]);
-    assert_eq!(app.screen, Screen::Sync);
-    let screen = draw(&mut app);
-    for said in [
-        " commit messages: 1 to pick",
-        "   to pick · 2 Bug 2 - add b",
-        " patch 2: Bug 2 - add b",
-        " the stack's message",
-        " your workspace's message",
-        "Bug 2 - add a bee",
-    ] {
-        assert!(screen.contains(said), "{said:?}:\n{screen}");
-    }
-    assert!(app.hint().starts_with("↑↓ choose · s: keep the stack's · w: keep your workspace's · enter: sync"), "{}", app.hint());
-    // Closed before every patch has its pick: what is left, said.
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "+TWO");
     keys(&mut app, &[KeyCode::Enter]);
-    assert_eq!(app.status, "patch 2 is still to pick: s keeps the stack's message and w your workspace's, for the patch the cursor is on");
-    assert_eq!(app.mode, Mode::Normal);
-    keys(&mut app, &[KeyCode::Char(' ')]);
-    assert!(items(&app).contains(&("Sync the commit messages…".to_string(), false)), "{:?}", items(&app));
-    assert!(menu_note(&app).contains("Patch 2 is still to pick"), "{}", menu_note(&app));
-    keys(&mut app, &[KeyCode::Esc]);
-    // Picked by key: said, and listed so.
-    keys(&mut app, &[KeyCode::Char('w')]);
-    assert_eq!(app.status, "patch 2 keeps your workspace's message: every patch has its pick, and Enter syncs them");
+    save(&mut app, "why so loud?");
+    let n = notes_of(&db, "s", 0).remove(0);
+    held(&db, "run-answer", &n.change, &n.id, "It is a shout.", false);
+    app.refresh();
+    // The banner says what waits, and nothing of the messages.
     let screen = draw(&mut app);
-    assert!(screen.contains("   workspace · 2 Bug 2 - add b") && screen.contains(" your workspace's message · kept"), "{screen}");
-    // Closed: asked first, what it does said, the menu on keeping picking.
+    let banner = screen.lines().nth(1).unwrap_or_default();
+    assert!(banner.starts_with(" ⟳ 1 landed ask and 1 edit by hand wait for your review"), "{screen}");
+    assert!(!screen.contains("commit messages") && !screen.contains("sync") && !banner.contains('✉'), "{screen}");
+    // The reply is taken at once from its comment's menu.
+    keys(&mut app, &[KeyCode::Down, KeyCode::Char(' ')]);
+    assert!(items(&app).contains(&("Accept the agent's reply".to_string(), true)), "{:?}", items(&app));
+    choose(&mut app, "Accept the agent's reply");
+    assert_eq!(app.status, "you accepted the agent's reply: it is in the thread now");
+    // The edit's review opens from the banner, its first line, and closes.
+    keys(&mut app, &[KeyCode::Esc]);
+    assert_eq!(app.banner_lines()[0], BannerLine::Landed(run));
+    // s and w, the keys of the sync of before, do nothing.
+    keys(&mut app, &[KeyCode::Char('s'), KeyCode::Char('w')]);
+    assert_eq!((app.screen, app.status.as_str()), (Screen::Main, ""));
     keys(&mut app, &[KeyCode::Enter]);
-    let Mode::Menu(m) = &app.mode else { panic!("{:?}", app.mode) };
-    assert_eq!((m.title.as_str(), m.items[m.sel].label.as_str()), ("sync the commit messages?", "Keep picking"));
-    assert_eq!(
-        menu_note(&app),
-        "Patch 2 takes your workspace's message.\nThe stack takes the new versions of its patches at once: your picks are their review.\nYour edit by hand of patch 1, which waits for your review, goes on from them."
-    );
-    choose(&mut app, "Sync them");
-    app.settle();
-    assert_eq!(
-        app.status,
-        "synced the commit messages of patch 2: patch 2 has a new version in the stack; your edit by hand of patch 1, which waits for your review, goes on from the new versions"
-    );
-    assert_eq!((app.screen, patch_message(&db, 1)), (Screen::Main, "Bug 2 - add a bee".to_string()));
-    let d = Db::load(&db).unwrap();
-    assert!(d.head("s").unwrap().1.op.starts_with("sync the commit messages of patch 2 with your workspace: edit "), "{}", d.head("s").unwrap().1.op);
-    drop(d);
-    // In sync: the line gone, and the landed work reviewed, its change
-    // still taken, the message kept with it.
-    assert!(app.head_here().is_some_and(|h| h.in_sync(2)), "{:?}", app.head_here());
-    assert!(!app.banner_lines().contains(&BannerLine::Sync), "{:?}", app.banner_lines());
-    keys(&mut app, &[KeyCode::Esc, KeyCode::Enter]);
     assert_eq!(app.screen, Screen::Review);
     app.settle();
     keys(&mut app, &[KeyCode::Esc]);
@@ -5559,156 +5496,9 @@ fn the_commit_messages_to_sync_are_the_banner_s_first_line_and_landed_work_waits
     choose(&mut app, "Accept them and close");
     app.settle();
     assert!(app.status.starts_with("reviewed: its change accepted"), "{}", app.status);
-    assert_eq!(patch_message(&db, 1), "Bug 2 - add a bee");
-    let d = Db::load(&db).unwrap();
-    assert!(d.patch(&d.stack("s").unwrap().patches[0]).diff.contains("+Two"));
-}
-
-#[test]
-fn the_sync_puts_the_message_kept_on_each_side_that_lacks_it_at_once() {
-    let (_tmp, db, src) = setup();
-    // Both commits reworded in the workspace, HEAD detached on them.
-    git(&src, &["checkout", "-q", "--detach", "HEAD~1"]);
-    git(&src, &["commit", "-q", "--amend", "-m", "Bug 1 - shout TWO\n\nBecause it is loud."]);
-    git(&src, &["cherry-pick", "main"]);
-    git(&src, &["commit", "-q", "--amend", "-m", "Bug 2 - add a bee"]);
-    let trees = (rev_in(&src, "HEAD~1^{tree}"), rev_in(&src, "HEAD^{tree}"));
-    let mut app = open_in(&db, &src);
-    // Opened from the banner's menu.
-    keys(&mut app, &[KeyCode::Esc]);
-    choose(&mut app, "Sync the commit messages of patches 1 and 2…");
-    assert_eq!(app.screen, Screen::Sync);
-    // Patch 1 keeps the stack's message, from the sync's menu; patch 2 your
-    // workspace's, with a click on it.
-    choose(&mut app, "Keep the stack's message");
-    assert_eq!(app.status, "patch 1 keeps the stack's message");
-    keys(&mut app, &[KeyCode::Down]);
-    let screen = draw(&mut app);
-    let (x, y) = at(&screen, "Bug 2 - add a bee");
-    assert_eq!(app.click(x, y, false), Effect::None);
-    let screen = draw(&mut app);
-    assert!(screen.contains("   stacked · 1 Bug 1 - shout") && screen.contains("   workspace · 2 Bug 2 - add b"), "{screen}");
-    // A click on a line of the list picks it, keeping nothing.
-    let (x, y) = at(&screen, "   stacked · 1 Bug 1");
-    app.click(x, y, false);
-    assert_eq!(app.syncing.as_ref().unwrap().sel, 0);
-    assert!(draw(&mut app).contains("   stacked · 1 Bug 1 - shout"));
-    keys(&mut app, &[KeyCode::Enter]);
-    assert_eq!(
-        menu_note(&app),
-        "Patch 2 takes your workspace's message.\nThe commit of patch 1 takes the stack's message.\nThe stack takes the new versions of its patches at once: your picks are their review.\n2 commits are made again in your workspace, the files as they were, and HEAD moves to them."
-    );
-    choose(&mut app, "Sync them");
-    app.settle();
-    assert_eq!(
-        app.status,
-        "synced the commit messages of patches 1 and 2: patch 2 has a new version in the stack, and HEAD has 2 commits made again, the files as they were"
-    );
-    // Both ways at once: the commits made again, their files as they were;
-    // the patch, a new version; HEAD in sync with the stack.
-    assert_eq!((commit_message(&src, "HEAD~1"), commit_message(&src, "HEAD")), ("Bug 1 - shout two\n\nBecause.".to_string(), "Bug 2 - add a bee".to_string()));
-    assert_eq!((rev_in(&src, "HEAD~1^{tree}"), rev_in(&src, "HEAD^{tree}")), trees);
-    assert_eq!((patch_message(&db, 0), patch_message(&db, 1)), ("Bug 1 - shout two\n\nBecause.".to_string(), "Bug 2 - add a bee".to_string()));
-    assert!(app.head_here().is_some_and(|h| h.in_sync(2)), "{:?}", app.head_here());
-    assert!(!draw(&mut app).contains("Sync the commit messages"));
-}
-
-#[test]
-fn a_change_waiting_for_review_takes_the_messages_synced_its_own_versions_too() {
-    let (_tmp, db, src) = setup();
-    // An edit by hand of patch 1's code waits for review; patch 1's commit
-    // is reworded in the workspace, HEAD detached on it and patch 2's.
-    hand_edit(&db, None);
-    git(&src, &["checkout", "-q", "--detach", "HEAD~1"]);
-    git(&src, &["commit", "-q", "--amend", "-m", "Bug 1 - shout TWO\n\nBecause it is loud."]);
-    git(&src, &["cherry-pick", "main"]);
-    let mut app = open_in(&db, &src);
-    keys(&mut app, &[KeyCode::Esc, KeyCode::Enter, KeyCode::Char('w'), KeyCode::Enter]);
-    choose(&mut app, "Sync them");
-    app.settle();
-    let loud = "Bug 1 - shout TWO\n\nBecause it is loud.";
-    assert_eq!(patch_message(&db, 0), loud);
-    // Its review: its own version of patch 1, its code changed, says the
-    // message synced too; accepted, so does the stack's.
-    keys(&mut app, &[KeyCode::Esc, KeyCode::Enter]);
-    assert_eq!(app.screen, Screen::Review);
-    let screen = draw(&mut app);
-    assert!(screen.contains("modify  1 Bug 1 - shout TWO"), "{screen}");
-    keys(&mut app, &[KeyCode::Esc]);
-    choose(&mut app, "Accept all remaining and Close");
-    choose(&mut app, "Accept them and close");
-    app.settle();
-    let d = Db::load(&db).unwrap();
-    let p = d.patch(&d.stack("s").unwrap().patches[0]);
-    assert!(p.diff.contains("+Two") && p.message == loud, "{p:?}");
-}
-
-#[test]
-fn while_the_agent_changes_the_stack_no_patch_takes_a_message_but_a_commit_may() {
-    let (_tmp, db, src) = setup();
-    git(&src, &["commit", "-q", "--amend", "-m", "Bug 2 - add a bee"]);
-    let change = {
-        let d = Db::load(&db).unwrap();
-        d.patch(&d.stack("s").unwrap().patches[0]).change.clone()
-    };
-    changing(&db, &change, "c1", serde_json::json!({"patch": change}));
-    let mut app = open_in(&db, &src);
-    // Your workspace's message kept: the stack would take it, and does not.
-    keys(&mut app, &[KeyCode::Esc, KeyCode::Enter, KeyCode::Char('w'), KeyCode::Enter]);
-    choose(&mut app, "Sync them");
-    app.settle();
-    assert_eq!(
-        app.status,
-        "the agent is changing patch 1, so the stack takes no new version of a patch until that work lands: nothing changed"
-    );
+    // The stack keeps its own message, and the commit its own.
     assert_eq!((patch_message(&db, 1), commit_message(&src, "HEAD")), ("Bug 2 - add b".to_string(), "Bug 2 - add a bee".to_string()));
-    // The stack's kept: only the commit changes, and it does.
-    keys(&mut app, &[KeyCode::Char('s'), KeyCode::Enter]);
-    choose(&mut app, "Sync them");
-    app.settle();
-    assert_eq!((app.screen, commit_message(&src, "HEAD")), (Screen::Main, "Bug 2 - add b".to_string()));
-}
-
-#[test]
-fn esc_keeps_the_picks_and_nothing_changes_when_something_did_meanwhile_or_the_checkout_is_not_ready() {
-    let (_tmp, db, src) = setup();
-    git(&src, &["commit", "-q", "--amend", "-m", "Bug 2 - add a bee"]);
-    let mut app = open_in(&db, &src);
-    keys(&mut app, &[KeyCode::Esc, KeyCode::Enter, KeyCode::Char('w'), KeyCode::Esc]);
-    assert_eq!(app.screen, Screen::Main);
-    assert_eq!(
-        app.status,
-        "you left the sync of the commit messages: your picks are kept while stacked runs, and the banner's first line opens it again"
-    );
-    // Opened again with clicks, on the banner, then on its line: the pick
-    // kept.
-    let screen = draw(&mut app);
-    let (x, y) = at(&screen, " ✉ the commit messages of patch 2");
-    app.click(x + 3, y, false);
-    let screen = draw(&mut app);
-    let (x, y) = at(&screen, "   ✉ Sync the commit messages of patch 2");
-    app.click(x + 5, y, false);
-    assert_eq!(app.screen, Screen::Sync);
-    assert!(draw(&mut app).contains("   workspace · 2 Bug 2 - add b"));
-    // The commit reworded again meanwhile: nothing changes, the sync says
-    // so, and the pick, of a message that is no longer, is dropped.
-    keys(&mut app, &[KeyCode::Enter]);
-    git(&src, &["commit", "-q", "--amend", "-m", "Bug 2 - add a bee, again"]);
-    let top = rev_in(&src, "HEAD");
-    choose(&mut app, "Sync them");
-    app.settle();
-    assert_eq!(app.status, "the stack or HEAD changed since the sync listed them: nothing changed, and the sync lists them as they are now");
-    assert_eq!((app.screen, patch_message(&db, 1), rev_in(&src, "HEAD")), (Screen::Sync, "Bug 2 - add b".to_string(), top.clone()));
-    let screen = draw(&mut app);
-    assert!(screen.contains("   to pick · 2 Bug 2 - add b") && screen.contains("Bug 2 - add a bee, again"), "{screen}");
-    // A change of yours not committed: no commit is made again.
-    std::fs::write(src.join("b.txt"), "bee, edited\n").unwrap();
-    keys(&mut app, &[KeyCode::Char('s'), KeyCode::Enter]);
-    choose(&mut app, "Sync them");
-    app.settle();
-    assert!(app.status.ends_with("has uncommitted changes: commit or stash them first; nothing changed"), "{}", app.status);
-    assert_eq!((rev_in(&src, "HEAD"), commit_message(&src, "HEAD")), (top, "Bug 2 - add a bee, again".to_string()));
-    assert_eq!(app.screen, Screen::Sync);
+    assert!(Db::load(&db).unwrap().head("s").unwrap().1.op.starts_with("edit "), "nothing else changed the stack");
 }
 
 /// While the file this gives is there, a `git status` in the checkout at
@@ -5728,21 +5518,11 @@ fn hold_moves(src: &Path) -> PathBuf {
     hold
 }
 
-/// Draws, and sees that nothing of the sync of the commit messages is said:
-/// not in the banner's line, nor as a line of it open.
-fn sync_quiet(app: &mut App) {
-    use stacked::tui::BannerLine;
-    let screen = draw(app);
-    assert!(!screen.contains("sync them first") && !screen.contains("Sync the commit messages"), "{screen}");
-    assert!(!app.banner_lines().contains(&BannerLine::Sync), "{:?}\n{screen}", app.banner_lines());
-}
-
-/// Reads what came, and draws, until `done` says so: nothing of the sync
-/// said each time (`sync_quiet`).
-fn quiet_until(app: &mut App, done: impl Fn(&App) -> bool) {
+/// Reads what came, and draws, until `done` says so.
+fn refresh_until(app: &mut App, done: impl Fn(&App) -> bool) {
     for _ in 0..300 {
         app.refresh();
-        sync_quiet(app);
+        draw(app);
         if done(app) {
             return;
         }
@@ -5753,191 +5533,29 @@ fn quiet_until(app: &mut App, done: impl Fn(&App) -> bool) {
 }
 
 #[test]
-fn nothing_of_the_sync_is_said_while_head_follows_a_review_until_it_is_looked_at_again() {
+fn head_is_shown_where_it_was_while_stacked_moves_it_and_where_it_went_once_it_is_over() {
     let (_tmp, db, src) = setup();
     let mut app = open_in(&db, &src);
-    // A comment on patch 1, then patch 1 reworded by hand, whose review
-    // opens.
-    keys(&mut app, &[KeyCode::Right]);
-    down_to(&mut app, "+TWO");
-    keys(&mut app, &[KeyCode::Enter]);
-    save(&mut app, "why so loud?");
-    let n = notes_of(&db, "s", 0).remove(0);
-    let louder = "Bug 1 - shout two, louder\n\nBecause.";
-    let run = Db::edit(&db, |d| {
-        let mut patches = d.stack("s")?.patches.clone();
-        let old = d.patch(&patches[0]).clone();
-        let draft = stacked::mbox::Draft {
-            message: louder.into(),
-            ..stacked::mbox::Draft::from(&old)
-        };
-        patches[0] = d.add_patch(stacked::ops::revise(&old, draft))?;
-        stacked::held::hold_by_hand(d, "s", patches, "reword", "patch 1", "reworded Bug 1", None)
-    })
-    .unwrap();
-    app.edited(stacked::ops::Edited::Landed { said: "reworded Bug 1".into(), run }, None, None);
-    assert_eq!(app.screen, Screen::Review);
-    app.settle();
-    // Accepted, HEAD following the stack, its move held: the stack has the
-    // new message at once, HEAD's commit the old one until HEAD has moved.
-    keys(&mut app, &[KeyCode::Esc]);
-    choose(&mut app, "Accept all remaining and Close");
-    let hold = hold_moves(&src);
-    choose(&mut app, "Accept them and close");
-    assert!(app.status.starts_with("reviewed: ") && app.status.ends_with("; moving HEAD to patch 2 of s…"), "{}", app.status);
-    assert_eq!(patch_message(&db, 0), louder);
-    sync_quiet(&mut app);
-    // The agent's answer to the comment lands, and HEAD is looked at
-    // meanwhile, its commit's message not the patch's: nothing of the sync
-    // said, and the answer's review not held back.
-    held(&db, "run-answer", &n.change, &n.id, "It is a shout.", false);
-    quiet_until(&mut app, |app| app.head_here().is_some_and(|h| h.differ() == [0]));
-    keys(&mut app, &[KeyCode::Esc, KeyCode::Char(' ')]);
-    assert!(items(&app).iter().any(|(l, ok)| l.starts_with("Review 1 reply") && *ok), "{:?}", items(&app));
-    keys(&mut app, &[KeyCode::Esc, KeyCode::Esc]);
-    // Moved: nothing said until HEAD is looked at again; then, in sync with
-    // the stack, there is nothing to sync.
-    std::fs::remove_file(&hold).unwrap();
-    quiet_until(&mut app, |app| app.status.contains("HEAD is at patch 2 of s"));
-    app.settle();
-    sync_quiet(&mut app);
-    assert!(app.status.ends_with("; HEAD is at patch 2 of s, detached: main is as it was"), "{}", app.status);
-    assert!(app.head_here().is_some_and(|h| h.in_sync(2)), "{:?}", app.head_here());
-    assert_eq!(commit_message(&src, "HEAD~1"), louder);
-}
-
-#[test]
-fn nothing_of_the_sync_is_said_while_head_is_moved_and_after_only_if_the_messages_differ() {
-    use stacked::tui::BannerLine;
-    let (_tmp, db, src) = setup();
-    git(&src, &["commit", "-q", "--amend", "-m", "Bug 2 - add a bee"]);
-    let mut app = open_in(&db, &src);
-    assert_eq!(app.banner_lines()[0], BannerLine::Sync);
-    // Moved to patch 1, the move held: nothing of the sync said meanwhile.
+    // Moved to patch 1, the move held: the bar says so, and HEAD looked at
+    // meanwhile is where it was.
     choose(&mut app, "Move HEAD…");
     let hold = hold_moves(&src);
     keys(&mut app, &[KeyCode::Enter]);
     assert_eq!(app.status, "moving HEAD to patch 1 of s…");
-    sync_quiet(&mut app);
+    assert!(draw(&mut app).contains("moving HEAD…"));
     app.look_at_head();
-    sync_quiet(&mut app);
-    // Moved, HEAD has only patch 1, whose message is the stack's: nothing
-    // to sync.
+    refresh_until(&mut app, |app| app.head_here().is_some_and(|h| h.in_sync(2)));
+    // Moved: looked at again, HEAD at patch 1.
     std::fs::remove_file(&hold).unwrap();
-    quiet_until(&mut app, |app| app.status.contains("HEAD is at patch 1 of s"));
+    refresh_until(&mut app, |app| app.status.contains("HEAD is at patch 1 of s"));
     app.settle();
-    sync_quiet(&mut app);
     assert_eq!(app.status, "HEAD is at patch 1 of s, detached: main is as it was");
     assert_eq!(app.head_here().and_then(|h| h.patches()), Some(1));
-    // With moz-phab, a commit whose message differs from its patch's by the
-    // revision it names alone is taken as it is: HEAD moved on from it, the
-    // line is back once HEAD has settled.
-    #[cfg(feature = "moz-phab")]
-    {
-        let named = "Bug 1 - shout two\n\nBecause.\n\nDifferential Revision: https://phabricator.services.mozilla.com/D1";
-        git(&src, &["commit", "-q", "--amend", "-m", named]);
-        app.look_at_head();
-        app.settle();
-        assert_eq!(app.banner_lines()[0], BannerLine::Sync);
-        choose(&mut app, "Move HEAD…");
-        keys(&mut app, &[KeyCode::Down]);
-        let hold = hold_moves(&src);
-        keys(&mut app, &[KeyCode::Enter]);
-        sync_quiet(&mut app);
-        std::fs::remove_file(&hold).unwrap();
-        quiet_until(&mut app, |app| app.status.contains("HEAD is at patch 2 of s"));
-        app.settle();
-        let screen = draw(&mut app);
-        assert!(screen.contains(" ✉ the commit messages of patch 1 differ from your workspace's: sync them first"), "{screen}");
-        assert_eq!(commit_message(&src, "HEAD~1"), named);
-    }
+    assert!(!draw(&mut app).contains("moving HEAD…"));
 }
 
 #[test]
-fn nothing_of_the_sync_is_said_while_a_rebase_is_stopped_midway_in_the_checkout() {
-    use stacked::tui::BannerLine;
-    let (_tmp, db, src) = setup();
-    git(&src, &["commit", "-q", "--amend", "-m", "Bug 2 - add a bee"]);
-    let mut app = open_in(&db, &src);
-    // The sync open, patch 2 keeping your workspace's message.
-    keys(&mut app, &[KeyCode::Esc, KeyCode::Enter, KeyCode::Char('w')]);
-    assert_eq!(app.screen, Screen::Sync);
-    // A rebase of the top commit stopped midway, an exec after it failing:
-    // the sync waits, and says why.
-    let stop = || {
-        let out = Command::new("git")
-            .args(["rebase", "--exec", "false", "HEAD~1"])
-            .current_dir(&src)
-            .env("GIT_EDITOR", "true")
-            .env("GIT_COMMITTER_NAME", "C O Mitter")
-            .env("GIT_COMMITTER_EMAIL", "committer@example.com")
-            .output()
-            .unwrap();
-        assert!(!out.status.success() && src.join(".git/rebase-merge").is_dir(), "{}", String::from_utf8_lossy(&out.stderr));
-    };
-    stop();
-    app.look_at_head();
-    app.settle();
-    let waits = "a rebase is stopped midway in your checkout: picks wait until it is finished or aborted";
-    let screen = draw(&mut app);
-    assert!(screen.contains(" commit messages: picks wait ") && screen.contains("a rebase is stopped midway in your checkout"), "{screen}");
-    keys(&mut app, &[KeyCode::Char('s')]);
-    assert_eq!(app.status, waits);
-    keys(&mut app, &[KeyCode::Enter]);
-    assert_eq!(app.status, waits);
-    keys(&mut app, &[KeyCode::Esc]);
-    assert_eq!(app.screen, Screen::Main);
-    sync_quiet(&mut app);
-    // Aborted: the line, as the messages differ, and the pick kept.
-    git(&src, &["rebase", "--abort"]);
-    app.look_at_head();
-    app.settle();
-    assert_eq!(app.banner_lines()[0], BannerLine::Sync);
-    keys(&mut app, &[KeyCode::Esc, KeyCode::Enter]);
-    assert!(draw(&mut app).contains("   workspace · 2 Bug 2 - add b"));
-    keys(&mut app, &[KeyCode::Esc]);
-    // Stopped again, then finished: nothing said meanwhile, the line after.
-    stop();
-    app.look_at_head();
-    app.settle();
-    sync_quiet(&mut app);
-    git(&src, &["rebase", "--continue"]);
-    app.look_at_head();
-    app.settle();
-    assert_eq!(app.banner_lines()[0], BannerLine::Sync);
-    assert!(draw(&mut app).contains(" ✉ the commit messages of patch 2 differ from your workspace's: sync them first"));
-}
-
-#[test]
-fn nothing_of_the_sync_is_said_of_head_seen_for_the_stack_as_it_was_until_it_is_seen_again() {
-    let (_tmp, db, src) = setup();
-    git(&src, &["commit", "-q", "--amend", "-m", "Bug 2 - add a bee"]);
-    let mut app = open_in(&db, &src);
-    assert!(draw(&mut app).contains(" ✉ the commit messages of patch 2 differ from your workspace's: sync them first"));
-    // Patch 1 reworded in the stack by another stacked: read, HEAD not yet
-    // looked at for the stack as it is now.
-    Db::edit(&db, |d| {
-        let mut patches = d.stack("s")?.patches.clone();
-        let old = d.patch(&patches[0]).clone();
-        let draft = stacked::mbox::Draft {
-            message: "Bug 1 - shout two, louder\n\nBecause.".into(),
-            ..stacked::mbox::Draft::from(&old)
-        };
-        patches[0] = d.add_patch(stacked::ops::revise(&old, draft))?;
-        d.set_stack("s", patches, "reword patch 1").map(|_| ())
-    })
-    .unwrap();
-    app.settle();
-    sync_quiet(&mut app);
-    // Looked at again: both patches to sync.
-    app.look_at_head();
-    app.settle();
-    let screen = draw(&mut app);
-    assert!(screen.contains(" ✉ the commit messages of patches 1 and 2 differ from your workspace's: sync them first"), "{screen}");
-}
-
-#[test]
-fn empty_lines_in_a_row_that_git_am_makes_one_leave_nothing_to_sync_once_head_has_moved() {
+fn empty_lines_in_a_row_that_git_am_makes_one_leave_head_in_sync_once_it_has_moved() {
     let (_tmp, db, src) = setup();
     // Patch 1's message with two empty lines under its title, as no commit
     // git makes has them.
@@ -5955,8 +5573,7 @@ fn empty_lines_in_a_row_that_git_am_makes_one_leave_nothing_to_sync_once_head_ha
     .unwrap();
     let mut app = open_in(&db, &src);
     // HEAD moved to the base, then up the stack, git am applying the
-    // patches: one empty line in its commit, and nothing to sync, HEAD in
-    // sync with the stack.
+    // patches: one empty line in its commit, HEAD in sync with the stack.
     for place in [KeyCode::Home, KeyCode::End] {
         choose(&mut app, "Move HEAD…");
         keys(&mut app, &[place, KeyCode::Enter]);
@@ -5965,211 +5582,16 @@ fn empty_lines_in_a_row_that_git_am_makes_one_leave_nothing_to_sync_once_head_ha
     assert_eq!(app.status, "HEAD is at patch 2 of s, detached");
     assert_eq!((patch_message(&db, 0), commit_message(&src, "HEAD~1")), (run.to_string(), "Bug 1 - shout two\n\nBecause.".to_string()));
     assert!(app.head_here().is_some_and(|h| h.in_sync(2)), "{:?}", app.head_here());
-    sync_quiet(&mut app);
     let said = stacked(&src, &db, &["head", "s"]);
     assert!(said.ends_with(", is at patch 2 of s\n"), "{said}");
-    // A real difference beside them: to sync.
+    // A real difference beside them: said, and nothing more.
     git(&src, &["checkout", "-q", "--detach", "HEAD~1"]);
     git(&src, &["commit", "-q", "--amend", "-m", "Bug 1 - shout TWO\n\nBecause."]);
     app.look_at_head();
     app.settle();
-    let screen = draw(&mut app);
-    assert!(screen.contains(" ✉ the commit messages of patch 1 differ from your workspace's: sync them first"), "{screen}");
+    assert!(app.head_here().is_some_and(|h| !h.in_sync(1)), "{:?}", app.head_here());
     let said = stacked(&src, &db, &["head", "s"]);
-    assert!(said.contains("\nthe message of patch 1 differs from its commit's: \"Bug 1 - shout TWO\"\n"), "{said}");
-}
-
-#[test]
-fn the_sync_s_keys_are_the_settings_read_before_the_screens() {
-    let (_tmp, db, src) = setup();
-    git(&src, &["commit", "-q", "--amend", "-m", "Bug 2 - add a bee"]);
-    let (cfg, wrong) = stacked::config::Config::parse("[keys]\nkeep_stack = \"left\"\nkeep_workspace = \"right\"\n").unwrap();
-    assert!(wrong.is_empty(), "{wrong:?}");
-    stacked::config::init(settings());
-    let mut app = App::with_config(&db, cfg).unwrap();
-    app.checkout = src.clone();
-    app.look_at_head();
-    app.settle();
-    keys(&mut app, &[KeyCode::Esc, KeyCode::Enter]);
-    assert!(app.hint().starts_with("↑↓ choose · ←: keep the stack's · →: keep your workspace's · enter: sync"), "{}", app.hint());
-    keys(&mut app, &[KeyCode::Right]);
-    assert!(draw(&mut app).contains("   workspace · 2 Bug 2 - add b"));
-    keys(&mut app, &[KeyCode::Left]);
-    assert!(draw(&mut app).contains("   stacked · 2 Bug 2 - add b"));
-    // s and w do nothing then; on the main screen, ← and → are as they were.
-    keys(&mut app, &[KeyCode::Char('w')]);
-    assert!(draw(&mut app).contains("   stacked · 2 Bug 2 - add b"));
-    keys(&mut app, &[KeyCode::Esc]);
-    assert_eq!((app.screen, app.focus, app.on_banner), (Screen::Main, Focus::List, false));
-    keys(&mut app, &[KeyCode::Right]);
-    assert_eq!(app.focus, Focus::Diff);
-}
-
-#[test]
-fn the_sync_colours_what_one_message_has_and_the_other_not_their_lines_wrapped_aside() {
-    use ratatui::style::Color;
-    let tmp = tempfile::tempdir().unwrap();
-    let src = tmp.path().join("src");
-    std::fs::create_dir(&src).unwrap();
-    git(&src, &["init", "-q", "-b", "main"]);
-    git(&src, &["config", "commit.gpgsign", "false"]);
-    std::fs::write(src.join("a.txt"), "a\n").unwrap();
-    git(&src, &["add", "."]);
-    git(&src, &["commit", "-qm", "base"]);
-    std::fs::write(src.join("b.txt"), "bee\n").unwrap();
-    git(&src, &["add", "."]);
-    git(&src, &["commit", "-qm", "Bug 1 - add b\n\nThe bee is added\nhere for now."]);
-    let db = tmp.path().join("db.jsonl");
-    stacked(&src, &db, &["import", "s", "HEAD~1"]);
-    // The paragraph wrapped otherwise, a word changed, and a paragraph
-    // split in two.
-    git(&src, &["commit", "-q", "--amend", "-m", "Bug 1 - add b\n\nThe bee is\nadded there\n\nfor now."]);
-    let mut app = open_in(&db, &src);
-    keys(&mut app, &[KeyCode::Esc, KeyCode::Enter]);
-    let buf = drawn(&mut app, 30);
-    let screen = text_of(&buf);
-    // Side by side, the stack's on the left, each with its own lines.
-    let (sx, sy) = at(&screen, "The bee is added");
-    let (wx, wy) = at_from(&screen, "The bee is", sx as usize + 10);
-    assert!(wx > sx && wy == sy, "{screen}");
-    assert_eq!(at_from(&screen, "added there", wx as usize).1, wy + 1, "{screen}");
-    let bg = |x: u16, y: u16| buf[(x, y)].bg;
-    // The words both have, in order, as any text, however they wrap.
-    for (x, y) in [(sx, sy), (sx + 13, sy), (wx, wy), (at_from(&screen, "added there", wx as usize).0, wy + 1)] {
-        assert_eq!(bg(x, y), Color::Reset, "{x},{y}:\n{screen}");
-    }
-    // The stack's own word, as words removed; your workspace's, as words
-    // added; and the break your workspace's alone has, marked on its line.
-    let (hx, hy) = at(&screen, "here for now.");
-    assert_eq!((bg(hx, hy), bg(hx + 5, hy)), (Color::Indexed(52), Color::Reset), "{screen}");
-    let (tx, ty) = at_from(&screen, "there", wx as usize);
-    assert_eq!((bg(tx, ty), bg(tx + 4, ty)), (Color::Indexed(22), Color::Indexed(22)), "{screen}");
-    let (px, py) = at_from(&screen, "¶", wx as usize);
-    assert_eq!((py, bg(px, py)), (ty + 1, Color::Indexed(22)), "{screen}");
-    // Too narrow for two columns: one over the other, the stack's first.
-    let mut small = Buffer::empty(Rect::new(0, 0, 70, 30));
-    app.draw(&mut small);
-    let screen = text_of(&small);
-    let (stack, theirs) = (at(&screen, " the stack's message").1, at(&screen, " your workspace's message").1);
-    assert!(stack < at(&screen, "The bee is added").1 && at(&screen, "The bee is added").1 < theirs, "{screen}");
-    assert!(theirs < at(&screen, "added there").1, "{screen}");
-}
-
-#[cfg(feature = "moz-phab")]
-#[test]
-fn with_moz_phab_a_revision_one_side_alone_names_goes_to_the_other_and_of_two_the_pick_wins() {
-    let (_tmp, db, src) = setup();
-    let trailer = |d: &str| format!("Differential Revision: https://phabricator.services.mozilla.com/{d}");
-    // moz-phab gives the top commit its trailer: nothing to pick, the stack
-    // taking the revision.
-    git(&src, &["commit", "-q", "--amend", "-m", &format!("Bug 2 - add b\n\n{}", trailer("D2"))]);
-    let mut app = open_in(&db, &src);
-    keys(&mut app, &[KeyCode::Esc, KeyCode::Enter]);
-    let screen = draw(&mut app);
-    for said in [
-        " commit messages: all picked",
-        "   nothing to pick · 2 Bug",
-        "The stack takes the Differential Revision D2 from your workspace's commit.",
-        " your workspace's message · kept",
-    ] {
-        assert!(screen.contains(said), "{said:?}:\n{screen}");
-    }
-    keys(&mut app, &[KeyCode::Char('s')]);
-    assert!(app.status.starts_with("patch 2 has nothing to pick: its two messages differ by the Differential Revision D2 alone"), "{}", app.status);
-    keys(&mut app, &[KeyCode::Enter]);
-    assert_eq!(
-        menu_note(&app),
-        "Patch 2 takes the Differential Revision D2 from your workspace's commit.\nThe stack takes the new versions of its patches at once: your picks are their review."
-    );
-    choose(&mut app, "Sync them");
-    app.settle();
-    assert_eq!(patch_message(&db, 1), format!("Bug 2 - add b\n\n{}", trailer("D2")));
-    assert!(app.head_here().is_some_and(|h| h.in_sync(2)), "{:?}", app.head_here());
-    // Another revision on the commit: one to pick, and the pick keeps its
-    // own, the mode saying which it drops.
-    git(&src, &["commit", "-q", "--amend", "-m", &format!("Bug 2 - add b\n\n{}", trailer("D22"))]);
-    app.look_at_head();
-    app.settle();
-    keys(&mut app, &[KeyCode::Esc, KeyCode::Enter]);
-    let screen = draw(&mut app);
-    assert!(screen.contains("   to pick · 2 Bug 2 - add b") && screen.contains("The stack's message names D2, your workspace's D22: the one kept keeps its own."), "{screen}");
-    keys(&mut app, &[KeyCode::Char('w')]);
-    assert!(draw(&mut app).contains("Keeping your workspace's message drops D2, which the stack's names."), "{}", draw(&mut app));
-    keys(&mut app, &[KeyCode::Enter]);
-    assert_eq!(
-        menu_note(&app),
-        "Patch 2 takes your workspace's message.\nThe Differential Revision D2 that patch 2 names in the stack is dropped: your workspace's message names another.\nThe stack takes the new versions of its patches at once: your picks are their review."
-    );
-    choose(&mut app, "Sync them");
-    app.settle();
-    assert_eq!(patch_message(&db, 1), format!("Bug 2 - add b\n\n{}", trailer("D22")));
-    // Reworded without it: the message kept takes the revision of the
-    // other, which goes to both sides.
-    git(&src, &["commit", "-q", "--amend", "-m", "Bug 2 - add a bee"]);
-    app.look_at_head();
-    app.settle();
-    keys(&mut app, &[KeyCode::Esc, KeyCode::Enter, KeyCode::Char('w')]);
-    assert!(draw(&mut app).contains("Your workspace's message names no revision: it takes D22, which the stack's names."), "{}", draw(&mut app));
-    keys(&mut app, &[KeyCode::Enter]);
-    assert_eq!(
-        menu_note(&app),
-        "Patch 2 takes your workspace's message, and its commit takes the Differential Revision D22 of the stack's.\nThe stack takes the new versions of its patches at once: your picks are their review.\n1 commit is made again in your workspace, the files as they were, and main moves to them."
-    );
-    choose(&mut app, "Sync them");
-    app.settle();
-    let both = format!("Bug 2 - add a bee\n\n{}", trailer("D22"));
-    assert_eq!((patch_message(&db, 1), commit_message(&src, "HEAD")), (both.clone(), both));
-    assert!(app.head_here().is_some_and(|h| h.in_sync(2)), "{:?}", app.head_here());
-}
-
-#[cfg(feature = "moz-phab")]
-#[test]
-fn an_edit_landing_waits_for_the_sync_and_follows_it_once_a_commit_s_revision_is_taken() {
-    let message = "Bug 2 - add b\n\nDifferential Revision: https://phabricator.services.mozilla.com/D2";
-    let (_tmp, db, src) = setup();
-    git(&src, &["commit", "-q", "--amend", "-m", message]);
-    let mut app = open_in(&db, &src);
-    // Landed, its review does not open: the sync first.
-    let run = hand_edit(&db, None);
-    app.edited(stacked::ops::Edited::Landed { said: "edited a.txt in Bug 1 - shout two".into(), run }, None, None);
-    assert_eq!(app.screen, Screen::Main);
-    assert_eq!(
-        app.status,
-        "edited a.txt in Bug 1 - shout two: it waits for your review; the commit messages of patch 2 differ from your workspace's: sync them first, from the banner's first line, then review what landed"
-    );
-    // Synced, nothing to pick: the stack takes the revision, the edit going
-    // on from it.
-    keys(&mut app, &[KeyCode::Esc, KeyCode::Enter, KeyCode::Enter]);
-    choose(&mut app, "Sync them");
-    app.settle();
-    assert_eq!(patch_message(&db, 1), message);
-    // In sync: its review opens, HEAD may follow the stack as it closes, and
-    // it does, the revision on its commit still.
-    keys(&mut app, &[KeyCode::Esc, KeyCode::Enter]);
-    assert_eq!(app.screen, Screen::Review);
-    app.settle();
-    keys(&mut app, &[KeyCode::Esc]);
-    assert!(items(&app).iter().any(|(l, _)| l == "HEAD"), "{:?}", items(&app));
-    choose(&mut app, "Accept all remaining and Close");
-    choose(&mut app, "Accept them and close");
-    app.settle();
-    assert!(app.status.starts_with("reviewed: its change accepted; HEAD is at patch 2 of s, detached"), "{}", app.status);
-    assert_eq!((patch_message(&db, 1), commit_message(&src, "HEAD")), (message.to_string(), message.to_string()));
-}
-
-#[cfg(not(feature = "moz-phab"))]
-#[test]
-fn without_moz_phab_a_differential_revision_is_a_line_to_pick_as_any_other() {
-    let (_tmp, db, src) = setup();
-    let trailer = "Differential Revision: https://phabricator.services.mozilla.com/D2";
-    git(&src, &["commit", "-q", "--amend", "-m", &format!("Bug 2 - add b\n\n{trailer}")]);
-    let mut app = open_in(&db, &src);
-    keys(&mut app, &[KeyCode::Esc, KeyCode::Enter]);
-    assert!(draw(&mut app).contains("   to pick · 2 Bug 2 - add b"), "{}", draw(&mut app));
-    keys(&mut app, &[KeyCode::Char('s'), KeyCode::Enter]);
-    choose(&mut app, "Sync them");
-    app.settle();
-    assert_eq!((commit_message(&src, "HEAD"), patch_message(&db, 1)), ("Bug 2 - add b".to_string(), "Bug 2 - add b".to_string()));
+    assert!(said.ends_with(", is at patch 1 of s\nthe message of patch 1 differs from its commit's: \"Bug 1 - shout TWO\"\n"), "{said}");
 }
 
 #[test]
@@ -7770,8 +7192,8 @@ fn what_changed_between_versions_is_painted_as_words_in_interdiffs_and_stack_dif
     let added = "+Subject: Bug 1 - shout two, reworded";
     let reworded = added.find("reworded").unwrap();
     // The interdiff of the new version: its title a line of its message,
-    // compared as the sync of the commit messages compares two: the words
-    // put in, as words; the words both versions have, as any text; its
+    // compared word by word, where the lines wrap aside: the words put in,
+    // as words; the words both versions have, as any text; its
     // sign, as added.
     choose(&mut app, "Versions of this patch…");
     assert_eq!(app.screen, Screen::Versions);
@@ -8004,8 +7426,8 @@ fn a_command_wrapped_otherwise_is_a_change_its_break_marked() {
     let text = |parts: &stacked::tui::Parts| parts.iter().map(|(t, _)| t.as_str()).collect::<String>();
     let rows: Vec<String> = app.hist_rows.iter().map(|p| text(p).trim().to_string()).collect();
     // The command taken out, and put in over two lines, the end of the
-    // first marked as the sync marks a break only one version has; the
-    // prose over it, the same.
+    // first marked as a break only one version has; the prose over it, the
+    // same.
     for line in ["-$ ./mach build --foo", "+$ ./mach build↵", "+  --foo", "Build it so:"] {
         assert!(rows.iter().any(|r| r == line), "{line:?} in {rows:#?}");
     }
@@ -10055,18 +9477,17 @@ fn closing_an_edit_review_leaves_head_where_it_is_when_picked_so_or_when_it_cann
 #[cfg(feature = "moz-phab")]
 #[test]
 fn a_review_open_still_closes_once_a_commit_names_a_differential_revision_its_patch_has_not_head_staying() {
-    use stacked::tui::BannerLine;
     let labels = |app: &App| items(app).into_iter().map(|(l, _)| l).collect::<Vec<_>>();
     // The review open, HEAD in sync with the stack; then moz-phab gives the
-    // top commit its trailer, the patch without it: the commit messages are
-    // to sync, HEAD is out of sync, and there is no row.
+    // top commit its trailer, the patch without it: HEAD is out of sync,
+    // and there is no row.
     let message = "Bug 2 - add b\n\nDifferential Revision: https://phabricator.services.mozilla.com/D2";
     let (_tmp, _db, src, mut app) = reviewing_with_head(|_| {});
     git(&src, &["commit", "-q", "--amend", "-m", message]);
     let was = rev_in(&src, "HEAD");
     app.look_at_head();
     app.settle();
-    assert!(app.banner_lines().contains(&BannerLine::Sync), "{:?}", app.banner_lines());
+    assert!(app.head_here().is_some_and(|h| !h.in_sync(2)), "{:?}", app.head_here());
     keys(&mut app, &[KeyCode::Esc]);
     assert!(!labels(&app).contains(&"HEAD".to_string()), "{:?}", labels(&app));
     // Closed all the same, open before: HEAD stays, its trailer with it.
@@ -13734,7 +13155,7 @@ fn a_revision_whose_code_is_the_patch_s_already_is_reviewed_for_its_message_alon
 
 #[cfg(feature = "moz-phab")]
 #[test]
-fn the_title_and_summary_sent_are_compared_as_the_sync_compares_two_messages_side_by_side_too() {
+fn the_title_and_summary_sent_are_compared_as_an_interdiff_compares_two_messages_side_by_side_too() {
     let message = format!("Bug 3 - three\n\nThe parser reads the entire\nfile before it checks\nthe header.\n\nBecause.\n\n{LINK}13");
     let (_tmp, db) = phab_setup(["Bug 1 - one", &format!("Bug 2 - two\n\n{LINK}12"), &message]);
     let mut p = Phab::default().with(12, "needs-review", "Bug 2 - two", "").with(13, "changes-planned", "WIP: Bug 3 - three", &patch_of(&db, 2).diff);
@@ -13883,7 +13304,7 @@ fn a_patch_whose_commit_names_a_revision_it_does_not_is_held_back_and_the_others
     app.look_at_head();
     app.settle();
     choose(&mut app, "Submit to Phabricator as WIP");
-    let held = "Patch 3 names no revision in the stack and D34 in your workspace's commit: sync the commit messages first, so that no second revision is made.";
+    let held = "Patch 3 names no revision in the stack and D34 in your workspace's commit: give the patch's message D34 first, with an edit by hand, so that no second revision is made.";
     assert_eq!(app.status, format!("{held} Nothing was sent."));
     assert!(phab.lock().unwrap().calls.is_empty(), "no call at all");
     // The menu knows it now: grayed, and why said.
@@ -13923,7 +13344,7 @@ fn a_commit_naming_another_revision_than_its_patch_holds_back_the_submit_and_the
     let mut app = open_in(&db, &src);
     keys(&mut app, &[KeyCode::Down, KeyCode::Down, KeyCode::Char(' ')]);
     assert_eq!(submit_offered(&app), Some(false));
-    let held = "Patch 3 names D13 in the stack and D34 in your workspace's commit: sync the commit messages first, so that its diff goes to the revision you keep.";
+    let held = "Patch 3 names D13 in the stack and D34 in your workspace's commit: make the patch and its commit name the same revision first, the patch with an edit by hand or the commit in your checkout, so that its diff goes to the revision you keep.";
     assert!(menu_note(&app).contains(held), "{}", menu_note(&app));
     assert!(phab.lock().unwrap().calls.is_empty());
     // The stack's patch alone names its revision: not held back.

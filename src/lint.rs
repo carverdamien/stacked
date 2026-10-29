@@ -34,9 +34,8 @@
 //! nothing fixed and nothing reported, nothing lands; with nothing fixed and
 //! something reported, that alone lands, to read. A lint job takes its turn
 //! as an edit of the agent's does (`ask::claim`): while it waits or runs, the
-//! stack is not edited by hand, and the commit messages' sync makes no new
-//! version of a patch; an edit asked meanwhile waits for it, then goes on
-//! from what it made, chained, as edits do. One lint job runs at a time, of
+//! stack is not edited by hand; an edit asked meanwhile waits for it, then
+//! goes on from what it made, chained, as edits do. One lint job runs at a time, of
 //! every stack of the database.
 //!
 //! A linter that hangs does not keep the stack blocked: you stop the job

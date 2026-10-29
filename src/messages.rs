@@ -1,6 +1,6 @@
 //! Two versions of a commit message compared word by word, where their
-//! lines wrap aside: what each has that the other has not, which the sync
-//! of the commit messages colours. A message is cut into sections at its
+//! lines wrap aside: what each has that the other has not, which an
+//! interdiff colours, and the review of a submit. A message is cut into sections at its
 //! empty lines, a fenced block (```, ~~~) staying whole, its empty lines
 //! and all. A section is code when one of its lines is: a line of a fenced
 //! block, the fences too; a line indented by a tab, or by four spaces or

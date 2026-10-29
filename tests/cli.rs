@@ -1402,11 +1402,11 @@ fn head_is_said_against_the_stack() {
     git(&e.src, &["commit", "-qm", "Mine"]);
     assert!(e.ok(&["head", "s"]).ends_with("is at patch 3 of s, then 1 commit not in the stack\n"));
     // The same patch, its message other: still the stack's, by its diff;
-    // its message to sync in the editor, which alone syncs it.
+    // its message said, and nothing of it goes into the stack.
     git(&e.src, &["checkout", "-q", "--detach", "main~1"]);
     git(&e.src, &["commit", "-q", "--amend", "-m", "Bug 3 - other words"]);
     let out = e.ok(&["head", "s"]);
-    let said = "is at patch 3 of s\nthe message of patch 3 differs from its commit's: \"Bug 3 - other words\"\nthe commit messages are synced in stacked's editor, from the first line of its banner\n";
+    let said = "is at patch 3 of s\nthe message of patch 3 differs from its commit's: \"Bug 3 - other words\"\n";
     assert!(out.ends_with(said), "{out}");
     for flag in ["--messages-to-stack", "--messages-to-checkout"] {
         let (fine, _, err) = e.run(&["head", "s", flag]);
@@ -1474,7 +1474,7 @@ fn head_says_which_revision_each_side_names_when_their_messages_differ_by_it_alo
     // Reworded by hand without it, the rest of its message the patch's.
     git(&e.src, &["commit", "-q", "--amend", "-m", title]);
     let out = e.ok(&["head", "s"]);
-    let said = "is at patch 3 of s\npatch 3 names D3 in the stack and no revision in your workspace's commit\nthe commit messages are synced in stacked's editor, from the first line of its banner\n";
+    let said = "is at patch 3 of s\npatch 3 names D3 in the stack and no revision in your workspace's commit\n";
     assert!(out.ends_with(said), "{out}");
     // Naming another.
     git(&e.src, &["commit", "-q", "--amend", "-m", &format!("{title}\n\n{}", trailer("D33"))]);
@@ -2678,8 +2678,8 @@ fn an_agent_s_change_of_a_patch_that_only_moves_its_lines_changes_nothing() {
 
 /// Messages that git writes otherwise than stacked stores them, each a
 /// patch's, bottom first, with an author of its own for some: two empty
-/// lines under the title, as the user's had once a sync took them from the
-/// checkout (patch 2 is the one the agent rewords, patch 1 is below it);
+/// lines under the title, as the user's had once the sync of the commit
+/// messages of before took them from the checkout (patch 2 is the one the agent rewords, patch 1 is below it);
 /// empty lines in a row, before the trailer moz-phab writes too; white
 /// space at the end of lines and of the title; a first paragraph of two
 /// lines, which git takes for a title and a body; carriage returns; a

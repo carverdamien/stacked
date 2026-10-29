@@ -107,19 +107,6 @@ pub enum Operation {
     Merge,
 }
 
-impl Operation {
-    /// What it is, said: `a rebase`, `git am`.
-    pub fn said(self) -> &'static str {
-        match self {
-            Operation::Rebase => "a rebase",
-            Operation::Am => "git am",
-            Operation::CherryPick => "a cherry-pick",
-            Operation::Revert => "a revert",
-            Operation::Merge => "a merge",
-        }
-    }
-}
-
 /// The git operation stopped midway in the checkout at `dir`, by anyone, if
 /// one is: a rebase, `git am`, a cherry-pick, a revert or a merge, as git's
 /// own state says, where `git rev-parse --git-path` finds it (a worktree's

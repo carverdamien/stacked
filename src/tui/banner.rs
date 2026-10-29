@@ -1,20 +1,16 @@
 //! The banner, under the top bar of the main screen: what waits on you on
-//! the stack. The commit messages to sync, while those of some patches
-//! differ from their commits' in your workspace, before anything else; what
-//! landed and waits for your review (an ask's work, a pull's comments from
-//! Phabricator), which waits until those messages are synced; a pull from
-//! Phabricator under way and where it is, the batch (the comments asked
-//! about later, to send together), and every comment open, with what the
-//! agent works on and what waits its turn: said in one line; while the
-//! cursor is on it, open, a line for each, in sections under their titles:
-//! the commit messages to sync, in a section of their own, first; what
-//! landed and changes nothing (read only), the pull under way last; then
-//! what changes the stack (edits), each the one you review now first, then
-//! those going on from an edit under review; then the batch and the
-//! comments, the most recently updated first. Enter opens the sync of the
-//! commit messages, reviews what landed, sends the batch, goes to a
-//! comment, or, on the pull under way, says what it brings. Esc goes to it
-//! from the panes, and from it back where the cursor was.
+//! the stack. What landed and waits for your review (an ask's work, a
+//! pull's comments from Phabricator), a pull from Phabricator under way and
+//! where it is, the batch (the comments asked about later, to send
+//! together), and every comment open, with what the agent works on and what
+//! waits its turn: said in one line; while the cursor is on it, open, a
+//! line for each, in sections under their titles: what landed and changes
+//! nothing (read only), the pull under way last; then what changes the
+//! stack (edits), each the one you review now first, then those going on
+//! from an edit under review; then the batch and the comments, the most
+//! recently updated first. Enter reviews what landed, sends the batch, goes
+//! to a comment, or, on the pull under way, says what it brings. Esc goes
+//! to it from the panes, and from it back where the cursor was.
 
 use super::reviewing::first_words;
 use super::*;
@@ -55,9 +51,6 @@ fn and(parts: &[String]) -> String {
 /// A line of the banner, open.
 #[derive(Debug, Clone, PartialEq)]
 pub enum BannerLine {
-    /// The commit messages of some patches differ from their commits' in
-    /// your workspace: to sync, before any landed work is reviewed.
-    Sync,
     /// Landed, and waiting for your review: its run.
     Landed(String),
     /// A pull from Phabricator under way: what it brings is read only, to
@@ -83,18 +76,14 @@ impl App {
         self.bg.pull.as_ref().filter(|(name, _)| *name == self.stack).map(|(_, p)| p)
     }
 
-    /// What the banner lists, section by section: the commit messages to
-    /// sync, if some differ; what landed and changes nothing, then the pull
-    /// under way; what changes the stack, each the first landed first, the
-    /// one you review now before those going on from an edit under review;
-    /// the batch, if there is one; then every comment open on the stack,
-    /// the most recently updated first.
+    /// What the banner lists, section by section: what landed and changes
+    /// nothing, then the pull under way; what changes the stack, each the
+    /// first landed first, the one you review now before those going on
+    /// from an edit under review; the batch, if there is one; then every
+    /// comment open on the stack, the most recently updated first.
     pub fn banner_lines(&self) -> Vec<BannerLine> {
         let landed = self.queue();
         let mut out: Vec<BannerLine> = Vec::new();
-        if self.sync_first().is_some() {
-            out.push(BannerLine::Sync);
-        }
         for edits in [false, true] {
             for later in [false, true] {
                 out.extend(
@@ -132,13 +121,11 @@ impl App {
         out
     }
 
-    /// The section of the banner line `l` is in: 0, the commit messages to
-    /// sync; 1, read only, what landed and changes nothing; 2, edits, what
-    /// changes the stack; 5, the stack's lint job; 4, the try pushes under
-    /// way; 3, the batch and the comments.
+    /// The section of the banner line `l` is in: 1, read only, what landed
+    /// and changes nothing; 2, edits, what changes the stack; 5, the stack's
+    /// lint job; 4, the try pushes under way; 3, the batch and the comments.
     fn banner_section(&self, l: &BannerLine) -> usize {
         match l {
-            BannerLine::Sync => 0,
             BannerLine::Landed(id) => 1 + usize::from(self.work(id).is_some_and(|(_, h)| h.stack.is_some())),
             #[cfg(feature = "moz-phab")]
             BannerLine::Pulling => 1,
@@ -190,9 +177,8 @@ impl App {
         rows
     }
 
-    /// What the banner says in its line: first, the commit messages to
-    /// sync, if some differ; how much landed work waits for review, and
-    /// which the next is; where a pull from Phabricator under way is; how
+    /// What the banner says in its line: how much landed work waits for
+    /// review, and which the next is; where a pull from Phabricator under way is; how
     /// many asks are batched; how much the agent works on; how many
     /// comments wait their turn; how many are open. None when there is none
     /// of it.
@@ -205,8 +191,6 @@ impl App {
         let ready = self.ready();
         let of = |n: usize, one: &str, many: &str| if n == 1 { format!("1 {one}") } else { format!("{n} {many}") };
         let mut said = Vec::new();
-        let sync = self.sync_said();
-        said.extend(sync.clone());
         if landed > 0 {
             // The asks' work, your edits by hand and the reviews pulled,
             // each counted.
@@ -288,13 +272,11 @@ impl App {
         if said.is_empty() {
             return None;
         }
-        // As its lines mark them, and the top bar the agents going (●): the
-        // commit messages to sync first.
+        // As its lines mark them, and the top bar the agents going (●).
         let going = going + pushes + linting;
         // A lint job waiting its turn, as a comment waiting its turn is.
         let ready = ready + usize::from(lint.is_some()) - linting;
         let mark = match (landed, going, pulling, ready, batched) {
-            _ if sync.is_some() => "✉",
             (0, 0, false, 0, 0) => "○",
             (0, 0, false, 0, _) => "◇",
             (0, 0, false, _, _) => "◌",
@@ -305,25 +287,16 @@ impl App {
         Some(format!(" {mark} {}", said.join(" · ")))
     }
 
-    /// The banner's menu, to pick from, all of it: the sync of the commit
-    /// messages, while some differ, first; each landed ask and each pull, to
-    /// review, once those are synced; the batch, to send; every comment the
-    /// agent can be asked about, checked if it is in the batch; then each
-    /// comment open, the most recently updated first, to go to.
+    /// The banner's menu, to pick from, all of it: each landed ask and each
+    /// pull, to review; the batch, to send; every comment the agent can be
+    /// asked about, checked if it is in the batch; then each comment open,
+    /// the most recently updated first, to go to.
     pub(super) fn banner_items(&self, items: &mut Vec<Item>) {
-        let synced = match self.sync_patches() {
-            Some(of) => {
-                items.push(Item::new(format!("Sync the commit messages of {of}…"), Action::OpenSync));
-                items.push(Item::line());
-                false
-            }
-            None => true,
-        };
         for id in self.queue() {
             let Some((r, _)) = self.work(&id) else { continue };
             let first = ask::guessing(&self.db, r).is_none();
             let left = crate::held::left(&self.db, r);
-            items.push(Item::new(format!("Review {left}{}", landed_how(r, 40)), Action::Review(id.clone(), None)).when(first && synced));
+            items.push(Item::new(format!("Review {left}{}", landed_how(r, 40)), Action::Review(id.clone(), None)).when(first));
         }
         // The stack's lint job: the linter stopped, or the job dropped.
         if let Some(stop) = crate::lint::pending(&self.db, &self.stack).and_then(|r| self.lint_stop_item(&r.id)) {
@@ -450,10 +423,6 @@ impl App {
     /// the agent, the last line it wrote).
     fn banner_line(&self, l: &BannerLine) -> String {
         match l {
-            BannerLine::Sync => {
-                let of = self.sync_patches().unwrap_or_default();
-                format!("   ✉ Sync the commit messages of {of}: the stack and your workspace differ")
-            }
             BannerLine::Landed(run) => match self.work(run) {
                 // Gone on from the work above it, guessing: reviewed after it.
                 Some((r, _)) if ask::guessing(&self.db, r).is_some() => {
@@ -521,16 +490,14 @@ impl App {
     }
 
     /// A key on the banner, open: ↑↓ another line, past the last the
-    /// stack's header; Enter opens the sync of the commit messages, reviews
-    /// what landed (once those are synced), opens the menu on the batch, or
-    /// goes to the comment; Esc goes back where the cursor was.
+    /// stack's header; Enter reviews what landed, opens the menu on the
+    /// batch, or goes to the comment; Esc goes back where the cursor was.
     pub(super) fn banner_key(&mut self, k: KeyEvent) -> Effect {
         let lines = self.banner_lines();
         let last = lines.len().saturating_sub(1);
         let page = (self.body_h / 2).max(1);
         match k.code {
             KeyCode::Enter => match lines.get(self.banner_sel).cloned() {
-                Some(BannerLine::Sync) => self.open_sync(),
                 Some(BannerLine::Landed(run)) => self.open_review(&run, None),
                 #[cfg(feature = "moz-phab")]
                 Some(BannerLine::Pulling) => self.status = PULL_BRINGS.into(),
@@ -604,7 +571,6 @@ impl App {
         for (y, &(i, k)) in rows.iter().skip(self.banner_top).take(room).enumerate() {
             let Some(i) = i else {
                 let title = match k {
-                    0 => " commit messages, to sync first",
                     1 => " read only, to review",
                     2 => " edits, to review",
                     4 => " try pushes, followed",

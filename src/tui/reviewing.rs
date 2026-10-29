@@ -241,14 +241,8 @@ impl App {
     }
 
     /// Opens the review of what run `run` brought back, as `show_review`
-    /// does; not while the commit messages of the stack and of your
-    /// workspace differ, which are synced before any landed work is
-    /// reviewed, whatever opens it.
+    /// does.
     pub(super) fn open_review(&mut self, run: &str, part: Option<Part>) {
-        if let Some(why) = self.sync_first() {
-            self.status = why;
-            return;
-        }
         self.show_review(run, part);
     }
 
@@ -675,14 +669,11 @@ impl App {
     /// What Delete does on the banner's line of what run `run` brought
     /// back: asks to reject every part of it not marked yet and close its
     /// review, as the review's "Reject all remaining and Close" does. Not
-    /// before the commit messages are synced, nor while it goes on from
-    /// work landed before it, which is reviewed first, nor with no part
-    /// left that is not marked, as that item is not: why is said.
+    /// while it goes on from work landed before it, which is reviewed
+    /// first, nor with no part left that is not marked, as that item is
+    /// not: why is said.
     pub(super) fn reject_work_here(&self, run: &str) -> std::result::Result<Action, String> {
         let Some((r, _)) = self.work(run) else { return Err("this work is gone".into()) };
-        if let Some(why) = self.sync_first() {
-            return Err(why);
-        }
         if ask::guessing(&self.db, r).is_some() {
             return Err("this work goes on from the work landed before it, which waits for your review: review that one first".into());
         }
@@ -718,13 +709,8 @@ impl App {
 
     /// The review of what run `run` brought back closed from the banner,
     /// every part not marked yet rejected, as from the review; the main
-    /// screen staying, closed or not (the status line says why not). Not
-    /// before the commit messages are synced.
+    /// screen staying, closed or not (the status line says why not).
     pub(super) fn reject_work(&mut self, run: &str) {
-        if let Some(why) = self.sync_first() {
-            self.status = why;
-            return;
-        }
         self.reviewing = Some(self.review_of(run));
         self.review_close(Some(false));
         self.reviewing = None;
@@ -2109,8 +2095,7 @@ impl App {
             marks.retain(|k, _| !k.starts_with("asking "));
         }
         // HEAD to follow: moving from now on, before the stack takes the
-        // change, which HEAD has only once it has moved; the sync of the
-        // commit messages waits meanwhile.
+        // change, which HEAD has only once it has moved.
         let moving = follow && self.head_to_move();
         let closed = self.edit(|db| {
             let said = crate::held::close(db, &rv.run, &marks, rest)?;

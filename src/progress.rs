@@ -87,7 +87,7 @@ pub fn blank_lines(message: &str) -> Vec<bool> {
 /// message's last paragraph, after an empty line, where trailers go, and so
 /// never in the title's paragraph. This is the one place that says which
 /// lines of a message are that trailer: the reading mode asks here, and so
-/// does the sync of a patch's message with its commit's (`head`).
+/// does where HEAD's commits are compared with their patches (`head`).
 #[cfg(feature = "moz-phab")]
 pub fn revision_trailers(message: &str) -> Vec<usize> {
     let lines: Vec<&str> = message.split('\n').collect();

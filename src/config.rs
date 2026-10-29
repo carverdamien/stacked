@@ -1058,6 +1058,9 @@ fn kind_of(key: &str) -> Result<Kind, String> {
     if let Some((_, k)) = SETTINGS.iter().find(|(name, _)| *name == key) {
         return Ok(*k);
     }
+    if let Some(why) = gone_key(key) {
+        return Err(why);
+    }
     if key.strip_prefix("colors.").and_then(Paint::named).is_some() {
         return Ok(Kind::Color);
     }
@@ -1065,6 +1068,14 @@ fn kind_of(key: &str) -> Result<Kind, String> {
         Some(k) if Key::ALL.iter().any(|key| key.name() == k) => Ok(Kind::List),
         _ => Err(format!("{key} is not a setting: `stacked config` prints them all")),
     }
+}
+
+/// Why `key` is no longer a setting, if it is a key that is gone
+/// (`keys::GONE`): a file that still sets it is told so, and taking it out
+/// of the file is all `stacked config` does with it.
+fn gone_key(key: &str) -> Option<String> {
+    let name = key.strip_prefix("keys.")?;
+    crate::keys::GONE.iter().find(|(n, _)| *n == name).map(|(n, why)| crate::keys::gone(n, why))
 }
 
 /// The value of `key` as `values` say it, in the file's form.
@@ -1212,7 +1223,13 @@ fn global() -> (Config, Vec<String>) {
 /// Each of `settings`, a key and its values, in the file's form: refused,
 /// with why, for one there is not, or a value of the wrong kind.
 fn literals<'a>(settings: &[(&'a str, Vec<String>)]) -> Result<Vec<(&'a str, String)>, String> {
-    settings.iter().map(|(key, values)| Ok((*key, literal(key, kind_of(key)?, values)?))).collect()
+    settings
+        .iter()
+        .map(|(key, values)| match gone_key(key) {
+            Some(why) => Err(format!("{why}; nothing written")),
+            None => Ok((*key, literal(key, kind_of(key)?, values)?)),
+        })
+        .collect()
 }
 
 /// `text`, a settings' file, with each of `lits` (a key, and its value in
@@ -1224,7 +1241,9 @@ fn with_settings(text: &str, lits: &[(&str, String)]) -> String {
 /// Takes `key` out of the settings' file at `path`: it is then as it would
 /// be with no file.
 pub fn unset(path: &Path, key: &str) -> Result<(), String> {
-    kind_of(key)?;
+    if gone_key(key).is_none() {
+        kind_of(key)?;
+    }
     edit_settings(path, |text| with_setting(text, key, None))
 }
 
@@ -1579,7 +1598,9 @@ pub fn set_local_all(dir: &Path, settings: &[(&str, Vec<String>)]) -> Result<Pat
 /// Takes `key` out of the local file of the checkout `dir` is in: there, it
 /// is then as the settings' file has it. Where it was.
 pub fn unset_local(dir: &Path, key: &str) -> Result<PathBuf, String> {
-    kind_of(key)?;
+    if gone_key(key).is_none() {
+        kind_of(key)?;
+    }
     let p = local_to_write(dir)?;
     edit_settings(&p, |text| with_setting(text, key, None))?;
     Ok(p)
@@ -2108,13 +2129,41 @@ mod tests {
         let (screens, search) = (at("\n# screens: on the screens"), at("\n# search: in the search of the middle"));
         assert!(screens < at("\nup = [\"up\"]\n") && at("\nquit = [\"ctrl-c\"]\n") < search, "{keys}");
         assert!(search < at("\nfind_next = [\"tab\"]\n") && search < at("\nfind_previous = [\"shift-tab\"]\n"), "{keys}");
-        let sync = at("\n# sync: in the sync of the commit messages");
-        assert!(search < sync && sync < at("\nkeep_stack = [\"s\"]\n") && sync < at("\nkeep_workspace = [\"w\"]\n"), "{keys}");
+        // The sync's keys, gone with it, are not listed.
+        assert!(!keys.contains("sync") && !keys.contains("keep_stack") && !keys.contains("keep_workspace"), "{keys}");
         // One key in two contexts is no clash; two things of one are.
         let (c, wrong) = Config::parse("[keys]\nmenu = \"tab\"\n").unwrap();
         assert!(wrong.is_empty(), "{wrong:?}");
         assert_eq!((c.keys.label(Key::Menu), c.keys.label(Key::FindNext)), ("Tab".to_string(), "Tab".to_string()));
         let (_, wrong) = Config::parse("[keys]\nfind_next = \"f5\"\nfind_previous = [\"f5\"]\n").unwrap();
         assert_eq!(wrong, ["keys: F5 is find_next and find_previous; it does the first"]);
+    }
+
+    #[test]
+    fn the_sync_s_keys_are_said_to_be_gone_read_refused_and_taken_out() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("stacked.toml");
+        let gone = "the sync of the commit messages it picked in is gone";
+        let vals = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        // Read: said, with why, the rest of the file used.
+        std::fs::write(&path, "[keys]\nmenu = \"m\"\nkeep_stack = \"s\"\nkeep_workspace = [\"w\"]\n").unwrap();
+        let (c, wrong) = Config::load(&path);
+        let at = path.display();
+        assert_eq!(
+            wrong,
+            [
+                format!("{at}: keys.keep_stack is no longer supported: {gone}; it is passed over"),
+                format!("{at}: keys.keep_workspace is no longer supported: {gone}; it is passed over"),
+            ]
+        );
+        assert_eq!(c.keys.label(Key::Menu), "m");
+        // Written, or read alone: refused, with why.
+        assert_eq!(set(&path, "keys.keep_stack", &vals(&["s"])), Err(format!("keys.keep_stack is no longer supported: {gone}; nothing written")));
+        assert_eq!(value_of(&c, "keys.keep_workspace"), Err(format!("keys.keep_workspace is no longer supported: {gone}")));
+        // Taken out: gone from the file, and nothing more is said.
+        unset(&path, "keys.keep_stack").unwrap();
+        unset(&path, "keys.keep_workspace").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "[keys]\nmenu = \"m\"\n");
+        assert!(Config::load(&path).1.is_empty());
     }
 }

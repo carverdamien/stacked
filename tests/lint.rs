@@ -680,7 +680,7 @@ fn an_edit_asked_while_the_linter_runs_waits_for_it_then_goes_on_from_what_it_ma
     let waits = stacked::ask::send(&db, "s", &[(note.change.clone(), note.id.clone())], stacked::db::Way::Change, false, stacked::db::Effort::High).unwrap();
     assert_eq!(waits.as_deref(), Some("once the linter's work on the stack lands"));
     assert!(!Db::load(&db).unwrap().runs().iter().any(|r| r.ask.is_some()), "not started");
-    // The commit messages' sync makes no new version meanwhile, as it says.
+    // What changes the stack meanwhile, as it says.
     assert_eq!(stacked::ask::changing(&Db::load(&db).unwrap(), "s").as_deref(), Some("the linter lints patch 1 of 2"));
     // An answer goes at once, as ever.
     let question = stacked::db::Note {

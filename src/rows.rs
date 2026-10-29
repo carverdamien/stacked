@@ -112,10 +112,9 @@ pub struct Row {
     /// what changed in it, as ranges of its characters (`changed_words`).
     pub words: Spans,
     /// A line of a message removed or added, compared with the other
-    /// version's as the sync of the commit messages compares two messages
-    /// (`messages::compare`): drawn as it draws them, `words` what only
-    /// this version has, the rest as any text, its sign in its line's
-    /// colour. And whether a break that only this version has follows it,
+    /// version's word by word, where their lines wrap aside
+    /// (`messages::compare`): `words` what only this version has, the rest
+    /// drawn as any text, its sign in its line's colour. And whether a break that only this version has follows it,
     /// marked on its last piece.
     pub compared: bool,
     pub broken: bool,

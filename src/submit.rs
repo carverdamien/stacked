@@ -14,8 +14,7 @@
 //! revision of the patch below. No reviewers are set, as `moz-phab submit
 //! --wip` sets none: those the title names stay in it, written as moz-phab
 //! writes them. A new revision's link goes into the patch, as a new
-//! version of it, at once. The workspace's commits are not touched: the
-//! sync of commit messages takes the link there.
+//! version of it, at once. The workspace's commits are not touched.
 
 use std::path::Path;
 use std::sync::Mutex;
@@ -924,11 +923,11 @@ pub fn held_by_head(head: &crate::head::Head, at: usize) -> Option<String> {
         return None;
     }
     let said = d.revisions(*k)?;
-    let so = match ours {
-        None => "so that no second revision is made",
-        Some(_) => "so that its diff goes to the revision you keep",
+    let first = match ours {
+        None => format!("give the patch's message {theirs} first, with an edit by hand, so that no second revision is made"),
+        Some(_) => "make the patch and its commit name the same revision first, the patch with an edit by hand or the commit in your checkout, so that its diff goes to the revision you keep".into(),
     };
-    Some(format!("{}{}: sync the commit messages first, {so}.", said[..1].to_uppercase(), &said[1..]))
+    Some(format!("{}{}: {first}.", said[..1].to_uppercase(), &said[1..]))
 }
 
 /// Whether patch `p`, number `n` in its stack, is one Phabricator can be
@@ -1363,10 +1362,10 @@ fn edit(call: &mut Call, phid: &str, txn: Value) -> Result<Value, String> {
     call("differential.revision.edit", json!({"objectIdentifier": phid, "transactions": [txn]}))
 }
 
-/// Message `m` with trailer `line` put as the sync of the commit messages
-/// puts the trailer naming a revision (`head::with_trailer`): at the end
-/// of its last paragraph when that is a paragraph of trailers (`Key:
-/// value`), else after an empty line.
+/// Message `m` with trailer `line` put where moz-phab puts the trailer
+/// naming a revision: at the end of its last paragraph when that is a
+/// paragraph of trailers (`Key: value`, `head::ends_in_trailers`), else
+/// after an empty line.
 fn with_link(m: &str, line: &str) -> String {
     let m = m.trim_end();
     let lines: Vec<&str> = m.split('\n').collect();
@@ -2136,11 +2135,11 @@ mod tests {
         let names = |ours: Option<&str>, theirs: Option<&str>| Differs::Revision(ours.map(String::from), theirs.map(String::from));
         assert_eq!(
             held_by_head(&head(names(None, Some("D34")), 2), 2).as_deref(),
-            Some("Patch 3 names no revision in the stack and D34 in your workspace's commit: sync the commit messages first, so that no second revision is made.")
+            Some("Patch 3 names no revision in the stack and D34 in your workspace's commit: give the patch's message D34 first, with an edit by hand, so that no second revision is made.")
         );
         assert_eq!(
             held_by_head(&head(names(Some("D13"), Some("D34")), 2), 2).as_deref(),
-            Some("Patch 3 names D13 in the stack and D34 in your workspace's commit: sync the commit messages first, so that its diff goes to the revision you keep.")
+            Some("Patch 3 names D13 in the stack and D34 in your workspace's commit: make the patch and its commit name the same revision first, the patch with an edit by hand or the commit in your checkout, so that its diff goes to the revision you keep.")
         );
         // The stack's patch alone names one; what they say differs; another
         // patch of the stack; HEAD elsewhere: not held back.
@@ -2243,7 +2242,7 @@ mod tests {
     }
 
     #[test]
-    fn a_new_revision_s_trailer_goes_where_the_sync_puts_one() {
+    fn a_new_revision_s_trailer_goes_where_moz_phab_puts_one() {
         let line = "Differential Revision: https://p.example/D9";
         assert_eq!(with_link("Bug 1 - x", line), format!("Bug 1 - x\n\n{line}"));
         assert_eq!(with_link("Bug 1 - x\n\nWhy.\n", line), format!("Bug 1 - x\n\nWhy.\n\n{line}"));
