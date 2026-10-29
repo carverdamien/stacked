@@ -61,6 +61,9 @@ pub enum BannerLine {
     /// review.
     #[cfg(feature = "moz-phab")]
     Pulling,
+    /// A try push under way, followed: its run.
+    #[cfg(feature = "try-push")]
+    Push(String),
     /// The batch: the comments asked about later, to send.
     Batch,
     /// A comment open on the stack: (change, id).
@@ -102,6 +105,9 @@ impl App {
                 out.push(BannerLine::Pulling);
             }
         }
+        // The try pushes of the stack under way, the first started first.
+        #[cfg(feature = "try-push")]
+        out.extend(self.pushes().into_iter().map(BannerLine::Push));
         if self.batched_count() > 0 {
             out.push(BannerLine::Batch);
         }
@@ -121,15 +127,38 @@ impl App {
 
     /// The section of the banner line `l` is in: 0, the commit messages to
     /// sync; 1, read only, what landed and changes nothing; 2, edits, what
-    /// changes the stack; 3, the batch and the comments.
+    /// changes the stack; 4, the try pushes under way; 3, the batch and the
+    /// comments.
     fn banner_section(&self, l: &BannerLine) -> usize {
         match l {
             BannerLine::Sync => 0,
             BannerLine::Landed(id) => 1 + usize::from(self.work(id).is_some_and(|(_, h)| h.stack.is_some())),
             #[cfg(feature = "moz-phab")]
             BannerLine::Pulling => 1,
+            #[cfg(feature = "try-push")]
+            BannerLine::Push(_) => 4,
             _ => 3,
         }
+    }
+
+    /// The try pushes of the stack under way: their runs, the first started
+    /// first.
+    #[cfg(feature = "try-push")]
+    pub(super) fn pushes(&self) -> Vec<String> {
+        self.db
+            .live_runs()
+            .into_iter()
+            .filter(|r| r.stack == self.stack && r.state == crate::db::RunState::Started && r.push.is_some())
+            .map(|r| r.id.clone())
+            .collect()
+    }
+
+    /// Where try push `run` is, said on its banner line and in the banner's
+    /// head: what mach does, then Lando's state of it, then its tasks.
+    #[cfg(feature = "try-push")]
+    fn push_progress(&self, run: &str) -> String {
+        let Some(p) = self.db.run(run).and_then(|r| r.push.as_ref()) else { return String::new() };
+        crate::try_push::state_said(p).trim_start_matches("try push: ").to_string()
     }
 
     /// The rows of the banner, open, for `lines`: each line, by its place,
@@ -209,6 +238,19 @@ impl App {
         };
         #[cfg(not(feature = "moz-phab"))]
         let pulling = false;
+        // The try pushes under way: where the one is, or how many.
+        #[cfg(feature = "try-push")]
+        let pushes = {
+            let pushes = self.pushes();
+            match pushes.as_slice() {
+                [] => {}
+                [one] => said.push(format!("1 try push: {}", self.push_progress(one))),
+                many => said.push(format!("{} try pushes", many.len())),
+            }
+            pushes.len()
+        };
+        #[cfg(not(feature = "try-push"))]
+        let pushes = 0;
         if batched > 0 {
             said.push(of(batched, "batched ask", "batched asks"));
         }
@@ -226,6 +268,7 @@ impl App {
         }
         // As its lines mark them, and the top bar the agents going (●): the
         // commit messages to sync first.
+        let going = going + pushes;
         let mark = match (landed, going, pulling, ready, batched) {
             _ if sync.is_some() => "✉",
             (0, 0, false, 0, 0) => "○",
@@ -398,6 +441,16 @@ impl App {
                 let said = c.next().map_or(String::new(), |f| f.to_uppercase().chain(c).collect());
                 format!("   ⇣ {said}…")
             }
+            #[cfg(feature = "try-push")]
+            BannerLine::Push(run) => {
+                let of = self
+                    .db
+                    .run(run)
+                    .and_then(|r| r.push.as_ref())
+                    .and_then(|p| self.db.note(&p.change, &p.id))
+                    .map_or(String::new(), |n| format!(" of {}", self.comment_said(n)));
+                format!("   ⇡ Try push{of}: {}", self.push_progress(run))
+            }
             BannerLine::Batch => format!("   ◇ Send the batch… {}", self.batch_said()),
             BannerLine::Comment(change, id) => {
                 let Some(n) = self.db.note(change, id) else { return String::new() };
@@ -452,6 +505,14 @@ impl App {
                     self.on_banner = false;
                     self.go_to(&change, &id);
                 }
+                // A try push: to the comment that asked for it.
+                #[cfg(feature = "try-push")]
+                Some(BannerLine::Push(run)) => {
+                    if let Some(p) = self.db.run(&run).and_then(|r| r.push.clone()) {
+                        self.on_banner = false;
+                        self.go_to(&p.change, &p.id);
+                    }
+                }
                 None => {}
             },
             KeyCode::Esc => self.on_banner = false,
@@ -500,6 +561,7 @@ impl App {
                     0 => " commit messages, to sync first",
                     1 => " read only, to review",
                     2 => " edits, to review",
+                    4 => " try pushes, followed",
                     _ => " open comments",
                 };
                 put(buf, area, 0, 2 + y, w, &fit(title, w), color::file());

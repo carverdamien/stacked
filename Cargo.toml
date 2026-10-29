@@ -42,7 +42,8 @@ moz-phab = []
 # A try push of Firefox's CI: the agent asked which tasks the comment asks
 # for, each with why, for your review; then the tasks you accept pushed to
 # try with `./mach try fuzzy`, from a worktree of the stack's own, its link
-# a reply on the comment.
+# a reply on the comment; and the push followed on Lando and Treeherder
+# until its tasks are done, its summary a reply to review.
 try-push = []
 
 [dependencies]

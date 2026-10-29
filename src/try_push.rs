@@ -286,6 +286,87 @@ pub struct Push {
     pub link: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lando: Option<Lando>,
+    /// Followed: when it was last looked at, on Lando and Treeherder (0:
+    /// not yet).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub looked: i64,
+    /// Lando's state of it, as last seen, until it pushes it to try.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lando_status: Option<String>,
+    /// The revision Lando pushed to try, and its push on Treeherder.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revision: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub treeherder: Option<u64>,
+    /// Its tasks, as Treeherder showed them last.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seen: Option<Seen>,
+    /// How many looks in a row found nothing of it pending or running, and
+    /// nothing new: at `QUIET`, it is over, what is missing never to show.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub quiet: u32,
+    /// Why the last look could not read Lando or Treeherder, as its stream
+    /// said it once: none since a look could.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trouble: Option<String>,
+}
+
+fn is_zero(n: &i64) -> bool {
+    *n == 0
+}
+
+fn is_zero_u32(n: &u32) -> bool {
+    *n == 0
+}
+
+/// A try push's tasks as Treeherder shows them: of those it pushes (the
+/// tasks accepted, each as many times as it runs), how many there are and
+/// how many are done, by result; those done that failed; the tasks the push
+/// ran for them that failed (their builds, the decision task); those not
+/// seen; and whether anything of it is pending or running still.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+pub struct Seen {
+    pub total: usize,
+    pub done: usize,
+    /// How many of those done ended each way, as Treeherder says it:
+    /// `success`, `testfailed`, `busted`, `exception`…
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub results: std::collections::BTreeMap<String, usize>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub failed: Vec<Shown>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub besides: Vec<Shown>,
+    /// Each label Treeherder does not show as many times as it is pushed,
+    /// with how many times it does not.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unseen: Vec<(String, usize)>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub going: bool,
+}
+
+/// A task as Treeherder shows it: its label, its result, and its link
+/// there, the run of it shown.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+pub struct Shown {
+    pub label: String,
+    pub result: String,
+    pub link: String,
+}
+
+impl Seen {
+    /// How far it is, said: `12 of 30 tasks done, 1 failed`.
+    pub fn said(&self) -> String {
+        let failed = match self.failed.len() {
+            0 => String::new(),
+            n => format!(", {n} failed"),
+        };
+        format!("{} of {} tasks done{failed}", thousands(self.done), thousands(self.total))
+    }
+
+    /// How many were not seen on Treeherder.
+    pub fn unseen_count(&self) -> usize {
+        self.unseen.iter().map(|(_, n)| n).sum()
+    }
 }
 
 /// Where a try push is.
@@ -325,7 +406,19 @@ pub fn state_said(p: &Push) -> String {
         (Step::Checking, _) => "try push: mach checks the tasks".into(),
         (Step::Pushing, Some(_)) => "try push: mach waits for your login".into(),
         (Step::Pushing, None) => "try push: mach pushes".into(),
-        (Step::Pushed, _) => "try push: pushed".into(),
+        (Step::Pushed, _) => format!("try push: {}", progress_said(p)),
+    }
+}
+
+/// How far try push `p`, pushed and followed, is, said: Lando's state of
+/// it until Lando pushes it to try, then its tasks on Treeherder.
+pub fn progress_said(p: &Push) -> String {
+    match (&p.revision, &p.seen, &p.lando_status) {
+        (Some(_), Some(seen), _) => seen.said(),
+        (Some(_), None, _) => "pushed, its tasks not on Treeherder yet".into(),
+        (None, _, Some(status)) => format!("Lando has it: {}", status.to_lowercase().replace('_', " ")),
+        (None, _, None) if p.trouble.is_some() => "pushed, Lando not read yet".into(),
+        (None, _, None) => "pushed, Lando not looked at yet".into(),
     }
 }
 
@@ -376,7 +469,7 @@ pub fn begin(db: &mut Db, work: &str, accepted: &[Task], rebuild: Option<u32>) -
         state: RunState::Started,
         request: format!("a try push of {}", tasks_said(labels.len())),
         starter: Some(std::process::id()),
-        push: Some(Push {
+        push: Some(Box::new(Push {
             change: asked.change.clone(),
             id: asked.id.clone(),
             work: work.into(),
@@ -387,7 +480,7 @@ pub fn begin(db: &mut Db, work: &str, accepted: &[Task], rebuild: Option<u32>) -
             rebuild,
             lowest,
             ..Default::default()
-        }),
+        })),
         ..Default::default()
     })?;
     Ok(id)
@@ -631,7 +724,7 @@ fn pushed_to_try(db_path: &Path, id: &str) -> Result<()> {
             pid: None,
             starter: None,
             summary: format!("pushed to try: {link}"),
-            push: Some(Push { login: None, step: Step::Pushed, ..p }),
+            push: Some(Box::new(Push { login: None, step: Step::Pushed, ..*p })),
             ..r
         })?;
         Ok(())
@@ -718,6 +811,462 @@ pub fn orphans(db_path: &Path, db: &Db) -> usize {
         .count()
 }
 
+// -- following the push ------------------------------------------------------- //
+
+/// Where Treeherder answers: its pages, and its API under `/api`.
+const TREEHERDER: &str = "https://treeherder.mozilla.org";
+
+/// How long a followed push goes between looks, in seconds: a few minutes.
+const LOOK_EVERY: i64 = 180;
+
+/// How many looks in a row that find nothing of a push pending or running,
+/// and nothing new, end it: what is missing then never shows.
+const QUIET: u32 = 2;
+
+/// The seconds between looks, when the tests set them.
+static EVERY: std::sync::Mutex<Option<i64>> = std::sync::Mutex::new(None);
+
+/// Looks at the pushes followed every `secs` seconds from now on, in this
+/// process: the tests'.
+pub fn look_every(secs: i64) {
+    *EVERY.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(secs);
+}
+
+fn every() -> i64 {
+    EVERY.lock().unwrap_or_else(std::sync::PoisonError::into_inner).unwrap_or(LOOK_EVERY)
+}
+
+/// Whether run `r` is a try push followed that is due a look at `now`:
+/// pushed, and not looked at for a few minutes.
+pub fn due(r: &Run, now: i64) -> bool {
+    r.state == RunState::Started && r.push.as_ref().is_some_and(|p| p.step == Step::Pushed && now - p.looked >= every())
+}
+
+/// The try pushes followed that are due a look, of `db`: their runs.
+pub fn due_now(db: &Db) -> Vec<String> {
+    let now = now();
+    db.live_runs().into_iter().filter(|r| due(r, now)).map(|r| r.id.clone()).collect()
+}
+
+/// A look at each try push followed that is due one (`follow`): what came
+/// of them, said for the status line.
+pub fn follow_due(db_path: &Path) -> Vec<String> {
+    let Ok(db) = Db::load(db_path) else { return vec![] };
+    due_now(&db).iter().filter_map(|id| follow(db_path, id).ok().flatten()).collect()
+}
+
+/// What answers the GETs that follow pushes, in place of the web, when set:
+/// the tests', which never reach Lando nor Treeherder.
+pub type Get = Box<dyn Fn(&str) -> std::result::Result<String, String> + Send>;
+
+static WEB: std::sync::Mutex<Option<Get>> = std::sync::Mutex::new(None);
+
+/// Has `get` answer the GETs that follow pushes; with none, the web again.
+pub fn web_stand_in(get: Option<Get>) {
+    *WEB.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = get;
+}
+
+/// What `url` answers, as JSON: a plain GET of a public page (Lando's,
+/// Treeherder's), with nothing of yours sent, by curl. The tests' stand-in,
+/// when one is set; never the web from a process that keeps nothing, as
+/// the tests' own.
+fn get(url: &str) -> std::result::Result<Value, String> {
+    let body = {
+        let web = WEB.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        match web.as_ref() {
+            Some(get) => get(url)?,
+            None if crate::home::get().dir == Path::new(crate::home::NOWHERE) => {
+                return Err("Lando and Treeherder are not reached from a process that keeps nothing, as the tests' own".into());
+            }
+            None => {
+                let out = Command::new("curl")
+                    .args(["-fsSL", "--max-time", "30", "-A", "stacked", "-H", "Accept: application/json"])
+                    .arg(url)
+                    .stdin(Stdio::null())
+                    .output()
+                    .map_err(|e| format!("curl: {e}"))?;
+                if !out.status.success() {
+                    return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
+                }
+                String::from_utf8_lossy(&out.stdout).into_owned()
+            }
+        }
+    };
+    serde_json::from_str(&body).map_err(|_| format!("{url} answered no JSON"))
+}
+
+/// Where Lando's instance `instance` answers: as `.lando.ini` at `dir`
+/// says it (`api_domain` in its section whose `instance_id` is that, or
+/// named so when it names none), as mach reads it; else Lando's own, which
+/// stacked knows (`lando-prod-2025`, lando.moz.tools).
+pub fn lando_api(dir: Option<&Path>, instance: &str) -> Option<String> {
+    let text = dir.and_then(|d| std::fs::read_to_string(d.join(".lando.ini")).ok()).unwrap_or_default();
+    // Each section's name, instance_id and api_domain.
+    let mut sections: Vec<(String, Option<String>, Option<String>)> = Vec::new();
+    for line in text.lines().map(str::trim) {
+        if line.is_empty() || line.starts_with('#') || line.starts_with(';') {
+            continue;
+        }
+        if let Some(name) = line.strip_prefix('[').and_then(|l| l.strip_suffix(']')) {
+            sections.push((name.trim().to_string(), None, None));
+            continue;
+        }
+        let (Some((key, value)), Some(s)) = (line.split_once('='), sections.last_mut()) else { continue };
+        match key.trim() {
+            "instance_id" => s.1 = Some(value.trim().to_string()),
+            "api_domain" => s.2 = Some(value.trim().to_string()),
+            _ => {}
+        }
+    }
+    let known = sections.into_iter().find_map(|(name, id, api)| (id.as_deref().unwrap_or(&name) == instance).then_some(api).flatten());
+    known.or_else(|| (instance == "lando-prod-2025").then(|| "lando.moz.tools".to_string()))
+}
+
+/// What one look at a push found.
+#[derive(Debug, PartialEq)]
+enum Looked {
+    /// Lando does not have it on try yet: its state there.
+    Lando(String),
+    /// Lando did not push it to try: its state, why it says, and its page.
+    NotPushed { status: String, error: String, page: Option<String> },
+    /// On try, as its revision: its push on Treeherder, if Treeherder has
+    /// it, and its tasks as Treeherder shows them.
+    OnTry { revision: String, push: Option<u64>, seen: Option<Seen> },
+    /// Lando or Treeherder could not be read: why.
+    Unread(String),
+}
+
+/// A look at try push `p`, pushed: on Lando, until it pushes it to try;
+/// then on Treeherder, its push, then its tasks. `dir` is where its
+/// `.lando.ini` is.
+fn look(p: &Push, dir: Option<&Path>) -> Looked {
+    let revision = match &p.revision {
+        Some(r) => r.clone(),
+        None => {
+            let Some(l) = &p.lando else {
+                return Looked::Unread("where Lando has the push is not known: its link names no Lando job".into());
+            };
+            let Some(api) = lando_api(dir, &l.instance) else {
+                return Looked::Unread(format!("stacked does not know where Lando's {} answers: its .lando.ini does not say", l.instance));
+            };
+            let job = match get(&format!("https://{api}/landing_jobs/{}/", l.job)) {
+                Ok(job) => job,
+                Err(e) => return Looked::Unread(format!("Lando could not be read: {e}")),
+            };
+            let status = job.get("status").and_then(Value::as_str).unwrap_or("").to_string();
+            match status.as_str() {
+                "LANDED" => match job.get("commit_id").and_then(Value::as_str).filter(|c| !c.is_empty()) {
+                    Some(c) => c.to_string(),
+                    None => return Looked::Unread("Lando says it pushed it, and names no revision".into()),
+                },
+                "FAILED" | "CANCELLED" | "ABORTED" => {
+                    return Looked::NotPushed {
+                        status,
+                        error: job.get("error").and_then(Value::as_str).unwrap_or("").trim().to_string(),
+                        page: job.get("url").and_then(Value::as_str).and_then(|u| crate::refs::link(u).ok()),
+                    };
+                }
+                _ => return Looked::Lando(status),
+            }
+        }
+    };
+    let push = match p.treeherder {
+        Some(push) => push,
+        None => match get(&format!("{TREEHERDER}/api/project/try/push/?revision={revision}")) {
+            Ok(v) => match v.pointer("/results/0/id").and_then(Value::as_u64) {
+                Some(push) => push,
+                None => return Looked::OnTry { revision, push: None, seen: None },
+            },
+            Err(e) => return Looked::Unread(format!("Treeherder could not be read: {e}")),
+        },
+    };
+    match jobs(push) {
+        Ok(rows) => {
+            let seen = seen_of(&rows, p, &revision);
+            Looked::OnTry { revision, push: Some(push), seen: Some(seen) }
+        }
+        Err(e) => Looked::Unread(format!("Treeherder could not be read: {e}")),
+    }
+}
+
+/// The jobs of push `push` on Treeherder, each by its properties' names,
+/// page after page.
+fn jobs(push: u64) -> std::result::Result<Vec<Map<String, Value>>, String> {
+    let mut url = Some(format!("{TREEHERDER}/api/jobs/?push_id={push}&count=2000"));
+    let mut out = Vec::new();
+    // Bounded: a push of fewer than 100,000 jobs.
+    for _ in 0..50 {
+        let Some(at) = url.take() else { break };
+        let page = get(&at)?;
+        let names: Vec<String> = page.get("job_property_names").and_then(Value::as_array).into_iter().flatten().filter_map(|n| n.as_str().map(String::from)).collect();
+        for row in page.get("results").and_then(Value::as_array).into_iter().flatten() {
+            let Some(values) = row.as_array() else { continue };
+            out.push(names.iter().cloned().zip(values.iter().cloned()).collect());
+        }
+        url = page.get("next").and_then(Value::as_str).filter(|n| n.starts_with(TREEHERDER)).map(String::from);
+    }
+    Ok(out)
+}
+
+/// Try push `p`'s tasks as the Treeherder jobs `rows` of its push, revision
+/// `revision`, show them: each task's last run (its retry), those of the
+/// labels it pushed counted, each label as many times as it runs, those it
+/// does not show as many times not seen; the others' failures (what the push
+/// ran for them) kept apart.
+pub fn seen_of(rows: &[Map<String, Value>], p: &Push, revision: &str) -> Seen {
+    let text = |r: &Map<String, Value>, k: &str| r.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+    let number = |r: &Map<String, Value>, k: &str| r.get(k).and_then(Value::as_u64).unwrap_or(0);
+    // Each task's last run.
+    let mut last: std::collections::BTreeMap<String, &Map<String, Value>> = std::collections::BTreeMap::new();
+    for r in rows {
+        let task = text(r, "task_id");
+        if last.get(&task).is_none_or(|was| number(was, "retry_id") <= number(r, "retry_id")) {
+            last.insert(task, r);
+        }
+    }
+    let shown = |r: &Map<String, Value>| Shown {
+        label: text(r, "job_type_name"),
+        result: text(r, "result"),
+        link: format!("{TREEHERDER}/jobs?repo=try&revision={revision}&selectedTaskRun={}.{}", text(r, "task_id"), number(r, "retry_id")),
+    };
+    let mut seen = Seen { going: last.is_empty(), ..Default::default() };
+    let mut of: std::collections::HashMap<String, Vec<&Map<String, Value>>> = std::collections::HashMap::new();
+    for r in last.values() {
+        let completed = text(r, "state") == "completed";
+        if !completed {
+            seen.going = true;
+        }
+        let label = text(r, "job_type_name");
+        if p.labels.contains(&label) {
+            of.entry(label).or_default().push(r);
+        } else if completed && text(r, "result") != "success" {
+            seen.besides.push(shown(r));
+        }
+    }
+    let runs = p.rebuild.unwrap_or(1) as usize;
+    for label in &p.labels {
+        let these = of.get(label).map(Vec::as_slice).unwrap_or(&[]);
+        seen.total += runs.max(these.len());
+        if these.len() < runs {
+            seen.unseen.push((label.clone(), runs - these.len()));
+        }
+        for r in these.iter().filter(|r| text(r, "state") == "completed") {
+            seen.done += 1;
+            let result = text(r, "result");
+            *seen.results.entry(result.clone()).or_default() += 1;
+            if result != "success" {
+                seen.failed.push(shown(r));
+            }
+        }
+    }
+    seen.besides.sort_by(|a, b| a.label.cmp(&b.label));
+    seen
+}
+
+/// One look at try push `id`, followed, if it is due one: taken under the
+/// lock, so that no other look is made meanwhile, then Lando and Treeherder
+/// read away from it, then what they say kept. Its stream says what
+/// changed. Over, its summary lands for your review, as an answer only's
+/// reply does, and the comment unlocks. What came of it, for the status
+/// line, when it is over.
+pub fn follow(db_path: &Path, id: &str) -> Result<Option<String>> {
+    let now = now();
+    let taken = Db::edit(db_path, |db| {
+        let Some(r) = db.run(id).cloned().filter(|r| due(r, now)) else { return Ok(None) };
+        let Some(mut p) = r.push.clone() else { return Ok(None) };
+        p.looked = now;
+        db.add_run(Run { push: Some(p.clone()), ..r })?;
+        Ok(Some(p))
+    })?;
+    let Some(p) = taken else { return Ok(None) };
+    let looked = look(&p, p.worktree.as_deref().map(Path::new));
+    Db::edit(db_path, |db| {
+        let r = db.run(id).cloned().ok_or_else(|| Error(format!("no run {id}")))?;
+        let Some(mut p) = r.push.clone().filter(|_| r.state == RunState::Started && r.push.as_ref().is_some_and(|p| p.step == Step::Pushed)) else {
+            return Ok(None);
+        };
+        let mut said: Vec<String> = Vec::new();
+        let mut over: Option<(String, String, String)> = None;
+        if !matches!(looked, Looked::Unread(_)) {
+            p.trouble = None;
+        }
+        match looked {
+            Looked::Lando(status) => {
+                if p.lando_status.as_deref() != Some(status.as_str()) {
+                    said.push(format!("Lando has the push: {status}"));
+                    p.lando_status = Some(status);
+                }
+            }
+            Looked::NotPushed { status, error, page } => {
+                let error = error.trim_end_matches('.');
+                let why = if error.is_empty() { status.clone() } else { format!("{status}: {error}") };
+                said.push(format!("Lando did not push it to try: {why}"));
+                let summary = format!("Lando did not push it to try: {why}");
+                let news = format!("the try push did not get to try, as Lando says {why}: its summary waits for your review");
+                let first = crate::refs::next_of(&db.note(&p.change, &p.id).cloned().unwrap_or_default());
+                over = Some((summary, news, not_pushed_said(&why, page.as_deref(), first)));
+            }
+            Looked::Unread(why) => {
+                if p.trouble.as_deref() != Some(why.as_str()) {
+                    said.push(format!("{why}: stacked looks again every few minutes"));
+                    p.trouble = Some(why);
+                }
+            }
+            Looked::OnTry { revision, push, seen } => {
+                if p.revision.is_none() {
+                    said.push(format!("Lando pushed it to try, as revision {}", &revision[..12.min(revision.len())]));
+                    p.revision = Some(revision);
+                    p.lando_status = Some("LANDED".into());
+                }
+                if p.treeherder.is_none() && push.is_some() {
+                    said.push("Treeherder has the push".into());
+                    p.treeherder = push;
+                }
+                if let Some(seen) = seen {
+                    let quiet = !seen.going && p.seen.as_ref() == Some(&seen);
+                    p.quiet = if quiet { p.quiet + 1 } else { 0 };
+                    if p.seen.as_ref().map(Seen::said) != Some(seen.said()) {
+                        said.push(seen.said());
+                    }
+                    let done = (seen.done == seen.total && seen.unseen.is_empty()) || p.quiet >= QUIET;
+                    if done {
+                        let link = p.link.clone().unwrap_or_default();
+                        let first = crate::refs::next_of(&db.note(&p.change, &p.id).cloned().unwrap_or_default());
+                        over = Some((format!("done: {}", results_said(&seen)), format!("the try push is done: {}: its summary waits for your review", results_said(&seen)), summary_said(&p, &seen, &link, first)));
+                    }
+                    p.seen = Some(seen);
+                }
+            }
+        }
+        for line in &said {
+            db.add_event(id, serde_json::json!({"type": "text", "text": format!("stacked: {line}")}))?;
+        }
+        match over {
+            // Over: its summary held for your review, as an answer only's
+            // reply is; the comment unlocks.
+            Some((summary, news, text)) => {
+                let held = crate::held::Held {
+                    at: now,
+                    replies: vec![crate::held::Reply {
+                        change: p.change.clone(),
+                        id: p.id.clone(),
+                        text,
+                        tag: "try".into(),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                };
+                db.add_run(Run { state: RunState::Done, summary, held: Some(held), pid: None, starter: None, push: Some(p), ..r })?;
+                Ok(Some(news))
+            }
+            None => {
+                db.add_run(Run { push: Some(p), ..r })?;
+                Ok(None)
+            }
+        }
+    })
+}
+
+/// How the tasks of a push seen as `seen` ended, said: `27 success, 2
+/// testfailed, 1 not seen on Treeherder`.
+fn results_said(seen: &Seen) -> String {
+    let mut by: Vec<(&String, &usize)> = seen.results.iter().collect();
+    by.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
+    let mut out: Vec<String> = by.into_iter().map(|(r, n)| format!("{} {r}", thousands(*n))).collect();
+    let still = seen.total - seen.done - seen.unseen_count().min(seen.total - seen.done);
+    if still > 0 {
+        out.push(format!("{} not done", thousands(still)));
+    }
+    if seen.unseen_count() > 0 {
+        out.push(format!("{} not seen on Treeherder", thousands(seen.unseen_count())));
+    }
+    if out.is_empty() {
+        out.push("none seen".into());
+    }
+    out.join(", ")
+}
+
+/// `items`, said: `a`, `a and b`, `a, b and c`.
+fn and(items: &[String]) -> String {
+    match items {
+        [] => String::new(),
+        [one] => one.clone(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+    }
+}
+
+/// The summary of try push `p`, done, as `seen` shows its tasks: its link,
+/// the counts of its tasks by result, those not seen on Treeherder apart,
+/// then each that failed, with its link, and what the push ran for them
+/// that failed; each link a reference numbered from `first`.
+fn summary_said(p: &Push, seen: &Seen, link: &str, first: usize) -> String {
+    let mut refs: Vec<Pointing> = Vec::new();
+    let mut named = |url: &str| -> String {
+        let k = first + refs.len();
+        refs.push(Pointing { n: Some(k), to: Pointer::Link(url.to_string()) });
+        format!("@r{k}")
+    };
+    let push = named(link);
+    let tasks = if seen.total == 1 { "task" } else { "tasks" };
+    let of = match p.rebuild {
+        Some(n) => format!("Of its {} {tasks}, the {} you accepted each run {n} times,", thousands(seen.total), thousands(p.labels.len())),
+        None => format!("Of its {} {tasks},", thousands(seen.total)),
+    };
+    let mut by: Vec<(&String, &usize)> = seen.results.iter().collect();
+    by.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
+    let shows: Vec<String> = by.into_iter().map(|(r, n)| format!("{} as {r}", thousands(*n))).collect();
+    let mut text = format!("The try push is done. Treeherder shows it: {push}.\n\n");
+    text += &match shows.is_empty() {
+        true => format!("{of} Treeherder shows none done"),
+        false => format!("{of} Treeherder shows {}", and(&shows)),
+    };
+    let still = seen.total - seen.done - seen.unseen_count().min(seen.total - seen.done);
+    if still > 0 {
+        text += &format!("; {} never ended", thousands(still));
+    }
+    if seen.unseen_count() > 0 {
+        let n = seen.unseen_count();
+        text += &format!("; {} {} not seen on Treeherder", thousands(n), if n == 1 { "was" } else { "were" });
+    }
+    text += ".";
+    if !seen.failed.is_empty() {
+        text += "\n\nThese failed:\n";
+        for f in &seen.failed {
+            text += &format!("\n- `{}` ({}): {}", f.label, f.result, named(&f.link));
+        }
+    }
+    if !seen.besides.is_empty() {
+        text += "\n\nThe push ran these for them too, and they failed:\n";
+        for f in &seen.besides {
+            text += &format!("\n- `{}` ({}): {}", f.label, f.result, named(&f.link));
+        }
+    }
+    if !seen.unseen.is_empty() {
+        let listed: Vec<String> = seen
+            .unseen
+            .iter()
+            .map(|(l, n)| match p.rebuild {
+                Some(runs) => format!("`{l}` ({n} of its {runs} runs)"),
+                None => format!("`{l}`"),
+            })
+            .collect();
+        text += &format!("\n\nNot seen on Treeherder, which shows no task that was never scheduled: {}.", listed.join(", "));
+    }
+    crate::refs::attach(&text, &refs)
+}
+
+/// The summary of a try push that Lando did not push to try, `why`, its
+/// page on Lando, if it said one, a reference numbered `first`.
+fn not_pushed_said(why: &str, page: Option<&str>, first: usize) -> String {
+    match page {
+        Some(page) => {
+            let text = format!("The try push did not get to try: Lando says {why}. None of its tasks ran. Lando shows it: @r{first}.");
+            crate::refs::attach(&text, &[Pointing { n: Some(first), to: Pointer::Link(page.to_string()) }])
+        }
+        None => format!("The try push did not get to try: Lando says {why}. None of its tasks ran."),
+    }
+}
+
 /// Ends try push `id` as `state` says, `why` its summary, `said` the reply
 /// on the comment that asked, if it is open, given that comment: the
 /// comment unlocks. Nothing, if it is over already.
@@ -731,7 +1280,7 @@ fn end(db_path: &Path, id: &str, state: RunState, why: &str, said: &dyn Fn(&Note
             summary: why.to_string(),
             pid: None,
             starter: None,
-            push: Some(Push { login: None, ..p }),
+            push: Some(Box::new(Push { login: None, ..*p })),
             ..r
         })?;
         Ok(())
@@ -927,10 +1476,11 @@ fn commits_problem(dir: &Path, base: &str, n: usize, names: &[String]) -> Option
     }
 }
 
-/// What mach is run with: `try fuzzy`, each task its own exact query
-/// (`-q '^LABEL$'`), the labels as the task graph has them, chunk numbers
-/// and all (`--show-chunk-numbers`), from every task it has
-/// (`--all-tasks`); how many times each runs; past the threshold, the
+/// What mach is run with: `try fuzzy`, the tasks in one query, each task
+/// an exact term of its own (`^LABEL$`), the terms joined by fzf's OR
+/// (`^a$ | ^b$`), so that fzf runs once; the labels as the task graph has
+/// them, chunk numbers and all (`--show-chunk-numbers`), from every task it
+/// has (`--all-tasks`); how many times each runs; past the threshold, the
 /// preset of the lowest priority; `--no-push` to see what it would push.
 pub fn mach_args(p: &Push, check: bool) -> Vec<String> {
     let mut out: Vec<String> = vec!["try".into(), "fuzzy".into()];
@@ -944,36 +1494,32 @@ pub fn mach_args(p: &Push, check: bool) -> Vec<String> {
     if p.lowest {
         out.extend(["--preset".to_string(), LOWEST.to_string()]);
     }
-    for l in &p.labels {
-        out.extend(["-q".to_string(), format!("^{l}$")]);
-    }
+    let terms: Vec<String> = p.labels.iter().map(|l| format!("^{l}$")).collect();
+    out.extend(["-q".to_string(), terms.join(" | ")]);
     out
 }
 
 /// mach's command line `args`, said in the stream: `./mach try fuzzy …`,
-/// each argument quoted as a shell would need it, the queries past the
-/// first two counted.
+/// each argument quoted as a shell would need it, a query of more than two
+/// terms cut after them, with how many it has.
 fn command_said(args: &[String]) -> String {
     let quote = |a: &str| match a.chars().all(|c| c.is_ascii_alphanumeric() || "-_./=:".contains(c)) {
         true => a.to_string(),
         false => format!("'{}'", a.replace('\'', "'\\''")),
     };
     let mut out = vec!["./mach".to_string()];
-    let mut queries = 0;
     let mut it = args.iter();
     while let Some(a) = it.next() {
         if a == "-q" {
             let q = it.next().map(String::as_str).unwrap_or("");
-            queries += 1;
-            if queries <= 2 {
-                out.push(format!("-q {}", quote(q)));
+            let terms: Vec<&str> = q.split(" | ").collect();
+            match terms.len() {
+                n if n > 2 => out.push(format!("-q {} (one query, a term for each of the {} tasks)", quote(&format!("{} | {} | …", terms[0], terms[1])), thousands(n))),
+                _ => out.push(format!("-q {}", quote(q))),
             }
             continue;
         }
         out.push(quote(a));
-    }
-    if queries > 2 {
-        out.push(format!("… {} more queries, one for each task", queries - 2));
     }
     out.join(" ")
 }
@@ -1319,19 +1865,21 @@ mod tests {
     }
 
     #[test]
-    fn mach_is_run_with_each_task_its_own_exact_query_and_said_short() {
+    fn mach_is_run_with_the_tasks_in_one_query_each_an_exact_term_and_said_short() {
         let p = push(&["build-linux64/debug", "test-linux2404-64/opt-xpcshell-1"], Some(3), true);
+        let args = mach_args(&p, true);
+        assert_eq!(&args[args.len() - 2..], ["-q", "^build-linux64/debug$ | ^test-linux2404-64/opt-xpcshell-1$"], "one argument, fzf's OR between the terms");
         assert_eq!(
-            mach_args(&p, true).join(" "),
-            "try fuzzy --no-push --show-chunk-numbers --all-tasks --rebuild 3 --preset stacked-lowest -q ^build-linux64/debug$ -q ^test-linux2404-64/opt-xpcshell-1$"
+            args.join(" "),
+            "try fuzzy --no-push --show-chunk-numbers --all-tasks --rebuild 3 --preset stacked-lowest -q ^build-linux64/debug$ | ^test-linux2404-64/opt-xpcshell-1$"
         );
         assert_eq!(mach_args(&push(&["a"], None, false), false).join(" "), "try fuzzy --show-chunk-numbers --all-tasks -q ^a$");
         assert_eq!(
-            command_said(&mach_args(&p, true)),
-            "./mach try fuzzy --no-push --show-chunk-numbers --all-tasks --rebuild 3 --preset stacked-lowest -q '^build-linux64/debug$' -q '^test-linux2404-64/opt-xpcshell-1$'"
+            command_said(&args),
+            "./mach try fuzzy --no-push --show-chunk-numbers --all-tasks --rebuild 3 --preset stacked-lowest -q '^build-linux64/debug$ | ^test-linux2404-64/opt-xpcshell-1$'"
         );
         let many = push(&["a", "b", "c", "d"], None, false);
-        assert_eq!(command_said(&mach_args(&many, false)), "./mach try fuzzy --show-chunk-numbers --all-tasks -q '^a$' -q '^b$' … 2 more queries, one for each task");
+        assert_eq!(command_said(&mach_args(&many, false)), "./mach try fuzzy --show-chunk-numbers --all-tasks -q '^a$ | ^b$ | …' (one query, a term for each of the 4 tasks)");
     }
 
     #[test]
@@ -1402,6 +1950,92 @@ mod tests {
         assert_eq!(program_of(at, None, false), Ok(PathBuf::from("/w/mach")));
         // This process is one: no home of its own was set up.
         assert!(program(at).is_err() || std::env::var_os("STACKED_MACH").is_some());
+    }
+
+    /// A Treeherder job as `jobs` reads one: by its properties' names.
+    fn row(label: &str, state: &str, result: &str, task: &str, retry: u64) -> Map<String, Value> {
+        serde_json::json!({"job_type_name": label, "state": state, "result": result, "task_id": task, "retry_id": retry}).as_object().unwrap().clone()
+    }
+
+    #[test]
+    fn a_push_s_tasks_are_counted_as_treeherder_shows_them_each_by_its_last_run() {
+        let p = push(&["a", "b", "c"], Some(2), false);
+        let rows = [
+            row("Gecko Decision Task", "completed", "success", "d", 0),
+            // a: twice, as it runs twice; its first run retried, then passed.
+            row("a", "completed", "retry", "a1", 0),
+            row("a", "completed", "success", "a1", 1),
+            row("a", "completed", "testfailed", "a2", 0),
+            // b: once of its two runs, still running.
+            row("b", "running", "unknown", "b1", 0),
+            // c: never; a build the push ran for them, busted.
+            row("build-linux64/debug", "completed", "busted", "x", 0),
+        ];
+        let seen = seen_of(&rows, &p, "rev");
+        assert_eq!((seen.total, seen.done, seen.going), (6, 2, true));
+        assert_eq!(seen.results, [("success".to_string(), 1), ("testfailed".to_string(), 1)].into_iter().collect());
+        assert_eq!(seen.failed, [Shown { label: "a".into(), result: "testfailed".into(), link: "https://treeherder.mozilla.org/jobs?repo=try&revision=rev&selectedTaskRun=a2.0".into() }]);
+        assert_eq!(seen.besides.iter().map(|s| (s.label.as_str(), s.result.as_str())).collect::<Vec<_>>(), [("build-linux64/debug", "busted")]);
+        assert_eq!(seen.unseen, [("b".to_string(), 1), ("c".to_string(), 2)]);
+        assert_eq!(seen.said(), "2 of 6 tasks done, 1 failed");
+        // Nothing shown yet: still to come.
+        assert!(seen_of(&[], &p, "rev").going);
+    }
+
+    #[test]
+    fn a_push_done_is_summed_up_its_failures_and_its_tasks_never_seen_with_their_links() {
+        let mut p = push(&["a", "b", "c"], None, false);
+        p.link = Some("https://treeherder.mozilla.org/jobs?repo=try&landoInstance=i&landoCommitID=1".into());
+        let rows = [row("a", "completed", "success", "a1", 0), row("b", "completed", "exception", "b1", 0), row("w", "completed", "busted", "w1", 0)];
+        let seen = seen_of(&rows, &p, "r");
+        assert_eq!(results_said(&seen), "1 exception, 1 success, 1 not seen on Treeherder");
+        let said = summary_said(&p, &seen, p.link.as_deref().unwrap(), 3);
+        assert_eq!(
+            said,
+            "The try push is done. Treeherder shows it: @r3.\n\nOf its 3 tasks, Treeherder shows 1 as exception and 1 as success; 1 was not seen on Treeherder.\n\nThese failed:\n\n- `b` (exception): @r4\n\nThe push ran these for them too, and they failed:\n\n- `w` (busted): @r5\n\nNot seen on Treeherder, which shows no task that was never scheduled: `c`.\n\n```refs\nr3 https://treeherder.mozilla.org/jobs?repo=try&landoInstance=i&landoCommitID=1\nr4 https://treeherder.mozilla.org/jobs?repo=try&revision=r&selectedTaskRun=b1.0\nr5 https://treeherder.mozilla.org/jobs?repo=try&revision=r&selectedTaskRun=w1.0\n```"
+        );
+        // Each run twice: said so, and the runs not seen counted.
+        let p = push(&["a"], Some(2), false);
+        let seen = seen_of(&[row("a", "completed", "success", "a1", 0)], &p, "r");
+        assert!(summary_said(&p, &seen, "https://treeherder.mozilla.org/x", 1).contains("Of its 2 tasks, the 1 you accepted each run 2 times, Treeherder shows 1 as success; 1 was not seen on Treeherder.\n\nNot seen on Treeherder, which shows no task that was never scheduled: `a` (1 of its 2 runs)."));
+        assert_eq!(
+            not_pushed_said("FAILED: it does not apply", Some("https://lando.moz.tools/landings/7"), 2),
+            "The try push did not get to try: Lando says FAILED: it does not apply. None of its tasks ran. Lando shows it: @r2.\n\n```refs\nr2 https://lando.moz.tools/landings/7\n```"
+        );
+    }
+
+    #[test]
+    fn where_lando_answers_as_the_checkout_s_lando_ini_says_and_a_push_s_progress_said() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join(".lando.ini"),
+            "[autoformat]\nenabled = True\n\n[lando-prod]\ninstance_id = lando-prod\napi_domain = api.lando.example\n\n[lando-prod-new]\ninstance_id = lando-prod-2025\napi_domain = lando.example\n# a comment\n[other]\napi_domain = other.example\n",
+        )
+        .unwrap();
+        let dir = Some(tmp.path());
+        assert_eq!(lando_api(dir, "lando-prod-2025").as_deref(), Some("lando.example"));
+        assert_eq!(lando_api(dir, "lando-prod").as_deref(), Some("api.lando.example"));
+        assert_eq!(lando_api(dir, "other").as_deref(), Some("other.example"), "named so, with no instance_id");
+        assert_eq!(lando_api(dir, "nowhere"), None);
+        assert_eq!(lando_api(None, "lando-prod-2025").as_deref(), Some("lando.moz.tools"), "the one stacked knows");
+        let mut p = push(&["a"], None, false);
+        p.step = Step::Pushed;
+        assert_eq!(state_said(&p), "try push: pushed, Lando not looked at yet");
+        p.lando_status = Some("IN_PROGRESS".into());
+        assert_eq!(state_said(&p), "try push: Lando has it: in progress");
+        p.revision = Some("r".into());
+        assert_eq!(progress_said(&p), "pushed, its tasks not on Treeherder yet");
+        p.seen = Some(Seen { total: 30, done: 12, failed: vec![Shown::default()], ..Default::default() });
+        assert_eq!(progress_said(&p), "12 of 30 tasks done, 1 failed");
+    }
+
+    #[test]
+    fn lando_and_treeherder_are_not_reached_from_a_process_that_keeps_nothing() {
+        // This process is one, and sets no stand-in.
+        assert_eq!(
+            get("https://lando.moz.tools/landing_jobs/1/"),
+            Err("Lando and Treeherder are not reached from a process that keeps nothing, as the tests' own".to_string())
+        );
     }
 
     /// A repository in `dir`, its first commit made, its id.

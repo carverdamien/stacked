@@ -2222,6 +2222,9 @@ enum Done {
     /// The commit messages synced: what came of it, said; or why nothing
     /// changed.
     Synced(std::result::Result<String, String>),
+    /// The try pushes followed looked at: what came of those now over.
+    #[cfg(feature = "try-push")]
+    Followed(Vec<String>),
 }
 
 /// What the bar says while the agent is asked what tools it has, for the
@@ -2288,6 +2291,10 @@ struct Background {
     /// its run: what the status line said of it last. None until it looks.
     #[cfg(feature = "try-push")]
     pushes: Option<HashMap<String, String>>,
+    /// The try pushes followed are being looked at, on Lando and
+    /// Treeherder.
+    #[cfg(feature = "try-push")]
+    following: bool,
 }
 
 impl Background {
@@ -2309,6 +2316,8 @@ impl Background {
             stopping: vec![],
             #[cfg(feature = "try-push")]
             pushes: None,
+            #[cfg(feature = "try-push")]
+            following: false,
         }
     }
 }
@@ -2577,15 +2586,32 @@ impl App {
     /// a moment ago. What they do lands on its own.
     pub fn say_still_running(&self) {
         let now = Db::load(&self.path);
-        let running = ask::still_running(now.as_ref().unwrap_or(&self.db));
+        let db = now.as_ref().unwrap_or(&self.db);
+        // Not eprintln!, which panics with nowhere to say it: `stacked web`
+        // left as its terminal closed.
+        use std::io::Write;
+        let running = ask::still_running(db);
         if !running.is_empty() {
-            // Not eprintln!, which panics with nowhere to say it: `stacked
-            // web` left as its terminal closed.
-            use std::io::Write;
             let mut err = std::io::stderr().lock();
             let _ = writeln!(err, "stacked: {} of the agent's asks still running; what they do lands on its own:", running.len());
             for l in running {
                 let _ = writeln!(err, "  {l}");
+            }
+        }
+        // The try pushes followed: no longer, until an editor opens again.
+        #[cfg(feature = "try-push")]
+        {
+            let followed = db
+                .live_runs()
+                .iter()
+                .filter(|r| r.state == RunState::Started && r.push.as_ref().is_some_and(|p| p.step == crate::try_push::Step::Pushed))
+                .count();
+            if followed > 0 {
+                let (these, them) = if followed == 1 { ("1 try push is".to_string(), "it") } else { (format!("{followed} try pushes are"), "them") };
+                let _ = writeln!(
+                    std::io::stderr().lock(),
+                    "stacked: {these} followed only while an editor runs: the next editor to open this database goes on following {them}"
+                );
             }
         }
     }
@@ -2707,6 +2733,8 @@ impl App {
     /// exited are waited for first, so that none is left a zombie. Every
     /// front-end calls it every few seconds.
     pub fn launch(&mut self) {
+        #[cfg(feature = "try-push")]
+        self.follow_pushes();
         if self.bg.launching {
             self.bg.again = true;
             return;
@@ -2721,9 +2749,30 @@ impl App {
         });
     }
 
+    /// The try pushes followed that are due a look, looked at away from
+    /// the screen, on Lando and Treeherder: as stacked runs, every few
+    /// minutes, from where the database has them.
+    #[cfg(feature = "try-push")]
+    fn follow_pushes(&mut self) {
+        if self.bg.following || crate::try_push::due_now(&self.db).is_empty() {
+            return;
+        }
+        self.bg.following = true;
+        let path = self.path.clone();
+        self.spawn(move || Done::Followed(crate::try_push::follow_due(&path)));
+    }
+
     /// What some work away from the screen came to.
     fn done(&mut self, d: Done) {
         match d {
+            #[cfg(feature = "try-push")]
+            Done::Followed(news) => {
+                self.bg.following = false;
+                self.reload();
+                if let Some(said) = news.into_iter().last() {
+                    self.status = said;
+                }
+            }
             Done::Launched(e) => {
                 self.bg.launching = false;
                 if let Some(e) = e {
@@ -3020,13 +3069,22 @@ impl App {
     /// Whether work is being done away from the screen: starting asks,
     /// pulling, applying, checking.
     pub fn working(&self) -> bool {
-        self.bg.launching || !self.bg.doing.is_empty() || self.bg.judging.is_some()
+        self.bg.launching || !self.bg.doing.is_empty() || self.bg.judging.is_some() || self.following()
+    }
+
+    /// Whether the try pushes followed are being looked at: never, built
+    /// without the `try-push` feature.
+    fn following(&self) -> bool {
+        #[cfg(feature = "try-push")]
+        return self.bg.following;
+        #[cfg(not(feature = "try-push"))]
+        return false;
     }
 
     /// Waits for the work away from the screen to be done, the files read
     /// to show whole too.
     pub fn settle(&mut self) {
-        while self.bg.launching || !self.bg.doing.is_empty() || self.bg.judging.is_some() || self.bg.heading {
+        while self.bg.launching || !self.bg.doing.is_empty() || self.bg.judging.is_some() || self.bg.heading || self.following() {
             match self.bg.rx.recv_timeout(Duration::from_secs(60)) {
                 Ok(d) => self.done(d),
                 Err(_) => break,
@@ -5182,6 +5240,9 @@ impl App {
             Screen::Main if self.on_banner => match self.banner_lines().get(self.banner_sel)? {
                 BannerLine::Landed(run) => Some(self.reject_work_here(run)),
                 BannerLine::Comment(change, id) => self.comment_deleting(self.db.note(change, id)?),
+                // A try push: following it stopped, or the push.
+                #[cfg(feature = "try-push")]
+                BannerLine::Push(run) => Some(Ok(Action::AskStop(run.clone()))),
                 _ => None,
             },
             Screen::Main => match self.focus {
@@ -5245,6 +5306,8 @@ impl App {
         if self.screen == Screen::Main && self.on_banner {
             return match self.banner_lines().get(self.banner_sel)? {
                 BannerLine::Comment(change, id) => self.db.note(change, id).cloned(),
+                #[cfg(feature = "try-push")]
+                BannerLine::Push(run) => self.db.run(run).and_then(|r| r.push.as_ref()).and_then(|p| self.db.note(&p.change, &p.id)).cloned(),
                 _ => None,
             };
         }
@@ -5374,8 +5437,13 @@ impl App {
                     Some(_) => " First, in a section of its own, the commit messages to sync: the messages of some patches differ from their commits' in your workspace, and no landed work is reviewed before they are synced.",
                     None => "",
                 };
+                let pushes = if cfg!(feature = "try-push") {
+                    " Try pushes, followed: each try push under way, with where it is, on Lando, then on Treeherder."
+                } else {
+                    ""
+                };
                 out.push(format!(
-                    "The banner says what waits on you on this stack, a line for each, in sections.{sync} Read only: what landed and changes nothing, the agent's answers and the comments pulled from Phabricator{pulling}. Edits: what changes the stack, the one you review now first, then those going on from it, as if you accept it, which you review after it. Nothing of it is applied before you review it. Then the batch, the comments you asked the agent about later, to send together, and every comment open, the most recently updated first, marked as the comments pane marks it, with where it stands."
+                    "The banner says what waits on you on this stack, a line for each, in sections.{sync} Read only: what landed and changes nothing, the agent's answers and the comments pulled from Phabricator{pulling}. Edits: what changes the stack, the one you review now first, then those going on from it, as if you accept it, which you review after it. Nothing of it is applied before you review it.{pushes} Then the batch, the comments you asked the agent about later, to send together, and every comment open, the most recently updated first, marked as the comments pane marks it, with where it stands."
                 ));
                 out.push(match self.banner_lines().get(self.banner_sel) {
                     Some(BannerLine::Sync) => {
@@ -5389,6 +5457,10 @@ impl App {
                     Some(BannerLine::Pulling) => format!("The pull is under way: {}.", banner::PULL_BRINGS),
                     Some(BannerLine::Batch) => {
                         "Press Enter to pick what to send: the batch's edits to a single agent, its answers to a single agent or fanned out, an agent each; and which comments are in it.".into()
+                    }
+                    #[cfg(feature = "try-push")]
+                    Some(BannerLine::Push(_)) => {
+                        "This try push is followed on Lando, then on Treeherder, every few minutes while stacked runs: once its tasks are done, its summary lands here for your review. Press Enter to go to the comment that asked for it.".into()
                     }
                     _ => "Press Enter to go to this comment.".into(),
                 });
@@ -11342,7 +11414,7 @@ pub fn note_state(db: &Db, name: &str, n: &Note, busy: &Busy) -> String {
 /// push: mach checks the tasks`. None for any other run.
 fn push_state(db: &Db, run: &str) -> Option<String> {
     #[cfg(feature = "try-push")]
-    return db.run(run).and_then(|r| r.push.as_ref()).map(crate::try_push::state_said);
+    return db.run(run).and_then(|r| r.push.as_deref()).map(crate::try_push::state_said);
     #[cfg(not(feature = "try-push"))]
     {
         let _ = (db, run);

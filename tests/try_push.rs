@@ -102,7 +102,114 @@ fn open(db: &Path) -> Editor {
     fake_claude();
     fake_mach();
     fake_opener();
+    fake_web();
+    // A push followed is looked at each time the editor launches what may go.
+    stacked::try_push::look_every(0);
     Editor(App::with_config(db, settings()).unwrap())
+}
+
+/// A push as the stand-in for Lando and Treeherder has it, by its Lando
+/// job: Lando's state of it, the revision it pushed and why it failed; then
+/// Treeherder's push of it, if it has it, and its jobs, each a label, a
+/// state, a result, a task and its run; and the pages read of it.
+#[derive(Clone, Default)]
+struct Pushed {
+    status: String,
+    revision: String,
+    error: String,
+    push: Option<u64>,
+    jobs: Vec<(String, String, String, String, u64)>,
+    gets: Vec<String>,
+}
+
+/// The pushes the stand-in for Lando and Treeherder has, by Lando job.
+static PUSHED: std::sync::Mutex<std::collections::BTreeMap<u64, Pushed>> = std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+/// Each test's own Lando job, for the stand-in for mach to push as.
+fn new_job(db: &Path) -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(5000);
+    let job = NEXT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    std::fs::write(db.with_file_name("mach-job"), job.to_string()).unwrap();
+    PUSHED.lock().unwrap().insert(job, Pushed { status: "SUBMITTED".into(), ..Default::default() });
+    job
+}
+
+/// Push `job` as the stand-in has it, changed by `change`.
+fn pushed(job: u64, change: impl FnOnce(&mut Pushed)) {
+    change(PUSHED.lock().unwrap().get_mut(&job).unwrap());
+}
+
+/// The pages of push `job` read, as the stand-in was asked for them.
+fn gets(job: u64) -> Vec<String> {
+    PUSHED.lock().unwrap().get(&job).map(|p| p.gets.clone()).unwrap_or_default()
+}
+
+/// The stand-in for Lando and Treeherder, for every test of this file: it
+/// answers the plain GETs that follow a push, from `PUSHED`.
+fn fake_web() {
+    static SET: std::sync::Once = std::sync::Once::new();
+    SET.call_once(|| stacked::try_push::web_stand_in(Some(Box::new(answer))));
+}
+
+/// What the stand-in answers for `url`, as Lando's and Treeherder's APIs
+/// would: a Lando job; Treeherder's push of a revision; a push's jobs.
+fn answer(url: &str) -> Result<String, String> {
+    let mut all = PUSHED.lock().unwrap();
+    if let Some(job) = url.strip_prefix("https://lando.moz.tools/landing_jobs/") {
+        let job: u64 = job.trim_end_matches('/').parse().map_err(|_| format!("no Lando job in {url}"))?;
+        let p = all.get_mut(&job).ok_or_else(|| format!("Lando has no job {job}"))?;
+        p.gets.push(url.to_string());
+        let landed = p.status == "LANDED";
+        return Ok(serde_json::json!({
+            "id": job,
+            "status": p.status,
+            "commit_id": if landed { p.revision.clone() } else { String::new() },
+            "error": p.error,
+            "repository": "try",
+            "url": format!("https://lando.moz.tools/landings/{job}"),
+        })
+        .to_string());
+    }
+    if let Some(rev) = url.strip_prefix("https://treeherder.mozilla.org/api/project/try/push/?revision=") {
+        let p = all.values_mut().find(|p| p.revision == rev).ok_or_else(|| format!("no push of {rev}"))?;
+        p.gets.push(url.to_string());
+        let results: Vec<serde_json::Value> = p.push.map(|id| serde_json::json!({"id": id, "revision": rev})).into_iter().collect();
+        return Ok(serde_json::json!({"meta": {"revision": rev, "count": results.len()}, "results": results}).to_string());
+    }
+    if let Some(rest) = url.strip_prefix("https://treeherder.mozilla.org/api/jobs/?push_id=") {
+        let id: u64 = rest.split('&').next().unwrap_or("").parse().map_err(|_| format!("no push in {url}"))?;
+        let p = all.values_mut().find(|p| p.push == Some(id)).ok_or_else(|| format!("Treeherder has no push {id}"))?;
+        p.gets.push(url.to_string());
+        let rows: Vec<serde_json::Value> = p.jobs.iter().map(|(label, state, result, task, retry)| serde_json::json!([label, state, result, task, retry])).collect();
+        return Ok(serde_json::json!({
+            "count": rows.len(),
+            "next": null,
+            "previous": null,
+            "results": rows,
+            "job_property_names": ["job_type_name", "state", "result", "task_id", "retry_id"],
+        })
+        .to_string());
+    }
+    Err(format!("the stand-in for Lando and Treeherder does not answer {url}"))
+}
+
+/// A job as the stand-in's Treeherder has it.
+fn treeherder_job(label: &str, state: &str, result: &str, task: &str, retry: u64) -> (String, String, String, String, u64) {
+    (label.into(), state.into(), result.into(), task.into(), retry)
+}
+
+/// The editor launching what may go, the pushes followed looked at, until
+/// `there` holds of the try push as the database has it.
+fn look_until(app: &mut App, db: &Path, there: impl Fn(&stacked::db::Run) -> bool) -> stacked::db::Run {
+    for _ in 0..100 {
+        app.launch();
+        app.settle();
+        if let Some(r) = push_run(db).filter(|r| there(r)) {
+            return r;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    panic!("the try push followed never got there: {:?}", push_run(db));
 }
 
 /// The stand-in for mach, for every test of this file, run as `./mach try
@@ -142,7 +249,7 @@ while [ $# -gt 0 ]; do
     --no-push) check=yes ;;
     --rebuild) shift; rebuild="$1" ;;
     --preset) shift; preset="$1" ;;
-    -q) shift; labels="$labels$1
+    -q) shift; labels="$labels$(printf '%s' "$1" | tr ' ' '\n' | grep -v '^|$')
 " ;;
   esac
   shift
@@ -196,7 +303,7 @@ while [ -e "$dir/mach-hold" ]; do sleep 0.1; printf '.'; done
 echo
 echo "Submitting stack of $(git rev-list --count HEAD --not --remotes=origin) nodes and the try commit."
 echo "try submission success in 2.0s:"
-echo " https://treeherder.mozilla.org/jobs?repo=try&landoInstance=lando-prod-new&landoCommitID=4242"
+echo " https://treeherder.mozilla.org/jobs?repo=try&landoInstance=lando-prod-2025&landoCommitID=$(cat "$dir/mach-job" 2>/dev/null || echo 4242)"
 "#;
         let dir = Path::new(env!("CARGO_TARGET_TMPDIR"));
         let (path, part) = (dir.join("try-mach.sh"), dir.join(format!("try-mach-{}.sh", std::process::id())));
@@ -704,7 +811,8 @@ fn a_try_push_accepted_is_checked_then_pushed_its_login_shown_its_link_a_reply_u
         app.status,
         "mach waits for you to log in to push to try: open https://auth.example.com/activate?user_code=WXYZ-1234 and enter the code WXYZ-1234 (the comment's menu has Open the login page)"
     );
-    let labels = "-q ^test-linux2404-64/opt-xpcshell-1$ -q ^build-linux64/debug$";
+    // One query, a term for each task, fzf's OR between them.
+    let labels = "-q ^test-linux2404-64/opt-xpcshell-1$ | ^build-linux64/debug$";
     assert_eq!(
         mach_args(&db),
         [format!("try fuzzy --no-push --show-chunk-numbers --all-tasks {labels}"), format!("try fuzzy --show-chunk-numbers --all-tasks {labels}")]
@@ -736,9 +844,9 @@ fn a_try_push_accepted_is_checked_then_pushed_its_login_shown_its_link_a_reply_u
     std::fs::remove_file(db.with_file_name("mach-hold")).unwrap();
     let r = wait_push(&mut app, &db, |r| r.push.as_ref().is_some_and(|p| p.link.is_some()) && r.pid.is_none());
     let p = r.push.clone().unwrap();
-    let link = "https://treeherder.mozilla.org/jobs?repo=try&landoInstance=lando-prod-new&landoCommitID=4242";
+    let link = "https://treeherder.mozilla.org/jobs?repo=try&landoInstance=lando-prod-2025&landoCommitID=4242";
     assert_eq!(p.link.as_deref(), Some(link));
-    assert_eq!(p.lando.as_ref().map(|l| (l.instance.as_str(), l.job)), Some(("lando-prod-new", 4242)));
+    assert_eq!(p.lando.as_ref().map(|l| (l.instance.as_str(), l.job)), Some(("lando-prod-2025", 4242)));
     assert_eq!(app.status, "the try push is made: its link is a reply on the comment that asked for it");
     assert_eq!(
         last_turn(&db),
@@ -763,6 +871,165 @@ fn a_try_push_accepted_is_checked_then_pushed_its_login_shown_its_link_a_reply_u
     );
     assert!(!locked(&db, &id));
     assert_eq!(push_run(&db).map(|r| (r.state, r.summary)), Some((stacked::db::RunState::Done, "stopped following".to_string())));
+}
+
+/// A comment of patch 1 asked as a try push of `tasks`, landed, reviewed,
+/// every part accepted, closed and pushed, as Lando job `job`: the
+/// comment's id.
+fn pushed_as(app: &mut App, db: &Path, tasks: &[(&str, &str)]) -> String {
+    tasks_answer(db, tasks, "As you asked.");
+    ask_try(app, "Run what tests a.txt.");
+    landed(app, db, 1);
+    let id = notes_of(db, 0)[0].id.clone();
+    keys(app, &[KeyCode::Esc, KeyCode::Enter]);
+    keys(app, &[KeyCode::Esc]);
+    choose(app, "Accept all remaining and Close");
+    choose(app, "Accept them and close");
+    wait_push(app, db, |r| r.push.as_ref().is_some_and(|p| p.link.is_some()) && r.pid.is_none());
+    id
+}
+
+#[test]
+fn a_try_push_followed_is_tracked_in_the_banner_and_its_summary_lands_for_review_once_done() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db);
+    let job = new_job(&db);
+    let id = pushed_as(&mut app, &db, &[("test-linux2404-64/opt-xpcshell-1", "Its tests."), ("build-linux64/debug", "Its build.")]);
+    // Lando has it, not on try yet: the banner says so, its stream too.
+    look_until(&mut app, &db, |r| r.push.as_ref().is_some_and(|p| p.lando_status.is_some()));
+    assert_eq!(gets(job), [format!("https://lando.moz.tools/landing_jobs/{job}/")]);
+    let screen = draw(&mut app);
+    assert!(screen.contains("1 try push: Lando has it: submitted"), "{screen}");
+    // On try: its tasks as Treeherder shows them, in the banner.
+    let rev = "abcdef0123456789abcdef0123456789abcdef01";
+    pushed(job, |p| {
+        p.status = "LANDED".into();
+        p.revision = rev.into();
+        p.push = Some(77);
+        p.jobs = vec![
+            treeherder_job("Gecko Decision Task", "completed", "success", "dec", 0),
+            treeherder_job("build-linux64/debug", "running", "unknown", "b1", 0),
+            treeherder_job("test-linux2404-64/opt-xpcshell-1", "pending", "unknown", "t1", 0),
+        ];
+    });
+    let r = look_until(&mut app, &db, |r| r.push.as_ref().and_then(|p| p.seen.as_ref()).is_some());
+    assert_eq!(r.push.as_ref().and_then(|p| p.revision.as_deref()), Some(rev));
+    assert_eq!(
+        &gets(job)[1..],
+        [
+            format!("https://lando.moz.tools/landing_jobs/{job}/"),
+            format!("https://treeherder.mozilla.org/api/project/try/push/?revision={rev}"),
+            "https://treeherder.mozilla.org/api/jobs/?push_id=77&count=2000".to_string(),
+        ]
+    );
+    let screen = draw(&mut app);
+    assert!(screen.contains("1 try push: 0 of 2 tasks done"), "{screen}");
+    keys(&mut app, &[KeyCode::Esc]);
+    let screen = draw(&mut app);
+    assert!(screen.contains(" try pushes, followed"), "{screen}");
+    assert!(screen.contains("⇡ Try push of patch 1"), "{screen}");
+    keys(&mut app, &[KeyCode::Esc]);
+    assert!(locked(&db, &id), "locked while followed");
+    let stream: Vec<String> = Db::load(&db).unwrap().events(&r.id).iter().filter_map(|e| e.get("text").and_then(|t| t.as_str()).map(String::from)).collect();
+    for said in ["stacked: Lando has the push: SUBMITTED", "stacked: Lando pushed it to try, as revision abcdef012345", "stacked: Treeherder has the push", "stacked: 0 of 2 tasks done"] {
+        assert!(stream.iter().any(|l| l == said), "{said:?} in {stream:?}");
+    }
+    // Done: the build retried, then passed; the test failed; a task the push
+    // ran for them too, busted.
+    pushed(job, |p| {
+        p.jobs = vec![
+            treeherder_job("Gecko Decision Task", "completed", "success", "dec", 0),
+            treeherder_job("build-linux64/debug", "completed", "retry", "b1", 0),
+            treeherder_job("build-linux64/debug", "completed", "success", "b1", 1),
+            treeherder_job("test-linux2404-64/opt-xpcshell-1", "completed", "testfailed", "t1", 0),
+            treeherder_job("build-win64/opt", "completed", "busted", "w1", 0),
+        ];
+    });
+    let r = look_until(&mut app, &db, |r| r.state != stacked::db::RunState::Started);
+    assert_eq!((r.state, r.summary.as_str()), (stacked::db::RunState::Done, "done: 1 success, 1 testfailed"));
+    assert_eq!(app.status, "the try push is done: 1 success, 1 testfailed: its summary waits for your review");
+    assert!(!locked(&db, &id), "unlocked once done");
+    // Its summary, for your review, as an answer only's reply is.
+    let link = format!("https://treeherder.mozilla.org/jobs?repo=try&landoInstance=lando-prod-2025&landoCommitID={job}");
+    let summary = format!(
+        "The try push is done. Treeherder shows it: @r2.\n\nOf its 2 tasks, Treeherder shows 1 as success and 1 as testfailed.\n\nThese failed:\n\n- `test-linux2404-64/opt-xpcshell-1` (testfailed): @r3\n\nThe push ran these for them too, and they failed:\n\n- `build-win64/opt` (busted): @r4\n\n```refs\nr2 {link}\nr3 https://treeherder.mozilla.org/jobs?repo=try&revision={rev}&selectedTaskRun=t1.0\nr4 https://treeherder.mozilla.org/jobs?repo=try&revision={rev}&selectedTaskRun=w1.0\n```"
+    );
+    let held = r.held.clone().unwrap();
+    assert_eq!((held.replies.len(), held.replies[0].text.as_str(), held.replies[0].tag.as_str()), (1, summary.as_str(), "try"));
+    assert!(draw(&mut app).contains("1 landed ask waits for your review · the next: 1 reply"), "{}", draw(&mut app));
+    // Taken at once from the comment, as an answer only's reply is.
+    to_comment(&mut app, &id);
+    keys(&mut app, &[KeyCode::Enter]);
+    assert_eq!(last_turn(&db), summary);
+    assert!(stacked::held::queue(&Db::load(&db).unwrap(), "s").is_empty());
+}
+
+#[test]
+fn a_try_push_s_tasks_treeherder_never_shows_are_counted_as_not_seen_once_nothing_runs() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db);
+    let job = new_job(&db);
+    pushed_as(&mut app, &db, &[("test-linux2404-64/opt-xpcshell-1", "Its tests."), ("test-linux2404-64/opt-xpcshell-2", "More of them.")]);
+    let rev = "1111111111111111111111111111111111111111";
+    pushed(job, |p| {
+        p.status = "LANDED".into();
+        p.revision = rev.into();
+        p.push = Some(78);
+        p.jobs = vec![treeherder_job("Gecko Decision Task", "completed", "success", "dec", 0), treeherder_job("test-linux2404-64/opt-xpcshell-1", "completed", "success", "t1", 0)];
+    });
+    // Nothing runs any more, nothing changes: over, what is missing never to
+    // show.
+    let r = look_until(&mut app, &db, |r| r.state != stacked::db::RunState::Started);
+    assert_eq!(r.summary, "done: 1 success, 1 not seen on Treeherder");
+    let text = r.held.unwrap().replies[0].text.clone();
+    for said in [
+        "Of its 2 tasks, Treeherder shows 1 as success; 1 was not seen on Treeherder.",
+        "Not seen on Treeherder, which shows no task that was never scheduled: `test-linux2404-64/opt-xpcshell-2`.",
+    ] {
+        assert!(text.contains(said), "{said:?} in {text}");
+    }
+    assert!(!text.contains("These failed"), "{text}");
+}
+
+#[test]
+fn a_try_push_lando_did_not_push_lands_a_summary_saying_so() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db);
+    let job = new_job(&db);
+    let id = pushed_as(&mut app, &db, &[("build-linux64/debug", "A build.")]);
+    pushed(job, |p| {
+        p.status = "FAILED".into();
+        p.error = "Patch 1 does not apply.".into();
+    });
+    let r = look_until(&mut app, &db, |r| r.state != stacked::db::RunState::Started);
+    assert_eq!(r.summary, "Lando did not push it to try: FAILED: Patch 1 does not apply");
+    assert_eq!(
+        r.held.unwrap().replies[0].text,
+        format!("The try push did not get to try: Lando says FAILED: Patch 1 does not apply. None of its tasks ran. Lando shows it: @r2.\n\n```refs\nr2 https://lando.moz.tools/landings/{job}\n```")
+    );
+    assert!(!locked(&db, &id));
+}
+
+#[test]
+fn a_try_push_followed_is_looked_at_again_by_the_next_editor_from_where_it_was() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db);
+    let job = new_job(&db);
+    let id = pushed_as(&mut app, &db, &[("build-linux64/debug", "A build.")]);
+    look_until(&mut app, &db, |r| r.push.as_ref().is_some_and(|p| p.lando_status.is_some()));
+    drop(app);
+    // Meanwhile, on try, and done.
+    pushed(job, |p| {
+        p.status = "LANDED".into();
+        p.revision = "2222222222222222222222222222222222222222".into();
+        p.push = Some(79);
+        p.jobs = vec![treeherder_job("build-linux64/debug", "completed", "success", "b1", 0)];
+    });
+    let mut app = open(&db);
+    assert!(locked(&db, &id), "followed still, as the database has it");
+    let r = look_until(&mut app, &db, |r| r.state != stacked::db::RunState::Started);
+    assert_eq!(r.summary, "done: 1 success");
+    assert!(r.held.unwrap().replies[0].text.contains("Of its 1 task, Treeherder shows 1 as success."));
 }
 
 #[test]
@@ -820,7 +1087,10 @@ fn a_try_push_past_the_threshold_is_given_the_lowest_priority_in_a_preset_mach_r
     // once the push is done with it.
     let args = mach_args(&db);
     assert_eq!(args.len(), 2);
-    assert!(args.iter().all(|a| a.contains("--show-chunk-numbers --all-tasks --preset stacked-lowest -q ^test-linux2404-64/opt-mochitest-plain-1$")), "{args:?}");
+    assert!(
+        args.iter().all(|a| a.contains("--show-chunk-numbers --all-tasks --preset stacked-lowest -q ^test-linux2404-64/opt-mochitest-plain-1$ | ^test-linux2404-64/opt-mochitest-plain-2$ | ")),
+        "{args:?}"
+    );
     let calls = mach_calls(&db);
     let presets: Vec<&str> = calls.lines().filter_map(|l| l.strip_prefix("presets: ")).collect();
     assert_eq!(presets.len(), 2, "{calls}");
@@ -930,7 +1200,7 @@ fn a_try_push_whose_process_is_gone_before_mach_said_it_pushed_ends_as_failed() 
             stack: "s".into(),
             state: stacked::db::RunState::Started,
             pid: Some(dead),
-            push: Some(stacked::try_push::Push {
+            push: Some(Box::new(stacked::try_push::Push {
                 change: change.clone(),
                 id: "c".into(),
                 rev,
@@ -938,7 +1208,7 @@ fn a_try_push_whose_process_is_gone_before_mach_said_it_pushed_ends_as_failed() 
                 labels: vec!["build-linux64/debug".into()],
                 step: stacked::try_push::Step::Checking,
                 ..Default::default()
-            }),
+            })),
             ..Default::default()
         })
         .map(|_| ())

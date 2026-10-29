@@ -49,7 +49,9 @@ The `try-push` feature adds the try push of Firefox's CI (Try push,
 below): a comment asked as a try push has the agent select the CI tasks it
 asks for, each with why, and those tasks wait for your review, to accept,
 reject or answer; those you accept are pushed to try with `./mach try
-fuzzy`, its link a reply on the comment. Built without it, stacked has none
+fuzzy`, its link a reply on the comment, and the push is followed on Lando
+and Treeherder until its tasks are done, its summary a reply for your
+review. Built without it, stacked has none
 of it, but reads a database and a settings' file that a build with it
 wrote: an ask of a try push is read as one to answer only, the try push's
 list of tools is passed over, and so is what a push's run keeps (it reads
@@ -1949,9 +1951,10 @@ try-push RUN`, which the editor starts), from a worktree of the stack's
 own, `.stacked/NAME/try` (`try-2`… while another push is made from it; under
 `agent.worktrees` when that is set): the stack's patches as commits on its
 base, up to the comment's. The commits mach would push are checked there
-to be those patches alone. Then `./mach try fuzzy --no-push` runs, each
-task its own exact query (`-q '^LABEL$'`), the labels with their chunk
-numbers (`--show-chunk-numbers`), from every task of the graph
+to be those patches alone. Then `./mach try fuzzy --no-push` runs, the
+tasks in one query, each its own exact term, fzf's OR between them (`-q
+'^a$ | ^b$'`, which fzf is given whole, so that it runs once), the labels
+with their chunk numbers (`--show-chunk-numbers`), from every task of the graph
 (`--all-tasks`), with `--rebuild N` when each runs more than once; what it
 says it would push (its try_task_config.json) is compared with what you
 accepted: the tasks, how many times each runs, and the priority. Anything
@@ -2003,6 +2006,37 @@ mach (`nothing was pushed`, unless mach had started to send the push to
 Lando, which it says). A push that fails says why in a reply, with mach's
 last lines, and the comment unlocks: reply, and ask for the try push
 again, for the agent to select the tasks again.
+
+The push is followed while stacked runs, the editor looking at it every
+few minutes, through what Lando and Treeherder show anyone, plain GETs of
+their public pages, nothing of yours sent: Lando's job, at the address
+`.lando.ini` gives its instance (`https://lando.moz.tools/landing_jobs/ID/`),
+until Lando says it pushed it to try, and as which revision; then
+Treeherder's push of that revision, then its jobs, page after page. All it
+saw is kept in the database: the next editor picks it up from there, after
+a restart too. Each change is a line of the comment's stream (`stacked:
+Lando pushed it to try, as revision abcdef012345`, `stacked: 12 of 30
+tasks done, 1 failed`), and the banner tracks it, in a section of its own,
+`try pushes, followed` (`⇡ Try push of patch 1 · "Run the tests…": 12 of
+30 tasks done, 1 failed`), and in its first line (`1 try push: 12 of 30
+tasks done, 1 failed`); Enter there goes to the comment, Delete stops
+following it. Its tasks are those you accepted, each as many times as it
+runs, each by its last run (a retry's). It is done once every one of them
+is, or once two looks in a row find nothing of the push pending or running
+and nothing new: a task Treeherder never shows then, as it shows no task
+that was never scheduled, is counted as not seen on Treeherder.
+
+Done, its summary lands as the agent's answers do, for your review, in the
+banner's read-only section, and the comment unlocks: `The try push is
+done. Treeherder shows it: @r2. Of its 30 tasks, Treeherder shows 27 as
+success and 2 as testfailed; 1 was not seen on Treeherder.`, then each task
+that failed, with its link on Treeherder (`- `test-linux2404-64/opt-xpcshell-1`
+(testfailed): @r3`), the tasks the push ran for them that failed (a build,
+the decision task), and those not seen on Treeherder; each link a web link
+under the reply. As an answer only's reply, it is taken at once from the
+comment, Enter there putting it in the thread, or reviewed with the rest.
+A push that Lando does not push to try (`FAILED`, `CANCELLED`, `ABORTED`)
+lands a summary saying so, with what Lando says and its page there.
 
 ## Reading
 
@@ -2874,7 +2908,9 @@ is typed: `import.rs`). A fix to one may belong in the other.
   remotes mach takes as Firefox's, `./mach try fuzzy --no-push` compared
   with what was accepted, then the push, mach's lines in its stream, its
   login and its link kept, its replies, the lock of its comment, and its
-  stop.
+  stop; then the push followed on Lando and Treeherder (`follow`), its
+  tasks counted as Treeherder shows them, and its summary, held for
+  review once it is done.
 - `import.rs`: what a stack made in the editor is imported from: a range of
   the checkout, its uncommitted changes on top if asked.
 - `mbox.rs`: reading `git format-patch` mail, writing mail for `git am`.
@@ -3413,27 +3449,42 @@ push runs a stand-in for mach (`$STACKED_MACH`, which a stacked that keeps
 nothing, as the tests' own, needs, never running a mach of a worktree's),
 the repository's remote of Firefox's a name and a ref, never fetched: the
 push checked with `--no-push`, then made, mach's stdin closed and its
-output not held back, each task its own exact query, the commits it would
-push the patch alone; its login's page and code in the status line and
-the comment's stream, the page opened from the comment's menu; its link a
+output not held back, the tasks in one query, the commits it would push
+the patch alone; its login's page and code in the status line and the
+comment's stream, the page opened from the comment's menu; its link a
 reply, a web link, the comment locked until you stop following it, which
 says so with the link; past the threshold, both runs given the preset of
 the lowest priority from a presets file of stacked's own, gone once the
 push is done; a check that would push another task, a question mach asks
 (quoted, with what to change), and a push that fails (mach's last lines)
 each said in a reply, nothing pushed, the comment unlocked; a push
-stopped as mach waits for the login; and a base none of the remotes of
+stopped as mach waits for the login; a base none of the remotes of
 Firefox's has, or no remote at all, keeping the review open, mach never
-run. `try_push.rs` tests its tasks read from the answer (each label once,
+run. The push followed answers to a stand-in for Lando and Treeherder
+(`try_push::web_stand_in`, which a process that keeps nothing, as the
+tests' own, needs, never reaching the web): Lando's state of it in the
+banner, then its tasks as Treeherder shows them, in the banner's section
+of try pushes and its first line, and in the stream, the pages read as
+Lando's and Treeherder's APIs have them; done, a retry counted by its last
+run, its summary held for review (the counts by result, each task that
+failed with its link, what the push ran for them that failed, each a web
+link), taken from the comment as an answer only's is, the comment
+unlocked; the tasks Treeherder never shows counted as not seen once
+nothing runs any more; a push Lando did not push to try summed up so; and
+a push followed picked up by the next editor from where the database has
+it. `try_push.rs` tests its tasks read from the answer (each label once,
 the first reason kept, one with a space or none left out, a reason with
 references), how many times each runs, from 2 to 20, the prompt, and what
-a round asked again is told; mach's arguments and how the stream says
-them; what `--no-push` says it would push, read and compared (the tasks,
-the runs, the priority); a question mach stopped on, its login, its link
-and Lando's job read from what it writes; that a process keeping nothing
-runs only a stand-in for mach; and the remotes mach takes as Firefox's (on
+a round asked again is told; mach's arguments, the tasks in one query, and
+how the stream says them; what `--no-push` says it would push, read and
+compared (the tasks, the runs, the priority); a question mach stopped on,
+its login, its link and Lando's job read from what it writes; that a
+process keeping nothing runs only a stand-in for mach, and reaches
+neither Lando nor Treeherder; the remotes mach takes as Firefox's (on
 GitHub, and hg.mozilla.org's but try in a git-cinnabar clone), a base none
-of them has, and the commits mach would push;
+of them has, and the commits mach would push; and a push's tasks counted as
+Treeherder shows them (each by its last run, each run of a rebuild, those
+not seen), its summary, and where Lando answers, as `.lando.ini` says;
 `ask.rs`, that a try push's ask is given what an answer is and its own
 list, and is asked for its tasks and their runs; `setup.rs`, the column of
 try pushes, ticked at first as the read-only one, its own once ticked, in
@@ -3619,9 +3670,6 @@ a test's own process.
   are still read, only to be left out. Once no database holds them, that
   code goes, and with it the split of a thread's turns between those that
   stand and all of them.
-- A try push, once pushed, is not followed yet: its comment stays locked
-  until you stop following it, and no reply says how its tasks ended (Try
-  push, above).
 - How apply picks a branch, which belongs to publishing: the editor applies
   on no branch, `stacked apply --branch` on one.
 - A stack-wide review runs one agent; one per patch is not done.

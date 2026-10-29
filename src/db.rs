@@ -716,7 +716,7 @@ pub struct Run {
     /// the same, this passed over.
     #[cfg(feature = "try-push")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub push: Option<crate::try_push::Push>,
+    pub push: Option<Box<crate::try_push::Push>>,
     pub time: i64,
 }
 
