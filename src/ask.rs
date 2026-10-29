@@ -316,7 +316,7 @@ pub(crate) fn stacked_exe() -> Result<PathBuf> {
 
 /// The process group of `pid` stopped, as an ask's agent is: sent SIGTERM,
 /// then SIGKILL if it is not gone within a few seconds. Whether it is gone.
-#[cfg(feature = "try-push")]
+/// A try push's, a lint job's.
 pub(crate) fn stop_group(pid: u32) -> bool {
     signal(pid, libc::SIGTERM);
     if gone_within(pid, TERM_GRACE) {
@@ -744,9 +744,15 @@ pub fn blocked(db: &Db, name: &str) -> Option<String> {
             );
         }
         Some(Changer::Lint(said)) => {
+            let r = crate::lint::pending(db, name);
+            let then = if r.and_then(|r| r.lint.as_deref()).is_some_and(|j| j.stopping) {
+                "once the linter is stopped, in a few seconds"
+            } else {
+                "once the linter is done and you have reviewed what it fixed, if it fixed anything"
+            };
             return Some(format!(
-                "the linter {said} ({}): the stack can be edited by hand again once the linter is done and you have reviewed what it fixed, if it fixed anything",
-                crate::lint::pending(db, name).map(|r| r.request.as_str()).unwrap_or_default()
+                "the linter {said} ({}): the stack can be edited by hand again {then}",
+                r.map(|r| r.request.as_str()).unwrap_or_default()
             ));
         }
         None => {}
@@ -3643,12 +3649,16 @@ const STOPPED_SAID: &str = "you stopped the agent";
 /// one that had landed already, or whose agent was done as it was
 /// stopped, stays as it landed.
 pub fn stop(db_path: &Path, id: &str) -> Result<(Run, bool)> {
+    // A lint job: the linter stopped, or the job dropped from the queue.
+    if Db::load(db_path)?.run(id).is_some_and(|r| r.lint.is_some()) {
+        return crate::lint::stop(db_path, id);
+    }
     // Said under the lock, its wrapper's pid read with it: an ask whose
     // wrapper starts after this sees it said, and stops its agent itself.
     let (landed, pid) = Db::edit(db_path, |db| {
         let r = db.run(id).cloned().ok_or_else(|| Error(format!("no run {id}")))?;
         if r.ask.is_none() {
-            return err(format!("run {id} is not an ask: only an ask's agent can be stopped"));
+            return err(format!("run {id} is not an ask nor a lint job: only an ask's agent, or the linter, can be stopped"));
         }
         if r.state != RunState::Started {
             return Ok((Some(r), None));

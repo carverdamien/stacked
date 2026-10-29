@@ -451,7 +451,9 @@ enum Cmd {
     /// Stop the agent of an ask that runs, by its run (as `runs` lists it,
     /// or the start of its id): sent SIGTERM, then SIGKILL if it has not
     /// exited a few seconds later, its ask lands at once, as failed, and
-    /// what waited behind it goes.
+    /// what waited behind it goes. A lint job's linter is stopped the same
+    /// way: the job lands at once, as stopped, and nothing changes in the
+    /// stack. A lint job waiting its turn is dropped.
     Stop { id: String },
     /// Phabricator, over Conduit with moz-phab's token: `pull`, a stack's
     /// reviews; `import`, a stack of its revisions. `stacked moz-phab` is
@@ -1714,7 +1716,8 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
             ask::launch(path)?;
             if !stopped {
                 let state = format!("{:?}", run.state).to_lowercase();
-                return err(format!("{id} is not running: its ask landed, {state}: {}", run.summary));
+                let what = if stacked::held::linted(&run) { "the lint job is over" } else { "its ask landed" };
+                return err(format!("{id} is not running: {what}, {state}: {}", run.summary));
             }
             print_run(&run);
         }

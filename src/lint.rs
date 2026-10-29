@@ -38,6 +38,12 @@
 //! version of a patch; an edit asked meanwhile waits for it, then goes on
 //! from what it made, chained, as edits do. One lint job runs at a time, of
 //! every stack of the database.
+//!
+//! A linter that hangs does not keep the stack blocked: you stop the job
+//! (`stop`) as you stop an ask's agent, its process group sent SIGTERM, then
+//! SIGKILL, and it lands as stopped, nothing landed and the stack as it was;
+//! one waiting its turn is dropped. What the linter left in the worktree is
+//! thrown away as the next job starts.
 
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
@@ -78,6 +84,13 @@ pub const FOLD: &str = "Fold these lint fixes into the patches they belong to, k
 
 /// What a lint job that fixed nothing and reported nothing came to.
 pub const NOTHING: &str = "the linter found nothing to fix, and reported nothing";
+
+/// What a lint job you stopped came to: nothing, the fixes folded so far
+/// thrown away.
+pub const STOPPED: &str = "you stopped the linter: nothing landed, and the stack is as it was";
+
+/// What a lint job you dropped before its turn came to.
+pub const DROPPED: &str = "you dropped the lint job before it ran: nothing was linted";
 
 /// How many of the lines a linter wrote are kept with the work, for the
 /// review to show: its stream has them all.
@@ -237,6 +250,10 @@ pub struct Job {
     pub at: usize,
     #[serde(default, skip_serializing_if = "is_zero")]
     pub of: usize,
+    /// Whether you stopped it, its process being stopped: it lands as
+    /// stopped, whatever it came to.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub stopping: bool,
 }
 
 fn is_zero(n: &usize) -> bool {
@@ -253,8 +270,12 @@ pub enum Step {
 }
 
 impl Job {
-    /// Where it is, said: `waits its turn`, `lints patch 2 of 5`.
+    /// Where it is, said: `waits its turn`, `lints patch 2 of 5`, `is being
+    /// stopped`.
     pub fn said(&self) -> String {
+        if self.stopping {
+            return "is being stopped".into();
+        }
         match (self.step, self.at) {
             (Step::Waiting, _) => "waits its turn to lint the stack".into(),
             (Step::Running, 0) => "makes its worktree, to lint the stack".into(),
@@ -267,6 +288,12 @@ impl Job {
 /// Run `r`'s lint job, if it is one still under way.
 fn job_of(r: &Run) -> Option<&Job> {
     r.lint.as_deref().filter(|_| r.state == RunState::Started)
+}
+
+/// Where run `r`'s lint job is, if it is one under way: waiting its turn,
+/// or running.
+pub fn step_of(r: &Run) -> Option<Step> {
+    job_of(r).map(|j| j.step)
 }
 
 /// The lint job of stack `name` under way, waiting or running, if one is.
@@ -442,10 +469,68 @@ fn end(db_path: &Path, id: &str, state: RunState, why: &str) -> Result<()> {
     })
 }
 
+/// Stops lint job `id`, as an ask's agent is stopped. One running is said
+/// stopped first, under the lock, so that whatever lands it lands it as
+/// stopped: failed, nothing landed, the stack as it was, the fixes folded so
+/// far thrown away. Then its process group, the stacked running it in a
+/// session of its own, the linter and what that runs, is sent SIGTERM, and
+/// SIGKILL if it is not gone within a few seconds; and once it is gone, the
+/// job is landed so, if it is not yet: its worktree is no other job's until
+/// then. One whose process is not started yet is landed so at once, as is
+/// one waiting its turn, dropped. The run as it is then, and whether it was
+/// stopped or dropped: one over already stays as it was. What waited
+/// behind it is started by the caller (`launch`).
+pub fn stop(db_path: &Path, id: &str) -> Result<(Run, bool)> {
+    // What came of it under the lock: over, already or now (the run boxed,
+    // as it is large); or its process to stop first.
+    enum Then {
+        Over(Box<Run>, bool),
+        Stop(u32),
+    }
+    let then = Db::edit(db_path, |db| {
+        let r = db.run(id).cloned().ok_or_else(|| Error(format!("no run {id}")))?;
+        let Some(mut j) = job_of(&r).cloned() else { return Ok(Then::Over(Box::new(r), false)) };
+        let over = |db: &mut Db, r: Run, summary: &str| -> Result<Then> {
+            let r = Run {
+                state: RunState::Failed,
+                summary: summary.into(),
+                pid: None,
+                starter: None,
+                ..r
+            };
+            db.add_run(r.clone())?;
+            Ok(Then::Over(Box::new(r), true))
+        };
+        if j.step == Step::Waiting {
+            return over(db, r, DROPPED);
+        }
+        // Said in its stream first, as an ask's stop is.
+        if !j.stopping {
+            let said = "stacked: you stopped the linter: its process is stopped, and nothing lands";
+            db.add_event(id, serde_json::json!({"type": "text", "text": said}))?;
+        }
+        // Its process not started yet: it does nothing once it is.
+        let Some(pid) = r.pid else { return over(db, r, STOPPED) };
+        j.stopping = true;
+        db.add_run(Run { lint: Some(Box::new(j)), ..r })?;
+        Ok(Then::Stop(pid))
+    })?;
+    let pid = match then {
+        Then::Over(r, stopped) => return Ok((*r, stopped)),
+        Then::Stop(pid) => pid,
+    };
+    crate::ask::stop_group(pid);
+    end(db_path, id, RunState::Failed, STOPPED)?;
+    let run = Db::load(db_path)?.run(id).cloned().ok_or_else(|| Error(format!("no run {id}")))?;
+    let stopped = run.state == RunState::Failed && run.summary == STOPPED;
+    Ok((run, stopped))
+}
+
 /// The lint jobs whose process is gone before they landed, as `db` has
 /// them, ended as failed: how many.
 pub fn orphans(db_path: &Path, db: &Db) -> usize {
-    let gone: Vec<String> = db
+    // One you stopped, whose stopping was not seen through, as stopped.
+    let gone: Vec<(String, &str)> = db
         .live_runs()
         .into_iter()
         .filter(|r| job_of(r).is_some_and(|j| j.step == Step::Running))
@@ -454,10 +539,9 @@ pub fn orphans(db_path: &Path, db: &Db) -> usize {
             (None, Some(starter)) => !crate::ask::alive(starter),
             (None, None) => now() - r.time > 120,
         })
-        .map(|r| r.id.clone())
+        .map(|r| (r.id.clone(), if job_of(r).is_some_and(|j| j.stopping) { STOPPED } else { "the process linting the stack is gone: nothing landed" }))
         .collect();
-    let said = "the process linting the stack is gone: nothing landed";
-    gone.iter().filter(|id| end(db_path, id, RunState::Failed, said).is_ok()).count()
+    gone.iter().filter(|(id, said)| end(db_path, id, RunState::Failed, said).is_ok()).count()
 }
 
 /// Runs lint job `id`, in the process `start` started: the stack linted
@@ -465,10 +549,10 @@ pub fn orphans(db_path: &Path, db: &Db) -> usize {
 /// for it goes.
 pub fn run(db_path: &Path, id: &str) -> Result<()> {
     // Its pid, for an orphan to be found; nothing done if it is over
-    // already.
+    // already, or being stopped.
     let started = Db::edit(db_path, |db| {
         let r = db.run(id).cloned().ok_or_else(|| Error(format!("no run {id}")))?;
-        if !job_of(&r).is_some_and(|j| j.step == Step::Running) {
+        if !job_of(&r).is_some_and(|j| j.step == Step::Running && !j.stopping) {
             return Ok(None);
         }
         db.add_run(Run {
@@ -501,8 +585,12 @@ fn linting(db_path: &Path, r: &Run) -> std::result::Result<Linted, String> {
     let at = take_worktree(db_path, id, &dir).map_err(|e| e.0)?;
     let (program, args) = program(&words, &at)?;
     let step = |text: String| record(db_path, id, STEP, &text);
-    // Its own, kept from the job before: what that left thrown away.
+    // Its own, kept from the job before: what that left thrown away, and
+    // the lock of git's that a job stopped as git wrote its index left.
     if at.join(".git").exists() {
+        if let Ok(dir) = crate::git::git(&at, &["rev-parse", "--absolute-git-dir"]) {
+            let _ = std::fs::remove_file(Path::new(dir.trim()).join("index.lock"));
+        }
         let _ = crate::git::scrub(&at);
     }
     crate::git::ready(&repo, &at, &base, "", 0, &step).map_err(|e| e.0)?;
@@ -522,13 +610,18 @@ fn linting(db_path: &Path, r: &Run) -> std::result::Result<Linted, String> {
 /// What lint job `id` came to, `done`, landed, unless the job is over
 /// already: its fixes held for your review, as one change of the stack, with
 /// a comment on the patch on top if there is one; or what it reported alone,
-/// to read; or nothing, said in its run's summary; or why it failed.
+/// to read; or nothing, said in its run's summary; or why it failed. Once
+/// you stopped it, nothing of it lands: it is stopped.
 fn land(db_path: &Path, id: &str, done: std::result::Result<Linted, String>) -> Result<()> {
     Db::edit(db_path, |db| {
         let Some(r) = db.run(id).filter(|r| r.state == RunState::Started).cloned() else { return Ok(()) };
-        let (state, summary, held) = match landed(db, &r, done) {
-            Ok((summary, held)) => (RunState::Done, summary, held),
-            Err(why) => (RunState::Failed, why, None),
+        let (state, summary, held) = if r.lint.as_deref().is_some_and(|j| j.stopping) {
+            (RunState::Failed, STOPPED.to_string(), None)
+        } else {
+            match landed(db, &r, done) {
+                Ok((summary, held)) => (RunState::Done, summary, held),
+                Err(why) => (RunState::Failed, why, None),
+            }
         };
         db.add_run(Run {
             state,

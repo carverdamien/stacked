@@ -2162,6 +2162,21 @@ writes, all of which its run keeps (`Runs…`, `stacked transcript RUN`). A
 job whose process is gone, killed, lands as failed once seen, as an ask
 whose agent is gone does, and the stack is free again.
 
+A linter that hangs does not keep the stack blocked. Delete on the job's
+line of the banner, or `Stop the linter…` on the banner's menu, asks
+first, then stops the linter as an ask's agent is stopped: the job's
+process group, its process and the linter with what that runs, is sent
+SIGTERM, then SIGKILL if it is not gone within a few seconds, and the job
+lands at once, as stopped; the banner says `The linter is being stopped`
+meanwhile. Nothing changes in the stack: the fixes folded so far are
+thrown away, nothing lands for review, and the status line says so. The
+stack can be edited by hand again, and the edits that waited for the
+linter go. A job waiting its turn is dropped the same way, `Drop the
+waiting lint job…`, and nothing is linted. Delete on the job in `Runs…`,
+or its menu there, does the same, and so does `stacked stop RUN`, the run
+as `stacked runs` lists it. What the linter left in the worktree is thrown
+away as the next job starts, so that the next job starts clean.
+
 `$STACKED_LINT` names a program run in place of the linter's own, given
 the command's arguments and the files: the tests' stand-in. From a process
 that keeps nothing, as the tests' own, only that runs, never the command,
@@ -3671,8 +3686,12 @@ read only, to read and close; an edit asked while the linter runs
 waiting for it, the stack not edited by hand meanwhile (the menus and the
 commands saying why), the sync of the commit messages told so, an answer
 going at once, then the edit going on from the stack the linter made;
-one lint job at a time of every stack, the next waiting its turn; and a
-job whose process is gone landed as failed, the stack free again.
+one lint job at a time of every stack, the next waiting its turn; a job
+whose process is gone landed as failed, the stack free again; and a
+linter that hangs stopped from the banner, asked first, and by `stacked
+stop`, the job landing as stopped with nothing landed and the stack as it
+was, the stack free again and the edit that waited for it going, and a
+job waiting its turn dropped the same way.
 `tests/cli.rs` sets the linter up: in the checkout's own settings alone,
 kept out of git's sight, never in the settings' file, which is passed over
 and said if it sets one; printed with where it comes from; turned off,

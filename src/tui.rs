@@ -2933,6 +2933,73 @@ impl App {
         None
     }
 
+    /// What stopping run `run` does, when it is a lint job under way: the
+    /// linter stopped, or the job, waiting its turn, dropped. None for any
+    /// other run.
+    fn lint_stop_said(&self, run: &str) -> Option<&'static str> {
+        match crate::lint::step_of(self.db.run(run)?)? {
+            crate::lint::Step::Running => Some("stop the linter"),
+            crate::lint::Step::Waiting => Some("drop the waiting lint job"),
+        }
+    }
+
+    /// The item that stops lint job `run`, asking first, if it is under
+    /// way: `Stop the linter…`, or, waiting its turn, `Drop the waiting lint
+    /// job…`.
+    fn lint_stop_item(&self, run: &str) -> Option<Item> {
+        let label = match crate::lint::step_of(self.db.run(run)?)? {
+            crate::lint::Step::Running => "Stop the linter…",
+            crate::lint::Step::Waiting => "Drop the waiting lint job…",
+        };
+        Some(Item::new(label, Action::AskStop(run.to_string())))
+    }
+
+    /// What stopping lint job `run` asks first, if the run is one under
+    /// way: the linter stopped, the job landing as stopped, nothing changed;
+    /// or the job waiting its turn dropped.
+    fn lint_stop_menu(&self, run: &str) -> Option<Menu> {
+        let (title, yes, no, said) = match crate::lint::step_of(self.db.run(run)?)? {
+            crate::lint::Step::Running => (
+                "stop the linter?",
+                "Stop it",
+                "Let it go on",
+                "Its process is stopped, the linter with it, and the lint job lands at once, as stopped: nothing changes in the stack, and the fixes it made so far are thrown away.",
+            ),
+            crate::lint::Step::Waiting => (
+                "drop the waiting lint job?",
+                "Drop it",
+                "Keep it",
+                "It is taken off the queue: nothing is linted, and nothing changes in the stack.",
+            ),
+        };
+        let mut m = Menu::ask(title, Item::new(yes, Action::Stop(run.to_string())), no, true);
+        m.note = Some(said.into());
+        Some(m)
+    }
+
+    /// Lint job `id` stopped, or dropped, away from the screen: the status
+    /// line says what came of it once it is, and what waited for it goes.
+    fn stop_lint(&mut self, id: String) {
+        if self.bg.stopping.contains(&id) {
+            self.status = "the linter is being stopped already".into();
+            return;
+        }
+        let running = self.db.run(&id).and_then(crate::lint::step_of) == Some(crate::lint::Step::Running);
+        self.bg.stopping.push(id.clone());
+        self.bg.doing.push(STOPPING);
+        self.status = if running { "stopping the linter…".into() } else { "dropping the waiting lint job…".into() };
+        let path = self.path.clone();
+        self.spawn(move || {
+            let said = match crate::lint::stop(&path, &id) {
+                Ok((r, true)) if r.summary == crate::lint::DROPPED => "the waiting lint job was dropped: nothing was linted, and the stack is as it was".to_string(),
+                Ok((_, true)) => "the linter was stopped, and nothing landed: the stack is as it was, and can be edited by hand again".to_string(),
+                Ok((r, false)) => format!("the lint job was over before it could be stopped: {}", r.summary),
+                Err(e) => e.0,
+            };
+            Done::Stopped(id, Some(said))
+        });
+    }
+
     /// Try push `id` stopped away from the screen: following it, or the
     /// push; the status line says what came of it once it is.
     #[cfg(feature = "try-push")]
@@ -3931,6 +3998,13 @@ impl App {
         match action {
             Action::CommentLine if on_file => "create a comment on this file, as a whole".into(),
             Action::Open if self.file_on().is_some() => "read this file".into(),
+            // A lint job's: the linter stopped, or the job dropped.
+            Action::AskStop(run) | Action::Stop(run) if self.lint_stop_said(run).is_some() => match self.db.run(run).and_then(crate::lint::step_of) {
+                Some(crate::lint::Step::Running) => {
+                    "stop the linter: the lint job lands at once, as stopped; nothing changes in the stack, and the fixes it made so far are thrown away".into()
+                }
+                _ => "drop the waiting lint job: nothing is linted, and nothing changes in the stack".into(),
+            },
             // A view this middle is too narrow for: the room it takes.
             Action::View(l) => match self.room_for(*l) {
                 Ok(Some(_)) => format!(
@@ -4000,9 +4074,11 @@ impl App {
                 && r.what != crate::db::TRY_PUSH
                 && !self.bg.stopping.contains(id)
             {
-                // A lint job that landed nothing: quietly said.
+                // A lint job that landed nothing: quietly said; stopped, or
+                // dropped, as it was.
+                let stopped = r.summary == crate::lint::STOPPED || r.summary == crate::lint::DROPPED;
                 self.status = match (crate::held::linted(r), r.state) {
-                    (true, RunState::Failed) => format!("the linter could not lint the stack {}: {}", r.stack, r.summary),
+                    (true, RunState::Failed) if !stopped => format!("the linter could not lint the stack {}: {}", r.stack, r.summary),
                     (true, _) => format!("{}: {}", r.request, r.summary),
                     (false, state) => format!("the agent's {} {}: {}", r.what, format!("{state:?}").to_lowercase(), r.summary),
                 };
@@ -5253,6 +5329,9 @@ impl App {
                 // A try push: following it stopped, or the push.
                 #[cfg(feature = "try-push")]
                 BannerLine::Push(run) => Some(Ok(Action::AskStop(run.clone()))),
+                // The stack's lint job: the linter stopped, or the job
+                // dropped.
+                BannerLine::Lint(run) => self.lint_stop_said(run).map(|_| Ok(Action::AskStop(run.clone()))),
                 _ => None,
             },
             Screen::Main => match self.focus {
@@ -5280,7 +5359,9 @@ impl App {
             Screen::Review => self.review_deleting(),
             Screen::Runs => {
                 let r = *self.runs_newest().get(self.pick)?;
-                (ask::running(r) && !crate::held::linted(r)).then(|| Ok(Action::AskStop(r.id.clone())))
+                // A lint job under way, running or waiting its turn.
+                let lint = crate::lint::step_of(r).is_some();
+                (lint || (ask::running(r) && !crate::held::linted(r))).then(|| Ok(Action::AskStop(r.id.clone())))
             }
             _ => None,
         }
@@ -5341,8 +5422,8 @@ impl App {
         let said = match self.delete_here()? {
             Action::AskCloseComment => "close it",
             Action::AskCloseOpened => "close it and those it opened",
-            Action::AskStop(_) if self.screen == Screen::Runs => "stop it",
-            Action::AskStop(run) => self.push_stop_said(&run).unwrap_or("stop the agent"),
+            Action::AskStop(run) if self.screen == Screen::Runs => self.lint_stop_said(&run).unwrap_or("stop it"),
+            Action::AskStop(run) => self.push_stop_said(&run).or_else(|| self.lint_stop_said(&run)).unwrap_or("stop the agent"),
             Action::Unsend => "take it back from the queue",
             Action::Unbatch => "remove it from the batch",
             Action::AskDrop => "drop it",
@@ -7423,7 +7504,7 @@ impl App {
                     };
                 }
             }
-            Action::AskStop(id) => match self.push_stop_menu(&id) {
+            Action::AskStop(id) => match self.push_stop_menu(&id).or_else(|| self.lint_stop_menu(&id)) {
                 Some(m) => self.mode = Mode::Menu(m),
                 None => {
                     let yes = Item::new("Stop it", Action::Stop(id));
@@ -7433,6 +7514,8 @@ impl App {
             // A try push's: following it, or the push.
             #[cfg(feature = "try-push")]
             Action::Stop(id) if self.push_stop_said(&id).is_some() => self.stop_try_push(id),
+            // A lint job's: the linter, or the job waiting its turn.
+            Action::Stop(id) if self.lint_stop_said(&id).is_some() => self.stop_lint(id),
             Action::Stop(id) => {
                 self.status = "stopping the agent: its ask lands as failed".into();
                 self.stop(id, true);
@@ -9297,8 +9380,12 @@ impl App {
                 let Some(r) = self.runs_newest().get(self.pick).map(|r| (*r).clone()) else {
                     return;
                 };
-                // A lint job: what the linter wrote, which nothing stops.
-                if ask::running(&r) && !crate::held::linted(&r) {
+                // A lint job under way: what the linter wrote, or the linter
+                // stopped (the job dropped, waiting its turn).
+                if let Some(stop) = self.lint_stop_item(&r.id) {
+                    let items = vec![Item::new("Show what the linter wrote", Action::Transcript(r.id.clone())), stop];
+                    self.mode = Mode::Menu(Menu::new(format!("{} {}", r.what, r.stack), items, None));
+                } else if ask::running(&r) && !crate::held::linted(&r) {
                     let (show, stop) = match self.push_stop_said(&r.id) {
                         Some(_) => ("Show what mach wrote for the try push", "Stop the try push…"),
                         None => ("Show what the agent wrote", "Stop the agent…"),

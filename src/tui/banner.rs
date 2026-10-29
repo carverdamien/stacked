@@ -325,6 +325,10 @@ impl App {
             let left = crate::held::left(&self.db, r);
             items.push(Item::new(format!("Review {left}{}", landed_how(r, 40)), Action::Review(id.clone(), None)).when(first && synced));
         }
+        // The stack's lint job: the linter stopped, or the job dropped.
+        if let Some(stop) = crate::lint::pending(&self.db, &self.stack).and_then(|r| self.lint_stop_item(&r.id)) {
+            items.push(stop);
+        }
         let batch = self.batch_items();
         if !items.is_empty() && !batch.is_empty() {
             items.push(Item::line());

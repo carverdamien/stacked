@@ -6,11 +6,14 @@
 //! that would keep a patch above from applying stopping the phase, the
 //! fixes from there on in a patch on top with a comment ready to send;
 //! nothing landing when the linter fixes and reports nothing; what it
-//! reports listed, and alone landing read only; and the queue: one lint job
-//! at a time, an edit asked meanwhile waiting for it, then going on from
-//! what it made. The editor is drawn into a buffer and driven by keys, as in
-//! `tests/tui.rs`. A stand-in runs in place of the linter (`fake_linter`),
-//! never a real one: from the tests' own processes, stacked runs no other.
+//! reports listed, and alone landing read only; the queue: one lint job at
+//! a time, an edit asked meanwhile waiting for it, then going on from what
+//! it made; and the stop: a linter that hangs stopped from the banner and by
+//! `stacked stop`, nothing landing, a job waiting its turn dropped, the next
+//! job starting clean. The editor is drawn into a buffer and driven by keys,
+//! as in `tests/tui.rs`. A stand-in runs in place of the linter
+//! (`fake_linter`), never a real one: from the tests' own processes, stacked
+//! runs no other.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -772,4 +775,163 @@ fn one_lint_job_runs_at_a_time_the_next_waiting_its_turn() {
     assert!(runs.iter().all(|r| r.state == RunState::Done), "{runs:?}");
     assert!(runs.iter().find(|r| r.id == s.id).unwrap().time <= runs.iter().find(|r| r.id == t.id).unwrap().time);
     assert_eq!(lint_calls(&db).lines().filter(|l| l.starts_with("args:")).count(), 3, "s's two patches, then t's one");
+}
+
+/// The cursor on the banner's line of lint job `run`, on the stack shown.
+fn on_lint_line(app: &mut App, run: &str) {
+    app.refresh();
+    app.screen = Screen::Main;
+    app.on_banner = true;
+    let line = stacked::tui::BannerLine::Lint(run.to_string());
+    app.banner_sel = app.banner_lines().iter().position(|l| *l == line).unwrap_or_else(|| panic!("no line of the linter: {:?}", app.banner_lines()));
+    draw(app);
+}
+
+/// The title of the menu open.
+fn menu_title(app: &App) -> String {
+    match &app.mode {
+        Mode::Menu(m) => m.title.clone(),
+        other => panic!("no menu open: {other:?}"),
+    }
+}
+
+/// Waits a moment for a stopped linter to have gone on, had it not been
+/// stopped: what it would have written by then.
+fn linted_meanwhile(db: &Path) -> String {
+    std::thread::sleep(std::time::Duration::from_millis(600));
+    lint_calls(db)
+}
+
+#[test]
+fn a_linter_that_hangs_is_stopped_from_the_banner_nothing_landing_and_the_edit_that_waited_going() {
+    let (one, two) = two_fixes();
+    let (_tmp, db, src) = setup(&[&[("a.txt", &one)], &[("a.txt", &two)]], false, Some(&["./lint.sh"]));
+    let mut app = open(&db);
+    let held = hold(&db);
+    lint(&mut app, "Lint the stack (./lint.sh)");
+    // The linter hangs, on patch 1.
+    let r = wait_lint(&mut app, &db, |r| r.pid.is_some() && r.lint.as_deref().is_some_and(|j| j.at == 1));
+    let (rev, before) = {
+        let d = Db::load(&db).unwrap();
+        (d.head("s").unwrap().0, d.stack("s").unwrap().patches.clone())
+    };
+    // An edit asked meanwhile waits for it.
+    let note = stacked::db::Note {
+        change: stacked::db::stack_change("s"),
+        id: "s-stop-test".into(),
+        text: "Make it better.".into(),
+        ..Default::default()
+    };
+    Db::edit(&db, |d| d.set_note(note.clone())).unwrap();
+    let waits = stacked::ask::send(&db, "s", &[(note.change.clone(), note.id.clone())], stacked::db::Way::Change, false, stacked::db::Effort::High).unwrap();
+    assert_eq!(waits.as_deref(), Some("once the linter's work on the stack lands"));
+    // The banner's menu stops it; so does Delete on its line, asking first.
+    on_lint_line(&mut app, &r.id);
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    assert!(items(&app).contains(&("Stop the linter…".to_string(), true)), "{:?}", items(&app));
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Delete]);
+    assert!(menu_title(&app).starts_with("stop the linter?"), "{}", menu_title(&app));
+    let note_said = menu_note(&app);
+    assert!(note_said.contains("the lint job lands at once, as stopped: nothing changes in the stack, and the fixes it made so far are thrown away"), "{note_said}");
+    assert!(items(&app).contains(&("Let it go on".to_string(), true)), "{:?}", items(&app));
+    choose(&mut app, "Stop it");
+    app.settle();
+    assert_eq!(app.status, "the linter was stopped, and nothing landed: the stack is as it was, and can be edited by hand again");
+    // Landed as stopped: nothing landed, the stack as it was, said in its
+    // stream.
+    let stopped = lint_runs(&db).pop().unwrap();
+    assert_eq!(
+        (stopped.id.as_str(), stopped.state, stopped.summary.as_str(), stopped.held.is_none()),
+        (r.id.as_str(), RunState::Failed, stacked::lint::STOPPED, true)
+    );
+    let d = Db::load(&db).unwrap();
+    assert_eq!((d.head("s").unwrap().0, d.stack("s").unwrap().patches.clone()), (rev, before));
+    assert!(!stacked::held::queue(&d, "s").iter().any(|w| stacked::held::linted(w)));
+    let said = stacked::ask::tail(&d, &r.id, 50);
+    assert!(said.iter().any(|l| l.contains("you stopped the linter: its process is stopped, and nothing lands")), "{said:?}");
+    drop(d);
+    assert_eq!(file_at(&src, &db, 1, "a.txt"), one);
+    // The linter was stopped with it: let go, it lints nothing.
+    drop(held);
+    assert_eq!(linted_meanwhile(&db), "", "the linter went on");
+    // The edit that waited goes, from the stack as it was.
+    let mut asked = None;
+    for _ in 0..300 {
+        app.refresh();
+        let d = Db::load(&db).unwrap();
+        asked = d.runs().into_iter().find(|a| a.what == "change").cloned();
+        if asked.as_ref().is_some_and(|a| a.state != RunState::Started) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    let asked = asked.expect("the edit that waited was asked");
+    assert_eq!(stacked::ask::info(&asked).unwrap().after, None, "not from the linter's work");
+    assert_eq!(std::fs::read_to_string(db.with_file_name("claude-saw")).unwrap(), two);
+}
+
+#[test]
+fn a_waiting_lint_job_is_dropped_from_the_banner_a_hanging_one_stopped_by_stacked_stop_and_the_next_starts_clean() {
+    let (one, two) = two_fixes();
+    let (_tmp, db, src) = setup(&[&[("a.txt", &one)], &[("a.txt", &two)]], false, Some(&["./lint.sh"]));
+    let mut app = open(&db);
+    let held = hold(&db);
+    // Stack t's job runs, its linter hanging; s's, asked then, waits its
+    // turn.
+    stacked::lint::ask(&db, "t").unwrap();
+    stacked::ask::launch(&db).unwrap();
+    let t = wait_lint(&mut app, &db, |r| r.stack == "t" && r.pid.is_some() && r.lint.as_deref().is_some_and(|j| j.at == 1));
+    lint(&mut app, "Lint the stack (./lint.sh)");
+    let s = wait_lint(&mut app, &db, |r| r.stack == "s");
+    assert_eq!(s.lint.as_deref().map(|j| j.step), Some(stacked::lint::Step::Waiting));
+    // Dropped from s's banner, its menu asking first.
+    on_lint_line(&mut app, &s.id);
+    let screen = draw(&mut app);
+    assert!(screen.contains("◌ The linter waits its turn to lint the stack (./lint.sh)"), "{screen}");
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    choose(&mut app, "Drop the waiting lint job…");
+    assert!(menu_title(&app).starts_with("drop the waiting lint job?"), "{}", menu_title(&app));
+    assert!(menu_note(&app).contains("It is taken off the queue: nothing is linted, and nothing changes in the stack."), "{}", menu_note(&app));
+    choose(&mut app, "Drop it");
+    app.settle();
+    assert_eq!(app.status, "the waiting lint job was dropped: nothing was linted, and the stack is as it was");
+    let dropped = lint_runs(&db).into_iter().find(|r| r.id == s.id).unwrap();
+    assert_eq!((dropped.state, dropped.summary.as_str(), dropped.held.is_none()), (RunState::Failed, stacked::lint::DROPPED, true));
+    assert_eq!(stacked::ask::blocked(&Db::load(&db).unwrap(), "s"), None);
+    // t's, stopped by `stacked stop`, its run as `stacked runs` lists it.
+    let rev = Db::load(&db).unwrap().head("t").unwrap().0;
+    let out = ok(&src, &db, &["stop", &t.id]);
+    assert!(out.contains("\tlint t \"./lint.sh\"\tfailed\t") && out.contains(stacked::lint::STOPPED), "{out}");
+    let stopped = lint_runs(&db).into_iter().find(|r| r.id == t.id).unwrap();
+    assert_eq!((stopped.state, stopped.summary.as_str(), stopped.held.is_none()), (RunState::Failed, stacked::lint::STOPPED, true));
+    // Nothing landed: the stack as it was, and free again, edited by hand.
+    let d = Db::load(&db).unwrap();
+    assert_eq!(d.head("t").unwrap().0, rev);
+    assert!(stacked::held::queue(&d, "t").is_empty());
+    assert_eq!(stacked::ask::blocked(&d, "t"), None);
+    drop(d);
+    // Over now: stopped again, it is refused.
+    let (fine, _, err) = stacked(&src, &db, &["stop", &t.id]);
+    assert!(!fine && err.contains("is not running: the lint job is over, failed: you stopped the linter"), "{err}");
+    // Its linter was stopped with it: let go, it lints nothing.
+    drop(held);
+    assert_eq!(linted_meanwhile(&db), "", "the linter went on");
+    // What a linter left in t's worktree, a file changed and one new, is
+    // thrown away as the next job starts: it lints the stack as it is.
+    let at = src.canonicalize().unwrap().join(".stacked/t/lint");
+    std::fs::write(at.join("b.txt"), "left behind  \n").unwrap();
+    std::fs::write(at.join("stray.txt"), "left behind\n").unwrap();
+    stacked::lint::ask(&db, "t").unwrap();
+    stacked::ask::launch(&db).unwrap();
+    let again = wait_lint(&mut app, &db, |r| r.stack == "t" && r.id != t.id && r.state != RunState::Started);
+    assert_eq!(again.state, RunState::Done, "{}", again.summary);
+    let h = again.held.clone().unwrap();
+    assert_eq!(h.stack.as_ref().map(|c| c.op.as_str()), Some("lint fixes in patch 1 (./lint.sh)"));
+    assert!(h.lint.as_ref().is_some_and(|l| !l.on_top && l.stopped.is_none()), "{:?}", h.lint);
+    assert!(!at.join("stray.txt").exists());
+    accept(&db, &again);
+    assert_eq!(ok(&src, &db, &["show", "t", "1", "--path", "a.txt"]), one.replace("TWO  ", "TWO"));
+    let d = Db::load(&db).unwrap();
+    let p1 = d.patch(&d.stack("t").unwrap().patches[0]);
+    assert!(!p1.diff.contains("stray.txt") && !p1.diff.contains("b.txt"), "{}", p1.diff);
 }
