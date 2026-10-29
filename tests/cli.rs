@@ -346,6 +346,31 @@ esac
 }
 
 #[test]
+fn an_interdiff_shows_a_paragraph_only_wrapped_otherwise_as_the_new_version_wraps_it() {
+    let e = env();
+    e.ok(&["import", "s", "base"]);
+    // Patch 2 reworded from the list: its first paragraph over two lines,
+    // the same words.
+    let editor = e.script(
+        "editor.sh",
+        r#"case "$1" in
+*.todo) sed '/Bug 2/s/^pick/reword/' "$1" > "$1.new" && mv "$1.new" "$1" ;;
+*.txt) printf 'Bug 2 - add b\n\nA\nbody.\n\nMore body.\n' > "$1" ;;
+esac
+"#,
+    );
+    let (fine, _, err) = stacked_in(&e.src, &e.db, &["edit", "s"], "", &[("EDITOR", &editor)]);
+    assert!(fine, "{err}");
+    e.ok(&["review", "s", "--accept-all"]);
+    assert_eq!(e.ok(&["versions", "s", "2"]).lines().count(), 2);
+    // What changed: the paragraph as the new version wraps it, among the
+    // lines kept as they were; no line taken out or put in.
+    let inter = e.ok(&["interdiff", "s", "2"]);
+    assert!(inter.contains("\n Subject: Bug 2 - add b\n \n A\n body.\n \n More body.\n ---\n"), "{inter}");
+    assert!(!inter.lines().skip(2).any(|l| l.starts_with('-') || l.starts_with('+')), "{inter}");
+}
+
+#[test]
 fn reimport_keeps_changes() {
     let e = env();
     e.ok(&["import", "s", "base"]);

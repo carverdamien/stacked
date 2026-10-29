@@ -648,7 +648,7 @@ impl Tour {
             return false;
         };
         let p = app.db.patch(&id);
-        let keys = app.db.read_keys(&p.change);
+        let keys = crate::progress::read_keys(&app.db, p);
         crate::progress::changed_lines(p).iter().filter(|(_, blank)| !blank).all(|(k, _)| keys.contains(k))
     }
 
@@ -848,7 +848,7 @@ impl Tour {
                 if let Some(p) = first.map(|id| app.db.patch(&id).clone())
                     && !Tour::read(app, 0)
                 {
-                    let keys = crate::progress::changed_keys(&p);
+                    let keys = crate::progress::with_sections(&p, crate::progress::changed_keys(&p));
                     if let Err(e) = Db::edit(&path, |db| db.mark_read(&p.change, keys)) {
                         fail(app, e);
                     }

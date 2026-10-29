@@ -1,10 +1,10 @@
 //! How far the review of a stack is: the lines left to review, of all it
 //! changes, and the comments left to close, as the stack is now.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use crate::db::{Db, Patch};
+use crate::db::{Db, Mark, Patch};
 
 /// Each patch's changed lines, by its id: each line's key, and whether it
 /// is blank (`changed_lines`). A patch never changes, so they are kept.
@@ -132,6 +132,60 @@ fn keys_of(db: &Db, memo: &mut Memo, id: &str) -> Arc<Vec<(String, bool)>> {
     memo.entry(id.to_string()).or_insert_with(|| Arc::new(changed_lines(db.patch(id)))).clone()
 }
 
+/// The sections of patch `p`'s message, each its key
+/// (`view::section_keys`) and the keys of its lines.
+fn sections_of(p: &Patch) -> Vec<(String, Vec<String>)> {
+    let lines = crate::view::message_keys(p);
+    crate::view::section_keys(p)
+        .into_iter()
+        .map(|(at, k)| (k, at.filter_map(|i| lines.get(i).cloned()).collect()))
+        .collect()
+}
+
+/// The lines of patch `p` read, by key: those marked read on its change
+/// (`Db::read_keys`), and each line of a section of its message that a
+/// mark holds the key of (`view::section_keys`). So a section of the
+/// message that a new version only wraps otherwise, or ends its lines in
+/// other white space, as an interdiff shows the same, is read in the new
+/// version as it was in the old: only what changed is to read again.
+/// This is what the counts, the reading mode's marks and the rows read.
+pub fn read_keys(db: &Db, p: &Patch) -> HashSet<String> {
+    let mut read = db.read_keys(&p.change);
+    let more: Vec<String> = sections_of(p).into_iter().filter(|(k, _)| read.contains(k)).flat_map(|(_, lines)| lines).collect();
+    read.extend(more);
+    read
+}
+
+/// The marks on patch `p`'s change, oldest first (`Db::marks`), each as the
+/// lines it reads in `p`: what it holds, a section's key (`read_keys`) as
+/// each line of that section of `p`'s message.
+pub fn marks(db: &Db, p: &Patch) -> Vec<(usize, Mark)> {
+    let sections = sections_of(p);
+    db.marks(&p.change)
+        .into_iter()
+        .map(|(rev, m)| {
+            let mut keys: Vec<String> = m.keys.iter().filter(|k| !crate::view::is_section_key(k)).cloned().collect();
+            keys.extend(sections.iter().filter(|(k, _)| m.keys.contains(k)).flat_map(|(_, lines)| lines.iter().cloned()));
+            (rev, Mark { keys, ..m.clone() })
+        })
+        .collect()
+}
+
+/// `keys`, lines of patch `p` that a mark is to hold, with the key of each
+/// section of `p`'s message (`view::section_keys`) whose lines they hold
+/// all of: the mark reads that section in any version of the patch that
+/// has it, however that version wraps it.
+pub fn with_sections(p: &Patch, mut keys: Vec<String>) -> Vec<String> {
+    let held: HashSet<&String> = keys.iter().collect();
+    let more: Vec<String> = sections_of(p)
+        .into_iter()
+        .filter(|(_, lines)| !lines.is_empty() && lines.iter().all(|k| held.contains(k)))
+        .map(|(k, _)| k)
+        .collect();
+    keys.extend(more);
+    keys
+}
+
 /// Where the review of stack `name` is; `memo` keeps the patches' changed
 /// lines. Those that are blank (`changed_lines`) are left to review only
 /// when `whitespace` says they need it.
@@ -141,7 +195,7 @@ pub fn progress(db: &Db, name: &str, memo: &mut Memo, whitespace: bool) -> Progr
     };
     let (mut lines, mut total) = (0, 0);
     for id in &stack.patches {
-        let read = db.read_keys(&db.patch(id).change);
+        let read = read_keys(db, db.patch(id));
         for (k, _) in keys_of(db, memo, id).iter().filter(|(_, blank)| whitespace || !blank) {
             total += 1;
             if !read.contains(k) {
@@ -394,6 +448,54 @@ mod tests {
         let a = patch_saying("a", &["one", "two"], &trailed());
         let start = [Record::Patch(a.clone()), stack("s", &[&a], 1000)];
         assert_eq!(of(&start), Progress { lines: 5, total: 5, comments: 0 });
+    }
+
+    #[test]
+    fn a_paragraph_a_new_version_only_wraps_otherwise_is_read_as_it_was() {
+        let wrapped = "Bug 1 - a\n\nThe parser reads the whole file\nbefore it checks the header.\n\nThat is all.";
+        let a = patch_saying("a", &["one"], wrapped);
+        let start = [Record::Patch(a.clone()), stack("s", &[&a], 1000)];
+        // Its line, the title and three lines of prose.
+        assert_eq!(of(&start), Progress { lines: 5, total: 5, comments: 0 });
+        // Read whole: the mark holds the key of each section of the
+        // message, as it holds its lines.
+        let keys = with_sections(&a, changed_keys(&a));
+        let sections: Vec<String> = crate::view::section_keys(&a).into_iter().map(|(_, k)| k).collect();
+        assert_eq!(sections.len(), 3);
+        assert!(sections.iter().all(|k| keys.contains(k) && crate::view::is_section_key(k)), "{keys:?}");
+        let mark = |p: &Patch, keys: Vec<String>, time: i64| Record::Read(Mark {
+            change: p.change.clone(),
+            keys,
+            undo: None,
+            time,
+        });
+        let read = [&start[..], &[mark(&a, keys, 1100)]].concat();
+        assert_eq!(of(&read).lines, 0);
+        // A new version that only wraps the paragraph otherwise: nothing
+        // left to read, as its interdiff shows nothing of it changed.
+        let rewrapped = wrapped.replace("whole file\nbefore", "whole\nfile before").replace("header.", "header.  ");
+        let b = patch_saying("a", &["one"], &rewrapped);
+        let recs = [&read[..], &[Record::Patch(b.clone()), stack("s", &[&b], 1200)]].concat();
+        assert_eq!(of(&recs), Progress { lines: 0, total: 5, comments: 0 });
+        let db = db_of(&recs);
+        let lines = crate::view::message_keys(&b);
+        assert!(lines.iter().all(|k| read_keys(&db, &b).contains(k)), "each line of it read");
+        // The mark, as it reads the new version: its lines, no section's key.
+        let marks = marks(&db, &b);
+        assert!(lines.iter().all(|k| marks[0].1.keys.contains(k)) && !marks[0].1.keys.iter().any(|k| crate::view::is_section_key(k)));
+        // A word of it changed: its two lines to read again, as its
+        // interdiff shows them both changed; the rest read.
+        let reworded = rewrapped.replace("whole", "entire");
+        let c = patch_saying("a", &["one"], &reworded);
+        let recs = [&recs[..], &[Record::Patch(c.clone()), stack("s", &[&c], 1300)]].concat();
+        assert_eq!(of(&recs), Progress { lines: 2, total: 5, comments: 0 });
+        // A mark of a paragraph alone holds its section, no other.
+        let held = with_sections(&c, vec![crate::view::message_keys(&c)[0].clone()]);
+        assert_eq!(held.len(), 2);
+        // A mark holding no section's key, as those made before marks
+        // held them: only the lines it holds, the paragraph's two to read.
+        let old = [&start[..], &[mark(&a, changed_keys(&a), 1100), Record::Patch(b.clone()), stack("s", &[&b], 1200)]].concat();
+        assert_eq!(of(&old).lines, 2);
     }
 
     #[test]

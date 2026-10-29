@@ -47,6 +47,33 @@ pub fn message_keys(p: &Patch) -> Vec<String> {
         .collect()
 }
 
+/// The keys of the sections of the message, as two messages are compared
+/// (`messages::sections_said`), each with the lines it holds, from 0. A
+/// section is keyed by what it says, its words however they wrap and the
+/// white space that ends its lines aside: a new version of the patch that
+/// only wraps a section otherwise has its key. A read mark that holds a
+/// section's key holds each line of the section, in any version
+/// (`progress::read_keys`).
+pub fn section_keys(p: &Patch) -> Vec<(std::ops::Range<usize>, String)> {
+    let m = mode(&p.change);
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    crate::messages::sections_said(&p.message)
+        .into_iter()
+        .map(|(lines, said)| {
+            let ord = counts.entry(said.clone()).or_insert(0);
+            // `§` where a line's key has its origin.
+            let key = line_key(&m, MSG_PATH, '§', &said, *ord);
+            *ord += 1;
+            (lines, key)
+        })
+        .collect()
+}
+
+/// Whether `key` is a section's (`section_keys`), not a line's.
+pub fn is_section_key(key: &str) -> bool {
+    key.split('\0').nth(2) == Some("§")
+}
+
 /// Every line of `p` a note can quote: its message's, then its diff's.
 pub fn note_lines(p: &Patch) -> Vec<NoteLine> {
     let mut out: Vec<NoteLine> = p

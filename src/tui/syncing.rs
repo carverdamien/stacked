@@ -94,21 +94,18 @@ fn whose(k: Keep) -> &'static str {
     }
 }
 
-/// A message's lines, as compared (`messages::compare`), `w` wide: what of
-/// each the other has not in `word`, the rest as any text; a break that
-/// only this message has marked, `↵` at the end of its line, `¶` on its
-/// empty line; a line longer than `w` folded, between words where it can,
-/// each piece after the first `↪` and what comes next.
+/// A message's lines, as compared (`messages::compare`), `w` wide, each as
+/// `marked_parts` draws it: what of each the other has not in `word`, the
+/// rest as any text; a break that only this message has marked, `↵` at the
+/// end of its line, `¶` on its empty line; a line longer than `w` folded,
+/// between words where it can, each piece after the first `↪` and what
+/// comes next.
 fn message_rows(lines: &[Marked], word: Style, w: usize) -> Vec<Parts> {
     let mut out = Vec::new();
     for l in lines {
         // An empty part first: what folds is padded as any text.
         let mut parts: Parts = vec![(String::new(), Style::new())];
-        parts.extend(split_words(&l.text, &l.words, Style::new(), word));
-        if l.broken {
-            parts.push((if l.text.trim().is_empty() { "¶" } else { "↵" }.to_string(), word));
-            parts.push((String::new(), Style::new()));
-        }
+        parts.extend(marked_parts(&l.text, &l.words, l.broken, word));
         for (k, piece) in fold_parts(&parts, w.saturating_sub(1).max(1), 0).into_iter().enumerate() {
             match k {
                 0 => out.push(piece),

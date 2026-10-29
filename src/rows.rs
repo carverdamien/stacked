@@ -111,6 +111,14 @@ pub struct Row {
     /// A line removed or added, the line paired with it almost the same:
     /// what changed in it, as ranges of its characters (`changed_words`).
     pub words: Spans,
+    /// A line of a message removed or added, compared with the other
+    /// version's as the sync of the commit messages compares two messages
+    /// (`messages::compare`): drawn as it draws them, `words` what only
+    /// this version has, the rest as any text, its sign in its line's
+    /// colour. And whether a break that only this version has follows it,
+    /// marked on its last piece.
+    pub compared: bool,
+    pub broken: bool,
     /// A line of a file shown whole that is in no hunk: no comment goes on
     /// it, nor a read mark. Drawn dim, as self-review draws the lines it
     /// adds around a hunk.

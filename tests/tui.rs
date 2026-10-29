@@ -7083,21 +7083,25 @@ fn what_changed_between_versions_is_painted_as_words_in_interdiffs_and_stack_dif
         panic!("no {text}");
     };
     let as_drawn = |s: ratatui::style::Style| (s.fg.unwrap_or_default(), s.bg.unwrap_or_default(), s.add_modifier);
-    let (word, line) = (stacked::paint::color::add_word(), stacked::paint::color::add());
+    let (word, line, plain) = (stacked::paint::color::add_word(), stacked::paint::color::add(), ratatui::style::Style::new());
     let added = "+Subject: Bug 1 - shout two, reworded";
     let reworded = added.find("reworded").unwrap();
-    // The interdiff of the new version: the words put in, as words; the rest
-    // of the line, as added.
+    // The interdiff of the new version: its title a line of its message,
+    // compared as the sync of the commit messages compares two: the words
+    // put in, as words; the words both versions have, as any text; its
+    // sign, as added.
     choose(&mut app, "Versions of this patch…");
     assert_eq!(app.screen, Screen::Versions);
     assert_eq!(style_of(&mut app, added, reworded), as_drawn(word), "reworded");
-    assert_eq!(style_of(&mut app, added, 1), as_drawn(line), "Subject");
+    assert_eq!(style_of(&mut app, added, 1), as_drawn(plain), "Subject");
+    assert_eq!(style_of(&mut app, added, 0), as_drawn(line), "its sign");
     // The stack diff of the change, in the history: the same.
     keys(&mut app, &[KeyCode::Esc, KeyCode::Home]);
     choose(&mut app, "History…");
     assert_eq!(app.screen, Screen::History);
     assert_eq!(style_of(&mut app, added, reworded), as_drawn(word), "reworded, in the history");
-    assert_eq!(style_of(&mut app, added, 1), as_drawn(line), "Subject, in the history");
+    assert_eq!(style_of(&mut app, added, 1), as_drawn(plain), "Subject, in the history");
+    assert_eq!(style_of(&mut app, added, 0), as_drawn(line), "its sign, in the history");
     // The cursor on that line of the stack diff: the line is in the
     // cursor's colours, and the words put in are still in their own.
     keys(&mut app, &[KeyCode::Right]);
@@ -7109,6 +7113,251 @@ fn what_changed_between_versions_is_painted_as_words_in_interdiffs_and_stack_dif
     let cursor = as_drawn(stacked::paint::on_cursor(ratatui::style::Style::new()));
     assert_eq!(style_of(&mut app, added, reworded), as_drawn(word), "reworded, under the cursor");
     assert_eq!(style_of(&mut app, added, 1), cursor, "Subject, under the cursor");
+}
+
+/// Patch 1's message as the next tests have it: a paragraph over two
+/// lines; then the same words over three, the white space ending a line
+/// other too.
+const WRAPPED: &str = "Bug 1 - shout two\n\nThe parser reads the whole file\nbefore it checks the header.\n\nBecause.";
+const REWRAPPED: &str = "Bug 1 - shout two\n\nThe parser reads the whole\nfile before it checks\nthe header.  \n\nBecause.";
+
+/// Patch `at` of stack `s` given `message`, and its diff `diff` if given,
+/// at once.
+fn reword(db: &Path, at: usize, message: &str, diff: Option<&str>) {
+    Db::edit(db, |d| {
+        let s = d.stack("s")?.clone();
+        let mut draft = stacked::mbox::Draft::from(d.patch(&s.patches[at]));
+        draft.message = message.into();
+        if let Some(diff) = diff {
+            draft.diff = diff.into();
+        }
+        stacked::ops::replace(d, "s", at, draft, "reword").map(|_| ())
+    })
+    .unwrap();
+}
+
+/// How the screen, 120 columns wide and `h` rows high, draws the cell `dx`
+/// after where `text` first is: its colours and modifiers.
+fn style_after(app: &mut App, text: &str, dx: usize, h: u16) -> (ratatui::style::Color, ratatui::style::Color, ratatui::style::Modifier) {
+    let mut buf = Buffer::empty(Rect::new(0, 0, 120, h));
+    app.draw(&mut buf);
+    for y in 0..h {
+        let line: String = (0..120).map(|x| buf[(x, y)].symbol()).collect();
+        if let Some(at) = line.find(text) {
+            let c = &buf[((line[..at].chars().count() + dx) as u16, y)];
+            return (c.fg, c.bg, c.modifier);
+        }
+    }
+    panic!("no {text:?} on the screen:\n{}", draw_sized(app, 120, h));
+}
+
+/// Style `s` as the cells drawn in it have it.
+fn as_drawn(s: ratatui::style::Style) -> (ratatui::style::Color, ratatui::style::Color, ratatui::style::Modifier) {
+    (s.fg.unwrap_or_default(), s.bg.unwrap_or_default(), s.add_modifier)
+}
+
+/// The lines of the review's right pane, drawn 100 rows high, the spaces
+/// around them gone.
+fn review_pane(app: &mut App) -> Vec<String> {
+    let screen = draw_sized(app, 120, 100);
+    screen.lines().map(|l| l.chars().skip(49).collect::<String>().trim().to_string()).collect()
+}
+
+#[test]
+fn a_paragraph_the_agent_only_wraps_otherwise_is_no_change_in_its_review_and_a_comment_there_is_on_its_line() {
+    let (_tmp, db, _src) = setup();
+    reword(&db, 0, WRAPPED, None);
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Enter]);
+    save(&mut app, "why so loud?");
+    // The agent's work: Two for TWO, and the paragraph wrapped otherwise.
+    let n = notes_of(&db, "s", 0).remove(0);
+    agent_changed_to(&db, "run-agent", &n, Some(REWRAPPED));
+    app.refresh();
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Enter]);
+    assert_eq!(app.screen, Screen::Review);
+    keys(&mut app, &[KeyCode::Home]);
+    down_to_review(&mut app, "modify  1 Bug 1 - shout two");
+    // → into the stack diff: the cursor on the first line that changed, the
+    // one of code; the paragraph there as the work wraps it, unchanged, and
+    // no line of the message taken out or put in.
+    keys(&mut app, &[KeyCode::Right]);
+    assert_eq!(work_row(&mut app).as_deref(), Some("-+TWO"));
+    let pane = review_pane(&mut app);
+    for line in ["The parser reads the whole", "file before it checks", "the header.", "Because."] {
+        assert!(pane.iter().any(|l| l == line), "{line:?} in {pane:#?}");
+    }
+    assert!(!pane.iter().any(|l| l.starts_with("-The") || l.starts_with("+The") || l.starts_with("+file") || l.starts_with("-before")), "{pane:#?}");
+    // Enter on a line of it: the patch as the work leaves it, the cursor on
+    // that line; Enter there writes a comment on that line of it.
+    keys(&mut app, &[KeyCode::Home]);
+    down_to_work_row(&mut app, "file before it checks");
+    keys(&mut app, &[KeyCode::Enter]);
+    assert!(draw(&mut app).contains(" patch 1 as the work leaves it: Bug 1 - shout two"));
+    assert_eq!(work_row(&mut app).as_deref(), Some("file before it checks"));
+    keys(&mut app, &[KeyCode::Enter]);
+    save(&mut app, "Wrapped better.");
+    let d = Db::load(&db).unwrap();
+    let new = d.patch(&d.run("run-agent").unwrap().held.as_ref().unwrap().stack.as_ref().unwrap().patches[0]).clone();
+    let mine = d.notes(&new.change).into_iter().find(|m| m.text.contains("Wrapped better.")).cloned().unwrap();
+    assert_eq!(mine.line, stacked::view::message_keys(&new)[3]);
+    assert_eq!(new.message.split('\n').nth(3), Some("file before it checks"));
+    // Back on the stack diff, a line of the old version's that the new one
+    // has no more goes to where it was: the version before wrapped none
+    // otherwise but `TWO`'s line, which goes to `Two`'s.
+    keys(&mut app, &[KeyCode::Left]);
+    down_to_work_row(&mut app, "-+TWO");
+    keys(&mut app, &[KeyCode::Enter]);
+    assert_eq!(work_row(&mut app).as_deref(), Some("+Two"));
+}
+
+#[test]
+fn a_paragraph_only_wrapped_otherwise_is_read_as_it_was_and_the_history_changes_no_line_of_it() {
+    let (_tmp, db, _src) = setup();
+    reword(&db, 0, WRAPPED, None);
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Enter]);
+    save(&mut app, "why so loud?");
+    // Patch 1's message read whole: its title, the paragraph's two lines,
+    // `Because.`.
+    keys(&mut app, &[KeyCode::Char('2')]);
+    app.wait_blocks();
+    keys(&mut app, &[KeyCode::Home, KeyCode::Char(' ')]);
+    assert!(app.status.contains("read: the message, 4 lines"), "{}", app.status);
+    keys(&mut app, &[KeyCode::Char('2')]);
+    // The agent's work, the paragraph wrapped otherwise, accepted.
+    let n = notes_of(&db, "s", 0).remove(0);
+    agent_changed_to(&db, "run-agent", &n, Some(REWRAPPED));
+    app.refresh();
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Enter]);
+    assert_eq!(app.screen, Screen::Review);
+    keys(&mut app, &[KeyCode::Esc]);
+    choose(&mut app, "Accept all remaining and Close");
+    choose(&mut app, "Accept them and close");
+    assert_eq!(app.screen, Screen::Main);
+    let d = Db::load(&db).unwrap();
+    assert_eq!(d.patch(&d.stack("s").unwrap().patches[0]).message, REWRAPPED);
+    drop(d);
+    // Reading again: of the message, nothing is left to read, its three
+    // lines read as the two were; of the code, the line that changed.
+    keys(&mut app, &[KeyCode::Char('2')]);
+    app.wait_blocks();
+    keys(&mut app, &[KeyCode::Home]);
+    draw(&mut app);
+    let texts: Vec<&str> = app.rows.iter().map(|r| r.text.as_str()).collect();
+    assert!(texts.contains(&"✉ message   read 5/5 lines"), "{texts:#?}");
+    for line in ["   The parser reads the whole", "   file before it checks", "   the header.  "] {
+        assert!(app.rows.iter().any(|r| r.text == line && r.read), "{line:?} read");
+    }
+    // The mark that read them is there: Delete on a line of the paragraph
+    // takes it back, and the paragraph is to read again; Space reads it,
+    // as the new version wraps it.
+    down_to(&mut app, "   file before it checks");
+    keys(&mut app, &[KeyCode::Delete]);
+    assert!(app.status.starts_with("unread: "), "{}", app.status);
+    draw(&mut app);
+    assert!(app.rows.iter().any(|r| r.text == "   file before it checks" && !r.read));
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    assert!(app.status.contains("read: lines 3–5 of the message, 3 lines"), "{}", app.status);
+    draw(&mut app);
+    assert!(app.rows.iter().any(|r| r.text == "   file before it checks" && r.read));
+    keys(&mut app, &[KeyCode::Char('2')]);
+    // The history: the stack diff of the work accepted, the paragraph as
+    // the new version wraps it, no line of it taken out or put in.
+    keys(&mut app, &[KeyCode::Left, KeyCode::Home]);
+    choose(&mut app, "History…");
+    keys(&mut app, &[KeyCode::Right]);
+    let text = |parts: &stacked::tui::Parts| parts.iter().map(|(t, _)| t.as_str()).collect::<String>();
+    let rows: Vec<String> = app.hist_rows.iter().map(|p| text(p).trim().to_string()).collect();
+    assert!(rows.iter().any(|r| r == "1 ~ Bug 1 - shout two"), "{rows:#?}");
+    assert!(rows.iter().any(|r| r == "The parser reads the whole") && rows.iter().any(|r| r == "-+TWO"), "{rows:#?}");
+    assert!(!rows.iter().any(|r| r.starts_with("-The") || r.starts_with("+The") || r.starts_with("-before")), "{rows:#?}");
+}
+
+#[test]
+fn a_word_changed_in_a_paragraph_wrapped_otherwise_is_the_one_word_coloured() {
+    let (_tmp, db, _src) = setup();
+    reword(&db, 0, WRAPPED, None);
+    reword(&db, 0, &REWRAPPED.replace("whole", "entire"), None);
+    let mut app = open(&db).unwrap();
+    choose(&mut app, "Versions of this patch…");
+    assert_eq!(app.screen, Screen::Versions);
+    // The old version's two lines taken out, the new one's three put in,
+    // each as its version wraps them.
+    let screen = draw_sized(&mut app, 120, 50);
+    let order = ["-The parser reads the whole file", "-before it checks the header.", "+The parser reads the entire", "+file before it checks", "+the header."];
+    let at: Vec<usize> = order.iter().map(|l| screen.find(l).unwrap_or_else(|| panic!("no {l:?}:\n{screen}"))).collect();
+    assert!(at.windows(2).all(|w| w[0] < w[1]), "{screen}");
+    assert!(screen.contains(" Subject: Bug 1 - shout two") && screen.contains(" Because."), "the rest, as it was:\n{screen}");
+    // The word changed in the colour of words, in each; every other word,
+    // as any text; the signs, as lines removed and added.
+    use stacked::paint::color;
+    let plain = ratatui::style::Style::new();
+    let (old, new) = (order[0], order[2]);
+    assert_eq!(style_after(&mut app, old, old.find("whole").unwrap(), 50), as_drawn(color::del_word()), "whole");
+    assert_eq!(style_after(&mut app, old, old.find("parser").unwrap(), 50), as_drawn(plain), "parser");
+    assert_eq!(style_after(&mut app, old, old.find("file").unwrap(), 50), as_drawn(plain), "file, which both have");
+    assert_eq!(style_after(&mut app, old, 0, 50), as_drawn(color::del()), "its sign");
+    assert_eq!(style_after(&mut app, new, new.find("entire").unwrap(), 50), as_drawn(color::add_word()), "entire");
+    assert_eq!(style_after(&mut app, new, new.find("reads").unwrap(), 50), as_drawn(plain), "reads");
+    assert_eq!(style_after(&mut app, new, 0, 50), as_drawn(color::add()), "its sign");
+    assert_eq!(style_after(&mut app, order[3], 1, 50), as_drawn(plain), "file, on its line");
+}
+
+#[test]
+fn a_command_wrapped_otherwise_is_a_change_its_break_marked() {
+    let (_tmp, db, _src) = setup();
+    let one = "Bug 1 - shout two\n\nBuild it so:\n\n$ ./mach build --foo";
+    reword(&db, 0, one, None);
+    reword(&db, 0, &one.replace("build --foo", "build\n  --foo"), None);
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Home]);
+    choose(&mut app, "History…");
+    keys(&mut app, &[KeyCode::Right]);
+    let text = |parts: &stacked::tui::Parts| parts.iter().map(|(t, _)| t.as_str()).collect::<String>();
+    let rows: Vec<String> = app.hist_rows.iter().map(|p| text(p).trim().to_string()).collect();
+    // The command taken out, and put in over two lines, the end of the
+    // first marked as the sync marks a break only one version has; the
+    // prose over it, the same.
+    for line in ["-$ ./mach build --foo", "+$ ./mach build↵", "+  --foo", "Build it so:"] {
+        assert!(rows.iter().any(|r| r == line), "{line:?} in {rows:#?}");
+    }
+    use stacked::paint::color;
+    let old = "-$ ./mach build --foo";
+    assert_eq!(style_after(&mut app, old, old.find(" --foo").unwrap(), 30), as_drawn(color::del_word()), "the space before --foo");
+    assert_eq!(style_after(&mut app, "+$ ./mach build↵", 15, 30), as_drawn(color::add_word()), "the break");
+    assert_eq!(style_after(&mut app, "+  --foo", 1, 30), as_drawn(color::add_word()), "the indent");
+}
+
+#[test]
+fn the_diff_of_an_interdiff_is_drawn_as_ever_whatever_its_message_does() {
+    let (_tmp, db, _src) = setup();
+    reword(&db, 0, WRAPPED, None);
+    let diff = Db::load(&db).unwrap().stack("s").map(|s| s.patches[0].clone()).unwrap();
+    let diff = Db::load(&db).unwrap().patch(&diff).diff.replace("+LINE 39", "+LINE 39, said again");
+    reword(&db, 0, &WRAPPED.replace("whole", "entire"), Some(&diff));
+    let mut app = open(&db).unwrap();
+    choose(&mut app, "Versions of this patch…");
+    // The line of code that took the place of another almost the same,
+    // paired with it: what changed in it, as words; the rest, as the line.
+    use stacked::paint::color;
+    let added = "++LINE 39, said again";
+    let screen = draw_sized(&mut app, 120, 50);
+    assert!(screen.lines().any(|l| l.trim_end().ends_with("│-+LINE 39")), "{screen}");
+    assert_eq!(style_after(&mut app, added, added.find("said").unwrap(), 50), as_drawn(color::add_word()), "said");
+    assert_eq!(style_after(&mut app, added, 2, 50), as_drawn(color::add()), "LINE");
+    assert_eq!(style_after(&mut app, added, 0, 50), as_drawn(color::add()), "its sign");
+    // The lines of the message, as compared, not paired as those are: the
+    // word changed alone in the colour for words, the rest as any text.
+    let (old, new) = ("-The parser reads the whole file", "+The parser reads the entire file");
+    assert_eq!(style_after(&mut app, old, old.find("whole").unwrap(), 50), as_drawn(color::del_word()), "whole");
+    assert_eq!(style_after(&mut app, new, new.find("entire").unwrap(), 50), as_drawn(color::add_word()), "entire");
+    assert_eq!(style_after(&mut app, new, new.find("file").unwrap(), 50), as_drawn(ratatui::style::Style::new()), "file");
+    assert_eq!(style_after(&mut app, "+before it checks the header.", 1, 50), as_drawn(ratatui::style::Style::new()), "before");
 }
 
 #[test]
@@ -12510,6 +12759,66 @@ fn a_revision_whose_code_is_the_patch_s_already_is_reviewed_for_its_message_alon
     assert_eq!(app.screen, Screen::Main);
     assert_eq!(app.status, "D13 is patch 3 as it is already, with its title and summary, so nothing was sent.");
     assert_eq!(phab.lock().unwrap().writes().len(), 1);
+    stacked::submit::stand_in(None);
+}
+
+#[cfg(feature = "moz-phab")]
+#[test]
+fn the_title_and_summary_sent_are_compared_as_the_sync_compares_two_messages_side_by_side_too() {
+    let message = format!("Bug 3 - three\n\nThe parser reads the entire\nfile before it checks\nthe header.\n\nBecause.\n\n{LINK}13");
+    let (_tmp, db) = phab_setup(["Bug 1 - one", &format!("Bug 2 - two\n\n{LINK}12"), &message]);
+    let mut p = Phab::default().with(12, "needs-review", "Bug 2 - two", "").with(13, "changes-planned", "WIP: Bug 3 - three", &patch_of(&db, 2).diff);
+    let r = p.revisions.get_mut(&13).unwrap();
+    (r.summary, r.parents) = ("The parser reads the whole file\nbefore it checks the header.\n\nBecause.".into(), vec!["PHID-DREV-12".into()]);
+    let phab = std::sync::Arc::new(std::sync::Mutex::new(p));
+    let _one = phab_stand_in(&phab);
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Down, KeyCode::Down]);
+    choose(&mut app, "Submit to Phabricator as WIP");
+    app.settle();
+    assert_eq!(app.screen, Screen::Submit);
+    // The title and `Because.`, the same in both, once; the paragraph,
+    // Phabricator's lines then those sent, each wrapped as it is.
+    let rows = submitted(&mut app);
+    let from = rows.iter().position(|r| r == "the title and summary: Phabricator's, then what is sent").unwrap() + 1;
+    assert_eq!(
+        rows[from..from + 9],
+        [
+            " WIP: Bug 3 - three",
+            " ",
+            "-The parser reads the whole file",
+            "-before it checks the header.",
+            "+The parser reads the entire",
+            "+file before it checks",
+            "+the header.",
+            " ",
+            " Because."
+        ],
+        "{rows:#?}"
+    );
+    // The word changed alone in the colour for words, the rest as any text.
+    use stacked::paint::color;
+    let plain = ratatui::style::Style::new();
+    let (old, new) = ("-The parser reads the whole file", "+The parser reads the entire");
+    let check = |app: &mut App| {
+        assert_eq!(style_after(app, old, old.find("whole").unwrap(), 40), as_drawn(color::del_word()), "whole");
+        assert_eq!(style_after(app, old, old.find("parser").unwrap(), 40), as_drawn(plain), "parser");
+        assert_eq!(style_after(app, old, 0, 40), as_drawn(color::del()), "its sign");
+        assert_eq!(style_after(app, new, new.find("entire").unwrap(), 40), as_drawn(color::add_word()), "entire");
+        assert_eq!(style_after(app, new, new.find("reads").unwrap(), 40), as_drawn(plain), "reads");
+        assert_eq!(style_after(app, new, 0, 40), as_drawn(color::add()), "its sign");
+    };
+    check(&mut app);
+    // Side by side (1): Phabricator's lines on the left, those sent on the
+    // right, each wrapped as it is, coloured the same way.
+    keys(&mut app, &[KeyCode::Char('1')]);
+    let screen = draw_sized(&mut app, 120, 40);
+    let beside = |left: &str, right: &str| screen.lines().any(|l| l.contains(left) && l.contains(&format!("│{right}")));
+    assert!(beside(old, new) && beside("-before it checks the header.", "+file before it checks") && beside("~", "+the header."), "{screen}");
+    assert!(beside(" Because.", " Because."), "{screen}");
+    check(&mut app);
+    keys(&mut app, &[KeyCode::Esc]);
+    assert!(phab.lock().unwrap().writes().is_empty());
     stacked::submit::stand_in(None);
 }
 

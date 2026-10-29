@@ -1,6 +1,7 @@
 //! Edits to a stack, as the commands and the UI make them.
 
 use std::collections::HashMap;
+use std::ops::Range;
 
 use crate::db::{Db, Error, Patch, Result, Stack, err, new_change};
 use crate::mbox::{Draft, format_mail};
@@ -372,14 +373,258 @@ pub fn render(p: &Patch) -> String {
     format_mail(&Draft::from(p), "")
 }
 
-/// What changed from `old` to `new`, their mails diffed.
+/// What changed from `old` to `new`, their mails diffed, as
+/// `interdiff_lines` has it: as text.
 pub fn interdiff(old: &Patch, new: &Patch) -> String {
+    inter(old, new).0
+}
+
+/// A line of an interdiff (`interdiff_lines`), as it is written, its sign
+/// first. On a line of the message taken out or put in, what of it the
+/// other version has not, as the sync of the commit messages marks it
+/// (`messages::compare`): ranges of its characters, the sign the first of
+/// them; and whether a break only it has follows it. The rest of such a
+/// line is what both versions say.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct InterLine {
+    pub text: String,
+    pub own: Option<(Vec<(usize, usize)>, bool)>,
+}
+
+impl From<&str> for InterLine {
+    fn from(text: &str) -> InterLine {
+        InterLine { text: text.into(), own: None }
+    }
+}
+
+/// What changed from `old` to `new`, a line at a time: their mails diffed,
+/// with three lines around each change. Their headers, and what follows
+/// the `---` before the diff, line by line. Their titles, then the bodies
+/// of their messages, each with the other's as the sync of the commit
+/// messages compares two messages (`messages::diff`): a section the same in
+/// both, though wrapped otherwise or ending its lines in other white space,
+/// is there once, as the new version writes it, unchanged; written
+/// otherwise, it is around a change of its own, though none of its lines
+/// is one. The sections that differ are the old version's lines taken out,
+/// then the new one's put in, each with its own line breaks, what only one
+/// has marked (`InterLine`). With the title and the body the same, the two
+/// mails diffed line by line.
+pub fn interdiff_lines(old: &Patch, new: &Patch) -> Vec<InterLine> {
+    inter(old, new).1
+}
+
+/// The interdiff of `old` and `new` (`interdiff_lines`): as text, and a
+/// line at a time.
+fn inter(old: &Patch, new: &Patch) -> (String, Vec<InterLine>) {
     let (a, b) = (render(old), render(new));
-    similar::TextDiff::from_lines(&a, &b)
-        .unified_diff()
-        .context_radius(3)
-        .header(&old.id[..8], &new.id[..8])
-        .to_string()
+    let names = (&old.id[..8], &new.id[..8]);
+    match (Mail::of(&a, old), Mail::of(&b, new)) {
+        (Some(x), Some(y)) if (x.title, x.body) != (y.title, y.body) => hunks(&mail_rows(&x, &y), names),
+        _ => {
+            let text = similar::TextDiff::from_lines(&a, &b).unified_diff().context_radius(3).header(names.0, names.1).to_string();
+            let lines = text.lines().map(InterLine::from).collect();
+            (text, lines)
+        }
+    }
+}
+
+/// A patch's mail (`render`) in its parts, each its lines with their
+/// newlines: its headers before the title; the title, its `Subject:`
+/// line; the empty line under it; the body of the message; the rest, from
+/// the `---` before the diff.
+struct Mail<'a> {
+    head: &'a str,
+    title: &'a str,
+    blank: &'a str,
+    body: &'a str,
+    rest: &'a str,
+}
+
+impl<'a> Mail<'a> {
+    /// `mail`, patch `p`'s, in its parts: none if it is not as `render`
+    /// writes it.
+    fn of(mail: &'a str, p: &Patch) -> Option<Mail<'a>> {
+        let starts: Vec<usize> = std::iter::once(0).chain(mail.match_indices('\n').map(|(i, _)| i + 1)).collect();
+        let start = |k: usize| starts.get(k).copied().unwrap_or(mail.len());
+        let line = |k: usize| &mail[start(k)..start(k + 1)];
+        let subject = mail.lines().position(|l| l.starts_with("Subject: "))?;
+        let sep = mail.lines().count().checked_sub(p.diff.lines().count() + 1)?;
+        (subject + 2 <= sep && line(subject + 1) == "\n" && line(sep) == "---\n").then(|| Mail {
+            head: &mail[..start(subject)],
+            title: line(subject),
+            blank: line(subject + 1),
+            body: &mail[start(subject + 2)..start(sep)],
+            rest: &mail[start(sep)..],
+        })
+    }
+}
+
+/// A line of an interdiff before its hunks are cut (`hunks`): its sign;
+/// the line, with its newline if it has one; how many lines of the old
+/// mail and of the new it stands for; whether it is a line the same in
+/// both as it is written, of those around a change that are cut to the
+/// three nearest; and what of it only its version has (`InterLine`).
+struct Row {
+    sign: char,
+    line: String,
+    old: usize,
+    new: usize,
+    kept: bool,
+    own: Option<(Vec<(usize, usize)>, bool)>,
+}
+
+/// The lines of the interdiff of mails `a` and `b`, before its hunks are
+/// cut: their headers line by line; their titles, then their bodies, as
+/// messages are compared; the empty line under the title, which both have;
+/// the rest line by line.
+fn mail_rows(a: &Mail, b: &Mail) -> Vec<Row> {
+    let mut rows = Vec::new();
+    by_line(&mut rows, a.head, b.head);
+    by_message(&mut rows, a.title, b.title);
+    rows.push(Row {
+        sign: ' ',
+        line: b.blank.into(),
+        old: 1,
+        new: 1,
+        kept: true,
+        own: None,
+    });
+    by_message(&mut rows, a.body, b.body);
+    by_line(&mut rows, a.rest, b.rest);
+    rows
+}
+
+/// Lines `a` of the old mail and `b` of the new, diffed line by line.
+fn by_line(rows: &mut Vec<Row>, a: &str, b: &str) {
+    for c in similar::TextDiff::from_lines(a, b).iter_all_changes() {
+        let (sign, old, new) = match c.tag() {
+            similar::ChangeTag::Equal => (' ', 1, 1),
+            similar::ChangeTag::Delete => ('-', 1, 0),
+            similar::ChangeTag::Insert => ('+', 0, 1),
+        };
+        rows.push(Row {
+            sign,
+            line: c.value().into(),
+            old,
+            new,
+            kept: sign == ' ',
+            own: None,
+        });
+    }
+}
+
+/// Lines `a` of the old mail and `b` of the new, a part of each one's
+/// message, compared as messages are (`messages::diff`): a run the same
+/// in both, the new one's lines, kept as they are when both write it so;
+/// a run that differs, the old one's lines taken out and the new one's
+/// put in, what only one has marked.
+fn by_message(rows: &mut Vec<Row>, a: &str, b: &str) {
+    let d = crate::messages::diff(a, b);
+    let (la, lb): (Vec<&str>, Vec<&str>) = (a.split_inclusive('\n').collect(), b.split_inclusive('\n').collect());
+    // What a line has that the other version has not, counted from its sign.
+    let own = |m: Option<&crate::messages::Marked>| {
+        Some(m.map_or((vec![], false), |m| (m.words.iter().map(|&(s, e)| (s + 1, e + 1)).collect(), m.broken)))
+    };
+    let row = |sign: char, line: &str, old: usize, new: usize, own: Option<(Vec<(usize, usize)>, bool)>| Row {
+        sign,
+        line: line.into(),
+        old,
+        new,
+        kept: false,
+        own,
+    };
+    for run in d.runs {
+        let (x, y) = (la.get(run.ours.clone()).unwrap_or_default(), lb.get(run.theirs.clone()).unwrap_or_default());
+        if run.same && x == y {
+            rows.extend(y.iter().map(|l| Row { kept: true, ..row(' ', l, 1, 1, None) }));
+        } else if run.same {
+            // Written otherwise: once, as the new version writes it.
+            rows.extend(y.iter().enumerate().map(|(k, l)| row(' ', l, if k == 0 { x.len() } else { 0 }, 1, None)));
+        } else {
+            rows.extend(run.ours.zip(x).map(|(i, l)| row('-', l, 1, 0, own(d.ours.get(i)))));
+            rows.extend(run.theirs.zip(y).map(|(j, l)| row('+', l, 0, 1, own(d.theirs.get(j)))));
+        }
+    }
+}
+
+/// `rows` as a unified diff, `names` the old mail's and the new one's: the
+/// lines kept as they are around each change cut to the three nearest, as
+/// `similar` cuts them, those of two changes further apart in two hunks.
+/// As text, and a line at a time.
+fn hunks(rows: &[Row], names: (&str, &str)) -> (String, Vec<InterLine>) {
+    const AROUND: usize = 3;
+    // Each run of lines kept as they are, and each other line.
+    let mut ops: Vec<(bool, Range<usize>)> = Vec::new();
+    for (i, r) in rows.iter().enumerate() {
+        match ops.last_mut() {
+            Some((true, run)) if r.kept => run.end = i + 1,
+            _ => ops.push((r.kept, i..i + 1)),
+        }
+    }
+    if let Some((true, run)) = ops.first_mut() {
+        run.start = run.end - run.len().min(AROUND);
+    }
+    if let Some((true, run)) = ops.last_mut() {
+        run.end = run.start + run.len().min(AROUND);
+    }
+    let mut groups: Vec<Vec<(bool, Range<usize>)>> = Vec::new();
+    let mut pending = Vec::new();
+    for (kept, run) in ops {
+        if kept && run.len() > 2 * AROUND {
+            pending.push((true, run.start..run.start + AROUND));
+            groups.push(std::mem::take(&mut pending));
+            pending.push((true, run.end - AROUND..run.end));
+            continue;
+        }
+        pending.push((kept, run));
+    }
+    if !matches!(&pending[..], [] | [(true, _)]) {
+        groups.push(pending);
+    }
+    // Where each row starts, in the old mail and in the new.
+    let (mut old, mut new) = (vec![0], vec![0]);
+    for r in rows {
+        old.push(old[old.len() - 1] + r.old);
+        new.push(new[new.len() - 1] + r.new);
+    }
+    // As a hunk's header has it: its first line, from 1, and how many.
+    let range = |from: usize, to: usize| match to - from {
+        0 => format!("{from},0"),
+        1 => format!("{}", from + 1),
+        n => format!("{},{n}", from + 1),
+    };
+    // A line written, ended with a newline.
+    fn put(out: &mut (String, Vec<InterLine>), text: String, own: Option<(Vec<(usize, usize)>, bool)>) {
+        out.0.push_str(&text);
+        out.0.push('\n');
+        out.1.push(InterLine { text, own });
+    }
+    let mut out = (String::new(), Vec::new());
+    for (k, g) in groups.iter().enumerate() {
+        let (from, to) = (g[0].1.start, g[g.len() - 1].1.end);
+        if k == 0 {
+            put(&mut out, format!("--- {}", names.0), None);
+            put(&mut out, format!("+++ {}", names.1), None);
+        }
+        put(&mut out, format!("@@ -{} +{} @@", range(old[from], old[to]), range(new[from], new[to])), None);
+        for r in &rows[from..to] {
+            let bare = r.line.strip_suffix('\n').unwrap_or(&r.line);
+            let bare = bare.strip_suffix('\r').unwrap_or(bare);
+            if r.line.ends_with(['\n', '\r']) {
+                // Written as it is, its own newline ending it.
+                out.0.push(r.sign);
+                out.0.push_str(&r.line);
+                out.1.push(InterLine {
+                    text: format!("{}{bare}", r.sign),
+                    own: r.own.clone(),
+                });
+            } else {
+                put(&mut out, format!("{}{bare}", r.sign), r.own.clone());
+                put(&mut out, "\\ No newline at end of file".into(), None);
+            }
+        }
+    }
+    out
 }
 
 /// A line of a patch's mail, as what it is of the patch: a line of its
@@ -1592,6 +1837,149 @@ mod tests {
 
     fn adds(line: &str) -> String {
         format!("diff --git a/f b/f\nindex 1..2 100644\n--- a/f\n+++ b/f\n@@ -0,0 +1 @@\n+{line}\n")
+    }
+
+    /// A patch of change `a` saying `message`, adding `line` to f.
+    fn saying(message: &str, line: &str) -> Patch {
+        Patch::new("a".into(), Some("T <t@x>".into()), None, message.into(), adds(line))
+    }
+
+    /// The lines of an interdiff, as written.
+    fn texts(lines: &[InterLine]) -> Vec<&str> {
+        lines.iter().map(|l| l.text.as_str()).collect()
+    }
+
+    /// What of `l` only its version has, as it reads.
+    fn own_said(l: &InterLine) -> Vec<String> {
+        let chars: Vec<char> = l.text.chars().collect();
+        l.own.iter().flat_map(|(w, _)| w.iter().map(|&(s, e)| chars[s..e].iter().collect())).collect()
+    }
+
+    const WRAPPED: &str = "Bug 1 - two\n\nThe parser reads the whole file\nbefore it checks the header.\n\nThat is all.\n";
+    const REWRAPPED: &str = "Bug 1 - two\n\nThe parser reads the whole\nfile before it checks\nthe header.  \n\nThat is all.\n";
+
+    #[test]
+    fn a_paragraph_only_wrapped_otherwise_is_no_line_taken_out_or_put_in() {
+        let (old, new) = (saying(WRAPPED, "x"), saying(REWRAPPED, "x"));
+        let lines = interdiff_lines(&old, &new);
+        // Once, as the new version writes it, among the lines around it,
+        // and none of them a change: the old version's two lines of the
+        // mail, the new one's three.
+        assert_eq!(
+            texts(&lines),
+            [
+                &format!("--- {}", &old.id[..8]),
+                &format!("+++ {}", &new.id[..8]),
+                "@@ -1,8 +1,9 @@",
+                " From: T <t@x>",
+                " Subject: Bug 1 - two",
+                " ",
+                " The parser reads the whole",
+                " file before it checks",
+                " the header.  ",
+                " ",
+                " That is all.",
+                " ---",
+            ]
+        );
+        assert!(lines.iter().all(|l| l.own.is_none()), "{lines:?}");
+        // As text, the same lines.
+        assert_eq!(interdiff(&old, &new).lines().collect::<Vec<_>>(), texts(&lines));
+        // Each where it is in the new version's mail.
+        let mail: Vec<String> = render(&new).lines().map(String::from).collect();
+        let body: Vec<&str> = texts(&lines)[2..].to_vec();
+        for (l, at) in body.iter().zip(interdiff_places(&body)).skip(1) {
+            assert_eq!(&l[1..], mail[at], "{body:?}");
+        }
+    }
+
+    #[test]
+    fn a_word_changed_in_a_paragraph_wrapped_otherwise_is_marked_alone() {
+        let (old, new) = (saying(WRAPPED, "x"), saying(&REWRAPPED.replace("whole", "entire"), "x"));
+        let lines = interdiff_lines(&old, &new);
+        let changed: Vec<&InterLine> = lines.iter().filter(|l| l.own.is_some()).collect();
+        // The old version's two lines taken out, the new one's three put in,
+        // each as it wraps them.
+        let said: Vec<&str> = changed.iter().map(|l| l.text.as_str()).collect();
+        assert_eq!(
+            said,
+            ["-The parser reads the whole file", "-before it checks the header.", "+The parser reads the entire", "+file before it checks", "+the header.  "]
+        );
+        // What only one has: the word, nothing else.
+        let own: Vec<Vec<String>> = changed.iter().map(|l| own_said(l)).collect();
+        assert_eq!(own, [vec!["whole".to_string()], vec![], vec!["entire".to_string()], vec![], vec![]]);
+        // The title and the last paragraph, the same: no line of them taken
+        // out or put in.
+        assert!(texts(&lines).contains(&" Subject: Bug 1 - two") && texts(&lines).contains(&" That is all."), "{lines:?}");
+    }
+
+    #[test]
+    fn a_command_wrapped_otherwise_is_taken_out_and_put_in() {
+        let one = "Bug 1 - build\n\nBuild it so:\n\n$ ./mach build --foo\n";
+        let (old, new) = (saying(one, "x"), saying(&one.replace("build --foo", "build\n  --foo"), "x"));
+        let lines = interdiff_lines(&old, &new);
+        let changed: Vec<(&str, Vec<String>, bool)> =
+            lines.iter().filter_map(|l| l.own.as_ref().map(|(_, broken)| (l.text.as_str(), own_said(l), *broken))).collect();
+        // The space before `--foo` in the one; the end of the line, marked,
+        // and the indent, in the other.
+        assert_eq!(
+            changed,
+            [
+                ("-$ ./mach build --foo", vec![" ".to_string()], false),
+                ("+$ ./mach build", vec![], true),
+                ("+  --foo", vec!["  ".to_string()], false)
+            ]
+        );
+        // The prose over it, the same.
+        assert!(texts(&lines).contains(&" Build it so:"), "{lines:?}");
+    }
+
+    #[test]
+    fn the_diff_after_the_message_is_diffed_line_by_line_as_ever() {
+        // The message and the diff changed: the diff's lines, from the
+        // `---` on, as the mails diffed line by line have them.
+        let before = |p: &Patch, q: &Patch| {
+            let text = similar::TextDiff::from_lines(&render(p), &render(q)).unified_diff().context_radius(3).to_string();
+            text.lines().skip_while(|l| *l != " ---").map(String::from).collect::<Vec<_>>()
+        };
+        let (old, new) = (saying(WRAPPED, "the parser"), saying(&REWRAPPED.replace("whole", "entire"), "the new parser"));
+        let lines = interdiff_lines(&old, &new);
+        let after: Vec<String> = lines.iter().map(|l| l.text.clone()).skip_while(|l| l != " ---").collect();
+        assert_eq!(after, before(&old, &new));
+        assert!(after.contains(&"-+the parser".to_string()) && after.contains(&"++the new parser".to_string()), "{after:?}");
+        // Nothing of them marked as the message's lines are: their words
+        // are paired as a diff's (`rows::word_spans`).
+        assert!(lines.iter().skip_while(|l| l.text != " ---").all(|l| l.own.is_none()));
+        // With no line of the diff near the message, its hunks of its own.
+        let far = |n: usize| (1..=n).map(|k| format!("+line {k}\n")).collect::<String>();
+        let long = |message: &str, last: &str| {
+            let diff = format!("diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -0,0 +1,21 @@\n{}+{last}\n", far(20));
+            Patch::new("a".into(), None, None, message.into(), diff)
+        };
+        let (old, new) = (long(WRAPPED, "end"), long(&WRAPPED.replace("whole", "entire"), "END"));
+        let text = interdiff(&old, &new);
+        let hunks: Vec<&str> = text.lines().filter(|l| l.starts_with("@@")).collect();
+        assert_eq!(hunks, ["@@ -1,7 +1,7 @@", "@@ -29,4 +29,4 @@"], "{text}");
+        assert!(text.contains("\n-+end\n++END\n"), "{text}");
+    }
+
+    #[test]
+    fn without_a_change_to_the_title_or_the_body_the_mails_are_diffed_as_ever() {
+        let whole = |p: &Patch, q: &Patch| {
+            similar::TextDiff::from_lines(&render(p), &render(q)).unified_diff().context_radius(3).header(&p.id[..8], &q.id[..8]).to_string()
+        };
+        // Its diff changed, its author too, its message not.
+        let (old, new) = (saying(WRAPPED, "x"), saying(WRAPPED, "y"));
+        let other = Patch::new("a".into(), Some("U <u@x>".into()), None, WRAPPED.into(), adds("y"));
+        for (p, q) in [(&old, &new), (&old, &other)] {
+            assert_eq!(interdiff(p, q), whole(p, q));
+            let lines = interdiff_lines(p, q);
+            assert_eq!(texts(&lines), whole(p, q).lines().collect::<Vec<_>>());
+            assert!(lines.iter().all(|l| l.own.is_none()));
+        }
+        // A message that only gains empty lines at its ends: its mail the same.
+        let spaced = saying(&format!("{}\n\n", WRAPPED.replacen("\n\n", "\n\n\n", 1)), "y");
+        assert_eq!(interdiff(&old, &spaced), whole(&old, &spaced));
     }
 
     /// A diff of two files: f, `d` added in a hunk at line `start`, under

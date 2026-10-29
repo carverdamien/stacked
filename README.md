@@ -631,7 +631,9 @@ those:
   the lines of an interdiff, what changed from one version of a patch to the
   next (`Versions…`), and of the stack diffs (`History…`, the edits' `What
   this edit changed…`, the review of the agent's work), paired by their
-  first sign. Made
+  first sign; but not the lines of the message in them, its title and its
+  body, which are compared as the sync of the commit messages compares two
+  messages (History, below). Made
   shorter than the cursor's line, the screen keeps the cursor's line in
   sight, on its last line, in every view.
 - Unified split in two shows the patch picked twice, side by side, each
@@ -1656,10 +1658,13 @@ operations of the change (a line for each patch: `noop`, `add`, `modify`,
 when it is rebased), the comments it opened, and its replies. On the right
 is the part the cursor is on, as it would be:
 the stack diff of the change, from the stack as it is, each new version's
-interdiff under it; or the comment where it would be, the reply as the
-last turn of its thread. → goes into it to scroll, → again makes it wide,
-the list out of sight, and ← narrows it, then comes back to the list (too
-narrow for both side by side, → shows it wide at once). On the stack
+interdiff under it, its message compared as the sync of the commit
+messages compares two (History, below), so that a paragraph the work only
+wraps otherwise is no change, nor a line to read again; or the comment
+where it would be, the reply as the last turn of its thread. → goes into
+it to scroll, → again makes it wide, the list out of sight, and ← narrows
+it, then comes back to the list (too narrow for both side by side, →
+shows it wide at once). On the stack
 operations, → goes into the stack diff, the cursor on the first line that
 changed of the patch the cursor was on: ↑↓ move it from line to line, and
 Enter on a line of a patch, or of what changed in it, shows that patch as
@@ -1817,7 +1822,14 @@ paragraph at a time, its lines between empty ones, its title a paragraph of
 its own; Space on a line of it marks its paragraph, once more the whole
 message, as Space on its header does; Delete takes back the latest mark
 there. Its empty lines need no reading, as a changed line of white space
-does not. A line of it reworded in a new version is to read again.
+does not. A line of it reworded in a new version is to read again; a
+paragraph that a new version only wraps otherwise, or whose lines end in
+other white space, is read as it was, as its interdiff shows it the same
+(History, below). For that, a mark holding every line of a section of the
+message, as the sync of the commit messages cuts a message into sections,
+holds the section too, by what it says however it is wrapped: each
+version of the patch that has the section has it read, and Delete on a
+line of it there takes that mark back.
 
 With the `moz-phab` feature (on by default), the trailer moz-phab writes to
 name the patch's revision needs no reading either, as an empty line needs
@@ -1953,6 +1965,27 @@ every comment and every run; the editor shows them where they belong:
               }
     2   Bug 2 - a readme
   ```
+
+  What changed in a new version's mail, its interdiff, is the two mails
+  diffed, with three lines around each change. Their headers, and their
+  diffs after the `---`, are diffed line by line, a line almost the same as
+  the one it took the place of showing what changed in it as words. Their
+  titles, then the bodies of their messages, are compared as the sync of
+  the commit messages compares two messages (The editor, above). A section
+  the same in both, a paragraph only wrapped otherwise or ending its lines
+  in other white space, is there once, as the new version writes it, among
+  the lines left as they were: none of its lines is a change. A section
+  that differs is the old version's lines taken out, then the new one's put
+  in, each version with its own line breaks: what only one of them has is
+  in the colours of `removed_word` and `added_word`, the words both have
+  are drawn as any text, each line's sign is in the colour of its line,
+  and a break only one has is marked as the sync marks it, `↵` at the end
+  of a line of code, `¶` on an empty line. Code is compared line by line,
+  so that a command split over two lines in one version and on one line in
+  the other is a change. With the title and the body the same, the mails
+  are diffed line by line. The interdiffs of the review of the agent's
+  work, of `What this edit changed…`, of `Versions of this patch…` and of
+  `stacked interdiff` are made the same way.
 - `Versions of this patch…`, on a patch: every version, oldest first, each
   with the edit that first had it; beside it what changed from the version
   before, or the version whole. `Put this version back in the stack` is an
@@ -2477,14 +2510,19 @@ sent to Phabricator, at https://phabricator.services.mozilla.com, as a new
 revision, with the status Changes Planned.`), with its title and its
 parent. For a revision there already, a screen of its own shows what
 replaces what, for your review: what is sent and where; then, of what
-changes, the title and summary, Phabricator's then what is sent, line by
-line; the parent and the bug, before then after, and the status; and the
+changes, the title and summary, Phabricator's then what is sent, compared
+as the sync of the commit messages compares two messages (a paragraph
+only wrapped otherwise once, as it is sent; a section that differs,
+Phabricator's lines then those sent, what only one has in the colours for
+words); the parent and the bug, before then after, and the status; and the
 code, each file as the latest diff leaves it, then as the patch does, both
 on the patches below it, a file that only one of them touches too. When
 the code is the patch's already, the screen says so at its top. ↑↓ (pgup
 pgdn home end) scroll, and 1 shows the code side by side, or unified
-again. Enter, or `Send it to Phabricator` in its menu,
-sends it; Esc, or `Cancel: send nothing`, sends nothing. Before anything
+again, the lines of the title and summary that differ side by side too,
+Phabricator's on the left, coloured the same way. Enter, or `Send it to
+Phabricator` in its menu, sends it; Esc, or `Cancel: send nothing`,
+sends nothing. Before anything
 is sent, the revision is read again: if its latest diff, its status, its
 title, summary or bug, or its parents changed meanwhile, nothing is (`D123
 changed on Phabricator since you reviewed it, so nothing was sent. Submit
@@ -2558,7 +2596,8 @@ is typed: `import.rs`). A fix to one may belong in the other.
 - `db.rs`: the file, its records and its lock.
 - `check.rs`: whether patches apply, before they go in; the files as a
   patch leaves them.
-- `ops.rs`: edits to a stack, `$EDITOR` (the patch as mail, its code), apply.
+- `ops.rs`: edits to a stack, `$EDITOR` (the patch as mail, its code), apply;
+  the interdiff of two versions of a patch.
 - `git.rs`: what stacked asks of git: mail from a range, the stack's
   worktrees and the agents', a checkout to edit a patch in.
 - `ask.rs`, `claude.rs`: asking the agent about comments, from the queue to
@@ -2568,7 +2607,9 @@ is typed: `import.rs`). A fix to one may belong in the other.
 - `head.rs`: where HEAD of your checkout is against a stack, HEAD moved
   along it, and the sync of the commit messages, both sides at once.
 - `messages.rs`: two versions of a commit message compared word by word,
-  where their lines wrap aside, for the sync to colour.
+  where their lines wrap aside, for the sync to colour; and so as a diff
+  of their lines, for the interdiffs and the submit's review; and what
+  each section of a message says, for the reading marks to hold.
 - `review.rs`, `phab.rs`, `submit.rs`: Phabricator, built with the
   `moz-phab` feature (on by default): the reviews pulled, the stacks
   imported, a patch submitted as work in progress.
@@ -2705,7 +2746,9 @@ or to what reads it, as `STACKED_TEST_CHECKPOINTS=1 cargo test`.
 through `git am`, a stack imported again (a patch whose lines a new
 version of a patch below moved keeping its own version, and its diff as
 stored; a patch whose hunk moved to another copy of its lines a new
-version), the tree, recovery from broken lines, comments on the
+version), `stacked interdiff` of a patch reworded from the list that only
+wraps a paragraph otherwise (the paragraph as the new version wraps it,
+no line taken out or put in), the tree, recovery from broken lines, comments on the
 stack, a patch and a line, every way of asking about them (a script stands
 in for the agent and rewrites commits with git, with a plain `git rebase
 -i` that takes the plan written to the todo file the prompt names, and
@@ -2852,6 +2895,18 @@ a word last in its line, and the words keeping their own colours under the
 cursor, in the code and in the history's stack diff, the rest of their line
 in the cursor's (`paint.rs` tests the colours for words so: whatever they
 become, they must look otherwise than their line's, and than the cursor's),
+the message in an interdiff compared as the sync of the commit messages
+compares two (the words put in its title as words, the words it keeps as
+any text, its sign as its line's; in the review of the agent's work, a
+paragraph the work only wraps otherwise no change, the cursor on the
+first line of code that changed, and a comment written from a line of it
+there on that line of the new version; accepted, its lines read as they
+were, Delete there taking back the mark that read them and Space reading
+them anew, and the history changing no line of it; a word changed in a
+paragraph wrapped otherwise the one word coloured in each; a command
+wrapped otherwise a change, its break marked; the diff after the message
+painted as words as ever), the submit's review comparing the title and
+summary so, side by side too,
 the cursor looking the same on every line, as `cursor` paints it, whatever
 the line's own colours (a line added, a line removed, a hunk's header, a
 file's name, each line of a comment, a line read, the patch picked in its
@@ -3084,12 +3139,21 @@ the author git gave back of its patch's has them as stored, from its
 commit as it was or made again, its code changed (the title git gave
 back finding its patch) or nothing to check on, while one whose message
 changed otherwise, if only in its white space, or with another author,
-is a new version with the draft's message or author; those
+is a new version with the draft's message or author; and they show the
+interdiff of two versions: a paragraph only wrapped otherwise no line
+taken out or put in, there once as the new version wraps it, each line
+where it is in the new mail, a word changed in it the one word marked,
+each version's lines taken out and put in, a command wrapped otherwise a
+change, its break marked, the diff after the `---` the same lines as the
+mails diffed line by line, its hunks of its own when far from the
+message, and with the title and the body the same, the mails diffed line
+by line as they were; those
 in `history.rs`, what the history leaves out (comments, runs, a move to
 where the stack is, a branch put straight back), how a stack diff follows
 each patch by its change, a move told from a shift, and a new version
 reworded when its message alone changed, its hunk moved under another
-heading. Those in
+heading, one that only wraps its message otherwise changing no line of
+it and one changing a word marking that word alone. Those in
 `setup.rs` show the setup screen's one list, a read-only box and a change
 box a row, what stacked always gives marked in its columns, Space ticking
 the box of the cursor's column, ←→ and Tab moving between them, a click
@@ -3129,7 +3193,10 @@ the settings say white space needs review, which lines are that trailer
 (its link to any host) and which are not (a line that says more, a link
 that ends otherwise, no link, the line in the title's paragraph or in the
 middle of the message), that a line of the diff saying the same is a line
-to review, and that without moz-phab the trailer is a line to review;
+to review, that without moz-phab the trailer is a line to review, and that
+a paragraph a new version only wraps otherwise is read as it was, once a
+mark holds its section, its lines to read again once a word of it
+changes, and a mark that holds no section's key holding its lines alone;
 those in `reading.rs`, Space and Delete on that trailer marking and
 unmarking the message as on an empty line, the next line to read found
 past the trailer, and the trailer drawn as a line that needs nothing, or
@@ -3153,7 +3220,13 @@ prose over it is, a fenced block one section of code, its empty lines and
 all, a line of code (indented, after a tab, a prompt) making its whole
 paragraph code, the white space within a line of code counting, its
 indent too, and a section of code in one version and prose in the other
-not the same; those in `head.rs`, which messages differ by the revision
+not the same; and the two as a diff of their lines: a paragraph wrapped
+otherwise a run the same in both, each with its own lines; one with a
+word changed a run that differs, the word alone marked; a paragraph split,
+one put in or taken out, a command wrapped otherwise, runs that differ;
+empty lines before every section or after the same as the other's there;
+and what a section says the same however it wraps, code line by line;
+those in `head.rs`, which messages differ by the revision
 alone and which have nothing to pick, where a trailer is added, the
 message kept as picked (the other's revision taken when it names none, of
 two the other's dropped, of one naming none the one that names it,

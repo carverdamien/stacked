@@ -314,7 +314,7 @@ impl App {
             }
             v.goes.push(under.map(|e| (e, None)));
             v.code.push(code);
-            v.changed.push(matches!(d, Diffed::Code(l) if l.starts_with('+') || l.starts_with('-')));
+            v.changed.push(matches!(d, Diffed::Code(l) if l.text.starts_with('+') || l.text.starts_with('-')));
         }
         // Each interdiff's lines: where each is in its patch's mail.
         let mut k = 0;
@@ -327,7 +327,7 @@ impl App {
                 k += 1;
                 continue;
             }
-            let code: Vec<&str> = diff[start..k].iter().map(|d| if let Diffed::Code(l) = d { l.as_str() } else { "" }).collect();
+            let code: Vec<&str> = diff[start..k].iter().map(|d| if let Diffed::Code(l) = d { l.text.as_str() } else { "" }).collect();
             for (j, at) in crate::ops::interdiff_places(&code).into_iter().enumerate() {
                 if let Some((e, _)) = v.goes[start + j] {
                     v.goes[start + j] = Some((e, Some(at)));

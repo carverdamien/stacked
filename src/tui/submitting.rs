@@ -112,6 +112,22 @@ fn diff_rows(rows: &mut Vec<Row>, line: &str, words: &[(usize, usize)], w: usize
     }
 }
 
+/// A line of the title and summary, `l`, compared with the other
+/// version's (`messages::diff`), after its sign, as rows folded to `w`:
+/// what only its version has marked on each piece, as the sync of the
+/// commit messages marks it, and a break only it has on the last.
+fn compared_rows(rows: &mut Vec<Row>, sign: char, l: &crate::messages::Marked, w: usize) {
+    let words: Vec<(usize, usize)> = l.words.iter().map(|&(s, e)| (s + 1, e + 1)).collect();
+    let from = rows.len();
+    diff_rows(rows, &format!("{sign}{}", l.text), &words, w);
+    for r in &mut rows[from..] {
+        r.compared = true;
+    }
+    if let Some(r) = rows.last_mut() {
+        r.broken = l.broken;
+    }
+}
+
 /// The rows of the review of `p`, folded to `w`: what is sent and where,
 /// said, and that the code does not change when it does not; then only
 /// what changes: the title and summary, Phabricator's then what is sent;
@@ -127,27 +143,28 @@ fn review_rows(p: &Prepared, w: usize) -> Vec<Row> {
     for s in p.said() {
         said_rows(&mut rows, Kind::Meta, &s, w);
     }
-    // The title and summary, line by line.
+    // The title and summary, as the sync of the commit messages compares
+    // two messages: a section the same in both once, as it is sent; one
+    // that differs, Phabricator's lines then those sent.
     let before = p.message_before().unwrap_or_default();
     let after = p.message_after();
     if before != after {
         rows.push(row(Kind::Blank, ""));
         rows.push(row(Kind::File, "the title and summary: Phabricator's, then what is sent"));
-        let d = similar::TextDiff::from_lines(before.as_str(), after.as_str());
-        let lines: Vec<String> = d
-            .iter_all_changes()
-            .map(|c| {
-                let sign = match c.tag() {
-                    similar::ChangeTag::Delete => '-',
-                    similar::ChangeTag::Insert => '+',
-                    similar::ChangeTag::Equal => ' ',
-                };
-                format!("{sign}{}", c.value().trim_end_matches('\n'))
-            })
-            .collect();
-        let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
-        for (l, words) in lines.iter().zip(crate::rows::word_spans(&refs)) {
-            diff_rows(&mut rows, l, &words, w);
+        let d = crate::messages::diff(&before, &after);
+        for run in &d.runs {
+            let (was, is) = (d.ours.get(run.ours.clone()).unwrap_or_default(), d.theirs.get(run.theirs.clone()).unwrap_or_default());
+            if run.same {
+                for l in is {
+                    diff_rows(&mut rows, &format!(" {}", l.text), &[], w);
+                }
+                continue;
+            }
+            for (sign, lines) in [('-', was), ('+', is)] {
+                for l in lines {
+                    compared_rows(&mut rows, sign, l, w);
+                }
+            }
         }
     }
     // What else changes, before then after; the status, always.

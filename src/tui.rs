@@ -78,6 +78,22 @@ fn by_style(by: Option<&By>) -> Style {
 /// keeps its own.
 pub(crate) fn row_parts(row: &Row, selected: bool) -> Vec<(String, Style)> {
     let st = row_style(row);
+    // A line of a message compared with the other version's: as the sync
+    // of the commit messages draws it, its lead (its sign, or `↪` on a
+    // piece after the first) in the line's colour; under the cursor, all
+    // but what only its version has in the cursor's colours.
+    if row.compared && matches!(row.kind, Kind::Add | Kind::Del) {
+        let word = if row.kind == Kind::Add { color::add_word() } else { color::del_word() };
+        let mut rest = row.text.chars();
+        let lead: String = rest.next().into_iter().collect();
+        let words: Vec<(usize, usize)> = row.words.iter().map(|&(s, e)| (s.saturating_sub(1), e.saturating_sub(1))).collect();
+        let mut parts = vec![(lead, st)];
+        parts.extend(marked_parts(rest.as_str(), &words, row.broken, word));
+        return match selected {
+            true => parts.into_iter().map(|(t, s)| (t, if s == word { s } else { on_cursor(s) })).collect(),
+            false => parts,
+        };
+    }
     // A line almost the same as the one paired with it: what changed in
     // its own colour, for words, dim as the line is; under the cursor, in
     // its own colour still, to stand out of the cursor's.
@@ -222,6 +238,48 @@ fn diff_line_parts(line: &str, words: &[(usize, usize)]) -> Parts {
     split_words(line, words, diff_style(line), word)
 }
 
+/// A line of a message, `text`, as compared with the other version
+/// (`messages::compare`): what of it the other has not, `words`, in
+/// `word`, the rest as any text; a break only it has, `broken`, marked in
+/// `word` too, `↵` at the end of its line, `¶` on an empty line. As the
+/// sync of the commit messages draws two messages, and an interdiff its
+/// lines of the message.
+fn marked_parts(text: &str, words: &[(usize, usize)], broken: bool, word: Style) -> Parts {
+    let mut parts = split_words(text, words, Style::new(), word);
+    if broken {
+        parts.push((if text.trim().is_empty() { "¶" } else { "↵" }.to_string(), word));
+        parts.push((String::new(), Style::new()));
+    }
+    parts
+}
+
+/// The lines of an interdiff as parts. A line of the message taken out or
+/// put in (`InterLine::own`), as the sync of the commit messages draws a
+/// message (`marked_parts`), its sign in its line's colour. Any other line
+/// coloured as a diff's, what changed in a line almost the same as the one
+/// paired with it in the colour for words (`rows::word_spans`): the lines
+/// of the message are paired with none.
+fn inter_parts(lines: &[&ops::InterLine]) -> Vec<Parts> {
+    let texts: Vec<&str> = lines.iter().map(|l| if l.own.is_some() { " " } else { l.text.as_str() }).collect();
+    lines
+        .iter()
+        .zip(crate::rows::word_spans(&texts))
+        .map(|(l, words)| match &l.own {
+            Some((own, broken)) => {
+                let added = l.text.starts_with('+');
+                let (line, word) = if added { (color::add(), color::add_word()) } else { (color::del(), color::del_word()) };
+                let mut rest = l.text.chars();
+                let sign: String = rest.next().into_iter().collect();
+                let own: Vec<(usize, usize)> = own.iter().map(|&(s, e)| (s.saturating_sub(1), e.saturating_sub(1))).collect();
+                let mut parts = vec![(sign, line)];
+                parts.extend(marked_parts(rest.as_str(), &own, *broken, word));
+                parts
+            }
+            None => diff_line_parts(&l.text, &words),
+        })
+        .collect()
+}
+
 /// A line of an interdiff or a mail, coloured as a diff's.
 fn diff_style(line: &str) -> Style {
     match line.chars().next() {
@@ -246,22 +304,21 @@ fn diff_lines(diff: &[Diffed]) -> Vec<(String, Style)> {
                 Diffed::Patch { was: Some(_), .. } => Style::new(),
                 Diffed::Patch { .. } => color::dim(),
                 Diffed::Dropped { .. } => color::del(),
-                Diffed::Code(l) => diff_style(l),
+                Diffed::Code(l) => diff_style(&l.text),
             };
             (format!(" {}", d.text()), st)
         })
         .collect()
 }
 
-/// A stack diff's lines as parts, coloured as `diff_lines` colours them; in
-/// the interdiffs under its patches, what changed in a line almost the same
-/// as the one paired with it, in the colour for words.
+/// A stack diff's lines as parts, coloured as `diff_lines` colours them;
+/// the interdiffs under its patches as `inter_parts` draws them.
 fn diff_parts(diff: &[Diffed]) -> Vec<Parts> {
     let lines = diff_lines(diff);
     let mut out: Vec<Parts> = lines.iter().map(|(t, st)| vec![(t.clone(), *st)]).collect();
-    // An interdiff's lines, one run of them at a time: drawn as ` ` and
-    // `Diffed::text`'s indent, then the line.
-    let shift = 1 + Diffed::Code(String::new()).text().chars().count();
+    // An interdiff's lines, one run of them at a time: drawn after ` ` and
+    // `Diffed::text`'s indent.
+    let indent = format!(" {}", Diffed::Code(Default::default()).text());
     let mut k = 0;
     while k < diff.len() {
         let start = k;
@@ -272,12 +329,12 @@ fn diff_parts(diff: &[Diffed]) -> Vec<Parts> {
             k += 1;
             continue;
         }
-        let code: Vec<&str> = diff[start..k].iter().map(|d| if let Diffed::Code(l) = d { l.as_str() } else { "" }).collect();
-        for (j, words) in crate::rows::word_spans(&code).into_iter().enumerate().filter(|(_, w)| !w.is_empty()) {
-            let (text, st) = &lines[start + j];
-            let word = if code[j].starts_with('+') { color::add_word() } else { color::del_word() };
-            let words: Vec<(usize, usize)> = words.iter().map(|&(s, e)| (s + shift, e + shift)).collect();
-            out[start + j] = split_words(text, &words, *st, word);
+        let code: Vec<&ops::InterLine> = diff[start..k].iter().filter_map(|d| if let Diffed::Code(l) = d { Some(l) } else { None }).collect();
+        for (j, mut parts) in inter_parts(&code).into_iter().enumerate() {
+            if let Some((text, _)) = parts.first_mut() {
+                text.insert_str(0, &indent);
+            }
+            out[start + j] = parts;
         }
     }
     out
@@ -2822,6 +2879,13 @@ impl App {
         self.current()?.patches.get(self.sel).cloned()
     }
 
+    /// The patch the middle pane is on, when it is on a patch rather than
+    /// on the stack.
+    fn shown_patch(&self) -> Option<&Patch> {
+        let id = self.patch_id().filter(|_| !self.on_stack)?;
+        Some(self.db.patch(&id))
+    }
+
     fn patch_count(&self) -> usize {
         self.current().map_or(0, |s| s.patches.len())
     }
@@ -3020,7 +3084,7 @@ impl App {
         let refs: Vec<&Note> = notes.iter().collect();
         let mut deco = self.deco(&notes);
         if self.reading && !self.on_stack {
-            deco.read = self.subject_change().map(|c| self.db.read_keys(&c));
+            deco.read = self.shown_patch().map(|p| crate::progress::read_keys(&self.db, p));
             deco.whitespace = self.cfg.view.whitespace_needs_review;
         }
         // Built otherwise than last, each file whole or not, for another
@@ -4624,9 +4688,10 @@ impl App {
     #[allow(clippy::type_complexity)]
     fn reading_at(&self) -> Option<(Option<Block>, Option<(usize, HashSet<String>)>)> {
         let blocks = self.finder.peek(&self.blocks_key()?)?;
-        let change = self.subject_change()?;
-        let read = self.db.read_keys(&change);
-        let marks = self.db.marks(&change);
+        let p = self.shown_patch()?;
+        let read = crate::progress::read_keys(&self.db, p);
+        let marks = crate::progress::marks(&self.db, p);
+        let marks: Vec<(usize, &crate::db::Mark)> = marks.iter().map(|(rev, m)| (*rev, m)).collect();
         let r = Reading {
             rows: &self.rows,
             blocks: &blocks,
@@ -4651,7 +4716,7 @@ impl App {
         let at = self.cursor;
         let next = |app: &App| {
             let blocks = app.finder.peek(&app.blocks_key()?)?;
-            let read = app.db.read_keys(&change);
+            let read = crate::progress::read_keys(&app.db, app.shown_patch()?);
             let r = Reading {
                 rows: &app.rows,
                 blocks: &blocks,
@@ -4664,7 +4729,12 @@ impl App {
         match self.reading_at().and_then(|(mark, _)| mark) {
             Some(t) => {
                 let n = t.new.len();
-                let keys: Vec<String> = t.keys.into_iter().collect();
+                let mut keys: Vec<String> = t.keys.into_iter().collect();
+                // The sections of the message it holds all of: read so in
+                // any version that has them.
+                if let Some(p) = self.shown_patch() {
+                    keys = crate::progress::with_sections(p, keys);
+                }
                 if self.edit(|db| db.mark_read(&change, keys)).is_none() {
                     return;
                 }
@@ -4762,7 +4832,7 @@ impl App {
     fn read_of(&mut self, id: &str) -> (usize, usize) {
         let whitespace = self.cfg.view.whitespace_needs_review;
         let lines = self.changed_lines(id);
-        let read = self.db.read_keys(&self.db.patch(id).change.clone());
+        let read = crate::progress::read_keys(&self.db, self.db.patch(id));
         let keys: Vec<&String> = lines.iter().filter(|(_, blank)| whitespace || !blank).map(|(k, _)| k).collect();
         (keys.iter().filter(|k| read.contains(**k)).count(), keys.len())
     }
@@ -10349,9 +10419,9 @@ impl App {
         let (w, h) = (area.width as usize, area.height as usize);
         let list = self.versions_list();
         let Some((p, first)) = list.get(self.pick) else { return };
-        let text = match (self.whole, self.pick.checked_sub(1).and_then(|i| list.get(i))) {
-            (false, Some((before, _))) => ops::interdiff(before, p),
-            _ => ops::render(p),
+        let lines = match (self.whole, self.pick.checked_sub(1).and_then(|i| list.get(i))) {
+            (false, Some((before, _))) => ops::interdiff_lines(before, p),
+            _ => ops::render(p).lines().map(ops::InterLine::from).collect(),
         };
         let say = if self.whole || self.pick == 0 { "the version whole" } else { "what changed from the version before" };
         let made = first
@@ -10359,10 +10429,9 @@ impl App {
             .map_or("never in the stack".to_string(), |(r, s)| format!("@{r} {} · {}", local_time(s.time), s.op));
         let here = if self.current().is_some_and(|s| s.patches.contains(&p.id)) { ", in the stack" } else { "" };
         put(buf, area, 0, 0, w, &fit(&format!(" v{}{here} · {say} · {made}", self.pick + 1), w), color::file());
-        let lines: Vec<&str> = text.lines().collect();
-        let words = crate::rows::word_spans(&lines);
-        for (y, (l, words)) in lines.iter().zip(&words).take(h.saturating_sub(1)).enumerate() {
-            put_parts(buf, area, 0, y + 1, w, &diff_line_parts(l, words));
+        let lines: Vec<&ops::InterLine> = lines.iter().collect();
+        for (y, parts) in inter_parts(&lines).iter().take(h.saturating_sub(1)).enumerate() {
+            put_parts(buf, area, 0, y + 1, w, parts);
         }
     }
 

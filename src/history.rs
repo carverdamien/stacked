@@ -196,8 +196,8 @@ pub enum Diffed {
     /// Patch `was` (from 1) of the stack before, not in the one after.
     Dropped { was: usize, title: String },
     /// A line of what changed in the new version above it: its mail and
-    /// the one before it, diffed.
-    Code(String),
+    /// the one before it, diffed (`ops::interdiff_lines`).
+    Code(crate::ops::InterLine),
 }
 
 impl Diffed {
@@ -232,7 +232,7 @@ impl Diffed {
                 format!("{at:>2} {mark} {title}{was}")
             }
             Diffed::Dropped { was, title } => format!("   − {title}, was {was}"),
-            Diffed::Code(l) => format!("     {l}"),
+            Diffed::Code(l) => format!("     {}", l.text),
         }
     }
 
@@ -338,11 +338,11 @@ fn put(out: &mut Vec<Diffed>, j: usize, p: &Patch, old: Option<&Patch>, was: Opt
         was: was.map(|i| i + 1),
     });
     if let (true, true, Some(o)) = (code, changed, old) {
-        let text = crate::ops::interdiff(o, p);
         out.extend(
-            text.lines()
-                .skip_while(|l| l.starts_with("--- ") || l.starts_with("+++ "))
-                .map(|l| Diffed::Code(l.to_string())),
+            crate::ops::interdiff_lines(o, p)
+                .into_iter()
+                .skip_while(|l| l.text.starts_with("--- ") || l.text.starts_with("+++ "))
+                .map(Diffed::Code),
         );
     }
 }
@@ -525,6 +525,50 @@ mod tests {
         };
         let diff = stacks_diff(&d, Some(&s(&a1)), Some(&s(&a2)), false);
         assert!(matches!(diff[..], [Diffed::Patch { changed: true, reworded: true, .. }]), "{diff:?}");
+    }
+
+    #[test]
+    fn a_new_version_that_only_wraps_its_message_otherwise_changes_no_line_of_it() {
+        let wrapped = "A\n\nThe parser reads the whole file\nbefore it checks the header.";
+        let a1 = Patch::new("a".into(), None, None, wrapped.into(), patch("a", "A", "a1").diff);
+        let a2 = Patch::new("a".into(), None, None, wrapped.replace("whole file\n", "whole\nfile ").replace("checks the", "checks\nthe"), a1.diff.clone());
+        let d = db(vec![Record::Patch(a1.clone()), Record::Patch(a2.clone())]);
+        let s = |p: &Patch| Stack {
+            name: "s".into(),
+            patches: vec![p.id.clone()],
+            base: None,
+            repo: None,
+            parent: None,
+            op: String::new(),
+            time: 0,
+        };
+        let diff = stacks_diff(&d, Some(&s(&a1)), Some(&s(&a2)), true);
+        assert!(matches!(diff[0], Diffed::Patch { changed: true, reworded: true, .. }), "{diff:?}");
+        // Under it, the paragraph as the new version wraps it, and no line
+        // taken out or put in.
+        let code: Vec<&str> = diff.iter().filter_map(|l| if let Diffed::Code(l) = l { Some(l.text.as_str()) } else { None }).collect();
+        assert!(code.contains(&" The parser reads the whole") && code.contains(&" the header."), "{code:?}");
+        assert!(!code.iter().any(|l| l.starts_with('-') || l.starts_with('+')), "{code:?}");
+        // A word changed in it: the paragraph's lines, each version's, taken
+        // out and put in, the word alone marked.
+        let a3 = Patch::new("a".into(), None, None, a2.message.replace("whole", "entire"), a1.diff.clone());
+        let d = db(vec![Record::Patch(a2.clone()), Record::Patch(a3.clone())]);
+        let diff = stacks_diff(&d, Some(&s(&a2)), Some(&s(&a3)), true);
+        let own: Vec<(&str, Vec<(usize, usize)>)> =
+            diff.iter().filter_map(|l| if let Diffed::Code(l) = l { Some((l.text.as_str(), l.own.clone()?.0)) } else { None }).collect();
+        assert_eq!(
+            own,
+            [
+                ("-The parser reads the whole", vec![(22, 27)]),
+                ("-file before it checks", vec![]),
+                ("-the header.", vec![]),
+                ("+The parser reads the entire", vec![(22, 28)]),
+                ("+file before it checks", vec![]),
+                ("+the header.", vec![])
+            ]
+        );
+        // As the agent is told it, the lines as written.
+        assert!(diff.iter().map(Diffed::text).any(|t| t == "     -The parser reads the whole"));
     }
 
     #[test]
