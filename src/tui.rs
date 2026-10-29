@@ -454,6 +454,12 @@ fn plural(n: usize) -> &'static str {
     if n == 1 { "" } else { "s" }
 }
 
+/// `text` with its first letter a capital.
+fn capitalized(text: &str) -> String {
+    let mut c = text.chars();
+    c.next().map_or(String::new(), |f| f.to_uppercase().chain(c).collect())
+}
+
 fn short(text: &str, n: usize) -> String {
     let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
     if text.chars().count() <= n {
@@ -548,6 +554,8 @@ pub enum Spot {
     Patch(Option<usize>),
     /// File `k` of the patch picked, as the patches pane lists them.
     File(usize),
+    /// HEAD's row in the patches pane.
+    HeadRow,
     Row(usize),
     /// Row `i` of the half of the middle split in two that the cursor is
     /// not in.
@@ -1455,7 +1463,7 @@ fn about(action: &Action) -> String {
         Action::GoToNote => "go to this comment".into(),
         Action::MovePatch => "pick this patch up and put it elsewhere in the stack".into(),
         Action::MoveHead(_) => {
-            "pick HEAD of your checkout up: ↑↓ place it, Enter moves the checkout there, detached; your branch as it is".into()
+            "pick HEAD of your checkout up: ↑↓ place it, never below a commit marked !, and Enter moves the checkout there, detached; your branch as it is".into()
         }
         Action::EditPatch => "edit this patch in $EDITOR, as mail, opened where the cursor is".into(),
         Action::EditCode => "edit this file as the patch leaves it, in $EDITOR, opened at this line".into(),
@@ -1925,6 +1933,9 @@ pub struct App {
     pub sel: usize,
     /// The left pane's cursor is on its header, the stack's place.
     pub on_stack: bool,
+    /// The left pane's cursor is on HEAD's row (`on_head`), the patch
+    /// picked as it was, the middle showing it still.
+    head_row: bool,
     /// The cursor is on the banner saying what the agent's work on the
     /// stack is, above the panes: open, a line for each, the line
     /// `banner_sel` picked, from `banner_top` on shown. Where the cursor was
@@ -2130,12 +2141,63 @@ type HistMemo = Option<((String, usize), std::rc::Rc<Vec<Entry>>)>;
 type ListEntry = (Listed, Vec<String>);
 
 /// What the patches pane shows: a patch, by its place shown and in the
-/// stack; a file of the patch picked, by its place among them; or HEAD.
+/// stack; a file of the patch picked, by its place among them; HEAD; or a
+/// commit HEAD alone has, by its row among them, drawn only.
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Listed {
     Patch(usize, usize),
     File(usize),
     Head,
+    Commit(usize),
+}
+
+/// A line of the patches pane the cursor stops on: the stack's header, a
+/// patch by its place, a file of the patch picked, or HEAD's row.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Stop {
+    Header,
+    Patch(usize),
+    File(usize),
+    Head,
+}
+
+/// How HEAD is drawn among the patches (`App::head_graph`): each patch's
+/// lead, by its place, the one of its first line, which takes the place of
+/// the space before its number, and the one of its next lines; how many
+/// patches go above HEAD's rows; then those rows: the commits HEAD alone
+/// has, each whole, and HEAD's own, its lead, that of its next lines where
+/// it folds, its sign (`▶`, `↕` while it is moved), what it says after it
+/// (`HEAD main · locked below patch 2`), and what it says pinned to the
+/// pane's edge, out of sight (`HEAD main`).
+struct Graph {
+    leads: Vec<(String, String)>,
+    slot: usize,
+    commits: Vec<String>,
+    head_lead: &'static str,
+    head_next: &'static str,
+    head_sign: char,
+    head_said: String,
+    head_pinned: String,
+}
+
+impl Graph {
+    /// HEAD's row, `w` wide: what it says folded between words, its next
+    /// lines under it.
+    fn head_lines(&self, w: usize) -> Vec<String> {
+        let lead_w = self.head_lead.chars().count() + 2;
+        let mut pieces = wrap(&self.head_said, w.saturating_sub(lead_w).max(1));
+        if pieces.is_empty() {
+            pieces.push(String::new());
+        }
+        pieces
+            .iter()
+            .enumerate()
+            .map(|(k, p)| match k {
+                0 => format!("{}{} {p}", self.head_lead, self.head_sign),
+                _ => format!("{}  {p}", self.head_next),
+            })
+            .collect()
+    }
 }
 
 /// A file a patch modifies: its path, the lines the patch adds and removes
@@ -2422,6 +2484,7 @@ impl App {
             stack,
             sel: 0,
             on_stack: false,
+            head_row: false,
             on_banner: false,
             banner_sel: 0,
             banner_top: 0,
@@ -2714,6 +2777,115 @@ impl App {
     fn move_head_why(&self) -> Option<String> {
         let why = self.head_moves_here()?.case.err()?;
         Some(format!("Move HEAD is grayed: {why}."))
+    }
+
+    /// The mark of the patch the patches pane's cursor is on, if it is on
+    /// one that has one, and its place.
+    fn mark_here(&self) -> Option<(usize, &crate::head::Mark)> {
+        if self.screen != Screen::Main || self.focus != Focus::List || self.on_banner || self.on_stack || self.on_head() || self.file_on().is_some() {
+            return None;
+        }
+        Some((self.sel, self.head_here()?.mark(self.sel)?))
+    }
+
+    /// What the bottom bar says `?` explains, on a patch marked or on
+    /// HEAD's row: `?: what the ! on patch 2 means`.
+    fn marks_pointer(&self) -> Option<String> {
+        if self.screen == Screen::Main && self.focus == Focus::List && !self.on_banner && self.on_head() {
+            return Some(match self.head_here().map_or(0, crate::head::Head::locked) {
+                0 => "?: where HEAD is, and what Move HEAD does".into(),
+                n => format!("?: why HEAD is locked below patch {n}"),
+            });
+        }
+        let (k, m) = self.mark_here()?;
+        Some(format!("?: what the {} on patch {} means", m.sign(), k + 1))
+    }
+
+    /// What `?` says first in the patches pane: on a patch marked `≠` or
+    /// `!`, what the mark means, what it locks or grays, and how it clears;
+    /// on HEAD's row, where HEAD is, its marks, every lock, and which of
+    /// Move HEAD's cases applies.
+    fn marks_help(&self) -> Vec<String> {
+        if self.screen == Screen::Main && self.focus == Focus::List && !self.on_banner && self.on_head() {
+            return self.head_help();
+        }
+        let Some((k, m)) = self.mark_here() else { return vec![] };
+        let n = k + 1;
+        match m {
+            crate::head::Mark::Message => {
+                let moves = match self.head_moves_here().map(|m| m.case) {
+                    Some(Ok(crate::head::Case::AsLeft)) => {
+                        "HEAD is as stacked last left it, so Move HEAD makes that commit again from the patch as it is now, its message too.".to_string()
+                    }
+                    _ => "Move HEAD writes the patch's message over the commit's only while HEAD is as stacked last left it, as the commit may be yours, amended outside stacked: until then Move HEAD is grayed, and so is editing in this checkout (pwd).".to_string(),
+                };
+                vec![
+                    format!("Patch {n} is marked ≠: its commit in your checkout has the patch's diff, but its message says something other than the patch's."),
+                    moves,
+                    "The mark clears once the two messages say the same: reword the commit in your checkout to the patch's message, or let Move HEAD make the commit again from the patch.".into(),
+                ]
+            }
+            crate::head::Mark::Revision { theirs, ours } => {
+                let (names, so) = match ours {
+                    None => (format!("names {theirs}, which the patch does not name"), "no second revision is made"),
+                    Some(o) => (format!("names {theirs}, where the patch names {o}"), "its diff goes to the revision you keep"),
+                };
+                let locked = self.head_here().map_or(n, crate::head::Head::locked);
+                vec![
+                    format!("Patch {n} is marked !: its commit in your checkout {names}."),
+                    format!("Move HEAD never rewrites nor drops that commit: HEAD is locked below patch {locked}, every commit up to it kept as it is in your checkout. Editing in this checkout (pwd) is grayed meanwhile, and the patch is not submitted to Phabricator, so that {so}."),
+                    format!("The mark clears once the patch names {theirs} too, or the commit no longer names it: give the patch {theirs} with an edit by hand, or reword the commit in your checkout."),
+                ]
+            }
+        }
+    }
+
+    /// What `?` says on HEAD's row: where HEAD is, its marks, every lock,
+    /// and which of Move HEAD's cases applies, or why none does.
+    fn head_help(&self) -> Vec<String> {
+        use crate::head::{At, Case, Mark};
+        let (Some(h), Some(moves)) = (self.head_here(), self.head_moves_here()) else { return vec![] };
+        let mut out = Vec::new();
+        let on = h.on();
+        out.push(match &h.at {
+            At::Elsewhere => format!("HEAD of your checkout, {on}, is not on the stack: the stack's base is not below it."),
+            At::Stack(o) if o.above.is_empty() && o.commits.is_empty() => {
+                format!("HEAD of your checkout, {on}, is at the base of {}: it has none of the stack's patches.", self.stack)
+            }
+            At::Stack(o) if o.above.is_empty() => format!(
+                "HEAD of your checkout, {on}, is at {}: its commits since the base are the stack's first patches, by their diffs.",
+                crate::head::place(&self.stack, o.commits.len())
+            ),
+            At::Stack(o) => {
+                let m = o.above.len();
+                let commits = if m == 1 { "1 commit".to_string() } else { format!("{} commits", crate::paint::thousands(m)) };
+                match o.commits.len() {
+                    0 => format!("HEAD of your checkout, {on}, forks from the stack at its base: it has {commits} the stack does not have, and none of its patches."),
+                    k => format!("HEAD of your checkout, {on}, has the stack's first {} by their diffs, then {commits} the stack does not have: it forks from the stack after patch {k}.", if k == 1 { "patch".to_string() } else { format!("{k} patches") }),
+                }
+            }
+        });
+        if let At::Stack(o) = &h.at {
+            let messages: Vec<usize> = o.marks.iter().filter(|(_, _, m)| *m == Mark::Message).map(|(k, _, _)| *k).collect();
+            match messages.as_slice() {
+                [] => {}
+                [k] => out.push(format!("Patch {} is marked ≠: its commit's message is not the patch's.", k + 1)),
+                ks => out.push(format!("{} are marked ≠: their commits' messages are not the patches'.", capitalized(&crate::head::patches_said(ks)))),
+            }
+            for (k, _, m) in o.marks.iter().filter(|(_, _, m)| *m != Mark::Message) {
+                out.push(format!("Patch {} is marked !: {}.", k + 1, m.said(*k)));
+            }
+        }
+        if let Some(lock) = h.lock_said() {
+            out.push(format!("{lock}. Move HEAD keeps every commit up to it as it is, and puts HEAD nowhere below it; editing in this checkout (pwd) is grayed meanwhile."));
+        }
+        out.push(match &moves.case {
+            Ok(Case::AsLeft) => "HEAD is as stacked left it: Move HEAD replaces it with the stack as it is now.".into(),
+            Ok(Case::OnStack) => "HEAD is on the stack with no marks: Move HEAD may put it at any patch, the commits it has taken as they are.".into(),
+            Err(why) => format!("{why}."),
+        });
+        out.push("Press Enter or Space for HEAD's menu, with Move HEAD…; ↑↓ for a patch, or the stack's header.".into());
+        out
     }
 
     /// Runs `work` in a thread of its own; what it comes to is read when
@@ -3654,6 +3826,7 @@ impl App {
             Spot::Patch(None) => panes && self.focus == Focus::List && self.on_stack,
             Spot::Patch(Some(i)) => panes && self.focus == Focus::List && !self.on_stack && self.sel == i && self.file_on().is_none(),
             Spot::File(k) => panes && self.file_on() == Some(k),
+            Spot::HeadRow => panes && self.focus == Focus::List && self.on_head(),
             Spot::Row(i) => panes && self.focus == Focus::Diff && self.cursor == i,
             // The half the cursor is not in.
             Spot::Beside(_) => false,
@@ -3855,7 +4028,7 @@ impl App {
             return;
         }
         let spot = self.spot_at(x, y);
-        let side = |s: &Spot| matches!(s, Spot::Patch(_) | Spot::File(_) | Spot::NotesHead | Spot::Note(_));
+        let side = |s: &Spot| matches!(s, Spot::Patch(_) | Spot::File(_) | Spot::HeadRow | Spot::NotesHead | Spot::Note(_));
         self.hovered = spot.filter(|s| side(s) && matches!(self.mode, Mode::Normal));
         let Some(spot) = spot else { return };
         let low = self.head_here().map_or(0, crate::head::Head::locked);
@@ -3939,6 +4112,11 @@ impl App {
                 self.half_beside(Focus::List);
                 self.list_to(self.sel, Some(k));
                 self.focus = Focus::List;
+            }
+            Spot::HeadRow => {
+                self.half_beside(Focus::List);
+                self.focus = Focus::List;
+                self.pick_head_row();
             }
             Spot::Row(i) => {
                 self.focus = Focus::Diff;
@@ -4561,36 +4739,77 @@ impl App {
         self.files_of(&id).iter().position(|f| f.path == path)
     }
 
-    /// The patches pane's cursor `delta` lines down (up, negative) the list
-    /// as it shows it: the stack's header, the patches and, listing files,
-    /// those of the patch picked under it. Onto another patch, that one is
-    /// picked. Up, it stops on the first patch before the header.
-    fn list_step(&mut self, delta: isize) {
+    /// Whether the patches pane's cursor is on HEAD's row: picked there,
+    /// and the row drawn.
+    pub fn on_head(&self) -> bool {
+        self.head_row && !self.on_stack && self.head_here().is_some()
+    }
+
+    /// The patches pane's cursor on HEAD's row, the patch picked as it was.
+    fn pick_head_row(&mut self) {
+        self.on_stack = false;
+        self.file_sel = None;
+        self.head_row = true;
+    }
+
+    /// The lines of the patches pane the cursor stops on, in their order:
+    /// the stack's header, the patches and, listing files, those of the
+    /// patch picked under it; and HEAD's row, where it is drawn. The rows
+    /// of the commits HEAD alone has are drawn only.
+    fn list_stops(&self) -> Vec<Stop> {
         let n = self.patch_count();
-        if n == 0 {
+        let files = self.files_listed().len();
+        let slot = self.head_graph(n).map(|g| g.slot);
+        let mut out = vec![Stop::Header];
+        for i in 0..n {
+            if slot == Some(i) {
+                out.push(Stop::Head);
+            }
+            out.push(Stop::Patch(i));
+            if i == self.sel {
+                out.extend((0..files).map(Stop::File));
+            }
+        }
+        if slot == Some(n) {
+            out.push(Stop::Head);
+        }
+        out
+    }
+
+    /// The patches pane's cursor `delta` lines down (up, negative) the list
+    /// as it shows it: the stack's header, the patches, HEAD's row and,
+    /// listing files, those of the patch picked under it (`list_stops`).
+    /// Onto another patch, that one is picked. Up, it stops on the first
+    /// line under the header before the header.
+    fn list_step(&mut self, delta: isize) {
+        if self.patch_count() == 0 {
             return;
         }
-        let files = self.files_listed().len();
-        // The header is line 0, the patch picked line `1 + sel`, and its
-        // files the lines under it.
-        let at = if self.on_stack { 0 } else { 1 + self.sel + self.file_on().map_or(0, |k| k + 1) };
+        let stops = self.list_stops();
+        let here = match self.file_on() {
+            _ if self.on_stack => Stop::Header,
+            _ if self.on_head() => Stop::Head,
+            Some(k) => Stop::File(k),
+            None => Stop::Patch(self.sel),
+        };
+        let at = stops.iter().position(|s| *s == here).unwrap_or(0);
         let to = match at {
             0 if delta > 0 => 1,
             0 | 1 if delta < 0 => 0,
             _ if delta < 0 => at.saturating_sub(delta.unsigned_abs()).max(1),
-            _ => (at + delta.unsigned_abs()).min(n + files),
+            _ => (at + delta.unsigned_abs()).min(stops.len() - 1),
         };
         if to == at {
             return;
         }
-        match to {
-            0 => {
+        match stops[to] {
+            Stop::Header => {
                 self.on_stack = true;
                 self.file_sel = None;
             }
-            t if t <= 1 + self.sel => self.list_to(t - 1, None),
-            t if t <= 1 + self.sel + files => self.list_to(self.sel, Some(t - 2 - self.sel)),
-            t => self.list_to(t - 1 - files, None),
+            Stop::Patch(i) => self.list_to(i, None),
+            Stop::File(k) => self.list_to(self.sel, Some(k)),
+            Stop::Head => self.pick_head_row(),
         }
     }
 
@@ -4601,6 +4820,7 @@ impl App {
     fn list_to(&mut self, sel: usize, file: Option<usize>) {
         let from_file = !self.on_stack && self.sel == sel && self.file_on().is_some();
         self.on_stack = false;
+        self.head_row = false;
         self.sel = sel;
         self.file_sel = file.zip(self.patch_id()).map(|(k, id)| (id, k));
         match file {
@@ -5244,7 +5464,7 @@ impl App {
             return None;
         }
         match self.focus {
-            Focus::List if self.on_stack => None,
+            Focus::List if self.on_stack || self.on_head() => None,
             Focus::List => (self.patch_count() > 0).then_some(Action::Open),
             Focus::Notes if self.notes_head => None,
             Focus::Notes => (!self.notes().is_empty()).then_some(Action::GoToNote),
@@ -5320,7 +5540,7 @@ impl App {
                 _ => None,
             },
             Screen::Main => match self.focus {
-                Focus::List if self.current().is_none() => None,
+                Focus::List if self.current().is_none() || self.on_head() => None,
                 Focus::List => {
                     let action = if self.on_stack {
                         Action::AskDeleteStack
@@ -5622,6 +5842,8 @@ impl App {
                 out.push(self.arrows_help());
             }
             Screen::Main => {
+                // On a patch marked, or on HEAD's row: what that is, first.
+                out.extend(self.marks_help());
                 if let Some((n, path)) = self.outside_here() {
                     out.push(format!(
                         "Line {n} of {path} is in no hunk of this patch, so no comment goes on it: the lines drawn dim are in no hunk."
@@ -6680,6 +6902,13 @@ impl App {
             (Screen::Review, _) => {
                 title = "this part of what landed".into();
                 self.review_items(&mut items);
+            }
+            // HEAD's row: Move HEAD, grayed with why when it would not move
+            // HEAD.
+            (Screen::Main, Focus::List) if self.on_head() => {
+                title = self.head_here().map_or("HEAD".into(), |h| format!("HEAD {}", h.on()));
+                items.push(Item::new("Move HEAD…", Action::MoveHead(None)).when(self.move_head_why().is_none()));
+                move_why = self.move_head_why();
             }
             (Screen::Main, Focus::List) if self.on_stack => {
                 title = format!("the stack {}", self.stack);
@@ -8916,6 +9145,7 @@ impl App {
             self.on_stack = true;
         } else if let Some(at) = self.current().and_then(|s| s.patches.iter().position(|p| self.db.patch(p).change == change)) {
             self.on_stack = false;
+            self.head_row = false;
             self.sel = at;
         } else {
             self.status = "that comment's patch is no longer in the stack".into();
@@ -8939,6 +9169,7 @@ impl App {
         };
         self.screen = Screen::Main;
         self.on_stack = false;
+        self.head_row = false;
         self.sel = at;
         self.built = None;
         self.want = Some(want);
@@ -10074,7 +10305,11 @@ impl App {
                     (Screen::Main, true, true) => "1: view · 2: comment · 3: hunks · ",
                     _ => "",
                 };
-                let ask = if self.helps() { "?: what can I do here" } else { "" };
+                let ask = match self.marks_pointer() {
+                    Some(p) => p,
+                    None if self.helps() => "?: what can I do here".into(),
+                    None => String::new(),
+                };
                 format!("{enter}space: menu · {open}{delete}{keys}{ask}").trim_end_matches(" · ").to_string()
             }
         }
@@ -10365,11 +10600,15 @@ impl App {
             }
             _ => (self.sel, false),
         };
-        // Each patch's lines: its number, the status of its revision on
-        // Phabricator, in a column as wide as the widest (blank where none
-        // is known; no column while none is), its title whole, folded under
-        // itself where the pane is narrower, and its tags at the end of its
-        // first.
+        // HEAD, as it is drawn among the patches (`head_graph`).
+        let graph = self.head_graph(s.patches.len());
+        let lead = |at: usize| graph.as_ref().and_then(|g| g.leads.get(at)).cloned().unwrap_or_else(|| (" ".into(), " ".into()));
+        // Each patch's lines: its lead (the mark of its commit in your
+        // checkout, or where HEAD forks, the graph), its number, the status
+        // of its revision on Phabricator, in a column as wide as the widest
+        // (blank where none is known; no column while none is), its title
+        // whole, folded under itself where the pane is narrower, and its
+        // tags at the end of its first.
         let col = self.status_col(self.list);
         let lines: Vec<Vec<String>> = order
             .iter()
@@ -10381,7 +10620,8 @@ impl App {
                     0 => String::new(),
                     _ => format!("{} ", fit(self.status_said(&s.patches[i], self.list).unwrap_or_default(), col)),
                 };
-                let head = format!(" {mark} {status}");
+                let (first, next) = lead(at);
+                let head = format!("{first}{mark} {status}");
                 let (head_w, tag_w) = (head.chars().count(), tag.chars().count());
                 let mut folded = vec![said.clone()];
                 if head_w + said.chars().count() + tag_w > w {
@@ -10395,7 +10635,7 @@ impl App {
                     .enumerate()
                     .map(|(k, part)| match k {
                         0 => format!("{}{tag}", fit(&format!("{head}{part}"), w.saturating_sub(tag_w))),
-                        _ => format!("{}{part}", " ".repeat(head_w)),
+                        _ => format!("{next}{}{part}", " ".repeat(head_w.saturating_sub(next.chars().count()))),
                     })
                     .collect()
             })
@@ -10413,15 +10653,29 @@ impl App {
         for (at, (&i, its)) in order.iter().zip(lines).enumerate() {
             entries.push((Listed::Patch(at, i), its));
             if at == on {
-                entries.extend(files.iter().enumerate().map(|(k, f)| (Listed::File(k), vec![file_line(f, left(f), w)])));
+                // Under a patch of a branch drawn first, the graph's line
+                // goes on beside its files.
+                let next = lead(at).1;
+                entries.extend(files.iter().enumerate().map(|(k, f)| {
+                    let line = file_line(f, left(f), w);
+                    let line = match next.starts_with('│') {
+                        true => format!("│{}", line.chars().skip(1).collect::<String>()),
+                        false => line,
+                    };
+                    (Listed::File(k), vec![line])
+                }));
             }
         }
         // HEAD of the checkout stacked runs in: after the patches it has as
-        // commits, under the header at the base or elsewhere.
+        // commits, under the header at the base or elsewhere; forked from
+        // the stack, after the commits it alone has, which are drawn only.
         let moving_head = matches!(self.mode, Mode::MovingHead { .. });
-        if let Some((n, line)) = self.head_line() {
-            let at = entries.iter().position(|(e, _)| matches!(e, Listed::Patch(at, _) if *at == n)).unwrap_or(entries.len());
-            entries.insert(at, (Listed::Head, vec![line]));
+        let on_head = self.on_head();
+        if let Some(g) = &graph {
+            let at = entries.iter().position(|(e, _)| matches!(e, Listed::Patch(at, _) if *at == g.slot)).unwrap_or(entries.len());
+            let mut rows: Vec<ListEntry> = g.commits.iter().enumerate().map(|(k, c)| (Listed::Commit(k), vec![c.clone()])).collect();
+            rows.push((Listed::Head, g.head_lines(w)));
+            entries.splice(at..at, rows);
         }
         // The pick, listing files: the file the cursor is on, in this pane;
         // from another, the file the middle's cursor is in. Else the patch.
@@ -10432,7 +10686,7 @@ impl App {
         };
         let on_entry = entries
             .iter()
-            .position(|(e, _)| match (moving_head, file_pick) {
+            .position(|(e, _)| match (moving_head || on_head, file_pick) {
                 (true, _) => *e == Listed::Head,
                 (false, Some(k)) => *e == Listed::File(k),
                 (false, None) => matches!(e, Listed::Patch(at, _) if *at == on),
@@ -10465,6 +10719,9 @@ impl App {
         // its place; else it is on the pane's edge it is beyond, `↓` (`↑`)
         // saying the patches go on between.
         let mut pinned: Option<(bool, String)> = None;
+        // Pinned, HEAD's row has no graph beside it, and says where HEAD
+        // is alone.
+        let plain = graph.as_ref().map_or(String::new(), |g| format!(" ▶ {}", g.head_pinned));
         if let Some(k) = entries.iter().position(|(e, _)| *e == Listed::Head)
             && (k < top || k >= end(top, room))
         {
@@ -10473,9 +10730,9 @@ impl App {
             if k + 1 == top {
                 top = k;
             } else if k < top {
-                pinned = Some((true, entries[k].1[0].replacen('▶', "↑", 1)));
+                pinned = Some((true, plain.replacen('▶', "↑", 1)));
             } else if k > end(top, room) {
-                pinned = Some((false, entries[k].1[0].replacen('▶', "↓", 1)));
+                pinned = Some((false, plain.replacen('▶', "↓", 1)));
             }
         }
         if let Some((true, line)) = &pinned {
@@ -10501,16 +10758,34 @@ impl App {
                     y += 1;
                     continue;
                 }
+                // HEAD's row: the cursor there, or the pick; the commits HEAD
+                // alone has, drawn only.
                 Listed::Head => {
-                    let st = if moving_head { on_cursor(color::meta()) } else { color::meta() };
-                    put(buf, area, 0, y, w, &fit(&its[0], w), st);
+                    let st = match (moving_head, on_head) {
+                        (true, _) => on_cursor(color::meta()),
+                        (false, true) => pick(color::meta()),
+                        (false, false) => color::meta(),
+                    };
+                    for line in its {
+                        if y >= bottom {
+                            break;
+                        }
+                        put(buf, area, 0, y, w, &fit(line, w), self.hovered_style(Spot::HeadRow, st));
+                        self.spot(area, (0, y, w), Spot::HeadRow);
+                        y += 1;
+                    }
+                    continue;
+                }
+                Listed::Commit(_) => {
+                    put(buf, area, 0, y, w, &fit(&its[0], w), color::meta());
                     y += 1;
                     continue;
                 }
             };
             let mut st = Style::new();
-            // The patch picked, unless one of its files is the pick.
-            if at == on && !self.on_stack && !moving_head && file_pick.is_none() {
+            // The patch picked, unless one of its files is the pick, or
+            // HEAD's row.
+            if at == on && !self.on_stack && !moving_head && !on_head && file_pick.is_none() {
                 st = pick(st);
             }
             let st = self.hovered_style(Spot::Patch(Some(at)), st);
@@ -10534,20 +10809,85 @@ impl App {
         cursor
     }
 
-    /// HEAD's line in the patches pane, and how many patches go above it:
-    /// where HEAD of the checkout stacked runs in is, if it is a checkout of
-    /// the stack's repository; `+2`, the commits above them that are not
-    /// the stack's.
-    fn head_line(&self) -> Option<(usize, String)> {
+    /// How HEAD of the checkout stacked runs in is drawn among the stack's
+    /// `n` patches, if it is a checkout of the stack's repository. On the
+    /// stack, `▶ HEAD main` (its branch, else its commit) after the patches
+    /// it has, each commit's mark before its patch's number: `≠`, its
+    /// message other than the patch's; `!`, a revision named that the
+    /// patch does not name. On another base, under the header, `off the
+    /// stack`. Forked from the stack: the trunk the two share, each patch
+    /// `●` or its mark; then the shorter of the two branches, then the
+    /// longer, the first drawn `├`, its next rows `│`, the other `└`; the
+    /// stack's patches `●`, all of them; the commits HEAD alone has `○`, by
+    /// their subject, three rows at most, the last `… N more commits` when
+    /// they do not fit; and HEAD's row after them. While there is a `!`,
+    /// HEAD's row ends `· locked below patch N`. Moving HEAD, or a patch,
+    /// the patches as they are and HEAD's row alone.
+    fn head_graph(&self, n: usize) -> Option<Graph> {
         use crate::head::At;
         let h = self.head_here()?;
-        if let Mode::MovingHead { to } = self.mode {
-            return Some((to, format!(" ↕ HEAD {}", h.on())));
+        let pinned = format!("HEAD {}", h.on());
+        let plain = |slot: usize, sign: char, said: String| Graph {
+            leads: vec![(" ".into(), " ".into()); n],
+            slot: slot.min(n),
+            commits: vec![],
+            head_lead: " ",
+            head_next: " ",
+            head_sign: sign,
+            head_said: said,
+            head_pinned: pinned.clone(),
+        };
+        let on = match (&self.mode, &h.at) {
+            (Mode::MovingHead { to }, _) => return Some(plain(*to, '↕', pinned.clone())),
+            (_, At::Elsewhere) => return Some(plain(0, '▶', format!("{pinned}: off the stack"))),
+            (Mode::Moving { .. }, At::Stack(on)) => return Some(plain(on.commits.len(), '▶', pinned.clone())),
+            (_, At::Stack(on)) => on,
+        };
+        let said = match h.locked() {
+            0 => pinned.clone(),
+            l => format!("{pinned} · locked below patch {l}"),
+        };
+        let k = on.commits.len().min(n);
+        let sign = |i: usize, none: &str| h.mark(i).map_or(none.to_string(), |m| m.sign().to_string());
+        // On the stack: as the patches are, each commit's mark before its
+        // patch's number.
+        if on.above.is_empty() {
+            let mut g = plain(k, '▶', said);
+            for (i, l) in g.leads.iter_mut().enumerate().take(k) {
+                l.0 = sign(i, " ");
+            }
+            return Some(g);
         }
-        Some(match &h.at {
-            At::Stack(on) if !on.above.is_empty() => (on.commits.len(), format!(" ▶ HEAD {} +{}", h.on(), on.above.len())),
-            At::Stack(on) => (on.commits.len(), format!(" ▶ HEAD {}", h.on())),
-            At::Elsewhere => (0, format!(" ▶ HEAD {}: off the stack", h.on())),
+        // Forked: the trunk, then the shorter branch, then the longer.
+        let (stack_n, head_n) = (n - k, on.above.len());
+        let head_first = head_n <= stack_n;
+        let graph = |first_drawn: bool, first_row: bool| match (first_drawn, first_row) {
+            (true, true) => "├",
+            (true, false) => "│",
+            (false, true) => "└",
+            (false, false) => " ",
+        };
+        let leads = (0..n)
+            .map(|i| match i < k {
+                true => (sign(i, "●"), " ".to_string()),
+                false => (format!("{}●", graph(!head_first, i == k)), format!("{} ", graph(!head_first, false))),
+            })
+            .collect();
+        let shown = if head_n <= crate::head::SUBJECTS { head_n } else { crate::head::SUBJECTS - 1 };
+        let mut commits: Vec<String> = on.subjects.iter().take(shown).enumerate().map(|(j, s)| format!("{}○ {s}", graph(head_first, j == 0))).collect();
+        if head_n > shown {
+            let more = head_n - shown;
+            commits.push(format!("{}○ … {} more commit{}", graph(head_first, false), crate::paint::thousands(more), if more == 1 { "" } else { "s" }));
+        }
+        Some(Graph {
+            leads,
+            slot: if head_first { k } else { n },
+            commits,
+            head_lead: graph(head_first, false),
+            head_next: graph(head_first, false),
+            head_sign: '▶',
+            head_said: said,
+            head_pinned: pinned,
         })
     }
 

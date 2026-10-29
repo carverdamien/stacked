@@ -168,6 +168,7 @@ impl App {
             Some(i) if i < self.patch_count() => {
                 self.sel = i;
                 self.on_stack = false;
+                self.head_row = false;
             }
             _ => {
                 self.sel = 0;

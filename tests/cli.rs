@@ -1417,12 +1417,16 @@ fn head_is_said_against_the_stack() {
         let (fine, _, err) = e.run(&["head", "s", flag]);
         assert!(!fine && err.contains(&format!("unexpected argument '{flag}'")), "{err}");
     }
-    // Not on the stack's base.
+    // Forked from the stack's base, none of its patches.
     git(&e.src, &["checkout", "-q", "-b", "other", "base"]);
     std::fs::write(e.src.join("d.txt"), "d\n").unwrap();
     git(&e.src, &["add", "d.txt"]);
     git(&e.src, &["commit", "-qm", "Other"]);
-    assert!(e.ok(&["head", "s"]).contains("is not on s"));
+    assert!(e.ok(&["head", "s"]).contains("is at the base of s, then 1 commit not in the stack\n"));
+    // On another base.
+    git(&e.src, &["checkout", "-q", "--orphan", "lone"]);
+    git(&e.src, &["commit", "-qm", "Lone"]);
+    assert!(e.ok(&["head", "s"]).contains("is not on s: the stack's base is not below it\n"));
     // Not a checkout of its repository.
     let (fine, _, err) = stacked_in(&e.root, &e.db, &["head", "s"], "", &[]);
     assert!(!fine && err.contains("is not a checkout of s's repository"), "{err}");
@@ -4138,11 +4142,11 @@ fn a_file_is_edited_in_the_stack_s_worktree_or_in_this_checkout() {
     assert_eq!(git(&e.src, &["worktree", "list"]).lines().count(), 2);
 
     // In this checkout: not while Move HEAD would not move HEAD, which on
-    // main is no longer on the stack the edits made.
+    // main forks from the stack the edits made at its base.
     script("sed -i '' 's/^newer$/fresh/' \"$file\"");
     let (fine, _, err) = edit(&["2", "--path", "b.txt", "--line", "1", "--in", "pwd"]);
     assert!(
-        !fine && err.contains("this checkout is not offered for edits by hand: HEAD is not on the stack, nor where stacked last left it: Move HEAD is offered only when"),
+        !fine && err.contains("this checkout is not offered for edits by hand: HEAD has commits stacked did not make, as 3 commits after the base are not the stack's: Move HEAD is offered only when"),
         "{err}"
     );
     assert_eq!((head(), branch()), (top.clone(), "main".to_string()));

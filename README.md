@@ -374,19 +374,55 @@ objc2 (`app/menu.rs`).
 The left pane is the current stack: its header (`≡ bug123 · 3 patches`),
 which is the stack's own place, then the patches' titles, bottom first, with
 how many comments wait on an answer. When stacked runs in a checkout of the
-stack's repository, a line among them says where its HEAD is: `▶ HEAD main`
-after the patches its commits since the stack's base are (a commit is a
-patch when its diff is, whatever its message), `+2` when two commits above
-them are not the stack's; under the header at the base, or when it is not
-on the stack (`▶ HEAD main: off the stack`). With more patches than the
-pane has room for, the line stays in sight: on the pane's last line while
-its place is further down (`↓ HEAD main`), under the header while it is
-further up (`↑ HEAD main`), the arrow saying that patches go on between.
-It is looked at again as the stack changes, and every few seconds.
-`stacked head NAME` says the same.
-`Move HEAD…`, in the stack's menu and each patch's, moves that checkout
-along the stack: ↑↓ place HEAD's line (`↕ HEAD`), the checkout as it is
-meanwhile, and Enter moves it there, Esc leaving it where it was. HEAD is
+stack's repository, a line among them says where its HEAD is (its branch,
+else its commit): on the stack, `▶ HEAD main` after the patches its
+commits since the stack's base are (a commit is a patch when its diff is,
+whatever its message), under the header at the base; on another base,
+under the header too, `▶ HEAD main: off the stack`. HEAD's commits that are
+the stack's patches but whose message is not are marked, in the column
+before the patch's number: `≠` when the commit's message says something
+other than the patch's, and, with moz-phab, `!` when it names a
+Differential Revision the patch does not name, none or another, which wins
+over `≠` (Move HEAD, below, says what each locks). While there is a `!`,
+HEAD's line ends `· locked below patch 2`, folded under itself where the
+pane is too narrow for it.
+
+HEAD forked from the stack on its base, with commits the stack does not
+have (yours, or main pulled since, or the stack moved on since HEAD was
+put there), is drawn as a graph:
+
+```
+● 1 [R] Bug 1 - first part
+≠ 2 [W] Bug 2 - second part
+├○ Fix the thing
+│▶ HEAD main
+└● 3     Bug 3 - third part
+ ● 4     Bug 4 - fourth part
+```
+
+First the trunk the two share, the patches whose commits HEAD has, each
+`●` or its mark; then the shorter of the two branches, then the longer:
+the first one drawn starts `├`, its next lines `│`, the other starts `└`.
+The stack's patches are `●`, every one of them, its rows as ever; the
+commits HEAD alone has are `○`, by their subject, three rows at most, the
+third `… 5 more commits` when there are more; and HEAD's line comes after
+HEAD's branch. The cursor goes over the `○` rows: they are drawn only.
+HEAD's line itself is a line the cursor stops on: its menu (Enter, Space)
+has `Move HEAD…`, and `?` there says where HEAD is, its marks, where it is
+locked, and which of Move HEAD's cases applies (`HEAD is as stacked left
+it: Move HEAD replaces it with the stack as it is now.`), or why none does.
+On a patch marked, `?` says first what its mark means, what it locks or
+grays, and how it clears; the bottom line says only that it does (`?: what
+the ! on patch 2 means`). With more patches than the pane has room for,
+HEAD's line stays in sight: on the pane's last line while its place is
+further down (`↓ HEAD main`), under the header while it is further up
+(`↑ HEAD main`), the arrow saying that patches go on between. It is looked
+at again as the stack changes, and every few seconds. `stacked head NAME`
+says the same.
+`Move HEAD…`, in the stack's menu, each patch's and HEAD's line's, moves
+that checkout along the stack: ↑↓ place HEAD's line (`↕ HEAD`), the
+checkout as it is meanwhile, the patches drawn as they are, and Enter moves
+it there, Esc leaving it where it was. HEAD is
 then detached at the stack's base with the patches up to there applied as
 commits, those the checkout has already, message too, taken as they are;
 the branch it was on stays where it was. Not while files git tracks have
@@ -3488,7 +3524,19 @@ holding back nothing (none of it in the banner, landed work reviewed and a
 reply taken at once meanwhile, the stack and the commit each keeping its
 own message, s and w doing nothing), HEAD shown where it was while stacked
 moves it and where it went once the move is over, a message whose empty
-lines in a row `git am` made one leaving HEAD in sync, `Move HEAD…` grayed
+lines in a row `git am` made one leaving HEAD in sync, HEAD forked from
+the stack drawn as a graph in each of its cases (the trunk, then the
+shorter branch, then the longer, HEAD above the whole stack, the stack
+moved on since, far ahead on the same base with no trunk, the commits HEAD
+alone has capped at three rows, the stack's patches all of them, and HEAD
+on another base off the stack), the cursor going over the commits HEAD
+alone has to HEAD's row and the patches, the marks of HEAD's commits in
+their margin, `≠` and `!`, HEAD's row ending `· locked below patch 2`,
+folded, `?` on each mark saying what it means, what it locks or grays and
+how it clears, the bottom line saying only that `?` does, and on HEAD's
+row saying where HEAD is, its marks, the lock and which case of Move HEAD
+applies, or why none does, its menu with Move HEAD grayed and why, a click
+on it and Delete there doing nothing, `Move HEAD…` grayed
 with why unless HEAD is as stacked last left it or on the stack with no
 mark (a commit of yours on top, one reworded outside stacked) and offered
 after a restart from what the database remembers, the stack moved on

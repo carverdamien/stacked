@@ -5226,24 +5226,279 @@ fn the_patches_pane_says_where_head_is_in_the_checkout() {
     app.settle();
     let screen = draw(&mut app);
     assert_eq!(row(&screen, &format!("▶ HEAD {}", short("HEAD"))), row(&screen, "  1 Bug 1") + 1, "{screen}");
-    // A commit of its own on top: said so.
+    // A commit of its own on top: forked from the stack after patch 1.
     std::fs::write(src.join("c.txt"), "c\n").unwrap();
     git(&src, &["add", "c.txt"]);
     git(&src, &["commit", "-qm", "Mine"]);
     app.look_at_head();
     app.settle();
     let screen = draw(&mut app);
-    assert_eq!(row(&screen, &format!("▶ HEAD {} +1", short("HEAD"))), row(&screen, "  1 Bug 1") + 1, "{screen}");
-    // Not on the stack: under the header, said so.
-    git(&src, &["checkout", "-q", "-b", "other", "HEAD~2"]);
-    std::fs::write(src.join("d.txt"), "d\n").unwrap();
-    git(&src, &["add", "d.txt"]);
+    assert_eq!(patches_pane(&screen), [" ≡ s · 2 patches", "● 1 Bug 1 - shout two", "├○ Mine", &format!("│▶ HEAD {}", short("HEAD")), "└● 2 Bug 2 - add b"]);
+    // On another base: under the header, off the stack.
+    git(&src, &["checkout", "-q", "--orphan", "other"]);
     git(&src, &["commit", "-qm", "Other"]);
     app.look_at_head();
     app.settle();
     let screen = draw(&mut app);
     assert_eq!(row(&screen, "▶ HEAD other: off the stack"), row(&screen, "≡ s") + 1, "{screen}");
 }
+
+/// The patches pane of `screen`, a line each, its end trimmed: from its
+/// header down to the first line that says nothing.
+fn patches_pane(screen: &str) -> Vec<String> {
+    let lines: Vec<&str> = screen.lines().collect();
+    let (_, y) = at(screen, "≡ ");
+    let x = lines[y as usize].chars().position(|c| c == '│').unwrap_or(30);
+    lines[y as usize..].iter().map(|l| l.chars().take(x).collect::<String>().trim_end().to_string()).take_while(|l| !l.is_empty()).collect()
+}
+
+/// A repository of a base and four patches, `Bug N - part N`, each adding
+/// a file; the database holding them as stack `s`, its checkout's HEAD on
+/// the top patch.
+fn four() -> (tempfile::TempDir, PathBuf, PathBuf) {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("src");
+    std::fs::create_dir(&src).unwrap();
+    git(&src, &["init", "-q", "-b", "main"]);
+    git(&src, &["config", "commit.gpgsign", "false"]);
+    std::fs::write(src.join("base.txt"), "base\n").unwrap();
+    git(&src, &["add", "."]);
+    git(&src, &["commit", "-qm", "base"]);
+    for n in 1..=4 {
+        std::fs::write(src.join(format!("{n}.txt")), format!("{n}\n")).unwrap();
+        git(&src, &["add", "."]);
+        git(&src, &["commit", "-qm", &format!("Bug {n} - part {n}")]);
+    }
+    let db = tmp.path().join("db.jsonl");
+    stacked(&src, &db, &["import", "s", "HEAD~4"]);
+    (tmp, db, src)
+}
+
+/// Commits of your own in the checkout at `src`, one for each of `titles`,
+/// each changing x.txt.
+fn own(src: &Path, titles: &[&str]) {
+    for t in titles {
+        std::fs::write(src.join("x.txt"), format!("{t}\n")).unwrap();
+        git(src, &["add", "x.txt"]);
+        git(src, &["commit", "-qm", t]);
+    }
+}
+
+/// HEAD looked at again, and the patches pane drawn.
+fn pane_after_head(app: &mut App) -> Vec<String> {
+    app.look_at_head();
+    app.settle();
+    patches_pane(&draw(app))
+}
+
+#[test]
+fn head_forked_from_the_stack_is_drawn_as_a_graph_its_own_commits_drawn_only() {
+    let (_tmp, db, src) = four();
+    let mut app = open_in(&db, &src);
+    let short = |src: &Path| rev_in(src, "HEAD")[..8].to_string();
+    let rows = |all: &[&str]| all.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    // On the stack: as the patches are.
+    assert_eq!(pane_after_head(&mut app), rows(&[" ≡ s · 4 patches", "  1 Bug 1 - part 1", "  2 Bug 2 - part 2", "  3 Bug 3 - part 3", "  4 Bug 4 - part 4", " ▶ HEAD main"]));
+    // Above the whole stack: the trunk all of it, then HEAD's own.
+    own(&src, &["Mine"]);
+    assert_eq!(
+        pane_after_head(&mut app),
+        rows(&[" ≡ s · 4 patches", "● 1 Bug 1 - part 1", "● 2 Bug 2 - part 2", "● 3 Bug 3 - part 3", "● 4 Bug 4 - part 4", "└○ Mine", " ▶ HEAD main"])
+    );
+    // Forked after patch 2, HEAD's branch the shorter: the trunk, then
+    // HEAD's branch and HEAD, then the stack's.
+    git(&src, &["checkout", "-q", "--detach", "main~3"]);
+    own(&src, &["Fix the thing"]);
+    let h = format!("│▶ HEAD {}", short(&src));
+    assert_eq!(
+        pane_after_head(&mut app),
+        rows(&[" ≡ s · 4 patches", "● 1 Bug 1 - part 1", "● 2 Bug 2 - part 2", "├○ Fix the thing", &h, "└● 3 Bug 3 - part 3", " ● 4 Bug 4 - part 4"])
+    );
+    // The cursor goes over the commit HEAD alone has, from patch 2 to
+    // HEAD's row, then to patch 3.
+    keys(&mut app, &[KeyCode::Home, KeyCode::Down, KeyCode::Down]);
+    assert_eq!((app.sel, app.on_head()), (1, false));
+    keys(&mut app, &[KeyCode::Down]);
+    assert!(app.on_head(), "on HEAD's row");
+    assert_eq!(app.sel, 1, "the patch picked as it was");
+    keys(&mut app, &[KeyCode::Down]);
+    assert_eq!((app.sel, app.on_head()), (2, false));
+    keys(&mut app, &[KeyCode::Up, KeyCode::Up]);
+    assert_eq!((app.sel, app.on_head()), (1, false));
+    // The stack's the shorter: the stack's, then HEAD's, its three commits.
+    own(&src, &["Fix another thing", "And a third"]);
+    let h = format!(" ▶ HEAD {}", short(&src));
+    assert_eq!(
+        pane_after_head(&mut app),
+        rows(&[" ≡ s · 4 patches", "● 1 Bug 1 - part 1", "● 2 Bug 2 - part 2", "├● 3 Bug 3 - part 3", "│● 4 Bug 4 - part 4", "└○ Fix the thing", " ○ Fix another thing", " ○ And a third", &h])
+    );
+    // From patch 4, the cursor goes over the three to HEAD's row, the last.
+    keys(&mut app, &[KeyCode::End, KeyCode::Down]);
+    assert!(app.on_head() && app.sel == 3, "{}", app.sel);
+    keys(&mut app, &[KeyCode::Down]);
+    assert!(app.on_head(), "nothing under it");
+    // More than three: capped, the first two, then how many more. The
+    // stack's patches, all of them always.
+    own(&src, &["And a fourth", "And a fifth"]);
+    let h = format!(" ▶ HEAD {}", short(&src));
+    assert_eq!(
+        pane_after_head(&mut app),
+        rows(&[" ≡ s · 4 patches", "● 1 Bug 1 - part 1", "● 2 Bug 2 - part 2", "├● 3 Bug 3 - part 3", "│● 4 Bug 4 - part 4", "└○ Fix the thing", " ○ Fix another thing", " ○ … 3 more commits", &h])
+    );
+    // The stack moved on: patch 2 with a new diff, HEAD with the old.
+    git(&src, &["checkout", "-q", "--detach", "main~3"]);
+    Db::edit(&db, |d| {
+        let mut patches = d.stack("s")?.patches.clone();
+        let old = d.patch(&patches[1]).clone();
+        let draft = stacked::mbox::Draft { diff: old.diff.replace("+2", "+two"), ..stacked::mbox::Draft::from(&old) };
+        patches[1] = d.add_patch(stacked::ops::revise(&old, draft))?;
+        d.set_stack("s", patches, "edit").map(|_| ())
+    })
+    .unwrap();
+    app.refresh();
+    let h = format!("│▶ HEAD {}", short(&src));
+    assert_eq!(
+        pane_after_head(&mut app),
+        rows(&[" ≡ s · 4 patches", "● 1 Bug 1 - part 1", "├○ Bug 2 - part 2", &h, "└● 2 Bug 2 - part 2", " ● 3 Bug 3 - part 3", " ● 4 Bug 4 - part 4"])
+    );
+    // Far ahead on the same base: no trunk, HEAD's branch capped.
+    git(&src, &["checkout", "-q", "-b", "far", "main~5"]);
+    own(&src, &["Bug 999 - a landing", "Bug 998 - another", "Bug 997 - a third", "Bug 996 - a fourth", "Bug 995 - a fifth"]);
+    assert_eq!(
+        pane_after_head(&mut app),
+        rows(&[" ≡ s · 4 patches", "├● 1 Bug 1 - part 1", "│● 2 Bug 2 - part 2", "│● 3 Bug 3 - part 3", "│● 4 Bug 4 - part 4", "└○ Bug 999 - a landing", " ○ Bug 998 - another", " ○ … 3 more commits", " ▶ HEAD far"])
+    );
+    // On another base: as before.
+    git(&src, &["checkout", "-q", "--orphan", "lone"]);
+    git(&src, &["commit", "-qm", "Lone"]);
+    assert_eq!(pane_after_head(&mut app)[..2], rows(&[" ≡ s · 4 patches", " ▶ HEAD lone: off the stack"]));
+}
+
+#[cfg(feature = "moz-phab")]
+#[test]
+fn the_marks_of_head_s_commits_are_in_a_margin_and_question_mark_says_each() {
+    let (_tmp, db, src) = four();
+    let trailer = "Differential Revision: https://phabricator.services.mozilla.com/D34";
+    // Patch 1's commit reworded, patch 2's naming D34, as moz-phab submit
+    // leaves it; HEAD forked after patch 3.
+    git(&src, &["checkout", "-q", "--detach", "main~3"]);
+    git(&src, &["commit", "-q", "--amend", "-m", "Bug 1 - other words"]);
+    git(&src, &["cherry-pick", "main~2"]);
+    git(&src, &["commit", "-q", "--amend", "-m", &format!("Bug 2 - part 2\n\n{trailer}")]);
+    git(&src, &["cherry-pick", "main~1"]);
+    own(&src, &["Mine"]);
+    let mut app = open_in(&db, &src);
+    let h = rev_in(&src, "HEAD")[..8].to_string();
+    assert_eq!(
+        patches_pane(&draw(&mut app)),
+        [" ≡ s · 4 patches", "≠ 1 Bug 1 - part 1", "! 2 Bug 2 - part 2", "● 3 Bug 3 - part 3", "├○ Mine", &format!("│▶ HEAD {h} · locked"), "│  below patch 2", "└● 4 Bug 4 - part 4"]
+    );
+    // On patch 1: the bottom bar's pointer, then what `?` says first.
+    keys(&mut app, &[KeyCode::Home, KeyCode::Down]);
+    assert!(app.hint().ends_with("?: what the ≠ on patch 1 means"), "{}", app.hint());
+    let said = |app: &mut App| {
+        keys(app, &[KeyCode::Char('?')]);
+        let Mode::Help { lines, .. } = &app.mode else { panic!("{:?}", app.mode) };
+        let lines = lines.clone();
+        keys(app, &[KeyCode::Esc]);
+        lines
+    };
+    let lines = said(&mut app);
+    assert_eq!(
+        lines[..3],
+        [
+            "Patch 1 is marked ≠: its commit in your checkout has the patch's diff, but its message says something other than the patch's.",
+            "Move HEAD writes the patch's message over the commit's only while HEAD is as stacked last left it, as the commit may be yours, amended outside stacked: until then Move HEAD is grayed, and so is editing in this checkout (pwd).",
+            "The mark clears once the two messages say the same: reword the commit in your checkout to the patch's message, or let Move HEAD make the commit again from the patch.",
+        ]
+    );
+    // On patch 2.
+    keys(&mut app, &[KeyCode::Down]);
+    assert!(app.hint().ends_with("?: what the ! on patch 2 means"), "{}", app.hint());
+    let lines = said(&mut app);
+    assert_eq!(
+        lines[..3],
+        [
+            "Patch 2 is marked !: its commit in your checkout names D34, which the patch does not name.",
+            "Move HEAD never rewrites nor drops that commit: HEAD is locked below patch 2, every commit up to it kept as it is in your checkout. Editing in this checkout (pwd) is grayed meanwhile, and the patch is not submitted to Phabricator, so that no second revision is made.",
+            "The mark clears once the patch names D34 too, or the commit no longer names it: give the patch D34 with an edit by hand, or reword the commit in your checkout.",
+        ]
+    );
+    // On patch 3, no mark: as ever.
+    keys(&mut app, &[KeyCode::Down]);
+    assert!(app.hint().ends_with("?: what can I do here"), "{}", app.hint());
+    assert_eq!(said(&mut app)[0], "Press Enter to read this patch.");
+    // On HEAD's row: where it is, its marks, the lock, and why Move HEAD
+    // is grayed; its menu has Move HEAD, grayed, and says why.
+    keys(&mut app, &[KeyCode::Down]);
+    assert!(app.on_head());
+    assert!(app.hint().starts_with("enter or space: menu") && app.hint().ends_with("?: why HEAD is locked below patch 2"), "{}", app.hint());
+    assert_eq!(
+        said(&mut app)[..6],
+        [
+            format!("HEAD of your checkout, {h}, has the stack's first 3 patches by their diffs, then 1 commit the stack does not have: it forks from the stack after patch 3."),
+            "Patch 1 is marked ≠: its commit's message is not the patch's.".to_string(),
+            "Patch 2 is marked !: the commit of patch 2 names D34, which the patch does not name.".to_string(),
+            "HEAD is locked below patch 2: the commit of patch 2 names D34, which the patch does not name. Move HEAD keeps every commit up to it as it is, and puts HEAD nowhere below it; editing in this checkout (pwd) is grayed meanwhile.".to_string(),
+            "HEAD has commits stacked did not make, as 1 commit after patch 3 is not the stack's, the commit of patch 1 has a message other than the stack's and the commit of patch 2 names D34, which the patch does not name: Move HEAD is offered only when HEAD is on the stack with no marks, or as stacked last left it.".to_string(),
+            "Press Enter or Space for HEAD's menu, with Move HEAD…; ↑↓ for a patch, or the stack's header.".to_string(),
+        ]
+    );
+    keys(&mut app, &[KeyCode::Enter]);
+    assert_eq!(menu_title(&app), format!("HEAD {h}"));
+    assert_eq!(offered(&app, "Move HEAD…"), Some(false));
+    assert!(menu_note(&app).starts_with("Move HEAD is grayed: HEAD has commits stacked did not make"), "{}", menu_note(&app));
+    keys(&mut app, &[KeyCode::Esc]);
+    // Delete does nothing there; a click on it picks it, a second its menu.
+    keys(&mut app, &[KeyCode::Delete]);
+    assert_eq!((app.mode.clone(), app.status.as_str()), (Mode::Normal, ""));
+    keys(&mut app, &[KeyCode::Home]);
+    let screen = draw(&mut app);
+    let (x, y) = at(&screen, "│▶ HEAD");
+    app.click(x + 3, y, false);
+    assert!(app.on_head());
+    app.click(x + 3, y, false);
+    assert_eq!(menu_title(&app), format!("HEAD {h}"));
+}
+
+#[test]
+fn heads_row_says_which_case_of_move_head_applies() {
+    let (_tmp, db, src) = four();
+    let mut app = open_in(&db, &src);
+    let head_said = |app: &mut App| {
+        keys(app, &[KeyCode::Home]);
+        while !app.on_head() {
+            let was = (app.sel, app.on_stack);
+            keys(app, &[KeyCode::Down]);
+            assert!(app.on_head() || was != (app.sel, app.on_stack), "never on HEAD's row");
+        }
+        keys(app, &[KeyCode::Char('?')]);
+        let Mode::Help { lines, .. } = &app.mode else { panic!("{:?}", app.mode) };
+        let lines = lines.clone();
+        keys(app, &[KeyCode::Esc]);
+        lines
+    };
+    // On the stack with no marks.
+    assert_eq!(
+        head_said(&mut app)[..2],
+        [
+            "HEAD of your checkout, main, is at patch 4 of s: its commits since the base are the stack's first patches, by their diffs.",
+            "HEAD is on the stack with no marks: Move HEAD may put it at any patch, the commits it has taken as they are.",
+        ]
+    );
+    // As stacked left it, the stack moved on since.
+    choose(&mut app, "Move HEAD…");
+    keys(&mut app, &[KeyCode::Up, KeyCode::Enter]);
+    app.settle();
+    reword(&db, 0, "Bug 1 - reworded", None);
+    app.refresh();
+    app.look_at_head();
+    app.settle();
+    let lines = head_said(&mut app);
+    assert_eq!(lines[1], "Patch 1 is marked ≠: its commit's message is not the patch's.");
+    assert_eq!(lines[2], "HEAD is as stacked left it: Move HEAD replaces it with the stack as it is now.");
+}
+
 
 #[test]
 fn heads_line_stays_in_sight_when_the_stack_is_too_long_for_the_pane() {
@@ -13544,7 +13799,7 @@ fn a_commit_naming_a_revision_holds_back_no_submit_while_head_is_elsewhere() {
     let phab = std::sync::Arc::new(std::sync::Mutex::new(Phab { next: 124, ..Default::default() }));
     let _one = phab_stand_in(&phab);
     let mut app = open_in(&db, &src);
-    assert!(app.head_here().is_some_and(|h| h.patches().is_none()), "known, and not on the stack");
+    assert!(app.head_here().is_some_and(|h| h.patches() == Some(0) && h.mark(2).is_none()), "known, and forked at the stack's base");
     keys(&mut app, &[KeyCode::Down, KeyCode::Down, KeyCode::Char(' ')]);
     assert_eq!(submit_offered(&app), Some(true));
     choose(&mut app, "Submit to Phabricator as WIP");

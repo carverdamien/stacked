@@ -297,6 +297,19 @@ pub mod color {
     }
 }
 
+/// `n` with a comma between each three of its digits: `1,240`.
+pub fn thousands(n: usize) -> String {
+    let digits = n.to_string();
+    let mut out = String::new();
+    for (k, c) in digits.chars().enumerate() {
+        if k > 0 && (digits.len() - k).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
+}
+
 /// Text in `st` under the cursor, as the settings' `cursor` paints it.
 pub fn on_cursor(st: Style) -> Style {
     under(color::cursor(), st)

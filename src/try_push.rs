@@ -64,18 +64,7 @@ pub fn scheduled(labels: usize, rebuild: Option<u32>) -> usize {
     labels * rebuild.unwrap_or(1) as usize
 }
 
-/// `n` with a comma between each three of its digits: `1,240`.
-pub fn thousands(n: usize) -> String {
-    let digits = n.to_string();
-    let mut out = String::new();
-    for (k, c) in digits.chars().enumerate() {
-        if k > 0 && (digits.len() - k).is_multiple_of(3) {
-            out.push(',');
-        }
-        out.push(c);
-    }
-    out
-}
+pub use crate::paint::thousands;
 
 /// Whether `label` can be a task's label as `./mach try fuzzy` is given
 /// it, a term that selects that task alone: something, and no white space,

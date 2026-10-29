@@ -2126,6 +2126,7 @@ mod tests {
                 commits: vec!["a".into(), "b".into(), "c".into()],
                 marks: vec![(k, "its commit's message".into(), d)],
                 above: vec![],
+                subjects: vec![],
             }),
         };
         let names = |ours: Option<&str>, theirs: &str| Mark::Revision { theirs: theirs.into(), ours: ours.map(String::from) };

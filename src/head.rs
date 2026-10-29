@@ -1,6 +1,7 @@
 //! Where HEAD is, in the checkout stacked runs in, against a stack: on its
 //! base with some of its patches as commits, a commit each, then maybe
-//! commits that are not the stack's; or elsewhere. A commit is a patch when
+//! commits that are not the stack's, forked from it; or on another base. A
+//! commit is a patch when
 //! its diff is, by `git patch-id`; its message may still differ, and the
 //! commit is marked so: `≠` when its message says something other than the
 //! patch's; `!`, with the moz-phab feature, when it names a Differential
@@ -41,23 +42,31 @@ pub struct Head {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum At {
-    /// On the stack's base, its first patches as commits.
+    /// On the stack's base, its first patches as commits, if any, then the
+    /// commits of its own, if any.
     Stack(OnStack),
-    /// Not on the stack: its base is not below HEAD, or the commit after it
-    /// is not the stack's.
+    /// Not on the stack: its base is not below HEAD.
     Elsewhere,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct OnStack {
-    /// The commits that are the stack's first patches, bottom first.
+    /// The commits that are the stack's first patches, bottom first: the
+    /// trunk HEAD and the stack share.
     pub commits: Vec<String>,
     /// Of those, the places (from 0) that are marked: the commit's message
     /// as taken, and its mark.
     pub marks: Vec<(usize, String, Mark)>,
-    /// The commits above them to HEAD, which are not the stack's.
+    /// The commits above them to HEAD, which are not the stack's, bottom
+    /// first: with them, HEAD forks from the stack.
     pub above: Vec<String>,
+    /// The subjects of the first of those, as many as `SUBJECTS`.
+    pub subjects: Vec<String>,
 }
+
+/// How many of the commits HEAD alone has are read by their subject: as
+/// many as the patches pane draws.
+pub const SUBJECTS: usize = 3;
 
 /// The mark of a commit of HEAD's with the same diff as its patch, whose
 /// message is not the patch's.
@@ -192,7 +201,7 @@ impl Head {
             match &self.at {
                 At::Stack(on) if on.above.is_empty() && on.marks.is_empty() => Ok(Case::OnStack),
                 At::Stack(on) => Err(not_made(on)),
-                At::Elsewhere => Err(format!("HEAD is not on the stack, nor where stacked last left it: {ONLY}")),
+                At::Elsewhere => Err(format!("HEAD is not on the stack's base, nor where stacked last left it: {ONLY}")),
             }
         };
         Moves { case, locked }
@@ -215,7 +224,7 @@ impl Head {
     /// not in the stack`, `not on s`.
     pub fn said(&self, name: &str) -> String {
         let At::Stack(on) = &self.at else {
-            return format!("not on {name}: the stack's base is not below it, or the commit after the base is not the stack's");
+            return format!("not on {name}: the stack's base is not below it");
         };
         let mut out = format!("at {}", place(name, on.commits.len()));
         if !on.above.is_empty() {
@@ -346,11 +355,21 @@ fn on_stack(dir: &Path, base: &str, head: &str, patches: &[&Patch]) -> Result<At
         }
         on.commits.push(sha.clone());
     }
-    if on.commits.is_empty() {
-        return Ok(At::Elsewhere);
-    }
+    // The rest forks from the stack: what of it the patches pane draws, by
+    // subject.
     on.above = all[on.commits.len()..].to_vec();
+    on.subjects = subjects(dir, &on.above[..on.above.len().min(SUBJECTS)])?;
     Ok(At::Stack(on))
+}
+
+/// The subject of each of `shas`, in their order.
+fn subjects(dir: &Path, shas: &[String]) -> Result<Vec<String>> {
+    if shas.is_empty() {
+        return Ok(vec![]);
+    }
+    let mut args = vec!["log", "--no-walk=unsorted", "--format=%s"];
+    args.extend(shas.iter().map(String::as_str));
+    Ok(git(dir, &args)?.lines().map(String::from).collect())
 }
 
 /// The patch id of each of `shas` that has a diff, by sha.
@@ -663,6 +682,7 @@ mod tests {
                 commits: commits.iter().map(|s| s.to_string()).collect(),
                 marks: marks.into_iter().map(|(k, m)| (k, "theirs".into(), m)).collect(),
                 above: above.iter().map(|s| s.to_string()).collect(),
+                subjects: vec![],
             }),
         }
     }
@@ -695,7 +715,7 @@ mod tests {
         assert_eq!((h.moves(Some("b")).case, h.keeps(2)), (Ok(Case::AsLeft), 1));
         // Elsewhere: as stacked left it alone.
         let elsewhere = Head { at: At::Elsewhere, ..head("x", &[], vec![], &[]) };
-        assert_eq!(elsewhere.moves(None).case, Err(format!("HEAD is not on the stack, nor where stacked last left it: {ONLY}")));
+        assert_eq!(elsewhere.moves(None).case, Err(format!("HEAD is not on the stack's base, nor where stacked last left it: {ONLY}")));
         assert_eq!((elsewhere.moves(Some("x")).case, elsewhere.keeps(2)), (Ok(Case::AsLeft), 0));
     }
 
