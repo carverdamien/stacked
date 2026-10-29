@@ -12097,19 +12097,18 @@ struct Rev {
     summary: String,
     bug: String,
     diffs: Vec<u64>,
-    reviewers: Vec<(String, bool)>,
     parents: Vec<String>,
 }
 
 /// Phabricator as the tests of a submit have it, never the real one: its
-/// revisions by number, its diffs by id, its users; each call made to it,
-/// and the number the next revision it makes takes.
+/// revisions by number, its diffs by id; each call made to it, and the
+/// number the next revision it makes takes. It knows no users nor groups,
+/// nor reviewers: a submit in work asks nothing of them.
 #[cfg(feature = "moz-phab")]
 #[derive(Default)]
 struct Phab {
     revisions: std::collections::BTreeMap<u64, Rev>,
     diffs: std::collections::BTreeMap<u64, String>,
-    users: Vec<(String, String)>,
     calls: Vec<(String, serde_json::Value)>,
     next: u64,
 }
@@ -12123,6 +12122,16 @@ impl Phab {
         let bug = title.split("Bug ").nth(1).and_then(|r| r.split(' ').next()).unwrap_or_default().to_string();
         self.revisions.insert(n, Rev { status: status.into(), title: title.into(), bug, diffs: vec![id], ..Default::default() });
         self
+    }
+
+    /// The calls of reviewers: their look-ups, and their edits.
+    fn of_reviewers(&self) -> Vec<String> {
+        let edits = |p: &serde_json::Value| p["transactions"].as_array().into_iter().flatten().any(|t| t["type"].as_str().is_some_and(|k| k.starts_with("reviewers.")));
+        self.calls
+            .iter()
+            .filter(|(m, p)| matches!(m.as_str(), "user.search" | "user.query" | "project.search") || edits(p))
+            .map(|(m, _)| m.clone())
+            .collect()
     }
 
     /// The calls that write, each with its transactions' types.
@@ -12145,11 +12154,9 @@ impl Phab {
             "needs-review" => "Needs Review",
             _ => "Closed",
         };
-        let reviewers: Vec<serde_json::Value> = r.reviewers.iter().map(|(p, b)| serde_json::json!({"reviewerPHID": p, "isBlocking": b})).collect();
         serde_json::json!({"id": n, "phid": format!("PHID-DREV-{n}"), "fields": {
             "title": r.title, "summary": r.summary, "status": {"value": r.status, "name": name}, "isDraft": false,
-            "bugzilla.bug-id": r.bug, "repositoryPHID": "PHID-REPO-1"},
-            "attachments": {"reviewers": {"reviewers": reviewers}}})
+            "bugzilla.bug-id": r.bug, "repositoryPHID": "PHID-REPO-1"}})
     }
 
     fn call(&mut self, method: &str, p: serde_json::Value) -> Result<serde_json::Value, String> {
@@ -12172,17 +12179,6 @@ impl Phab {
             }
             "differential.getrawdiff" => json!(self.diffs[&p["diffID"].as_u64().unwrap()]),
             "diffusion.repository.search" => json!({"data": [{"phid": "PHID-REPO-1", "fields": {"vcs": "git"}}]}),
-            "user.search" | "project.search" => {
-                let c = &p["constraints"];
-                let wanted: Vec<&str> = c["usernames"].as_array().or(c["phids"].as_array()).into_iter().flatten().filter_map(|v| v.as_str()).collect();
-                let users = if method == "user.search" { &self.users } else { &vec![] };
-                let found: Vec<serde_json::Value> = users
-                    .iter()
-                    .filter(|(name, phid)| wanted.contains(&name.as_str()) || wanted.contains(&phid.as_str()))
-                    .map(|(name, phid)| json!({"phid": phid, "fields": {"username": name}}))
-                    .collect();
-                json!({"data": found})
-            }
             "differential.creatediff" => {
                 let id = 2000 + self.diffs.len() as u64;
                 self.diffs.insert(id, String::new());
@@ -12210,7 +12206,6 @@ impl Phab {
                         }
                         "plan-changes" => r.status = "changes-planned".into(),
                         "parents.add" | "parents.set" => r.parents = v.as_array().unwrap().iter().map(|d| d.as_str().unwrap().to_string()).collect(),
-                        "reviewers.set" => r.reviewers = v.as_array().unwrap().iter().map(|d| (d.as_str().unwrap().to_string(), false)).collect(),
                         k => return Err(format!("no transaction {k}")),
                     }
                 }
@@ -12296,7 +12291,8 @@ fn submitted(app: &mut App) -> Vec<String> {
 #[cfg(feature = "moz-phab")]
 #[test]
 fn a_patch_with_no_revision_is_sent_as_a_new_one_once_the_dialog_says_what_is_sent_and_where() {
-    let (_tmp, db) = phab_setup(["Bug 1 - one\n\nBecause.", "Bug 2 - two", "Bug 3 - three"]);
+    // Its title names reviewers: in work, none is set, as moz-phab sets none.
+    let (_tmp, db) = phab_setup(["Bug 1 - one r=alice r?#build\n\nBecause.", "Bug 2 - two", "Bug 3 - three"]);
     let phab = std::sync::Arc::new(std::sync::Mutex::new(Phab { next: 124, ..Default::default() }));
     let _one = phab_stand_in(&phab);
     let mut app = open(&db).unwrap();
@@ -12309,9 +12305,8 @@ fn a_patch_with_no_revision_is_sent_as_a_new_one_once_the_dialog_says_what_is_se
     let Mode::Menu(m) = &app.mode else { unreachable!() };
     assert_eq!(
         m.note.as_deref().unwrap(),
-        "Patch 1 is sent to Phabricator, at https://phabricator.example.com, as a new revision, with the status Changes Planned. Its title is \"WIP: Bug 1 - one\", and its bug is 1.\n\
-         Patch 1 is at the bottom of the stack, so the new revision gets no parent.\n\
-         The title names no reviewers, so the new revision has none."
+        "Patch 1 is sent to Phabricator, at https://phabricator.example.com, as a new revision, with the status Changes Planned. Its title is \"WIP: Bug 1 - one r?#build r=alice\", and its bug is 1.\n\
+         Patch 1 is at the bottom of the stack, so the new revision gets no parent."
     );
     assert_eq!(items(&app).iter().map(|(l, _)| l.as_str()).collect::<Vec<_>>(), ["Send it to Phabricator", "Cancel: send nothing"]);
     let screen = draw(&mut app);
@@ -12334,8 +12329,10 @@ fn a_patch_with_no_revision_is_sent_as_a_new_one_once_the_dialog_says_what_is_se
         phab.lock().unwrap().writes(),
         ["differential.creatediff", "differential.setdiffproperty", "differential.revision.edit title,summary,bugzilla.bug-id,update,plan-changes"]
     );
+    assert!(phab.lock().unwrap().of_reviewers().is_empty(), "no call of reviewers at all");
+    assert_eq!(phab.lock().unwrap().revisions[&124].title, "WIP: Bug 1 - one r?#build r=alice");
     // The patch names it, a new version taken at once, as the history says.
-    assert_eq!(patch_of(&db, 0).message, format!("Bug 1 - one\n\nBecause.\n\n{LINK}124"));
+    assert_eq!(patch_of(&db, 0).message, format!("Bug 1 - one r=alice r?#build\n\nBecause.\n\n{LINK}124"));
     let d = Db::load(&db).unwrap();
     assert_eq!(d.stack("s").unwrap().op, "submitted patch 1 as D124, in work");
     keys(&mut app, &[KeyCode::Up]);
@@ -12353,10 +12350,9 @@ fn a_revision_in_work_is_reviewed_phabricator_s_version_against_the_one_sent_bef
     // which changes a.txt otherwise, and adds no c.txt.
     let earlier = patch_of(&db, 2).diff;
     let mine = earlier.split("diff --git a/c.txt").next().unwrap().replace("+LINE 20", "+Line twenty");
-    next_version(&db, 2, &format!("Bug 3 - three r=alice\n\nNew why.\n\n{LINK}13"), &mine);
+    next_version(&db, 2, &format!("Bug 3 - three r=alice r?bob\n\nNew why.\n\n{LINK}13"), &mine);
     let mut p = Phab::default().with(12, "needs-review", "Bug 2 - two", "").with(13, "changes-planned", "WIP: Bug 3 - three", &earlier);
     p.revisions.get_mut(&13).unwrap().summary = "Old why.".into();
-    p.users = vec![("alice".into(), "PHID-USER-a".into())];
     let phab = std::sync::Arc::new(std::sync::Mutex::new(p));
     let _one = phab_stand_in(&phab);
     let mut app = open(&db).unwrap();
@@ -12367,22 +12363,20 @@ fn a_revision_in_work_is_reviewed_phabricator_s_version_against_the_one_sent_bef
     let rows = submitted(&mut app);
     let at = |text: &str| rows.iter().position(|r| r == text).unwrap_or_else(|| panic!("no {text:?} in {rows:#?}"));
     // What is sent and where; then the title and summary, Phabricator's
-    // then this; the reviewers and the parent, before then after; the
-    // status; then the code: a.txt changed, c.txt that only Phabricator's
-    // version adds, gone back to what the patches below leave, none.
+    // then this, the reviewers the title names written as moz-phab writes
+    // them; the parent, before then after; the status; then the code: a.txt
+    // changed, c.txt that only Phabricator's version adds, gone back to what
+    // the patches below leave, none. Of reviewers, nothing else is said.
     let order = [
         "what is sent",
         "   D13, at https://phabricator.example.com/D13, gets a new diff of patch 3, and stays Changes Planned.",
         "   Its parent is set to D12, the revision of patch 2.",
-        "   The reviewers of D13 are set to alice.",
         "the title and summary: Phabricator's, then what is sent",
         "-WIP: Bug 3 - three",
-        "+WIP: Bug 3 - three r=alice",
+        "+WIP: Bug 3 - three r?bob r=alice",
         "-Old why.",
         "+New why.",
         "what else changes",
-        "-reviewers: none",
-        "+reviewers: alice",
         "-parent: none",
         "+parent: D12, the revision of patch 2",
         " status: stays Changes Planned",
@@ -12397,6 +12391,7 @@ fn a_revision_in_work_is_reviewed_phabricator_s_version_against_the_one_sent_bef
     let places: Vec<usize> = order.iter().map(|t| at(t)).collect();
     assert!(places.windows(2).all(|w| w[0] < w[1]), "{rows:#?}");
     assert!(!rows.iter().any(|r| r.contains("The code does not change")), "{rows:#?}");
+    assert!(!rows.iter().any(|r| r.contains("reviewers")), "{rows:#?}");
     let screen = draw(&mut app);
     assert!(screen.lines().nth(1).unwrap().starts_with(" D13: what is sent to Phabricator, for your review"), "{screen}");
     assert_eq!(app.hint(), "↑↓: scroll · enter: send it to Phabricator · esc: send nothing · 1: side by side · space: menu · ?: what can I do here");
@@ -12413,14 +12408,14 @@ fn a_revision_in_work_is_reviewed_phabricator_s_version_against_the_one_sent_bef
     keys(&mut app, &[KeyCode::Esc]);
     assert_eq!((app.screen, app.status.as_str()), (Screen::Main, "nothing was sent to Phabricator"));
     assert!(phab.lock().unwrap().writes().is_empty());
-    // Reviewed again, Enter sends it: the diff, then the parent and the
-    // reviewers, each in an edit of its own.
+    // Reviewed again, Enter sends it: the diff, then the parent in an edit
+    // of its own; no reviewers.
     choose(&mut app, "Submit to Phabricator as WIP");
     app.settle();
     keys(&mut app, &[KeyCode::Enter]);
     assert_eq!((app.screen, app.status.as_str()), (Screen::Main, "sending patch 3 to Phabricator…"));
     app.settle();
-    assert_eq!(app.status, "D13 has the new diff of patch 3 now. D13 stays Changes Planned. The parent of D13 is D12 now. The reviewers of D13 are alice.");
+    assert_eq!(app.status, "D13 has the new diff of patch 3 now. D13 stays Changes Planned. The parent of D13 is D12 now.");
     assert_eq!(
         phab.lock().unwrap().writes(),
         [
@@ -12429,9 +12424,9 @@ fn a_revision_in_work_is_reviewed_phabricator_s_version_against_the_one_sent_bef
             "differential.revision.edit title,summary,update",
             "differential.revision.edit plan-changes",
             "differential.revision.edit parents.set",
-            "differential.revision.edit reviewers.set",
         ]
     );
+    assert!(phab.lock().unwrap().of_reviewers().is_empty(), "no call of reviewers at all");
     let r = phab.lock().unwrap().revisions[&13].clone();
     assert_eq!((r.status.as_str(), r.summary.as_str(), r.parents.clone()), ("changes-planned", "New why.", vec!["PHID-DREV-12".to_string()]));
     stacked::submit::stand_in(None);

@@ -9,12 +9,13 @@
 //! is no version of the patch the database holds, as it came from
 //! elsewhere. Then only what changed is sent (`send`): a new diff and its
 //! commit's author and message, the title, the summary and the bug, the
-//! status kept or put in Changes Planned; after that, each in a call of its
-//! own, so that a refusal undoes none of the rest, the parent set to the
-//! revision of the patch below, and the reviewers to those the title names.
-//! A new revision's link goes into the patch, as a new version of it, at
-//! once. The workspace's commits are not touched: the sync of commit
-//! messages takes the link there.
+//! status kept or put in Changes Planned; after that, in a call of its own,
+//! so that a refusal undoes none of the rest, the parent set to the
+//! revision of the patch below. No reviewers are set, as `moz-phab submit
+//! --wip` sets none: those the title names stay in it, written as moz-phab
+//! writes them. A new revision's link goes into the patch, as a new
+//! version of it, at once. The workspace's commits are not touched: the
+//! sync of commit messages takes the link there.
 
 use std::path::Path;
 use std::sync::Mutex;
@@ -302,8 +303,7 @@ fn bug_in(s: &[char]) -> Option<(usize, usize, String)> {
 }
 
 /// What moz-phab makes of a commit's title (its message's first line) to
-/// submit it as work in progress: the revision's title, the bug, the
-/// reviewers it names.
+/// submit it as work in progress: the revision's title, and the bug.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Titled {
     /// `WIP: ` and the title, its reviewers and its bug written as
@@ -311,17 +311,12 @@ pub struct Titled {
     pub title: String,
     /// From `Bug 123` (or `b=123`): the first.
     pub bug: Option<String>,
-    /// As written after `r?` then `r=`: `alice`, `bob!` (blocking),
-    /// `#build` (a group).
-    pub reviewers: Vec<String>,
 }
 
-/// Title `first` as moz-phab's `submit --wip` reads it, and what it sends
-/// of it: the typo `r!` fixed, the reviewers asked (`r?`) and given (`r=`)
-/// read, then written again as it writes them, the first bug said `Bug N`,
-/// and `WIP: ` before it all, in place of one written already.
-pub fn wip_title(first: &str) -> Titled {
-    let t = morph_blocking(first);
+/// The reviewers title `t` names, as moz-phab reads them
+/// (`parse_reviewers`): those asked (`r?`), then those who gave it (`r=`),
+/// each as written: `alice`, `bob!` (blocking), `#build` (a group).
+fn reviewers_in(t: &str) -> (Vec<String>, Vec<String>) {
     let c: Vec<char> = t.chars().collect();
     let names = |kind: char| -> Vec<String> {
         specs(&c, &[kind])
@@ -330,7 +325,18 @@ pub fn wip_title(first: &str) -> Titled {
             .flat_map(|r| split_names(&c, r))
             .collect()
     };
-    let (request, granted) = (names('?'), names('='));
+    (names('?'), names('='))
+}
+
+/// Title `first` as moz-phab's `submit --wip` reads it, and what it sends
+/// of it: the typo `r!` fixed, the reviewers asked (`r?`) and given (`r=`)
+/// read, then written again as it writes them, as it does with `--wip` or
+/// without, though with it it sets none; the first bug said `Bug N`; and
+/// `WIP: ` before it all, in place of one written already.
+pub fn wip_title(first: &str) -> Titled {
+    let t = morph_blocking(first);
+    let c: Vec<char> = t.chars().collect();
+    let (request, granted) = reviewers_in(&t);
     let bug = bug_in(&c).map(|(_, _, b)| b);
     let preview = replace_reviewers(&t, &request, &granted);
     let preview = match &bug {
@@ -354,7 +360,6 @@ pub fn wip_title(first: &str) -> Titled {
     Titled {
         title: format!("WIP: {}", rest.trim_start()),
         bug,
-        reviewers: request.into_iter().chain(granted).collect(),
     }
 }
 
@@ -408,6 +413,7 @@ pub fn summary_of(message: &str, trailer: &str) -> String {
 
 /// A revision as a submit reads it, before it sends anything, and again
 /// before it does: if any of it but `raw` changed meanwhile, nothing is.
+/// Its reviewers are not read: a submit in work sets none.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Remote {
     /// `D123`.
@@ -424,8 +430,6 @@ pub struct Remote {
     /// Its bug, empty for none.
     pub bug: String,
     pub repository: Option<String>,
-    /// Its reviewers: each one's PHID, and whether it is blocking; sorted.
-    pub reviewers: Vec<(String, bool)>,
     /// Its parents' PHIDs, sorted.
     pub parents: Vec<String>,
     /// Its latest diff: its id, and the diff, raw.
@@ -459,20 +463,9 @@ fn field(r: &Value, k: &str) -> String {
 /// Revision `id` (`D123`) as it is now, its latest diff raw too if `raw`.
 fn read_remote(call: &mut Call, id: &str, raw: bool) -> Result<Remote, String> {
     let n: u64 = id.trim_start_matches('D').parse().map_err(|_| format!("{id} names no revision"))?;
-    let found = call("differential.revision.search", json!({"constraints": {"ids": [n]}, "attachments": {"reviewers": true}}))?;
+    let found = call("differential.revision.search", json!({"constraints": {"ids": [n]}}))?;
     let r = found.pointer("/data/0").cloned().ok_or(format!("Phabricator has no revision {id}"))?;
     let phid = r.get("phid").and_then(Value::as_str).unwrap_or_default().to_string();
-    let mut reviewers: Vec<(String, bool)> = r
-        .pointer("/attachments/reviewers/reviewers")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(|v| {
-            let p = v.get("reviewerPHID").and_then(Value::as_str)?;
-            Some((p.to_string(), v.get("isBlocking").and_then(Value::as_bool).unwrap_or(false)))
-        })
-        .collect();
-    reviewers.sort();
     let mut parents = crate::phab::edges(call, &phid, "revision.parent")?;
     parents.sort();
     let diffs = call("differential.querydiffs", json!({"revisionIDs": [n]}))?;
@@ -498,7 +491,6 @@ fn read_remote(call: &mut Call, id: &str, raw: bool) -> Result<Remote, String> {
         summary: field(&r, "summary"),
         bug: field(&r, "bugzilla.bug-id"),
         repository,
-        reviewers,
         parents,
         diff,
         raw,
@@ -591,50 +583,6 @@ pub enum Parent {
     Nothing(String),
 }
 
-/// The reviewers a submit sets: those the title names that Phabricator
-/// has, each as the title names it, without its `!`, its PHID, and whether
-/// it is blocking; those it has not. Or why they could not be looked up.
-#[derive(Debug, Clone, PartialEq, Default)]
-pub struct Reviewers {
-    pub found: Vec<(String, String, bool)>,
-    pub missing: Vec<String>,
-    pub failed: Option<String>,
-}
-
-impl Reviewers {
-    /// The reviewers as `reviewers.set` takes them: the users, those
-    /// blocking, the groups, those blocking, each blocking one written
-    /// `blocking(PHID)`, as moz-phab orders them.
-    fn value(&self) -> Vec<String> {
-        let group = |n: &str| n.starts_with('#');
-        let mut out = Vec::new();
-        for (g, b) in [(false, false), (false, true), (true, false), (true, true)] {
-            for (n, p, blocking) in &self.found {
-                if group(n) == g && *blocking == b {
-                    let v = if b { format!("blocking({p})") } else { p.clone() };
-                    if !out.contains(&v) {
-                        out.push(v);
-                    }
-                }
-            }
-        }
-        out
-    }
-
-    /// As (PHID, blocking), sorted, as `Remote::reviewers` holds them.
-    fn set(&self) -> Vec<(String, bool)> {
-        let mut out: Vec<(String, bool)> = self.found.iter().map(|(_, p, b)| (p.clone(), *b)).collect();
-        out.sort();
-        out.dedup();
-        out
-    }
-
-    /// Those found, by name: `alice, bob (blocking) and #build`.
-    pub fn said(&self) -> String {
-        and(&self.found.iter().map(|(n, _, b)| if *b { format!("{n} (blocking)") } else { n.clone() }).collect::<Vec<_>>())
-    }
-}
-
 /// `a`, `a and b`, `a, b and c`.
 pub fn and(items: &[String]) -> String {
     match items {
@@ -669,11 +617,8 @@ pub struct Prepared {
     pub new_diff: bool,
     pub repository: Repository,
     pub parent: Parent,
-    /// None when the title names no reviewer.
-    pub reviewers: Option<Reviewers>,
-    /// The revision's reviewers as they are, by name, and its parents, by
-    /// revision: what the review says they were.
-    pub reviewers_now: Vec<String>,
+    /// The revision's parents as they are, by revision: what the review
+    /// says they were.
     pub parents_now: Vec<String>,
     /// The code from the revision's latest diff to the one sent, each file
     /// as both leave it on what is below the patch, as a diff; none when it
@@ -686,12 +631,6 @@ impl Prepared {
     /// The patch's number in the stack, from 1.
     pub fn number(&self) -> usize {
         self.at + 1
-    }
-
-    /// The revision, as the sentences name it: `D123`, or `the new
-    /// revision`.
-    fn name(&self) -> String {
-        self.revision.as_ref().map_or("the new revision".into(), |r| r.id.clone())
     }
 
     /// The revision's title and summary, as Phabricator has them; none for
@@ -734,15 +673,6 @@ impl Prepared {
         }
     }
 
-    /// The reviewers to set, unless they are those already.
-    fn reviewers_to_set(&self) -> Option<&Reviewers> {
-        let r = self.reviewers.as_ref().filter(|r| !r.found.is_empty())?;
-        match &self.revision {
-            Some(now) if now.reviewers == r.set() => None,
-            _ => Some(r),
-        }
-    }
-
     /// Whether the edit that sends the rest is made.
     fn main_edit(&self) -> bool {
         self.new_diff || self.message_changes() || self.plan_changes().0
@@ -750,22 +680,13 @@ impl Prepared {
 
     /// Whether nothing at all is to be sent.
     pub fn nothing(&self) -> bool {
-        !self.main_edit() && !matches!(self.parent, Parent::Set { .. }) && self.reviewers_to_set().is_none()
+        !self.main_edit() && !self.parent_changes()
     }
 
-    /// Whether the reviewers change, and the parent: what the review lists
-    /// under what else changes.
-    pub fn reviewers_change(&self) -> bool {
-        self.reviewers_to_set().is_some()
-    }
-
+    /// Whether the parent changes: what the review lists under what else
+    /// changes.
     pub fn parent_changes(&self) -> bool {
         matches!(self.parent, Parent::Set { .. })
-    }
-
-    /// The reviewers as they will be, by name.
-    pub fn reviewers_after(&self) -> String {
-        self.reviewers_to_set().map_or(String::new(), Reviewers::said)
     }
 
     /// The parent as it will be, said: `D122, the revision of patch 2`.
@@ -790,8 +711,8 @@ impl Prepared {
         }
     }
 
-    /// What is sent, said: what to where, and its status; then its parent
-    /// and its reviewers. For the dialog, and over the review.
+    /// What is sent, said: what to where, and its status; then its parent.
+    /// For the dialog, and over the review.
     pub fn said(&self) -> Vec<String> {
         let n = self.number();
         let mut out = vec![match &self.revision {
@@ -813,7 +734,6 @@ impl Prepared {
             }
         }];
         out.push(self.parent_said());
-        out.push(self.reviewers_said(false));
         out
     }
 
@@ -826,47 +746,13 @@ impl Prepared {
         }
     }
 
-    /// What is done of the reviewers, said: before it is (`done` false), or
-    /// once it is.
-    fn reviewers_said(&self, done: bool) -> String {
-        let name = self.name();
-        let Some(r) = &self.reviewers else {
-            return match &self.revision {
-                None => "The title names no reviewers, so the new revision has none.".into(),
-                Some(_) => format!("The title names no reviewers, so the reviewers of {name} are left as they are."),
-            };
-        };
-        if let Some(e) = &r.failed {
-            return format!("The reviewers the title names could not be looked up, so they are not set: {e}.");
-        }
-        let missing = match r.missing.len() {
-            0 => None,
-            1 => Some(format!("No reviewer named {} was found", r.missing[0])),
-            _ => Some(format!("No reviewers named {} were found", and(&r.missing))),
-        };
-        let are = match done {
-            true => format!("the reviewers of {name} are {}", r.said()),
-            false => format!("the reviewers of {name} are set to {}", r.said()),
-        };
-        match (missing, r.found.is_empty(), self.reviewers_to_set().is_none()) {
-            (Some(m), true, _) => format!("{m}, so the reviewers of {name} are left as they are."),
-            (Some(m), false, _) if done => format!("{m}; {are}."),
-            (Some(m), false, _) => format!("{m}, so {are}."),
-            (None, _, true) if self.revision.is_some() => format!("The reviewers of {name} are {} already.", r.said()),
-            (None, _, _) => format!("{}{}.", are[..1].to_uppercase(), &are[1..]),
-        }
-    }
-
     /// What the status line says when nothing is to be sent: and why no
-    /// parent is set, or some reviewers are not, if that is so.
+    /// parent is set, if that is so.
     pub fn nothing_said(&self) -> String {
         let r = self.revision.as_ref().map_or("The revision".into(), |r| r.id.clone());
         let mut out = vec![format!("{r} is patch {} as it is already, with its title and summary, so nothing was sent.", self.number())];
         if let Parent::Nothing(why) = &self.parent {
             out.push(why.clone());
-        }
-        if self.reviewers.as_ref().is_some_and(|rv| !rv.missing.is_empty() || rv.failed.is_some()) {
-            out.push(self.reviewers_said(false));
         }
         out.join(" ")
     }
@@ -945,96 +831,6 @@ fn parent(db: &Db, s: &Stack, at: usize, call: &mut Call, now: Option<&Remote>) 
             }
         }
     }
-}
-
-/// The reviewers `names` (as the title names them: `alice`, `bob!`,
-/// `#build`), looked up with `call`: users by their usernames, groups by
-/// their slugs, as moz-phab looks them up (`project.search`, the active
-/// ones), names in any case.
-fn look_up(call: &mut Call, names: &[String]) -> Reviewers {
-    let mut out = Reviewers::default();
-    // Each once, blocking if it is so once.
-    let mut wanted: Vec<(String, bool)> = Vec::new();
-    for n in names {
-        let name = n.trim_end_matches('!').to_string();
-        if name.trim_start_matches('#').is_empty() {
-            continue;
-        }
-        match wanted.iter_mut().find(|(w, _)| w.eq_ignore_ascii_case(&name)) {
-            Some(w) => w.1 |= n.ends_with('!'),
-            None => wanted.push((name, n.ends_with('!'))),
-        }
-    }
-    let mut phid_of: std::collections::HashMap<String, String> = std::collections::HashMap::new();
-    let users: Vec<&str> = wanted.iter().map(|(n, _)| n.as_str()).filter(|n| !n.starts_with('#')).collect();
-    let groups: Vec<&str> = wanted.iter().map(|(n, _)| n.as_str()).filter(|n| n.starts_with('#')).collect();
-    let found = |v: &Value| v.get("data").and_then(Value::as_array).cloned().unwrap_or_default();
-    if !users.is_empty() {
-        match call("user.search", json!({"constraints": {"usernames": users}})) {
-            Ok(v) => {
-                for u in found(&v) {
-                    if let (Some(name), Some(phid)) = (u.pointer("/fields/username").and_then(Value::as_str), u.get("phid").and_then(Value::as_str)) {
-                        phid_of.insert(name.to_lowercase(), phid.into());
-                    }
-                }
-            }
-            Err(e) => out.failed = Some(e),
-        }
-    }
-    if !groups.is_empty() && out.failed.is_none() {
-        match call("project.search", json!({"queryKey": "active", "constraints": {"slugs": groups}})) {
-            Ok(v) => {
-                for g in found(&v) {
-                    if let (Some(slug), Some(phid)) = (g.pointer("/fields/slug").and_then(Value::as_str), g.get("phid").and_then(Value::as_str)) {
-                        phid_of.insert(format!("#{}", slug.to_lowercase()), phid.into());
-                    }
-                }
-                // Found by another of their slugs.
-                for (slug, m) in v.pointer("/maps/slugMap").and_then(Value::as_object).into_iter().flatten() {
-                    if let Some(phid) = m.get("projectPHID").and_then(Value::as_str) {
-                        phid_of.entry(format!("#{}", slug.trim_start_matches('#').to_lowercase())).or_insert(phid.into());
-                    }
-                }
-            }
-            Err(e) => out.failed = Some(e),
-        }
-    }
-    if out.failed.is_some() {
-        return out;
-    }
-    for (name, blocking) in wanted {
-        match phid_of.get(&name.to_lowercase()) {
-            Some(phid) => out.found.push((name, phid.clone(), blocking)),
-            None => out.missing.push(name),
-        }
-    }
-    out
-}
-
-/// The names of reviewers `phids` (each with whether it is blocking), read
-/// with `call`: a user's username, a group's `#slug`, else the PHID.
-fn reviewer_names(call: &mut Call, phids: &[(String, bool)]) -> Vec<String> {
-    let mut name_of: std::collections::HashMap<String, String> = std::collections::HashMap::new();
-    for (method, prefix, mark) in [("user.search", "PHID-USER-", ""), ("project.search", "PHID-PROJ-", "#")] {
-        let these: Vec<&str> = phids.iter().map(|(p, _)| p.as_str()).filter(|p| p.starts_with(prefix)).collect();
-        if these.is_empty() {
-            continue;
-        }
-        let Ok(v) = call(method, json!({"constraints": {"phids": these}})) else { continue };
-        for d in v.get("data").and_then(Value::as_array).into_iter().flatten() {
-            let name = d.pointer("/fields/username").or_else(|| d.pointer("/fields/slug")).and_then(Value::as_str);
-            if let (Some(name), Some(phid)) = (name, d.get("phid").and_then(Value::as_str)) {
-                name_of.insert(phid.into(), format!("{mark}{name}"));
-            }
-        }
-    }
-    phids
-        .iter()
-        .map(|(p, blocking)| {
-            let name = name_of.get(p).cloned().unwrap_or_else(|| p.clone());
-            if *blocking { format!("{name} (blocking)") } else { name }
-        })
-        .collect()
 }
 
 /// The revisions `phids`, read with `call`, as `D123`; each not found, its
@@ -1221,11 +1017,7 @@ fn prepare_with(db: &Db, s: &Stack, at: usize, url: &str, arc: &Arc, call: &mut 
     };
     let new_diff = known.as_ref().is_none_or(|k| !k.current);
     let parent = parent(db, s, at, call, revision.as_ref());
-    let reviewers = (!titled.reviewers.is_empty()).then(|| look_up(call, &titled.reviewers));
-    let (reviewers_now, parents_now) = match &revision {
-        Some(r) => (reviewer_names(call, &r.reviewers), revision_names(call, &r.parents)),
-        None => (Vec::new(), Vec::new()),
-    };
+    let parents_now = revision.as_ref().map_or_else(Vec::new, |r| revision_names(call, &r.parents));
     let (code, code_said) = match (&revision, &known) {
         (Some(r), Some(k)) if new_diff => code_change(db, s, at, k, &r.raw, &p.diff),
         _ => (None, None),
@@ -1245,8 +1037,6 @@ fn prepare_with(db: &Db, s: &Stack, at: usize, url: &str, arc: &Arc, call: &mut 
         new_diff,
         repository,
         parent,
-        reviewers,
-        reviewers_now,
         parents_now,
         code,
         code_said,
@@ -1736,7 +1526,8 @@ fn sent(path: &Path, p: &Prepared, call: &mut Call) -> String {
             Err(e) => format!("But the message of patch {n} could not take the link to {d}: {}.", e.0),
         });
     }
-    // Best effort, each on its own: the parent, then the reviewers.
+    // Best effort, on its own: the parent. No reviewers are set, as
+    // moz-phab sets none with `--wip`.
     match &p.parent {
         Parent::Set { id, phid: parent, .. } => {
             let kind = if r.is_none() { "parents.add" } else { "parents.set" };
@@ -1747,14 +1538,6 @@ fn sent(path: &Path, p: &Prepared, call: &mut Call) -> String {
         }
         Parent::Already { .. } => {}
         Parent::Nothing(why) => said.push(why.replace("the new revision", &d)),
-    }
-    if let Some(rv) = p.reviewers_to_set() {
-        said.push(match edit(call, &phid, json!({"type": "reviewers.set", "value": rv.value()})) {
-            Ok(_) => p.reviewers_said(true).replace("the new revision", &d),
-            Err(e) => format!("But the reviewers of {d} were not set: {e}"),
-        });
-    } else if p.reviewers.as_ref().is_some_and(|rv| !rv.missing.is_empty() || rv.failed.is_some()) {
-        said.push(p.reviewers_said(true).replace("the new revision", &d));
     }
     said.into_iter().map(sentence).collect::<Vec<_>>().join(" ")
 }
@@ -1779,27 +1562,29 @@ mod tests {
 
     #[test]
     fn a_title_is_read_as_moz_phab_reads_it() {
+        let names = |t: &str| reviewers_in(&morph_blocking(t));
+        let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
         let t = wip_title("Bug 1 - Fix foo r=alice,bob");
         assert_eq!((t.title.as_str(), t.bug.as_deref()), ("WIP: Bug 1 - Fix foo r=alice,bob", Some("1")));
-        assert_eq!(t.reviewers, ["alice", "bob"]);
-        // Asked of a group and of one who blocks, given by another: those
-        // asked first, each list written again as moz-phab writes it.
-        let t = wip_title("Bug 2 - x r?#build, carol! r=dave");
-        assert_eq!(t.reviewers, ["#build", "carol!", "dave"]);
-        assert_eq!(t.title, "WIP: Bug 2 - x r?#build,carol! r=dave");
+        assert_eq!(names("Bug 1 - Fix foo r=alice,bob"), (vec![], s(&["alice", "bob"])));
+        // Asked of a group and of one who blocks, given by another: each list
+        // written again as moz-phab writes it, those asked first.
+        assert_eq!(names("Bug 2 - x r?#build, carol! r=dave"), (s(&["#build", "carol!"]), s(&["dave"])));
+        assert_eq!(wip_title("Bug 2 - x r?#build, carol! r=dave").title, "WIP: Bug 2 - x r?#build,carol! r=dave");
         // The typo `r!`: each blocking, given.
-        let t = wip_title("Bug 3 - y r!erin,frank.");
-        assert_eq!((t.title.as_str(), t.reviewers.clone()), ("WIP: Bug 3 - y r=erin!,frank!.", vec!["erin!".to_string(), "frank!".into()]));
+        assert_eq!(wip_title("Bug 3 - y r!erin,frank.").title, "WIP: Bug 3 - y r=erin!,frank!.");
+        assert_eq!(names("Bug 3 - y r!erin,frank."), (vec![], s(&["erin!", "frank!"])));
         // Another's specifier, `sr=`, is none of its names; nor is one in a word.
-        assert_eq!(wip_title("Bug 4 - z r=ann, sr=bo").reviewers, ["ann"]);
-        assert_eq!(wip_title("Bug 5 - zr=ann (r=bo)").reviewers, ["bo"]);
+        assert_eq!(names("Bug 4 - z r=ann, sr=bo"), (vec![], s(&["ann"])));
+        assert_eq!(names("Bug 5 - zr=ann (r=bo)"), (vec![], s(&["bo"])));
         // The bug in any case, said `Bug N`; `WIP:` once; none named.
         let t = wip_title("bug 123 - lower");
         assert_eq!((t.title.as_str(), t.bug.as_deref()), ("WIP: Bug 123 - lower", Some("123")));
         assert_eq!(wip_title("WIP: Bug 6 - again").title, "WIP: Bug 6 - again");
         assert_eq!(wip_title("wip Bug 7").title, "WIP: Bug 7");
         let t = wip_title("Fix it");
-        assert_eq!((t.title.as_str(), t.bug, t.reviewers.is_empty()), ("WIP: Fix it", None, true));
+        assert_eq!((t.title.as_str(), t.bug), ("WIP: Fix it", None));
+        assert_eq!(names("Fix it"), (vec![], vec![]));
         // A specifier with no name goes.
         assert_eq!(wip_title("Bug 9 - x r=").title, "WIP: Bug 9 - x");
         assert_eq!(wip_title("Bug 12x - no bug").bug, None);
@@ -1911,19 +1696,17 @@ mod tests {
         summary: String,
         bug: String,
         diffs: Vec<u64>,
-        reviewers: Vec<(String, bool)>,
         parents: Vec<String>,
     }
 
-    /// Phabricator as the tests have it: revisions by number, diffs by id,
-    /// its users and groups; each call made, and those to refuse (a
-    /// method, or a method and a transaction's type: `edit:parents.set`).
+    /// Phabricator as the tests have it: revisions by number, diffs by id;
+    /// each call made, and those to refuse (a method, or a method and a
+    /// transaction's type: `edit:parents.set`). It knows no users nor
+    /// groups, nor reviewers: a submit in work asks nothing of them.
     #[derive(Default)]
     struct Fake {
         revisions: BTreeMap<u64, Rev>,
         diffs: BTreeMap<u64, String>,
-        users: Vec<(&'static str, &'static str)>,
-        groups: Vec<(&'static str, &'static str)>,
         calls: Vec<(String, Value)>,
         refuse: Vec<&'static str>,
     }
@@ -1940,6 +1723,16 @@ mod tests {
             self
         }
 
+        /// The calls of reviewers: their look-ups, and their edits.
+        fn of_reviewers(&self) -> Vec<String> {
+            let edits = |p: &Value| p["transactions"].as_array().into_iter().flatten().any(|t| t["type"].as_str().is_some_and(|k| k.starts_with("reviewers.")));
+            self.calls
+                .iter()
+                .filter(|(m, p)| matches!(m.as_str(), "user.search" | "user.query" | "project.search") || edits(p))
+                .map(|(m, _)| m.clone())
+                .collect()
+        }
+
         fn writes(&self) -> Vec<String> {
             self.calls.iter().filter(|(m, _)| WRITES.contains(&m.as_str())).map(|(m, p)| {
                 let kinds: Vec<&str> = p["transactions"].as_array().into_iter().flatten().filter_map(|t| t["type"].as_str()).collect();
@@ -1949,12 +1742,10 @@ mod tests {
 
         fn revision(&self, n: u64) -> Value {
             let r = &self.revisions[&n];
-            let reviewers: Vec<Value> = r.reviewers.iter().map(|(p, b)| json!({"reviewerPHID": p, "isBlocking": b})).collect();
             let name = match r.status.as_str() { "changes-planned" => "Changes Planned", "needs-review" => "Needs Review", "draft" => "Draft", "published" => "Closed", _ => "?" };
             json!({"id": n, "phid": format!("PHID-DREV-{n}"), "fields": {
                 "title": r.title, "summary": r.summary, "status": {"value": r.status, "name": name}, "isDraft": r.draft,
-                "bugzilla.bug-id": r.bug, "repositoryPHID": "PHID-REPO-1"},
-                "attachments": {"reviewers": {"reviewers": reviewers}}})
+                "bugzilla.bug-id": r.bug, "repositoryPHID": "PHID-REPO-1"}})
         }
 
         fn call(&mut self, method: &str, p: Value) -> Result<Value, String> {
@@ -1980,14 +1771,6 @@ mod tests {
                 }
                 "differential.getrawdiff" => json!(self.diffs[&p["diffID"].as_u64().unwrap()]),
                 "diffusion.repository.search" => json!({"data": [{"phid": "PHID-REPO-1", "fields": {"vcs": "git"}}]}),
-                "user.search" | "project.search" => {
-                    let (list, field, mark) = if method == "user.search" { (&self.users, "username", "") } else { (&self.groups, "slug", "#") };
-                    let c = &p["constraints"];
-                    let wanted: Vec<String> = c["usernames"].as_array().or(c["slugs"].as_array()).or(c["phids"].as_array()).into_iter().flatten().filter_map(|v| v.as_str()).map(|s| s.trim_start_matches('#').to_lowercase()).collect();
-                    let found: Vec<Value> = list.iter().filter(|(name, phid)| wanted.contains(&name.to_lowercase()) || wanted.contains(&phid.to_lowercase())).map(|(name, phid)| json!({"phid": phid, "fields": {field: name}})).collect();
-                    let _ = mark;
-                    json!({"data": found, "maps": {"slugMap": {}}})
-                }
                 "differential.creatediff" => {
                     let id = 2000 + self.diffs.len() as u64;
                     self.diffs.insert(id, render(&p["changes"]));
@@ -2018,13 +1801,6 @@ mod tests {
                             "plan-changes" if r.status == "changes-planned" => return Err("plan-changes: it is Changes Planned already".into()),
                             "plan-changes" => r.status = "changes-planned".into(),
                             "parents.add" | "parents.set" => r.parents = v.as_array().unwrap().iter().map(|p| p.as_str().unwrap().to_string()).collect(),
-                            "reviewers.set" => {
-                                r.reviewers = v.as_array().unwrap().iter().map(|p| {
-                                    let p = p.as_str().unwrap();
-                                    match p.strip_prefix("blocking(") { Some(b) => (b.trim_end_matches(')').to_string(), true), None => (p.to_string(), false) }
-                                }).collect();
-                                r.reviewers.sort();
-                            }
                             k => return Err(format!("no transaction {k}")),
                         }
                     }
@@ -2078,14 +1854,20 @@ mod tests {
     const LINK: &str = "Differential Revision: https://phabricator.example.com";
 
     #[test]
-    fn a_new_revision_is_made_in_changes_planned_its_parent_and_reviewers_set_and_its_link_goes_into_the_patch() {
-        let (_tmp, db, _r) = stack(["Bug 1 - one", &format!("Bug 2 - two\n\n{LINK}/D12"), "Bug 3 - three r=alice,#build!\n\nBecause."]);
-        let mut fake = Fake { users: vec![("alice", "PHID-USER-a")], groups: vec![("build", "PHID-PROJ-b")], ..Default::default() }.with(12, "needs-review", "", "Bug 2");
+    fn a_new_revision_is_made_in_changes_planned_its_parent_set_and_its_link_goes_into_the_patch() {
+        let (_tmp, db, _r) = stack(["Bug 1 - one", &format!("Bug 2 - two\n\n{LINK}/D12"), "Bug 3 - three r=alice,#build! r?bob\n\nBecause."]);
+        let mut fake = Fake::default().with(12, "needs-review", "", "Bug 2");
         let (ready, sent) = submit(&db, 2, &mut fake);
         let p = ready.unwrap();
-        assert_eq!(p.said()[0], "Patch 3 is sent to Phabricator, at https://phabricator.example.com, as a new revision, with the status Changes Planned. Its title is \"WIP: Bug 3 - three r=alice,#build!\", and its bug is 3.");
-        assert_eq!(p.said()[1], "Its parent is set to D12, the revision of patch 2.");
-        assert_eq!(p.said()[2], "The reviewers of the new revision are set to alice and #build (blocking).");
+        // The reviewers the title names stay in it, written as moz-phab
+        // writes them, and none is set: neither said nor asked.
+        assert_eq!(
+            p.said(),
+            [
+                "Patch 3 is sent to Phabricator, at https://phabricator.example.com, as a new revision, with the status Changes Planned. Its title is \"WIP: Bug 3 - three r?bob r=alice,#build!\", and its bug is 3.",
+                "Its parent is set to D12, the revision of patch 2.",
+            ]
+        );
         assert_eq!(
             fake.writes(),
             [
@@ -2093,13 +1875,13 @@ mod tests {
                 "differential.setdiffproperty",
                 "differential.revision.edit title,summary,bugzilla.bug-id,update,plan-changes",
                 "differential.revision.edit parents.add",
-                "differential.revision.edit reviewers.set",
             ]
         );
-        assert_eq!(sent.unwrap(), "Patch 3 is D201 on Phabricator now, in Changes Planned. The message of patch 3 names D201 now. The parent of D201 is D12 now. The reviewers of D201 are alice and #build (blocking).");
+        assert!(fake.of_reviewers().is_empty(), "{:?}", fake.of_reviewers());
+        assert_eq!(sent.unwrap(), "Patch 3 is D201 on Phabricator now, in Changes Planned. The message of patch 3 names D201 now. The parent of D201 is D12 now.");
         let made = &fake.revisions[&201];
-        assert_eq!((made.status.as_str(), made.title.as_str(), made.summary.as_str(), made.bug.as_str()), ("changes-planned", "WIP: Bug 3 - three r=alice,#build!", "Because.", "3"));
-        assert_eq!((made.parents.clone(), made.reviewers.clone()), (vec!["PHID-DREV-12".to_string()], vec![("PHID-PROJ-b".to_string(), true), ("PHID-USER-a".to_string(), false)]));
+        assert_eq!((made.status.as_str(), made.title.as_str(), made.summary.as_str(), made.bug.as_str()), ("changes-planned", "WIP: Bug 3 - three r?bob r=alice,#build!", "Because.", "3"));
+        assert_eq!(made.parents, ["PHID-DREV-12"]);
         // The diff as moz-phab makes one, on the stack's base, and its commit.
         let diff = fake.calls.iter().find(|(m, _)| m == "differential.creatediff").unwrap().1.clone();
         let d = Db::load(&db).unwrap();
@@ -2110,7 +1892,7 @@ mod tests {
         let commit = commits.as_object().unwrap().values().next().unwrap();
         assert_eq!((commit["author"].as_str(), commit["authorEmail"].as_str()), (Some("A U Thor"), Some("author@example.com")));
         // The patch names it now, a new version, and the history says why.
-        assert_eq!(message_of(&db, 2), format!("Bug 3 - three r=alice,#build!\n\nBecause.\n\n{LINK}/D201"));
+        assert_eq!(message_of(&db, 2), format!("Bug 3 - three r=alice,#build! r?bob\n\nBecause.\n\n{LINK}/D201"));
         let s = d.stack("s").unwrap();
         assert_eq!(s.op, "submitted patch 3 as D201, in work");
         assert_eq!(d.versions(&d.patch(&s.patches[2]).change).len(), 2);
@@ -2260,28 +2042,32 @@ mod tests {
     }
 
     #[test]
-    fn the_reviewers_are_those_the_title_names_that_phabricator_has() {
-        let (_tmp, db, _r) = stack(["Bug 1 - one", "Bug 2 - two", &format!("Bug 3 - three r=alice,bobb r?#build\n\n{LINK}/D13")]);
-        let title = "WIP: Bug 3 - three r?#build r=alice,bobb";
-        let mut fake = Fake { users: vec![("alice", "PHID-USER-a")], groups: vec![("build", "PHID-PROJ-b")], ..Default::default() }.with(13, "changes-planned", &diff_of(&db, 2), title);
-        let (ready, sent) = submit(&db, 2, &mut fake);
-        let p = ready.unwrap();
-        assert_eq!(p.said()[2], "No reviewer named bobb was found, so the reviewers of D13 are set to #build and alice.");
-        assert_eq!(fake.writes(), ["differential.revision.edit reviewers.set"]);
-        assert!(sent.unwrap().ends_with("No reviewer named bobb was found; the reviewers of D13 are #build and alice."));
-        let set = fake.calls.iter().rev().find(|(m, _)| m == "differential.revision.edit").unwrap().1["transactions"][0]["value"].clone();
-        assert_eq!(set, json!(["PHID-USER-a", "PHID-PROJ-b"]), "users first, then groups, as moz-phab sets them");
-        // Already those: nothing is sent; the review says who they are.
-        fake.calls.clear();
+    fn a_submit_in_work_asks_nothing_of_reviewers_whatever_the_title_names() {
+        // The title names some, asked and given, a group and one blocking;
+        // the revision has the title as moz-phab writes it, and one reviewer.
+        let (_tmp, db, _r) = stack(["Bug 1 - one", "Bug 2 - two", &format!("Bug 3 - three r=alice,bob! r?#build
+
+{LINK}/D13")]);
+        let title = "WIP: Bug 3 - three r?#build r=alice,bob!";
+        let mut fake = Fake::default().with(13, "changes-planned", &diff_of(&db, 2), title);
         let (ready, _) = submit(&db, 2, &mut fake);
         let p = ready.unwrap();
-        assert_eq!((p.reviewers_change(), p.reviewers_now.clone()), (false, vec!["#build".to_string(), "alice".to_string()]));
+        assert!(p.nothing(), "{p:?}");
+        assert_eq!(p.said().len(), 2, "no word of reviewers: {:?}", p.said());
         assert!(fake.writes().is_empty());
-        // Refused: the rest is kept, and said.
-        fake.revisions.get_mut(&13).unwrap().reviewers.clear();
-        fake.refuse = vec!["edit:reviewers.set"];
+        // A new diff: sent, and still nothing of reviewers, neither looked up
+        // nor set nor read.
+        Db::edit(&db, |d| {
+            let old = d.patch(&d.stack("s")?.patches[2]).clone();
+            let draft = crate::mbox::Draft { diff: old.diff.replace("+LINE 20", "+Line twenty"), ..crate::mbox::Draft::from(&old) };
+            crate::ops::replace(d, "s", 2, draft, "edit").map(|_| ())
+        })
+        .unwrap();
         let (_, sent) = submit(&db, 2, &mut fake);
-        assert!(sent.unwrap().ends_with("But the reviewers of D13 were not set: differential.revision.edit: refused."));
+        assert_eq!(sent.unwrap(), "D13 has the new diff of patch 3 now. D13 stays Changes Planned. Patch 2 has no revision, so D13 gets no parent.");
+        assert!(fake.of_reviewers().is_empty(), "{:?}", fake.of_reviewers());
+        let search = fake.calls.iter().find(|(m, _)| m == "differential.revision.search").unwrap().1.clone();
+        assert_eq!(search, json!({"constraints": {"ids": [13]}}), "its reviewers not asked for");
     }
 
     #[test]
@@ -2316,8 +2102,12 @@ mod tests {
     }
 
     #[test]
-    fn a_refused_parent_or_reviewers_keeps_the_new_diff_and_says_so() {
-        let (_tmp, db, _r) = stack(["Bug 1 - one", &format!("Bug 2 - two\n\n{LINK}/D12"), &format!("Bug 3 - three r=alice\n\n{LINK}/D13")]);
+    fn a_refused_parent_keeps_the_new_diff_and_says_so() {
+        let (_tmp, db, _r) = stack(["Bug 1 - one", &format!("Bug 2 - two
+
+{LINK}/D12"), &format!("Bug 3 - three
+
+{LINK}/D13")]);
         let earlier = diff_of(&db, 2);
         Db::edit(&db, |d| {
             let old = d.patch(&d.stack("s")?.patches[2]).clone();
@@ -2325,13 +2115,13 @@ mod tests {
             crate::ops::replace(d, "s", 2, draft, "edit").map(|_| ())
         })
         .unwrap();
-        let mut fake = Fake { users: vec![("alice", "PHID-USER-a")], refuse: vec!["edit:parents.set", "edit:reviewers.set"], ..Default::default() }
+        let mut fake = Fake { refuse: vec!["edit:parents.set"], ..Default::default() }
             .with(12, "needs-review", "", "Bug 2 - two")
-            .with(13, "changes-planned", &earlier, "WIP: Bug 3 - three r=alice");
+            .with(13, "changes-planned", &earlier, "WIP: Bug 3 - three");
         let (_, sent) = submit(&db, 2, &mut fake);
         assert_eq!(
             sent.unwrap(),
-            "D13 has the new diff of patch 3 now. D13 stays Changes Planned. But the parent of D13 was not set to D12: differential.revision.edit: refused. But the reviewers of D13 were not set: differential.revision.edit: refused."
+            "D13 has the new diff of patch 3 now. D13 stays Changes Planned. But the parent of D13 was not set to D12: differential.revision.edit: refused."
         );
         assert_eq!(
             fake.writes(),
@@ -2341,24 +2131,10 @@ mod tests {
                 "differential.revision.edit update",
                 "differential.revision.edit plan-changes",
                 "differential.revision.edit parents.set",
-                "differential.revision.edit reviewers.set",
             ]
         );
         let r = &fake.revisions[&13];
-        assert_eq!((r.diffs.len(), r.status.as_str(), r.parents.is_empty(), r.reviewers.is_empty()), (2, "changes-planned", true, true));
-    }
-
-    #[test]
-    fn a_title_naming_no_reviewers_leaves_them_as_they_are() {
-        let (_tmp, db, _r) = stack(["Bug 1 - one", "Bug 2 - two", &format!("Bug 3 - three\n\n{LINK}/D13")]);
-        let mut fake = Fake::default().with(13, "changes-planned", &diff_of(&db, 2), "WIP: Bug 3 - three");
-        fake.revisions.get_mut(&13).unwrap().reviewers = vec![("PHID-USER-z".into(), false)];
-        let (ready, _) = submit(&db, 2, &mut fake);
-        let p = ready.unwrap();
-        assert_eq!(p.said()[2], "The title names no reviewers, so the reviewers of D13 are left as they are.");
-        assert!(p.nothing(), "{p:?}");
-        assert_eq!(p.reviewers_now, ["PHID-USER-z"], "not found: its PHID");
-        assert!(fake.writes().is_empty());
+        assert_eq!((r.diffs.len(), r.status.as_str(), r.parents.is_empty()), (2, "changes-planned", true));
     }
 
     #[test]

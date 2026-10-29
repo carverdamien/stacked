@@ -3,7 +3,7 @@
 //! revision, a dialog then says what is sent and where. For a revision
 //! there already, a screen of its own shows what replaces what: what is
 //! sent and where, said; the title and summary, Phabricator's then what is
-//! sent; what else changes (the reviewers, the parent, the status); and the
+//! sent; what else changes (the parent, the bug, the status); and the
 //! code, each file as Phabricator's latest diff leaves it, then as the
 //! patch does, both on the patches below it, as the other diffs are shown.
 //! Enter sends it, once the revision is read again and seen to be as it
@@ -115,8 +115,8 @@ fn diff_rows(rows: &mut Vec<Row>, line: &str, words: &[(usize, usize)], w: usize
 /// The rows of the review of `p`, folded to `w`: what is sent and where,
 /// said, and that the code does not change when it does not; then only
 /// what changes: the title and summary, Phabricator's then what is sent;
-/// the reviewers, the parent and the bug, before then after, and the
-/// status; the code, each file from Phabricator's latest diff to the patch.
+/// the parent and the bug, before then after, and the status; the code,
+/// each file from Phabricator's latest diff to the patch.
 fn review_rows(p: &Prepared, w: usize) -> Vec<Row> {
     let mut rows = vec![row(Kind::File, "what is sent")];
     let n = p.number();
@@ -154,10 +154,6 @@ fn review_rows(p: &Prepared, w: usize) -> Vec<Row> {
     rows.push(row(Kind::Blank, ""));
     rows.push(row(Kind::File, "what else changes"));
     let none = |l: &[String]| if l.is_empty() { "none".to_string() } else { and(l) };
-    if p.reviewers_change() {
-        diff_rows(&mut rows, &format!("-reviewers: {}", none(&p.reviewers_now)), &[], w);
-        diff_rows(&mut rows, &format!("+reviewers: {}", p.reviewers_after()), &[], w);
-    }
     if p.parent_changes() {
         diff_rows(&mut rows, &format!("-parent: {}", none(&p.parents_now)), &[], w);
         diff_rows(&mut rows, &format!("+parent: {}", p.parent_after()), &[], w);
@@ -406,7 +402,7 @@ impl App {
         let id = self.submitting.as_ref().and_then(|s| s.ready.revision.as_ref()).map_or("the revision".to_string(), |r| r.id.clone());
         vec![
             format!(
-                "This is what is sent to Phabricator, for you to review before it is: at the top, what is sent and where; then, of what changes, the title and summary, Phabricator's then what is sent; the reviewers, the parent and the bug, before then after, and the status; and the code, each file as the latest diff of {id} leaves it, then as the patch leaves it, both on the patches below it."
+                "This is what is sent to Phabricator, for you to review before it is: at the top, what is sent and where; then, of what changes, the title and summary, Phabricator's then what is sent; the parent and the bug, before then after, and the status; and the code, each file as the latest diff of {id} leaves it, then as the patch leaves it, both on the patches below it."
             ),
             format!("Press Enter to send it: {id} is read again first, and if it changed on Phabricator since this was read, nothing is sent. Press Esc to send nothing."),
             "Press ↑↓ (pgup pgdn home end) to scroll, and 1 to show the code side by side, or unified again.".into(),

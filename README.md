@@ -2458,21 +2458,21 @@ made.`); the other patches, and other differences, are not held back.
 
 For a new revision, a dialog then says what is sent and where (`Patch 3 is
 sent to Phabricator, at https://phabricator.services.mozilla.com, as a new
-revision, with the status Changes Planned.`), with its title, its parent
-and its reviewers. For a revision there already, a screen of its own shows
-what replaces what, for your review: what is sent and where; then, of what
+revision, with the status Changes Planned.`), with its title and its
+parent. For a revision there already, a screen of its own shows what
+replaces what, for your review: what is sent and where; then, of what
 changes, the title and summary, Phabricator's then what is sent, line by
-line; the reviewers, the parent and the bug, before then after, and the
-status; and the code, each file as the latest diff leaves it, then as the
-patch does, both on the patches below it, a file that only one of them
-touches too. When the code is the patch's already, the screen says so at
-its top. ↑↓ (pgup pgdn home end) scroll, and 1 shows the code side by
-side, or unified again. Enter, or `Send it to Phabricator` in its menu,
+line; the parent and the bug, before then after, and the status; and the
+code, each file as the latest diff leaves it, then as the patch does, both
+on the patches below it, a file that only one of them touches too. When
+the code is the patch's already, the screen says so at its top. ↑↓ (pgup
+pgdn home end) scroll, and 1 shows the code side by side, or unified
+again. Enter, or `Send it to Phabricator` in its menu,
 sends it; Esc, or `Cancel: send nothing`, sends nothing. Before anything
 is sent, the revision is read again: if its latest diff, its status, its
-title, summary or bug, its reviewers or its parents changed meanwhile,
-nothing is (`D123 changed on Phabricator since you reviewed it, so nothing
-was sent. Submit again to review it as it is now.`).
+title, summary or bug, or its parents changed meanwhile, nothing is (`D123
+changed on Phabricator since you reviewed it, so nothing was sent. Submit
+again to review it as it is now.`).
 
 Only what changed is sent, as moz-phab sends it: a new diff of the patch
 (differential.creatediff, its commit's author and message set with
@@ -2484,17 +2484,17 @@ the title), where they differ; and Changes Planned, kept, or put back after
 a new diff, which Phabricator takes as a request for review
 (differential.revision.edit). When the latest diff is the patch as it is
 and nothing else changes, nothing is sent, and the bottom line says so.
-Then, each in an edit of its own, so that a refusal undoes none of the
-rest: the parent, the revision of the patch below, when it is open (none
-for the bottom patch, or when the patch below has no revision, and a
-revision's parents are then left as they are); and the reviewers the title
-names (`r=alice,bob!`, `r?#build`: `!` blocking, `#` a group), those
-Phabricator does not have left out, and said. A title that names none
-leaves the revision's reviewers as they are. While it is sent, the top bar
-says `submitting…`; then the bottom line says what came of it, and what
-was done and what was not when a call failed partway (`D123 has the new
-diff of patch 3 now. D123 stays Changes Planned. But the parent of D123
-was not set to D122: …`). A new revision's link goes into the patch, its
+Then, in an edit of its own, so that a refusal undoes none of the rest:
+the parent, the revision of the patch below, when it is open (none for
+the bottom patch, or when the patch below has no revision, and a
+revision's parents are then left as they are). A submit as work in
+progress sets no reviewers, as `moz-phab submit --wip` sets none: those
+the title names (`r=alice,bob!`, `r?#build`) stay in the title, written
+as moz-phab writes them, and nothing of the revision's reviewers is read,
+said or changed. While it is sent, the top bar says `submitting…`; then
+the bottom line says what came of it, and what was done and what was not
+when a call failed partway (`D123 has the new diff of patch 3 now. D123
+stays Changes Planned. But the parent of D123 was not set to D122: …`). A new revision's link goes into the patch, its
 trailer at the end of the message, as a new version taken at once, which
 the history says (`submitted patch 3 as D124, in work`). The workspace's
 commits are not touched: when HEAD is on the stack, the banner's first
@@ -3167,10 +3167,11 @@ a test's own process.
   and take `--json-schema`, unless `agent.schema` is off.
 - Only git mail is read: no `hg export`.
 - A patch is submitted to Phabricator one at a time, as work in progress
-  alone (Changes Planned): a stack at once, a revision sent for review, a
-  file that is not text, and each file whole as the diff's context (so
-  that reviewers can see more of it) are still moz-phab's, after
-  `stacked apply`.
+  alone (Changes Planned), and so with no reviewers: a stack at once, a
+  revision sent for review with the reviewers its title names, a file
+  that is not text, and each file whole as the diff's context (so that
+  reviewers can see more of it) are still moz-phab's, after `stacked
+  apply`.
 - StackED's windows are on macOS only: elsewhere it has one, on one
   database, and no File or Edit menu. A database is not opened by dropping
   it on StackED's icon or by double-clicking it in the Finder, and there is
