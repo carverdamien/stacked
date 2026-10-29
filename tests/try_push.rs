@@ -36,29 +36,38 @@ fn git(dir: &Path, args: &[&str]) {
 
 /// stacked run in `dir` on the database `db`, as `tests/tui.rs` runs it:
 /// its own things kept in `home` beside the database, what it writes in
-/// the temporary directory in `tmp` beside it.
+/// the temporary directory in `tmp` beside it; and, as `tests/cli.rs` runs
+/// it, the folders of its asks' own (a try push's copy of the task graph)
+/// in `todo` beside it (`$STACKED_TODO`), never in the temporary
+/// directory's, which every stacked shares.
 fn stacked(dir: &Path, db: &Path, args: &[&str]) {
     stacked_with(dir, db, args, &[]);
 }
 
 /// As `stacked`, with `env` besides; what it printed.
 fn stacked_with(dir: &Path, db: &Path, args: &[&str], env: &[(&str, &Path)]) -> String {
+    let out = stacked_out(dir, db, args, env);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+/// As `stacked_with`, whether it succeeds or not: how it ended.
+fn stacked_out(dir: &Path, db: &Path, args: &[&str], env: &[(&str, &Path)]) -> std::process::Output {
     let tmp = db.with_file_name("tmp");
     std::fs::create_dir_all(&tmp).unwrap();
-    let out = Command::new(env!("CARGO_BIN_EXE_stacked"))
+    Command::new(env!("CARGO_BIN_EXE_stacked"))
         .current_dir(dir)
         .arg("-f")
         .arg(db)
         .args(args)
         .env("STACKED_HOME", db.with_file_name("home"))
         .env("TMPDIR", tmp)
+        .env("STACKED_TODO", db.with_file_name("todo"))
         .env_remove("STACKED_CONFIG")
         .env_remove("STACKED_APP_STATE")
         .envs(env.iter().copied())
         .output()
-        .unwrap();
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
-    String::from_utf8_lossy(&out.stdout).into_owned()
+        .unwrap()
 }
 
 /// A database holding stack `s` of two patches, and the repository: its
@@ -417,7 +426,10 @@ fn asks_over(app: &mut App) {
 }
 
 /// The stand-in for claude, for every test of this file: it answers with
-/// what `answer_with` wrote beside the test's database.
+/// what `answer_with` wrote beside the test's database, once no `hold` is
+/// there. First it writes down its arguments there (`claude_args`), and,
+/// as the agent would, downloads the task graph where its prompt says:
+/// `{}`, nothing reached.
 fn fake_claude() -> PathBuf {
     static FAKE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
     FAKE.get_or_init(|| {
@@ -425,6 +437,9 @@ fn fake_claude() -> PathBuf {
         let script = format!(
             "#!/bin/sh\necho '{{\"type\":\"system\",\"subtype\":\"init\",\"model\":\"fake\"}}'\n\
              git=$(git rev-parse --path-format=absolute --git-common-dir)\n\
+             printf '%s\\n' \"$@\" > \"$git/../../claude-args-$$\"\n\
+             graph=$(printf '%s\\n' \"$2\" | sed -n 's/.*download it once into `\\([^`]*\\)`.*/\\1/p')\n\
+             test -z \"$graph\" || echo '{{}}' > \"$graph\"\n\
              while test -e \"$git/../../hold\"; do sleep 0.1; done\n\
              if test -e \"$git/../../answer\"; then cat \"$git/../../answer\"; else cat <<'EOF'\n{result}\nEOF\nfi\n"
         );
@@ -664,6 +679,61 @@ fn ask_try(app: &mut App, text: &str) {
     choose_as(app, "Ask agent", "try push");
 }
 
+/// A comment on patch 1 as a whole, `text`, written from the patches pane,
+/// and asked as a try push as it is saved.
+fn ask_try_on_patch(app: &mut App, text: &str) {
+    keys(app, &[KeyCode::Home, KeyCode::Down]);
+    choose(app, "Comment on this patch…");
+    typed(app, text);
+    keys(app, &[KeyCode::Esc]);
+    choose_as(app, "Ask agent", "try push");
+}
+
+/// A comment on the stack, `text`, written from the patches pane, and
+/// asked as a try push as it is saved.
+fn ask_try_on_stack(app: &mut App, text: &str) {
+    keys(app, &[KeyCode::Home]);
+    choose(app, "Comment on the stack…");
+    typed(app, text);
+    keys(app, &[KeyCode::Esc]);
+    choose_as(app, "Ask agent", "try push");
+}
+
+/// What the stand-in for claude was run with by each ask, as it wrote it
+/// down beside the database: its arguments, a line each, the prompt one of
+/// them.
+fn claude_args(db: &Path) -> Vec<String> {
+    std::fs::read_dir(db.parent().unwrap())
+        .unwrap()
+        .flatten()
+        .filter(|e| e.file_name().to_string_lossy().starts_with("claude-args-"))
+        .map(|e| std::fs::read_to_string(e.path()).unwrap_or_default())
+        .collect()
+}
+
+/// The try push asks going on `db`, once there are `n` and the stand-in
+/// of each has downloaded its copy of the task graph: each by its run's
+/// id, with the folder of its own that copy is in. The editor launches
+/// what waits meanwhile.
+fn tries_going(app: &mut App, db: &Path, n: usize) -> Vec<(String, PathBuf)> {
+    let mut going = Vec::new();
+    for _ in 0..300 {
+        app.refresh();
+        let d = Db::load(db).unwrap();
+        going = d
+            .runs()
+            .into_iter()
+            .filter(|r| r.what == "try" && r.state == stacked::db::RunState::Started)
+            .filter_map(|r| Some((r.id.clone(), PathBuf::from(stacked::ask::info(r)?.todo?))))
+            .collect();
+        if going.len() == n && going.iter().all(|(_, dir)| dir.join(stacked::try_push::GRAPH).exists()) {
+            return going;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    panic!("not {n} try push asks going, each its copy of the task graph downloaded: {going:?}");
+}
+
 #[test]
 fn a_try_push_asked_lands_the_tasks_the_comment_asks_for_each_with_why() {
     let (_tmp, db, _src) = setup();
@@ -780,6 +850,59 @@ fn a_try_push_asked_lands_the_tasks_the_comment_asks_for_each_with_why() {
     assert!(stacked::held::queue(&Db::load(&db).unwrap(), "s").is_empty());
     let r = wait_push(&mut app, &db, |r| r.push.as_ref().is_some_and(|p| p.link.is_some()));
     assert_eq!(r.push.unwrap().labels.len(), 3);
+}
+
+#[test]
+fn each_try_push_ask_downloads_the_task_graph_into_a_folder_of_its_own_gone_once_it_lands_or_is_stopped() {
+    let (_tmp, db, src) = setup();
+    let mut app = open(&db);
+    tasks_answer(&db, &[("build-linux64/debug", "The build the tests need.")], "One task.");
+    // Two asks at once, held as they go: patch 1's and the stack's.
+    let hold = db.with_file_name("hold");
+    std::fs::write(&hold, "").unwrap();
+    ask_try_on_patch(&mut app, "Run the build.");
+    assert!(app.status.starts_with("asked the agent about 1 comment (try push)"), "{}", app.status);
+    ask_try_on_stack(&mut app, "Run the build of the stack.");
+    assert!(app.status.starts_with("asked the agent about 1 comment (try push)"), "{}", app.status);
+    let going = tries_going(&mut app, &db, 2);
+    assert_ne!(going[0].1, going[1].1, "two asks, two folders");
+    // Each folder its own, beside the rebase plans' (the test's own, beside
+    // its database), outside your checkout: its prompt names the copy in it,
+    // to download and to read, and claude is let write there (`--add-dir`).
+    let plans = db.canonicalize().unwrap().with_file_name("stacked-todo");
+    let args = claude_args(&db);
+    let d = Db::load(&db).unwrap();
+    for (id, dir) in &going {
+        assert_eq!(dir.parent(), Some(plans.as_path()), "{}", dir.display());
+        let copy = dir.join("full-task-graph.json");
+        let prompt = stacked::ask::info(d.run(id).unwrap()).unwrap().prompt;
+        for said in [
+            format!("download it once into `{}`, a scratch file in a folder of your own, the one place you may write", copy.display()),
+            format!("`curl -sL --compressed -o {}` with its address", copy.display()),
+            format!("`jq '[\"LABEL\", …] - keys' {}`", copy.display()),
+        ] {
+            assert!(prompt.contains(&said), "{said:?} in {prompt}");
+        }
+        assert!(args.iter().any(|a| a.contains(&format!("\n--add-dir\n{}\n", dir.display()))), "{args:?}");
+    }
+    // Nothing written in your checkout.
+    assert_eq!(git_out(&src, &["status", "--porcelain"]), "");
+    // Landed, each folder is gone, its copy with it.
+    std::fs::remove_file(&hold).unwrap();
+    landed(&mut app, &db, 2);
+    for (_, dir) in &going {
+        assert!(!dir.exists(), "{}", dir.display());
+    }
+    assert_eq!(git_out(&src, &["status", "--porcelain"]), "");
+    // Stopped as it goes, its folder goes too.
+    std::fs::write(&hold, "").unwrap();
+    ask_try_on_stack(&mut app, "Run it on Windows too.");
+    let going = tries_going(&mut app, &db, 1);
+    let (run, stopped) = stacked::ask::stop(&db, &going[0].0).unwrap();
+    assert!(stopped && run.state == stacked::db::RunState::Failed, "{run:?}");
+    assert!(!going[0].1.exists(), "{}", going[0].1.display());
+    std::fs::remove_file(&hold).unwrap();
+    assert_eq!(git_out(&src, &["status", "--porcelain"]), "");
 }
 
 #[test]

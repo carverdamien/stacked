@@ -163,8 +163,10 @@ pub struct Info {
     /// to the agent to reuse what still holds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub was: Option<String>,
-    /// A change to the whole stack: the folder its agent writes its rebase
-    /// plan in, removed once it lands.
+    /// The folder of its own its agent writes in, outside its worktree,
+    /// removed once it lands: a change to the whole stack's, for its rebase
+    /// plan; a try push's selection's that may run curl, for its copy of the
+    /// task graph.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub todo: Option<String>,
     /// The effort the agent is asked at (`--effort`), the one its comments
@@ -1198,8 +1200,9 @@ fn first_line(text: &str) -> String {
 }
 
 /// A run that could not start: failed, and its comments with it. The
-/// folder made for its rebase plan, if one was, goes. One landed
-/// meanwhile (stopped as its worktree was made) stays as it landed.
+/// folder made for it, if one was (its rebase plan's, or its copy of the
+/// task graph's), goes. One landed meanwhile (stopped as its worktree was
+/// made) stays as it landed.
 fn fail_start(db_path: &Path, id: &str, why: &str) -> Result<()> {
     Db::edit(db_path, |db| {
         let Some(r) = db.run(id).cloned().filter(|r| r.state == RunState::Started) else { return Ok(()) };
@@ -1729,7 +1732,10 @@ fn prompt(db: &Db, i: &Info, s: &Stack, cmd: &str, run: &str, structured: bool, 
                      or not."
                 ),
             };
-            crate::try_push::prompt(&what, &here, web, curl)
+            // Let run curl: where it downloads the task graph, in its folder
+            // of its own.
+            let graph = i.todo.as_deref().filter(|_| curl).map(|d| Path::new(d).join(crate::try_push::GRAPH));
+            crate::try_push::prompt(&what, &here, web, graph.as_deref())
         }
     };
     // Another round: what it brought back was sent back. What it changed
@@ -2205,7 +2211,8 @@ fn plans(db: &Path) -> PathBuf {
 const GITDIR: &str = "gitdir";
 
 /// How long a folder that names no git directory, as a stacked of before
-/// made them, is kept once nothing in it has changed: a day.
+/// made them and as a try push's selection's is, is kept once nothing in
+/// it has changed: a day.
 const UNNAMED_KEPT: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
 
 /// Whether `name` is a plan folder's: the first 12 hex digits of a SHA-1.
@@ -2263,10 +2270,11 @@ fn plans_busy(db: &Db, id: &str) -> HashSet<PathBuf> {
 
 /// The plan folders in `base` that no rebase can want any more, removed:
 /// each folder whose git directory is gone, as its `gitdir` file names it;
-/// and each that names none, as a stacked of before made them, once nothing
-/// in it has changed for a day (`now` being the time). Never a folder that
-/// one of the asks still running (`busy`) writes its plan in: a folder
-/// whose git directory is there is kept, rebase or not.
+/// and each that names none, as a stacked of before made them and as a try
+/// push's selection's copy of the task graph is kept, once nothing in it
+/// has changed for a day (`now` being the time). Never a folder that one
+/// of the asks still running (`busy`) writes in: a folder whose git
+/// directory is there is kept, rebase or not.
 fn prune_plans(base: &Path, busy: &HashSet<PathBuf>, now: std::time::SystemTime) {
     let Ok(entries) = std::fs::read_dir(base) else {
         return;
@@ -2309,6 +2317,20 @@ fn rebase_todo(base: &Path, dir: &Path, busy: &HashSet<PathBuf>) -> Result<PathB
     let todo = plan_folder(base, gitdir.trim())?.join("REBASE_TODO");
     let _ = std::fs::remove_file(&todo);
     Ok(todo)
+}
+
+/// The folder of its own that run `id` of database `db`, a try push's
+/// selection, downloads the task graph into, made empty: in `base`, beside
+/// the rebase plans' folders, and named as they are, so that it goes as
+/// they go, once the ask lands, however it ends, and, should nothing land
+/// it, once nothing in it has changed for a day. Each ask has its own: two
+/// at once each download their own copy.
+#[cfg(feature = "try-push")]
+fn graph_folder(base: &Path, db: &Path, id: &str) -> Result<PathBuf> {
+    let dir = base.join(crate::diff::sha1_12(&format!("try push {} {id}", db.display())));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).map_err(|e| Error(format!("{}: {e}", dir.display())))?;
+    Ok(dir)
 }
 
 /// Starts claimed run `id`: its worktree made, its prompt written, claude
@@ -2419,13 +2441,21 @@ fn start(db_path: &Path, id: &str) -> Result<()> {
     // settings add, for its kind and for every ask.
     let tools = tools_for(i.way, &cmd, agent);
     let curl = tools.split(',').any(|t| t == "Bash(curl *)");
+    let plans = plans(&db_abs);
+    // A try push's selection that may run curl downloads the task graph, to
+    // check its labels against, into a folder of its own that its prompt
+    // names: beside the rebase plans' folders, outside your checkout and
+    // any worktree, kept in the run as theirs is, to remove once it lands.
+    #[cfg(feature = "try-push")]
+    if i.way == Way::Try && curl {
+        i.todo = Some(graph_folder(&plans, &db_abs, id)?.to_string_lossy().into_owned());
+    }
     i.prompt = prompt(&db, &i, &s, &cmd, id, agent.schema, curl);
     let cwd = i.worktree.clone().map_or(repo.clone(), PathBuf::from);
     // A change to the stack rewrites what is below HEAD with a plan it
     // writes, which a plain `git rebase -i` takes: claude refuses a command
     // that sets an editor. Its plan's folder is kept in the run, to remove
     // once it lands.
-    let plans = plans(&db_abs);
     let todo = match (i.way, &i.scope) {
         (Way::Change, Scope::Stack) => Some(rebase_todo(&plans, &cwd, &plans_busy(&db, id))?),
         _ => None,
@@ -2441,7 +2471,7 @@ fn start(db_path: &Path, id: &str) -> Result<()> {
     };
     let landed = Db::edit(db_path, |db| {
         // Unless it was landed meanwhile, taken for one left behind: then
-        // the folder made for its plan goes.
+        // the folder made for it goes.
         if db.run(id).is_some_and(|r| r.state == RunState::Started) {
             db.add_run(run.clone())?;
             Ok(false)
@@ -2461,15 +2491,16 @@ fn start(db_path: &Path, id: &str) -> Result<()> {
     c.args(["--output-format", "stream-json", "--verbose"]);
     c.args(["--permission-mode", permission, "--allowedTools", &tools]);
     // The plan checked (one that runs a command is refused), then copied in
-    // as the rebase's todo, the messages kept: no editor opens. The plan's
-    // folder is claude's to write in, as the worktree is.
+    // as the rebase's todo, the messages kept: no editor opens.
     if let Some(todo) = &todo {
         let quoted = |p: &Path| format!("'{}'", p.display().to_string().replace('\'', "'\\''"));
         c.env("GIT_SEQUENCE_EDITOR", format!("{} __plan {}", quoted(&exe), quoted(todo)));
         c.env("GIT_EDITOR", "true");
-        if let Some(dir) = todo.parent() {
-            c.arg("--add-dir").arg(dir);
-        }
+    }
+    // Its folder of its own, its rebase plan's or its copy of the task
+    // graph's, is claude's to write in, as the worktree is.
+    if let Some(dir) = &i.todo {
+        c.arg("--add-dir").arg(dir);
     }
     // What would run another program, of what a change may run: refused.
     // And to every ask, what the checkout's claude settings of yours deny,
@@ -2803,8 +2834,9 @@ fn file_landed(db_path: &Path, id: &str, exit: Option<&str>) -> Result<Run> {
             ..started
         };
         db.add_run(run.clone())?;
-        // Its rebase plan's folder goes, failed or not, under the lock: an
-        // ask that takes its worktree next makes the folder again.
+        // Its folder of its own goes, failed or not, stopped or found dead,
+        // under the lock: its rebase plan's, which an ask that takes its
+        // worktree next makes again, or its copy of the task graph's.
         if let Some(dir) = &i.todo {
             drop_plan(Path::new(dir), &plans_busy(db, id));
         }

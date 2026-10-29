@@ -1477,8 +1477,10 @@ running writes its plan there. Each time an ask that may change the whole
 stack starts, stacked also removes every folder whose git directory is
 gone, unless an ask that is running writes its plan there. A folder that
 names no git directory, as an older stacked made them, is removed once
-nothing in it has changed for a day. `$STACKED_TODO` names another folder
-to keep the plans in, in place of `$TMPDIR/stacked-todo`.
+nothing in it has changed for a day; so is the folder a try push's
+selection downloads the task graph into (Try push, below), should its ask
+never have landed. `$STACKED_TODO` names another folder to keep the plans
+in, in place of `$TMPDIR/stacked-todo`.
 
 What a change may run reaches no network, unless what its list
 (`agent.change_tools`) adds does: stacked ticks nothing in that list's
@@ -1900,7 +1902,19 @@ from 2 to 20, as mach's `--rebuild` takes it. It reads as an answer does,
 where an answer works, with the tools of its own list (`agent.try_tools`,
 Settings, below), and pushes nothing, nor runs `./mach`. When it may run
 curl, it is told where the labels of the tasks of mozilla-central's latest
-push are listed, and autoland's. It gives the tasks with its replies, as
+push are listed (its `target-tasks.json`), and autoland's; and where that
+push's full task graph is (its `full-task-graph.json`), whose keys are the
+labels of every task `./mach try fuzzy --all-tasks` can select, to check
+each label it selects against it before it answers. The graph is large:
+the agent downloads it once, into a folder of the ask's own that its
+prompt names, the one place it may write, and reads that copy with jq, all
+its labels in one go. The folder is beside the rebase plans' folders
+(`$TMPDIR/stacked-todo/…`, Asking the agent, above), outside your checkout
+and any worktree, so that neither shows anything new; stacked lets claude
+write there (`--add-dir`), and removes it once the ask lands, however it
+ends: done, failed, stopped, or found with its agent gone. Two asks at
+once each have their own. If the download fails, the agent says so in its
+answer, and answers without it. It gives the tasks with its replies, as
 structured output, else in the JSON it ends with, whatever prose is around
 it; a label given twice is taken once, and one with white space in it,
 which could not select its task alone, is left out.
@@ -3010,8 +3024,10 @@ test's.
 
 Nor does any test write in, or remove anything from, the folder of the
 agents' rebase plans in the temporary directory, which every stacked
-shares. In `tests/cli.rs`, the function that gives every run of the binary
-its home gives it a folder of the test's as `$STACKED_TODO` too. The tests'
+shares. In `tests/cli.rs` and `tests/try_push.rs`, whose asks a run of
+the binary starts (a try push's keeps its copy of the task graph there),
+the function that gives every run of the binary its home gives it a
+folder of the test's as `$STACKED_TODO` too. The tests'
 own processes keep the plans beside their database, in the test's own
 folder, and the asks they start are told the same. In a folder of their
 own, the tests in `ask.rs` show which plan folders are removed: one whose
@@ -3021,7 +3037,8 @@ not, nor one that an ask still running writes its plan in. They show a
 landed ask's folder removed, but not while a rebase is under way in its git
 directory, nor while another ask still running writes its plan there.
 `tests/cli.rs` shows the folder gone once an agent's change to the whole
-stack lands.
+stack lands; `tests/try_push.rs`, a try push's selection's, one for each
+ask, gone once it lands or is stopped.
 
 Nor does any test leave anything else in the temporary directory, which
 every process shares. In each test file, the function that gives every run

@@ -122,9 +122,12 @@ pub fn tasks_of(answer: Option<&Map<String, Value>>) -> (Vec<Task>, Option<u32>)
 /// stack, or a patch with those below it), `here` where it works and how
 /// it reads the stack, `web` what it may read of the web: the tasks the
 /// comments ask for, as few or as many as they say, exact labels, why each;
-/// and nothing pushed, nothing changed.
-pub fn prompt(what: &str, here: &str, web: &str, curl: bool) -> String {
-    let labels = if curl { LABELS } else { "" };
+/// and nothing pushed, nothing changed. When it may run curl, `graph` being
+/// the file of its own it downloads the task graph into, it is told where
+/// the labels are, and to check each it selects against the task graph
+/// (`labels`).
+pub fn prompt(what: &str, here: &str, web: &str, graph: Option<&Path>) -> String {
+    let labels = graph.map(labels).unwrap_or_default();
     format!(
         "You are selecting the CI tasks of a try push of {what}, as the comments below ask for \
          them: as few or as many as they say, and for what they say. Each task is one of \
@@ -142,12 +145,49 @@ pub fn prompt(what: &str, here: &str, web: &str, curl: bool) -> String {
     )
 }
 
+/// Where the decision task of mozilla-central's latest push keeps what it
+/// made, as Taskcluster's index finds it: `target-tasks.json`,
+/// `full-task-graph.json`.
+const DECISION: &str = "https://firefox-ci-tc.services.mozilla.com/api/index/v1/task/\
+gecko.v2.mozilla-central.latest.taskgraph.decision/artifacts/public";
+
+/// The file a try push ask that may run curl downloads the task graph into,
+/// in the folder of its own stacked makes it, which `ask` keeps beside the
+/// rebase plans' and removes once the ask lands.
+pub const GRAPH: &str = "full-task-graph.json";
+
 /// What a try push ask is told of where to find the labels, when it may
-/// read the web with curl.
-const LABELS: &str = " The labels of the tasks of mozilla-central's latest push are a JSON \
-list at https://firefox-ci-tc.services.mozilla.com/api/index/v1/task/\
-gecko.v2.mozilla-central.latest.taskgraph.decision/artifacts/public/target-tasks.json, and \
-autoland's with `autoland` in place of `mozilla-central`: a try push may run any of them.";
+/// read the web with curl: those of the tasks of mozilla-central's latest
+/// push, and autoland's; and that push's full task graph, every task it
+/// may select, to check each label it selects against before it answers,
+/// downloaded once into `graph`, its scratch file, and read there, and a
+/// download that fails said in its answer.
+fn labels(graph: &Path) -> String {
+    let file = graph.display();
+    let word = quoted(&file.to_string());
+    format!(
+        " The labels of the tasks of mozilla-central's latest push are a JSON list at \
+         {DECISION}/target-tasks.json, and autoland's with `autoland` in place of \
+         `mozilla-central`: a try push may run any of them. The full task graph of \
+         mozilla-central's latest push, every task `./mach try fuzzy --all-tasks` can select, \
+         is the JSON object at {DECISION}/full-task-graph.json, whose keys are the tasks' \
+         labels: check each label you select against it before you answer. It is large: \
+         download it once into `{file}`, a scratch file in a folder of your own, the one \
+         place you may write (`curl -sL --compressed -o {word}` with its address), and read \
+         that copy: `jq '[\"LABEL\", …] - keys' {word}` prints the labels you list that the \
+         graph does not have. If the download fails, say so in your answer, and answer \
+         without it."
+    )
+}
+
+/// `word` as sh reads it as one word: as it is, when it is only letters,
+/// digits and `-_./=:`; else between single quotes.
+fn quoted(word: &str) -> String {
+    match word.chars().all(|c| c.is_ascii_alphanumeric() || "-_./=:".contains(c)) {
+        true => word.to_string(),
+        false => format!("'{}'", word.replace('\'', "'\\''")),
+    }
+}
 
 /// What a try push ask ends its answer with, `end` saying how it gives
 /// it: its replies, the tasks it selects, how many times each runs.
@@ -1503,10 +1543,6 @@ pub fn mach_args(p: &Push, check: bool) -> Vec<String> {
 /// each argument quoted as a shell would need it, a query of more than two
 /// terms cut after them, with how many it has.
 fn command_said(args: &[String]) -> String {
-    let quote = |a: &str| match a.chars().all(|c| c.is_ascii_alphanumeric() || "-_./=:".contains(c)) {
-        true => a.to_string(),
-        false => format!("'{}'", a.replace('\'', "'\\''")),
-    };
     let mut out = vec!["./mach".to_string()];
     let mut it = args.iter();
     while let Some(a) = it.next() {
@@ -1514,12 +1550,12 @@ fn command_said(args: &[String]) -> String {
             let q = it.next().map(String::as_str).unwrap_or("");
             let terms: Vec<&str> = q.split(" | ").collect();
             match terms.len() {
-                n if n > 2 => out.push(format!("-q {} (one query, a term for each of the {} tasks)", quote(&format!("{} | {} | …", terms[0], terms[1])), thousands(n))),
-                _ => out.push(format!("-q {}", quote(q))),
+                n if n > 2 => out.push(format!("-q {} (one query, a term for each of the {} tasks)", quoted(&format!("{} | {} | …", terms[0], terms[1])), thousands(n))),
+                _ => out.push(format!("-q {}", quoted(q))),
             }
             continue;
         }
-        out.push(quote(a));
+        out.push(quoted(a));
     }
     out.join(" ")
 }
@@ -1821,7 +1857,7 @@ mod tests {
 
     #[test]
     fn the_prompt_asks_for_what_the_comment_asks_exact_labels_and_why_pushing_nothing() {
-        let p = prompt("the stack's patches", "Read the stack.", "You may read the web.", true);
+        let p = prompt("the stack's patches", "Read the stack.", "You may read the web.", Some(Path::new("/tmp/0123456789ab/full-task-graph.json")));
         for said in [
             "as few or as many as they say",
             "exact label",
@@ -1835,9 +1871,43 @@ mod tests {
             assert!(p.contains(said), "{said:?} in {p}");
         }
         assert!(!p.contains("minimal"), "{p}");
-        assert!(!prompt("x", "", "", false).contains("target-tasks.json"), "without curl, no address to read");
+        assert!(!prompt("x", "", "", None).contains("target-tasks.json"), "without curl, no address to read");
         let end = answer_said("End your reply with a JSON object");
         assert!(end.contains("\"tasks\"") && end.contains("\"rebuild\"") && end.contains("\"replies\""), "{end}");
+    }
+
+    #[test]
+    fn with_curl_each_label_is_checked_against_the_task_graph_downloaded_once() {
+        let graph = Path::new("/tmp/stacked-todo/0123456789ab/full-task-graph.json");
+        let p = prompt("the stack's patches", "Read the stack.", "You may read the web.", Some(graph));
+        // Beside target-tasks.json's address, the same decision task's full
+        // task graph, and what it holds.
+        let index = "https://firefox-ci-tc.services.mozilla.com/api/index/v1/task/gecko.v2.mozilla-central.latest.taskgraph.decision/artifacts/public";
+        for said in [
+            format!("a JSON list at {index}/target-tasks.json, and autoland's"),
+            format!(
+                "The full task graph of mozilla-central's latest push, every task `./mach try fuzzy --all-tasks` can select, \
+                 is the JSON object at {index}/full-task-graph.json, whose keys are the tasks' labels"
+            ),
+            "check each label you select against it before you answer".to_string(),
+            // Once, into its scratch file, by its full path, and read there.
+            format!("It is large: download it once into `{}`, a scratch file in a folder of your own, the one place you may write", graph.display()),
+            format!("`curl -sL --compressed -o {}` with its address", graph.display()),
+            format!("read that copy: `jq '[\"LABEL\", …] - keys' {}` prints the labels you list that the graph does not have", graph.display()),
+            "If the download fails, say so in your answer, and answer without it.".to_string(),
+        ] {
+            assert!(p.contains(&said), "{said:?} in {p}");
+        }
+        assert!(p.find("target-tasks.json") < p.find("full-task-graph.json"), "{p}");
+        // A path sh would split, quoted in the commands.
+        let p = prompt("x", "", "", Some(Path::new("/tmp/my plans/0123456789ab/full-task-graph.json")));
+        assert!(p.contains("`curl -sL --compressed -o '/tmp/my plans/0123456789ab/full-task-graph.json'` with its address"), "{p}");
+        assert!(p.contains("`jq '[\"LABEL\", …] - keys' '/tmp/my plans/0123456789ab/full-task-graph.json'`"), "{p}");
+        // Without curl, nothing of it.
+        let p = prompt("the stack's patches", "Read the stack.", "", None);
+        for not in ["full-task-graph.json", "check each label", "download", "place you may write"] {
+            assert!(!p.contains(not), "{not:?} in {p}");
+        }
     }
 
     #[test]
