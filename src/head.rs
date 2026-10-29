@@ -44,8 +44,8 @@ pub enum At {
 pub struct OnStack {
     /// The commits that are the stack's first patches, bottom first.
     pub commits: Vec<String>,
-    /// Of those, the places (from 0) whose message is not the patch's: the
-    /// commit's message, and how the two differ.
+    /// Of those, the places (from 0) whose message is not the patch's, as
+    /// compared (`compared`): the commit's message, and how the two differ.
     pub messages: Vec<(usize, String, Differs)>,
     /// The commits above them to HEAD, which are not the stack's.
     pub above: Vec<String>,
@@ -318,16 +318,31 @@ fn norm(m: &str) -> String {
     lines[start..end].join("\n")
 }
 
+/// A message as compared with another: as taken (`norm`), empty lines in
+/// a row within it one, as `git am` leaves them. Two messages that differ
+/// by no more than that are the same, as HEAD moved by stacked, which
+/// applies patches with `git am`, has them; each is written as it is.
+fn compared(m: &str) -> String {
+    let taken = norm(m);
+    let mut lines: Vec<&str> = Vec::new();
+    for l in taken.split('\n') {
+        if !(l.is_empty() && lines.last().is_some_and(|p| p.is_empty())) {
+            lines.push(l);
+        }
+    }
+    lines.join("\n")
+}
+
 /// How commit message `theirs` differs from its patch's, `ours`, each as
-/// taken (`norm`), if it does: in what it says; or, with the moz-phab
-/// feature, by the revision named alone, the two the same without the
-/// trailer moz-phab writes (`Differs::Revision`).
+/// compared (`compared`), if it does: in what it says; or, with the
+/// moz-phab feature, by the revision named alone, the two the same without
+/// the trailer moz-phab writes (`Differs::Revision`).
 fn differs(ours: &str, theirs: &str) -> Option<Differs> {
-    if norm(ours) == norm(theirs) {
+    if compared(ours) == compared(theirs) {
         return None;
     }
     #[cfg(feature = "moz-phab")]
-    if norm(&without_trailer(ours)) == norm(&without_trailer(theirs)) {
+    if compared(&without_trailer(ours)) == compared(&without_trailer(theirs)) {
         let (a, b) = (revision_named(ours), revision_named(theirs));
         if a != b {
             return Some(Differs::Revision(a, b));
@@ -469,11 +484,13 @@ pub fn plan(on: &OnStack, messages: &[&str], picks: &[(usize, Keep)]) -> std::re
             left.push(*k);
             continue;
         };
-        let said = norm(&kept.message);
-        if said != norm(ours) {
+        // Each side whose message is another, as compared, takes it as it
+        // is.
+        let said = compared(&kept.message);
+        if said != compared(ours) {
             out.patches.push((*k, kept.message.clone()));
         }
-        if said != *theirs {
+        if said != compared(theirs) {
             out.commits.push((*k, kept.message.clone()));
         }
         out.kept.push((*k, kept));
@@ -701,6 +718,36 @@ mod tests {
 
     /// The trailer moz-phab writes.
     const TRAILER: &str = "Differential Revision: https://phabricator.services.mozilla.com/D123";
+
+    #[test]
+    fn empty_lines_in_a_row_are_one_as_git_am_leaves_them_and_a_message_kept_is_written_as_it_is() {
+        // Two empty lines under the title, then one of spaces: one, as git
+        // am leaves them; as taken, they stay.
+        let run = "Bug 1 - two\n\n\n  \nBecause.";
+        assert_eq!((compared(run), norm(run)), ("Bug 1 - two\n\nBecause.".to_string(), "Bug 1 - two\n\n\n\nBecause.".to_string()));
+        assert_eq!(differs(run, "Bug 1 - two\n\nBecause.\n"), None);
+        // A real difference beside them is one still, on either side.
+        assert_eq!(differs(run, "Bug 1 - two\n\nWhy."), Some(Differs::Text));
+        assert_eq!(differs("Bug 1 - two\n\nBecause.", "Bug 1 - two\n\n\nWhy."), Some(Differs::Text));
+        #[cfg(feature = "moz-phab")]
+        assert_eq!(differs(&format!("{run}\n\n{TRAILER}"), "Bug 1 - two\n\nBecause."), Some(Differs::Revision(Some("D123".into()), None)));
+        // Kept, a message is written as it is, its empty lines too, on the
+        // side whose message is another.
+        let on = OnStack {
+            commits: vec!["a".into()],
+            messages: vec![(0, "Bug 1 - two\n\nWhy.".into(), Differs::Text)],
+            above: vec![],
+        };
+        let p = plan(&on, &[run], &[(0, Keep::Stack)]).unwrap();
+        assert_eq!((p.patches, p.commits), (vec![], vec![(0, run.to_string())]));
+        let theirs = "Bug 1 - two\n\n\nWhy.";
+        let on = OnStack {
+            messages: vec![(0, theirs.into(), Differs::Text)],
+            ..on
+        };
+        let p = plan(&on, &["Bug 1 - two\n\nBecause."], &[(0, Keep::Workspace)]).unwrap();
+        assert_eq!((p.patches, p.commits), (vec![(0, theirs.to_string())], vec![]));
+    }
 
     #[cfg(feature = "moz-phab")]
     #[test]

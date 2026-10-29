@@ -26,8 +26,8 @@ fn git(dir: &Path, args: &[&str]) {
 /// things (its settings, the databases opened last) kept in `home` beside
 /// the database (`$STACKED_HOME`), never in the home of whoever runs the
 /// tests; what it writes in the temporary directory, in `tmp` beside it
-/// (`$TMPDIR`), removed with the test's folder.
-fn stacked(dir: &Path, db: &Path, args: &[&str]) {
+/// (`$TMPDIR`), removed with the test's folder. What it printed.
+fn stacked(dir: &Path, db: &Path, args: &[&str]) -> String {
     let tmp = db.with_file_name("tmp");
     std::fs::create_dir_all(&tmp).unwrap();
     let out = Command::new(env!("CARGO_BIN_EXE_stacked"))
@@ -42,6 +42,7 @@ fn stacked(dir: &Path, db: &Path, args: &[&str]) {
         .output()
         .unwrap();
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
 #[test]
@@ -5545,6 +5546,49 @@ fn nothing_of_the_sync_is_said_of_head_seen_for_the_stack_as_it_was_until_it_is_
     app.settle();
     let screen = draw(&mut app);
     assert!(screen.contains(" ✉ the commit messages of patches 1 and 2 differ from your workspace's: sync them first"), "{screen}");
+}
+
+#[test]
+fn empty_lines_in_a_row_that_git_am_makes_one_leave_nothing_to_sync_once_head_has_moved() {
+    let (_tmp, db, src) = setup();
+    // Patch 1's message with two empty lines under its title, as no commit
+    // git makes has them.
+    let run = "Bug 1 - shout two\n\n\nBecause.";
+    Db::edit(&db, |d| {
+        let mut patches = d.stack("s")?.patches.clone();
+        let old = d.patch(&patches[0]).clone();
+        let draft = stacked::mbox::Draft {
+            message: run.into(),
+            ..stacked::mbox::Draft::from(&old)
+        };
+        patches[0] = d.add_patch(stacked::ops::revise(&old, draft))?;
+        d.set_stack("s", patches, "reword patch 1").map(|_| ())
+    })
+    .unwrap();
+    let mut app = open_in(&db, &src);
+    // HEAD moved to the base, then up the stack, git am applying the
+    // patches: one empty line in its commit, and nothing to sync, HEAD in
+    // sync with the stack.
+    for place in [KeyCode::Home, KeyCode::End] {
+        choose(&mut app, "Move HEAD…");
+        keys(&mut app, &[place, KeyCode::Enter]);
+        app.settle();
+    }
+    assert_eq!(app.status, "HEAD is at patch 2 of s, detached");
+    assert_eq!((patch_message(&db, 0), commit_message(&src, "HEAD~1")), (run.to_string(), "Bug 1 - shout two\n\nBecause.".to_string()));
+    assert!(app.head_here().is_some_and(|h| h.in_sync(2)), "{:?}", app.head_here());
+    sync_quiet(&mut app);
+    let said = stacked(&src, &db, &["head", "s"]);
+    assert!(said.ends_with(", is at patch 2 of s\n"), "{said}");
+    // A real difference beside them: to sync.
+    git(&src, &["checkout", "-q", "--detach", "HEAD~1"]);
+    git(&src, &["commit", "-q", "--amend", "-m", "Bug 1 - shout TWO\n\nBecause."]);
+    app.look_at_head();
+    app.settle();
+    let screen = draw(&mut app);
+    assert!(screen.contains(" ✉ the commit messages of patch 1 differ from your workspace's: sync them first"), "{screen}");
+    let said = stacked(&src, &db, &["head", "s"]);
+    assert!(said.contains("\nthe message of patch 1 differs from its commit's: \"Bug 1 - shout TWO\"\n"), "{said}");
 }
 
 #[test]

@@ -433,7 +433,8 @@ of `removed_word`, and what only your workspace's has, in those of
 the end of a line of code, `¶` on an empty line. Two messages that differ
 only in how they wrap are listed all the same, drawn as any text: HEAD is
 not in sync. White space at the end of a line is no difference, as it is
-not for HEAD.
+not for HEAD, nor are empty lines in a row, which `git am` makes one as
+HEAD is moved: a message kept is written as it is all the same.
 
 `s` keeps the stack's message for the patch the cursor is on, and `w` your
 workspace's (`keep_stack` and `keep_workspace` in `[keys]`, Settings,
