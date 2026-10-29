@@ -393,6 +393,38 @@ the branch it was on stays where it was. Not while files git tracks have
 changes, nor while the agent works in the checkout. `stacked head NAME
 --to N` moves it to N patches (0, the base).
 
+With the `moz-phab` feature (on by default), a patch whose message names a
+revision (its `Differential Revision:` trailer, Phabricator below) has that
+revision's status on Phabricator after its number, in brackets. Listing
+files, the status is a letter: `[D]` Draft, `[W]` Changes Planned, `[R]`
+Needs Review, `[C]` Needs Revision, `[A]` Accepted, `[L]` Closed (landed),
+`[X]` Abandoned, and `[?]` a status stacked does not know. Expanded, it is
+a word or two: `[Draft]`, `[WIP]` (work in progress, shorter than Changes
+Planned), `[Needs Review]`, `[Needs Revision]`, `[Accepted]`, `[Landed]`,
+`[Abandoned]` and `[unknown]` (`  2 [WIP] Bug 2 - add b`). The statuses are
+a column of their own, as wide as the widest of the stack's, so that the
+titles start together: a patch that names no revision, or whose revision's
+status is not read yet, has its column blank, and while no status is known
+there is no column at all. Expanded, the pane is wider by the column, up to
+half the screen, so that each title keeps the room it had and folds as it
+did. The tags at the end of a patch's first line (`[2]`, and `✓` or `3/7`
+in the reading mode) are where they were. A revision is a draft when its
+status is Draft: one in Changes Planned that was never sent for review, as
+`Submit to Phabricator as WIP` makes one, is `[W]`, though Phabricator says
+it is a draft too (`isDraft`, as it says of every revision it has not sent
+to reviewers yet). The statuses are read away from the screen, over Conduit
+with the token a pull uses, all of the stack's revisions in one search
+(differential.revision.search; one for each Phabricator, should their
+links name more than one): as the stack is shown, again when the
+revisions its patches name change and right after a submit, and every three
+minutes while the editor runs. They are kept as long as it runs, and
+written nowhere. A read that fails leaves them as they were, and the bottom
+line says so once (`The statuses of the stack's revisions could not be read
+from Phabricator: …`), then again only after a read that worked. Nothing is
+read while reviews come from nowhere (`reviews.source = "none"`, Settings
+below), nor in the tour. In the browser (`stacked web`) and in StackED, the
+same.
+
 A commit of the checkout is a patch of the stack when its diff is, but its
 message may say otherwise. While HEAD is on the stack and the messages of
 some patches differ from their commits', the banner (What the agent brings
@@ -2626,7 +2658,8 @@ settings:
   out. Given up on by claude, the ask fails and says so.
 - `[reviews]` (built with the `moz-phab` feature, on by default; read
   either way, so one file serves both builds): `source`, `"phabricator"`
-  or `"none"` (no pulling, no importing); `url`, the Phabricator a bare
+  or `"none"` (no pulling, no importing, no statuses of revisions read);
+  `url`, the Phabricator a bare
   `D123` trailer is on; `arcrc`, where the tokens are; `token`, one for
   `url` instead; `trailer`, the trailer naming a revision
   (`Differential Revision`); `bugzilla`, the Bugzilla that a bug a commit
@@ -2913,6 +2946,10 @@ A line of a commit message that names a bug (`Bug 123`), or the revision
 line's `Open bug 123 in your browser` (The editor, above), the bug on
 Bugzilla, `reviews.bugzilla` (Settings, below).
 
+The patches pane shows the status of each patch's revision after its number
+(`[W]`, `[Needs Review]`: The editor, above), read over Conduit with the
+same token, all of the stack's revisions in one search.
+
 ### Submitting a patch
 
 `Submit to Phabricator as WIP`, on a patch's menu (not while reviews come
@@ -3060,7 +3097,8 @@ is typed: `import.rs`). A fix to one may belong in the other.
   names and the revision its trailer names.
 - `review.rs`, `phab.rs`, `submit.rs`: Phabricator, built with the
   `moz-phab` feature (on by default): the reviews pulled, the stacks
-  imported, a patch submitted as work in progress.
+  imported, a patch submitted as work in progress, the statuses of
+  revisions read.
 - `try_push.rs`: the try push, built with the `try-push` feature (on by
   default): what an ask of a try push is told and answers with, its tasks
   read from its answer, and what a round asked again is told of them; the
@@ -3119,6 +3157,8 @@ is typed: `import.rs`). A fix to one may belong in the other.
   back, for syncing the commit messages, and for searching;
   `tui/submitting.rs`, what a submit to Phabricator sends, said in a
   dialog, or reviewed on a screen of its own, before it is sent;
+  `tui/revisions.rs`, the status on Phabricator of each patch's revision,
+  which the patches pane shows, and when it is read;
   `tui/banner.rs`, the banner of the agent's work; `tui/places.rs`, where
   each pane's cursor was, each half's of the middle split in two;
   `tui/finding.rs`, the search of the middle (`/`).
@@ -3151,7 +3191,11 @@ the linter; none reaches Phabricator: its revisions and their comments are
 read by stand-ins, and what a submit sends is answered by one, which keeps
 every call made to it, so that a test can see that a refusal wrote
 nothing, and which, as Phabricator does, makes no revision of a diff whose
-commit has no tree; none opens a window, nor a browser: a script stands in
+commit has no tree; the statuses of a stack's revisions are answered by one
+set for the test's database alone, as every editor reads the statuses of the
+stack it shows, so that no test's stand-in answers another's editors; and
+in a test's own process, which keeps nothing, an editor with no stand-in
+reads none. None opens a window, nor a browser: a script stands in
 for the program that opens a web link, and only writes down the links it
 is given. No sleep decides what a test sees:
 when a test looks at the agent's stand-in at work, the stand-in goes on
@@ -3523,7 +3567,19 @@ Enter and →, clicked, and picked from the middle, where ← comes back to
 the file; reading, each saying the lines left to mark read as marks are
 made and taken back, those of white space alone counted only as the
 settings say, a file with no newline at its end ticked once read whole,
-its patch too, the pane keeping its width from patch to patch), and the
+its patch too, the pane keeping its width from patch to patch), the
+statuses of the revisions there (with moz-phab, each status after its
+patch's number, a letter listing files and words expanded, `[?]` and
+`[unknown]` for one stacked does not know; none before it is read, nor
+for a patch naming no revision or one Phabricator does not have; the
+titles starting together, those folded folding as they did, the pane
+wider by the column, and the tags where they were; the stack's revisions
+read in one search, no other call made, not again while they are the
+same, again once its patches name others and right after a submit, a new
+revision's status shown at once; Changes Planned shown as such though
+Phabricator says it is a draft; a read that fails keeping those known and
+saying so once, again only after one that worked; none read while reviews
+come from nowhere; built without moz-phab, none shown), and the
 comments pane's states (expanded, compact, hidden) and the compact view
 of the code as they were. With the `web` feature, `tests/web.rs`
 serves the editor and asks it over HTTP as a browser would: the token
@@ -3536,7 +3592,9 @@ runs, on the list StackED's Open Recent shows, the effort picked in a
 menu kept in the state file of its home, where the next `stacked web`
 starts, a message's long lines wrapped from its patch's menu, the edit
 landing for review, and a link of a line of a message opened from the
-menu of a right click on it and with `o`, by a stand-in; and
+menu of a right click on it and with `o`, by a stand-in, and, with
+moz-phab, the status of a patch's revision after its number, in words and
+in a letter, read by a stand-in for its database; and
 `web.rs` tests the rows and the lines both ways, with the client's own tests
 (`web/client.rs`, compiled to the machine as well as to wasm), which also
 test the mouse followed only while the page has the focus: the cell where
@@ -3553,7 +3611,9 @@ menu of a right click on it and with `o`, by a stand-in, and a database
 that cannot be read said before any window; two editors in one process,
 as two windows, each in its own
 folder (HEAD said in the checkout's, none elsewhere); a message's long
-lines wrapped from its patch's menu, the edit landing for review; and the File menu,
+lines wrapped from its patch's menu, the edit landing for review; with
+moz-phab, the status of a patch's revision after its number, in words and
+in a letter, read by a stand-in for its database; and the File menu,
 its panels answered by the test: Open… opening each database picked in a
 window of its own (one picked twice, one that cannot be read said, the
 panel cancelled), New… making an empty database that stacked reads and
@@ -3878,7 +3938,14 @@ one `$STACKED_HOME` names, a file named over it, nowhere with neither);
 the files of before moved in once by a run of yours and said, never over a
 file there, a link moved as a link, and nothing moved that an override
 names the place of; what stacked runs told the same places; and nowhere in
-a test's own process.
+a test's own process. Those in `phab.rs` show a revision's status read from
+its value alone, whatever Phabricator says of drafts, with its letter and
+its words; the statuses of revisions read in one search, those it does not
+find not known, and a search refused said; and an editor's read by the
+stand-in for its database alone, one search for each Phabricator the links
+name, never from a process that keeps nothing without one. Those in
+`tui/revisions.rs` show when the statuses are due a read: never read, other
+revisions, a submit ended since, or three minutes gone by.
 
 ## Not done yet
 

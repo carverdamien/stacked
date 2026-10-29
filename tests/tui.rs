@@ -13245,11 +13245,13 @@ const ARCCONFIG: &str = r#"{"phabricator.uri": "https://phabricator.example.com/
 #[cfg(feature = "moz-phab")]
 const LINK: &str = "Differential Revision: https://phabricator.example.com/D";
 
-/// A revision as the stand-in for Phabricator has it.
+/// A revision as the stand-in for Phabricator has it: a draft when it was
+/// never sent for review (`isDraft`).
 #[cfg(feature = "moz-phab")]
 #[derive(Clone, Default)]
 struct Rev {
     status: String,
+    draft: bool,
     title: String,
     summary: String,
     bug: String,
@@ -13262,7 +13264,9 @@ struct Rev {
 /// is of (`local:commits`); each call made to it, and the number the next
 /// revision it makes takes. As Mozilla's Phabricator, it makes no revision
 /// of a diff whose commits lack their tree. It knows no users nor groups,
-/// nor reviewers: a submit in work asks nothing of them.
+/// nor reviewers: a submit in work asks nothing of them. Answering the
+/// statuses' searches of an editor (`statuses_from`), it keeps the
+/// revisions each asked for, and refuses them while it is down.
 #[cfg(feature = "moz-phab")]
 #[derive(Default)]
 struct Phab {
@@ -13271,6 +13275,8 @@ struct Phab {
     commits: std::collections::BTreeMap<u64, serde_json::Value>,
     calls: Vec<(String, serde_json::Value)>,
     next: u64,
+    searched: Vec<serde_json::Value>,
+    down: bool,
 }
 
 #[cfg(feature = "moz-phab")]
@@ -13318,10 +13324,11 @@ impl Phab {
         let name = match r.status.as_str() {
             "changes-planned" => "Changes Planned",
             "needs-review" => "Needs Review",
+            "draft" => "Draft",
             _ => "Closed",
         };
         serde_json::json!({"id": n, "phid": format!("PHID-DREV-{n}"), "fields": {
-            "title": r.title, "summary": r.summary, "status": {"value": r.status, "name": name}, "isDraft": false,
+            "title": r.title, "summary": r.summary, "status": {"value": r.status, "name": name}, "isDraft": r.draft,
             "bugzilla.bug-id": r.bug, "repositoryPHID": "PHID-REPO-1"}})
     }
 
@@ -13934,4 +13941,285 @@ fn a_commit_naming_a_revision_holds_back_no_submit_while_head_is_elsewhere() {
     assert_eq!(menu_title(&app), "send patch 3 to Phabricator as a new revision?");
     assert!(!phab.lock().unwrap().calls.is_empty());
     stacked::submit::stand_in(None);
+}
+
+// -- the statuses of the stack's revisions, in the patches pane ------------ //
+
+/// `phab` the stand-in for Phabricator in the statuses' searches of the
+/// editors of `db` alone (`phab::statuses_stand_in`): the revisions each
+/// search asks for kept in its `searched`, each refused while it is
+/// `down`.
+#[cfg(feature = "moz-phab")]
+fn statuses_from(db: &Path, phab: &std::sync::Arc<std::sync::Mutex<Phab>>) {
+    let p = phab.clone();
+    stacked::phab::statuses_stand_in(
+        db,
+        Some(Box::new(move |m, v| {
+            let mut p = p.lock().unwrap();
+            if p.down {
+                return Err(format!("{m}: Phabricator is down"));
+            }
+            p.searched.push(v["constraints"]["ids"].clone());
+            p.call(m, v)
+        })),
+    );
+}
+
+/// The lines of the patches pane under its header, the screen drawn, as
+/// `pane_lines` gives them: with the banner above it or not.
+#[cfg(feature = "moz-phab")]
+fn under_header(screen: &str) -> Vec<String> {
+    let pane = screen.lines().skip_while(|l| !l.starts_with(" ≡ ")).skip(1);
+    pane.map(|l| l.split('│').next().unwrap().trim_end().to_string()).take_while(|l| !l.is_empty()).collect()
+}
+
+/// A checkout and a database holding stack `s` of a patch for each of
+/// `messages`, each adding a file of its own.
+#[cfg(feature = "moz-phab")]
+fn stack_of(messages: &[String]) -> (tempfile::TempDir, PathBuf) {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("src");
+    std::fs::create_dir(&src).unwrap();
+    git(&src, &["init", "-q", "-b", "main"]);
+    git(&src, &["config", "commit.gpgsign", "false"]);
+    std::fs::write(src.join("base.txt"), "base\n").unwrap();
+    git(&src, &["add", "."]);
+    git(&src, &["commit", "-qm", "base"]);
+    for (k, m) in messages.iter().enumerate() {
+        std::fs::write(src.join(format!("f{}.txt", k + 1)), format!("{}\n", k + 1)).unwrap();
+        git(&src, &["add", "."]);
+        git(&src, &["commit", "-qm", m]);
+    }
+    let db = tmp.path().join("db.jsonl");
+    stacked(&src, &db, &["import", "s", &format!("HEAD~{}", messages.len())]);
+    (tmp, db)
+}
+
+#[cfg(feature = "moz-phab")]
+#[test]
+fn each_revision_s_status_follows_its_patch_s_number_a_letter_listing_files_and_words_expanded() {
+    // A patch for each status Phabricator gives, then one stacked does not
+    // know; one naming a revision Phabricator does not have; one naming
+    // none.
+    let statuses = ["draft", "changes-planned", "needs-review", "needs-revision", "accepted", "published", "abandoned", "something-new"];
+    let words = ["one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"];
+    let mut messages: Vec<String> = (1..=9).map(|n| format!("Bug {n} - {}\n\n{LINK}{n}", words[n - 1])).collect();
+    messages.push("Bug 10 - ten".into());
+    let (_tmp, db) = stack_of(&messages);
+    let mut p = Phab::default();
+    for (k, s) in statuses.iter().enumerate() {
+        p = p.with(k as u64 + 1, s, "", "");
+    }
+    let phab = std::sync::Arc::new(std::sync::Mutex::new(p));
+    statuses_from(&db, &phab);
+    let mut app = open(&db).unwrap();
+    // Not read yet: no column, each title where it always was.
+    assert_eq!(pane_lines(&draw(&mut app))[0], "  1 Bug 1 - one");
+    // Read away from the screen, shown once read.
+    app.refresh();
+    assert_eq!(pane_lines(&draw(&mut app))[0], "  1 Bug 1 - one");
+    app.settle();
+    let line = |n: usize, status: &str, w: usize| format!(" {n:>2} {status:<w$} Bug {n} - {}", words[n - 1]);
+    let expanded = ["[Draft]", "[WIP]", "[Needs Review]", "[Needs Revision]", "[Accepted]", "[Landed]", "[Abandoned]", "[unknown]", "", ""];
+    let screen = draw(&mut app);
+    let want: Vec<String> = expanded.iter().enumerate().map(|(k, s)| line(k + 1, s, 16)).collect();
+    assert_eq!(pane_lines(&screen), want, "{screen}");
+    // The pane wider by the column: a quarter of the screen, and 17.
+    assert_eq!(screen.lines().nth(2).unwrap().chars().position(|c| c == '│'), Some(30 + 17), "{screen}");
+    // Listing files: a letter each, the files of the patch picked under it.
+    keys(&mut app, &[KeyCode::Left]);
+    let letters = ["[D]", "[W]", "[R]", "[C]", "[A]", "[L]", "[X]", "[?]", "", ""];
+    let mut lines = pane_lines(&draw(&mut app));
+    assert!(lines.remove(1).trim_start().starts_with("f1.txt"), "{lines:?}");
+    assert_eq!(lines, letters.iter().enumerate().map(|(k, s)| line(k + 1, s, 3)).collect::<Vec<_>>());
+    // Hidden, then expanded again: drawn from what was read, read once.
+    keys(&mut app, &[KeyCode::Left, KeyCode::Left]);
+    assert_eq!(pane_lines(&draw(&mut app)), want);
+    assert_eq!(phab.lock().unwrap().searched.len(), 1);
+    stacked::phab::statuses_stand_in(&db, None);
+}
+
+#[cfg(feature = "moz-phab")]
+#[test]
+fn the_titles_start_together_with_a_status_or_none_and_fold_under_themselves_as_they_did() {
+    let long = "Bug 2 - the parser skips the blank lines and the total does not overflow any more";
+    let (_tmp, db) = phab_setup([&format!("Bug 1 - one\n\n{LINK}11"), long, &format!("Bug 3 - three\n\n{LINK}13")]);
+    let p = Phab::default().with(11, "needs-revision", "", "").with(13, "changes-planned", "", "");
+    let phab = std::sync::Arc::new(std::sync::Mutex::new(p));
+    statuses_from(&db, &phab);
+    let mut app = open(&db).unwrap();
+    // A comment on patch 1: its tag at the end of its first line.
+    choose(&mut app, "Comment on this patch…");
+    save(&mut app, "Why?");
+    let before = under_header(&draw(&mut app));
+    assert_eq!(before.len(), 6, "patch 2's title folded in four: {before:#?}");
+    assert!(before[0].starts_with("  1 Bug 1 - one") && before[0].ends_with(" [1]"), "{before:#?}");
+    app.refresh();
+    app.settle();
+    // Expanded: the column as wide as `[Needs Revision]`, each title after
+    // it, and the pane wider by as much, so that each title folds as it
+    // did, under itself, and its tag stays where it was.
+    let after = under_header(&draw(&mut app));
+    let with = |l: &String, status: &str| format!("{}{status:<16} {}", &l[..4], &l[4..]);
+    let mut want = vec![with(&before[0], "[Needs Revision]")];
+    want.extend(before[1..5].iter().map(|l| with(l, "")));
+    want.push(with(&before[5], "[WIP]"));
+    assert_eq!(after, want);
+    // Listing files: each title after the letters.
+    keys(&mut app, &[KeyCode::Left]);
+    let screen = draw(&mut app);
+    let lines = under_header(&screen);
+    let at = |text: &str| lines.iter().find_map(|l| l.find(text)).unwrap_or_else(|| panic!("no {text:?}: {screen}"));
+    assert!(lines[0].starts_with("  1 [C] Bug 1 - one") && lines[0].ends_with(" [1]"), "{screen}");
+    assert_eq!((at("Bug 1 - one"), at("Bug 2 - the"), at("Bug 3 - three")), (8, 8, 8), "{screen}");
+    stacked::phab::statuses_stand_in(&db, None);
+}
+
+#[cfg(feature = "moz-phab")]
+#[test]
+fn the_stack_s_revisions_are_read_in_one_search_as_it_is_shown_and_again_once_its_patches_name_others() {
+    let (_tmp, db) = phab_setup([&format!("Bug 1 - one\n\n{LINK}11"), &format!("Bug 2 - two\n\n{LINK}12"), "Bug 3 - three"]);
+    let p = Phab::default().with(11, "needs-review", "", "").with(12, "accepted", "", "").with(13, "abandoned", "", "");
+    let phab = std::sync::Arc::new(std::sync::Mutex::new(p));
+    statuses_from(&db, &phab);
+    let mut app = open(&db).unwrap();
+    app.refresh();
+    app.settle();
+    assert_eq!(pane_lines(&draw(&mut app)), ["  1 [Needs Review] Bug 1 - one", "  2 [Accepted]     Bug 2 - two", "  3                Bug 3 - three"]);
+    // One search, for both, and no other call; none again while the
+    // stack's revisions are the same.
+    for _ in 0..3 {
+        app.refresh();
+        app.settle();
+    }
+    assert_eq!(phab.lock().unwrap().searched, [serde_json::json!([11, 12])]);
+    assert_eq!(phab.lock().unwrap().calls.iter().map(|(m, _)| m.as_str()).collect::<Vec<_>>(), ["differential.revision.search"]);
+    // Patch 3 names D13 now: all three read again, in one search.
+    next_version(&db, 2, &format!("Bug 3 - three\n\n{LINK}13"), &patch_of(&db, 2).diff);
+    app.refresh();
+    app.settle();
+    assert_eq!(phab.lock().unwrap().searched, [serde_json::json!([11, 12]), serde_json::json!([11, 12, 13])]);
+    assert_eq!(pane_lines(&draw(&mut app))[2], "  3 [Abandoned]    Bug 3 - three");
+    stacked::phab::statuses_stand_in(&db, None);
+}
+
+#[cfg(feature = "moz-phab")]
+#[test]
+fn the_statuses_are_read_again_right_after_a_submit() {
+    let (_tmp, db) = phab_setup(["Bug 1 - one", "Bug 2 - two", &format!("Bug 3 - three\n\n{LINK}13")]);
+    // D13, a draft never sent for review: in work, as moz-phab takes it.
+    let mut p = Phab { next: 124, ..Default::default() }.with(13, "draft", "WIP: Bug 3 - three", &patch_of(&db, 2).diff);
+    p.revisions.get_mut(&13).unwrap().draft = true;
+    let phab = std::sync::Arc::new(std::sync::Mutex::new(p));
+    let _one = phab_stand_in(&phab);
+    statuses_from(&db, &phab);
+    let mut app = open(&db).unwrap();
+    app.refresh();
+    app.settle();
+    assert_eq!(pane_lines(&draw(&mut app))[2], "  3 [Draft] Bug 3 - three");
+    // Submitted, it is Changes Planned, though Phabricator still says it
+    // is a draft, never sent for review: read again at once, `[WIP]`.
+    keys(&mut app, &[KeyCode::Down, KeyCode::Down]);
+    choose(&mut app, "Submit to Phabricator as WIP");
+    app.settle();
+    assert_eq!(app.screen, Screen::Submit);
+    keys(&mut app, &[KeyCode::Enter]);
+    app.settle();
+    assert_eq!(app.status, "D13 is Changes Planned now. Patch 2 has no revision, so D13 gets no parent.");
+    let r = phab.lock().unwrap().revisions[&13].clone();
+    assert_eq!((r.status.as_str(), r.draft), ("changes-planned", true));
+    assert_eq!(phab.lock().unwrap().searched, [serde_json::json!([13]), serde_json::json!([13])]);
+    assert_eq!(pane_lines(&draw(&mut app))[2], "  3 [WIP] Bug 3 - three");
+    // A new revision, of patch 1: its status at once, with its link.
+    keys(&mut app, &[KeyCode::Up, KeyCode::Up]);
+    choose(&mut app, "Submit to Phabricator as WIP");
+    app.settle();
+    choose(&mut app, "Send it to Phabricator");
+    app.settle();
+    assert!(app.status.starts_with("Patch 1 is D124 on Phabricator now"), "{}", app.status);
+    assert_eq!(phab.lock().unwrap().searched.last(), Some(&serde_json::json!([124, 13])));
+    assert_eq!(pane_lines(&draw(&mut app))[0], "  1 [WIP] Bug 1 - one");
+    stacked::phab::statuses_stand_in(&db, None);
+    stacked::submit::stand_in(None);
+}
+
+#[cfg(feature = "moz-phab")]
+#[test]
+fn a_read_that_fails_keeps_the_statuses_known_and_says_so_once() {
+    let (_tmp, db) = phab_setup([&format!("Bug 1 - one\n\n{LINK}11"), &format!("Bug 2 - two\n\n{LINK}12"), "Bug 3 - three"]);
+    let p = Phab::default().with(11, "needs-review", "", "").with(12, "accepted", "", "").with(13, "abandoned", "", "");
+    let phab = std::sync::Arc::new(std::sync::Mutex::new(p));
+    statuses_from(&db, &phab);
+    let mut app = open(&db).unwrap();
+    app.refresh();
+    app.settle();
+    let known = ["  1 [Needs Review] Bug 1 - one", "  2 [Accepted]     Bug 2 - two"];
+    assert_eq!(pane_lines(&draw(&mut app))[..2], known);
+    // Patch 3 names revision `rev` now: read at once, as the stack's
+    // revisions are others.
+    let diff = patch_of(&db, 2).diff;
+    let names = |app: &mut App, rev: u64| {
+        next_version(&db, 2, &format!("Bug 3 - three\n\n{LINK}{rev}"), &diff);
+        app.refresh();
+        app.settle();
+    };
+    // Phabricator down: those known kept, D13's not known, and why said.
+    phab.lock().unwrap().down = true;
+    names(&mut app, 13);
+    assert_eq!(pane_lines(&draw(&mut app)), [known[0], known[1], "  3                Bug 3 - three"]);
+    let again = "The statuses of the stack's revisions could not be read from Phabricator again, so the patches pane shows them as they were: differential.revision.search: Phabricator is down";
+    assert_eq!(app.status, again);
+    // Failing again, nothing more is said.
+    app.status.clear();
+    names(&mut app, 14);
+    assert_eq!(app.status, "");
+    assert_eq!(pane_lines(&draw(&mut app))[..2], known);
+    // Up again, read; down once more, said once more.
+    phab.lock().unwrap().down = false;
+    names(&mut app, 13);
+    assert_eq!(pane_lines(&draw(&mut app))[2], "  3 [Abandoned]    Bug 3 - three");
+    assert_eq!(app.status, "");
+    phab.lock().unwrap().down = true;
+    names(&mut app, 14);
+    assert_eq!(app.status, again);
+    assert_eq!(phab.lock().unwrap().searched, [serde_json::json!([11, 12]), serde_json::json!([11, 12, 13])]);
+    stacked::phab::statuses_stand_in(&db, None);
+}
+
+#[cfg(feature = "moz-phab")]
+#[test]
+fn a_first_read_that_fails_says_so_and_shows_no_status() {
+    let (_tmp, db) = phab_setup([&format!("Bug 1 - one\n\n{LINK}11"), "Bug 2 - two", "Bug 3 - three"]);
+    let phab = std::sync::Arc::new(std::sync::Mutex::new(Phab { down: true, ..Phab::default().with(11, "needs-review", "", "") }));
+    statuses_from(&db, &phab);
+    let mut app = open(&db).unwrap();
+    app.refresh();
+    app.settle();
+    assert_eq!(app.status, "The statuses of the stack's revisions could not be read from Phabricator: differential.revision.search: Phabricator is down");
+    assert_eq!(pane_lines(&draw(&mut app)), ["  1 Bug 1 - one", "  2 Bug 2 - two", "  3 Bug 3 - three"]);
+    stacked::phab::statuses_stand_in(&db, None);
+}
+
+#[cfg(feature = "moz-phab")]
+#[test]
+fn no_status_is_read_or_shown_while_reviews_come_from_nowhere() {
+    let (_tmp, db) = phab_setup([&format!("Bug 1 - one\n\n{LINK}11"), "Bug 2 - two", "Bug 3 - three"]);
+    let phab = std::sync::Arc::new(std::sync::Mutex::new(Phab::default().with(11, "needs-review", "", "")));
+    statuses_from(&db, &phab);
+    let mut app = open_set(&db, |c| c.reviews.source = stacked::config::Source::None);
+    app.refresh();
+    app.settle();
+    assert_eq!(pane_lines(&draw(&mut app)), ["  1 Bug 1 - one", "  2 Bug 2 - two", "  3 Bug 3 - three"]);
+    assert!(phab.lock().unwrap().calls.is_empty(), "nothing asked of Phabricator");
+    stacked::phab::statuses_stand_in(&db, None);
+}
+
+#[cfg(not(feature = "moz-phab"))]
+#[test]
+fn without_moz_phab_the_patches_pane_shows_no_status() {
+    let (_tmp, db, _) = with_message(|_| "Bug 1 - one\n\nDifferential Revision: https://phabricator.example.com/D11".into());
+    let mut app = open(&db).unwrap();
+    app.refresh();
+    app.settle();
+    assert_eq!(pane_lines(&draw(&mut app)), ["  1 Bug 1 - one"]);
 }

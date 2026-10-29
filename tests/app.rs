@@ -259,6 +259,30 @@ fn a_patch_is_submitted_to_phabricator_from_its_menu_in_the_window_too() {
     stacked::submit::stand_in(None);
 }
 
+#[cfg(feature = "moz-phab")]
+#[test]
+fn the_status_of_each_patch_s_revision_shows_in_the_window_too() {
+    let (tmp, db) = setup_with("Bug 1 - shout two\n\nDifferential Revision: https://phabricator.example.com/D11");
+    // A stand-in for Phabricator, answering the statuses' searches of the
+    // editors of this database alone: D11 needs review.
+    stacked::phab::statuses_stand_in(
+        &db,
+        Some(Box::new(|m, _| match m {
+            "differential.revision.search" => Ok(serde_json::json!({"data": [{"id": 11, "fields": {"status": {"value": "needs-review"}}}]})),
+            _ => Err(format!("{m}: not asked in this test")),
+        })),
+    );
+    let s = Session::open(&db, tmp.path()).unwrap();
+    s.send(Input::Size(100, 30));
+    // Expanded, in words after the number; the patch naming no revision
+    // blank, its title after the column all the same.
+    screen(&s, "the status", |b| row(b, 2).starts_with("  1 [Needs Review] Bug 1 - shout two") && row(b, 3).starts_with("  2                Bug 2 - add b"));
+    // Listing files, a letter.
+    press(&s, KeyCode::Left);
+    screen(&s, "the letter", |b| row(b, 2).starts_with("  1 [R] Bug 1 - shout two"));
+    stacked::phab::statuses_stand_in(&db, None);
+}
+
 #[test]
 fn a_message_s_long_lines_are_wrapped_from_its_patch_s_menu_in_the_window_too() {
     let long = "Bug 1 - shout two\n\nThe parser read the whole file before it checked the header, which made it slow on the big files we have.";

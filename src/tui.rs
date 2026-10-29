@@ -55,6 +55,8 @@ pub use finding::Find;
 pub mod places;
 pub mod reviewing;
 pub use reviewing::Reviewing;
+#[cfg(feature = "moz-phab")]
+mod revisions;
 pub mod searching;
 pub use searching::Searching;
 #[cfg(feature = "moz-phab")]
@@ -2117,6 +2119,10 @@ pub struct App {
     planned: Option<Planned>,
     /// Where its HEAD was against a stack, when last looked at.
     head: Option<HeadSeen>,
+    /// The status on Phabricator of each revision the patches name, as last
+    /// read: kept while the editor runs, never written.
+    #[cfg(feature = "moz-phab")]
+    statuses: revisions::Statuses,
     /// The work done away from the screen.
     bg: Background,
     /// The comments the agent works on, as last read, and how many records
@@ -2195,6 +2201,10 @@ enum Done {
     /// can be.
     #[cfg(feature = "moz-phab")]
     Submitting(std::result::Result<Box<crate::submit::Prepared>, String>),
+    /// The statuses of the stack's revisions read from Phabricator, by
+    /// link: or what was wrong.
+    #[cfg(feature = "moz-phab")]
+    Statuses(std::result::Result<HashMap<String, crate::phab::Status>, String>),
     /// Whether stack `name` at `rev` applies: why not, if not.
     Judged {
         name: String,
@@ -2528,6 +2538,8 @@ impl App {
             import_with: (false, false),
             planned: None,
             head: None,
+            #[cfg(feature = "moz-phab")]
+            statuses: Default::default(),
             bg: Background::new(),
             busy_memo: std::cell::RefCell::new(None),
             files_memo: std::cell::RefCell::new(HashMap::new()),
@@ -2804,6 +2816,8 @@ impl App {
             }
             #[cfg(feature = "moz-phab")]
             Done::Submitting(read) => self.submit_read(read),
+            #[cfg(feature = "moz-phab")]
+            Done::Statuses(read) => self.statuses_read(read),
             Done::Said(what, said) => {
                 self.bg.doing.retain(|d| *d != what);
                 #[cfg(feature = "moz-phab")]
@@ -2815,6 +2829,11 @@ impl App {
                 if what == MOVING_HEAD || what == APPLYING {
                     self.bg.moved += 1;
                     self.look_at_head();
+                }
+                // Submitted: the statuses of the revisions read again.
+                #[cfg(feature = "moz-phab")]
+                if what == submitting::SUBMITTING {
+                    self.statuses_again();
                 }
             }
             Done::Judged { name, rev, why } => {
@@ -3154,10 +3173,19 @@ impl App {
         return false;
     }
 
+    /// Whether the statuses of the stack's revisions are being read from
+    /// Phabricator: never, built without the `moz-phab` feature.
+    fn reading_statuses(&self) -> bool {
+        #[cfg(feature = "moz-phab")]
+        return self.statuses.reading;
+        #[cfg(not(feature = "moz-phab"))]
+        return false;
+    }
+
     /// Waits for the work away from the screen to be done, the files read
     /// to show whole too.
     pub fn settle(&mut self) {
-        while self.bg.launching || !self.bg.doing.is_empty() || self.bg.judging.is_some() || self.bg.heading || self.following() {
+        while self.bg.launching || !self.bg.doing.is_empty() || self.bg.judging.is_some() || self.bg.heading || self.following() || self.reading_statuses() {
             match self.bg.rx.recv_timeout(Duration::from_secs(60)) {
                 Ok(d) => self.done(d),
                 Err(_) => break,
@@ -4043,7 +4071,9 @@ impl App {
     }
 
     /// Reads what someone appended to the database, if anything, and what
-    /// the work away from the screen came to.
+    /// the work away from the screen came to; and starts what is due away
+    /// from it: where HEAD is looked at, the statuses of the stack's
+    /// revisions read.
     pub fn refresh(&mut self) {
         self.poll_search();
         let polled = self.poll();
@@ -4052,6 +4082,8 @@ impl App {
             self.reload();
         }
         self.check_head();
+        #[cfg(feature = "moz-phab")]
+        self.check_statuses();
     }
 
     /// Reads what was appended: what an edit just wrote, or another
@@ -9763,17 +9795,20 @@ impl App {
 
     /// How wide the side panes are, of `w`, as `left` and `right` show
     /// them: expanded, a quarter of the width (what does not fit in it
-    /// folds: the patches' titles whole); the patches listing files, as
-    /// wide as their paths need, from as wide as expanded to a third of the
-    /// width; the comments compact, what they show needs, a fifth at most;
-    /// hidden, not at all. The pane a comment is written in, `wide`, takes
-    /// half the width.
+    /// folds: the patches' titles whole), the patches' wider by the column
+    /// of their revisions' statuses, half the width at most; the patches
+    /// listing files, as wide as their paths need, from as wide as expanded
+    /// without that column to a third of the width; the comments compact,
+    /// what they show needs, a fifth at most; hidden, not at all. The pane
+    /// a comment is written in, `wide`, takes half the width.
     fn side_widths(&self, w: usize, left: PatchesPane, right: Pane, wide: Option<Focus>) -> (usize, usize) {
         let expanded = (w / 4).clamp(20, 40);
         let mut left_w = match left {
             PatchesPane::Hidden => 0,
             PatchesPane::Files => self.files_wants().clamp(expanded, (w / 3).max(expanded)),
-            PatchesPane::Expanded => expanded,
+            // Wider by the column of the revisions' statuses, half the width
+            // at most, so that the titles keep the room they had.
+            PatchesPane::Expanded => (expanded + self.status_room(left)).min((w / 2).max(expanded)),
         };
         let mut right_w = match right {
             Pane::Hidden => 0,
@@ -9859,6 +9894,38 @@ impl App {
             tag += &format!(" [{open}]");
         }
         (p.title().to_string(), tag)
+    }
+
+    /// What the patches pane shows after patch `id`'s number, shown as
+    /// `mode`: the status on Phabricator of the revision it names, in
+    /// brackets, a letter listing files (`[W]`), a word or two expanded
+    /// (`[WIP]`). None when it names no revision, or its status is not
+    /// known yet; always, built without the `moz-phab` feature.
+    fn status_said(&self, id: &str, mode: PatchesPane) -> Option<&'static str> {
+        #[cfg(feature = "moz-phab")]
+        return self.revision_status(id).map(|s| if mode == PatchesPane::Files { s.letter() } else { s.word() });
+        #[cfg(not(feature = "moz-phab"))]
+        {
+            let _ = (id, mode);
+            None
+        }
+    }
+
+    /// How wide the column of the statuses is in the patches pane shown as
+    /// `mode`: as the widest of the stack's patches', so that their titles
+    /// start together; 0, no column, while none is known.
+    fn status_col(&self, mode: PatchesPane) -> usize {
+        let Some(s) = self.current() else { return 0 };
+        s.patches.iter().filter_map(|id| self.status_said(id, mode)).map(|t| t.chars().count()).max().unwrap_or(0)
+    }
+
+    /// The room the column of the statuses takes on a patch's line, the
+    /// pane shown as `mode`: its width and a space after it, or none.
+    fn status_room(&self, mode: PatchesPane) -> usize {
+        match self.status_col(mode) {
+            0 => 0,
+            n => n + 1,
+        }
     }
 
     /// How wide the patches pane is to be, listing files: its widest file
@@ -10374,16 +10441,23 @@ impl App {
             }
             _ => (self.sel, false),
         };
-        // Each patch's lines: its number, its title whole, folded under
+        // Each patch's lines: its number, the status of its revision on
+        // Phabricator, in a column as wide as the widest (blank where none
+        // is known; no column while none is), its title whole, folded under
         // itself where the pane is narrower, and its tags at the end of its
         // first.
+        let col = self.status_col(self.list);
         let lines: Vec<Vec<String>> = order
             .iter()
             .enumerate()
             .map(|(at, &i)| {
                 let (said, tag) = self.patch_said(&s.patches[i]);
                 let mark = if moving && at == on { " ↕".to_string() } else { format!("{:>2}", at + 1) };
-                let head = format!(" {mark} ");
+                let status = match col {
+                    0 => String::new(),
+                    _ => format!("{} ", fit(self.status_said(&s.patches[i], self.list).unwrap_or_default(), col)),
+                };
+                let head = format!(" {mark} {status}");
                 let (head_w, tag_w) = (head.chars().count(), tag.chars().count());
                 let mut folded = vec![said.clone()];
                 if head_w + said.chars().count() + tag_w > w {

@@ -304,6 +304,37 @@ fn a_patch_is_submitted_to_phabricator_from_its_menu_in_the_browser_too() {
     stacked::submit::stand_in(None);
 }
 
+/// A stand-in for Phabricator, answering the statuses' searches of the
+/// editors of `db` alone: D11 needs review.
+#[cfg(feature = "moz-phab")]
+fn d11_needs_review(db: &Path) {
+    stacked::phab::statuses_stand_in(
+        db,
+        Some(Box::new(|m, _| match m {
+            "differential.revision.search" => Ok(serde_json::json!({"data": [{"id": 11, "fields": {"status": {"value": "needs-review"}}}]})),
+            _ => Err(format!("{m}: not asked in this test")),
+        })),
+    );
+}
+
+#[cfg(feature = "moz-phab")]
+#[test]
+fn the_status_of_each_patch_s_revision_shows_in_the_browser_too() {
+    let (_tmp, db) = setup_with("Bug 1 - shout two\n\nDifferential Revision: https://phabricator.example.com/D11");
+    d11_needs_review(&db);
+    stacked::config::init(stacked::config::Config::default());
+    let (port, token) = stacked::web::start(db.clone()).unwrap();
+    let mut events = events(port, &token, 100);
+    // Expanded, in words after the number; the patch naming no revision
+    // blank, its title after the column all the same.
+    until(&mut events, "the status", |l| l.starts_with("data: r 2 ") && text(l).starts_with("  1 [Needs Review] Bug 1 - shout two"));
+    until(&mut events, "the title after it", |l| l.starts_with("data: r 3 ") && text(l).starts_with("  2                Bug 2 - add b"));
+    // Listing files, a letter.
+    ask(port, &format!("127.0.0.1:{port}"), &format!("POST /input?t={token}"), "k Left -\n");
+    until(&mut events, "the letter", |l| l.starts_with("data: r 2 ") && text(l).starts_with("  1 [R] Bug 1 - shout two"));
+    stacked::phab::statuses_stand_in(&db, None);
+}
+
 /// Patch 1 of stack `s` in `db` given a new version whose message is
 /// `message`, at once.
 fn reworded(db: &Path, message: &str) {

@@ -653,6 +653,167 @@ pub(crate) fn revision_in(message: &str, trailer: &str, url: Option<&str>) -> Op
     })
 }
 
+/// A revision's status on Phabricator, as the patches pane shows it after
+/// each patch's number.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Status {
+    Draft,
+    ChangesPlanned,
+    NeedsReview,
+    NeedsRevision,
+    Accepted,
+    /// Closed, as Phabricator names it: landed.
+    Published,
+    Abandoned,
+    /// One stacked does not know.
+    Unknown,
+}
+
+impl Status {
+    /// The status of revision `r`, as differential.revision.search gives
+    /// it: its value alone (`fields.status.value`). `isDraft` is not read:
+    /// Phabricator sets it (as `!shouldBroadcast`) on every revision it has
+    /// not sent to reviewers yet, whatever its status: a draft, but also a
+    /// revision in Changes Planned that was never sent for review, as a
+    /// submit in work makes one, and one abandoned before then.
+    pub fn of(r: &Value) -> Status {
+        match r.pointer("/fields/status/value").and_then(Value::as_str) {
+            Some("draft") => Status::Draft,
+            Some("changes-planned") => Status::ChangesPlanned,
+            Some("needs-review") => Status::NeedsReview,
+            Some("needs-revision") => Status::NeedsRevision,
+            Some("accepted") => Status::Accepted,
+            Some("published") => Status::Published,
+            Some("abandoned") => Status::Abandoned,
+            _ => Status::Unknown,
+        }
+    }
+
+    /// The patches pane's status listing files: a letter, in brackets.
+    pub fn letter(self) -> &'static str {
+        match self {
+            Status::Draft => "[D]",
+            Status::ChangesPlanned => "[W]",
+            Status::NeedsReview => "[R]",
+            Status::NeedsRevision => "[C]",
+            Status::Accepted => "[A]",
+            Status::Published => "[L]",
+            Status::Abandoned => "[X]",
+            Status::Unknown => "[?]",
+        }
+    }
+
+    /// The patches pane's status expanded: a word or two, in brackets;
+    /// Changes Planned the shorter `WIP`, work in progress.
+    pub fn word(self) -> &'static str {
+        match self {
+            Status::Draft => "[Draft]",
+            Status::ChangesPlanned => "[WIP]",
+            Status::NeedsReview => "[Needs Review]",
+            Status::NeedsRevision => "[Needs Revision]",
+            Status::Accepted => "[Accepted]",
+            Status::Published => "[Landed]",
+            Status::Abandoned => "[Abandoned]",
+            Status::Unknown => "[unknown]",
+        }
+    }
+}
+
+/// The statuses of revisions `ids` (`D123`), Conduit called with `call`:
+/// one search for all of them. By revision, those Phabricator has.
+pub(crate) fn statuses_over(call: &mut Call, ids: &[String]) -> Result<HashMap<String, Status>, String> {
+    let numbers: Vec<u64> = ids.iter().filter_map(|d| d.strip_prefix('D')?.parse().ok()).collect();
+    if numbers.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let found = call("differential.revision.search", json!({"constraints": {"ids": numbers}}))?;
+    Ok(found
+        .get("data")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|r| Some((format!("D{}", r.get("id")?.as_u64()?), Status::of(r))))
+        .collect())
+}
+
+/// A stand-in for Phabricator, answering Conduit's calls as a submit's does
+/// (`submit::stand_in`), shared with the read under way.
+type StatusStandIn = std::sync::Arc<std::sync::Mutex<crate::submit::Phabricator>>;
+
+/// What answers the statuses' searches of the editors of a database in
+/// place of Phabricator, by the database's path: the tests', which never
+/// reach it. For the editors of that database alone, not for the whole
+/// process as a submit's stand-in is: every editor reads the statuses of
+/// the stack it shows, so one for the process would answer the editors of
+/// every test at once.
+static STATUS_STAND_INS: std::sync::Mutex<Vec<(std::path::PathBuf, StatusStandIn)>> = std::sync::Mutex::new(Vec::new());
+
+/// Has `p` answer the statuses' searches of the editors of the database at
+/// `db` rather than Phabricator; with none, Phabricator again.
+pub fn statuses_stand_in(db: &Path, p: Option<crate::submit::Phabricator>) {
+    let mut all = STATUS_STAND_INS.lock().unwrap_or_else(|e| e.into_inner());
+    all.retain(|(at, _)| at != db);
+    if let Some(p) = p {
+        all.push((db.to_path_buf(), std::sync::Arc::new(std::sync::Mutex::new(p))));
+    }
+}
+
+/// The stand-in answering for the editors of the database at `db`, if one
+/// does.
+fn status_stand_in(db: &Path) -> Option<StatusStandIn> {
+    let all = STATUS_STAND_INS.lock().unwrap_or_else(|e| e.into_inner());
+    all.iter().find(|(at, _)| at == db).map(|(_, p)| p.clone())
+}
+
+/// Whether the editors of the database at `db` read the statuses of their
+/// revisions: from a stand-in set for it, else from Phabricator, but never
+/// from a process that keeps nothing, as the tests' own.
+pub fn statuses_read(db: &Path) -> bool {
+    status_stand_in(db).is_some() || crate::home::get().dir != Path::new(crate::home::NOWHERE)
+}
+
+/// The statuses of revisions `revisions` (`D123`, and its link) on
+/// Phabricator, by link: one search for those of each Phabricator, as
+/// their links name it (`statuses_over`). Through the stand-in set for the
+/// database at `db`, if one is; else over Conduit, with the token for
+/// that Phabricator, never from a process that keeps nothing. What is
+/// wrong, said, when a search fails.
+pub fn statuses(db: &Path, revisions: &[(String, String)]) -> Result<HashMap<String, Status>, String> {
+    let stand_in = status_stand_in(db);
+    if stand_in.is_none() && crate::home::get().dir == Path::new(crate::home::NOWHERE) {
+        return Err("Phabricator is not reached from a process that keeps nothing, as the tests' own".into());
+    }
+    // By Phabricator, as `pull` reads the comments.
+    let mut by_host: Vec<(String, Vec<&(String, String)>)> = Vec::new();
+    for r in revisions {
+        let host = r.1.split('/').take(3).collect::<Vec<_>>().join("/");
+        match by_host.iter_mut().find(|(h, _)| *h == host) {
+            Some((_, these)) => these.push(r),
+            None => by_host.push((host, vec![r])),
+        }
+    }
+    let mut out = HashMap::new();
+    for (_, these) in by_host {
+        let ids: Vec<String> = these.iter().map(|(d, _)| d.clone()).collect();
+        let found = match &stand_in {
+            Some(p) => {
+                let mut p = p.lock().unwrap_or_else(|e| e.into_inner());
+                statuses_over(&mut |m, v| p(m, v), &ids)?
+            }
+            None => {
+                let conduit = Conduit::for_url(Some(&these[0].1))?;
+                statuses_over(&mut |m, v| conduit.call(m, v), &ids)?
+            }
+        };
+        for (d, link) in these {
+            if let Some(s) = found.get(d) {
+                out.insert(link.clone(), *s);
+            }
+        }
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -810,6 +971,99 @@ mod tests {
         });
         assert_eq!(told, [0, 1]);
         assert_eq!(pulled, Err("transaction.search: D2 is gone".to_string()));
+    }
+
+    /// A revision as differential.revision.search gives it: its number, its
+    /// status's value, if it has one, and whether Phabricator says it is a
+    /// draft (`isDraft`).
+    fn revision(n: u64, status: Option<&str>, draft: bool) -> Value {
+        let mut fields = json!({"isDraft": draft});
+        if let Some(s) = status {
+            fields["status"] = json!({"value": s});
+        }
+        json!({"id": n, "phid": format!("PHID-DREV-{n}"), "fields": fields})
+    }
+
+    #[test]
+    fn a_revision_s_status_is_its_value_whatever_phabricator_says_of_drafts() {
+        let all = [
+            ("draft", Status::Draft, "[D]", "[Draft]"),
+            ("changes-planned", Status::ChangesPlanned, "[W]", "[WIP]"),
+            ("needs-review", Status::NeedsReview, "[R]", "[Needs Review]"),
+            ("needs-revision", Status::NeedsRevision, "[C]", "[Needs Revision]"),
+            ("accepted", Status::Accepted, "[A]", "[Accepted]"),
+            ("published", Status::Published, "[L]", "[Landed]"),
+            ("abandoned", Status::Abandoned, "[X]", "[Abandoned]"),
+            ("something-new", Status::Unknown, "[?]", "[unknown]"),
+        ];
+        for (value, status, letter, word) in all {
+            assert_eq!(Status::of(&revision(1, Some(value), false)), status, "{value}");
+            assert_eq!((status.letter(), status.word()), (letter, word), "{value}");
+        }
+        // Never sent for review: Phabricator says each is a draft, Changes
+        // Planned as a submit in work leaves it, and abandoned so. Its
+        // status is its value all the same.
+        assert_eq!(Status::of(&revision(1, Some("changes-planned"), true)), Status::ChangesPlanned);
+        assert_eq!(Status::of(&revision(1, Some("abandoned"), true)), Status::Abandoned);
+        assert_eq!(Status::of(&revision(1, Some("draft"), true)), Status::Draft);
+        assert_eq!(Status::of(&revision(1, None, true)), Status::Unknown, "no value");
+    }
+
+    #[test]
+    fn the_statuses_of_revisions_are_read_in_one_search_those_it_finds_by_revision() {
+        let mut asked = Vec::new();
+        let mut call = |method: &str, params: Value| -> Result<Value, String> {
+            asked.push((method.to_string(), params.clone()));
+            Ok(json!({"data": [revision(12, Some("accepted"), false), revision(11, Some("changes-planned"), true)]}))
+        };
+        let ids = ["D11", "D12", "D13"].map(String::from);
+        let found = statuses_over(&mut call, &ids).unwrap();
+        assert_eq!(asked, [("differential.revision.search".to_string(), json!({"constraints": {"ids": [11, 12, 13]}}))]);
+        // D13, not given: not known.
+        let want: HashMap<String, Status> = [("D11".to_string(), Status::ChangesPlanned), ("D12".to_string(), Status::Accepted)].into();
+        assert_eq!(found, want);
+        // No revision, no search.
+        let mut none = |_: &str, _: Value| -> Result<Value, String> { panic!("nothing to search") };
+        assert_eq!(statuses_over(&mut none, &[]), Ok(HashMap::new()));
+        // A search refused: what is wrong, said.
+        let mut refused = |m: &str, _: Value| -> Result<Value, String> { Err(format!("{m}: refused")) };
+        assert_eq!(statuses_over(&mut refused, &ids), Err("differential.revision.search: refused".to_string()));
+    }
+
+    #[test]
+    fn the_statuses_of_an_editor_s_revisions_are_read_by_its_database_s_stand_in_one_search_for_each_phabricator() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (db, other) = (tmp.path().join("db.jsonl"), tmp.path().join("other.jsonl"));
+        let revisions: Vec<(String, String)> = [("D11", "https://a.example/D11"), ("D12", "https://a.example/D12"), ("D11", "https://b.example/D11")]
+            .map(|(d, l)| (d.to_string(), l.to_string()))
+            .to_vec();
+        // The tests' own process keeps nothing: with no stand-in for the
+        // database, Phabricator is not reached, and the editor reads none.
+        assert!(!statuses_read(&db));
+        assert_eq!(statuses(&db, &revisions), Err("Phabricator is not reached from a process that keeps nothing, as the tests' own".to_string()));
+        let searched = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = searched.clone();
+        statuses_stand_in(
+            &db,
+            Some(Box::new(move |_, params: Value| {
+                let ids = params["constraints"]["ids"].clone();
+                seen.lock().unwrap().push(ids.clone());
+                // Each Phabricator its own: D11 needs review on the first,
+                // is abandoned on the second.
+                let status = if ids == json!([11]) { "abandoned" } else { "needs-review" };
+                Ok(json!({"data": ids.as_array().unwrap().iter().map(|n| revision(n.as_u64().unwrap(), Some(status), false)).collect::<Vec<_>>()}))
+            })),
+        );
+        assert!(statuses_read(&db) && !statuses_read(&other), "for that database alone");
+        let found = statuses(&db, &revisions).unwrap();
+        assert_eq!(*searched.lock().unwrap(), [json!([11, 12]), json!([11])], "one search for each Phabricator");
+        let by_link = |l: &str| found.get(l).copied();
+        assert_eq!(
+            (by_link("https://a.example/D11"), by_link("https://a.example/D12"), by_link("https://b.example/D11")),
+            (Some(Status::NeedsReview), Some(Status::NeedsReview), Some(Status::Abandoned))
+        );
+        statuses_stand_in(&db, None);
+        assert!(!statuses_read(&db));
     }
 
     #[test]
