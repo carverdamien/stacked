@@ -1407,15 +1407,17 @@ fn the_menu_goes_by_place() {
     // A patch's, then what every menu ends with.
     let patch = labels(&mut app);
     assert!(patch.contains(&"Move this patch…".to_string()) && patch.contains(&"Comment on this patch…".to_string()), "{patch:?}");
-    assert!(!patch.iter().any(|l| l.starts_with("Tree of edits") || l.starts_with("Apply")), "{patch:?}");
+    assert!(!patch.iter().any(|l| l.starts_with("Tree of edits")), "{patch:?}");
     assert_eq!(patch.last().unwrap(), "Quit");
     // The stack's, on the header only.
     keys(&mut app, &[KeyCode::Up]);
     let stack = labels(&mut app);
-    for label in ["Comment on the stack…", "Show…", "Tree of edits…", "History…", "Apply the stack to the worktree…", "Delete this stack…"] {
+    for label in ["Comment on the stack…", "Show…", "Tree of edits…", "History…", "Delete this stack…"] {
         assert!(stack.contains(&label.to_string()), "{label}: {stack:?}");
     }
     assert!(stack.contains(&"Ask agent about all".to_string()), "{stack:?}");
+    // No item puts the stack into your checkout: Move HEAD… moves HEAD.
+    assert!(!stack.iter().chain(&patch).any(|l| l.starts_with("Apply")), "{stack:?}");
     assert!(!stack.contains(&"Move this patch…".to_string()), "{stack:?}");
     // A line's.
     keys(&mut app, &[KeyCode::Down, KeyCode::Right]);
@@ -6932,9 +6934,24 @@ fn an_agent_stopped_lands_its_ask_as_failed_at_once_its_comment_free_again() {
     assert_eq!(app.status, "stopping the agent: its ask lands as failed");
     assert!(draw(&mut app).contains("stopping the agent…"), "the bar says so");
     // Within a few seconds, held at work as the agent is, it lands, failed,
-    // said so; its stream is folded, and the editor goes on.
-    let screen = wait_for(&mut app, "ask failed: you stopped the agent");
-    assert_eq!(app.status, "the agent was stopped, and its ask landed as failed");
+    // said so; its stream is folded, and the editor goes on. Its comment
+    // says so as soon as the database does; the stop is over a moment
+    // later, once what it wrote is on disk, and until then the bar still
+    // says that the agent is being stopped. Then the status line says it
+    // was, and the bar no longer does.
+    wait_for(&mut app, "ask failed: you stopped the agent");
+    let stopped = "the agent was stopped, and its ask landed as failed";
+    let mut screen = draw(&mut app);
+    for _ in 0..300 {
+        if app.status == stopped {
+            break;
+        }
+        assert!(screen.contains("stopping the agent…"), "the bar says so until the stop is over: {}\n{screen}", app.status);
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        app.refresh();
+        screen = draw(&mut app);
+    }
+    assert_eq!(app.status, stopped);
     assert!(!screen.contains("Reading the patch.") && !screen.contains("stopping the agent…"), "{screen}");
     assert!(screen.contains("✗ you · a.txt: TWO"), "{screen}");
     let d = Db::load(&db).unwrap();
@@ -9265,7 +9282,7 @@ fn the_agents_worktrees_are_made_ahead_as_the_stack_s_checkout_says() {
     }
     assert!(made.join(".git").exists(), "made ahead");
     assert!(!src.join(".stacked/s/agent").exists(), "a change's is made when one is asked");
-    assert!(app.status.ends_with(".stacked/local.toml: agent.worktree: \"sometimes\" is not pwd, ondemand or precreate"), "{}", app.status);
+    assert!(app.status.ends_with(".stacked/local.toml: agent.worktree: \"sometimes\" is not ondemand or precreate"), "{}", app.status);
     // Removed once the editor exits.
     app.leave();
     for _ in 0..300 {
@@ -10015,14 +10032,16 @@ fn closing_an_edit_review_leaves_head_where_it_is_when_picked_so_or_when_it_cann
     choose(&mut app, "Mark as rejected");
     keys(&mut app, &[KeyCode::Esc]);
     assert!(!labels(&app).contains(&"HEAD".to_string()), "{:?}", labels(&app));
-    // The agent makes its changes in your checkout, which moves HEAD itself:
-    // no row.
+    // The checkout's own settings of before, which had the agent make its
+    // changes in your checkout (`worktree = "pwd"`): read as "ondemand",
+    // every ask works in a worktree of its own, and HEAD can follow: the
+    // row.
     let (_tmp, _db, _src, mut app) = reviewing_with_head(|src| {
         std::fs::create_dir_all(src.join(".stacked")).unwrap();
         std::fs::write(src.join(".stacked/local.toml"), "[agent]\nworktree = \"pwd\"\n").unwrap();
     });
     keys(&mut app, &[KeyCode::Esc]);
-    assert!(!labels(&app).contains(&"HEAD".to_string()), "{:?}", labels(&app));
+    assert!(labels(&app).contains(&"HEAD".to_string()), "{:?}", labels(&app));
     // Not run in a checkout of the stack's repository: no HEAD, no row.
     let (_tmp, db, _src) = setup();
     let mut app = open(&db).unwrap();

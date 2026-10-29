@@ -1,5 +1,5 @@
-//! Asking claude, which is sending it comments. The user's worktree is never
-//! touched.
+//! Asking claude, which is sending it comments. The user's checkout is never
+//! touched: every ask works in a worktree of its own.
 //!
 //! A comment is written first, then sent, in one of three ways (`Way`):
 //! claude may change the code, answer only, or build and test. Where the
@@ -20,24 +20,25 @@
 //! takes its turn in the same queue as a change does, one at a time of
 //! every stack (`lint`): the changes asked after it wait for it.
 //!
-//! A change works in a git worktree of the stack's own, `.stacked/NAME/agent`
-//! (`agent-2`… when it is busy, or holds what an agent left unfinished),
-//! made the first time and taken again by the next, or made ahead by the
-//! editor; or, as the settings say, in the user's checkout moved to the
-//! stack and back. For the stack, all its patches as commits; for a patch,
-//! the stack up to it: the patches below as commits and the patch on top,
-//! the patches above to read only. A patch change
+//! Every ask works in a git worktree of the stack's own, never in the user's
+//! checkout, the stack up to its place applied. A change works in
+//! `.stacked/NAME/agent` (`agent-2`… when it is busy, or holds what an agent
+//! left unfinished), made the first time and taken again by the next, or
+//! made ahead by the editor. For the stack, all its patches as commits; for
+//! a patch, the stack up to it: the patches below as commits and the patch
+//! on top, the patches above to read only. A patch change
 //! checks, with `stacked fits`, that the patches above still apply on it; if
 //! they would not, claude changes nothing and the comment is promoted to the
-//! stack. An answer runs in the repository as it is checked out, as
-//! self-review's do (unless the settings give it a worktree of the stack's
-//! own, `.stacked/NAME/answer-only-agent`): a worktree of a big repository
-//! takes long to make. It
-//! reads the stack through stacked (`export`, `show`, and a file as a patch
-//! leaves it, `show --path`), and is let run nothing that changes anything.
-//! A build and test works in a worktree of the stack's own too,
-//! `.stacked/NAME/build`, the stack up to its place applied: kept for the
-//! next build to build on, what a build made there left as it is.
+//! stack. An answer works in `.stacked/NAME/answer-only-agent`, made and
+//! taken as a change's is, and is let run nothing that changes anything; so
+//! does the selection of a try push's tasks. A build and test works in
+//! `.stacked/NAME/build`: kept for the next build to build on, what a build
+//! made there left as it is.
+//!
+//! An ask that a stacked of before started in the user's checkout, as it
+//! could then, is read as it was written, and lands, or is found dead, as
+//! any other: the checkout is left as the agent left it, never removed nor
+//! cleaned.
 //!
 //! When claude exits, `stacked land` files what it did: a patch change slots
 //! into the stack as it is by then, the comments on lines a split moved
@@ -124,19 +125,17 @@ pub struct Info {
     pub base: String,
     #[serde(default)]
     pub repo: String,
-    /// The worktree it works in.
+    /// The worktree it works in, one of the stack's own once it is taken.
+    /// An ask that a stacked of before started in the user's checkout has
+    /// none, for an answer, or the checkout itself (`repo`), for a change;
+    /// what that stacked also wrote of where the checkout had been is not
+    /// read.
     #[serde(default)]
     pub worktree: Option<String>,
     /// Its worktree is one of the stack's own, kept once it lands for the
     /// next ask to take, while it holds nothing an agent left unfinished.
     #[serde(default)]
     pub kept: bool,
-    /// The user's checkout it works in, moved to the stack: where it was,
-    /// to go back to once it lands, and the files git did not track then.
-    #[serde(default)]
-    pub back: Option<git::Head>,
-    #[serde(default)]
-    pub untracked: Vec<String>,
     /// For a patch: its id when the ask started, and where it was.
     #[serde(default)]
     pub patch: Option<(String, usize)>,
@@ -348,7 +347,8 @@ fn reap() {
 
 /// What leaving the editor says of the asks still running: a line for
 /// each, as `stacked runs` says it, and where its agent works: its
-/// worktree, or the repository as it is checked out.
+/// worktree; for an answer a stacked of before started in the user's
+/// checkout, that checkout.
 pub fn still_running(db: &Db) -> Vec<String> {
     db.live_runs()
         .iter()
@@ -513,15 +513,9 @@ fn set_up(db: &Db, name: &str, way: Way) -> Result<()> {
 
 /// Whether, with `agent`'s settings, a change or an answer goes on from the
 /// change waiting for your review, guessing you accept it: unless the
-/// setting says not, or changes work in your checkout, one at a time.
+/// setting says not.
 fn chains(agent: &crate::config::Agent) -> bool {
-    agent.chain && agent.worktree != Workspace::Pwd
-}
-
-/// Whether stack `name`'s agent makes its changes in your checkout, moved
-/// to the stack and back (`agent.worktree = "pwd"`).
-pub fn changes_in_checkout(db: &Db, name: &str) -> bool {
-    agent_of(db, name).worktree == Workspace::Pwd
+    agent.chain
 }
 
 /// What the next change or answer of stack `name` goes on from, chained:
@@ -1298,8 +1292,6 @@ fn claim(db: &mut Db) -> Result<(Vec<String>, Vec<String>)> {
             repo: String::new(),
             worktree: None,
             kept: false,
-            back: None,
-            untracked: Vec::new(),
             patch: None,
             commits: vec![],
             prompt: String::new(),
@@ -1626,11 +1618,6 @@ fn lines_text(db: &Db, s: &Stack, r: &crate::refs::Ref) -> Option<String> {
     }
 }
 
-/// Where an ask to answer only is, told it: the repository as the user has
-/// it, which need not be the stack.
-const HERE: &str = "The current directory is the user's repository, as it is checked out now: \
-its files need not be as the stack leaves them, so read the stack through stacked, as below.";
-
 /// What the agent is told of the comments it opens: one issue each, as
 /// many on one line as it has issues there.
 const ONE_ISSUE: &str = "Each comment you open is about one issue: a line with two issues gets two \
@@ -1732,18 +1719,10 @@ fn prompt(db: &Db, i: &Info, s: &Stack, cmd: &str, run: &str, structured: bool, 
     // back, as the work it goes on from makes it.
     let at = i.after.as_ref().or(i.on.as_ref()).map_or(format!("--rev {}", i.from), |w| format!("--work {w}"));
     let export = format!("{cmd} export {} {at}", s.name);
-    let show = format!("{cmd} show {} {at}", s.name);
-    // Where it works, told it.
-    let here = if i.back.is_some() {
-        "The current directory is the user's own checkout, put at the stack for you: it goes \
-         back where it was once you are done"
-    } else {
-        "The current directory is a git worktree made for you"
-    };
     let mut p = match (i.way, &i.scope) {
         (Way::Change, Scope::Stack) => format!(
-            "You are changing a stack of patches, as the comments below ask. {here}: the \
-             stack is the commits {base}..HEAD, \
+            "You are changing a stack of patches, as the comments below ask. The current \
+             directory is a git worktree made for you: the stack is the commits {base}..HEAD, \
              each commit a patch, listed below bottom first. You may change any of them: \
              edit files and `git commit --amend` for HEAD, `git reset` and `git commit` to \
              split, a new commit where a new patch belongs. To change, reorder, squash or \
@@ -1767,8 +1746,8 @@ fn prompt(db: &Db, i: &Info, s: &Stack, cmd: &str, run: &str, structured: bool, 
         ),
         (Way::Change, Scope::Patch(_)) => format!(
             "You are changing one patch of a stack, patch {k} of {n}, as the comments below \
-             ask. {here}: the commits {base}..HEAD are the stack up to that patch, the \
-             patches below it and the patch \
+             ask. The current directory is a git worktree made for you: the commits \
+             {base}..HEAD are the stack up to that patch, the patches below it and the patch \
              itself on top, at HEAD. You may change only this patch: amend HEAD, or split it \
              into several commits in its place (its title stays on the first). Do not touch \
              the commits below it. The patches above it are not here: you may read them, not \
@@ -1781,7 +1760,7 @@ fn prompt(db: &Db, i: &Info, s: &Stack, cmd: &str, run: &str, structured: bool, 
             base = i.base,
             orig = i.commits.last().map_or("HEAD", |c| c.0.as_str())
         ),
-        (Way::Answer, Scope::Stack) if i.worktree.is_some() => format!(
+        (Way::Answer, Scope::Stack) => format!(
             "You are answering comments on a stack of patches. The current directory is a git \
              worktree made for you: the stack is the commits {base}..HEAD, each commit a \
              patch, listed below bottom first; `git show` each to read it. Do NOT modify \
@@ -1790,7 +1769,7 @@ fn prompt(db: &Db, i: &Info, s: &Stack, cmd: &str, run: &str, structured: bool, 
              of any patch, as a careful reviewer would, without repeating what is already said. {ONE_ISSUE}",
             base = i.base
         ),
-        (Way::Answer, Scope::Patch(_)) if i.worktree.is_some() => format!(
+        (Way::Answer, Scope::Patch(_)) => format!(
             "You are answering comments on one patch of a stack, patch {k} of {n}. The current \
              directory is a git worktree made for you: the commits {base}..HEAD are the stack \
              up to that patch, the patch itself at HEAD; `git show` to read them; `{export}` \
@@ -1798,28 +1777,6 @@ fn prompt(db: &Db, i: &Info, s: &Stack, cmd: &str, run: &str, structured: bool, 
              cannot build the project or run its tests; reason from the code. {web} \
              Besides your answers, you may open comments of your own on lines of this patch, as \
              a careful reviewer would, without repeating what is already said. {ONE_ISSUE}",
-            k = k.map_or(0, |k| k + 1),
-            base = i.base
-        ),
-        (Way::Answer, Scope::Stack) => format!(
-            "You are answering comments on a stack of patches, listed below bottom first; they \
-             apply to commit {base}. {HERE} `{export}` prints the stack's patches as mail, \
-             `{show} N` patch N, and `{show} N --path FILE` a file as patch N leaves it, \
-             whether the stack changes it or not. Do NOT modify anything: no file, no commit, \
-             no branch. You cannot build the project or run its tests; reason from the code. \
-             {web} Besides your answers, you may open comments of your own on lines \
-             of any patch, as a careful reviewer would, without repeating what is already said. {ONE_ISSUE}",
-            base = i.base
-        ),
-        (Way::Answer, Scope::Patch(_)) => format!(
-            "You are answering comments on one patch of a stack, patch {k} of {n}, listed below \
-             with the others, bottom first; they apply to commit {base}. {HERE} `{show} {k}` \
-             prints patch {k}, `{show} {k} --path FILE` a file as it leaves it, whether the \
-             stack changes it or not, and `{export}` the whole stack, the patches above \
-             included. Do NOT modify anything: no file, no commit, no branch. You cannot build \
-             the project or run its tests; reason from the code. {web} Besides your \
-             answers, you may open comments of your own on lines of this patch, as a careful \
-             reviewer would, without repeating what is already said. {ONE_ISSUE}",
             k = k.map_or(0, |k| k + 1),
             base = i.base
         ),
@@ -1856,19 +1813,12 @@ fn prompt(db: &Db, i: &Info, s: &Stack, cmd: &str, run: &str, structured: bool, 
                     k = k.map_or(0, |k| k + 1)
                 ),
             };
-            let here = match i.worktree.is_some() {
-                true => format!(
-                    "The current directory is a git worktree made for you: the commits {}..HEAD are \
-                     what is pushed, each commit a patch; `git show` to read them; `{export}` prints \
-                     the whole stack.",
-                    i.base
-                ),
-                false => format!(
-                    "{HERE} `{export}` prints the stack's patches as mail, `{show} N` patch N, and \
-                     `{show} N --path FILE` a file as patch N leaves it, whether the stack changes it \
-                     or not."
-                ),
-            };
+            let here = format!(
+                "The current directory is a git worktree made for you: the commits {}..HEAD are \
+                 what is pushed, each commit a patch; `git show` to read them; `{export}` prints \
+                 the whole stack.",
+                i.base
+            );
             // Let run curl: where it downloads the task graph, in its folder
             // of its own.
             let graph = i.todo.as_deref().filter(|_| curl).map(|d| Path::new(d).join(crate::try_push::GRAPH));
@@ -2515,65 +2465,34 @@ fn start(db_path: &Path, id: &str) -> Result<()> {
             k + 1
         }
     };
-    // Where it works, as the settings say (those of the stack's checkout,
-    // read now): an answer in the repository as it is (pwd), else in a
-    // worktree of the stack's own, the stack up to its place applied; a
-    // change in one, or in the user's checkout moved to the stack (pwd); a
-    // build and test in the stack's build worktree, always.
+    // Where it works: a worktree of the stack's own, never the user's
+    // checkout, the stack up to its place applied. A change takes one of
+    // the changes'; an answer, and a try push's selection, one of the
+    // answers'; a build and test, one of the builds'. The settings of the
+    // stack's checkout, read now, say where the agents' worktrees go, and
+    // what the agent is.
     let (cfg, _) = crate::config::of(&repo);
     let agent = &cfg.agent;
     let patches: Vec<&Patch> = s.patches[..upto].iter().map(|p| db.patch(p)).collect();
     let mbox = format_mbox(&patches);
-    match (i.way, agent.worktree, agent.answer_only_worktree) {
-        (Way::Answer, _, Workspace::Pwd) => {}
-        // A try push's selection works where an answer does.
+    let kind = match i.way {
+        Way::Change => AGENT,
+        Way::Answer => ANSWERING,
+        Way::Test => BUILD,
         #[cfg(feature = "try-push")]
-        (Way::Try, _, Workspace::Pwd) => {}
-        (Way::Change, Workspace::Pwd, _) => {
-            if git::unfinished_tracked(&repo)? {
-                return err(format!(
-                    "{} has changes to files git tracks: a change asked there (agent.worktree = \"pwd\") needs it clean; nothing asked",
-                    repo.display()
-                ));
-            }
-            let back = git::head_of(&repo)?;
-            i.untracked = git::untracked(&repo)?.into_iter().collect();
-            if let Err(e) = git::ready(&repo, &repo, &base, &mbox, upto, &step) {
-                let _ = git::back_to(&repo, &back);
-                return Err(e);
-            }
-            i.back = Some(back);
-            i.worktree = Some(repo.to_string_lossy().into_owned());
-        }
-        (way, _, _) => {
-            let kind = match way {
-                Way::Change => AGENT,
-                Way::Answer => ANSWERING,
-                Way::Test => BUILD,
-                #[cfg(feature = "try-push")]
-                Way::Try => ANSWERING,
-            };
-            let dir = agents_dir(&repo, &s.name, agent.worktrees.as_deref())?;
-            let slot = take_slot(db_path, id, &dir, kind)?;
-            git::ready(&repo, &slot, &base, &mbox, upto, &step)?;
-            i.worktree = Some(slot.to_string_lossy().into_owned());
-            i.kept = true;
-        }
-    }
-    // Back where it was, the user's checkout, should starting go no further.
-    let undo = |i: &Info| {
-        if let Some(back) = &i.back {
-            let _ = git::back_to(&repo, back);
-        }
+        Way::Try => ANSWERING,
     };
+    let dir = agents_dir(&repo, &s.name, agent.worktrees.as_deref())?;
+    let cwd = take_slot(db_path, id, &dir, kind)?;
+    git::ready(&repo, &cwd, &base, &mbox, upto, &step)?;
+    i.worktree = Some(cwd.to_string_lossy().into_owned());
+    i.kept = true;
     if i.way == Way::Change {
-        let wt = PathBuf::from(i.worktree.clone().unwrap_or_default());
-        let shas: Vec<String> = git::git(&wt, &["rev-list", "--reverse", &format!("{base}..HEAD")])?
+        let shas: Vec<String> = git::git(&cwd, &["rev-list", "--reverse", &format!("{base}..HEAD")])?
             .lines()
             .map(String::from)
             .collect();
         if shas.len() != upto {
-            undo(&i);
             return err(format!("{upto} patches made {} commits: is one empty?", shas.len()));
         }
         i.commits = shas.into_iter().zip(s.patches[..upto].iter().cloned()).collect();
@@ -2595,7 +2514,6 @@ fn start(db_path: &Path, id: &str) -> Result<()> {
         i.todo = Some(graph_folder(&plans, &db_abs, id)?.to_string_lossy().into_owned());
     }
     i.prompt = prompt(&db, &i, &s, &cmd, id, agent.schema, curl);
-    let cwd = i.worktree.clone().map_or(repo.clone(), PathBuf::from);
     // A change to the stack rewrites what is below HEAD with a plan it
     // writes, which a plain `git rebase -i` takes: claude refuses a command
     // that sets an editor. Its plan's folder is kept in the run, to remove
@@ -2627,7 +2545,6 @@ fn start(db_path: &Path, id: &str) -> Result<()> {
         }
     })?;
     if landed {
-        undo(&i);
         return err("it was landed while its worktree was made");
     }
     let mut c = Command::new("sh");
@@ -2938,15 +2855,15 @@ fn file_landed(db_path: &Path, id: &str, exit: Option<&str>) -> Result<Run> {
             if let Some(why) = ended_badly(&events) {
                 summary += &format!("; {why}");
             }
-            if keep {
-                summary += &format!("; its work is left in {}", left_in(&i));
+            if let Some(w) = i.worktree.as_deref().filter(|_| keep) {
+                summary += &format!("; its work is left in {w}");
             }
             Landed::failed(summary, keep)
         } else {
             // Whatever goes wrong filing it is what came of it: a run left
             // started would be landed again and again.
             file(db, &started, &i, &output).unwrap_or_else(|e| {
-                let at = i.worktree.as_ref().map_or(String::new(), |_| format!("; its work is left in {}", left_in(&i)));
+                let at = i.worktree.as_ref().map_or(String::new(), |w| format!("; its work is left in {w}"));
                 Landed::failed(format!("could not file what the agent did: {}{at}", e.0), true)
             })
         };
@@ -2987,22 +2904,19 @@ fn file_landed(db_path: &Path, id: &str, exit: Option<&str>) -> Result<Run> {
         Ok(run)
     })?;
     if let Some(i) = after {
-        leave(&i);
+        drop_scratch(&i);
     }
     Ok(run)
 }
 
 /// Whether the agent left work unfinished where run `i` worked: anything
-/// uncommitted; in the user's checkout, of what was not there before.
+/// uncommitted.
 fn left_work(i: &Info) -> bool {
     let Some(w) = i.worktree.as_deref() else {
         return false;
     };
     let w = Path::new(w);
-    if i.back.is_some() {
-        git::unfinished_tracked(w).unwrap_or(true)
-            || git::untracked(w).map_or(true, |now| now.iter().any(|f| !i.untracked.contains(f)))
-    } else if i.way == Way::Test {
+    if i.way == Way::Test {
         // What a build made, untracked, is not work: the next build's.
         git::unfinished_tracked(w).unwrap_or(false)
     } else {
@@ -3010,33 +2924,16 @@ fn left_work(i: &Info) -> bool {
     }
 }
 
-/// Where run `i`'s agent left its work, said: in the user's checkout, with
-/// how to take it back.
-fn left_in(i: &Info) -> String {
-    let w = i.worktree.clone().unwrap_or_default();
-    match &i.back {
-        Some(git::Head::Branch(b)) => format!("your checkout, {w}, at the stack: `git switch {b}` takes it back"),
-        Some(git::Head::Commit(c)) => {
-            format!("your checkout, {w}, at the stack: `git switch --detach {}` takes it back", &c[..12.min(c.len())])
-        }
-        None => w,
-    }
-}
-
 /// Where run `i` worked, once it is filed and nothing is left unfinished
-/// there: a worktree made for it alone (by a stacked of before), removed;
-/// one of the stack's own, kept for the next ask; the user's checkout,
-/// back where it was.
-fn leave(i: &Info) {
-    let Some(w) = i.worktree.as_deref() else {
+/// there: a worktree a stacked of before made for it alone, removed. One
+/// of the stack's own is kept for the next ask; and the user's checkout,
+/// which a stacked of before let a change work in, is never removed.
+fn drop_scratch(i: &Info) {
+    let Some(w) = i.worktree.as_deref().map(Path::new) else {
         return;
     };
-    match &i.back {
-        Some(back) => {
-            let _ = git::back_to(Path::new(w), back);
-        }
-        None if !i.kept => git::remove_scratch(Path::new(&i.repo), Path::new(w)),
-        None => {}
+    if !i.kept && w != Path::new(&i.repo) {
+        git::remove_scratch(Path::new(&i.repo), w);
     }
 }
 

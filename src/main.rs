@@ -16,7 +16,8 @@ use stacked::{git, tree};
 
 /// A stack editor. Patches, stacks and every edit made to them, comments
 /// and what the agent (claude) and Phabricator said: all in one file that is only ever
-/// appended to. The worktree is not touched unless `apply` is asked to.
+/// appended to. Your checkout is not touched unless you ask: every ask of the agent
+/// runs in a worktree of its own.
 #[derive(Parser)]
 #[command(version)]
 struct Cli {
@@ -264,7 +265,7 @@ enum Cmd {
         patches: Vec<String>,
     },
     /// Every edit and every move of a head, oldest first: a stack's, or
-    /// all. `runs` has the asks, applies and pulls.
+    /// all. `runs` has the asks and the pulls.
     Log { name: Option<String> },
     /// A stack's tree of edits, newest first.
     Tree { name: String },
@@ -443,8 +444,7 @@ enum Cmd {
         #[arg(long)]
         close_asking: bool,
     },
-    /// The runs, oldest first: asks, applies and pulls, and what came of
-    /// them.
+    /// The runs, oldest first: asks and pulls, and what came of them.
     Runs { name: Option<String> },
     /// What a run's agent wrote.
     Transcript { id: String },
@@ -463,14 +463,6 @@ enum Cmd {
     MozPhab {
         #[command(subcommand)]
         what: MozPhabWhat,
-    },
-    /// Put a stack into the worktree here: its base checked out and its
-    /// patches committed, detached or on --branch. Only with nothing
-    /// uncommitted.
-    Apply {
-        name: String,
-        #[arg(long)]
-        branch: Option<String>,
     },
     /// Where HEAD of the checkout stacked runs in is, against stack NAME: at
     /// its base, at one of its patches (its commits since the base being the
@@ -505,6 +497,10 @@ enum Cmd {
     /// settings set (.stacked/local.toml at its top) are said so. With KEY,
     /// its value; with VALUE too, KEY written in that file (made, with its
     /// folder, if it is not there), the rest of it as it was.
+    ///
+    /// Every ask of the agent runs in a worktree of its own, never in your
+    /// checkout: agent.worktree, for a change, and agent.answer_only_worktree,
+    /// for an answer, say when it is made, `ondemand` or `precreate`.
     Config {
         /// A setting, as the file names it: `editor`, `view.layout`,
         /// `keys.down`.
@@ -1529,8 +1525,8 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
                     ask::info(r).is_some_and(|i| i.notes.iter().any(|sh| sent.contains(&(sh.change.clone(), sh.id.clone()))))
                 };
                 // The processes of the asks about it: until each is gone,
-                // what landing does after filing (the checkout moved back,
-                // the next asks started) is not done.
+                // what landing does after filing (the next asks started) is
+                // not done.
                 let mut pids: Vec<u32> = Vec::new();
                 loop {
                     std::thread::sleep(std::time::Duration::from_millis(200));
@@ -1727,7 +1723,6 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
         }
         #[cfg(feature = "moz-phab")]
         Cmd::MozPhab { what: MozPhabWhat::Pull { name } } => print_run(&review::pull(path, &name)?),
-        Cmd::Apply { name, branch } => print_run(&ops::apply_stack(path, &name, branch.as_deref())?),
         Cmd::Trim { new, from } => {
             let from = from.as_deref().map(parse_rev).transpose()?;
             println!("{}", stacked::trim::trim(path, &new, from)?.said(&new));

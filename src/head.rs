@@ -505,27 +505,15 @@ pub fn plan(on: &OnStack, messages: &[&str], picks: &[(usize, Keep)]) -> std::re
 
 /// The checkout at `here`, a checkout of stack `s`'s repository, made sure
 /// of before HEAD is moved or its commits made again: nothing of yours
-/// uncommitted to carry along, and no agent working there.
-fn ready(db: &Db, s: &Stack, here: &Path, nothing: &str) -> Result<(PathBuf, String)> {
+/// uncommitted to carry along. No agent works there: every ask works in a
+/// worktree of its own.
+fn ready(s: &Stack, here: &Path, nothing: &str) -> Result<(PathBuf, String)> {
     let (repo, base) = ops::base_of(s)?;
     let dir = git::checkout_of(&repo, here)?;
     if git::unfinished_tracked(&dir)? {
         return err(format!("{} has uncommitted changes: commit or stash them first; {nothing}", dir.display()));
     }
-    if agent_in(db, &dir) {
-        return err(format!("the agent is working in {}, your checkout: {nothing} until its ask lands", dir.display()));
-    }
     Ok((dir, base))
-}
-
-/// Whether an agent works in the checkout at `dir`, moved to its stack for
-/// a change asked there (`agent.worktree = "pwd"`), its ask still running.
-pub fn agent_in(db: &Db, dir: &Path) -> bool {
-    db.live_runs()
-        .into_iter()
-        .filter(|r| crate::ask::running(r))
-        .filter_map(crate::ask::info)
-        .any(|i| i.back.is_some() && i.worktree.as_deref().map(Path::new) == Some(dir))
 }
 
 /// HEAD of the checkout at `here` moved to stack `name` with its first `n`
@@ -539,7 +527,7 @@ pub fn move_to(path: &Path, name: &str, here: &Path, n: usize) -> Result<String>
     if n > s.patches.len() {
         return err(format!("{name} has {} patches", s.patches.len()));
     }
-    let (dir, base) = ready(&db, &s, here, "HEAD did not move")?;
+    let (dir, base) = ready(&s, here, "HEAD did not move")?;
     let patches: Vec<&Patch> = s.patches.iter().map(|id| db.patch(id)).collect();
     let head = locate(&dir, &base, &patches)?;
     // What it has of the stack, as the stack has it, up to the place.
@@ -652,7 +640,7 @@ pub fn sync(path: &Path, name: &str, here: &Path, rev: Option<usize>, seen: &Hea
         Err(left) => return err(format!("{} still to pick: {nothing}", patches_said(&left))),
     };
     if !plan.commits.is_empty() {
-        ready(&db, &s, here, nothing)?;
+        ready(&s, here, nothing)?;
     }
     if !plan.patches.is_empty()
         && let Some(what) = crate::ask::changing(&db, name)

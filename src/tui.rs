@@ -1393,8 +1393,6 @@ pub enum Action {
     CancelSubmit,
     #[cfg(feature = "moz-phab")]
     SubmitSide(bool),
-    AskApply,
-    Apply,
     Runs,
     Search,
     Stacks,
@@ -1674,8 +1672,7 @@ fn about(action: &Action) -> String {
         Action::SubmitSide(true) => "show the code of what is sent side by side".into(),
         #[cfg(feature = "moz-phab")]
         Action::SubmitSide(false) => "show the code of what is sent unified".into(),
-        Action::AskApply | Action::Apply => "commit the stack's patches in the worktree, on top of its base".into(),
-        Action::Runs => "see the agent's asks, the applies and the pulls, and what came of them".into(),
+        Action::Runs => "see the agent's asks and the pulls, and what came of them".into(),
         Action::Search => "search the comments, the patches and the files they touch, and the history: what is found is listed as it is found, and enter goes to it".into(),
         Action::Stacks => "switch to another stack".into(),
         Action::AskDeleteStack | Action::DeleteStack => "delete this stack (undo brings it back)".into(),
@@ -2281,7 +2278,7 @@ struct Background {
     /// Asks are being started; and to look again when that is done.
     launching: bool,
     again: bool,
-    /// What is being done that the bar says: pulling, applying.
+    /// What is being done that the bar says: pulling, importing.
     doing: Vec<&'static str>,
     /// The pull under way: its stack, and where it is, which the banner
     /// says.
@@ -2339,11 +2336,9 @@ impl Background {
 }
 
 /// What the bar says while HEAD of the checkout is being moved, or the
-/// commit messages synced; and while the stack is applied to the worktree
-/// of its repository, which moves HEAD there.
+/// commit messages synced.
 const MOVING_HEAD: &str = "moving HEAD";
 const SYNCING: &str = "syncing the commit messages";
-const APPLYING: &str = "applying";
 
 /// What the bar says while a web link is being opened in the browser.
 const OPENING: &str = "opening a link";
@@ -2826,7 +2821,7 @@ impl App {
                 }
                 self.status = said;
                 // Moved: where HEAD is, looked at again.
-                if what == MOVING_HEAD || what == APPLYING {
+                if what == MOVING_HEAD {
                     self.bg.moved += 1;
                     self.look_at_head();
                 }
@@ -3159,7 +3154,7 @@ impl App {
     }
 
     /// Whether work is being done away from the screen: starting asks,
-    /// pulling, applying, checking.
+    /// pulling, importing, checking.
     pub fn working(&self) -> bool {
         self.bg.launching || !self.bg.doing.is_empty() || self.bg.judging.is_some() || self.following()
     }
@@ -6746,7 +6741,6 @@ impl App {
                     if self.cfg.reviews.source != crate::config::Source::None {
                         items.push(Item::new("Pull reviews from Phabricator", Action::Pull));
                     }
-                    items.push(Item::new("Apply the stack to the worktree…", Action::AskApply).when(w));
                     if self.head_here().is_some() {
                         items.push(Item::new("Move HEAD…", Action::MoveHead(None)));
                     }
@@ -7102,7 +7096,7 @@ impl App {
         // disk, or reaches Phabricator.
         #[cfg(feature = "demo")]
         if crate::memory::is_file(&self.path)
-            && (matches!(action, Action::AskApply | Action::Apply | Action::AskTrim(_) | Action::Trim(_) | Action::FromWorkspace | Action::AgentStack)
+            && (matches!(action, Action::AskTrim(_) | Action::Trim(_) | Action::FromWorkspace | Action::AgentStack)
                 || reaches_phabricator(&action))
         {
             self.status = "not in the demo: this would write on disk, or reach Phabricator".into();
@@ -7765,32 +7759,6 @@ impl App {
             Action::CancelSubmit => self.submit_cancel(),
             #[cfg(feature = "moz-phab")]
             Action::SubmitSide(side) => self.submit_side(side),
-            Action::AskApply => {
-                let (n, repo) = match self.current() {
-                    Some(s) => (s.patches.len(), s.repo.clone().unwrap_or_default()),
-                    None => return Effect::None,
-                };
-                let title = format!("commit the stack's {n} patch{} in {repo}, on top of its base, on no branch?", if n == 1 { "" } else { "es" });
-                self.mode = Mode::Menu(Menu::ask(title, Item::new("Apply it", Action::Apply), "Cancel", true));
-            }
-            Action::Apply => {
-                if self.bg.doing.contains(&APPLYING) {
-                    self.status = "already applying".into();
-                } else {
-                    self.bg.doing.push(APPLYING);
-                    self.status = "applying the stack to the worktree…".into();
-                    let path = self.path.clone();
-                    self.spawn(move || {
-                        Done::Said(
-                            APPLYING,
-                            match ops::apply_stack(&path, &name, None) {
-                                Ok(r) => r.summary,
-                                Err(e) => e.0,
-                            },
-                        )
-                    });
-                }
-            }
             Action::AskAbout(rev) => self.write(Target::About(rev), Focus::Diff, ""),
             Action::GoToAbout(rev) => {
                 if let Some(n) = self.about(rev).first() {

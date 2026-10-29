@@ -915,8 +915,8 @@ pub const SKILL: &str = "Skill";
 /// the row of claude's tool for them.
 const SKILLS_SAID: [&str; 3] = [
     "a skill may run what its own allowed-tools let it, commands that change things too",
-    "(rewriting history, filing a bug), and an answer runs in your checkout itself,",
-    "unless agent.answer_only_worktree says otherwise",
+    "(rewriting history, filing a bug); an answer runs in a worktree of its own,",
+    "never in your checkout",
 ];
 
 /// What the setup says of agent.tools, what every ask may use: ticked in
@@ -2610,8 +2610,8 @@ mod tests {
         let lines = [
             "    [ ]      [ ]     Skill   claude's tool for the checkout's skills; one of the agent's tools",
             "                       a skill may run what its own allowed-tools let it, commands that change things too",
-            "                       (rewriting history, filing a bug), and an answer runs in your checkout itself,",
-            "                       unless agent.answer_only_worktree says otherwise",
+            "                       (rewriting history, filing a bug); an answer runs in a worktree of its own,",
+            "                       never in your checkout",
         ]
         .map(two);
         let at = line_of(&shown, &lines[0]);
@@ -2846,7 +2846,7 @@ mod tests {
         assert_eq!(asked[0], "Keep them as they are? [Y/n: one by one]");
         for q in [
             "  Which asks may use Bash(jq *), stacked's default for answers? [R: read only, c: change, b: both, n: neither]",
-            "  Which asks may use Skill, claude's tool for the checkout's skills? A skill may run what its own allowed-tools let it, commands that change things too (rewriting history, filing a bug), and an answer runs in your checkout itself, unless agent.answer_only_worktree says otherwise. [r: read only, c: change, b: both, N: neither]",
+            "  Which asks may use Skill, claude's tool for the checkout's skills? A skill may run what its own allowed-tools let it, commands that change things too (rewriting history, filing a bug); an answer runs in a worktree of its own, never in your checkout. [r: read only, c: change, b: both, N: neither]",
             "  Which asks may use Bash(lint *), named in AGENTS.md, not found on PATH? [r: read only, c: change, b: both, N: neither]",
             "  Which asks may use all of the MCP server moz's tools, those to come too (mcp__moz__*)? [r: read only, c: change, b: both, n: neither, E: each]",
             "    Which asks may use get_bug? [r: read only, c: change, B: both, n: neither]",

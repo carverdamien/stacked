@@ -924,28 +924,58 @@ fn the_agents_work_in_worktrees_of_the_stack_s_own_reused_while_clean() {
     assert!(send(&e, &claude, &[&id], &[]).0);
     assert_eq!(pwd(), e.src.join(".stacked/s/agent-2").display().to_string());
 
-    // An answer works in the repository as it is, unless the settings say
-    // otherwise: then in the stack's own worktree for answers.
-    let settings = e.root.join("settings.toml");
-    std::fs::write(&settings, format!("{SET_UP}answer_only_worktree = \"ondemand\"\nworktree = \"pwd\"\n")).unwrap();
-    let id = comment(&e, &["Why?"]);
-    assert!(send(&e, &claude, &[&id, "--answer-only"], &[("STACKED_CONFIG", &settings)]).0);
-    assert_eq!(pwd(), e.src.join(".stacked/s/answer-only-agent").display().to_string());
-    // A change in pwd: the user's checkout, moved to the stack while the
-    // agent works, back where it was after.
-    let head = git(&e.src, &["rev-parse", "HEAD"]);
-    let id = comment(&e, &["Change", "it."]);
-    let (fine, _, err) = send(&e, &claude, &[&id], &[("STACKED_CONFIG", &settings)]);
-    assert!(fine, "{err}");
-    assert_eq!(pwd(), e.src.display().to_string());
-    assert!(std::fs::read_to_string(&subject).unwrap().starts_with("Bug 3 - café"), "at the stack's top");
-    assert_eq!(git(&e.src, &["rev-parse", "HEAD"]), head);
-    assert_eq!(git(&e.src, &["symbolic-ref", "--short", "HEAD"]).trim(), "main");
-    // Not while it has changes to files git tracks.
+    // An answer works in the stack's own worktree for answers, as a change
+    // does, the stack applied there: never in your checkout, whose HEAD,
+    // branch and files are as they were while the agent works, and after,
+    // a change of yours there uncommitted.
+    let during = e.root.join("during");
+    let yours_now = || git(&e.src, &["rev-parse", "HEAD"]) + &git(&e.src, &["symbolic-ref", "--short", "HEAD"]) + &git(&e.src, &["status", "--porcelain"]);
+    let looking = fake_claude(
+        &e,
+        "claude-looking.sh",
+        &format!(
+            "pwd > {}\ngit log --format=%s -1 > {}\n{{ git -C \"$STACKED_SRC\" rev-parse HEAD; git -C \"$STACKED_SRC\" symbolic-ref --short HEAD; git -C \"$STACKED_SRC\" status --porcelain; }} > {}",
+            here.display(),
+            subject.display(),
+            during.display()
+        ),
+        r#"{"replies": {"c1": "Looked."}}"#,
+    );
     std::fs::write(e.src.join("a.txt"), "mine\n").unwrap();
-    let id = comment(&e, &["Again."]);
-    let (fine, out, _) = send(&e, &claude, &[&id], &[("STACKED_CONFIG", &settings)]);
-    assert!(!fine && out.contains("has changes to files git tracks"), "{out}");
+    let yours = yours_now();
+    assert!(yours.ends_with("main\n M a.txt\n"), "{yours}");
+    let id = comment(&e, &["Why?"]);
+    let (fine, _, err) = send(&e, &looking, &[&id, "--answer-only"], &[("STACKED_SRC", &e.src)]);
+    assert!(fine, "{err}");
+    assert_eq!(pwd(), e.src.join(".stacked/s/answer-only-agent").display().to_string());
+    assert!(std::fs::read_to_string(&subject).unwrap().starts_with("Bug 3 - café"), "at the stack's top");
+    assert_eq!(std::fs::read_to_string(&during).unwrap(), yours, "your checkout while the agent works");
+    assert_eq!(yours_now(), yours, "and after");
+    assert!(last().contains("$ git worktree add --detach") && last().contains("answer-only-agent"), "{}", last());
+    // A settings' file of before that says "pwd", your checkout: read as
+    // "ondemand", and said; the answer and the change each work in a
+    // worktree of the stack's own, your checkout as it was.
+    let settings = e.root.join("settings.toml");
+    std::fs::write(&settings, format!("{SET_UP}answer_only_worktree = \"pwd\"\nworktree = \"pwd\"\n")).unwrap();
+    let said = |key: &str| {
+        format!(
+            "stacked: {}: {key} = \"pwd\" is no longer supported: asks run in a worktree of their own; read as \"ondemand\"",
+            settings.display()
+        )
+    };
+    let env = [("STACKED_CONFIG", settings.as_path()), ("STACKED_SRC", e.src.as_path())];
+    let id = comment(&e, &["Why", "again?"]);
+    let (fine, _, err) = send(&e, &looking, &[&id, "--answer-only"], &env);
+    assert!(fine, "{err}");
+    assert!(err.contains(&said("agent.answer_only_worktree")) && err.contains(&said("agent.worktree")), "{err}");
+    assert_eq!(pwd(), e.src.join(".stacked/s/answer-only-agent").display().to_string());
+    assert_eq!(std::fs::read_to_string(&during).unwrap(), yours);
+    let id = comment(&e, &["Change", "it."]);
+    let (fine, _, err) = send(&e, &looking, &[&id], &env);
+    assert!(fine, "{err}");
+    assert_eq!(pwd(), e.src.join(".stacked/s/agent-2").display().to_string());
+    assert_eq!(std::fs::read_to_string(&during).unwrap(), yours);
+    assert_eq!(yours_now(), yours);
     assert_eq!(std::fs::read_to_string(e.src.join("a.txt")).unwrap(), "mine\n");
 }
 
@@ -980,6 +1010,180 @@ fn the_agents_worktrees_are_made_ahead_and_removed_away_from_the_editor() {
     }
     assert!(!agent.exists(), "removed");
     assert!(answering.join("mine.txt").exists(), "kept: it holds something uncommitted");
+}
+
+#[test]
+fn stacked_config_refuses_pwd_every_ask_running_in_a_worktree_of_its_own() {
+    let e = env();
+    e.ok(&["import", "s", "base"]);
+    let settings = e.root.join("home/config.toml");
+    // Refused, with why, in the settings' file and in the checkout's own:
+    // nothing written in either.
+    for key in ["agent.worktree", "agent.answer_only_worktree"] {
+        let why = format!("{key} = \"pwd\" is no longer supported: asks run in a worktree of their own; nothing written");
+        for args in [vec!["config", key, "pwd"], vec!["config", "--local", key, "pwd"]] {
+            let (fine, _, err) = e.run(&args);
+            assert!(!fine && err.contains(&why), "{args:?}: {err}");
+        }
+    }
+    assert_eq!(std::fs::read_to_string(&settings).unwrap(), SET_UP);
+    assert!(!e.src.join(".stacked/local.toml").exists());
+    // What is neither, refused too; ondemand and precreate written.
+    let (fine, _, err) = e.run(&["config", "agent.worktree", "here"]);
+    assert!(!fine && err.contains("agent.worktree is ondemand or precreate, not \"here\""), "{err}");
+    e.ok(&["config", "agent.answer_only_worktree", "precreate"]);
+    assert_eq!(e.ok(&["config", "agent.answer_only_worktree"]), "precreate\n");
+    // A file that still says pwd is read as ondemand, and said: by every
+    // command, and by `config`, which prints it as it is read.
+    std::fs::write(&settings, format!("{SET_UP}worktree = \"pwd\"\n")).unwrap();
+    let said = format!(
+        "{}: agent.worktree = \"pwd\" is no longer supported: asks run in a worktree of their own; read as \"ondemand\"",
+        settings.display()
+    );
+    assert_eq!(e.ok(&["config", "agent.worktree"]), "ondemand\n");
+    let out = e.ok(&["config"]);
+    assert!(out.contains(&format!("\n# wrong: {said}\n")) && out.contains("\nworktree = \"ondemand\"\n"), "{out}");
+    assert!(out.contains("\n# Every ask runs in a worktree of its own, never in your checkout."), "{out}");
+    let (fine, _, err) = e.run(&["stacks"]);
+    assert!(fine && err.contains(&format!("stacked: {said}")), "{err}");
+    // As the command's help says.
+    let help = e.ok(&["config", "--help"]);
+    assert!(help.contains("Every ask of the agent runs in a worktree of its own, never in your checkout"), "{help}");
+}
+
+/// A run as a stacked of before wrote it, of an ask it started in your
+/// checkout `at`, as it could then (`pwd`, an answer's default): `way`
+/// asked of the whole stack about comment `id`, its stream `events`. An
+/// answer worked there as the checkout was, with no worktree; a change had
+/// the checkout itself for its worktree, moved to the stack, where it was
+/// to go back to (`back`), the files git did not track then, and
+/// `commits`, those made there of the patches, each with its patch. Its
+/// agent is not known to this stacked: it started ten minutes ago, its
+/// process not written.
+fn ask_of_before(e: &Env, at: &Path, run: &str, way: &str, id: &str, commits: &[(String, String)], events: &[serde_json::Value]) {
+    let db = Db::load(&e.db).unwrap();
+    let n = db.find_note("s", id).unwrap().clone();
+    let (from, s) = db.head("s").unwrap();
+    let base = s.base.clone().unwrap();
+    drop(db);
+    let at = at.display().to_string();
+    let mut ask = serde_json::json!({
+        "way": way, "scope": "stack", "from": from,
+        "notes": [{"label": "c1", "change": n.change, "id": n.id}],
+        "base": base, "repo": at, "prompt": "The current directory is the user's own checkout, put at the stack for you.",
+    });
+    if way == "change" {
+        ask["worktree"] = serde_json::json!(at);
+        ask["kept"] = serde_json::json!(false);
+        ask["back"] = serde_json::json!({"Branch": "mine"});
+        ask["untracked"] = serde_json::json!([]);
+        ask["commits"] = serde_json::json!(commits);
+    }
+    let request = stacked::thread::thread_turns(&n.text).last().unwrap().body.lines().next().unwrap().to_string();
+    // Written as that stacked wrote them, its time with it.
+    let started = Record::Run(stacked::db::Run {
+        id: run.into(),
+        what: way.into(),
+        stack: "s".into(),
+        state: RunState::Started,
+        request,
+        ask: Some(ask),
+        time: stacked::db::now() - 600,
+        ..Default::default()
+    });
+    let stream = events.iter().map(|event| Record::Event { run: run.into(), event: event.clone() });
+    Db::append(&e.db, &std::iter::once(started).chain(stream).collect::<Vec<_>>()).unwrap();
+}
+
+#[test]
+fn the_asks_a_stacked_of_before_started_in_your_checkout_land_or_are_found_dead_the_checkout_left_as_it_is() {
+    let e = env();
+    // Your checkout, a worktree of the repository's own, on a branch of
+    // yours: the stack imported there. git would remove it if asked to.
+    let mine = e.root.join("mine");
+    git(&e.src, &["worktree", "add", "-q", "-b", "mine", mine.to_str().unwrap(), "main"]);
+    let (fine, _, err) = stacked_in(&mine, &e.db, &["import", "s", "base"], "", &[]);
+    assert!(fine, "{err}");
+    let at = mine.display().to_string();
+    let worktrees = || git(&e.src, &["worktree", "list", "--porcelain"]).lines().filter(|l| l.starts_with("worktree ")).map(String::from).collect::<Vec<_>>();
+    let listed = worktrees();
+    assert_eq!(listed, [format!("worktree {}", e.src.display()), format!("worktree {at}")]);
+    let branch = git(&mine, &["rev-parse", "mine"]);
+    let ended = |result: &str| {
+        vec![
+            serde_json::json!({"type": "system", "subtype": "init", "model": "fake"}),
+            serde_json::json!({"type": "result", "result": result}),
+            serde_json::json!({"type": "exit", "code": 0}),
+        ]
+    };
+    // An answer it ran in your checkout as it was: read as it was written,
+    // it lands, its reply held for your review; the checkout untouched.
+    let id = comment(&e, &["Why?"]);
+    ask_of_before(&e, &mine, "old-answer", "answer", &id, &[], &ended(r#"{"replies": {"c1": "Because."}}"#));
+    let db = Db::load(&e.db).unwrap();
+    let i = stacked::ask::info(db.run("old-answer").unwrap()).expect("read as it was written");
+    assert_eq!((i.worktree, i.repo.as_str()), (None, at.as_str()));
+    drop(db);
+    let landed = e.ok(&["land", "old-answer"]);
+    assert!(landed.contains("\tanswer s \"Why?\"\tdone\tits work waits for your review"), "{landed}");
+    e.ok(&["review", "s", "old-answer", "--accept-all"]);
+    assert!(e.ok(&["comments", "s"]).contains("agent: Because."), "{}", e.ok(&["comments", "s"]));
+    let yours = (git(&mine, &["rev-parse", "HEAD"]), git(&mine, &["branch", "--show-current"]), git(&mine, &["status", "--porcelain"]));
+    assert_eq!(yours, (branch.clone(), "mine\n".to_string(), String::new()));
+    assert_eq!(worktrees(), listed);
+    // A change it made in your checkout, moved to the stack: read as it
+    // was written, it lands, its change held for your review; your checkout
+    // is left as the agent left it, at the stack, never moved back nor
+    // removed, your branch as it was.
+    let patches = Db::load(&e.db).unwrap().stack("s").unwrap().patches.clone();
+    let shas: Vec<String> = git(&mine, &["rev-list", "--reverse", "base..mine"]).lines().map(String::from).collect();
+    let commits: Vec<(String, String)> = shas.into_iter().zip(patches).collect();
+    git(&mine, &["switch", "-q", "--detach", "mine"]);
+    std::fs::write(mine.join("c.txt"), "c\n").unwrap();
+    git(&mine, &["add", "c.txt"]);
+    git(&mine, &["commit", "-q", "--amend", "--no-edit"]);
+    let theirs = git(&mine, &["rev-parse", "HEAD"]);
+    let id = comment(&e, &["Add", "c."]);
+    ask_of_before(&e, &mine, "old-change", "change", &id, &commits, &ended(r#"{"replies": {"c1": "Added c."}}"#));
+    let db = Db::load(&e.db).unwrap();
+    let i = stacked::ask::info(db.run("old-change").unwrap()).expect("read as it was written");
+    assert_eq!((i.worktree.as_deref(), i.kept, i.commits.len()), (Some(at.as_str()), false, 3));
+    drop(db);
+    let landed = e.ok(&["land", "old-change"]);
+    assert!(landed.contains("\tchange s \"Add c.\"\tdone\tits work waits for your review"), "{landed}");
+    let left = |what: &str| {
+        assert!(mine.join(".git").is_file() && mine.join("a.txt").is_file(), "{what}: the checkout is there");
+        assert_eq!(git(&mine, &["rev-parse", "HEAD"]), theirs, "{what}: HEAD as the agent left it");
+        assert_eq!(git(&mine, &["branch", "--show-current"]).trim(), "", "{what}: still at the stack, not moved back");
+        assert_eq!(git(&mine, &["rev-parse", "mine"]), branch, "{what}: your branch as it was");
+        assert_eq!(worktrees(), listed, "{what}: no worktree removed nor made");
+    };
+    left("landed");
+    e.ok(&["review", "s", "old-change", "--accept-all"]);
+    assert_eq!(e.ok(&["show", "s", "3", "--path", "c.txt"]), "c\n");
+    // Found dead, its agent gone: each lands as failed, as any ask does;
+    // what the change's agent left in your checkout is said, and left there.
+    std::fs::write(mine.join("half.txt"), "half\n").unwrap();
+    let id = comment(&e, &["Split", "it."]);
+    let now: Vec<(String, String)> = git(&mine, &["rev-list", "--reverse", "base..HEAD"])
+        .lines()
+        .map(String::from)
+        .zip(Db::load(&e.db).unwrap().stack("s").unwrap().patches.clone())
+        .collect();
+    ask_of_before(&e, &mine, "old-dead-change", "change", &id, &now, &[serde_json::json!({"type": "text", "text": "Splitting it."})]);
+    let id = comment(&e, &["And", "why?"]);
+    ask_of_before(&e, &mine, "old-dead-answer", "answer", &id, &[], &[serde_json::json!({"type": "text", "text": "Reading it."})]);
+    let runs = e.ok(&["runs"]);
+    assert!(
+        runs.contains(&format!("\tchange s \"Split it.\"\tfailed\tthe agent failed (killed): Splitting it.; its work is left in {at}\n")),
+        "{runs}"
+    );
+    assert!(runs.contains("\tanswer s \"And why?\"\tfailed\tthe agent failed (killed): Reading it.\n"), "{runs}");
+    assert_eq!(std::fs::read_to_string(mine.join("half.txt")).unwrap(), "half\n");
+    left("found dead");
+    // Their comments failed, to ask again.
+    let failed = e.ok(&["comments", "s", "--show", "failed"]);
+    assert!(failed.contains("you: Split it.") && failed.contains("you: And why?"), "{failed}");
 }
 
 #[test]
@@ -2166,12 +2370,14 @@ fn an_answer_runs_on_the_stack_as_it_is_and_accepting_an_edit_asks_it_again() {
     let (fine, out, err) = stacked_in(&e.src, &e.db, &["send", "s", &first, "--wait"], "", &env);
     assert!(fine, "{out}{err}");
     let one = landed_ids(&e).remove(0);
-    // The answer goes at once, on the stack as it is, not the change's.
+    // The answer goes at once, on the stack as it is, not the change's: in
+    // a worktree of its own, the stack up to its patch, the whole stack as
+    // it is printed by `export --rev`.
     let (fine, out, err) = stacked_in(&e.src, &e.db, &["send", "s", &why, "--answer-only", "--wait"], "", &env);
     assert!(fine, "{out}{err}");
     let told = std::fs::read_to_string(&prompts).unwrap();
     let asked = told.split("=====").nth(1).unwrap();
-    assert!(asked.contains("show s --rev ") && !asked.contains("--work"), "{told}");
+    assert!(asked.contains("a git worktree made for you") && asked.contains("export s --rev ") && !asked.contains("--work"), "{told}");
     assert!(e.ok(&["show", "s", "1", "--work", &one]).contains("+deux\n"));
     assert!(!e.ok(&["landed", "s"]).contains("goes on from"));
     // The change accepted, the answer is asked again, on the stack it makes.
@@ -2293,12 +2499,12 @@ fn the_agent_rebases_reviews_and_tests() {
     assert!(e.ok(&["stacks"]).contains("3 patches"));
 
     // A review is an answer that opens comments of its own. As any answer,
-    // it runs in the repository as it is, no worktree made for it, and is
-    // told to read the stack through stacked.
+    // it runs in the stack's own worktree for answers, the stack applied
+    // there, never in your checkout, and is told so.
     let review = fake_claude(
         &e,
         "claude-review.sh",
-        r#"test "$PWD" = "$STACKED_SRC" || exit 3"#,
+        r#"case "$PWD" in */.stacked/s/answer-only-agent) ;; *) exit 3;; esac; test "$PWD" != "$STACKED_SRC" || exit 4; test "$(git rev-list --count HEAD ^upstream)" = 3 || exit 5"#,
         r#"{"replies": {"c1": "Two things."}, "comments": [{"patch": 2, "file": "b.txt", "side": "+", "line": "new", "text": "Say what b is for."},
             {"patch": 1, "file": "nowhere", "side": "+", "line": "?", "text": "On the whole patch."}]}"#,
     );
@@ -2307,9 +2513,9 @@ fn the_agent_rebases_reviews_and_tests() {
     assert!(fine, "{err}");
     let db = Db::load(&e.db).unwrap();
     let info = stacked::ask::info(db.runs().last().unwrap()).unwrap();
-    assert!(info.worktree.is_none(), "no worktree: {:?}", info.worktree);
-    assert!(info.prompt.contains("the user's repository, as it is checked out now"), "{}", info.prompt);
-    assert!(info.prompt.contains("show s --rev") && info.prompt.contains("N --path FILE"), "{}", info.prompt);
+    assert!(info.worktree.as_deref().is_some_and(|w| w.ends_with("/.stacked/s/answer-only-agent")), "{:?}", info.worktree);
+    assert!(info.prompt.contains("The current directory is a git worktree made for you"), "{}", info.prompt);
+    assert!(!info.prompt.contains("the user's repository"), "{}", info.prompt);
     drop(db);
     assert!(out.contains("agent replied (answer only) · opened 2 comments"), "{out}");
     let c = e.ok(&["comments", "s", "--patch", "2"]);
@@ -3078,21 +3284,32 @@ fn a_comment_holding_a_fence_of_a_turn_is_yours_whole() {
 }
 
 #[test]
-fn apply_is_the_only_change_to_the_worktree() {
+fn there_is_no_apply_and_the_applies_of_before_are_still_listed() {
     let e = env();
     e.ok(&["import", "s", "base"]);
     e.ok(&["drop", "s", "2"]);
-    std::fs::write(e.src.join("a.txt"), "dirty\n").unwrap();
-    let (fine, _, err) = e.run(&["apply", "s"]);
-    assert!(!fine && err.contains("uncommitted"), "{err}");
-    git(&e.src, &["checkout", "--", "a.txt"]);
-    let out = e.ok(&["apply", "s", "--branch", "s"]);
-    assert!(out.contains("applied"), "{out}");
-    assert_eq!(git(&e.src, &["branch", "--show-current"]).trim(), "s");
-    let log = git(&e.src, &["log", "--format=%s", "base..HEAD"]);
-    assert_eq!(log.lines().count(), 2, "{log}");
-    assert!(!e.src.join("b.txt").exists());
-    assert!(e.ok(&["runs"]).contains("apply s\tdone"));
+    let head = git(&e.src, &["rev-parse", "HEAD"]);
+    // No command puts the stack into your checkout: `stacked head NAME
+    // --to N` moves HEAD there, as the editor's `Move HEAD…` does.
+    let (fine, _, err) = e.run(&["apply", "s", "--branch", "s"]);
+    assert!(!fine && err.contains("'apply'"), "{err}");
+    assert_eq!(git(&e.src, &["rev-parse", "HEAD"]), head);
+    assert_eq!(git(&e.src, &["branch", "--show-current"]).trim(), "main");
+    assert!(!e.ok(&["--help"]).lines().any(|l| l.trim_start().starts_with("apply ")));
+    // The run of an apply a stacked of before made is listed as it was.
+    let run = stacked::db::Run {
+        id: "apply-1".into(),
+        what: "apply".into(),
+        stack: "s".into(),
+        state: RunState::Done,
+        summary: "@3 applied in the checkout: s at 1234567".into(),
+        rev: Some(3),
+        time: stacked::db::now(),
+        ..Default::default()
+    };
+    Db::edit(&e.db, |db| db.add_run(run.clone()).map(|_| ())).unwrap();
+    let runs = e.ok(&["runs"]);
+    assert!(runs.contains("\tapply s\tdone\t@3 applied in the checkout: s at 1234567\n"), "{runs}");
 }
 
 #[test]

@@ -115,7 +115,7 @@ fn made_ahead(tmp: &Path) -> PathBuf {
 }
 
 /// What the bar says once the worktree `made_ahead` asks for is made.
-const MADE: &str = "is not pwd, ondemand or precreate";
+const MADE: &str = "is not ondemand or precreate";
 
 /// Waits for `dir` to be gone: whether it is.
 fn gone(dir: &Path) -> bool {

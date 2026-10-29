@@ -1696,8 +1696,7 @@ impl App {
     /// rejected; HEAD was in sync with the stack as it is, when last looked
     /// at (on its top, each patch a commit with the patch's message, the
     /// revision it names too, no commit above), and nothing is uncommitted
-    /// there; and no agent works in your checkout, nor makes its changes
-    /// there (`agent.worktree = "pwd"`), which moves HEAD itself.
+    /// there.
     fn head_can_follow(&self) -> bool {
         let Some(rv) = &self.reviewing else { return false };
         let Some((now, _)) = self.review_stacks() else { return false };
@@ -1707,7 +1706,7 @@ impl App {
         let rev = self.db.head(&self.stack).map(|(r, _)| r);
         let Some(seen) = self.head.as_ref().filter(|h| h.name == self.stack && h.rev == rev) else { return false };
         let Some(h) = &seen.head else { return false };
-        h.in_sync(now.patches.len()) && seen.clean == Some(true) && !crate::head::agent_in(&self.db, &h.dir) && !ask::changes_in_checkout(&self.db, &self.stack)
+        h.in_sync(now.patches.len()) && seen.clean == Some(true)
     }
 
     /// HEAD picked to stay where it is as the review closes (`stay`), or to

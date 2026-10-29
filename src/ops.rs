@@ -717,45 +717,6 @@ pub fn base_of(s: &Stack) -> Result<(std::path::PathBuf, String)> {
     }
 }
 
-/// Puts stack `name` into the worktree of its repository: its base checked
-/// out, its patches applied as commits, on `branch` if named. The one thing
-/// stacked does to a worktree, and only when asked. The result is a run.
-pub fn apply_stack(
-    db_path: &std::path::Path,
-    name: &str,
-    branch: Option<&str>,
-) -> Result<crate::db::Run> {
-    use crate::db::{Run, RunState};
-    let db = Db::load(db_path)?;
-    let s = db.stack(name)?;
-    let (rev, _) = db.head(name).unwrap();
-    let (repo, base) = base_of(s)?;
-    let patches: Vec<_> = s.patches.iter().map(|id| db.patch(id)).collect();
-    let applied = crate::git::apply(&repo, &base, &crate::mbox::format_mbox(&patches), branch);
-    let (state, summary) = match &applied {
-        Ok(head) => (
-            RunState::Done,
-            format!(
-                "@{rev} applied in {}: {} at {head}",
-                repo.display(),
-                branch.unwrap_or("detached HEAD")
-            ),
-        ),
-        Err(e) => (RunState::Failed, e.0.clone()),
-    };
-    let run = Run {
-        id: format!("apply-{}", crate::db::unique()),
-        what: "apply".into(),
-        stack: name.into(),
-        state,
-        summary,
-        rev: Some(rev),
-        ..Default::default()
-    };
-    Db::edit(db_path, |db| db.add_run(run.clone()))?;
-    applied.map(|_| run)
-}
-
 /// The lines `with_error` puts at the top of what is edited again.
 const ERROR: &str = "# stacked: ";
 

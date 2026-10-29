@@ -6,7 +6,8 @@ Phabricator said: all in one file that is only ever appended to (its
 header aside), so that any edit can be undone and the history read back. A
 comment can be asked of the agent, which answers it or changes the
 patches; what it brings back waits for your review. Your checkout is not
-touched unless you ask.
+touched unless you ask: every ask of the agent runs in a worktree of its
+own, never in your checkout.
 
 What follows are the notes on using it that do not belong in its `--help`.
 Press `?` in the editor: it says what can be done where the cursor is.
@@ -115,7 +116,6 @@ stacked stop 1761650000000-4242    # the agent of that run (stacked runs lists t
 stacked reply bug123 4f1c2a and keep the title
 stacked moz-phab pull bug123       # reviewers' comments from Phabricator, held for your review (moz-phab)
 stacked moz-phab import D123       # a new stack of D123, those it stacks on and those on it (moz-phab)
-stacked apply bug123 --branch bug123   # only now does the worktree change
 stacked export bug123 | git am     # or put it anywhere by hand
 stacked trim new.jsonl --from @40  # a new database, the history before @40 left out
 stacked config > ~/.stacked/config.toml   # every setting, to start a settings file from (once ~/.stacked is made)
@@ -185,7 +185,7 @@ that tour, shift-Tab lists the sections again, to go to any of them.
 Apart from that setting, it writes nothing on disk: its database and its
 repository are kept in memory, and its patches are applied there as `git
 apply` would apply them. Anything that would write on disk (`$EDITOR`,
-apply, trim) or reach Phabricator says that it is not in the demo.
+trim) or reach Phabricator says that it is not in the demo.
 
 ## In a browser
 
@@ -439,12 +439,10 @@ Enter on it says to sync the commit messages first, as Delete there does,
 and Enter on a comment whose reply waits; a comment's `Accept the agent's
 reply` and `Review the agent's work…` are grayed, its menu saying why. An
 edit by hand lands and waits there. Asks still run and land as they do,
-and a review open before the messages came to differ still closes. While
-the agent makes its changes in your checkout (`agent.worktree = "pwd"`),
-HEAD is the agent's, and nothing is to sync. Nor is anything to sync while
-stacked moves HEAD (`Move HEAD…`, HEAD following the stack as a review
-closes, `Apply the stack to the worktree…`, the sync itself) until HEAD has
-been looked at again after the move, nor while a rebase, `git am`, a
+in worktrees of their own, and a review open before the messages came to
+differ still closes. Nothing is to sync while stacked moves HEAD (`Move
+HEAD…`, HEAD following the stack as a review closes, the sync itself) until
+HEAD has been looked at again after the move, nor while a rebase, `git am`, a
 cherry-pick, a revert or a merge is stopped midway in the checkout: the
 banner says nothing of the sync and holds back no review meanwhile, and its
 line comes back once HEAD has settled, if the messages still differ.
@@ -598,7 +596,7 @@ them other keys, and the help then names those:
 - Space is the menu: all that can be done where the cursor is, then undo,
   redo, `Runs…` and quit, which every menu ends with. The stack's items
   (comment on it, ask about all, `Show…`, the stack as a list, the tree,
-  the history, Phabricator, apply, switch, delete) are on the left header
+  the history, Phabricator, `Move HEAD…`, switch, delete) are on the left header
   only; a patch's on a patch; a line's on a line; a comment's on a comment.
   ↑↓ and enter; ↑ from the top is Quit. What a read-only stack cannot do is
   shown dimmed, and the menu says why. An item may have choices, radio
@@ -1239,21 +1237,17 @@ comment editor's `Ask agent`:
   Phabricator, a page of documentation), through `jq` if need be. It may
   also use what your own claude settings allow, and what its list and
   stacked's `agent.tools` add (the stack's checkout's own, if it sets them:
-  Settings, below), your MCP servers' tools among them: running in the
-  repository, it has the servers you added there. What it was not let use
+  Settings, below), your MCP servers' tools among them. What it was not let use
   is said in its stream (`⛔ not allowed: mcp__moz__get_bug: …`) and in its
   run's summary, with the list that lets its kind of ask use more
   (`agent.answer_tools`, `agent.change_tools`; for a build and test,
   `agent.tools`), to allow it if it should be; every ask, a change's too,
   is told to say so in what it writes, the tool not allowed, never that the
-  service behind it (Bugzilla, Phabricator) refused. No worktree is made for
-  it, which in a big repository takes a while, unless the settings say so
-  (below): as self-review's answers do, it runs in the stack's repository as
-  it is checked out, and is told that this need not be the stack. It reads
-  the stack through stacked: `stacked
-  export`, `stacked show NAME N`, and `stacked show NAME N --path FILE`, a
-  file as patch N leaves it, whether the stack changes it or not, read
-  without a checkout. Only the reply comes back. An
+  service behind it (Bugzilla, Phabricator) refused. It works in a worktree
+  of the stack's own for answers (below), never in your checkout, the stack
+  up to its place applied, as a change's worktree is: it reads the patches
+  there with `git show`, and the whole stack with `stacked export`. Only the
+  reply comes back. An
   answer may open comments of its own on lines within the place, as a
   review does, each about one issue (a line with two issues gets two
   comments, both on it): the asking comment then says `opened 4 comments, 1 with your
@@ -1412,33 +1406,38 @@ line, `stacked send NAME ID --later` batches (how, as `send` says it:
 batch, the answers an agent each with `--fan-out`, and the try pushes the
 editor batched, each on its own.
 
-Where an agent works costs time and space: a worktree is a checkout of
-every file. So the stack has worktrees of its own, `.stacked/NAME/agent`
-for changes, `.stacked/NAME/answer-only-agent` for answers and
-`.stacked/NAME/build` for builds and tests, beside yours
-(`.stacked/NAME/user`), out of git's sight. An ask takes the first
+Every ask works in a worktree of its own, never in your checkout. A
+worktree is a checkout of every file, which costs time and space: so the
+stack has worktrees of its own, `.stacked/NAME/agent` for changes,
+`.stacked/NAME/answer-only-agent` for answers and for the selection of a
+try push's tasks, and `.stacked/NAME/build` for builds and tests, beside
+yours (`.stacked/NAME/user`), out of git's sight. An ask takes the first
 that no running ask is in and that holds nothing uncommitted, moves it to
 what it is asked about, and leaves it there when it lands, for the next
 ask to take: only what differs is written. One busy, the next ask takes
 `agent-2`, `agent-3`. One an agent left work unfinished in is left as it
 is, for you to look at; the ask says so when it fails (`it is left in
-…/.stacked/NAME/agent`), and the next takes another. Where each kind of ask
-works is a setting of `[agent]` (the stack's checkout's own, if it sets
-it): `worktree` for a change, and `answer_only_worktree` for an answer,
-each `pwd`, `ondemand` or `precreate`:
+…/.stacked/NAME/agent`), and the next takes another. A setting of
+`[agent]` (the stack's checkout's own, if it sets it) says when each is
+made: `worktree` for a change, and `answer_only_worktree` for an answer,
+each `ondemand` or `precreate`:
 
-- `ondemand`, a change's unless set: the stack's own worktree, made the
-  first time an ask needs it, and kept until you remove it (`git worktree
-  remove .stacked/NAME/agent`).
+- `ondemand`, unless set: the stack's own worktree, made the first time an
+  ask needs it, and kept until you remove it (`git worktree remove
+  .stacked/NAME/agent`).
 - `precreate`: the same, made when the editor opens the stack, and each
   stack it switches to, away from the screen, so that no ask waits for it;
   removed when the editor exits, away from it too, but those an agent is
   working in or left anything uncommitted in.
-- `pwd`, an answer's unless set: the stack's repository as it is checked
-  out. For an answer, as it is. For a change, moved to the stack, the agent
-  working in your checkout, then back where it was once it lands; not while
-  it has changes to files git tracks. While it works, leave the checkout to
-  it.
+
+A stacked of before also took `pwd`, your checkout itself. No ask works
+there now: a settings' file that still says `pwd` is read as `ondemand`,
+and stacked says so where it says what is wrong with the settings
+(`agent.answer_only_worktree = "pwd" is no longer supported: asks run in a
+worktree of their own; read as "ondemand"`); `stacked config` refuses to
+write it. An ask that a stacked of before started in your checkout still
+lands, or is found dead, as any other: your checkout is left as the agent
+left it, never removed nor cleaned.
 
 A build and test always works in `.stacked/NAME/build`, made the first
 time and kept until you remove it (`git worktree remove --force
@@ -1459,7 +1458,7 @@ on, and goes on its own when that lands. Nothing is asked on a stack that
 does not apply. A lint job of the stack takes its turn as a change does,
 the changes asked after it waiting for it (Linting, below).
 
-Chained (`agent.chain`, on unless changes work in your checkout), a change
+Chained (`agent.chain`, on unless set to false), a change
 does not wait for the review of the change before it: it goes at once, from
 the stack that change makes, as if you accept it, one change running at a
 time. What it brings back is reviewed after the work it went on from: the
@@ -1618,8 +1617,8 @@ run to start it, as it runs: `starting: git worktree add --detach … BASE`
 big repository) or `starting: git switch --detach BASE, in WORKTREE` (taken
 again), then `starting: git am --keep-non-patch, 3 patches` (the stack, up
 to what it is asked about); then `starting: claude -p … --permission-mode
-… --effort LEVEL, in WORKTREE` (or the repository, for an answer as it is
-by default, or a build and test). They stay
+… --effort LEVEL, in WORKTREE`, the ask's own worktree, whatever its kind:
+never your checkout. They stay
 at the top of its stream, as `$ git worktree add …`, in the stream, in
 `Runs…` and in `stacked transcript RUN`. Enter on a comment the agent is
 working on opens its stream in place; esc folds it, and so does the agent
@@ -1663,15 +1662,15 @@ is expanded, opened again or not.
 
 The commits made in the agent's worktree, stacked's and the agent's, are
 not signed, whatever git's `commit.gpgsign` says: they are only read back
-as patches. `stacked apply`'s commits are yours, signed as git says.
+as patches.
 
 The agent runs in a process group of its own. Quitting the editor leaves it
 running, and what it does lands on its own; leaving (ctrl-c, or `Quit`)
 lists the asks still running, each as `stacked runs` says it and where its
-agent works: its worktree, or the repository. A worktree with work the agent
-did not commit, or that could not be filed, is left in place, and the run's
-summary says where; others are removed once landed. `Runs…` lists every
-ask, apply and pull, and shows what the agent wrote.
+agent works: its worktree. A worktree with work the agent did not commit, or
+that could not be filed, is left in place, and the run's summary says
+where; others are kept for the next ask. `Runs…` lists every ask and pull,
+and shows what the agent wrote.
 
 `Stop the agent…`, in the menu of a comment the agent works on, and on an
 ask that runs in `Runs…` (Delete does the same in both places), asks
@@ -1843,9 +1842,8 @@ HEAD moves there once the change is accepted: detached at the stack's
 top, the branch it was on as it was, as `Move HEAD…` moves it, the status
 line saying where it went. HEAD can move safely when it was in sync with
 the stack (on its top, each patch a commit with the patch's message, its
-`Differential Revision:` trailer too, no commit above), nothing is
-uncommitted in the checkout, and no agent works
-there or makes its changes there (`agent.worktree = "pwd"`). `sync` is
+`Differential Revision:` trailer too, no commit above), and nothing is
+uncommitted in the checkout. `sync` is
 picked unless you picked otherwise in this review, and the pick is not
 kept for the stack. A reply that goes with a change of the stack
 opens that review, on the reply, from its comment (Enter, or `Review the
@@ -2498,9 +2496,11 @@ settings:
 - `[agent]`: `command`, the program run as the agent; `args`, added to
   every run, but an `--effort` they give, which the ask's own effort takes
   the place of (Asking the agent, above); `worktree` and
-  `answer_only_worktree`, where a change and an
-  answer work: `pwd`, `ondemand` or `precreate` (Asking the agent, above;
-  `ondemand` and `pwd` unless set); `model`. What each kind of ask may use
+  `answer_only_worktree`, when the worktree a change works in, and the one
+  an answer works in, is made: `ondemand` or `precreate` (Asking the agent,
+  above; `ondemand` unless set), as every ask runs in a worktree of its
+  own, never in your checkout (a file of before that says `pwd` is read as
+  `ondemand`, and stacked says so); `model`. What each kind of ask may use
   besides what stacked gives it (Asking the agent, above), as claude names
   the tools for `--allowedTools`: all of an MCP server's
   (`mcp__bugzilla__*`; there is no way to name every server's at once), one
@@ -2542,8 +2542,8 @@ settings:
   their `deny` is left alone), each rule as written, but for a command's
   older form (below), said `allowed in .claude/settings.local.json` (or in
   both files, if both allow it): claude applies them when it runs in the
-  checkout, but an agent working in a worktree of the stack's own does not
-  have the first, which git does not track; what the checkout's skills let run, unticked,
+  checkout, but every ask runs in a worktree of the stack's own, which does
+  not have the first, as git does not track it; what the checkout's skills let run, unticked,
   as several skills change things (they commit, rewrite history, file
   bugs); and the programs the checkout's instructions to the agent name,
   unticked, as stacked cannot know what a program does. A skill's rules
@@ -2599,8 +2599,8 @@ settings:
   its read-only box gives answer-only asks the skills, written in
   `answer_tools` as `Skill`, and the lines under it say what that lets in:
   a skill may run what its own allowed-tools let it, commands that change
-  things too (rewriting history, filing a bug), and an answer runs in your
-  checkout itself unless `answer_only_worktree` says otherwise. Its change
+  things too (rewriting history, filing a bug); an answer runs in a worktree
+  of its own, never in your checkout. Its change
   box gives the skills to changes, written in `change_tools`. Whether what
   stacked refuses still holds against what a skill's allowed-tools let it
   run, claude's own text does not say, so stacked does not claim it. What
@@ -2813,7 +2813,7 @@ each stack, whether it applies.
 Everything is in the database, one JSON object per line, and a line once
 written is never changed, but the header: patches, every state of every
 stack, which state each stack is on, comments and their replies, every run
-(an ask, an apply, a pull) with what came of it, every line the agent
+(an ask, a lint job, a pull) with what came of it, every line the agent
 wrote while it worked, what each stack's comments pane shows, and what is
 read. A record is named by its place among the records, its rev: `@12`.
 The first line, the header, is `@1`: it says the file's format, and is 128
@@ -3039,16 +3039,6 @@ be written, nothing is sent, and the bottom line says why. The diff is in
 the repository the checkout's `.arcconfig` names (`repository.callsign`;
 a revision there already keeps its own).
 
-## Applying
-
-`apply`, or the menu's `Apply the stack to the worktree…`, is the only thing
-that changes a worktree. It checks out the stack's base, detached or on
-`--branch` (made, or reset there), then `git am`s the patches. It refuses if
-anything is uncommitted, and if a patch does not apply it aborts and leaves
-the worktree at the base. Like every run, it lands in the database. The
-editor asks in plain words before it applies, on no branch; a branch is the
-command line's.
-
 ## Copied from self-review-rs
 
 stacked started from self-review-rs, a reviewer of your own changes in the
@@ -3076,8 +3066,8 @@ is typed: `import.rs`). A fix to one may belong in the other.
 - `db.rs`: the file, its records and its lock.
 - `check.rs`: whether patches apply, before they go in; the files as a
   patch leaves them, and the tree, for a submit.
-- `ops.rs`: edits to a stack, `$EDITOR` (the patch as mail, its code), apply;
-  the interdiff of two versions of a patch.
+- `ops.rs`: edits to a stack, `$EDITOR` (the patch as mail, its code); the
+  interdiff of two versions of a patch.
 - `git.rs`: what stacked asks of git: mail from a range, the stack's
   worktrees and the agents', a checkout to edit a patch in.
 - `ask.rs`, `claude.rs`: asking the agent about comments, from the queue to
@@ -3271,7 +3261,13 @@ in for the agent and rewrites commits with git, with a plain `git rebase
 -i` that takes the plan written to the todo file the prompt names, and
 none without a plan or with one that runs a command, claude told what to
 refuse; runs `stacked fits`,
-answers, opens comments, tests), a split following its comments, a comment
+answers, opens comments, tests), every ask in a worktree of its own (your
+checkout's HEAD, branch and files as they were while the agent works and
+after; a settings' file of before that says `pwd` read as `ondemand`, and
+said; `stacked config` refusing it; the asks a stacked of before started in
+your checkout landing, or found dead, the checkout left as the agent left
+it, never removed; no `apply`, the applies of before listed), a split
+following its comments, a comment
 moved to the stack, a patch's comment asked of the whole stack adding a
 patch on top, work that brought nothing back held for review while a
 comment it was asked about is open (and not once every one is closed), the
@@ -3334,7 +3330,7 @@ ask sent before the setup is saved, and every ask once it is), Phabricator's com
 held for review then filed (none twice, none rejected again, an edit held
 as an edit of its turn), a stack imported from Phabricator's revisions (by
 number or link, named or not), Phabricator's commands there only when
-built with it, apply, and
+built with it, and
 what does not apply being refused, edited again, or read-only. `tests/tui.rs` draws the editor into a buffer and presses keys:
 that no letter but 1, 2, 3 and / does anything, keys mapped by the settings,
 Delete and Backspace as the menus' items that close, drop, stop or reject
@@ -3665,7 +3661,8 @@ room on a middle too narrow, the step waiting for the hunks again;
 `memory.rs` tests its diffs applied as git applies them. With the
 `try-push` feature, `tests/try_push.rs` drives the editor as
 `tests/tui.rs` does, a stand-in of its own for claude: a comment asked as
-a try push, `try push` among the comment's choices of how, its prompt
+a try push, `try push` among the comment's choices of how, its ask in a
+worktree of its own, your checkout as it was while it works and after, its prompt
 asking for the tasks the comment asks for, as few or as many as it says,
 exact labels, why each, nothing pushed or changed; its tasks landing in
 the banner as read-only work, listed in the review, why each was selected
@@ -3953,8 +3950,6 @@ revisions, a submit ended since, or three minutes gone by.
   are still read, only to be left out. Once no database holds them, that
   code goes, and with it the split of a thread's turns between those that
   stand and all of them.
-- How apply picks a branch, which belongs to publishing: the editor applies
-  on no branch, `stacked apply --branch` on one.
 - A stack-wide review runs one agent; one per patch is not done.
 - An agent other than claude must speak claude's command line and stream,
   and take `--json-schema`, unless `agent.schema` is off.
@@ -3963,8 +3958,8 @@ revisions, a submit ended since, or three minutes gone by.
   alone (Changes Planned), and so with no reviewers: a stack at once, a
   revision sent for review with the reviewers its title names, a file
   that is not text, and each file whole as the diff's context (so that
-  reviewers can see more of it) are still moz-phab's, after `stacked
-  apply`.
+  reviewers can see more of it) are still moz-phab's, once `stacked head
+  NAME --to N` (or `Move HEAD…`) has put the stack in your checkout.
 - StackED's windows are on macOS only: elsewhere it has one, on one
   database, and no File or Edit menu. A database is not opened by dropping
   it on StackED's icon or by double-clicking it in the Finder, and there is

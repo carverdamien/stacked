@@ -899,6 +899,35 @@ fn each_try_push_ask_downloads_the_task_graph_into_a_folder_of_its_own_gone_once
     assert_eq!(git_out(&src, &["status", "--porcelain"]), "");
 }
 
+#[test]
+fn a_try_push_ask_works_in_a_worktree_of_its_own_your_checkout_as_it_was_while_it_works_and_after() {
+    let (_tmp, db, src) = setup();
+    let mut app = open(&db);
+    tasks_answer(&db, &[("build-linux64/debug", "The build the tests need.")], "One task.");
+    // A change of yours, not committed: it stays as it is.
+    std::fs::write(src.join("b.txt"), "mine\n").unwrap();
+    let yours = || [&["rev-parse", "HEAD"][..], &["symbolic-ref", "--short", "HEAD"], &["status", "--porcelain", "--untracked-files=all"]].map(|a| git_out(&src, a));
+    let before = yours();
+    assert_eq!(before[1..], ["main".to_string(), "M b.txt".to_string()]);
+    let hold = db.with_file_name("hold");
+    std::fs::write(&hold, "").unwrap();
+    ask_try(&mut app, "Run the build.");
+    let going = tries_going(&mut app, &db, 1);
+    // Its own worktree, the one for answers, the patches up to the
+    // comment's applied there: patch 1 at its HEAD.
+    let wt = src.canonicalize().unwrap().join(".stacked/s/answer-only-agent");
+    let d = Db::load(&db).unwrap();
+    let i = stacked::ask::info(d.run(&going[0].0).unwrap()).unwrap();
+    assert_eq!(i.worktree.as_deref(), Some(wt.to_str().unwrap()));
+    drop(d);
+    assert_eq!(git_out(&wt, &["log", "-1", "--format=%s"]), "Bug 1 - shout two");
+    assert!(last_prompt(&db).contains("The current directory is a git worktree made for you"), "{}", last_prompt(&db));
+    assert_eq!(yours(), before, "your checkout while the agent works");
+    std::fs::remove_file(&hold).unwrap();
+    landed(&mut app, &db, 1);
+    assert_eq!(yours(), before, "and after");
+}
+
 /// Comment `id` of patch 1 put on the queue as a try push, as an older
 /// stacked let a comment on a line be: in the batch (`Stage::Batch`), or
 /// ready to go (`Stage::Ready`).

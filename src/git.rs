@@ -248,7 +248,7 @@ pub fn unfinished_tracked(dir: &Path) -> Result<bool> {
 }
 
 /// Where a checkout is: on a branch, or at a commit.
-#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Head {
     Branch(String),
     Commit(String),
@@ -308,29 +308,11 @@ pub fn am(dir: &Path, mbox: &str) -> Result<()> {
     Ok(())
 }
 
+/// The worktree at `at` removed from `repo`, whatever it holds: one a
+/// stacked of before made for an ask alone.
 pub fn remove_scratch(repo: &Path, at: &Path) {
     let _ = git(repo, &["worktree", "remove", "--force", &at.to_string_lossy()]);
     let _ = git(repo, &["worktree", "prune"]);
-}
-
-/// Puts the stack into the worktree of `repo`: `base` checked out and
-/// `mbox` applied, on `branch` if one is named (made or reset there), else
-/// detached. Only when nothing is uncommitted, so nothing is lost.
-pub fn apply(repo: &Path, base: &str, mbox: &str, branch: Option<&str>) -> Result<String> {
-    if dirty(repo)? {
-        return err(format!("{} has uncommitted changes; nothing applied", repo.display()));
-    }
-    match branch {
-        Some(b) => git(repo, &["switch", "--quiet", "--force-create", b, base])?,
-        None => git(repo, &["switch", "--quiet", "--detach", base])?,
-    };
-    if !mbox.is_empty()
-        && let Err(e) = git_in(repo, &["am", "--quiet", "--3way", "--keep-non-patch"], Some(mbox))
-    {
-        let _ = git(repo, &["am", "--abort"]);
-        return err(format!("{}; the worktree is left at the base", e.0));
-    }
-    Ok(git(repo, &["rev-parse", "--short", "HEAD"])?.trim().to_string())
 }
 
 #[cfg(test)]

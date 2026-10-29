@@ -156,16 +156,16 @@ impl App {
 
     /// Why the sync of the commit messages waits, if it does: while stacked
     /// moves HEAD of your checkout, or is about to (`Move HEAD…`, HEAD
-    /// following the stack as a review closes, an apply, the sync itself),
-    /// until HEAD has been looked at again since; and while a git operation
-    /// is stopped midway there, by anyone, as HEAD was last looked at.
-    /// Meanwhile no patch is to sync: the banner says nothing of it, and
-    /// holds back no review.
+    /// following the stack as a review closes, the sync itself), until HEAD
+    /// has been looked at again since; and while a git operation is stopped
+    /// midway there, by anyone, as HEAD was last looked at. Meanwhile no
+    /// patch is to sync: the banner says nothing of it, and holds back no
+    /// review.
     pub(super) fn sync_waits(&self) -> Option<Waits> {
         if self.bg.doing.contains(&SYNCING) {
             return Some(Waits::Syncing);
         }
-        if self.bg.doing.iter().any(|d| [MOVING_HEAD, APPLYING].contains(d)) {
+        if self.bg.doing.contains(&MOVING_HEAD) {
             return Some(Waits::Moving);
         }
         let seen = self.head.as_ref().filter(|h| h.name == self.stack)?;
@@ -187,15 +187,11 @@ impl App {
 
     /// The patches whose message differs from its commit's in your
     /// workspace, HEAD as last looked at on the stack as it is: none while
-    /// HEAD is not on it, nor while the agent works in your checkout, HEAD
-    /// its own then, nor while the sync waits for HEAD to settle
+    /// HEAD is not on it, nor while the sync waits for HEAD to settle
     /// (`sync_waits`).
     pub(super) fn differing(&self) -> Vec<Differing> {
-        let Some((h, on)) = self.listed() else { return vec![] };
+        let Some((_, on)) = self.listed() else { return vec![] };
         let Some(s) = self.current() else { return vec![] };
-        if crate::head::agent_in(&self.db, &h.dir) {
-            return vec![];
-        }
         on.messages
             .iter()
             .filter_map(|(k, theirs, d)| {
@@ -245,12 +241,10 @@ impl App {
     }
 
     /// The picks kept only for the patches that still differ, HEAD looked
-    /// at on the stack as it is: not while the agent works in your
-    /// checkout, HEAD its own then, nor while the sync waits for HEAD to
+    /// at on the stack as it is: not while the sync waits for HEAD to
     /// settle, the picks kept meanwhile.
     pub(super) fn keep_sync_picks(&mut self) {
-        let Some(seen) = self.fresh_head() else { return };
-        if seen.head.as_ref().is_some_and(|h| crate::head::agent_in(&self.db, &h.dir)) {
+        if self.fresh_head().is_none() {
             return;
         }
         let still: HashSet<(String, String)> = self.differing().into_iter().map(|d| (d.patch, d.theirs)).collect();

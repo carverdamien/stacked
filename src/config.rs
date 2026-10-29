@@ -156,14 +156,12 @@ pub enum Source {
     None,
 }
 
-/// Where an ask's agent works.
+/// Where an ask's agent works: always a worktree of the stack's own, never
+/// your checkout. The setting says when the worktree is made.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Workspace {
-    /// The stack's repository as it is checked out: as it is, for an
-    /// answer; moved to the stack and back, for a change.
-    Pwd,
-    /// A worktree of the stack's own, made the first time an ask needs one,
-    /// and reused while it holds nothing an agent left unfinished.
+    /// Made the first time an ask needs one, and reused while it holds
+    /// nothing an agent left unfinished.
     OnDemand,
     /// The same, made when the editor opens the stack, and removed when it
     /// exits.
@@ -173,7 +171,6 @@ pub enum Workspace {
 impl Workspace {
     pub fn name(self) -> &'static str {
         match self {
-            Workspace::Pwd => "pwd",
             Workspace::OnDemand => "ondemand",
             Workspace::Precreate => "precreate",
         }
@@ -181,12 +178,21 @@ impl Workspace {
 
     fn parse(s: &str) -> Option<Workspace> {
         match s {
-            "pwd" => Some(Workspace::Pwd),
             "ondemand" => Some(Workspace::OnDemand),
             "precreate" => Some(Workspace::Precreate),
             _ => None,
         }
     }
+}
+
+/// What a stacked of before took, in `agent.worktree` and
+/// `agent.answer_only_worktree`, for the checkout itself: the agent then
+/// worked in your checkout. No ask does now.
+const PWD: &str = "pwd";
+
+/// Why `key` no longer takes `"pwd"`.
+fn no_pwd(key: &str) -> String {
+    format!("{key} = \"pwd\" is no longer supported: asks run in a worktree of their own")
 }
 
 /// What answer-only asks may use unless the settings say otherwise: the
@@ -221,9 +227,9 @@ pub struct Agent {
     /// nor an ask of a kind its version had no column for
     /// (`setup::Kind::since`).
     pub setup: Option<usize>,
-    /// Where a change works.
+    /// When a change's worktree is made.
     pub worktree: Workspace,
-    /// Where an answer works.
+    /// When an answer's worktree is made, a try push's selection's too.
     pub answer_only_worktree: Workspace,
     /// Where the agents' worktrees go; else `.stacked/` at the top of the
     /// stack's repository.
@@ -252,7 +258,7 @@ impl Default for Agent {
             try_tools: ANSWER_TOOLS.map(String::from).to_vec(),
             setup: None,
             worktree: Workspace::OnDemand,
-            answer_only_worktree: Workspace::Pwd,
+            answer_only_worktree: Workspace::OnDemand,
             worktrees: None,
             chain: true,
             schema: true,
@@ -570,7 +576,14 @@ impl Config {
             if let Some(s) = written {
                 match Workspace::parse(s) {
                     Some(p) => *at = p,
-                    None => wrong.push(format!("{key}: {s:?} is not pwd, ondemand or precreate")),
+                    // Your checkout, as a stacked of before let an agent
+                    // work in: a worktree of its own instead, made when an
+                    // ask needs it; and said.
+                    None if s == PWD => {
+                        *at = Workspace::OnDemand;
+                        wrong.push(format!("{}; read as \"ondemand\"", no_pwd(key)));
+                    }
+                    None => wrong.push(format!("{key}: {s:?} is not ondemand or precreate")),
                 }
             }
         }
@@ -828,16 +841,15 @@ impl Config {
             None => "# setup = ...   (not done)\n".into(),
         });
         out.push_str(
-            "# Where a change works: \"ondemand\", a worktree of the stack's own (.stacked/NAME/agent)\n\
-             # made the first time and reused while it holds nothing unfinished; \"precreate\", the\n\
-             # same made when the editor opens the stack, removed when it exits; \"pwd\", the\n\
-             # stack's repository as it is checked out, moved to the stack and back (refused\n\
-             # while it has changes).\n",
+            "# Every ask runs in a worktree of its own, never in your checkout. A change works in\n\
+             # a worktree of the stack's own, .stacked/NAME/agent: \"ondemand\", made the first time\n\
+             # an ask needs it and reused while it holds nothing unfinished; \"precreate\", the\n\
+             # same, made when the editor opens the stack and removed when it exits.\n",
         );
         out.push_str(&format!("worktree = {}\n", q(self.agent.worktree.name())));
         out.push_str(
-            "# Where an answer works: \"pwd\", the stack's repository as it is checked out; or\n\
-             # \"ondemand\" or \"precreate\", as for a change (.stacked/NAME/answer-only-agent).\n",
+            "# An answer works in a worktree of the stack's own too, .stacked/NAME/answer-only-agent:\n\
+             # \"ondemand\" or \"precreate\", as for a change.\n",
         );
         out.push_str(&format!("answer_only_worktree = {}\n", q(self.agent.answer_only_worktree.name())));
         out.push_str("# Where the agents' worktrees go.\n");
@@ -848,8 +860,7 @@ impl Config {
         out.push_str(
             "# Whether a change or an answer starts while the change before it waits for your\n\
              # review, from the stack that change makes, as if you accept it: rejected, sent\n\
-             # back or edited by hand, what went on from it is dropped and starts again. Not\n\
-             # while changes work in your checkout (worktree = \"pwd\").\n",
+             # back or edited by hand, what went on from it is dropped and starts again.\n",
         );
         out.push_str(&format!("chain = {}\n", self.agent.chain));
         out.push_str(
@@ -1002,6 +1013,8 @@ enum Kind {
     Patches,
     /// The comments pane's state, or true or false.
     Pane,
+    /// When an ask's worktree is made: ondemand or precreate.
+    Workspace,
 }
 
 /// Every setting there is, as the file names it, and what it holds; the
@@ -1018,8 +1031,8 @@ const SETTINGS: &[(&str, Kind)] = &[
     #[cfg(feature = "try-push")]
     ("agent.try_tools", Kind::List),
     ("agent.setup", Kind::Count),
-    ("agent.worktree", Kind::Text),
-    ("agent.answer_only_worktree", Kind::Text),
+    ("agent.worktree", Kind::Workspace),
+    ("agent.answer_only_worktree", Kind::Workspace),
     ("agent.worktrees", Kind::Text),
     ("agent.chain", Kind::Flag),
     ("agent.schema", Kind::Flag),
@@ -1082,6 +1095,13 @@ fn literal(key: &str, kind: Kind, values: &[String]) -> Result<String, String> {
             v @ ("true" | "false") => v.to_string(),
             v if Pane::parse(v).is_some() => toml::Value::String(v.to_string()).to_string(),
             v => return Err(format!("{key} is expanded, compact or hidden, not {v:?}")),
+        },
+        // Your checkout, which no ask works in now, refused, as a stacked
+        // of before took it.
+        Kind::Workspace => match one()? {
+            v if Workspace::parse(v).is_some() => toml::Value::String(v.to_string()).to_string(),
+            PWD => return Err(format!("{}; nothing written", no_pwd(key))),
+            v => return Err(format!("{key} is ondemand or precreate, not {v:?}")),
         },
         Kind::Color => {
             let v = one()?;
@@ -2021,6 +2041,63 @@ mod tests {
         assert_eq!(again, c);
         let (defaults, _) = Config::parse(&Config::default().render()).unwrap();
         assert_eq!(defaults, Config::default());
+    }
+
+    #[test]
+    fn every_ask_works_in_a_worktree_of_its_own_and_pwd_is_read_as_ondemand() {
+        // Unless set, an answer's worktree is made when an ask needs it, as
+        // a change's is; the settings say every ask has its own.
+        let d = Config::default();
+        assert_eq!((d.agent.worktree, d.agent.answer_only_worktree), (Workspace::OnDemand, Workspace::OnDemand));
+        let text = d.render();
+        assert!(text.contains("\n# Every ask runs in a worktree of its own, never in your checkout. A change works in\n"), "{text}");
+        assert!(text.contains("\nworktree = \"ondemand\"\n") && text.contains("\nanswer_only_worktree = \"ondemand\"\n"), "{text}");
+        let agent = &text[text.find("\n[agent]\n").unwrap()..];
+        let agent = &agent[..agent[1..].find("\n[").map_or(agent.len(), |e| e + 1)];
+        assert!(!agent.contains("pwd"), "{agent}");
+        // "pwd", your checkout, as a stacked of before took it: read as
+        // "ondemand", and said.
+        let (c, wrong) = Config::parse("[agent]\nworktree = \"pwd\"\nanswer_only_worktree = \"pwd\"\n").unwrap();
+        assert_eq!((c.agent.worktree, c.agent.answer_only_worktree), (Workspace::OnDemand, Workspace::OnDemand));
+        assert_eq!(
+            wrong,
+            [
+                "agent.worktree = \"pwd\" is no longer supported: asks run in a worktree of their own; read as \"ondemand\"",
+                "agent.answer_only_worktree = \"pwd\" is no longer supported: asks run in a worktree of their own; read as \"ondemand\"",
+            ]
+        );
+        assert_eq!(value_of(&c, "agent.answer_only_worktree"), Ok(vec!["ondemand".to_string()]));
+        // Over a file that says "precreate", too: "ondemand".
+        let (base, _) = Config::parse("[agent]\nanswer_only_worktree = \"precreate\"\n").unwrap();
+        let (c, wrong) = base.over("[agent]\nanswer_only_worktree = \"pwd\"\n").unwrap();
+        assert_eq!((c.agent.answer_only_worktree, wrong.len()), (Workspace::OnDemand, 1), "{wrong:?}");
+        // Neither: said, and the default kept.
+        let (c, wrong) = Config::parse("[agent]\nworktree = \"sometimes\"\n").unwrap();
+        assert_eq!(c.agent.worktree, Workspace::OnDemand);
+        assert_eq!(wrong, ["agent.worktree: \"sometimes\" is not ondemand or precreate"]);
+        // Written, or refused with why, the file as it was.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("settings.toml");
+        let read = || std::fs::read_to_string(&path).unwrap();
+        let vals = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        set(&path, "agent.answer_only_worktree", &vals(&["precreate"])).unwrap();
+        assert_eq!(read(), "[agent]\nanswer_only_worktree = \"precreate\"\n");
+        for key in ["agent.worktree", "agent.answer_only_worktree"] {
+            let e = set(&path, key, &vals(&["pwd"])).unwrap_err();
+            assert_eq!(e, format!("{key} = \"pwd\" is no longer supported: asks run in a worktree of their own; nothing written"));
+        }
+        let e = set(&path, "agent.worktree", &vals(&["sometimes"])).unwrap_err();
+        assert_eq!(e, "agent.worktree is ondemand or precreate, not \"sometimes\"");
+        assert_eq!(read(), "[agent]\nanswer_only_worktree = \"precreate\"\n");
+        // A file that still says "pwd" takes the other settings written in
+        // it, and loses what it says once "ondemand" is written over it.
+        std::fs::write(&path, "[agent]\nworktree = \"pwd\"\n").unwrap();
+        set(&path, "agent.chain", &vals(&["false"])).unwrap();
+        assert_eq!(read(), "[agent]\nworktree = \"pwd\"\nchain = false\n");
+        assert!(set(&path, "agent.worktree", &vals(&["pwd"])).is_err(), "refused, even as the file says it");
+        set(&path, "agent.worktree", &vals(&["ondemand"])).unwrap();
+        let (c, wrong) = Config::load(&path);
+        assert!(wrong.is_empty() && c.agent.worktree == Workspace::OnDemand && !c.agent.chain, "{wrong:?}");
     }
 
     #[test]
