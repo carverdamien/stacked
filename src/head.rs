@@ -427,9 +427,10 @@ fn with_trailer(source: &str, _: &str) -> (String, Option<String>) {
 }
 
 /// Whether the lines of a message, `lines`, end in a paragraph of trailers
-/// after an empty line: each of its lines a trailer (`trailer`).
+/// after an empty line: each of its lines a trailer (`trailer`). A submit
+/// to Phabricator puts a new revision's trailer as the sync does.
 #[cfg(feature = "moz-phab")]
-fn ends_in_trailers(lines: &[&str]) -> bool {
+pub(crate) fn ends_in_trailers(lines: &[&str]) -> bool {
     let start = lines.iter().rposition(|l| l.trim().is_empty()).map(|e| e + 1);
     start.is_some_and(|s| s < lines.len() && lines[s..].iter().all(|l| trailer(l)))
 }

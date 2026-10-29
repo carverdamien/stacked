@@ -472,6 +472,24 @@ pub fn paths_of(repo: &Path, diffs: &[&str]) -> BTreeSet<String> {
     touched_by(repo, diffs)
 }
 
+/// The tree `diffs` leave, applied in turn on `base` in `repo`, as git
+/// would write it for a commit of them: written by `git write-tree` from an
+/// index of the whole base, of its own, what that writes in an object store
+/// of its own too; the repository is only read. Why not, when one does not
+/// apply.
+pub fn tree_of(repo: &Path, base: &str, diffs: &[&str]) -> Result<String> {
+    #[cfg(feature = "demo")]
+    if crate::memory::tree(repo, base).is_some() {
+        return err("a repository kept in memory has no trees to write");
+    }
+    reachable(repo, base)?;
+    let ix = Index::new(repo, base, None)?;
+    if let Err((k, e)) = ix.apply_each(repo, diffs) {
+        return err(format!("patch {} does not apply on those below it: {}", k + 1, e.0.trim()));
+    }
+    Ok(git_env(repo, &["write-tree"], None, &ix.env())?.trim().to_string())
+}
+
 /// The file the last of `patches` changes, as it is before it (at
 /// `old_path`) and after it (at `path`): its text, None where it is not
 /// there or is not text. Read as `versions` reads them.
@@ -672,6 +690,26 @@ mod tests {
         assert!(reachable(&r, &"0".repeat(40)).is_err());
         let e = applies(&r, &base, &[&patch(String::new())]).unwrap_err();
         assert!(e.0.contains("has no diff"), "{}", e.0);
+    }
+
+    #[test]
+    fn the_tree_a_patch_leaves_is_its_commit_s_and_written_outside_the_repository() {
+        let (_tmp, r, base, p) = repo();
+        let objects = || git_ok(&r, &["count-objects", "-v"]);
+        let status = || git_ok(&r, &["status", "--porcelain"]);
+        let (before, clean) = (objects(), status());
+        let head = git_ok(&r, &["rev-parse", "HEAD^{tree}"]).trim().to_string();
+        assert_eq!(tree_of(&r, &base, &[&p.diff]).unwrap(), head);
+        // A tree no commit has is written too, in the check's objects alone.
+        let changed = p.diff.replace("+2", "+zwei");
+        let tree = tree_of(&r, &base, &[&changed]).unwrap();
+        assert_eq!(tree.len(), 40, "{tree}");
+        assert_ne!(tree, head);
+        assert_eq!(objects(), before, "no tree or blob is written to the repository");
+        assert_eq!(status(), clean);
+        let e = tree_of(&r, &base, &[&p.diff, &p.diff]).unwrap_err();
+        assert!(e.0.starts_with("patch 2 does not apply on those below it: "), "{}", e.0);
+        assert!(tree_of(&r, &"0".repeat(40), &[&p.diff]).is_err());
     }
 
     #[test]

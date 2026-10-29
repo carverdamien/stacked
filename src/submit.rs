@@ -1293,30 +1293,67 @@ fn public_node(repo: &Path, node: &str, vcs: &str) -> String {
     }
 }
 
-/// The commit of patch `p`, as differential.setdiffproperty sets
-/// `local:commits`, as moz-phab sets it: its author, when, its summary
-/// (`title`), its message, the commit it is (the patch's id: it is no
-/// commit of the workspace's) and the one it is on, `base`.
-fn commits(p: &Patch, title: &str, base: &str) -> String {
+/// The commit a submit says the patch is, as moz-phab says a commit is
+/// (`local:commits`): `node`, as the checkout names it, and its parent;
+/// and its tree.
+#[derive(Debug, Clone, PartialEq)]
+struct Made {
+    node: String,
+    parent: String,
+    tree: String,
+}
+
+/// The commit the patch at `at` of stack `s` makes: the workspace's, when
+/// HEAD in the checkout at `here` is on the stack and has the patch as a
+/// commit, as `head::find` matches them, its parent the commit below it, or
+/// the stack's base for the bottom patch, its tree the commit's; else the
+/// patch's own id, on the stack's base, its tree the one the patches below
+/// and the patch leave on the base, written in a check's index of the
+/// whole base (`check::tree_of`). Why not, when the tree cannot be had.
+fn made(db: &Db, s: &Stack, at: usize, here: Option<&Path>) -> Result<Made, String> {
+    let (repo, base) = crate::ops::base_of(s).map_err(|e| e.0)?;
+    let head = here.and_then(|h| crate::head::find(db, &s.name, h).ok().flatten());
+    if let Some(h) = &head
+        && let crate::head::At::Stack(on) = &h.at
+        && let Some(sha) = on.commits.get(at)
+    {
+        let tree = crate::git::git(&h.dir, &["rev-parse", "--verify", "--quiet", &format!("{sha}^{{tree}}")]).map_err(|e| e.0)?;
+        let parent = if at == 0 { base } else { on.commits[at - 1].clone() };
+        return Ok(Made { node: sha.clone(), parent, tree: tree.trim().to_string() });
+    }
+    let diffs: Vec<&str> = s.patches[..=at].iter().map(|id| db.patch(id).diff.as_str()).collect();
+    let tree = crate::check::tree_of(&repo, &base, &diffs).map_err(|e| e.0)?;
+    Ok(Made { node: s.patches[at].clone(), parent: base, tree })
+}
+
+/// Commit `made` of patch `p`, as differential.setdiffproperty sets
+/// `local:commits`, as moz-phab sets it (`set_diff_property`): its author,
+/// when, its summary (`title`), its message, the commit and its parent as
+/// Phabricator's repository names them, held in `vcs` (`public_node`), and
+/// its tree; in a Mercurial one, the commit as the checkout names it too
+/// (`rev`). By the commit, as the checkout names it.
+fn commits(p: &Patch, title: &str, made: &Made, repo: &Path, vcs: &str) -> String {
     let author = p.author.clone().or_else(crate::ops::default_author).unwrap_or_default();
     let (name, email) = match author.rsplit_once(" <") {
         Some((n, e)) => (n.trim().to_string(), e.trim_end_matches('>').to_string()),
         None => (author.trim().to_string(), String::new()),
     };
     let time = p.date.as_deref().and_then(epoch).unwrap_or_else(crate::db::now);
+    let mut commit = json!({
+        "author": name,
+        "authorEmail": email,
+        "time": time,
+        "summary": title,
+        "message": p.message,
+        "commit": public_node(repo, &made.node, vcs),
+        "parents": [public_node(repo, &made.parent, vcs)],
+        "tree": made.tree,
+    });
+    if vcs == "hg" {
+        commit["rev"] = json!(made.node);
+    }
     let mut data = serde_json::Map::new();
-    data.insert(
-        p.id.clone(),
-        json!({
-            "author": name,
-            "authorEmail": email,
-            "time": time,
-            "summary": title,
-            "message": p.message,
-            "commit": p.id,
-            "parents": [base],
-        }),
-    );
+    data.insert(made.node.clone(), commit);
     Value::Object(data).to_string()
 }
 
@@ -1326,9 +1363,22 @@ fn edit(call: &mut Call, phid: &str, txn: Value) -> Result<Value, String> {
     call("differential.revision.edit", json!({"objectIdentifier": phid, "transactions": [txn]}))
 }
 
+/// Message `m` with trailer `line` put as the sync of the commit messages
+/// puts the trailer naming a revision (`head::with_trailer`): at the end
+/// of its last paragraph when that is a paragraph of trailers (`Key:
+/// value`), else after an empty line.
+fn with_link(m: &str, line: &str) -> String {
+    let m = m.trim_end();
+    let lines: Vec<&str> = m.split('\n').collect();
+    match crate::head::ends_in_trailers(&lines) {
+        true => format!("{m}\n{line}"),
+        false => format!("{m}\n\n{line}"),
+    }
+}
+
 /// The patch of change `change`, in stack `name` of the database at
-/// `path`, given the trailer naming revision `d` at `link`, as a new
-/// version, at once: the history says the submit made it.
+/// `path`, given the trailer naming revision `d` at `link` (`with_link`),
+/// as a new version, at once: the history says the submit made it.
 fn take_link(path: &Path, name: &str, change: &str, d: &str, link: &str) -> crate::db::Result<()> {
     Db::edit(path, |db| {
         crate::ops::by_hand(db, name)?;
@@ -1340,7 +1390,7 @@ fn take_link(path: &Path, name: &str, change: &str, d: &str, link: &str) -> crat
         if let Some((other, _)) = crate::phab::revision_of(&old.message) {
             return crate::db::err(format!("its message names {other} already"));
         }
-        let message = format!("{}\n\n{}: {link}", old.message.trim_end(), trailer());
+        let message = with_link(&old.message, &format!("{}: {link}", trailer()));
         let new = crate::ops::revise(&old, crate::mbox::Draft { message, ..crate::mbox::Draft::from(&old) });
         let id = db.add_patch(new)?;
         let mut patches = s.patches.clone();
@@ -1359,14 +1409,15 @@ fn sentence(s: String) -> String {
 
 /// Sends what `p` says, with `call`, once the stack and the revision are
 /// seen to be as they were when it was read: the stack in the database at
-/// `path`. What came of it, said: what was done and what was not, when a
-/// call fails partway.
-fn send_with(path: &Path, p: &Prepared, call: &mut Call) -> String {
-    sentence(sent(path, p, call))
+/// `path`, the commit it makes the workspace's when HEAD of the checkout
+/// at `here` has it (`made`). What came of it, said: what was done and what
+/// was not, when a call fails partway.
+fn send_with(path: &Path, p: &Prepared, here: Option<&Path>, call: &mut Call) -> String {
+    sentence(sent(path, p, here, call))
 }
 
 /// As `send_with`, what came of it said a sentence after another.
-fn sent(path: &Path, p: &Prepared, call: &mut Call) -> String {
+fn sent(path: &Path, p: &Prepared, here: Option<&Path>, call: &mut Call) -> String {
     let n = p.number();
     let db = match Db::load(path) {
         Ok(db) => db,
@@ -1398,12 +1449,17 @@ fn sent(path: &Path, p: &Prepared, call: &mut Call) -> String {
         None => "so no revision was made of it".to_string(),
     };
     let repo = s.repo.clone().unwrap_or_default();
-    let base = public_node(Path::new(&repo), s.base.as_deref().unwrap_or_default(), &p.repository.vcs);
-    // The diff, with its commit.
+    // The diff, with its commit: on the commit below it, as moz-phab says
+    // one is, each of its files of that commit.
     let diff = match p.new_diff {
         false => None,
         true => {
-            let changes = match changes(&patch.diff, &patch.id) {
+            let commit = match made(&db, &s, p.at, here) {
+                Ok(m) => m,
+                Err(e) => return format!("The tree of patch {n}'s commit could not be worked out, so nothing was sent: {e}"),
+            };
+            let (node, base) = (public_node(Path::new(&repo), &commit.node, &p.repository.vcs), public_node(Path::new(&repo), &commit.parent, &p.repository.vcs));
+            let changes = match changes(&patch.diff, &node) {
                 Ok(c) => c,
                 Err(e) => return format!("Nothing was sent: {e}."),
             };
@@ -1429,7 +1485,7 @@ fn sent(path: &Path, p: &Prepared, call: &mut Call) -> String {
             let (Some(id), Some(phid)) = (made.get("diffid").cloned(), made.get("phid").and_then(Value::as_str).map(String::from)) else {
                 return format!("Phabricator made the diff of patch {n}, but did not say which, {left}.");
             };
-            let property = json!({"diff_id": id, "name": "local:commits", "data": commits(&patch, &p.title, &base)});
+            let property = json!({"diff_id": id, "name": "local:commits", "data": commits(&patch, &p.title, &commit, Path::new(&repo), &p.repository.vcs)});
             if let Err(e) = call("differential.setdiffproperty", property) {
                 return format!("The diff of patch {n} was made on Phabricator, but its commit's author and message were not set, {left}: {e}");
             }
@@ -1515,15 +1571,15 @@ fn sent(path: &Path, p: &Prepared, call: &mut Call) -> String {
 }
 
 /// Sends what `p` says to Phabricator, once the stack and the revision are
-/// seen to be as they were when it was read, in the database at `path`:
-/// what came of it, said.
-pub fn send(path: &Path, p: &Prepared) -> String {
+/// seen to be as they were when it was read, in the database at `path`,
+/// HEAD looked at in the checkout at `here`: what came of it, said.
+pub fn send(path: &Path, p: &Prepared, here: &Path) -> String {
     let via = match Via::to(p.from.as_deref()) {
         Ok(v) => v,
         Err(e) => return format!("Nothing was sent: {e}."),
     };
     let mut call = |m: &str, v: Value| via.call(m, v);
-    send_with(path, p, &mut call)
+    send_with(path, p, Some(here), &mut call)
 }
 
 #[cfg(test)]
@@ -1671,14 +1727,17 @@ mod tests {
         parents: Vec<String>,
     }
 
-    /// Phabricator as the tests have it: revisions by number, diffs by id;
-    /// each call made, and those to refuse (a method, or a method and a
-    /// transaction's type: `edit:parents.set`). It knows no users nor
-    /// groups, nor reviewers: a submit in work asks nothing of them.
+    /// Phabricator as the tests have it: revisions by number, diffs by id,
+    /// and the commits each diff says it is of (`local:commits`); each call
+    /// made, and those to refuse (a method, or a method and a transaction's
+    /// type: `edit:parents.set`). As Mozilla's Phabricator, it makes no
+    /// revision of a diff whose commits lack their tree. It knows no users
+    /// nor groups, nor reviewers: a submit in work asks nothing of them.
     #[derive(Default)]
     struct Fake {
         revisions: BTreeMap<u64, Rev>,
         diffs: BTreeMap<u64, String>,
+        commits: BTreeMap<u64, Value>,
         calls: Vec<(String, Value)>,
         refuse: Vec<&'static str>,
     }
@@ -1748,8 +1807,21 @@ mod tests {
                     self.diffs.insert(id, render(&p["changes"]));
                     json!({"diffid": id, "phid": format!("PHID-DIFF-{id}")})
                 }
-                "differential.setdiffproperty" => Value::Null,
+                "differential.setdiffproperty" => {
+                    let data: Value = serde_json::from_str(p["data"].as_str().unwrap()).unwrap();
+                    self.commits.insert(p["diff_id"].as_u64().unwrap(), data);
+                    Value::Null
+                }
                 "differential.revision.edit" => {
+                    // As Mozilla's Phabricator: the diff's commits read,
+                    // each its tree.
+                    for t in p["transactions"].as_array().unwrap().iter().filter(|t| t["type"] == "update") {
+                        let id: u64 = t["value"].as_str().unwrap().trim_start_matches("PHID-DIFF-").parse().unwrap();
+                        let commits = self.commits.get(&id).and_then(Value::as_object).cloned().unwrap_or_default();
+                        if commits.values().any(|c| c.get("tree").is_none()) {
+                            return Err(format!("{method}: Undefined array key \"tree\""));
+                        }
+                    }
                     let n = match p.get("objectIdentifier") {
                         Some(o) => num(o).unwrap(),
                         None => {
@@ -1803,13 +1875,19 @@ mod tests {
     }
 
     /// Prepares the submit of patch `at` of `s` with `fake`, then sends it:
-    /// what was prepared, and what came of it.
+    /// what was prepared, and what came of it. HEAD is looked at in no
+    /// checkout.
     fn submit(db: &Path, at: usize, fake: &mut Fake) -> (Result<Prepared, String>, Option<String>) {
+        submit_in(db, at, None, fake)
+    }
+
+    /// As `submit`, HEAD looked at in the checkout at `here`.
+    fn submit_in(db: &Path, at: usize, here: Option<&Path>, fake: &mut Fake) -> (Result<Prepared, String>, Option<String>) {
         let d = Db::load(db).unwrap();
         let s = d.stack("s").unwrap().clone();
         let arc = arcconfig(Path::new(s.repo.as_deref().unwrap()));
         let ready = prepare_with(&d, &s, at, "https://phabricator.example.com", &arc, &mut |m, v| fake.call(m, v));
-        let sent = ready.as_ref().ok().map(|p| send_with(db, p, &mut |m, v| fake.call(m, v)));
+        let sent = ready.as_ref().ok().map(|p| send_with(db, p, here, &mut |m, v| fake.call(m, v)));
         (ready, sent)
     }
 
@@ -2109,6 +2187,91 @@ mod tests {
         assert_eq!((r.diffs.len(), r.status.as_str(), r.parents.is_empty()), (2, "changes-planned", true));
     }
 
+    /// What the last setdiffproperty said of its commit, by the commit, and
+    /// the last creatediff.
+    fn last_commit(fake: &Fake) -> (String, Value, Value) {
+        let property = fake.calls.iter().rev().find(|(m, _)| m == "differential.setdiffproperty").unwrap().1.clone();
+        let data: Value = serde_json::from_str(property["data"].as_str().unwrap()).unwrap();
+        let (key, commit) = data.as_object().unwrap().iter().next().map(|(k, v)| (k.clone(), v.clone())).unwrap();
+        let diff = fake.calls.iter().rev().find(|(m, _)| m == "differential.creatediff").unwrap().1.clone();
+        (key, commit, diff)
+    }
+
+    #[test]
+    fn the_commit_sent_has_its_tree_and_is_the_workspace_s_when_head_has_it() {
+        // HEAD looked at nowhere: the patch's own id, on the base, its tree
+        // the one the patches leave, the commit's in the checkout.
+        let (_tmp, db, r) = stack(["Bug 1 - one", "Bug 2 - two", "Bug 3 - three"]);
+        let sha = |rev: &str| git_ok(&r, &["rev-parse", rev]).trim().to_string();
+        let id = Db::load(&db).unwrap().stack("s").unwrap().patches[2].clone();
+        let mut fake = Fake::default();
+        let (_, sent) = submit(&db, 2, &mut fake);
+        assert!(sent.unwrap().starts_with("Patch 3 is D200 on Phabricator now"));
+        let (key, commit, diff) = last_commit(&fake);
+        assert_eq!((key.as_str(), commit["commit"].as_str(), commit["tree"].as_str()), (id.as_str(), Some(id.as_str()), Some(sha("HEAD^{tree}").as_str())));
+        assert_eq!(commit["parents"], json!([sha("HEAD~3")]));
+        assert_eq!((diff["sourceControlBaseRevision"].as_str(), diff["changes"][0]["commitHash"].as_str()), (Some(sha("HEAD~3").as_str()), Some(id.as_str())));
+        assert!(commit.get("rev").is_none(), "git's: no rev");
+        // HEAD on the stack, the patches its commits: the commit is the
+        // workspace's, on the commit below it; the bottom patch's on the base.
+        let (_tmp, db, r) = stack(["Bug 1 - one", "Bug 2 - two", "Bug 3 - three"]);
+        let sha = |rev: &str| git_ok(&r, &["rev-parse", rev]).trim().to_string();
+        let mut fake = Fake::default();
+        let (_, sent) = submit_in(&db, 2, Some(&r), &mut fake);
+        assert!(sent.unwrap().starts_with("Patch 3 is D200 on Phabricator now"));
+        let (key, commit, diff) = last_commit(&fake);
+        let said = |v: &Value| v.as_str().unwrap_or_default().to_string();
+        assert_eq!((key, said(&commit["commit"]), said(&commit["tree"])), (sha("HEAD"), sha("HEAD"), sha("HEAD^{tree}")));
+        assert_eq!(commit["parents"], json!([sha("HEAD~1")]));
+        assert_eq!((said(&diff["sourceControlBaseRevision"]), said(&diff["changes"][0]["commitHash"])), (sha("HEAD~1"), sha("HEAD")));
+        let (_, sent) = submit_in(&db, 0, Some(&r), &mut fake);
+        assert!(sent.unwrap().starts_with("Patch 1 is D201 on Phabricator now"));
+        let (_, commit, _) = last_commit(&fake);
+        assert_eq!((said(&commit["commit"]), said(&commit["tree"])), (sha("HEAD~2"), sha("HEAD~2^{tree}")));
+        assert_eq!(commit["parents"], json!([sha("HEAD~3")]));
+    }
+
+    #[test]
+    fn phabricator_makes_no_revision_of_a_diff_whose_commit_has_no_tree() {
+        // As the user's Phabricator refused one: the stand-in does too.
+        let mut fake = Fake::default();
+        let data = json!({"c": {"commit": "c", "parents": ["b"]}}).to_string();
+        fake.call("differential.setdiffproperty", json!({"diff_id": 7, "name": "local:commits", "data": data})).unwrap();
+        let refused = fake.call("differential.revision.edit", json!({"transactions": [{"type": "update", "value": "PHID-DIFF-7"}]}));
+        assert_eq!(refused, Err("differential.revision.edit: Undefined array key \"tree\"".to_string()));
+        assert!(fake.revisions.is_empty());
+    }
+
+    #[test]
+    fn a_new_revision_s_trailer_goes_where_the_sync_puts_one() {
+        let line = "Differential Revision: https://p.example/D9";
+        assert_eq!(with_link("Bug 1 - x", line), format!("Bug 1 - x\n\n{line}"));
+        assert_eq!(with_link("Bug 1 - x\n\nWhy.\n", line), format!("Bug 1 - x\n\nWhy.\n\n{line}"));
+        let signed = "Bug 1 - x\n\nWhy.\n\nReviewed-by: ann\nAcked-by: bo";
+        assert_eq!(with_link(signed, line), format!("{signed}\n{line}"));
+        // A last paragraph that is not trailers alone.
+        let prose = "Bug 1 - x\n\nWhy: because.\nAnd more.";
+        assert_eq!(with_link(prose, line), format!("{prose}\n\n{line}"));
+    }
+
+    #[test]
+    fn a_submit_after_one_that_failed_partway_makes_a_new_diff_and_the_revision() {
+        let (_tmp, db, _r) = stack(["Bug 1 - one", "Bug 2 - two", "Bug 3 - three\n\nWhy.\n\nReviewed-by: ann"]);
+        // The revision refused, the diff made: no revision, nor link.
+        let mut fake = Fake { refuse: vec!["edit:title"], ..Default::default() };
+        let (_, sent) = submit(&db, 2, &mut fake);
+        assert_eq!(sent.unwrap(), "The diff of patch 3 was made on Phabricator, but no revision was made of it: differential.revision.edit: refused.");
+        assert!(crate::phab::revision_of(&message_of(&db, 2)).is_none());
+        // Submitted again: a diff of its own, and the revision of it; the
+        // trailer after the paragraph of trailers the message ends with.
+        fake.refuse.clear();
+        let (_, sent) = submit(&db, 2, &mut fake);
+        assert!(sent.unwrap().starts_with("Patch 3 is D200 on Phabricator now, in Changes Planned."));
+        let made: Vec<u64> = fake.diffs.keys().copied().filter(|d| *d >= 2000).collect();
+        assert_eq!((made.len(), fake.revisions[&200].diffs.clone()), (2, vec![made[1]]), "a new diff");
+        assert_eq!(message_of(&db, 2), format!("Bug 3 - three\n\nWhy.\n\nReviewed-by: ann\n{LINK}/D200"));
+    }
+
     #[test]
     fn a_revision_changed_since_it_was_read_is_sent_nothing() {
         let (_tmp, db, _r) = stack(["Bug 1 - one", "Bug 2 - two", &format!("Bug 3 - three\n\nNew.\n\n{LINK}/D13")]);
@@ -2118,7 +2281,7 @@ mod tests {
         let arc = arcconfig(Path::new(s.repo.as_deref().unwrap()));
         let p = prepare_with(&d, &s, 2, "https://phabricator.example.com", &arc, &mut |m, v| fake.call(m, v)).unwrap();
         fake.revisions.get_mut(&13).unwrap().title = "Someone's title".into();
-        let sent = send_with(&db, &p, &mut |m, v| fake.call(m, v));
+        let sent = send_with(&db, &p, None, &mut |m, v| fake.call(m, v));
         assert_eq!(sent, "D13 changed on Phabricator since you reviewed it, so nothing was sent. Submit again to review it as it is now.");
         assert!(fake.writes().is_empty());
     }

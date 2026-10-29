@@ -2811,8 +2811,8 @@ changed on Phabricator since you reviewed it, so nothing was sent. Submit
 again to review it as it is now.`).
 
 Only what changed is sent, as moz-phab sends it: a new diff of the patch
-(differential.creatediff, its commit's author and message set with
-differential.setdiffproperty), unless the latest diff is the patch as it
+(differential.creatediff, its commit's author, message, parent and tree
+set with differential.setdiffproperty), unless the latest diff is the patch as it
 is; the title (`WIP: ` and the patch's first line, its reviewers and its
 bug written as moz-phab writes them), the summary (the rest of the
 message, without the line naming the revision) and the bug (`Bug 123` in
@@ -2830,16 +2830,24 @@ as moz-phab writes them, and nothing of the revision's reviewers is read,
 said or changed. While it is sent, the top bar says `submitting…`; then
 the bottom line says what came of it, and what was done and what was not
 when a call failed partway (`D123 has the new diff of patch 3 now. D123
-stays Changes Planned. But the parent of D123 was not set to D122: …`). A new revision's link goes into the patch, its
-trailer at the end of the message, as a new version taken at once, which
-the history says (`submitted patch 3 as D124, in work`). The workspace's
+stays Changes Planned. But the parent of D123 was not set to D122: …`). A new revision's link goes into the patch, as a
+new version taken at once, which the history says (`submitted patch 3 as
+D124, in work`). Its trailer goes where the sync of the commit messages
+puts one: at the end of the message's last paragraph when that paragraph
+is trailers (`Reviewed-by: …`), else after an empty line. The workspace's
 commits are not touched: when HEAD is on the stack, the banner's first
 line then says that the patch's message differs from its commit's, and
 the sync of the commit messages (The editor, above) puts the trailer on
-the commit, the message naming the revision being the one kept. The diff
-is said to be on the stack's base, in the repository the checkout's
-`.arcconfig` names (`repository.callsign`; a revision there already keeps
-its own).
+the commit, the message naming the revision being the one kept. When HEAD is
+on the stack and has the patch's commit, the diff is said to be that
+commit, made on the commit below it (on the stack's base for the bottom
+patch), with that commit's tree, as moz-phab says it. Else the diff is
+said to be the patch's own sha1, made on the stack's base, and its tree,
+the files as the patch leaves them on the patches below it, is written in
+a check index of its own, the repository only read; when that tree cannot
+be written, nothing is sent, and the bottom line says why. The diff is in
+the repository the checkout's `.arcconfig` names (`repository.callsign`;
+a revision there already keeps its own).
 
 ## Applying
 
@@ -2877,7 +2885,7 @@ is typed: `import.rs`). A fix to one may belong in the other.
 - `main.rs`: the command line; the library does the rest.
 - `db.rs`: the file, its records and its lock.
 - `check.rs`: whether patches apply, before they go in; the files as a
-  patch leaves them.
+  patch leaves them, and the tree, for a submit.
 - `ops.rs`: edits to a stack, `$EDITOR` (the patch as mail, its code), apply;
   the interdiff of two versions of a patch.
 - `git.rs`: what stacked asks of git: mail from a range, the stack's
@@ -2980,7 +2988,8 @@ adds the tests of each feature named. No test runs claude: a script stands
 in for it; none reaches Phabricator: its revisions and their comments are
 read by stand-ins, and what a submit sends is answered by one, which keeps
 every call made to it, so that a test can see that a refusal wrote
-nothing; none opens a window, nor a browser: a script stands in
+nothing, and which, as Phabricator does, makes no revision of a diff whose
+commit has no tree; none opens a window, nor a browser: a script stands in
 for the program that opens a web link, and only writes down the links it
 is given. No sleep decides what a test sees:
 when a test looks at the agent's stand-in at work, the stand-in goes on
@@ -3502,8 +3511,9 @@ done as you stopped it; what is said of landed work left to review is tested
 in `held.rs`. The
 tests in `check.rs` show
 the check's index holds only what the patches touch, that it writes nothing
-to the repository, how a patch's files are read before and after it, and
-where a diff of the same effect as its draft does otherwise (git applying
+to the repository (nor does the tree a patch leaves, written for a
+submit), how a patch's files are read before and after it, and where a
+diff of the same effect as its draft does otherwise (git applying
 it at another copy of its lines, it not applying), the drafts not
 applying an error;
 those in `ops.rs`, that two code edits saved at once, on two threads, each

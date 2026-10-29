@@ -311,8 +311,10 @@ impl App {
         }
         self.bg.doing.push(SUBMITTING);
         self.status = format!("sending patch {} to Phabricator…", sub.ready.number());
-        let path = self.path.clone();
-        self.spawn(move || Done::Said(SUBMITTING, crate::submit::send(&path, &sub.ready)));
+        // The commit it makes is the workspace's when HEAD of the checkout
+        // stacked runs in has it.
+        let (path, here) = (self.path.clone(), self.checkout.clone());
+        self.spawn(move || Done::Said(SUBMITTING, crate::submit::send(&path, &sub.ready, &here)));
     }
 
     /// The submit left, nothing sent.

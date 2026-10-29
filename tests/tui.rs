@@ -13273,14 +13273,17 @@ struct Rev {
 }
 
 /// Phabricator as the tests of a submit have it, never the real one: its
-/// revisions by number, its diffs by id; each call made to it, and the
-/// number the next revision it makes takes. It knows no users nor groups,
+/// revisions by number, its diffs by id, and the commits each diff says it
+/// is of (`local:commits`); each call made to it, and the number the next
+/// revision it makes takes. As Mozilla's Phabricator, it makes no revision
+/// of a diff whose commits lack their tree. It knows no users nor groups,
 /// nor reviewers: a submit in work asks nothing of them.
 #[cfg(feature = "moz-phab")]
 #[derive(Default)]
 struct Phab {
     revisions: std::collections::BTreeMap<u64, Rev>,
     diffs: std::collections::BTreeMap<u64, String>,
+    commits: std::collections::BTreeMap<u64, serde_json::Value>,
     calls: Vec<(String, serde_json::Value)>,
     next: u64,
 }
@@ -13294,6 +13297,12 @@ impl Phab {
         let bug = title.split("Bug ").nth(1).and_then(|r| r.split(' ').next()).unwrap_or_default().to_string();
         self.revisions.insert(n, Rev { status: status.into(), title: title.into(), bug, diffs: vec![id], ..Default::default() });
         self
+    }
+
+    /// What the last diff made says of its commit (`local:commits`): the
+    /// commit, its parents, its tree.
+    fn last_commit(&self) -> serde_json::Value {
+        self.commits.values().last().and_then(|d| d.as_object()?.values().next().cloned()).unwrap_or_default()
     }
 
     /// The calls of reviewers: their look-ups, and their edits.
@@ -13356,8 +13365,21 @@ impl Phab {
                 self.diffs.insert(id, String::new());
                 json!({"diffid": id, "phid": format!("PHID-DIFF-{id}")})
             }
-            "differential.setdiffproperty" => serde_json::Value::Null,
+            "differential.setdiffproperty" => {
+                let data: serde_json::Value = serde_json::from_str(p["data"].as_str().unwrap()).unwrap();
+                self.commits.insert(p["diff_id"].as_u64().unwrap(), data);
+                serde_json::Value::Null
+            }
             "differential.revision.edit" => {
+                // As Mozilla's Phabricator: the diff's commits read, each its
+                // tree.
+                for t in p["transactions"].as_array().unwrap().iter().filter(|t| t["type"] == "update") {
+                    let id: u64 = t["value"].as_str().unwrap().trim_start_matches("PHID-DIFF-").parse().unwrap();
+                    let commits = self.commits.get(&id).and_then(serde_json::Value::as_object).cloned().unwrap_or_default();
+                    if commits.values().any(|c| c.get("tree").is_none()) {
+                        return Err(format!("{method}: Undefined array key \"tree\""));
+                    }
+                }
                 let n = match p.get("objectIdentifier") {
                     Some(o) => num(o).unwrap(),
                     None => {
@@ -13430,6 +13452,14 @@ fn phab_setup(messages: [&str; 3]) -> (tempfile::TempDir, PathBuf) {
     (tmp, db)
 }
 
+/// What git says in `dir`, trimmed.
+#[cfg(feature = "moz-phab")]
+fn git_said(dir: &Path, args: &[&str]) -> String {
+    let out = Command::new("git").args(args).current_dir(dir).output().unwrap();
+    assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
 /// Patch `at` of stack `s`, as the database has it.
 #[cfg(feature = "moz-phab")]
 fn patch_of(db: &Path, at: usize) -> stacked::db::Patch {
@@ -13464,7 +13494,8 @@ fn submitted(app: &mut App) -> Vec<String> {
 #[test]
 fn a_patch_with_no_revision_is_sent_as_a_new_one_once_the_dialog_says_what_is_sent_and_where() {
     // Its title names reviewers: in work, none is set, as moz-phab sets none.
-    let (_tmp, db) = phab_setup(["Bug 1 - one r=alice r?#build\n\nBecause.", "Bug 2 - two", "Bug 3 - three"]);
+    let (tmp, db) = phab_setup(["Bug 1 - one r=alice r?#build\n\nBecause.", "Bug 2 - two", "Bug 3 - three"]);
+    let src = tmp.path().join("src");
     let phab = std::sync::Arc::new(std::sync::Mutex::new(Phab { next: 124, ..Default::default() }));
     let _one = phab_stand_in(&phab);
     let mut app = open(&db).unwrap();
@@ -13503,6 +13534,11 @@ fn a_patch_with_no_revision_is_sent_as_a_new_one_once_the_dialog_says_what_is_se
     );
     assert!(phab.lock().unwrap().of_reviewers().is_empty(), "no call of reviewers at all");
     assert_eq!(phab.lock().unwrap().revisions[&124].title, "WIP: Bug 1 - one r?#build r=alice");
+    // Its commit, HEAD not on the stack where the editor runs: the patch's
+    // own, on the base, with the tree its commit has in the checkout.
+    let c = phab.lock().unwrap().last_commit();
+    assert_eq!(c["tree"].as_str(), Some(git_said(&src, &["rev-parse", "HEAD~2^{tree}"]).as_str()));
+    assert_eq!(c["parents"], serde_json::json!([git_said(&src, &["rev-parse", "HEAD~3"])]));
     // The patch names it, a new version taken at once, as the history says.
     assert_eq!(patch_of(&db, 0).message, format!("Bug 1 - one r=alice r?#build\n\nBecause.\n\n{LINK}124"));
     let d = Db::load(&db).unwrap();
@@ -13852,6 +13888,15 @@ fn a_patch_whose_commit_names_a_revision_it_does_not_is_held_back_and_the_others
     let p = phab.lock().unwrap();
     assert!(!p.calls.is_empty() && p.writes().is_empty(), "read, nothing sent yet");
     drop(p);
+    // Sent: its commit is the workspace's, HEAD having it, with its tree,
+    // on the stack's base, as moz-phab says a commit.
+    choose(&mut app, "Send it to Phabricator");
+    app.settle();
+    assert!(app.status.starts_with("Patch 1 is D124 on Phabricator now"), "{}", app.status);
+    let c = phab.lock().unwrap().last_commit();
+    let said = |rev: &str| git_said(&src, &["rev-parse", rev]);
+    assert_eq!((c["commit"].as_str(), c["tree"].as_str()), (Some(said("HEAD~2").as_str()), Some(said("HEAD~2^{tree}").as_str())));
+    assert_eq!(c["parents"], serde_json::json!([said("HEAD~3")]));
     stacked::submit::stand_in(None);
 }
 
