@@ -803,17 +803,14 @@ pub fn open_links_with(program: &Path) {
     *OPENER.lock().unwrap() = Some(program.to_path_buf());
 }
 
-/// The program that opens a web link, run as `program URL`: the tests'
-/// stand-in, else the one `$STACKED_OPEN` names, else the system's, `open`
-/// on macOS and `xdg-open` elsewhere.
-pub fn opener() -> PathBuf {
+/// The program that opens a web link, run as `program URL`, when one is
+/// named: the tests' stand-in, else the one `$STACKED_OPEN` names. None for
+/// the system's own way, which the `open` crate knows (`opened_by_system`).
+pub fn opener() -> Option<PathBuf> {
     if let Some(p) = OPENER.lock().unwrap().clone() {
-        return p;
+        return Some(p);
     }
-    match std::env::var_os("STACKED_OPEN").filter(|p| !p.is_empty()) {
-        Some(p) => PathBuf::from(p),
-        None => PathBuf::from(if cfg!(target_os = "macos") { "open" } else { "xdg-open" }),
-    }
+    std::env::var_os("STACKED_OPEN").filter(|p| !p.is_empty()).map(PathBuf::from)
 }
 
 /// How long the program opening a link is waited for, to say whether it
@@ -825,10 +822,21 @@ const OPENING: Duration = Duration::from_secs(5);
 /// nowhere, as the screen is the editor's: what came of it, said for the
 /// status line.
 pub fn open_with(program: &Path, url: &str) -> String {
-    let url = match link(url) {
-        Ok(url) => url,
-        Err(why) => return why,
-    };
+    said(opened_with(program, url))
+}
+
+/// The link opened, said; else why not.
+fn said(opened: std::result::Result<String, String>) -> String {
+    match opened {
+        Ok(url) => format!("opened {url} in your browser"),
+        Err(why) => why,
+    }
+}
+
+/// Web link `url` opened with `program`: the link, as it was opened; else
+/// why not, said for the status line.
+fn opened_with(program: &Path, url: &str) -> std::result::Result<String, String> {
+    let url = link(url)?;
     let name = program.display();
     let mut c = Command::new(program);
     c.arg(&url).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
@@ -838,36 +846,63 @@ pub fn open_with(program: &Path, url: &str) -> String {
     let mut child = match c.spawn() {
         Ok(child) => child,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return format!("the link could not be opened: there is no {name} here to open it ($STACKED_OPEN may name a program that does)");
+            return Err(format!("the link could not be opened: there is no {name} here to open it ($STACKED_OPEN may name a program that does)"));
         }
-        Err(e) => return format!("the link could not be opened: {name} did not run: {e}"),
+        Err(e) => return Err(format!("the link could not be opened: {name} did not run: {e}")),
     };
     let started = Instant::now();
     loop {
         match child.try_wait() {
-            Ok(Some(s)) if s.success() => return format!("opened {url} in your browser"),
+            Ok(Some(s)) if s.success() => return Ok(url),
             Ok(Some(s)) => {
-                return match s.code() {
+                return Err(match s.code() {
                     Some(code) => format!("the link could not be opened: {name} failed, exiting with {code}"),
                     None => format!("the link could not be opened: {name} was stopped"),
-                };
+                });
             }
             Ok(None) if started.elapsed() < OPENING => std::thread::sleep(Duration::from_millis(10)),
             // Running on: waited for away from here, so that it is not left
             // a zombie once it is done.
             Ok(None) => {
                 std::thread::spawn(move || child.wait());
-                return format!("opened {url} in your browser");
+                return Ok(url);
             }
-            Err(e) => return format!("the link could not be opened: {e}"),
+            Err(e) => return Err(format!("the link could not be opened: {e}")),
         }
     }
 }
 
-/// Opens web link `url` with the program that opens links (`opener`):
-/// what came of it, said.
+/// Web link `url` opened as this system opens one, as the `open` crate
+/// knows it: `open` on macOS; elsewhere `xdg-open`, else gio's and the
+/// desktops' own, each tried in turn, each waited for as long as
+/// `OPENING`, in a session of its own (a ctrl-c where stacked was started
+/// does not stop the browser it starts). The link, as it was opened; else
+/// why not, said for the status line.
+fn opened_by_system(url: &str) -> std::result::Result<String, String> {
+    let url = link(url)?;
+    match open::that_detached_with_timeout(&url, OPENING) {
+        Ok(()) => Ok(url),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            Err("the link could not be opened: this system has no program to open it with ($STACKED_OPEN may name one)".into())
+        }
+        Err(_) => Err("the link could not be opened: the program this system opens links with failed ($STACKED_OPEN may name another)".into()),
+    }
+}
+
+/// Web link `url` opened with the program that opens links (`opener`),
+/// else as the system opens one: the link, as it was opened; else why not,
+/// said for the status line.
+pub fn open_url(url: &str) -> std::result::Result<String, String> {
+    match opener() {
+        Some(program) => opened_with(&program, url),
+        None => opened_by_system(url),
+    }
+}
+
+/// Opens web link `url` with the program that opens links (`opener`), else
+/// as the system opens one: what came of it, said.
 pub fn open_link(url: &str) -> String {
-    open_with(&opener(), url)
+    said(open_url(url))
 }
 
 #[cfg(test)]
@@ -1428,12 +1463,15 @@ mod tests {
             open_with(Path::new("/nowhere/at/all/open"), url),
             "the link could not be opened: there is no /nowhere/at/all/open here to open it ($STACKED_OPEN may name a program that does)"
         );
-        // What is not a web link is not handed to it.
+        // What is not a web link is not handed to it, nor to the system's
+        // way of opening links.
         assert!(open_with(Path::new("true"), "file:///etc/passwd").starts_with("a web link starts with https://"));
+        assert!(opened_by_system("file:///etc/passwd").unwrap_err().starts_with("a web link starts with https://"));
         // The program the tests set is the one that opens links: never the
         // system's, which would open a browser.
         open_links_with(Path::new("true"));
-        assert_eq!(opener(), PathBuf::from("true"));
+        assert_eq!(opener(), Some(PathBuf::from("true")));
         assert_eq!(open_link(url), "opened https://example.com/a/b in your browser");
+        assert_eq!(open_url(&format!(" {url} ")), Ok(url.to_string()), "the link as it was opened");
     }
 }

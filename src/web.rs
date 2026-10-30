@@ -79,20 +79,17 @@ impl Bound {
     }
 }
 
-/// Opens the browser on `url`, as this system opens one.
+/// Opens the browser on `url`, as stacked opens a web link
+/// (`refs::open_url`: `$STACKED_OPEN`'s program, else as this system opens
+/// one), away from the server, which serves meanwhile: what went wrong
+/// said on stderr.
 pub fn open_browser(url: &str) {
-    let opener = if cfg!(target_os = "macos") {
-        "open"
-    } else if cfg!(windows) {
-        "explorer"
-    } else {
-        "xdg-open"
-    };
-    let _ = std::process::Command::new(opener)
-        .arg(url)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn();
+    let url = url.to_string();
+    std::thread::spawn(move || {
+        if let Err(why) = crate::refs::open_url(&url) {
+            eprintln!("stacked: {why}");
+        }
+    });
 }
 
 /// Sixteen random bytes, in hex.

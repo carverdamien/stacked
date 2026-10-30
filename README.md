@@ -820,8 +820,8 @@ them other keys, and the help then names those:
   of the message with none, the status line says so; anywhere else, it does
   nothing. A right click on the line opens its menu, with the items; a
   click never opens the browser. A link opens away from the screen, with
-  the program a comment's web link opens with (`$STACKED_OPEN`, else `open`
-  or `xdg-open`: Writing comments, below), and the status line says what
+  the program a comment's web link opens with (`$STACKED_OPEN`, else the
+  system's own: Writing comments, below), and the status line says what
   came of it (`opened https://bugzilla.mozilla.org/show_bug.cgi?id=1234567
   in your browser`). It is so wherever the cursor is on a line of a
   message: the patch's message in the middle, commenting or reading; in
@@ -1156,10 +1156,12 @@ it`, `r3 ⇗ https://example.com/a/b` (a link too long for the pane is cut
 there, its start kept). Enter on a comment's goes to that comment (closed,
 it opens as it was); on lines, it previews them; on a link, it shows the
 link whole in a box, and Enter there opens it in your browser, with the
-program `$STACKED_OPEN` names, else with `open` on macOS and `xdg-open`
-elsewhere: the program is given the link as its one argument. The status
-line says what was opened, or why it could not be. StackED and `stacked
-web` open it the same way, on the machine stacked runs on. A mention
+program `$STACKED_OPEN` names, given the link as its one argument; else as
+the system opens links, which the `open` crate knows: with `open` on
+macOS, and elsewhere with `xdg-open`, else gio's, gnome-open or KDE's, the
+first there is. The status line says what was opened, or why it could not
+be. StackED and `stacked web` open it the same way, on the machine stacked
+runs on. A mention
 naming no reference attached is drawn in the warning colour, and the agent
 is not asked until it names one: the menu says why, and `stacked send`
 refuses it. `Detach a reference…` takes one off, but not one that another

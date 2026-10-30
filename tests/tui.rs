@@ -4205,7 +4205,7 @@ fn a_web_link_is_attached_named_shown_whole_and_opened_by_a_stand_in() {
     assert!(lines[at + 1].contains(bottom), "{lines:#?}");
     // Enter there opens it with the stand-in, never a browser: the status
     // line says so.
-    assert_eq!(stacked::refs::opener(), fake_opener());
+    assert_eq!(stacked::refs::opener(), Some(fake_opener()));
     keys(&mut app, &[KeyCode::Enter]);
     app.settle();
     assert_eq!(app.status, format!("opened {url} in your browser"));

@@ -9464,8 +9464,9 @@ impl App {
     }
 
     /// Web link `url` opened in the browser, away from the screen, by the
-    /// program that opens links (`refs::opener`): the status line says it
-    /// was, or why it could not be.
+    /// program that opens links (`refs::opener`), else as the system opens
+    /// one (`refs::open_url`): the status line says it was, or why it could
+    /// not be.
     fn open_link(&mut self, url: String) {
         if self.bg.doing.contains(&OPENING) {
             self.status = "a link is being opened already: wait for it".into();
