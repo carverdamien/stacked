@@ -1334,7 +1334,7 @@ fn where_what_is_typed_is_read_the_bottom_bar_names_the_keys_as_they_are() {
 }
 
 /// As `choose`, the item's choice drawn as `pick` (or starting so)
-/// picked first, with →.
+/// picked first, with ← →.
 fn choose_as(app: &mut App, label: &str, pick: &str) -> Effect {
     if !matches!(app.mode, Mode::Menu(_)) {
         assert_eq!(key(app, KeyCode::Char(' ')), Effect::None);
@@ -1354,17 +1354,30 @@ fn choose_as(app: &mut App, label: &str, pick: &str) -> Effect {
     }
     let list = choices_of(app, want);
     assert!(list.iter().any(|c| c.starts_with(pick)), "no {pick:?} among {label:?}'s {list:?}");
-    for _ in 0..list.len() {
-        let shown = match &app.mode {
-            Mode::Menu(m) => m.items[want].choices.first().map(|c| c.list[c.picked].shown.clone()),
-            _ => None,
-        };
-        if shown.is_some_and(|s| s.starts_with(pick)) {
-            break;
-        }
-        key(app, KeyCode::Right);
-    }
+    turn_to(app, want, pick);
     key(app, KeyCode::Enter)
+}
+
+/// The first dropdown of the open menu's item `i` on the choice drawn as
+/// `pick` (or starting so), picked with ← → unless it is picked already:
+/// towards it, as neither goes round past its end. Whether it is picked.
+fn turn_to(app: &mut App, i: usize, pick: &str) -> bool {
+    let list = choices_of(app, i);
+    let picked = |app: &App| match &app.mode {
+        Mode::Menu(m) => m.items[i].choices.first().map(|c| c.picked),
+        _ => None,
+    };
+    let Some(to) = list.iter().position(|c| c.starts_with(pick)) else { return false };
+    for _ in 0..list.len() {
+        match picked(app) {
+            Some(at) if list[at].starts_with(pick) => return true,
+            Some(at) => {
+                key(app, if to > at { KeyCode::Right } else { KeyCode::Left });
+            }
+            None => return false,
+        }
+    }
+    picked(app).is_some_and(|at| list[at].starts_with(pick))
 }
 
 /// The choices of the open menu's item `i`, as drawn.
@@ -6670,6 +6683,11 @@ fn this_checkout_is_grayed_for_edits_by_hand_while_move_head_would_not_move_head
     assert!(menu_note(&app).contains(&format!("Editing in this checkout (pwd) is grayed: {why}.")), "{}", menu_note(&app));
     key(&mut app, KeyCode::Right);
     assert!(draw(&mut app).contains("[ ] tmp/file  [ ] pwd  [x] .stacked/s"));
+    // No further than either end: → stays on the last, ← on the first.
+    key(&mut app, KeyCode::Right);
+    assert!(draw(&mut app).contains("[ ] tmp/file  [ ] pwd  [x] .stacked/s"));
+    key(&mut app, KeyCode::Left);
+    assert!(draw(&mut app).contains("[x] tmp/file  [ ] pwd  [ ] .stacked/s"));
     key(&mut app, KeyCode::Left);
     assert!(draw(&mut app).contains("[x] tmp/file  [ ] pwd  [ ] .stacked/s"));
     // A click on it picks nothing.
@@ -9903,9 +9921,14 @@ fn ask_agent_saves_what_changed_first_and_asks_at_the_effort_its_line_ends_with(
     assert_eq!(app.hint(), "↑↓ choose · ←→: effort · tab: how · enter: do it · esc: close · ?: what it does");
     assert!(attrs(&drawn(&mut app, 30), "Effort [high]", 0).iter().all(|m| m.contains(Modifier::UNDERLINED)));
     assert!(!attrs(&drawn(&mut app, 30), "[ ] change", 0)[0].contains(Modifier::UNDERLINED));
-    keys(&mut app, &[KeyCode::Right, KeyCode::Right, KeyCode::Right]);
-    assert_eq!(app.effort, Effort::Low, "round past the last");
-    keys(&mut app, &[KeyCode::Left, KeyCode::Left]);
+    // Neither goes round past its end: → held ends on max, ← held on low.
+    keys(&mut app, &[KeyCode::Right; 5]);
+    assert_eq!(app.effort, Effort::Max, "no further than the last");
+    assert!(draw(&mut app).contains("[ ] change  [x] the whole stack  [ ] answer only    Effort [max]"));
+    keys(&mut app, &[KeyCode::Left; 6]);
+    assert_eq!(app.effort, Effort::Low, "no further than the first");
+    assert!(draw(&mut app).contains("[ ] change  [x] the whole stack  [ ] answer only    Effort [low]"));
+    keys(&mut app, &[KeyCode::Right; 3]);
     assert!(draw(&mut app).contains("[ ] change  [x] the whole stack  [ ] answer only    Effort [xhigh]"));
     assert_eq!(app.effort, Effort::Xhigh);
     assert_eq!(Db::load(&db).unwrap().choice("s", "ask"), Some("whole"));
@@ -10202,11 +10225,15 @@ fn where_a_file_is_edited_is_a_choice_of_its_item_kept_per_stack() {
     let screen = draw(&mut app);
     assert!(screen.contains(" Edit a.txt here in $EDITOR    [x] tmp/file  [ ] pwd  [ ] .stacked/s"), "{screen}");
     assert!(screen.lines().last().unwrap().contains("←→: where"), "{screen}");
-    // → picks the next one, around the end, and ← the one before; each is
-    // kept for the stack at once.
+    // → picks the next one, and ← the one before, neither past its end;
+    // each is kept for the stack at once.
     key(&mut app, KeyCode::Right);
     assert!(draw(&mut app).contains("[ ] tmp/file  [x] pwd  [ ] .stacked/s"));
-    keys(&mut app, &[KeyCode::Right, KeyCode::Right, KeyCode::Left]);
+    keys(&mut app, &[KeyCode::Right, KeyCode::Right]);
+    assert!(draw(&mut app).contains("[ ] tmp/file  [ ] pwd  [x] .stacked/s"));
+    keys(&mut app, &[KeyCode::Left, KeyCode::Left, KeyCode::Left]);
+    assert!(draw(&mut app).contains("[x] tmp/file  [ ] pwd  [ ] .stacked/s"));
+    keys(&mut app, &[KeyCode::Right, KeyCode::Right]);
     assert!(draw(&mut app).contains("[ ] tmp/file  [ ] pwd  [x] .stacked/s"));
     assert_eq!(Db::load(&db).unwrap().choice("s", "edit"), Some("worktree"));
     assert_eq!(Db::load(&db).unwrap().choice("t", "edit"), None, "another stack's is its own");
@@ -10454,7 +10481,7 @@ fn the_top_bar_says_what_is_left_to_review() {
 }
 
 /// Goes to the open menu's item `label`, and picks its choice drawn as
-/// `pick` (or starting so), with →: the item is not done.
+/// `pick` (or starting so), with ← →: the item is not done.
 fn pick(app: &mut App, label: &str, pick: &str) {
     let all = items(app);
     let want = all.iter().position(|(l, _)| l.starts_with(label)).unwrap_or_else(|| panic!("no {label:?} in {all:?}"));
@@ -10466,17 +10493,9 @@ fn pick(app: &mut App, label: &str, pick: &str) {
             }
         }
     }
-    for _ in 0..choices_of(app, want).len() {
-        let shown = match &app.mode {
-            Mode::Menu(m) => m.items[want].choices.first().map(|c| c.list[c.picked].shown.clone()),
-            _ => None,
-        };
-        if shown.is_some_and(|s| s.starts_with(pick)) {
-            return;
-        }
-        key(app, KeyCode::Right);
+    if !turn_to(app, want, pick) {
+        panic!("no {pick:?} among {label:?}'s choices {:?}", choices_of(app, want));
     }
-    panic!("no {pick:?} among {label:?}'s choices {:?}", choices_of(app, want));
 }
 
 /// The open menu's items as drawn, a checked box before the label of those
@@ -10939,7 +10958,17 @@ fn leaving_a_review_picks_whether_the_asking_comment_closes_above_accept_and_rej
     assert_eq!(row(&app).2, "keep");
     let marks = app.reviewing.as_ref().unwrap().marks.clone();
     assert!(!marks.contains_key("asking 0") && !marks.contains_key("reply 0"), "{marks:?}");
-    // Enter picks the other, the menu staying.
+    keys(&mut app, &[KeyCode::Left]);
+    assert_eq!(row(&app).2, "keep", "no further than the first");
+    // Enter picks the other, the menu staying: round past the last, where
+    // → stays.
+    keys(&mut app, &[KeyCode::Enter]);
+    assert_eq!(row(&app).2, "close");
+    keys(&mut app, &[KeyCode::Right]);
+    assert_eq!(row(&app).2, "close", "no further than the last");
+    keys(&mut app, &[KeyCode::Enter]);
+    assert_eq!(row(&app).2, "keep");
+    assert!(!app.reviewing.as_ref().unwrap().marks.contains_key("asking 0"));
     keys(&mut app, &[KeyCode::Enter]);
     assert_eq!(row(&app).2, "close");
     assert_eq!(app.reviewing.as_ref().unwrap().marks.get("asking 0"), Some(&true));
@@ -11034,7 +11063,8 @@ fn closing_an_edit_review_moves_head_along_when_it_was_in_sync_with_the_stack() 
     assert_eq!(all[k + 1], "Accept all remaining and Close");
     let screen = draw(&mut app);
     assert!(screen.contains("HEAD") && screen.contains("[x] sync  [ ] no sync"), "{screen}");
-    // ← → pick the other, kept for the review; Enter too, the menu staying.
+    // → picks the other, kept for the review; Enter too, round past the
+    // last, the menu staying.
     pick(&mut app, "HEAD", "no sync");
     assert!(app.reviewing.as_ref().unwrap().stay);
     keys(&mut app, &[KeyCode::Enter]);

@@ -570,7 +570,7 @@ pub enum Spot {
     Item(usize),
     /// Choice `k` of dropdown `d` of menu item `i`, the one a click picks:
     /// the one clicked; on a dropdown drawn as one, `Effort [high]`, the
-    /// one after the one picked.
+    /// one after the one picked, round past the last.
     Choice(usize, usize, usize),
     Pick(usize),
     HistRow(usize),
@@ -1070,7 +1070,7 @@ pub struct Choices {
     pub list: Vec<Choice>,
     pub picked: usize,
     /// Its name, drawn before the one picked, when it is drawn as one: a
-    /// click on it picks the next.
+    /// click on it picks the next, round past the last.
     pub named: Option<&'static str>,
 }
 
@@ -1130,17 +1130,32 @@ impl Choices {
         self.list[self.picked].name
     }
 
-    /// Another picked, the next (`by` 1) or the one before (-1), round
-    /// past either end, past those grayed: what it is a choice of, and what
-    /// is picked now.
-    fn turn(&mut self, by: isize) -> (&'static str, &'static str) {
-        let n = self.list.len() as isize;
-        for _ in 0..n {
-            self.picked = (self.picked as isize + by).rem_euclid(n) as usize;
-            if self.list[self.picked].enabled {
-                break;
-            }
-        }
+    /// Another picked, the next (`forward`) or the one before, past those
+    /// grayed, as → and ← pick: never round past either end, so that ←
+    /// held ends on the first and → held on the last. What it is a choice
+    /// of, and what is picked now; none if no choice that way can be
+    /// picked, and then nothing moves.
+    fn step(&mut self, forward: bool) -> Option<(&'static str, &'static str)> {
+        let enabled = |k: &usize| self.list[*k].enabled;
+        self.picked = match forward {
+            true => (self.picked + 1..self.list.len()).find(enabled),
+            false => (0..self.picked).rev().find(enabled),
+        }?;
+        Some((self.of, self.pick()))
+    }
+
+    /// The one after the one picked, past those grayed, round past the
+    /// last, so that one step to the next never stops at an end: what Enter
+    /// picks on the review's rows, and a click on a dropdown drawn as one.
+    fn after(&self) -> usize {
+        let n = self.list.len();
+        (1..=n).map(|k| (self.picked + k) % n).find(|k| self.list[*k].enabled).unwrap_or(self.picked)
+    }
+
+    /// The next picked, round past the last (`after`): what it is a choice
+    /// of, and what is picked now.
+    fn cycle(&mut self) -> (&'static str, &'static str) {
+        self.picked = self.after();
         (self.of, self.pick())
     }
 }
@@ -1769,7 +1784,8 @@ impl Item {
     /// `pad` columns (the menu's first dropdowns in one column); and where
     /// a click picks in them: for each choice drawn, its dropdown, which
     /// one it is, where it starts in the row and how wide it is; for a
-    /// dropdown drawn as one, the whole of it, picking the next.
+    /// dropdown drawn as one, the whole of it, picking the next, round past
+    /// the last.
     pub fn row(&self, pad: usize) -> (String, Vec<(usize, usize, usize, usize)>) {
         let mut text = match self.check {
             Some(on) => format!("{} {}", if on { "[x]" } else { "[ ]" }, self.label),
@@ -1786,7 +1802,7 @@ impl Item {
             match c.named {
                 Some(name) => {
                     let one = format!("{name} [{}]", c.list[c.picked].shown);
-                    at.push((d, (c.picked + 1) % c.list.len(), start, one.chars().count()));
+                    at.push((d, c.after(), start, one.chars().count()));
                     text.push_str(&one);
                 }
                 None => {
@@ -6325,10 +6341,9 @@ impl App {
                 m.step(false);
             }
             // On an item with choices, another one picked in the dropdown
-            // the menu is on, and kept.
+            // the menu is on, and kept; none past either end.
             KeyCode::Left | KeyCode::Right => {
-                let by = if k.code == KeyCode::Right { 1 } else { -1 };
-                if let Some((of, pick)) = m.dropdown_mut().map(|c| c.turn(by)) {
+                if let Some((of, pick)) = m.dropdown_mut().and_then(|c| c.step(k.code == KeyCode::Right)) {
                     self.picked_choice(of, pick);
                     if of == "when" {
                         m.relabel(pick == "later");
@@ -6352,10 +6367,10 @@ impl App {
                 return Effect::None;
             }
             // On the review's rows picking whether the comments that asked
-            // close, and whether HEAD follows the stack: the other pick, the
-            // menu staying.
+            // close, and whether HEAD follows the stack: the other pick,
+            // round past the last, the menu staying.
             KeyCode::Enter if m.chosen().is_some_and(|i| matches!(i.action, Action::AskingAll | Action::HeadSync)) => {
-                if let Some((of, pick)) = m.items.get_mut(m.sel).and_then(|i| i.choices.first_mut()).map(|c| c.turn(1)) {
+                if let Some((of, pick)) = m.items.get_mut(m.sel).and_then(|i| i.choices.first_mut()).map(|c| c.cycle()) {
                     self.picked_choice(of, pick);
                 }
             }
@@ -12275,6 +12290,39 @@ fn _short_id(c: &str, i: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_arrows_stop_at_either_end_of_a_dropdown_and_the_next_goes_round_both_past_those_grayed() {
+        use super::{Choice, Choices};
+        // Four choices, `a` to `d`, those in `gray` grayed, `pick` picked.
+        let of = |gray: &[&str], pick: &str| {
+            let list = ["a", "b", "c", "d"].map(|n| Choice::new(n, n, n, None).when(!gray.contains(&n)));
+            Choices::new("x", "what", list.into(), Some(pick))
+        };
+        // ← → one at a time, past those grayed, no further than either end:
+        // nothing picked anew there.
+        let mut c = of(&["b"], "a");
+        assert_eq!(c.step(true), Some(("x", "c")));
+        assert_eq!(c.step(true), Some(("x", "d")));
+        assert_eq!((c.step(true), c.pick()), (None, "d"));
+        assert_eq!(c.step(false), Some(("x", "c")));
+        assert_eq!(c.step(false), Some(("x", "a")));
+        assert_eq!((c.step(false), c.pick()), (None, "a"));
+        // Only grayed ones that way: nothing moves.
+        let mut c = of(&["a", "d"], "b");
+        assert_eq!((c.step(false), c.pick()), (None, "b"));
+        assert_eq!(c.step(true), Some(("x", "c")));
+        assert_eq!((c.step(true), c.pick()), (None, "c"));
+        // The next goes round past the last, past those grayed, as a click
+        // on a dropdown drawn as one picks it; with no other to pick, it
+        // stays.
+        let mut c = of(&["a"], "d");
+        assert_eq!(c.after(), 1);
+        assert_eq!(c.cycle(), ("x", "b"));
+        assert_eq!(c.cycle(), ("x", "c"));
+        let mut c = of(&["a", "b", "c"], "d");
+        assert_eq!(c.cycle(), ("x", "d"));
+    }
+
     #[test]
     fn a_reply_in_editor_opens_under_the_conversation_its_references_under_it() {
         let text = [

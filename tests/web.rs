@@ -692,6 +692,66 @@ fn the_effort_picked_in_a_menu_is_where_the_next_run_starts() {
 }
 
 #[test]
+fn the_effort_s_arrows_stop_at_low_and_at_max_and_a_click_on_it_goes_round_in_the_browser_too() {
+    let (tmp, db) = setup();
+    let home = tmp.path().join("home");
+    let file = db.to_str().unwrap();
+    // A comment on the stack, for its menu to ask about.
+    let out = stacked(&home).current_dir(tmp.path()).args(["-f", file, "comment", "s", "Why?"]).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let mut web = stacked(&home);
+    web.args(["-f", file, "web", "--no-open"]).current_dir(tmp.path()).stdin(Stdio::null()).stderr(Stdio::piped());
+    let mut child = web.spawn().unwrap();
+    let mut said = BufReader::new(child.stderr.take().unwrap());
+    let mut child = Running(child);
+    let mut line = String::new();
+    said.read_line(&mut line).unwrap();
+    let url = line.split_whitespace().find_map(|w| w.strip_prefix("http://127.0.0.1:")).expect(&line).to_string();
+    let (port, token) = url.split_once("/?t=").unwrap();
+    let port: u16 = port.parse().unwrap();
+    let mut events = events(port, token, 120);
+    until(&mut events, "the patches", |l| l.contains("Bug 2 - add b"));
+    let (host, input) = (format!("127.0.0.1:{port}"), format!("POST /input?t={token}"));
+    let send = |lines: &[&str]| {
+        for l in lines {
+            ask(port, &host, &input, &format!("{l}\n"));
+        }
+    };
+    // The stack's menu, on its header, once the middle shows the stack's
+    // comment: `Ask agent about all` ends with the effort, high at first.
+    send(&["k Home -"]);
+    until(&mut events, "the stack in the middle", |l| text(l).contains("the stack s · 2 patches"));
+    send(&["k c 20 -"]);
+    let asking = |l: &str, level: &str| {
+        let t = text(l);
+        t.contains("Ask agent about all") && t.contains(&format!("Effort [{level}]"))
+    };
+    // A click on the effort, in the row seen last: the next level picked,
+    // and the menu on it, for ← → to pick in it.
+    let click = |seen: Vec<String>| {
+        let row = seen.last().unwrap();
+        let y = row.strip_prefix("data: r ").and_then(|r| r.split(' ').next()).unwrap();
+        let line = text(row);
+        let x = line[..line.find("Effort [").unwrap()].chars().count() + 1;
+        send(&[format!("m {x} {y} l").as_str()]);
+    };
+    click(until(&mut events, "high, at first", |l| asking(l, "high")));
+    until(&mut events, "xhigh, clicked", |l| asking(l, "xhigh"));
+    // → no further than max; a click there goes round, to low.
+    send(&["k Right -"; 4]);
+    click(until(&mut events, "max", |l| asking(l, "max")));
+    until(&mut events, "low, clicked", |l| asking(l, "low"));
+    // ← no further than low: → from there picks medium.
+    send(&["k Left -", "k Left -", "k Left -", "k Right -"]);
+    until(&mut events, "medium", |l| asking(l, "medium"));
+    // Quit: medium kept.
+    send(&["k c 63 c"]);
+    until(&mut events, "bye", |l| l == "data: bye");
+    assert!(child.0.wait().unwrap().success());
+    assert_eq!(stacked::state::effort(&home.join("state.json")), Some(stacked::db::Effort::Medium));
+}
+
+#[test]
 fn the_database_the_editor_opens_is_on_the_list_stacked_s_open_recent_reads() {
     let (tmp, _) = setup();
     std::fs::copy(tmp.path().join("db.jsonl"), tmp.path().join("other.jsonl")).unwrap();

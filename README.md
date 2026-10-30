@@ -739,7 +739,9 @@ them other keys, and the help then names those:
   Phabricator, on a screen of its own, and Enter is the menu. What a
   read-only stack cannot do is shown dimmed, and the menu says why. An
   item may have choices, radio
-  buttons after its label (`[x] tmp/file  [ ] pwd`): ← → pick one, a click
+  buttons after its label (`[x] tmp/file  [ ] pwd`): ← → pick one, and
+  stop at either end rather than go round, so that ← held ends on the first
+  and → held on the last; a click
   on one picks it, and Enter does the item with the one picked, which is
   kept for the stack in the database. An item that asks the agent ends
   with a dropdown of the effort it asks at, `Effort [high]` (Asking the
@@ -747,7 +749,8 @@ them other keys, and the help then names those:
   than one dropdown, ← → pick in the one underlined, which is the first
   until Tab goes to the next one; shift-Tab goes back, as the bottom bar
   says (`←→: how · tab: effort`). A click picks in the dropdown it is on:
-  the choice clicked, or, on `Effort [high]`, the next level.
+  the choice clicked, or, on `Effort [high]`, the next level, round from
+  `max` to `low`.
 - `?` says what can be done where the cursor is, as `Press Enter to create a
   comment on this line.`, and where the arrows go. The next key closes it
   and does what it does, so the key it names can be pressed straight away.
@@ -1462,8 +1465,10 @@ only…` on the history and `Ask the agent to make a stack…`, end with
 `Effort [high]` too: the menu of what you write then starts at the effort
 picked there.
 On an item with choices of its own, Tab goes to the effort, shift-Tab
-goes back, and ← → pick in the one the menu is on; a click on `Effort
-[high]` picks the next level. The effort picked last is where every next
+goes back, and ← → pick in the one the menu is on. Neither goes round
+past its end: ← held ends on `low`, and → held on `max`. A click on
+`Effort [high]` picks the next level, round from `max` to `low`. The
+effort picked last is where every next
 menu starts, in every stack: stacked keeps it between runs, in
 `~/.stacked/state.json` (Settings, below), and it is `high` until one is
 picked. The tour keeps none.
@@ -2055,8 +2060,9 @@ question says what is left, the menu on `Keep reviewing`), while
 something is left: once every part is marked, they are grayed. Over them,
 `Asking comment  [x] keep  [ ] close` picks whether the comments the agent
 was asked about are kept open or closed as the review closes, every one,
-picked as the review has them: ← → or Enter pick the other, the menu
-staying. Under it, while HEAD of your checkout can move safely to the
+picked as the review has them: ← picks `keep`, → picks `close`, and Enter
+picks the other, the menu staying. Under it, while HEAD of your checkout
+can move safely to the
 stack as the review leaves it, `HEAD  [x] sync  [ ] no sync` picks whether
 HEAD moves there once the change is accepted: detached at the stack's
 top, the branch it was on as it was, as `Move HEAD…` moves it, the status
@@ -3866,7 +3872,8 @@ review closes landed at once though it had no process yet, the review's
 word kept, the effort an ask goes at
 (`Ask agent` saving what changed first, and asking about what did not as
 it is; the effort at the end of its line, picked with Tab, ← → and a
-click, as `?` and the bar say, the other dropdown picked each way too; the
+click, as `?` and the bar say, ← → no further than `low` and `max` and a
+click going round from `max` to `low`, the other dropdown picked each way too; the
 stand-in started at the effort picked, `high` until one is, the settings'
 own taken out; the effort picked where the next menus start, kept nowhere
 in a test's own process; a batched comment, sent now or with the batch,
@@ -4090,7 +4097,8 @@ stack its acceptance made, an edit asked after it waiting until it is
 reviewed and an answer going at once; going on from an edit by hand
 rejected, dropped and made again from the stack as it is; grayed with no
 commit marked), this checkout grayed for edits by hand
-meanwhile (dim, ← → going past it, a click picking nothing, the menu and
+meanwhile (dim, ← → going past it and no further than either end, a
+click picking nothing, the menu and
 `?` saying why, an edit there as the stack's menus last picked it
 refused), the comment editor hiding
 nothing in each view of the code, each pane keeping where its cursor
@@ -4166,7 +4174,8 @@ and the editor left, the worktree made ahead removed (Quit in the page;
 `stacked web` at once, each putting its database, named from where it
 runs, on the list StackED's Open Recent shows, the effort picked in a
 menu kept in the state file of its home, where the next `stacked web`
-starts, a message's long lines wrapped from its patch's menu, the edit
+starts, its ← → no further than `low` and `max` and a click on it going
+round from `max` to `low`, a message's long lines wrapped from its patch's menu, the edit
 landing for review, what waits its turn (a reconcile with HEAD, a lint
 job, an edit ask) taken out of the queue from the banner with Delete, each
 asked first, → opening the comments pane of a patch with none, saying why,
@@ -4206,7 +4215,9 @@ waits its turn (a reconcile with HEAD, a lint job, an edit ask) taken out
 of the queue from the banner with Delete, each asked first; → opening the
 comments pane of a patch with none, saying why, its menu there, and ←
 putting it away; `Move HEAD…` on the stack's menu drawn as any item while
-it would not move HEAD, and the view of why opened from it, then left; with
+it would not move HEAD, and the view of why opened from it, then left; the
+effort of a menu's item, its ← → no further than `low` and `max` and a
+click on it going round from `max` to `low`; with
 moz-phab, the status of a patch's revision after its number, a letter,
 and the Phabricator line over its message, Space on it showing what
 differs on a screen of its own, Esc going back to the line, read by a

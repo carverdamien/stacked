@@ -396,6 +396,44 @@ fn the_stack_s_lint_is_offered_on_its_menu_in_the_window_too() {
     screen(&s, "the stack's menu", |b| find(b, "Lint the stack (./lint.sh --fix)").is_some());
 }
 
+#[test]
+fn the_effort_s_arrows_stop_at_low_and_at_max_and_a_click_on_it_goes_round_in_the_window_too() {
+    let (tmp, db) = setup();
+    // A comment on the stack, for its menu to ask about.
+    let (home, file) = (tmp.path().join("home"), db.to_str().unwrap());
+    let out = stacked(&home).current_dir(tmp.path()).args(["-f", file, "comment", "s", "Why?"]).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    // Wide enough for the whole of that item's row; the banner, saying the
+    // comment is open, over the patches.
+    let s = Session::open(&db, tmp.path()).unwrap();
+    s.send(Input::Size(120, 30));
+    screen(&s, "the patches", |b| text(b).contains("Bug 2 - add b"));
+    // The stack's menu, on its header, once the middle shows the stack's
+    // comment: `Ask agent about all` ends with the effort, high at first.
+    press(&s, KeyCode::Home);
+    screen(&s, "the stack in the middle", |b| text(b).contains("the stack s · 2 patches"));
+    press(&s, KeyCode::Char(' '));
+    let effort = |b: &Buffer, level: &str| find(b, "Ask agent about all").and(find(b, &format!("Effort [{level}]")));
+    // A click on the effort: the next level picked, and the menu on it, for
+    // ← → to pick in it.
+    let click = |(x, y): (u16, u16)| s.send(Input::Click { x, y, right: false });
+    let menu = screen(&s, "high, at first", |b| effort(b, "high").is_some());
+    click(effort(&menu, "high").unwrap());
+    screen(&s, "xhigh, clicked", |b| effort(b, "xhigh").is_some());
+    // → no further than max; a click there goes round, to low.
+    for _ in 0..4 {
+        press(&s, KeyCode::Right);
+    }
+    let menu = screen(&s, "max", |b| effort(b, "max").is_some());
+    click(effort(&menu, "max").unwrap());
+    screen(&s, "low, clicked", |b| effort(b, "low").is_some());
+    // ← no further than low: → from there picks medium.
+    for k in [KeyCode::Left, KeyCode::Left, KeyCode::Left, KeyCode::Right] {
+        press(&s, k);
+    }
+    screen(&s, "medium", |b| effort(b, "medium").is_some());
+}
+
 /// The links a stand-in for the program that opens web links, in `dir`,
 /// writes once it was given `n` of them, or the wait given up: the editor
 /// of this process opens them with it from now on. It opens nothing: no test
