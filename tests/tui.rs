@@ -10809,8 +10809,15 @@ fn the_effort_the_agent_was_asked_at_is_shown_wherever_its_work_is_named() {
     assert!(screen.contains(" answer(max) s \"why so loud?\" · its work waits for your review: 1 reply, 1 opened comment"), "{screen}");
     keys(&mut app, &[KeyCode::Enter, KeyCode::Home]);
     assert_eq!(app.screen, Screen::Transcript);
+    // The line claude was started with begins with the stand-in's path, as
+    // long as the folder Cargo gives the tests makes it: the run's stream
+    // says the effort, and the transcript shows that line from its second
+    // column, cut where the screen ends.
+    let d = Db::load(&db).unwrap();
+    let started = stacked::ask::tail(&d, &d.runs().last().unwrap().id, usize::MAX);
+    let line = started.iter().find(|l| l.contains(" -p … --permission-mode default --effort max, in ")).unwrap_or_else(|| panic!("{started:?}"));
     let screen = draw(&mut app);
-    assert!(screen.contains(" -p … --permission-mode default --effort max, in "), "{screen}");
+    assert!(screen.contains(&line.chars().take(119).collect::<String>()), "{line:?} in:\n{screen}");
     keys(&mut app, &[KeyCode::Esc, KeyCode::Esc]);
     assert_eq!(app.screen, Screen::Main);
     // The comment's menu names the work its reply waits with.
