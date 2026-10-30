@@ -660,9 +660,10 @@ them other keys, and the help then names those:
   comment. Elsewhere it is the menu.
 - Space is the menu: all that can be done where the cursor is, then undo,
   redo, `Runs…` and quit, which every menu ends with. The stack's items
-  (comment on it, ask about all, `Show…`, the stack as a list, the tree,
-  the history, Phabricator, `Move HEAD…`, switch, delete) are on the left header
-  only; a patch's on a patch; a line's on a line; a comment's on a comment.
+  (comment on it, ask about all, `Filter comments…`, the stack as a list,
+  the tree, the history, Phabricator, `Move HEAD…`, switch, delete) are on
+  the left header only, but `Filter comments…`, which a patch's menu has
+  too; a patch's on a patch; a line's on a line; a comment's on a comment.
   ↑↓ and enter; ↑ from the top is Quit. On the Phabricator line over a
   patch's message (with moz-phab, above), Space shows what differs from
   Phabricator under the line, or hides it, and Enter is the menu. What a
@@ -1740,16 +1741,23 @@ batched, `◌` ready, `◆` its reply waits for your review, `✓` replied, `✗
 failed, `↑` moved), its header counts them (`4 comments · 1 with the agent ·
 1 to review · 2 to read`), and the top bar too (`agent ●2 · batch:3 ·
 ready:1`).
-`Show…`, on either header, picks what both panes show, each with its
-count: all, to send, to review, to read (any, from an answer, from a change), in
-progress, failed or moved, gone (on a line the patch no longer has),
-closed, none. It is kept per stack, in the file. A comment you are done
+`Filter comments…`, on either header and on a patch's menu, picks what
+both panes show, each with its count: all, to send, to review, to read
+(any, from an answer, from a change), in progress, failed or moved, gone
+(on a line the patch no longer has), closed, none. The counts are of the
+comments the middle shows, which the comments pane lists, the patch's or
+the stack's own, as the menu's title says, from either header as from a
+patch's menu, that patch's (`filter comments, counted on patch 3`,
+`filter comments, counted on the stack's own comments`). What is picked
+is kept per stack, in the file, and filters every patch's comments and the
+stack's own alike. A comment you are done
 with is closed, from its menu (`Close this comment…`): it leaves the
 comments shown. When the cursor is on the comment closed, the cursor goes
 to the line the comment was on (a line of the code or of the message, the
 file's name, or the patch's title), on the same line of the screen; a
 comment on the stack, or on a line the patch no longer has, leaves it on
-the row over the comment. A comment that `Show…` hides does the same. When
+the row over the comment. A comment that `Filter comments…` hides does
+the same. When
 a comment is closed from elsewhere (the comments pane, the banner, another
 stacked), the cursor stays where it is, as it does whenever other comments
 come, go or change: hidden, moved to the stack, answered, written on, or
@@ -1931,9 +1939,9 @@ comments the agent was asked about, for its work, on top (`asking
 comments`): each is `keep`, as it is when the review opens, or `close`,
 done with: Enter turns one to the other, as Space's `Close it with the
 review` and `Keep it open` do, and the review closes those to close as it
-closes, once their replies are in their threads (`Show…`, closed, lists
-them, to reopen). Marked to close, a comment's replies, which go with it,
-are accepted; kept again, they are as they were. With no part, as when
+closes, once their replies are in their threads (`Filter comments…`,
+closed, lists them, to reopen). Marked to close, a comment's replies,
+which go with it, are accepted; kept again, they are as they were. With no part, as when
 the agent brought nothing back, the list has only those comments, and
 `Close review` closes or keeps them as marked. The sections are the stack
 operations of the change (a line for each patch: `noop`, `add`, `modify`,
@@ -2691,7 +2699,8 @@ every comment and every run; the editor shows them where they belong:
   before, or the version whole. `Put this version back in the stack` is an
   edit like any.
 - `History of this comment…`, on a comment: every state it was in, with the
-  rev and time of each; a closed one's too, from `Show…`, `closed`.
+  rev and time of each; a closed one's too, from `Filter comments…`,
+  `closed`.
 
 `stacked log`, `tree`, `versions`, `interdiff` and `runs` say the same on
 the command line.
@@ -3779,7 +3788,11 @@ effort it was asked at, unless another is picked), the screen never waiting on
 the agent, redrawing not slowing as the agent writes (a frame timed as the
 time the editor ran to read and draw it, not by the clock, which counts
 too the time a busy machine gives to other work), the filter kept in
-the file, the views of the code (the menu of 1, the view drawn marked,
+the file, `Filter comments…` on a patch's menu as on both headers, each
+counting the comments the middle shows, as its title says (from the
+comments pane's header, the patch's or the stack's own), the filter
+picked from one patch's filtering every patch's, the views of the code
+(the menu of 1, the view drawn marked,
 Enter or a click picking one and Esc none, its key a setting, each view
 drawn; a view picked on a middle too narrow making its room, the comments
 compact, else hidden, else the patches hidden too, as little as it can,
@@ -3857,12 +3870,12 @@ cannot be, a comment closed taking the cursor on it to the line it was on,
 on its line of the screen (from its menu on its first row and on a
 reference, by Delete on a turn; in each view of the code, split in two each
 half on its own, with each file whole, on a line folded, reading too; on
-the stack, the row over it; hidden by `Show…`, from the agent's stream too),
-and leaving the cursor elsewhere where it is (closed from the comments
-pane, which picks the next comment or the one before at the end, from the
-banner, by another stacked; hidden by `Show…` from either header, moved to
-the stack, reopened), a turn written again in its place taking the cursor
-back to it, what you said last written again (off the queue meanwhile;
+the stack, the row over it; hidden by `Filter comments…`, from the agent's
+stream too), and leaving the cursor elsewhere where it is (closed from the
+comments pane, which picks the next comment or the one before at the end,
+from the banner, by another stacked; hidden by `Filter comments…` from
+either header, moved to the stack, reopened), a turn written again in its
+place taking the cursor back to it, what you said last written again (off the queue meanwhile;
 left as it was, asked as it is or left so), a reply written in $EDITOR
 under its conversation, its references under it, and a turn written again
 there in its place, the editor in the middle between the last reply and the

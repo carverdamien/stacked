@@ -29,13 +29,14 @@ struct Cli {
     cmd: Option<Cmd>,
 }
 
-/// Which comments `comments` lists, as the editor's Show… picks them.
 /// A shell `completions` completes stacked in.
 #[derive(Clone, Copy, ValueEnum)]
 enum Shell {
     Zsh,
 }
 
+/// Which comments `comments` lists, as the editor's Filter comments… picks
+/// them.
 #[derive(Clone, Copy, ValueEnum)]
 enum ShowArg {
     All,

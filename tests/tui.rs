@@ -753,24 +753,25 @@ fn a_menu_opened_by_a_click_stays_whole_on_a_screen_made_smaller() {
 fn a_menu_that_a_click_on_an_item_opens_is_drawn_next_to_that_click() {
     let (_tmp, db, _src) = setup();
     let mut app = open(&db).unwrap();
-    // The stack's header right-clicked: its menu. Show… clicked in that
-    // menu: the menu of which comments the panes show, next to the second
-    // click.
+    // The stack's header right-clicked: its menu. Filter comments… clicked
+    // in that menu: the menu of which comments the panes show, next to the
+    // second click.
     let header = at(&draw(&mut app), "≡ s · 2 patches");
     app.click(header.0, header.1, true);
     assert_eq!(menu_title(&app), "the stack s");
-    let (x, y) = at(&draw(&mut app), "Show…");
+    let (x, y) = at(&draw(&mut app), "Filter comments…");
     app.click(x, y, false);
-    assert_eq!(menu_title(&app), "show the comments");
+    assert_eq!(menu_title(&app), "filter comments, counted on the stack's own comments");
     let screen = draw(&mut app);
-    let (bx, by, _, _) = menu_box(&screen, "show the comments");
+    let (bx, by, _, _) = menu_box(&screen, "filter comments, counted on the stack's own comments");
     assert_eq!((bx, by), (usize::from(x) + 1, usize::from(y) + 1), "{screen}");
-    // Show… chosen with keys in the menu a click opened: in the middle.
+    // Filter comments… chosen with keys in the menu a click opened: in the
+    // middle.
     keys(&mut app, &[KeyCode::Esc]);
     app.click(header.0, header.1, true);
     draw(&mut app);
-    choose(&mut app, "Show…");
-    let (bx, by, w, h) = menu_box(&draw(&mut app), "show the comments");
+    choose(&mut app, "Filter comments…");
+    let (bx, by, w, h) = menu_box(&draw(&mut app), "filter comments, counted on the stack's own comments");
     assert_eq!((bx, by), ((120 - w) / 2, 1 + (28 - h) / 2));
 }
 
@@ -1414,7 +1415,7 @@ fn the_menu_goes_by_place() {
     // The stack's, on the header only.
     keys(&mut app, &[KeyCode::Up]);
     let stack = labels(&mut app);
-    for label in ["Comment on the stack…", "Show…", "Tree of edits…", "History…", "Delete this stack…"] {
+    for label in ["Comment on the stack…", "Filter comments…", "Tree of edits…", "History…", "Delete this stack…"] {
         assert!(stack.contains(&label.to_string()), "{label}: {stack:?}");
     }
     assert!(stack.contains(&"Ask agent about all".to_string()), "{stack:?}");
@@ -4171,7 +4172,7 @@ fn every_open_comment_of_the_stack_is_closed_at_once_once_asked() {
     let Mode::Menu(m) = &app.mode else { panic!("{:?}", app.mode) };
     assert_eq!(
         m.title,
-        "close 2 of the stack's 3 open comments? 1 stays open: with the agent, or a reply waiting for your review. Show…, closed, can reopen each"
+        "close 2 of the stack's 3 open comments? 1 stays open: with the agent, or a reply waiting for your review. Filter comments…, closed, can reopen each"
     );
     assert_eq!(items(&app), [("Close them".to_string(), true), ("Keep them open".to_string(), true)]);
     assert_eq!(m.sel, 1);
@@ -4180,7 +4181,7 @@ fn every_open_comment_of_the_stack_is_closed_at_once_once_asked() {
     // Closed: those that can be.
     choose(&mut app, "Close all comments…");
     choose(&mut app, "Close them");
-    assert_eq!(app.status, "closed 2 comments: Show…, closed, lists them to reopen; 1 left open, with the agent or a reply waiting for your review");
+    assert_eq!(app.status, "closed 2 comments: Filter comments…, closed, lists them to reopen; 1 left open, with the agent or a reply waiting for your review");
     let d = Db::load(&db).unwrap();
     assert_eq!(d.stack_notes("s").into_iter().map(|n| n.text.clone()).collect::<Vec<_>>(), ["and this one?"]);
     drop(d);
@@ -4199,7 +4200,7 @@ fn closing_all_says_how_many_it_closes() {
     keys(&mut app, &[KeyCode::Home]);
     choose(&mut app, "Close all comments…");
     let Mode::Menu(m) = &app.mode else { panic!("{:?}", app.mode) };
-    assert_eq!(m.title, "close the stack's open comment? Show…, closed, can reopen it");
+    assert_eq!(m.title, "close the stack's open comment? Filter comments…, closed, can reopen it");
     assert_eq!(items(&app), [("Close it".to_string(), true), ("Keep it open".to_string(), true)]);
     keys(&mut app, &[KeyCode::Esc]);
     choose(&mut app, "Comment on the stack…");
@@ -4207,9 +4208,9 @@ fn closing_all_says_how_many_it_closes() {
     keys(&mut app, &[KeyCode::Home]);
     choose(&mut app, "Close all comments…");
     let Mode::Menu(m) = &app.mode else { panic!("{:?}", app.mode) };
-    assert_eq!(m.title, "close all 2 open comments of the stack? Show…, closed, can reopen each");
+    assert_eq!(m.title, "close all 2 open comments of the stack? Filter comments…, closed, can reopen each");
     choose(&mut app, "Close them");
-    assert_eq!(app.status, "closed 2 comments: Show…, closed, lists them to reopen");
+    assert_eq!(app.status, "closed 2 comments: Filter comments…, closed, lists them to reopen");
     assert!(Db::load(&db).unwrap().stack_notes("s").is_empty());
 }
 
@@ -4298,7 +4299,7 @@ fn the_comments_pane_previews_without_moving_the_patch() {
         keys(&mut app, &[KeyCode::Char(' ')]);
         items(&app).into_iter().map(|(l, _)| l).collect()
     };
-    assert!(all.contains(&"Ask agent about all".to_string()) && all.contains(&"Show…".to_string()), "{all:?}");
+    assert!(all.contains(&"Ask agent about all".to_string()) && all.contains(&"Filter comments…".to_string()), "{all:?}");
     assert_eq!(choices_named(&app, "Ask agent about all")[..2], ["change (2)", "answer only (2)"]);
 }
 
@@ -6644,7 +6645,8 @@ fn the_agent_s_reply_waits_for_review_and_enter_takes_it() {
     keys(&mut app, &[KeyCode::Down]);
     let screen = draw(&mut app);
     assert!(screen.contains("the agent's reply waits for your review") && !screen.contains("It is a shout."), "{screen}");
-    // The comments pane marks it, and counts it; Show… lists it apart.
+    // The comments pane marks it, and counts it; Filter comments… lists it
+    // apart.
     assert!(screen.contains("◆ you · a.txt: TWO") && screen.contains("1 comment · 1 to review"), "{screen}");
     assert!(app.show_counts().contains(&(Show::ToReview, 1)) && app.show_counts().contains(&(Show::ToSend, 0)));
     keys(&mut app, &[KeyCode::Char(' ')]);
@@ -7320,9 +7322,11 @@ fn a_comment_is_sent_from_its_menu_and_answered_in_place() {
     assert!(screen.contains("Seen.") && screen.contains("✓ you · a.txt: TWO"), "{screen}");
     assert!(screen.contains("1 to read") && !screen.contains("⟳"), "{screen}");
 
-    // Show… picks what both panes show, each with its count; kept per stack.
+    // Filter comments… picks what both panes show, each with its count;
+    // kept per stack.
     keys(&mut app, &[KeyCode::Right, KeyCode::Home]);
-    choose(&mut app, "Show…");
+    choose(&mut app, "Filter comments…");
+    assert_eq!(menu_title(&app), "filter comments, counted on patch 1");
     let all: Vec<String> = items(&app).into_iter().map(|(l, _)| l).collect();
     assert_eq!(all[..5], ["● all (1)", "  to send (0)", "  to review (0)", "  to read (1)", "  to read: read-only (1)"], "{all:?}");
     choose(&mut app, "  to send");
@@ -7333,6 +7337,89 @@ fn a_comment_is_sent_from_its_menu_and_answered_in_place() {
     let mut again = open(&db).unwrap();
     assert_eq!(again.show, Show::ToSend, "kept in the file");
     draw(&mut again);
+}
+
+#[test]
+fn filter_comments_is_on_a_patch_s_menu_and_both_headers_each_counting_what_the_middle_shows() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    // Two comments on patch 1, one on patch 2, and one on the stack itself.
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Enter]);
+    save(&mut app, "why so loud?");
+    down_to(&mut app, "+LINE 39");
+    keys(&mut app, &[KeyCode::Enter]);
+    save(&mut app, "and this?");
+    stack_note(&db, "s-c1", "Make it better.");
+    Db::edit(&db, |d| {
+        let second = d.patch(&d.stack("s").unwrap().patches[1]).clone();
+        d.set_note(Note {
+            change: second.change.clone(),
+            id: "p2-c1".into(),
+            line: stacked::view::title_key(&second),
+            file: stacked::view::MSG_PATH.into(),
+            preview: second.title().into(),
+            text: "Why b?".into(),
+            ..Default::default()
+        })
+    })
+    .unwrap();
+    app.refresh();
+    // The filter's menu, from the menu open where the cursor is: its title,
+    // and its first two choices.
+    fn filter(app: &mut App) -> (String, Vec<String>) {
+        choose(app, "Filter comments…");
+        let (title, items, _) = asked(app);
+        keys(app, &[KeyCode::Esc]);
+        (title, items[..2].to_vec())
+    }
+    // A patch's menu has it, counted on that patch's comments, the patch the
+    // middle shows; ? says what it does.
+    on_patch(&mut app, 0);
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    let want = items(&app).iter().position(|(l, _)| l == "Filter comments…").expect("on a patch's menu");
+    assert_eq!(items(&app)[want - 1].0, "Comment on this patch…");
+    while !matches!(&app.mode, Mode::Menu(m) if m.sel == want) {
+        key(&mut app, KeyCode::Down);
+    }
+    keys(&mut app, &[KeyCode::Char('?')]);
+    let Mode::Help { lines, .. } = &app.mode else { panic!("{:?}", app.mode) };
+    assert_eq!(
+        lines[0],
+        "Press Enter to pick which comments both panes show, on every patch and on the stack, kept for the stack: each choice counts the comments the middle shows now, as the menu's title says."
+    );
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Esc]);
+    assert_eq!(filter(&mut app), ("filter comments, counted on patch 1".to_string(), labels(&["● all (2)", "  to send (2)"])));
+    on_patch(&mut app, 1);
+    assert_eq!(filter(&mut app), ("filter comments, counted on patch 2".to_string(), labels(&["● all (1)", "  to send (1)"])));
+    // The stack's header: on the stack's own comments.
+    keys(&mut app, &[KeyCode::Home]);
+    assert!(app.on_stack);
+    let own = ("filter comments, counted on the stack's own comments".to_string(), labels(&["● all (1)", "  to send (1)"]));
+    assert_eq!(filter(&mut app), own);
+    // The comments pane's header: on what the middle shows, which the
+    // comments pane lists, the stack's own or the patch's.
+    to_comments(&mut app);
+    keys(&mut app, &[KeyCode::Home]);
+    assert!(app.notes_head);
+    assert!(draw(&mut app).contains(" 1 comment "), "{}", draw(&mut app));
+    assert_eq!(filter(&mut app), own);
+    on_patch(&mut app, 0);
+    to_comments(&mut app);
+    keys(&mut app, &[KeyCode::Home]);
+    assert!(draw(&mut app).contains(" 2 comments "), "{}", draw(&mut app));
+    assert_eq!(filter(&mut app), ("filter comments, counted on patch 1".to_string(), labels(&["● all (2)", "  to send (2)"])));
+    // The filter itself is the stack's, on every patch: picked from patch
+    // 2's menu, patch 1's comments are filtered too, as the comments pane's
+    // header says.
+    on_patch(&mut app, 1);
+    choose(&mut app, "Filter comments…");
+    choose(&mut app, "  to read");
+    assert_eq!((app.show, Db::load(&db).unwrap().view("s")), (Show::ToRead, Some("to read")));
+    on_patch(&mut app, 0);
+    let screen = draw(&mut app);
+    assert!(screen.contains(" to read · 0 of 2") && !screen.contains("why so loud?"), "{screen}");
 }
 
 /// A comment asked about, its stream opened in place: the agent held at
@@ -9408,14 +9495,14 @@ fn a_closed_comment_is_shown_as_it_was_and_reopened() {
     // reopened.
     keys(&mut app, &[KeyCode::Down]);
     choose(&mut app, "Close this comment…");
-    assert!(draw(&mut app).contains("close this comment? Show…, closed, can reopen it"));
+    assert!(draw(&mut app).contains("close this comment? Filter comments…, closed, can reopen it"));
     choose(&mut app, "Close it");
-    assert!(app.status.contains("Show…, closed"), "{}", app.status);
+    assert!(app.status.contains("Filter comments…, closed"), "{}", app.status);
     assert!(!draw(&mut app).contains("why so loud?"));
-    // Show…, closed, from the stack's header: on the patch, it is there as
-    // it was, saying when it was deleted.
+    // Filter comments…, closed, from the stack's header: on the patch, it
+    // is there as it was, saying when it was deleted.
     keys(&mut app, &[KeyCode::Left, KeyCode::Up]);
-    choose(&mut app, "Show…");
+    choose(&mut app, "Filter comments…");
     choose(&mut app, "  closed");
     keys(&mut app, &[KeyCode::Down, KeyCode::Right]);
     let screen = draw(&mut app);
@@ -12309,25 +12396,25 @@ fn delete_closes_the_comment_the_cursor_is_on_once_asked() {
     keys(&mut app, &[KeyCode::Down]);
     // Said where the cursor is, in the bar and by `?`.
     assert!(app.hint().contains(" · space: menu · delete: close it · 1: view"), "{}", app.hint());
-    let said = "Press Delete to close this comment, done with: it leaves the comments shown (Show…, closed, lists it, to reopen). Delete asks first.";
+    let said = "Press Delete to close this comment, done with: it leaves the comments shown (Filter comments…, closed, lists it, to reopen). Delete asks first.";
     assert!(app.help().iter().any(|l| l == said), "{:?}", app.help());
     // Asked first, as the menu's "Close this comment…" asks, keeping it open
     // picked; Esc keeps it.
     keys(&mut app, &[KeyCode::Delete]);
-    assert_eq!(asked(&app), ("close this comment? Show…, closed, can reopen it".to_string(), labels(&["Close it", "Keep it open"]), 1));
+    assert_eq!(asked(&app), ("close this comment? Filter comments…, closed, can reopen it".to_string(), labels(&["Close it", "Keep it open"]), 1));
     keys(&mut app, &[KeyCode::Esc]);
     assert_eq!(app.mode, Mode::Normal);
     assert_eq!(notes_of(&db, "s", 0).len(), 2, "kept");
     // Backspace is Delete too: closed, once said.
     keys(&mut app, &[KeyCode::Backspace]);
     choose(&mut app, "Close it");
-    assert_eq!(app.status, "closed: Show…, closed, on a header, lists it to reopen");
+    assert_eq!(app.status, "closed: Filter comments…, closed, lists it to reopen");
     assert_eq!(notes_of(&db, "s", 0).into_iter().map(|n| n.text).collect::<Vec<_>>(), ["and this?"]);
     // In the comments pane, the same.
     keys(&mut app, &[KeyCode::Right]);
     assert_eq!(app.focus, Focus::Notes);
     keys(&mut app, &[KeyCode::Delete]);
-    assert_eq!(menu_title(&app), "close this comment? Show…, closed, can reopen it");
+    assert_eq!(menu_title(&app), "close this comment? Filter comments…, closed, can reopen it");
     choose(&mut app, "Close it");
     assert!(notes_of(&db, "s", 0).is_empty());
     // A comment closed, shown as it was: nothing, the status saying why.
@@ -12335,7 +12422,7 @@ fn delete_closes_the_comment_the_cursor_is_on_once_asked() {
     // header is Home on the patches.)
     keys(&mut app, &[KeyCode::Left, KeyCode::Left, KeyCode::Home]);
     assert!(app.focus == Focus::List && app.on_stack, "{:?}", app.focus);
-    choose(&mut app, "Show…");
+    choose(&mut app, "Filter comments…");
     choose(&mut app, "  closed");
     keys(&mut app, &[KeyCode::Down, KeyCode::Right, KeyCode::Home]);
     down_to(&mut app, "   └ comment");
@@ -12380,7 +12467,7 @@ fn delete_closes_a_comment_and_those_its_answer_opened_once_asked() {
     assert!(app.hint().contains("delete: close it and those it opened"), "{}", app.hint());
     keys(&mut app, &[KeyCode::Delete]);
     let (title, items, sel) = asked(&app);
-    assert_eq!((title.as_str(), sel), ("close this comment and the 1 it opened? Show…, closed, can reopen each", 1));
+    assert_eq!((title.as_str(), sel), ("close this comment and the 1 it opened? Filter comments…, closed, can reopen each", 1));
     assert_eq!(items, labels(&["Close them", "Keep them open"]));
     keys(&mut app, &[KeyCode::Esc]);
     assert_eq!(Db::load(&db).unwrap().stack_notes("s").len(), 2, "kept");
@@ -12575,7 +12662,7 @@ fn delete_takes_a_comment_back_from_the_queue_once_asked_its_comment_open_or_out
     assert!(notes_of(&db, "s", 0)[0].queued.is_none(), "out of the batch");
     // Then neither: closed, once asked.
     keys(&mut app, &[KeyCode::Delete]);
-    assert_eq!(menu_title(&app), "close this comment? Show…, closed, can reopen it");
+    assert_eq!(menu_title(&app), "close this comment? Filter comments…, closed, can reopen it");
 }
 
 #[test]
@@ -12803,7 +12890,7 @@ fn reading_a_comment_s_rows_have_the_keys_they_have_when_commenting() {
     keys(&mut app, &[KeyCode::Esc]);
     // Delete: asked to close it.
     keys(&mut app, &[KeyCode::Delete]);
-    assert_eq!(menu_title(&app), "close this comment? Show…, closed, can reopen it");
+    assert_eq!(menu_title(&app), "close this comment? Filter comments…, closed, can reopen it");
     keys(&mut app, &[KeyCode::Esc]);
     assert_eq!((notes_of(&db, "s", 0).len(), read(&db)), (1, 0));
     // Enter: a reply.
@@ -13318,7 +13405,7 @@ fn on_the_banner_delete_rejects_what_landed_or_closes_a_comment_once_asked() {
     assert!(selected_banner(&mut app).contains("why so loud?"), "{}", selected_banner(&mut app));
     assert!(app.hint().contains("enter: go to it · delete: close it · space: pick one"), "{}", app.hint());
     keys(&mut app, &[KeyCode::Delete]);
-    assert_eq!(menu_title(&app), "close this comment? Show…, closed, can reopen it");
+    assert_eq!(menu_title(&app), "close this comment? Filter comments…, closed, can reopen it");
     choose(&mut app, "Close it");
     assert!(notes_of(&db, "s", 0).is_empty());
 }
@@ -13616,11 +13703,11 @@ fn reopening_a_comment_closed_keeps_the_cursor_on_its_line() {
     choose(&mut app, "Close this comment…");
     choose(&mut app, "Close it");
     assert_eq!(on_row(&app), "+LINE 39");
-    // Show…, closed: the cursor on its line still; on the comment closed,
-    // reopened, it is no longer one of those shown: the cursor on its line
-    // again, and there once all are shown.
+    // Filter comments…, closed: the cursor on its line still; on the
+    // comment closed, reopened, it is no longer one of those shown: the
+    // cursor on its line again, and there once all are shown.
     keys(&mut app, &[KeyCode::Left, KeyCode::Up]);
-    choose(&mut app, "Show…");
+    choose(&mut app, "Filter comments…");
     choose(&mut app, "  closed");
     keys(&mut app, &[KeyCode::Down, KeyCode::Right]);
     assert_eq!(on_row(&app), "+LINE 39");
@@ -13630,7 +13717,7 @@ fn reopening_a_comment_closed_keeps_the_cursor_on_its_line() {
     assert!(notes_of(&db, "s", 0).iter().any(|n| n.id == b.id));
     assert_eq!(on_row(&app), "+LINE 39", "{}", draw(&mut app));
     keys(&mut app, &[KeyCode::Left, KeyCode::Up]);
-    choose(&mut app, "Show…");
+    choose(&mut app, "Filter comments…");
     choose(&mut app, "  all");
     keys(&mut app, &[KeyCode::Down, KeyCode::Right]);
     assert_eq!(on_row(&app), "+LINE 39", "{}", draw(&mut app));
@@ -13649,7 +13736,7 @@ fn a_comment_hidden_moved_away_or_closed_elsewhere_leaves_the_cursor_where_it_wa
     let show = |app: &mut App, filter: &str| {
         to_comments(app);
         keys(app, &[KeyCode::Home]);
-        choose(app, "Show…");
+        choose(app, "Filter comments…");
         choose(app, filter);
     };
     show(&mut app, "  none");
@@ -13663,7 +13750,7 @@ fn a_comment_hidden_moved_away_or_closed_elsewhere_leaves_the_cursor_where_it_wa
     down_to(&mut app, "     ▎   As @r2 shows.");
     let show = |app: &mut App, filter: &str| {
         keys(app, &[KeyCode::Left, KeyCode::Up]);
-        choose(app, "Show…");
+        choose(app, "Filter comments…");
         choose(app, filter);
         keys(app, &[KeyCode::Down, KeyCode::Right]);
     };
@@ -13724,7 +13811,7 @@ fn a_comment_hidden_with_the_cursor_on_the_agent_s_stream_takes_it_to_its_line()
     assert!(app.rows[app.cursor].stream);
     to_comments(&mut app);
     keys(&mut app, &[KeyCode::Home]);
-    choose(&mut app, "Show…");
+    choose(&mut app, "Filter comments…");
     choose(&mut app, "  none");
     assert_eq!(on_row(&app), "+LINE 39", "{}", draw(&mut app));
 }

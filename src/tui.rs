@@ -742,6 +742,11 @@ pub enum Screen {
     Submit,
 }
 
+/// The item of the menus that picks which comments both panes show, as
+/// self-review's filter: on the stack's header, the comments pane's, and a
+/// patch's.
+const FILTER: &str = "Filter comments…";
+
 /// What the comments pane shows, as self-review's filter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Show {
@@ -1526,7 +1531,7 @@ fn about(action: &Action) -> String {
         Action::AskReviewClose(true) => "accept every part not marked yet, then close the review, once you say so".into(),
         Action::AskReviewClose(false) => "reject every part not marked yet, then close the review, once you say so".into(),
         Action::CloseAsking(_, true) => {
-            "close this comment as the review closes, done with: its replies, which go with it, are accepted (Show…, closed, lists it, to reopen)".into()
+            "close this comment as the review closes, done with: its replies, which go with it, are accepted (Filter comments…, closed, lists it, to reopen)".into()
         }
         Action::CloseAsking(_, false) => "keep this comment open when the review closes; its replies as they were".into(),
         Action::SendBack => {
@@ -1630,12 +1635,14 @@ fn about(action: &Action) -> String {
         Action::GoToOrigin => "go to where it was before it moved to the stack".into(),
         Action::MoveBack => "move it back where it came from".into(),
         Action::NoteHistory => "read every state this comment has been in".into(),
-        Action::AskCloseComment | Action::CloseComment(..) => "close this comment, done with: it leaves the comments shown (Show…, closed, lists it, to reopen)".into(),
+        Action::AskCloseComment | Action::CloseComment(..) => "close this comment, done with: it leaves the comments shown (Filter comments…, closed, lists it, to reopen)".into(),
         Action::Reopen => "reopen this comment, as it was when it was closed".into(),
         Action::AskCloseAll | Action::CloseAll => {
-            "close every open comment of the stack, done with, asked first: those with the agent, or whose reply waits for your review, stay open; Show…, closed, lists them, to reopen each".into()
+            "close every open comment of the stack, done with, asked first: those with the agent, or whose reply waits for your review, stay open; Filter comments…, closed, lists them, to reopen each".into()
         }
-        Action::ShowMenu => "pick which comments the panes show".into(),
+        Action::ShowMenu => {
+            "pick which comments both panes show, on every patch and on the stack, kept for the stack: each choice counts the comments the middle shows now, as the menu's title says".into()
+        }
         Action::SetShow(s) => format!("show the comments {}", s.name()),
         Action::View(Layout::Unified) => "draw the code unified: in one column, the lines removed over the lines added in their place".into(),
         Action::View(Layout::Split) => {
@@ -3350,6 +3357,16 @@ impl App {
             self.current().map(|_| stack_change(&self.stack))
         } else {
             self.patch_id().map(|id| self.db.patch(&id).change.clone())
+        }
+    }
+
+    /// What the middle shows the comments of, which the filter's choices
+    /// count, said: `patch 3`, the patch picked, or `the stack's own
+    /// comments`.
+    fn counted_on(&self) -> String {
+        match self.subject_change() {
+            Some(c) if c != stack_change(&self.stack) => format!("patch {}", self.sel + 1),
+            _ => "the stack's own comments".into(),
         }
     }
 
@@ -6981,7 +6998,7 @@ impl App {
                 if self.current().is_some() {
                     items.push(Item::new("Comment on the stack…", Action::CommentStack));
                     self.send_all_items(&mut items, true);
-                    items.push(Item::new("Show…", Action::ShowMenu));
+                    items.push(Item::new(FILTER, Action::ShowMenu));
                     items.push(Item::new("Close all comments…", Action::AskCloseAll).when(!self.closable().0.is_empty()));
                     items.push(Item::line());
                     items.push(Item::new("Edit the stack as a list in $EDITOR", Action::EditList).when(h && n > 0));
@@ -7028,6 +7045,9 @@ impl App {
                 title = self.patch_title();
                 items.push(Item::new("Read this patch", Action::Open));
                 items.push(Item::new("Comment on this patch…", Action::CommentPatch));
+                // Its choices counted on this patch's comments, which the
+                // middle shows.
+                items.push(Item::new(FILTER, Action::ShowMenu));
                 items.push(Item::new("Move this patch…", Action::MovePatch).when(h && n > 1));
                 if self.head_here().is_some() {
                     items.push(Item::new("Move HEAD…", Action::MoveHead(Some(self.sel))).when(self.move_head_why().is_none()));
@@ -7067,7 +7087,7 @@ impl App {
             (Screen::Main, Focus::Notes) if self.notes_head => {
                 title = "the comments listed".into();
                 self.send_all_items(&mut items, !self.on_stack);
-                items.push(Item::new("Show…", Action::ShowMenu));
+                items.push(Item::new(FILTER, Action::ShowMenu));
             }
             (Screen::Main, Focus::Diff | Focus::Notes) => {
                 if let Some(c) = self.picked() {
@@ -7838,7 +7858,7 @@ impl App {
             Action::AskCloseOpened => {
                 if let Some(c) = self.comment_here() {
                     let n = self.db.opened_from(&name, &c.change, &c.id).len();
-                    let title = format!("close this comment and the {n} it opened? Show…, closed, can reopen each");
+                    let title = format!("close this comment and the {n} it opened? Filter comments…, closed, can reopen each");
                     let yes = Item::new("Close them", Action::CloseOpened(c.change, c.id));
                     self.mode = Mode::Menu(Menu::ask(title, yes, "Keep them open", true));
                 }
@@ -7873,7 +7893,7 @@ impl App {
             Action::AskCloseComment => {
                 if let Some(c) = self.comment_here() {
                     self.mode = Mode::Menu(Menu::ask(
-                        "close this comment? Show…, closed, can reopen it",
+                        "close this comment? Filter comments…, closed, can reopen it",
                         Item::new("Close it", Action::CloseComment(c.change, c.id)),
                         "Keep it open",
                         true,
@@ -7894,7 +7914,7 @@ impl App {
                     k => format!(" {k} stay open: with the agent, or a reply waiting for your review."),
                 };
                 let (it, yes, no) = if n == 1 { ("it", "Close it", "Keep it open") } else { ("each", "Close them", "Keep them open") };
-                let title = format!("{close}{stay} Show…, closed, can reopen {it}");
+                let title = format!("{close}{stay} Filter comments…, closed, can reopen {it}");
                 self.mode = Mode::Menu(Menu::ask(title, Item::new(yes, Action::CloseAll), no, true));
             }
             Action::CloseAll => {
@@ -7911,14 +7931,14 @@ impl App {
                         0 => String::new(),
                         k => format!("; {k} left open, with the agent or a reply waiting for your review"),
                     };
-                    self.status = format!("closed {n} comment{}: Show…, closed, lists them to reopen{left}", plural(n));
+                    self.status = format!("closed {n} comment{}: Filter comments…, closed, lists them to reopen{left}", plural(n));
                 }
             }
             Action::CloseComment(change, id) => {
                 if let Some(c) = self.db.note(&change, &id).cloned()
                     && self.edit(|db| db.set_note(Note { text: String::new(), ..c })).is_some()
                 {
-                    self.status = "closed: Show…, closed, on a header, lists it to reopen".into();
+                    self.status = "closed: Filter comments…, closed, lists it to reopen".into();
                 }
             }
             Action::Reopen => {
@@ -7938,7 +7958,8 @@ impl App {
                         Item::new(format!("{mark}{} ({n})", s.name()), Action::SetShow(s))
                     })
                     .collect();
-                let mut m = Menu::new("show the comments", items, None);
+                // What its counts are of: what the middle shows.
+                let mut m = Menu::new(format!("filter comments, counted on {}", self.counted_on()), items, None);
                 m.sel = Show::ALL.iter().position(|s| *s == self.show).unwrap_or(0);
                 self.mode = Mode::Menu(m);
             }
