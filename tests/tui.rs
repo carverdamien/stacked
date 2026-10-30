@@ -14627,6 +14627,119 @@ fn space_on_the_phabricator_line_shows_what_differs_under_it_and_hides_it_again(
     stacked::phab::statuses_stand_in(&db, None);
 }
 
+#[cfg(feature = "moz-phab")]
+#[test]
+fn a_summary_wrapped_otherwise_differs_space_showing_the_lines_of_both_until_a_submit_sends_it() {
+    // D13 has patch 3 as it was submitted, its paragraph on one line; the
+    // patch's message is wrapped otherwise since, as wrapping its long
+    // lines leaves it, every word the same.
+    let message = format!("Bug 3 - three\n\nThe parser reads the whole file\nbefore it checks the header.\n\nBecause.\n\n{LINK}13");
+    let (_tmp, db) = phab_setup(["Bug 1 - one", "Bug 2 - two", &message]);
+    let mut p = Phab::default().with(13, "changes-planned", "WIP: Bug 3 - three", &patch_of(&db, 2).diff);
+    p.revisions.get_mut(&13).unwrap().summary = "The parser reads the whole file before it checks the header.\n\nBecause.".into();
+    let phab = std::sync::Arc::new(std::sync::Mutex::new(p));
+    let _one = phab_stand_in(&phab);
+    statuses_from(&db, &phab);
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Down, KeyCode::Down]);
+    app.refresh();
+    app.settle();
+    // What lands is Phabricator's lines: not this version's.
+    assert_eq!(phab_line(&mut app).as_deref(), Some("Phabricator: D13 · Changes Planned · the title or summary differs · no new comments"));
+    // Space: that said, then the title and `Because.` once, and the
+    // paragraph as each version writes it, Phabricator's lines then this
+    // version's, no word in the colour for words.
+    keys(&mut app, &[KeyCode::Right, KeyCode::Up, KeyCode::Char(' ')]);
+    let under = under_line(&mut app);
+    assert_eq!(under[0], "the title and summary: Phabricator's, then this version's");
+    let said: Vec<&str> = under[1..].iter().map(String::as_str).take_while(|l| l.starts_with("   ")).collect();
+    assert_eq!(
+        said.iter().map(|l| l.trim()).collect::<Vec<_>>().join(" "),
+        "Both versions have the same words: they differ only in where their lines wrap, or in their white space."
+    );
+    let (old, new) = ("-The parser reads the whole file before it checks the header.", "+The parser reads the whole file");
+    assert_eq!(under[1 + said.len()..], [" WIP: Bug 3 - three", " ", old, new, "+before it checks the header.", " ", " Because.", ""]);
+    use stacked::paint::color;
+    let plain = ratatui::style::Style::new();
+    assert_eq!(style_after(&mut app, old, old.find("whole").unwrap(), 30), as_drawn(plain), "whole");
+    assert_eq!(style_after(&mut app, old, 0, 30), as_drawn(color::del()), "its sign");
+    assert_eq!(style_after(&mut app, new, new.find("whole").unwrap(), 30), as_drawn(plain), "whole");
+    assert_eq!(style_after(&mut app, new, 0, 30), as_drawn(color::add()), "its sign");
+    // `?`: in sync is to the letter, where the lines wrap too.
+    keys(&mut app, &[KeyCode::Char('?')]);
+    let Mode::Help { lines, .. } = &app.mode else { panic!("{:?}", app.mode) };
+    assert!(lines[0].contains("the title and summary exactly as a submit sends them, where their lines wrap too;"), "{lines:#?}");
+    keys(&mut app, &[KeyCode::Esc]);
+    // Hidden, `?` says what Space shows: the title and summary alone, as
+    // the code is the same.
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    assert!(under_line(&mut app).is_empty());
+    keys(&mut app, &[KeyCode::Char('?')]);
+    let Mode::Help { lines, .. } = &app.mode else { panic!("{:?}", app.mode) };
+    assert_eq!(lines[1], "Press Space to show what differs under this line: the title and summary, Phabricator's then this version's. Space again hides it.");
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Left]);
+    // The submit's review shows them so too.
+    choose(&mut app, "Submit to Phabricator as WIP");
+    app.settle();
+    assert_eq!(app.screen, Screen::Submit);
+    let rows = submitted(&mut app);
+    let from = rows.iter().position(|r| r == "the title and summary: Phabricator's, then what is sent").unwrap() + 1;
+    let said = rows[from..].iter().take_while(|r| r.starts_with("   ")).count();
+    assert!(said > 0, "{rows:#?}");
+    assert_eq!(rows[from + said..from + said + 7], [" WIP: Bug 3 - three", " ", old, new, "+before it checks the header.", " ", " Because."], "{rows:#?}");
+    // Sent, the summary as this version writes it: given back so, in sync.
+    keys(&mut app, &[KeyCode::Enter]);
+    app.settle();
+    assert_eq!(app.status, "D13 has the title and summary of patch 3 now. Patch 2 has no revision, so D13 gets no parent.");
+    assert_eq!(phab.lock().unwrap().revisions[&13].summary, "The parser reads the whole file\nbefore it checks the header.\n\nBecause.");
+    assert_eq!(phab_line(&mut app).as_deref(), Some("Phabricator: D13 · Changes Planned · in sync · no new comments"));
+    stacked::phab::statuses_stand_in(&db, None);
+    stacked::submit::stand_in(None);
+}
+
+#[cfg(feature = "moz-phab")]
+#[test]
+fn a_patch_submitted_and_unchanged_since_is_in_sync_phabricator_giving_back_what_was_sent() {
+    let (_tmp, db) = phab_setup(["Bug 1 - one", "Bug 2 - two", &format!("Bug 3 - three\n\n{LINK}13")]);
+    // Patch 3's next version: reviewers in its title, which moz-phab writes
+    // otherwise; a paragraph with white space ending a line, a command, and
+    // the trailer between those and the last paragraph.
+    let message = format!("bug 3 - three r=alice r?bob\n\nThe parser reads the whole file\nbefore it checks the header.  \n\n    $ ./mach build --foo\n\n{LINK}13\n\nBecause.");
+    next_version(&db, 2, &message, &patch_of(&db, 2).diff);
+    let mut p = Phab::default().with(13, "changes-planned", "WIP: Bug 3 - an older title", &patch_of(&db, 2).diff);
+    p.revisions.get_mut(&13).unwrap().summary = "Why.".into();
+    let phab = std::sync::Arc::new(std::sync::Mutex::new(p));
+    let _one = phab_stand_in(&phab);
+    statuses_from(&db, &phab);
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Down, KeyCode::Down]);
+    app.refresh();
+    app.settle();
+    assert_eq!(phab_line(&mut app).as_deref(), Some("Phabricator: D13 · Changes Planned · the title or summary differs · no new comments"));
+    choose(&mut app, "Submit to Phabricator as WIP");
+    app.settle();
+    keys(&mut app, &[KeyCode::Enter]);
+    app.settle();
+    assert_eq!(app.status, "D13 has the title and summary of patch 3 now. Patch 2 has no revision, so D13 gets no parent.");
+    // Phabricator keeps them as they were sent: the title as moz-phab
+    // writes it, the summary without the trailer, its lines as the
+    // message's, the white space ending one too.
+    let r = phab.lock().unwrap().revisions[&13].clone();
+    assert_eq!(r.title, "WIP: Bug 3 - three r?bob r=alice");
+    assert_eq!(r.summary, "The parser reads the whole file\nbefore it checks the header.  \n\n    $ ./mach build --foo\n\nBecause.");
+    // Read again as they are given back: in sync, and Space says that
+    // Phabricator has this exact version.
+    assert_eq!(phab_line(&mut app).as_deref(), Some("Phabricator: D13 · Changes Planned · in sync · no new comments"));
+    keys(&mut app, &[KeyCode::Right, KeyCode::Up, KeyCode::Char(' ')]);
+    assert_eq!(
+        app.status,
+        "Phabricator has this exact version of patch 3: the latest diff of D13 does what this version does, and the title and summary of D13 are those of this version."
+    );
+    assert!(under_line(&mut app).is_empty());
+    stacked::phab::statuses_stand_in(&db, None);
+    stacked::submit::stand_in(None);
+}
+
 /// `fetch` the stand-in for Phabricator in the pulls made while the guard it
 /// gives lives: the tests of a pull share it, so they go one at a time.
 #[cfg(feature = "moz-phab")]

@@ -566,11 +566,13 @@ Phabricator names it), Abandoned, or `status unknown`; whether Phabricator
 has this version of the patch, `in sync` when the revision's latest diff
 does what the patch does (the same effect, or each file the same once both
 are applied on the patches below it, as a submit's check takes them) and
-its title and summary say what the patch's message does, as a submit
-sends them (`WIP: ` first or not, as the revision's title is; the summary
-without the lines naming a revision; their lines wrapped otherwise the
-same), else `the diff differs`, `the title or summary differs`, or `the
-diff and the title or summary differ`, always against the patch as it is,
+its title and summary are to the letter those a submit sends (`WIP: `
+first or not, as the revision's title is; the summary without the lines
+naming a revision; the white space at their end aside), where their lines
+wrap too, as Phabricator's are what lands: a message wrapped again since
+it was submitted is not in sync until it is submitted again; else `the
+diff differs`, `the title or summary differs`, or `the diff and the title
+or summary differ`, always against the patch as it is,
 never its older versions; and how many of the revision's comments are not
 pulled yet: `2 new comments to pull`, `1 edited comment to pull` (edited on
 Phabricator since it was filed), `no new comments`. Those are counted from
@@ -588,13 +590,17 @@ the title pinned in its place. The cursor comes to a patch on its
 message's header, the line over it in sight; ↑ goes onto it. There, Space
 shows what differs, under the line, as a submit's review shows it: the
 title and summary, Phabricator's then this version's, compared where their
-lines wrap aside, when they differ; and the code, each file as the latest
-diff leaves it, then as this version leaves it, both on the patches below
-it (the two diffs diffed as text when the files cannot be read so). Space
-again, on the line or on what it shows, hides it. In sync, Space says so on
-the bottom line (`Phabricator has this exact version of patch 1: …`). Space
-there marks nothing read, even in the reading mode, and opens no menu:
-Enter opens it, and `?` says what the line says and what Space does.
+lines wrap aside, when they differ (when they differ only in where their
+lines wrap, or in their white space, that is said, and each paragraph
+written otherwise is there as each version writes it, Phabricator's lines
+then this version's, no word in the colours for words); and the code,
+each file as the latest diff leaves it, then as this version leaves it,
+both on the patches below it (the two diffs diffed as text when the files
+cannot be read so). Space again, on the line or on what it shows, hides
+it. In sync, Space says so on the bottom line (`Phabricator has this
+exact version of patch 1: …`). Space there marks nothing read, even in
+the reading mode, and opens no menu: Enter opens it, and `?` says what
+the line says and what Space does.
 
 The latest diff (differential.diff.search, the newest alone, then
 differential.getrawdiff) and the comments (transaction.search) are read
@@ -3181,15 +3187,18 @@ changes, the title and summary, Phabricator's then what is sent, compared
 as an interdiff compares two messages (History, above: a paragraph
 only wrapped otherwise once, as it is sent; a section that differs,
 Phabricator's lines then those sent, what only one has in the colours for
-words); the parent and the bug, before then after, and the status; and the
-code, each file as the latest diff leaves it, then as the patch does, both
-on the patches below it, a file that only one of them touches too. When
-the code is the patch's already, the screen says so at its top. ↑↓ (pgup
-pgdn home end) scroll, and 1 shows the code side by side, or unified
-again, the lines of the title and summary that differ side by side too,
-Phabricator's on the left, coloured the same way. Enter, or `Send it to
-Phabricator` in its menu, sends it; Esc, or `Cancel: send nothing`,
-sends nothing. Before anything
+words; and when nothing differs but where their lines wrap, or their
+white space, that is said, and each paragraph written otherwise is there
+as each writes it, Phabricator's lines then those sent, no word in the
+colours for words); the parent and the bug, before then after, and the
+status; and the code, each file as the latest diff leaves it, then as the
+patch does, both on the patches below it, a file that only one of them
+touches too. When the code is the patch's already, the screen says so at
+its top. ↑↓ (pgup pgdn home end) scroll, and 1 shows the code side by
+side, or unified again, the lines of the title and summary that differ
+side by side too, Phabricator's on the left, coloured the same way.
+Enter, or `Send it to Phabricator` in its menu, sends it; Esc, or
+`Cancel: send nothing`, sends nothing. Before anything
 is sent, the revision is read again: if its latest diff, its status, its
 title, summary or bug, or its parents changed meanwhile, nothing is (`D123
 changed on Phabricator since you reviewed it, so nothing was sent. Submit
@@ -3825,9 +3834,16 @@ come from nowhere; built without moz-phab, none shown, nor a Phabricator
 line), the Phabricator line (with moz-phab, over the message's header,
 the cursor coming to the header: the revision alone and `…` before
 anything is read; in sync; the diff differing, the title or summary, and
-both; a status stacked does not know, and a revision Phabricator does not
-have; the comments to pull, none once a pull holds them for review, nor
-once they are filed, one edited and one new once the revision is read
+both; a summary wrapped otherwise, every word the same, differing: Space
+showing the lines of both versions, no word in the colours for words, and
+saying so, `?` saying that in sync is to the letter and what Space shows,
+the submit's review showing them so too, and in sync once it is
+submitted; a patch submitted and unchanged since in sync, Phabricator
+giving back its title and summary as they were sent, white space ending
+a line and all; a status stacked does not know, and a revision
+Phabricator does not have; the comments to pull, none once a pull holds
+them for review, nor once they are filed, one edited and one new once
+the revision is read
 again, none once their thread is closed; over the message in every view
 of the code, in each half of the middle split in two, reading and with
 each file whole; none over a patch naming no revision, nor while reviews
@@ -4235,10 +4251,17 @@ moved to the stack's comments, another stack's pull not this one's, and
 one rejected in a review counted, as only the history holds it. Those in
 `tui/revisions.rs` show when the statuses are due a read: never read, other
 revisions, a submit ended since, or three minutes gone by; a title in work
-as moz-phab reads it; the title and summary compared as a submit sends
-them, in work or not as the revision's title is, however their lines
-wrap; the comments to pull and what differs said in plain words; and the
-line folded between words, its pieces under its first.
+as moz-phab reads it; the title and summary compared to the letter as a
+submit sends them, in work or not as the revision's title is, the white
+space at their end aside, their lines wrapped otherwise or other white
+space in them differing; what a submit sent, given back as it was, in
+sync, its reviewers, its trailer, white space ending a line, a fenced
+block or carriage returns and all; a title and summary only wrapped
+otherwise, or only spaced otherwise, showing the lines of both versions,
+nothing marked, said so, and one with a word changed too showing the
+paragraph wrapped otherwise once; the comments to pull and what differs
+said in plain words; and the line folded between words, its pieces under
+its first.
 
 ## Not done yet
 

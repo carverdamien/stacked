@@ -185,16 +185,33 @@ fn review_rows(p: &Prepared, w: usize) -> Vec<Row> {
     rows
 }
 
+/// What the rows of two versions of a title and summary say first when
+/// they differ in nothing but where their lines wrap, or their white space.
+const ONLY_WRAPPED: &str = "Both versions have the same words: they differ only in where their lines wrap, or in their white space.";
+
 /// Two versions of a title and summary, `before` then `after`, as rows
 /// folded to `w`, compared as an interdiff compares two messages, where
 /// their lines wrap aside (`messages::diff`): a section the same in both
 /// once, as `after` has it; one that differs, the lines of `before` then
-/// those of `after`, what only each has marked.
+/// those of `after`, what only each has marked. When they differ in
+/// nothing else than where their lines wrap, or their white space, that
+/// is said first, and each section written otherwise is there as each
+/// version writes it, the lines of `before` then those of `after`, nothing
+/// marked, as every word is in both: what differs in sight, rather than
+/// one version alone.
 pub(super) fn message_rows(rows: &mut Vec<Row>, before: &str, after: &str, w: usize) {
     let d = crate::messages::diff(before, after);
+    // Each version's lines as it writes them, the white space ending each
+    // too, a carriage return as well; the same lines as `messages` reads.
+    let (wrote_a, wrote_b): (Vec<&str>, Vec<&str>) = (before.split('\n').collect(), after.split('\n').collect());
+    let only_wrapped = before != after && d.runs.iter().all(|r| r.same);
+    if only_wrapped {
+        said_rows(rows, Kind::Meta, ONLY_WRAPPED, w);
+    }
     for run in &d.runs {
         let (was, is) = (d.ours.get(run.ours.clone()).unwrap_or_default(), d.theirs.get(run.theirs.clone()).unwrap_or_default());
-        if run.same {
+        let written_alike = wrote_a.get(run.ours.clone()) == wrote_b.get(run.theirs.clone());
+        if run.same && (written_alike || !only_wrapped) {
             for l in is {
                 diff_rows(rows, &format!(" {}", l.text), &[], w);
             }
@@ -450,7 +467,7 @@ impl App {
         let Some(sub) = self.submitting.as_ref() else { return Vec::new() };
         let rows = &sub.rows;
         // Under their heading, as `review_rows` writes it, up to the empty
-        // row after them.
+        // row after them; what is said over them (`message_rows`) aside.
         let heading = "the title and summary: Phabricator's, then what is sent";
         let Some(head) = rows.iter().position(|r| r.kind == Kind::File && r.text == heading) else { return Vec::new() };
         let end = rows[head..].iter().position(|r| r.kind == Kind::Blank).map_or(rows.len(), |k| head + k);
@@ -459,7 +476,7 @@ impl App {
             _ => vec![sub.cursor],
         };
         let mut out: Vec<String> = Vec::new();
-        for i in under.into_iter().filter(|&i| head < i && i < end) {
+        for i in under.into_iter().filter(|&i| head < i && i < end && rows[i].kind != Kind::Meta) {
             let Some(first) = (head + 1..=i).rev().find(|&k| !rows[k].cont) else { continue };
             let last = (first + 1..end).find(|&k| !rows[k].cont).unwrap_or(end);
             let line: String = rows[first..last].iter().map(|r| r.text.strip_prefix(crate::rows::FOLDED).filter(|_| r.cont).unwrap_or(r.text.as_str())).collect();

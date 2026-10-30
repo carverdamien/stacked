@@ -26,6 +26,15 @@ const EVERY: Duration = Duration::from_secs(180);
 /// files cannot be read as the patches below leave them.
 const AS_TEXT: &str = "The files could not be read as the patches below this one leave them, so this is Phabricator's latest diff against this version's diff, as text.";
 
+/// What the code of patch `n` (from 1) is compared on, said: each version
+/// applied on the stack's base for the first, else on the patches below it.
+fn below(n: usize) -> String {
+    match n {
+        1 => "both on the stack's base".to_string(),
+        _ => format!("both on the patches below patch {n}"),
+    }
+}
+
 /// Whether the statuses of revisions `named` are due a read at `now`, as
 /// `s` says they were read: never, or of other revisions; or a submit
 /// ended since; or a few minutes ago.
@@ -110,8 +119,13 @@ fn in_work(t: &str) -> bool {
 /// The title and summary of revision `s`, as its search found them, and as
 /// patch `p` would send them, as a submit reads them (`submit::wip_title`,
 /// `submit::summary_of`, the lines naming a revision left out of both): its
-/// title `WIP: ` first, or not, as the revision's is. None when they say
-/// the same, however their lines wrap (`messages::diff`).
+/// title `WIP: ` first, or not, as the revision's is. None when they are
+/// the same to the letter, the white space at their end aside, as a
+/// submit compares them before it sends them: where their lines wrap too,
+/// as that is what lands, so that a message wrapped again since it was
+/// submitted differs until it is submitted again. Phabricator gives a
+/// title and summary back as a submit sent them, over Conduit, to the
+/// letter: nothing else is to be allowed for.
 fn message_against(s: &Searched, p: &Patch, trailer: &str) -> Option<(String, String)> {
     let before = format!("{}\n\n{}", s.title, crate::submit::summary_of(&format!("\n{}", s.summary), trailer)).trim_end().to_string();
     let wip = crate::submit::wip_title(p.title()).title;
@@ -120,8 +134,7 @@ fn message_against(s: &Searched, p: &Patch, trailer: &str) -> Option<(String, St
         false => wip.strip_prefix("WIP: ").unwrap_or(&wip).to_string(),
     };
     let after = format!("{title}\n\n{}", crate::submit::summary_of(&p.message, trailer)).trim_end().to_string();
-    let d = crate::messages::diff(&before, &after);
-    (!d.runs.iter().all(|r| r.same)).then_some((before, after))
+    (before != after).then_some((before, after))
 }
 
 /// How many comments are not pulled yet, new and edited (`review::not_pulled`), as
@@ -494,9 +507,11 @@ impl App {
     /// What differs, `x`, between patch `p`, the one picked, and its
     /// revision `d`, as rows `w` wide under the Phabricator line, as a
     /// submit's review shows them: the title and summary, Phabricator's then
-    /// this version's, compared where their lines wrap aside; then the code,
-    /// each file as the latest diff leaves it, then as this version does,
-    /// both on the patches below it. An empty row after, over the message.
+    /// this version's, compared where their lines wrap aside, or each
+    /// version's lines when only where they wrap differs (`message_rows`);
+    /// then the code, each file as the latest diff leaves it, then as this
+    /// version does, both on the patches below it. An empty row after, over
+    /// the message.
     fn differs_rows(&self, p: &Patch, d: &str, x: &Differs, w: usize) -> Vec<Row> {
         let mut rows = Vec::new();
         let n = self.sel + 1;
@@ -509,11 +524,7 @@ impl App {
                 rows.push(row(Kind::Blank, ""));
             }
             rows.push(row(Kind::File, "the code: Phabricator's, then this version's"));
-            let on = match n {
-                1 => "both on the stack's base".to_string(),
-                _ => format!("both on the patches below patch {n}"),
-            };
-            let said = said.clone().unwrap_or_else(|| format!("Each file as the latest diff of {d} leaves it, then as this version of patch {n} leaves it, {on}."));
+            let said = said.clone().unwrap_or_else(|| format!("Each file as the latest diff of {d} leaves it, then as this version of patch {n} leaves it, {}.", below(n)));
             said_rows(&mut rows, Kind::Meta, &said, w);
             rows.push(row(Kind::Blank, ""));
             rows.extend(code_rows(&p.change, code, w));
@@ -566,7 +577,7 @@ impl App {
         let Some((d, link)) = crate::phab::revision_of(&p.message) else { return Vec::new() };
         let n = self.sel + 1;
         let mut out = vec![format!(
-            "This line says what Phabricator has of patch {n}: its revision, {d}; the status of {d}, by its name; whether the latest diff of {d}, and its title and summary, are those of this version (in sync), the diff by what it does, the title and summary by their words, however their lines wrap; and how many of the comments of {d} are not pulled yet. What this line says is read from Phabricator, away from the screen, for the patch the middle shows: every three minutes, and again after a submit or a pull. Where something is not read yet, the line says … in its place."
+            "This line says what Phabricator has of patch {n}: its revision, {d}; the status of {d}, by its name; whether the latest diff of {d}, and its title and summary, are those of this version (in sync), the diff by what it does, the title and summary exactly as a submit sends them, where their lines wrap too; and how many of the comments of {d} are not pulled yet. What this line says is read from Phabricator, away from the screen, for the patch the middle shows: every three minutes, and again after a submit or a pull. Where something is not read yet, the line says … in its place."
         )];
         let unfolded = self.unfolded(p, &link);
         let missing = self.statuses.missing.contains(&link) && !self.statuses.known.contains_key(&link);
@@ -574,9 +585,20 @@ impl App {
             _ if missing => format!("Phabricator has no revision {d}, so nothing of it is compared with this patch, and Space only says so."),
             Some(_) if unfolded => "Under this line is what differs: press Space to hide it.".into(),
             Some(x) if x.none() => "Phabricator has this exact version: Space says so, and shows nothing under this line.".into(),
-            Some(_) => format!(
-                "Press Space to show what differs under this line: the title and summary when they differ, Phabricator's then this version's; and each file as the latest diff of {d} leaves it, then as this version leaves it, both on the patches below patch {n}. Space again hides it."
-            ),
+            // What Space shows, of what differs.
+            Some(x) => {
+                let message = "the title and summary, Phabricator's then this version's".to_string();
+                let code = match x.code {
+                    Some((_, Some(_))) => format!("the latest diff of {d} against this version's diff, as text, since the files could not be read"),
+                    _ => format!("each file as the latest diff of {d} leaves it, then as this version leaves it, {}", below(n)),
+                };
+                let shown = match (x.message.is_some(), x.code.is_some()) {
+                    (true, true) => format!("{message}; and {code}"),
+                    (true, false) => message,
+                    _ => code,
+                };
+                format!("Press Space to show what differs under this line: {shown}. Space again hides it.")
+            }
             None => "Press Space to show what differs under this line, once it is read and compared.".into(),
         });
         out.push("Press Enter for all that can be done here.".into());
@@ -634,10 +656,28 @@ mod tests {
         let trailer = "Differential Revision";
         let mine = p("Bug 1 - one r?alice\n\nThe parser reads the whole file\nbefore it checks the header.\n\nDifferential Revision: https://p.example/D1");
         // In work, or not: the title as moz-phab writes it, either way; the
-        // summary however its lines wrap, the trailer left out.
-        let summary = "The parser reads the whole file before it checks the header.";
+        // summary line for line, the trailer left out, the white space at
+        // its end aside.
+        let summary = "The parser reads the whole file\nbefore it checks the header.";
         assert_eq!(message_against(&searched("WIP: Bug 1 - one r?alice", summary), &mine, trailer), None);
         assert_eq!(message_against(&searched("Bug 1 - one r?alice", summary), &mine, trailer), None);
+        assert_eq!(message_against(&searched("Bug 1 - one r?alice", &format!("{summary}\n\n")), &mine, trailer), None);
+        // The same words, their lines wrapped otherwise, as a message wrapped
+        // again since it was submitted is: they differ, Phabricator's then
+        // this version's, as a submit would send them again.
+        let (before, after) = message_against(&searched("Bug 1 - one r?alice", "The parser reads the whole file before it checks the header."), &mine, trailer).unwrap();
+        assert_eq!(before, "Bug 1 - one r?alice\n\nThe parser reads the whole file before it checks the header.");
+        assert_eq!(after, "Bug 1 - one r?alice\n\nThe parser reads the whole file\nbefore it checks the header.");
+        // Other white space too: within a line, ending one, a carriage
+        // return ending one.
+        for other in [
+            "The parser reads the whole  file\nbefore it checks the header.",
+            "The parser reads the whole file \nbefore it checks the header.",
+            "The parser reads the whole file\r\nbefore it checks the header.",
+        ] {
+            assert!(message_against(&searched("Bug 1 - one r?alice", other), &mine, trailer).is_some(), "{other:?}");
+        }
+        assert!(message_against(&searched("Bug 1 -  one r?alice", summary), &mine, trailer).is_some(), "the title's");
         // A word of the summary otherwise: Phabricator's, then this version's.
         let (before, after) = message_against(&searched("Bug 1 - one r?alice", "The parser reads the entire file before it checks the header."), &mine, trailer).unwrap();
         assert_eq!(before, "Bug 1 - one r?alice\n\nThe parser reads the entire file before it checks the header.");
@@ -645,6 +685,76 @@ mod tests {
         // The title otherwise, in work: compared in work.
         let (before, after) = message_against(&searched("WIP: Bug 1 - two", summary), &mine, trailer).unwrap();
         assert_eq!((before.lines().next(), after.lines().next()), (Some("WIP: Bug 1 - two"), Some("WIP: Bug 1 - one r?alice")));
+    }
+
+    #[test]
+    fn a_title_and_summary_given_back_as_a_submit_sent_them_are_in_sync() {
+        let trailer = "Differential Revision";
+        let link = "Differential Revision: https://p.example/D1";
+        for message in [
+            format!("Bug 1 - one\n\n{link}"),
+            "Bug 1 - one, its title alone".to_string(),
+            // Reviewers moz-phab writes otherwise; white space ending a line,
+            // a command, a fenced block and its empty line.
+            format!("bug 1 - one r=alice,bob! r?#build\n\nThe parser reads the whole file\nbefore it checks the header.  \n\n    $ ./mach build --foo\n\n```\nfn a() {{}}\n\nfn b() {{}}\n```\n\n{link}"),
+            // The trailer between two paragraphs, empty lines after it all.
+            format!("Bug 1 - one\n\nA paragraph.\n\n{link}\n\nAnother, after the trailer.\n\n\n"),
+            // Lines that end in a carriage return.
+            format!("WIP: Bug 1 - one\r\n\r\nLines that end\r\nin a carriage return.\r\n\r\n{link}\r\n"),
+        ] {
+            let p = Patch::new("c".into(), None, None, message.clone(), String::new());
+            // What a submit sends (`submit::prepare_with`), as Phabricator
+            // keeps it and gives it back.
+            let sent = Searched {
+                status: Status::ChangesPlanned,
+                title: crate::submit::wip_title(p.title()).title,
+                summary: crate::submit::summary_of(&p.message, trailer),
+                phid: String::new(),
+            };
+            assert_eq!(message_against(&sent, &p, trailer), None, "{message:?}");
+        }
+    }
+
+    #[test]
+    fn a_title_and_summary_only_wrapped_otherwise_show_the_lines_of_both_versions_said_so() {
+        let rows = |before: &str, after: &str| {
+            let mut rows = Vec::new();
+            message_rows(&mut rows, before, after, 80);
+            rows
+        };
+        let texts = |rows: &[Row]| rows.iter().map(|r| r.text.clone()).collect::<Vec<_>>();
+        let said = |rows: &[Row]| rows.iter().take_while(|r| r.kind == Kind::Meta).map(|r| r.text.trim().to_string()).collect::<Vec<_>>();
+        let before = "WIP: Bug 1 - one\n\nThe parser reads the whole file before it checks the header.\n\nBecause.";
+        let after = "WIP: Bug 1 - one\n\nThe parser reads the whole file\nbefore it checks the header.\n\nBecause.";
+        // Wrapped otherwise, and nothing else: said first; the title and
+        // `Because.` once; the paragraph as each version writes it,
+        // Phabricator's lines then this version's, nothing of them marked, as
+        // every word of them is in both.
+        let only = rows(before, after);
+        let over = said(&only);
+        assert_eq!(over.join(" "), "Both versions have the same words: they differ only in where their lines wrap, or in their white space.");
+        assert!(over.len() > 1, "folded to the width: {over:?}");
+        let lines = &only[over.len()..];
+        assert_eq!(
+            texts(lines),
+            [" WIP: Bug 1 - one", " ", "-The parser reads the whole file before it checks the header.", "+The parser reads the whole file", "+before it checks the header.", " ", " Because."]
+        );
+        assert!(lines.iter().all(|r| r.words.is_empty() && !r.broken), "{lines:#?}");
+        assert!(lines.iter().filter(|r| r.kind != Kind::Ctx).all(|r| r.compared && matches!(r.kind, Kind::Add | Kind::Del)), "{lines:#?}");
+        // White space otherwise alone, its lines wrapped where they were: the
+        // same, both versions' lines.
+        let spaced = rows("Bug 1\n\nThe parser  reads it.\r\nThen it checks.", "Bug 1\n\nThe parser reads it.\nThen it checks.");
+        let lines = &spaced[said(&spaced).len()..];
+        assert!(!said(&spaced).is_empty());
+        assert_eq!(texts(lines), [" Bug 1", " ", "-The parser  reads it.", "-Then it checks.", "+The parser reads it.", "+Then it checks."]);
+        // A word otherwise too: nothing said, the paragraph wrapped otherwise
+        // once, as this version writes it, the word's own lines Phabricator's
+        // then this version's.
+        let mixed = rows(before, &after.replace("Because.", "Since."));
+        assert_eq!(
+            texts(&mixed),
+            [" WIP: Bug 1 - one", " ", " The parser reads the whole file", " before it checks the header.", " ", "-Because.", "+Since."]
+        );
     }
 
     #[test]
