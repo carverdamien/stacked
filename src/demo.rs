@@ -258,6 +258,7 @@ fn agent(path: &Path, id: &str) -> Result<()> {
                     text: text.into(),
                     tag: info.way.name().into(),
                     promote: promote.map(String::from),
+                    effort: info.effort,
                     ..Default::default()
                 })
                 .collect()

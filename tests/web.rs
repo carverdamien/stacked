@@ -907,6 +907,83 @@ fn a_reviewer_s_edit_is_headed_so_and_a_pull_s_review_rejects_nothing_in_the_bro
     assert!(!seen.iter().any(|l| text(l).contains("Reject all remaining")), "{seen:#?}");
 }
 
+/// On stack `s` of `db`, the agent's work at max: on its first patch's
+/// title, a thread the agent replied to at max, after its reply of before
+/// efforts were picked; and its answer to a comment on the second patch's
+/// title, landed, waiting for your review.
+fn at_max(db: &Path) {
+    use stacked::db::{Effort, Note, Run, RunState};
+    use stacked::thread::{Role, append_agent, append_turn};
+    stacked::db::Db::edit(db, |d| {
+        let (from, s) = d.head("s").map(|(rev, s)| (rev, s.clone())).unwrap();
+        let (first, second) = (d.patch(&s.patches[0]).clone(), d.patch(&s.patches[1]).clone());
+        let note = |p: &stacked::db::Patch, id: &str, text: String| Note {
+            change: p.change.clone(),
+            id: id.into(),
+            line: stacked::view::title_key(p),
+            file: stacked::view::MSG_PATH.into(),
+            preview: p.title().into(),
+            text,
+            ..Default::default()
+        };
+        let before = append_turn("Was it so before?", Role::Agent, "It was.", Some("answer"));
+        let thread = append_agent(&append_turn(&before, Role::You, "Why shout?", None), "A shout.", "answer", Some("max"));
+        d.set_note(note(&first, "c-max", thread))?;
+        d.set_note(note(&second, "c-bee", "Why add b?".into()))?;
+        let ask = serde_json::json!({"way": "answer", "scope": {"patch": second.change}, "from": from, "notes": [{"label": "c1", "change": second.change, "id": "c-bee"}], "effort": "max"});
+        d.add_run(Run {
+            id: "run-max".into(),
+            what: "answer".into(),
+            stack: "s".into(),
+            state: RunState::Done,
+            request: "Why add b?".into(),
+            ask: Some(ask),
+            held: Some(stacked::held::Held {
+                at: stacked::db::now(),
+                replies: vec![stacked::held::Reply {
+                    change: second.change.clone(),
+                    id: "c-bee".into(),
+                    text: "For the bees.".into(),
+                    tag: "answer".into(),
+                    effort: Some(Effort::Max),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }),
+            ..Default::default()
+        })
+        .map(|_| ())
+    })
+    .unwrap();
+}
+
+#[test]
+fn the_effort_the_agent_was_asked_at_heads_its_turns_and_names_its_work_in_the_browser_too() {
+    let (_tmp, db) = setup();
+    at_max(&db);
+    stacked::config::init(stacked::config::Config::default());
+    let (port, token) = stacked::web::start(db).unwrap();
+    let (host, input) = (format!("127.0.0.1:{port}"), format!("POST /input?t={token}"));
+    let mut events = events(port, &token, 120);
+    // The screen as the events leave it.
+    let rows: std::cell::RefCell<Vec<String>> = std::cell::RefCell::new(Vec::new());
+    let on_screen = |said: &[&str]| said.iter().all(|s| rows.borrow().iter().any(|r| r.contains(*s)));
+    // The thread: the agent's turn at max headed with it, the one of before
+    // as ever; the comments pane saying it before what the agent said last;
+    // the banner, what landed at max.
+    until(&mut events, "the turns", |l| {
+        shown(&mut rows.borrow_mut(), l);
+        on_screen(&["▎ agent(max):", "▎ agent:", "agent(max): A shout.", "· the next: 1 reply, asked at max: \"Why add b?\""])
+    });
+    // Its review, from the banner: its title, and its reply headed so.
+    ask(port, &host, &input, "k Esc -\n");
+    ask(port, &host, &input, "k Enter -\n");
+    until(&mut events, "the review", |l| {
+        shown(&mut rows.borrow_mut(), l);
+        on_screen(&[" the agent's work (max): 1 reply", "▎ agent(max):", "▎   For the bees."])
+    });
+}
+
 /// A comment on patch 1's `+TWO`, answered in 30 lines, then closed: what a
 /// comment written there again shows, dimmed, until something is written.
 fn closed_on_two(tmp: &Path, db: &Path) {

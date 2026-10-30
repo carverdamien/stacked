@@ -2022,7 +2022,7 @@ impl TextView {
 
 pub use crate::config::{Pane, PatchesPane};
 pub use crate::history::{Diffed, Entry};
-use crate::history::{note_change, way_said};
+use crate::history::note_change;
 
 pub struct App {
     pub path: PathBuf,
@@ -4407,7 +4407,10 @@ impl App {
                     _ if crate::reconcile::is(r) => r.summary.clone(),
                     (true, RunState::Failed) if !stopped => format!("the linter could not lint the stack {}: {}", r.stack, r.summary),
                     (true, _) => format!("{}: {}", r.request, r.summary),
-                    (false, state) => format!("the agent's {} {}: {}", r.what, format!("{state:?}").to_lowercase(), r.summary),
+                    (false, state) => {
+                        let at = crate::thread::asked_at(ask::effort_said(r));
+                        format!("the agent's {}{at} {}: {}", r.what, format!("{state:?}").to_lowercase(), r.summary)
+                    }
                 };
             }
         }
@@ -7268,7 +7271,7 @@ impl App {
                 if let Some(c) = self.picked() {
                     title = match by_of(&c) {
                         By::You => "your comment".into(),
-                        By::Agent => "agent's comment".into(),
+                        By::Agent => crate::thread::named_at("agent's comment", crate::thread::opened_effort(&c.text).as_deref()),
                         By::Reviewer => format!("{}'s comment", c.by.clone().unwrap_or_default()),
                     };
                     if self.is_closed(&c) {
@@ -7522,7 +7525,10 @@ impl App {
                 if alone {
                     items.push(Item::new(format!("Accept {}", self.reply_said(&run, k)), Action::TakeReply(run.clone(), k)));
                 }
-                let review = if r.is_some_and(crate::held::pulled) { "Review the comments pulled…" } else { "Review the agent's work…" };
+                let review = match r {
+                    Some(r) if crate::held::pulled(r) => "Review the comments pulled…".to_string(),
+                    _ => format!("Review {}…", crate::thread::named_at("the agent's work", r.and_then(ask::effort_said))),
+                };
                 items.push(Item::new(review, Action::Review(run, Some(crate::held::Part::Reply(k)))));
             }
             // In the batch: sent now, on its own, at the effort it was
@@ -9901,7 +9907,7 @@ impl App {
                         Item::new(show, Action::Transcript(r.id.clone())),
                         Item::new(stop, Action::AskStop(r.id.clone())),
                     ];
-                    self.mode = Mode::Menu(Menu::new(format!("{} {}", r.what, r.stack), items, None));
+                    self.mode = Mode::Menu(Menu::new(format!("{} {}", ask::what_said(&r), r.stack), items, None));
                 } else {
                     self.perform(Action::Transcript(r.id));
                 }
@@ -10439,16 +10445,27 @@ impl App {
     /// What the comments pane says of comment `n`: its mark (with the agent,
     /// waiting its turn, its reply waiting for review, failed, moved,
     /// answered), who opened it and where it is; then the first line of
-    /// what was said last.
+    /// what was said last. The agent, its run asked at an effort, is said
+    /// with it, `agent(max)`: as the one who opened it, and before what it
+    /// said last.
     fn note_said(&self, n: &Note, busy: &Busy, held: &Held) -> (String, String) {
         let mark = self.note_mark(n, busy, held);
-        let who = n.by.as_deref().unwrap_or("you");
+        let who = match (by_of(n), crate::thread::opened_effort(&n.text)) {
+            (By::Agent, Some(e)) => crate::thread::agent_at(Some(&e)),
+            _ => n.by.clone().unwrap_or_else(|| "you".into()),
+        };
         let at = match n.about {
             Some(rev) => format!("history @{rev}"),
             None if n.on_stack() => "the stack".to_string(),
             None => n.where_said(),
         };
-        let last = thread_turns(&n.text).last().map(|t| crate::markdown::first_line(&t.body)).unwrap_or_default();
+        let last = thread_turns(&n.text).pop().map_or(String::new(), |t| {
+            let first = crate::markdown::first_line(&t.body);
+            match t.agent_effort() {
+                Some(e) => format!("{}: {first}", crate::thread::agent_at(Some(e))),
+                None => first,
+            }
+        });
         (format!("{mark} {who} · {at}"), format!("   {last}"))
     }
 
@@ -11924,9 +11941,9 @@ impl App {
                     .last()
                     .map(|t| {
                         let who = match t.role {
-                            Role::You => "you",
-                            Role::Agent => "agent",
-                            Role::Reviewer => "reviewer",
+                            Role::You => "you".to_string(),
+                            Role::Agent => crate::thread::agent_at(t.agent_effort()),
+                            Role::Reviewer => "reviewer".to_string(),
                         };
                         format!("{who}: {}", crate::markdown::first_line(&t.body))
                     })
@@ -12048,7 +12065,7 @@ impl App {
                         " {} {:<7} {} {}{req} · {}",
                         local_time(r.time),
                         state,
-                        r.what,
+                        ask::what_said(r),
                         r.stack,
                         r.summary
                     ),
@@ -12154,12 +12171,13 @@ fn said_turns<'a>(turns: impl IntoIterator<Item = &'a Turn>) -> Vec<String> {
     out
 }
 
-/// Who said turn `t`, as $EDITOR's lines say it: `you`, `agent`, `ann`.
-fn who_said(t: &Turn) -> &str {
+/// Who said turn `t`, as $EDITOR's lines say it: `you`, `agent`, `ann`;
+/// the agent's, its run asked at an effort, `agent(max)`.
+fn who_said(t: &Turn) -> String {
     match t.role {
-        Role::You => "you",
-        Role::Agent => "agent",
-        Role::Reviewer => t.tag.as_deref().filter(|w| !w.is_empty()).unwrap_or("reviewer"),
+        Role::You => "you".into(),
+        Role::Agent => crate::thread::agent_at(t.agent_effort()),
+        Role::Reviewer => t.tag.as_deref().filter(|w| !w.is_empty()).unwrap_or("reviewer").into(),
     }
 }
 
@@ -12244,13 +12262,17 @@ pub fn where_on(db: &Db, name: &str, n: &Note) -> String {
 }
 
 /// What a comment's first line says of where it stands: with claude,
-/// ready, failed, replied, moved, and what its answer opened.
+/// ready, failed, replied, moved, and what its answer opened. With the
+/// agent, or replied to, it says the effort the agent's run was asked at
+/// after how it was asked: `with the agent (answer only, at max)`.
 pub fn note_state(db: &Db, name: &str, n: &Note, busy: &Busy) -> String {
     let mut parts = Vec::new();
     if let Some((way, run)) = busy.get(&(n.change.clone(), n.id.clone())) {
         // A patch's comment, asked of the whole stack.
         let whole = *way == Way::Change && !n.on_stack() && ask::run_scope(db, run) == Some(Scope::Stack);
-        parts.push(push_state(db, run).unwrap_or_else(|| format!("with the agent ({})", if whole { crate::db::WHOLE } else { way.said() })));
+        let how = if whole { crate::db::WHOLE } else { way.said() };
+        let at = db.run(run).and_then(ask::effort_said).map_or(String::new(), |e| format!(", at {e}"));
+        parts.push(push_state(db, run).unwrap_or_else(|| format!("with the agent ({how}{at})")));
     } else if let Some(q) = n.queued.as_ref().filter(|q| q.batched()) {
         parts.push(format!("batched ({})", q.said()));
     } else if let Some(q) = &n.queued {
@@ -12262,8 +12284,7 @@ pub fn note_state(db: &Db, name: &str, n: &Note, busy: &Busy) -> String {
     } else if let Some(f) = &n.failed {
         parts.push(format!("ask failed: {}", f.split_whitespace().collect::<Vec<_>>().join(" ")));
     } else if last_role(&n.text) == Some(Role::Agent) && n.moved.is_none() {
-        let way = last_reply_way(&n.text).unwrap_or_default();
-        parts.push(format!("agent replied ({})", way_said(&way)));
+        parts.push(crate::history::replied_said(&n.text));
     }
     if let Some(m) = &n.moved {
         parts.push(format!("moved from {}", where_was(db, name, m)));

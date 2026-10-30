@@ -30,7 +30,7 @@ use std::collections::{BTreeMap, HashMap};
 use serde::{Deserialize, Serialize};
 
 use crate::db::{Db, Error, Note, Patch, Result, Run, err, now};
-use crate::thread::{Role, Turn, all_turns, append_turn, render_thread};
+use crate::thread::{Role, Turn, all_turns, append_agent, append_turn, render_thread};
 
 /// What an ask brought back, held until it is reviewed.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
@@ -124,6 +124,11 @@ pub struct Reply {
     /// thread, and the work goes back to the agent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub answer: Option<String>,
+    /// The agent's, its run asked at an effort: that effort, which its turn
+    /// in the thread says. None for a reviewer's, and for one an ask made
+    /// before efforts were picked brought back.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<crate::db::Effort>,
 }
 
 /// A thread you closed, as a pull keeps it with a reviewer's reply to it:
@@ -139,14 +144,14 @@ pub struct Closed {
 
 impl Reply {
     /// Thread `text` with this reply as its last turn: the reviewer's who
-    /// wrote it, or the agent's; your answer to it after, if you wrote one.
-    /// A reviewer's edit is their edit of their turn as it was, which it
-    /// redacts (`edited`).
+    /// wrote it, or the agent's, the effort its run was asked at on it; your
+    /// answer to it after, if you wrote one. A reviewer's edit is their edit
+    /// of their turn as it was, which it redacts (`edited`).
     pub fn after(&self, text: &str) -> String {
         let text = match (&self.reviewer, &self.was) {
             (Some(who), Some(was)) => edited(text, who, was, &self.text),
             (Some(who), None) => append_turn(text, Role::Reviewer, &self.text, Some(who)),
-            (None, _) => append_turn(text, Role::Agent, &self.text, Some(&self.tag)),
+            (None, _) => append_agent(text, &self.text, &self.tag, self.effort_said()),
         };
         match &self.answer {
             Some(a) => append_turn(&text, Role::You, a, None),
@@ -159,10 +164,17 @@ impl Reply {
         self.reviewer.as_deref().unwrap_or("the agent")
     }
 
-    /// It, said: `the agent's reply`, `ann's reply`, `ann's edit`.
+    /// It, said: `the agent's reply`, `ann's reply`, `ann's edit`; the
+    /// agent's, its run asked at an effort, `the agent's reply (max)`.
     pub fn said(&self) -> String {
         let what = if self.was.is_some() { "edit" } else { "reply" };
-        format!("{}'s {what}", self.who())
+        crate::thread::named_at(&format!("{}'s {what}", self.who()), self.effort_said())
+    }
+
+    /// The name of the effort the agent's run was asked at, if it is the
+    /// agent's and its run had one.
+    pub fn effort_said(&self) -> Option<&'static str> {
+        self.effort.filter(|_| self.reviewer.is_none()).map(crate::db::Effort::name)
     }
 }
 
@@ -193,6 +205,7 @@ fn edited(text: &str, who: &str, was: &str, now: &str) -> String {
         deleted: false,
         edit,
         redacted: false,
+        effort: None,
     });
     render_thread(&turns)
 }
@@ -618,7 +631,7 @@ fn apply_reply(db: &mut Db, name: &str, rp: &Reply) -> Result<bool> {
         db.set_note(n.clone())?;
     }
     if let Some(why) = &rp.promote {
-        crate::ask::promote(db, name, &n, why)?;
+        crate::ask::promote(db, name, &n, why, rp.effort)?;
     }
     Ok(reopened)
 }

@@ -22,7 +22,7 @@ use super::*;
 
 /// How the work run `r` holds landed, said after what it holds: pulled
 /// from Phabricator, your edit by hand, or what the agent was asked (cut
-/// to `room`), and whether you edited it by hand since.
+/// to `room`) and at what effort, and whether you edited it by hand since.
 pub(super) fn landed_how(r: &crate::db::Run, room: usize) -> String {
     if crate::held::pulled(r) {
         return ", pulled from Phabricator".into();
@@ -36,7 +36,14 @@ pub(super) fn landed_how(r: &crate::db::Run, room: usize) -> String {
     if crate::reconcile::is(r) {
         return ", reconciled with HEAD: its commits' messages".into();
     }
-    let mut out = if r.request.is_empty() { String::new() } else { format!(", asked \"{}\"", short(&r.request, room)) };
+    // The effort it was asked at before what was asked, which may be long.
+    let at = crate::thread::asked_at(ask::effort_said(r));
+    let mut out = match r.request.is_empty() {
+        true if at.is_empty() => String::new(),
+        true => format!(", asked{at}"),
+        false if at.is_empty() => format!(", asked \"{}\"", short(&r.request, room)),
+        false => format!(", asked{at}: \"{}\"", short(&r.request, room)),
+    };
     if r.held.as_ref().is_some_and(|h| !h.edits.is_empty()) {
         out.push_str(", edited by hand");
     }

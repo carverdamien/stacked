@@ -59,6 +59,17 @@ pub fn way_said(tag: &str) -> &'static str {
     }
 }
 
+/// What a comment whose last word is the agent's says of it: `agent
+/// replied (answer only)`, and the effort its run was asked at, if its
+/// turn says one: `agent replied (answer only, at max)`.
+pub fn replied_said(text: &str) -> String {
+    let way = way_said(&last_reply_way(text).unwrap_or_default());
+    match crate::thread::last_reply_effort(text) {
+        Some(e) => format!("agent replied ({way}, at {e})"),
+        None => format!("agent replied ({way})"),
+    }
+}
+
 /// What stack `rev` holds, as far as a change of it goes; none for no
 /// stack.
 fn held(db: &Db, rev: Option<usize>) -> Option<(&[String], Option<&str>, Option<&str>)> {
@@ -381,12 +392,15 @@ pub fn what_changed(db: &Db, rev: usize) -> Vec<Diffed> {
     db.node(rev).map_or(vec![], |s| stack_diff(db, s.parent, Some(rev), true))
 }
 
-/// What a comment's record was, next to the one before it.
+/// What a comment's record was, next to the one before it. The agent's
+/// turns, their run asked at an effort, are said with it: `opened by the
+/// agent at max`, `agent replied (answer only, at max)`, `you edited the
+/// agent's reply (max)`.
 pub fn note_change(before: Option<&Note>, n: &Note) -> String {
     let Some(b) = before else {
         return match n.by.as_deref() {
             None => "written".into(),
-            Some("agent" | "claude") => "opened by the agent".into(),
+            Some("agent" | "claude") => format!("opened by the agent{}", crate::thread::asked_at(crate::thread::opened_effort(&n.text).as_deref())),
             Some(who) => format!("pulled: {who}'s comment"),
         };
     };
@@ -442,7 +456,7 @@ pub fn note_change(before: Option<&Note>, n: &Note) -> String {
         // A reviewer's comment edited on Phabricator: their edit of it, last.
         let edit = thread_turns(&n.text).last().is_some_and(|t| t.edit.is_some());
         return match last_role(&n.text) {
-            Some(Role::Agent) => format!("agent replied ({})", way_said(&last_reply_way(&n.text).unwrap_or_default())),
+            Some(Role::Agent) => replied_said(&n.text),
             Some(Role::Reviewer) if edit => "a reviewer edited a comment on Phabricator".into(),
             Some(Role::Reviewer) => "a reviewer replied".into(),
             _ => "you replied".into(),

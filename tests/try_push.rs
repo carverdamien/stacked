@@ -1209,6 +1209,52 @@ fn a_try_push_followed_is_tracked_in_the_banner_and_its_summary_lands_for_review
 }
 
 #[test]
+fn a_try_push_s_replies_say_the_effort_its_tasks_were_selected_at() {
+    use stacked::db::Effort;
+    use stacked::thread::{said_by, thread_turns};
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db);
+    let job = new_job(&db);
+    // Asked at max: in its review, why the agent selected the task headed
+    // with it, and the title.
+    tasks_answer(&db, &[("build-linux64/debug", "Its build.")], "One task.");
+    app.effort = Effort::Max;
+    ask_try(&mut app, "Build it.");
+    landed(&mut app, &db, 1);
+    let id = notes_of(&db, 0)[0].id.clone();
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Enter]);
+    assert_eq!(app.screen, Screen::Review);
+    let screen = draw(&mut app);
+    assert!(screen.contains(" the agent's work (max): 1 task to push") && screen.contains("▎ agent(max):"), "{screen}");
+    keys(&mut app, &[KeyCode::Esc]);
+    choose(&mut app, "Accept all remaining and Close");
+    choose(&mut app, "Accept them and close");
+    // Pushed: the push keeps the effort, and its link is a reply at it.
+    let r = wait_push(&mut app, &db, |r| r.push.as_ref().is_some_and(|p| p.link.is_some()) && r.pid.is_none());
+    assert_eq!(r.push.as_ref().and_then(|p| p.effort), Some(Effort::Max));
+    let text = notes_of(&db, 0)[0].text.clone();
+    let last = thread_turns(&text).pop().unwrap();
+    assert!(last.body.starts_with("stacked pushed ") && said_by(&last) == "agent(max)", "{text}");
+    assert!(text.contains("```agent try effort max\nstacked pushed "), "{text}");
+    // Done: its summary, held for your review, at it too, and so in the
+    // thread once taken.
+    let rev = "abcdef0123456789abcdef0123456789abcdef02";
+    pushed(job, |p| {
+        p.status = "LANDED".into();
+        p.revision = rev.into();
+        p.push = Some(81);
+        p.jobs = vec![treeherder_job("Gecko Decision Task", "completed", "success", "dec", 0), treeherder_job("build-linux64/debug", "completed", "success", "b1", 0)];
+    });
+    let r = look_until(&mut app, &db, |r| r.state != stacked::db::RunState::Started);
+    assert_eq!(r.held.as_ref().map(|h| h.replies[0].effort), Some(Some(Effort::Max)));
+    to_comment(&mut app, &id);
+    assert!(draw(&mut app).contains("the agent's reply (max) waits for your review"), "{}", draw(&mut app));
+    keys(&mut app, &[KeyCode::Enter]);
+    let last = thread_turns(&notes_of(&db, 0)[0].text).pop().unwrap();
+    assert!(last.body.starts_with("The try push is done.") && last.effort.as_deref() == Some("max"), "{last:?}");
+}
+
+#[test]
 fn a_try_push_s_tasks_treeherder_never_shows_are_counted_as_not_seen_once_nothing_runs() {
     let (_tmp, db, _src) = setup();
     let mut app = open(&db);

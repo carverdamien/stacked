@@ -2802,7 +2802,7 @@ mod tests {
             db.set_note(note("b", "kept"))?;
             // Moved to the stack, as the agent moves one: not deleted.
             db.set_note(note("m", "needs the stack"))?;
-            crate::ask::promote(db, "s", &note("m", "needs the stack"), "it needs more")
+            crate::ask::promote(db, "s", &note("m", "needs the stack"), "it needs more", None)
         })
         .unwrap();
         let db = Db::load(&path).unwrap();

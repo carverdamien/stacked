@@ -1106,7 +1106,10 @@ A comment shows under what it is on: `└ comment:` (or `└ agent's comment:`,
 `└ ann's comment:`), in the colour of who opened it, then each turn of its
 thread, a bar at its left and its author's name in the author's colour
 (yours amber, the agent's violet, a reviewer's blue), and what they said in
-the terminal's own colour, so that no comment reads as code. A reviewer's
+the terminal's own colour, so that no comment reads as code. The agent's
+name says the effort its run was asked at, when it was asked at one
+(`▎ agent(max):`, `└ agent's comment (max):`): Asking the agent, below.
+A reviewer's
 comment edited on Phabricator is a turn of its own, headed by what it
 edits (`ann's edit of the comment that said "Hi Da":`), and the turn it
 edits stays, headed `ann (redacted):` (Phabricator, below). The colours
@@ -1568,6 +1571,36 @@ starts at the effort it was asked at as well, unless another is picked on
 effort of its own: it goes at the agent's default, or at the settings'
 `--effort`.
 
+What the agent brings back says the effort it was asked at wherever the
+agent or its work is named, so that work done at `max` is told from work
+done at `low`. Each turn of the agent's in a thread is headed with it,
+`agent(max):`, in the middle, in the previews of the comments pane, in a
+review, in the browser and in StackED; the comments pane says `agent(max)`
+as who opened a comment the agent opened, and before the agent's last word
+(`agent(max): It is a shout.`), and the comment's head says `agent's
+comment (max)`. A turn is named with it (`Edit the agent's reply (max)`,
+`the agent's reply (max): edit it`, `you edited the agent's reply (max)`
+in the comment's history), and a comment's state says it after how it was
+asked (`with the agent (answer only, at max)`, `agent replied (answer
+only, at max)`, `the agent's reply (max) waits for your review`). The
+banner says it of what landed, before what was asked (`⟳ Review 1 reply,
+asked at max: "why so loud?"`), the review's title after whose work it is
+(`the agent's work (max): 1 reply · asked "why so loud?"`), as the menu of
+a comment its reply waits on names it (`Review the agent's work (max)…`),
+`Runs…` and `stacked runs` after what each run is (`answer(max) s "why so
+loud?"`), `stacked landed` after what is left of the work to review, a
+column of its own (`asked at max`), and `stacked comments`, the search and
+the history's comments as the editor heads the turns (`agent(max): It is a
+shout.`); the transcript's first lines give it as claude was given it
+(`--effort max`). The effort goes with each turn, on its fence (One file,
+only appended to, below): a reply or a comment the agent opened says it
+however long its work waits for review, and once accepted; so does a reply
+that moves a comment to the stack's comments, and a try push's replies, at
+the effort its tasks were selected at. A turn written before efforts were
+picked, or by an ask that went at the agent's own, says nothing of it, and
+shows as it always did. What the agent is told of the earlier turns of a
+thread says none of it either.
+
 On the command line, `stacked send` takes `--effort LEVEL`. Without it, an
 ask goes at the effort the editor picked last (`high` until one is), and
 `--batch` sends each comment at the effort it was batched at, an ask of
@@ -1883,11 +1916,13 @@ too long: ready (and on what), with the agent (and the last lines of its
 stream under the comment's turns, over its references: what it says and
 runs, and while it thinks, one line
 counting it, `✻ thinking · ~688 tokens`, with the words of it when claude
-gives them), agent replied (changed, answered, tested), failed (and why),
-moved. Until the agent writes its first line, one line says what is being
-run to start it, as it runs: `starting: git worktree add --detach … BASE`
-(the stack's own worktree, made the first time, which takes a while in a
-big repository) or `starting: git switch --detach BASE, in WORKTREE` (taken
+gives them), agent replied (changed, answered, tested), each with how it
+was asked and at what effort (`with the agent (answer only, at max)`,
+`agent replied (change, at max)`), failed (and why), moved. Until the
+agent writes its first line, one line says what is being run to start
+it, as it runs: `starting: git worktree add --detach … BASE` (the
+stack's own worktree, made the first time, which takes a while in a big
+repository) or `starting: git switch --detach BASE, in WORKTREE` (taken
 again), then `starting: git am --keep-non-patch, 3 patches` (the stack, up
 to what it is asked about); then `starting: claude -p … --permission-mode
 … --effort LEVEL, in WORKTREE`, the ask's own worktree, whatever its kind:
@@ -1953,7 +1988,8 @@ lists the asks still running, each as `stacked runs` says it and where its
 agent works: its worktree. A worktree with work the agent did not commit, or
 that could not be filed, is left in place, and the run's summary says
 where; others are kept for the next ask. `Runs…` lists every ask and pull,
-and shows what the agent wrote.
+each ask with the effort it was asked at (`answer(max) s "why so loud?"`),
+as `stacked runs` does, and shows what the agent wrote.
 
 `Stop the agent…`, in the menu of a comment the agent works on, and on an
 ask that runs in `Runs…` (Delete does the same in both places), asks
@@ -2027,7 +2063,8 @@ brought nothing back (The tools the agent could not use, below).
 
 In the editor, a banner under the top bar says what waits on you on the
 stack, in a line: what waits for your review (`⟳ 2 landed asks wait for
-your review · the next: a change of patch 2, 1 reply, asked "…"`; edits by
+your review · the next: a change of patch 2, 1 reply, asked at max: "…"`,
+the effort the agent was asked at before what it was asked; edits by
 hand, lints and reconciles with HEAD counted apart), a reconcile with HEAD
 waiting its turn (`Reconcile with HEAD waits its turn`), a pull
 from Phabricator under way and the revision it reads (`pulling the reviews
@@ -2053,7 +2090,8 @@ batch… 2 edits, 1 answer only`; then every comment open on the stack, the
 most recently updated first, marked as the comments pane marks it (`●` with the agent,
 `◇` batched, `◌` waiting its turn, `◆` its reply waiting for review, `✓`
 answered…), with where it is, how it starts, and where it stands (with the
-agent, the last line it wrote). ↑↓ pick one, and Enter reviews what
+agent, and at what effort, `with the agent (answer only, at max)`, the last
+line it wrote). ↑↓ pick one, and Enter reviews what
 landed, or goes to the comment; on the batch, it opens the banner's menu,
 all of it, which Space opens from any line: what landed, to review; the
 batch, to
@@ -2222,7 +2260,8 @@ work leaves it.
 On the command line, `stacked landed NAME` lists the queue: each landed ask
 by its run, what is left of it to review (with no part left, the comments
 the agent was asked about: `1 asking comment to close or keep, nothing
-brought back`), and each part of it. `stacked review NAME [RUN]
+brought back`), the effort it was asked at, if it was asked at one (`asked
+at max`), and each part of it. `stacked review NAME [RUN]
 --accept-all` (or `--reject-all`) closes the review of that ask, the first
 landed if no run is given: the parts not marked yet are accepted (or
 rejected), and what is accepted is applied; `--close-asking` closes the
@@ -3320,7 +3359,10 @@ bytes long, padded with spaces.
   undo, redo, a stack picked from the tree, a delete.
 - A comment record is the whole comment as it is now; its earlier records
   are its history. The agent's turns are fenced ```` ```agent ````
-  (```` ```claude ````, as the first files have them, reads the same), and
+  (```` ```claude ````, as the first files have them, reads the same) and
+  the way they were asked (```` ```agent answer ````), then, when their run
+  was asked at an effort, `effort` and its name (```` ```agent answer
+  effort max ````), a turn of before having none; and
   a reviewer's ```` ```reviewer ```` and their name; a reviewer's turn an
   edit of it replaces has `redacted` after the name (```` ```reviewer ann
   redacted ````), and their edit `edit` and the first line of the comment it
@@ -3879,7 +3921,11 @@ at (`--effort`, else the one the editor picked last, kept in the test's
 home, else `high`; the settings' own taken out; a level claude does not
 take refused, nothing sent; a batch at the effort its comments were
 batched at, and work sent back at the effort it was asked at unless
-`--effort` says otherwise), a rebase, a patch whose lines a new version of
+`--effort` says otherwise; the effort an ask was asked at said by
+`stacked landed`, `stacked runs`, `stacked comments` and its transcript,
+on the comment its reply waits on, on its reply and on the comment it
+opened, and kept on the fence as the thread is written again, a turn of
+before as ever), a rebase, a patch whose lines a new version of
 a patch below moved keeping its version and its diff as stored when the
 agent's rebase rewords another patch (the stack diff marking only the
 reworded one), the agent's change of such a patch, its commit left as it
@@ -4019,7 +4065,14 @@ own taken out; the effort picked where the next menus start, kept nowhere
 in a test's own process; a batched comment, sent now or with the batch,
 at the effort it was batched at, one waiting its turn at its own, one
 queued by an older stacked at the agent's default; work sent back at the
-effort it was asked at, unless another is picked), the screen never waiting on
+effort it was asked at, unless another is picked; the effort the agent
+was asked at shown wherever its work is named: its comment's state with
+the agent and replied to, in the middle and the banner, the banner's
+landed line, `Runs…` and the transcript, the review's title, the comment
+it opened and its reply in the review, then their turns in the middle,
+the comments pane, the search, the turn's name in its menu and in the
+editor's title, the comment's history, a reply added keeping each turn's
+mark, and a thread of before as it always was), the screen never waiting on
 the agent, redrawing not slowing as the agent writes (a frame timed as the
 time the editor ran to read and draw it, not by the clock, which counts
 too the time a busy machine gives to other work), the filter kept in
@@ -4323,8 +4376,10 @@ and the editor left, the worktree made ahead removed (Quit in the page;
 runs, on the list StackED's Open Recent shows, the effort picked in a
 menu kept in the state file of its home, where the next `stacked web`
 starts, its ← → no further than `low` and `max` and a click on it going
-round from `max` to `low`, a message's long lines wrapped from its patch's menu, the edit
-landing for review, what waits its turn (a reconcile with HEAD, a lint
+round from `max` to `low`, the agent's turns headed with the effort it was
+asked at and its landed work named with it, in the banner and its review,
+a turn of before as ever, a message's long lines wrapped from its patch's
+menu, the edit landing for review, what waits its turn (a reconcile with HEAD, a lint
 job, an edit ask) taken out of the queue from the banner with Delete, each
 asked first, → opening the comments pane of a patch with none, saying why,
 its menu there, and ← putting it away, `Move HEAD…` on the stack's menu
@@ -4365,7 +4420,9 @@ comments pane of a patch with none, saying why, its menu there, and ←
 putting it away; `Move HEAD…` on the stack's menu drawn as any item while
 it would not move HEAD, and the view of why opened from it, then left; the
 effort of a menu's item, its ← → no further than `low` and `max` and a
-click on it going round from `max` to `low`; with
+click on it going round from `max` to `low`; the agent's turns headed
+with the effort it was asked at, and its landed work named with it, in
+the banner and its review, a turn of before as ever; with
 moz-phab, the status of a patch's revision after its number, a letter,
 and the Phabricator line over its message, Space on it showing what
 differs on a screen of its own, Esc going back to the line, read by a
@@ -4585,7 +4642,12 @@ reopened, read from a checkpoint without its history read, while the
 agent's goes nowhere and a pull's parts are not rejected. Those in
 `thread.rs` show the fences of a reviewer's edit and of a turn redacted
 read and written again, their headings, the first line an edit quotes cut
-short with `…`, and a name alone as ever. The
+short with `…`, and a name alone as ever; and the effort on the fence of
+the agent's turn, after the way, read, headed and named with it, kept as
+the thread is written again, a reply added, a turn edited or one holding
+a code block, a turn of before read and written as it was, a comment the
+agent opened at an effort, and a reviewer named `effort` a name as ever;
+in `ask.rs`, the thread the agent is told says none of it. The
 tests in `check.rs` show
 the check's index holds only what the patches touch, that it writes nothing
 to the repository (nor does the tree a patch leaves, written for a

@@ -1284,7 +1284,7 @@ impl App {
         let (Some(t), Some(rv)) = (h.tools.get(k), self.reviewing.as_ref()) else { return (String::new(), vec![], 0..0) };
         let rule = crate::refusals::rule_of(t, &rv.marks, k).to_string();
         let why = if t.why.trim().is_empty() { "The agent did not say why it needed this tool." } else { t.why.as_str() };
-        let mut text = append_turn("", Role::Agent, why, Some("tool"));
+        let mut text = crate::thread::append_agent("", why, "tool", self.reviewed_at());
         if let Some(a) = &t.answer {
             text = append_turn(&text, Role::You, a, None);
         }
@@ -1349,7 +1349,7 @@ impl App {
     fn task_view(&self, h: &Work, k: usize, w: usize) -> View {
         let Some(t) = h.tasks.get(k) else { return (String::new(), vec![], 0..0) };
         let why = if t.why.trim().is_empty() { "The agent did not say why." } else { t.why.as_str() };
-        let mut text = append_turn("", Role::Agent, why, Some("try"));
+        let mut text = crate::thread::append_agent("", why, "try", self.reviewed_at());
         if let Some(a) = &t.answer {
             text = append_turn(&text, Role::You, a, None);
         }
@@ -1410,7 +1410,10 @@ impl App {
                 }
                 let asked = if r.request.is_empty() { String::new() } else { format!(" · asked \"{}\"", r.request) };
                 let edited = if h.edits.is_empty() { String::new() } else { format!(" · then you {}", h.edits.join(", then ")) };
-                format!(" the agent's work: {left}{asked}{edited}")
+                // The effort it was asked at, first, where the list's width
+                // leaves it in sight.
+                let whose = crate::thread::named_at("the agent's work", ask::effort_said(r));
+                format!(" {whose}: {left}{asked}{edited}")
             });
             put(buf, list, 0, 0, list_w, &fit(&title, list_w), color::header());
             let mut top = rv.top;
@@ -2246,6 +2249,15 @@ impl App {
         let said: Vec<String> = self.review_again(Closing::SendingBack).into_iter().chain(self.tools_note(Closing::SendingBack)).collect();
         m.note = (!said.is_empty()).then(|| said.join("\n"));
         m
+    }
+
+    /// The name of the effort the work reviewed was asked at, which heads
+    /// the agent's words the review shows as comments of its own (why it
+    /// selected a task, what it said of a tool it could not use): none for
+    /// work of before, nor for what is not the agent's.
+    fn reviewed_at(&self) -> Option<&'static str> {
+        let rv = self.reviewing.as_ref()?;
+        ask::effort_said(self.db.run(&rv.run)?)
     }
 
     /// The effort the work reviewed was asked at, which it goes back to the

@@ -861,11 +861,11 @@ echo extra > c.txt && git add c.txt && git -c user.name=C -c user.email=c@x comm
     let (fine, out, err) = send(&e, &claude, &[&id], &[("STACKED_SRC", &e.src)]);
     assert!(fine, "{err}");
     assert!(out.contains(&format!("{id}\tsent (may change the code)")), "{out}");
-    assert!(out.contains(&format!("{id}\tthe stack\tagent replied (change)")), "{out}");
+    assert!(out.contains(&format!("{id}\tthe stack\tagent replied (change, at high)")), "{out}");
     // The plan's folder, the test's own, is gone once the ask landed.
     let plans = e.root.join("todo");
     assert!(plans.is_dir() && std::fs::read_dir(&plans).unwrap().next().is_none(), "{}", plans.display());
-    assert!(out.contains("  agent: Squashed it, and added c."), "{out}");
+    assert!(out.contains("  agent(high): Squashed it, and added c."), "{out}");
     assert_eq!(e.column(3), ["Bug 1 - change two", "Bug 2 - add b", "Bug 4 - add c"]);
     let after = e.column(2);
     assert_ne!(after[0], before[0], "the bottom patch has a new version");
@@ -879,7 +879,7 @@ echo extra > c.txt && git add c.txt && git -c user.name=C -c user.email=c@x comm
     // All of it is in the database: the run and what claude wrote.
     let runs = e.ok(&["runs"]);
     assert!(
-        runs.contains("change s \"Squash the top into the bottom, and add c.\"\tdone\treviewed: its change accepted; 1 reply accepted"),
+        runs.contains("change(high) s \"Squash the top into the bottom, and add c.\"\tdone\treviewed: its change accepted; 1 reply accepted"),
         "{runs}"
     );
     let run = runs.split('\t').next().unwrap();
@@ -1230,8 +1230,8 @@ $fits > {out}"#,
     );
     assert_eq!(e.titles(), ["Bug 1 - c", "Bug 2 - a", "Bug 2b - ", "Bug 3 - c"]);
     // The comment followed its line to the piece that has it.
-    assert!(out.contains("\tpatch 3 · b.txt: new\tagent replied (change)"), "{out}");
-    assert!(out.contains("agent: Split: b is a patch of its own."), "{out}");
+    assert!(out.contains("\tpatch 3 · b.txt: new\tagent replied (change, at high)"), "{out}");
+    assert!(out.contains("agent(high): Split: b is a patch of its own."), "{out}");
     assert!(e.ok(&["comments", "s", "--patch", "2"]).is_empty());
     assert!(e.ok(&["log", "s"]).contains("agent: patch 2 split in 2"));
 
@@ -1248,7 +1248,7 @@ $fits > {out}"#,
     assert!(fine, "{err}");
     let all = e.ok(&["comments", "s", "--show", "failed"]);
     assert!(all.contains("\tthe stack\tmoved from patch 1 · ✉ message: Bug 1 - change two"), "{all}");
-    assert!(all.contains("This needs more than the patch: patch 3 says two as well"), "{all}");
+    assert!(all.contains("  agent(high): This needs more than the patch: patch 3 says two as well\n"), "{all}");
     assert!(e.ok(&["comments", "s", "--patch", "1"]).is_empty());
     // There, it waits to be sent again.
     assert!(e.ok(&["comments", "s", "--show", "to-send"]).contains("\tthe stack\tmoved from patch 1"));
@@ -1276,7 +1276,7 @@ echo t > t.txt && git add t.txt && git -c user.name=C -c user.email=c@x commit -
     assert!(e.ok(&["log", "s"]).contains("agent: the stack"));
     // Its reply in its thread, the comment still on its line of patch 1.
     let c = e.ok(&["comments", "s", "--patch", "1"]);
-    assert!(c.contains(&format!("{id}\tpatch 1 · a.txt: 2")) && c.contains("agent: Tested, in patch 4."), "{c}");
+    assert!(c.contains(&format!("{id}\tpatch 1 · a.txt: 2")) && c.contains("agent(high): Tested, in patch 4."), "{c}");
     // Only a change goes to the whole stack.
     let (fine, _, err) = e.run(&["send", "s", &id, "--whole-stack", "--answer-only"]);
     assert!(!fine && err.contains("cannot be used with"), "{err}");
@@ -1322,10 +1322,10 @@ fn the_stack_is_not_edited_by_hand_while_the_agent_changes_it() {
     assert!(!fine && err.contains(why), "{err}");
     let (fine, _, err) = e.run(&["reply", "s", &id, "Also", "this."]);
     assert!(!fine && err.contains("the agent's reply to it waits for your review"), "{err}");
-    assert!(!e.ok(&["comments", "s"]).contains("agent: Amended."));
+    assert!(!e.ok(&["comments", "s"]).contains("agent(high): Amended."));
     let reviewed = e.ok(&["review", "s", "--accept-all"]);
     assert!(reviewed.contains("reviewed: its change accepted; 1 reply accepted"), "{reviewed}");
-    assert!(e.ok(&["comments", "s"]).contains("agent: Amended."));
+    assert!(e.ok(&["comments", "s"]).contains("agent(high): Amended."));
     assert!(e.column(3)[2].starts_with("Bug 3 - café"), "the agent's change is the stack's");
     e.ok(&["drop", "s", "1"]);
     assert_eq!(e.column(3).len(), 2, "reviewed, the stack is the user's again");
@@ -1358,7 +1358,7 @@ fn what_the_agent_brings_back_waits_for_review_and_may_be_rejected() {
     assert!(queue.contains("a change of the stack, 1 reply") && queue.contains("  change\tagent: the stack"), "{queue}");
     assert!(queue.contains(&format!("  reply\t{id}\tAmended.")), "{queue}");
     let review = e.ok(&["comments", "s", "--show", "to-review"]);
-    assert!(review.contains(&format!("{id}\tthe stack\tthe agent's reply waits for your review")), "{review}");
+    assert!(review.contains(&format!("{id}\tthe stack\tthe agent's reply (high) waits for your review")), "{review}");
     assert!(!e.ok(&["comments", "s", "--show", "to-send"]).contains(&id), "not to send again before");
     // The next change goes from the stack as the review leaves it.
     let (fine, out, err) = stacked_in(&e.src, &e.db, &["send", "s", &next], "", &env);
@@ -1809,7 +1809,7 @@ fn a_web_link_attached_goes_to_the_agent_as_a_link_and_the_agent_gives_its_own()
     // Accepted, the thread lists it.
     e.ok(&["review", "s", "--accept-all"]);
     let listed = e.ok(&["comments", "s"]);
-    assert!(listed.contains("agent: As @r2 says, and @r4.") && listed.contains("  r2 https://example.com/spec#a\n"), "{listed}");
+    assert!(listed.contains("agent(high): As @r2 says, and @r4.") && listed.contains("  r2 https://example.com/spec#a\n"), "{listed}");
     assert!(listed.contains(&format!("  r1 ⇗ {bug}")), "{listed}");
 }
 
@@ -1889,7 +1889,7 @@ fn several_asks_wait_their_turn() {
     }
     assert_eq!(e.ok(&["landed", "s"]), "");
     let read = e.ok(&["comments", "s", "--show", "to-read"]);
-    assert_eq!(read.matches("agent: Seen.").count(), 3, "{read}");
+    assert_eq!(read.matches("agent(high): Seen.").count(), 3, "{read}");
     assert!(e.ok(&["comments", "s", "--show", "to-read-only"]).contains(&three));
 }
 
@@ -1960,7 +1960,7 @@ fn comments_batched_wait_until_the_batch_is_sent() {
     asks.sort_by_key(|(w, ..)| *w == Way::Answer);
     assert_eq!(asks, [(Way::Change, true, 2), (Way::Answer, false, 1)]);
     let read = e.ok(&["comments", "s", "--show", "to-read"]);
-    assert_eq!(read.matches("agent: Seen.").count(), 2, "{read}");
+    assert_eq!(read.matches("agent(high): Seen.").count(), 2, "{read}");
     // Nothing left to send.
     let (fine, _, err) = e.run(&["send", "s", "--batch"]);
     assert!(!fine && err.contains("the batch is empty"), "{err}");
@@ -1999,7 +1999,7 @@ fn landed_work_is_edited_by_hand_in_its_place() {
     assert!(runs.contains("reviewed: rejected for your edit of it by hand"), "{runs}");
     e.ok(&["review", "s", "--accept-all"]);
     assert!(e.ok(&["show", "s", "1"]).contains("+two, spelled\n"));
-    assert!(e.ok(&["comments", "s"]).contains("agent: Spelled it deux."));
+    assert!(e.ok(&["comments", "s"]).contains("agent(high): Spelled it deux."));
     // Nothing waits for review: none to edit.
     let (fine, _, err) = e.run(&["edit", "s", "1", "--work", &run[..8]]);
     assert!(!fine && err.contains("no work on s waits for review"), "{err}");
@@ -2016,7 +2016,7 @@ fn the_asking_comment_is_closed_with_its_review_if_said() {
     let out = e.ok(&["review", "s", "--accept-all", "--close-asking"]);
     assert!(out.contains("reviewed: 1 reply accepted; 1 asking comment closed"), "{out}");
     assert_eq!(e.ok(&["comments", "s"]), "");
-    assert!(e.ok(&["comments", "s", "--show", "closed"]).contains("agent: Because."));
+    assert!(e.ok(&["comments", "s", "--show", "closed"]).contains("agent(high): Because."));
 }
 
 #[test]
@@ -2038,7 +2038,7 @@ fn work_that_brought_nothing_back_waits_for_review_while_its_comment_is_open() {
         "{runs}"
     );
     let landed = e.ok(&["landed", "s"]);
-    assert!(landed.lines().count() == 1 && landed.ends_with("\t1 asking comment to close or keep, nothing brought back\n"), "{landed}");
+    assert!(landed.lines().count() == 1 && landed.ends_with("\t1 asking comment to close or keep, nothing brought back\tasked at high\n"), "{landed}");
     // Closed with nothing to mark, the comment kept: nothing waits, and the
     // comment is open still, to ask again.
     let out = e.ok(&["review", "s", "--accept-all"]);
@@ -2162,7 +2162,7 @@ fn a_reply_taken_at_once_closes_the_review_of_its_work_its_comment_left_open() {
     // The comment stays open, the reply its last word: to read, and to
     // reply to, as any comment.
     assert_eq!(e.ok(&["comments", "s", "--show", "to-review"]), "");
-    assert!(e.ok(&["comments", "s", "--show", "to-read"]).contains("agent: Because."));
+    assert!(e.ok(&["comments", "s", "--show", "to-read"]).contains("agent(high): Because."));
     e.ok(&["reply", "s", &id, "Really?"]);
     assert!(e.ok(&["comments", "s", "--show", "to-send"]).contains("you: Really?"));
 }
@@ -2214,7 +2214,7 @@ fn taking_the_last_reply_closes_the_review_its_comments_open_or_not() {
     Db::edit(&e.db, |d| stacked::held::take(d, &run, 0)).unwrap();
     assert_eq!(e.ok(&["landed", "s"]), "");
     let comments = e.ok(&["comments", "s"]);
-    assert!(comments.contains("\tthe stack\tmoved from patch 2") && comments.contains("agent: Patch 3 has to change too."), "{comments}");
+    assert!(comments.contains("\tthe stack\tmoved from patch 2") && comments.contains("agent(high): Patch 3 has to change too."), "{comments}");
 }
 
 #[test]
@@ -2254,7 +2254,7 @@ fn an_answer_opens_a_comment_for_each_issue_several_on_a_line() {
     assert!(told.contains("Each comment you open is about one issue: a line with two issues gets two comments"), "{told}");
     let shown = e.ok(&["comments", "s", "--patch", "1"]);
     assert_eq!(shown.lines().filter(|l| l.contains("\tpatch 1 · a.txt: 2")).count(), 2, "{shown}");
-    assert!(shown.contains("agent: Say two.") && shown.contains("agent: And test it."), "{shown}");
+    assert!(shown.contains("agent(high): Say two.") && shown.contains("agent(high): And test it."), "{shown}");
 }
 
 #[test]
@@ -2312,7 +2312,7 @@ fn landed_work_with_what_you_wrote_in_its_review_goes_back_to_the_agent_from_it(
     assert!(e.ok(&["show", "s", "1"]).contains("+2 spelled\n"));
     let shown = e.ok(&["comments", "s"]);
     let thread: Vec<&str> = shown.lines().skip_while(|l| !l.starts_with(&id)).skip(1).take_while(|l| l.starts_with(' ')).collect();
-    assert_eq!(thread, ["  you: Spell it out.", "  agent: Done.", "  you: Not like this.", "  agent: Done."], "{shown}");
+    assert_eq!(thread, ["  you: Spell it out.", "  agent(high): Done.", "  you: Not like this.", "  agent(high): Done."], "{shown}");
     assert!(shown.contains(&mine), "{shown}");
 }
 
@@ -2644,9 +2644,9 @@ fn the_agent_rebases_reviews_and_tests() {
     assert!(info.prompt.contains("The current directory is a git worktree made for you"), "{}", info.prompt);
     assert!(!info.prompt.contains("the user's repository"), "{}", info.prompt);
     drop(db);
-    assert!(out.contains("agent replied (answer only) · opened 2 comments"), "{out}");
+    assert!(out.contains("agent replied (answer only, at high) · opened 2 comments"), "{out}");
     let c = e.ok(&["comments", "s", "--patch", "2"]);
-    assert!(c.contains("b.txt: new") && c.contains("agent: Say what b is for."), "{c}");
+    assert!(c.contains("b.txt: new") && c.contains("agent(high): Say what b is for."), "{c}");
     let c = e.ok(&["comments", "s", "--patch", "1"]);
     assert!(c.contains("patch 1, as a whole") && c.contains("On the whole patch."), "{c}");
     assert!(e.ok(&["runs"]).contains("reviewed: 2 opened comments accepted; 1 reply accepted"));
@@ -2664,7 +2664,7 @@ fn the_agent_rebases_reviews_and_tests() {
     assert!(fine, "{err}");
     let runs = e.ok(&["runs"]);
     assert!(runs.lines().last().is_some_and(|l| l.ends_with("reviewed: 2 opened comments accepted; 1 reply accepted")), "{runs}");
-    assert!(e.ok(&["comments", "s", "--patch", "3"]).contains("fails: a.txt (tested @"));
+    assert!(e.ok(&["comments", "s", "--patch", "3"]).contains("  agent(high): fails: a.txt (tested @"), "a finding, at the effort the build and test was asked at");
     let db = Db::load(&e.db).unwrap();
     let info = stacked::ask::info(db.runs().last().unwrap()).unwrap();
     assert!(info.worktree.as_deref().is_some_and(|w| w.ends_with("/.stacked/s/build")), "{:?}", info.worktree);
@@ -3316,7 +3316,7 @@ fn a_reviewer_s_reply_to_a_comment_you_closed_reopens_it_once_accepted() {
     // there, where it was last, the patch's own left closed.
     Db::edit(&e.db, |db| {
         let n = db.note(&p.change, "phab:c1").unwrap().clone();
-        stacked::ask::promote(db, "s", &n, "it is the whole stack's")?;
+        stacked::ask::promote(db, "s", &n, "it is the whole stack's", None)?;
         let moved = db.notes("stack:s").into_iter().find(|n| n.id.starts_with("moved:")).unwrap().clone();
         db.set_note(Note { text: String::new(), ..moved })
     })
@@ -3551,7 +3551,7 @@ fn a_comment_edited_on_phabricator_is_held_as_an_edit_of_its_turn() {
     // there.
     Db::edit(&e.db, |db| {
         let n = db.note(&p.change, "phab:b1v2").unwrap().clone();
-        stacked::ask::promote(db, "s", &n, "it is the whole stack's")
+        stacked::ask::promote(db, "s", &n, "it is the whole stack's", None)
     })
     .unwrap();
     let b1 = ann("b1v3", "Typo there.", None, &[("b1v2", "Typo here."), ("b1", "Tpyo here.")]);
@@ -4018,6 +4018,69 @@ fn a_batch_and_work_sent_back_go_at_the_effort_they_were_asked_at_unless_another
     // Only with --send-back.
     let (fine, _, err) = e.run(&["review", "s", "--accept-all", "--effort", "low"]);
     assert!(!fine && err.contains("--send-back"), "{err}");
+}
+
+#[test]
+fn the_effort_the_agent_was_asked_at_is_said_wherever_the_command_line_names_its_work() {
+    use stacked::thread::{Role, append_turn, thread_turns};
+    let e = env();
+    e.ok(&["import", "s", "base"]);
+    // A thread of before: the agent's turn in it of no effort.
+    let old = comment(&e, &["--patch", "2", "Why", "b?"]);
+    Db::edit(&e.db, |db| {
+        let n = db.find_note("s", &old)?.clone();
+        db.set_note(stacked::db::Note { text: append_turn(&n.text, Role::Agent, "It was so.", Some("answer")), ..n })
+    })
+    .unwrap();
+    // Asked at max: it replies, and opens a comment of its own.
+    let id = comment(&e, &["--patch", "1", "Why", "2?"]);
+    let efforts = e.root.join("efforts");
+    let answer = r#"{"replies": {"c1": "Because."}, "comments": [{"patch": 1, "file": "a.txt", "side": "+", "line": "2", "text": "Say two."}]}"#;
+    let claude = fake_claude(&e, "claude-max.sh", &effort_said(&efforts), answer);
+    let (fine, out, err) = stacked_in(&e.src, &e.db, &["send", "s", &id, "--answer-only", "--effort", "max", "--wait"], "", &[("STACKED_CLAUDE", &claude)]);
+    assert!(fine, "{out}{err}");
+    assert_eq!(std::fs::read_to_string(&efforts).unwrap(), "max\n");
+    // Waiting for your review: `landed` says the effort after what is left
+    // of it, `runs` after what the run is, the comment of its reply; the
+    // transcript starts as claude was given it.
+    let landed = e.ok(&["landed", "s"]);
+    let first = landed.lines().next().unwrap();
+    assert!(first.ends_with("\t1 reply, 1 opened comment\tasked at max"), "{landed}");
+    let runs = e.ok(&["runs", "s"]);
+    assert!(runs.contains("\tanswer(max) s \"Why 2?\"\tdone\tits work waits for your review: 1 reply, 1 opened comment\n"), "{runs}");
+    let review = e.ok(&["comments", "s", "--show", "to-review"]);
+    assert!(review.contains(&format!("{id}\tpatch 1, as a whole\tthe agent's reply (max) waits for your review\n")), "{review}");
+    let run = first.split('\t').next().unwrap();
+    let transcript = e.ok(&["transcript", run]);
+    assert!(transcript.lines().any(|l| l.starts_with("$ ") && l.contains(" --effort max, in ")), "{transcript}");
+    // Accepted: its turns headed with it, the comment it opened too; the
+    // agent's turn of before as ever.
+    e.ok(&["review", "s", "--accept-all"]);
+    let c = e.ok(&["comments", "s"]);
+    let asked = format!("{id}\tpatch 1, as a whole\tagent replied (answer only, at max) · opened 1 comment\n  you: Why 2?\n  agent(max): Because.\n");
+    assert!(c.contains(&asked), "{c}");
+    assert!(c.contains("\tpatch 1 · a.txt: 2\tagent replied (answer only, at max)\n  agent(max): Say two.\n"), "{c}");
+    assert!(c.contains(&format!("{old}\tpatch 2, as a whole\tagent replied (answer only)\n  you: Why b?\n  agent: It was so.\n")), "{c}");
+    // The effort is on the fence of the agent's turn, kept as the thread is
+    // written again; the turn of before has none.
+    e.ok(&["reply", "s", &id, "Thanks."]);
+    let db = Db::load(&e.db).unwrap();
+    let text = db.find_note("s", &id).unwrap().text.clone();
+    assert!(text.contains("\n```agent answer effort max\nBecause.\n```\nThanks."), "{text}");
+    let efforts: Vec<Option<String>> = thread_turns(&text).into_iter().map(|t| t.effort).collect();
+    assert_eq!(efforts, [None, Some("max".to_string()), None]);
+    let old = db.find_note("s", &old).unwrap().text.clone();
+    assert_eq!(old, "Why b?\n```agent answer\nIt was so.\n```");
+    drop(db);
+    // Moved to the stack's comments by a change asked at low, replying
+    // nothing: the agent's turn that moves it says it.
+    let moved = comment(&e, &["--patch", "1", "Rename", "two."]);
+    let promote = fake_claude(&e, "claude-moves.sh", "", r#"{"replies": {}, "promote": "every patch says two"}"#);
+    let (fine, out, err) = stacked_in(&e.src, &e.db, &["send", "s", &moved, "--effort", "low", "--wait"], "", &[("STACKED_CLAUDE", &promote)]);
+    assert!(fine, "{out}{err}");
+    e.ok(&["review", "s", "--accept-all"]);
+    let c = e.ok(&["comments", "s", "--show", "failed"]);
+    assert!(c.contains("\tthe stack\tmoved from patch 1") && c.contains("  agent(low): This needs more than the patch: every patch says two\n"), "{c}");
 }
 
 #[test]
@@ -4615,7 +4678,7 @@ fn what_you_said_last_may_be_written_again() {
     e.ok(&["reply", "s", &id, "Thanks."]);
     e.ok(&["reply", "s", &id, "--edit", "Thanks, and why 9?"]);
     let c = e.ok(&["comments", "s", "--patch", "1"]);
-    assert!(c.contains("you: Why 2, not two?") && c.contains("agent: Seen.") && c.contains("you: Thanks, and why 9?"), "{c}");
+    assert!(c.contains("you: Why 2, not two?") && c.contains("agent(high): Seen.") && c.contains("you: Thanks, and why 9?"), "{c}");
     assert!(!c.contains("you: Thanks.\n"), "{c}");
 }
 
@@ -4839,14 +4902,14 @@ fn the_agent_answers_on_the_history() {
     );
     let (fine, out, err) = send(&e, &agent, &[&id, "--answer-only"], &[]);
     assert!(fine, "{err}");
-    assert!(out.contains("agent: To put c first.") && out.contains("opened 1 comment"), "{out}");
+    assert!(out.contains("agent(high): To put c first.") && out.contains("opened 1 comment"), "{out}");
     let told = std::fs::read_to_string(&told).unwrap();
     assert!(told.contains("on the stack's history, about @") && told.contains("The stack's history, oldest first"), "{told}");
     assert!(told.contains(&format!("What @{rev} was:")) && told.contains("↕ Bug 3 - café"), "{told}");
     assert!(told.contains("export s --rev @N") && told.contains("Bash(") && told.contains(" log *)"), "{told}");
     assert!(!told.contains("acceptEdits"), "it changes nothing");
     let c = e.ok(&["comments", "s", "--patch", "1"]);
-    assert!(c.contains("a.txt: 9") && c.contains("agent: This is the one moved."), "{c}");
+    assert!(c.contains("a.txt: 9") && c.contains("agent(high): This is the one moved."), "{c}");
 }
 
 #[test]
@@ -5366,7 +5429,7 @@ fn the_calls_the_agent_was_refused_land_as_items_one_a_rule_even_from_a_failed_r
     // In the work's review: one item a rule, in the order refused, each
     // with the first call it tried; Edit noted, as an answer only reads.
     let landed = e.ok(&["landed", "s"]);
-    assert!(landed.lines().next().unwrap().ends_with("\t1 reply, 4 tools the agent could not use"), "{landed}");
+    assert!(landed.lines().next().unwrap().ends_with("\t1 reply, 4 tools the agent could not use\tasked at high"), "{landed}");
     for line in [
         "  tool\tBash(searchfox-cli *)\trefused\tsearchfox-cli --define Foo",
         "  tool\tBash(./mach try fuzzy *)\trefused\t./mach try fuzzy --no-push -q x",
@@ -5402,7 +5465,7 @@ fn the_calls_the_agent_was_refused_land_as_items_one_a_rule_even_from_a_failed_r
     let (fine, _, err) = stacked_in(&e.src, &e.db, &["send", "s", &id, "--answer-only", "--wait"], "", &[("STACKED_CLAUDE", &failing)]);
     assert!(!fine && err.contains("1 of them failed"), "{err}");
     let landed = e.ok(&["landed", "s"]);
-    assert!(landed.lines().next().unwrap().ends_with("\t1 tool the agent could not use"), "{landed}");
+    assert!(landed.lines().next().unwrap().ends_with("\t1 tool the agent could not use\tasked at high"), "{landed}");
     let d = Db::load(&e.db).unwrap();
     let r = stacked::held::queue(&d, "s")[0].clone();
     assert_eq!(r.state, RunState::Failed);

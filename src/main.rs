@@ -865,7 +865,8 @@ fn print_run(r: &stacked::db::Run) {
     } else {
         format!(" \"{}\"", r.request.split_whitespace().collect::<Vec<_>>().join(" "))
     };
-    println!("{}\t{}\t{} {}{req}\t{state}\t{}", r.id, time(r.time), r.what, r.stack, r.summary);
+    // An ask asked at an effort, with it: `answer(max)`.
+    println!("{}\t{}\t{} {}{req}\t{state}\t{}", r.id, time(r.time), ask::what_said(r), r.stack, r.summary);
 }
 
 /// The run of the landed work on stack `name` that `run` starts, waiting
@@ -1607,7 +1608,9 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
                 let review = db.review(&r.id).cloned().unwrap_or_default();
                 // Gone on from the work before it, guessing: reviewed after it.
                 let after = ask::guessing(&db, r).map_or(String::new(), |on| format!("\tgoes on from {on}, which waits for your review"));
-                println!("{}\t{}\t{}{after}", r.id, time(h.at), stacked::held::left(&db, r));
+                // The agent's: the effort it was asked at.
+                let at = ask::effort_said(r).map_or(String::new(), |e| format!("\tasked at {e}"));
+                println!("{}\t{}\t{}{at}{after}", r.id, time(h.at), stacked::held::left(&db, r));
                 // A pull's parts are not marked: each is filed as its review
                 // closes.
                 let marked = !stacked::held::pulled(r);

@@ -34,7 +34,7 @@ use serde_json::{Map, Value};
 
 use crate::db::{Db, Error, Note, Record, Result, Run, RunState, err, now};
 use crate::refs::{Pointer, Pointing};
-use crate::thread::{Role, append_turn};
+use crate::thread::append_agent;
 
 /// A task the agent selected for a try push: its exact label in the task
 /// graph; why it is relevant, as the agent said it, its references in a
@@ -338,6 +338,11 @@ pub struct Push {
     /// said it once: none since a look could.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trouble: Option<String>,
+    /// The effort the agent that selected its tasks was asked at, its
+    /// work's: its replies on the comment say it, as the agent's replies do.
+    /// None for a push of before, or of work asked at the agent's own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<crate::db::Effort>,
 }
 
 fn is_zero(n: &i64) -> bool {
@@ -508,6 +513,7 @@ pub fn begin(db: &mut Db, work: &str, accepted: &[Task], rebuild: Option<u32>) -
             labels,
             rebuild,
             lowest,
+            effort: i.effort,
             ..Default::default()
         })),
         ..Default::default()
@@ -1181,6 +1187,7 @@ pub fn follow(db_path: &Path, id: &str) -> Result<Option<String>> {
                         id: p.id.clone(),
                         text,
                         tag: "try".into(),
+                        effort: p.effort,
                         ..Default::default()
                     }],
                     ..Default::default()
@@ -1317,10 +1324,11 @@ fn end(db_path: &Path, id: &str, state: RunState, why: &str, said: &dyn Fn(&Note
 }
 
 /// `said`, given the comment that asked for try push `p`, a reply of the
-/// try push's on it, if it is open.
+/// try push's on it, if it is open: at the effort of the agent that
+/// selected its tasks.
 fn reply(db: &mut Db, p: &Push, said: &dyn Fn(&Note) -> String) -> Result<()> {
     let Some(n) = db.note(&p.change, &p.id).filter(|n| !n.text.is_empty()).cloned() else { return Ok(()) };
-    let text = append_turn(&n.text, Role::Agent, &said(&n), Some("try"));
+    let text = append_agent(&n.text, &said(&n), "try", p.effort.map(crate::db::Effort::name));
     db.set_note(Note { text, time: now(), ..n })
 }
 

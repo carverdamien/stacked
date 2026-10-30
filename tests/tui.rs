@@ -4156,7 +4156,7 @@ fn a_web_link_is_attached_named_shown_whole_and_opened_by_a_stand_in() {
     let n = notes_of(&db, "s", 0).remove(0);
     assert_eq!(n.attached, [Attached { n: 1, to: To::Link(url.clone()) }]);
     accept_landed(&mut app, &db);
-    wait_for(&mut app, "agent replied (answer only)");
+    wait_for(&mut app, "agent replied (answer only, at high)");
     // Under the comment, a line each: yours cut to the middle, its start
     // kept; the agent's whole.
     let under = references_under(&mut app);
@@ -5353,7 +5353,7 @@ fn esc_asks_what_to_do_with_a_comment_unless_nothing_would_be_done() {
     let said: Vec<String> = stacked::thread::thread_turns(&notes_of(&db, "s", 0).remove(0).text).into_iter().map(|t| t.body).collect();
     assert_eq!(said, ["why so loud?", "It is a shout.", "louder"]);
     accept_landed(&mut app, &db);
-    wait_for(&mut app, "agent replied (answer only)");
+    wait_for(&mut app, "agent replied (answer only, at high)");
 }
 
 /// The agent changing `scope` of stack `s`, asked by comment (change, id):
@@ -8486,7 +8486,7 @@ fn a_comment_on_a_patch_may_be_sent_to_the_whole_stack() {
     choose_as(&mut app, "Ask agent", "the whole stack");
     assert!(app.status.contains("asked the agent about 1 comment (may change the whole stack)"), "{}", app.status);
     let screen = wait_for(&mut app, "⋯ Reading the patch.");
-    assert!(screen.contains("with the agent (may change the whole stack)"), "{screen}");
+    assert!(screen.contains("with the agent (may change the whole stack, at high)"), "{screen}");
     // The ask has the whole stack; its answer lands in the thread, on its
     // line.
     let d = Db::load(&db).unwrap();
@@ -8495,7 +8495,7 @@ fn a_comment_on_a_patch_may_be_sent_to_the_whole_stack() {
     drop(d);
     drop(held);
     accept_landed(&mut app, &db);
-    let screen = wait_for(&mut app, "agent replied (change)");
+    let screen = wait_for(&mut app, "agent replied (change, at high)");
     assert!(screen.contains("Seen.") && screen.contains("you · a.txt: TWO"), "{screen}");
     // A comment on the stack has the whole stack already.
     keys(&mut app, &[KeyCode::Left, KeyCode::Home]);
@@ -8525,7 +8525,7 @@ fn a_comment_is_sent_from_its_menu_and_answered_in_place() {
     // While claude works, its stream shows under the comment, and the top
     // bar and the comments pane say so.
     let screen = wait_for(&mut app, "⋯ Reading the patch.");
-    assert!(screen.contains("with the agent (answer only)"), "{screen}");
+    assert!(screen.contains("with the agent (answer only, at high)"), "{screen}");
     assert!(screen.contains("agent ●1"), "{screen}");
     assert!(screen.contains("● you · a.txt: TWO") && screen.contains("1 with the agent"), "{screen}");
     // Enter on it opens the stream in place; esc folds it.
@@ -8540,11 +8540,11 @@ fn a_comment_is_sent_from_its_menu_and_answered_in_place() {
     // nothing else changes, not even the bottom line.
     drop(held);
     let screen = wait_for(&mut app, "⟳ 1 landed ask waits for your review");
-    assert!(screen.contains("the next: 1 reply, asked \"why so loud?\"") && !screen.contains("Seen."), "{screen}");
+    assert!(screen.contains("the next: 1 reply, asked at high: \"why so loud?\"") && !screen.contains("Seen."), "{screen}");
     assert!(!app.status.contains("answer done"), "{}", app.status);
     // Accepted, it is a turn of the thread.
     accept_landed(&mut app, &db);
-    let screen = wait_for(&mut app, "agent replied (answer only)");
+    let screen = wait_for(&mut app, "agent replied (answer only, at high)");
     assert!(screen.contains("Seen.") && screen.contains("✓ you · a.txt: TWO"), "{screen}");
     assert!(screen.contains("1 to read") && !screen.contains("⟳"), "{screen}");
 
@@ -8835,7 +8835,7 @@ fn the_first_ask_goes_at_once_with_stacked_s_defaults_and_no_setup() {
     assert_eq!(efforts(&mut app, 1), ["xhigh"]);
     // With what stacked gives an answer, curl and jq its list unless set.
     accept_landed(&mut app, &db);
-    wait_for(&mut app, "agent replied (answer only)");
+    wait_for(&mut app, "agent replied (answer only, at xhigh)");
     let d = Db::load(&db).unwrap();
     let given = d.runs().iter().find_map(|r| stacked::ask::info(r)).unwrap().given;
     assert!(given.contains("Bash(git show *)") && given.ends_with(",StructuredOutput,Bash(curl *),Bash(jq *)"), "{given}");
@@ -8882,7 +8882,7 @@ fn the_screen_never_waits_on_the_agent() {
     keys(&mut app, &[KeyCode::Down, KeyCode::Up]);
     app.settle();
     assert!(!app.working());
-    let screen = wait_for(&mut app, "with the agent (may change the code)");
+    let screen = wait_for(&mut app, "with the agent (may change the code, at high)");
     assert!(screen.contains("agent ●1"), "{screen}");
     // A stack made by someone else is checked away from the screen too.
     Db::edit(&db, |d| stacked::ops::drop_patches(d, "s", &[1]).map(|_| ())).unwrap();
@@ -9854,8 +9854,8 @@ fn the_agent_is_asked_about_the_history_to_answer_only() {
     drop(d);
     // Its answer shows under the record.
     accept_landed(&mut app, &db);
-    let screen = wait_for(&mut app, "└ agent: Seen.");
-    assert!(screen.contains(" │    └ agent: Seen. · agent replied"), "under the record, the lanes beside it:\n{screen}");
+    let screen = wait_for(&mut app, "└ agent(high): Seen.");
+    assert!(screen.contains(" │    └ agent(high): Seen. · agent replied"), "under the record, the lanes beside it:\n{screen}");
     // Among the stack's comments it says what it is about, and is asked
     // about only to answer.
     choose(&mut app, "Go to its comments");
@@ -9915,7 +9915,7 @@ fn a_comment_moved_to_the_stack_takes_the_cursor_with_it() {
     // The agent moves it to the stack, as it does what needs more than the
     // patch: the cursor goes with it, and says what to do there.
     let n = notes_of(&db, "s", 0).remove(0);
-    Db::edit(&db, |d| stacked::ask::promote(d, "s", &n, "patch 2 says two too")).unwrap();
+    Db::edit(&db, |d| stacked::ask::promote(d, "s", &n, "patch 2 says two too", None)).unwrap();
     app.refresh();
     let screen = draw(&mut app);
     assert!(app.on_stack && app.rows[app.cursor].head, "on it:\n{screen}");
@@ -9937,7 +9937,7 @@ fn a_comment_moved_to_the_stack_shows_where_it_came_from() {
     keys(&mut app, &[KeyCode::Enter]);
     save(&mut app, "rename two everywhere");
     let n = notes_of(&db, "s", 0).remove(0);
-    Db::edit(&db, |d| stacked::ask::promote(d, "s", &n, "patch 2 says two too")).unwrap();
+    Db::edit(&db, |d| stacked::ask::promote(d, "s", &n, "patch 2 says two too", None)).unwrap();
     app.refresh();
     assert!(notes_of(&db, "s", 0).is_empty());
     keys(&mut app, &[KeyCode::Left, KeyCode::Home, KeyCode::Right]);
@@ -10577,6 +10577,165 @@ fn the_agent_is_started_at_the_ask_s_effort_in_place_of_the_settings_own() {
     let run = d.runs().last().unwrap().id.clone();
     let started = stacked::ask::tail(&d, &run, usize::MAX);
     assert!(started.iter().any(|l| l.contains(" -p … --permission-mode default --verbose --effort high, in ")), "{started:?}");
+}
+
+/// The texts of the rows the middle has, drawn or not.
+fn row_texts(app: &App) -> Vec<String> {
+    app.rows.iter().map(|r| r.text.clone()).collect()
+}
+
+#[test]
+fn the_effort_the_agent_was_asked_at_is_shown_wherever_its_work_is_named() {
+    use stacked::db::Effort;
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Right]);
+    // A thread of before, its agent's turn of no effort: as it always was.
+    down_to(&mut app, "+LINE 39");
+    keys(&mut app, &[KeyCode::Enter]);
+    save(&mut app, "Is it old?");
+    let old = notes_of(&db, "s", 0).remove(0);
+    Db::edit(&db, |d| d.set_note(Note { text: append_turn(&old.text, Role::Agent, "It is old.", Some("answer")), ..old.clone() })).unwrap();
+    app.refresh();
+    // Asked at max to answer only, the stand-in given --effort max: it
+    // replies, and opens a comment of its own.
+    answer_with(&db, &serde_json::json!({"replies": {"c1": "A shout."}, "comments": [{"patch": 1, "file": "a.txt", "side": "+", "line": "TWO", "text": "Softly?"}]}));
+    keys(&mut app, &[KeyCode::Home]);
+    down_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Enter]);
+    typed(&mut app, "why so loud?");
+    app.effort = Effort::Max;
+    keys(&mut app, &[KeyCode::Esc]);
+    let held = hold(&db);
+    choose_as(&mut app, "Ask agent", "answer only");
+    assert_eq!(efforts(&mut app, 1), ["max"]);
+    let ours = notes_of(&db, "s", 0).into_iter().find(|n| n.text == "why so loud?").unwrap();
+    // With the agent: the comment says at what effort, in the middle and on
+    // its line of the banner.
+    wait_for(&mut app, "with the agent (answer only, at max)");
+    keys(&mut app, &[KeyCode::Esc]);
+    assert!(app.on_banner);
+    let screen = draw(&mut app);
+    assert!(screen.contains("   ● patch 1 · a.txt: TWO · \"why so loud?\" · with the agent (answer only, at max)"), "{screen}");
+    keys(&mut app, &[KeyCode::Esc]);
+    // Landed: the banner says it of what waits for your review, before what
+    // was asked; Runs… after what the run is, and its transcript as claude
+    // was started.
+    drop(held);
+    let screen = wait_for(&mut app, "⟳ 1 landed ask waits for your review");
+    assert!(screen.contains(" · the next: 1 reply, 1 opened comment, asked at max: \"why so loud?\""), "{screen}");
+    choose(&mut app, "Runs…");
+    assert_eq!(app.screen, Screen::Runs);
+    let screen = draw(&mut app);
+    assert!(screen.contains(" answer(max) s \"why so loud?\" · its work waits for your review: 1 reply, 1 opened comment"), "{screen}");
+    keys(&mut app, &[KeyCode::Enter, KeyCode::Home]);
+    assert_eq!(app.screen, Screen::Transcript);
+    let screen = draw(&mut app);
+    assert!(screen.contains(" -p … --permission-mode default --effort max, in "), "{screen}");
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Esc]);
+    assert_eq!(app.screen, Screen::Main);
+    // The comment's menu names the work its reply waits with.
+    keys(&mut app, &[KeyCode::Home]);
+    for _ in 0..app.rows.len() {
+        if app.rows[app.cursor].head && app.rows[app.cursor].note.as_deref() == Some(ours.id.as_str()) {
+            break;
+        }
+        key(&mut app, KeyCode::Down);
+        draw(&mut app);
+    }
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    assert!(items(&app).contains(&("Review the agent's work (max)…".to_string(), true)), "{:?}", items(&app));
+    keys(&mut app, &[KeyCode::Esc]);
+    // Its review, from the banner: its title says whose work at what effort;
+    // the comment it opened, and its reply, headed with it.
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Enter]);
+    assert_eq!(app.screen, Screen::Review);
+    let screen = draw(&mut app);
+    assert!(screen.contains(" the agent's work (max): 1 reply, 1 opened"), "{screen}");
+    down_to_review(&mut app, "Softly?");
+    let screen = draw(&mut app);
+    assert!(screen.contains("   └ agent's comment (max):") && screen.contains("     ▎ agent(max):"), "{screen}");
+    down_to_review(&mut app, "A shout.");
+    let screen = draw(&mut app);
+    assert!(screen.contains("     ▎ agent(max):") && screen.contains("     ▎   A shout."), "{screen}");
+    keys(&mut app, &[KeyCode::Esc]);
+    choose(&mut app, "Accept all remaining and Close");
+    choose(&mut app, "Accept them and close");
+    app.settle();
+    assert_eq!(app.screen, Screen::Main);
+    // Accepted. In the middle, its reply headed with it, and the comment it
+    // opened its comment at max; the turn of before as ever.
+    let texts = row_texts(&app);
+    for said in ["     ▎ agent(max):", "     ▎   A shout.", "     ▎ agent:", "     ▎   It is old."] {
+        assert!(texts.iter().any(|t| t == said), "{said:?} in {texts:#?}");
+    }
+    assert!(texts.iter().any(|t| t.starts_with("   └ agent's comment (max)")), "{texts:#?}");
+    for said in ["agent replied (answer only, at max)", "agent replied (answer only)"] {
+        assert!(texts.iter().any(|t| t.contains(said)), "{said:?} in {texts:#?}");
+    }
+    // In the comments pane: who opened the agent's comment, and before what
+    // the agent said last; the comment of before as ever.
+    let screen = draw(&mut app);
+    for said in ["✓ you · a.txt: TWO", "   agent(max): A shout.", "✓ agent(max) · a.txt: TWO", "   agent(max): Softly?", "✓ you · a.txt: LINE 39", "│   It is old."] {
+        assert!(screen.contains(said), "{said:?} in:\n{screen}");
+    }
+    // Searched, from the comments pane: each turn found by who said it, as
+    // its turn is headed.
+    app.focus = Focus::Notes;
+    choose(&mut app, "Search…");
+    typed(&mut app, "shout");
+    assert_eq!(searched(&mut app), ["patch 1 · agent(max) · A shout."]);
+    keys(&mut app, &[KeyCode::Esc]);
+    choose(&mut app, "Search…");
+    typed(&mut app, "old");
+    assert_eq!(searched(&mut app), ["patch 1 · you · Is it old?", "patch 1 · agent · It is old."]);
+    keys(&mut app, &[KeyCode::Esc]);
+    app.focus = Focus::Diff;
+    // On the agent's turn, its menu names it with the effort; written again,
+    // the editor's title says it, and the comment's history.
+    keys(&mut app, &[KeyCode::Home]);
+    for _ in 0..app.rows.len() {
+        let r = &app.rows[app.cursor];
+        if r.who && r.note.as_deref() == Some(ours.id.as_str()) && r.by == Some(stacked::rows::By::Agent) {
+            break;
+        }
+        key(&mut app, KeyCode::Down);
+        draw(&mut app);
+    }
+    assert_eq!(app.rows[app.cursor].text, "     ▎ agent(max):");
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    assert!(items(&app).contains(&("Edit the agent's reply (max)".to_string(), true)), "{:?}", items(&app));
+    choose_as(&mut app, "Edit the agent's reply (max)", "here");
+    assert!(draw(&mut app).contains("the agent's reply (max): edit it"), "{}", draw(&mut app));
+    typed(&mut app, " Loud.");
+    keys(&mut app, &[KeyCode::Esc]);
+    choose(&mut app, "Save it");
+    let d = Db::load(&db).unwrap();
+    let mut said = Vec::new();
+    let mut before: Option<&Note> = None;
+    for (_, x) in d.note_history(&ours.change, &ours.id) {
+        said.push(stacked::history::note_change(before, x));
+        before = Some(x);
+    }
+    assert!(said.contains(&"agent replied (answer only, at max)".to_string()), "{said:?}");
+    assert_eq!(said.last().map(String::as_str), Some("you edited the agent's reply (max)"), "{said:?}");
+    let opened = d.notes(&ours.change).into_iter().find(|n| n.by.as_deref() == Some("agent")).cloned().unwrap();
+    let first = d.note_history(&opened.change, &opened.id).first().map(|(_, n)| stacked::history::note_change(None, n));
+    assert_eq!(first.as_deref(), Some("opened by the agent at max"));
+    drop(d);
+    choose(&mut app, "History of this comment…");
+    let screen = draw(&mut app);
+    assert!(screen.contains("agent replied (answer only, at max)") && screen.contains("    ```agent answer effort max"), "{screen}");
+    keys(&mut app, &[KeyCode::Esc]);
+    // A reply added, the thread written again: each turn keeps its own.
+    choose_as(&mut app, "Reply", "here");
+    save(&mut app, "louder?");
+    let text = notes_of(&db, "s", 0).into_iter().find(|n| n.id == ours.id).unwrap().text;
+    assert!(text.contains("\n```agent answer effort max\n") && text.ends_with("\nlouder?"), "{text}");
+    let turns = stacked::thread::thread_turns(&text);
+    assert_eq!(turns.iter().map(|t| t.effort.as_deref()).collect::<Vec<_>>(), [None, Some("max"), None]);
+    let old = notes_of(&db, "s", 0).into_iter().find(|n| n.id == old.id).unwrap().text;
+    assert_eq!(old, "Is it old?\n```agent answer\nIt is old.\n```");
 }
 
 #[test]
@@ -15000,7 +15159,7 @@ fn a_comment_hidden_moved_away_or_closed_elsewhere_leaves_the_cursor_where_it_wa
     // cursor on a turn of the other: the cursor stays there.
     down_to(&mut app, "     ▎   Which one?");
     let mut y = cursor_line_y(&mut app);
-    Db::edit(&db, |d| stacked::ask::promote(d, "s", &a, "patch 2 says two too")).unwrap();
+    Db::edit(&db, |d| stacked::ask::promote(d, "s", &a, "patch 2 says two too", None)).unwrap();
     app.refresh();
     let screen = draw(&mut app);
     assert!(!app.on_stack && !screen.contains("why so loud?"), "{screen}");

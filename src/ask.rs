@@ -74,7 +74,7 @@ use crate::held::Held;
 use crate::lint::Linter;
 use crate::mbox::{Draft, format_mbox, parse_mbox};
 use crate::ops::{Written, base_of, plan_checked};
-use crate::thread::{Role, append_turn, fenced, last_reply_way, last_role, thread_turns};
+use crate::thread::{Role, agent_open, append_agent, fenced, last_reply_way, last_role, thread_turns};
 use crate::view::{MSG_PATH, find_line, mode, note_lines, title_key};
 
 /// What an ask may change: the whole stack, or the patch of this change.
@@ -106,6 +106,33 @@ fn asked_scope(n: &Note) -> Scope {
 /// The scope run `id` was started with, if it is an ask.
 pub fn run_scope(db: &Db, id: &str) -> Option<Scope> {
     light(db.run(id)?).map(|l| l.scope)
+}
+
+/// The effort run `r` was asked at, if it is an ask that had one: read from
+/// its run without the rest, as it is read on every redraw. None for an
+/// ask made before efforts were picked, which went at the agent's own.
+pub fn effort_of(r: &Run) -> Option<Effort> {
+    #[derive(Deserialize)]
+    struct Asked {
+        #[serde(default)]
+        effort: Option<Effort>,
+    }
+    Asked::deserialize(r.ask.as_ref()?).ok()?.effort
+}
+
+/// The name of the effort run `r` was asked at, as `effort_of` reads it.
+pub fn effort_said(r: &Run) -> Option<&'static str> {
+    effort_of(r).map(Effort::name)
+}
+
+/// What run `r` is, as Runs… and `stacked runs` list it: `answer`, `pull`;
+/// an ask asked at an effort with it, as the agent's turns are headed
+/// (`answer(max)`).
+pub fn what_said(r: &Run) -> String {
+    match effort_said(r) {
+        Some(e) => format!("{}({e})", r.what),
+        None => r.what.clone(),
+    }
 }
 
 /// A comment claude is shown, by the label the prompt gives it.
@@ -391,7 +418,7 @@ pub fn still_running(db: &Db) -> Vec<String> {
                 Some(i) if r.pid.is_some() && !i.repo.is_empty() => format!("works in {}", i.repo),
                 _ => "is being started, its worktree being made".to_string(),
             };
-            format!("{} {} {}{asked} {at}", r.id, r.what, r.stack)
+            format!("{} {} {}{asked} {at}", r.id, what_said(r), r.stack)
         })
         .collect()
 }
@@ -3146,7 +3173,8 @@ fn named_comment(db: &Db, i: &Info, stack: &str, name: &str) -> Option<(String, 
     db.find_note(stack, name).ok().map(|n| (n.change.clone(), n.id.clone()))
 }
 
-/// Claude's replies to the comments it was sent, held: turns `way` names.
+/// Claude's replies to the comments it was sent, held: turns `way` names,
+/// at the effort the ask was asked at.
 fn held_replies(db: &Db, i: &Info, replies: &Map<String, Value>) -> Vec<crate::held::Reply> {
     let stack = db.node(i.from).map(|s| s.name.clone()).unwrap_or_default();
     i.notes
@@ -3163,6 +3191,7 @@ fn held_replies(db: &Db, i: &Info, replies: &Map<String, Value>) -> Vec<crate::h
                     crate::refs::written_with(v, first, &|c| named_comment(db, i, &stack, c))
                 })?,
                 tag: i.way.name().into(),
+                effort: i.effort,
                 ..Default::default()
             })
         })
@@ -3217,6 +3246,7 @@ fn land_patch(db: &mut Db, run: &Run, i: &Info, result: &str, replies: &Map<Stri
                     text: String::new(),
                     tag: i.way.name().into(),
                     promote: Some(why.clone()),
+                    effort: i.effort,
                     ..Default::default()
                 }),
                 None => {}
@@ -3458,8 +3488,9 @@ pub(crate) fn follow_lines(db: &mut Db, olds: &[Patch], now: &[String]) -> Resul
 }
 
 /// Moves comment `n` to stack `name`'s own comments, `why` claude's last
-/// turn: it needs more than its patch. It waits there to be sent again.
-pub fn promote(db: &mut Db, name: &str, n: &Note, why: &str) -> Result<()> {
+/// turn, at the effort its ask was asked at: it needs more than its patch.
+/// It waits there to be sent again.
+pub fn promote(db: &mut Db, name: &str, n: &Note, why: &str, effort: Option<Effort>) -> Result<()> {
     let moved = Moved {
         change: n.change.clone(),
         id: n.id.clone(),
@@ -3471,7 +3502,7 @@ pub fn promote(db: &mut Db, name: &str, n: &Note, why: &str) -> Result<()> {
         change: stack_change(name),
         id: format!("moved:{}", crate::db::short_id(&n.change, &n.id)),
         line: String::new(),
-        text: append_turn(&n.text, Role::Agent, &format!("This needs more than the patch: {why}"), Some("moved")),
+        text: append_agent(&n.text, &format!("This needs more than the patch: {why}"), "moved", effort.map(Effort::name)),
         moved: Some(moved),
         queued: None,
         failed: None,
@@ -3541,7 +3572,7 @@ fn opened_notes(db: &Db, run: &Run, i: &Info, result: &str) -> Result<Vec<Note>>
             id: format!("agent:{}:{n}", run.id),
             line,
             text: fenced(
-                "agent answer",
+                &agent_open(Way::Answer.name(), i.effort.map(Effort::name)),
                 &crate::refs::attach(
                     str_of(note.get("text")).trim(),
                     &crate::refs::resolved(crate::refs::of_json(note.get("refs")), Some(1), &|c| named_comment(db, i, &from.name, c)),
@@ -3582,7 +3613,8 @@ fn test_notes(db: &Db, run: &Run, i: &Info, result: &str) -> Result<Vec<Note>> {
             text: {
                 let (found, refs) = crate::refs::text_and_refs(v);
                 let refs = crate::refs::resolved(refs, Some(1), &|c| named_comment(db, i, &from.name, c));
-                fenced("agent test", &crate::refs::attach(&format!("{} (tested @{})", found.trim(), i.from), &refs))
+                let open = agent_open(Way::Test.name(), i.effort.map(Effort::name));
+                fenced(&open, &crate::refs::attach(&format!("{} (tested @{})", found.trim(), i.from), &refs))
             },
             file: MSG_PATH.into(),
             preview: p.title().chars().take(80).collect(),
@@ -3813,6 +3845,7 @@ fn gone_within(pid: u32, within: std::time::Duration) -> bool {
 mod tests {
     use super::*;
     use crate::db::{Record, VERSION};
+    use crate::thread::append_turn;
 
     #[test]
     fn a_rebase_plan_that_runs_a_command_is_refused() {
@@ -4195,6 +4228,12 @@ mod tests {
         assert_eq!(transcript(&text), "The user: why, really?");
         // A turn deleted the first way is told to no one.
         assert_eq!(transcript("why?\n```deleted agent answer\n> Because.\n```\nand here?"), "The user: why?\nThe user: and here?");
+        // The effort its earlier turns were asked at is not told: they are
+        // told as ever.
+        let text = append_agent("why?", "Because.", "answer", Some("max"));
+        let text = append_agent(&append_turn(&text, Role::You, "and here?", None), "Here too.", "change", Some("low"));
+        assert!(text.contains("```agent answer effort max\n") && text.contains("```agent change effort low\n"), "{text}");
+        assert_eq!(transcript(&text), "The user: why?\nYou (the agent, earlier): Because.\nThe user: and here?\nYou (the agent, earlier): Here too.");
     }
 
     #[test]

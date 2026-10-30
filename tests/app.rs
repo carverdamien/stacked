@@ -902,6 +902,78 @@ fn a_reviewer_s_edit_is_headed_so_and_a_pull_s_review_rejects_nothing_in_the_win
     assert!(text(&dialog).contains("Close review") && !text(&dialog).contains("Reject all remaining"), "{}", text(&dialog));
 }
 
+/// On stack `s` of `db`, the agent's work at max: on its first patch's
+/// title, a thread the agent replied to at max, after its reply of before
+/// efforts were picked; and its answer to a comment on the second patch's
+/// title, landed, waiting for your review.
+fn at_max(db: &Path) {
+    use stacked::db::{Effort, Note, Run, RunState};
+    use stacked::thread::{Role, append_agent, append_turn};
+    stacked::db::Db::edit(db, |d| {
+        let (from, s) = d.head("s").map(|(rev, s)| (rev, s.clone())).unwrap();
+        let (first, second) = (d.patch(&s.patches[0]).clone(), d.patch(&s.patches[1]).clone());
+        let note = |p: &stacked::db::Patch, id: &str, text: String| Note {
+            change: p.change.clone(),
+            id: id.into(),
+            line: stacked::view::title_key(p),
+            file: stacked::view::MSG_PATH.into(),
+            preview: p.title().into(),
+            text,
+            ..Default::default()
+        };
+        let before = append_turn("Was it so before?", Role::Agent, "It was.", Some("answer"));
+        let thread = append_agent(&append_turn(&before, Role::You, "Why shout?", None), "A shout.", "answer", Some("max"));
+        d.set_note(note(&first, "c-max", thread))?;
+        d.set_note(note(&second, "c-bee", "Why add b?".into()))?;
+        let ask = serde_json::json!({"way": "answer", "scope": {"patch": second.change}, "from": from, "notes": [{"label": "c1", "change": second.change, "id": "c-bee"}], "effort": "max"});
+        d.add_run(Run {
+            id: "run-max".into(),
+            what: "answer".into(),
+            stack: "s".into(),
+            state: RunState::Done,
+            request: "Why add b?".into(),
+            ask: Some(ask),
+            held: Some(stacked::held::Held {
+                at: stacked::db::now(),
+                replies: vec![stacked::held::Reply {
+                    change: second.change.clone(),
+                    id: "c-bee".into(),
+                    text: "For the bees.".into(),
+                    tag: "answer".into(),
+                    effort: Some(Effort::Max),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }),
+            ..Default::default()
+        })
+        .map(|_| ())
+    })
+    .unwrap();
+}
+
+#[test]
+fn the_effort_the_agent_was_asked_at_heads_its_turns_and_names_its_work_in_the_window_too() {
+    let (tmp, db) = setup();
+    at_max(&db);
+    let s = Session::open(&db, tmp.path()).unwrap();
+    s.send(Input::Size(120, 30));
+    // The thread: the agent's turn at max headed with it, the one of before
+    // as ever; the comments pane saying it before what the agent said last;
+    // the banner, what landed at max.
+    screen(&s, "the turns", |b| {
+        let t = text(b);
+        ["▎ agent(max):", "▎ agent:", "agent(max): A shout.", "· the next: 1 reply, asked at max: \"Why add b?\""].iter().all(|said| t.contains(said))
+    });
+    // Its review, from the banner: its title, and its reply headed so.
+    press(&s, KeyCode::Esc);
+    press(&s, KeyCode::Enter);
+    screen(&s, "the review", |b| {
+        let t = text(b);
+        [" the agent's work (max): 1 reply", "▎ agent(max):", "▎   For the bees."].iter().all(|said| t.contains(said))
+    });
+}
+
 /// A comment on patch 1's `+TWO`, answered in 30 lines, then closed: what a
 /// comment written there again shows, dimmed, until something is written.
 fn closed_on_two(tmp: &Path, db: &Path) {

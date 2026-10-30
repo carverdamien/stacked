@@ -321,7 +321,7 @@ fn the_answer_taken_with_enter_closes_its_review_and_the_tour_goes_on() {
     press(&mut app, KeyCode::Enter);
     // The answer is in the thread, nothing of its work is left to review,
     // and the tour goes on.
-    assert_eq!(app.status, "you accepted the agent's reply: it is in the thread now");
+    assert_eq!(app.status, "you accepted the agent's reply (high): it is in the thread now");
     app.refresh();
     assert!(stacked::held::queue(&app.db, "game").is_empty());
     assert!(!screen(&mut app, &tour).contains("landed ask waits for your review"));
