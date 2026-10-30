@@ -1303,6 +1303,31 @@ fn what_is_said_names_the_keys_of_the_settings() {
     assert_eq!(app.say_keys("press ↓ to pick it, ↑ to go back, ↑↓ for another".into()), "press j to pick it, k to go back, kj for another");
 }
 
+#[test]
+fn where_what_is_typed_is_read_the_bottom_bar_names_the_keys_as_they_are() {
+    let (_tmp, db, _src) = setup();
+    let (cfg, wrong) = stacked::config::Config::parse("[keys]\nenter = [\"x\", \"enter\"]\nback = [\"q\", \"esc\"]\n").unwrap();
+    assert!(wrong.is_empty(), "{wrong:?}");
+    stacked::config::init(settings());
+    let mut app = App::with_config(&db, cfg).unwrap();
+    let bar = |app: &mut App| draw(app).lines().last().unwrap_or_default().to_string();
+    // On a line of the patch, the keys of the settings.
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "+TWO");
+    assert!(bar(&mut app).starts_with(" x: comment"), "{}", bar(&mut app));
+    // In the comment editor, which takes the keys as they are, enter and
+    // esc, not x and q, which it types.
+    keys(&mut app, &[KeyCode::Enter]);
+    assert_eq!(bar(&mut app).trim_end(), " enter: a new line · esc: close");
+    typed(&mut app, "xq");
+    keys(&mut app, &[KeyCode::Esc]);
+    choose(&mut app, "Save it");
+    assert_eq!(notes_of(&db, "s", 0)[0].text, "xq");
+    // The search's own screen, which reads what is typed, too.
+    choose(&mut app, "Search…");
+    assert!(bar(&mut app).trim_end().ends_with(" · enter: go there · esc: back"), "{}", bar(&mut app));
+}
+
 /// As `choose`, the item's choice drawn as `pick` (or starting so)
 /// picked first, with →.
 fn choose_as(app: &mut App, label: &str, pick: &str) -> Effect {

@@ -2939,7 +2939,8 @@ settings:
   editor, above), unless a setting gives them to something on the screens.
   The comment
   editor, a line typed in a box, and the search's own screen read what is
-  typed, whatever the keys.
+  typed, whatever the keys, and the bottom bar names their keys as they
+  are there (`enter: a new line · esc: close`).
 - `[lint]`: `command`, the linter of a checkout, which the stack's `Lint the
   stack` runs (Linting, above): a checkout's own setting alone, read only
   from its `.stacked/local.toml`, which `stacked setup lint` writes; `""`,
@@ -3626,7 +3627,8 @@ imported from Phabricator's revisions (by
 number or link, named or not), Phabricator's commands there only when
 built with it, and
 what does not apply being refused, edited again, or read-only. `tests/tui.rs` draws the editor into a buffer and presses keys:
-that no letter but 1, 2, 3 and / does anything, keys mapped by the settings,
+that no letter but 1, 2, 3 and / does anything, keys mapped by the settings
+(the bottom bar naming them, but as they are where what is typed is read),
 Delete and Backspace as the menus' items that close, drop, stop or reject
 (a comment closed, with those its answer opened, its agent stopped and
 its ask landed at once as failed, taken

@@ -10387,7 +10387,11 @@ impl App {
         let w = area.width as usize;
         let y = area.height as usize - 1;
         let text = if self.status.is_empty() {
-            format!(" {}", self.say_keys(self.hint()))
+            // Where what is typed is read, the keys are as they are, not as
+            // the settings map them, and so are those said.
+            let typed = matches!(self.mode, Mode::Edit(_) | Mode::Lines(_) | Mode::Prompt(_))
+                || (self.screen == Screen::Search && matches!(self.mode, Mode::Normal));
+            format!(" {}", if typed { self.hint() } else { self.say_keys(self.hint()) })
         } else if matches!(self.mode, Mode::Moving { .. }) {
             // Refused, and still moving: why, cut short if it must be, and
             // the keys that go on from here, never cut.
