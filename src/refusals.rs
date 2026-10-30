@@ -4,11 +4,12 @@
 //! that five calls of `searchfox-cli` are one item, `Bash(searchfox-cli
 //! *)`, with the calls it tried. A command's rule is `Bash(PROGRAM *)` for
 //! a plain program, and narrower for a broad one (`./mach`, `git`, `sh`,
-//! `bash`, `python`): a refused `./mach try fuzzy --no-push …` is
-//! `Bash(./mach try fuzzy *)`, which may be widened to `Bash(./mach try
-//! *)`, then `Bash(./mach *)`. The narrowest is the rule a change is given
-//! the checkout's linter by (`narrowest`), so that no call of the linter
-//! is an item of a change's. Each command of a pipe is its own, as claude
+//! `bash`, `python`, `npx`, `cargo`): a refused `./mach try fuzzy --no-push
+//! …` is `Bash(./mach try fuzzy *)`, which may be widened to `Bash(./mach
+//! try *)`, then `Bash(./mach *)`; `npx eslint --fix` is `Bash(npx eslint
+//! *)`, then `Bash(npx *)`. The narrowest is the rule a change is given the
+//! checkout's linter by (`narrowest`), so that no call of the linter is an
+//! item of a change's. Each command of a pipe is its own, as claude
 //! matches each apart. Another tool's rule is its name, an MCP server's
 //! tool widened to all of the server's (`mcp__SERVER__*`). The agent says
 //! why it needed each, and how it worked around it (`"refused"` in its
@@ -433,15 +434,66 @@ fn subcommand(w: &str) -> bool {
     w.starts_with(|c: char| c.is_ascii_lowercase()) && w.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
 }
 
+/// The options npx takes with no value before the package it runs, as npm
+/// reads them from its version 7 on.
+const NPX_FLAGS: [&str; 4] = ["-y", "--yes", "-q", "--quiet"];
+
+/// The option npx takes with a value, `-p PKG` (`--package`): a package to
+/// install. With it, the word after the options is the command to run, not
+/// a package.
+const NPX_VALUED: [&str; 2] = ["-p", "--package"];
+
+/// cargo's global options that take no value, given before its subcommand.
+const CARGO_FLAGS: [&str; 8] = ["-q", "--quiet", "-v", "-vv", "--verbose", "--locked", "--offline", "--frozen"];
+
+/// cargo's global options that take a value.
+const CARGO_VALUED: [&str; 4] = ["--color", "--config", "-C", "-Z"];
+
+/// What npx or cargo is asked to run, as one step of its rules
+/// (`rules_of`): the words of `args` up to the one that names what runs,
+/// which is `named`, with the options before it as written, so that the
+/// rule lets the call (`-y eslint` of `npx -y eslint .`, `+nightly --locked
+/// clippy` of `cargo +nightly --locked clippy`). The options start at
+/// `from`; the words before it are kept as they are (cargo's toolchain).
+/// An option is one of `flags`, alone; one of `valued`, with the word after
+/// it, or a long one with its value after an `=` (`--color=always`); `--`
+/// ends them. Nothing for an option that is none of those, as its value
+/// could be the word taken for what runs; for no word `named` after the
+/// options; or for a word that no rule holds as it is written.
+fn runs(args: &[String], from: usize, flags: &[&str], valued: &[&str], named: fn(&str) -> bool) -> Vec<String> {
+    let mut k = from;
+    while let Some(w) = args.get(k).map(String::as_str).filter(|w| w.starts_with('-')) {
+        if w == "--" {
+            k += 1;
+            break;
+        }
+        let joined = valued.iter().any(|v| v.starts_with("--") && w.strip_prefix(v).is_some_and(|value| value.starts_with('=')));
+        k += if flags.contains(&w) || joined {
+            1
+        } else if valued.contains(&w) {
+            2
+        } else {
+            return vec![];
+        };
+    }
+    match args.get(k) {
+        Some(w) if named(w) && args[..=k].iter().all(|w| plain(w)) => vec![args[..=k].join(" ")],
+        _ => vec![],
+    }
+}
+
 /// The rules that would let command `cmd` run, the narrowest first, each
 /// as claude writes it: `Bash(PREFIX *)`. Its program alone, for a plain
 /// program; for a broad one, with what it is asked to do, then wider, a
 /// word at a time: `./mach try fuzzy`, then `./mach try`, then `./mach`;
 /// `git log`, then `git`; `bash ./run.sh`, then `bash`; `python3 -m pytest`,
-/// then `python3`. What it sets first (`A=b`) stays before the program.
-/// None for a shell's own (`cd`, `echo`), nor for what no rule can hold as
-/// it is written (a quote in its program, a comma, which would cut in two
-/// the list claude is given).
+/// then `python3`; `npx eslint`, then `npx`; `cargo clippy`, then `cargo`.
+/// The options npx or cargo is given before what it runs stay in the
+/// narrowest rule as written, so that the rule lets the call: `npx -y
+/// eslint`, `cargo +nightly clippy`. What it sets first (`A=b`) stays
+/// before the program. None for a shell's own (`cd`, `echo`), nor for what
+/// no rule can hold as it is written (a quote in its program, a comma,
+/// which would cut in two the list claude is given).
 pub fn command_rules(cmd: &str) -> Vec<String> {
     rules_of(cmd).0
 }
@@ -450,9 +502,10 @@ pub fn command_rules(cmd: &str) -> Vec<String> {
 /// of it is offered with (`command_rules`), if it is narrow: none for a
 /// broad program that `cmd` asks nothing narrower of, its rule letting it
 /// run anything (`Bash(./mach *)` of `./mach --verbose lint`, `Bash(sh *)`
-/// of `sh -c …`), nor for a command no rule holds. `Bash(./mach lint *)` of
-/// `./mach lint --fix`; a plain program's own, `Bash(eslint *)` of `eslint
-/// --fix`.
+/// of `sh -c …`, `Bash(npx *)` of `npx` alone), nor for a command no rule
+/// holds. `Bash(./mach lint *)` of `./mach lint --fix`, `Bash(npx eslint
+/// *)` of `npx eslint --fix`, `Bash(cargo clippy *)` of `cargo clippy
+/// --fix`; a plain program's own, `Bash(eslint *)` of `eslint --fix`.
 pub fn narrowest(cmd: &str) -> Option<String> {
     let (rules, broad) = rules_of(cmd);
     if broad && rules.len() < 2 {
@@ -473,28 +526,36 @@ fn rules_of(cmd: &str) -> (Vec<String>, bool) {
         return (vec![], false);
     }
     let base = program.rsplit('/').next().unwrap_or(program);
-    let more: Option<Vec<&str>> = match base {
-        "mach" => Some(args.iter().take(2).take_while(|w| subcommand(w)).map(String::as_str).collect()),
-        "git" => Some(args.iter().take(1).take_while(|w| subcommand(w)).map(String::as_str).collect()),
-        "sh" | "bash" | "zsh" => Some(args.iter().take(1).take_while(|w| !w.starts_with('-') && plain(w)).map(String::as_str).collect()),
+    // What a broad program is asked to do, in steps that its wider rules
+    // drop one at a time, the last first: `try` and `fuzzy` of `./mach try
+    // fuzzy`. Words that go together are one step: `-m` with its module,
+    // the options of npx or cargo with what they run.
+    let more: Option<Vec<String>> = match base {
+        "mach" => Some(args.iter().take(2).take_while(|w| subcommand(w)).cloned().collect()),
+        "git" => Some(args.iter().take(1).take_while(|w| subcommand(w)).cloned().collect()),
+        "sh" | "bash" | "zsh" => Some(args.iter().take(1).take_while(|w| !w.starts_with('-') && plain(w)).cloned().collect()),
         "python" | "python3" => Some(match args.first().map(String::as_str) {
-            Some("-m") => args.get(1).filter(|m| plain(m)).map_or(vec![], |m| vec!["-m", m.as_str()]),
-            Some(w) if !w.starts_with('-') && plain(w) => vec![w],
+            Some("-m") => args.get(1).filter(|m| plain(m)).map_or(vec![], |m| vec![format!("-m {m}")]),
+            Some(w) if !w.starts_with('-') && plain(w) => vec![w.to_string()],
             _ => vec![],
         }),
+        // The package npx runs, a scope or a version part of its word
+        // (`@scope/pkg`, `eslint@9`); after `-p PKG`, the command it runs.
+        "npx" => Some(runs(args, 0, &NPX_FLAGS, &NPX_VALUED, |w| !w.starts_with('-'))),
+        // cargo's subcommand, after the toolchain rustup reads first
+        // (`+nightly`) and cargo's global options.
+        "cargo" => {
+            let toolchain = args.first().is_some_and(|w| w.len() > 1 && w.starts_with('+'));
+            Some(runs(args, usize::from(toolchain), &CARGO_FLAGS, &CARGO_VALUED, subcommand))
+        }
         _ => None,
     };
     let broad = more.is_some();
     let more = more.unwrap_or_default();
-    let head: Vec<&str> = sets.iter().map(String::as_str).chain([program.as_str()]).collect();
-    // `-m` goes with its module: dropped together.
-    let mut keep: Vec<usize> = (0..=more.len()).rev().collect();
-    if more.first() == Some(&"-m") {
-        keep.retain(|&n| n != 1);
-    }
-    let rules = keep
-        .into_iter()
-        .map(|n| format!("Bash({} *)", head.iter().chain(&more[..n]).copied().collect::<Vec<_>>().join(" ")))
+    let head: Vec<&str> = sets.iter().chain([program]).map(String::as_str).collect();
+    let rules = (0..=more.len())
+        .rev()
+        .map(|n| format!("Bash({} *)", head.iter().copied().chain(more[..n].iter().map(String::as_str)).collect::<Vec<_>>().join(" ")))
         .filter(|r| crate::setup::rule(r).is_ok())
         .collect();
     (rules, broad)
@@ -1009,8 +1070,8 @@ mod tests {
             ("python3 -m black", "Bash(python3 -m black *)"),
             ("bash ./tools/lint.sh", "Bash(bash ./tools/lint.sh *)"),
             ("eslint --fix", "Bash(eslint *)"),
-            ("npx eslint --fix", "Bash(npx *)"),
-            ("cargo clippy --fix", "Bash(cargo *)"),
+            ("npx eslint --fix", "Bash(npx eslint *)"),
+            ("cargo clippy --fix", "Bash(cargo clippy *)"),
             ("ruff check --fix", "Bash(ruff *)"),
         ] {
             assert_eq!(narrowest(cmd).as_deref(), Some(rule), "{cmd}");
@@ -1018,8 +1079,63 @@ mod tests {
         }
         // A broad program it asks nothing narrower of, which its rule would
         // let do anything; or what no rule holds: none.
-        for none in ["./mach --verbose lint", "./mach", "sh -c 'eslint --fix'", "git -C x status", "python3 -c 'x'", "'./my lint' --fix", "cd x", ""] {
+        for none in ["./mach --verbose lint", "./mach", "sh -c 'eslint --fix'", "git -C x status", "python3 -c 'x'", "npx", "cargo", "'./my lint' --fix", "cd x", ""] {
             assert_eq!(narrowest(none), None, "{none}");
+        }
+    }
+
+    #[test]
+    fn npx_s_rule_names_the_package_it_runs_and_cargo_s_its_subcommand() {
+        let bash = |rule: &str, cmd: &str| lets(rule, "Bash", &Value::Null, Some(cmd));
+        // The narrowest rule, then the wide one. The options before what
+        // runs stay as written, so that the rule lets the call.
+        for (cmd, rule, wide) in [
+            ("npx eslint --fix", "Bash(npx eslint *)", "Bash(npx *)"),
+            ("npx -y eslint .", "Bash(npx -y eslint *)", "Bash(npx *)"),
+            ("npx --yes -q eslint .", "Bash(npx --yes -q eslint *)", "Bash(npx *)"),
+            ("npx -- eslint --fix", "Bash(npx -- eslint *)", "Bash(npx *)"),
+            // With -p, what npx installs, then the command it runs.
+            ("npx -p typescript tsc --noEmit", "Bash(npx -p typescript tsc *)", "Bash(npx *)"),
+            ("npx --package=typescript tsc", "Bash(npx --package=typescript tsc *)", "Bash(npx *)"),
+            // A scope or a version is part of the package's word.
+            ("npx @scope/pkg run", "Bash(npx @scope/pkg *)", "Bash(npx *)"),
+            ("npx eslint@9 .", "Bash(npx eslint@9 *)", "Bash(npx *)"),
+            ("npx @scope/pkg@1.2.3", "Bash(npx @scope/pkg@1.2.3 *)", "Bash(npx *)"),
+            // cargo's toolchain and global options, then its subcommand.
+            ("cargo clippy --fix", "Bash(cargo clippy *)", "Bash(cargo *)"),
+            ("cargo +nightly clippy", "Bash(cargo +nightly clippy *)", "Bash(cargo *)"),
+            ("cargo --locked test", "Bash(cargo --locked test *)", "Bash(cargo *)"),
+            ("cargo -q --color always build", "Bash(cargo -q --color always build *)", "Bash(cargo *)"),
+            ("cargo +1.80 -vv --config=build.jobs=2 nextest run", "Bash(cargo +1.80 -vv --config=build.jobs=2 nextest *)", "Bash(cargo *)"),
+            ("~/.cargo/bin/cargo fmt", "Bash(~/.cargo/bin/cargo fmt *)", "Bash(~/.cargo/bin/cargo *)"),
+        ] {
+            assert_eq!(command_rules(cmd), [rule, wide], "{cmd}");
+            assert_eq!(narrowest(cmd).as_deref(), Some(rule), "{cmd}");
+            assert!(bash(rule, cmd) && bash(wide, cmd), "{rule} and {wide} let {cmd}");
+        }
+        // Another package, or another of cargo's subcommands: not let.
+        assert!(!bash("Bash(npx eslint *)", "npx prettier --write .") && !bash("Bash(npx eslint *)", "npx eslint-x"));
+        assert!(!bash("Bash(cargo clippy *)", "cargo run") && !bash("Bash(cargo +nightly clippy *)", "cargo +nightly install x"));
+        // Alone; its options with nothing after them; an option it is not
+        // known to read alone or with a value, whose value could be the
+        // word after it; or what no rule holds as written: the wide rule
+        // alone, and no narrowest.
+        for (cmd, wide) in [
+            ("npx", "Bash(npx *)"),
+            ("npx -y", "Bash(npx *)"),
+            ("npx -p typescript", "Bash(npx *)"),
+            ("npx --registry https://r.example eslint", "Bash(npx *)"),
+            ("npx -c 'eslint --fix'", "Bash(npx *)"),
+            ("npx 'eslint' --fix", "Bash(npx *)"),
+            ("cargo", "Bash(cargo *)"),
+            ("cargo +nightly", "Bash(cargo *)"),
+            ("cargo --version", "Bash(cargo *)"),
+            ("cargo --color clippy", "Bash(cargo *)"),
+            ("cargo --frobnicate x clippy", "Bash(cargo *)"),
+            ("cargo Clippy", "Bash(cargo *)"),
+        ] {
+            assert_eq!(command_rules(cmd), [wide], "{cmd}");
+            assert_eq!(narrowest(cmd), None, "{cmd}");
         }
     }
 
@@ -1033,7 +1149,9 @@ mod tests {
             (Linter::Mach, vec!["./mach lint --fix dom/a.js dom/b.js", "./mach lint dom/a.js", "./mach lint -l eslint dom/a.js"]),
             (Linter::Set("eslint --fix".into()), vec!["eslint --fix src/a.js", "eslint src/a.js"]),
             (Linter::Set("npx eslint --fix".into()), vec!["npx eslint --fix src/a.js", "npx eslint src/a.js"]),
+            (Linter::Set("npx -y eslint --fix".into()), vec!["npx -y eslint --fix src/a.js", "npx -y eslint src/a.js"]),
             (Linter::Set("cargo clippy --fix".into()), vec!["cargo clippy --fix --allow-dirty", "cargo clippy"]),
+            (Linter::Set("cargo +nightly clippy --fix".into()), vec!["cargo +nightly clippy --fix --allow-dirty", "cargo +nightly clippy"]),
             (Linter::Set("ruff check --fix".into()), vec!["ruff check --fix a.py", "ruff check a.py"]),
         ] {
             let rule = linter.rule().unwrap();
@@ -1041,6 +1159,20 @@ mod tests {
                 assert!(lets(&rule, "Bash", &Value::Null, Some(call)), "{rule} lets {call}");
                 assert_eq!(command_rules(call)[0], rule, "{call}");
             }
+        }
+        // npx's package and cargo's subcommand, not npx nor cargo at large:
+        // the rule given lets no other package run, nor `cargo run`, nor
+        // `cargo install`.
+        let rule = |command: &str| Linter::Set(command.into()).rule();
+        assert_eq!(rule("npx eslint --fix").as_deref(), Some("Bash(npx eslint *)"));
+        assert_eq!(rule("cargo clippy --fix").as_deref(), Some("Bash(cargo clippy *)"));
+        for (linter, other) in [("npx eslint --fix", "npx prettier --write src/a.js"), ("cargo clippy --fix", "cargo run"), ("cargo clippy --fix", "cargo install x")] {
+            assert!(!lets(&rule(linter).unwrap(), "Bash", &Value::Null, Some(other)), "{linter}: {other}");
+        }
+        // npx or cargo with nothing narrower to name, as another broad
+        // program asked nothing narrower: none given.
+        for none in ["npx", "npx -y", "cargo", "cargo +nightly --locked"] {
+            assert_eq!(rule(none), None, "{none}");
         }
         assert_eq!((Linter::Off.rule(), Linter::None.rule()), (None, None));
         // A run of before, not given it: its refused call an item, offered
@@ -1052,6 +1184,29 @@ mod tests {
         let given = strings(&["Read", Linter::Mach.rule().unwrap().as_str()]);
         let now = items(&[&result], Way::Change, &given, &[], &[], &[]);
         assert_eq!(now.iter().map(|r| (r.rule(), r.noted.as_deref())).collect::<Vec<_>>(), [("Bash(./mach lint *)", Some(ALREADY))]);
+        // npx's and cargo's linters likewise, to widen to npx or cargo at
+        // large; npx or cargo alone, offered with the wide rule, its only
+        // choice.
+        let result = refusing(&[
+            ("Bash", command("npx eslint --fix src/a.js")),
+            ("Bash", command("cargo clippy --fix --allow-dirty")),
+            ("Bash", command("npx")),
+            ("Bash", command("cargo")),
+        ]);
+        let before = items(&[&result], Way::Change, &strings(&["Read"]), &[], &[], &[]);
+        assert_eq!(
+            before.iter().map(|r| (r.rules.clone(), r.offered())).collect::<Vec<_>>(),
+            [
+                (strings(&["Bash(npx eslint *)", "Bash(npx *)"]), true),
+                (strings(&["Bash(cargo clippy *)", "Bash(cargo *)"]), true),
+                (strings(&["Bash(npx *)"]), true),
+                (strings(&["Bash(cargo *)"]), true),
+            ]
+        );
+        let given = strings(&["Read", &rule("npx eslint --fix").unwrap(), &rule("cargo clippy --fix").unwrap()]);
+        let now = items(&[&result], Way::Change, &given, &[], &[], &[]);
+        let noted: Vec<(&str, Option<&str>)> = now.iter().map(|r| (r.rule(), r.noted.as_deref())).collect();
+        assert_eq!(noted, [("Bash(npx eslint *)", Some(ALREADY)), ("Bash(cargo clippy *)", Some(ALREADY)), ("Bash(npx *)", None), ("Bash(cargo *)", None)]);
     }
 
     #[test]

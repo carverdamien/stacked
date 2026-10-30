@@ -4144,8 +4144,11 @@ mod tests {
         let set = |c: &str| tools_for(Way::Change, cmd, &agent, &Linter::Set(c.into()));
         assert_eq!(set("eslint --fix"), format!("{change},Bash(eslint *),Bash(make check *)"));
         assert_eq!(set("python3 -m black"), format!("{change},Bash(python3 -m black *),Bash(make check *)"));
+        assert_eq!(set("npx eslint --fix"), format!("{change},Bash(npx eslint *),Bash(make check *)"));
+        assert_eq!(set("cargo clippy --fix"), format!("{change},Bash(cargo clippy *),Bash(make check *)"));
         // One no narrow rule lets run, lint off, or no linter: nothing.
-        for none in [Linter::Set("sh -c 'eslint --fix \"$@\"' sh".into()), Linter::Set("./mach --verbose lint".into()), Linter::Off, Linter::None] {
+        let wide = ["sh -c 'eslint --fix \"$@\"' sh", "./mach --verbose lint", "npx", "cargo"].map(|c| Linter::Set(c.into()));
+        for none in wide.into_iter().chain([Linter::Off, Linter::None]) {
             assert_eq!(tools_for(Way::Change, cmd, &agent, &none), format!("{change},Bash(make check *)"), "{none:?}");
         }
         // An answer, a try push's selection, a build and test: never.

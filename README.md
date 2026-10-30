@@ -2171,13 +2171,28 @@ rule is `Bash(PROGRAM *)`. A broad program's is narrower: for `./mach` and
 `git`, what it is asked to do (a refused `./mach try fuzzy --no-push -q …`
 is `Bash(./mach try fuzzy *)`, `git log --oneline` is `Bash(git log *)`);
 for `sh`, `bash` and `python`, the script it runs (`Bash(bash
-./tools/run.sh *)`, `Bash(python3 -m pytest *)`). Each command of a pipe
-is matched on its own, as claude matches it: of `curl … | jq .`, only the
-command that was not let run is an item. An MCP server's tool is its rule,
-`mcp__SERVER__TOOL`; another tool is its name (`WebFetch`). Only the calls
-claude refused are items, never what the agent says it would have liked.
-Work that holds an item lands for your review though the agent failed or
-brought nothing back, so that a tool can be allowed and the work sent back.
+./tools/run.sh *)`, `Bash(python3 -m pytest *)`); for `npx`, the package
+it runs, with its scope or version (`npx eslint --fix` is `Bash(npx eslint
+*)`, `npx @scope/pkg@2 x` is `Bash(npx @scope/pkg@2 *)`), or, after `-p
+PKG`, the command it runs (`Bash(npx -p typescript tsc *)`); for `cargo`,
+its subcommand (`cargo clippy --fix` is `Bash(cargo clippy *)`). The
+options that npx and cargo are given before what they run stay in the
+narrow rule as written, so that the rule lets the call: `npx -y eslint .`
+is `Bash(npx -y eslint *)`, and `cargo +nightly --locked clippy` is
+`Bash(cargo +nightly --locked clippy *)`. The options read this way are
+npx's `-y`, `--yes`, `-q`, `--quiet` and `-p` (`--package`), and cargo's
+toolchain (`+nightly`) and global options: `-q`, `--quiet`, `-v`, `-vv`,
+`--verbose`, `--locked`, `--offline`, `--frozen`, `--color`, `--config`,
+`-C` and `-Z`. After any other option, which could take the word after it
+as its value, the rule is the wide one alone (`Bash(npx *)`, `Bash(cargo
+*)`), as it is for `npx` or `cargo` with nothing after it. Each command of
+a pipe is matched on its own, as claude matches it: of `curl … | jq .`,
+only the command that was not let run is an item. An MCP server's tool is
+its rule, `mcp__SERVER__TOOL`; another tool is its name (`WebFetch`).
+Only the calls claude refused are items, never what the agent says it
+would have liked. Work that holds an item lands for your review though
+the agent failed or brought nothing back, so that a tool can be allowed
+and the work sent back.
 
 Every ask is told not to stop at a refusal: to work around it with what it
 may use, and to finish what it was asked as well as it can; and to say,
@@ -2477,15 +2492,18 @@ would offer first (The tools the agent could not use, above), so that no
 call of it is refused: `Bash(./mach lint *)` for `./mach lint --fix`, with
 or without `--fix`, on any files; for a linter the checkout sets, its
 program, with what it is asked to do for a broad program (`Bash(eslint *)`
-for `eslint --fix`, `Bash(python3 -m black *)` for `python3 -m black`). A
-linter that no
-narrow rule lets run is not given: a broad program asked nothing narrower,
-whose rule would let it run anything (`sh -c …`, `./mach --verbose lint`),
-or one whose program is in quotes. The ask's prompt names the command:
-``This checkout's linter is `./mach lint --fix`: you may run it on the
-files you change, to check them.`` With no linter, or lint off, nothing is
-given and nothing is said. `stacked setup agent` names the linter, among
-what stacked always gives, in the change column (Settings, below).
+for `eslint --fix`, `Bash(python3 -m black *)` for `python3 -m black`,
+`Bash(npx eslint *)` for `npx eslint --fix`, `Bash(cargo clippy *)` for
+`cargo clippy --fix`), so that the ask may not run another package with
+npx, nor `cargo run` or `cargo install`. A linter that no narrow rule lets
+run is not given: a broad program asked nothing narrower, whose rule would
+let it run anything (`sh -c …`, `./mach --verbose lint`, `npx` or `cargo`
+alone), or one whose program is in quotes. The ask's prompt names the
+command: ``This checkout's linter is `./mach lint --fix`: you may run it
+on the files you change, to check them.`` With no linter, or lint off,
+nothing is given and nothing is said. `stacked setup agent` names the
+linter, among what stacked always gives, in the change column (Settings,
+below).
 
 The item names the command in use; with none, it reads `Lint the stack`,
 grayed, and the menu says why: `No linter is set for this checkout:
@@ -4509,12 +4527,17 @@ line by line, a question a row for every kind.
 Those in `refusals.rs` show a command line cut into the commands claude
 matches apart, quotes and `$(…)` kept whole; a command's rule, its program
 for a plain one, narrower for a broad one with the wider ones to pick,
-what claude passes over first passed over, none for a shell's own; the
-narrowest, none for a broad program asked nothing narrower; the rule that
-lets a change run the checkout's linter, the one a refused call of it is
-offered with, which lets each call of it on files run; a call of it that a
-run of before was refused, not given it, an item offered with that rule,
-and one refused though given it noted as allowed already; how a
+what claude passes over first passed over, none for a shell's own; npx's
+package and cargo's subcommand, past the options before them, kept as
+written so that the rule lets the call, and the wide rule alone after an
+option not known or with nothing after the options; the narrowest, none
+for a broad program asked nothing narrower; the rule that lets a change
+run the checkout's linter, the one a refused call of it is offered with,
+which lets each call of it on files run, and not another package of
+npx's nor another subcommand of cargo's; a call of it that a run of
+before was refused, not given it, an item offered with that rule, npx or
+cargo alone offered with the wide rule only, and one refused though given
+it noted as allowed already; how a
 rule lets a call (the older prefix form, a pattern, an MCP server's tools,
 WebFetch's domain); the calls refused as items, one a rule, each with its
 calls and the agent's word, a pipe's command given already left out; what
