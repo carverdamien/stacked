@@ -16540,6 +16540,52 @@ fn a_revision_in_work_is_reviewed_phabricator_s_version_against_the_one_sent_bef
 
 #[cfg(feature = "moz-phab")]
 #[test]
+fn a_latest_diff_of_the_patch_s_changes_made_before_a_rebase_is_reviewed_saying_why_a_new_diff_is_sent() {
+    let (tmp, db) = phab_setup(["Bug 1 - one", "Bug 2 - two", &format!("Bug 3 - three\n\n{LINK}13")]);
+    let src = tmp.path().join("src");
+    // As moz-phab sends it: ten lines of context around a.txt's line 20.
+    let wide = format!("{}\n", git_said(&src, &["diff", "-U10", "HEAD~1", "HEAD"]));
+    // Upstream changes a.txt's line 12, within those ten lines but not
+    // within the three the stack's diffs keep, and the stack is rebased
+    // onto it, each patch as it was.
+    git(&src, &["checkout", "-q", "-b", "upstream", "HEAD~3"]);
+    let lines: String = (1..=30).map(|n| format!("line {n}\n")).collect();
+    std::fs::write(src.join("a.txt"), lines.replace("line 12\n", "line twelve\n")).unwrap();
+    git(&src, &["commit", "-qam", "upstream"]);
+    git(&src, &["checkout", "-q", "main"]);
+    git(&src, &["rebase", "-q", "upstream"]);
+    stacked(&src, &db, &["import", "s", "upstream", "--replace"]);
+    let phab = std::sync::Arc::new(std::sync::Mutex::new(Phab::default().with(13, "changes-planned", "WIP: Bug 3 - three", &wide)));
+    let _one = phab_stand_in(&phab);
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Down, KeyCode::Down]);
+    choose(&mut app, "Submit to Phabricator as WIP");
+    app.settle();
+    assert_eq!((app.screen, app.status.as_str()), (Screen::Submit, ""));
+    // At its top, why a new diff is sent; then what is sent and where, and
+    // no code, as it is the patch's already.
+    let rows = submitted(&mut app);
+    let sent = rows.iter().position(|r| r.starts_with("   D13, at ")).unwrap_or_else(|| panic!("{rows:#?}"));
+    let top: Vec<&str> = rows[1..sent].iter().map(|r| r.trim_start()).collect();
+    assert_eq!(
+        top.join(" "),
+        "The latest diff of D13 makes the same changes as version 1 of patch 3, but it was made on the patches below patch 3 as they were before, and it no longer applies on them as they are now, so a new diff of patch 3 is sent, made on them."
+    );
+    assert_eq!(rows[sent], "   D13, at https://phabricator.example.com/D13, gets a new diff of patch 3, and stays Changes Planned.");
+    assert!(!rows.iter().any(|r| r.contains("The code does not change") || r.starts_with("the code")), "{rows:#?}");
+    // Enter sends it: a new diff.
+    keys(&mut app, &[KeyCode::Enter]);
+    app.settle();
+    assert_eq!(app.status, "D13 has the new diff of patch 3 now. D13 stays Changes Planned. Patch 2 has no revision, so D13 gets no parent.");
+    assert_eq!(
+        phab.lock().unwrap().writes(),
+        ["differential.creatediff", "differential.setdiffproperty", "differential.revision.edit update", "differential.revision.edit plan-changes"]
+    );
+    stacked::submit::stand_in(None);
+}
+
+#[cfg(feature = "moz-phab")]
+#[test]
 fn a_revision_changed_on_phabricator_since_its_review_opened_is_sent_nothing() {
     let (_tmp, db) = phab_setup(["Bug 1 - one", "Bug 2 - two", &format!("Bug 3 - three\n\nNew.\n\n{LINK}13")]);
     let p = Phab::default().with(13, "changes-planned", "WIP: Bug 3 - three", &patch_of(&db, 2).diff);

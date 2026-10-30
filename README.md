@@ -698,7 +698,10 @@ Planned, Needs Review, Needs Revision, Accepted, Landed (Closed, as
 Phabricator names it), Abandoned, or `status unknown`; whether Phabricator
 has this version of the patch, `in sync` when the revision's latest diff
 does what the patch does (the same effect, or each file the same once both
-are applied on the patches below it, as a submit's check takes them), its
+are applied on the patches below it, as a submit's check takes them: the
+line keeps those two strict rules, and not the submit's third, as a diff of
+the same changes made on the patches below as they were before, which no
+longer applies on them, is not what would land), its
 title and summary are to the letter those a submit sends (`WIP: `
 first or not, as the revision's title is; the summary without the lines
 naming a revision; the white space at their end aside), where their lines
@@ -3692,7 +3695,16 @@ updated, and nothing was sent.`). Its latest diff must be a version of the
 patch the database holds, the one in the stack or an earlier one: of the
 same effect, or leaving the same files once both are applied on the
 patches below, so that a diff moz-phab sent with more context is still the
-version it was made from. Else it came from elsewhere, and nothing is sent
+version it was made from. When neither rule finds one, a third looks for
+the version whose changes it makes: file by file, the same lines removed
+and added one after another, whatever lines of context are around them and
+wherever its hunks start. moz-phab sends a diff with more context than
+stacked keeps, so once a rebase has changed lines of that context, the
+diff no longer applies on the patches below, though its changes are that
+version's. A diff known by this rule is never the patch as it is, as it
+was made on the patches below as they were before: a new diff of the
+patch is sent, made on them as they are now. Else it came from elsewhere,
+and nothing is sent
 (`D123's latest diff is not a version of patch 3 that stacked knows: it
 came from elsewhere, and nothing was sent.`). And while HEAD is on the
 stack, a patch whose commit in your workspace names a revision the patch
@@ -3719,7 +3731,13 @@ colours for words); the parent and the bug, before then after, and the
 status; and the code, each file as the latest diff leaves it, then as the
 patch does, both on the patches below it, a file that only one of them
 touches too. When the code is the patch's already, the screen says so at
-its top. ↑↓ (pgup pgdn home end) scroll, and 1 shows the code side by
+its top. When the latest diff was known by the third rule, the screen says
+at its top why a new diff is sent (`The latest diff of D123 makes the same
+changes as version 2 of patch 3, but it was made on the patches below
+patch 3 as they were before, and it no longer applies on them as they are
+now, so a new diff of patch 3 is sent, made on them.`), and the code is
+then each file as that version leaves it, then as the patch does, both on
+the patches below it as they are now. ↑↓ (pgup pgdn home end) scroll, and 1 shows the code side by
 side, or unified again, the lines of the title and summary that differ
 side by side too, Phabricator's on the left, coloured the same way.
 Enter, or `Send it to Phabricator` in its menu, sends it; Esc, or
@@ -4280,7 +4298,9 @@ them anew, and the history changing no line of it; a word changed in a
 paragraph wrapped otherwise the one word coloured in each; a command
 wrapped otherwise a change, its break marked; the diff after the message
 painted as words as ever), the submit's review comparing the title and
-summary so, side by side too,
+summary so, side by side too, and saying at its top why a new diff is
+sent when the latest diff makes the patch's changes on the patches below
+as they were before a rebase, no code under it, then sending one,
 the cursor looking the same on every line, as `cursor` paints it, whatever
 the line's own colours (a line added, a line removed, a hunk's header, a
 file's name, each line of a comment, a line read, the patch picked in its
@@ -4872,7 +4892,16 @@ its file, under another heading or none, other blobs, a rename's
 similarity, a header's line ending in a tab or not, an empty line in a
 hunk for an empty context line) and which do not (another line added,
 removed or kept, a file more or fewer, the files in another order, a mode
-changed, a hunk split in two), and that a draft with its patch's message,
+changed, a hunk split in two), which diffs make the same changes (more
+context, as `-U5` and `-U10` write it, merging the hunks; a hunk split in
+two or merged, starting elsewhere, under another heading, with other lines
+kept around it; an empty line in a hunk for an empty context line; the
+files in another order; more context reaching the end of a file that has
+no newline there) and which do not (another line added or removed, white
+space a line added ends with, a file more or fewer, a mode changed, a line
+added with no newline at its end or with one, a run of changed lines split
+in two by a line kept between them, or split across two files otherwise),
+and that a draft with its patch's message,
 author and effect is that patch, its diff as stored, whatever its date,
 while one with another message, author or effect is a new version, as is
 one that nothing can be checked on, and that a draft with the message and
@@ -4891,7 +4920,15 @@ message, and with the title and the body the same, the mails diffed line
 by line as they were; and compared to the letter, as the view of what
 differs from Phabricator compares them, a paragraph only wrapped
 otherwise each version's lines, nothing of them marked, but where a word
-changed too, as ever; those
+changed too, as ever; those in `submit.rs`, that a latest diff with ten
+lines of context, as moz-phab sends it, is the patch as it is on the base
+it was made on, and nothing is sent; that once upstream has changed a line
+within those ten and not within three, and the stack is rebased onto it,
+the diff is known by its changes alone, never as the patch as it is, the
+review saying why, and a new diff is sent, which a submit after it finds
+to be the patch as it is; that once the patch is edited too, its code is
+compared from the version whose changes the diff makes; and that a latest
+diff of other changes is still refused, nothing written; those
 in `history.rs`, what the history leaves out (comments, runs, a move to
 where the stack is, a branch put straight back), how a stack diff follows
 each patch by its change, a move told from a shift, and a new version

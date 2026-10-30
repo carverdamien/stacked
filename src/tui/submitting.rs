@@ -59,16 +59,20 @@ impl Submitting {
 }
 
 /// The rows of the review of `p`, folded to `w`: what is sent and where,
-/// said, and that the code does not change when it does not; then only
-/// what changes: the title and summary, Phabricator's then what is sent;
-/// the parent and the bug, before then after, and the status; the code,
-/// each file from Phabricator's latest diff to the patch.
+/// said, and that the code does not change when it does not, or why a new
+/// diff is sent of a latest diff that makes the changes of a version of
+/// the patch; then only what changes: the title and summary, Phabricator's
+/// then what is sent; the parent and the bug, before then after, and the
+/// status; the code, each file from Phabricator's latest diff to the patch.
 fn review_rows(p: &Prepared, w: usize) -> Vec<Row> {
     let mut rows = vec![row(Kind::File, "what is sent")];
     let n = p.number();
     let id = p.revision.as_ref().map_or("the revision".to_string(), |r| r.id.clone());
     if !p.new_diff {
         said_rows(&mut rows, Kind::Meta, &format!("The code does not change: the latest diff of {id} is patch {n} as it is now."), w);
+    }
+    if let Some(said) = p.changes_said() {
+        said_rows(&mut rows, Kind::Meta, &said, w);
     }
     for s in p.said() {
         said_rows(&mut rows, Kind::Meta, &s, w);

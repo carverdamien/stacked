@@ -145,10 +145,75 @@ fn effect(d: &str) -> impl Iterator<Item = &str> {
         } else if in_hunk {
             return Some(if l.is_empty() { " " } else { l });
         }
-        let l = l.trim_end();
-        let derived = ["index ", "similarity index ", "dissimilarity index "].iter().any(|p| l.starts_with(p));
-        (!derived).then_some(l)
+        header_line(l)
     })
+}
+
+/// A line of a file's header as `effect` takes it: without the white space
+/// it ends with; none for an `index` line or a similarity, which git
+/// derives.
+fn header_line(l: &str) -> Option<&str> {
+    let l = l.trim_end();
+    let derived = ["index ", "similarity index ", "dissimilarity index "].iter().any(|p| l.starts_with(p));
+    (!derived).then_some(l)
+}
+
+/// Whether diffs `a` and `b` make the same changes, whatever context git
+/// wrote around them: the same files, in any order, each with the same
+/// header as `same_effect` takes it, and the same runs of changed lines,
+/// each the lines it removes and adds one after another, with git's `\ No
+/// newline at end of file` after one of them, as they are. How many lines
+/// of context there are, and which, where each hunk starts, and how git
+/// splits or merges the hunks, do not count. So a diff moz-phab sent with
+/// more context than stacked keeps still makes the changes of the version
+/// it was made of once a rebase has changed lines of that context, though
+/// it no longer applies on the patches below.
+pub fn same_changes(a: &str, b: &str) -> bool {
+    changes(a) == changes(b)
+}
+
+/// A file of a diff as `same_changes` compares it: its header, as `effect`
+/// takes it, and its runs of changed lines, each its lines as they are.
+#[derive(Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+struct FileChanges<'a> {
+    header: Vec<&'a str>,
+    runs: Vec<Vec<&'a str>>,
+}
+
+/// The files of diff `d` as `same_changes` compares them, sorted, what
+/// comes before the first one a file too. In a hunk, a line removed or
+/// added goes in the run of those right before it, or starts one, as git's
+/// `\ No newline at end of file` does after one of them; a context line
+/// ends a run, as a hunk's header does, and neither is kept (an empty line
+/// in a hunk is git's empty context line, as `effect` takes it), nor git's
+/// `\ No newline at end of file` after a context line: more context may
+/// reach the end of a file that has none, where less does not.
+fn changes(d: &str) -> Vec<FileChanges<'_>> {
+    let mut files = vec![FileChanges::default()];
+    let (mut in_hunk, mut in_run) = (false, false);
+    for l in d.split_terminator('\n') {
+        if l.starts_with("diff --git ") {
+            files.push(FileChanges::default());
+            in_hunk = false;
+        } else if l.starts_with("@@") {
+            (in_hunk, in_run) = (true, false);
+            continue;
+        }
+        let Some(file) = files.last_mut() else { continue };
+        if !in_hunk {
+            file.header.extend(header_line(l));
+            continue;
+        }
+        let changed = l.starts_with(['-', '+']) || (in_run && l.starts_with('\\'));
+        if changed && in_run && let Some(run) = file.runs.last_mut() {
+            run.push(l);
+        } else if changed {
+            file.runs.push(vec![l]);
+        }
+        in_run = changed;
+    }
+    files.sort();
+    files
 }
 
 /// As `plan_drafts`, each patch it keeps with its diff as stored checked
@@ -2101,6 +2166,88 @@ mod tests {
         let old = Patch::new("a".into(), Some("T <t@x>".into()), None, "Bug XXXXXXX - A\n".into(), at.clone());
         let planned = plan_drafts(std::slice::from_ref(&old), vec![draft("Bug 2084269 - A", &hunk_at(348))], &Written::default());
         assert_eq!(planned[0].change, "a");
+    }
+
+    /// A diff of f, from thirty lines to the same with lines 10 and 20
+    /// changed and a line put in after line 21, as git writes it with `n`
+    /// lines of context (`-U5`, `-U10`): with three, in two hunks; with five
+    /// or more, in one, as the context merges them.
+    fn with_context(n: usize) -> String {
+        let old: String = (1..=30).map(|k| format!("line {k}\n")).collect();
+        let new = old.replace("line 10\n", "LINE 10\n").replace("line 20\n", "LINE 20\n").replace("line 21\n", "line 21\nnew\n");
+        let d = similar::TextDiff::from_lines(&old, &new);
+        let hunks = d.unified_diff().context_radius(n).header("a/f", "b/f").to_string();
+        format!("diff --git a/f b/f\nindex 1..2 100644\n{hunks}")
+    }
+
+    /// A diff of f removing line a and adding line b, `gap` between them.
+    fn gapped(gap: &str) -> String {
+        format!("diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -1,2 +1,2 @@\n-a\n{gap}+b\n")
+    }
+
+    #[test]
+    fn a_diff_with_more_context_or_its_hunks_otherwise_makes_the_same_changes() {
+        // More context, as moz-phab sends: the hunks merged by it, which
+        // `same_effect` tells apart.
+        let three = with_context(3);
+        assert_eq!(three.matches("\n@@ ").count(), 2, "{three}");
+        for n in [5, 10] {
+            let wide = with_context(n);
+            assert_eq!(wide.matches("\n@@ ").count(), 1, "{wide}");
+            assert!(same_changes(&three, &wide) && !same_effect(&three, &wide), "{wide}");
+        }
+        // A hunk split in two by its context, or merged.
+        let merged = "diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -1,8 +1,10 @@\n a\n+b\n c\n d\n e\n f\n g\n+h\n i\n j\n";
+        let split = "diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -1,4 +1,5 @@\n a\n+b\n c\n d\n@@ -5,4 +6,5 @@\n e\n f\n g\n+h\n i\n j\n";
+        assert!(same_changes(merged, split));
+        // Its hunk starting elsewhere, under another heading, other blobs or
+        // none named, other lines kept around it.
+        let at = hunk_at(336);
+        assert!(same_changes(&at, &hunk_at(348)));
+        assert!(same_changes(&at, &at.replace("@@ fn f()", "@@ fn helper()")));
+        assert!(same_changes(&at, &at.replace("index 1..2 100644\n", "")));
+        assert!(same_changes(&at, &at.replace(" e\n", " E\n")));
+        // An empty line in a hunk, the empty context line git applies it as.
+        assert!(same_changes(&gapped(" \n"), &gapped("\n")));
+        // The files in another order.
+        let (f, g) = at.split_at(at.find("diff --git a/g").unwrap());
+        let swapped = format!("{g}{f}");
+        assert!(same_changes(&at, &swapped) && !same_effect(&at, &swapped));
+        // More context reaching the end of a file that has no newline there,
+        // which git says after the last line.
+        let end = |hunk: &str| format!("diff --git a/e b/e\n--- a/e\n+++ b/e\n{hunk}");
+        let near = end("@@ -1,3 +1,3 @@\n 1\n-2\n+two\n 3\n");
+        let far = end("@@ -1,5 +1,5 @@\n 1\n-2\n+two\n 3\n 4\n 5\n\\ No newline at end of file\n");
+        assert!(same_changes(&near, &far));
+    }
+
+    #[test]
+    fn a_diff_with_another_line_file_mode_or_end_of_file_makes_other_changes() {
+        let at = hunk_at(336);
+        // A line added or removed otherwise, white space a line added ends
+        // with too.
+        assert!(!same_changes(&at, &at.replace("+d", "+D")));
+        assert!(!same_changes(&at, &at.replace("-x", "-X")));
+        assert!(!same_changes(&at, &at.replace("+d\n", "+d \n")));
+        // A file more, or fewer.
+        let (f, _) = at.split_at(at.find("diff --git a/g").unwrap());
+        assert!(!same_changes(&at, f));
+        assert!(!same_changes(&at, &format!("{at}diff --git a/h b/h\nnew file mode 100644\nindex 0..5\n--- /dev/null\n+++ b/h\n@@ -0,0 +1 @@\n+h\n")));
+        // A file's mode changed too, or a file added with another mode.
+        assert!(!same_changes(&at, &at.replace("index 1..2 100644\n", "old mode 100644\nnew mode 100755\nindex 1..2\n")));
+        let added = |mode: &str| format!("diff --git a/h b/h\nnew file mode {mode}\nindex 0..5\n--- /dev/null\n+++ b/h\n@@ -0,0 +1 @@\n+h\n");
+        assert!(!same_changes(&added("100644"), &added("100755")));
+        // A line added with no newline at its end, or with one.
+        let eof = "diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -1,2 +1,2 @@\n a\n-b\n+B\n\\ No newline at end of file\n";
+        assert!(!same_changes(eof, &eof.replace("\\ No newline at end of file\n", "")));
+        // A run split in two by a line kept between its lines, an empty one
+        // too.
+        assert!(!same_changes(&gapped(""), &gapped(" x\n")));
+        assert!(!same_changes(&gapped(""), &gapped("\n")));
+        // The same lines changed one after another, but a run of them split
+        // across two files otherwise.
+        let two = |f: &str, g: &str| format!("diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -1,2 +1,2 @@\n a\n{f}diff --git a/g b/g\n--- a/g\n+++ b/g\n@@ -1,2 +1,2 @@\n c\n{g}");
+        assert!(!same_changes(&two("-b\n+B\n", "-d\n+D\n"), &two("-b\n", "+B\n-d\n+D\n")));
     }
 
     #[test]

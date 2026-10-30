@@ -532,13 +532,17 @@ fn repository_by(call: &mut Call, constraint: &str, value: &str) -> Result<Repos
 // -- the plan ------------------------------------------------------------- //
 
 /// How the latest diff of the revision is a version of the patch: which,
-/// from 1, oldest first; whether it is the version in the stack; its diff,
-/// as the database holds it.
+/// from 1, oldest first; whether it is the version in the stack, as it
+/// would be sent; its diff, as the database holds it; and whether it was
+/// known by its changes alone (`ops::same_changes`), made on what was below
+/// the patch before, so that it is never the version in the stack, and a
+/// new diff of the patch is sent.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Known {
     pub version: usize,
     pub current: bool,
     pub diff: String,
+    pub by_changes: bool,
 }
 
 /// The parent a submit gives the revision: the revision of the patch
@@ -708,6 +712,21 @@ impl Prepared {
         out
     }
 
+    /// Why a new diff is sent when the revision's latest diff was known by
+    /// its changes alone (`Known::by_changes`), said at the top of the
+    /// review: though it makes the changes of a version of the patch, it was
+    /// made on what was below the patch before, and no longer applies there.
+    /// None otherwise.
+    pub fn changes_said(&self) -> Option<String> {
+        let k = self.known.as_ref().filter(|k| k.by_changes)?;
+        let id = self.revision.as_ref().map_or("the revision".to_string(), |r| r.id.clone());
+        let n = self.number();
+        Some(format!(
+            "The latest diff of {id} makes the same changes as version {} of patch {n}, but it was made on the patches below patch {n} as they were before, and it no longer applies on them as they are now, so a new diff of patch {n} is sent, made on them.",
+            k.version
+        ))
+    }
+
     /// What is done of the parent, said.
     fn parent_said(&self) -> String {
         match &self.parent {
@@ -742,6 +761,12 @@ fn trailer() -> String {
 /// (`ops::same_effect`), else leaving the files the same as it once both
 /// are applied on what is below the patch (`check::same_files`), so that a
 /// diff with another context than the database's is that version still.
+/// When neither rule finds one, the first, in the same order, that makes
+/// the same changes (`ops::same_changes`): moz-phab sends a diff with more
+/// context than the database keeps, and once a rebase has changed lines of
+/// that context, the diff no longer applies on what is below the patch.
+/// Known so, it is never the version in the stack, as that diff was made on
+/// what was below the patch before: a new diff of the patch is sent.
 fn known(db: &Db, s: &Stack, at: usize, raw: &str) -> Option<Known> {
     let p = db.patch(&s.patches[at]);
     let versions = db.versions(&p.change);
@@ -756,14 +781,24 @@ fn known(db: &Db, s: &Stack, at: usize, raw: &str) -> Option<Known> {
     };
     let effect = |c: &[(usize, &Patch)]| c.iter().position(|(_, v)| crate::ops::same_effect(raw, &v.diff));
     let (current, earlier) = list.split_at(list.iter().take_while(|(_, v)| v.id == p.id).count());
-    let (version, v) = effect(current)
+    let strict = effect(current)
         .or_else(|| files(current))
         .map(|k| current[k])
-        .or_else(|| effect(earlier).or_else(|| files(earlier)).map(|k| earlier[k]))?;
+        .or_else(|| effect(earlier).or_else(|| files(earlier)).map(|k| earlier[k]));
+    if let Some((version, v)) = strict {
+        return Some(Known {
+            version,
+            current: v.id == p.id,
+            diff: v.diff.clone(),
+            by_changes: false,
+        });
+    }
+    let (version, v) = *list.iter().find(|(_, v)| crate::ops::same_changes(raw, &v.diff))?;
     Some(Known {
         version,
-        current: v.id == p.id,
+        current: false,
         diff: v.diff.clone(),
+        by_changes: true,
     })
 }
 
@@ -940,11 +975,21 @@ pub(crate) fn diffs_diffed(at: usize, theirs: &str, mine: &str) -> String {
 /// known as `k`, to the patch at `at` of stack `s`, `mine`: from the
 /// database's version it is, else from `raw`, each file as it leaves it;
 /// else, when neither applies on what is below the patch, the two diffs
-/// diffed, as text. And what that is, said, when it is not the files.
+/// diffed, as text. And what that is, said, when it is not the files. Known
+/// by its changes alone, `raw` applies there no more: the code is from the
+/// version whose changes it makes, said so.
 fn code_change(db: &Db, s: &Stack, at: usize, k: &Known, raw: &str, mine: &str) -> (Option<String>, Option<String>) {
-    for theirs in [k.diff.as_str(), raw] {
-        if let Some(code) = code_diff(db, s, at, theirs, mine) {
-            return (code, None);
+    if k.by_changes {
+        if let Some(code) = code_diff(db, s, at, &k.diff, mine) {
+            let n = at + 1;
+            let said = code.as_ref().map(|_| format!("Each file as version {} of patch {n} leaves it, then as patch {n} leaves it, both on the patches below patch {n}.", k.version));
+            return (code, said);
+        }
+    } else {
+        for theirs in [k.diff.as_str(), raw] {
+            if let Some(code) = code_diff(db, s, at, theirs, mine) {
+                return (code, None);
+            }
         }
     }
     let said = "The files could not be read as what is below the patch leaves them, so this is Phabricator's latest diff against the diff that is sent, as text.";
@@ -2053,6 +2098,96 @@ mod tests {
         assert_eq!((p.new_diff, p.known.as_ref().map(|k| k.current)), (false, Some(true)));
         assert!(p.nothing(), "{p:?}");
         assert!(fake.writes().is_empty());
+    }
+
+    /// Upstream's change of a.txt's line 12 in the checkout at `r`, within
+    /// the ten lines of context moz-phab sends around line 20 but not within
+    /// the three the stack's diffs keep, and the stack of the database `db`
+    /// rebased onto it, imported again, each patch as it was. The new base.
+    fn rebased_upstream(db: &Path, r: &Path) -> String {
+        git_ok(r, &["checkout", "-q", "-b", "upstream", "HEAD~3"]);
+        let lines: String = (1..=30).map(|n| format!("line {n}\n")).collect();
+        std::fs::write(r.join("a.txt"), lines.replace("line 12\n", "line twelve\n")).unwrap();
+        git_ok(r, &["commit", "-qam", "upstream"]);
+        git_ok(r, &["checkout", "-q", "main"]);
+        git_ok(r, &["rebase", "-q", "upstream"]);
+        let read = crate::import::read_range(r, "upstream..main", false, false).unwrap();
+        Db::edit(db, |d| crate::ops::import(d, "s", read.drafts, true, Some((read.base, r.display().to_string())))).unwrap();
+        git_ok(r, &["rev-parse", "upstream"]).trim().to_string()
+    }
+
+    #[test]
+    fn a_latest_diff_whose_wider_context_a_rebase_changed_is_known_by_its_changes_and_sent_again() {
+        let (_tmp, db, r) = stack(["Bug 1 - one", "Bug 2 - two", &format!("Bug 3 - three\n\n{LINK}/D13")]);
+        // As moz-phab sends it: ten lines of context around line 20 of a.txt,
+        // from line 10 to line 30.
+        let wide = git_ok(&r, &["diff", "-U10", "HEAD~1", "HEAD"]);
+        let mut fake = Fake::default().with(13, "changes-planned", &wide, "WIP: Bug 3 - three");
+        // On the base it was made on, the rules of before take it: the patch
+        // as it is, and nothing to send.
+        let (ready, _) = submit(&db, 2, &mut fake);
+        let p = ready.unwrap();
+        assert_eq!(p.known.as_ref().map(|k| (k.version, k.current, k.by_changes)), Some((1, true, false)));
+        assert!(p.nothing() && p.changes_said().is_none(), "{p:?}");
+        // Rebased onto upstream's change, each patch as it was.
+        let id = Db::load(&db).unwrap().stack("s").unwrap().patches[2].clone();
+        let base = rebased_upstream(&db, &r);
+        let d = Db::load(&db).unwrap();
+        let s = d.stack("s").unwrap();
+        assert_eq!((s.base.clone(), s.patches[2].clone()), (Some(base), id));
+        // Phabricator's diff no longer applies on the patches below, but it
+        // makes the changes of patch 3: known by them, never as the patch as
+        // it is, and sent again, though the code is the patch's already.
+        let (ready, sent) = submit(&db, 2, &mut fake);
+        let p = ready.unwrap();
+        assert_eq!(p.known.as_ref().map(|k| (k.version, k.current, k.by_changes)), Some((1, false, true)));
+        assert!(p.new_diff && p.code.is_none(), "{p:?}");
+        assert_eq!(
+            p.changes_said().as_deref(),
+            Some(
+                "The latest diff of D13 makes the same changes as version 1 of patch 3, but it was made on the patches below patch 3 as they were before, and it no longer applies on them as they are now, so a new diff of patch 3 is sent, made on them."
+            )
+        );
+        assert_eq!(p.said()[0], "D13, at https://phabricator.example.com/D13, gets a new diff of patch 3, and stays Changes Planned.");
+        assert_eq!(
+            fake.writes(),
+            ["differential.creatediff", "differential.setdiffproperty", "differential.revision.edit update", "differential.revision.edit plan-changes"]
+        );
+        assert_eq!(sent.unwrap(), "D13 has the new diff of patch 3 now. D13 stays Changes Planned. Patch 2 has no revision, so D13 gets no parent.");
+        // That diff, made on the new base, is the patch as it is: nothing is
+        // sent again.
+        fake.calls.clear();
+        let (ready, _) = submit(&db, 2, &mut fake);
+        let p = ready.unwrap();
+        assert_eq!(p.known.as_ref().map(|k| (k.current, k.by_changes)), Some((true, false)));
+        assert!(p.nothing(), "{p:?}");
+        assert!(fake.writes().is_empty());
+    }
+
+    #[test]
+    fn a_latest_diff_made_before_a_rebase_and_an_edit_shows_the_code_from_the_version_whose_changes_it_makes() {
+        let (_tmp, db, r) = stack(["Bug 1 - one", "Bug 2 - two", &format!("Bug 3 - three\n\n{LINK}/D13")]);
+        let wide = git_ok(&r, &["diff", "-U10", "HEAD~1", "HEAD"]);
+        rebased_upstream(&db, &r);
+        // Then patch 3 takes one more file, as a lint edit gives one.
+        Db::edit(&db, |d| {
+            let old = d.patch(&d.stack("s")?.patches[2]).clone();
+            let diff = format!("{}diff --git a/d.txt b/d.txt\nnew file mode 100644\n--- /dev/null\n+++ b/d.txt\n@@ -0,0 +1 @@\n+dee\n", old.diff);
+            crate::ops::replace(d, "s", 2, crate::mbox::Draft { diff, ..crate::mbox::Draft::from(&old) }, "edit").map(|_| ())
+        })
+        .unwrap();
+        let mut fake = Fake::default().with(13, "changes-planned", &wide, "WIP: Bug 3 - three");
+        let (ready, sent) = submit(&db, 2, &mut fake);
+        let p = ready.unwrap();
+        // Known by its changes as version 1, the one before the patch as it
+        // is; the code from that version to this one, d.txt alone, said so.
+        assert_eq!(p.known.as_ref().map(|k| (k.version, k.current, k.by_changes)), Some((1, false, true)));
+        assert!(p.changes_said().unwrap().starts_with("The latest diff of D13 makes the same changes as version 1 of patch 3, but "), "{p:?}");
+        let code = p.code.clone().unwrap();
+        assert!(code.starts_with("diff --git a/d.txt b/d.txt\nnew file mode 100644\n") && !code.contains("a.txt"), "{code}");
+        assert_eq!(p.code_said.as_deref(), Some("Each file as version 1 of patch 3 leaves it, then as patch 3 leaves it, both on the patches below patch 3."));
+        assert_eq!(fake.writes()[0], "differential.creatediff");
+        assert_eq!(sent.unwrap(), "D13 has the new diff of patch 3 now. D13 stays Changes Planned. Patch 2 has no revision, so D13 gets no parent.");
     }
 
     #[test]
