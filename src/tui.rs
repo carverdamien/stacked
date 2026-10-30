@@ -7435,7 +7435,10 @@ impl App {
         if let Some(m) = &c.moved {
             items.push(Item::new("Go to where it came from", Action::GoToOrigin));
             let back = self.where_was(m).split(" · ").next().unwrap_or("its patch").to_string();
-            items.push(Item::new(format!("Move it back to {back}"), Action::MoveBack).when(open));
+            // Not to a patch the stack does not hold, where it would be in
+            // sight nowhere.
+            let there = self.current().is_some_and(|s| s.patches.iter().any(|id| self.db.patch(id).change == m.change));
+            items.push(Item::new(format!("Move it back to {back}"), Action::MoveBack).when(open && there));
         }
         if !collapsed {
             items.push(Item::new("Collapse this comment", Action::Collapse));

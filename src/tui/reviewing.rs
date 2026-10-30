@@ -579,10 +579,10 @@ impl App {
     }
 
     /// Whether comment `n` is one of the work reviewed: one its ask was
-    /// about, or one you wrote in its review.
+    /// about, or one you wrote in its review, whoever opened its thread.
     pub(super) fn review_shows(&self, n: &Note) -> bool {
         let Some((r, _)) = self.reviewing.as_ref().and_then(|rv| self.work(&rv.run)) else { return false };
-        crate::held::asking_of(r).iter().any(|(c, i)| *c == n.change && *i == n.id) || (n.review.as_deref() == Some(r.id.as_str()) && n.by.is_none())
+        crate::held::asking_of(r).iter().any(|(c, i)| *c == n.change && *i == n.id) || n.review.as_deref() == Some(r.id.as_str())
     }
 
     /// What you wrote in the review, counted: the comments written there,
@@ -681,25 +681,24 @@ impl App {
         }
     }
 
-    /// What you wrote in the review, `y`, taken back: your comment closed, or
-    /// your answer to the work's reply gone. It does not go back to the agent
-    /// with the work; the cursor stays on a line still there.
+    /// What you wrote in the review, `y`, taken back: your comment closed, a
+    /// thread you wrote in there as it was before the review, or your answer
+    /// to the work's reply gone. It does not go back to the agent with the
+    /// work; the cursor stays on a line still there.
     pub(super) fn review_take_back(&mut self, y: Yours) {
         let Some(run) = self.reviewing.as_ref().map(|rv| rv.run.clone()) else { return };
         let done = match y {
-            Yours::Comment(change, id) => self.edit(|db| {
-                let n = db.note(&change, &id).cloned().ok_or_else(|| crate::db::Error("the comment is gone".into()))?;
-                db.set_note(Note { text: String::new(), ..n }).map(|_| ())
-            }),
-            Yours::Answer(k) => self.edit(|db| crate::held::answer(db, &run, k, "")),
+            Yours::Comment(change, id) => self.edit(|db| crate::held::take_back(db, &run, &change, &id)),
+            Yours::Answer(k) => self.edit(|db| crate::held::answer(db, &run, k, "")).map(|_| false),
             #[cfg(feature = "try-push")]
-            Yours::TaskAnswer(k) => self.edit(|db| crate::held::answer_task(db, &run, k, "")),
-            Yours::ToolAnswer(k) => self.edit(|db| crate::held::answer_tool(db, &run, k, "")),
+            Yours::TaskAnswer(k) => self.edit(|db| crate::held::answer_task(db, &run, k, "")).map(|_| false),
+            Yours::ToolAnswer(k) => self.edit(|db| crate::held::answer_tool(db, &run, k, "")).map(|_| false),
         };
-        if done.is_none() {
-            return;
-        }
-        self.status = "taken back: it does not go back to the agent with the work".into();
+        let Some(before) = done else { return };
+        self.status = match before {
+            true => "taken back: the comment is as it was before this review, and does not go back to the agent with the work".into(),
+            false => "taken back: it does not go back to the agent with the work".into(),
+        };
         let lines = self.review_lines();
         if let Some(rv) = self.reviewing.as_mut()
             && !lines.get(rv.sel).is_some_and(Line::selectable)
@@ -712,7 +711,17 @@ impl App {
     /// What Delete asks first on what you wrote in the review: taking it
     /// back, which its menu's item does at once.
     pub(super) fn review_take_back_ask(&self) -> Option<Menu> {
+        // A comment the ask was about is a thread from before the review:
+        // what you wrote in it there alone is taken back.
+        let asked = |c: &str, i: &str| {
+            let r = self.reviewing.as_ref().and_then(|rv| self.db.run(&rv.run));
+            r.is_some_and(|r| crate::held::asking_of(r).iter().any(|(ac, ai)| ac == c && ai == i))
+        };
         let (title, yes) = match self.review_yours_line()? {
+            Yours::Comment(c, i) if asked(&c, &i) => (
+                "take back what you wrote on this comment in this review? the comment is as it was before the review, and does not go back to the agent with the work",
+                "Take it back",
+            ),
             Yours::Comment(..) => ("take your comment back? it does not go back to the agent with the work", "Take it back"),
             Yours::Answer(_) => ("take your answer back? it does not go back to the agent with the work", "Take your answer back"),
             #[cfg(feature = "try-push")]
@@ -1222,7 +1231,9 @@ impl App {
             stack_rows(&format!("the stack {}", r.stack), &titles, &[n], w, &deco)
         } else {
             // On a patch of the stack; or on one the work adds, as the work
-            // makes it (the linter's patch on top).
+            // makes it (the linter's patch on top); or on one neither holds,
+            // a work sent back added and this one dropped, as its latest
+            // version has it.
             let p = self
                 .db
                 .stack(&r.stack)
@@ -1231,7 +1242,8 @@ impl App {
                 .or_else(|| {
                     let (_, next) = self.review_stacks()?;
                     next.patches.iter().map(|id| self.db.patch(id)).find(|p| p.change == n.change)
-                });
+                })
+                .or_else(|| self.db.latest_version(&n.change));
             let Some(p) = p else { return (said, vec![], 0..0) };
             patch_rows(p, &[n], w, &deco)
         };

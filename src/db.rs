@@ -2368,6 +2368,21 @@ impl Db {
             .collect()
     }
 
+    /// Every comment open, whatever holds it, by change then id: on a stack
+    /// or one of its patches, and on a patch no stack holds, as a comment
+    /// written in the review of landed work on a patch that work adds is
+    /// until the work is accepted.
+    pub fn open_notes(&self) -> Vec<&Note> {
+        self.notes
+            .values()
+            // A comment's latest record not read is one that closed it.
+            .filter_map(|&at| match &self.records[at] {
+                Record::Comment(n) if !n.text.is_empty() => Some(n),
+                _ => None,
+            })
+            .collect()
+    }
+
     /// Every comment of stack `name`: its own, then its patches', bottom
     /// first.
     pub fn stack_notes(&self, name: &str) -> Vec<&Note> {

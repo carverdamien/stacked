@@ -1937,7 +1937,8 @@ with the agent's why as its last turn and `moved from patch 2 · a.txt: TWO`
 on its first line, to be asked again from there (asked of the whole stack
 from the start, it would not have had to). The cursor goes with it if it
 was on it, and the bottom line says so. `Go to where it came from`
-and `Move it back to patch 2` are in its menu. Comments on lines follow a
+and `Move it back to patch 2` are in its menu, the second grayed while the
+stack does not hold that patch. Comments on lines follow a
 split or merged patch to the piece that has their line. A rebase says onto
 what (the agent adds `"base"` to its answer): the stack's base moves there.
 
@@ -2294,7 +2295,11 @@ the agent. In the patch as the work leaves it, ↑↓ move from line to line,
 and Enter writes a comment on the line in the inline editor, as in the
 main view: on a comment, what you said last written again if the last word
 is yours, a reply if not, and your answer to the agent's reply if this work
-replied to it. Where Enter writes a new comment, on a line or on a file's
+replied to it. The same holds on a patch the work adds, or splits a patch
+into, which the stack holds only once the work is accepted, and in the
+thread of a comment the ask was about that someone else opened, a
+reviewer or the agent: what you write there is yours, as a comment you
+open is. Where Enter writes a new comment, on a line or on a file's
 name, Space has `Comment on this line` (`Comment on this file`), which
 writes the same comment, here or in $EDITOR as the item's choice picks, as
 in the main view. On a reply in the list, Space has `Reply to it`, your answer
@@ -2302,8 +2307,10 @@ to follow the reply in its thread (`Edit your answer to it` once written).
 Nothing written there asks the agent at once, and the list shows it under
 `what you wrote, to send back`: on one of its lines, the right pane shows
 it where it would be, Enter writes it again, and Space has `Take it back`
-(`Take your answer back`), for it not to go back with the work. With any
-of it, the work is not accepted:
+(`Take your answer back`), for it not to go back with the work: a comment
+you opened there is closed, and a comment the ask was about is as it was
+before you wrote in it in the review. With any
+of it, the work is neither accepted nor rejected:
 Esc has `Send it back to the agent` in place of closing the review. The
 work is rejected, its change not applied; its replies go in their threads,
 your answers after them, and the comments it opened go as you marked them.
@@ -2318,7 +2325,13 @@ its replies are in their threads already. Its session is not the one
 before: claude starts afresh each round. The round goes at the effort the
 work was asked at, which `Send it back to the agent` ends with, unless
 another is picked there. That round's work lands for review in
-place of the one sent back. The round goes before anything else waiting
+place of the one sent back. A comment it is asked about on a patch the
+work sent back added stays there, open; should the stack never take that
+patch, the round's work rejected, or accepted without it, the comment
+moves to the stack's own comments as that review closes, open still,
+`moved from a patch · c.txt: cee` on its first line (`Move it back` grayed
+while the stack does not hold that patch), and the review says so. The
+round goes before anything else waiting
 for the agent, and the stack is not edited by hand until you have reviewed
 its work: nothing changes the stack it goes on from.
 
@@ -4006,7 +4019,10 @@ your checkout landing, or found dead, the checkout left as the agent left
 it, never removed; no `apply`, the applies of before listed), a split
 following its comments, a comment
 moved to the stack, a patch's comment asked of the whole stack adding a
-patch on top, work that brought nothing back held for review while a
+patch on top, a comment written with `comment --work` on a patch the
+agent's work adds keeping that work from being accepted or rejected, sent
+back with it and asked of the next round, on that patch, which accepted,
+holds the patch, the comment and its reply, work that brought nothing back held for review while a
 comment it was asked about is open (and not once every one is closed), the
 last reply taken at once closing its work's review with its comment open
 or not, a reply going with a comment the agent opened not taken at once, a
@@ -4152,7 +4168,14 @@ yours, and what it was allowed for itself ending as its review closes,
 the close saying so; what is allowed from now on saved closing,
 accepted or rejected, in the checkout's own list for answers alone, not
 offered where git tracks that file; and a reply on an item sending the
-work back; a comment asked
+work back; in the review of the agent's work, a comment on a patch it adds
+(Enter on that patch's line of the stack diff), and what you write in a
+thread the agent or a reviewer opened that it was asked about, each listed
+with what you wrote, keeping the work from being accepted or rejected,
+taken back (that thread as it was before the review), and sent back, the
+next round asked about it, on that patch of the stack it goes on from;
+that round rejected, the comment on the patch it added moved to the
+stack's own comments, open, `Move it back` grayed; a comment asked
 about and its stream and answer shown in place, its agent stopped from its
 menu (the ask landed at once as failed, said so, its stream folded, the
 comment's menu whole again, and the agent's wrapper, a child of the
@@ -4519,7 +4542,10 @@ from its patch's menu, the edit landing for review, what waits its turn
 (a reconcile with HEAD, a lint
 job, an edit ask) taken out of the queue from the banner with Delete, each
 asked first, → opening the comments pane of a patch with none, saying why,
-its menu there, and ← putting it away, `Move HEAD…` on the stack's menu
+its menu there, and ← putting it away, a comment on a patch the agent's
+work adds, and what you write in a thread the agent opened that it was
+asked about, written in its review, listed with what you wrote and
+sending the work back, `Move HEAD…` on the stack's menu
 not grayed while it would not move HEAD, and the view of why opened from
 it, then left, a link of a line of a message opened from the
 menu of a right click on it and with `o`, and one of a line of a comment
@@ -4554,7 +4580,8 @@ lines wrapped from its patch's menu, the edit landing for review; what
 waits its turn (a reconcile with HEAD, a lint job, an edit ask) taken out
 of the queue from the banner with Delete, each asked first; → opening the
 comments pane of a patch with none, saying why, its menu there, and ←
-putting it away; `Move HEAD…` on the stack's menu drawn as any item while
+putting it away; a comment on a patch the agent's work adds, written in
+its review, listed with what you wrote and sending the work back; `Move HEAD…` on the stack's menu drawn as any item while
 it would not move HEAD, and the view of why opened from it, then left; the
 ask dialog opened with nothing set from a click on `Ask agent about all…`,
 Ask Now and Ask Later drawn dim, Ask Now as claude is not found, which it

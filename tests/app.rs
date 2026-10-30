@@ -1196,3 +1196,96 @@ fn right_opens_the_comments_pane_of_a_patch_with_none_saying_why_in_the_window_t
     press(&s, KeyCode::Left);
     screen(&s, "the pane gone", |b| !text(b).contains("nothing listed") && find(b, "Filter comments…").is_none());
 }
+
+/// On stack `s` of `db`, under `tmp`: a comment on the first patch's
+/// `+TWO`, asked about as a change of the stack, and the agent's work for
+/// it landed, waiting for your review: `TWO` made `Two`, and a patch of its
+/// own added over patch 1, `Bug 1 - a c too`, making c.txt, which the stack
+/// does not hold until the work is accepted; its reply to the comment.
+fn added_work(tmp: &Path, db: &Path) {
+    let out = stacked(&tmp.join("home"))
+        .current_dir(tmp.join("src"))
+        .args(["-f", db.to_str().unwrap(), "comment", "s", "--patch", "1", "--line", "a.txt:+TWO", "why so loud?"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    stacked::db::Db::edit(db, |d| {
+        let (from, s) = d.head("s").map(|(r, s)| (r, s.clone())).unwrap();
+        let old = d.patch(&s.patches[0]).clone();
+        let n = d.notes(&old.change).into_iter().next().cloned().unwrap();
+        let draft = stacked::mbox::Draft {
+            diff: old.diff.replace("+TWO", "+Two"),
+            ..stacked::mbox::Draft::from(&old)
+        };
+        let added = stacked::mbox::Draft {
+            message: "Bug 1 - a c too".into(),
+            diff: "diff --git a/c.txt b/c.txt\nnew file mode 100644\n--- /dev/null\n+++ b/c.txt\n@@ -0,0 +1,2 @@\n+cee\n+dee\n".into(),
+            ..stacked::mbox::Draft::from(&old)
+        };
+        let mut patches = s.patches.clone();
+        patches[0] = d.add_patch(stacked::ops::revise(&old, draft))?;
+        patches.insert(1, d.add_patch(stacked::ops::new_patch(added))?);
+        let ask = serde_json::json!({"way": "change", "scope": "stack", "from": from, "notes": [{"label": "c1", "change": n.change, "id": n.id}]});
+        d.add_run(stacked::db::Run {
+            id: "run-agent".into(),
+            what: "change".into(),
+            stack: "s".into(),
+            state: stacked::db::RunState::Done,
+            request: n.text.clone(),
+            ask: Some(ask),
+            held: Some(stacked::held::Held {
+                at: stacked::db::now(),
+                stack: Some(stacked::held::Change {
+                    patches,
+                    base: s.base.clone(),
+                    op: "agent: the stack".into(),
+                    of: "the stack".into(),
+                    from: None,
+                }),
+                replies: vec![stacked::held::Reply {
+                    change: n.change.clone(),
+                    id: n.id.clone(),
+                    text: "Quieter now.".into(),
+                    tag: "change".into(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }),
+            ..Default::default()
+        })
+        .map(|_| ())
+    })
+    .unwrap();
+}
+
+#[test]
+fn a_comment_on_a_patch_the_work_adds_sends_it_back_from_its_review_in_the_window_too() {
+    let (tmp, db) = setup();
+    added_work(tmp.path(), &db);
+    let s = Session::open(&db, tmp.path()).unwrap();
+    s.send(Input::Size(120, 30));
+    screen(&s, "the banner", |b| text(b).contains("1 landed ask waits for your review"));
+    // Its review, from the banner; in its stack diff, Enter on the patch the
+    // work adds, then on a line of it, a comment there, saved.
+    press(&s, KeyCode::Esc);
+    press(&s, KeyCode::Enter);
+    screen(&s, "the review", |b| text(b).contains("add     2 Bug 1 - a c too"));
+    for code in [KeyCode::Down, KeyCode::Down, KeyCode::Right, KeyCode::Enter] {
+        press(&s, code);
+    }
+    screen(&s, "the patch it adds", |b| text(b).contains(" patch 2 as the work leaves it: Bug 1 - a c too"));
+    for _ in 0..6 {
+        press(&s, KeyCode::Down);
+    }
+    press(&s, KeyCode::Enter);
+    screen(&s, "the editor", |b| text(b).contains("a comment on: cee"));
+    for c in "Why a c?".chars() {
+        press(&s, KeyCode::Char(c));
+    }
+    press(&s, KeyCode::Esc);
+    press(&s, KeyCode::Enter);
+    // Listed with what you wrote, it sends the work back.
+    screen(&s, "what you wrote", |b| text(b).contains("✎ c.txt: cee · Why a c?"));
+    press(&s, KeyCode::Esc);
+    screen(&s, "the dialog", |b| find(b, "Send it back to the agent").is_some());
+}

@@ -1221,3 +1221,135 @@ fn right_opens_the_comments_pane_of_a_patch_with_none_saying_why_in_the_browser_
     ask(port, &host, &input, "k Left -\n");
     until(&mut events, "the pane gone", |l| l.starts_with("data: r 1 ") && !text(l).contains("nothing listed"));
 }
+
+/// On stack `s` of `db`, under `tmp`: a comment on the first patch's
+/// `+TWO`, `said`, asked about as a change of the stack, and the agent's
+/// work for it landed, waiting for your review: `TWO` made `Two`; with
+/// `add`, a patch of its own added over patch 1, `Bug 1 - a c too`, making
+/// c.txt, which the stack does not hold until the work is accepted; and a
+/// reply to the comment unless `quiet`. The comment, as it is then.
+fn work_on_two(tmp: &Path, db: &Path, said: &str, add: bool, quiet: bool) -> stacked::db::Note {
+    let out = stacked(&tmp.join("home"))
+        .current_dir(tmp.join("src"))
+        .args(["-f", db.to_str().unwrap(), "comment", "s", "--patch", "1", "--line", "a.txt:+TWO", said])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    stacked::db::Db::edit(db, |d| {
+        let (from, s) = d.head("s").map(|(r, s)| (r, s.clone())).unwrap();
+        let old = d.patch(&s.patches[0]).clone();
+        let n = d.notes(&old.change).into_iter().next().cloned().unwrap();
+        let draft = stacked::mbox::Draft {
+            diff: old.diff.replace("+TWO", "+Two"),
+            ..stacked::mbox::Draft::from(&old)
+        };
+        let mut patches = s.patches.clone();
+        patches[0] = d.add_patch(stacked::ops::revise(&old, draft))?;
+        if add {
+            let added = stacked::mbox::Draft {
+                message: "Bug 1 - a c too".into(),
+                diff: "diff --git a/c.txt b/c.txt\nnew file mode 100644\n--- /dev/null\n+++ b/c.txt\n@@ -0,0 +1,2 @@\n+cee\n+dee\n".into(),
+                ..stacked::mbox::Draft::from(&old)
+            };
+            patches.insert(1, d.add_patch(stacked::ops::new_patch(added))?);
+        }
+        let ask = serde_json::json!({"way": "change", "scope": "stack", "from": from, "notes": [{"label": "c1", "change": n.change, "id": n.id}]});
+        let replies = match quiet {
+            true => vec![],
+            false => vec![stacked::held::Reply {
+                change: n.change.clone(),
+                id: n.id.clone(),
+                text: "Quieter now.".into(),
+                tag: "change".into(),
+                ..Default::default()
+            }],
+        };
+        d.add_run(stacked::db::Run {
+            id: "run-agent".into(),
+            what: "change".into(),
+            stack: "s".into(),
+            state: stacked::db::RunState::Done,
+            request: n.text.clone(),
+            ask: Some(ask),
+            held: Some(stacked::held::Held {
+                at: stacked::db::now(),
+                stack: Some(stacked::held::Change {
+                    patches,
+                    base: s.base.clone(),
+                    op: "agent: the stack".into(),
+                    of: "the stack".into(),
+                    from: None,
+                }),
+                replies,
+                ..Default::default()
+            }),
+            ..Default::default()
+        })
+        .map(|_| n)
+    })
+    .unwrap()
+}
+
+/// `said` typed in the page, a key for each of its characters.
+fn typed_in(port: u16, host: &str, input: &str, said: &str) {
+    let keys: String = said.chars().map(|c| format!("k c {:x} -\n", c as u32)).collect();
+    ask(port, host, input, &keys);
+}
+
+#[test]
+fn a_comment_on_a_patch_the_work_adds_sends_it_back_from_its_review_in_the_browser_too() {
+    let (tmp, db) = setup();
+    work_on_two(tmp.path(), &db, "why so loud?", true, false);
+    stacked::config::init(stacked::config::Config::default());
+    let (port, token) = stacked::web::start(db.clone()).unwrap();
+    let (host, input) = (format!("127.0.0.1:{port}"), format!("POST /input?t={token}"));
+    let mut events = events(port, &token, 120);
+    until(&mut events, "the banner", |l| text(l).contains("1 landed ask waits for your review"));
+    // Its review, from the banner; in its stack diff, Enter on the patch the
+    // work adds, then on a line of it, a comment there, saved.
+    ask(port, &host, &input, "k Esc -\nk Enter -\n");
+    until(&mut events, "the review", |l| text(l).contains("add     2 Bug 1 - a c too"));
+    ask(port, &host, &input, "k Down -\nk Down -\nk Right -\nk Enter -\n");
+    until(&mut events, "the patch it adds", |l| text(l).contains(" patch 2 as the work leaves it: Bug 1 - a c too"));
+    ask(port, &host, &input, &format!("{}k Enter -\n", "k Down -\n".repeat(6)));
+    until(&mut events, "the editor", |l| text(l).contains("a comment on: cee"));
+    typed_in(port, &host, &input, "Why a c?");
+    ask(port, &host, &input, "k Esc -\nk Enter -\n");
+    // Listed with what you wrote, it sends the work back.
+    until(&mut events, "what you wrote", |l| text(l).contains("✎ c.txt: cee · Why a c?"));
+    ask(port, &host, &input, "k Esc -\n");
+    until(&mut events, "the dialog", |l| text(l).contains("Send it back to the agent"));
+}
+
+#[test]
+fn a_thread_the_agent_opened_written_in_its_review_sends_the_work_back_in_the_browser_too() {
+    use stacked::thread::{Role, append_turn};
+    let (tmp, db) = setup();
+    // The comment on `+TWO` is the agent's, which you replied to; the work
+    // replies to nothing.
+    let n = work_on_two(tmp.path(), &db, "Then quiet it.", false, true);
+    stacked::db::Db::edit(&db, |d| {
+        let text = append_turn(&append_turn("", Role::Agent, "This shouts.", Some("change")), Role::You, "Then quiet it.", None);
+        d.set_note(stacked::db::Note { text, by: Some("agent".into()), ..n.clone() })
+    })
+    .unwrap();
+    stacked::config::init(stacked::config::Config::default());
+    let (port, token) = stacked::web::start(db.clone()).unwrap();
+    let (host, input) = (format!("127.0.0.1:{port}"), format!("POST /input?t={token}"));
+    let mut events = events(port, &token, 120);
+    until(&mut events, "the banner", |l| text(l).contains("1 landed ask waits for your review"));
+    // In the patch as the work leaves it, Enter on that thread, at its end:
+    // what you said last, written again, added to.
+    ask(port, &host, &input, "k Esc -\nk Enter -\n");
+    until(&mut events, "the review", |l| text(l).contains("modify  1 Bug 1 - shout two"));
+    ask(port, &host, &input, "k Down -\nk Right -\nk Enter -\nk End -\nk Enter -\n");
+    until(&mut events, "the editor", |l| text(l).contains("your reply: edit it, or add to it"));
+    typed_in(port, &host, &input, " Now.");
+    ask(port, &host, &input, "k Esc -\nk Enter -\n");
+    until(&mut events, "what you wrote", |l| text(l).contains("✎ a.txt: TWO · Then quiet it. Now."));
+    ask(port, &host, &input, "k Esc -\n");
+    until(&mut events, "the dialog", |l| text(l).contains("Send it back to the agent"));
+    let d = stacked::db::Db::load(&db).unwrap();
+    let now = d.note(&n.change, &n.id).unwrap();
+    assert_eq!((now.by.as_deref(), now.review.as_deref()), (Some("agent"), Some("run-agent")));
+}

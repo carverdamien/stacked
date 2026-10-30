@@ -2317,6 +2317,51 @@ fn landed_work_with_what_you_wrote_in_its_review_goes_back_to_the_agent_from_it(
 }
 
 #[test]
+fn a_comment_on_a_patch_the_work_adds_goes_back_to_the_agent_with_it() {
+    let e = env();
+    e.ok(&["import", "s", "base"]);
+    let id = comment(&e, &["--patch", "1", "Spell", "it", "out."]);
+    let prompts = e.root.join("prompts.txt");
+    // A first round adds a patch of its own over patch 1, making c.txt; a
+    // second finds it there, and answers.
+    let claude = fake_claude(
+        &e,
+        "claude-adds.sh",
+        &format!(
+            "set -e\nif ! test -e c.txt; then printf 'cee\\n' > c.txt && git add c.txt && git -c user.name=C -c user.email=c@x commit -q -m 'Bug 1 - a c too'; fi\n\
+             printf '%s\\n=====\\n' \"$2\" >> {}",
+            prompts.display()
+        ),
+        r#"{"replies": {"c1": "Done."}}"#,
+    );
+    let env = [("STACKED_CLAUDE", claude.as_path())];
+    let (fine, out, err) = stacked_in(&e.src, &e.db, &["send", "s", &id, "--wait"], "", &env);
+    assert!(fine, "{out}{err}");
+    let work = e.ok(&["landed", "s"]).split('\t').next().unwrap().to_string();
+    assert!(e.ok(&["show", "s", "--work", &work[..8]]).contains("Bug 1 - a c too"), "the work adds patch 2");
+    // In its review, a comment on that patch: the work goes back to the
+    // agent with it, neither accepted nor rejected.
+    let mine = comment(&e, &["--patch", "2", "--line", "c.txt:+cee", "--work", &work[..8], "Why", "a", "c?"]);
+    for all in ["--accept-all", "--reject-all"] {
+        let (fine, _, err) = e.run(&["review", "s", all]);
+        assert!(!fine && err.contains("sent back to the agent"), "{all}: {err}");
+    }
+    let (fine, out, err) = stacked_in(&e.src, &e.db, &["review", "s", "--send-back"], "", &env);
+    assert!(fine && out.contains(": 1 comment to ask again"), "{out}{err}");
+    landed(&e, 2);
+    // The next round is asked about it, on that patch of the stack it goes on
+    // from; accepted, the stack holds the patch, and the comment its reply.
+    let told = std::fs::read_to_string(&prompts).unwrap();
+    let second = told.split("=====").nth(1).unwrap();
+    assert!(second.contains("Why a c?") && second.contains("patch 2, c.txt line `cee`"), "{second}");
+    e.ok(&["review", "s", "--accept-all"]);
+    assert!(e.ok(&["show", "s"]).contains("Bug 1 - a c too"));
+    let shown = e.ok(&["comments", "s"]);
+    let thread: Vec<&str> = shown.lines().skip_while(|l| !l.starts_with(&mine)).skip(1).take_while(|l| l.starts_with(' ')).collect();
+    assert_eq!(thread, ["  you: Why a c?", "  agent(high): Done."], "{shown}");
+}
+
+#[test]
 fn a_round_sent_back_goes_first_and_the_stack_waits_for_it() {
     let e = env();
     e.ok(&["import", "s", "base"]);

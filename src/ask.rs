@@ -846,7 +846,26 @@ pub fn changing(db: &Db, name: &str) -> Option<String> {
 /// Whether a round sent back from the review of stack `name`'s landed work,
 /// one that may change the code, waits its turn.
 fn round_waiting(db: &Db, name: &str) -> bool {
-    db.stack_notes(name).iter().any(|n| n.queued.as_ref().is_some_and(|q| q.on.is_some() && q.way == Way::Change && !q.batched()))
+    let waits = |n: &Note| n.queued.as_ref().is_some_and(|q| q.on.is_some() && q.way == Way::Change && !q.batched());
+    db.stack_notes(name).into_iter().any(waits) || queued_off_stacks(db).into_iter().any(|(s, n)| s == name && waits(n))
+}
+
+/// The comments waiting their turn in a round sent back from landed work
+/// that are on a patch no stack holds: one that work adds, which the round
+/// goes on from, written on in its review. Each with the stack of that
+/// work, which `stack_notes` does not find them on.
+fn queued_off_stacks(db: &Db) -> Vec<(String, &Note)> {
+    let stacks = db.stacks();
+    let held: HashSet<&str> = stacks.iter().flat_map(|s| s.patches.iter().map(|id| db.patch(id).change.as_str())).collect();
+    let own: HashSet<String> = stacks.iter().map(|s| stack_change(&s.name)).collect();
+    db.open_notes()
+        .into_iter()
+        .filter(|n| !held.contains(n.change.as_str()) && !own.contains(&n.change))
+        .filter_map(|n| {
+            let on = n.queued.as_ref().filter(|q| !q.batched())?.on.as_deref()?;
+            Some((db.run(on)?.stack.clone(), n))
+        })
+        .collect()
 }
 
 /// Whose change of the stack run `r` holds, said: `your edit by hand`,
@@ -1239,8 +1258,19 @@ fn claim(db: &mut Db) -> Result<(Vec<String>, Vec<String>)> {
     // as it would go, a comment still, its ask failed saying why.
     #[cfg(feature = "try-push")]
     let mut refused: Vec<Note> = Vec::new();
-    for s in db.stacks() {
-        for n in db.stack_notes(&s.name) {
+    // Each stack's comments; then those of a round sent back on a patch no
+    // stack holds yet, one the work it goes on from adds, with the stack of
+    // that work.
+    let stacks: Vec<(String, Vec<&Note>)> = db.stacks().into_iter().map(|s| (s.name.clone(), db.stack_notes(&s.name))).collect();
+    let mut off: Vec<(String, Vec<&Note>)> = Vec::new();
+    for (name, n) in queued_off_stacks(db) {
+        match off.iter_mut().find(|(s, _)| *s == name) {
+            Some((_, ns)) => ns.push(n),
+            None => off.push((name, vec![n])),
+        }
+    }
+    for (name, notes) in stacks.into_iter().chain(off) {
+        for n in notes {
             let Some(q) = n.queued.as_ref().filter(|q| !q.batched()) else { continue };
             #[cfg(feature = "try-push")]
             if q.way == Way::Try && !can_try(db, n) {
@@ -1249,7 +1279,7 @@ fn claim(db: &mut Db) -> Result<(Vec<String>, Vec<String>)> {
             }
             let entry = batches.entry(q.batch.clone()).or_insert_with(|| {
                 order.push(q.batch.clone());
-                (s.name.clone(), q.way, asked_scope(n), Vec::new(), q.on.clone(), q.was.clone(), q.effort)
+                (name.clone(), q.way, asked_scope(n), Vec::new(), q.on.clone(), q.was.clone(), q.effort)
             });
             entry.3.push(n.clone());
             entry.6 = entry.6.max(q.effort);
@@ -3491,6 +3521,20 @@ pub(crate) fn follow_lines(db: &mut Db, olds: &[Patch], now: &[String]) -> Resul
 /// turn, at the effort its ask was asked at: it needs more than its patch.
 /// It waits there to be sent again.
 pub fn promote(db: &mut Db, name: &str, n: &Note, why: &str, effort: Option<Effort>) -> Result<()> {
+    let text = append_agent(&n.text, &format!("This needs more than the patch: {why}"), "moved", effort.map(Effort::name));
+    moved_to_stack(db, name, n, text)
+}
+
+/// Moves comment `n` to stack `name`'s own comments as it is, its thread
+/// unchanged: on a patch the stack does not hold, it would be in sight
+/// nowhere. Where it was is kept with it, as for one promoted.
+pub(crate) fn to_stack(db: &mut Db, name: &str, n: &Note) -> Result<()> {
+    moved_to_stack(db, name, n, n.text.clone())
+}
+
+/// Comment `n` on stack `name`'s own comments, its thread `text` there,
+/// where it was kept with it; closed where it was.
+fn moved_to_stack(db: &mut Db, name: &str, n: &Note, text: String) -> Result<()> {
     let moved = Moved {
         change: n.change.clone(),
         id: n.id.clone(),
@@ -3502,7 +3546,7 @@ pub fn promote(db: &mut Db, name: &str, n: &Note, why: &str, effort: Option<Effo
         change: stack_change(name),
         id: format!("moved:{}", crate::db::short_id(&n.change, &n.id)),
         line: String::new(),
-        text: append_agent(&n.text, &format!("This needs more than the patch: {why}"), "moved", effort.map(Effort::name)),
+        text,
         moved: Some(moved),
         queued: None,
         failed: None,

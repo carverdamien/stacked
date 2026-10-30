@@ -719,21 +719,71 @@ pub fn marks(db: &Db, r: &Run) -> BTreeMap<String, bool> {
     marks
 }
 
-/// What you wrote in the review of work `r`: the comments you opened
-/// there, still open, and your answers to its replies, and to the reasons
-/// of a try push's tasks. With any, the work is not accepted: it goes back
-/// to the agent.
+/// What you wrote in the review of work `r`: the comments written there,
+/// still open, and your answers to its replies, to the reasons of a try
+/// push's tasks, and to what it said of the tools it could not use. A
+/// comment written there is one you opened in it, or one whose thread you
+/// wrote in there, whoever opened it (a reviewer, the agent); on the stack
+/// or one of its patches, or on a patch the work adds (`added_changes`),
+/// which the stack holds only once the work is accepted. With any, the
+/// work is not accepted: it goes back to the agent.
 pub fn yours_in(db: &Db, r: &Run) -> (Vec<(String, String)>, usize) {
-    let opened = db
-        .stack_notes(&r.stack)
+    let mut notes = db.stack_notes(&r.stack);
+    for change in added_changes(db, r) {
+        notes.extend(db.notes(&change));
+    }
+    let opened = notes
         .into_iter()
-        .filter(|n| n.review.as_deref() == Some(r.id.as_str()) && n.by.is_none())
+        .filter(|n| n.review.as_deref() == Some(r.id.as_str()))
         .map(|n| (n.change.clone(), n.id.clone()))
         .collect();
     let answers = r.held.as_ref().map_or(0, |h| {
         h.replies.iter().filter(|rp| rp.answer.is_some()).count() + h.task_answers() + h.tools.iter().filter(|t| t.answer.is_some()).count()
     });
     (opened, answers)
+}
+
+/// The changes of the patches the stack that work `r` makes holds and its
+/// stack does not, in the order the work has them: those the work adds, or
+/// splits a patch into, and those a round sent back carries from the work
+/// it goes on from. None for work that does not change the stack.
+fn added_changes(db: &Db, r: &Run) -> Vec<String> {
+    let Some(c) = r.held.as_ref().and_then(|h| h.stack.as_ref()) else { return vec![] };
+    let held = held_changes(db, &r.stack);
+    let mut out: Vec<String> = Vec::new();
+    for id in &c.patches {
+        let change = &db.patch(id).change;
+        if !held.contains(change) && !out.contains(change) {
+            out.push(change.clone());
+        }
+    }
+    out
+}
+
+/// The changes of the patches stack `name` holds: none for no stack.
+fn held_changes(db: &Db, name: &str) -> std::collections::HashSet<String> {
+    db.stack(name).map(|s| s.patches.iter().map(|id| db.patch(id).change.clone()).collect()).unwrap_or_default()
+}
+
+/// Takes back what you wrote in the review of run `id` on comment (change,
+/// `note`), for it not to go back to the agent with the work: one you
+/// opened there is closed; a thread from before the review (yours, a
+/// reviewer's, the agent's) is as it was then, its history read for it.
+/// Whether it was a thread from before.
+pub fn take_back(db: &mut Db, id: &str, change: &str, note: &str) -> Result<bool> {
+    let n = db.note(change, note).cloned().ok_or_else(|| Error("the comment is gone".into()))?;
+    let before = db
+        .note_history(change, note)
+        .into_iter()
+        .rev()
+        .map(|(_, n)| n)
+        .find(|n| n.review.as_deref() != Some(id))
+        .filter(|n| !n.text.is_empty())
+        .cloned();
+    match before {
+        Some(was) => db.set_note(Note { time: now(), ..was }).map(|_| true),
+        None => db.set_note(Note { text: String::new(), ..n }).map(|_| false),
+    }
 }
 
 impl Held {
@@ -981,12 +1031,28 @@ pub fn close_with(db: &mut Db, id: &str, marks: &BTreeMap<String, bool>, rest: O
         }
     }
     let mut rev = r.rev;
+    let held_before = held_changes(db, &r.stack);
     if let Some((c, true)) = change {
         let s = db.stack(&r.stack)?.clone();
         let olds: Vec<Patch> = s.patches.iter().map(|p| db.patch(p).clone()).collect();
         let base = c.base.clone().or(s.base.clone());
         rev = Some(db.set_stack_on(&r.stack, c.patches.clone(), base, s.repo.clone(), &c.op)?);
         crate::ask::follow_lines(db, &olds, &c.patches)?;
+    }
+    // A comment the ask was about, kept open, on a patch the stack held
+    // neither before nor holds now (one that work it went on from added,
+    // the stack never taking it), stays in sight: on the stack's own
+    // comments, moved there from where it was.
+    let held_after = held_changes(db, &r.stack);
+    let mut moved = 0;
+    for (c, i) in asking_of(&r) {
+        if held_before.contains(&c) || held_after.contains(&c) || c == crate::db::stack_change(&r.stack) {
+            continue;
+        }
+        if let Some(n) = db.note(&c, &i).cloned() {
+            crate::ask::to_stack(db, &r.stack, &n)?;
+            moved += 1;
+        }
     }
     // What went on from it, guessing it would be accepted: right, or wrong.
     // Its change accepted, the answers made on the stack before it are asked
@@ -1039,6 +1105,10 @@ pub fn close_with(db: &mut Db, id: &str, marks: &BTreeMap<String, bool>, rest: O
     }
     if closed > 0 {
         said += &format!("; {}", count(closed, "asking comment closed", "asking comments closed"));
+    }
+    if moved > 0 {
+        let what = count(moved, "asking comment", "asking comments");
+        said += &format!("; {what} moved to the stack's comments, as the stack does not hold {}", if moved == 1 { "its patch" } else { "their patches" });
     }
     for a in again {
         said += &format!("; {a}");
