@@ -632,19 +632,40 @@ of the patch, over its message's header, and folds between words where
 the middle is narrower; it is not pinned, and scrolls away with the rows,
 the title pinned in its place. The cursor comes to a patch on its
 message's header, the line over it in sight; ↑ goes onto it. There, Space
-shows what differs, under the line, as a submit's review shows it: the
-title and summary, Phabricator's then this version's, compared where their
-lines wrap aside, when they differ (when they differ only in where their
-lines wrap, or in their white space, that is said, and each paragraph
-written otherwise is there as each version writes it, Phabricator's lines
-then this version's, no word in the colours for words); and the code,
-each file as the latest diff leaves it, then as this version leaves it,
-both on the patches below it (the two diffs diffed as text when the files
-cannot be read so). Space again, on the line or on what it shows, hides
-it. In sync, Space says so on the bottom line (`Phabricator has this
-exact version of patch 1: …`). Space there marks nothing read, even in
-the reading mode, and opens no menu: Enter opens it, and `?` says what
-the line says and what Space does.
+shows what differs on a screen of its own, titled `D12 on Phabricator,
+then patch 2 as it is`: Phabricator's version of the patch, the
+revision's title and summary as a submit compares them over its latest
+diff, then the patch as it is, as an interdiff, the way `Versions of this
+patch…` shows two versions. The screen first says what it shows. The
+title and summary are compared where their lines wrap aside, what only
+each has marked; when they differ only in where their lines wrap, or in
+their white space, the screen says so, and each paragraph written
+otherwise is there as each version writes it, Phabricator's lines taken
+out and this version's put in, no word in the colours for words. The code
+is the two diffs, as an interdiff, what git derives in them left out of
+both, as Phabricator's raw diffs have none of it (the `index` lines, the
+heading after a hunk's `@@`): Phabricator's lines taken out, this
+version's put in. When the latest diff is on another base than this
+version (the two read a file before the patch otherwise: a line at the
+same place is not the same, the same hunk is at another place, or one
+makes a file the other finds there), the code is instead each file as
+that diff leaves it, then as this version leaves it, both on the patches
+below it, as the line compares them, and the screen says so; where the
+files cannot be read so, the code is the interdiff all the same, and the
+screen says that too. When the code is the same, the screen shows the
+title and summary alone. ↑↓ (pgup pgdn home end) scroll it, and Esc goes
+back to the line. In sync, Space says so on the bottom line (`Phabricator
+has this exact version of patch 1: …`), and opens nothing; while what
+differs is not read yet, it says that. Space there marks nothing read,
+even in the reading mode, and opens no menu: Enter opens it, titled `D12
+on Phabricator`. Its first items are the revision's: `What differs from
+D12 on Phabricator…` opens the same screen (in sync, the screen says that
+nothing differs), grayed, the menu saying why, while the revision is not
+read and compared yet, or Phabricator does not have it; and `Pull the
+reviews of D12 from Phabricator` pulls the reviews of that revision alone
+(Phabricator, below). The patch's menu in the patches pane has both too,
+after `Submit to Phabricator as WIP`. `?` says what the line says, what
+Space shows there, and what the menu has.
 
 The latest diff (differential.diff.search, the newest alone, then
 differential.getrawdiff) and the comments (transaction.search) are read
@@ -715,7 +736,7 @@ them other keys, and the help then names those:
   too; a patch's on a patch; a line's on a line; a comment's on a comment.
   ↑↓ and enter; ↑ from the top is Quit. On the Phabricator line over a
   patch's message (with moz-phab, above), Space shows what differs from
-  Phabricator under the line, or hides it, and Enter is the menu. What a
+  Phabricator, on a screen of its own, and Enter is the menu. What a
   read-only stack cannot do is shown dimmed, and the menu says why. An
   item may have choices, radio
   buttons after its label (`[x] tmp/file  [ ] pwd`): ← → pick one, a click
@@ -3272,7 +3293,16 @@ settings'. While it reads them, the banner says which revision it reads
 (`⇣ pulling the reviews from Phabricator: D12, revision 2 of 3…`), and the
 top bar `pulling…`; once it is done, the bottom line says what came of it
 (`1 new comment from 3 revisions: it waits for your review`), or what went
-wrong. What is new waits for your review, in the queue of work the agent's
+wrong. In the editor, `Pull the reviews of D12 from Phabricator`, on the
+menu of a patch's Phabricator line (The editor, above) and on the patch's
+own in the patches pane, reads that patch's revision alone, as the stack's
+pull reads each: the banner says so (`⇣ pulling the reviews from
+Phabricator: D12…`), the bottom line says what came of it (`2 new comments
+from D12: they wait for your review`), what it brings is held as a pull's,
+and the line is read again once it is done. As the stack's pull, it is not
+offered while reviews come from nowhere, and not done in the tour; one
+pull goes at a time (`already pulling the reviews`). What is new waits for
+your review, in the queue of work the agent's
 asks land in (below): nothing is filed before you close that review. A
 pull's parts are all accepted, never rejected: closing its review files
 every comment it pulled (`Close review`, or `stacked review NAME RUN
@@ -3337,8 +3367,9 @@ The patches pane shows the status of each patch's revision after its number
 the stack's revisions in one search; and the Phabricator line over the
 message of the patch the middle shows says it by name, whether the
 revision's latest diff and its title and summary are the patch's, and how
-many of its comments are not pulled yet, what differs shown under it with
-Space (The editor, above).
+many of its comments are not pulled yet. Space there shows what differs on
+a screen of its own, and its menu pulls the reviews of that revision alone
+(The editor, above).
 
 ### Submitting a patch
 
@@ -3553,13 +3584,14 @@ is typed: `import.rs`). A fix to one may belong in the other.
   dialog, or reviewed on a screen of its own, before it is sent;
   `tui/revisions.rs`, the status on Phabricator of each patch's revision,
   which the patches pane shows, and the Phabricator line over the message
-  of the patch the middle shows, what differs under it, and when each is
-  read; `tui/compared.rs`, two versions of a text compared word by word
-  where their lines wrap aside, as rows: a title and summary in those two,
-  a reviewer's comment edited on Phabricator in the review of a pull, a
-  commit's message against its patch's; and a diff, or a commit, as the
-  middle draws a patch; `tui/head_why.rs`, the view of why Move HEAD does
-  not move HEAD, and what you can do in your checkout so that it can;
+  of the patch the middle shows, what differs on a screen of its own, the
+  pull of its reviews alone, and when each is read; `tui/compared.rs`, two
+  versions of a text compared word by word where their lines wrap aside,
+  as rows: a title and summary in the review of a submit, a reviewer's
+  comment edited on Phabricator in the review of a pull, a commit's
+  message against its patch's; and a diff, or a commit, as the middle
+  draws a patch; `tui/head_why.rs`, the view of why Move HEAD does not
+  move HEAD, and what you can do in your checkout so that it can;
   `tui/banner.rs`, the banner of the agent's work; `tui/places.rs`, where
   each pane's cursor was, each half's of the middle split in two;
   `tui/finding.rs`, the search of the middle (`/`).
@@ -4086,10 +4118,11 @@ line), the Phabricator line (with moz-phab, over the message's header,
 the cursor coming to the header: the revision alone and `…` before
 anything is read; in sync; the diff differing, the title or summary, and
 both; a summary wrapped otherwise, every word the same, differing: Space
-showing the lines of both versions, no word in the colours for words, and
-saying so, `?` saying that in sync is to the letter and what Space shows,
-the submit's review showing them so too, and in sync once it is
-submitted; a patch submitted and unchanged since in sync, Phabricator
+showing the lines of both versions, Phabricator's taken out and this
+version's put in, no word in the colours for words, and saying so, `?`
+saying that in sync is to the letter and what Space shows, the submit's
+review showing them so too, and in sync once it is submitted; a patch
+submitted and unchanged since in sync, Phabricator
 giving back its title and summary as they were sent, white space ending
 a line and all; a status stacked does not know, and a revision
 Phabricator does not have; the comments to pull, none once a pull holds
@@ -4100,13 +4133,28 @@ of the code, in each half of the middle split in two, reading and with
 each file whole; none over a patch naming no revision, nor while reviews
 come from nowhere, nor without a stand-in in the tests' own process;
 scrolled away with the rows, the title pinned in its place; Space on it
-showing what differs under it, the code and the title and summary, Space
-again hiding it, on the line or on what it shows, the cursor back on the
-line; in sync, Space saying so; reading, Space marking nothing read and
-Delete taking no mark back; Enter opening the menu, and the bar and `?`
-saying what Space does; the revision of the patch shown read alone, once,
-its diff by its PHID, not again as patches are shown again, again after
-a submit and after a pull, the raw diff not read again while it is the
+opening what differs on a screen of its own, its title naming both
+versions and what it shows said first: the code as an interdiff of the
+two diffs, what git derives in them left out, and the title and summary
+compared where their lines wrap aside, what only each has marked in the
+colours for words; Esc going back to the line; in sync, Space saying so
+and opening nothing; not read yet, Space saying that; reading, Space
+marking nothing read and Delete taking no mark back; Enter opening the
+menu, titled for the revision, what differs and the pull of its reviews
+first, and the bar and `?` saying what Space does and what the menu has;
+the patch's menu in the patches pane offering both too, after its submit;
+what differs grayed, the menu saying why, while it is not read yet, and
+for a revision Phabricator does not have; in sync, the screen saying that
+nothing differs, Esc going back to the patch; neither item while reviews
+come from nowhere; a latest diff on another base, each file as each
+leaves it, said, or the interdiff all the same, said too, where the
+files cannot be read so; the reviews of one patch's revision pulled
+alone, from the line's menu and from the patch's, that revision read and
+no other, the banner naming it, one pull at a time, what it brings held
+for review as a pull's, the line read again after it, and the stack's
+pull still reading every revision; the revision of the patch shown read
+alone, once, its diff by its PHID, not again as patches are shown again,
+again after a submit and after a pull, the raw diff not read again while it is the
 latest; a read that fails keeping what was known and saying nothing more
 than the statuses' read), and the comments pane's states (expanded,
 compact, hidden) and the compact view of the code as they were. With the `web` feature, `tests/web.rs`
@@ -4131,7 +4179,9 @@ longer than its box in a small page, scrolled down to its last line with
 ↓, the wheel's ↓ and pgdn, and, with
 moz-phab, the status of a patch's revision after its number, a letter,
 and the Phabricator line over its message, Space on it showing what
-differs under it, read by a stand-in for its database; and
+differs on a screen of its own, Esc going back to the line, read by a
+stand-in for its database, and the reviews of its revision pulled alone
+from its menu, an item clicked, by a stand-in too; and
 `web.rs` tests the rows and the lines both ways, with the client's own tests
 (`web/client.rs`, compiled to the machine as well as to wasm), which also
 test the mouse followed only while the page has the focus: the cell where
@@ -4159,7 +4209,9 @@ putting it away; `Move HEAD…` on the stack's menu drawn as any item while
 it would not move HEAD, and the view of why opened from it, then left; with
 moz-phab, the status of a patch's revision after its number, a letter,
 and the Phabricator line over its message, Space on it showing what
-differs under it, read by a stand-in for its database; and the File menu,
+differs on a screen of its own, Esc going back to the line, read by a
+stand-in for its database, and the reviews of its revision pulled alone
+from its menu, an item clicked, by a stand-in too; and the File menu,
 its panels answered by the test: Open… opening each database picked in a
 window of its own (one picked twice, one that cannot be read said, the
 panel cancelled), New… making an empty database that stacked reads and
@@ -4368,7 +4420,10 @@ each version's lines taken out and put in, a command wrapped otherwise a
 change, its break marked, the diff after the `---` the same lines as the
 mails diffed line by line, its hunks of its own when far from the
 message, and with the title and the body the same, the mails diffed line
-by line as they were; those
+by line as they were; and compared to the letter, as the view of what
+differs from Phabricator compares them, a paragraph only wrapped
+otherwise each version's lines, nothing of them marked, but where a word
+changed too, as ever; those
 in `history.rs`, what the history leaves out (comments, runs, a move to
 where the stack is, a branch put straight back), how a stack diff follows
 each patch by its change, a move told from a shift, and a new version
@@ -4541,7 +4596,8 @@ the pulls waiting: those filed or waiting not counted, one edited since
 it was filed counted as edited, a thread closed not counted, nor a new
 reply or edit there, but for one moved to the stack's comments, another
 stack's pull not this one's, and one a review of before rejected counted,
-as a pull brings it again. Those in
+as a pull brings it again; and where a pull is said, one patch's revision
+pulled alone too. Those in
 `tui/revisions.rs` show when the statuses are due a read: never read, other
 revisions, a submit ended since, or three minutes gone by; a title in work
 as moz-phab reads it; the title and summary compared to the letter as a
@@ -4552,7 +4608,14 @@ sync, its reviewers, its trailer, white space ending a line, a fenced
 block or carriage returns and all; a title and summary only wrapped
 otherwise, or only spaced otherwise, showing the lines of both versions,
 nothing marked, said so, and one with a word changed too showing the
-paragraph wrapped otherwise once; the comments to pull and what differs
+paragraph wrapped otherwise once; a title and summary only wrapped or
+spaced otherwise told from one with a word changed; a diff bare of what
+git derives in it, as Phabricator's raw diffs are, the lines of its hunks
+as they are; two diffs on other bases told by the files they read before
+the patch, a line otherwise at the same place, the same hunk elsewhere, a
+file one makes and the other finds, but not by more of a file around a
+hunk, nor by another file; the tour pulling nothing from Phabricator, a
+patch's revision alone neither; the comments to pull and what differs
 said in plain words; and the line folded between words, its pieces under
 its first.
 

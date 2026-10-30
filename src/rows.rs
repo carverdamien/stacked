@@ -129,9 +129,9 @@ pub struct Row {
     pub outside: bool,
     /// A row of the Phabricator line over a patch's message, with the
     /// `moz-phab` feature: the line, which says what Phabricator has of the
-    /// patch, or what differs from it, shown under the line. Drawn only: no
-    /// comment goes on it, nor a read mark; Space there shows or hides what
-    /// differs.
+    /// patch, or a piece of it folded. Drawn only: no comment goes on it,
+    /// nor a read mark; Space there shows what differs, on a screen of its
+    /// own.
     pub phab: bool,
 }
 
@@ -1408,7 +1408,7 @@ pub enum Place {
     /// The message's header, the first row; the first row of the stack's.
     Message,
     /// Row `k` of the Phabricator line over the message, from 0: the line,
-    /// its pieces folded, then what differs, shown under it.
+    /// then its pieces folded.
     Phab(usize),
     /// `k` rows over the row at a place, or under it, being at none of its
     /// own: an empty row, what is said of a file not shown whole, the row

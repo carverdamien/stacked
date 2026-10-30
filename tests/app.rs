@@ -291,12 +291,36 @@ fn the_status_of_each_patch_s_revision_and_its_phabricator_line_show_in_the_wind
     // Listing files, a letter too.
     press(&s, KeyCode::Left);
     screen(&s, "the letter", |b| row(b, 2).starts_with("  1 [R] Bug 1 - shout two"));
-    // Space on the line: what differs, under it.
+    // Space on the line: what differs, on a screen of its own, Phabricator's
+    // line of the diff taken out; Esc, back on the line.
     for k in [KeyCode::Right, KeyCode::Up, KeyCode::Char(' ')] {
         press(&s, k);
     }
-    screen(&s, "what differs", |b| find(b, "the code: Phabricator's, then this version's").is_some() && find(b, "│-Two").is_some());
+    screen(&s, "what differs", |b| find(b, "D11 on Phabricator, then patch 1 as it is").is_some() && (0..b.area.height).any(|y| row(b, y).starts_with("-+Two")));
+    press(&s, KeyCode::Esc);
+    screen(&s, "the line again", |b| find(b, line).is_some());
+    // Its menu: what differs, and the reviews of D11 pulled alone, clicked,
+    // held for review.
+    stacked::phab::stand_in(Some(one_on_d11));
+    press(&s, KeyCode::Enter);
+    let item = "Pull the reviews of D11 from Phabricator";
+    let menu = screen(&s, "the line's menu", |b| find(b, item).is_some());
+    assert!(find(&menu, "What differs from D11 on Phabricator…").is_some(), "{}", text(&menu));
+    let (x, y) = find(&menu, item).unwrap();
+    s.send(Input::Click { x, y, right: false });
+    screen(&s, "what the pull brought", |b| find(b, "1 new comment from D11: it waits for your review").is_some());
+    stacked::phab::stand_in(None);
     stacked::phab::statuses_stand_in(&db, None);
+}
+
+/// The stand-in for Phabricator in the pull of
+/// `the_status_of_each_patch_s_revision_…`: a comment of ann's on D11, none
+/// on any other.
+#[cfg(feature = "moz-phab")]
+fn one_on_d11(source: &str, rev: &str, _url: &str) -> Result<stacked::phab::RevisionComments, String> {
+    let ann = stacked::phab::Remote { phid: "c1".into(), author: "ann".into(), text: "Why shout?".into(), created: 1, ..Default::default() };
+    let comments = if rev == "D11" { vec![ann] } else { vec![] };
+    Ok(stacked::phab::RevisionComments { revision: rev.into(), source: source.into(), comments })
 }
 
 #[test]

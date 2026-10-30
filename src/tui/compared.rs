@@ -1,11 +1,10 @@
 //! Rows of two versions of a text compared word by word, where their lines
 //! wrap aside (`messages::diff`), each line a row of a diff, its sign
 //! first, what only its version has marked: as the review of a submit shows
-//! a title and summary, the patches pane's Phabricator line what differs,
-//! the review of a pull a reviewer's comment edited on Phabricator, and the
-//! view of why Move HEAD does not move HEAD a commit's message against its
-//! patch's. And the rows of a diff, or of a commit, as the middle draws a
-//! patch, drawn only.
+//! a title and summary, the review of a pull a reviewer's comment edited on
+//! Phabricator, and the view of why Move HEAD does not move HEAD a commit's
+//! message against its patch's. And the rows of a diff, or of a commit, as
+//! the middle draws a patch, drawn only.
 
 use super::*;
 
@@ -81,8 +80,9 @@ fn compared_rows(rows: &mut Vec<Row>, sign: char, l: &crate::messages::Marked, w
 }
 
 /// What the rows of two versions of a title and summary say first when
-/// they differ in nothing but where their lines wrap, or their white space.
-const ONLY_WRAPPED: &str = "Both versions have the same words: they differ only in where their lines wrap, or in their white space.";
+/// they differ in nothing but where their lines wrap, or their white space;
+/// and the Phabricator line's view of what differs, too.
+pub(super) const ONLY_WRAPPED: &str = "Both versions have the same words: they differ only in where their lines wrap, or in their white space.";
 
 /// Two versions of a title and summary, `before` then `after`, as rows
 /// folded to `w`, compared as an interdiff compares two messages, where

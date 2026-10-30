@@ -412,13 +412,35 @@ pub fn interdiff_lines(old: &Patch, new: &Patch) -> Vec<InterLine> {
     inter(old, new).1
 }
 
+/// What changed from `old` to `new`, as `interdiff_lines` has it, their
+/// messages compared to the letter: when they have the same words, and
+/// differ only in where their lines wrap or in their white space, each
+/// section written otherwise is there as each version writes it, the old
+/// one's lines taken out and the new one's put in, nothing of them marked,
+/// as every word of them is in both. As the Phabricator line's view
+/// compares a revision with its patch, their titles and summaries in sync
+/// only to the letter.
+pub fn letter_interdiff_lines(old: &Patch, new: &Patch) -> Vec<InterLine> {
+    inter_as(old, new, true).1
+}
+
 /// The interdiff of `old` and `new` (`interdiff_lines`): as text, and a
 /// line at a time.
 fn inter(old: &Patch, new: &Patch) -> (String, Vec<InterLine>) {
+    inter_as(old, new, false)
+}
+
+/// As `inter`, the messages compared to the letter if `letter`
+/// (`letter_interdiff_lines`).
+fn inter_as(old: &Patch, new: &Patch, letter: bool) -> (String, Vec<InterLine>) {
     let (a, b) = (render(old), render(new));
     let names = (&old.id[..8], &new.id[..8]);
     match (Mail::of(&a, old), Mail::of(&b, new)) {
-        (Some(x), Some(y)) if (x.title, x.body) != (y.title, y.body) => hunks(&mail_rows(&x, &y), names),
+        (Some(x), Some(y)) if (x.title, x.body) != (y.title, y.body) => {
+            // The same words, only wrapped or spaced otherwise.
+            let wrapped = letter && [(x.title, y.title), (x.body, y.body)].iter().all(|(p, q)| crate::messages::diff(p, q).runs.iter().all(|r| r.same));
+            hunks(&mail_rows(&x, &y, wrapped), names)
+        }
         _ => {
             let text = similar::TextDiff::from_lines(&a, &b).unified_diff().context_radius(3).header(names.0, names.1).to_string();
             let lines = text.lines().map(InterLine::from).collect();
@@ -474,12 +496,13 @@ struct Row {
 
 /// The lines of the interdiff of mails `a` and `b`, before its hunks are
 /// cut: their headers line by line; their titles, then their bodies, as
-/// messages are compared; the empty line under the title, which both have;
-/// the rest line by line.
-fn mail_rows(a: &Mail, b: &Mail) -> Vec<Row> {
+/// messages are compared, each section written otherwise there as each
+/// writes it when `wrapped` (`by_message`); the empty line under the
+/// title, which both have; the rest line by line.
+fn mail_rows(a: &Mail, b: &Mail, wrapped: bool) -> Vec<Row> {
     let mut rows = Vec::new();
     by_line(&mut rows, a.head, b.head);
-    by_message(&mut rows, a.title, b.title);
+    by_message(&mut rows, a.title, b.title, wrapped);
     rows.push(Row {
         sign: ' ',
         line: b.blank.into(),
@@ -488,7 +511,7 @@ fn mail_rows(a: &Mail, b: &Mail) -> Vec<Row> {
         kept: true,
         own: None,
     });
-    by_message(&mut rows, a.body, b.body);
+    by_message(&mut rows, a.body, b.body, wrapped);
     by_line(&mut rows, a.rest, b.rest);
     rows
 }
@@ -516,8 +539,11 @@ fn by_line(rows: &mut Vec<Row>, a: &str, b: &str) {
 /// message, compared as messages are (`messages::diff`): a run the same
 /// in both, the new one's lines, kept as they are when both write it so;
 /// a run that differs, the old one's lines taken out and the new one's
-/// put in, what only one has marked.
-fn by_message(rows: &mut Vec<Row>, a: &str, b: &str) {
+/// put in, what only one has marked. When `wrapped`, as the two messages
+/// differ only in where their lines wrap or in their white space, a run
+/// the same in both but written otherwise is as one that differs, nothing
+/// of it marked.
+fn by_message(rows: &mut Vec<Row>, a: &str, b: &str, wrapped: bool) {
     let d = crate::messages::diff(a, b);
     let (la, lb): (Vec<&str>, Vec<&str>) = (a.split_inclusive('\n').collect(), b.split_inclusive('\n').collect());
     // What a line has that the other version has not, counted from its sign.
@@ -536,7 +562,7 @@ fn by_message(rows: &mut Vec<Row>, a: &str, b: &str) {
         let (x, y) = (la.get(run.ours.clone()).unwrap_or_default(), lb.get(run.theirs.clone()).unwrap_or_default());
         if run.same && x == y {
             rows.extend(y.iter().map(|l| Row { kept: true, ..row(' ', l, 1, 1, None) }));
-        } else if run.same {
+        } else if run.same && !wrapped {
             // Written otherwise: once, as the new version writes it.
             rows.extend(y.iter().enumerate().map(|(k, l)| row(' ', l, if k == 0 { x.len() } else { 0 }, 1, None)));
         } else {
@@ -1908,6 +1934,30 @@ mod tests {
         for (l, at) in body.iter().zip(interdiff_places(&body)).skip(1) {
             assert_eq!(&l[1..], mail[at], "{body:?}");
         }
+    }
+
+    #[test]
+    fn to_the_letter_a_paragraph_only_wrapped_otherwise_is_each_version_s_lines_nothing_marked() {
+        let (old, new) = (saying(WRAPPED, "x"), saying(REWRAPPED, "x"));
+        let lines = letter_interdiff_lines(&old, &new);
+        // The old version's two lines taken out, the new one's three put in,
+        // as each writes them, nothing of them marked; the title and the last
+        // paragraph once, among the lines around them.
+        let changed: Vec<&InterLine> = lines.iter().filter(|l| l.own.is_some()).collect();
+        let said: Vec<&str> = changed.iter().map(|l| l.text.as_str()).collect();
+        assert_eq!(
+            said,
+            ["-The parser reads the whole file", "-before it checks the header.", "+The parser reads the whole", "+file before it checks", "+the header.  "]
+        );
+        assert!(changed.iter().all(|l| l.own == Some((vec![], false))), "{changed:?}");
+        assert!(texts(&lines).contains(&" Subject: Bug 1 - two") && texts(&lines).contains(&" That is all."), "{lines:?}");
+        // A word otherwise too: as `interdiff_lines` has it, the paragraph
+        // wrapped otherwise once, as the new version writes it.
+        let (old, new) = (saying(WRAPPED, "x"), saying(&REWRAPPED.replace("That is all.", "That is not all."), "x"));
+        assert_eq!(letter_interdiff_lines(&old, &new), interdiff_lines(&old, &new));
+        // The same messages: the mails diffed line by line, as ever.
+        let (old, new) = (saying(WRAPPED, "x"), saying(WRAPPED, "y"));
+        assert_eq!(letter_interdiff_lines(&old, &new), interdiff_lines(&old, &new));
     }
 
     #[test]

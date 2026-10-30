@@ -344,13 +344,40 @@ fn the_status_of_each_patch_s_revision_and_its_phabricator_line_show_in_the_brow
     // Listing files, a letter too.
     ask(port, &host, &input, "k Left -\n");
     until(&mut events, "the letter", |l| l.starts_with("data: r 2 ") && text(l).starts_with("  1 [R] Bug 1 - shout two"));
-    // Space on the line: what differs, under it.
+    // Space on the line: what differs, on a screen of its own, Phabricator's
+    // line of the diff taken out; Esc, back on the line.
     for k in ["k Right -\n", "k Up -\n", "k c 20 -\n"] {
         ask(port, &host, &input, k);
     }
-    until(&mut events, "what differs", |l| text(l).contains("the code: Phabricator's, then this version's"));
-    until(&mut events, "the line of Phabricator's diff", |l| text(l).contains("│-Two"));
+    until(&mut events, "what differs", |l| text(l).contains("D11 on Phabricator, then patch 1 as it is"));
+    until(&mut events, "the line of Phabricator's diff", |l| text(l).starts_with("-+Two"));
+    ask(port, &host, &input, "k Esc -\n");
+    until(&mut events, "the line again", |l| text(l).contains(line));
+    // Its menu: what differs, and the reviews of D11 pulled alone, clicked,
+    // held for review.
+    stacked::phab::stand_in(Some(one_on_d11));
+    ask(port, &host, &input, "k Enter -\n");
+    let item = "Pull the reviews of D11 from Phabricator";
+    let seen = until(&mut events, "the line's menu", |l| text(l).contains(item));
+    assert!(seen.iter().any(|l| text(l).contains("What differs from D11 on Phabricator…")), "{seen:#?}");
+    let row = seen.last().unwrap();
+    let y = row.strip_prefix("data: r ").and_then(|r| r.split(' ').next()).unwrap();
+    let said = text(row);
+    let x = said[..said.find(item).unwrap()].chars().count() + 1;
+    ask(port, &host, &input, &format!("m {x} {y} l\n"));
+    until(&mut events, "what the pull brought", |l| text(l).contains("1 new comment from D11: it waits for your review"));
+    stacked::phab::stand_in(None);
     stacked::phab::statuses_stand_in(&db, None);
+}
+
+/// The stand-in for Phabricator in the pull of
+/// `the_status_of_each_patch_s_revision_…`: a comment of ann's on D11, none
+/// on any other.
+#[cfg(feature = "moz-phab")]
+fn one_on_d11(source: &str, rev: &str, _url: &str) -> Result<stacked::phab::RevisionComments, String> {
+    let ann = stacked::phab::Remote { phid: "c1".into(), author: "ann".into(), text: "Why shout?".into(), created: 1, ..Default::default() };
+    let comments = if rev == "D11" { vec![ann] } else { vec![] };
+    Ok(stacked::phab::RevisionComments { revision: rev.into(), source: source.into(), comments })
 }
 
 /// Patch 1 of stack `s` in `db` given a new version whose message is

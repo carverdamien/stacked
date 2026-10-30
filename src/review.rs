@@ -1,7 +1,8 @@
-//! Reviews from Phabricator, pulled into the database as work held for
-//! review, as the agent's is (`held`): a remote thread new, a comment opened
-//! on the line it is on (or the patch's title), the replies pulled with it
-//! turns of it; a reply to a thread there already, a reply to it. None is
+//! Reviews from Phabricator, of every revision the stack's patches name or
+//! of one patch's alone, pulled into the database as work held for review,
+//! as the agent's is (`held`): a remote thread new, a comment opened on the
+//! line it is on (or the patch's title), the replies pulled with it turns
+//! of it; a reply to a thread there already, a reply to it. None is
 //! rejected: closing the review files each in its thread, a reply to a
 //! thread you closed reopening it. A comment pulled is known by the thread
 //! that holds it, open or closed, or by the pull waiting for review that
@@ -295,6 +296,12 @@ fn new_thread(p: &crate::db::Patch, lines: &[crate::view::NoteLine], c: &Remote)
 /// revisions, `fetched`, as run `id`: what is new held in it, to review.
 pub fn file(db: &mut Db, name: &str, id: &str, revisions: usize, fetched: &std::result::Result<phab::Pulled, String>) -> Result<Run> {
     let of = format!("{revisions} revision{}", if revisions == 1 { "" } else { "s" });
+    file_from(db, name, id, &of, fetched)
+}
+
+/// As `file`, the revisions read said as `of`: `3 revisions`, or `D12`
+/// for a pull of one patch's revision alone.
+fn file_from(db: &mut Db, name: &str, id: &str, of: &str, fetched: &std::result::Result<phab::Pulled, String>) -> Result<Run> {
     let (state, summary, held) = match fetched {
         Ok(pulled) => {
             let h = hold(db, name, pulled)?;
@@ -335,15 +342,19 @@ pub enum Pulling {
     Starting,
     /// Reading revision `rev`, the `at`th of `of`, from 1.
     Reading { rev: String, at: usize, of: usize },
+    /// Reading revision `rev`, the revision of one patch, pulled alone.
+    Alone(String),
 }
 
 impl Pulling {
     /// What the pull is doing, said: `pulling the reviews from Phabricator:
-    /// D12, revision 2 of 3`.
+    /// D12, revision 2 of 3`; of one patch's revision alone, `pulling the
+    /// reviews from Phabricator: D12`.
     pub fn said(&self) -> String {
         match self {
             Pulling::Starting => "pulling the reviews from Phabricator".into(),
             Pulling::Reading { rev, at, of } => format!("pulling the reviews from Phabricator: {rev}, revision {at} of {of}"),
+            Pulling::Alone(rev) => format!("pulling the reviews from Phabricator: {rev}"),
         }
     }
 }
@@ -357,27 +368,51 @@ pub fn pull(db_path: &std::path::Path, name: &str) -> Result<Run> {
 /// As `pull`, `say` told where it is as it goes: each revision as it starts
 /// reading it.
 pub fn pull_saying(db_path: &std::path::Path, name: &str, say: &mut dyn FnMut(Pulling)) -> Result<Run> {
+    pull_of(db_path, name, None, say)
+}
+
+/// As `pull_saying`, of the revision of the patch of `change` alone, as
+/// the editor's Phabricator line and the patch's menu pull it: that
+/// revision read, as a pull of the whole stack reads each, what is new on
+/// it held for review the same way.
+pub fn pull_patch_saying(db_path: &std::path::Path, name: &str, change: &str, say: &mut dyn FnMut(Pulling)) -> Result<Run> {
+    pull_of(db_path, name, Some(change), say)
+}
+
+/// The pull of the revisions of `name`'s patches, those of the patch of
+/// change `only` alone when given; `say` told where it is as it goes.
+fn pull_of(db_path: &std::path::Path, name: &str, only: Option<&str>, say: &mut dyn FnMut(Pulling)) -> Result<Run> {
     if crate::config::get().reviews.source == crate::config::Source::None {
         return crate::db::err(format!(
             "reviews come from nowhere: reviews.source is \"none\" in {}",
             crate::config::path().display()
         ));
     }
-    let revs = revisions(&Db::load(db_path)?, name)?;
+    let mut revs = revisions(&Db::load(db_path)?, name)?;
+    if let Some(change) = only {
+        revs.retain(|(c, _, _)| c == change);
+    }
     let id = format!("pull-{}", crate::db::unique());
-    let fetched = if revs.is_empty() {
-        Err("no patch of the stack has a Differential Revision".to_string())
-    } else {
-        let of = revs.len();
-        phab::pull(&revs, &mut |k| {
-            say(Pulling::Reading {
-                rev: revs[k].1.clone(),
-                at: k + 1,
-                of,
+    let fetched = match (revs.is_empty(), only) {
+        (true, None) => Err("no patch of the stack has a Differential Revision".to_string()),
+        (true, Some(_)) => Err("the patch has no Differential Revision, or is no longer in the stack".to_string()),
+        (false, None) => {
+            let of = revs.len();
+            phab::pull(&revs, &mut |k| {
+                say(Pulling::Reading {
+                    rev: revs[k].1.clone(),
+                    at: k + 1,
+                    of,
+                })
             })
-        })
+        }
+        (false, Some(_)) => phab::pull(&revs, &mut |k| say(Pulling::Alone(revs[k].1.clone()))),
     };
-    Db::edit(db_path, |db| file(db, name, &id, revs.len(), &fetched))
+    let of = match (only, revs.as_slice()) {
+        (Some(_), [(_, rev, _)]) => rev.clone(),
+        _ => format!("{} revision{}", revs.len(), if revs.len() == 1 { "" } else { "s" }),
+    };
+    Db::edit(db_path, |db| file_from(db, name, &id, &of, &fetched))
 }
 
 #[cfg(test)]
@@ -474,5 +509,7 @@ mod tests {
             of: 3,
         };
         assert_eq!(reading.said(), "pulling the reviews from Phabricator: D12, revision 2 of 3");
+        // One patch's revision, pulled alone: it alone, named.
+        assert_eq!(Pulling::Alone("D12".into()).said(), "pulling the reviews from Phabricator: D12");
     }
 }

@@ -15693,13 +15693,27 @@ fn phab_line(app: &mut App) -> Option<String> {
     Some(said)
 }
 
-/// What the Phabricator line shows under it, row by row, the screen drawn.
+/// What the view of what differs from Phabricator shows, the screen drawn:
+/// its title, and its lines; none while it is not open.
 #[cfg(feature = "moz-phab")]
-fn under_line(app: &mut App) -> Vec<String> {
+fn differs_seen(app: &mut App) -> Option<(String, Vec<String>)> {
     draw(app);
-    let rows: Vec<&stacked::rows::Row> = app.rows.iter().take_while(|r| r.phab).collect();
-    let line = 1 + rows.iter().skip(1).take_while(|r| r.cont).count();
-    rows.iter().skip(line).map(|r| r.text.clone()).collect()
+    let t = app.text.as_ref().filter(|_| app.screen == Screen::Text)?;
+    Some((t.title.clone(), t.texts()))
+}
+
+/// What the view of what differs says first, its lines `lines`: those over
+/// its first empty line, joined.
+#[cfg(feature = "moz-phab")]
+fn differs_said(lines: &[String]) -> String {
+    lines.iter().take_while(|l| !l.is_empty()).map(|l| l.trim()).collect::<Vec<_>>().join(" ")
+}
+
+/// What the view of what differs shows after what it says first, its
+/// lines `lines`: those under its first empty line.
+#[cfg(feature = "moz-phab")]
+fn differs_shown(lines: &[String]) -> Vec<&str> {
+    lines.iter().map(String::as_str).skip_while(|l| !l.is_empty()).skip(1).collect()
 }
 
 /// A stack of three patches naming D11, D12 and D13 (`phab_setup`), and the
@@ -15922,75 +15936,162 @@ fn the_phabricator_line_scrolls_away_with_the_message_the_title_pinned_in_its_pl
 
 #[cfg(feature = "moz-phab")]
 #[test]
-fn space_on_the_phabricator_line_shows_what_differs_under_it_and_hides_it_again() {
+fn space_on_the_phabricator_line_shows_what_differs_on_a_screen_of_its_own_esc_coming_back_to_the_line() {
     let (_tmp, db, _phab, _) = three_revisions();
     let mut app = open(&db).unwrap();
     app.refresh();
     app.settle();
-    // On the line of D11, in sync: Space says so, nothing shown under it,
-    // no menu.
+    // On the line of D11, in sync: Space says so, and opens nothing, no
+    // menu either.
     keys(&mut app, &[KeyCode::Right, KeyCode::Up]);
     assert!(app.on_line());
-    assert_eq!(app.hint(), "space: show what differs · enter: menu · 1: view · 2: read · 3: whole · ?: what can I do here");
+    assert_eq!(app.hint(), "space: what differs from Phabricator · enter: menu · 1: view · 2: read · 3: whole · ?: what can I do here");
     keys(&mut app, &[KeyCode::Char(' ')]);
     assert_eq!(
         app.status,
         "Phabricator has this exact version of patch 1: the latest diff of D11 does what this version does, and the title and summary of D11 are those of this version."
     );
-    assert!(under_line(&mut app).is_empty() && app.mode == Mode::Normal);
+    assert_eq!((app.screen, &app.mode), (Screen::Main, &Mode::Normal));
     // `o` opens nothing there: the line is no line of the message.
     app.status.clear();
     keys(&mut app, &[KeyCode::Char('o')]);
     assert_eq!((app.status.as_str(), &app.mode), ("", &Mode::Normal));
-    // D12: the code, each file as Phabricator's diff leaves it, then as
-    // this version does.
+    // D12: Phabricator's version, then this one, as an interdiff of two
+    // versions, what is shown said first. The code: the two diffs, what git
+    // derives in them left out of both, Phabricator's line taken out and
+    // this version's put in.
     keys(&mut app, &[KeyCode::Left]);
     next_patch(&mut app);
     keys(&mut app, &[KeyCode::Right, KeyCode::Up, KeyCode::Char(' ')]);
-    let under = under_line(&mut app);
-    assert_eq!(under[0], "the code: Phabricator's, then this version's");
-    let said: String = under.iter().skip(1).take_while(|l| !l.is_empty()).map(|l| l.trim()).collect::<Vec<_>>().join(" ");
-    assert_eq!(said, "Each file as the latest diff of D12 leaves it, then as this version of patch 2 leaves it, both on the patches below patch 2.");
-    let code: Vec<&str> = under.iter().map(String::as_str).skip_while(|l| !l.is_empty()).skip(1).collect();
-    assert_eq!(code, ["b.txt", "@@ -1 +1 @@", "-bea", "+bee", ""]);
-    // The rest as it was: the message's header after it, the cursor still
-    // on the line, and the bar saying how to hide it.
-    let at = app.rows.iter().position(|r| !r.phab).unwrap();
-    assert_eq!((app.rows[at].text.as_str(), app.cursor), ("✉ message", 0));
-    assert_eq!(app.hint(), "space: hide what differs · enter: menu · 1: view · 2: read · 3: whole · ?: what can I do here");
-    // `?` says what the line says, and what Space does.
+    let (title, lines) = differs_seen(&mut app).expect("the view of what differs");
+    assert_eq!(title, "D12 on Phabricator, then patch 2 as it is");
+    assert_eq!(
+        differs_said(&lines),
+        "The title and summary of D12 are those of this version. The code is shown as an interdiff of the latest diff of D12 and this version's diff."
+    );
+    let shown = differs_shown(&lines);
+    assert_eq!(shown[..2], ["--- D12 on Phabricator", "+++ patch 2 as it is"], "{shown:#?}");
+    assert!(shown[2].starts_with("@@ -"), "{shown:#?}");
+    assert_eq!(shown[3..], [" --- /dev/null", " +++ b/b.txt", " @@ -0,0 +1 @@", "-+bea", "++bee"]);
+    // Esc: back on the line, as it was.
+    keys(&mut app, &[KeyCode::Esc]);
+    assert_eq!((app.screen, app.cursor), (Screen::Main, 0));
+    assert!(app.on_line());
+    // `?` says what the line says, what Space shows, and what the menu has.
     keys(&mut app, &[KeyCode::Char('?')]);
     let Mode::Help { lines, .. } = &app.mode else { panic!("{:?}", app.mode) };
     assert!(lines[0].starts_with("This line says what Phabricator has of patch 2: its revision, D12;"), "{lines:#?}");
-    assert_eq!(lines[1], "Under this line is what differs: press Space to hide it.");
-    assert_eq!(lines[2], "Press Enter for all that can be done here.");
+    assert_eq!(
+        lines[1],
+        "Press Space to see what differs from D12 on Phabricator, on a screen of its own: the latest diff of D12, then this version's diff, as an interdiff. Esc there comes back to this line."
+    );
+    assert_eq!(lines[2], "Press Enter for all that can be done here: what differs from D12 on Phabricator, and a pull of the reviews of D12 alone.");
     keys(&mut app, &[KeyCode::Esc]);
-    // On a row of what differs, Space hides it too: the cursor back on the
-    // line.
-    keys(&mut app, &[KeyCode::Down, KeyCode::Down, KeyCode::Down]);
-    assert!(app.rows[app.cursor].phab && app.cursor > 0);
-    keys(&mut app, &[KeyCode::Char(' ')]);
-    assert!(under_line(&mut app).is_empty());
-    assert_eq!(app.cursor, 0);
     // Reading: Space on the line still shows what differs, and marks
     // nothing read; Delete takes no mark back.
     keys(&mut app, &[KeyCode::Char('2')]);
-    assert_eq!(app.hint(), "space: show what differs · enter: menu · 1: view · 2: comment · 3: whole · ?: what can I do here");
+    assert_eq!(app.hint(), "space: what differs from Phabricator · enter: menu · 1: view · 2: comment · 3: whole · ?: what can I do here");
     keys(&mut app, &[KeyCode::Char(' ')]);
-    assert!(!under_line(&mut app).is_empty());
-    keys(&mut app, &[KeyCode::Delete]);
+    assert!(differs_seen(&mut app).is_some());
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Delete]);
     assert!(Db::load(&db).unwrap().read_keys(&patch_of(&db, 1).change).is_empty());
-    assert!(!under_line(&mut app).is_empty() && app.rows[app.cursor].phab);
-    keys(&mut app, &[KeyCode::Char(' '), KeyCode::Char('2')]);
-    // Enter: the menu, as Space is not there.
+    assert!(app.on_line());
+    keys(&mut app, &[KeyCode::Char('2')]);
+    // Enter: the menu, its revision's items first; what differs from there
+    // too.
     keys(&mut app, &[KeyCode::Enter]);
-    assert!(matches!(app.mode, Mode::Menu(_)), "{:?}", app.mode);
+    assert_eq!(menu_title(&app), "D12 on Phabricator");
+    assert_eq!(items(&app)[..2], [("What differs from D12 on Phabricator…".to_string(), true), ("Pull the reviews of D12 from Phabricator".to_string(), true)]);
+    choose(&mut app, "What differs from D12 on Phabricator…");
+    assert_eq!(differs_seen(&mut app).map(|(t, _)| t).as_deref(), Some("D12 on Phabricator, then patch 2 as it is"));
     keys(&mut app, &[KeyCode::Esc]);
-    // D13: the title and summary, Phabricator's then this version's.
+    assert!(app.on_line());
+    // D13: the title and summary, Phabricator's taken out, this version's
+    // put in, what only each has marked, as an interdiff marks two
+    // versions' messages; the code the same.
     keys(&mut app, &[KeyCode::Left]);
     next_patch(&mut app);
     keys(&mut app, &[KeyCode::Right, KeyCode::Up, KeyCode::Char(' ')]);
-    assert_eq!(under_line(&mut app), ["the title and summary: Phabricator's, then this version's", "-Bug 3 - an older title", "+Bug 3 - three", ""]);
+    let (title, lines) = differs_seen(&mut app).unwrap();
+    assert_eq!(title, "D13 on Phabricator, then patch 3 as it is");
+    assert_eq!(
+        differs_said(&lines),
+        "The title and summary of D13 are compared with those a submit of this version sends, where their lines wrap aside. The latest diff of D13 does what this version does."
+    );
+    let shown = differs_shown(&lines);
+    let changed: Vec<&str> = shown[2..].iter().copied().filter(|l| l.starts_with(['-', '+'])).collect();
+    assert_eq!(changed, ["-Subject: Bug 3 - an older title", "+Subject: Bug 3 - three"]);
+    use stacked::paint::color;
+    let (old, new) = (changed[0], changed[1]);
+    let at = "-Subject: Bug 3 - ".len();
+    assert_eq!(style_after(&mut app, old, at, 30), as_drawn(color::del_word()), "an older title");
+    assert_eq!(style_after(&mut app, old, 1, 30), as_drawn(ratatui::style::Style::new()), "Subject");
+    assert_eq!(style_after(&mut app, old, 0, 30), as_drawn(color::del()), "its sign");
+    assert_eq!(style_after(&mut app, new, at, 30), as_drawn(color::add_word()), "three");
+    stacked::phab::statuses_stand_in(&db, None);
+}
+
+#[cfg(feature = "moz-phab")]
+#[test]
+fn what_differs_is_offered_on_the_line_s_menu_and_the_patch_s_grayed_until_it_is_read_and_says_so_in_sync() {
+    let (_tmp, db, _phab, diffs) = three_revisions();
+    let mut app = open(&db).unwrap();
+    let view = ("What differs from D11 on Phabricator…".to_string(), false);
+    let pull = ("Pull the reviews of D11 from Phabricator".to_string(), true);
+    let grayed = "What differs from D11 on Phabricator is grayed: D11 is not read from Phabricator and compared with this patch yet.";
+    // Nothing read yet: Space says so, and opens nothing; the line's menu
+    // and the patch's offer what differs grayed, saying why, and the pull.
+    keys(&mut app, &[KeyCode::Right, KeyCode::Up]);
+    assert_eq!(phab_line(&mut app).as_deref(), Some("Phabricator: D11 · …"));
+    assert!(app.on_line());
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    assert_eq!(app.status, "What differs between patch 1 and D11 on Phabricator is not known yet: the line says it once D11 is read and compared.");
+    assert_eq!(app.screen, Screen::Main);
+    keys(&mut app, &[KeyCode::Enter]);
+    assert_eq!(menu_title(&app), "D11 on Phabricator");
+    assert_eq!(items(&app)[..2], [view.clone(), pull.clone()]);
+    assert_eq!(menu_note(&app), grayed);
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Left]);
+    assert_eq!(app.focus, Focus::List);
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    let all = items(&app);
+    let at = all.iter().position(|(l, _)| l == "Submit to Phabricator as WIP").unwrap_or_else(|| panic!("{all:?}"));
+    assert_eq!(all[at + 1..at + 3], [view, pull]);
+    assert!(menu_note(&app).contains(grayed), "{}", menu_note(&app));
+    keys(&mut app, &[KeyCode::Esc]);
+    // Read, in sync: from the patch's menu, the view says that nothing
+    // differs, and nothing else; Esc goes back to the patch.
+    app.refresh();
+    app.settle();
+    choose(&mut app, "What differs from D11 on Phabricator…");
+    let (title, lines) = differs_seen(&mut app).unwrap();
+    assert_eq!(title, "D11 on Phabricator, then patch 1 as it is");
+    assert_eq!(
+        differs_said(&lines),
+        "Nothing differs: the latest diff of D11 does what this version of patch 1 does, and the title and summary of D11 are those of this version."
+    );
+    assert!(differs_shown(&lines).is_empty(), "{lines:#?}");
+    keys(&mut app, &[KeyCode::Esc]);
+    assert_eq!((app.screen, app.focus, app.sel), (Screen::Main, Focus::List, 0));
+    // A revision Phabricator does not have: grayed, saying so, and Space
+    // says so.
+    next_version(&db, 2, &format!("Bug 3 - three\n\n{LINK}16"), &diffs[2]);
+    app.refresh();
+    app.settle();
+    keys(&mut app, &[KeyCode::Down, KeyCode::Down]);
+    app.refresh();
+    app.settle();
+    assert_eq!(phab_line(&mut app).as_deref(), Some("Phabricator: D16 · not found on Phabricator"));
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    assert!(items(&app).contains(&("What differs from D16 on Phabricator…".to_string(), false)), "{:?}", items(&app));
+    assert!(menu_note(&app).contains("What differs from D16 on Phabricator is grayed: Phabricator has no revision D16."), "{}", menu_note(&app));
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Right, KeyCode::Up, KeyCode::Char(' ')]);
+    assert_eq!(app.status, "Phabricator has no revision D16, so nothing of it is compared with patch 3.");
+    assert_eq!(app.screen, Screen::Main);
+    // Reviews from nowhere: neither item.
+    let mut none = open_set(&db, |c| c.reviews.source = stacked::config::Source::None);
+    keys(&mut none, &[KeyCode::Char(' ')]);
+    assert!(!items(&none).iter().any(|(l, _)| l.starts_with("What differs from") || l.starts_with("Pull the reviews of")), "{:?}", items(&none));
     stacked::phab::statuses_stand_in(&db, None);
 }
 
@@ -16014,36 +16115,33 @@ fn a_summary_wrapped_otherwise_differs_space_showing_the_lines_of_both_until_a_s
     // What lands is Phabricator's lines: not this version's.
     assert_eq!(phab_line(&mut app).as_deref(), Some("Phabricator: D13 · Changes Planned · the title or summary differs · no new comments"));
     // Space: that said, then the title and `Because.` once, and the
-    // paragraph as each version writes it, Phabricator's lines then this
-    // version's, no word in the colour for words.
+    // paragraph as each version writes it, Phabricator's lines taken out
+    // and this version's put in, no word in the colour for words.
     keys(&mut app, &[KeyCode::Right, KeyCode::Up, KeyCode::Char(' ')]);
-    let under = under_line(&mut app);
-    assert_eq!(under[0], "the title and summary: Phabricator's, then this version's");
-    let said: Vec<&str> = under[1..].iter().map(String::as_str).take_while(|l| l.starts_with("   ")).collect();
+    let (_, lines) = differs_seen(&mut app).expect("the view of what differs");
     assert_eq!(
-        said.iter().map(|l| l.trim()).collect::<Vec<_>>().join(" "),
-        "Both versions have the same words: they differ only in where their lines wrap, or in their white space."
+        differs_said(&lines),
+        "The title and summary of D13 are compared with those a submit of this version sends, where their lines wrap aside. Both versions have the same words: they differ only in where their lines wrap, or in their white space. Each version's lines are shown as it writes them. The latest diff of D13 does what this version does."
     );
+    let shown = differs_shown(&lines);
     let (old, new) = ("-The parser reads the whole file before it checks the header.", "+The parser reads the whole file");
-    assert_eq!(under[1 + said.len()..], [" WIP: Bug 3 - three", " ", old, new, "+before it checks the header.", " ", " Because.", ""]);
+    let from = shown.iter().position(|l| *l == " Subject: WIP: Bug 3 - three").unwrap_or_else(|| panic!("{shown:#?}"));
+    assert_eq!(shown[from..from + 7], [" Subject: WIP: Bug 3 - three", " ", old, new, "+before it checks the header.", " ", " Because."]);
     use stacked::paint::color;
     let plain = ratatui::style::Style::new();
     assert_eq!(style_after(&mut app, old, old.find("whole").unwrap(), 30), as_drawn(plain), "whole");
     assert_eq!(style_after(&mut app, old, 0, 30), as_drawn(color::del()), "its sign");
     assert_eq!(style_after(&mut app, new, new.find("whole").unwrap(), 30), as_drawn(plain), "whole");
     assert_eq!(style_after(&mut app, new, 0, 30), as_drawn(color::add()), "its sign");
-    // `?`: in sync is to the letter, where the lines wrap too.
-    keys(&mut app, &[KeyCode::Char('?')]);
+    // `?`: in sync is to the letter, where the lines wrap too; Space shows
+    // the title and summary alone, as the code is the same.
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Char('?')]);
     let Mode::Help { lines, .. } = &app.mode else { panic!("{:?}", app.mode) };
     assert!(lines[0].contains("the title and summary exactly as a submit sends them, where their lines wrap too;"), "{lines:#?}");
-    keys(&mut app, &[KeyCode::Esc]);
-    // Hidden, `?` says what Space shows: the title and summary alone, as
-    // the code is the same.
-    keys(&mut app, &[KeyCode::Char(' ')]);
-    assert!(under_line(&mut app).is_empty());
-    keys(&mut app, &[KeyCode::Char('?')]);
-    let Mode::Help { lines, .. } = &app.mode else { panic!("{:?}", app.mode) };
-    assert_eq!(lines[1], "Press Space to show what differs under this line: the title and summary, Phabricator's then this version's. Space again hides it.");
+    assert_eq!(
+        lines[1],
+        "Press Space to see what differs from D13 on Phabricator, on a screen of its own: the title and summary of D13, then those a submit of this version sends, compared where their lines wrap aside. Esc there comes back to this line."
+    );
     keys(&mut app, &[KeyCode::Esc, KeyCode::Left]);
     // The submit's review shows them so too.
     choose(&mut app, "Submit to Phabricator as WIP");
@@ -16102,9 +16200,70 @@ fn a_patch_submitted_and_unchanged_since_is_in_sync_phabricator_giving_back_what
         app.status,
         "Phabricator has this exact version of patch 3: the latest diff of D13 does what this version does, and the title and summary of D13 are those of this version."
     );
-    assert!(under_line(&mut app).is_empty());
+    assert_eq!((app.screen, &app.mode), (Screen::Main, &Mode::Normal));
     stacked::phab::statuses_stand_in(&db, None);
     stacked::submit::stand_in(None);
+}
+
+#[cfg(feature = "moz-phab")]
+#[test]
+fn the_code_of_a_latest_diff_on_another_base_is_each_file_as_each_leaves_it_where_the_files_are_read() {
+    let (_tmp, db) = phab_setup(["Bug 1 - one", "Bug 2 - two", &format!("Bug 3 - three\n\n{LINK}13")]);
+    let mine = patch_of(&db, 2).diff;
+    // D13 made on a base with two lines fewer over line 20, which it says
+    // otherwise: the same lines there, at other places. Applied on the
+    // patches below patch 3, it finds them two lines further down.
+    let at = mine.find("@@ -17,7 +17,7 @@").unwrap_or_else(|| panic!("{mine}"));
+    let raw = format!("{}@@ -15,7 +15,7 @@{}", &mine[..at], &mine[at + "@@ -17,7 +17,7 @@".len()..]).replace("+LINE 20", "+Line 20");
+    let p = Phab::default().with(13, "changes-planned", "WIP: Bug 3 - three", &raw);
+    let phab = std::sync::Arc::new(std::sync::Mutex::new(p));
+    statuses_from(&db, &phab);
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Down, KeyCode::Down]);
+    app.refresh();
+    app.settle();
+    assert_eq!(phab_line(&mut app).as_deref(), Some("Phabricator: D13 · Changes Planned · the diff differs · no new comments"));
+    // Said, then each file as each diff leaves it, on the patches below:
+    // the one line that differs, under the title and summary, which are
+    // the same.
+    keys(&mut app, &[KeyCode::Right, KeyCode::Up, KeyCode::Char(' ')]);
+    let (_, lines) = differs_seen(&mut app).expect("the view of what differs");
+    assert_eq!(
+        differs_said(&lines),
+        "The title and summary of D13 are those of this version. The latest diff of D13 is on another base than this version, so the code shown is each file as that diff leaves it, then as this version leaves it, both on the patches below patch 3."
+    );
+    let shown = differs_shown(&lines);
+    assert_eq!(shown[..2], [" the code: Phabricator's, then this version's", "diff --git a/a.txt b/a.txt"], "{shown:#?}");
+    let changed: Vec<&str> = shown.iter().copied().filter(|l| l.starts_with(['-', '+']) && !l.starts_with("---") && !l.starts_with("+++")).collect();
+    assert_eq!(changed, ["-Line 20", "+LINE 20"]);
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Char('?')]);
+    let Mode::Help { lines, .. } = &app.mode else { panic!("{:?}", app.mode) };
+    assert_eq!(
+        lines[1],
+        "Press Space to see what differs from D13 on Phabricator, on a screen of its own: each file as the latest diff of D13 leaves it, then as this version leaves it, both on the patches below patch 3, as that diff is on another base. Esc there comes back to this line."
+    );
+    keys(&mut app, &[KeyCode::Esc]);
+    // Its lines there otherwise too, so that it applies nowhere: the files
+    // cannot be read so, and the code is an interdiff all the same, said.
+    let raw = raw.replace(" line 19\n", " LINE 19\n");
+    {
+        let mut p = phab.lock().unwrap();
+        *p = std::mem::take(&mut *p).with(14, "changes-planned", "WIP: Bug 3 - three", &raw);
+    }
+    next_version(&db, 2, &format!("Bug 3 - three\n\n{LINK}14"), &mine);
+    app.refresh();
+    app.settle();
+    assert_eq!(phab_line(&mut app).as_deref(), Some("Phabricator: D14 · Changes Planned · the diff differs · no new comments"));
+    keys(&mut app, &[KeyCode::Home, KeyCode::Char(' ')]);
+    let (_, lines) = differs_seen(&mut app).expect("the view of what differs");
+    assert_eq!(
+        differs_said(&lines),
+        "The title and summary of D14 are those of this version. The latest diff of D14 is on another base than this version, and the files could not be read as the patches below this one leave them, so the code is shown as an interdiff of the two diffs all the same."
+    );
+    let shown = differs_shown(&lines);
+    assert_eq!(shown[..2], ["--- D14 on Phabricator", "+++ patch 3 as it is"], "{shown:#?}");
+    assert!(shown.contains(&"-@@ -15,7 +15,7 @@") && shown.contains(&"+@@ -17,7 +17,7 @@") && shown.contains(&"-+Line 20"), "{shown:#?}");
+    stacked::phab::statuses_stand_in(&db, None);
 }
 
 /// `fetch` the stand-in for Phabricator in the pulls made while the guard it
@@ -16169,6 +16328,96 @@ fn the_phabricator_line_reads_the_patch_shown_alone_once_and_again_after_a_pull(
     app.settle();
     assert_eq!(line_calls(&phab), [&d11[..], &d11[..], &["differential.diff.search", "transaction.search"]].concat());
     assert_eq!(phab_line(&mut app).unwrap(), "Phabricator: D11 · Needs Review · in sync · no new comments");
+    stacked::phab::stand_in(None);
+    stacked::phab::statuses_stand_in(&db, None);
+}
+
+/// The revisions the stand-in for Phabricator of `alone_on_d12` was asked
+/// to read, in turn; and whether it is let go on.
+#[cfg(feature = "moz-phab")]
+static READ_ALONE: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+#[cfg(feature = "moz-phab")]
+static ALONE_GO: std::sync::Mutex<bool> = std::sync::Mutex::new(false);
+#[cfg(feature = "moz-phab")]
+static ALONE_ON: std::sync::Condvar = std::sync::Condvar::new();
+
+/// The stand-in for Phabricator in the pulls of
+/// `the_reviews_of_a_patch_s_revision_are_pulled_alone_…`: each revision it
+/// reads kept, once it is let go on; D12's two comments, the second
+/// answering the first.
+#[cfg(feature = "moz-phab")]
+fn alone_on_d12(source: &str, rev: &str, _url: &str) -> Result<stacked::phab::RevisionComments, String> {
+    READ_ALONE.lock().unwrap().push(rev.to_string());
+    let mut go = ALONE_GO.lock().unwrap();
+    while !*go {
+        go = ALONE_ON.wait(go).unwrap();
+    }
+    let c = |phid: &str, reply_to: Option<&str>| stacked::phab::Remote {
+        phid: phid.into(),
+        author: "ann".into(),
+        text: format!("Comment {phid}."),
+        created: 1,
+        reply_to: reply_to.map(String::from),
+        ..Default::default()
+    };
+    let comments = if rev == "D12" { vec![c("c1", None), c("c2", Some("c1"))] } else { vec![] };
+    Ok(stacked::phab::RevisionComments { revision: rev.into(), source: source.into(), comments })
+}
+
+#[cfg(feature = "moz-phab")]
+#[test]
+fn the_reviews_of_a_patch_s_revision_are_pulled_alone_from_its_line_s_menu_and_its_patch_s_held_for_review() {
+    let (_tmp, db, phab, _) = three_revisions();
+    let _one = pull_stand_in(alone_on_d12);
+    READ_ALONE.lock().unwrap().clear();
+    *ALONE_GO.lock().unwrap() = false;
+    let mut app = open(&db).unwrap();
+    app.refresh();
+    app.settle();
+    next_patch(&mut app);
+    let comments = |app: &mut App| phab_line(app).unwrap().rsplit(" · ").next().unwrap().to_string();
+    assert_eq!(comments(&mut app), "2 new comments to pull");
+    let read = line_calls(&phab).len();
+    // From the line's menu: D12's alone, the banner saying so while it goes.
+    keys(&mut app, &[KeyCode::Right, KeyCode::Up, KeyCode::Enter]);
+    choose(&mut app, "Pull the reviews of D12 from Phabricator");
+    assert_eq!(app.status, "pulling the reviews of D12 from Phabricator…");
+    let banner = |app: &mut App| draw(app).lines().nth(1).unwrap_or("").to_string();
+    assert!(banner(&mut app).starts_with(" ⇣ pulling the reviews from Phabricator: D12…"), "{}", banner(&mut app));
+    assert_eq!(app.banner_lines(), [stacked::tui::BannerLine::Pulling]);
+    // One pull at a time.
+    keys(&mut app, &[KeyCode::Enter]);
+    choose(&mut app, "Pull the reviews of D12 from Phabricator");
+    assert_eq!(app.status, "already pulling the reviews");
+    // Done: D12 read alone; what it brought waits for review as a pull's,
+    // and the line is read again, none to pull any more.
+    *ALONE_GO.lock().unwrap() = true;
+    ALONE_ON.notify_all();
+    app.settle();
+    assert_eq!(app.status, "2 new comments from D12: they wait for your review");
+    assert_eq!(*READ_ALONE.lock().unwrap(), ["D12"]);
+    let d = Db::load(&db).unwrap();
+    let pulls: Vec<&stacked::db::Run> = d.runs().into_iter().filter(|r| stacked::held::pulled(r)).collect();
+    assert_eq!(pulls.len(), 1);
+    assert_eq!(pulls[0].held.as_ref().map(|h| h.opened.iter().map(|n| n.remote.clone()).collect::<Vec<_>>()), Some(vec![vec!["c1".to_string(), "c2".to_string()]]));
+    assert!(!app.banner_lines().contains(&stacked::tui::BannerLine::Pulling));
+    assert!(draw(&mut app).contains("⟳ 1 pull from Phabricator waits for your review"), "{}", draw(&mut app));
+    assert_eq!(line_calls(&phab)[read..], ["differential.diff.search", "transaction.search"]);
+    assert_eq!(comments(&mut app), "no new comments");
+    // From the patch's menu too: nothing new, the two waiting in the pull's
+    // review.
+    keys(&mut app, &[KeyCode::Left]);
+    assert_eq!(app.focus, Focus::List);
+    choose(&mut app, "Pull the reviews of D12 from Phabricator");
+    app.settle();
+    assert_eq!(app.status, "nothing new from D12");
+    assert_eq!(*READ_ALONE.lock().unwrap(), ["D12", "D12"]);
+    // The stack's pull, as ever: every revision its patches name.
+    keys(&mut app, &[KeyCode::Home]);
+    choose(&mut app, "Pull reviews from Phabricator");
+    app.settle();
+    assert_eq!(app.status, "nothing new from 3 revisions");
+    assert_eq!(READ_ALONE.lock().unwrap()[2..], ["D11", "D12", "D13"]);
     stacked::phab::stand_in(None);
     stacked::phab::statuses_stand_in(&db, None);
 }

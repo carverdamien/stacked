@@ -12,7 +12,7 @@
 //! comments makes them compact, then hides them), enter does what is to be
 //! done where the cursor is, space is the menu of all that can be done
 //! there (on the Phabricator line over a patch's message, what differs from
-//! Phabricator, shown under it or hidden, enter being the menu there), `?`
+//! Phabricator, on a screen of its own, enter being the menu there), `?`
 //! says what that is, and esc goes back. Delete (Backspace too)
 //! and `o` are the shortcuts: Delete the menu's item that closes, drops,
 //! stops or rejects what the cursor is on, asking first as that item does;
@@ -1401,6 +1401,14 @@ pub enum Action {
     MarkUnread,
     #[cfg(feature = "moz-phab")]
     Pull,
+    /// The reviews of the revision of the patch of change `0` pulled from
+    /// Phabricator, that revision's alone.
+    #[cfg(feature = "moz-phab")]
+    PullPatch(String),
+    /// What differs between the patch the middle shows and its revision's
+    /// latest version on Phabricator, on a screen of its own.
+    #[cfg(feature = "moz-phab")]
+    Differs,
     /// The patch picked sent to Phabricator as work in progress, once what
     /// is sent is read and seen: its dialog, or its review. Then sent, or
     /// nothing sent; the review's code side by side (true), or unified.
@@ -1449,7 +1457,7 @@ fn as_it_is(a: Action) -> Action {
 fn reaches_phabricator(action: &Action) -> bool {
     match action {
         #[cfg(feature = "moz-phab")]
-        Action::Pull | Action::FromPhabricator | Action::Submit | Action::SendSubmit => true,
+        Action::Pull | Action::PullPatch(_) | Action::FromPhabricator | Action::Submit | Action::SendSubmit => true,
         _ => false,
     }
 }
@@ -1684,6 +1692,10 @@ fn about(action: &Action) -> String {
         Action::MarkUnread => "mark this block as unread".into(),
         #[cfg(feature = "moz-phab")]
         Action::Pull => "pull the reviewers' comments from Phabricator".into(),
+        #[cfg(feature = "moz-phab")]
+        Action::PullPatch(_) => "pull the reviewers' comments on this patch's revision alone from Phabricator: what is new waits for your review".into(),
+        #[cfg(feature = "moz-phab")]
+        Action::Differs => "see what differs between Phabricator's latest version of this patch's revision and this version, on a screen of its own: the title and summary as a submit sends them, and the code".into(),
         #[cfg(feature = "moz-phab")]
         Action::Submit => "send this patch alone to Phabricator as work in progress, in Changes Planned: as a new revision, or as a new diff of the revision its message names, once what is sent is read and you have seen it".into(),
         #[cfg(feature = "moz-phab")]
@@ -4566,11 +4578,11 @@ impl App {
                     self.toggle_whole();
                     return Effect::None;
                 }
-                // On the Phabricator line: what differs from Phabricator,
-                // shown under it or hidden; nothing else, reading or not.
+                // On the Phabricator line: what differs from Phabricator, on
+                // a screen of its own; nothing else, reading or not.
                 #[cfg(feature = "moz-phab")]
                 KeyCode::Char(' ') if self.on_line() => {
-                    self.toggle_line();
+                    self.line_space();
                     return Effect::None;
                 }
                 KeyCode::Char(' ') if self.reading_here() => return self.perform(Action::MarkRead),
@@ -5303,7 +5315,8 @@ impl App {
     /// and the cursor is in it, on a row of its code. A comment's rows keep
     /// the keys they have when commenting: Space is the comment's menu,
     /// Delete closes it, Enter replies; nothing is marked read there. Nor
-    /// on the Phabricator line, where Space shows what differs.
+    /// on the Phabricator line, where Space shows what differs, on a screen
+    /// of its own.
     pub fn reading_here(&self) -> bool {
         self.reading
             && self.screen == Screen::Main
@@ -5322,21 +5335,20 @@ impl App {
     }
 
     /// Whether the middle's cursor is on a row of the Phabricator line over
-    /// the patch's message: the line, or what differs, shown under it.
+    /// the patch's message: the line, or a piece of it folded.
     fn on_line_row(&self) -> bool {
         self.rows.get(self.cursor).is_some_and(|r| r.phab)
     }
 
     /// Whether the cursor is there, in the middle of the main screen, where
-    /// Space shows what differs from Phabricator, or hides it: never, built
-    /// without the `moz-phab` feature, as no row is the line's.
+    /// Space shows what differs from Phabricator, on a screen of its own:
+    /// never, built without the `moz-phab` feature, as no row is the line's.
     pub fn on_line(&self) -> bool {
         self.screen == Screen::Main && self.focus == Focus::Diff && !self.on_banner && !self.on_stack && self.on_line_row()
     }
 
-    /// The rows over patch `p`'s message, `w` wide: the Phabricator line,
-    /// and what differs when it is shown under it (`line_rows`); none built
-    /// without the `moz-phab` feature.
+    /// The rows over patch `p`'s message, `w` wide: the Phabricator line
+    /// (`line_rows`); none built without the `moz-phab` feature.
     fn phab_rows(&self, p: &Patch, w: usize) -> Vec<Row> {
         #[cfg(feature = "moz-phab")]
         return self.line_rows(p, w);
@@ -7043,9 +7055,12 @@ impl App {
         let n = self.patch_count();
         let mut title = self.stack.clone();
         let mut items = Vec::new();
-        // Why the patch's submit is grayed, if it is.
+        // Why the patch's submit is grayed, if it is; and what differs from
+        // its revision on Phabricator.
         #[cfg(feature = "moz-phab")]
         let mut held_submit: Option<String> = None;
+        #[cfg(feature = "moz-phab")]
+        let mut differs_why: Option<String> = None;
         // What the menu says of the messages its item wraps, if it has one.
         let mut wraps: Option<String> = None;
         // Why the stack's lint is grayed, but for what edits by hand say.
@@ -7150,11 +7165,13 @@ impl App {
                 items.push(Item::new("Drop this patch…", Action::AskDrop).when(h));
                 items.push(Item::new("Versions of this patch…", Action::Versions));
                 // This patch alone; not while reviews come from nowhere.
+                // Then its revision's: what differs from it, and its reviews.
                 #[cfg(feature = "moz-phab")]
                 if self.cfg.reviews.source != crate::config::Source::None {
                     items.push(Item::line());
                     held_submit = self.submit_held(self.sel);
                     items.push(Item::new("Submit to Phabricator as WIP", Action::Submit).when(w && held_submit.is_none()));
+                    differs_why = self.revision_items(&mut items);
                 }
             }
             #[cfg(feature = "moz-phab")]
@@ -7187,6 +7204,15 @@ impl App {
                     items.push(Item::line());
                     items.extend(self.comment_link_items(&c));
                 } else {
+                    // On the Phabricator line: what differs from its
+                    // revision, and the reviews of that revision alone.
+                    #[cfg(feature = "moz-phab")]
+                    if self.on_line() {
+                        if let Some(t) = self.line_title() {
+                            title = t;
+                        }
+                        differs_why = self.revision_items(&mut items);
+                    }
                     if self.commentable().is_some() {
                         // A file's name: the file as a whole.
                         let file = self.rows.get(self.cursor).is_some_and(|r| r.kind == Kind::File);
@@ -7261,6 +7287,8 @@ impl App {
         }
         #[cfg(feature = "moz-phab")]
         why.extend(held_submit);
+        #[cfg(feature = "moz-phab")]
+        why.extend(differs_why);
         let mut m = Menu::new(title, items, (!why.is_empty()).then(|| why.join("\n")));
         // What the item wrapping messages wraps, said whether or not an item
         // is grayed.
@@ -8113,29 +8141,11 @@ impl App {
             Action::MarkRead => self.mark_read(),
             Action::MarkUnread => self.mark_unread(),
             #[cfg(feature = "moz-phab")]
-            Action::Pull => {
-                if self.bg.doing.contains(&"pulling") {
-                    self.status = "already pulling the reviews".into();
-                } else {
-                    self.bg.doing.push("pulling");
-                    self.bg.pull = Some((name.clone(), review::Pulling::Starting));
-                    self.status = "pulling the reviews from Phabricator…".into();
-                    let (path, tx) = (self.path.clone(), self.bg.tx.clone());
-                    self.spawn(move || {
-                        // Where it is, as it goes: the banner says.
-                        let mut say = |p| {
-                            let _ = tx.send(Done::Pulling(p));
-                        };
-                        Done::Said(
-                            "pulling",
-                            match review::pull_saying(&path, &name, &mut say) {
-                                Ok(r) => r.summary,
-                                Err(e) => e.0,
-                            },
-                        )
-                    });
-                }
-            }
+            Action::Pull => self.pull_reviews(None),
+            #[cfg(feature = "moz-phab")]
+            Action::PullPatch(change) => self.pull_reviews(Some(change)),
+            #[cfg(feature = "moz-phab")]
+            Action::Differs => self.open_differs(),
             #[cfg(feature = "moz-phab")]
             Action::Submit => self.submit_patch(),
             #[cfg(feature = "moz-phab")]
@@ -10515,8 +10525,9 @@ impl App {
             #[cfg(feature = "moz-phab")]
             Mode::Normal if self.screen == Screen::Submit => self.submit_hint(),
             Mode::Normal if self.screen == Screen::HeadWhy => self.head_why_hint(),
-            // On the Phabricator line, Space shows what differs, or hides
-            // it, reading or not; Enter opens the menu, as Space does not.
+            // On the Phabricator line, Space shows what differs, on a screen
+            // of its own, reading or not; Enter opens the menu, as Space
+            // does not.
             #[cfg(feature = "moz-phab")]
             Mode::Normal if self.on_line() => self.line_hint(),
             // Reading, Space marks read and Delete unread; Enter does what it

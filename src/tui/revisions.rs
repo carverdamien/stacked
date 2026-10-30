@@ -4,18 +4,22 @@
 //! the Phabricator line over the message of the patch the middle shows,
 //! which says its revision's status by name, whether Phabricator's latest
 //! diff and the revision's title and summary are this version's, and how
-//! many of the revision's comments are not pulled yet, what differs shown
-//! under it with Space. All read away from the screen: the statuses as the
-//! stack is shown, again as those revisions change and right after a
-//! submit, and every few minutes while the editor runs; the latest diff and
-//! the comments of the patch shown alone, once each time the statuses are
-//! read, and again after a submit or a pull, kept by revision, its diff
-//! kept by id. Kept in memory as long as the editor runs, nothing written;
-//! a read that fails leaves what was known as it was. Not while reviews
-//! come from nowhere, nor in the tour. Built with the `moz-phab` feature.
+//! many of the revision's comments are not pulled yet. Space there, or its
+//! menu, shows what differs on a screen of its own, Phabricator's version
+//! then this one as an interdiff compares two versions; the menu pulls the
+//! reviews of that revision alone, too. All read away from the screen: the
+//! statuses as the stack is shown, again as those revisions change and
+//! right after a submit, and every few minutes while the editor runs; the
+//! latest diff and the comments of the patch shown alone, once each time
+//! the statuses are read, and again after a submit or a pull, kept by
+//! revision, its diff kept by id. Kept in memory as long as the editor
+//! runs, nothing written; a read that fails leaves what was known as it
+//! was. Not while reviews come from nowhere, nor in the tour. Built with
+//! the `moz-phab` feature.
 
-use super::compared::{code_rows, message_rows, row, said_rows};
+use super::compared::{ONLY_WRAPPED, row};
 use super::*;
+use crate::diff::{FileDiff, Hunk};
 use crate::phab::{Latest, Searched, Status};
 
 /// How long the statuses go between reads while the stack's revisions are
@@ -137,6 +141,89 @@ fn message_against(s: &Searched, p: &Patch, trailer: &str) -> Option<(String, St
     (before != after).then_some((before, after))
 }
 
+/// Whether two versions of a title and summary, `before` and `after`, have
+/// the same words, and differ only in where their lines wrap, or in their
+/// white space (`messages::diff`).
+fn only_wrapped(before: &str, after: &str) -> bool {
+    before != after && crate::messages::diff(before, after).runs.iter().all(|r| r.same)
+}
+
+/// Diff `d` without what git derives in it, of which Phabricator's raw
+/// diffs have nothing: a file's `index` line and its similarity, the white
+/// space ending a line of a file's header, and the heading git writes after
+/// a hunk's second `@@`. As the view of what differs compares a revision's
+/// latest diff with the patch's, so that only what the two do, and where,
+/// is told apart.
+fn bare(d: &str) -> String {
+    let mut in_hunk = false;
+    let mut out = String::new();
+    for l in d.split_inclusive('\n') {
+        let line = l.strip_suffix('\n').unwrap_or(l);
+        if line.starts_with("diff --git ") {
+            in_hunk = false;
+        }
+        if let Some(rest) = line.strip_prefix("@@") {
+            // `@@ -1,3 +1,3 @@ fn main() {`: up to its second `@@`.
+            in_hunk = true;
+            let end = rest.find("@@").map_or(line.len(), |k| k + 4);
+            out.push_str(&line[..end]);
+            out.push('\n');
+        } else if in_hunk {
+            out.push_str(l);
+        } else {
+            let header = line.trim_end();
+            if !["index ", "similarity index ", "dissimilarity index "].iter().any(|p| header.starts_with(p)) {
+                out.push_str(header);
+                out.push('\n');
+            }
+        }
+    }
+    out
+}
+
+/// Whether diffs `theirs` and `mine` of a patch are on two bases, as what
+/// each says of the files both change, as they are before the patch,
+/// tells: a line both have at the same place there, kept or taken out, is
+/// another in one; a hunk the same in both, its lines and all, starts
+/// elsewhere in one; or one makes the file, and the other finds it there.
+/// On one base, both read each file as it is there, at the same places.
+fn other_bases(theirs: &str, mine: &str) -> bool {
+    let (a, b) = (crate::diff::parse_diff(theirs, ""), crate::diff::parse_diff(mine, ""));
+    let made = |f: &FileDiff| f.header.iter().any(|l| l.starts_with("new file mode"));
+    // The lines of the file before the patch, by their number there.
+    let before = |f: &FileDiff| -> HashMap<usize, String> {
+        let kept = f.hunks.iter().flat_map(|h| &h.lines).filter(|l| matches!(l.origin, ' ' | '-'));
+        kept.map(|l| (l.old_no, l.text.get(1..).unwrap_or_default().to_string())).collect()
+    };
+    let start = |h: &Hunk| h.lines.first().map(|l| l.old_no);
+    fn lines(h: &Hunk) -> Vec<&str> {
+        h.lines.iter().map(|l| l.text.as_str()).collect()
+    }
+    a.iter().any(|fa| {
+        let Some(fb) = b.iter().find(|f| f.path == fa.path) else { return false };
+        let (x, y) = (before(fa), before(fb));
+        made(fa) != made(fb)
+            || x.iter().any(|(k, t)| y.get(k).is_some_and(|u| u != t))
+            || fa.hunks.iter().any(|ha| fb.hunks.iter().any(|hb| lines(ha) == lines(hb) && start(ha) != start(hb)))
+    })
+}
+
+/// What the view of what differs from Phabricator shows of the code: of a
+/// revision's latest diff and a version of its patch (`App::shown_code`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Shown<'a> {
+    /// Nothing: the latest diff does what the version does.
+    Same,
+    /// The two diffs, as an interdiff, each without what git derives in it
+    /// (`bare`); and whether the latest diff is on another base, its files
+    /// not read as the patches below leave them.
+    Interdiff(bool),
+    /// Each file as the latest diff leaves it, then as the version does,
+    /// both on the patches below, as the Phabricator line compared them:
+    /// the latest diff is on another base (`other_bases`).
+    Files(&'a str),
+}
+
 /// How many comments are not pulled yet, new and edited (`review::not_pulled`), as
 /// the Phabricator line says it.
 fn comments_said((new, edited): (usize, usize)) -> String {
@@ -210,8 +297,6 @@ pub(super) struct Statuses {
     /// (`compare_key`); and the one being worked out.
     compared: HashMap<String, Code>,
     comparing: Option<String>,
-    /// The patches whose line shows what differs under it, by change.
-    unfolded: HashSet<String>,
     /// How many times what the line may say changed: the middle's rows
     /// are built again each time.
     seq: u64,
@@ -425,11 +510,10 @@ impl App {
         self.check_line();
     }
 
-    /// Whether what differs between patch `p` and its revision at `link`
-    /// is shown under the Phabricator line: Space showed it, and something
-    /// differs.
-    fn unfolded(&self, p: &Patch, link: &str) -> bool {
-        self.statuses.unfolded.contains(&p.change) && self.differs(p, link).is_some_and(|x| !x.none())
+    /// Whether the search did not find revision `link`, and nothing is
+    /// known of it.
+    fn not_found(&self, link: &str) -> bool {
+        self.statuses.missing.contains(link) && !self.statuses.known.contains_key(link)
     }
 
     /// What differs between patch `p` and its revision at `link`, once the
@@ -454,7 +538,7 @@ impl App {
     /// `…`, once for those in a row; a revision the search did not find,
     /// said so, and nothing else.
     fn line_said(&self, p: &Patch, d: &str, link: &str, x: Option<&Differs>) -> String {
-        if self.statuses.missing.contains(link) && !self.statuses.known.contains_key(link) {
+        if self.not_found(link) {
             return format!("Phabricator: {d} · not found on Phabricator");
         }
         let status = self.statuses.known.get(link).map(|s| s.status.name().to_string());
@@ -480,98 +564,236 @@ impl App {
 
     /// The rows over patch `p`'s message, `w` wide, the middle showing it:
     /// the Phabricator line, folded between words where the pane is
-    /// narrower; then, Space having shown it, what differs. None when the
-    /// patch names no revision, or the editor does not read Phabricator.
+    /// narrower. None when the patch names no revision, or the editor does
+    /// not read Phabricator.
     pub(super) fn line_rows(&self, p: &Patch, w: usize) -> Vec<Row> {
         if !self.reads_phabricator() {
             return Vec::new();
         }
         let Some((d, link)) = crate::phab::revision_of(&p.message) else { return Vec::new() };
         let x = self.differs(p, &link);
-        let mut rows: Vec<Row> = fold_line(&self.line_said(p, &d, &link, x.as_ref()), w)
+        fold_line(&self.line_said(p, &d, &link, x.as_ref()), w)
             .into_iter()
             .enumerate()
-            .map(|(k, text)| Row { cont: k > 0, ..row(Kind::Meta, text) })
-            .collect();
-        if self.statuses.unfolded.contains(&p.change)
-            && let Some(x) = x.filter(|x| !x.none())
-        {
-            rows.extend(self.differs_rows(p, &d, &x, w));
-        }
-        for r in &mut rows {
-            r.phab = true;
-        }
-        rows
+            .map(|(k, text)| Row { cont: k > 0, phab: true, ..row(Kind::Meta, text) })
+            .collect()
     }
 
-    /// What differs, `x`, between patch `p`, the one picked, and its
-    /// revision `d`, as rows `w` wide under the Phabricator line, as a
-    /// submit's review shows them: the title and summary, Phabricator's then
-    /// this version's, compared where their lines wrap aside, or each
-    /// version's lines when only where they wrap differs (`message_rows`);
-    /// then the code, each file as the latest diff leaves it, then as this
-    /// version does, both on the patches below it. An empty row after, over
-    /// the message.
-    fn differs_rows(&self, p: &Patch, d: &str, x: &Differs, w: usize) -> Vec<Row> {
-        let mut rows = Vec::new();
+    /// What the view of what differs, `x`, between patch `p` and its
+    /// revision at `link` shows of the code (`Shown`): nothing when the
+    /// revision's latest diff does what the patch does; else the two diffs
+    /// as an interdiff, but when the latest is on another base
+    /// (`other_bases`) and the files were read as the patches below leave
+    /// them, those files, as the line compared them.
+    fn shown_code<'a>(&'a self, p: &Patch, link: &str, x: &Differs<'a>) -> Shown<'a> {
+        let raw = self.statuses.latest.get(link).map_or("", |l| l.raw.as_str());
+        match x.code {
+            None => Shown::Same,
+            Some((files, None)) if other_bases(raw, &p.diff) => Shown::Files(files),
+            Some((_, unread)) => Shown::Interdiff(unread.is_some() && other_bases(raw, &p.diff)),
+        }
+    }
+
+    /// The view of what differs, `x`, between patch `p`, the one picked,
+    /// and its revision `d` at `link`: its title, and its lines `w` wide.
+    /// What it shows, said first, then Phabricator's version of the patch,
+    /// the revision's title and summary as a submit compares them
+    /// (`message_against`) over its latest diff, then the patch as it is,
+    /// as two versions of a patch are compared (`ops::letter_interdiff_lines`,
+    /// the title and summary where their lines wrap aside, to the letter),
+    /// the code as an interdiff of the two diffs, each without what git
+    /// derives in it (`bare`); or, the latest diff on another base, each
+    /// file as each leaves it, under the title and summary (`shown_code`).
+    /// The code the same, the title and summary alone. In sync, only that
+    /// nothing differs.
+    fn view_of(&self, p: &Patch, d: &str, link: &str, x: &Differs, w: usize) -> (String, Vec<Parts>) {
         let n = self.sel + 1;
-        if let Some((before, after)) = &x.message {
-            rows.push(row(Kind::File, "the title and summary: Phabricator's, then this version's"));
-            message_rows(&mut rows, before, after, w);
-        }
-        if let Some((code, said)) = x.code {
-            if !rows.is_empty() {
-                rows.push(row(Kind::Blank, ""));
+        let title = format!("{d} on Phabricator, then patch {n} as it is");
+        let mut said: Vec<String> = Vec::new();
+        let mut lines: Vec<Parts> = Vec::new();
+        // A line of a diff, folded to the width under its sign.
+        let folded = |all: &[ops::InterLine]| -> Vec<Parts> {
+            let refs: Vec<&ops::InterLine> = all.iter().collect();
+            inter_parts(&refs).iter().flat_map(|parts| fold_parts(parts, w, 1)).collect()
+        };
+        if x.none() {
+            said.push(format!(
+                "Nothing differs: the latest diff of {d} does what this version of patch {n} does, and the title and summary of {d} are those of this version."
+            ));
+        } else {
+            let shown = self.shown_code(p, link, x);
+            said.push(match &x.message {
+                Some((before, after)) if only_wrapped(before, after) => format!(
+                    "The title and summary of {d} are compared with those a submit of this version sends, where their lines wrap aside. {ONLY_WRAPPED} Each version's lines are shown as it writes them."
+                ),
+                Some(_) => format!("The title and summary of {d} are compared with those a submit of this version sends, where their lines wrap aside."),
+                None => format!("The title and summary of {d} are those of this version."),
+            });
+            said.push(match shown {
+                Shown::Same => format!("The latest diff of {d} does what this version does."),
+                Shown::Interdiff(false) => format!("The code is shown as an interdiff of the latest diff of {d} and this version's diff."),
+                Shown::Interdiff(true) => format!(
+                    "The latest diff of {d} is on another base than this version, and the files could not be read as the patches below this one leave them, so the code is shown as an interdiff of the two diffs all the same."
+                ),
+                Shown::Files(_) => format!(
+                    "The latest diff of {d} is on another base than this version, so the code shown is each file as that diff leaves it, then as this version leaves it, {}.",
+                    below(n)
+                ),
+            });
+            // Phabricator's version, then this one: over the diffs the
+            // interdiff compares, or, where it compares none, this version's
+            // under both.
+            let raw = self.statuses.latest.get(link).map_or("", |l| l.raw.as_str());
+            let (theirs, mine) = match shown {
+                Shown::Interdiff(_) => (bare(raw), bare(&p.diff)),
+                _ => (p.diff.clone(), p.diff.clone()),
+            };
+            let (before, after) = x.message.clone().unwrap_or_else(|| (p.message.clone(), p.message.clone()));
+            let mut inter = ops::letter_interdiff_lines(&Patch { message: before, diff: theirs, ..p.clone() }, &Patch { message: after, diff: mine, ..p.clone() });
+            // Its two first lines name the two versions.
+            if let [a, b, ..] = inter.as_mut_slice()
+                && a.text.starts_with("--- ")
+                && b.text.starts_with("+++ ")
+            {
+                a.text = format!("--- {d} on Phabricator");
+                b.text = format!("+++ patch {n} as it is");
             }
-            rows.push(row(Kind::File, "the code: Phabricator's, then this version's"));
-            let said = said.clone().unwrap_or_else(|| format!("Each file as the latest diff of {d} leaves it, then as this version of patch {n} leaves it, {}.", below(n)));
-            said_rows(&mut rows, Kind::Meta, &said, w);
-            rows.push(row(Kind::Blank, ""));
-            rows.extend(code_rows(&p.change, code, w));
+            if !inter.is_empty() {
+                lines.push(vec![(String::new(), Style::new())]);
+                lines.extend(folded(&inter));
+            }
+            if let Shown::Files(code) = shown {
+                lines.push(vec![(String::new(), Style::new())]);
+                lines.push(vec![(" the code: Phabricator's, then this version's".to_string(), color::file())]);
+                lines.extend(folded(&code.lines().map(ops::InterLine::from).collect::<Vec<_>>()));
+            }
         }
-        if rows.last().is_none_or(|r| r.kind != Kind::Blank) {
-            rows.push(row(Kind::Blank, ""));
-        }
-        rows
+        let mut out: Vec<Parts> = wrap(&said.join(" "), w.saturating_sub(2).max(10)).into_iter().map(|l| vec![(format!(" {l}"), color::meta())]).collect();
+        out.extend(lines);
+        (title, out)
     }
 
-    /// Space on the Phabricator line, or on what it shows under it: what
-    /// differs shown under the line, or hidden again. With nothing that
-    /// differs, the status line says that Phabricator has this exact
-    /// version; with what differs not known yet, it says so.
-    pub(super) fn toggle_line(&mut self) {
-        let Some(p) = self.shown_patch().cloned() else { return };
+    /// What differs between the patch the middle shows and its revision on
+    /// Phabricator, as its view shows it (`view_of`), its lines as wide as
+    /// the screen: its title and its lines. Or, nothing of it known, or
+    /// Phabricator not having the revision, why, for the status line.
+    fn differs_view(&self) -> std::result::Result<(String, Vec<Parts>), String> {
+        let n = self.sel + 1;
+        let Some(p) = self.shown_patch() else { return Err("No patch is shown, so nothing of it is compared with Phabricator.".into()) };
+        let Some((d, link)) = crate::phab::revision_of(&p.message) else {
+            return Err(format!("Patch {n} names no revision, so nothing of it is compared with Phabricator."));
+        };
+        if self.not_found(&link) {
+            return Err(format!("Phabricator has no revision {d}, so nothing of it is compared with patch {n}."));
+        }
+        match self.differs(p, &link) {
+            Some(x) => Ok(self.view_of(p, &d, &link, &x, self.body_w)),
+            None => Err(format!("What differs between patch {n} and {d} on Phabricator is not known yet: the line says it once {d} is read and compared.")),
+        }
+    }
+
+    /// What differs between the patch the middle shows and its revision on
+    /// Phabricator, on a screen of its own, Esc going back where the cursor
+    /// was (`differs_view`): from the Phabricator line's menu and the
+    /// patch's, and Space on the line. Not known, the status line says why.
+    pub(super) fn open_differs(&mut self) {
+        match self.differs_view() {
+            Ok((title, lines)) => self.open_parts(title, lines),
+            Err(why) => self.status = why,
+        }
+    }
+
+    /// Space on the Phabricator line: what differs, on a screen of its own
+    /// (`open_differs`). With nothing that differs, the status line says
+    /// that Phabricator has this exact version, and nothing opens; with what
+    /// differs not known yet, it says so.
+    pub(super) fn line_space(&mut self) {
+        let Some(p) = self.shown_patch() else { return };
         let Some((d, link)) = crate::phab::revision_of(&p.message) else { return };
-        let n = self.sel + 1;
-        // Shown: hidden again. Shown once, and nothing differs since: as
-        // if it were not.
-        let shown = self.unfolded(&p, &link);
-        if self.statuses.unfolded.remove(&p.change) && shown {
-            self.statuses.seq += 1;
+        if self.differs(p, &link).is_some_and(|x| x.none()) {
+            let n = self.sel + 1;
+            self.status = format!(
+                "Phabricator has this exact version of patch {n}: the latest diff of {d} does what this version does, and the title and summary of {d} are those of this version."
+            );
             return;
         }
-        if self.statuses.missing.contains(&link) && !self.statuses.known.contains_key(&link) {
-            self.status = format!("Phabricator has no revision {d}, so nothing of it is compared with patch {n}.");
-            return;
-        }
-        match self.differs(&p, &link).map(|x| x.none()) {
-            None => {
-                self.status = format!("What differs between patch {n} and {d} on Phabricator is not known yet: the line says it once {d} is read and compared.");
-            }
-            Some(true) => {
-                self.status = format!(
-                    "Phabricator has this exact version of patch {n}: the latest diff of {d} does what this version does, and the title and summary of {d} are those of this version."
-                );
-            }
-            Some(false) => {
-                self.statuses.unfolded.insert(p.change.clone());
-                self.statuses.seq += 1;
-            }
-        }
+        self.open_differs();
     }
 
-    /// What `?` says on the Phabricator line, or on what it shows under it:
-    /// what the line says, and what Space does there.
+    /// The items about the revision of the patch the middle shows, on the
+    /// Phabricator line's menu and on the patch's in the patches pane: what
+    /// differs from it on Phabricator, on a screen of its own, grayed while
+    /// that is not known; and a pull of its reviews alone. Why the first is
+    /// grayed, if it is, for the menu to say. No item, while reviews come
+    /// from nowhere, or the patch names no revision.
+    pub(super) fn revision_items(&self, items: &mut Vec<Item>) -> Option<String> {
+        if self.cfg.reviews.source == crate::config::Source::None {
+            return None;
+        }
+        let p = self.shown_patch()?;
+        let (d, link) = crate::phab::revision_of(&p.message)?;
+        let why = match self.differs(p, &link) {
+            Some(_) => None,
+            None if self.not_found(&link) => Some(format!("Phabricator has no revision {d}.")),
+            None => Some(format!("{d} is not read from Phabricator and compared with this patch yet.")),
+        };
+        items.push(Item::new(format!("What differs from {d} on Phabricator…"), Action::Differs).when(why.is_none()));
+        items.push(Item::new(format!("Pull the reviews of {d} from Phabricator"), Action::PullPatch(p.change.clone())));
+        why.map(|why| format!("What differs from {d} on Phabricator is grayed: {why}"))
+    }
+
+    /// The title of the Phabricator line's menu: its revision, on
+    /// Phabricator.
+    pub(super) fn line_title(&self) -> Option<String> {
+        let (d, _) = crate::phab::revision_of(&self.shown_patch()?.message)?;
+        Some(format!("{d} on Phabricator"))
+    }
+
+    /// The reviews pulled from Phabricator, away from the screen: of every
+    /// revision the stack's patches name, or of the patch of change `only`'s
+    /// alone; the banner saying where the pull is as it goes, what it brings
+    /// held for review, the Phabricator line read again once it is done.
+    /// One pull at a time.
+    pub(super) fn pull_reviews(&mut self, only: Option<String>) {
+        if self.bg.doing.contains(&"pulling") {
+            self.status = "already pulling the reviews".into();
+            return;
+        }
+        let name = self.stack.clone();
+        // Of one patch: its revision, said from the start.
+        let alone = only.as_ref().and_then(|change| {
+            let s = self.current()?;
+            let p = s.patches.iter().map(|id| self.db.patch(id)).find(|p| p.change == *change)?;
+            crate::phab::revision_of(&p.message).map(|(d, _)| d)
+        });
+        self.bg.doing.push("pulling");
+        self.status = match &alone {
+            Some(d) => format!("pulling the reviews of {d} from Phabricator…"),
+            None => "pulling the reviews from Phabricator…".into(),
+        };
+        self.bg.pull = Some((name.clone(), alone.map_or(review::Pulling::Starting, review::Pulling::Alone)));
+        let (path, tx) = (self.path.clone(), self.bg.tx.clone());
+        self.spawn(move || {
+            // Where it is, as it goes: the banner says.
+            let mut say = |p| {
+                let _ = tx.send(Done::Pulling(p));
+            };
+            let pulled = match &only {
+                Some(change) => review::pull_patch_saying(&path, &name, change, &mut say),
+                None => review::pull_saying(&path, &name, &mut say),
+            };
+            Done::Said(
+                "pulling",
+                match pulled {
+                    Ok(r) => r.summary,
+                    Err(e) => e.0,
+                },
+            )
+        });
+    }
+
+    /// What `?` says on the Phabricator line: what the line says, what
+    /// Space does there, and what the menu has.
     pub(super) fn line_help(&self) -> Vec<String> {
         let Some(p) = self.shown_patch() else { return Vec::new() };
         let Some((d, link)) = crate::phab::revision_of(&p.message) else { return Vec::new() };
@@ -579,37 +801,34 @@ impl App {
         let mut out = vec![format!(
             "This line says what Phabricator has of patch {n}: its revision, {d}; the status of {d}, by its name; whether the latest diff of {d}, and its title and summary, are those of this version (in sync), the diff by what it does, the title and summary exactly as a submit sends them, where their lines wrap too; and how many of the comments of {d} are not pulled yet. What this line says is read from Phabricator, away from the screen, for the patch the middle shows: every three minutes, and again after a submit or a pull. Where something is not read yet, the line says … in its place."
         )];
-        let unfolded = self.unfolded(p, &link);
-        let missing = self.statuses.missing.contains(&link) && !self.statuses.known.contains_key(&link);
         out.push(match self.differs(p, &link) {
-            _ if missing => format!("Phabricator has no revision {d}, so nothing of it is compared with this patch, and Space only says so."),
-            Some(_) if unfolded => "Under this line is what differs: press Space to hide it.".into(),
-            Some(x) if x.none() => "Phabricator has this exact version: Space says so, and shows nothing under this line.".into(),
+            _ if self.not_found(&link) => format!("Phabricator has no revision {d}, so nothing of it is compared with this patch, and Space only says so."),
+            Some(x) if x.none() => "Phabricator has this exact version: Space says so on the bottom line, and opens nothing.".into(),
             // What Space shows, of what differs.
             Some(x) => {
-                let message = "the title and summary, Phabricator's then this version's".to_string();
-                let code = match x.code {
-                    Some((_, Some(_))) => format!("the latest diff of {d} against this version's diff, as text, since the files could not be read"),
-                    _ => format!("each file as the latest diff of {d} leaves it, then as this version leaves it, {}", below(n)),
+                let message = format!("the title and summary of {d}, then those a submit of this version sends, compared where their lines wrap aside");
+                let code = match self.shown_code(p, &link, &x) {
+                    Shown::Files(_) => format!("each file as the latest diff of {d} leaves it, then as this version leaves it, {}, as that diff is on another base", below(n)),
+                    _ => format!("the latest diff of {d}, then this version's diff, as an interdiff"),
                 };
                 let shown = match (x.message.is_some(), x.code.is_some()) {
                     (true, true) => format!("{message}; and {code}"),
                     (true, false) => message,
                     _ => code,
                 };
-                format!("Press Space to show what differs under this line: {shown}. Space again hides it.")
+                format!("Press Space to see what differs from {d} on Phabricator, on a screen of its own: {shown}. Esc there comes back to this line.")
             }
-            None => "Press Space to show what differs under this line, once it is read and compared.".into(),
+            None => format!(
+                "Press Space to see what differs from {d} on Phabricator, on a screen of its own, once {d} is read and compared: until then, Space says that it is not known yet."
+            ),
         });
-        out.push("Press Enter for all that can be done here.".into());
+        out.push(format!("Press Enter for all that can be done here: what differs from {d} on Phabricator, and a pull of the reviews of {d} alone."));
         out
     }
 
-    /// What the bottom bar says on the Phabricator line, or on what it
-    /// shows under it.
+    /// What the bottom bar says on the Phabricator line.
     pub(super) fn line_hint(&self) -> String {
-        let unfolded = self.shown_patch().is_some_and(|p| crate::phab::revision_of(&p.message).is_some_and(|(_, link)| self.unfolded(p, &link)));
-        let space = if unfolded { "space: hide what differs" } else { "space: show what differs" };
+        let space = "space: what differs from Phabricator";
         let keys = match (self.reading, self.whole_files) {
             (false, false) => "1: view · 2: read · 3: whole",
             (false, true) => "1: view · 2: read · 3: hunks",
@@ -622,6 +841,7 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+    use super::super::compared::message_rows;
     use super::*;
 
     #[test]
@@ -755,6 +975,60 @@ mod tests {
             texts(&mixed),
             [" WIP: Bug 1 - one", " ", " The parser reads the whole file", " before it checks the header.", " ", "-Because.", "+Since."]
         );
+    }
+
+    #[test]
+    fn a_diff_is_bare_of_what_git_derives_in_it_as_phabricator_s_raw_diffs_are() {
+        // As git writes it: blobs, a similarity, a hunk's heading, a header's
+        // line ending in a tab. As Phabricator gives it back: none of those.
+        let git = "diff --git a/a.txt b/a.txt\nindex 1234567..89abcde 100644\n--- a/a.txt\n+++ b/a.txt\n@@ -1,3 +1,3 @@ fn main() {\n one\n-two\n+TWO\n three\n\
+                   diff --git a/old.txt b/new.txt\nsimilarity index 90%\nrename from old.txt\nrename to new.txt\n--- a/old.txt\n+++ b/new.txt\t\n@@ -1 +1 @@\n-x\n+y\n";
+        let phab = "diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -1,3 +1,3 @@\n one\n-two\n+TWO\n three\n\
+                    diff --git a/old.txt b/new.txt\nrename from old.txt\nrename to new.txt\n--- a/old.txt\n+++ b/new.txt\n@@ -1 +1 @@\n-x\n+y\n";
+        assert_eq!(bare(git), phab);
+        assert_eq!(bare(phab), phab);
+        // The lines of a hunk as they are, those that read as a header too,
+        // and the white space ending them; git's line under a last line
+        // with no newline.
+        let hunk = "diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -1,2 +1,2 @@\n-index 1..2\n+index 3..4  \n similarity index 1%\n\\ No newline at end of file";
+        assert_eq!(bare(hunk), hunk);
+    }
+
+    #[test]
+    fn two_diffs_are_on_other_bases_when_they_read_a_file_otherwise_before_the_patch() {
+        let diff = |start: usize, lines: &str| format!("diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -{start},3 +{start},3 @@\n{lines}");
+        let mine = diff(10, " line 10\n-line 11\n+LINE 11\n line 12\n");
+        // On one base: the same lines at the same places, whatever each
+        // changes; more of the file around them in one; another file.
+        assert!(!other_bases(&mine, &mine));
+        assert!(!other_bases(&diff(10, " line 10\n-line 11\n+Line 11\n line 12\n"), &mine));
+        let wider = "diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -9,5 +9,5 @@\n line 9\n line 10\n-line 11\n+Line 11\n line 12\n line 13\n";
+        assert!(!other_bases(wider, &mine));
+        assert!(!other_bases(&mine.replace("a.txt", "b.txt"), &mine));
+        // The same hunk elsewhere, as lines were added above it below the
+        // patch; another line at the same place, as one was changed there.
+        assert!(other_bases(&diff(14, " line 10\n-line 11\n+LINE 11\n line 12\n"), &mine));
+        assert!(other_bases(&diff(10, " line 10\n-line 11\n+Line 11\n LINE 12\n"), &mine));
+        // A file the one makes, which the other finds there.
+        let made = "diff --git a/a.txt b/a.txt\nnew file mode 100644\n--- /dev/null\n+++ b/a.txt\n@@ -0,0 +1 @@\n+LINE 11\n";
+        assert!(other_bases(made, &mine) && other_bases(&mine, made));
+    }
+
+    #[cfg(feature = "demo")]
+    #[test]
+    fn the_tour_pulls_nothing_from_phabricator_a_patch_s_revision_alone_neither() {
+        assert!(reaches_phabricator(&Action::Pull) && reaches_phabricator(&Action::PullPatch("c".into())));
+        // What differs shows what was read, and reads nothing.
+        assert!(!reaches_phabricator(&Action::Differs));
+    }
+
+    #[test]
+    fn a_title_and_summary_only_wrapped_otherwise_are_told_from_those_that_differ() {
+        let wrapped = "Bug 1 - one\n\nThe parser reads the whole file\nbefore it checks the header.";
+        assert!(only_wrapped("Bug 1 - one\n\nThe parser reads the whole file before it checks the header.", wrapped));
+        assert!(only_wrapped("Bug 1 -  one\n\nThe parser reads the whole file\nbefore it checks the header.", wrapped));
+        assert!(!only_wrapped(wrapped, wrapped));
+        assert!(!only_wrapped("Bug 1 - one\n\nThe parser reads the entire file before it checks the header.", wrapped));
     }
 
     #[test]
