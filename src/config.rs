@@ -212,7 +212,8 @@ pub struct Agent {
     /// command.
     pub tools: Vec<String>,
     /// Tools asks that change the stack may use, besides what stacked gives
-    /// them: none unless set, as nothing they are given reaches the network.
+    /// them: none unless set, as nothing they are given reaches the network
+    /// but the checkout's linter, yours.
     pub change_tools: Vec<String>,
     /// Tools answer-only asks may use, besides what stacked gives them:
     /// unless set, curl and jq, to read the web.

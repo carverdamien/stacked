@@ -2,7 +2,7 @@
 //! header, runs the linter of the stack's checkout on every patch, patch by
 //! patch from the bottom, away from the screen; what it fixes lands for your
 //! review as one change, as an edit by hand does. stacked runs the linter
-//! itself, never the agent: a lint job is a run of its own (`Run::lint`),
+//! itself, not the agent: a lint job is a run of its own (`Run::lint`),
 //! run by `stacked lint-job RUN`, a process of its own, in a session of its
 //! own (no terminal to ask anything on), at a low priority, its stdin
 //! closed, in a worktree of the stack's own, `.stacked/NAME/lint` (under
@@ -13,7 +13,10 @@
 //! `.stacked/local.toml`'s `[lint] command`): a program and its arguments,
 //! split as a shell splits words and run with no shell, the files to lint
 //! after them. Unset, a checkout whose top has `./mach` lints with `./mach
-//! lint --fix`, nothing written; set empty, lint is off.
+//! lint --fix`, nothing written; set empty, lint is off. An ask that changes
+//! the stack may run it too, on the files it changes: it is given the rule a
+//! refused call of it would be offered with (`Linter::rule`), and its prompt
+//! names the command.
 //!
 //! Patch by patch: for each patch, from the bottom, the worktree holds the
 //! stack up to it, with the fixes kept so far, and the linter is run on the
@@ -131,6 +134,17 @@ impl Linter {
             Linter::Mach => Some(MACH),
             Linter::Off | Linter::None => None,
         }
+    }
+
+    /// The rule that lets an ask that changes the stack run it, as claude
+    /// writes one for `--allowedTools`, if it has a command: the one a
+    /// refused call of it would be offered with (`refusals::narrowest`), so
+    /// that the two agree. `Bash(./mach lint *)` for `./mach lint --fix`,
+    /// which lets it run with or without `--fix`, on any files. None for a
+    /// command no narrow rule lets run: a broad program it asks nothing
+    /// narrower of (`sh -c …`), a quote in its program, a shell's own.
+    pub fn rule(&self) -> Option<String> {
+        self.command().and_then(crate::refusals::narrowest)
     }
 
     /// Why nothing is linted with it, if nothing is.

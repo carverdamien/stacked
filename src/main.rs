@@ -612,7 +612,9 @@ enum SetupWhat {
     /// stack (agent.change_tools), and, built with the try-push feature,
     /// asks that select a try push's tasks (agent.try_tools). They are
     /// shown as one list of tools, each with a box for each kind: read
-    /// only, change, try push. The agent is started (and stopped at once)
+    /// only, change, try push; above them, what stacked always gives each,
+    /// among it the checkout's linter, which changes may run, named by its
+    /// command. The agent is started (and stopped at once)
     /// in the stack's repository, else here, where it has your MCP servers,
     /// and says what tools it has. The boxes are ticked as the settings
     /// say, else as stacked has it: nothing for changes; for answers, curl
@@ -643,7 +645,8 @@ enum SetupWhat {
         global: bool,
     },
     /// The linter of the checkout it is run in, which the editor's `Lint
-    /// the stack` runs on a stack of it: COMMAND, a program and its
+    /// the stack` runs on a stack of it, and which the asks that change one
+    /// may run on the files they change: COMMAND, a program and its
     /// arguments, the files of each patch after them, run by stacked with
     /// no shell. Written in that checkout's own settings alone,
     /// .stacked/local.toml at its top (`[lint] command`), never in the

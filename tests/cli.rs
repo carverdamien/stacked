@@ -3849,6 +3849,60 @@ fn each_kind_of_ask_may_use_what_the_settings_add_for_it() {
 }
 
 #[test]
+fn an_ask_that_changes_the_stack_may_run_the_checkout_s_linter_and_is_told_so() {
+    let e = env();
+    e.ok(&["import", "s", "base"]);
+    // Its arguments a line each: the tools after --allowedTools, and the
+    // prompt.
+    let args = e.root.join("args");
+    let claude = fake_claude(&e, "claude-lint.sh", &format!("printf '%s\\n' \"$@\" > {}", args.display()), r#"{"replies": {"c1": "Seen."}}"#);
+    // A comment on the stack, or on patch 1, asked `how`: what the ask
+    // may use, and all it was given.
+    let ask = |patch: bool, how: &[&str]| {
+        let mut words = if patch { vec!["--patch", "1"] } else { vec![] };
+        words.extend(["Tidy", "it."]);
+        let id = comment(&e, &words);
+        let (fine, _, err) = send(&e, &claude, &[&[id.as_str()][..], how].concat(), &[]);
+        assert!(fine, "{how:?}: {err}");
+        let said = std::fs::read_to_string(&args).unwrap();
+        let tools = said.lines().skip_while(|l| *l != "--allowedTools").nth(1).unwrap().to_string();
+        (tools, said)
+    };
+    let told = |command: &str| format!("This checkout's linter is `{command}`: you may run it on the files you change, to check them.");
+    let none = "This checkout's linter";
+    // No linter: none given, none told.
+    let (tools, said) = ask(false, &[]);
+    assert!(tools.ends_with(" export *),StructuredOutput"), "{tools}");
+    assert!(!said.contains(none), "{said}");
+    // ./mach at the top of the checkout, a stand-in the tests never run: a
+    // change of the stack or of a patch may run its lint, with or without
+    // --fix, and is told so; an answer and a build and test are not given
+    // it (a build and test runs any command already).
+    std::fs::write(e.src.join("mach"), "#!/bin/sh\necho 'not the real mach: the tests never run it' >&2\nexit 2\n").unwrap();
+    for patch in [false, true] {
+        let (tools, said) = ask(patch, &[]);
+        assert!(tools.ends_with(" export *),Bash(./mach lint *),StructuredOutput"), "{tools}");
+        assert!(said.contains(&told("./mach lint --fix")), "{said}");
+    }
+    for how in ["--answer-only", "--build-and-test"] {
+        let (tools, said) = ask(false, &[how]);
+        assert!(!tools.contains("Bash(./mach lint *)"), "{how}: {tools}");
+        assert!(!said.contains(none), "{how}: {said}");
+    }
+    // One the checkout sets, over ./mach: as narrow as a refused call of it
+    // is offered.
+    e.ok(&["setup", "lint", "eslint", "--fix"]);
+    let (tools, said) = ask(false, &[]);
+    assert!(tools.ends_with(" export *),Bash(eslint *),StructuredOutput") && !tools.contains("mach lint"), "{tools}");
+    assert!(said.contains(&told("eslint --fix")), "{said}");
+    // Lint turned off, ./mach or not: none.
+    e.ok(&["setup", "lint", "--off"]);
+    let (tools, said) = ask(false, &[]);
+    assert!(tools.ends_with(" export *),StructuredOutput"), "{tools}");
+    assert!(!said.contains(none), "{said}");
+}
+
+#[test]
 fn what_your_claude_settings_deny_in_the_checkout_is_refused_to_every_ask() {
     let e = env();
     e.ok(&["import", "s", "base"]);
@@ -4054,6 +4108,7 @@ fn what_each_kind_of_ask_may_use_is_set_up_with_the_agent() {
         format!("stacked: the agent, in {}, has 12 tools. What each kind of ask may use is saved in {}; Enter keeps what is ticked.", e.src.display(), local.display()),
         two(" read only  change   read only is for answer-only asks; change is for asks that change the stack"),
         two("            always   commands that read: grep, rg, find, cat, sed, sort…"),
+        two("            always   the checkout's linter, when it has one: this checkout has none"),
         two("    [x]      [ ]     Bash(lint *)   allowed in .claude/settings.local.json"),
         two("    [x]      [x]       write"),
         "Keep them as they are? [Y/n: one by one] ".into(),
@@ -4089,15 +4144,19 @@ fn what_each_kind_of_ask_may_use_is_set_up_with_the_agent() {
     // Again, as it is, the checkout's own list holding lint the older way,
     // as an earlier stacked saved it: the settings' ticks now, the lists
     // set. The instructions now name lint too, there on PATH: still one
-    // row, the newer way, and lint saved so.
+    // row, the newer way, and lint saved so. The checkout has ./mach at
+    // its top now, a stand-in never run: the linter changes are given is
+    // named.
     let (fine, _, err) = stacked_in(&e.src, &e.db, &["config", "--local", "agent.answer_tools", "Bash(curl *)", "Bash(jq *)", "Bash(lint:*)"], "", &env);
     assert!(fine, "{err}");
     std::fs::write(bin.join("lint"), "#!/bin/sh\n").unwrap();
     Command::new("chmod").arg("+x").arg(bin.join("lint")).status().unwrap();
     std::fs::write(e.src.join("AGENTS.md"), "Search the code:\n\n```sh\nsearchfox-cli --define Foo\nlint --all\n```\n").unwrap();
+    std::fs::write(e.src.join("mach"), "#!/bin/sh\necho 'not the real mach: the tests never run it' >&2\nexit 2\n").unwrap();
     let (fine, _, err) = stacked_in(&e.src, &e.db, &["setup", "agent", "s"], "", &env);
     assert!(fine, "{err}");
     for line in [
+        "            always   this checkout's linter, ./mach lint --fix, to run on the files a change changes (Bash(./mach lint *))",
         "    [ ]      [x]     all of the MCP server moz's tools, those to come too (mcp__moz__*)",
         "    [ ]      [x]     Bash(make check *)   in the settings",
         "    [x]      [ ]     Bash(lint *)   allowed in .claude/settings.local.json; named in AGENTS.md",

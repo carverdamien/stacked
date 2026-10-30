@@ -8,7 +8,9 @@
 //! answers, `change` for changes, `try push` for try pushes. Each column
 //! starts ticked as the settings say, else as stacked has it (`Start`):
 //! nothing for changes, curl and jq for answers and for try pushes, which
-//! read only too. The list holds
+//! read only too. What stacked always gives each kind is said first, the
+//! checkout's linter that changes are given by its command (`linter_said`).
+//! The list holds
 //! what the agent says it has (`ask::agent_tools`: its own tools, and its
 //! MCP servers'); what the checkout's own claude settings allow
 //! (`allowed`), ticked for answers, as you allow it yourself; what the
@@ -36,15 +38,16 @@ use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, Ke
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 
-use crate::ask::{CHANGING, GIVEN, GIVEN_SAID};
+use crate::ask::{CHANGING, GIVEN, GIVEN_SAID, LINTER_GIVEN};
 use crate::config::{ANSWER_TOOLS, Agent};
 use crate::db::{Error, Result, Way};
 use crate::editor::Editor;
+use crate::lint::Linter;
 use crate::paint::{color, fit, on_cursor, put, window};
 
 /// The agent's tools that read the web, of what a change may be let use,
 /// with Bash at large: said to reach the network, as nothing a change is
-/// given does.
+/// given does, but the checkout's linter, yours.
 const WEB: [&str; 2] = ["WebFetch", "WebSearch"];
 
 /// The tool `rule` lets use: what comes before its parentheses.
@@ -664,9 +667,10 @@ fn warnings(rule: &str) -> Vec<&'static str> {
 /// its column, `Kind::ALL`); what the settings let every ask use
 /// (agent.tools), ticked for each; what the checkout's own claude settings
 /// allow, what its skills let run, and the programs its instructions name;
-/// what its claude settings of yours deny, refused to every ask; and what
-/// the reviews of the agent's work allowed from now on, for each kind of
-/// ask, and the file that says so, the checkout's own.
+/// what its claude settings of yours deny, refused to every ask; what the
+/// reviews of the agent's work allowed from now on, for each kind of ask,
+/// and the file that says so, the checkout's own; and its linter, which
+/// asks that change the stack are given.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Start {
     pub change: Vec<String>,
@@ -683,6 +687,8 @@ pub struct Start {
     pub denied: Vec<String>,
     pub accepted: Vec<(Way, Vec<String>)>,
     pub accepted_in: String,
+    /// The linter of the checkout, where the checkout is known.
+    pub linter: Option<Linter>,
 }
 
 impl Start {
@@ -694,7 +700,8 @@ impl Start {
     /// settings allow, as you allow it yourself, but what changes things;
     /// for try pushes, read-only too, as the column for answers starts.
     /// What its skills let run, the skills themselves, and the programs its
-    /// instructions name are ticked only as the settings say.
+    /// instructions name are ticked only as the settings say. Its linter is
+    /// read as a lint job reads it (`Linter::of`).
     pub fn new(agent: &Agent, set: Boxes, top: Option<&Path>, path: &OsStr) -> Start {
         let allowed = top.map(allowed).unwrap_or_default();
         let answer = match set[Kind::Answer.col()] {
@@ -722,6 +729,7 @@ impl Start {
             allowed,
             accepted: Vec::new(),
             accepted_in: String::new(),
+            linter: top.map(Linter::of),
         }
     }
 
@@ -829,7 +837,7 @@ enum Row {
     Columns,
     /// What stacked always gives, said: `always` in the column of each kind
     /// of ask that has it, nothing to let or not.
-    Always { said: &'static str, given: Boxes },
+    Always { said: String, given: Boxes },
     /// An MCP server: all its tools let, now and to come, or not, in each
     /// column; that written as the settings write it (`mcp__NAME__*`,
     /// `mcp__NAME`); where else it comes from.
@@ -909,6 +917,21 @@ fn said(from: &[Source]) -> Vec<String> {
         }
     }
     out
+}
+
+/// What the setup says, among what stacked always gives, of the linter
+/// that asks that change the stack are given: as `GIVEN_SAID` says it, the
+/// checkout not known; else of `linter`, the checkout's, its command and
+/// the rule that lets it run (`Linter::rule`), or why none is given.
+fn linter_said(linter: Option<&Linter>) -> String {
+    let Some(linter) = linter else { return LINTER_GIVEN.to_string() };
+    let one = "the checkout's linter, when it has one";
+    match (linter.command(), linter.rule()) {
+        (Some(c), Some(r)) => format!("this checkout's linter, {c}, to run on the files a change changes ({r})"),
+        (Some(c), None) => format!("{one}: not {c}, which no narrow rule lets run"),
+        (None, _) if *linter == Linter::Off => format!("{one}: lint is turned off in this checkout"),
+        (None, _) => format!("{one}: this checkout has none"),
+    }
 }
 
 /// The rule that lets an ask use skills: claude's tool for them.
@@ -1110,7 +1133,8 @@ impl Setup {
     /// claude settings of yours denying it, and what the settings let every
     /// ask use, to read. Then one list, a box in each row for each kind of
     /// ask: under the columns' headings, what stacked always gives, marked
-    /// in the column of each kind that has it; curl and jq, which stacked
+    /// in the column of each kind that has it, the checkout's linter named
+    /// by its command where the checkout is known; curl and jq, which stacked
     /// let answers run before there were lists; the skills, with what they
     /// may run; what the checkout's own claude settings allow; what its
     /// skills let run; the programs its instructions name; each MCP server
@@ -1204,9 +1228,13 @@ impl Setup {
             }
         }
         rows.push(Row::Columns);
-        // What a try push is given, as an answer is.
+        // What a try push is given, as an answer is. The linter, said of
+        // the checkout.
         let given = |answer: bool, change: bool| Kind::ALL.map(|k| if k == Kind::Change { change } else { answer });
-        rows.extend(GIVEN_SAID.iter().map(|&(said, answer, change)| Row::Always { said, given: given(answer, change) }));
+        rows.extend(GIVEN_SAID.iter().map(|&(said, answer, change)| {
+            let said = if said == LINTER_GIVEN { linter_said(start.linter.as_ref()) } else { said.to_string() };
+            Row::Always { said, given: given(answer, change) }
+        }));
         // The boxes of the server last listed, all its tools let.
         let mut whole: Boxes = [false; KINDS];
         for i in items.before.iter().chain(&items.served).chain(&items.after) {
@@ -1554,7 +1582,7 @@ impl Setup {
             Row::Heading(t) => (None, format!(" {t}")),
             Row::Given(t) => (None, format!("   {t}")),
             Row::Columns => (Some(Kind::ALL.map(|kind| kind.label().to_string())), COLUMNS_SAID.to_string()),
-            Row::Always { said, given } => (Some(given.map(|g| if g { "always".to_string() } else { String::new() })), said.to_string()),
+            Row::Always { said, given } => (Some(given.map(|g| if g { "always".to_string() } else { String::new() })), said.clone()),
             Row::Server { name, form, all, from } => {
                 (boxes(all), format!("all of the MCP server {name}'s tools, those to come too ({form}){}", after(said(from))))
             }
@@ -2157,7 +2185,8 @@ mod tests {
             "            always   commands that read: grep, rg, find, cat, sed, sort…",
             "            always   git's other history commands (status, add, commit, reset, rebase -i…), and git config to read",
             "  always             stacked's commands that read the stack: export, show, log, tree, versions, interdiff, comments",
-            "            always   stacked's fits and export; nothing a change is given reaches the network",
+            "            always   stacked's fits and export; none of these reaches the network",
+            "            always   the checkout's linter, when it has one, to run on the files a change changes",
             "    [x]      [ ]     Bash(curl *)   stacked's default for answers",
             "    [x]      [ ]     Bash(jq *)   stacked's default for answers",
             "    [ ]      [ ]     Skill   claude's tool for the checkout's skills",
@@ -2231,6 +2260,41 @@ mod tests {
             try_said("Bash(curl *), Bash(jq *), mcp__notes__write")
         );
         assert_eq!(c.said(), said);
+    }
+
+    #[test]
+    fn the_linter_changes_are_given_is_named_where_the_checkout_is_known() {
+        // The line of what stacked always gives that says it, on the screen
+        // and line by line alike.
+        let line = |s: &mut Setup| {
+            let shown = screen(s);
+            let on = shown.lines().find(|l| l.contains("linter")).unwrap_or_else(|| panic!("no linter in:\n{shown}")).to_string();
+            let mut said = Vec::new();
+            ask_lines(s, &mut |_| String::new(), &mut |l| said.push(l.to_string()));
+            assert_eq!(said.iter().filter(|l| l.contains("linter")).collect::<Vec<_>>(), [&on], "line by line");
+            on
+        };
+        let said = |text: &str| two(&format!("            always   {text}"));
+        // No checkout known: as stacked gives it, for changes alone.
+        let given = said("the checkout's linter, when it has one, to run on the files a change changes");
+        assert_eq!(line(&mut Setup::new(&[], &[], &fresh(), "local.toml", "here")), given);
+        // A checkout: its linter named, with the rule that lets it run.
+        let tmp = tempfile::tempdir().unwrap();
+        let top = tmp.path().canonicalize().unwrap().join("repo");
+        std::fs::create_dir(&top).unwrap();
+        crate::git::git(&top, &["init", "-q"]).unwrap();
+        let at = |top: &Path| Setup::new(&[], &[], &Start::new(&Agent::default(), [false; KINDS], Some(top), OsStr::new("")), "local.toml", "here");
+        assert_eq!(line(&mut at(&top)), said("the checkout's linter, when it has one: this checkout has none"));
+        executable(&top.join("mach"));
+        assert_eq!(line(&mut at(&top)), said("this checkout's linter, ./mach lint --fix, to run on the files a change changes (Bash(./mach lint *))"));
+        let set = |command: &str| crate::config::set_local(&top, "lint.command", &[command.to_string()]).unwrap();
+        set("eslint --fix");
+        assert_eq!(line(&mut at(&top)), said("this checkout's linter, eslint --fix, to run on the files a change changes (Bash(eslint *))"));
+        // One no narrow rule lets run, or lint off: none given, and why.
+        set("sh -c 'eslint --fix \"$@\"' sh");
+        assert_eq!(line(&mut at(&top)), said("the checkout's linter, when it has one: not sh -c 'eslint --fix \"$@\"' sh, which no narrow rule lets run"));
+        set("");
+        assert_eq!(line(&mut at(&top)), said("the checkout's linter, when it has one: lint is turned off in this checkout"));
     }
 
     #[test]

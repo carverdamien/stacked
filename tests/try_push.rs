@@ -926,6 +926,24 @@ fn a_try_push_ask_works_in_a_worktree_of_its_own_your_checkout_as_it_was_while_i
     assert_eq!(yours(), before, "and after");
 }
 
+#[test]
+fn a_try_push_ask_is_not_given_the_checkout_s_linter_as_a_change_is() {
+    let (_tmp, db, src) = setup();
+    stacked(&src, &db, &["setup", "lint", "eslint", "--fix"]);
+    let mut app = open(&db);
+    assert_eq!(stacked::lint::Linter::of(&src).rule().as_deref(), Some("Bash(eslint *)"), "a change would be given it");
+    tasks_answer(&db, &[("build-linux64/debug", "The build the tests need.")], "One task.");
+    ask_try(&mut app, "Run the build.");
+    landed(&mut app, &db, 1);
+    // It reads only, as an answer does: what it may use holds no linter,
+    // and its prompt says none.
+    let args = claude_args(&db);
+    assert_eq!(args.len(), 1, "{args:?}");
+    let tools = args[0].lines().skip_while(|l| *l != "--allowedTools").nth(1).unwrap_or_default().to_string();
+    assert!(tools.contains("Read,") && !tools.contains("Bash(eslint *)"), "{tools}");
+    assert!(!last_prompt(&db).contains("This checkout's linter"), "{}", last_prompt(&db));
+}
+
 /// Comment `id` of patch 1 put on the queue as a try push, as an older
 /// stacked let a comment on a line be: in the batch (`Stage::Batch`), or
 /// ready to go (`Stage::Ready`).

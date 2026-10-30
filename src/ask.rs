@@ -29,7 +29,9 @@
 //! on top, the patches above to read only. A patch change
 //! checks, with `stacked fits`, that the patches above still apply on it; if
 //! they would not, claude changes nothing and the comment is promoted to the
-//! stack. An answer works in `.stacked/NAME/answer-only-agent`, made and
+//! stack. A change may run the linter of the stack's checkout, when it has
+//! one, on the files it changes (`lint::Linter::rule`), and its prompt
+//! says so. An answer works in `.stacked/NAME/answer-only-agent`, made and
 //! taken as a change's is, and is let run nothing that changes anything; so
 //! does the selection of a try push's tasks. A build and test works in
 //! `.stacked/NAME/build`: kept for the next build to build on, what a build
@@ -69,6 +71,7 @@ use crate::db::{
 };
 use crate::git;
 use crate::held::Held;
+use crate::lint::Linter;
 use crate::mbox::{Draft, format_mbox, parse_mbox};
 use crate::ops::{Written, base_of, plan_checked};
 use crate::thread::{Role, append_turn, fenced, last_reply_way, last_role, thread_turns};
@@ -1548,35 +1551,56 @@ fn answer_given(cmd: &str) -> String {
 /// What stacked always gives an ask that changes the stack, `cmd` being
 /// stacked on its database: git's history commands and the commands that
 /// read (`allowed_tools`), none that reaches the network, and stacked's
-/// own, to check that the patches above still apply, and to read the stack.
-fn change_given(cmd: &str) -> String {
-    format!("{},Bash({cmd} fits *),Bash({cmd} export *)", allowed_tools())
+/// own, to check that the patches above still apply, and to read the
+/// stack; then the checkout's linter, `linter`, if it has one that a narrow
+/// rule lets run (`Linter::rule`), to check the files the change changes.
+fn change_given(cmd: &str, linter: &Linter) -> String {
+    let mut out = format!("{},Bash({cmd} fits *),Bash({cmd} export *)", allowed_tools());
+    if let Some(rule) = linter.rule() {
+        out.push(',');
+        out.push_str(&rule);
+    }
+    out
 }
 
 /// What stacked always gives the asks, said, a line each, as the setup
 /// shows it beside what the settings add: what it is, whether answer-only
 /// asks have it (`answer_given`), and whether asks that change the stack
-/// do (`change_given`).
-pub const GIVEN_SAID: [(&str, bool, bool); 5] = [
+/// do (`change_given`). The last, the checkout's linter, the setup says of
+/// the checkout it is run in, naming its command (`setup::linter_said`).
+pub const GIVEN_SAID: [(&str, bool, bool); 6] = [
     ("Read, Grep, Glob, LS, and git show, log and diff", true, true),
     ("commands that read: grep, rg, find, cat, sed, sort…", false, true),
     ("git's other history commands (status, add, commit, reset, rebase -i…), and git config to read", false, true),
     ("stacked's commands that read the stack: export, show, log, tree, versions, interdiff, comments", true, false),
-    ("stacked's fits and export; nothing a change is given reaches the network", false, true),
+    ("stacked's fits and export; none of these reaches the network", false, true),
+    (LINTER_GIVEN, false, true),
 ];
 
+/// What the setup says of the linter that asks that change the stack are
+/// given, the checkout's, where it does not know the checkout.
+pub const LINTER_GIVEN: &str = "the checkout's linter, when it has one, to run on the files a change changes";
+
+/// What an ask that changes the stack is told of the checkout's linter,
+/// `command`, when it is given it: that it may run it on the files it
+/// changes.
+fn linter_told(command: &str) -> String {
+    format!(" This checkout's linter is `{command}`: you may run it on the files you change, to check them.")
+}
+
 /// What an ask in `way` may use, `cmd` being stacked on its database, as
-/// claude takes it (`--allowedTools`): what stacked gives that kind of ask,
-/// then what the settings `agent` add for that kind (`change_tools`,
-/// `answer_tools`, `try_tools`), then what reviews allowed it from now on,
-/// in a list of its own (`change_accepted`, `answer_accepted`,
-/// `test_accepted`, `try_accepted`), then what they add for every ask
-/// (`tools`). A build and test runs what the project needs: Bash at large,
-/// and every ask's. A try push's selection is given what an answer is: it
-/// reads only.
-pub fn tools_for(way: Way, cmd: &str, agent: &crate::config::Agent) -> String {
+/// claude takes it (`--allowedTools`): what stacked gives that kind of ask
+/// (for a change, with the rule that lets it run `linter`, the checkout's
+/// linter), then what the settings `agent` add for that kind
+/// (`change_tools`, `answer_tools`, `try_tools`), then what reviews allowed
+/// it from now on, in a list of its own (`change_accepted`,
+/// `answer_accepted`, `test_accepted`, `try_accepted`), then what they add
+/// for every ask (`tools`). A build and test runs what the project needs:
+/// Bash at large, and every ask's. A try push's selection is given what an
+/// answer is: it reads only, and is not given the linter.
+pub fn tools_for(way: Way, cmd: &str, agent: &crate::config::Agent, linter: &Linter) -> String {
     let (mut tools, own): (String, &[String]) = match way {
-        Way::Change => (change_given(cmd), &agent.change_tools),
+        Way::Change => (change_given(cmd, linter), &agent.change_tools),
         Way::Answer => (answer_given(cmd), &agent.answer_tools),
         Way::Test => (format!("Bash,{}", allowed_tools()), &[]),
         #[cfg(feature = "try-push")]
@@ -1817,9 +1841,12 @@ fn brought(db: &Db, i: &Info, was: &str, name: &str, cmd: &str, replies: bool) -
 
 /// The prompt for an ask: what it may do, the stack, the comments, and
 /// what to answer with. An answer is told it may read the web with curl if
-/// `curl` says it is let run curl.
-fn prompt(db: &Db, i: &Info, s: &Stack, cmd: &str, run: &str, structured: bool, curl: bool) -> String {
+/// `curl` says it is let run curl; a change, that it may run the
+/// checkout's linter, `linter`, its command, if it is given it.
+#[allow(clippy::too_many_arguments)]
+fn prompt(db: &Db, i: &Info, s: &Stack, cmd: &str, run: &str, structured: bool, curl: bool, linter: Option<&str>) -> String {
     let web = if curl { READ_THE_WEB } else { READ_WITH_TOOLS };
+    let lint = linter.map(linter_told).unwrap_or_default();
     // How it answers: as structured output, which claude checks against
     // what this asks for (`answer_schema`); else as JSON it ends with.
     let (end, only, said) = match structured {
@@ -1858,7 +1885,7 @@ fn prompt(db: &Db, i: &Info, s: &Stack, cmd: &str, run: &str, structured: bool, 
              commits below {base}. To rebase the stack onto another commit, write the plan \
              of its picks, then `git rebase -i --onto COMMIT {base}`, and say onto what: \
              \"base\": COMMIT's full sha, {said}. \
-             {KEEP_TITLES}",
+             {KEEP_TITLES}{lint}",
             base = i.base
         ),
         (Way::Change, Scope::Patch(_)) => format!(
@@ -1872,7 +1899,7 @@ fn prompt(db: &Db, i: &Info, s: &Stack, cmd: &str, run: &str, structured: bool, 
              `{cmd} fits {run}`: it says whether the patches above still apply on your change. \
              If they would not, or if what is asked needs another patch to change too, change \
              nothing: `git reset --hard {orig}` puts the patch back as it was, and answer \
-             with \"promote\" saying why, so the comment goes to the stack. {KEEP_TITLES}",
+             with \"promote\" saying why, so the comment goes to the stack. {KEEP_TITLES}{lint}",
             k = k.map_or(0, |k| k + 1),
             base = i.base,
             orig = i.commits.last().map_or("HEAD", |c| c.0.as_str())
@@ -2644,10 +2671,17 @@ fn start(db_path: &Path, id: &str) -> Result<()> {
     let exe = stacked_exe()?;
     let db_abs = db_path.canonicalize().map_err(|e| Error(e.to_string()))?;
     let cmd = format!("{} -f {}", exe.display(), db_abs.display());
+    // A change may run the linter of the stack's checkout, as the
+    // checkout's settings have it now, on the files it changes; no other
+    // kind of ask is given it.
+    let linter = match i.way {
+        Way::Change => Linter::of(&repo),
+        _ => Linter::None,
+    };
     // What it may use: what stacked gives its kind of ask, and what the
     // settings add, for its kind and for every ask; then what it may use
     // for this work alone. Kept, to read what it is refused against.
-    let tools = with_more(tools_for(i.way, &cmd, agent), &i.allowed);
+    let tools = with_more(tools_for(i.way, &cmd, agent, &linter), &i.allowed);
     i.given = tools.clone();
     let curl = tools.split(',').any(|t| t == "Bash(curl *)");
     let plans = plans(&db_abs);
@@ -2659,7 +2693,9 @@ fn start(db_path: &Path, id: &str) -> Result<()> {
     if i.way == Way::Try && curl {
         i.todo = Some(graph_folder(&plans, &db_abs, id)?.to_string_lossy().into_owned());
     }
-    i.prompt = prompt(&db, &i, &s, &cmd, id, agent.schema, curl);
+    // Told of the linter it is given, by its command.
+    let lints = linter.rule().and(linter.command());
+    i.prompt = prompt(&db, &i, &s, &cmd, id, agent.schema, curl, lints);
     // A change to the stack rewrites what is below HEAD with a plan it
     // writes, which a plain `git rebase -i` takes: claude refuses a command
     // that sets an editor. Its plan's folder is kept in the run, to remove
@@ -3862,7 +3898,7 @@ mod tests {
             ..Default::default()
         };
         let cmd = "stacked -f db";
-        let tools = tools_for(Way::Try, cmd, &agent);
+        let tools = tools_for(Way::Try, cmd, &agent, &Linter::None);
         assert!(tools.starts_with(&answer_given(cmd)), "what an answer is given: {tools}");
         assert!(tools.contains("mcp__moz__*") && !tools.contains("Bash(curl *)"), "its own list, not the answers': {tools}");
         assert!(allow_more(Way::Try).contains("; agent.try_tools lets the asks that select a try push's tasks use more"));
@@ -4081,19 +4117,49 @@ mod tests {
         // Then its list, then every ask's; its list being curl and jq unless
         // the settings say otherwise, as they were before there were lists.
         // The skills, let answers, are theirs alone.
-        assert_eq!(tools_for(Way::Answer, cmd, &mine), format!("{given},Bash(lint *),Skill,mcp__moz__*"));
-        assert_eq!(tools_for(Way::Answer, cmd, &none), format!("{given},Bash(curl *),Bash(jq *)"));
+        assert_eq!(tools_for(Way::Answer, cmd, &mine, &Linter::None), format!("{given},Bash(lint *),Skill,mcp__moz__*"));
+        assert_eq!(tools_for(Way::Answer, cmd, &none, &Linter::None), format!("{given},Bash(curl *),Bash(jq *)"));
         // A change: git's history, what reads, stacked's fits and export; then
         // its own list, none unless set, then every ask's.
         let change = format!("{},Bash({cmd} fits *),Bash({cmd} export *)", allowed_tools());
-        assert_eq!(tools_for(Way::Change, cmd, &mine), format!("{change},Bash(make check *),mcp__moz__*"));
-        assert_eq!(tools_for(Way::Change, cmd, &none), change);
+        assert_eq!(tools_for(Way::Change, cmd, &mine, &Linter::None), format!("{change},Bash(make check *),mcp__moz__*"));
+        assert_eq!(tools_for(Way::Change, cmd, &none, &Linter::None), change);
         // A build and test: Bash at large, and every ask's alone.
-        assert_eq!(tools_for(Way::Test, cmd, &mine), format!("Bash,{},mcp__moz__*", allowed_tools()));
+        assert_eq!(tools_for(Way::Test, cmd, &mine, &Linter::None), format!("Bash,{},mcp__moz__*", allowed_tools()));
         // Asked for structured output, the tool it answers with comes after
         // what stacked gives.
-        let schema = tools_for(Way::Answer, cmd, &crate::config::Agent::default());
+        let schema = tools_for(Way::Answer, cmd, &crate::config::Agent::default(), &Linter::None);
         assert_eq!(schema, format!("{given},StructuredOutput,Bash(curl *),Bash(jq *)"));
+    }
+
+    #[test]
+    fn a_change_is_given_the_checkout_s_linter_and_no_other_ask_is() {
+        let cmd = "stacked -f db";
+        let agent = crate::config::Agent { change_tools: vec!["Bash(make check *)".into()], schema: false, ..Default::default() };
+        let change = format!("{},Bash({cmd} fits *),Bash({cmd} export *)", allowed_tools());
+        // ./mach at the top of the checkout: its lint, with or without
+        // --fix, after what stacked gives and before what the settings add.
+        assert_eq!(tools_for(Way::Change, cmd, &agent, &Linter::Mach), format!("{change},Bash(./mach lint *),Bash(make check *)"));
+        // One the checkout sets: as narrow as a refusal of it is offered.
+        let set = |c: &str| tools_for(Way::Change, cmd, &agent, &Linter::Set(c.into()));
+        assert_eq!(set("eslint --fix"), format!("{change},Bash(eslint *),Bash(make check *)"));
+        assert_eq!(set("python3 -m black"), format!("{change},Bash(python3 -m black *),Bash(make check *)"));
+        // One no narrow rule lets run, lint off, or no linter: nothing.
+        for none in [Linter::Set("sh -c 'eslint --fix \"$@\"' sh".into()), Linter::Set("./mach --verbose lint".into()), Linter::Off, Linter::None] {
+            assert_eq!(tools_for(Way::Change, cmd, &agent, &none), format!("{change},Bash(make check *)"), "{none:?}");
+        }
+        // An answer, a try push's selection, a build and test: never.
+        let ways = [Way::Answer, Way::Test, #[cfg(feature = "try-push")] Way::Try];
+        for way in ways {
+            let tools = tools_for(way, cmd, &agent, &Linter::Mach);
+            assert_eq!(tools, tools_for(way, cmd, &agent, &Linter::None), "{way:?}");
+            assert!(!tools.contains("lint"), "{way:?}: {tools}");
+        }
+        // What the prompt of a change given it says.
+        assert_eq!(
+            linter_told(crate::lint::MACH),
+            " This checkout's linter is `./mach lint --fix`: you may run it on the files you change, to check them."
+        );
     }
 
     #[test]

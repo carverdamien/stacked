@@ -6,7 +6,9 @@
 //! a plain program, and narrower for a broad one (`./mach`, `git`, `sh`,
 //! `bash`, `python`): a refused `./mach try fuzzy --no-push …` is
 //! `Bash(./mach try fuzzy *)`, which may be widened to `Bash(./mach try
-//! *)`, then `Bash(./mach *)`. Each command of a pipe is its own, as claude
+//! *)`, then `Bash(./mach *)`. The narrowest is the rule a change is given
+//! the checkout's linter by (`narrowest`), so that no call of the linter
+//! is an item of a change's. Each command of a pipe is its own, as claude
 //! matches each apart. Another tool's rule is its name, an MCP server's
 //! tool widened to all of the server's (`mcp__SERVER__*`). The agent says
 //! why it needed each, and how it worked around it (`"refused"` in its
@@ -441,36 +443,61 @@ fn subcommand(w: &str) -> bool {
 /// it is written (a quote in its program, a comma, which would cut in two
 /// the list claude is given).
 pub fn command_rules(cmd: &str) -> Vec<String> {
+    rules_of(cmd).0
+}
+
+/// The narrowest rule that would let command `cmd` run, the one a refusal
+/// of it is offered with (`command_rules`), if it is narrow: none for a
+/// broad program that `cmd` asks nothing narrower of, its rule letting it
+/// run anything (`Bash(./mach *)` of `./mach --verbose lint`, `Bash(sh *)`
+/// of `sh -c …`), nor for a command no rule holds. `Bash(./mach lint *)` of
+/// `./mach lint --fix`; a plain program's own, `Bash(eslint *)` of `eslint
+/// --fix`.
+pub fn narrowest(cmd: &str) -> Option<String> {
+    let (rules, broad) = rules_of(cmd);
+    if broad && rules.len() < 2 {
+        return None;
+    }
+    rules.into_iter().next()
+}
+
+/// The rules of `command_rules`, and whether the program of `cmd` is a
+/// broad one, whose rule is narrowed by what it is asked to do.
+fn rules_of(cmd: &str) -> (Vec<String>, bool) {
     let all = words(cmd);
     let ws = unwrapped(&all);
     let at = ws.iter().position(|w| !assigns(w)).unwrap_or(ws.len());
     let (sets, rest) = ws.split_at(at);
-    let Some((program, args)) = rest.split_first() else { return vec![] };
+    let Some((program, args)) = rest.split_first() else { return (vec![], false) };
     if BUILTIN.contains(&program.as_str()) || !plain(program) || sets.iter().any(|s| !plain(s)) {
-        return vec![];
+        return (vec![], false);
     }
     let base = program.rsplit('/').next().unwrap_or(program);
-    let more: Vec<&str> = match base {
-        "mach" => args.iter().take(2).take_while(|w| subcommand(w)).map(String::as_str).collect(),
-        "git" => args.iter().take(1).take_while(|w| subcommand(w)).map(String::as_str).collect(),
-        "sh" | "bash" | "zsh" => args.iter().take(1).take_while(|w| !w.starts_with('-') && plain(w)).map(String::as_str).collect(),
-        "python" | "python3" => match args.first().map(String::as_str) {
+    let more: Option<Vec<&str>> = match base {
+        "mach" => Some(args.iter().take(2).take_while(|w| subcommand(w)).map(String::as_str).collect()),
+        "git" => Some(args.iter().take(1).take_while(|w| subcommand(w)).map(String::as_str).collect()),
+        "sh" | "bash" | "zsh" => Some(args.iter().take(1).take_while(|w| !w.starts_with('-') && plain(w)).map(String::as_str).collect()),
+        "python" | "python3" => Some(match args.first().map(String::as_str) {
             Some("-m") => args.get(1).filter(|m| plain(m)).map_or(vec![], |m| vec!["-m", m.as_str()]),
             Some(w) if !w.starts_with('-') && plain(w) => vec![w],
             _ => vec![],
-        },
-        _ => vec![],
+        }),
+        _ => None,
     };
+    let broad = more.is_some();
+    let more = more.unwrap_or_default();
     let head: Vec<&str> = sets.iter().map(String::as_str).chain([program.as_str()]).collect();
     // `-m` goes with its module: dropped together.
     let mut keep: Vec<usize> = (0..=more.len()).rev().collect();
     if more.first() == Some(&"-m") {
         keep.retain(|&n| n != 1);
     }
-    keep.into_iter()
+    let rules = keep
+        .into_iter()
         .map(|n| format!("Bash({} *)", head.iter().chain(&more[..n]).copied().collect::<Vec<_>>().join(" ")))
         .filter(|r| crate::setup::rule(r).is_ok())
-        .collect()
+        .collect();
+    (rules, broad)
 }
 
 /// The command `cmd` as claude matches it: past what it passes over
@@ -970,6 +997,61 @@ mod tests {
         for none in ["cd ..", "echo hi", "'./mach' build", "a,b x", "X=$(pwd) make"] {
             assert!(command_rules(none).is_empty(), "{none}");
         }
+    }
+
+    #[test]
+    fn the_narrowest_rule_is_none_for_a_broad_program_asked_nothing_narrower() {
+        // The rule a refusal of each is offered with first.
+        for (cmd, rule) in [
+            ("./mach lint --fix", "Bash(./mach lint *)"),
+            ("./mach try fuzzy -q x", "Bash(./mach try fuzzy *)"),
+            ("git clang-format --diff", "Bash(git clang-format *)"),
+            ("python3 -m black", "Bash(python3 -m black *)"),
+            ("bash ./tools/lint.sh", "Bash(bash ./tools/lint.sh *)"),
+            ("eslint --fix", "Bash(eslint *)"),
+            ("npx eslint --fix", "Bash(npx *)"),
+            ("cargo clippy --fix", "Bash(cargo *)"),
+            ("ruff check --fix", "Bash(ruff *)"),
+        ] {
+            assert_eq!(narrowest(cmd).as_deref(), Some(rule), "{cmd}");
+            assert_eq!(command_rules(cmd)[0], rule, "{cmd}");
+        }
+        // A broad program it asks nothing narrower of, which its rule would
+        // let do anything; or what no rule holds: none.
+        for none in ["./mach --verbose lint", "./mach", "sh -c 'eslint --fix'", "git -C x status", "python3 -c 'x'", "'./my lint' --fix", "cd x", ""] {
+            assert_eq!(narrowest(none), None, "{none}");
+        }
+    }
+
+    #[test]
+    fn the_linter_a_change_is_given_is_the_rule_a_refusal_of_it_is_offered_with() {
+        use crate::lint::Linter;
+        // The calls an agent makes of the linter, on the files it changed,
+        // with or without --fix: the rule given lets each run, and is the
+        // one a refusal of it would be offered with first.
+        for (linter, calls) in [
+            (Linter::Mach, vec!["./mach lint --fix dom/a.js dom/b.js", "./mach lint dom/a.js", "./mach lint -l eslint dom/a.js"]),
+            (Linter::Set("eslint --fix".into()), vec!["eslint --fix src/a.js", "eslint src/a.js"]),
+            (Linter::Set("npx eslint --fix".into()), vec!["npx eslint --fix src/a.js", "npx eslint src/a.js"]),
+            (Linter::Set("cargo clippy --fix".into()), vec!["cargo clippy --fix --allow-dirty", "cargo clippy"]),
+            (Linter::Set("ruff check --fix".into()), vec!["ruff check --fix a.py", "ruff check a.py"]),
+        ] {
+            let rule = linter.rule().unwrap();
+            for call in calls {
+                assert!(lets(&rule, "Bash", &Value::Null, Some(call)), "{rule} lets {call}");
+                assert_eq!(command_rules(call)[0], rule, "{call}");
+            }
+        }
+        assert_eq!((Linter::Off.rule(), Linter::None.rule()), (None, None));
+        // A run of before, not given it: its refused call an item, offered
+        // with that rule, to widen. One given it that claude refused all the
+        // same: noted, allowed already, as no rule would change it.
+        let result = refusing(&[("Bash", command("./mach lint --fix dom/a.js"))]);
+        let before = items(&[&result], Way::Change, &strings(&["Read"]), &[], &[], &[]);
+        assert_eq!(before.iter().map(|r| (r.rules.clone(), r.offered())).collect::<Vec<_>>(), [(strings(&["Bash(./mach lint *)", "Bash(./mach *)"]), true)]);
+        let given = strings(&["Read", Linter::Mach.rule().unwrap().as_str()]);
+        let now = items(&[&result], Way::Change, &given, &[], &[], &[]);
+        assert_eq!(now.iter().map(|r| (r.rule(), r.noted.as_deref())).collect::<Vec<_>>(), [("Bash(./mach lint *)", Some(ALREADY))]);
     }
 
     #[test]

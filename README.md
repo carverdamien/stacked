@@ -1409,7 +1409,8 @@ choice, picked with ← →, kept for the stack, and the same as that of the
 comment editor's `Ask agent`:
 
 - `change`: it may change the code within the comment's place; its reply
-  says what changed.
+  says what changed. It may run the checkout's linter on the files it
+  changes, to check them (Linting, below).
 - `the whole stack`, on a patch's comment: a change, with the whole stack in
   its worktree, as for the stack's own comments: it may change any patch,
   add patches anywhere, reorder them. The comment stays on its line, and
@@ -1501,9 +1502,11 @@ What each kind of ask may use is stacked's to give and yours to add to.
 stacked always gives each what it needs: a change, git's history commands,
 the commands that read, and its own `stacked fits` and `stacked export`,
 none of which reaches the network, so that a change cannot touch a remote
-(below); an answer, and a try push's selection, `Read`, `Grep`, `Glob`,
-`LS`, `git show`, `log` and `diff`, and stacked's commands that read the
-stack; a build and test, any command. What else each may use is a list of
+(below), and the checkout's linter, when it has one, to run on the files
+it changes (Linting, below); an answer, and a try push's selection,
+`Read`, `Grep`, `Glob`, `LS`, `git show`, `log` and `diff`, and stacked's
+commands that read the stack; a build and test, any command. What else
+each may use is a list of
 the settings' (Settings, below): `agent.change_tools` for the asks that
 change the stack, nothing unless set; `agent.answer_tools` for answer-only
 asks, `curl` and `jq` unless set, as answers could always run them before
@@ -1709,15 +1712,18 @@ never have landed. `$STACKED_TODO` names another folder to keep the plans
 in, in place of `$TMPDIR/stacked-todo`.
 
 What a change may run reaches no network, unless what its list
-(`agent.change_tools`) adds does: stacked ticks nothing in that list's
-column of the setup, and the setup says which of the agent's tools can
-reach the network (Bash at large, `WebFetch`, `WebSearch`), as a change
-that reaches it could touch a remote. It may run git's history
+(`agent.change_tools`) adds does, or the checkout's linter does: stacked
+ticks nothing in that list's column of the setup, and the setup says
+which of the agent's tools can reach the network (Bash at large,
+`WebFetch`, `WebSearch`), as a change that reaches it could touch a
+remote. It may run git's history
 commands (`status`, `log`, `show`, `diff`, `add`, `restore`, `reset`,
 `commit`, `cherry-pick`, `apply`, `checkout`, `switch`), `git rebase` with
 its plan (`-i`, and `--continue`, `--skip`, `--abort`), git's settings to
-read them (`git config --get`, `--list`), and commands that read (`grep`,
-`rg`, `find`, `cat`, `sed`, `sort` and the like). It may not set git's
+read them (`git config --get`, `--list`), commands that read (`grep`,
+`rg`, `find`, `cat`, `sed`, `sort` and the like), and the checkout's
+linter, when it has one, on the files it changes (Linting, below). It may
+not set git's
 settings (`git -c`, `git config` otherwise), as one can run a program, and
 stacked has claude refuse what would make the rest run another program
 (`--disallowedTools`: `git rebase --exec`, `find -exec`, `rg --pre`, `sort
@@ -2446,7 +2452,7 @@ nothing is linted unless you choose it.
 The linter is the checkout's own setting, `[lint] command` in its
 `.stacked/local.toml`, which `stacked setup lint COMMAND…`, run in the
 checkout, writes: a program and its arguments (`stacked setup lint eslint
---fix`), the files to lint after them. stacked runs it itself, never the
+--fix`), the files to lint after them. A lint job runs it itself, not the
 agent, and with no shell: the command is split into words as a shell
 splits them, quotes and all, and nothing else of a shell's is read, no
 pipe and no variable. A checkout whose top has `./mach`, as Firefox's has,
@@ -2461,6 +2467,25 @@ setting is never written in `~/.stacked/config.toml`, nor read from it,
 which says so if it sets one; `stacked config lint.command VALUE` refuses,
 with `--local` too, and says that `stacked setup lint` writes it, while
 `stacked config lint.command` reads it as any setting.
+
+An ask that changes the stack may run the linter too, on the files it
+changes, to check them: it is given the linter as the checkout's settings
+have it when the ask starts, and no other kind of ask is (an answer and a
+try push's selection only read; a build and test runs any command
+already). It is given the rule the review of a refused call of the linter
+would offer first (The tools the agent could not use, above), so that no
+call of it is refused: `Bash(./mach lint *)` for `./mach lint --fix`, with
+or without `--fix`, on any files; for a linter the checkout sets, its
+program, with what it is asked to do for a broad program (`Bash(eslint *)`
+for `eslint --fix`, `Bash(python3 -m black *)` for `python3 -m black`). A
+linter that no
+narrow rule lets run is not given: a broad program asked nothing narrower,
+whose rule would let it run anything (`sh -c …`, `./mach --verbose lint`),
+or one whose program is in quotes. The ask's prompt names the command:
+``This checkout's linter is `./mach lint --fix`: you may run it on the
+files you change, to check them.`` With no linter, or lint off, nothing is
+given and nothing is said. `stacked setup agent` names the linter, among
+what stacked always gives, in the change column (Settings, below).
 
 The item names the command in use; with none, it reads `Lint the stack`,
 grayed, and the menu says why: `No linter is set for this checkout:
@@ -2886,7 +2911,13 @@ settings:
   starts, as both only read, for you to check before the first try push.
   First comes
   what stacked always gives, which does not change: `always` in the column
-  of each kind of ask that has it, greyed, with nothing to tick. Then the
+  of each kind of ask that has it, greyed, with nothing to tick. Its last
+  line is the checkout's linter, which changes are given (Linting, above),
+  named with the rule that lets it run: `this checkout's linter, ./mach
+  lint --fix, to run on the files a change changes (Bash(./mach lint *))`;
+  or, with none given, why: `the checkout's linter, when it has one: this
+  checkout has none`, `lint is turned off in this checkout`, or that no
+  narrow rule lets it run. Then the
   list holds what the agent says it has (each MCP server, its tools all at
   once or one by one, and the agent's other tools, but those stacked gives
   every ask, said `one of the agent's tools`); what the checkout's own
@@ -3099,7 +3130,8 @@ settings:
   typed, whatever the keys, and the bottom bar names their keys as they
   are there (`enter: a new line · esc: close`).
 - `[lint]`: `command`, the linter of a checkout, which the stack's `Lint the
-  stack` runs (Linting, above): a checkout's own setting alone, read only
+  stack` runs, and which asks that change the stack may run on the files
+  they change (Linting, above): a checkout's own setting alone, read only
   from its `.stacked/local.toml`, which `stacked setup lint` writes; `""`,
   lint turned off there; unset, `./mach lint --fix` where `./mach` is at the
   checkout's top. `stacked config` shows it as a comment, so that what it
@@ -3536,7 +3568,8 @@ is typed: `import.rs`). A fix to one may belong in the other.
   review once it is done.
 - `lint.rs`: linting a stack: the linter of a checkout (its own setting,
   else `./mach lint --fix` where `./mach` is), its command split as a
-  shell splits words; a lint job (its run's `lint`), its turn in the queue
+  shell splits words, and the rule that lets a change run it; a lint job
+  (its run's `lint`), its turn in the queue
   taken as a change's (`ask::claim`), run by `stacked lint-job` in the
   stack's lint worktree, patch by patch, each patch's fixes folded into it
   once the patches above still apply, the rest in a patch at the end with a
@@ -3567,7 +3600,8 @@ is typed: `import.rs`). A fix to one may belong in the other.
   editor, StackED's windows to open again, and the searches of the middle,
   kept between runs under a lock.
 - `setup.rs`: `stacked setup agent`, what each kind of ask may use, one
-  list with a box for each kind: where what it lists comes from (the agent,
+  list with a box for each kind: what stacked always gives, the checkout's
+  linter named; where what it lists comes from (the agent,
   the checkout's claude settings, its skills and its instructions), which
   rules mean the same and are one row, what the checkout's claude settings
   of yours deny, refused to every ask, what the reviews allowed from now
@@ -3575,7 +3609,8 @@ is typed: `import.rs`). A fix to one may belong in the other.
   saving writes.
 - `refusals.rs`: the tools the agent could not use, as items of the
   review of its work: the rule each call refused needs, narrow for a broad
-  program and wider to pick, one item a rule, what is noted and why, the
+  program and wider to pick, the narrowest also the rule that lets a change
+  run the checkout's linter; one item a rule, what is noted and why, the
   agent's word on each; their three states as the review's marks; what this
   work may use for itself, round after round; and what is saved from now
   on, in the checkout's own settings.
@@ -4276,7 +4311,8 @@ room on a middle too narrow, the step waiting for the hunks again;
 `try-push` feature, `tests/try_push.rs` drives the editor as
 `tests/tui.rs` does, a stand-in of its own for claude: a comment asked as
 a try push, `try push` among the comment's choices of how, its ask in a
-worktree of its own, your checkout as it was while it works and after, its prompt
+worktree of its own, your checkout as it was while it works and after, not
+given the checkout's linter as a change is, its prompt
 asking for the tasks the comment asks for, as few or as many as it says,
 exact labels, why each, nothing pushed or changed; its tasks landing in
 the banner as read-only work, listed in the review, why each was selected
@@ -4330,7 +4366,8 @@ of them has, and the commits mach would push; and a push's tasks counted as
 Treeherder shows them (each by its last run, each run of a rebuild, those
 not seen), its summary, and where Lando answers, as `.lando.ini` says;
 `ask.rs`, that a try push's ask is given what an answer is and its own
-list, and is asked for its tasks and their runs; `setup.rs`, the column of
+list, not the linter a change is given, and is asked for its tasks and
+their runs; `setup.rs`, the column of
 try pushes, ticked at first as the read-only one, its own once ticked, in
 what saving writes, and line by line `read only` for both read-only kinds;
 `refusals.rs`, what changes things noted for a try push's selection, as
@@ -4370,7 +4407,13 @@ kept out of git's sight, never in the settings' file, which is passed over
 and said if it sets one; printed with where it comes from; turned off,
 and that kept over the default of `./mach`; `stacked config` refusing to
 write it but reading it; refused in a settings file git tracks and outside
-a checkout. `tests/web.rs` and `tests/app.rs` show the item in the
+a checkout. It shows a change, of the stack or of a patch, given the
+checkout's linter, with `./mach` at its top or one set over it, as the
+rule a refused call of it is offered with, after what stacked gives and
+before what the settings add, and its prompt naming the command; an
+answer and a build and test not given it, nor a change with lint off or
+no linter; and `stacked setup agent` naming it, or saying the checkout has
+none. `tests/web.rs` and `tests/app.rs` show the item in the
 browser and in StackED, and also that a reviewer's edit is headed by what
 it edits, the turn it edits redacted, and that a pull's review rejects
 nothing there either. `lint.rs` tests a command split as a shell's
@@ -4459,11 +4502,19 @@ program on PATH, one not, a builtin and a tool stacked gives left out),
 nothing read out of the checkout; the row of claude's tool for skills,
 with what it lets an answer do; the rules the reviews allowed from now on,
 a row each, unticked and ticked again, what saving takes out of their
-list; and the setup asked line by line, a question a row for every kind.
+list; the linter changes are given, named where the checkout is known,
+with the rule that lets it run, or why none is given (none, lint off, no
+narrow rule), on the screen and line by line alike; and the setup asked
+line by line, a question a row for every kind.
 Those in `refusals.rs` show a command line cut into the commands claude
 matches apart, quotes and `$(…)` kept whole; a command's rule, its program
 for a plain one, narrower for a broad one with the wider ones to pick,
-what claude passes over first passed over, none for a shell's own; how a
+what claude passes over first passed over, none for a shell's own; the
+narrowest, none for a broad program asked nothing narrower; the rule that
+lets a change run the checkout's linter, the one a refused call of it is
+offered with, which lets each call of it on files run; a call of it that a
+run of before was refused, not given it, an item offered with that rule,
+and one refused though given it noted as allowed already; how a
 rule lets a call (the older prefix form, a pattern, an MCP server's tools,
 WebFetch's domain); the calls refused as items, one a rule, each with its
 calls and the agent's word, a pipe's command given already left out; what
