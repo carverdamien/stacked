@@ -10616,6 +10616,65 @@ fn the_ask_dialog_opens_with_nothing_set_steps_each_line_with_enter_and_keeps_no
 }
 
 #[test]
+fn the_ask_dialog_opens_on_the_permission_line_and_the_first_enter_sets_answer_only() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    let cursor = as_drawn(stacked::paint::on_cursor(ratatui::style::Style::new()));
+    // The dialog opened from `what`: the cursor on the permission's line,
+    // drawn there, not on the effort's line nor on Ask Now, and the bottom
+    // bar and `?` say what Enter does there. The first Enter sets the first
+    // option, answer only, and nothing else; then Esc.
+    let first_enter = |app: &mut App, what: &str| {
+        let d = dialog(app).clone();
+        assert_eq!((d.line, d.permission, d.effort), (0, None, None), "{what}");
+        assert_eq!(d.permission_labels()[0], "answer only", "{what}");
+        let buf = drawn(app, 30);
+        let screen = text_of(&buf);
+        let looks_at = |text: &str| {
+            let c = &buf[at(&screen, text)];
+            (c.fg, c.bg, c.modifier)
+        };
+        assert_eq!(looks_at("Permission: [ — ]"), cursor, "{what}: the cursor on the permission's line\n{screen}");
+        assert_ne!(looks_at("Effort: [ — ]"), cursor, "{what}: not on the effort's line\n{screen}");
+        assert_ne!(looks_at("< Ask Now >"), cursor, "{what}: not on Ask Now\n{screen}");
+        assert_eq!(app.hint(), "↑↓ choose · enter: set the permission · esc: cancel · ?: what it does", "{what}");
+        assert!(app.help()[0].starts_with("Press Enter to set what the agent may do: answer only first"), "{what}: {:?}", app.help());
+        keys(app, &[KeyCode::Enter]);
+        let d = dialog(app);
+        assert_eq!((d.line, d.permission().map(|p| p.label()), d.effort), (0, Some("answer only"), None), "{what}");
+        assert!(draw(app).contains(" Permission: [answer only] "), "{what}");
+        keys(app, &[KeyCode::Esc]);
+    };
+    // The comment being written, from the menu Esc opens; Esc goes back to
+    // writing it.
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Enter]);
+    typed(&mut app, "why so loud?");
+    keys(&mut app, &[KeyCode::Esc]);
+    choose(&mut app, "Ask agent…");
+    first_enter(&mut app, "the comment being written");
+    assert!(matches!(&app.mode, Mode::Edit(_)), "{:?}", app.mode);
+    // Saved: the comment's own Ask agent….
+    keys(&mut app, &[KeyCode::Esc]);
+    choose(&mut app, "Save it");
+    keys(&mut app, &[KeyCode::Down]);
+    assert!(app.rows[app.cursor].head);
+    choose(&mut app, "Ask agent…");
+    first_enter(&mut app, "a comment");
+    // The comments listed: Ask agent about all…, on the stack's header.
+    keys(&mut app, &[KeyCode::Left, KeyCode::Home]);
+    choose(&mut app, "Comment on the stack…");
+    save(&mut app, "and the rest");
+    to_comment(&mut app, "and the rest");
+    keys(&mut app, &[KeyCode::Left]);
+    assert!(app.on_stack);
+    choose(&mut app, "Ask agent about all…");
+    first_enter(&mut app, "the comments listed");
+    assert_eq!(app.mode, Mode::Normal);
+}
+
+#[test]
 fn ask_now_saves_what_changed_first_and_asks_at_the_permission_and_effort_set() {
     let (_tmp, db, _src) = setup();
     fake_claude();
