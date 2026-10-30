@@ -470,10 +470,13 @@ pub fn comment_rows(n: &Note, width: usize, deco: &Deco) -> Vec<Row> {
         if t.deleted {
             continue;
         }
-        let (name, author) = match t.role {
-            Role::You => ("you", By::You),
-            Role::Agent => ("agent", By::Agent),
-            Role::Reviewer => (t.tag.as_deref().unwrap_or("reviewer"), By::Reviewer),
+        // Who: a reviewer's edit by what it edits, a turn an edit replaces
+        // said redacted.
+        let name = crate::thread::said_by(&t);
+        let author = match t.role {
+            Role::You => By::You,
+            Role::Agent => By::Agent,
+            Role::Reviewer => By::Reviewer,
         };
         // The references it attaches, kept for under the comment. Written
         // in the editor, it is shown there only; written again in its
@@ -498,10 +501,13 @@ pub fn comment_rows(n: &Note, width: usize, deco: &Deco) -> Vec<Row> {
             by: Some(author.clone()),
             ..r
         };
-        out.push(Row {
-            who: true,
-            ..of(row(Kind::Comment, format!("     {BAR} {name}:"), false))
-        });
+        // Folded where it is longer than the pane, as an edit's may be.
+        for piece in crate::paint::wrap(&format!("{name}:"), width.saturating_sub(7).max(20)) {
+            out.push(Row {
+                who: true,
+                ..of(row(Kind::Comment, format!("     {BAR} {piece}"), false))
+            });
+        }
         // What they said, read as markdown.
         for pieces in crate::markdown::render(&body, width.saturating_sub(9)) {
             let (pieces, names) = marked(pieces, &nums);

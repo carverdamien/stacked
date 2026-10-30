@@ -672,3 +672,67 @@ fn the_tools_the_agent_could_not_use_are_reviewed_in_the_browser_too() {
     ask(port, &host, &input, "k Enter -\n");
     until(&mut events, "allowed", |l| text(l).contains("✓ Bash(searchfox-cli *) · from now on"));
 }
+
+/// On stack `s` of `db`, ann's thread on its first patch's title: her
+/// comment, your reply, then her edit of her comment on Phabricator, her
+/// comment as it was redacted. And a pull waiting for your review, holding
+/// her new comment on the second patch's title.
+fn pulled_work(db: &Path) {
+    use stacked::db::{Note, Run, RunState};
+    use stacked::thread::fenced;
+    stacked::db::Db::edit(db, |d| {
+        let s = d.stack("s").unwrap().clone();
+        let (first, second) = (d.patch(&s.patches[0]).clone(), d.patch(&s.patches[1]).clone());
+        let thread = [fenced("reviewer ann redacted", "Hi Da"), "Hi ann! My name is Damien".to_string(), fenced("reviewer ann edit Hi Da", "Hi Damien!")].join("\n");
+        let note = |p: &stacked::db::Patch, id: &str, text: String| Note {
+            change: p.change.clone(),
+            id: id.into(),
+            line: stacked::view::title_key(p),
+            file: stacked::view::MSG_PATH.into(),
+            preview: p.title().into(),
+            text,
+            by: Some("ann".into()),
+            remote: vec![id.trim_start_matches("phab:").into()],
+            ..Default::default()
+        };
+        d.set_note(note(&first, "phab:c1", thread))?;
+        d.add_run(Run {
+            id: "pull-1".into(),
+            what: "pull".into(),
+            stack: "s".into(),
+            state: RunState::Done,
+            held: Some(stacked::held::Held {
+                at: stacked::db::now(),
+                opened: vec![note(&second, "phab:c2", fenced("reviewer ann", "Why add b?"))],
+                ..Default::default()
+            }),
+            ..Default::default()
+        })
+        .map(|_| ())
+    })
+    .unwrap();
+}
+
+#[test]
+fn a_reviewer_s_edit_is_headed_so_and_a_pull_s_review_rejects_nothing_in_the_browser_too() {
+    let (_tmp, db) = setup();
+    pulled_work(&db);
+    stacked::config::init(stacked::config::Config::default());
+    let (port, token) = stacked::web::start(db.clone()).unwrap();
+    let (host, input) = (format!("127.0.0.1:{port}"), format!("POST /input?t={token}"));
+    let mut events = events(port, &token, 120);
+    // ann's comment as it was, redacted; her edit, by what it edits.
+    let seen = until(&mut events, "her edit", |l| text(l).contains("▎ ann's edit of the comment that said \"Hi Da\":"));
+    assert!(seen.iter().any(|l| text(l).contains("▎ ann (redacted):")), "{seen:#?}");
+    // The pull's review: its part accepted; Delete rejects nothing, and says
+    // why; closing it, nothing to reject either.
+    ask(port, &host, &input, "k Esc -\n");
+    ask(port, &host, &input, "k Enter -\n");
+    until(&mut events, "the part", |l| text(l).contains("✓ ✉ message: Bug 2 - add b · Why add b?"));
+    ask(port, &host, &input, "k Delete -\n");
+    until(&mut events, "why", |l| text(l).contains("a comment pulled from Phabricator cannot be rejected: close the review to file it"));
+    ask(port, &host, &input, "k Esc -\n");
+    let seen = until(&mut events, "the dialog", |l| text(l).contains("Keep reviewing"));
+    assert!(seen.iter().any(|l| text(l).contains("Close review")), "{seen:#?}");
+    assert!(!seen.iter().any(|l| text(l).contains("Reject all remaining")), "{seen:#?}");
+}

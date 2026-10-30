@@ -2015,6 +2015,13 @@ impl Db {
         Ok(db)
     }
 
+    /// Whether it was read from a checkpoint, and whether something read its
+    /// whole history since: for the tests of what reads none.
+    #[cfg(test)]
+    pub(crate) fn read_from_checkpoint(&self) -> (bool, bool) {
+        (self.cp.is_some(), self.shadow.get().is_some())
+    }
+
     /// The whole history taken in, if it was read: before anything changes.
     fn promote(&mut self) {
         if let Some(whole) = self.shadow.take() {

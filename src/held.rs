@@ -8,7 +8,9 @@
 //! their replies, and their comments edited on Phabricator since they were
 //! filed. Each part is accepted or rejected, the change of the stack as
 //! one; once every part is, the review closes: what was accepted is
-//! applied, and the rest is dropped for good. Until then, the stack is not
+//! applied, and the rest is dropped for good. A pull's parts are not
+//! rejected: closing its review files every comment it pulled, a reply to
+//! a thread you closed reopening that thread. Until then, the stack is not
 //! edited by hand if the agent changed it, and the comments it answered
 //! are not written on. Replies that are all their work holds may also be
 //! taken at once, one by one, out of its review, unless that work goes on
@@ -28,7 +30,7 @@ use std::collections::{BTreeMap, HashMap};
 use serde::{Deserialize, Serialize};
 
 use crate::db::{Db, Error, Note, Patch, Result, Run, err, now};
-use crate::thread::{Role, all_turns, append_turn, edit_turn};
+use crate::thread::{Role, Turn, all_turns, append_turn, render_thread};
 
 /// What an ask brought back, held until it is reviewed.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
@@ -108,19 +110,38 @@ pub struct Reply {
     pub remote: Option<String>,
     /// Pulled, a reviewer's comment edited on Phabricator since it was
     /// filed: what it said, as its turn of the thread says it until the
-    /// edit is accepted. Accepted, the edit takes the place of that turn.
+    /// edit is accepted. Accepted, the edit is their latest turn, and that
+    /// turn is redacted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub was: Option<String>,
+    /// Pulled, to a thread you closed: that thread as it was when you
+    /// closed it, kept by the pull, which read it from the history, so that
+    /// its review shows it, and accepting reopens it, without reading the
+    /// history again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub closed: Option<Closed>,
     /// Your answer to it, written in its review: it follows it in its
     /// thread, and the work goes back to the agent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub answer: Option<String>,
 }
 
+/// A thread you closed, as a pull keeps it with a reviewer's reply to it:
+/// as it was when you closed it, where it was last open (on its patch, or
+/// moved to the stack's comments), and the rev of the record that closed
+/// it, its latest then. Written since, the thread's latest record is
+/// another: then it is read again from the history.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+pub struct Closed {
+    pub rev: usize,
+    pub note: Note,
+}
+
 impl Reply {
     /// Thread `text` with this reply as its last turn: the reviewer's who
     /// wrote it, or the agent's; your answer to it after, if you wrote one.
-    /// A reviewer's edit is in the place of their turn as it was.
+    /// A reviewer's edit is their edit of their turn as it was, which it
+    /// redacts (`edited`).
     pub fn after(&self, text: &str) -> String {
         let text = match (&self.reviewer, &self.was) {
             (Some(who), Some(was)) => edited(text, who, was, &self.text),
@@ -145,21 +166,35 @@ impl Reply {
     }
 }
 
-/// Thread `text` with the turn of reviewer `who` that says `was` saying
-/// `now`, as Phabricator has their comment since they edited it; that turn
-/// gone (rewound, say), `now` is their last turn.
+/// Thread `text` with the comment of reviewer `who` that said `was` saying
+/// `now`, as Phabricator has it since they edited it: their edit of it, as
+/// their last turn, its heading quoting what it edits (`ann's edit of the
+/// comment that said "Hi Da"`). Their turn that said it, the latest version
+/// of their comment, stays as it was, for what answered it to read as it
+/// was written, redacted. That turn gone (rewound, say), `now` is their
+/// last turn, and nothing is redacted.
 fn edited(text: &str, who: &str, was: &str, now: &str) -> String {
     // Each line as it ends aside: Phabricator's may end with a carriage
     // return, a turn's lines do not.
     let plain = |s: &str| s.lines().map(str::trim_end).collect::<Vec<_>>().join("\n").trim().to_string();
     let was = plain(was);
-    let at = all_turns(text)
+    let mut turns = all_turns(text);
+    let at = turns
         .iter()
-        .position(|t| t.role == Role::Reviewer && !t.deleted && t.tag.as_deref() == Some(who) && plain(&t.body) == was);
-    match at.and_then(|i| edit_turn(text, i, now)) {
-        Some(text) => text,
-        None => append_turn(text, Role::Reviewer, now, Some(who)),
-    }
+        .rposition(|t| t.role == Role::Reviewer && !t.deleted && !t.redacted && t.tag.as_deref() == Some(who) && plain(&t.body) == was);
+    let edit = at.map(|i| {
+        turns[i].redacted = true;
+        turns[i].body.lines().next().unwrap_or("").trim().to_string()
+    });
+    turns.push(Turn {
+        role: Role::Reviewer,
+        body: now.trim().to_string(),
+        tag: Some(who.to_string()),
+        deleted: false,
+        edit,
+        redacted: false,
+    });
+    render_thread(&turns)
 }
 
 /// Whether run `r` is a pull of reviews from Phabricator: the work it
@@ -480,13 +515,96 @@ fn under_review(db: &Db, id: &str) -> Result<(Run, Held, Review)> {
     Ok((r, h, v))
 }
 
+/// Where a reply held goes, as the database stands, its history not read:
+/// what the review shows of it, and where accepting it files it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Goes<'a> {
+    /// Into its thread, open: where it is now, moved since or not.
+    Open(&'a Note),
+    /// A reviewer's, into a thread you closed, which accepting it reopens:
+    /// the thread as the pull kept it, if it did.
+    Reopens(Option<&'a Note>),
+    /// Nowhere: its thread is gone, or never was.
+    Nowhere,
+}
+
+/// Where reply `rp`, of work on stack `name`, goes (`Goes`).
+pub fn goes<'a>(db: &'a Db, name: &str, rp: &'a Reply) -> Goes<'a> {
+    if let Some(n) = db.note(&rp.change, &rp.id) {
+        return Goes::Open(n);
+    }
+    // The agent's: no comment is closed while the agent has it, nor while
+    // its reply waits for review.
+    if rp.reviewer.is_none() {
+        return Goes::Nowhere;
+    }
+    // Open elsewhere: moved since, with its lines, to the stack's comments
+    // or back. Known by its first comment, which the thread holds wherever
+    // it is: as the pull kept the thread, else as its id names it.
+    let kept = rp.closed.as_ref().map(|c| &c.note);
+    let first = kept.and_then(|n| n.remote.first()).map(String::as_str).or_else(|| rp.id.strip_prefix("phab:"));
+    if let Some(n) = first.and_then(|f| holding(db, name, f)) {
+        return Goes::Open(n);
+    }
+    match kept {
+        Some(n) => Goes::Reopens(Some(n)),
+        // Closed, though the pull kept no copy of it: held while it was
+        // open, or by a stacked of before.
+        None if db.note_rev(&rp.change, &rp.id).is_some() => Goes::Reopens(None),
+        None => Goes::Nowhere,
+    }
+}
+
+/// The open comment of stack `name` that holds remote comment `remote`, if
+/// one does.
+fn holding<'a>(db: &'a Db, name: &str, remote: &str) -> Option<&'a Note> {
+    db.stack_notes(name).into_iter().find(|n| n.remote.iter().any(|r| r == remote))
+}
+
+/// Comment (change, id) as its history has it last open, if it ever was:
+/// the whole history read.
+fn last_open(db: &Db, change: &str, id: &str) -> Option<Note> {
+    db.note_history(change, id).into_iter().rev().find(|(_, n)| !n.text.is_empty()).map(|(_, n)| n.clone())
+}
+
+/// The thread of reviewer's reply `rp`, of work on stack `name`, which you
+/// closed, reopened as `Reopen it` reopens a comment: as it was when
+/// closed, not asked again. As the pull kept it, unless the thread was
+/// written since: then as its history has it last open, which is read
+/// only here, as you accept the reply. Open elsewhere by then, that one,
+/// not reopened. The thread, and whether it reopened it; none if it never
+/// was.
+fn reopen(db: &mut Db, name: &str, rp: &Reply) -> Result<Option<(Note, bool)>> {
+    let kept = rp.closed.as_ref().filter(|c| db.note_rev(&rp.change, &rp.id) == Some(c.rev)).map(|c| c.note.clone());
+    let Some(was) = kept.or_else(|| last_open(db, &rp.change, &rp.id)) else { return Ok(None) };
+    if let Some(n) = was.remote.first().and_then(|f| holding(db, name, f)) {
+        return Ok(Some((n.clone(), false)));
+    }
+    let n = Note { queued: None, ..was };
+    db.set_note(n.clone())?;
+    Ok(Some((n, true)))
+}
+
 /// Reply `rp` put into its thread, as the agent's turn or the reviewer's,
 /// the comment moved to stack `name`'s comments if it needs more than its
-/// patch.
-fn apply_reply(db: &mut Db, name: &str, rp: &Reply) -> Result<()> {
-    // Gone meanwhile: nothing to answer.
-    let Some(mut n) = db.note(&rp.change, &rp.id).cloned() else { return Ok(()) };
-    if !rp.text.trim().is_empty() {
+/// patch. A reviewer's reply to a thread you closed reopens it first
+/// (`reopen`). Whether it reopened one.
+fn apply_reply(db: &mut Db, name: &str, rp: &Reply) -> Result<bool> {
+    let says = !rp.text.trim().is_empty();
+    let open = match goes(db, name, rp) {
+        Goes::Open(n) => Some(n.clone()),
+        Goes::Reopens(_) if says => None,
+        // Gone meanwhile, or nothing to say in it: nothing to answer.
+        _ => return Ok(false),
+    };
+    let (mut n, reopened) = match open {
+        Some(n) => (n, false),
+        None => match reopen(db, name, rp)? {
+            Some(at) => at,
+            None => return Ok(false),
+        },
+    };
+    if says {
         let mut remote = n.remote.clone();
         remote.extend(rp.remote.clone());
         // The agent's answer ends a failed ask; a reviewer's reply does not.
@@ -502,7 +620,7 @@ fn apply_reply(db: &mut Db, name: &str, rp: &Reply) -> Result<()> {
     if let Some(why) = &rp.promote {
         crate::ask::promote(db, name, &n, why)?;
     }
-    Ok(())
+    Ok(reopened)
 }
 
 /// Whether the replies of the work run `r` holds may be taken at once, out
@@ -531,9 +649,9 @@ pub fn can_take(db: &Db, r: &Run) -> Result<()> {
 }
 
 /// Takes reply `k` of what run `id` brought back into its thread at once,
-/// accepted, out of the review, if `can_take` lets it. The last reply
-/// taken, the review closes: the comments the ask was about stay open, as
-/// any comment does.
+/// accepted, out of the review, if `can_take` lets it: a reviewer's reply
+/// to a thread you closed reopens it. The last reply taken, the review
+/// closes: the comments the ask was about stay open, as any comment does.
 pub fn take(db: &mut Db, id: &str, k: usize) -> Result<()> {
     let (r, h, mut v) = under_review(db, id)?;
     can_take(db, &r)?;
@@ -557,11 +675,35 @@ pub fn take(db: &mut Db, id: &str, k: usize) -> Result<()> {
 }
 
 /// Saves the marks of run `id`'s review, to take up again: nothing is
-/// applied.
+/// applied. A pull's parts are not rejected.
 pub fn save(db: &mut Db, id: &str, marks: &BTreeMap<String, bool>) -> Result<()> {
-    let (_, _, mut v) = under_review(db, id)?;
+    let (r, h, mut v) = under_review(db, id)?;
+    if pulled(&r) && rejects(&h, marks) {
+        return err(FILED);
+    }
     v.marks = marks.clone();
     db.set_review(id, v).map(|_| ())
+}
+
+/// What refusing to reject a comment pulled from Phabricator says: each is
+/// filed as its pull's review closes.
+pub const FILED: &str = "a comment pulled from Phabricator cannot be rejected: close the review to file it";
+
+/// Whether `marks` rejects a part of work `h`.
+fn rejects(h: &Held, marks: &BTreeMap<String, bool>) -> bool {
+    h.parts().iter().any(|p| marks.get(&p.key()) == Some(&false))
+}
+
+/// The marks of the review of the work run `r` holds, as saved; of a
+/// pull's, every part accepted, as none is rejected: closing its review
+/// files each comment it pulled. Marks a stacked of before saved
+/// rejecting some are passed over.
+pub fn marks(db: &Db, r: &Run) -> BTreeMap<String, bool> {
+    let mut marks = db.review(&r.id).map(|v| v.marks.clone()).unwrap_or_default();
+    if pulled(r) {
+        marks.extend(r.held.iter().flat_map(Held::parts).map(|p| (p.key(), true)));
+    }
+    marks
 }
 
 /// What you wrote in the review of work `r`: the comments you opened
@@ -752,8 +894,10 @@ pub fn asking_open<'a>(db: &'a Db, r: &Run) -> Vec<(usize, &'a Note)> {
 /// unmarked accepted or rejected as `rest` says (with none, every part must
 /// be marked). Rejecting the change of the stack rejects its replies and
 /// comments too. What is accepted is applied, the change of the stack only
-/// if the stack is still the one the agent took; the rest is dropped. What
-/// came of it, said.
+/// if the stack is still the one the agent took; the rest is dropped. A
+/// pull's parts are all accepted, a mark or `rest` rejecting any refused:
+/// each comment is filed, a reviewer's reply to a thread you closed
+/// reopening it. What came of it, said.
 pub fn close(db: &mut Db, id: &str, marks: &BTreeMap<String, bool>, rest: Option<bool>) -> Result<String> {
     close_with(db, id, marks, rest, false)
 }
@@ -772,6 +916,12 @@ pub fn close_with(db: &mut Db, id: &str, marks: &BTreeMap<String, bool>, rest: O
     if !opened.is_empty() || answers > 0 {
         return err("you wrote in its review: it is not accepted nor rejected, but sent back to the agent");
     }
+    // A pull's: every comment it pulled is filed, none rejected.
+    let rest = match pulled(&r) {
+        true if rest == Some(false) || rejects(&h, marks) => return err(FILED),
+        true => Some(true),
+        false => rest,
+    };
     let mut all = BTreeMap::new();
     for p in h.parts() {
         if matches!(p, Part::Reply(k) if v.taken.contains(&k)) {
@@ -797,10 +947,12 @@ pub fn close_with(db: &mut Db, id: &str, marks: &BTreeMap<String, bool>, rest: O
         return err("the stack changed since this change was made from it: it can only be rejected");
     }
     // The replies where their comments are, then the change, the comments
-    // on its lines following them, then the comments opened.
+    // on its lines following them, then the comments opened. A reviewer's
+    // reply to a thread you closed reopens it.
+    let mut reopened = 0;
     for (k, rp) in h.replies.iter().enumerate() {
-        if all.get(&Part::Reply(k).key()) == Some(&true) {
-            apply_reply(db, &r.stack, rp)?;
+        if all.get(&Part::Reply(k).key()) == Some(&true) && apply_reply(db, &r.stack, rp)? {
+            reopened += 1;
         }
     }
     // Done with, the comments that asked are closed: a closed comment does
@@ -866,6 +1018,9 @@ pub fn close_with(db: &mut Db, id: &str, marks: &BTreeMap<String, bool>, rest: O
         (false, s) if s.is_empty() && h.lint.is_some() => "what the linter reported, read".to_string(),
         (false, s) => s,
     };
+    if reopened > 0 {
+        said += &format!("; {}", count(reopened, "comment reopened", "comments reopened"));
+    }
     if let Some(i) = crate::ask::info(&r) {
         said += &settled.said(i.way);
     }
@@ -952,22 +1107,52 @@ mod tests {
     use crate::thread::fenced;
 
     #[test]
-    fn an_edit_on_phabricator_takes_the_place_of_its_turn_as_it_was() {
+    fn an_edit_on_phabricator_is_the_reviewer_s_latest_turn_and_the_turn_it_edits_is_redacted() {
         let edit = |was: &str, now: &str| Reply {
             text: now.into(),
             reviewer: Some("ann".into()),
             was: Some(was.into()),
             ..Default::default()
         };
-        // ann's comment as filed, your answer, bob's reply saying the same:
-        // hers edited is in its place, the rest as it was. Phabricator's
-        // lines end with a carriage return, a turn's do not.
-        let text = [fenced("reviewer ann", "Fine.\nBut why?"), "Because.".to_string(), fenced("reviewer bob", "Fine.\nBut why?")].join("\n");
+        let ann = |text: &str| fenced("reviewer ann", text);
+        let turns = |text: &str| all_turns(text).iter().enumerate().map(|(i, t)| (t.name(i), t.body.clone())).collect::<Vec<_>>();
+        let named = |pairs: &[(&str, &str)]| pairs.iter().map(|(n, b)| (n.to_string(), b.to_string())).collect::<Vec<_>>();
+        // Nothing after her comment: it stays, redacted, her edit after it
+        // quoting it.
+        let once = edit("Hi Da", "Hi Damien").after(&ann("Hi Da"));
+        assert_eq!(once, "```reviewer ann redacted\nHi Da\n```\n```reviewer ann edit Hi Da\nHi Damien\n```");
+        // Edited again: the latest version's turn redacted in its turn, the
+        // new edit quoting it.
+        let twice = edit("Hi Damien", "Hi Damien!").after(&once);
+        assert_eq!(
+            turns(&twice),
+            named(&[
+                ("ann's comment (redacted)", "Hi Da"),
+                ("ann's edit of the comment that said \"Hi Da\" (redacted)", "Hi Damien"),
+                ("ann's edit of the comment that said \"Hi Damien\"", "Hi Damien!"),
+            ])
+        );
+        // Your reply after it: it stays after what it answered, the edit
+        // after it.
+        let text = [ann("Hi Da"), "Hi ann! My name is Damien".to_string()].join("\n");
+        let replied = edit("Hi Da", "Hi Damien!").after(&text);
+        assert_eq!(
+            turns(&replied),
+            named(&[
+                ("ann's comment (redacted)", "Hi Da"),
+                ("your reply", "Hi ann! My name is Damien"),
+                ("ann's edit of the comment that said \"Hi Da\"", "Hi Damien!"),
+            ])
+        );
+        // Phabricator's lines end with a carriage return, a turn's do not;
+        // bob's turn saying the same is not hers.
+        let text = [ann("Fine.\nBut why?"), "Because.".to_string(), fenced("reviewer bob", "Fine.\nBut why?")].join("\n");
         assert_eq!(
             edit("Fine.\r\nBut why?", "Fine, but why?").after(&text),
-            "```reviewer ann\nFine, but why?\n```\nBecause.\n```reviewer bob\nFine.\nBut why?\n```"
+            "```reviewer ann redacted\nFine.\nBut why?\n```\nBecause.\n```reviewer bob\nFine.\nBut why?\n```\n```reviewer ann edit Fine.\nFine, but why?\n```"
         );
-        // Its turn gone, rewound away say: the edit is ann's last turn.
+        // Its turn gone, rewound away say: the edit is ann's last turn,
+        // nothing redacted.
         assert_eq!(edit("Never said.", "Said now.").after(&text), format!("{text}\n```reviewer ann\nSaid now.\n```"));
         // Said as what it is.
         let reply = Reply {
@@ -982,6 +1167,231 @@ mod tests {
         assert_eq!(h.said(), "1 reply, 1 edited comment");
         let marks = [("reply 0".to_string(), true), ("reply 1".to_string(), false)].into();
         assert_eq!(said(&h, &marks), "1 reply rejected; 1 edited comment accepted");
+    }
+
+    /// A database at `path` holding ann's thread `phab:a1` on change `c`,
+    /// your answer in it, closed since; and pull `run` holding `replies`,
+    /// each kept with that thread as it was when closed. The thread as it
+    /// was.
+    fn closed_thread(path: &std::path::Path, run: &str, replies: Vec<Reply>) -> Note {
+        let open = Note {
+            change: "c".into(),
+            id: "phab:a1".into(),
+            line: "+x".into(),
+            text: format!("{}\nBecause.", fenced("reviewer ann", "Why?")),
+            by: Some("ann".into()),
+            remote: vec!["a1".into()],
+            ..Default::default()
+        };
+        Db::create(path).unwrap();
+        Db::edit(path, |db| {
+            db.set_note(open.clone())?;
+            db.set_note(Note { text: String::new(), ..open.clone() })?;
+            let kept = Closed {
+                rev: db.note_rev("c", "phab:a1").unwrap(),
+                note: db.note_history("c", "phab:a1")[0].1.clone(),
+            };
+            let replies = replies.into_iter().map(|rp| Reply { closed: Some(kept.clone()), ..rp }).collect();
+            pull_run(db, run, replies)?;
+            Ok(kept.note)
+        })
+        .unwrap()
+    }
+
+    /// Pull `run` of stack `s`, holding `replies`, waiting for review.
+    fn pull_run(db: &mut Db, run: &str, replies: Vec<Reply>) -> Result<()> {
+        db.add_run(Run {
+            id: run.into(),
+            what: "pull".into(),
+            stack: "s".into(),
+            state: crate::db::RunState::Done,
+            held: Some(Held { at: now(), replies, ..Default::default() }),
+            ..Default::default()
+        })
+        .map(|_| ())
+    }
+
+    /// ann's reply `text`, Phabricator's comment `remote`, to thread
+    /// `phab:a1` of change `c`.
+    fn ann_says(text: &str, remote: &str) -> Reply {
+        Reply {
+            change: "c".into(),
+            id: "phab:a1".into(),
+            text: text.into(),
+            reviewer: Some("ann".into()),
+            remote: Some(remote.into()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_reviewer_s_reply_to_a_comment_you_closed_reopens_it_as_it_was_once_accepted() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("db.jsonl");
+        let open = closed_thread(&path, "pull-1", vec![ann_says("Still?", "a2")]);
+        let db = Db::load(&path).unwrap();
+        let rp = &db.run("pull-1").unwrap().held.as_ref().unwrap().replies[0];
+        // Where it goes: into the thread as it was when closed, reopened.
+        assert_eq!(goes(&db, "s", rp), Goes::Reopens(Some(&open)));
+        // The agent's to it would go nowhere: none is closed while the agent
+        // has it, nor while its reply waits.
+        let agent_s = Reply { reviewer: None, ..rp.clone() };
+        assert_eq!(goes(&db, "s", &agent_s), Goes::Nowhere);
+        drop(db);
+        // A pull's parts are not rejected, a mark or the rest.
+        let reject = [("reply 0".to_string(), false)].into();
+        assert_eq!(Db::edit(&path, |db| close(db, "pull-1", &reject, None)).unwrap_err().0, FILED);
+        assert_eq!(Db::edit(&path, |db| close(db, "pull-1", &Default::default(), Some(false))).unwrap_err().0, FILED);
+        assert_eq!(Db::edit(&path, |db| save(db, "pull-1", &reject)).unwrap_err().0, FILED);
+        // Closed, every part accepted: the thread reopened as it was, not
+        // asked again, then her reply its last turn, its comment's id kept.
+        let said = Db::edit(&path, |db| close(db, "pull-1", &Default::default(), None)).unwrap();
+        assert_eq!(said, "1 reply accepted; 1 comment reopened");
+        let db = Db::load(&path).unwrap();
+        let n = db.note("c", "phab:a1").unwrap();
+        assert_eq!(n.text, format!("{}\nBecause.\n{}", fenced("reviewer ann", "Why?"), fenced("reviewer ann", "Still?")));
+        assert_eq!((n.remote.clone(), n.queued.clone(), n.line.as_str()), (vec!["a1".to_string(), "a2".to_string()], None, "+x"));
+        // Reopened, then replied to: as `Reopen it` reopens it, then as her
+        // reply is filed in a thread open.
+        let history = db.note_history("c", "phab:a1");
+        let last: Vec<&str> = history.iter().rev().take(2).map(|(_, n)| n.text.as_str()).collect();
+        assert_eq!(last, [n.text.as_str(), open.text.as_str()]);
+    }
+
+    #[test]
+    fn a_reply_taken_at_once_or_sent_back_with_the_work_reopens_the_comment_too() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("db.jsonl");
+        closed_thread(&path, "pull-1", vec![ann_says("Still?", "a2")]);
+        // Taken at once: reopened, the review closed with it.
+        Db::edit(&path, |db| take(db, "pull-1", 0)).unwrap();
+        let db = Db::load(&path).unwrap();
+        assert!(db.note("c", "phab:a1").unwrap().text.ends_with(&fenced("reviewer ann", "Still?")));
+        assert!(db.review("pull-1").is_some_and(|v| v.closed));
+        drop(db);
+        // Sent back with the agent's work, its replies filed: one of a
+        // reviewer's to a thread you closed reopens it there too, the
+        // agent's to the comment it was asked about in its thread.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("db.jsonl");
+        closed_thread(&path, "pull-1", vec![]);
+        Db::edit(&path, |db| {
+            let kept = Closed {
+                rev: db.note_rev("c", "phab:a1").unwrap(),
+                note: db.note_history("c", "phab:a1")[0].1.clone(),
+            };
+            db.set_note(Note {
+                change: "c".into(),
+                id: "+y".into(),
+                line: "+y".into(),
+                text: "Why y?".into(),
+                ..Default::default()
+            })?;
+            let agent_s = Reply {
+                change: "c".into(),
+                id: "+y".into(),
+                text: "Because of x.".into(),
+                tag: "answer".into(),
+                answer: Some("And z?".into()),
+                ..Default::default()
+            };
+            db.add_run(Run {
+                id: "work-1".into(),
+                what: "answer".into(),
+                stack: "s".into(),
+                state: crate::db::RunState::Done,
+                ask: Some(serde_json::json!({"way": "answer", "scope": "stack", "from": 1, "notes": [{"label": "1", "change": "c", "id": "+y"}]})),
+                held: Some(Held {
+                    at: now(),
+                    replies: vec![agent_s, Reply { closed: Some(kept), ..ann_says("Still?", "a2") }],
+                    ..Default::default()
+                }),
+                ..Default::default()
+            })
+            .map(|_| ())
+        })
+        .unwrap();
+        let round = Db::edit(&path, |db| send_back(db, "work-1", &Default::default())).unwrap();
+        assert_eq!(round.notes, [("c".to_string(), "+y".to_string())]);
+        let db = Db::load(&path).unwrap();
+        assert!(db.note("c", "phab:a1").unwrap().text.ends_with(&fenced("reviewer ann", "Still?")));
+        assert!(db.note("c", "+y").unwrap().text.ends_with("```agent answer\nBecause of x.\n```\nAnd z?"));
+    }
+
+    #[test]
+    fn a_comment_written_since_the_pull_is_read_again_and_one_open_elsewhere_is_not_reopened() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("db.jsonl");
+        let open = closed_thread(&path, "pull-1", vec![ann_says("Still?", "a2")]);
+        // Reopened since, written to, closed again: as its history has it
+        // last open, your reply in.
+        Db::edit(&path, |db| {
+            let more = Note { text: format!("{}\nAnd then?", open.text), ..open.clone() };
+            db.set_note(more.clone())?;
+            db.set_note(Note { text: String::new(), ..more })
+        })
+        .unwrap();
+        assert_eq!(Db::edit(&path, |db| close(db, "pull-1", &Default::default(), None)).unwrap(), "1 reply accepted; 1 comment reopened");
+        let n = Db::load(&path).unwrap().note("c", "phab:a1").unwrap().clone();
+        assert_eq!(n.text, format!("{}\nAnd then?\n{}", open.text, fenced("reviewer ann", "Still?")));
+        // Open again since: the reply goes in it, nothing reopened.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("db.jsonl");
+        let open = closed_thread(&path, "pull-1", vec![ann_says("Still?", "a2")]);
+        Db::edit(&path, |db| db.set_note(open.clone())).unwrap();
+        assert_eq!(Db::edit(&path, |db| close(db, "pull-1", &Default::default(), None)).unwrap(), "1 reply accepted");
+        assert!(Db::load(&path).unwrap().note("c", "phab:a1").unwrap().text.ends_with(&fenced("reviewer ann", "Still?")));
+        // Moved to the stack's comments since, open there: the reply goes
+        // there, the thread not reopened on its patch.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("db.jsonl");
+        let open = closed_thread(&path, "pull-1", vec![ann_says("Still?", "a2")]);
+        Db::edit(&path, |db| {
+            db.set_note(Note {
+                change: crate::db::stack_change("s"),
+                id: "moved:x".into(),
+                line: String::new(),
+                moved: Some(crate::db::Moved { change: "c".into(), id: "phab:a1".into(), ..Default::default() }),
+                ..open.clone()
+            })
+        })
+        .unwrap();
+        assert_eq!(Db::edit(&path, |db| close(db, "pull-1", &Default::default(), None)).unwrap(), "1 reply accepted");
+        let db = Db::load(&path).unwrap();
+        assert!(db.note("c", "phab:a1").is_none(), "not reopened where it was");
+        let moved = db.note(&crate::db::stack_change("s"), "moved:x").unwrap();
+        assert!(moved.text.ends_with(&fenced("reviewer ann", "Still?")) && moved.remote.contains(&"a2".to_string()), "{moved:?}");
+    }
+
+    #[test]
+    fn read_from_a_checkpoint_the_review_shows_the_thread_closed_as_the_pull_kept_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("db.jsonl");
+        let open = closed_thread(&path, "pull-1", vec![ann_says("Still?", "a2")]);
+        // A head moved: a checkpoint, which reads no comment closed.
+        let stack = crate::db::Stack {
+            name: "s".into(),
+            patches: vec![],
+            base: None,
+            repo: None,
+            parent: None,
+            op: "new".into(),
+            time: 0,
+        };
+        Db::append(&path, &[crate::db::Record::Stack(stack)]).unwrap();
+        let rev = Db::load(&path).unwrap().last_rev();
+        Db::edit(&path, |db| db.restore_head("s", Some(rev), "again".into()).map(|_| ())).unwrap();
+        let db = Db::load(&path).unwrap();
+        assert_eq!(db.read_from_checkpoint(), (true, false));
+        // Where the reply goes, as the review shows it: the thread as the
+        // pull kept it, the history not read.
+        let rp = &db.run("pull-1").unwrap().held.as_ref().unwrap().replies[0];
+        assert_eq!(goes(&db, "s", rp), Goes::Reopens(Some(&open)));
+        assert_eq!(db.read_from_checkpoint(), (true, false), "nothing has read the whole history");
+        drop(db);
+        // Accepted, reopened from it.
+        assert_eq!(Db::edit(&path, |db| close(db, "pull-1", &Default::default(), None)).unwrap(), "1 reply accepted; 1 comment reopened");
+        assert!(Db::load(&path).unwrap().note("c", "phab:a1").unwrap().text.ends_with(&fenced("reviewer ann", "Still?")));
     }
 
     #[test]

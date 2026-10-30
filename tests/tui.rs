@@ -11740,8 +11740,7 @@ fn reviews_pulled_wait_in_the_banner_as_the_agent_s_work_does() {
     assert!(screen.contains(" pulled from Phabricator: 1 opened comment") && screen.contains("a reviewer's comment, where it would be"), "{screen}");
     keys(&mut app, &[KeyCode::Esc]);
     assert!(draw(&mut app).contains("your review of the comments pulled"));
-    choose(&mut app, "Accept all remaining and Close");
-    choose(&mut app, "Accept them and close");
+    choose(&mut app, "Close review");
     let notes = notes_of(&db, "s", 0);
     assert_eq!((notes.len(), notes[0].by.as_deref()), (1, Some("ann")));
     // Pulled later, ann's reply to it waits, said on the comment; taken at
@@ -11755,7 +11754,8 @@ fn reviews_pulled_wait_in_the_banner_as_the_agent_s_work_does() {
     let text = notes_of(&db, "s", 0).remove(0).text;
     assert!(text.ends_with("```reviewer ann\nStill?\n```"), "{text}");
     // ann edits her comment on Phabricator: pulled, her edit waits, said on
-    // the comment; taken at once, it is in the place of her turn.
+    // the comment; taken at once, it is her latest turn, quoting what it
+    // edits, her turn as it was redacted.
     let edited = |phid: &str, text: &str, was: &[(&str, &str)]| Remote {
         earlier: was.iter().map(|(phid, text)| Version { phid: phid.to_string(), text: text.to_string() }).collect(),
         ..by_ann(phid, text, None)
@@ -11770,9 +11770,12 @@ fn reviews_pulled_wait_in_the_banner_as_the_agent_s_work_does() {
     choose(&mut app, "Accept ann's edit");
     assert_eq!(app.status, "you accepted ann's edit: it is in the thread now");
     let text = notes_of(&db, "s", 0).remove(0).text;
-    assert_eq!(text, "```reviewer ann\nWhy shout so?\n```\n```reviewer ann\nStill?\n```");
-    // Edited again: in its review, the edit says whose it is, and shows the
-    // thread as it would be.
+    assert_eq!(text, "```reviewer ann redacted\nWhy shout?\n```\n```reviewer ann\nStill?\n```\n```reviewer ann edit Why shout?\nWhy shout so?\n```");
+    let screen = draw(&mut app);
+    assert!(screen.contains("▎ ann (redacted):") && screen.contains("▎ ann's edit of the comment that said \"Why shout?\":"), "{screen}");
+    // Edited again: in its review, the edit says whose it is, shows her
+    // comment as it was filed and as it is now, then the thread as it
+    // would be.
     let again = edited("c1v3", "Why shout at all?", &[("c1v2", "Why shout so?"), ("c1", "Why shout?")]);
     Db::edit(&db, |d| stacked::review::file(d, "s", "pull-4", 1, &pulled(vec![again, still]))).unwrap();
     app.refresh();
@@ -11783,11 +11786,76 @@ fn reviews_pulled_wait_in_the_banner_as_the_agent_s_work_does() {
     let screen = draw(&mut app);
     assert!(screen.contains(" pulled from Phabricator: 1 edited comment") && screen.contains(" · ann's edit: "), "{screen}");
     assert!(screen.contains("ann's comment, edited on Phabricator, as it would be in its thread"), "{screen}");
+    let rows: Vec<&str> = screen.lines().map(str::trim_end).collect();
+    let at = rows.iter().position(|r| r.ends_with("ann's comment as it was filed, then as it was edited on Phabricator")).unwrap_or_else(|| panic!("{screen}"));
+    assert!(rows[at + 1].ends_with("-Why shout so?") && rows[at + 2].ends_with("+Why shout at all?"), "{screen}");
+    assert!(screen.contains("▎ ann's edit of the comment that said \"Why shout so?\":"), "{screen}");
     keys(&mut app, &[KeyCode::Esc]);
-    choose(&mut app, "Accept all remaining and Close");
-    choose(&mut app, "Accept them and close");
+    choose(&mut app, "Close review");
+    assert_eq!(app.status, "reviewed: 1 edited comment accepted");
     let text = notes_of(&db, "s", 0).remove(0).text;
-    assert_eq!(text, "```reviewer ann\nWhy shout at all?\n```\n```reviewer ann\nStill?\n```");
+    assert_eq!(
+        text,
+        "```reviewer ann redacted\nWhy shout?\n```\n```reviewer ann\nStill?\n```\n```reviewer ann redacted edit Why shout?\nWhy shout so?\n```\n```reviewer ann edit Why shout so?\nWhy shout at all?\n```"
+    );
+}
+
+#[cfg(feature = "moz-phab")]
+#[test]
+fn a_reply_to_a_comment_you_closed_is_reviewed_with_it_as_it_was_and_reopens_it() {
+    use stacked::phab::{Pulled, Remote, RevisionComments};
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    let d = Db::load(&db).unwrap();
+    let change = d.patch(&d.stack("s").unwrap().patches[0]).change.clone();
+    drop(d);
+    let pulled = |comments: Vec<Remote>| -> Result<Pulled, String> {
+        Ok(Pulled { revisions: vec![RevisionComments { revision: "D1".into(), source: change.clone(), comments }] })
+    };
+    let by_ann = |phid: &str, text: &str, reply: Option<&str>| Remote {
+        phid: phid.into(),
+        author: "ann".into(),
+        text: text.into(),
+        reply_to: reply.map(String::from),
+        ..Default::default()
+    };
+    // ann's comment, filed, then closed; her reply to it since, pulled.
+    Db::edit(&db, |d| stacked::review::file(d, "s", "pull-1", 1, &pulled(vec![by_ann("c1", "Why shout?", None)]))).unwrap();
+    Db::edit(&db, |d| stacked::held::close(d, "pull-1", &Default::default(), None)).unwrap();
+    Db::edit(&db, |d| {
+        let n = d.notes(&change)[0].clone();
+        d.set_note(Note { text: String::new(), ..n })
+    })
+    .unwrap();
+    Db::edit(&db, |d| stacked::review::file(d, "s", "pull-2", 1, &pulled(vec![by_ann("c1", "Why shout?", None), by_ann("c2", "Still?", Some("c1"))]))).unwrap();
+    app.refresh();
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Enter]);
+    assert_eq!(app.screen, Screen::Review);
+    // Its line says where the comment was, closed; on its right, the thread
+    // as it was when closed, her reply after it.
+    let screen = draw_sized(&mut app, 240, 30);
+    assert!(screen.contains("   ✓ ✉ message: Bug 1 - shout two (closed) · Still?"), "{screen}");
+    assert!(
+        screen.contains(" ann's reply to a comment you closed, as it would be in its thread: accepting it reopens the comment"),
+        "{screen}"
+    );
+    assert!(screen.contains("▎   Why shout?") && screen.contains("▎   Still?"), "{screen}");
+    // Nothing of it to reject: not with Delete, its menu, nor as it closes.
+    assert!(!app.hint().contains("delete"), "{}", app.hint());
+    keys(&mut app, &[KeyCode::Delete]);
+    assert_eq!(app.status, "a comment pulled from Phabricator cannot be rejected: close the review to file it");
+    assert!(app.hint().contains("enter: nothing, what was pulled is filed as the review closes"), "{}", app.hint());
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    assert!(!items(&app).iter().any(|(l, _)| l.starts_with("Mark ")), "{:?}", items(&app));
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Esc]);
+    let all: Vec<String> = items(&app).into_iter().map(|(l, _)| l).collect();
+    assert!(all.contains(&"Close review".to_string()) && !all.iter().any(|l| l.contains("Reject") || l.contains("Accept all")), "{all:?}");
+    // Closed: the comment reopened as it was, her reply its last turn.
+    choose(&mut app, "Close review");
+    assert_eq!(app.status, "reviewed: 1 reply accepted; 1 comment reopened");
+    let notes = notes_of(&db, "s", 0);
+    assert_eq!(notes[0].text, "```reviewer ann\nWhy shout?\n```\n```reviewer ann\nStill?\n```");
+    assert_eq!(notes[0].remote, ["c1", "c2"]);
 }
 
 /// The menu open: its title, its items' labels, and the one selected.

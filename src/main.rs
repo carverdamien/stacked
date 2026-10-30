@@ -420,7 +420,8 @@ enum Cmd {
     /// of it that is
     /// not marked yet, or reject it. What is accepted is applied; what is
     /// rejected is dropped for good. Rejecting a change of the stack
-    /// rejects its replies too.
+    /// rejects its replies too. A pull's reviews are not rejected:
+    /// --accept-all files every comment it pulled.
     Review {
         name: String,
         run: Option<String>,
@@ -1608,8 +1609,11 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
                 // Gone on from the work before it, guessing: reviewed after it.
                 let after = ask::guessing(&db, r).map_or(String::new(), |on| format!("\tgoes on from {on}, which waits for your review"));
                 println!("{}\t{}\t{}{after}", r.id, time(h.at), stacked::held::left(&db, r));
+                // A pull's parts are not marked: each is filed as its review
+                // closes.
+                let marked = !stacked::held::pulled(r);
                 for p in stacked::held::parts_left(&db, r) {
-                    let mark = match review.marks.get(&p.key()) {
+                    let mark = match review.marks.get(&p.key()).filter(|_| marked) {
                         Some(true) => "\taccepted",
                         Some(false) => "\trejected",
                         None => "",
@@ -1619,7 +1623,12 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
                         stacked::held::Part::Reply(k) => {
                             let rp = &h.replies[k];
                             let what = if rp.was.is_some() { "edited" } else { "reply" };
-                            format!("{what}\t{}\t{}", short_id(&rp.change, &rp.id), rp.text.lines().next().unwrap_or(""))
+                            // To a comment you closed, which accepting it reopens.
+                            let closed = match stacked::held::goes(&db, &name, rp) {
+                                stacked::held::Goes::Reopens(_) => "\tto a comment you closed: accepting it reopens the comment",
+                                _ => "",
+                            };
+                            format!("{what}\t{}\t{}{closed}", short_id(&rp.change, &rp.id), rp.text.lines().next().unwrap_or(""))
                         }
                         stacked::held::Part::Opened(k) => {
                             let n = &h.opened[k];
@@ -1682,7 +1691,8 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
                     },
                     None => queue.first().cloned().ok_or_else(|| Error(format!("nothing on {name} waits for your review")))?,
                 };
-                let marks = db.review(&id).map(|v| v.marks.clone()).unwrap_or_default();
+                // A pull's: every part accepted, none rejected.
+                let marks = db.run(&id).map(|r| stacked::held::marks(db, r)).unwrap_or_default();
                 let said = stacked::held::close_with(db, &id, &marks, Some(accept_all), close_asking)?;
                 Ok(format!("{id}\treviewed: {said}"))
             })?;

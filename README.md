@@ -578,10 +578,10 @@ pulled yet: `2 new comments to pull`, `1 edited comment to pull` (edited on
 Phabricator since it was filed), `no new comments`. Those are counted from
 what the database holds as it stands, never from its history: a comment is
 pulled when a comment open holds it, on the patch or moved to the stack's,
-or when a pull's review waiting holds it; one in a thread of the patch
-closed since is passed over, as a pull passes it over; but one you
-rejected in a pull's review counts as new, as only that pull's record, in
-the history, holds it. What is not read yet is `…` (`Phabricator: D123 ·
+or when a pull's review waiting holds it. The line does not count the
+comments of a thread you closed, though a pull brings the new ones: without
+the history, a new reply or edit there is not told from the comments filed
+in it before you closed it. What is not read yet is `…` (`Phabricator: D123 ·
 Needs Review · …`); a revision Phabricator does not have is said so,
 alone (`Phabricator: D123 · not found on Phabricator`). The line is a row
 of the patch, over its message's header, and folds between words where
@@ -696,9 +696,11 @@ them other keys, and the help then names those:
   patch's changes to that file (Editing a patch by hand, below). In the
   review of landed work, it is `Mark as rejected` on a part, `Close it with
   the review` on a comment the ask was about, and `Take it back` or `Take
-  your answer back` on what you wrote there. On the banner, it rejects all
-  that remains of the landed work picked and closes its review, as the
-  review's `Reject all remaining and Close` does; on a comment's line, it
+  your answer back` on what you wrote there; on a part of a pull's, which
+  is not rejected, it does nothing, and the status line says why. On the
+  banner, it rejects all that remains of the landed work picked and closes
+  its review, as the review's `Reject all remaining and Close` does, but
+  for a pull's, which it does not reject; on a comment's line, it
   does what it does on the comment. On the runs, it stops an ask that
   runs. An item ending with `…` asks first, and so does Delete; Delete also
   asks before it takes back what you wrote in a review, and before it
@@ -937,7 +939,10 @@ A comment shows under what it is on: `└ comment:` (or `└ agent's comment:`,
 `└ ann's comment:`), in the colour of who opened it, then each turn of its
 thread, a bar at its left and its author's name in the author's colour
 (yours amber, the agent's violet, a reviewer's blue), and what they said in
-the terminal's own colour, so that no comment reads as code. The colours
+the terminal's own colour, so that no comment reads as code. A reviewer's
+comment edited on Phabricator is a turn of its own, headed by what it
+edits (`ann's edit of the comment that said "Hi Da":`), and the turn it
+edits stays, headed `ann (redacted):` (Phabricator, below). The colours
 are settings (`[colors]`, below).
 
 What was said is read as markdown, as comments write it: `**bold**` is
@@ -1778,7 +1783,8 @@ back waits for your review all the same while a comment it was asked
 about is still open: its review has no part, only those comments, to
 close or keep. If every comment it was asked about was closed or deleted
 meanwhile, it is not held, and its run says that the agent brought
-nothing back. You accept or reject each part. A
+nothing back. You accept or reject each part, but those of a pull from
+Phabricator, which are all accepted (Phabricator, below). A
 comment is one part, and the change of the stack is one part, taken whole
 or not at all. Rejecting the change of the stack rejects the replies that
 go with it too, since each says what the agent changed. Once every part is
@@ -1910,6 +1916,13 @@ kept for the stack. A reply that goes with a change of the stack
 opens that review, on the reply, from its comment (Enter, or `Review the
 agent's work…` in its menu).
 
+The review of a pull from Phabricator rejects nothing: each part shows as
+accepted (`✓`), Enter, Delete and Space mark none of them (Delete says
+`a comment pulled from Phabricator cannot be rejected: close the review to
+file it`), and Esc offers `Close review`, which files every comment it
+pulled, with `Save` and `Discard` to leave it waiting for you; there is no
+`Accept all remaining and Close` nor `Reject all remaining and Close`.
+
 What you write in the review of the agent's work sends that work back to
 the agent. In the patch as the work leaves it, ↑↓ move from line to line,
 and Enter writes a comment on the line in the inline editor, as in the
@@ -1970,7 +1983,9 @@ brought back`), and each part of it. `stacked review NAME [RUN]
 --accept-all` (or `--reject-all`) closes the review of that ask, the first
 landed if no run is given: the parts not marked yet are accepted (or
 rejected), and what is accepted is applied; `--close-asking` closes the
-comments the agent was asked about too. In the review of landed work RUN,
+comments the agent was asked about too. A pull's review is not rejected:
+`--reject-all` refuses it, and `--accept-all` files every comment it
+pulled. In the review of landed work RUN,
 `stacked comment NAME --patch N --line … --work RUN TEXT` writes a comment
 on the patch as that work leaves it, and `stacked reply NAME ID --answer
 TEXT` answers the agent's reply to comment ID; then `stacked review NAME
@@ -3014,7 +3029,11 @@ bytes long, padded with spaces.
 - A comment record is the whole comment as it is now; its earlier records
   are its history. The agent's turns are fenced ```` ```agent ````
   (```` ```claude ````, as the first files have them, reads the same), and
-  a reviewer's ```` ```reviewer ````; a turn holding fences of its own (a
+  a reviewer's ```` ```reviewer ```` and their name; a reviewer's turn an
+  edit of it replaces has `redacted` after the name (```` ```reviewer ann
+  redacted ````), and their edit `edit` and the first line of the comment it
+  edits (```` ```reviewer ann edit Hi Da ````), both when it is an edit
+  redacted in its turn; a turn holding fences of its own (a
   code block) is fenced with one backtick more than they have, and only a
   line of as many backticks ends it. A turn of yours is as you wrote it,
   unless a line of it would read as one of those fences: then it is fenced
@@ -3118,24 +3137,57 @@ settings'. While it reads them, the banner says which revision it reads
 top bar `pulling…`; once it is done, the bottom line says what came of it
 (`1 new comment from 3 revisions: it waits for your review`), or what went
 wrong. What is new waits for your review, in the queue of work the agent's
-asks land in (below): nothing is filed before you accept it. Each
+asks land in (below): nothing is filed before you close that review. A
+pull's parts are all accepted, never rejected: closing its review files
+every comment it pulled (`Close review`, or `stacked review NAME RUN
+--accept-all`; `--reject-all` refuses). Each
 new thread is a comment opened, on its line, or on the patch's title for
 one on the whole revision, its replies pulled with it turns of it; a reply
 to a thread there already is a reply to it, the reviewer's turn (`ann's
 reply waits for your review`, `Accept ann's reply`). The banner counts the
 pulls apart (`1 pull from Phabricator waits for your review`), and the
-review says what was pulled. Pulling again holds only what is new: what was
-pulled before, waiting, accepted or rejected, is passed over, so a comment
-you rejected does not come back. A comment the reviewer edited on
-Phabricator since it was filed (each edit makes a version of it, with an id
-of its own) is held as an edit of their turn (`ann's edit waits for your
-review`, `Accept ann's edit`): accepted, the edit takes the place of that
-turn, wherever it is in the thread, or is the reviewer's last turn when
-that one is gone. An edit you rejected does not come back, though a later
-one does; a comment some of which still waits in a pull's review is pulled
-once that review closes, and the comments of a thread you closed are passed
-over. Replies and edits to a thread moved to the stack's comments go to it
-there. A comment removed on Phabricator stays in its thread as it was. A
+review says what was pulled. Pulling again holds only what is new: a
+comment is passed over when a thread holds it, open or closed (as it was
+when you closed it, read from the history, which a pull reads), or when a
+pull whose review is still open holds it; a comment some of which still
+waits in a pull's review is pulled once that review closes. Nothing
+remembers a rejection: a comment a stacked of before let you reject, which
+no thread holds, comes back once, with the next pull, and is filed as its
+review closes; a reply or an edit as well.
+
+A comment the reviewer edited on Phabricator since it was filed (each edit
+makes a version of it, with an id of its own) is held as an edit of their
+turn (`ann's edit waits for your review`, `Accept ann's edit`). Its review
+shows the comment as it was filed, then as it is now, one above the other,
+compared word by word where their lines wrap aside, as two versions of a
+message are (`ann's comment as it was filed, then as it was edited on
+Phabricator`), then the thread as it would be. Accepted, the edit is the
+reviewer's latest turn, headed by what it edits: `ann's edit of the comment
+that said "Hi Da"`, the comment's first line, cut with `…` past 60
+characters. The turn it edits, the latest version of the comment, stays as
+it was, for what answered it to read as it was written, and is redacted:
+headed `ann (redacted)` in the thread, `ann's comment (redacted)` where a
+turn is named, and told to the agent as replaced by the edit below it. A
+later edit redacts the latest version's turn the same way, and is added
+after the rest. With its turn gone (rewound), the edit is the reviewer's
+last turn, and nothing is redacted.
+
+A new reply or edit in a thread you closed is pulled and held, with the
+thread as it was when you closed it. Its review shows that thread, its
+line saying `(closed)` after where the comment is, and says that
+accepting it reopens the comment (`ann's reply to a comment you closed, as
+it would be in its thread: accepting it reopens the comment`);
+`stacked landed` says `to a comment you closed: accepting it reopens the
+comment`. Accepted, as the review closes or taken at once, it reopens the
+comment as `Reopen it` does, as it was when closed (as its history has it
+last, when it was written since), its reply or edit in it (`reviewed: 1
+reply accepted; 1 comment reopened`); until then the comment stays closed.
+It is not pulled again: the pull's review holds it until it closes, and
+the thread then. One moved to the stack's comments and closed there
+reopens there; one open elsewhere since (moved with its lines, or back
+from the stack's comments) takes the reply where it is open, and nothing
+is reopened. Replies and edits to a thread moved to the stack's comments
+go to it there. A comment removed on Phabricator stays in its thread as it was. A
 reviewer's comment can be asked about like any.
 
 A line of a commit message that names a bug (`Bug 123`), or the revision
@@ -3363,7 +3415,9 @@ is typed: `import.rs`). A fix to one may belong in the other.
   `tui/revisions.rs`, the status on Phabricator of each patch's revision,
   which the patches pane shows, and the Phabricator line over the message
   of the patch the middle shows, what differs under it, and when each is
-  read;
+  read; `tui/compared.rs`, two versions of a text compared word by word
+  where their lines wrap aside, as rows: a title and summary in those two,
+  a reviewer's comment edited on Phabricator in the review of a pull;
   `tui/banner.rs`, the banner of the agent's work; `tui/places.rs`, where
   each pane's cursor was, each half's of the middle split in two;
   `tui/finding.rs`, the search of the middle (`/`).
@@ -3557,8 +3611,13 @@ allowed from now on saved in the checkout's own list for its kind alone,
 sent back or closed, and one allowed for this work given to every round of
 it until its review closes; the setup listing what reviews allowed, to
 take out), Phabricator's comments
-held for review then filed (none twice, none rejected again, an edit held
-as an edit of its turn), a stack imported from Phabricator's revisions (by
+held for review then filed, none rejected (none twice, but those a review
+of before rejected, back once; an edit held as an edit of its turn, then
+the reviewer's latest turn, the turn it edits redacted; a reply or an edit
+in a thread you closed held with the thread as it was, `stacked landed`
+saying so, and reopening it once accepted, on the stack's comments for one
+moved there, as its history has it last when written since), a stack
+imported from Phabricator's revisions (by
 number or link, named or not), Phabricator's commands there only when
 built with it, and
 what does not apply being refused, edited again, or read-only. `tests/tui.rs` draws the editor into a buffer and presses keys:
@@ -3767,7 +3826,11 @@ read-only stack and while an edit by hand waits for review), searching (what is 
 files they touch, the history), the agents' worktrees made ahead as the
 stack's checkout says, the banner of the agent's work (Esc to it and
 back, open a line for each, Enter on each; the reviews pulled waiting in
-it as the agent's work does; replies taken with Enter, the last one
+it as the agent's work does, their review rejecting nothing (no Delete, no
+item, nothing to reject as it closes), a reply to a comment you closed
+shown with the comment as it was, reopening it once the review closes, an
+edit shown as it was filed and as it is now over its thread, then headed
+by what it edits, the turn it edits redacted; replies taken with Enter, the last one
 closing their work's review, its comments left open; Enter opening the
 review of work that opened comments too, and saying to review first the
 edit that work goes on from; and work that brought nothing back reviewed
@@ -4037,7 +4100,9 @@ and said if it sets one; printed with where it comes from; turned off,
 and that kept over the default of `./mach`; `stacked config` refusing to
 write it but reading it; refused in a settings file git tracks and outside
 a checkout. `tests/web.rs` and `tests/app.rs` show the item in the
-browser and in StackED. `lint.rs` tests a command split as a shell's
+browser and in StackED, and also that a reviewer's edit is headed by what
+it edits, the turn it edits redacted, and that a pull's review rejects
+nothing there either. `lint.rs` tests a command split as a shell's
 words and written back, only a stand-in run from a process that keeps
 nothing, what the history says of the fixes, a patch's sections spliced
 with those written again, and the patches' run itself on a repository of
@@ -4052,8 +4117,19 @@ place of theirs, a child process that has exited not taken for alive
 though `kill` still finds it, its exit left for whoever started it, the
 wrapper of an ask the process started waited for once it has exited, and
 an ask whose agent you stopped landing as stopped, unless the agent was
-done as you stopped it; what is said of landed work left to review is tested
-in `held.rs`. The
+done as you stopped it, and the thread the agent is told, a reviewer's edit
+and the turn it redacts in plain words; what is said of landed work left
+to review is tested in `held.rs`, with a reviewer's edit as their latest
+turn, the turn it edits redacted, again on a later edit, nothing redacted
+when that turn is gone; and a reviewer's reply to a comment you closed
+reopening it once accepted, as the review closes, taken at once or sent
+back with the agent's work, as the pull kept it, as its history has it
+last when written since, filed where it is open since rather than
+reopened, read from a checkpoint without its history read, while the
+agent's goes nowhere and a pull's parts are not rejected. Those in
+`thread.rs` show the fences of a reviewer's edit and of a turn redacted
+read and written again, their headings, the first line an edit quotes cut
+short with `…`, and a name alone as ever. The
 tests in `check.rs` show
 the check's index holds only what the patches touch, that it writes nothing
 to the repository (nor does the tree a patch leaves, written for a
@@ -4246,9 +4322,10 @@ from every page of its transactions, their authors and lines not read, a
 revision with no diff said. Those in `review.rs` show the comments not
 pulled yet counted from the comments open, the threads by their ids and
 the pulls waiting: those filed or waiting not counted, one edited since
-it was filed counted as edited, a thread closed passed over but for one
-moved to the stack's comments, another stack's pull not this one's, and
-one rejected in a review counted, as only the history holds it. Those in
+it was filed counted as edited, a thread closed not counted, nor a new
+reply or edit there, but for one moved to the stack's comments, another
+stack's pull not this one's, and one a review of before rejected counted,
+as a pull brings it again. Those in
 `tui/revisions.rs` show when the statuses are due a read: never read, other
 revisions, a submit ended since, or three minutes gone by; a title in work
 as moz-phab reads it; the title and summary compared to the letter as a

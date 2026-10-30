@@ -1218,6 +1218,8 @@ mod tests {
             body: body.into(),
             tag: (role != Role::You).then(|| "answer".to_string()),
             deleted,
+            edit: None,
+            redacted: false,
         };
         // The agent's reply, deleted the first way, names r1 and points at
         // a comment, r2.

@@ -3178,7 +3178,7 @@ fn reviews_from_phabricator_wait_for_review_then_are_threads() {
     let general = notes.iter().find(|n| n.id == "phab:c2").unwrap();
     assert_eq!(general.line, stacked::view::title_key(&p), "a general comment is on the title");
     // Later, a reply to a thread there is a reply held: accepted, the
-    // reviewer's turn of it. A new thread rejected is not pulled again.
+    // reviewer's turn of it. None is rejected: a pull's review files them.
     let mut later = first.clone();
     later.push(remote("c4", Some("b.txt"), 1, "Ping?", Some("c3")));
     later.push(remote("c5", None, 0, "Also, the title.", None));
@@ -3186,15 +3186,221 @@ fn reviews_from_phabricator_wait_for_review_then_are_threads() {
     assert_eq!(run.summary, "2 new comments from 1 revision: they wait for your review");
     let h = run.held.unwrap();
     assert_eq!((h.replies.len(), h.opened.len(), h.replies[0].who()), (1, 1, "reviewer"));
+    let refused = "a comment pulled from Phabricator cannot be rejected: close the review to file it";
+    let (fine, _, err) = e.run(&["review", "s", "pull-3", "--reject-all"]);
+    assert!(!fine && err.contains(refused), "{err}");
     let marks = [("reply 0".to_string(), true), ("opened 0".to_string(), false)].into();
-    Db::edit(&e.db, |db| stacked::held::close(db, "pull-3", &marks, None)).unwrap();
+    assert_eq!(Db::edit(&e.db, |db| stacked::held::close(db, "pull-3", &marks, None)).unwrap_err().0, refused);
+    let landed = e.ok(&["landed", "s"]);
+    assert!(landed.contains("\n  reply\t") && landed.contains("\n  opened\t") && !landed.contains("accepted") && !landed.contains("rejected"), "{landed}");
+    let out = e.ok(&["review", "s", "pull-3", "--accept-all"]);
+    assert!(out.contains("pull-3\treviewed: 1 opened comment accepted; 1 reply accepted"), "{out}");
     let db = Db::load(&e.db).unwrap();
     let inline = db.note(&p.change, "phab:c1").unwrap();
     assert!(inline.text.ends_with("```reviewer reviewer\nPing?\n```"), "{}", inline.text);
     assert!(inline.remote.contains(&"c4".to_string()), "{:?}", inline.remote);
-    assert!(db.note(&p.change, "phab:c5").is_none(), "rejected, it is not filed");
+    assert!(db.note(&p.change, "phab:c5").is_some(), "filed");
     let again = Db::edit(&e.db, |db| stacked::review::file(db, "s", "pull-4", 1, &pulled(later))).unwrap();
     assert_eq!(again.summary, "nothing new from 1 revision", "nor pulled again");
+}
+
+/// Pull `run` filed on stack `s` of `e`, revision D1 of patch 2: the
+/// comments `comments`, as Phabricator has them.
+#[cfg(feature = "moz-phab")]
+fn pull_into(e: &Env, run: &str, comments: &[stacked::phab::Remote]) -> stacked::db::Run {
+    use stacked::phab::{Pulled, RevisionComments};
+    let db = Db::load(&e.db).unwrap();
+    let change = db.patch(&db.stack("s").unwrap().patches[1]).change.clone();
+    let pulled = Ok(Pulled {
+        revisions: vec![RevisionComments {
+            revision: "D1".into(),
+            source: change,
+            comments: comments.to_vec(),
+        }],
+    });
+    drop(db);
+    Db::edit(&e.db, |db| stacked::review::file(db, "s", run, 1, &pulled)).unwrap()
+}
+
+/// ann's comment `phid` as Phabricator has it, on `b.txt`'s line 1: `text`,
+/// a reply to `reply` if any, its versions before `earlier`.
+#[cfg(feature = "moz-phab")]
+fn by_ann(phid: &str, text: &str, reply: Option<&str>, earlier: &[(&str, &str)]) -> stacked::phab::Remote {
+    stacked::phab::Remote {
+        phid: phid.into(),
+        author: "ann".into(),
+        text: text.into(),
+        path: Some("b.txt".into()),
+        line: 1,
+        line_text: Some("new".into()),
+        reply_to: reply.map(String::from),
+        earlier: earlier.iter().map(|(phid, text)| stacked::phab::Version { phid: phid.to_string(), text: text.to_string() }).collect(),
+        ..Default::default()
+    }
+}
+
+#[cfg(feature = "moz-phab")]
+#[test]
+fn a_reviewer_s_reply_to_a_comment_you_closed_reopens_it_once_accepted() {
+    use stacked::db::Note;
+    use stacked::thread::{Role, append_turn, fenced};
+    let e = env();
+    e.ok(&["import", "s", "base"]);
+    let db = Db::load(&e.db).unwrap();
+    let p = db.patch(&db.stack("s").unwrap().patches[1]).clone();
+    drop(db);
+    let turn = |text: &str| fenced("reviewer ann", text);
+    let c1 = by_ann("c1", "What is b?", None, &[]);
+    let c2 = by_ann("c2", "Ping?", Some("c1"), &[]);
+    // Filed, answered, then closed.
+    pull_into(&e, "pull-1", std::slice::from_ref(&c1));
+    e.ok(&["review", "s", "pull-1", "--accept-all"]);
+    let filed = Db::edit(&e.db, |db| {
+        let n = db.note(&p.change, "phab:c1").unwrap().clone();
+        let n = Note { text: append_turn(&n.text, Role::You, "Because.", None), ..n };
+        db.set_note(n.clone())?;
+        db.set_note(Note { text: String::new(), ..n.clone() })?;
+        Ok(n)
+    })
+    .unwrap();
+    // The Phabricator line counts no comment of a thread closed.
+    let counted = |comments: &[stacked::phab::Remote]| stacked::review::not_pulled(&Db::load(&e.db).unwrap(), "s", &p.change, comments);
+    assert_eq!(counted(&[c1.clone(), c2.clone()]), (0, 0));
+    // ann's reply to it since: pulled, held with the thread as it was when
+    // closed, for its review to show it.
+    let run = pull_into(&e, "pull-2", &[c1.clone(), c2.clone()]);
+    assert_eq!(run.summary, "1 new comment from 1 revision: it waits for your review");
+    let rp = run.held.unwrap().replies.remove(0);
+    assert_eq!((rp.id.as_str(), rp.closed.map(|c| c.note.text)), ("phab:c1", Some(filed.text.clone())));
+    assert_eq!(counted(&[c1.clone(), c2.clone()]), (0, 0), "nor while it waits");
+    let landed = e.ok(&["landed", "s"]);
+    assert!(landed.contains("\tPing?\tto a comment you closed: accepting it reopens the comment\n"), "{landed}");
+    // Not rejected: accepted, it reopens the thread as it was, her reply its
+    // last turn, its comment's id kept.
+    let (fine, _, err) = e.run(&["review", "s", "pull-2", "--reject-all"]);
+    assert!(!fine && err.contains("cannot be rejected"), "{err}");
+    let out = e.ok(&["review", "s", "pull-2", "--accept-all"]);
+    assert!(out.contains("pull-2\treviewed: 1 reply accepted; 1 comment reopened"), "{out}");
+    let db = Db::load(&e.db).unwrap();
+    let n = db.note(&p.change, "phab:c1").unwrap();
+    assert_eq!(n.text, format!("{}\n{}", filed.text, turn("Ping?")));
+    assert_eq!(n.remote, ["c1", "c2"]);
+    drop(db);
+    assert_eq!(pull_into(&e, "pull-3", &[c1.clone(), c2.clone()]).summary, "nothing new from 1 revision");
+    // Moved to the stack's comments, and closed there: a reply reopens it
+    // there, where it was last, the patch's own left closed.
+    Db::edit(&e.db, |db| {
+        let n = db.note(&p.change, "phab:c1").unwrap().clone();
+        stacked::ask::promote(db, "s", &n, "it is the whole stack's")?;
+        let moved = db.notes("stack:s").into_iter().find(|n| n.id.starts_with("moved:")).unwrap().clone();
+        db.set_note(Note { text: String::new(), ..moved })
+    })
+    .unwrap();
+    let c3 = by_ann("c3", "Still?", Some("c2"), &[]);
+    let run = pull_into(&e, "pull-4", &[c1.clone(), c2.clone(), c3.clone()]);
+    let rp = run.held.unwrap().replies.remove(0);
+    assert!(rp.change == "stack:s" && rp.id.starts_with("moved:") && rp.closed.is_some(), "{rp:?}");
+    let out = e.ok(&["review", "s", "pull-4", "--accept-all"]);
+    assert!(out.contains("reviewed: 1 reply accepted; 1 comment reopened"), "{out}");
+    let db = Db::load(&e.db).unwrap();
+    let moved = db.note("stack:s", &rp.id).unwrap();
+    assert!(moved.text.ends_with(&turn("Still?")) && moved.remote.contains(&"c3".to_string()), "{}", moved.text);
+    assert!(db.note(&p.change, "phab:c1").is_none(), "its patch's own, still closed");
+    drop(db);
+    // Written since the pull, and closed again: as the history has it last.
+    Db::edit(&e.db, |db| {
+        let n = db.note("stack:s", &rp.id).unwrap().clone();
+        db.set_note(Note { text: String::new(), ..n })
+    })
+    .unwrap();
+    let c4 = by_ann("c4", "Hello?", Some("c3"), &[]);
+    pull_into(&e, "pull-5", &[c1, c2, c3, c4]);
+    Db::edit(&e.db, |db| {
+        let was = db.deleted_notes("s", "stack:s").into_iter().map(|(_, n)| n).find(|n| n.id == rp.id).unwrap();
+        let more = Note { text: append_turn(&was.text, Role::You, "Gone, sorry.", None), ..was };
+        db.set_note(more.clone())?;
+        db.set_note(Note { text: String::new(), ..more })
+    })
+    .unwrap();
+    let out = e.ok(&["review", "s", "pull-5", "--accept-all"]);
+    assert!(out.contains("reviewed: 1 reply accepted; 1 comment reopened"), "{out}");
+    let moved = Db::load(&e.db).unwrap().note("stack:s", &rp.id).unwrap().clone();
+    assert!(moved.text.ends_with(&format!("Gone, sorry.\n{}", turn("Hello?"))), "{}", moved.text);
+}
+
+#[cfg(feature = "moz-phab")]
+#[test]
+fn comments_a_review_of_before_rejected_come_back_once_and_are_filed() {
+    use stacked::db::{Note, Run, RunState};
+    use stacked::held::{Held, Reply, Review};
+    use stacked::thread::fenced;
+    let e = env();
+    e.ok(&["import", "s", "base"]);
+    let db = Db::load(&e.db).unwrap();
+    let p = db.patch(&db.stack("s").unwrap().patches[1]).clone();
+    drop(db);
+    // Filed: ann's thread, a1.
+    let a1 = by_ann("a1", "What is b?", None, &[]);
+    pull_into(&e, "pull-1", std::slice::from_ref(&a1));
+    e.ok(&["review", "s", "pull-1", "--accept-all"]);
+    // A pull reviewed by a stacked of before, which rejected all it held: a
+    // new thread, n1; a reply to a1, a2; an edit of a1, a1v2.
+    let n1 = by_ann("n1", "Also, the title.", None, &[]);
+    let a2 = by_ann("a2", "Ping?", Some("a1"), &[]);
+    let a1v2 = by_ann("a1v2", "What is b for?", None, &[("a1", "What is b?")]);
+    Db::edit(&e.db, |db| {
+        let thread = db.note(&p.change, "phab:a1").unwrap().clone();
+        let reply = |text: &str, remote: &str, was: Option<&str>| Reply {
+            change: p.change.clone(),
+            id: "phab:a1".into(),
+            text: text.into(),
+            reviewer: Some("ann".into()),
+            remote: Some(remote.into()),
+            was: was.map(String::from),
+            ..Default::default()
+        };
+        let opened = Note {
+            change: p.change.clone(),
+            id: "phab:n1".into(),
+            line: thread.line.clone(),
+            text: fenced("reviewer ann", "Also, the title."),
+            by: Some("ann".into()),
+            remote: vec!["n1".into()],
+            ..Default::default()
+        };
+        let run = Run {
+            id: "pull-0".into(),
+            what: "pull".into(),
+            stack: "s".into(),
+            state: RunState::Done,
+            held: Some(Held {
+                at: stacked::db::now(),
+                opened: vec![opened],
+                replies: vec![reply("Ping?", "a2", None), reply("What is b for?", "a1v2", Some("What is b?"))],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        db.add_run(run.clone())?;
+        let marks = [("opened 0", false), ("reply 0", false), ("reply 1", false)].into_iter().map(|(k, m)| (k.to_string(), m)).collect();
+        db.set_review("pull-0", Review { marks, closed: true, ..Default::default() })?;
+        db.add_run(Run { summary: "reviewed: 1 opened comment rejected; 1 reply rejected; 1 edited comment rejected".into(), ..run })
+            .map(|_| ())
+    })
+    .unwrap();
+    // Nothing remembers that: each comes back once, then is filed.
+    let comments = [a1v2.clone(), a2.clone(), n1.clone()];
+    let run = pull_into(&e, "pull-2", &comments);
+    assert_eq!(run.summary, "2 new comments and 1 edited comment from 1 revision: they wait for your review");
+    let out = e.ok(&["review", "s", "pull-2", "--accept-all"]);
+    assert!(out.contains("reviewed: 1 opened comment accepted; 1 reply accepted; 1 edited comment accepted"), "{out}");
+    let db = Db::load(&e.db).unwrap();
+    assert!(db.note(&p.change, "phab:n1").is_some());
+    let n = db.note(&p.change, "phab:a1").unwrap();
+    let said: Vec<String> = stacked::thread::all_turns(&n.text).iter().enumerate().map(|(i, t)| format!("{}: {}", t.name(i), t.body)).collect();
+    assert_eq!(said, ["ann's comment (redacted): What is b?", "ann's edit of the comment that said \"What is b?\": What is b for?", "ann's reply: Ping?"]);
+    drop(db);
+    assert_eq!(pull_into(&e, "pull-3", &comments).summary, "nothing new from 1 revision");
 }
 
 #[cfg(feature = "moz-phab")]
@@ -3249,6 +3455,9 @@ fn a_comment_edited_on_phabricator_is_held_as_an_edit_of_its_turn() {
     })
     .unwrap();
     // She edits her comment: the edit waits for your review, nothing filed.
+    let redacted = |text: &str| format!("```reviewer ann redacted\n{text}\n```");
+    let edit = |was: &str, text: &str| format!("```reviewer ann edit {was}\n{text}\n```");
+    let edit_redacted = |was: &str, text: &str| format!("```reviewer ann redacted edit {was}\n{text}\n```");
     let v2 = ann("a1v2", "What is b for?", None, &[("a1", "What is b?")]);
     let run = pull("pull-2", &[v2, a2.clone()]);
     assert_eq!(run.summary, "1 edited comment from 1 revision: it waits for your review");
@@ -3261,25 +3470,48 @@ fn a_comment_edited_on_phabricator_is_held_as_an_edit_of_its_turn() {
     // Edited again while that waits: pulled once its review closes.
     let v3 = ann("a1v3", "What is b for, really?", None, &[("a1v2", "What is b for?"), ("a1", "What is b?")]);
     assert_eq!(pull("pull-3", &[v3.clone(), a2.clone()]).summary, "nothing new from 1 revision");
-    // Accepted, it is in the place of her turn, your answer after it.
+    // Accepted, it is her latest turn, quoting what it edits; her turn as
+    // it was stays, redacted, your answer after it.
     assert_eq!(close("pull-2", true), "1 edited comment accepted");
-    assert_eq!(thread("phab:a1"), format!("{}\n{}\nBecause.", turn("What is b for?"), turn("And why now?")));
-    // Its edit again, rejected: not pulled again, and the thread as it was.
+    let after_v2 = format!("{}\n{}\nBecause.\n{}", redacted("What is b?"), turn("And why now?"), edit("What is b?", "What is b for?"));
+    assert_eq!(thread("phab:a1"), after_v2);
+    // Its edit again: held, and not rejected; accepted, the latest version
+    // redacted in its turn.
     let run = pull("pull-4", &[v3.clone(), a2.clone()]);
     assert_eq!(run.held.unwrap().replies[0].was.as_deref(), Some("What is b for?"));
-    assert_eq!(close("pull-4", false), "1 edited comment rejected");
+    assert_eq!(
+        Db::edit(&e.db, |db| stacked::held::close(db, "pull-4", &Default::default(), Some(false))).unwrap_err().0,
+        "a comment pulled from Phabricator cannot be rejected: close the review to file it"
+    );
+    assert_eq!(close("pull-4", true), "1 edited comment accepted");
     assert_eq!(pull("pull-5", &[v3, a2]).summary, "nothing new from 1 revision");
-    assert_eq!(thread("phab:a1"), format!("{}\n{}\nBecause.", turn("What is b for?"), turn("And why now?")));
-    // Edited once more, and her reply too: each an edit of the turn it was
-    // filed as, the one rejected never filed.
+    let after_v3 = format!(
+        "{}\n{}\nBecause.\n{}\n{}",
+        redacted("What is b?"),
+        turn("And why now?"),
+        edit_redacted("What is b?", "What is b for?"),
+        edit("What is b for?", "What is b for, really?")
+    );
+    assert_eq!(thread("phab:a1"), after_v3);
+    // Edited once more, and her reply too: each an edit of the turn of its
+    // latest version.
     let v4 = ann("a1v4", "Is b needed?", None, &[("a1v3", "What is b for, really?"), ("a1v2", "What is b for?"), ("a1", "What is b?")]);
     let r2 = ann("a2v2", "And why now, in this patch?", Some("a1"), &[("a2", "And why now?")]);
     let run = pull("pull-6", &[v4.clone(), r2.clone()]);
     assert_eq!(run.summary, "2 edited comments from 1 revision: they wait for your review");
     close("pull-6", true);
-    assert_eq!(thread("phab:a1"), format!("{}\n{}\nBecause.", turn("Is b needed?"), turn("And why now, in this patch?")));
+    let after_v4 = format!(
+        "{}\n{}\nBecause.\n{}\n{}\n{}\n{}",
+        redacted("What is b?"),
+        redacted("And why now?"),
+        edit_redacted("What is b?", "What is b for?"),
+        edit_redacted("What is b for?", "What is b for, really?"),
+        edit("What is b for, really?", "Is b needed?"),
+        edit("And why now?", "And why now, in this patch?")
+    );
+    assert_eq!(thread("phab:a1"), after_v4);
     let n = Db::load(&e.db).unwrap().note(&p.change, "phab:a1").unwrap().clone();
-    assert_eq!(n.remote, ["a1", "a2", "a1v2", "a1v4", "a2v2"]);
+    assert_eq!(n.remote, ["a1", "a2", "a1v2", "a1v3", "a1v4", "a2v2"]);
     // A comment edited before it was first pulled is new, as it is now; a
     // reply to its version before is in its thread.
     let b1 = ann("b1v2", "Typo here.", None, &[("b1", "Tpyo here.")]);
@@ -3306,17 +3538,36 @@ fn a_comment_edited_on_phabricator_is_held_as_an_edit_of_its_turn() {
     close("pull-8", true);
     let db = Db::load(&e.db).unwrap();
     let moved = db.notes("stack:s").into_iter().find(|n| n.id.starts_with("moved:")).unwrap().clone();
-    assert!(moved.text.starts_with(&format!("{}\n{}\n", turn("Typo there."), turn("Still."))), "{}", moved.text);
-    assert!(moved.text.ends_with(&turn("Ping?")), "{}", moved.text);
+    assert!(moved.text.starts_with(&format!("{}\n{}\n", redacted("Typo here."), turn("Still."))), "{}", moved.text);
+    assert!(moved.text.ends_with(&format!("{}\n{}", edit("Typo here.", "Typo there."), turn("Ping?"))), "{}", moved.text);
     drop(db);
-    // Its thread closed, an edit of it is not pulled.
+    // Its thread closed, an edit of it is held all the same, with the
+    // thread as it was when closed; accepted, it reopens it.
     Db::edit(&e.db, |db| {
         let n = db.note(&p.change, "phab:a1").unwrap().clone();
         db.set_note(Note { text: String::new(), ..n })
     })
     .unwrap();
     let v5 = ann("a1v5", "Never mind.", None, &[("a1v4", "Is b needed?"), ("a1v3", ""), ("a1v2", ""), ("a1", "")]);
-    assert_eq!(pull("pull-9", &[v5, r2]).summary, "nothing new from 1 revision");
+    let run = pull("pull-9", &[v5.clone(), r2.clone()]);
+    assert_eq!(run.summary, "1 edited comment from 1 revision: it waits for your review");
+    assert_eq!(run.held.unwrap().replies[0].closed.as_ref().map(|c| c.note.text.clone()), Some(after_v4.clone()));
+    let landed = e.ok(&["landed", "s"]);
+    assert!(landed.contains("\tNever mind.\tto a comment you closed: accepting it reopens the comment\n"), "{landed}");
+    assert_eq!(close("pull-9", true), "1 edited comment accepted; 1 comment reopened");
+    let reopened = after_v4.replace(&edit("What is b for, really?", "Is b needed?"), &edit_redacted("What is b for, really?", "Is b needed?"));
+    assert_eq!(thread("phab:a1"), format!("{reopened}\n{}", edit("Is b needed?", "Never mind.")));
+    // Its history says so: closed, reopened, then her edit.
+    let d = Db::load(&e.db).unwrap();
+    let mut said = Vec::new();
+    let mut before: Option<&Note> = None;
+    for (_, x) in d.note_history(&p.change, "phab:a1") {
+        said.push(stacked::history::note_change(before, x));
+        before = Some(x);
+    }
+    assert_eq!(said[said.len() - 3..], ["closed", "reopened", "a reviewer edited a comment on Phabricator"]);
+    drop(d);
+    assert_eq!(pull("pull-10", &[v5, r2]).summary, "nothing new from 1 revision");
 }
 
 #[test]

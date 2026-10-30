@@ -1581,15 +1581,28 @@ const READ_WITH_TOOLS: &str = "You may use the tools of MCP servers you are let 
 on Bugzilla, a revision on Phabricator): only to read, never to send anything of this repository \
 anywhere.";
 
-/// A thread as a conversation, for claude.
+/// A thread as a conversation, for claude. A reviewer's comment edited on
+/// Phabricator is said so: the turn of its edit by what it edits, the turn
+/// it replaces as redacted by the edit below it.
 fn transcript(text: &str) -> String {
     thread_turns(text)
         .iter()
-        .map(|t| {
+        .enumerate()
+        .map(|(i, t)| {
             let who = match t.role {
                 Role::You => "The user".to_string(),
                 Role::Agent => "You (the agent, earlier)".to_string(),
-                Role::Reviewer => format!("{} (a reviewer, on Phabricator)", t.tag.as_deref().unwrap_or("someone")),
+                Role::Reviewer => {
+                    let name = t.tag.as_deref().unwrap_or("someone");
+                    let mut who = format!("{name} (a reviewer, on Phabricator)");
+                    if t.edit.is_some() || t.redacted {
+                        who += &format!(", {}", t.named(i));
+                    }
+                    if t.redacted {
+                        who += &format!(" (redacted: {name} edited it on Phabricator, and the edit below replaces it)");
+                    }
+                    who
+                }
             };
             // What it points at, said rather than as its block.
             let (body, pointers) = crate::refs::split(&t.body);
@@ -4073,6 +4086,24 @@ mod tests {
         assert_eq!(transcript(&text), "The user: why, really?");
         // A turn deleted the first way is told to no one.
         assert_eq!(transcript("why?\n```deleted agent answer\n> Because.\n```\nand here?"), "The user: why?\nThe user: and here?");
+    }
+
+    #[test]
+    fn the_agent_is_told_a_reviewer_s_edit_and_the_turn_it_redacts_in_plain_words() {
+        // ann's comment, your reply, her edit of it on Phabricator: her
+        // comment as it was, then what answered it, then the edit.
+        let text = [
+            fenced("reviewer ann redacted", "Hi Da"),
+            "Hi ann! My name is Damien".to_string(),
+            fenced("reviewer ann edit Hi Da", "Hi Damien!"),
+        ]
+        .join("\n");
+        assert_eq!(
+            transcript(&text),
+            "ann (a reviewer, on Phabricator), ann's comment (redacted: ann edited it on Phabricator, and the edit below replaces it): Hi Da\n\
+             The user: Hi ann! My name is Damien\n\
+             ann (a reviewer, on Phabricator), ann's edit of the comment that said \"Hi Da\": Hi Damien!"
+        );
     }
 
     /// A git directory of the test's own, `tmp/NAME/.git`: its path.

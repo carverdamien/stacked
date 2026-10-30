@@ -11,6 +11,15 @@
 //! yours, ```you, with more backticks than its own: the rest are as
 //! written.
 //!
+//! A reviewer's comment edited on Phabricator is a turn of its own, after
+//! the rest: their edit of that comment, its fence naming the comment's
+//! first line as it was filed, after the reviewer's name and `edit`
+//! (```reviewer ann edit Hi Da), and its heading quoting it (`ann's edit of
+//! the comment that said "Hi Da"`). The comment's own turn stays as it was,
+//! for what answered it to read as it was written, redacted: `redacted`
+//! after the reviewer's name on its fence (```reviewer ann redacted), and
+//! on its heading (`ann's comment (redacted)`).
+//!
 //! A turn deleted by stacked's first way of deleting one is a fenced
 //! ```deleted block, what it said quoted in it: it is read only to be left
 //! out, shown nowhere and told to no one, and nothing writes one any more.
@@ -24,6 +33,16 @@ pub const REVIEWER_OPEN: &str = "```reviewer";
 pub const YOU_OPEN: &str = "```you";
 pub const DELETED_OPEN: &str = "```deleted";
 pub const FENCE_CLOSE: &str = "```";
+/// The word after a reviewer's name on the fence of their edit of a
+/// comment of theirs above it, the first line of that comment after it.
+pub const EDIT: &str = "edit";
+/// The word after a reviewer's name on the fence of a turn of theirs that
+/// an edit of it below replaces, before `edit` if it is one too.
+pub const REDACTED: &str = "redacted";
+
+/// How much of a comment's first line the heading of an edit of it quotes,
+/// before `…`.
+const QUOTED: usize = 60;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Role {
@@ -41,12 +60,27 @@ pub struct Turn {
     pub body: String,
     pub tag: Option<String>,
     pub deleted: bool,
+    /// A reviewer's edit, on Phabricator, of a comment of theirs above it:
+    /// that comment's first line, as it was filed.
+    pub edit: Option<String>,
+    /// A reviewer's turn that an edit of it below replaces: shown, and told,
+    /// as it was, said redacted.
+    pub redacted: bool,
 }
 
 impl Turn {
     /// Turn `i` of its thread, said: `your comment`, `the agent's reply`,
-    /// `ann's reply`.
+    /// `ann's reply`, `ann's edit of the comment that said "Hi Da"`; one an
+    /// edit replaces, `ann's comment (redacted)`.
     pub fn name(&self, i: usize) -> String {
+        match self.redacted {
+            true => format!("{} ({REDACTED})", self.named(i)),
+            false => self.named(i),
+        }
+    }
+
+    /// As `name` says turn `i`, one an edit replaces not said so.
+    pub fn named(&self, i: usize) -> String {
         let whose = match self.role {
             Role::You => "your".to_string(),
             Role::Agent => "the agent's".to_string(),
@@ -55,7 +89,22 @@ impl Turn {
                 _ => "the reviewer's".to_string(),
             },
         };
+        // A reviewer's edit of a comment of theirs above: that comment,
+        // quoted.
+        if let Some(was) = &self.edit {
+            return format!("{whose} edit of the comment that said \"{}\"", quoted(was));
+        }
         format!("{whose} {}", if i == 0 { "comment" } else { "reply" })
+    }
+}
+
+/// The first line of `text`, as the heading of an edit quotes it: cut with
+/// `…` when long.
+fn quoted(text: &str) -> String {
+    let first = text.lines().next().unwrap_or("").trim();
+    match first.chars().count() > QUOTED {
+        true => format!("{}…", first.chars().take(QUOTED - 1).collect::<String>().trim_end()),
+        false => first.to_string(),
     }
 }
 
@@ -131,12 +180,35 @@ fn closed(role: Role, tag: &str, deleted: bool, body: &[&str]) -> Turn {
     } else {
         body.to_vec()
     };
+    // A reviewer's: their name; `redacted`, if an edit of it replaces it;
+    // `edit`, if it is one, then the first line of the comment it edits.
+    let mut marks = (tag, false, None);
+    if let Some((who, rest)) = tag.split_once(' ').filter(|_| role == Role::Reviewer && !deleted) {
+        let (redacted, rest) = match after_word(rest, REDACTED) {
+            Some(rest) => (true, rest),
+            None => (false, rest),
+        };
+        let edit = after_word(rest, EDIT).map(str::to_string);
+        if redacted || edit.is_some() {
+            marks = (who, redacted, edit);
+        }
+    }
+    let (tag, redacted, edit) = marks;
     Turn {
         role,
         body: lines.join("\n").trim().to_string(),
         tag: (role != Role::You).then(|| tag.to_string()),
         deleted,
+        edit,
+        redacted,
     }
+}
+
+/// What follows word `w` at the start of `s`, if it starts with it as a
+/// word of its own.
+fn after_word<'a>(s: &'a str, w: &str) -> Option<&'a str> {
+    let rest = s.strip_prefix(w)?;
+    (rest.is_empty() || rest.starts_with(' ')).then(|| rest.trim_start())
 }
 
 /// Splits a stored comment into ordered turns, those deleted too, empty
@@ -156,6 +228,8 @@ pub fn all_turns(text: &str) -> Vec<Turn> {
                 body,
                 tag: None,
                 deleted: false,
+                edit: None,
+                redacted: false,
             });
         }
         mine.clear();
@@ -194,16 +268,28 @@ pub fn all_turns(text: &str) -> Vec<Turn> {
     turns
 }
 
+/// Who said turn `t`, as the editor heads it and a thread read as lines
+/// says it: `you`, `agent`, a reviewer's name (`ann`); a reviewer's edit by
+/// what it edits (`ann's edit of the comment that said "Hi Da"`); either
+/// `(redacted)` once an edit replaces it.
+pub fn said_by(t: &Turn) -> String {
+    match t.role {
+        Role::You => "you".into(),
+        Role::Agent => "agent".into(),
+        Role::Reviewer if t.edit.is_some() => t.name(1),
+        Role::Reviewer => {
+            let who = t.tag.clone().filter(|w| !w.is_empty()).unwrap_or_else(|| "reviewer".into());
+            if t.redacted { format!("{who} ({REDACTED})") } else { who }
+        }
+    }
+}
+
 /// A thread as lines to read: who said each turn, then what, its lines
 /// after the first indented; a turn deleted the first way left out.
 pub fn said_lines(text: &str) -> Vec<String> {
     let mut out = Vec::new();
     for t in all_turns(text).into_iter().filter(|t| !t.deleted) {
-        let who = match t.role {
-            Role::You => "you",
-            Role::Agent => "agent",
-            Role::Reviewer => t.tag.as_deref().unwrap_or("reviewer"),
-        };
+        let who = said_by(&t);
         for (k, line) in t.body.lines().enumerate() {
             out.push(if k == 0 { format!("{who}: {line}") } else { format!("  {line}") });
         }
@@ -240,7 +326,20 @@ pub fn render_thread(turns: &[Turn]) -> String {
                 Role::Agent => word(AGENT_OPEN),
                 Role::Reviewer => word(REVIEWER_OPEN),
             };
-            match t.tag.as_deref().unwrap_or("") {
+            let tag = t.tag.as_deref().unwrap_or("");
+            // A reviewer's, redacted or an edit: named, as its marks follow
+            // the name.
+            if t.role == Role::Reviewer && (t.redacted || t.edit.is_some()) {
+                let mut open = format!("{open} {}", if tag.is_empty() { "someone" } else { tag });
+                if t.redacted {
+                    open += &format!(" {REDACTED}");
+                }
+                if let Some(was) = &t.edit {
+                    open += &format!(" {EDIT} {}", was.lines().next().unwrap_or("").trim());
+                }
+                return fenced(&open, &t.body);
+            }
+            match tag {
                 "" => fenced(open, &t.body),
                 tag => fenced(&format!("{open} {tag}"), &t.body),
             }
@@ -267,6 +366,8 @@ pub fn append_turn(text: &str, role: Role, body: &str, tag: Option<&str>) -> Str
         body: body.trim().to_string(),
         tag: tag.map(String::from),
         deleted: false,
+        edit: None,
+        redacted: false,
     });
     render_thread(&turns)
 }
@@ -327,6 +428,8 @@ pub fn rewind(text: &str, k: usize, body: &str) -> Option<String> {
         body: body.trim().to_string(),
         tag: None,
         deleted: false,
+        edit: None,
+        redacted: false,
     });
     Some(render_thread(&turns))
 }
@@ -348,12 +451,7 @@ pub const REWIND_SAYS: [&str; 7] = [
 pub fn rewound_lines(text: &str, k: usize) -> Vec<String> {
     let mut out = Vec::new();
     for t in all_turns(text).into_iter().skip(k).filter(|t| !t.deleted) {
-        let who = match t.role {
-            Role::You => "you".to_string(),
-            Role::Agent => "agent".to_string(),
-            Role::Reviewer => t.tag.clone().filter(|w| !w.is_empty()).unwrap_or_else(|| "reviewer".into()),
-        };
-        out.push(format!("# {who}:"));
+        out.push(format!("# {}:", said_by(&t)));
         out.extend(t.body.lines().map(|l| if l.trim().is_empty() { "#".to_string() } else { format!("#   {l}") }));
     }
     out
@@ -545,6 +643,36 @@ mod tests {
         assert_eq!(roles[1], LineRole::Fence);
         assert!(roles[2..roles.len() - 1].iter().all(|r| *r == LineRole::Agent), "{roles:?}");
         assert_eq!(roles.last(), Some(&LineRole::Fence));
+    }
+
+    #[test]
+    fn a_reviewer_s_edit_is_headed_by_what_it_edits_and_the_turn_it_replaces_is_redacted() {
+        // As the fences have them: the comment, redacted; your reply; her
+        // edit, the comment's first line on its fence.
+        let text = [fenced("reviewer ann redacted", "Hi Da"), "Hi ann! My name is Damien".to_string(), fenced("reviewer ann edit Hi Da", "Hi Damien!")].join("\n");
+        let turns = all_turns(&text);
+        let names: Vec<String> = turns.iter().enumerate().map(|(i, t)| t.name(i)).collect();
+        assert_eq!(names, ["ann's comment (redacted)", "your reply", "ann's edit of the comment that said \"Hi Da\""]);
+        assert_eq!((turns[0].tag.as_deref(), turns[0].redacted, &turns[0].edit), (Some("ann"), true, &None));
+        assert_eq!((turns[2].tag.as_deref(), turns[2].redacted, turns[2].edit.as_deref()), (Some("ann"), false, Some("Hi Da")));
+        // Written again as read; an edit redacted in its turn, both marks.
+        assert_eq!(render_thread(&turns), text);
+        let mut again = turns.clone();
+        again[2].redacted = true;
+        let both = render_thread(&again);
+        assert!(both.ends_with("```reviewer ann redacted edit Hi Da\nHi Damien!\n```"), "{both}");
+        assert_eq!(all_turns(&both)[2].name(2), "ann's edit of the comment that said \"Hi Da\" (redacted)");
+        // As a thread is read as lines, and as a rewind writes it: headed so.
+        assert_eq!(said_lines(&text), ["ann (redacted): Hi Da", "you: Hi ann! My name is Damien", "ann's edit of the comment that said \"Hi Da\": Hi Damien!"]);
+        assert_eq!(rewound_lines(&text, 2), ["# ann's edit of the comment that said \"Hi Da\":", "#   Hi Damien!"]);
+        // A long first line, quoted short; only the first line.
+        let long = "This sentence is long enough that the heading of an edit of it must cut it short somewhere.";
+        let t = &all_turns(&fenced(&format!("reviewer ann edit {long}"), "Shorter."))[0];
+        assert_eq!(t.edit.as_deref(), Some(long));
+        assert_eq!(t.name(1), "ann's edit of the comment that said \"This sentence is long enough that the heading of an edit of…\"");
+        // A reviewer's name and nothing else after it, as ever: a name.
+        let t = &all_turns(&fenced("reviewer ann smith", "Hi."))[0];
+        assert_eq!((t.tag.as_deref(), t.redacted, &t.edit), (Some("ann smith"), false, &None));
     }
 
     #[test]

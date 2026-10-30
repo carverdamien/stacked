@@ -439,8 +439,11 @@ pub fn note_change(before: Option<&Note>, n: &Note) -> String {
         {
             return "you edited it".into();
         }
+        // A reviewer's comment edited on Phabricator: their edit of it, last.
+        let edit = thread_turns(&n.text).last().is_some_and(|t| t.edit.is_some());
         return match last_role(&n.text) {
             Some(Role::Agent) => format!("agent replied ({})", way_said(&last_reply_way(&n.text).unwrap_or_default())),
+            Some(Role::Reviewer) if edit => "a reviewer edited a comment on Phabricator".into(),
             Some(Role::Reviewer) => "a reviewer replied".into(),
             _ => "you replied".into(),
         };

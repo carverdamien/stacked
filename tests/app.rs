@@ -644,3 +644,66 @@ fn the_tools_the_agent_could_not_use_are_reviewed_in_the_window_too() {
     press(&s, KeyCode::Enter);
     screen(&s, "allowed", |b| text(b).contains("✓ Bash(searchfox-cli *) · from now on"));
 }
+
+/// On stack `s` of `db`, ann's thread on its first patch's title: her
+/// comment, your reply, then her edit of her comment on Phabricator, her
+/// comment as it was redacted. And a pull waiting for your review, holding
+/// her new comment on the second patch's title.
+fn pulled_work(db: &Path) {
+    use stacked::db::{Note, Run, RunState};
+    use stacked::thread::fenced;
+    stacked::db::Db::edit(db, |d| {
+        let s = d.stack("s").unwrap().clone();
+        let (first, second) = (d.patch(&s.patches[0]).clone(), d.patch(&s.patches[1]).clone());
+        let thread = [fenced("reviewer ann redacted", "Hi Da"), "Hi ann! My name is Damien".to_string(), fenced("reviewer ann edit Hi Da", "Hi Damien!")].join("\n");
+        let note = |p: &stacked::db::Patch, id: &str, text: String| Note {
+            change: p.change.clone(),
+            id: id.into(),
+            line: stacked::view::title_key(p),
+            file: stacked::view::MSG_PATH.into(),
+            preview: p.title().into(),
+            text,
+            by: Some("ann".into()),
+            remote: vec![id.trim_start_matches("phab:").into()],
+            ..Default::default()
+        };
+        d.set_note(note(&first, "phab:c1", thread))?;
+        d.add_run(Run {
+            id: "pull-1".into(),
+            what: "pull".into(),
+            stack: "s".into(),
+            state: RunState::Done,
+            held: Some(stacked::held::Held {
+                at: stacked::db::now(),
+                opened: vec![note(&second, "phab:c2", fenced("reviewer ann", "Why add b?"))],
+                ..Default::default()
+            }),
+            ..Default::default()
+        })
+        .map(|_| ())
+    })
+    .unwrap();
+}
+
+#[test]
+fn a_reviewer_s_edit_is_headed_so_and_a_pull_s_review_rejects_nothing_in_the_window_too() {
+    let (tmp, db) = setup();
+    pulled_work(&db);
+    let s = Session::open(&db, tmp.path()).unwrap();
+    s.send(Input::Size(120, 30));
+    // ann's comment as it was, redacted; her edit, by what it edits.
+    screen(&s, "her edit", |b| {
+        let t = text(b);
+        t.contains("▎ ann (redacted):") && t.contains("▎ ann's edit of the comment that said \"Hi Da\":")
+    });
+    // The pull's review: its part accepted; Delete rejects nothing, and says
+    // why; closing it, nothing to reject either.
+    press(&s, KeyCode::Esc);
+    press(&s, KeyCode::Enter);
+    screen(&s, "the part", |b| text(b).contains("✓ ✉ message: Bug 2 - add b · Why add b?"));
+    press(&s, KeyCode::Delete);
+    screen(&s, "why", |b| text(b).contains("a comment pulled from Phabricator cannot be rejected: close the review to file it"));
+    press(&s, KeyCode::Esc);
+    let dialog = screen(&s, "the dialog", |b| text(b).contains("Keep reviewing"));
+    assert!(text(&dialog).contains("Close review") && !text(&dialog).contains("Reject all remaining"), "{}", text(&dialog));
+}

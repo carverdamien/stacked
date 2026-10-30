@@ -14,7 +14,8 @@
 //! a read that fails leaves what was known as it was. Not while reviews
 //! come from nowhere, nor in the tour. Built with the `moz-phab` feature.
 
-use super::submitting::{code_rows, message_rows, row, said_rows};
+use super::compared::{message_rows, row, said_rows};
+use super::submitting::code_rows;
 use super::*;
 use crate::phab::{Latest, Searched, Status};
 

@@ -52,6 +52,7 @@ use crate::view::{MSG_PATH, note_keys, title_key};
 
 pub mod banner;
 pub use banner::BannerLine;
+mod compared;
 pub mod finding;
 pub use finding::Find;
 pub mod places;
@@ -5730,6 +5731,14 @@ impl App {
                 out.extend(self.delete_help());
                 out.push("Press ↑↓ for another line, and ↓ past the last for the stack; Space to pick one, to review, send or go to; Esc to go back where you were.".into());
             }
+            Screen::Review if self.review_pulled() => {
+                out.push(
+                    "The review of the comments pulled from Phabricator: the comments opened, the replies, and the comments edited on Phabricator. None is rejected: closing the review files every one of them, and a reply to a comment you closed reopens that comment."
+                        .into(),
+                );
+                out.push("Press ↑↓ for another part; → to scroll what it looks like, → again to see it wide, the list out of sight, and ← to come back; Esc, then Close review, to file them.".into());
+                out.extend(self.delete_help());
+            }
             Screen::Review => {
                 out.push(
                     "The review of what landed, the agent's work or the comments pulled from Phabricator: the stack operations of a change, the comments opened, the replies. Each is accepted or rejected; a change of the stack is one part, and rejecting it rejects the comments too."
@@ -7550,8 +7559,13 @@ impl App {
             Action::MarkReplies(accept) => self.mark_all(true, accept),
             Action::ReviewSave => self.review_save(),
             Action::ReviewDiscard => {
+                // A pull's: nothing marked, all of it filed as it closes.
+                let pulled = self.review_pulled();
                 self.leave_review();
-                self.status = "the marks you made since you opened the review are thrown away".into();
+                self.status = match pulled {
+                    true => reviewing::PULL_WAITS.into(),
+                    false => "the marks you made since you opened the review are thrown away".into(),
+                };
             }
             Action::AskReviewClose(accept) => self.mode = Mode::Menu(self.review_close_ask(accept)),
             Action::ReviewClose(rest) => self.review_close(rest),

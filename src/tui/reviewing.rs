@@ -21,7 +21,7 @@ use std::path::PathBuf;
 
 use super::*;
 use crate::db::Run;
-use crate::held::{Held as Work, Part};
+use crate::held::{Goes, Held as Work, Part};
 use crate::history::Diffed;
 use crate::refusals::{Allow, Refusal};
 #[cfg(feature = "try-push")]
@@ -30,6 +30,9 @@ use crate::try_push::thousands;
 /// What the review's right pane shows of a part: what it is, said; its
 /// lines; and the lines that are the part, the first to show first.
 type View = (String, Vec<Vec<(String, Style)>>, Range<usize>);
+
+/// What leaving the review of a pull's comments says: they wait for it.
+pub(super) const PULL_WAITS: &str = "the comments pulled wait for your review: closing it files every one of them";
 
 /// The stack diff of the change, as the right pane shows it: what it is,
 /// said; its lines. For each of its entries: the lines it takes; where
@@ -217,6 +220,29 @@ fn operation(d: &Diffed) -> Option<(String, Style)> {
     })
 }
 
+/// Reviewer's edit `rp` of their comment, which said `was`, as its review
+/// shows it over its thread, `w` wide: under a heading, the comment as it
+/// was filed, then as it is now, compared as two versions of a message are
+/// (`compared::message_rows`), what only each has marked; a line between
+/// them and the thread.
+fn edit_lines(rp: &crate::held::Reply, was: &str, w: usize) -> Vec<Vec<(String, Style)>> {
+    // Each line as it ends aside: Phabricator's may end with a carriage
+    // return.
+    let plain = |s: &str| s.lines().map(str::trim_end).collect::<Vec<_>>().join("\n").trim().to_string();
+    let heading = format!("{}'s comment as it was filed, then as it was edited on Phabricator", rp.who());
+    let mut rows = vec![super::compared::row(Kind::File, heading)];
+    super::compared::message_rows(&mut rows, &plain(was), &plain(&rp.text), w);
+    rows.push(super::compared::row(Kind::Blank, ""));
+    rows.iter().map(|row| row_parts(row, false)).collect()
+}
+
+/// Reviewer's reply `rp` to a comment you closed, said: `ann's reply to a
+/// comment you closed`, `ann's edit of a comment you closed`.
+fn closed_said(rp: &crate::held::Reply) -> String {
+    let to = if rp.was.is_some() { "of" } else { "to" };
+    format!("{} {to} a comment you closed", rp.said())
+}
+
 /// A comment's first words.
 pub(super) fn first_words(text: &str) -> String {
     thread_turns(text).first().map(|t| crate::markdown::first_line(&t.body)).unwrap_or_default()
@@ -291,7 +317,7 @@ impl App {
             self.status = "this work goes on from the work landed before it, which waits for your review: review that one first".into();
             return;
         }
-        let marks = self.db.review(run).map(|v| v.marks.clone()).unwrap_or_default();
+        let marks = crate::held::marks(&self.db, r);
         self.reviewing = Some(Reviewing {
             run: run.into(),
             marks,
@@ -341,6 +367,12 @@ impl App {
     fn asking_open(&self) -> Vec<(usize, Note)> {
         let Some((r, _)) = self.reviewing.as_ref().and_then(|rv| self.work(&rv.run)) else { return vec![] };
         crate::held::asking_open(&self.db, r).into_iter().map(|(k, n)| (k, n.clone())).collect()
+    }
+
+    /// Whether the work reviewed is a pull's, whose parts are all accepted:
+    /// none of the comments it pulled is rejected.
+    pub(super) fn review_pulled(&self) -> bool {
+        self.reviewing.as_ref().and_then(|rv| self.db.run(&rv.run)).is_some_and(crate::held::pulled)
     }
 
     /// Whether the work reviewed is the agent's, to send back to it with
@@ -718,6 +750,9 @@ impl App {
             });
         }
         let p = line.part?;
+        if self.review_pulled() {
+            return Some(Err(crate::held::FILED.into()));
+        }
         Some(match rv.marks.get(&p.key()) {
             Some(false) => Err("this part is rejected already".into()),
             _ => Ok(Action::MarkPart(false)),
@@ -729,7 +764,7 @@ impl App {
     fn review_of(&self, run: &str) -> Reviewing {
         Reviewing {
             run: run.into(),
-            marks: self.db.review(run).map(|v| v.marks.clone()).unwrap_or_default(),
+            marks: self.db.run(run).map(|r| crate::held::marks(&self.db, r)).unwrap_or_default(),
             local: self.local_of(run),
             ..Default::default()
         }
@@ -824,6 +859,9 @@ impl App {
     /// not: why is said.
     pub(super) fn reject_work_here(&self, run: &str) -> std::result::Result<Action, String> {
         let Some((r, _)) = self.work(run) else { return Err("this work is gone".into()) };
+        if crate::held::pulled(r) {
+            return Err(crate::held::FILED.into());
+        }
         if ask::guessing(&self.db, r).is_some() {
             return Err("this work goes on from the work landed before it, which waits for your review: review that one first".into());
         }
@@ -893,7 +931,7 @@ impl App {
     pub(super) fn review_lines(&self) -> Vec<Line> {
         let mut out = Vec::new();
         let Some(rv) = &self.reviewing else { return out };
-        let Some((_, h)) = self.work(&rv.run) else { return out };
+        let Some((r, h)) = self.work(&rv.run) else { return out };
         let line = |text: String, style: Style| Line {
             text,
             style,
@@ -981,10 +1019,13 @@ impl App {
             for p in replies {
                 let Part::Reply(k) = p else { continue };
                 let rp = &h.replies[k];
-                let at = match self.db.note(&rp.change, &rp.id) {
-                    Some(n) if n.on_stack() => "the stack".to_string(),
-                    Some(n) => n.where_said(),
-                    None => "a comment deleted".to_string(),
+                let on = |n: &Note| if n.on_stack() { "the stack".to_string() } else { n.where_said() };
+                let at = match crate::held::goes(&self.db, &r.stack, rp) {
+                    Goes::Open(n) => on(n),
+                    // A reviewer's, to a comment you closed: where it was.
+                    Goes::Reopens(Some(n)) => format!("{} (closed)", on(n)),
+                    Goes::Reopens(None) => "a comment you closed".to_string(),
+                    Goes::Nowhere => "a comment deleted".to_string(),
                 };
                 let (m, st) = mark_of(mark(p));
                 let edit = if rp.was.is_some() { format!("{}: ", rp.said()) } else { String::new() };
@@ -1129,12 +1170,18 @@ impl App {
                 let (n, said) = match p {
                     Part::Reply(k) => {
                         let rp = &h.replies[k];
-                        let Some(n) = self.db.note(&rp.change, &rp.id) else {
-                            return ("its comment was deleted: nothing to answer".into(), vec![], 0..0);
+                        // A reviewer's, to a comment you closed: its thread as
+                        // it was when closed, as the pull kept it.
+                        let (n, closed) = match crate::held::goes(&self.db, &r.stack, rp) {
+                            Goes::Open(n) => (n, false),
+                            Goes::Reopens(Some(n)) => (n, true),
+                            Goes::Reopens(None) => return (format!(" {}: accepting it reopens the comment", closed_said(rp)), vec![], 0..0),
+                            Goes::Nowhere => return ("its comment was deleted: nothing to answer".into(), vec![], 0..0),
                         };
                         let text = rp.after(&n.text);
                         let said = match &rp.promote {
                             Some(why) => format!(" its reply, as it would be in its thread; then it moves to the stack's comments: {why}"),
+                            None if closed => format!(" {}, as it would be in its thread: accepting it reopens the comment", closed_said(rp)),
                             None if rp.was.is_some() => format!(" {}'s comment, edited on Phabricator, as it would be in its thread", rp.who()),
                             None => " its reply, as it would be in its thread".to_string(),
                         };
@@ -1146,7 +1193,18 @@ impl App {
                     #[cfg(feature = "try-push")]
                     Part::Task(_) => unreachable!(),
                 };
-                self.comment_view(r, &n, said, w)
+                let (said, mut lines, at) = self.comment_view(r, &n, said, w);
+                // A reviewer's comment edited on Phabricator: as it was filed,
+                // then as it is now, over its thread.
+                if let Part::Reply(k) = p
+                    && let Some(was) = &h.replies[k].was
+                {
+                    let both = edit_lines(&h.replies[k], was, w);
+                    let n = both.len();
+                    lines.splice(at.start..at.start, both);
+                    return (said, lines, at.start..at.end + n);
+                }
+                (said, lines, at)
             }
         }
     }
@@ -1492,6 +1550,8 @@ impl App {
         let entry = self.reviewing.as_ref().and_then(|rv| lines.get(rv.sel)).and_then(|l| l.entry);
         let first = diff.as_ref().map_or(0, |v| v.first_change(entry));
         let goes = diff.filter(|_| on_diff).map(|v| v.goes);
+        // A pull's parts: all accepted, nothing to mark.
+        let pulled = self.review_pulled();
         let Some(rv) = self.reviewing.as_mut() else {
             self.screen = Screen::Main;
             return Effect::None;
@@ -1562,7 +1622,7 @@ impl App {
                 } else if let Some(k) = lines.get(rv.sel).and_then(|l| l.tool) {
                     // A tool the agent could not use: allowed from now on.
                     self.tool_enter(k);
-                } else if let Some(p) = lines.get(rv.sel).and_then(|l| l.part) {
+                } else if let Some(p) = lines.get(rv.sel).and_then(|l| l.part).filter(|_| !pulled) {
                     match rv.marks.get(&p.key()) {
                         Some(true) => {
                             rv.marks.remove(&p.key());
@@ -1619,6 +1679,10 @@ impl App {
     /// they are as they were. A comment is not accepted while the change it
     /// goes with is rejected.
     pub(super) fn mark(&mut self, p: Part, accept: bool) {
+        if !accept && self.review_pulled() {
+            self.status = crate::held::FILED.into();
+            return;
+        }
         let comments: Vec<Part> = self.review_parts().into_iter().filter(|p| *p != Part::Stack).collect();
         let whose = self.reviewing.as_ref().and_then(|rv| self.db.run(&rv.run)).map_or("the agent's change", ask::whose_change);
         let Some(rv) = self.reviewing.as_mut() else { return };
@@ -1742,6 +1806,7 @@ impl App {
         match (line.asking, line.part) {
             (Some(k), _) if rv.marks.get(&crate::held::asking_key(k)) == Some(&true) => "enter: keep it open",
             (Some(_), _) => "enter: close it with the review",
+            (None, Some(_)) if self.review_pulled() => "enter: nothing, what was pulled is filed as the review closes",
             (None, Some(p)) if rv.marks.get(&p.key()) == Some(&true) => "enter: to review again",
             _ => "enter: accept",
         }
@@ -1913,12 +1978,15 @@ impl App {
         items.push(Item::line());
         items.extend(self.asking_row());
         items.extend(self.head_row());
-        items.extend([
-            Item::new("Accept all remaining and Close", Action::AskReviewClose(true)).when(!done),
-            Item::new("Reject all remaining and Close", Action::AskReviewClose(false)).when(!done),
-            Item::line(),
-            Item::new("Keep reviewing", Action::Cancel),
-        ]);
+        // A pull's: every part accepted already, none to reject.
+        if !self.review_pulled() {
+            items.extend([
+                Item::new("Accept all remaining and Close", Action::AskReviewClose(true)).when(!done),
+                Item::new("Reject all remaining and Close", Action::AskReviewClose(false)).when(!done),
+                Item::line(),
+            ]);
+        }
+        items.push(Item::new("Keep reviewing", Action::Cancel));
         let run = self.reviewing.as_ref().and_then(|rv| self.db.run(&rv.run));
         let of = match run {
             Some(r) if crate::held::pulled(r) => "the comments pulled",
@@ -2360,7 +2428,9 @@ impl App {
             items.push(Item::new("Close it with the review", Action::CloseAsking(k, true)).when(!closing));
             items.push(Item::new("Keep it open", Action::CloseAsking(k, false)).when(closing));
         }
-        if let Some(p) = lines.get(rv.sel).and_then(|l| l.part) {
+        // A pull's parts: all accepted, none rejected, nothing to mark.
+        let marked = !self.review_pulled();
+        if let Some(p) = lines.get(rv.sel).and_then(|l| l.part).filter(|_| marked) {
             let may_accept = p == Part::Stack || !rejected;
             match rv.marks.get(&p.key()) {
                 Some(true) => items.push(Item::new("Mark as rejected", Action::MarkPart(false))),
@@ -2372,7 +2442,7 @@ impl App {
             }
         }
         // The comments it opened, and its replies, each kind apart.
-        let parts = self.review_parts();
+        let parts: Vec<Part> = self.review_parts().into_iter().filter(|_| marked).collect();
         if parts.iter().any(|p| matches!(p, Part::Opened(_))) {
             items.push(Item::new("Mark all opened comments accepted", Action::MarkOpened(true)).when(!rejected));
             items.push(Item::new("Mark all opened comments rejected", Action::MarkOpened(false)));
@@ -2456,8 +2526,13 @@ impl App {
     /// The review's marks saved, to go on from them later.
     pub(super) fn review_save(&mut self) {
         let Some(rv) = self.reviewing.clone() else { return };
+        let pulled = self.review_pulled();
         if self.edit(|db| crate::held::save(db, &rv.run, &rv.marks)).is_some() {
-            self.status = "your marks are saved: the review goes on from them when you open it again".into();
+            self.status = match pulled {
+                // A pull's: nothing marked, all of it filed as it closes.
+                true => PULL_WAITS.into(),
+                false => "your marks are saved: the review goes on from them when you open it again".into(),
+            };
             self.leave_review();
         }
     }
