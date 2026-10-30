@@ -249,8 +249,9 @@ was started: `$EDITOR`, for what is edited in it, opens there. Quit is
 quit, and the page says so. A ctrl-c there, a kill, or that terminal
 closing quits too. Either way, as when the editor in a terminal is left,
 the agents' worktrees made ahead are removed, and the asks still running
-are listed there. A ctrl-c while `$EDITOR` runs there goes to `$EDITOR`
-alone.
+are listed there; and `stacked web` ends once each page is told (a few
+seconds at most, for a page that reads nothing). A ctrl-c while `$EDITOR`
+runs there goes to `$EDITOR` alone.
 
 The server runs the editor as the terminal does, drawn into a buffer of the
 page's size, and sends the page the rows that changed (server-sent events);
@@ -4557,9 +4558,10 @@ view showing the parent first, then the code), and the comments pane's states (e
 compact, hidden) and the compact view of the code as they were. With the `web` feature, `tests/web.rs`
 serves the editor and asks it over HTTP as a browser would: the token
 needed, the page, the wasm, the rows as they change, a key and a click,
-and the editor left, the worktree made ahead removed (Quit in the page;
-`stacked web` itself sent SIGINT, SIGTERM or SIGHUP, the first while
-`$EDITOR` runs left to `$EDITOR`, the second waiting for it), and two
+and the editor left, the page told, the worktree made ahead removed (Quit
+in the page; `stacked web` itself sent SIGINT, SIGTERM or SIGHUP, the
+first while `$EDITOR` runs left to `$EDITOR`, the second waiting for it),
+and two
 `stacked web` at once, each putting its database, named from where it
 runs, on the list StackED's Open Recent shows, the ask dialog (opened with
 nothing set from `Ask agent about all…`, clicked, its permission stepped

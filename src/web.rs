@@ -11,7 +11,8 @@
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::time::{Duration, Instant};
 
@@ -37,6 +38,42 @@ enum Input {
     /// A line it sent: a key, a click, its size.
     Line(String),
 }
+
+/// How many requests the server is answering, the browsers' events among
+/// them, each counted from when it comes (`Answering::one`) until it is
+/// answered: `stacked web` ends once none is, so that each has what it
+/// was sent, and its answer.
+#[derive(Clone, Default)]
+struct Answering(Arc<AtomicUsize>);
+
+/// A request counted among those being answered, while it is.
+struct Answered(Arc<AtomicUsize>);
+
+impl Answering {
+    /// A request come: counted until what this gives goes.
+    fn one(&self) -> Answered {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        Answered(self.0.clone())
+    }
+
+    /// Waits for every request to be answered, as long as `TELLING` at most:
+    /// for a page that reads nothing, or a request that never ends.
+    fn wait(&self) {
+        let started = Instant::now();
+        while self.0.load(Ordering::SeqCst) > 0 && started.elapsed() < TELLING {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+}
+
+impl Drop for Answered {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// How long the editor left waits for the requests it is answering.
+const TELLING: Duration = Duration::from_secs(5);
 
 /// The server, listening: its port, and the token its pages need.
 pub struct Bound {
@@ -67,15 +104,18 @@ impl Bound {
     pub fn serve(self, path: &Path) -> Result<()> {
         let (tx, rx) = mpsc::channel();
         let Bound { listener, port, token } = self;
+        let answering = Answering::default();
+        let counting = answering.clone();
         std::thread::spawn(move || {
             for stream in listener.incoming().flatten() {
-                let (token, tx) = (token.clone(), tx.clone());
+                let (token, tx, answered) = (token.clone(), tx.clone(), counting.one());
                 std::thread::spawn(move || {
                     let _ = handle(stream, &token, port, &tx);
+                    drop(answered);
                 });
             }
         });
-        run(path, rx)
+        run(path, rx, &answering)
     }
 }
 
@@ -132,17 +172,24 @@ pub fn catch_signals() {
 
 /// The editor left, as the terminal's is once quit: the browsers told, the
 /// agents' worktrees it made ahead removed, the asks still running said.
-fn leave(app: &App, browsers: &[Sender<String>]) {
+/// Then what is `answering` is waited for, for each browser to be told and
+/// the request that quit to be answered: `stacked web` ends with this, and
+/// what is not written by then never is. A page not told, its events cut,
+/// would try them again and again, never saying that the editor is gone.
+fn leave(app: &App, browsers: Vec<Sender<String>>, answering: &Answering) {
+    // Each sent its last, then nothing more: its events end once written.
     for b in browsers {
         let _ = b.send("bye".into());
     }
     app.leave();
     app.say_still_running();
+    answering.wait();
 }
 
 /// The editor, as the terminal runs it: what the browsers send done, its
-/// screen drawn after, the rows that changed sent them.
-fn run(path: &Path, rx: Receiver<Input>) -> Result<()> {
+/// screen drawn after, the rows that changed sent them; until it is left,
+/// once what it is `answering` is answered.
+fn run(path: &Path, rx: Receiver<Input>, answering: &Answering) -> Result<()> {
     let mut app = App::new(path)?;
     // Opened: on StackED's File → Open Recent too.
     crate::state::opened_in_editor(path);
@@ -156,13 +203,13 @@ fn run(path: &Path, rx: Receiver<Input>) -> Result<()> {
             Ok(i) => Some(i),
             Err(RecvTimeoutError::Timeout) => None,
             Err(RecvTimeoutError::Disconnected) => {
-                leave(&app, &browsers);
+                leave(&app, browsers, answering);
                 return Ok(());
             }
         };
         // Ctrl-c, a kill, the terminal closed: left as Quit leaves it.
         if INTERRUPTED.load(Ordering::SeqCst) || TERMINATED.load(Ordering::SeqCst) {
-            leave(&app, &browsers);
+            leave(&app, browsers, answering);
             return Ok(());
         }
         // All that came meanwhile, before it is drawn: a paste is many keys.
@@ -179,7 +226,7 @@ fn run(path: &Path, rx: Receiver<Input>) -> Result<()> {
                     match act(&mut app, &line, &mut size) {
                         Effect::None => {}
                         Effect::Quit => {
-                            leave(&app, &browsers);
+                            leave(&app, browsers, answering);
                             return Ok(());
                         }
                         // $EDITOR, where `stacked web` was started: a ctrl-c
