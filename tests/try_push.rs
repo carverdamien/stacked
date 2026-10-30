@@ -277,7 +277,7 @@ if [ "$check" = yes ]; then
   echo
   echo 'Pushed via `mach try fuzzy`'
   echo "Calculated try_task_config.json:"
-  tasks=$(printf '%s' "$labels" | sed 's/^\^//; s/\$$//' | sort)
+  tasks=$(printf '%s' "$labels" | sed 's/^\^//; s/\$$//' | LC_ALL=C sort)
   if [ "$mode" = drop ]; then tasks=$(printf '%s\n' "$tasks" | sed '$d'); fi
   priority=""
   if [ -n "$preset" ] && grep -q '"lowest"' "$MACH_TRY_PRESET_PATHS"; then priority=lowest; fi

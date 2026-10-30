@@ -269,6 +269,19 @@ impl Env {
     }
 }
 
+/// What `sed -i '' SCRIPT FILE` does with BSD's sed, as a command of the
+/// shell's that any sed runs: GNU's reads `-i ''` otherwise, `''` as its
+/// script. `file` is named as the shell reads it (`a.txt`, `$1`), and
+/// written anew from what `script` makes of it; in a subshell, the two
+/// steps fail as the one command did, which `set -e` stops at.
+fn sed_i(script: &str, file: &str) -> String {
+    format!("(sed '{script}' \"{file}\" > \"{file}.new\" && mv \"{file}.new\" \"{file}\")")
+}
+
+/// A command of the shell's that prints the lines it reads, the last
+/// first, as BSD's `tail -r` and GNU's `tac` do: neither has the other's.
+const REVERSED: &str = "sed -n '1!G;h;$p'";
+
 #[test]
 fn round_trip_through_git() {
     let e = env();
@@ -361,11 +374,13 @@ fn todo_list_in_the_editor() {
     // drops the bottom one; then rewrites the message it is given.
     let editor = e.script(
         "editor.sh",
-        r#"case "$1" in
-*.todo) grep -v '^#' "$1" | grep . | tail -r | sed '1s/^pick/reword/;$s/^pick/drop/' > "$1.new" && mv "$1.new" "$1" ;;
+        &format!(
+            r#"case "$1" in
+*.todo) grep -v '^#' "$1" | grep . | {REVERSED} | sed '1s/^pick/reword/;$s/^pick/drop/' > "$1.new" && mv "$1.new" "$1" ;;
 *.txt) printf 'Bug 3 - reworded\n\nNew body.\n' > "$1" ;;
 esac
-"#,
+"#
+        ),
     );
     let (fine, _, err) = stacked_in(&e.src, &e.db, &["edit", "s"], "", &[("EDITOR", &editor)]);
     assert!(fine, "{err}");
@@ -665,9 +680,9 @@ fn a_todo_list_that_does_not_apply_comes_back() {
         &format!(
             r#"if grep -q '^# stacked: ' "$1"; then
   grep '^# stacked: ' "$1" > {why}
-  grep '^pick' "$1" | sort -k3 > "$1.new" && mv "$1.new" "$1"
+  grep '^pick' "$1" | LC_ALL=C sort -k3 > "$1.new" && mv "$1.new" "$1"
 else
-  grep '^pick' "$1" | tail -r > "$1.new" && mv "$1.new" "$1"
+  grep '^pick' "$1" | {REVERSED} > "$1.new" && mv "$1.new" "$1"
 fi
 "#,
             why = e.root.join("why").display()
@@ -1959,7 +1974,10 @@ fn landed_work_is_edited_by_hand_in_its_place() {
     let claude = fake_claude(
         &e,
         "claude-spell.sh",
-        "set -e\nsed -i '' 's/^2$/deux/' a.txt\ngit -c user.name=C -c user.email=c@x commit -q --amend --no-edit -a",
+        &format!(
+            "set -e\n{}\ngit -c user.name=C -c user.email=c@x commit -q --amend --no-edit -a",
+            sed_i("s/^2$/deux/", "a.txt")
+        ),
         r#"{"replies": {"c1": "Spelled it deux."}}"#,
     );
     let (fine, out, err) = stacked_in(&e.src, &e.db, &["send", "s", &id, "--wait"], "", &[("STACKED_CLAUDE", &claude)]);
@@ -1968,7 +1986,7 @@ fn landed_work_is_edited_by_hand_in_its_place() {
     let run = landed.split('\t').next().unwrap().to_string();
     assert!(landed.contains("Spelled it deux."), "{landed}");
     // Edited by hand from its review: patch 1 as the work leaves it.
-    let editor = e.script("editor.sh", "sed -i '' 's/^+deux$/+two, spelled/' \"$1\"\n");
+    let editor = e.script("editor.sh", &format!("{}\n", sed_i("s/^+deux$/+two, spelled/", "$1")));
     let (fine, _, err) = stacked_in(&e.src, &e.db, &["edit", "s", "1", "--work", &run[..8]], "", &[("EDITOR", &editor)]);
     assert!(fine && err.contains("it waits for your review"), "{err}");
     // That work is rejected; in its place, the agent's with your edit in it,
@@ -2251,9 +2269,11 @@ fn landed_work_with_what_you_wrote_in_its_review_goes_back_to_the_agent_from_it(
         &e,
         "claude-rounds.sh",
         &format!(
-            "set -e\nif grep -qx deux a.txt; then sed -i '' 's/^deux$/2 spelled/' a.txt; else sed -i '' 's/^2$/deux/' a.txt; fi\n\
+            "set -e\nif grep -qx deux a.txt; then {spelled}; else {deux}; fi\n\
              git -c user.name=C -c user.email=c@x commit -q --amend --no-edit -a\nprintf '%s\\n=====\\n' \"$2\" >> {}",
-            prompts.display()
+            prompts.display(),
+            spelled = sed_i("s/^deux$/2 spelled/", "a.txt"),
+            deux = sed_i("s/^2$/deux/", "a.txt")
         ),
         r#"{"replies": {"c1": "Done."}}"#,
     );
@@ -2309,10 +2329,12 @@ fn a_round_sent_back_goes_first_and_the_stack_waits_for_it() {
         "claude-first.sh",
         &format!(
             "set -e\nprintf '%s\\n=====\\n' \"$2\" >> {p}\ncase \"$2\" in\n  *'Why b?'*) until test -e {g}; do sleep 0.1; done ;;\n  \
-             *) if grep -qx deux a.txt; then sed -i '' 's/^deux$/2 spelled/' a.txt; else sed -i '' 's/^2$/deux/' a.txt; fi\n     \
+             *) if grep -qx deux a.txt; then {spelled}; else {deux}; fi\n     \
              git -c user.name=C -c user.email=c@x commit -q --amend --no-edit -a ;;\nesac",
             p = prompts.display(),
-            g = gate.display()
+            g = gate.display(),
+            spelled = sed_i("s/^deux$/2 spelled/", "a.txt"),
+            deux = sed_i("s/^2$/deux/", "a.txt")
         ),
         r#"{"replies": {"c1": "Done."}}"#,
     );
@@ -2356,9 +2378,11 @@ fn chain_claude(e: &Env, prompts: &Path, gate: Option<&Path>) -> PathBuf {
         "claude-chain.sh",
         &format!(
             "set -e\nprintf '%s\\n=====\\n' \"$2\" >> {p}\ncase \"$2\" in\n  *'Why b?'*) ;;\n  \
-             *) if grep -qx deux a.txt; then {wait}sed -i '' 's/^deux$/2 spelled/' a.txt; else sed -i '' 's/^2$/deux/' a.txt; fi\n     \
+             *) if grep -qx deux a.txt; then {wait}{spelled}; else {deux}; fi\n     \
              git -c user.name=C -c user.email=c@x commit -q --amend --no-edit -a ;;\nesac",
-            p = prompts.display()
+            p = prompts.display(),
+            spelled = sed_i("s/^deux$/2 spelled/", "a.txt"),
+            deux = sed_i("s/^2$/deux/", "a.txt")
         ),
         r#"{"replies": {"c1": "Done."}}"#,
     )
@@ -2508,10 +2532,11 @@ fn an_answer_runs_alongside_a_running_edit_and_rejecting_the_edit_keeps_it() {
         "claude-alongside.sh",
         &format!(
             "set -e\nprintf '%s\\n=====\\n' \"$2\" >> {p}\ncase \"$2\" in\n  *'Why b?'*) ;;\n  \
-             *) until test -e {g}; do sleep 0.1; done; sed -i '' 's/^2$/deux/' a.txt\n     \
+             *) until test -e {g}; do sleep 0.1; done; {deux}\n     \
              git -c user.name=C -c user.email=c@x commit -q --amend --no-edit -a ;;\nesac",
             p = prompts.display(),
-            g = gate.display()
+            g = gate.display(),
+            deux = sed_i("s/^2$/deux/", "a.txt")
         ),
         r#"{"replies": {"c1": "Done."}}"#,
     );
@@ -3726,7 +3751,7 @@ fn a_patch_is_edited_where_the_cursor_is() {
     let said = || std::fs::read_to_string(&args).unwrap();
 
     // The patch as mail, at a line.
-    script("sed -i '' 's/^Subject: Bug 2 - add b$/Subject: Bug 2 - add bee/' \"$file\"");
+    script(&sed_i("s/^Subject: Bug 2 - add b$/Subject: Bug 2 - add bee/", "$file"));
     let (fine, _, err) = edit(&["2", "--line", "7"]);
     assert!(fine, "{err}");
     assert_eq!(said().lines().last(), Some("+7"));
@@ -3734,7 +3759,7 @@ fn a_patch_is_edited_where_the_cursor_is() {
 
     // A file as the patch leaves it, at a line: the patch is made again
     // from it, the rest of it as it was.
-    script("sed -i '' 's/^2$/deux/' \"$file\"");
+    script(&sed_i("s/^2$/deux/", "$file"));
     let (fine, _, err) = edit(&["1", "--path", "a.txt", "--line", "2"]);
     assert!(fine && err.contains("edited a.txt in Bug 1 - change two"), "{err}");
     assert_eq!(said().lines().last(), Some("+2"));
@@ -3746,14 +3771,14 @@ fn a_patch_is_edited_where_the_cursor_is() {
     // One the patch above cannot take is not taken; it is kept, and taken
     // up again from where it was left. It is kept in the temporary
     // directory, which is a folder of the test's here.
-    script("sed -i '' 's/^eight$/huit/' \"$file\"");
+    script(&sed_i("s/^eight$/huit/", "$file"));
     let (fine, _, err) = edit(&["1", "--path", "a.txt", "--line", "8"]);
     assert!(!fine && err.contains("patch 3 (Bug 3 - café") && err.contains("does not apply"), "{err}");
     let kept = err.split("Your edit is kept in ").nth(1).unwrap().split(':').next().unwrap().to_string();
     assert!(Path::new(&kept).starts_with(e.root.join("tmp")), "{kept}");
     assert!(std::fs::read_to_string(&kept).unwrap().contains("huit"));
     assert_eq!(e.ok(&["versions", "s", "1"]).lines().count(), 2, "nothing changed");
-    script("sed -i '' 's/^huit$/eight/' \"$file\"");
+    script(&sed_i("s/^huit$/eight/", "$file"));
     let (fine, _, err) = edit(&["1", "--path", "a.txt", "--from", &kept]);
     assert!(fine && err.contains("saved as it was"), "back as it was: {err}");
     let (fine, _, err) = edit(&["1", "--path", "b.txt"]);
@@ -4293,7 +4318,7 @@ fn a_later_patch_that_no_longer_applies_is_resolved_by_hand() {
         std::fs::write(&file, text).unwrap();
         format!("cp {} \"$1\"", file.display())
     };
-    let huit = "sed -i '' 's/^eight$/huit/' \"$1\"";
+    let huit = &sed_i("s/^eight$/huit/", "$1");
 
     // Patch 3 changes nine, under eight: eight edited in patch 1, patch 3
     // no longer applies, and the edit is not taken; the error says how to
@@ -4331,7 +4356,7 @@ fn a_later_patch_that_no_longer_applies_is_resolved_by_hand() {
     let ten = "diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -7,4 +7,4 @@\n seven\n huit\n 9\n-ten\n+10\n";
     let (fine, _, err) = stacked_in(&e.src, &e.db, &["add", "s", "-m", "Bug 4 - ten"], ten, &[]);
     assert!(fine, "{err}");
-    let loud = "sed -i '' 's/^huit$/HUIT/' \"$1\"";
+    let loud = &sed_i("s/^huit$/HUIT/", "$1");
     let both = put(2, &TEN.replace("two", "2").replace("eight", "HUIT").replace("nine", "9"));
     steps(&[loud, &both, "true"]);
     let (fine, _, err) = edit(&["1", "--path", "a.txt", "--resolve"]);
@@ -4373,7 +4398,7 @@ fn a_file_is_edited_in_the_stack_s_worktree_or_in_this_checkout() {
     // too, is patch 1 again. One of before, .stacked/s itself, is moved
     // there.
     git(&e.src, &["worktree", "add", "--quiet", "--detach", e.src.join(".stacked/s").to_str().unwrap(), "base"]);
-    script("sed -i '' 's/^2$/deux/' \"$file\"\necho new > c.txt");
+    script(&format!("{}\necho new > c.txt", sed_i("s/^2$/deux/", "$file")));
     let (fine, _, err) = edit(&["1", "--path", "a.txt", "--line", "2", "--in", "worktree"]);
     assert!(fine && err.contains("edited a.txt and c.txt in Bug 1 - change two"), "{err}");
     let kept = e.src.join(".stacked/s/user");
@@ -4389,7 +4414,7 @@ fn a_file_is_edited_in_the_stack_s_worktree_or_in_this_checkout() {
     assert_eq!((head(), branch()), (top.clone(), "main".to_string()));
     assert!(std::fs::read_to_string(e.src.join(".git/info/exclude")).unwrap().contains("/.stacked/"));
     // Kept: the next edit moves it to its patch.
-    script("sed -i '' 's/^new$/newer/' \"$file\"");
+    script(&sed_i("s/^new$/newer/", "$file"));
     let (fine, _, err) = edit(&["2", "--path", "b.txt", "--line", "1", "--in", "worktree"]);
     assert!(fine && err.contains("edited b.txt in Bug 2 - add b"), "{err}");
     assert_eq!(last(), format!("+1 {} Bug 2 - add b", kept.display()));
@@ -4397,7 +4422,7 @@ fn a_file_is_edited_in_the_stack_s_worktree_or_in_this_checkout() {
 
     // In this checkout: not while Move HEAD would not move HEAD, which on
     // main forks from the stack the edits made at its base.
-    script("sed -i '' 's/^newer$/fresh/' \"$file\"");
+    script(&sed_i("s/^newer$/fresh/", "$file"));
     let (fine, _, err) = edit(&["2", "--path", "b.txt", "--line", "1", "--in", "pwd"]);
     assert!(
         !fine && err.contains("this checkout is not offered for edits by hand: HEAD has commits stacked did not make, as 3 commits after the base are not the stack's: Move HEAD moves HEAD only when"),
@@ -4437,14 +4462,14 @@ fn a_file_is_edited_in_the_stack_s_worktree_or_in_this_checkout() {
     // cannot take is not taken: it is kept in a commit, and taken up again
     // from there.
     Db::edit(&e.db, |db| db.set_choice("s", "edit", "worktree")).unwrap();
-    script("sed -i '' 's/^eight$/huit/' \"$file\"");
+    script(&sed_i("s/^eight$/huit/", "$file"));
     let (fine, _, err) = edit(&["1", "--path", "a.txt", "--line", "8"]);
     assert!(!fine && err.contains("patch 3 (Bug 3 - café") && err.contains("does not apply"), "{err}");
     assert_eq!(last(), format!("+8 {} Bug 1 - change two", kept.display()));
     assert!(err.contains("--in worktree --from "), "{err}");
     let commit = err.split("--from ").nth(1).unwrap().split('`').next().unwrap().to_string();
     assert_eq!(e.ok(&["versions", "s", "1"]).lines().count(), 2, "nothing changed");
-    script("sed -i '' 's/^huit$/eight/' \"$file\"");
+    script(&sed_i("s/^huit$/eight/", "$file"));
     let (fine, _, err) = edit(&["1", "--path", "a.txt", "--in", "worktree", "--from", &commit]);
     assert!(fine && err.contains("saved as it was"), "back as it was: {err}");
 }
@@ -5231,7 +5256,7 @@ fn refusing_claude(e: &Env, name: &str, tools: &Path, denials: &[serde_json::Val
              echo '{{\"type\":\"system\",\"subtype\":\"init\",\"model\":\"fake\"}}'\n\
              case \"$2\" in\n\
              *'Spell it'*)\n\
-             sed -i '' 's/^2$/deux/' a.txt\n\
+             {deux}\n\
              git -c user.name=C -c user.email=c@x commit -q --amend --no-edit -a\n\
              cat <<'EOF'\n{done}\nEOF\n\
              ;;\n\
@@ -5239,7 +5264,8 @@ fn refusing_claude(e: &Env, name: &str, tools: &Path, denials: &[serde_json::Val
              cat <<'EOF'\n{result}\nEOF\n\
              exit {exit} ;;\n\
              esac\n",
-            tools = tools.display()
+            tools = tools.display(),
+            deux = sed_i("s/^2$/deux/", "a.txt")
         ),
     )
 }
