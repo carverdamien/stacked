@@ -3683,6 +3683,11 @@ impl App {
         self.cursor = self.cursor.min(self.rows.len().saturating_sub(1));
         if here {
             self.note_sel = self.note_sel.min(self.notes().len().saturating_sub(1));
+            // Nothing listed: the comments pane's cursor on its header, which
+            // says why.
+            if self.notes().is_empty() {
+                self.notes_head = true;
+            }
         }
         if let Some(w) = self.want.take() {
             let at = match &w {
@@ -3723,14 +3728,54 @@ impl App {
         }
     }
 
-    /// Whether the comments pane is there: there are comments shown, and the
-    /// pane was not put away.
+    /// Whether the comments pane is there: there are comments to show, or
+    /// the cursor is in it, which → puts there though it lists nothing (its
+    /// header says so, and the line under it why: `nothing_listed`); and the
+    /// pane was not put away. With no comment to show, it goes once the
+    /// cursor leaves it, the middle keeping its width.
     pub fn notes_shown(&self) -> bool {
-        let any = match self.show {
+        self.screen == Screen::Main && self.comments.shown() && (self.notes_to_show() || self.focus == Focus::Notes)
+    }
+
+    /// Whether the comments pane has comments to show, the filter aside:
+    /// the closed ones, when it shows those; else those of what the middle
+    /// shows.
+    fn notes_to_show(&self) -> bool {
+        match self.show {
             Show::Closed => !self.closed().is_empty(),
             _ => !self.subject_notes().is_empty(),
-        };
-        self.screen == Screen::Main && self.comments.shown() && any
+        }
+    }
+
+    /// Why the comments pane lists nothing, said under its header: the
+    /// filter shows the closed comments, and none is closed here; the
+    /// patch, or the stack, has no comment; or the filter hides all of
+    /// them.
+    fn nothing_listed(&self) -> String {
+        let patch = matches!(self.subject_change(), Some(c) if c != stack_change(&self.stack));
+        let total = self.subject_notes().len();
+        let pick = "Filter comments…, on this header, picks another.";
+        match self.show {
+            Show::Closed if patch => format!("The filter shows the closed comments, and this patch has none: {pick}"),
+            Show::Closed => format!("The filter shows the closed comments, and the stack has none of its own: {pick}"),
+            _ if (total == 0 || self.show == Show::All) && patch => "This patch has no comments.".into(),
+            _ if total == 0 || self.show == Show::All => "The stack has no comments of its own.".into(),
+            s => {
+                let shows = match s {
+                    Show::Nothing => "no comment".to_string(),
+                    Show::ToReadAnswer => "the comments to read, from an answer".into(),
+                    Show::ToReadChange => "the comments to read, from a change".into(),
+                    s => format!("the comments {}", s.name()),
+                };
+                let hides = match (total, patch) {
+                    (1, true) => "this patch's only comment".to_string(),
+                    (1, false) => "the stack's only comment of its own".into(),
+                    (n, true) => format!("all {n} of this patch's"),
+                    (n, false) => format!("all {n} of the stack's own"),
+                };
+                format!("The filter shows {shows}, and hides {hides}: {pick}")
+            }
+        }
     }
 
     /// The comments the middle pane shows, in its order: each its first row
@@ -4607,7 +4652,10 @@ impl App {
                 self.file_sel = self.file_at_cursor().zip(self.patch_id()).map(|(k, id)| (id, k));
                 self.focus = Focus::List;
             }
-            (Focus::Diff, KeyCode::Right) if !self.subject_notes().is_empty() => {
+            // Into the comments pane, whatever the patch has: listing
+            // nothing, its header says why, and its menu has the filter. Put
+            // away by hand, it comes back, expanded.
+            (Focus::Diff, KeyCode::Right) if self.subject_change().is_some() => {
                 if !self.comments.shown() {
                     self.comments = self.comments.next();
                 }
@@ -5898,6 +5946,10 @@ impl App {
             Screen::Main => {
                 // On a patch marked, or on HEAD's row: what that is, first.
                 out.extend(self.marks_help());
+                // In the comments pane listing nothing: why.
+                if self.focus == Focus::Notes && self.notes().is_empty() {
+                    out.push(self.nothing_listed());
+                }
                 if let Some((n, path)) = self.outside_here() {
                     out.push(format!(
                         "Line {n} of {path} is in no hunk of this patch, so no comment goes on it: the lines drawn dim are in no hunk."
@@ -5930,6 +5982,13 @@ impl App {
                         }
                     }
                     Focus::Diff => out.push(self.arrows_help()),
+                    // Listing nothing: where ← goes, and whether the pane
+                    // goes with it.
+                    Focus::Notes if self.notes().is_empty() => out.push(if !self.notes_to_show() {
+                        "Press ← to go back to the middle, where → comes back here: with no comment to show, the pane goes as you leave it.".to_string()
+                    } else {
+                        "Press ← to go back to the middle, where → comes back here; → for less of the comments: a line each, then hidden.".to_string()
+                    }),
                     Focus::Notes => out.push(
                         "Press ↑↓ for another comment, or the list at the top (the middle stays where it is, and shows it at its top or bottom); ← to go back; → for less of the comments: a line each, then hidden."
                             .into(),
@@ -6080,8 +6139,8 @@ impl App {
                 self.compact.scroll.name()
             );
             keys += ", and past them, ← for the patches";
-            if !self.subject_notes().is_empty() {
-                keys += ", → for the comments";
+            if self.subject_change().is_some() {
+                keys += if self.notes_shown() { ", → for the comments" } else { ", → to show the comments" };
             }
             return format!("{keys}.");
         }
@@ -6095,8 +6154,8 @@ impl App {
         };
         if halves && !self.in_right() {
             keys += ", → for the right half";
-        } else if !self.subject_notes().is_empty() {
-            keys += if self.comments.shown() { ", → for the comments" } else { ", → to show the comments" };
+        } else if self.subject_change().is_some() {
+            keys += if self.notes_shown() { ", → for the comments" } else { ", → to show the comments" };
         }
         format!("{keys}.")
     }
@@ -11511,15 +11570,24 @@ impl App {
         let change = self.subject_change()?;
         let notes = self.notes();
         let busy = self.busy();
-        let all: Vec<Note> = notes.iter().filter_map(|(_, id)| self.db.note(&change, id).cloned()).collect();
+        // The filter showing the closed ones, each as it was, as the middle
+        // shows it.
+        let closed: HashMap<String, Note> = match self.show {
+            Show::Closed => self.closed().into_iter().map(|(_, n)| (n.id.clone(), n)).collect(),
+            _ => HashMap::new(),
+        };
+        let all: Vec<Note> = notes.iter().filter_map(|(_, id)| self.db.note(&change, id).cloned().or_else(|| closed.get(id).cloned())).collect();
         let with = all.iter().filter(|n| busy.contains_key(&(n.change.clone(), n.id.clone()))).count();
         let to_read = all.iter().filter(|n| self.shows(Show::ToRead, n, &busy, false)).count();
         let to_review = all.iter().filter(|n| self.shows(Show::ToReview, n, &busy, false)).count();
         let total = self.subject_notes().len();
-        let mut header = if self.show == Show::All {
-            format!(" {} comment{}", all.len(), plural(all.len()))
-        } else {
-            format!(" {} · {} of {total}", self.show.name(), all.len())
+        // Listing nothing, it says what the filter is, and that it lists
+        // nothing: the line under it says why.
+        let mut header = match self.show {
+            _ if all.is_empty() => format!(" {} · nothing listed", self.show.name()),
+            Show::All => format!(" {} comment{}", all.len(), plural(all.len())),
+            Show::Closed => format!(" {} closed comment{}", all.len(), plural(all.len())),
+            _ => format!(" {} · {} of {total}", self.show.name(), all.len()),
         };
         if with > 0 {
             header += &format!(" · {with} with the agent");
@@ -11537,6 +11605,13 @@ impl App {
         let st = self.hovered_style(Spot::NotesHead, st);
         put(buf, area, 0, 0, w, &fit(&header, w), st);
         self.spot(area, (0, 0, w), Spot::NotesHead);
+        // Nothing listed: why, under the header, as the pane is wide.
+        if all.is_empty() {
+            for (k, l) in wrap(&self.nothing_listed(), w.saturating_sub(2)).iter().take(h.saturating_sub(1)).enumerate() {
+                put(buf, area, 1, 1 + k, w.saturating_sub(1), l, color::dim());
+            }
+            return None;
+        }
         // The one the middle's cursor is in, when the cursor is there.
         let lit = match self.focus {
             _ if self.on_banner => None,

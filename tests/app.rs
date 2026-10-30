@@ -924,3 +924,23 @@ fn over_now(db: &Path, id: &str) {
     })
     .unwrap();
 }
+
+#[test]
+fn right_opens_the_comments_pane_of_a_patch_with_none_saying_why_in_the_window_too() {
+    let (tmp, db) = setup();
+    let s = Session::open(&db, tmp.path()).unwrap();
+    s.send(Input::Size(140, 30));
+    screen(&s, "the patches", |b| row(b, 3).contains("Bug 2 - add b"));
+    // Into the middle, then the comments pane, though the patch has none:
+    // its header, and why it lists nothing; Enter there, its menu, with the
+    // filter.
+    press(&s, KeyCode::Right);
+    press(&s, KeyCode::Right);
+    screen(&s, "the pane", |b| row(b, 1).contains("│ all · nothing listed") && text(b).contains("This patch has no comments."));
+    press(&s, KeyCode::Enter);
+    screen(&s, "its menu", |b| find(b, "Filter comments…").is_some());
+    // ← out of it, once the menu is closed: the pane goes.
+    press(&s, KeyCode::Esc);
+    press(&s, KeyCode::Left);
+    screen(&s, "the pane gone", |b| !text(b).contains("nothing listed") && find(b, "Filter comments…").is_none());
+}

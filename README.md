@@ -652,7 +652,17 @@ them other keys, and the help then names those:
   from the middle brings them back expanded. → on the comments makes them
   compact, a line for each (who, and where it is); → again hides them, the
   bar saying how many there are; and → from the middle brings them back
-  expanded, each with the first line of what was said last.
+  expanded, each with the first line of what was said last. → from the
+  middle opens the comments pane whatever the patch has, the cursor on its
+  header when it lists nothing: the header says what the filter is and that
+  it lists nothing (`all · nothing listed`), and the line under it why
+  (`This patch has no comments.`, `The filter shows the comments to review,
+  and hides this patch's only comment: Filter comments…, on this header,
+  picks another.`, `The filter shows the closed comments, and this patch
+  has none: …`), as `?` does; Enter or Space on the header is its menu, the
+  filter's item there. With nothing on the patch for it to show, the pane
+  goes again as ← leaves it, so that the middle keeps its width, and → opens
+  it again; one the filter empties stays, as there are comments to show.
 - Enter does what is to be done where the cursor is, reading or commenting:
   on a patch, read it; on a file the patches pane lists, read the patch
   there; on a line, comment on it; on a comment, reply, or, while the agent
@@ -1750,7 +1760,9 @@ the stack's own, as the menu's title says, from either header as from a
 patch's menu, that patch's (`filter comments, counted on patch 3`,
 `filter comments, counted on the stack's own comments`). What is picked
 is kept per stack, in the file, and filters every patch's comments and the
-stack's own alike. A comment you are done
+stack's own alike. Under `closed`, the comments pane lists those closed, as
+the middle shows them, its header counting them (`1 closed comment`); it
+is there for them though no comment is open, and → reaches it. A comment you are done
 with is closed, from its menu (`Close this comment…`): it leaves the
 comments shown. When the cursor is on the comment closed, the cursor goes
 to the line the comment was on (a line of the code or of the message, the
@@ -1762,7 +1774,8 @@ a comment is closed from elsewhere (the comments pane, the banner, another
 stacked), the cursor stays where it is, as it does whenever other comments
 come, go or change: hidden, moved to the stack, answered, written on, or
 opened again. The comments pane then picks the next comment, or the one
-before it when the comment closed was the last. A comment closed is not
+before it when the comment closed was the last; with none left to list, its
+cursor is on its header, which says why. A comment closed is not
 lost, as the file only grows: `closed` shows each
 as it was, `closed @12` on its first line, its menu (which Enter opens) to
 `Reopen it` or to read its history. The agent's comments moved to the stack
@@ -3791,7 +3804,14 @@ too the time a busy machine gives to other work), the filter kept in
 the file, `Filter comments…` on a patch's menu as on both headers, each
 counting the comments the middle shows, as its title says (from the
 comments pane's header, the patch's or the stack's own), the filter
-picked from one patch's filtering every patch's, the views of the code
+picked from one patch's filtering every patch's, → opening the comments
+pane of a patch with none, and of the stack with none of its own, its
+header saying the filter and that it lists nothing, the line under it and
+`?` why, its menu there with the filter, ← putting it away, the middle as
+wide as it was, and → bringing it back, put away by hand too; the line's
+texts for a filter hiding a patch's only comment or the stack's, and for
+none closed, the pane staying then, or going; a comment closed and none
+open, the pane listing it under `closed` and → reaching it, the views of the code
 (the menu of 1, the view drawn marked,
 Enter or a click picking one and Esc none, its key a setting, each view
 drawn; a view picked on a middle too narrow making its room, the comments
@@ -4046,7 +4066,8 @@ menu kept in the state file of its home, where the next `stacked web`
 starts, a message's long lines wrapped from its patch's menu, the edit
 landing for review, what waits its turn (a reconcile with HEAD, a lint
 job, an edit ask) taken out of the queue from the banner with Delete, each
-asked first, a link of a line of a message opened from the
+asked first, → opening the comments pane of a patch with none, saying why,
+its menu there, and ← putting it away, a link of a line of a message opened from the
 menu of a right click on it and with `o`, and one of a line of a comment
 from its menu, by a stand-in, and the comment closed last on a line,
 longer than its box in a small page, scrolled down to its last line with
@@ -4075,7 +4096,9 @@ as two windows, each in its own
 folder (HEAD said in the checkout's, none elsewhere); a message's long
 lines wrapped from its patch's menu, the edit landing for review; what
 waits its turn (a reconcile with HEAD, a lint job, an edit ask) taken out
-of the queue from the banner with Delete, each asked first; with
+of the queue from the banner with Delete, each asked first; → opening the
+comments pane of a patch with none, saying why, its menu there, and ←
+putting it away; with
 moz-phab, the status of a patch's revision after its number, a letter,
 and the Phabricator line over its message, Space on it showing what
 differs under it, read by a stand-in for its database; and the File menu,

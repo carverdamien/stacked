@@ -983,3 +983,26 @@ fn what_waits_its_turn_is_taken_out_of_the_queue_from_the_banner_once_asked_in_t
     })
     .unwrap();
 }
+
+#[test]
+fn right_opens_the_comments_pane_of_a_patch_with_none_saying_why_in_the_browser_too() {
+    let (_tmp, db) = setup();
+    stacked::config::init(stacked::config::Config::default());
+    let (port, token) = stacked::web::start(db).unwrap();
+    let (host, input) = (format!("127.0.0.1:{port}"), format!("POST /input?t={token}"));
+    let mut events = events(port, &token, 140);
+    until(&mut events, "the patches", |l| l.starts_with("data: r 3 ") && l.contains("Bug 2 - add b"));
+    // Into the middle, then the comments pane, though the patch has none:
+    // its header, and why it lists nothing; Enter there, its menu, with the
+    // filter.
+    ask(port, &host, &input, "k Right -\n");
+    ask(port, &host, &input, "k Right -\n");
+    until(&mut events, "its header", |l| l.starts_with("data: r 1 ") && text(l).contains("│ all · nothing listed"));
+    until(&mut events, "why", |l| text(l).contains("This patch has no comments."));
+    ask(port, &host, &input, "k Enter -\n");
+    until(&mut events, "its menu", |l| text(l).contains("Filter comments…"));
+    // ← out of it, once the menu is closed: the pane goes.
+    ask(port, &host, &input, "k Esc -\n");
+    ask(port, &host, &input, "k Left -\n");
+    until(&mut events, "the pane gone", |l| l.starts_with("data: r 1 ") && !text(l).contains("nothing listed"));
+}

@@ -1045,8 +1045,12 @@ fn split_in_two_each_half_has_its_own_cursor_and_scroll_and_the_arrows_go_from_p
     assert_eq!((app.focus, app.in_right_half()), (Focus::Diff, Some(false)));
     keys(&mut app, &[KeyCode::Right]);
     assert_eq!((app.focus, app.in_right_half()), (Focus::Diff, Some(true)));
+    // Past the right half, the comments pane, though the patch has none; ←
+    // back into the right half, the pane gone with nothing to show.
     keys(&mut app, &[KeyCode::Right]);
-    assert_eq!((app.focus, app.in_right_half()), (Focus::Diff, Some(true)), "no comments to go to");
+    assert_eq!((app.focus, app.notes_shown()), (Focus::Notes, true));
+    keys(&mut app, &[KeyCode::Left]);
+    assert_eq!((app.focus, app.in_right_half(), app.notes_shown()), (Focus::Diff, Some(true), false));
     keys(&mut app, &[KeyCode::Esc]);
     assert_eq!((app.focus, app.in_right_half()), (Focus::Diff, Some(false)));
     // A patch clicked from the right half: the cursor's half is the left
@@ -2979,6 +2983,129 @@ fn reading_the_patches_pane_keeps_its_width_from_patch_to_patch() {
     keys(&mut app, &[KeyCode::Char(' ')]);
     assert_eq!(pane_words(&draw(&mut app))[1], "docs/notes/today.txt ✓");
     assert_eq!(width(&mut app), Some(35));
+}
+
+/// The comments pane's words, as drawn on a screen with the pane there:
+/// each row's part right of the last line between panes, joined.
+fn notes_pane_words(screen: &str) -> String {
+    screen
+        .lines()
+        .filter_map(|l| l.rsplit_once('│').map(|(_, r)| r.trim()))
+        .filter(|r| !r.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// The filter picked from the comments pane's header, the cursor taken
+/// there, as → takes it.
+fn filter_to(app: &mut App, pick: &str) {
+    to_comments(app);
+    keys(app, &[KeyCode::Home]);
+    choose(app, "Filter comments…");
+    choose(app, pick);
+}
+
+#[test]
+fn right_opens_the_comments_pane_of_a_patch_with_none_its_header_saying_why_and_left_puts_it_away() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    // Patch 1 has no comments: no pane.
+    keys(&mut app, &[KeyCode::Right]);
+    assert!(!app.notes_shown());
+    let wide = draw(&mut app);
+    keys(&mut app, &[KeyCode::Char('?')]);
+    let Mode::Help { lines, .. } = &app.mode else { panic!("{:?}", app.mode) };
+    assert!(lines.iter().any(|l| l.contains(", → to show the comments.")), "{lines:?}");
+    keys(&mut app, &[KeyCode::Esc]);
+    // → opens it all the same, the cursor on its header, which says what the
+    // filter is and that it lists nothing; the line under it says why, and
+    // so does ?.
+    keys(&mut app, &[KeyCode::Right]);
+    assert!(app.notes_shown() && app.focus == Focus::Notes && app.notes_head);
+    assert_eq!(notes_pane_words(&draw(&mut app)), "all · nothing listed This patch has no comments.");
+    keys(&mut app, &[KeyCode::Char('?')]);
+    let Mode::Help { lines, .. } = &app.mode else { panic!("{:?}", app.mode) };
+    assert_eq!(lines[0], "This patch has no comments.");
+    let leave = "Press ← to go back to the middle, where → comes back here: with no comment to show, the pane goes as you leave it.";
+    assert!(lines.iter().any(|l| l == leave), "{lines:?}");
+    keys(&mut app, &[KeyCode::Esc]);
+    // Enter on the header: its menu, with the filter.
+    keys(&mut app, &[KeyCode::Enter]);
+    assert_eq!(menu_title(&app), "the comments listed");
+    assert_eq!(offered(&app, "Filter comments…"), Some(true));
+    choose(&mut app, "Filter comments…");
+    assert_eq!(menu_title(&app), "filter comments, counted on patch 1");
+    keys(&mut app, &[KeyCode::Esc]);
+    // ← out of it: the pane goes, and the middle is as wide as it was; →
+    // brings it back.
+    keys(&mut app, &[KeyCode::Left]);
+    assert!(!app.notes_shown() && app.focus == Focus::Diff);
+    assert_eq!(draw(&mut app), wide);
+    keys(&mut app, &[KeyCode::Right]);
+    assert!(app.notes_shown() && app.focus == Focus::Notes && app.notes_head);
+    // Put away by hand, → from the middle brings it back, expanded.
+    keys(&mut app, &[KeyCode::Right, KeyCode::Right]);
+    assert_eq!((app.comments, app.focus), (Pane::Hidden, Focus::Diff));
+    keys(&mut app, &[KeyCode::Right]);
+    assert_eq!((app.comments, app.focus, app.notes_shown()), (Pane::Expanded, Focus::Notes, true));
+    // On the stack's header, the stack's own: none either.
+    keys(&mut app, &[KeyCode::Left, KeyCode::Left, KeyCode::Home]);
+    assert!(app.on_stack);
+    to_comments(&mut app);
+    assert_eq!(notes_pane_words(&draw(&mut app)), "all · nothing listed The stack has no comments of its own.");
+}
+
+#[test]
+fn the_comments_pane_listing_nothing_says_why_and_one_listing_closed_comments_is_reached() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Enter]);
+    save(&mut app, "why so loud?");
+    let pick = "Filter comments…, on this header, picks another.";
+    // The filter hides the patch's only comment: the pane lists nothing, and
+    // says why; ← leaves it there, as there is a comment to show.
+    filter_to(&mut app, "  to review");
+    let words = notes_pane_words(&draw(&mut app));
+    let why = format!("The filter shows the comments to review, and hides this patch's only comment: {pick}");
+    assert_eq!(words, format!("to review · nothing listed {why}"));
+    keys(&mut app, &[KeyCode::Left]);
+    assert!(app.notes_shown());
+    // None closed, the filter showing the closed ones: so it says; ← puts
+    // the pane away, nothing to show.
+    filter_to(&mut app, "  closed");
+    let why = format!("The filter shows the closed comments, and this patch has none: {pick}");
+    assert_eq!(notes_pane_words(&draw(&mut app)), format!("closed · nothing listed {why}"));
+    keys(&mut app, &[KeyCode::Left]);
+    assert!(!app.notes_shown());
+    // The comment closed, the patch has none open: the pane there shows it
+    // closed, and → reaches it.
+    filter_to(&mut app, "  all");
+    keys(&mut app, &[KeyCode::Left, KeyCode::Home]);
+    down_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Down]);
+    choose(&mut app, "Close this comment…");
+    choose(&mut app, "Close it");
+    assert!(!app.notes_shown());
+    filter_to(&mut app, "  closed");
+    keys(&mut app, &[KeyCode::Left]);
+    assert!(app.notes_shown() && app.focus == Focus::Diff);
+    let words = notes_pane_words(&draw(&mut app));
+    assert!(words.starts_with("1 closed comment you · a.txt: TWO why so loud?"), "{words}");
+    keys(&mut app, &[KeyCode::Right]);
+    assert_eq!((app.focus, app.notes_head, app.note_sel), (Focus::Notes, false, 0));
+    // The stack's own: none closed; one, which the filter hides.
+    keys(&mut app, &[KeyCode::Left, KeyCode::Left, KeyCode::Home]);
+    assert!(app.on_stack);
+    to_comments(&mut app);
+    let why = format!("The filter shows the closed comments, and the stack has none of its own: {pick}");
+    assert_eq!(notes_pane_words(&draw(&mut app)), format!("closed · nothing listed {why}"));
+    stack_note(&db, "s-c1", "Make it better.");
+    app.refresh();
+    filter_to(&mut app, "  to review");
+    let why = format!("The filter shows the comments to review, and hides the stack's only comment of its own: {pick}");
+    assert_eq!(notes_pane_words(&draw(&mut app)), format!("to review · nothing listed {why}"));
 }
 
 #[test]
@@ -7419,7 +7546,7 @@ fn filter_comments_is_on_a_patch_s_menu_and_both_headers_each_counting_what_the_
     assert_eq!((app.show, Db::load(&db).unwrap().view("s")), (Show::ToRead, Some("to read")));
     on_patch(&mut app, 0);
     let screen = draw(&mut app);
-    assert!(screen.contains(" to read · 0 of 2") && !screen.contains("why so loud?"), "{screen}");
+    assert!(screen.contains(" to read · nothing listed") && !screen.contains("why so loud?"), "{screen}");
 }
 
 /// A comment asked about, its stream opened in place: the agent held at
