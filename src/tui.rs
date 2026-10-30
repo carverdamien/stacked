@@ -10279,7 +10279,9 @@ impl App {
             },
             Mode::Moving { .. } => "↑↓ to place it · enter: put it there · esc: leave it where it was".into(),
             Mode::MovingHead { .. } => "↑↓ to place HEAD · enter: move your checkout there · esc: leave it where it was".into(),
-            Mode::Edit(e) if e.ed.ghosted() => format!("↑↓: read the last comment closed here · enter: a new line · {}", self.esc_does(e)),
+            // What was closed here, taller than its box: ↑↓ scroll it. Whole
+            // in the box, there is nothing to scroll.
+            Mode::Edit(e) if e.ed.ghost_scrolls() => format!("↑↓: read the last comment closed here · enter: a new line · {}", self.esc_does(e)),
             Mode::Edit(e) => format!("enter: a new line · {}", self.esc_does(e)),
             Mode::Help { .. } => "any key: back, and that key".into(),
             Mode::Preview(p) if matches!(p.jump, Jump::Link(_)) => "enter: open it in your browser · esc: back".into(),

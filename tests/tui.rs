@@ -10870,8 +10870,9 @@ fn a_comment_where_one_was_closed_shows_it_dimmed_until_you_write() {
     assert!(matches!(&app.mode, Mode::Edit(e) if e.ed.ghosted()), "{:?}", app.mode);
     let screen = draw(&mut app);
     assert!(screen.contains("you: why so loud?") && screen.contains("agent: It is a shout."), "{screen}");
-    assert!(screen.contains("↑↓: read the last one closed here"), "{screen}");
-    assert_eq!(app.hint(), "↑↓: read the last comment closed here · enter: a new line · esc: close");
+    // All of it in the box: nothing to scroll, and ↑↓ not said.
+    assert!(!screen.contains("↑↓"), "{screen}");
+    assert_eq!(app.hint(), "enter: a new line · esc: close");
     let mut buf = Buffer::empty(Rect::new(0, 0, 120, 30));
     app.draw(&mut buf);
     let (x, y) = at(&screen, "you: why so loud?");
@@ -10888,6 +10889,81 @@ fn a_comment_where_one_was_closed_shows_it_dimmed_until_you_write() {
     down_to(&mut app, "-two");
     keys(&mut app, &[KeyCode::Enter]);
     assert!(matches!(&app.mode, Mode::Edit(e) if !e.ed.ghosted()), "nothing was closed on that line: {:?}", app.mode);
+}
+
+/// The box of the comment being written, as `screen` shows it: the lines
+/// inside it, its bottom edge, and the row that edge is on.
+fn editor_box(screen: &str) -> (Vec<String>, String, usize) {
+    let lines: Vec<Vec<char>> = screen.lines().map(|l| l.chars().collect()).collect();
+    let top = lines
+        .iter()
+        .position(|l| l.iter().collect::<String>().contains("┌─ a comment on"))
+        .unwrap_or_else(|| panic!("no box:\n{screen}"));
+    let left = lines[top].iter().position(|&c| c == '┌').unwrap();
+    let right = lines[top].iter().position(|&c| c == '┐').unwrap();
+    let bottom = (top + 1..lines.len()).find(|&y| lines[y][left] == '└').unwrap_or_else(|| panic!("no bottom edge:\n{screen}"));
+    let inside = (top + 1..bottom).map(|y| lines[y][left + 1..right].iter().collect::<String>().trim_end().to_string()).collect();
+    (inside, lines[bottom][left..=right].iter().collect(), bottom)
+}
+
+#[test]
+fn what_was_closed_here_taller_than_its_box_scrolls_to_its_end_and_only_then_says_so() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Enter]);
+    save(&mut app, "why so loud?");
+    // Answered at length, then closed.
+    let answer: Vec<String> = (1..=30).map(|n| format!("reason {n}")).collect();
+    Db::edit(&db, |d| {
+        let n = d.notes(&d.patch(&d.stack("s")?.patches[0]).change.clone()).into_iter().next().cloned().unwrap();
+        d.set_note(Note {
+            text: append_turn(&n.text, Role::Agent, &answer.join("\n"), Some("answer")),
+            ..n
+        })
+    })
+    .unwrap();
+    app.refresh();
+    keys(&mut app, &[KeyCode::Down]);
+    choose(&mut app, "Close this comment");
+    choose(&mut app, "Close it");
+    // On its line again, on a screen of 80 by 16: its first 5 lines in the
+    // box, ▼ under them, and ↑↓ said, in the box and on the bottom bar.
+    keys(&mut app, &[KeyCode::Home]);
+    down_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Enter]);
+    let shown = |app: &mut App| editor_box(&draw_sized(app, 80, 16));
+    let (inside, edge, _) = shown(&mut app);
+    assert_eq!(inside, ["you: why so loud?", "agent: reason 1", "  reason 2", "  reason 3", "  reason 4"]);
+    assert!(edge.contains("↑↓: read the last one closed here") && edge.contains('▼'), "{edge}");
+    assert_eq!(app.hint(), "↑↓: read the last comment closed here · enter: a new line · esc: close");
+    // ↓ scrolls it a line, pgdn a box's worth; a terminal that sends ↑↓ for
+    // the wheel and the trackpad scrolls it as they do.
+    let press = |app: &mut App, k: KeyCode, times: usize| {
+        for _ in 0..times {
+            key(app, k);
+            draw_sized(app, 80, 16);
+        }
+        shown(app)
+    };
+    assert_eq!(press(&mut app, KeyCode::Down, 3).0[0], "  reason 3");
+    assert_eq!(press(&mut app, KeyCode::PageDown, 1).0[0], "  reason 8");
+    // To its end and no further: its last line in sight, the box's bottom
+    // edge above the bottom bar.
+    let (inside, edge, bottom) = press(&mut app, KeyCode::Down, 40);
+    assert_eq!(inside, ["  reason 26", "  reason 27", "  reason 28", "  reason 29", "  reason 30"]);
+    assert!(!edge.contains('▼') && bottom < 15, "{edge} on row {bottom}");
+    assert_eq!(press(&mut app, KeyCode::PageUp, 1).0[0], "  reason 21");
+    assert_eq!(press(&mut app, KeyCode::Up, 1).0[0], "  reason 20");
+    // Written on, it is gone, and ↑↓ move in what is written.
+    typed(&mut app, "x");
+    keys(&mut app, &[KeyCode::Enter]);
+    typed(&mut app, "y");
+    keys(&mut app, &[KeyCode::Up]);
+    typed(&mut app, "z");
+    assert!(matches!(&app.mode, Mode::Edit(e) if !e.ed.ghosted() && e.ed.text() == "xz\ny"), "{:?}", app.mode);
+    assert!(app.hint().starts_with("enter: a new line · esc: "), "{}", app.hint());
 }
 
 /// What the agent brought back of an ask, to answer, about `notes` of

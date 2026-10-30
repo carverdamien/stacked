@@ -1663,6 +1663,12 @@ mod tests {
             run(vec![wheel(egui::MouseWheelUnit::Line, -1.0), wheel(egui::MouseWheelUnit::Page, 1.0)], false, true),
             [plain(KeyCode::Down), plain(KeyCode::PageUp)]
         );
+        // While a comment is written as well: the last one closed where it
+        // goes, shown in its box, scrolls with them as with ↑↓.
+        assert_eq!(
+            run(vec![wheel(egui::MouseWheelUnit::Line, -2.0)], true, true),
+            [plain(KeyCode::Down), plain(KeyCode::Down)]
+        );
         // A key and the text it types: the text; ctrl, the key.
         let press = |key, modifiers| egui::Event::Key {
             key,

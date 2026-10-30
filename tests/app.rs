@@ -707,3 +707,70 @@ fn a_reviewer_s_edit_is_headed_so_and_a_pull_s_review_rejects_nothing_in_the_win
     let dialog = screen(&s, "the dialog", |b| text(b).contains("Keep reviewing"));
     assert!(text(&dialog).contains("Close review") && !text(&dialog).contains("Reject all remaining"), "{}", text(&dialog));
 }
+
+/// A comment on patch 1's `+TWO`, answered in 30 lines, then closed: what a
+/// comment written there again shows, dimmed, until something is written.
+fn closed_on_two(tmp: &Path, db: &Path) {
+    let out = stacked(&tmp.join("home"))
+        .current_dir(tmp.join("src"))
+        .args(["-f", db.to_str().unwrap(), "comment", "s", "--patch", "1", "--line", "a.txt:+TWO", "why so loud?"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let answer: Vec<String> = (1..=30).map(|n| format!("reason {n}")).collect();
+    stacked::db::Db::edit(db, |d| {
+        let change = d.patch(&d.stack("s")?.patches[0]).change.clone();
+        let note = d.notes(&change).into_iter().next().cloned().unwrap();
+        let text = stacked::thread::append_turn(&note.text, stacked::thread::Role::Agent, &answer.join("\n"), Some("answer"));
+        d.set_note(stacked::db::Note { text, ..note.clone() })?;
+        d.set_note(stacked::db::Note { text: String::new(), ..note })
+    })
+    .unwrap();
+}
+
+/// The box of the comment being written in `buf`, if there is one: the
+/// lines inside it, and the row of its bottom edge.
+fn editor_box(buf: &Buffer) -> Option<(Vec<String>, u16)> {
+    let (left, top) = find(buf, "┌─ a comment on")?;
+    let right = (left..buf.area.width).find(|&x| buf[(x, top)].symbol() == "┐")?;
+    let bottom = (top + 1..buf.area.height).find(|&y| buf[(left, y)].symbol() == "└")?;
+    let inside = (top + 1..bottom).map(|y| (left + 1..right).map(|x| buf[(x, y)].symbol()).collect::<String>().trim_end().to_string());
+    Some((inside.collect(), bottom))
+}
+
+#[test]
+fn what_was_closed_here_scrolls_to_its_end_with_the_arrows_and_the_wheel_in_the_window_too() {
+    let (tmp, db) = setup();
+    closed_on_two(tmp.path(), &db);
+    let s = Session::open(&db, tmp.path()).unwrap();
+    s.send(Input::Size(80, 16));
+    // The box's first line, as the screen shows it.
+    let first = |at: &'static str| move |b: &Buffer| editor_box(b).is_some_and(|(inside, _)| inside.first().is_some_and(|l| l == at));
+    // The mouse over the line picks it, and a click on it is Enter: the box
+    // opens on what was closed there, from its first line, ↑↓ said on the
+    // bottom bar.
+    let buf = screen(&s, "the line", |b| find(b, "+TWO").is_some());
+    let (x, y) = find(&buf, "+TWO").unwrap();
+    s.send(Input::Hover(x, y));
+    s.send(Input::Click { x, y, right: false });
+    let buf = screen(&s, "what was closed there", first("you: why so loud?"));
+    assert!(row(&buf, 15).contains("↑↓: read the last comment closed here"), "{}", text(&buf));
+    // ↓ scrolls it a line, and so do the wheel and the trackpad, which the
+    // window sends as ↓, a line for each notch; pgdn a box's worth.
+    for _ in 0..3 {
+        press(&s, KeyCode::Down);
+    }
+    screen(&s, "three lines down", first("  reason 3"));
+    press(&s, KeyCode::PageDown);
+    screen(&s, "a box's worth further", first("  reason 8"));
+    // To its end and no further: its last line in sight, the box's bottom
+    // edge above the bottom bar.
+    for _ in 0..40 {
+        press(&s, KeyCode::Down);
+    }
+    let buf = screen(&s, "its end", first("  reason 26"));
+    let (inside, bottom) = editor_box(&buf).unwrap();
+    assert!(inside.last().is_some_and(|l| l == "  reason 30") && bottom < 15, "{}", text(&buf));
+    press(&s, KeyCode::Up);
+    screen(&s, "a line back up", first("  reason 25"));
+}

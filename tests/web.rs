@@ -736,3 +736,96 @@ fn a_reviewer_s_edit_is_headed_so_and_a_pull_s_review_rejects_nothing_in_the_bro
     assert!(seen.iter().any(|l| text(l).contains("Close review")), "{seen:#?}");
     assert!(!seen.iter().any(|l| text(l).contains("Reject all remaining")), "{seen:#?}");
 }
+
+/// A comment on patch 1's `+TWO`, answered in 30 lines, then closed: what a
+/// comment written there again shows, dimmed, until something is written.
+fn closed_on_two(tmp: &Path, db: &Path) {
+    let out = stacked(&tmp.join("home"))
+        .current_dir(tmp.join("src"))
+        .args(["-f", db.to_str().unwrap(), "comment", "s", "--patch", "1", "--line", "a.txt:+TWO", "why so loud?"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let answer: Vec<String> = (1..=30).map(|n| format!("reason {n}")).collect();
+    stacked::db::Db::edit(db, |d| {
+        let change = d.patch(&d.stack("s")?.patches[0]).change.clone();
+        let note = d.notes(&change).into_iter().next().cloned().unwrap();
+        let text = stacked::thread::append_turn(&note.text, stacked::thread::Role::Agent, &answer.join("\n"), Some("answer"));
+        d.set_note(stacked::db::Note { text, ..note.clone() })?;
+        d.set_note(stacked::db::Note { text: String::new(), ..note })
+    })
+    .unwrap();
+}
+
+/// The screen `rows`, a row of text each, as event `l` leaves it.
+fn shown(rows: &mut Vec<String>, l: &str) {
+    if let Some(size) = l.strip_prefix("data: s ") {
+        *rows = vec![String::new(); size.split(' ').nth(1).and_then(|r| r.parse().ok()).unwrap_or(0)];
+    } else if let Some(y) = l.strip_prefix("data: r ").and_then(|r| r.split(' ').next()).and_then(|y| y.parse::<usize>().ok())
+        && y < rows.len()
+    {
+        rows[y] = text(l);
+    }
+}
+
+/// The box of the comment being written on the screen `rows`, if there is
+/// one: the lines inside it, its bottom edge, and the row that edge is on.
+fn editor_box(rows: &[String]) -> Option<(Vec<String>, String, usize)> {
+    let lines: Vec<Vec<char>> = rows.iter().map(|r| r.chars().collect()).collect();
+    let top = rows.iter().position(|r| r.contains("┌─ a comment on"))?;
+    let left = lines[top].iter().position(|&c| c == '┌')?;
+    let right = lines[top].iter().position(|&c| c == '┐')?;
+    let bottom = (top + 1..lines.len()).find(|&y| lines[y].get(left) == Some(&'└'))?;
+    let inside = (top + 1..bottom).map(|y| lines[y].get(left + 1..right).unwrap_or_default().iter().collect::<String>().trim_end().to_string());
+    Some((inside.collect(), lines[bottom].get(left..=right).unwrap_or_default().iter().collect(), bottom))
+}
+
+#[test]
+fn what_was_closed_here_scrolls_to_its_end_with_the_arrows_and_the_wheel_in_the_browser_too() {
+    let (tmp, db) = setup();
+    closed_on_two(tmp.path(), &db);
+    stacked::config::init(stacked::config::Config::default());
+    let (port, token) = stacked::web::start(db).unwrap();
+    let (host, input) = (format!("127.0.0.1:{port}"), format!("POST /input?t={token}"));
+    let mut s = TcpStream::connect(("127.0.0.1", port)).unwrap();
+    write!(s, "GET /events?t={token}&cols=80&rows=16 HTTP/1.1\r\nHost: {host}\r\n\r\n").unwrap();
+    let mut events = BufReader::new(s);
+    // The screen as the events leave it, and the box's first line there.
+    let rows = std::cell::RefCell::new(Vec::new());
+    let first = |at: &str| editor_box(&rows.borrow()).is_some_and(|(inside, ..)| inside.first().is_some_and(|l| l == at));
+    // The mouse over the line picks it, and a click on it is Enter: the box
+    // opens on what was closed there, from its first line, ↑↓ said on the
+    // bottom bar.
+    let seen = until(&mut events, "the line", |l| {
+        shown(&mut rows.borrow_mut(), l);
+        text(l).contains("+TWO")
+    });
+    let (x, y) = cell_of(seen.last().unwrap(), "+TWO");
+    ask(port, &host, &input, &format!("v {x} {y}\nm {x} {y} l\n"));
+    until(&mut events, "what was closed there", |l| {
+        shown(&mut rows.borrow_mut(), l);
+        first("you: why so loud?") && rows.borrow().get(15).is_some_and(|r| r.contains("↑↓: read the last comment closed here"))
+    });
+    // ↓ scrolls it a line, and so does the wheel, which the page sends as ↓
+    // for each notch it turns (two here); pgdn a box's worth.
+    ask(port, &host, &input, "k Down -\n");
+    ask(port, &host, &input, "k Down -\nk Down -\n");
+    until(&mut events, "three lines down", |l| {
+        shown(&mut rows.borrow_mut(), l);
+        first("  reason 3")
+    });
+    ask(port, &host, &input, "k PageDown -\n");
+    until(&mut events, "a box's worth further", |l| {
+        shown(&mut rows.borrow_mut(), l);
+        first("  reason 8")
+    });
+    // To its end and no further: its last line in sight, the box's bottom
+    // edge above the bottom bar.
+    ask(port, &host, &input, &"k Down -\n".repeat(40));
+    until(&mut events, "its end", |l| {
+        shown(&mut rows.borrow_mut(), l);
+        editor_box(&rows.borrow()).is_some_and(|(inside, edge, bottom)| {
+            inside.first().is_some_and(|l| l == "  reason 26") && inside.last().is_some_and(|l| l == "  reason 30") && !edge.contains('▼') && bottom < 15
+        })
+    });
+}

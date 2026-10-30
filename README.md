@@ -980,9 +980,14 @@ being written in takes half the width meanwhile. Typing and the arrows
 edit, and enter breaks the line. On a line where no comment is open but one
 was closed (or a patch's title), the box opens on the one closed last there,
 dimmed, its thread as it was (`you: why so loud?`, `agent: It is a shout.`),
-to read before you write: ↑↓ (pgup, pgdn) scroll it, and the first thing you
-type takes its place. What you write is the comment; the closed one stays
-as it was.
+to read before you write. The box grows to show the whole thread, up to
+half the pane. When the thread is longer, ↑↓ (pgup, pgdn) scroll it down to
+its last line, and the box's foot and the bottom bar say so (`↑↓: read the
+last comment closed here`); the wheel and the trackpad scroll it too
+wherever they are ↑↓ (in the browser, in StackED, and in a terminal that
+sends ↑↓ for them). When the whole thread shows, there is nothing to
+scroll, and neither says ↑↓. The first thing you type takes its place.
+What you write is the comment; the closed one stays as it was.
 ctrl-a and ctrl-e go to the start and the end of the line. ctrl-k cuts the
 rest of the line, or at its end the line break, and ctrl-k again adds what
 it cuts to that; ctrl-y puts what was cut last where the cursor is, in this
@@ -3650,7 +3655,10 @@ its others as they are; with each file whole, a line in no hunk found and
 gone to, 3 typed while the bar is open, 3 after Enter, and the files read
 while it is open searched again, Esc going back to the row found again),
 the
-menus by place, what `?` says where, writing in every pane, the regions it
+menus by place, what `?` says where, writing in every pane, the comment
+closed last on a line shown dimmed in the box until you write (↑↓ said only
+when it is longer than the box, which ↑↓ and pgdn then scroll down to its
+last line, the box above the bottom bar), the regions it
 says it drew (its panes, then the boxes over them, inside their borders:
 what StackED's selections keep to), the first ask going at once with no
 setup, at the effort picked, given stacked's defaults, the setup's old
@@ -3931,8 +3939,10 @@ and the editor left, the worktree made ahead removed (Quit in the page;
 runs, on the list StackED's Open Recent shows, the effort picked in a
 menu kept in the state file of its home, where the next `stacked web`
 starts, a message's long lines wrapped from its patch's menu, the edit
-landing for review, and a link of a line of a message opened from the
-menu of a right click on it and with `o`, by a stand-in, and, with
+landing for review, a link of a line of a message opened from the
+menu of a right click on it and with `o`, by a stand-in, and the comment
+closed last on a line, longer than its box in a small page, scrolled down
+to its last line with ↓, the wheel's ↓ and pgdn, and, with
 moz-phab, the status of a patch's revision after its number, a letter,
 and the Phabricator line over its message, Space on it showing what
 differs under it, read by a stand-in for its database; and
@@ -3948,7 +3958,9 @@ it, with no window: nothing drawn before the window's size, a key, a click,
 the mouse over a patch then gone, a window too small, the wait while
 `$EDITOR` runs (an editor that edits nothing, set in the test's settings),
 quit, the command there, a link of a line of a message opened from the
-menu of a right click on it and with `o`, by a stand-in, and a database
+menu of a right click on it and with `o`, by a stand-in, the comment
+closed last on a line, longer than its box in a small window, scrolled
+down to its last line with ↓ and pgdn, as the wheel's ↓ do, and a database
 that cannot be read said before any window; two editors in one process,
 as two windows, each in its own
 folder (HEAD said in the checkout's, none elsewhere); a message's long
@@ -3963,7 +3975,8 @@ never replacing a file there (its bytes the same), and Open Recent taking
 a database deleted off the menu and off the state kept, then Clear Menu.
 `app.rs` tests what the window paints of a screen (the colours, reversed
 and dim, the faces, wide characters, the lines of boxes and blocks), what
-it makes of keys, clicks, the wheel and pastes, and the window itself, run
+it makes of keys, clicks, the wheel (while a comment is written too) and
+pastes, and the window itself, run
 by egui with no window: the grid's size sent, the screen painted, what is
 done sent, the wait for `$EDITOR`, and closing, and text dragged over lit
 and copied, kept to its pane (a block with alt, a drag past the grid up to
