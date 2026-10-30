@@ -2,7 +2,10 @@
 //! wrap aside (`messages::diff`), each line a row of a diff, its sign
 //! first, what only its version has marked: as the review of a submit shows
 //! a title and summary, the patches pane's Phabricator line what differs,
-//! and the review of a pull a reviewer's comment edited on Phabricator.
+//! the review of a pull a reviewer's comment edited on Phabricator, and the
+//! view of why Move HEAD does not move HEAD a commit's message against its
+//! patch's. And the rows of a diff, or of a commit, as the middle draws a
+//! patch, drawn only.
 
 use super::*;
 
@@ -114,5 +117,39 @@ pub(super) fn message_rows(rows: &mut Vec<Row>, before: &str, after: &str, w: us
                 compared_rows(rows, sign, l, w);
             }
         }
+    }
+}
+
+/// `code`, a diff of change `change`'s files from one version to another,
+/// as the rows the middle draws a patch's files in, folded to `w`: each
+/// file's name, its hunks and their lines, what changed in a line marked.
+/// Drawn only: no row is a line of a patch, so none takes a comment nor a
+/// read mark, nor is found again as one.
+#[cfg(feature = "moz-phab")]
+pub(super) fn code_rows(change: &str, code: &str, w: usize) -> Vec<Row> {
+    let code = Patch::new(change.to_string(), None, None, String::new(), code.to_string());
+    let all = patch_rows(&code, &[], w, &Deco::default());
+    // Its message's rows, empty, left out.
+    let from = all.iter().position(|r| r.kind == Kind::Blank).map_or(0, |k| k + 1);
+    all.into_iter().skip(from).map(drawn).collect()
+}
+
+/// Commit `c` of the checkout, read whole, as the rows the middle draws a
+/// patch in, folded to `w`: its message, then each file's name, its hunks
+/// and their lines. Drawn only, as `code_rows` are.
+pub(super) fn commit_rows(c: &crate::head::Commit, w: usize) -> Vec<Row> {
+    let p = Patch::new(c.sha.clone(), None, None, c.message.clone(), c.diff.clone());
+    patch_rows(&p, &[], w, &Deco::default()).into_iter().map(drawn).collect()
+}
+
+/// Row `r` of a patch's, drawn only: what it says and how, none of what
+/// makes it a line of the patch.
+fn drawn(r: Row) -> Row {
+    Row {
+        kind: r.kind,
+        text: r.text,
+        cont: r.cont,
+        words: r.words,
+        ..Default::default()
     }
 }

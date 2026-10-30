@@ -1399,7 +1399,7 @@ fn head_is_said_against_the_stack() {
     git(&e.src, &["commit", "-qm", "Mine"]);
     let out = e.ok(&["head", "s"]);
     assert!(
-        out.ends_with("is at patch 3 of s, then 1 commit not in the stack\n--to N is refused: HEAD has commits stacked did not make, as 1 commit after patch 3 is not the stack's: Move HEAD is offered only when HEAD is on the stack with no marks, or as stacked last left it\n"),
+        out.ends_with("is at patch 3 of s, then 1 commit not in the stack\n--to N is refused: HEAD has commits stacked did not make, as 1 commit after patch 3 is not the stack's: Move HEAD moves HEAD only when HEAD is on the stack with no marks, or as stacked last left it\n"),
         "{out}"
     );
     // The same patch, its message other: still the stack's, by its diff;
@@ -1461,7 +1461,7 @@ fn head_moves_along_the_stack_detached_its_branch_as_it_was() {
     let reworded = sha("HEAD");
     let (fine, _, err) = e.run(&["head", "s", "--to", "2"]);
     assert!(
-        !fine && err.contains("HEAD has commits stacked did not make, as the commit of patch 1 has a message other than the stack's: Move HEAD is offered only when HEAD is on the stack with no marks, or as stacked last left it; HEAD did not move"),
+        !fine && err.contains("HEAD has commits stacked did not make, as the commit of patch 1 has a message other than the stack's: Move HEAD moves HEAD only when HEAD is on the stack with no marks, or as stacked last left it; HEAD did not move"),
         "{err}"
     );
     assert_eq!(sha("HEAD"), reworded);
@@ -1496,7 +1496,7 @@ fn head_moves_only_as_stacked_left_it_or_on_the_stack_with_no_mark() {
     git(&e.src, &["add", "c.txt"]);
     git(&e.src, &["commit", "-qm", "Mine"]);
     let mine = sha("HEAD");
-    let why = "HEAD has commits stacked did not make, as 1 commit after patch 2 is not the stack's: Move HEAD is offered only when HEAD is on the stack with no marks, or as stacked last left it";
+    let why = "HEAD has commits stacked did not make, as 1 commit after patch 2 is not the stack's: Move HEAD moves HEAD only when HEAD is on the stack with no marks, or as stacked last left it";
     let (fine, _, err) = e.run(&["head", "s", "--to", "3"]);
     assert!(!fine && err.contains(&format!("{why}; HEAD did not move")), "{err}");
     assert_eq!(sha("HEAD"), mine);
@@ -1555,7 +1555,7 @@ fn head_goes_nowhere_below_a_commit_that_names_a_revision_its_patch_does_not() {
     git(&e.src, &["checkout", "-q", "main"]);
     git(&e.src, &["commit", "-q", "--amend", "-m", &format!("Bug 3 - café, a very long title that format-patch will fold over more than one line\n\n{}", trailer("D35"))]);
     let (fine, _, err) = e.run(&["head", "s", "--to", "3"]);
-    assert!(!fine && err.contains("the commit of patch 3 names D35, which the patch does not name: Move HEAD is offered only when"), "{err}");
+    assert!(!fine && err.contains("the commit of patch 3 names D35, which the patch does not name: Move HEAD moves HEAD only when"), "{err}");
 }
 
 /// The trailer moz-phab writes to name revision `d`.
@@ -4400,7 +4400,7 @@ fn a_file_is_edited_in_the_stack_s_worktree_or_in_this_checkout() {
     script("sed -i '' 's/^newer$/fresh/' \"$file\"");
     let (fine, _, err) = edit(&["2", "--path", "b.txt", "--line", "1", "--in", "pwd"]);
     assert!(
-        !fine && err.contains("this checkout is not offered for edits by hand: HEAD has commits stacked did not make, as 3 commits after the base are not the stack's: Move HEAD is offered only when"),
+        !fine && err.contains("this checkout is not offered for edits by hand: HEAD has commits stacked did not make, as 3 commits after the base are not the stack's: Move HEAD moves HEAD only when"),
         "{err}"
     );
     assert_eq!((head(), branch()), (top.clone(), "main".to_string()));

@@ -12,7 +12,7 @@
 //! item grayed, before anything is read. Built with the `moz-phab`
 //! feature.
 
-use super::compared::{diff_rows, message_rows, row, said_rows};
+use super::compared::{code_rows, diff_rows, message_rows, row, said_rows};
 use super::*;
 use crate::submit::{Prepared, and};
 
@@ -113,28 +113,6 @@ fn review_rows(p: &Prepared, w: usize) -> Vec<Row> {
         rows.extend(code_rows(&p.change, code, w));
     }
     rows
-}
-
-/// `code`, a diff of change `change`'s files from one version to another,
-/// as the rows the middle draws a patch's files in, folded to `w`: each
-/// file's name, its hunks and their lines, what changed in a line marked.
-/// Drawn only: no row is a line of a patch, so none takes a comment nor a
-/// read mark, nor is found again as one.
-pub(super) fn code_rows(change: &str, code: &str, w: usize) -> Vec<Row> {
-    let code = Patch::new(change.to_string(), None, None, String::new(), code.to_string());
-    let all = patch_rows(&code, &[], w, &Deco::default());
-    // Its message's rows, empty, left out.
-    let from = all.iter().position(|r| r.kind == Kind::Blank).map_or(0, |k| k + 1);
-    all.into_iter()
-        .skip(from)
-        .map(|r| Row {
-            kind: r.kind,
-            text: r.text,
-            cont: r.cont,
-            words: r.words,
-            ..Default::default()
-        })
-        .collect()
 }
 
 impl App {

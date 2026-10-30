@@ -494,6 +494,55 @@ fn a_message_s_long_lines_are_wrapped_from_its_patch_s_menu_in_the_browser_too()
 }
 
 #[test]
+fn move_head_says_why_it_does_not_move_head_in_the_browser_too() {
+    let (tmp, db) = setup();
+    let src = tmp.path().join("src");
+    // A commit of yours on top: Move HEAD would not move HEAD.
+    std::fs::write(src.join("c.txt"), "c\n").unwrap();
+    git(&src, &["add", "c.txt"]);
+    git(&src, &["commit", "-qm", "Mine"]);
+    // `stacked web`, run in the checkout, its home the test's.
+    let mut child = stacked(&tmp.path().join("home"))
+        .args(["-f", db.to_str().unwrap(), "web", "--no-open"])
+        .current_dir(&src)
+        .stdin(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut said = BufReader::new(child.stderr.take().unwrap());
+    let _child = Running(child);
+    let mut line = String::new();
+    said.read_line(&mut line).unwrap();
+    let url = line.split_whitespace().find_map(|w| w.strip_prefix("http://127.0.0.1:")).expect(&line).to_string();
+    let (port, token) = url.split_once("/?t=").unwrap();
+    let port: u16 = port.parse().unwrap();
+    let (host, input) = (format!("127.0.0.1:{port}"), format!("POST /input?t={token}"));
+    let mut events = events(port, token, 100);
+    until(&mut events, "HEAD forked", |l| text(l).contains("└○ Mine"));
+    // The stack's menu, opened with a right click on its header: Move HEAD…
+    // drawn as any item, not dim (2); clicked, the view of why it does not
+    // move HEAD.
+    ask(port, &host, &input, "m 5 1 r\n");
+    let item = "Move HEAD…";
+    let seen = until(&mut events, "the stack's menu", |l| text(l).contains(item));
+    let row = seen.last().unwrap();
+    assert!(row.contains(&format!(",,0\u{1f} {item}")), "{row}");
+    let y = row.strip_prefix("data: r ").and_then(|r| r.split(' ').next()).unwrap();
+    let line = text(row);
+    let x = line[..line.find(item).unwrap()].chars().count() + 1;
+    ask(port, &host, &input, &format!("m {x} {y} l\n"));
+    until(&mut events, "the view", |l| text(l).contains(" why Move HEAD does not move HEAD"));
+    // ↓: the commit, then what to do, the command on a line of its own.
+    ask(port, &host, &input, "k Down -\n");
+    until(&mut events, "the command", |l| text(l).contains("      git switch --detach "));
+    // Esc: back to the patches. Then quit, in the page.
+    ask(port, &host, &input, "k Esc -\n");
+    until(&mut events, "the patches again", |l| text(l).contains("└○ Mine"));
+    ask(port, &host, &input, "k c 63 c\n");
+    until(&mut events, "bye", |l| l == "data: bye");
+}
+
+#[test]
 fn the_stack_s_lint_is_offered_on_its_menu_in_the_browser_too() {
     let (tmp, db) = setup();
     let src = tmp.path().join("src");

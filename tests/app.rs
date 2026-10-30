@@ -328,6 +328,35 @@ fn a_message_s_long_lines_are_wrapped_from_its_patch_s_menu_in_the_window_too() 
 }
 
 #[test]
+fn move_head_says_why_it_does_not_move_head_in_the_window_too() {
+    let (tmp, db) = setup();
+    let src = tmp.path().join("src");
+    // A commit of yours on top: Move HEAD would not move HEAD.
+    std::fs::write(src.join("c.txt"), "c\n").unwrap();
+    git(&src, &["add", "c.txt"]);
+    git(&src, &["commit", "-qm", "Mine"]);
+    let s = Session::open(&db, &src).unwrap();
+    s.send(Input::Size(100, 30));
+    screen(&s, "HEAD forked", |b| text(b).contains("└○ Mine"));
+    // The stack's menu, from its header: Move HEAD… drawn as any item, not
+    // dim; clicked, the view of why it does not move HEAD.
+    press(&s, KeyCode::Up);
+    press(&s, KeyCode::Char(' '));
+    let item = "Move HEAD…";
+    let menu = screen(&s, "the stack's menu", |b| find(b, item).is_some());
+    let (x, y) = find(&menu, item).unwrap();
+    assert!(!menu[(x, y)].modifier.contains(Modifier::DIM), "{}", text(&menu));
+    s.send(Input::Click { x, y, right: false });
+    screen(&s, "the view", |b| find(b, " why Move HEAD does not move HEAD").is_some() && text(b).contains("Move HEAD does not move HEAD from there"));
+    // ↓: the commit, then what to do, the command on a line of its own.
+    press(&s, KeyCode::Down);
+    screen(&s, "the commit", |b| text(b).contains("only in your checkout") && text(b).contains("      git switch --detach "));
+    // Esc: back to the patches.
+    press(&s, KeyCode::Esc);
+    screen(&s, "the patches again", |b| text(b).contains("└○ Mine") && find(b, " why Move HEAD does not move HEAD").is_none());
+}
+
+#[test]
 fn the_stack_s_lint_is_offered_on_its_menu_in_the_window_too() {
     let (tmp, db) = setup();
     let src = tmp.path().join("src");

@@ -55,6 +55,8 @@ pub use banner::BannerLine;
 mod compared;
 pub mod finding;
 pub use finding::Find;
+pub mod head_why;
+pub use head_why::HeadWhy;
 pub mod places;
 pub mod reviewing;
 pub use reviewing::Reviewing;
@@ -585,6 +587,9 @@ pub enum Spot {
     /// Match `i` of the search's; where it looks, its button.
     Found(usize),
     SearchScope,
+    /// Line `i` of the list of the view of why Move HEAD does not move
+    /// HEAD.
+    WhyLine(usize),
 }
 
 /// That `spot` is drawn at `(x, y)` of `area`, `w` by `h`: what a click
@@ -740,6 +745,9 @@ pub enum Screen {
     /// diff, for your review before it is sent.
     #[cfg(feature = "moz-phab")]
     Submit,
+    /// Why Move HEAD does not move HEAD from where it is, and what you can
+    /// do in your checkout so that it can: only to read.
+    HeadWhy,
 }
 
 /// The item of the menus that picks which comments both panes show, as
@@ -1974,6 +1982,8 @@ pub struct App {
     /// review.
     #[cfg(feature = "moz-phab")]
     pub submitting: Option<Box<Submitting>>,
+    /// The view of why Move HEAD does not move HEAD, open.
+    pub head_why: Option<Box<HeadWhy>>,
     /// The search open, and the searches made before, newest first: kept
     /// for as long as the editor runs.
     pub searching: Option<Searching>,
@@ -2295,6 +2305,9 @@ enum Done {
         clean: Option<bool>,
         moves: usize,
     },
+    /// What the view of why Move HEAD does not move HEAD reads of the
+    /// checkout, for HEAD as it was then: or what was wrong.
+    HeadRead(Box<(crate::head::Head, std::result::Result<crate::head::Read, String>)>),
     /// The agent of run `0` stopped, its ask landed: what the status says
     /// of it, if anything.
     Stopped(String, Option<String>),
@@ -2515,6 +2528,7 @@ impl App {
             reviewing: None,
             #[cfg(feature = "moz-phab")]
             submitting: None,
+            head_why: None,
             searching: None,
             searches: Vec::new(),
             finds: Vec::new(),
@@ -2820,12 +2834,6 @@ impl App {
         }
     }
 
-    /// Why Move HEAD is grayed, if it is, said as the menu says it.
-    fn move_head_why(&self) -> Option<String> {
-        let why = self.head_moves_here()?.case.err()?;
-        Some(format!("Move HEAD is grayed: {why}."))
-    }
-
     /// The mark of the patch the patches pane's cursor is on, if it is on
     /// one that has one, and its place.
     fn mark_here(&self) -> Option<(usize, &crate::head::Mark)> {
@@ -2864,7 +2872,7 @@ impl App {
                     Some(Ok(crate::head::Case::AsLeft)) => {
                         "HEAD is as stacked last left it, so Move HEAD makes that commit again from the patch as it is now, its message too.".to_string()
                     }
-                    _ => "Move HEAD writes the patch's message over the commit's only while HEAD is as stacked last left it, as the commit may be yours, amended outside stacked: until then Move HEAD is grayed, and so is editing in this checkout (pwd).".to_string(),
+                    _ => "Move HEAD writes the patch's message over the commit's only while HEAD is as stacked last left it, as the commit may be yours, amended outside stacked: until then, Move HEAD… shows why Move HEAD does not move HEAD, and what you can do, rather than moving HEAD; and editing in this checkout (pwd) is grayed.".to_string(),
                 };
                 vec![
                     format!("Patch {n} is marked ≠: its commit in your checkout has the patch's diff, but its message says something other than the patch's."),
@@ -2931,6 +2939,10 @@ impl App {
             Ok(Case::OnStack) => "HEAD is on the stack with no marks: Move HEAD may put it at any patch, the commits it has taken as they are.".into(),
             Err(why) => format!("{why}."),
         });
+        // Refused: where to see why, and what to do.
+        if moves.case.is_err() {
+            out.push("Move HEAD…, in HEAD's menu, shows why Move HEAD does not move HEAD, and what you can do about it in your checkout.".into());
+        }
         if matches!(&h.at, At::Stack(o) if !o.marks.is_empty()) {
             out.push("Reconcile with HEAD, in HEAD's menu, gives each patch marked its commit's message, in one edit for your review: accepted, the marks are gone.".into());
         }
@@ -3082,6 +3094,12 @@ impl App {
                 if moves != self.bg.moved {
                     self.check_head();
                 }
+                // The view of why Move HEAD does not move HEAD follows it.
+                self.follow_head_why();
+            }
+            Done::HeadRead(read) => {
+                let (head, read) = *read;
+                self.head_why_read(head, read);
             }
             // What landed read first, so that what is said of the stop is
             // the last word; then what waited behind it goes.
@@ -3878,6 +3896,7 @@ impl App {
             Spot::BannerLine(i) => self.on_banner && self.banner_sel == i,
             Spot::ReviewLine(i) => self.reviewing.as_ref().is_some_and(|r| r.sel == i && !r.in_main),
             Spot::Found(i) => self.searching.as_ref().is_some_and(|s| s.sel == i),
+            Spot::WhyLine(i) => self.on_why_line(i),
             Spot::Item(_) | Spot::Choice(..) | Spot::Box | Spot::Editor | Spot::SearchScope => false,
         }
     }
@@ -4117,6 +4136,7 @@ impl App {
                 }
             }
             Spot::SearchScope => self.step_scope(),
+            Spot::WhyLine(i) => self.pick_why_line(i),
             Spot::Patch(None) => {
                 self.half_beside(Focus::List);
                 self.focus = Focus::List;
@@ -4191,6 +4211,10 @@ impl App {
         match action {
             Action::CommentLine if on_file => "create a comment on this file, as a whole".into(),
             Action::Open if self.file_on().is_some() => "read this file".into(),
+            // Moving nothing: why, and what you can do, in a view of its own.
+            Action::MoveHead(_) if self.head_moves_here().is_some_and(|m| m.case.is_err()) => {
+                "see why Move HEAD does not move HEAD of your checkout from where HEAD is, and what you can do in your checkout so that Move HEAD can move HEAD: a view of its own, only to read, with a line for each thing that keeps Move HEAD from moving HEAD, its diff, and stacked's comment saying what to do; Esc there comes back here".into()
+            }
             // A lint job's: the linter stopped, or the job dropped.
             Action::AskStop(run) | Action::Stop(run) if self.lint_stop_said(run).is_some() => match self.db.run(run).and_then(crate::lint::step_of) {
                 Some(crate::lint::Step::Running) => {
@@ -4574,6 +4598,7 @@ impl App {
                 self.text_key(k);
                 Effect::None
             }
+            Screen::HeadWhy => self.head_why_key(k),
             _ => {
                 self.list_key(k);
                 Effect::None
@@ -6063,6 +6088,7 @@ impl App {
             }
             #[cfg(feature = "moz-phab")]
             Screen::Submit => out.extend(self.submit_help()),
+            Screen::HeadWhy => out.extend(self.head_why_help()),
         }
         // On a line of a commit message: the key that opens its links, said
         // after Enter in the middle, and here elsewhere.
@@ -6810,8 +6836,9 @@ impl App {
         let h = self.by_hand().is_none();
         items.push(Item::line());
         // Nothing is edited from History…, nor from a review, nor from what
-        // a submit sends, only looked at.
-        let edits = !matches!(self.screen, Screen::History | Screen::Review) && !self.on_submit();
+        // a submit sends, nor from why Move HEAD does not move HEAD, only
+        // looked at.
+        let edits = !matches!(self.screen, Screen::History | Screen::Review | Screen::HeadWhy) && !self.on_submit();
         if edits && (self.current().is_some() || self.db.names().contains(&self.stack.as_str())) {
             if let Some((_, op)) = self.db.undo_target(&self.stack) {
                 items.push(Item::new(format!("Undo: {op}"), Action::Undo).when(h));
@@ -7025,8 +7052,7 @@ impl App {
         let mut lint_why: Option<String> = None;
         // Why a tool the agent could not use is not offered from now on.
         let mut tool_why: Option<String> = None;
-        // Why Move HEAD is grayed, if it is, and Reconcile with HEAD.
-        let mut move_why: Option<String> = None;
+        // Why Reconcile with HEAD is grayed, if it is.
         let mut reconcile_why: Option<String> = None;
         match (self.screen, self.focus) {
             // What landed, to review; the comments open, to go to.
@@ -7041,12 +7067,11 @@ impl App {
                     tool_why = self.tool_local().err().map(|why| format!("Allowed from now on is not offered: {why}."));
                 }
             }
-            // HEAD's row: Move HEAD, grayed with why when it would not move
-            // HEAD.
+            // HEAD's row: Move HEAD, which says why, and what you can do, when
+            // it would not move HEAD.
             (Screen::Main, Focus::List) if self.on_head() => {
                 title = self.head_here().map_or("HEAD".into(), |h| format!("HEAD {}", h.on()));
-                items.push(Item::new("Move HEAD…", Action::MoveHead(None)).when(self.move_head_why().is_none()));
-                move_why = self.move_head_why();
+                items.push(Item::new("Move HEAD…", Action::MoveHead(None)));
                 items.push(Item::new("Reconcile with HEAD", Action::Reconcile).when(self.reconcile_why().is_none()));
                 reconcile_why = self.reconcile_why();
                 // One waiting its turn: dropped from the queue.
@@ -7080,8 +7105,7 @@ impl App {
                         items.push(Item::new("Pull reviews from Phabricator", Action::Pull));
                     }
                     if self.head_here().is_some() {
-                        items.push(Item::new("Move HEAD…", Action::MoveHead(None)).when(self.move_head_why().is_none()));
-                        move_why = self.move_head_why();
+                        items.push(Item::new("Move HEAD…", Action::MoveHead(None)));
                     }
                     items.push(Item::line());
                 }
@@ -7109,8 +7133,7 @@ impl App {
                 items.push(Item::new(FILTER, Action::ShowMenu));
                 items.push(Item::new("Move this patch…", Action::MovePatch).when(h && n > 1));
                 if self.head_here().is_some() {
-                    items.push(Item::new("Move HEAD…", Action::MoveHead(Some(self.sel))).when(self.move_head_why().is_none()));
-                    move_why = self.move_head_why();
+                    items.push(Item::new("Move HEAD…", Action::MoveHead(Some(self.sel))));
                 }
                 // Its commit marked: its message, and every other marked,
                 // taken into the stack.
@@ -7231,7 +7254,6 @@ impl App {
         let mut why: Vec<String> = hands.filter(|_| self.screen != Screen::Review).into_iter().collect();
         why.extend(lint_why);
         why.extend(tool_why);
-        why.extend(move_why);
         why.extend(reconcile_why);
         // An edit by hand in this checkout grayed: why.
         if items.iter().any(|i| i.enabled && i.choices.iter().any(|c| c.of == "edit" && c.list.iter().any(|ch| !ch.enabled))) {
@@ -7505,10 +7527,11 @@ impl App {
                 None => self.status = "this reconcile with HEAD no longer waits its turn".into(),
             },
             Action::DropReconcile(run) => self.drop_reconcile(&run),
-            // Not while it would not move HEAD; from the place picked, or
-            // HEAD's, never below its last commit marked `!`.
+            // From the place picked, or HEAD's, never below its last commit
+            // marked `!`. While it would not move HEAD: why, and what you
+            // can do so that it can, in a view of its own.
             Action::MoveHead(at) => match self.head_moves_here() {
-                Some(m) if m.case.is_err() => self.status = m.case.err().unwrap_or_default(),
+                Some(m) if m.case.is_err() => self.open_head_why(),
                 m => {
                     let to = at.map(|at| at + 1).or_else(|| self.head_here().and_then(|h| h.patches()));
                     self.mode = Mode::MovingHead {
@@ -10111,6 +10134,7 @@ impl App {
             Screen::Search => cursor = self.draw_search(buf, body),
             #[cfg(feature = "moz-phab")]
             Screen::Submit => self.draw_submit(buf, body),
+            Screen::HeadWhy => self.draw_head_why(buf, body),
             Screen::Tree | Screen::Stacks | Screen::Versions => {
                 let (left, (right, _)) = self.columns(buf, body, (body.width as usize / 4).clamp(20, 40), 0);
                 let left = left.unwrap();
@@ -10490,6 +10514,7 @@ impl App {
             }
             #[cfg(feature = "moz-phab")]
             Mode::Normal if self.screen == Screen::Submit => self.submit_hint(),
+            Mode::Normal if self.screen == Screen::HeadWhy => self.head_why_hint(),
             // On the Phabricator line, Space shows what differs, or hides
             // it, reading or not; Enter opens the menu, as Space does not.
             #[cfg(feature = "moz-phab")]

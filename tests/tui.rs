@@ -5737,7 +5737,7 @@ fn the_marks_of_head_s_commits_are_in_a_margin_and_question_mark_says_each() {
         lines[..3],
         [
             "Patch 1 is marked ≠: its commit in your checkout has the patch's diff, but its message says something other than the patch's.",
-            "Move HEAD writes the patch's message over the commit's only while HEAD is as stacked last left it, as the commit may be yours, amended outside stacked: until then Move HEAD is grayed, and so is editing in this checkout (pwd).",
+            "Move HEAD writes the patch's message over the commit's only while HEAD is as stacked last left it, as the commit may be yours, amended outside stacked: until then, Move HEAD… shows why Move HEAD does not move HEAD, and what you can do, rather than moving HEAD; and editing in this checkout (pwd) is grayed.",
             "The mark clears once the two messages say the same: Reconcile with HEAD, in this patch's menu, gives the patch its commit's message, for your review; or reword the commit in your checkout to the patch's message, or let Move HEAD make the commit again from the patch.",
         ]
     );
@@ -5757,27 +5757,29 @@ fn the_marks_of_head_s_commits_are_in_a_margin_and_question_mark_says_each() {
     keys(&mut app, &[KeyCode::Down]);
     assert!(app.hint().ends_with("?: what can I do here"), "{}", app.hint());
     assert_eq!(said(&mut app)[0], "Press Enter to read this patch.");
-    // On HEAD's row: where it is, its marks, the lock, and why Move HEAD
-    // is grayed; its menu has Move HEAD, grayed, and says why.
+    // On HEAD's row: where it is, its marks, the lock, why Move HEAD does
+    // not move HEAD, and where it says so; its menu has Move HEAD, not
+    // grayed.
     keys(&mut app, &[KeyCode::Down]);
     assert!(app.on_head());
     assert!(app.hint().starts_with("enter or space: menu") && app.hint().ends_with("?: why HEAD is locked below patch 2"), "{}", app.hint());
     assert_eq!(
-        said(&mut app)[..7],
+        said(&mut app)[..8],
         [
             format!("HEAD of your checkout, {h}, has the stack's first 3 patches by their diffs, then 1 commit the stack does not have: it forks from the stack after patch 3."),
             "Patch 1 is marked ≠: its commit's message is not the patch's.".to_string(),
             "Patch 2 is marked !: the commit of patch 2 names D34, which the patch does not name.".to_string(),
             "HEAD is locked below patch 2: the commit of patch 2 names D34, which the patch does not name. Move HEAD keeps every commit up to it as it is, and puts HEAD nowhere below it; editing in this checkout (pwd) is grayed meanwhile.".to_string(),
-            "HEAD has commits stacked did not make, as 1 commit after patch 3 is not the stack's, the commit of patch 1 has a message other than the stack's and the commit of patch 2 names D34, which the patch does not name: Move HEAD is offered only when HEAD is on the stack with no marks, or as stacked last left it.".to_string(),
+            "HEAD has commits stacked did not make, as 1 commit after patch 3 is not the stack's, the commit of patch 1 has a message other than the stack's and the commit of patch 2 names D34, which the patch does not name: Move HEAD moves HEAD only when HEAD is on the stack with no marks, or as stacked last left it.".to_string(),
+            "Move HEAD…, in HEAD's menu, shows why Move HEAD does not move HEAD, and what you can do about it in your checkout.".to_string(),
             "Reconcile with HEAD, in HEAD's menu, gives each patch marked its commit's message, in one edit for your review: accepted, the marks are gone.".to_string(),
             "Press Enter or Space for HEAD's menu, with Move HEAD… and Reconcile with HEAD; ↑↓ for a patch, or the stack's header.".to_string(),
         ]
     );
     keys(&mut app, &[KeyCode::Enter]);
     assert_eq!(menu_title(&app), format!("HEAD {h}"));
-    assert_eq!(offered(&app, "Move HEAD…"), Some(false));
-    assert!(menu_note(&app).starts_with("Move HEAD is grayed: HEAD has commits stacked did not make"), "{}", menu_note(&app));
+    assert_eq!(offered(&app, "Move HEAD…"), Some(true));
+    assert!(!menu_note(&app).contains("Move HEAD"), "{}", menu_note(&app));
     keys(&mut app, &[KeyCode::Esc]);
     // Delete does nothing there; a click on it picks it, a second its menu.
     keys(&mut app, &[KeyCode::Delete]);
@@ -5789,6 +5791,22 @@ fn the_marks_of_head_s_commits_are_in_a_margin_and_question_mark_says_each() {
     assert!(app.on_head());
     app.click(x + 3, y, false);
     assert_eq!(menu_title(&app), format!("HEAD {h}"));
+    // Move HEAD…, chosen there: a line for each thing that keeps it from
+    // moving HEAD, each kind under its title.
+    choose(&mut app, "Move HEAD…");
+    app.settle();
+    assert_eq!(
+        why_lines(&app),
+        [
+            " where HEAD is, and why".to_string(),
+            " commits only your checkout has".into(),
+            format!("   ○ {h} Mine"),
+            " messages other than their patch's".into(),
+            "   ≠ 1 Bug 1 - part 1".into(),
+            " revisions their patch does not name".into(),
+            "   ! 2 Bug 2 - part 2".into(),
+        ]
+    );
 }
 
 #[test]
@@ -6024,8 +6042,42 @@ fn offered(app: &App, label: &str) -> Option<bool> {
     items(app).into_iter().find(|(l, _)| l == label).map(|(_, ok)| ok)
 }
 
+/// What the view of why Move HEAD does not move HEAD says on the line its
+/// cursor is on, each of its pieces as text: a commit as its sha, message
+/// and the lines its diff adds; two messages compared, each whole.
+fn why_said(app: &App) -> Vec<String> {
+    use stacked::tui::head_why::Piece;
+    let v = app.head_why.as_ref().expect("the view open");
+    v.said_here()
+        .1
+        .into_iter()
+        .map(|p| match p {
+            Piece::Heading(t) | Piece::Text(t) | Piece::Command(t) | Piece::Line(t) | Piece::Waiting(t) => t,
+            Piece::Commit(c) => {
+                let added: Vec<&str> = c.diff.lines().filter(|l| l.starts_with('+') && !l.starts_with("+++")).collect();
+                format!("[commit {}: {} | {}]", &c.sha[..12], c.message, added.join(" "))
+            }
+            Piece::Messages(ours, theirs) => format!("[{ours} | {theirs}]"),
+            Piece::Blank => String::new(),
+        })
+        .collect()
+}
+
+/// The commands the view of why Move HEAD does not move HEAD gives on the
+/// line its cursor is on.
+fn why_commands(app: &App) -> Vec<String> {
+    use stacked::tui::head_why::Piece;
+    let v = app.head_why.as_ref().expect("the view open");
+    v.said_here().1.into_iter().filter_map(|p| if let Piece::Command(c) = p { Some(c) } else { None }).collect()
+}
+
+/// The view's list, a line each.
+fn why_lines(app: &App) -> Vec<String> {
+    app.head_why.as_ref().expect("the view open").texts()
+}
+
 #[test]
-fn move_head_is_grayed_with_why_unless_head_is_as_stacked_left_it_or_on_the_stack_with_no_mark() {
+fn move_head_moves_head_as_stacked_left_it_or_on_the_stack_with_no_mark_and_else_says_why() {
     let (_tmp, db, src) = setup();
     let mut app = open_in(&db, &src);
     let top = app.head_here().unwrap().dir.clone();
@@ -6037,17 +6089,30 @@ fn move_head_is_grayed_with_why_unless_head_is_as_stacked_left_it_or_on_the_stac
         assert_eq!(offered(&app, "Move HEAD…"), Some(true));
         keys(&mut app, &[KeyCode::Esc]);
     }
-    // A commit of yours on top: grayed, the menu saying why.
+    // A commit of yours on top: offered too, as an item that can be picked,
+    // the menu saying nothing of it; chosen, it moves nothing, and says why
+    // in a view of its own. Esc goes back.
     std::fs::write(src.join("c.txt"), "c\n").unwrap();
     git(&src, &["add", "c.txt"]);
     git(&src, &["commit", "-qm", "Mine"]);
     app.look_at_head();
     app.settle();
-    keys(&mut app, &[KeyCode::Char(' ')]);
-    assert_eq!(offered(&app, "Move HEAD…"), Some(false));
-    let why = "HEAD has commits stacked did not make, as 1 commit after patch 2 is not the stack's: Move HEAD is offered only when HEAD is on the stack with no marks, or as stacked last left it";
-    assert!(menu_note(&app).contains(&format!("Move HEAD is grayed: {why}.")), "{}", menu_note(&app));
-    keys(&mut app, &[KeyCode::Esc]);
+    let mine = rev_in(&src, "HEAD");
+    for at_top in [true, false] {
+        (app.focus, app.on_stack) = (Focus::List, at_top);
+        keys(&mut app, &[KeyCode::Char(' ')]);
+        assert_eq!(offered(&app, "Move HEAD…"), Some(true));
+        assert!(!menu_note(&app).contains("Move HEAD"), "{}", menu_note(&app));
+        choose(&mut app, "Move HEAD…");
+        app.settle();
+        assert_eq!((app.screen, &app.mode), (Screen::HeadWhy, &Mode::Normal));
+        let why = "HEAD has commits stacked did not make, as 1 commit after patch 2 is not the stack's: Move HEAD moves HEAD only when HEAD is on the stack with no marks, or as stacked last left it";
+        assert_eq!(why_said(&app)[2], format!("Move HEAD does not move HEAD from there: {why}."));
+        keys(&mut app, &[KeyCode::Esc]);
+        assert_eq!((app.screen, &app.mode), (Screen::Main, &Mode::Normal));
+        assert!(app.head_why.is_none());
+        assert_eq!(rev_in(&src, "HEAD"), mine, "HEAD where it was");
+    }
     // Moved by stacked from the stack: where it left HEAD, remembered.
     git(&src, &["checkout", "-q", "--detach", "HEAD~1"]);
     app.look_at_head();
@@ -6071,13 +6136,15 @@ fn move_head_is_grayed_with_why_unless_head_is_as_stacked_left_it_or_on_the_stac
     assert_eq!(app.status, "HEAD is at patch 2 of s, detached");
     assert_eq!(commit_message(&src, "HEAD~1"), "Bug 1 - shout two, reworded\n\nBecause.");
     assert_eq!(left(&db), Some(rev_in(&src, "HEAD")));
-    // Reworded outside stacked: grayed, and refused if asked all the same.
+    // Reworded outside stacked: said why, in the view, and refused if asked
+    // all the same.
     git(&src, &["commit", "-q", "--amend", "-m", "Bug 2 - mine"]);
     app.look_at_head();
     app.settle();
-    keys(&mut app, &[KeyCode::Char(' ')]);
-    assert_eq!(offered(&app, "Move HEAD…"), Some(false));
-    assert!(menu_note(&app).contains("as the commit of patch 2 has a message other than the stack's"), "{}", menu_note(&app));
+    choose(&mut app, "Move HEAD…");
+    app.settle();
+    assert_eq!(app.screen, Screen::HeadWhy);
+    assert!(why_said(&app)[2].contains("as the commit of patch 2 has a message other than the stack's"), "{:?}", why_said(&app));
     keys(&mut app, &[KeyCode::Esc]);
     let was = rev_in(&src, "HEAD");
     let said = stacked(&src, &db, &["head", "s"]);
@@ -6138,6 +6205,445 @@ fn heads_place_is_never_below_its_last_commit_that_names_a_revision_its_patch_do
     assert!(commit_message(&src, "HEAD").contains(trailer));
 }
 
+/// The patches pane's cursor on HEAD's row.
+fn to_head_row(app: &mut App) {
+    (app.focus, app.on_banner) = (Focus::List, false);
+    keys(app, &[KeyCode::Home]);
+    while !app.on_head() {
+        let was = (app.sel, app.on_stack);
+        keys(app, &[KeyCode::Down]);
+        assert!(app.on_head() || was != (app.sel, app.on_stack), "never on HEAD's row");
+    }
+}
+
+/// The view of why Move HEAD does not move HEAD, opened from HEAD's menu,
+/// what it reads of the checkout read.
+fn open_why(app: &mut App) {
+    to_head_row(app);
+    choose(app, "Move HEAD…");
+    app.settle();
+    assert_eq!(app.screen, Screen::HeadWhy, "{}", app.status);
+}
+
+#[test]
+fn a_commit_above_the_stack_is_shown_whole_with_what_to_do_so_that_move_head_moves_head() {
+    let (_tmp, db, src) = setup();
+    own(&src, &["Mine"]);
+    let (head, top) = (rev_in(&src, "HEAD"), rev_in(&src, "HEAD~1"));
+    let mut app = open_in(&db, &src);
+    // On HEAD's row, `?` says where to see why Move HEAD does not move HEAD;
+    // on its item, what the item does.
+    to_head_row(&mut app);
+    keys(&mut app, &[KeyCode::Char('?')]);
+    let Mode::Help { lines, .. } = &app.mode else { panic!("{:?}", app.mode) };
+    let pointer = "Move HEAD…, in HEAD's menu, shows why Move HEAD does not move HEAD, and what you can do about it in your checkout.";
+    assert!(lines.iter().any(|l| l == pointer), "{lines:?}");
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Char(' ')]);
+    assert_eq!(items(&app)[0], ("Move HEAD…".to_string(), true));
+    keys(&mut app, &[KeyCode::Char('?')]);
+    let Mode::Help { lines, .. } = &app.mode else { panic!("{:?}", app.mode) };
+    assert!(
+        lines[0].starts_with("Press Enter to see why Move HEAD does not move HEAD of your checkout from where HEAD is, and what you can do in your checkout so that Move HEAD can move HEAD: a view of its own"),
+        "{lines:?}"
+    );
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Esc]);
+    // Chosen: the view, where HEAD is first, then the commit.
+    open_why(&mut app);
+    assert_eq!(why_lines(&app), [" where HEAD is, and why".to_string(), " commits only your checkout has".into(), format!("   ○ {} Mine", &head[..8])]);
+    assert_eq!(why_said(&app)[0], format!("HEAD of your checkout, on main at {}, is at patch 2 of s, then 1 commit not in the stack.", &head[..12]));
+    // The commit as git shows it, then what to do: HEAD on main, which
+    // keeps it.
+    keys(&mut app, &[KeyCode::Down]);
+    let said = why_said(&app);
+    assert_eq!(said[..3], ["the commit, as git show shows it".to_string(), format!("[commit {}: Mine | +Mine]", &head[..12]), String::new()]);
+    assert_eq!(
+        said[3..],
+        [
+            "stacked's comment".to_string(),
+            "This commit, after patch 2, is not one of the stack's patches: only your checkout has it. Move HEAD would move HEAD away from this commit, which stacked did not make: stacked never does that, as the commit may be yours. This commit stays on main, the branch HEAD is on: Move HEAD leaves main where it is, and so does `git switch --detach`.".into(),
+            String::new(),
+            "What you can do, in your checkout:".into(),
+            "Go back to the commit of patch 2, the stack's last commit in your checkout:".into(),
+            format!("git switch --detach {}", &top[..12]),
+            "Then Move HEAD can move HEAD. `git switch main` takes you back to this commit whenever you want.".into(),
+        ]
+    );
+    // Drawn as a review is: the list, then the commit as a patch is, its
+    // message and its file, and the command on a line of its own.
+    let screen = draw(&mut app);
+    for drawn in [" why Move HEAD does not move HEAD", &format!(" commit {}, only in your checkout", &head[..12]), "✉ message", "x.txt", "+Mine", &format!("      git switch --detach {}", &top[..12])] {
+        assert!(screen.contains(drawn), "{drawn:?}: {screen}");
+    }
+    // Done in the checkout: HEAD back on patch 2, main as it was. The view
+    // follows HEAD, and says that nothing keeps Move HEAD from moving HEAD
+    // now; chosen again, Move HEAD moves it.
+    git(&src, &["switch", "-q", "--detach", &top[..12]]);
+    app.look_at_head();
+    app.settle();
+    assert_eq!(why_lines(&app), [" where HEAD is, and why"]);
+    assert_eq!(
+        why_said(&app)[2],
+        "Nothing keeps Move HEAD from moving HEAD now: HEAD is on the stack with no marks, so Move HEAD may put HEAD at any patch. Press Esc, then choose Move HEAD… again to move HEAD."
+    );
+    assert_eq!(rev_in(&src, "main"), head);
+    keys(&mut app, &[KeyCode::Esc]);
+    assert_eq!(app.screen, Screen::Main);
+    to_head_row(&mut app);
+    choose(&mut app, "Move HEAD…");
+    assert!(matches!(app.mode, Mode::MovingHead { to: 2 }), "{:?}", app.mode);
+    keys(&mut app, &[KeyCode::Esc]);
+    // A commit of its own on no branch: put on a branch first.
+    own(&src, &["Mine again"]);
+    let again = rev_in(&src, "HEAD");
+    app.look_at_head();
+    app.settle();
+    open_why(&mut app);
+    keys(&mut app, &[KeyCode::Down]);
+    assert_eq!(why_commands(&app), [format!("git branch my-work {}", &again[..12]), format!("git switch --detach {}", &top[..12])]);
+    let said = why_said(&app);
+    for line in [
+        "HEAD is on no branch, so no branch keeps this commit: once HEAD moves away from it, the commit is left on no branch.",
+        "Put this commit on a branch first, to keep it. The branch is named my-work here, but any name not taken will do:",
+        "Then go back to the commit of patch 2, the stack's last commit in your checkout:",
+        "Then Move HEAD can move HEAD. `git switch my-work` takes you back to this commit whenever you want.",
+    ] {
+        assert!(said.iter().any(|l| l.contains(line)), "{line:?}: {said:?}");
+    }
+    // Nothing of it run: HEAD where it was.
+    assert_eq!(rev_in(&src, "HEAD"), again);
+}
+
+#[test]
+fn a_fork_with_commits_only_the_checkout_has_lists_each_and_goes_back_to_the_stack_s_last_commit_there() {
+    let (_tmp, db, src) = four();
+    // Forked after patch 2, on no branch, with two commits of its own.
+    git(&src, &["checkout", "-q", "--detach", "main~2"]);
+    let patch2 = rev_in(&src, "HEAD");
+    own(&src, &["Fix the thing", "Fix another thing"]);
+    let (first, last) = (rev_in(&src, "HEAD~1"), rev_in(&src, "HEAD"));
+    let mut app = open_in(&db, &src);
+    open_why(&mut app);
+    assert_eq!(
+        why_lines(&app),
+        [
+            " where HEAD is, and why".to_string(),
+            " commits only your checkout has".into(),
+            format!("   ○ {} Fix the thing", &first[..8]),
+            format!("   ○ {} Fix another thing", &last[..8]),
+        ]
+    );
+    assert_eq!(why_said(&app)[0], format!("HEAD of your checkout, detached at {}, is at patch 2 of s, then 2 commits not in the stack.", &last[..12]));
+    // Each commit, with the same comment: put them on a branch, then back to
+    // patch 2's commit.
+    let commands = [format!("git branch my-work {}", &last[..12]), format!("git switch --detach {}", &patch2[..12])];
+    keys(&mut app, &[KeyCode::Down]);
+    let said = why_said(&app);
+    assert_eq!(said[1], format!("[commit {}: Fix the thing | +Fix the thing]", &first[..12]));
+    for line in [
+        "This commit is one of the 2 commits after patch 2 that are not the stack's patches: only your checkout has them.",
+        "Move HEAD would move HEAD away from these commits, which stacked did not make: stacked never does that, as the commits may be yours.",
+        "HEAD is on no branch, so no branch keeps these commits: once HEAD moves away from them, the commits are left on no branch.",
+        "Put these commits on a branch first, to keep them. The branch is named my-work here, but any name not taken will do:",
+        "Then Move HEAD can move HEAD. `git switch my-work` takes you back to these commits whenever you want.",
+    ] {
+        assert!(said.iter().any(|l| l.contains(line)), "{line:?}: {said:?}");
+    }
+    assert_eq!(why_commands(&app), commands);
+    keys(&mut app, &[KeyCode::Down]);
+    assert_eq!(why_said(&app)[1], format!("[commit {}: Fix another thing | +Fix another thing]", &last[..12]));
+    assert_eq!(why_commands(&app), commands);
+    // ↓ past the last line: on it still.
+    keys(&mut app, &[KeyCode::Down]);
+    assert_eq!(app.head_why.as_ref().unwrap().here(), stacked::tui::head_why::Why::Own(1));
+    keys(&mut app, &[KeyCode::Esc]);
+    // Forked at the base, more commits than are listed: the first ten,
+    // then how many more; back to the base.
+    git(&src, &["checkout", "-q", "--detach", "main~4"]);
+    let base = rev_in(&src, "HEAD");
+    let titles: Vec<String> = (1..=11).map(|n| format!("Mine {n}")).collect();
+    own(&src, &titles.iter().map(String::as_str).collect::<Vec<_>>());
+    app.look_at_head();
+    app.settle();
+    open_why(&mut app);
+    let lines = why_lines(&app);
+    assert_eq!((lines.len(), lines[2].ends_with(" Mine 1"), lines[11].ends_with(" Mine 10")), (13, true, true), "{lines:?}");
+    assert_eq!(lines[12], "   ○ … 1 more commit");
+    keys(&mut app, &[KeyCode::End]);
+    let tenth = rev_in(&src, "HEAD~1");
+    let said = why_said(&app);
+    assert_eq!(said[1], format!("[commit {}: Mine 10 | +Mine 10]", &tenth[..12]));
+    for line in [
+        "This commit is one of the 11 commits after the base that are not the stack's patches: only your checkout has them.",
+        "Then go back to the stack's base, as your checkout has none of the stack's patches:",
+    ] {
+        assert!(said.iter().any(|l| l.contains(line)), "{line:?}: {said:?}");
+    }
+    assert_eq!(why_commands(&app), [format!("git branch my-work {}", &rev_in(&src, "HEAD")[..12]), format!("git switch --detach {}", &base[..12])]);
+}
+
+#[test]
+fn a_commit_with_another_message_is_compared_with_its_patch_s_and_reconciled_or_reworded() {
+    let (_tmp, db, src) = setup();
+    let loud = "Bug 1 - shout TWO\n\nBecause it is loud.";
+    first_reworded(&src, loud);
+    let first = rev_in(&src, "HEAD~1");
+    let mut app = open_in(&db, &src);
+    open_why(&mut app);
+    assert_eq!(why_lines(&app), [" where HEAD is, and why", " messages other than their patch's", "   ≠ 1 Bug 1 - shout two"]);
+    keys(&mut app, &[KeyCode::Down]);
+    assert_eq!(
+        why_said(&app),
+        [
+            "the message of patch 1 in the stack, then of its commit in your checkout".to_string(),
+            format!("[Bug 1 - shout two\n\nBecause. | {loud}]"),
+            String::new(),
+            "stacked's comment".into(),
+            format!(
+                "The commit {} of your checkout has the diff of patch 1, but another message: above, the lines marked - are the patch's, and those marked + the commit's. Move HEAD would make that commit again from the patch, writing the patch's message over the commit's, and stacked never rewrites a commit it did not make: the commit's message may be yours, amended outside stacked.",
+                &first[..12]
+            ),
+            String::new(),
+            "What you can do:".into(),
+            "Choose Reconcile with HEAD, in the menu of patch 1 or of HEAD's line in the patches pane: it gives the patch its commit's message, in an edit for your review. Once you accept the edit, the two messages are the same, and the mark is gone.".into(),
+            "Or give the commit the patch's message, in your checkout. Run this command:".into(),
+            format!("git rebase -i {}^", &first[..12]),
+            "In the list it opens, change `pick` to `reword` on the first line, the commit's, then write the message of patch 1 as the stack has it.".into(),
+            "Then Move HEAD can move HEAD.".into(),
+        ]
+    );
+    // Drawn as the reviews compare two messages: the patch's, then the
+    // commit's.
+    let screen = draw(&mut app);
+    for drawn in [&format!(" the commit of patch 1, {}: another message", &first[..12]), "-Bug 1 - shout two", "+Bug 1 - shout TWO", "+Because it is loud."] {
+        assert!(screen.contains(drawn), "{drawn:?}: {screen}");
+    }
+    keys(&mut app, &[KeyCode::Esc]);
+    // HEAD's own commit reworded too: amended, the other line to deal with.
+    git(&src, &["commit", "-q", "--amend", "-m", "Bug 2 - a bee"]);
+    app.look_at_head();
+    app.settle();
+    open_why(&mut app);
+    assert_eq!(why_lines(&app)[1..], [" messages other than their patch's", "   ≠ 1 Bug 1 - shout two", "   ≠ 2 Bug 2 - add b"]);
+    keys(&mut app, &[KeyCode::End]);
+    assert_eq!(why_commands(&app), ["git commit --amend"]);
+    let said = why_said(&app);
+    assert!(said.iter().any(|l| l == "Then write the message of patch 2 as the stack has it."), "{said:?}");
+    assert_eq!(said.last().unwrap(), "Then, once the other lines of the list are dealt with too, Move HEAD can move HEAD.");
+}
+
+#[cfg(feature = "moz-phab")]
+#[test]
+fn a_commit_naming_a_revision_its_patch_does_not_locks_head_and_its_revision_is_reconciled_or_reworded_away() {
+    let (_tmp, db, src) = setup();
+    let trailer = "Differential Revision: https://phabricator.services.mozilla.com/D34";
+    git(&src, &["commit", "-q", "--amend", "-m", &format!("Bug 2 - add b\n\n{trailer}")]);
+    let top = rev_in(&src, "HEAD");
+    let mut app = open_in(&db, &src);
+    open_why(&mut app);
+    assert_eq!(why_lines(&app), [" where HEAD is, and why", " revisions their patch does not name", "   ! 2 Bug 2 - add b"]);
+    keys(&mut app, &[KeyCode::Down]);
+    let said = why_said(&app);
+    assert_eq!(said[1], format!("[Bug 2 - add b | Bug 2 - add b\n\n{trailer}]"));
+    assert_eq!(
+        said[4..],
+        [
+            format!(
+                "The commit {} of your checkout has the diff of patch 2, but it names D34, which the patch does not name: above, the lines marked - are the patch's, and those marked + the commit's. HEAD is locked below this patch: Move HEAD never rewrites nor drops a commit that names a revision its patch does not name, so Move HEAD keeps this commit and the commits under it as they are, and puts HEAD nowhere below this patch. While the commit is marked, Move HEAD does not move HEAD at all: Move HEAD moves HEAD only when HEAD is on the stack with no marks, or as stacked last left it.",
+                &top[..12]
+            ),
+            String::new(),
+            "What you can do:".into(),
+            "Choose Reconcile with HEAD, in the menu of patch 2 or of HEAD's line in the patches pane: it gives the patch its commit's message, D34 with it, in an edit for your review. Once you accept the edit, the patch names D34 too, and the mark is gone.".into(),
+            "Or give the commit the patch's message, in your checkout, so that it no longer names D34. Run this command:".into(),
+            "git commit --amend".into(),
+            "Then write the message of patch 2 as the stack has it.".into(),
+            "Then Move HEAD can move HEAD.".into(),
+        ]
+    );
+    // The revision's line drawn as the commit's alone.
+    let screen = draw(&mut app);
+    for drawn in [&format!(" the commit of patch 2, {}: it names D34", &top[..12]), "+Differential Revision:"] {
+        assert!(screen.contains(drawn), "{drawn:?}: {screen}");
+    }
+}
+
+#[test]
+fn head_on_another_base_is_said_against_the_stack_s_base_with_how_to_switch_there() {
+    let (_tmp, db, src) = setup();
+    let base = rev_in(&src, "main~2");
+    // An orphan branch, which shares no commit with the base.
+    git(&src, &["checkout", "-q", "--orphan", "other"]);
+    git(&src, &["commit", "-qm", "Other"]);
+    let other = rev_in(&src, "HEAD");
+    let mut app = open_in(&db, &src);
+    open_why(&mut app);
+    assert_eq!(why_lines(&app), [" where HEAD is, and why", " HEAD on another base", "   ▶ HEAD other: off the stack"]);
+    assert_eq!(why_said(&app)[0], format!("HEAD of your checkout, on other at {}, is not on s: the stack's base is not below it.", &other[..12]));
+    assert_eq!(
+        why_said(&app)[2],
+        "Move HEAD does not move HEAD from there: HEAD is not on the stack's base, nor where stacked last left it: Move HEAD moves HEAD only when HEAD is on the stack with no marks, or as stacked last left it."
+    );
+    keys(&mut app, &[KeyCode::Down]);
+    assert_eq!(
+        why_said(&app),
+        [
+            "HEAD and the stack's base".to_string(),
+            format!("HEAD      {}, on other: Other", &other[..12]),
+            format!("the base  {}: base", &base[..12]),
+            String::new(),
+            "They share no commit: HEAD's history is not the base's.".into(),
+            "HEAD's latest commits, the newest first:".into(),
+            format!("○ {} Other", &other[..8]),
+            String::new(),
+            "stacked's comment".into(),
+            "Move HEAD moves HEAD along the stack: to its base, or to a patch, the patches under it applied there. From another base, Move HEAD would move HEAD away from the commits HEAD has there, and stacked never moves HEAD away from commits stacked did not make: those commits may be yours.".into(),
+            String::new(),
+            "What you can do, in your checkout:".into(),
+            "Commit or stash the changes you have not committed, if you have any: Move HEAD does not move HEAD while files git tracks have changes.".into(),
+            "Then switch your checkout to the stack's base:".into(),
+            format!("git switch --detach {}", &base[..12]),
+            "Then Move HEAD can move HEAD to any patch of the stack. `git switch other` takes you back to HEAD's commits whenever you want.".into(),
+            "Or keep HEAD where it is, and leave Move HEAD alone.".into(),
+        ]
+    );
+    let screen = draw(&mut app);
+    for drawn in [" HEAD, not on the stack's base", &format!("HEAD      {}, on other: Other", &other[..12]), &format!("      git switch --detach {}", &base[..12])] {
+        assert!(screen.contains(drawn), "{drawn:?}: {screen}");
+    }
+    // A history whose base is not its first commit: HEAD under the base, on
+    // no branch, has nothing of its own to keep.
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("src");
+    std::fs::create_dir(&src).unwrap();
+    git(&src, &["init", "-q", "-b", "main"]);
+    git(&src, &["config", "commit.gpgsign", "false"]);
+    std::fs::write(src.join("root.txt"), "root\n").unwrap();
+    git(&src, &["add", "."]);
+    git(&src, &["commit", "-qm", "root"]);
+    std::fs::write(src.join("base.txt"), "base\n").unwrap();
+    git(&src, &["add", "."]);
+    git(&src, &["commit", "-qm", "base"]);
+    own(&src, &["Bug 1 - part 1"]);
+    let db = tmp.path().join("db.jsonl");
+    stacked(&src, &db, &["import", "s", "HEAD~1"]);
+    let (root, base) = (rev_in(&src, "main~2"), rev_in(&src, "main~1"));
+    git(&src, &["checkout", "-q", "--detach", "main~2"]);
+    let mut app = open_in(&db, &src);
+    open_why(&mut app);
+    keys(&mut app, &[KeyCode::Down]);
+    assert_eq!(why_said(&app)[4], "HEAD is under the base, 1 commit behind it: HEAD has no commit the base does not have.");
+    assert_eq!(why_commands(&app), [format!("git switch --detach {}", &base[..12])]);
+    keys(&mut app, &[KeyCode::Esc]);
+    // Forked from below the base, on no branch: its commit put on a branch
+    // first.
+    own(&src, &["Old work"]);
+    let old = rev_in(&src, "HEAD");
+    app.look_at_head();
+    app.settle();
+    open_why(&mut app);
+    keys(&mut app, &[KeyCode::Down]);
+    assert_eq!(
+        why_said(&app)[4..7],
+        [
+            format!("They share {}: HEAD has 1 commit since it, and the base 1.", &root[..12]),
+            "HEAD's latest commits since then, the newest first:".to_string(),
+            format!("○ {} Old work", &old[..8]),
+        ]
+    );
+    assert_eq!(why_commands(&app), [format!("git branch my-work {}", &old[..12]), format!("git switch --detach {}", &base[..12])]);
+    assert!(why_said(&app).iter().any(|l| l == "Then Move HEAD can move HEAD to any patch of the stack. `git switch my-work` takes you back to HEAD's commits whenever you want."), "{:?}", why_said(&app));
+}
+
+#[test]
+fn several_things_that_keep_move_head_from_moving_head_are_a_line_each() {
+    let (_tmp, db, src) = four();
+    // Patch 1's commit reworded, patches 2 and 3, then a commit of its own.
+    git(&src, &["checkout", "-q", "--detach", "main~3"]);
+    git(&src, &["commit", "-q", "--amend", "-m", "Bug 1 - other words"]);
+    let first = rev_in(&src, "HEAD");
+    git(&src, &["cherry-pick", "main~2"]);
+    git(&src, &["cherry-pick", "main~1"]);
+    let patch3 = rev_in(&src, "HEAD");
+    own(&src, &["Mine"]);
+    let mine = rev_in(&src, "HEAD");
+    let mut app = open_in(&db, &src);
+    open_why(&mut app);
+    assert_eq!(
+        why_lines(&app),
+        [
+            " where HEAD is, and why".to_string(),
+            " commits only your checkout has".into(),
+            format!("   ○ {} Mine", &mine[..8]),
+            " messages other than their patch's".into(),
+            "   ≠ 1 Bug 1 - part 1".into(),
+        ]
+    );
+    assert_eq!(
+        why_said(&app)[2],
+        "Move HEAD does not move HEAD from there: HEAD has commits stacked did not make, as 1 commit after patch 3 is not the stack's and the commit of patch 1 has a message other than the stack's: Move HEAD moves HEAD only when HEAD is on the stack with no marks, or as stacked last left it."
+    );
+    // Each with what to do about it, the other to deal with too.
+    keys(&mut app, &[KeyCode::Down]);
+    assert_eq!(why_commands(&app), [format!("git branch my-work {}", &mine[..12]), format!("git switch --detach {}", &patch3[..12])]);
+    assert_eq!(
+        why_said(&app).last().unwrap(),
+        "Then, once the other lines of the list are dealt with too, Move HEAD can move HEAD. `git switch my-work` takes you back to this commit whenever you want."
+    );
+    keys(&mut app, &[KeyCode::Down]);
+    assert_eq!(why_commands(&app), [format!("git rebase -i {}^", &first[..12])]);
+    assert_eq!(why_said(&app)[1], "[Bug 1 - part 1 | Bug 1 - other words]");
+    assert_eq!(why_said(&app).last().unwrap(), "Then, once the other lines of the list are dealt with too, Move HEAD can move HEAD.");
+}
+
+#[test]
+fn the_view_of_why_move_head_does_not_move_head_is_read_with_the_arrows_and_esc_goes_back() {
+    let (_tmp, db, src) = setup();
+    own(&src, &["Mine"]);
+    let mut app = open_in(&db, &src);
+    // From the stack's header too.
+    (app.focus, app.on_stack) = (Focus::List, true);
+    choose(&mut app, "Move HEAD…");
+    app.settle();
+    assert_eq!(app.screen, Screen::HeadWhy);
+    assert_eq!(app.hint(), "↑↓ choose · →: read it · esc: back · space: menu · ?: what can I do here");
+    // `?` says what it is.
+    keys(&mut app, &[KeyCode::Char('?')]);
+    let Mode::Help { lines, .. } = &app.mode else { panic!("{:?}", app.mode) };
+    assert!(lines[0].starts_with("This view says why Move HEAD does not move HEAD of your checkout from where HEAD is"), "{lines:?}");
+    assert!(lines.iter().any(|l| l == "Once your checkout changes, stacked reads HEAD again, and this view with it."), "{lines:?}");
+    keys(&mut app, &[KeyCode::Esc]);
+    // → into the pane on the right, ↓ scrolls it, → again wide, the list out
+    // of sight; ← ← back to the list.
+    keys(&mut app, &[KeyCode::Right]);
+    assert!(app.head_why.as_ref().unwrap().in_main);
+    assert_eq!(app.hint(), "↑↓: scroll · →: wider · ←: back to the list · esc: back · ?: what can I do here");
+    keys(&mut app, &[KeyCode::Down]);
+    assert_eq!(app.head_why.as_ref().unwrap().scroll, 1);
+    keys(&mut app, &[KeyCode::Right]);
+    assert!(app.head_why.as_ref().unwrap().wide);
+    assert!(!draw(&mut app).contains(" why Move HEAD does not move HEAD"), "the list out of sight");
+    keys(&mut app, &[KeyCode::Left, KeyCode::Left]);
+    assert!(!app.head_why.as_ref().unwrap().in_main);
+    // A click on a line of the list picks it; a second goes into the pane on
+    // the right.
+    let screen = draw(&mut app);
+    let (x, y) = at(&screen, "○ ");
+    app.click(x, y, false);
+    assert_eq!(app.head_why.as_ref().map(|v| (v.here(), v.in_main)), Some((stacked::tui::head_why::Why::Own(0), false)));
+    app.click(x, y, false);
+    assert!(app.head_why.as_ref().unwrap().in_main);
+    // Space: the menu, as on every screen; Esc, back where it was opened.
+    keys(&mut app, &[KeyCode::Left, KeyCode::Char(' ')]);
+    assert!(matches!(app.mode, Mode::Menu(_)), "{:?}", app.mode);
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Esc]);
+    assert_eq!((app.screen, app.on_stack, app.head_why.is_none()), (Screen::Main, true, true));
+    // ← from the list goes back too.
+    choose(&mut app, "Move HEAD…");
+    app.settle();
+    keys(&mut app, &[KeyCode::Left]);
+    assert_eq!(app.screen, Screen::Main);
+}
+
 #[test]
 fn this_checkout_is_grayed_for_edits_by_hand_while_move_head_would_not_move_head() {
     let (_tmp, db, src) = setup();
@@ -6160,7 +6666,7 @@ fn this_checkout_is_grayed_for_edits_by_hand_while_move_head_would_not_move_head
     while !matches!(&app.mode, Mode::Menu(m) if m.sel == want) {
         key(&mut app, KeyCode::Down);
     }
-    let why = "HEAD has commits stacked did not make, as 1 commit after patch 2 is not the stack's: Move HEAD is offered only when HEAD is on the stack with no marks, or as stacked last left it";
+    let why = "HEAD has commits stacked did not make, as 1 commit after patch 2 is not the stack's: Move HEAD moves HEAD only when HEAD is on the stack with no marks, or as stacked last left it";
     assert!(menu_note(&app).contains(&format!("Editing in this checkout (pwd) is grayed: {why}.")), "{}", menu_note(&app));
     key(&mut app, KeyCode::Right);
     assert!(draw(&mut app).contains("[ ] tmp/file  [ ] pwd  [x] .stacked/s"));

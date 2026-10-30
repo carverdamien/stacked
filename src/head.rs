@@ -21,6 +21,10 @@
 //! why: the commits might be yours, made or amended outside stacked. HEAD
 //! following a review (`follow`) moves only from where it was seen in sync
 //! with the stack. Each move remembers where it left HEAD.
+//!
+//! Refused, `Move HEAD…` shows why, and what you can do in your checkout
+//! so that it moves HEAD: what that view shows of the checkout's commits is
+//! read away from the screen (`read`).
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -60,13 +64,18 @@ pub struct OnStack {
     /// The commits above them to HEAD, which are not the stack's, bottom
     /// first: with them, HEAD forks from the stack.
     pub above: Vec<String>,
-    /// The subjects of the first of those, as many as `SUBJECTS`.
+    /// The subjects of the first of those, as many as `SHOWN`.
     pub subjects: Vec<String>,
 }
 
-/// How many of the commits HEAD alone has are read by their subject: as
-/// many as the patches pane draws.
+/// How many of the commits HEAD alone has the patches pane draws by their
+/// subject.
 pub const SUBJECTS: usize = 3;
+
+/// How many of the commits HEAD alone has are read by their subject: as
+/// many as the view of why Move HEAD does not move HEAD lists, each read
+/// whole there (`read`); the patches pane draws the first `SUBJECTS`.
+pub const SHOWN: usize = 10;
 
 /// The mark of a commit of HEAD's with the same diff as its patch, whose
 /// message is not the patch's.
@@ -235,8 +244,8 @@ impl Head {
     }
 }
 
-/// When Move HEAD is offered, said after why it is not.
-pub const ONLY: &str = "Move HEAD is offered only when HEAD is on the stack with no marks, or as stacked last left it";
+/// When Move HEAD moves HEAD, said after why it does not.
+pub const ONLY: &str = "Move HEAD moves HEAD only when HEAD is on the stack with no marks, or as stacked last left it";
 
 /// Why Move HEAD does not replace the commits of `on`, HEAD not where
 /// stacked last left it: what of them stacked did not make.
@@ -355,10 +364,10 @@ fn on_stack(dir: &Path, base: &str, head: &str, patches: &[&Patch]) -> Result<At
         }
         on.commits.push(sha.clone());
     }
-    // The rest forks from the stack: what of it the patches pane draws, by
-    // subject.
+    // The rest forks from the stack: what of it the patches pane draws, and
+    // the view of why Move HEAD does not move HEAD lists, by subject.
     on.above = all[on.commits.len()..].to_vec();
-    on.subjects = subjects(dir, &on.above[..on.above.len().min(SUBJECTS)])?;
+    on.subjects = subjects(dir, &on.above[..on.above.len().min(SHOWN)])?;
     Ok(At::Stack(on))
 }
 
@@ -416,6 +425,133 @@ fn commit_messages(dir: &Path, shas: &[String]) -> Result<HashMap<String, String
         .filter(|c| c.len() == 2)
         .map(|c| (c[0].trim().to_string(), c[1].to_string()))
         .collect())
+}
+
+/// A commit of the checkout read whole, as `git show` shows it: its sha,
+/// its message as taken (`norm`), and its diff, empty for a merge or a
+/// commit that changes nothing. A diff of more lines than `DIFF_LINES` is
+/// not kept: how many lines it has is, instead (`cut`).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Commit {
+    pub sha: String,
+    pub message: String,
+    pub diff: String,
+    pub cut: Option<usize>,
+}
+
+/// How many lines a commit's diff read whole (`Commit`) may have to be
+/// kept: the view of why Move HEAD does not move HEAD draws it then.
+pub const DIFF_LINES: usize = 2000;
+
+/// HEAD and the stack's base, HEAD not on it (`At::Elsewhere`), as git says
+/// it cheaply: HEAD's subject; the base's, if the checkout has the base;
+/// the commit the two share last, if they share one, with how many commits
+/// HEAD has since it, then how many the base has; and HEAD's latest commits
+/// since it (sharing none, its latest), newest first, each its sha and
+/// subject, as many as `SUBJECTS`.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Apart {
+    pub subject: String,
+    pub base: Option<String>,
+    pub shared: Option<(String, usize, usize)>,
+    pub latest: Vec<(String, String)>,
+}
+
+/// What the view of why Move HEAD does not move HEAD reads of the checkout
+/// (`read`): the first commits only the checkout has, as many as `SHOWN`,
+/// each read whole; or, HEAD not on the stack's base, how the two stand.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Read {
+    pub own: Vec<Commit>,
+    pub apart: Option<Apart>,
+}
+
+/// What the view of why Move HEAD does not move HEAD reads of the checkout
+/// of HEAD `h`, the stack's base being `base` (`Read`): from the shas
+/// `h` has, in a git command or two.
+pub fn read(h: &Head, base: &str) -> Result<Read> {
+    Ok(match &h.at {
+        At::Stack(on) => Read {
+            own: read_whole(&h.dir, &on.above[..on.above.len().min(SHOWN)])?,
+            apart: None,
+        },
+        At::Elsewhere => Read {
+            own: vec![],
+            apart: Some(apart(&h.dir, &h.commit, base)?),
+        },
+    })
+}
+
+/// Each of `shas` read whole, in their order (`Commit`), in one `git log`:
+/// as git shows a commit, whatever its settings say of colours,
+/// signatures, an external diff, or the prefixes of the files' paths.
+fn read_whole(dir: &Path, shas: &[String]) -> Result<Vec<Commit>> {
+    if shas.is_empty() {
+        return Ok(vec![]);
+    }
+    let mut args = vec![
+        "log",
+        "-p",
+        "--no-walk=unsorted",
+        "--no-color",
+        "--no-ext-diff",
+        "--no-show-signature",
+        "--src-prefix=a/",
+        "--dst-prefix=b/",
+        "--format=%x00%H%x00%B%x00",
+    ];
+    args.extend(shas.iter().map(String::as_str));
+    let out = git(dir, &args)?;
+    // Each commit is its sha, its message, then its diff, after a NUL each.
+    let parts: Vec<&str> = out.split('\0').collect();
+    Ok(parts
+        .get(1..)
+        .unwrap_or_default()
+        .chunks(3)
+        .filter(|c| c.len() == 3)
+        .map(|c| {
+            let diff = c[2].trim_start_matches('\n');
+            let n = diff.lines().count();
+            let (diff, cut) = if n > DIFF_LINES { (String::new(), Some(n)) } else { (diff.to_string(), None) };
+            Commit {
+                sha: c[0].trim().to_string(),
+                message: norm(c[1]),
+                diff,
+                cut,
+            }
+        })
+        .collect())
+}
+
+/// HEAD at commit `head` and the stack's base `base` apart, in the checkout
+/// at `dir` (`Apart`).
+fn apart(dir: &Path, head: &str, base: &str) -> Result<Apart> {
+    let subject = |rev: &str| -> Result<String> { Ok(git(dir, &["log", "-1", "--no-show-signature", "--format=%s", rev])?.trim_end().to_string()) };
+    let mut a = Apart {
+        subject: subject(head)?,
+        ..Apart::default()
+    };
+    let Ok(base) = git::rev_parse(dir, base) else { return Ok(a) };
+    a.base = Some(subject(&base)?);
+    let shared = git(dir, &["merge-base", head, &base]).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+    let (n, since) = (SUBJECTS.to_string(), format!("{base}..{head}"));
+    let mut latest = vec!["log", "--no-show-signature", "-n", &n, "--format=%H%x00%s"];
+    match shared {
+        Some(s) => {
+            // HEAD's own since, then the base's.
+            let counts = git(dir, &["rev-list", "--left-right", "--count", &format!("{head}...{base}")])?;
+            let mut each = counts.split_whitespace().map(|c| c.parse().unwrap_or(0));
+            a.shared = Some((s, each.next().unwrap_or(0), each.next().unwrap_or(0)));
+            latest.push(&since);
+        }
+        None => latest.push(head),
+    }
+    a.latest = git(dir, &latest)?
+        .lines()
+        .filter_map(|l| l.split_once('\0'))
+        .map(|(sha, s)| (sha.to_string(), s.to_string()))
+        .collect();
+    Ok(a)
 }
 
 /// A message as taken: each line's end trimmed, no blank line at either

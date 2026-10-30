@@ -410,7 +410,8 @@ HEAD's branch. The cursor goes over the `○` rows: they are drawn only.
 HEAD's line itself is a line the cursor stops on: its menu (Enter, Space)
 has `Move HEAD…`, and `?` there says where HEAD is, its marks, where it is
 locked, and which of Move HEAD's cases applies (`HEAD is as stacked left
-it: Move HEAD replaces it with the stack as it is now.`), or why none does.
+it: Move HEAD replaces it with the stack as it is now.`), or why none does,
+and then that `Move HEAD…` shows why, and what you can do (below).
 On a patch marked, `?` says first what its mark means, what it locks or
 grays, and how it clears; the bottom line says only that it does (`?: what
 the ! on patch 2 means`). With more patches than the pane has room for,
@@ -486,12 +487,14 @@ HEAD replaces commits only when HEAD is exactly that commit, whatever the
 stack has become since (its patches edited, reworded, the commits of HEAD
 then other than the stack's): stacked made them; or when HEAD is on the
 stack, its commits the stack's first patches, with nothing above them and
-the same messages. Else `Move HEAD…` is grayed, and its menu says why
-(`Move HEAD is grayed: HEAD has commits stacked did not make, as 1 commit
-after patch 2 is not the stack's: Move HEAD is offered only when HEAD is
-on the stack with no marks, or as stacked last left it.`); `--to` is
-refused with the same reason. Everything else of HEAD is read from the
-commits, by their diffs, never from what was remembered.
+the same messages. Else `Move HEAD…` moves nothing: it is offered all
+the same, drawn as any item, and chosen, it opens a view of why it does not
+move HEAD, and of what you can do in your checkout so that it can (below);
+`?` on it says so. `--to` is refused with the reason (`HEAD has commits
+stacked did not make, as 1 commit after patch 2 is not the stack's: Move
+HEAD moves HEAD only when HEAD is on the stack with no marks, or as
+stacked last left it`). Everything else of HEAD is read from the commits,
+by their diffs, never from what was remembered.
 
 A commit that names a revision its patch does not name is never rewritten
 nor dropped: everything up to and including the last such commit is kept
@@ -506,6 +509,42 @@ commit's: "Bug 3 - other words"`; with moz-phab, when the two differ by the
 revision they name, or would but for it, `patch 3 names no revision in the
 stack and D3 in your workspace's commit`), then where HEAD is locked, and
 why `--to` would be refused, when it would.
+
+The view `Move HEAD…` opens while it would not move HEAD is only to read,
+a screen of its own laid out as the review of what the agent brings back is
+(below). On the left, first, where HEAD is and why Move HEAD does not move
+it (`HEAD of your checkout, on main at 9f8e7d6c5b4a, is at patch 2 of s,
+then 1 commit not in the stack.`); then each thing that keeps it from
+moving HEAD, a line each, under a title for each kind: each commit only
+your checkout has, after the stack's patches it has, by its subject (the
+first ten, then `○ … 3 more commits`); each commit with its patch's diff
+but another message, `≠`, then each that names a revision its patch does
+not name, `!`, by its patch; or HEAD on another base. On the right, the
+line the cursor is on: the commit as `git show` shows it, drawn as the
+middle draws a patch (a diff of more than 2,000 lines said, not drawn); the
+patch's message then the commit's, compared where their lines wrap aside,
+as the reviews compare two messages; or HEAD and the stack's base, how
+they stand (the commit they share and how many commits each has since, or
+none shared), with HEAD's latest commits. Under it, stacked's comment says
+why that keeps Move HEAD from moving HEAD, and what you can do in your
+checkout, the git commands written out, their commits named: the commits
+only your checkout has put on a branch first when HEAD is on none (`git
+branch my-work 9f8e7d6c5b4a`, any name not taken), then HEAD back on the
+stack's last commit there, or on its base (`git switch --detach
+1a2b3c4d5e6f`), the branch HEAD was on keeping them; a commit marked given
+to its patch by Reconcile with HEAD (below), or reworded in your checkout
+to the patch's message (`git rebase -i 1a2b3c4d5e6f^` and `reword` on its
+line, or `git commit --amend` for HEAD's own commit); HEAD on another base
+switched to the stack's base, its commits first put on a branch when it is
+on none, or kept where it is, Move HEAD left alone. stacked runs none of
+them. What the view shows of the commits is read away from the screen as
+it opens, `reading your checkout…` on the top bar meanwhile. As HEAD is
+looked at again, every few seconds, the view follows it: once nothing
+keeps Move HEAD from moving HEAD, it says so, and `Move HEAD…` moves HEAD
+again. ↑↓ go from line to line, → (or Enter) into the pane on the right
+to scroll it, → again to see it wide, the list out of sight, ← back, and
+Esc goes back where the view was opened from; `?` says so. In the browser
+(`stacked web`) and in StackED, the same.
 
 `Reconcile with HEAD`, in the menu of each patch marked and of HEAD's
 line, takes the commits' messages into the stack: each patch marked, `≠` or
@@ -3428,7 +3467,8 @@ is typed: `import.rs`). A fix to one may belong in the other.
   line, its stream and its replies.
 - `held.rs`: what an ask brought back, held for your review.
 - `head.rs`: where HEAD of your checkout is against a stack, its commits
-  marked, and HEAD moved along it, only as stacked left it or with no mark.
+  marked, and HEAD moved along it, only as stacked left it or with no mark;
+  what the view of why Move HEAD does not move HEAD reads of the checkout.
 - `reconcile.rs`: Reconcile with HEAD, the commits' messages taken into the
   stack, queued and reviewed as an edit is.
 - `messages.rs`: two versions of a commit message compared word by word,
@@ -3516,7 +3556,10 @@ is typed: `import.rs`). A fix to one may belong in the other.
   of the patch the middle shows, what differs under it, and when each is
   read; `tui/compared.rs`, two versions of a text compared word by word
   where their lines wrap aside, as rows: a title and summary in those two,
-  a reviewer's comment edited on Phabricator in the review of a pull;
+  a reviewer's comment edited on Phabricator in the review of a pull, a
+  commit's message against its patch's; and a diff, or a commit, as the
+  middle draws a patch; `tui/head_why.rs`, the view of why Move HEAD does
+  not move HEAD, and what you can do in your checkout so that it can;
   `tui/banner.rs`, the banner of the agent's work; `tui/places.rs`, where
   each pane's cursor was, each half's of the middle split in two;
   `tui/finding.rs`, the search of the middle (`/`).
@@ -3983,13 +4026,25 @@ their margin, `≠` and `!`, HEAD's row ending `· locked below patch 2`,
 folded, `?` on each mark saying what it means, what it locks or grays and
 how it clears, the bottom line saying only that `?` does, and on HEAD's
 row saying where HEAD is, its marks, the lock and which case of Move HEAD
-applies, or why none does, its menu with Move HEAD grayed and why, a click
-on it and Delete there doing nothing, `Move HEAD…` grayed
-with why unless HEAD is as stacked last left it or on the stack with no
-mark (a commit of yours on top, one reworded outside stacked) and offered
-after a restart from what the database remembers, the stack moved on
-since, its place never below a commit that names a revision its patch does
-not (↑, Home and a click stopping there, `?` saying why), HEAD following
+applies, or why none does and where to see why, its menu with Move HEAD
+not grayed, a click on it and Delete there doing nothing, `Move HEAD…`
+moving HEAD only as stacked last left it or on the stack with no mark,
+else offered all the same, `?` on it saying what it does, and opening the
+view of why (a commit of yours on top, one reworded outside stacked), HEAD
+as it was, and moving it after a restart from what the database
+remembers, the stack moved on since, its place never below a commit that
+names a revision its patch does not (↑, Home and a click stopping there,
+`?` saying why), the view of why Move HEAD does not move HEAD (a commit
+above the stack, HEAD on its branch, then on none, shown whole with what
+to do; a fork with commits only the checkout has, each, the first ten
+then how many more, forked at the base too; a commit marked `≠`, HEAD's
+own amended; one marked `!`, with moz-phab; HEAD on another base, sharing
+no commit, under the base, forked from below it; several at once, each
+with the others to deal with too; each line's comment and its commands,
+their commits named, none of them run; the view following HEAD once the
+checkout changes, then saying that nothing keeps Move HEAD from moving
+HEAD; the arrows, a click, `?`, Space and Esc there, from the stack's
+header too), HEAD following
 a review remembered where it went, Reconcile with HEAD (on the menus of
 the patches marked and of HEAD's row, not of another, `?` saying what it
 does; made at once, waiting for review in the banner, grayed while it is
@@ -4067,7 +4122,9 @@ starts, a message's long lines wrapped from its patch's menu, the edit
 landing for review, what waits its turn (a reconcile with HEAD, a lint
 job, an edit ask) taken out of the queue from the banner with Delete, each
 asked first, → opening the comments pane of a patch with none, saying why,
-its menu there, and ← putting it away, a link of a line of a message opened from the
+its menu there, and ← putting it away, `Move HEAD…` on the stack's menu
+not grayed while it would not move HEAD, and the view of why opened from
+it, then left, a link of a line of a message opened from the
 menu of a right click on it and with `o`, and one of a line of a comment
 from its menu, by a stand-in, and the comment closed last on a line,
 longer than its box in a small page, scrolled down to its last line with
@@ -4098,7 +4155,8 @@ lines wrapped from its patch's menu, the edit landing for review; what
 waits its turn (a reconcile with HEAD, a lint job, an edit ask) taken out
 of the queue from the banner with Delete, each asked first; → opening the
 comments pane of a patch with none, saying why, its menu there, and ←
-putting it away; with
+putting it away; `Move HEAD…` on the stack's menu drawn as any item while
+it would not move HEAD, and the view of why opened from it, then left; with
 moz-phab, the status of a patch's revision after its number, a letter,
 and the Phabricator line over its message, Space on it showing what
 differs under it, read by a stand-in for its database; and the File menu,
