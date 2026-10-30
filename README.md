@@ -4131,7 +4131,9 @@ its others as they are; with each file whole, a line in no hunk found and
 gone to, 3 typed while the bar is open, 3 after Enter, and the files read
 while it is open searched again, Esc going back to the row found again),
 the
-menus by place, what `?` says where, writing in every pane, the comment
+menus by place, what `?` says where, writing in every pane, the keys in
+a patch looked at closer in a review going from the line Enter went to
+in its stack diff, though nothing was drawn since, the comment
 closed last on a line shown dimmed in the box until you write (↑↓ said only
 when it is longer than the box, which ↑↓ and pgdn then scroll down to its
 last line, the box above the bottom bar), the regions it

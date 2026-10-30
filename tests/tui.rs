@@ -12649,6 +12649,29 @@ fn enter_on_a_line_of_the_interdiff_goes_to_that_line_of_the_patch() {
     assert!(matches!(&app.mode, Mode::Edit(_)), "{:?}", app.mode);
 }
 
+#[test]
+fn keys_in_the_patch_looked_at_closer_go_from_the_line_enter_went_to_though_nothing_was_drawn_since() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Enter]);
+    save(&mut app, "why so loud?");
+    let n = notes_of(&db, "s", 0).remove(0);
+    agent_changed(&db, "run-agent", &n);
+    app.refresh();
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Enter]);
+    keys(&mut app, &[KeyCode::Home]);
+    down_to_review(&mut app, "modify  1 Bug 1");
+    keys(&mut app, &[KeyCode::Right]);
+    assert_eq!(work_row(&mut app).as_deref(), Some("-+TWO"));
+    // Enter, then ↓ at once, as keys come together from the browser and
+    // StackED: the line after the one Enter went to.
+    key(&mut app, KeyCode::Enter);
+    key(&mut app, KeyCode::Down);
+    assert_eq!(work_row(&mut app).as_deref(), Some("three"));
+}
+
 /// The edits by hand the open menu has: its items ending in `in $EDITOR`.
 fn edits_of(app: &App) -> Vec<String> {
     items(app).into_iter().map(|(l, _)| l).filter(|l| l.ends_with("in $EDITOR")).collect()

@@ -1539,12 +1539,16 @@ impl App {
     pub(super) fn review_key(&mut self, k: KeyEvent) -> Effect {
         let lines = self.review_lines();
         let page = self.page();
-        // A patch looked at closer: how many rows it has.
+        // A patch looked at closer: how many rows it has; gone to from the
+        // stack diff and not drawn since, the row Enter went to there, which
+        // the keys move from, as the drawing would put the cursor on it.
         let looked = self.reviewing.as_ref().is_some_and(|rv| rv.in_main && rv.in_patch);
-        let patch_rows = self
-            .review_patch()
-            .filter(|_| looked)
-            .map(|(_, p)| self.review_rows(&p, self.reviewing.as_ref().map_or(80, |rv| rv.main_w)).len());
+        let goto = self.reviewing.as_ref().and_then(|rv| rv.goto);
+        let rows = self.review_patch().filter(|_| looked).map(|(_, p)| {
+            let rows = self.review_rows(&p, self.reviewing.as_ref().map_or(80, |rv| rv.main_w));
+            (rows.len(), goto.map(|m| row_of(&rows, crate::ops::line_of_mail(&p, m))))
+        });
+        let (patch_rows, went) = (rows.map(|(n, _)| n), rows.and_then(|(_, at)| at));
         // The stack diff: where → from the list puts the cursor in it; looked
         // at closer, where Enter on each of its entries goes.
         let in_main = self.reviewing.as_ref().is_some_and(|rv| rv.in_main);
@@ -1577,6 +1581,9 @@ impl App {
             (true, code @ (KeyCode::Up | KeyCode::Down | KeyCode::PageUp | KeyCode::PageDown | KeyCode::Home | KeyCode::End))
                 if patch_rows.is_some() =>
             {
+                if let Some(at) = went {
+                    (rv.row, rv.goto) = (at, None);
+                }
                 let last = patch_rows.unwrap_or(1).saturating_sub(1);
                 rv.row = match code {
                     KeyCode::Down => (rv.row + 1).min(last),
