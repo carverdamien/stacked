@@ -833,6 +833,10 @@ pub enum Target {
     /// `run` holds, in its review: it goes back to the agent with it.
     #[cfg(feature = "try-push")]
     TaskAnswer { run: String, k: usize },
+    /// Your answer to what the agent said of tool `k` it could not use, of
+    /// the work run `run` holds, in its review: it goes back to the agent
+    /// with it.
+    ToolAnswer { run: String, k: usize },
 }
 
 /// A comment being written, in the pane it is written in.
@@ -898,31 +902,6 @@ pub enum Mode {
     /// match as it is typed, Tab and shift-Tab from match to match, Enter
     /// staying on one, Esc going back.
     Find(Box<Find>),
-    /// Before the first ask, the setup of what each kind of ask may use, as
-    /// `stacked setup agent --tui` shows it: saved, the ask goes; left,
-    /// nothing is sent.
-    Setup(Box<SettingUp>),
-}
-
-/// The setup before the first ask, of the stack's checkout `repo`: while
-/// the agent is asked what tools it has, away from the screen, none to show
-/// yet; then its screen. What is to be sent once it is saved.
-#[derive(Debug, Clone, PartialEq)]
-pub struct SettingUp {
-    pub screen: Option<crate::setup::Setup>,
-    pub repo: PathBuf,
-    pub then: Then,
-}
-
-/// What sending waits on the setup for, each at the effort picked to send
-/// it: comments asked now, in a way, to the whole stack or not; the stack's
-/// batch of a way sent, fanned out or not; or the work under review sent
-/// back.
-#[derive(Debug, Clone, PartialEq)]
-pub enum Then {
-    Send(Vec<(String, String)>, Way, bool, Effort),
-    Batch(Way, bool, Option<Effort>),
-    SendBack(Option<Effort>),
 }
 
 /// A line being typed, for what `asking` asks: what it gives, said, and
@@ -1268,6 +1247,13 @@ pub enum Action {
     AnswerTask(usize),
     #[cfg(feature = "try-push")]
     MarkTasks(bool),
+    /// In the review: the tool `0` the agent could not use marked refused,
+    /// allowed for this work, or allowed from now on (`1`); allowed with its
+    /// rule `1`, from the narrowest; your answer to what the agent said of
+    /// it written.
+    ToolState(usize, crate::refusals::Allow),
+    ToolRule(usize, usize),
+    AnswerTool(usize),
     /// In the review: what you wrote there, on the list's line the cursor
     /// is on, written again, or taken back (asked first, from Delete).
     EditYours,
@@ -1543,6 +1529,15 @@ fn about(action: &Action) -> String {
         Action::MarkTasks(true) => "mark every task the agent selected accepted: each is pushed to try when the review closes".into(),
         #[cfg(feature = "try-push")]
         Action::MarkTasks(false) => "mark every task the agent selected rejected: none of them is pushed to try".into(),
+        Action::ToolState(_, crate::refusals::Allow::Refused) => "refuse this tool: the agent is not let use it, and nothing is saved".into(),
+        Action::ToolState(_, crate::refusals::Allow::Work) => {
+            "allow this tool for this work: every round of it may use it until its review closes, sent back or asked again; nothing is saved".into()
+        }
+        Action::ToolState(_, crate::refusals::Allow::Always) => {
+            "allow this tool from now on: once the work is sent back or its review closes, the rule is saved in the checkout's own .stacked/local.toml, for every ask of this kind".into()
+        }
+        Action::ToolRule(..) => "allow the tool with this rule instead, narrower or wider, as it is marked".into(),
+        Action::AnswerTool(_) => "answer what the agent said of this tool: the work goes back to the agent with your answer".into(),
         Action::EditYours => "write it again: what you said last in your comment, or your answer to the agent's reply".into(),
         Action::AskTakeYoursBack | Action::TakeYoursBack => "take it back: it does not go back to the agent with the work".into(),
         Action::AskRejectWork(_) | Action::RejectWork(_) => {
@@ -2281,9 +2276,6 @@ enum Done {
         clean: Option<bool>,
         moves: usize,
     },
-    /// The setup's screen for the checkout `0`, the agent asked what tools it
-    /// has there; or why it could not be shown.
-    SetUp(PathBuf, std::result::Result<Box<crate::setup::Setup>, String>),
     /// The agent of run `0` stopped, its ask landed: what the status says
     /// of it, if anything.
     Stopped(String, Option<String>),
@@ -2291,10 +2283,6 @@ enum Done {
     #[cfg(feature = "try-push")]
     Followed(Vec<String>),
 }
-
-/// What the bar says while the agent is asked what tools it has, for the
-/// setup before the first ask.
-const SETTING_UP: &str = "asking the agent what tools it has";
 
 /// What the bar says while an agent is being stopped, its ask landed then.
 const STOPPING: &str = "stopping the agent";
@@ -3072,24 +3060,6 @@ impl App {
                     self.check_head();
                 }
             }
-            // Unless it was left meanwhile: nothing sent, said already. An
-            // agent asked for a setup left before serves the next.
-            Done::SetUp(repo, made) => {
-                if let Some(k) = self.bg.doing.iter().position(|d| *d == SETTING_UP) {
-                    self.bg.doing.remove(k);
-                }
-                let Mode::Setup(su) = &mut self.mode else { return };
-                if su.repo != repo || su.screen.is_some() {
-                    return;
-                }
-                match made {
-                    Ok(screen) => su.screen = Some(*screen),
-                    Err(e) => {
-                        self.mode = Mode::Normal;
-                        self.status = format!("{e}; nothing was sent");
-                    }
-                }
-            }
             // What landed read first, so that what is said of the stop is
             // the last word; then what waited behind it goes.
             Done::Stopped(id, said) => {
@@ -3248,96 +3218,6 @@ impl App {
             };
             Done::Stopped(id, said)
         });
-    }
-
-    /// Whether what is to be sent, `then`, waits on the setup of what each
-    /// kind of ask may use: not done in the stack's checkout, it opens, the
-    /// agent asked what tools it has away from the screen, and `then` is
-    /// done once it is saved.
-    fn set_up_first(&mut self, then: Then) -> bool {
-        // The kind of ask it waits on: the work sent back's own.
-        let way = match &then {
-            Then::Send(_, way, ..) | Then::Batch(way, ..) => *way,
-            Then::SendBack(_) => self.reviewing.as_ref().and_then(|rv| ask::way_of(&self.db, &rv.run)).unwrap_or(Way::Change),
-        };
-        if ask::not_set_up(&self.db, &self.stack, way).is_none() {
-            return false;
-        }
-        let Some(repo) = self.current().and_then(|s| s.repo.clone()).map(PathBuf::from) else { return false };
-        self.mode = Mode::Setup(Box::new(SettingUp { screen: None, repo: repo.clone(), then }));
-        // Once for each agent asked: the editor waits for each to be done.
-        self.bg.doing.push(SETTING_UP);
-        let path = std::env::var_os("PATH").unwrap_or_default();
-        self.spawn(move || {
-            let made = (|| {
-                let to = crate::config::local_to_write(&repo)?;
-                let (cfg, _) = crate::config::of(&repo);
-                let lists = crate::setup::Kind::ALL.map(|k| crate::config::set_in(&repo, k.key()).is_some());
-                let start = crate::setup::Start::new(&cfg.agent, lists, Some(&repo), &path);
-                let (tools, servers) = ask::agent_tools(&repo, &cfg).map_err(|e| format!("the agent could not say what tools it has: {}", e.0))?;
-                let said = format!("the agent's tools, in {}", repo.display());
-                Ok(Box::new(crate::setup::Setup::new(&tools, &servers, &start, &to.display().to_string(), &said)))
-            })();
-            Done::SetUp(repo, made)
-        });
-        true
-    }
-
-    /// A key on the setup before the first ask: while the agent is asked,
-    /// Esc leaves; then the screen's own. Saved, it is written in the
-    /// stack's checkout's own settings, and what waited on it is sent; left,
-    /// nothing is, as the bar says.
-    fn setup_key(&mut self, mut su: SettingUp, k: KeyEvent) -> Effect {
-        let step = match &mut su.screen {
-            None if k.code == KeyCode::Esc => crate::setup::Step::Leave,
-            None => crate::setup::Step::Stay,
-            Some(s) => s.key(k),
-        };
-        match step {
-            crate::setup::Step::Stay => self.mode = Mode::Setup(Box::new(su)),
-            crate::setup::Step::Leave => {
-                self.status = "nothing was sent: what each kind of ask may use is not set up yet, and sending again opens the setup again".into();
-            }
-            crate::setup::Step::Save(chosen) => match crate::config::set_local_all(&su.repo, &chosen.settings()) {
-                Ok(at) => {
-                    match su.then {
-                        Then::Send(notes, way, whole, effort) => self.send(notes, way, whole, effort),
-                        Then::Batch(way, fan, effort) => self.send_batch(way, fan, effort),
-                        Then::SendBack(effort) => self.review_send_back(effort),
-                    }
-                    let saved = format!("the setup is saved in {}", at.display());
-                    self.status = if self.status.is_empty() { saved } else { format!("{saved}; {}", self.status) };
-                }
-                Err(e) => self.status = format!("{e}; nothing was sent"),
-            },
-        }
-        Effect::None
-    }
-
-    /// The setup before the first ask, over the screen: its own screen,
-    /// once the agent said what tools it has; until then, a box saying it
-    /// is asked. Where the terminal's cursor goes.
-    fn draw_setup(&mut self, buf: &mut Buffer, area: Rect) -> Option<(u16, u16)> {
-        let Mode::Setup(su) = &mut self.mode else { return None };
-        if let Some(s) = &mut su.screen {
-            return s.draw(buf, area);
-        }
-        let (w, h) = (area.width as usize, area.height as usize);
-        let bw = (w * 2 / 3).clamp(30.min(w), 72.min(w));
-        let said = format!(
-            "Before the first ask, stacked shows what each kind of ask may use, for you to check and save. The agent, in {}, is being asked what tools it has.",
-            su.repo.display()
-        );
-        let lines = wrap(&said, bw.saturating_sub(4));
-        let bh = (lines.len() + 4).min(h);
-        let (x, y) = (w.saturating_sub(bw) / 2, h.saturating_sub(bh) / 2);
-        window(buf, area, x, y, bw, bh, "the setup of the agent's tools", color::meta());
-        spot_in(&self.spots, area, (x, y, bw, bh), Spot::Box);
-        for (k, l) in lines.iter().take(bh.saturating_sub(4)).enumerate() {
-            put(buf, area, x + 2, y + 1 + k, bw - 4, l, Style::new());
-        }
-        put(buf, area, x + 2, y + bh - 2, bw - 4, "esc: send nothing", color::dim());
-        None
     }
 
     /// Reads what the work away from the screen came to; whether it came
@@ -4016,16 +3896,6 @@ impl App {
                 }
                 return Effect::None;
             }
-            // The setup's screen: a box ticked or not, a row picked, or the
-            // line to add a command or a tool opened, as the screen says;
-            // nothing while a command is typed or its menu is open, nor while
-            // the agent is asked what tools it has.
-            Mode::Setup(su) => {
-                if let Some(s) = su.screen.as_mut().filter(|s| s.adding.is_none() && s.menu.is_none()) {
-                    s.click(x.into(), y.into());
-                }
-                return Effect::None;
-            }
             // What the agent writes, read in place: folded.
             Mode::Stream { .. } => {
                 self.mode = Mode::Normal;
@@ -4095,14 +3965,6 @@ impl App {
     /// it what Enter does: in a menu, its item; a patch being moved goes
     /// there. Not while a comment is written, nor over what `?` says.
     pub fn hover(&mut self, x: u16, y: u16) {
-        // The setup's screen: the row under the mouse picked, and the column
-        // of the box under it.
-        if let Mode::Setup(su) = &mut self.mode {
-            if let Some(s) = su.screen.as_mut().filter(|s| s.adding.is_none() && s.menu.is_none()) {
-                s.hover(x.into(), y.into());
-            }
-            return;
-        }
         let spot = self.spot_at(x, y);
         let side = |s: &Spot| matches!(s, Spot::Patch(_) | Spot::File(_) | Spot::HeadRow | Spot::NotesHead | Spot::Note(_));
         self.hovered = spot.filter(|s| side(s) && matches!(self.mode, Mode::Normal));
@@ -4474,16 +4336,8 @@ impl App {
         // what `?` said.
         // The search reads what is typed too.
         let typed = self.screen == Screen::Search && matches!(self.mode, Mode::Normal);
-        // The setup's screen reads its own letters (s saves, a adds), and
-        // what is typed for a command; the arrows as the settings map them.
-        let setting_up = match &self.mode {
-            Mode::Setup(su) => Some(su.screen.as_ref().is_some_and(|s| s.adding.is_some())),
-            _ => None,
-        };
-        let k = if matches!(self.mode, Mode::Edit(_) | Mode::Lines(_) | Mode::Prompt(_) | Mode::Find(_)) || typed || setting_up == Some(true) {
+        let k = if matches!(self.mode, Mode::Edit(_) | Mode::Lines(_) | Mode::Prompt(_) | Mode::Find(_)) || typed {
             k
-        } else if setting_up.is_some() {
-            self.cfg.keys.translate(&k).unwrap_or(k)
         } else {
             match self.cfg.keys.translate(&k) {
                 Some(t) => t,
@@ -4527,7 +4381,7 @@ impl App {
                 return Effect::None;
             }
         } else if k.code == KeyCode::Char('?')
-            && !matches!(self.mode, Mode::Edit(_) | Mode::Lines(_) | Mode::Prompt(_) | Mode::Find(_) | Mode::Setup(_))
+            && !matches!(self.mode, Mode::Edit(_) | Mode::Lines(_) | Mode::Prompt(_) | Mode::Find(_))
             && (self.helps() || self.mode != Mode::Normal)
         {
             self.mode = Mode::Help {
@@ -4545,7 +4399,6 @@ impl App {
             Mode::Lines(l) => return self.lines_key(*l, k),
             Mode::Prompt(p) => return self.prompt_key(*p, k),
             Mode::Find(f) => return self.find_key(*f, k),
-            Mode::Setup(su) => return self.setup_key(*su, k),
             Mode::Moving { from, to } => {
                 self.moving_key(from, to, k);
                 return Effect::None;
@@ -5752,6 +5605,7 @@ impl App {
             Action::AskDropFile(_) => "drop its changes",
             Action::MarkUnread => "unread",
             Action::MarkPart(_) => "reject",
+            Action::ToolState(..) => "refuse it",
             Action::CloseAsking(..) => "close it with the review",
             Action::AskTakeYoursBack => "take it back",
             Action::AskRejectWork(_) => "reject all remaining",
@@ -5893,6 +5747,10 @@ impl App {
                 #[cfg(feature = "try-push")]
                 if self.reviewing.as_ref().and_then(|rv| self.work(&rv.run)).is_some_and(|(_, h)| !h.tasks.is_empty()) {
                     out.push("The tasks are the CI tasks the agent selected for a try push, as the comment asked: accept those to push, and reject the others. On a task, the right pane shows why the agent selected it, as its comment, and Space has Reply to it: your answer sends the work back to the agent, which selects the tasks again. Closing the review with tasks accepted is where they are pushed to try; with none accepted, nothing is pushed.".into());
+                }
+                // The tools the agent could not use: their three states.
+                if self.reviewing.as_ref().and_then(|rv| self.work(&rv.run)).is_some_and(|(_, h)| !h.tools.is_empty()) {
+                    out.push("The tools the agent could not use are a section of their own, each refused until you allow it. On a tool, the right pane shows why the agent needed it, as its comment, and the calls it tried. Press Enter to allow the tool from now on: its rule is saved in the checkout's own .stacked/local.toml, for this kind of ask, once the work is sent back or its review closes. Press Delete to refuse it again. Space has its menu, to allow it for this work alone (every round of this work until its review closes, and nothing saved), to widen its rule, or to reply to what the agent said of it. With a tool allowed, Esc can send the work back to the agent though you wrote nothing.".into());
                 }
                 out.push("What you write in the review of the agent's work sends that work back to the agent: the work is not accepted, and the agent is asked again, starting from this work.".into());
                 if self.review_yours() > (0, 0) {
@@ -6329,6 +6187,18 @@ impl App {
                 if let Some((of, pick)) = m.items.get_mut(m.sel).and_then(|i| i.choices.first_mut()).map(|c| c.turn(1)) {
                     self.picked_choice(of, pick);
                 }
+            }
+            // On a tool the agent could not use, its state or its rule
+            // picked: the menu again as it is now, its box checked, the
+            // cursor where it was, or on its state once its rule changed.
+            KeyCode::Enter if m.chosen().is_some_and(|i| matches!(i.action, Action::ToolState(..) | Action::ToolRule(..))) => {
+                let action = m.chosen().map(|i| i.action.clone()).unwrap_or(Action::Cancel);
+                self.perform(action.clone());
+                let mut again = self.main_menu();
+                let at = again.items.iter().position(|i| i.action == action).or_else(|| again.items.iter().position(|i| i.check == Some(true)));
+                again.sel = at.unwrap_or(again.sel);
+                again.at = m.at;
+                m = again;
             }
             KeyCode::Enter => {
                 // On the row picking when an ask goes, the ask over it.
@@ -7020,6 +6890,8 @@ impl App {
         let mut wraps: Option<String> = None;
         // Why the stack's lint is grayed, but for what edits by hand say.
         let mut lint_why: Option<String> = None;
+        // Why a tool the agent could not use is not offered from now on.
+        let mut tool_why: Option<String> = None;
         // Why Move HEAD is grayed, if it is, and Reconcile with HEAD.
         let mut move_why: Option<String> = None;
         let mut reconcile_why: Option<String> = None;
@@ -7032,6 +6904,9 @@ impl App {
             (Screen::Review, _) => {
                 title = "this part of what landed".into();
                 self.review_items(&mut items);
+                if items.iter().any(|i| matches!(i.action, Action::ToolState(_, crate::refusals::Allow::Always)) && !i.enabled) {
+                    tool_why = self.tool_local().err().map(|why| format!("Allowed from now on is not offered: {why}."));
+                }
             }
             // HEAD's row: Move HEAD, grayed with why when it would not move
             // HEAD.
@@ -7208,6 +7083,7 @@ impl App {
         // from there: nothing it holds back is said.
         let mut why: Vec<String> = hands.filter(|_| self.screen != Screen::Review).into_iter().collect();
         why.extend(lint_why);
+        why.extend(tool_why);
         why.extend(move_why);
         why.extend(reconcile_why);
         // An edit by hand in this checkout grayed: why.
@@ -7761,6 +7637,9 @@ impl App {
             Action::AnswerTask(k) => self.review_task_answer(k),
             #[cfg(feature = "try-push")]
             Action::MarkTasks(accept) => self.mark_tasks(accept),
+            Action::ToolState(k, a) => self.tool_state(k, a),
+            Action::ToolRule(k, j) => self.tool_rule(k, j),
+            Action::AnswerTool(k) => self.review_tool_answer(k),
             Action::EditYours => {
                 if let Some(y) = self.review_yours_line() {
                     self.review_write_yours(y);
@@ -8273,7 +8152,7 @@ impl App {
     /// written again.
     fn attachable(&self, target: &Target) -> bool {
         match target {
-            Target::Answer { .. } => false,
+            Target::Answer { .. } | Target::ToolAnswer { .. } => false,
             #[cfg(feature = "try-push")]
             Target::TaskAnswer { .. } => false,
             Target::Turn { change, id, turn } => {
@@ -9092,6 +8971,13 @@ impl App {
                     let asked = db.run(run).and_then(|r| crate::held::asking_of(r).into_iter().next());
                     return Ok(asked.unwrap_or_else(|| (stack_change(&name), format!("task {k}"))));
                 }
+                // Your answer to what the agent said of a tool it could not
+                // use, in its review: held with the tool, as a task's is.
+                Target::ToolAnswer { run, k } => {
+                    crate::held::answer_tool(db, run, *k, &text)?;
+                    let asked = db.run(run).and_then(|r| crate::held::asking_of(r).into_iter().next());
+                    return Ok(asked.unwrap_or_else(|| (stack_change(&name), format!("tool {k}"))));
+                }
             };
             let mut note = Note {
                 review: review.clone().or(note.review),
@@ -9158,9 +9044,6 @@ impl App {
     /// at. They are started away from the screen.
     fn send_batch(&mut self, way: Way, fan: bool, effort: Option<Effort>) {
         let sent = ask::batched(&self.db, &self.stack, way);
-        if !sent.is_empty() && self.set_up_first(Then::Batch(way, fan, effort)) {
-            return;
-        }
         let done = ask::release_batch(&self.path, &self.stack, way, fan, effort);
         self.reload();
         let (n, refused) = match done {
@@ -9256,12 +9139,9 @@ impl App {
     }
 
     /// Puts `notes` on the agent's queue, to the whole stack if `whole`, at
-    /// `effort`; they are started away from the screen. Before the first
-    /// ask, once the setup of what each kind of ask may use is saved.
+    /// `effort`; they are started away from the screen, the first ask as any
+    /// other, with no setup before it.
     fn send(&mut self, notes: Vec<(String, String)>, way: Way, whole: bool, effort: Effort) {
-        if !notes.is_empty() && self.set_up_first(Then::Send(notes.clone(), way, whole, effort)) {
-            return;
-        }
         let n = notes.len();
         if let Err(e) = ask::queue(&self.path, &self.stack, &notes, way, whole, effort) {
             self.status = e.0;
@@ -9991,10 +9871,6 @@ impl App {
         self.edit_box.set(None);
         self.spots.borrow_mut().clear();
         self.areas.borrow_mut().clear();
-        // The setup before the first ask: its screen over all of it.
-        if matches!(&self.mode, Mode::Setup(su) if su.screen.is_some()) {
-            return self.draw_setup(buf, area);
-        }
         // Where the cursor is in a list of its own screen, kept as it goes.
         self.keep_list();
         self.keep_progress();
@@ -10078,8 +9954,6 @@ impl App {
         self.draw_ref_preview(buf, body);
         let cursor = self.draw_lines(buf, body).or(cursor);
         let cursor = self.draw_prompt(buf, body).or(cursor);
-        // The agent asked what tools it has, for the setup: said over it.
-        self.draw_setup(buf, body);
         self.draw_status(buf, area);
         // The search of the middle, over the bottom bar.
         self.draw_find(buf, area).or(cursor)
@@ -10401,7 +10275,6 @@ impl App {
             Mode::Prompt(p) if p.ok => format!("enter: {} · esc: back", p.asking.does()),
             Mode::Prompt(_) => "esc: back".into(),
             Mode::Find(f) => self.find_hint(f),
-            Mode::Setup(_) => "esc: send nothing".into(),
             Mode::Stream { .. } => "↑↓: scroll · esc: fold it".into(),
             Mode::Normal if self.screen == Screen::Main && self.on_banner => {
                 let enter = match self.banner_lines().get(self.banner_sel) {
@@ -10687,6 +10560,7 @@ impl App {
             Target::Answer { .. } => "your answer to the agent's reply".to_string(),
             #[cfg(feature = "try-push")]
             Target::TaskAnswer { .. } => "your answer to why the agent selected this task".to_string(),
+            Target::ToolAnswer { .. } => "your answer to what the agent said of this tool".to_string(),
         };
         spot_in(&self.spots, area, (0, y, w, bh), Spot::Editor);
         self.edit_box.set(Some(Rect::new(area.x, area.y + y as u16, w as u16, bh as u16)));

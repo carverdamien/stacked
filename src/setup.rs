@@ -20,10 +20,12 @@
 //! `Bash(PROGRAM *)`, however it was written (`shown`). What the checkout's
 //! claude settings of yours deny (`denied`) is said, and refused to every
 //! ask. A command or a tool may be added too, as claude writes a permission
-//! rule (`rule`). Saving is the setup done: each list is written, with
-//! agent.setup, the version of the setup that was done, without which no
-//! ask goes. On a screen of its own (`Setup`, for `--tui`, and in the
-//! editor before its first ask), or asked line by line (`ask_lines`).
+//! rule (`rule`). Saving writes each list; no ask waits for it, each going
+//! with stacked's defaults until it is saved. What the reviews of the
+//! agent's work allowed from now on, in the checkout's own settings
+//! (agent.answer_accepted…, `refusals`), is listed too, a rule a row, each
+//! kept or taken out. On a screen of its own (`Setup`, for `--tui`), or
+//! asked line by line (`ask_lines`).
 
 use std::collections::HashSet;
 use std::ffi::OsStr;
@@ -36,16 +38,9 @@ use ratatui::style::Style;
 
 use crate::ask::{CHANGING, GIVEN, GIVEN_SAID};
 use crate::config::{ANSWER_TOOLS, Agent};
-use crate::db::{Error, Result};
+use crate::db::{Error, Result, Way};
 use crate::editor::Editor;
 use crate::paint::{color, fit, on_cursor, put, window};
-
-/// The version of the setup this stacked shows: a setup done with an
-/// earlier one (`agent.setup`) is asked again before an ask of a kind its
-/// column was not in (`Kind::since`), as what the setup shows changed
-/// since. With the `try-push` feature, the setup has a column for try
-/// pushes: version 2.
-pub const VERSION: usize = if cfg!(feature = "try-push") { 2 } else { 1 };
 
 /// The agent's tools that read the web, of what a change may be let use,
 /// with Bash at large: said to reach the network, as nothing a change is
@@ -124,7 +119,7 @@ pub fn rule(text: &str) -> std::result::Result<String, String> {
 /// written `mcp__SERVER__*`. Any other rule is only the same as itself: a
 /// wider rule (`Bash(./mach *)`) is never the same as a narrower one
 /// (`Bash(./mach build *)`).
-fn same(rule: &str) -> String {
+pub(crate) fn same(rule: &str) -> String {
     if let Some(prefix) = rule.strip_prefix("Bash(").and_then(|r| r.strip_suffix(":*)"))
         && !prefix.is_empty()
         && prefix.trim() == prefix
@@ -142,7 +137,7 @@ fn same(rule: &str) -> String {
 /// command's older prefix form the newer way (`same`), which reads better
 /// and which claude reads alike; anything else as it is written. All of an
 /// MCP server's tools are written as their row has it (`Setup::new`).
-fn shown(rule: &str) -> String {
+pub(crate) fn shown(rule: &str) -> String {
     match rule.starts_with("mcp__") {
         true => rule.to_string(),
         false => same(rule),
@@ -209,7 +204,7 @@ pub fn denied(top: &Path) -> Vec<String> {
 /// `permissions.WHAT`, if it is a file of the checkout: each that reads as
 /// a rule (`rule`), as written; one claude could not be given in a list
 /// (a comma in it) left out.
-fn rules_in(top: &Path, file: &str, what: &str) -> Vec<String> {
+pub(crate) fn rules_in(top: &Path, file: &str, what: &str) -> Vec<String> {
     let Some(real) = in_checkout(top, Path::new(file)) else { return vec![] };
     let Some(v) = std::fs::read_to_string(&real).ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()) else { return vec![] };
     let rules = v.pointer(&format!("/permissions/{what}")).and_then(|a| a.as_array()).into_iter().flatten();
@@ -487,7 +482,7 @@ fn program_of(line: &str) -> Option<&str> {
 
 /// Shells and their builtins, and what runs another program: none a program
 /// of its own to let run.
-const SHELL: [&str; 44] = [
+pub(crate) const SHELL: [&str; 44] = [
     "sh", "bash", "zsh", "fish", "dash", "ksh", "csh", "tcsh", "cd", "echo", "export", "source", ".", "set", "unset", "alias", "eval",
     "exec", "exit", "pwd", "pushd", "popd", "true", "false", "test", "printf", "read", "type", "command", "builtin", "env", "time",
     "nohup", "xargs", "sudo", "if", "then", "else", "fi", "for", "while", "do", "done", "case",
@@ -634,16 +629,6 @@ impl Kind {
         }
     }
 
-    /// The version of the setup that first had its column: no ask of its
-    /// kind goes before a setup that has it is saved.
-    pub fn since(self) -> usize {
-        match self {
-            Kind::Change | Kind::Answer => 1,
-            #[cfg(feature = "try-push")]
-            Kind::Try => 2,
-        }
-    }
-
     /// Why what `rule` lets use is to think twice about for its asks, if it
     /// is: what reaches the network (Bash at large, the web's tools), for a
     /// change; what changes things (Bash at large, Edit, Write…), for an
@@ -658,18 +643,6 @@ impl Kind {
             Kind::Try if changes => Some("it changes things: an answer could too"),
             _ => None,
         }
-    }
-}
-
-/// The kind of ask asked in `way`, whose list its tools are: a build and
-/// test's, every ask's alone, has none of its own, and is set up as
-/// changes are.
-pub fn kind_of(way: crate::db::Way) -> Kind {
-    match way {
-        crate::db::Way::Answer => Kind::Answer,
-        crate::db::Way::Change | crate::db::Way::Test => Kind::Change,
-        #[cfg(feature = "try-push")]
-        crate::db::Way::Try => Kind::Try,
     }
 }
 
@@ -691,8 +664,9 @@ fn warnings(rule: &str) -> Vec<&'static str> {
 /// its column, `Kind::ALL`); what the settings let every ask use
 /// (agent.tools), ticked for each; what the checkout's own claude settings
 /// allow, what its skills let run, and the programs its instructions name;
-/// what its claude settings of yours deny, refused to every ask; and the
-/// version of the setup done, if one was.
+/// what its claude settings of yours deny, refused to every ask; and what
+/// the reviews of the agent's work allowed from now on, for each kind of
+/// ask, and the file that says so, the checkout's own.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Start {
     pub change: Vec<String>,
@@ -707,7 +681,8 @@ pub struct Start {
     pub skilled: Vec<Skilled>,
     pub named: Vec<Named>,
     pub denied: Vec<String>,
-    pub done: Option<usize>,
+    pub accepted: Vec<(Way, Vec<String>)>,
+    pub accepted_in: String,
 }
 
 impl Start {
@@ -745,8 +720,25 @@ impl Start {
             named: top.map(|t| named(t, path)).unwrap_or_default(),
             denied: top.map(denied).unwrap_or_default(),
             allowed,
-            done: agent.setup,
+            accepted: Vec::new(),
+            accepted_in: String::new(),
         }
+    }
+
+    /// What the reviews of the agent's work allowed from now on, for each
+    /// kind of ask, as the checkout `dir`'s own settings say: each list it
+    /// sets, and that file. None outside a checkout.
+    pub fn accepted_in(mut self, dir: &Path) -> Start {
+        let Some(file) = crate::config::local_path(dir) else { return self };
+        for way in Way::ALL {
+            if let Ok(Some(list)) = crate::config::local_value(dir, crate::config::accepted_key(*way))
+                && !list.is_empty()
+            {
+                self.accepted.push((*way, list));
+            }
+        }
+        self.accepted_in = file.display().to_string();
+        self
     }
 
     /// The list `kind`'s column starts ticked as.
@@ -762,7 +754,9 @@ impl Start {
 
 /// What saving the setup writes: each kind's list, and what is left of
 /// agent.tools if that is to change (a tool of it taken out of one kind's
-/// list is kept in the others' alone).
+/// list is kept in the others' alone); and, in the checkout's own settings,
+/// each list of what the reviews allowed from now on that a rule was taken
+/// out of, as it is left.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Chosen {
     pub change: Vec<String>,
@@ -770,6 +764,7 @@ pub struct Chosen {
     #[cfg(feature = "try-push")]
     pub try_push: Vec<String>,
     pub every: Option<Vec<String>>,
+    pub accepted: Vec<(&'static str, Vec<String>)>,
 }
 
 impl Chosen {
@@ -784,8 +779,8 @@ impl Chosen {
     }
 
     /// The settings saving writes, as `config::set_all` takes them: each
-    /// list, agent.tools if it changes, and the setup done, as this
-    /// stacked's version of it.
+    /// list, and agent.tools if it changes. What the reviews allowed, the
+    /// checkout's own settings alone hold (`accepted`).
     pub fn settings(&self) -> Vec<(&'static str, Vec<String>)> {
         let mut out: Vec<(&'static str, Vec<String>)> = [Kind::Change, Kind::Answer, #[cfg(feature = "try-push")] Kind::Try]
             .into_iter()
@@ -794,7 +789,6 @@ impl Chosen {
         if let Some(every) = &self.every {
             out.push(("agent.tools", every.clone()));
         }
-        out.push(("agent.setup", vec![VERSION.to_string()]));
         out
     }
 
@@ -809,6 +803,12 @@ impl Chosen {
             out += &format!("; tools: {}", listed(every));
         }
         out
+    }
+
+    /// What saving writes of what the reviews allowed, said: each list a
+    /// rule was taken out of, as it is to be. Empty when none is.
+    pub fn accepted_said(&self) -> String {
+        self.accepted.iter().map(|(k, l)| format!("{}: {}", k.trim_start_matches("agent."), listed(l))).collect::<Vec<_>>().join("; ")
     }
 }
 
@@ -841,6 +841,9 @@ enum Row {
     Add,
     /// A warning of the row above it, to read: nothing to let or not.
     Note(&'static str),
+    /// A rule a review of the agent's work allowed from now on, for the
+    /// asks made in `way`: kept, or taken out, its one box ticked or not.
+    Accepted { rule: String, way: Way, kept: bool },
 }
 
 /// Where a rule the setup lists comes from.
@@ -967,7 +970,7 @@ impl Row {
 
     /// Whether the cursor can be on it.
     fn picks(&self) -> bool {
-        self.boxes() || *self == Row::Add
+        self.boxes() || *self == Row::Add || matches!(self, Row::Accepted { .. })
     }
 }
 
@@ -1061,6 +1064,8 @@ pub struct Setup {
     every: Vec<String>,
     start: Chosen,
     to: String,
+    /// The file that holds what the reviews allowed: the checkout's own.
+    accepted_in: String,
     said: String,
     now: String,
     /// Esc's menu, open, its item picked: as the comment editor's, once
@@ -1190,6 +1195,14 @@ impl Setup {
             rows.push(Row::Heading("Every ask, builds and tests too: agent.tools".into()));
             rows.push(Row::Given(format!("{}: {EVERY_SAID}", start.every.join(", "))));
         }
+        // What the reviews allowed from now on: each rule, kept unless
+        // unticked.
+        if start.accepted.iter().any(|(_, l)| !l.is_empty()) {
+            rows.push(Row::Heading(format!("Allowed from now on in reviews of the agent's work, in {}: untick a rule to take it out", start.accepted_in)));
+            for (way, list) in &start.accepted {
+                rows.extend(list.iter().map(|r| Row::Accepted { rule: r.clone(), way: *way, kept: true }));
+            }
+        }
         rows.push(Row::Columns);
         // What a try push is given, as an answer is.
         let given = |answer: bool, change: bool| Kind::ALL.map(|k| if k == Kind::Change { change } else { answer });
@@ -1214,10 +1227,9 @@ impl Setup {
         }
         rows.push(Row::Add);
         let sel = rows.iter().position(Row::picks).unwrap_or(0);
-        let now = match start.done.unwrap_or(0) {
-            n if n >= VERSION => SAVED_SAID,
-            0 => "Not set up yet: ticked as stacked has it, and as the settings say. Saving it lets the asks go.",
-            _ => "An earlier stacked's setup was done: ticked as the settings say. Saving it lets the asks go.",
+        let now = match start.set.iter().any(|s| *s) {
+            true => SAVED_SAID,
+            false => "None of these lists is set yet: ticked as stacked has it, and as the settings say. Saving writes each list.",
         };
         let mut s = Setup {
             rows,
@@ -1229,6 +1241,7 @@ impl Setup {
             every: start.every.clone(),
             start: Chosen::default(),
             to: to.to_string(),
+            accepted_in: start.accepted_in.clone(),
             said: said.to_string(),
             now: now.to_string(),
             menu: None,
@@ -1287,12 +1300,29 @@ impl Setup {
             }
         }
         let list = |k: Kind| lists[k.col()].iter().filter(|t| !kept.contains(t)).cloned().collect();
+        // What the reviews allowed: each list a rule was taken out of.
+        let mut accepted: Vec<(&'static str, Vec<String>)> = Vec::new();
+        for way in Way::ALL {
+            let all: Vec<(&String, bool)> = self
+                .rows
+                .iter()
+                .filter_map(|r| match r {
+                    Row::Accepted { rule, way: w, kept } if w == way => Some((rule, *kept)),
+                    _ => None,
+                })
+                .collect();
+            let left: Vec<String> = all.iter().filter(|(_, k)| *k).map(|(r, _)| (*r).clone()).collect();
+            if left.len() < all.len() {
+                accepted.push((crate::config::accepted_key(*way), left));
+            }
+        }
         Chosen {
             change: list(Kind::Change),
             answer: list(Kind::Answer),
             #[cfg(feature = "try-push")]
             try_push: list(Kind::Try),
             every: (kept != self.every).then_some(kept),
+            accepted,
         }
     }
 
@@ -1327,6 +1357,11 @@ impl Setup {
                 }
             }
             Some(Row::Add) => self.open_adding(),
+            Some(Row::Accepted { .. }) => {
+                if let Some(Row::Accepted { kept, .. }) = self.rows.get_mut(self.sel) {
+                    *kept = !*kept;
+                }
+            }
             _ => {}
         }
     }
@@ -1467,9 +1502,11 @@ impl Setup {
         let first = 2 + usize::from(self.pinned);
         let k = y.checked_sub(first).filter(|&k| k + usize::from(self.pinned) < self.room)? + self.top;
         let row = self.rows.get(k).filter(|r| r.picks())?;
+        // A rule a review allowed has its one box in the first column.
+        let accepted = matches!(row, Row::Accepted { .. });
         let col = Kind::ALL.into_iter().find(|kind| {
             let (at, w) = COLUMNS[kind.col()];
-            row.boxes() && (at..at + w).contains(&x)
+            (row.boxes() || (accepted && kind.col() == 0)) && (at..at + w).contains(&x)
         });
         Some((k, col))
     }
@@ -1531,6 +1568,11 @@ impl Setup {
             }
             Row::Add => (empty(), "+ add a command or a tool…".to_string()),
             Row::Note(t) => (empty(), format!("  {t}")),
+            Row::Accepted { rule, way, kept } => {
+                let mut cells = Kind::ALL.map(|_| String::new());
+                cells[0] = mark(*kept).to_string();
+                (Some(cells), format!("{rule}   for {}", crate::refusals::kind_said(*way)))
+            }
         }
     }
 
@@ -1568,7 +1610,13 @@ impl Setup {
         put(buf, area, 0, 0, w, &fit(&head, w), color::header());
         put(buf, area, 0, 1, w, &fit(&format!(" {}", self.now), w), color::dim());
         let st = if self.changed() { color::note() } else { color::dim() };
-        put(buf, area, 0, h - 2, w, &fit(&format!(" To be, in {}: {}", self.to, self.chosen().said()), w), st);
+        // What the reviews allowed taken out first, as the lists are long.
+        let chosen = self.chosen();
+        let taken = match chosen.accepted_said() {
+            s if s.is_empty() => String::new(),
+            s => format!(" in {}: {s};", self.accepted_in),
+        };
+        put(buf, area, 0, h - 2, w, &fit(&format!(" To be,{taken} in {}: {}", self.to, chosen.said()), w), st);
         // The first row drawn: the one picked always shows, and so do the
         // rows above it when none of them can be picked. Once the columns'
         // heading is above the first row drawn, it is drawn on the first
@@ -1602,6 +1650,7 @@ impl Setup {
             (Some(_), ..) => " enter: add it · esc: back".to_string(),
             (None, Some(_), _) => " ↑↓ choose · enter: do it · esc: keep choosing".to_string(),
             (None, None, Some(Row::Add)) => format!(" ↑↓: pick · enter: add a command or a tool · s: save · {esc}"),
+            (None, None, Some(Row::Accepted { .. })) => format!(" ↑↓: pick · space: keep it or take it out · a: add a command or a tool · s: save · {esc}"),
             (None, None, _) => format!(" ↑↓←→: pick · space: let {} use it or not · a: add a command or a tool · s: save · {esc}", self.col.named()),
         };
         put(buf, area, 0, h - 1, w, &fit(&keys, w), color::status());
@@ -1626,18 +1675,22 @@ impl Setup {
             Row::Heading(_) | Row::Columns | Row::Server { .. } => color::file(),
             Row::Given(_) | Row::Always { .. } | Row::Add => color::dim(),
             Row::Tool { name, server: None, .. } if !warnings(name).is_empty() => color::note(),
-            Row::Tool { .. } => Style::new(),
+            Row::Tool { .. } | Row::Accepted { .. } => Style::new(),
             Row::Note(_) => color::note(),
         };
         let line = self.line(k);
         put(buf, area, 0, y, w, &fit(&line, w), st);
         let picked = k == self.sel;
-        if let (Some(cells), true) = (self.cells(k).0, row.boxes()) {
+        // A rule a review allowed: its one box, under the cursor whatever
+        // the cursor's column.
+        let accepted = matches!(row, Row::Accepted { .. });
+        if let (Some(cells), true) = (self.cells(k).0, row.boxes() || accepted) {
             for kind in Kind::ALL {
                 let (at, cw) = COLUMNS[kind.col()];
                 let dim = matches!(row, Row::Tool { server: Some(s), .. } if self.all(kind, s));
                 let bst = if dim { color::dim() } else { Style::new() };
-                let bst = if picked && kind == self.col { on_cursor(bst) } else { bst };
+                let on = if accepted { kind.col() == 0 } else { kind == self.col };
+                let bst = if picked && on { on_cursor(bst) } else { bst };
                 put(buf, area, at, y, cw, &centred(&cells[kind.col()], cw), bst);
             }
         }
@@ -1711,6 +1764,21 @@ impl Setup {
                         }
                     }
                     _ => {}
+                }
+            }
+            Row::Accepted { rule, way, kept } => {
+                let a = ask(&format!(
+                    "  Keep {rule}, allowed from now on in a review, for {}? {}",
+                    crate::refusals::kind_said(way),
+                    if kept { "[Y/n]" } else { "[y/N]" }
+                ));
+                let keep = match a.trim().to_ascii_lowercase().as_str() {
+                    "y" | "yes" => true,
+                    "n" | "no" => false,
+                    _ => kept,
+                };
+                if let Some(Row::Accepted { kept, .. }) = self.rows.get_mut(k) {
+                    *kept = keep;
                 }
             }
             Row::Tool { name, on, from, .. } => {
@@ -1826,7 +1894,7 @@ pub fn ask_lines(s: &mut Setup, ask: &mut dyn FnMut(&str) -> String, say: &mut d
     }
     if matches!(ask("Keep them as they are? [Y/n: one by one]").to_ascii_lowercase().as_str(), "n" | "no") {
         for k in 0..s.rows.len() {
-            if matches!(s.rows[k], Row::Server { .. } | Row::Tool { server: None, .. }) {
+            if matches!(s.rows[k], Row::Server { .. } | Row::Tool { server: None, .. } | Row::Accepted { .. }) {
                 s.ask_row(k, ask, say);
             }
         }
@@ -2029,14 +2097,13 @@ mod tests {
         let s = fresh();
         #[cfg(feature = "try-push")]
         assert_eq!(s.try_push, s.answer, "try pushes, as answers");
-        assert_eq!((s.change, s.answer, s.set, s.done), (vec![], strings(&["Bash(curl *)", "Bash(jq *)"]), [false; KINDS], None));
+        assert_eq!((s.change, s.answer, s.set), (vec![], strings(&["Bash(curl *)", "Bash(jq *)"]), [false; KINDS]));
         // A list a file sets is as it says; agent.tools, every ask's, kept
         // apart.
         let agent = Agent {
             change_tools: strings(&["Bash(make check *)"]),
             answer_tools: strings(&["Bash(curl *)"]),
             tools: strings(&["mcp__moz__*"]),
-            setup: Some(VERSION),
             ..Agent::default()
         };
         let s = Start::new(&agent, sets(&[Kind::Change, Kind::Answer]), None, OsStr::new(""));
@@ -2044,8 +2111,8 @@ mod tests {
         #[cfg(feature = "try-push")]
         assert_eq!(s.try_push, strings(&["Bash(curl *)"]));
         assert_eq!(
-            (s.change, s.answer, s.every, s.set, s.done),
-            (strings(&["Bash(make check *)"]), strings(&["Bash(curl *)"]), strings(&["mcp__moz__*"]), sets(&[Kind::Change, Kind::Answer]), Some(VERSION))
+            (s.change, s.answer, s.every, s.set),
+            (strings(&["Bash(make check *)"]), strings(&["Bash(curl *)"]), strings(&["mcp__moz__*"]), sets(&[Kind::Change, Kind::Answer]))
         );
         // One a file does not set, as stacked has it: the change list, here.
         assert!(Start::new(&agent, sets(&[Kind::Answer]), None, OsStr::new("")).change.is_empty());
@@ -2082,7 +2149,7 @@ mod tests {
         let shown = screen(&mut s);
         let lines = [
             " What each kind of ask may use, besides what stacked always gives it: the agent's tools, in repo",
-            " Not set up yet: ticked as stacked has it, and as the settings say. Saving it lets the asks go.",
+            &format!(" {SAVED_SAID}"),
             " Every ask, builds and tests too: agent.tools",
             &format!("   mcp__notes__write: {EVERY_SAID}"),
             " read only  change   read only is for answer-only asks; change is for asks that change the stack",
@@ -2154,7 +2221,6 @@ mod tests {
             ("agent.answer_tools", strings(&["Bash(jq *)", "mcp__notes__write"])),
             ("agent.try_tools", try_push),
             ("agent.tools", vec![]),
-            ("agent.setup", vec![VERSION.to_string()]),
         ];
         if !cfg!(feature = "try-push") {
             settings.remove(2);
@@ -2273,11 +2339,10 @@ mod tests {
         assert_eq!(c.answer, strings(&["Bash(curl *)", "Bash(jq *)", "Bash(searchfox-cli *)"]));
         assert_eq!(c.try_push, strings(&["Bash(jq *)", "Bash(searchfox-cli *)", "WebFetch"]));
         assert_eq!(c.change, Vec::<String>::new());
-        // Saved: its list too, and the setup of this version, which has
-        // its column.
+        // Saved: its list too.
         let settings = c.settings();
         assert!(settings.contains(&("agent.try_tools", strings(&["Bash(jq *)", "Bash(searchfox-cli *)", "WebFetch"]))), "{settings:?}");
-        assert_eq!(settings.last(), Some(&("agent.setup", vec!["2".to_string()])));
+        assert!(settings.iter().all(|(k, _)| k.ends_with("_tools")), "{settings:?}");
         assert!(c.said().contains("; try_tools: Bash(jq *), Bash(searchfox-cli *), WebFetch"), "{}", c.said());
         // agent.tools ticked in all three columns: taken out of one, kept in
         // the two others' alone.
@@ -2706,7 +2771,7 @@ mod tests {
         let mut s = open();
         assert!(screen(&mut s).ends_with("esc: close"), "{}", screen(&mut s));
         assert_eq!(press(&mut s, KeyCode::Esc), Step::Leave);
-        // Saved as it is: the setup done all the same.
+        // Saved as it is: each list written all the same, and nothing else.
         let mut s = open();
         let Step::Save(c) = press(&mut s, KeyCode::Char('s')) else { panic!() };
         let chosen = Chosen {
@@ -2716,7 +2781,7 @@ mod tests {
             ..Chosen::default()
         };
         assert_eq!(c, chosen);
-        assert_eq!(c.settings().last(), Some(&("agent.setup", vec![VERSION.to_string()])));
+        assert!(c.settings().iter().all(|(k, _)| k.ends_with("_tools")), "{:?}", c.settings());
         // Changed: a menu, on saving it; ↑↓ past the line between its items.
         let mut s = open();
         press(&mut s, KeyCode::Char(' '));
@@ -2763,7 +2828,7 @@ mod tests {
             #[cfg(feature = "try-push")]
             try_push: strings(&["mcp__moz__*"]),
             denied: strings(&["Bash(rm:*)"]),
-            done: Some(VERSION),
+            set: [true; KINDS],
             ..fresh()
         };
         let mut s = Setup::new(&tools, &[], &start, "settings.toml", "here");
@@ -2786,6 +2851,65 @@ mod tests {
         press(&mut s, KeyCode::Home);
         let shown = screen_of(&mut s, 20);
         assert!(shown.lines().nth(2) == Some(" Refused to every ask, whatever the lists say"), "{shown}");
+    }
+
+    /// The line of a rule the reviews allowed from now on, its box `mark`
+    /// in the first column, then `text`.
+    fn accepted(mark: &str, text: &str) -> String {
+        format!("    {mark}{}{text}", " ".repeat(TEXT - 7))
+    }
+
+    #[test]
+    fn what_reviews_allowed_from_now_on_is_listed_each_to_keep_or_take_out() {
+        let start = Start {
+            accepted: vec![(Way::Answer, strings(&["Bash(searchfox-cli *)", "WebFetch"])), (Way::Test, strings(&["Bash(./mach build *)"]))],
+            accepted_in: "/repo/.stacked/local.toml".into(),
+            ..fresh()
+        };
+        let open = || Setup::new(&[], &[], &start, "/repo/.stacked/local.toml", "here");
+        let mut s = open();
+        let shown = screen(&mut s);
+        for line in [
+            " Allowed from now on in reviews of the agent's work, in /repo/.stacked/local.toml: untick a rule to take it out".to_string(),
+            accepted("[x]", "Bash(searchfox-cli *)   for answer-only asks"),
+            accepted("[x]", "WebFetch   for answer-only asks"),
+            accepted("[x]", "Bash(./mach build *)   for builds and tests"),
+        ] {
+            assert!(shown.lines().any(|l| l == line), "{line:?} in:\n{shown}");
+        }
+        // The cursor on the first, its one box under it whatever the column:
+        // Space takes it out, and saving writes what is left of its list in
+        // the checkout's own settings, the setup's lists as they were.
+        assert!(shown.ends_with(" ↑↓: pick · space: keep it or take it out · a: add a command or a tool · s: save · esc: close"), "{shown}");
+        press(&mut s, KeyCode::Down);
+        press(&mut s, KeyCode::Right);
+        press(&mut s, KeyCode::Char(' '));
+        let c = s.chosen();
+        assert_eq!(c.accepted, [("agent.answer_accepted", strings(&["Bash(searchfox-cli *)"]))]);
+        assert_eq!(c.accepted_said(), "answer_accepted: Bash(searchfox-cli *)");
+        assert!(c.settings().iter().all(|(k, _)| k.ends_with("_tools")), "{:?}", c.settings());
+        let shown = screen(&mut s);
+        let out = accepted("[ ]", "WebFetch   for answer-only asks");
+        assert!(shown.lines().any(|l| l == out), "{out:?} in:\n{shown}");
+        let to_be = " To be, in /repo/.stacked/local.toml: answer_accepted: Bash(searchfox-cli *); in /repo/.stacked/local.toml: change_tools: none;";
+        assert!(shown.lines().any(|l| l.starts_with(to_be)), "{to_be:?} in:\n{shown}");
+        // A click on its box: kept again, nothing to write.
+        s.click(5, line_of(&shown, &out));
+        assert!(s.chosen().accepted.is_empty());
+        // Asked line by line: each kept or not, Enter keeping it.
+        let mut s = open();
+        let mut answers = ["n", "", "n", "", "", "", "", ""].into_iter();
+        let mut asked = Vec::new();
+        let c = ask_lines(
+            &mut s,
+            &mut |q| {
+                asked.push(q.to_string());
+                answers.next().unwrap_or_default().to_string()
+            },
+            &mut |_| {},
+        );
+        assert!(asked.contains(&"  Keep WebFetch, allowed from now on in a review, for answer-only asks? [Y/n]".to_string()), "{asked:?}");
+        assert_eq!(c.accepted, [("agent.answer_accepted", strings(&["Bash(searchfox-cli *)"]))]);
     }
 
     #[test]

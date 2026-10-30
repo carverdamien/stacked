@@ -96,12 +96,10 @@ fn setup() -> (tempfile::TempDir, PathBuf, PathBuf) {
     (tmp, db, src)
 }
 
-/// The settings of these tests: the defaults, with the setup of what each
-/// kind of ask may use done, as a user's are once it is saved.
+/// The settings of these tests: the defaults, with which every ask goes
+/// as the first does, no setup before it.
 fn settings() -> stacked::config::Config {
-    let mut c = stacked::config::Config::default();
-    c.agent.setup = Some(stacked::setup::VERSION);
-    c
+    stacked::config::Config::default()
 }
 
 /// The editor on `db`, with the tests' settings and the stand-ins for
@@ -948,8 +946,6 @@ fn queued_as_try(db: &Path, id: &str, stage: stacked::db::Stage) {
 #[test]
 fn a_try_push_is_asked_of_the_stack_or_a_patch_as_a_whole_never_of_a_line() {
     let (_tmp, db, src) = setup();
-    // The command line's settings: the setup done, as the editor's is.
-    stacked(&src, &db, &["config", "--local", "agent.setup", &stacked::setup::VERSION.to_string()]);
     let mut app = open(&db);
     // A comment on the stack, or on patch 1 as a whole, may be asked as a
     // try push, as it may be sent to build and test.
@@ -1564,42 +1560,24 @@ fn a_try_push_past_the_tasks_mach_pushes_without_asking_says_it_runs_at_the_lowe
 }
 
 #[test]
-fn a_try_push_asks_its_own_setup_first_as_its_column_is_new() {
+fn the_first_try_push_goes_at_once_with_no_setup_before_it() {
     let (_tmp, db, src) = setup();
-    // Set up by a stacked with no column for try pushes.
-    stacked(&src, &db, &["config", "--local", "agent.setup", "1"]);
-    let local = src.canonicalize().unwrap().join(".stacked/local.toml");
+    // Settings of before, the setup's old mark in them: passed over.
+    std::fs::create_dir_all(src.join(".stacked")).unwrap();
+    std::fs::write(src.join(".stacked/local.toml"), "[agent]\nsetup = 1\n").unwrap();
     let mut app = open(&db);
-    keys(&mut app, &[KeyCode::Right]);
-    down_to(&mut app, "+TWO");
-    keys(&mut app, &[KeyCode::Enter]);
-    save(&mut app, "Why so loud?");
-    keys(&mut app, &[KeyCode::Down]);
-    // An answer goes at once: its kind was set up.
-    choose_as(&mut app, "Ask agent", "answer only");
-    assert!(app.status.starts_with("asked the agent about 1 comment (answer only)"), "{}", app.status);
-    landed(&mut app, &db, 1);
-    // A try push, of patch 1 as a whole: the setup first, its column there
-    // to check.
-    keys(&mut app, &[KeyCode::Left]);
-    ask_try(&mut app, "Which tasks?");
-    assert!(matches!(&app.mode, Mode::Setup(_)), "{:?}", app.mode);
-    let mut screen = draw(&mut app);
-    for _ in 0..300 {
-        if screen.contains(" What each kind of ask may use") {
-            break;
-        }
-        app.refresh();
-        std::thread::sleep(std::time::Duration::from_millis(100));
-        screen = draw(&mut app);
-    }
-    assert!(screen.contains(" read only  change  try push"), "{screen}");
+    // A try push, of patch 1 as a whole: it goes at once, with what an
+    // answer is given and stacked's defaults for its own list.
     tasks_answer(&db, &[("build-linux64/debug", "A build.")], "One task.");
-    keys(&mut app, &[KeyCode::Char('s')]);
+    ask_try(&mut app, "Which tasks?");
     assert!(app.status.contains("asked the agent about 1 comment (try push)"), "{}", app.status);
-    let saved = std::fs::read_to_string(&local).unwrap();
-    assert!(saved.contains("setup = 2") && saved.contains("try_tools = [\"Bash(curl *)\", \"Bash(jq *)\"]"), "{saved}");
-    landed(&mut app, &db, 2);
+    assert!(matches!(app.mode, Mode::Normal), "{:?}", app.mode);
+    landed(&mut app, &db, 1);
+    let d = Db::load(&db).unwrap();
+    let r = d.runs().into_iter().last().unwrap().clone();
+    let given = stacked::ask::info(&r).unwrap().given;
+    assert!(given.ends_with(",Bash(curl *),Bash(jq *)"), "{given}");
+    assert_eq!(std::fs::read_to_string(src.join(".stacked/local.toml")).unwrap(), "[agent]\nsetup = 1\n", "nothing written");
 }
 
 /// A comment on patch 1 as a whole, `text`, written from the patches pane,
@@ -1638,8 +1616,6 @@ fn a_try_push_batched_is_sent_from_the_banner_on_its_own() {
 #[test]
 fn a_try_push_the_editor_batched_goes_with_the_batch_the_command_line_sends() {
     let (_tmp, db, src) = setup();
-    // The command line's settings: the setup done, as the editor's is.
-    stacked(&src, &db, &["config", "--local", "agent.setup", &stacked::setup::VERSION.to_string()]);
     let mut app = open(&db);
     batch_try(&mut app, "Which tasks?");
     tasks_answer(&db, &[("build-linux64/debug", "A build.")], "One task.");

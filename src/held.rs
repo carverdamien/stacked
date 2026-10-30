@@ -63,6 +63,11 @@ pub struct Held {
     /// read. With no change of the stack, it is all the work holds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lint: Option<crate::lint::Report>,
+    /// The tools the agent could not use, each refused, allowed for this
+    /// work or allowed from now on, as the review marks it: with them, work
+    /// lands for review though the agent failed or brought nothing back.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tools: Vec<crate::refusals::Refusal>,
 }
 
 /// A change of the stack held: the stack it makes from the one the ask
@@ -353,7 +358,15 @@ impl Held {
         if self.lint.as_ref().is_some_and(|l| !l.errors.is_empty()) {
             out.push("what the linter reported".to_string());
         }
+        if !self.tools.is_empty() {
+            out.push(count(self.tools.len(), "tool the agent could not use", "tools the agent could not use"));
+        }
         out.join(", ")
+    }
+
+    /// Whether it holds a tool the agent could not use that may be allowed.
+    pub fn offers_tools(&self) -> bool {
+        self.tools.iter().any(crate::refusals::Refusal::offered)
     }
 }
 
@@ -508,6 +521,9 @@ pub fn can_take(db: &Db, r: &Run) -> Result<()> {
     if !h.no_tasks() {
         return err("this reply goes with the tasks the agent selected for a try push: review them together");
     }
+    if h.offers_tools() {
+        return err("this reply goes with the tools the agent could not use: review them together");
+    }
     if crate::ask::guessing(db, r).is_some() {
         return err("this reply goes on from the work landed before it, which waits for your review: review that one first");
     }
@@ -559,7 +575,9 @@ pub fn yours_in(db: &Db, r: &Run) -> (Vec<(String, String)>, usize) {
         .filter(|n| n.review.as_deref() == Some(r.id.as_str()) && n.by.is_none())
         .map(|n| (n.change.clone(), n.id.clone()))
         .collect();
-    let answers = r.held.as_ref().map_or(0, |h| h.replies.iter().filter(|rp| rp.answer.is_some()).count() + h.task_answers());
+    let answers = r.held.as_ref().map_or(0, |h| {
+        h.replies.iter().filter(|rp| rp.answer.is_some()).count() + h.task_answers() + h.tools.iter().filter(|t| t.answer.is_some()).count()
+    });
     (opened, answers)
 }
 
@@ -593,6 +611,16 @@ pub fn answer_task(db: &mut Db, id: &str, k: usize, text: &str) -> Result<()> {
     db.add_run(Run { held: Some(h), ..r }).map(|_| ())
 }
 
+/// Writes `text`, your answer to what the agent said of tool `k` it could
+/// not use, of the work run `id` holds, in its review: empty, it takes it
+/// back.
+pub fn answer_tool(db: &mut Db, id: &str, k: usize, text: &str) -> Result<()> {
+    let (r, mut h, _) = under_review(db, id)?;
+    let t = h.tools.get_mut(k).ok_or_else(|| Error(format!("run {id} holds no tool {k}")))?;
+    t.answer = Some(text.trim().to_string()).filter(|t| !t.is_empty());
+    db.add_run(Run { held: Some(h), ..r }).map(|_| ())
+}
+
 /// What goes back to the agent from a review: the comments to ask again,
 /// how, whether of the whole stack, and at what effort, the work's own.
 #[derive(Debug, Clone, PartialEq)]
@@ -603,6 +631,10 @@ pub struct Round {
     pub effort: Option<crate::db::Effort>,
     /// How many edits that went on from it are asked again.
     pub dropped: usize,
+    /// What the next round may use for this work, of what the agent was
+    /// refused; and what the review saved for good, or could not.
+    pub allowed: Vec<String>,
+    pub settled: crate::refusals::Settled,
 }
 
 /// Rejects the work run `id` holds, to send it back to the agent as what
@@ -618,9 +650,16 @@ pub fn send_back(db: &mut Db, id: &str, marks: &BTreeMap<String, bool>) -> Resul
     }
     let i = crate::ask::info(&r).ok_or_else(|| Error(format!("run {id} is not the agent's work: there is no one to send it back to")))?;
     let (opened, answers) = yours_in(db, &r);
-    if opened.is_empty() && answers == 0 {
-        return err("you wrote nothing in its review to send back: accept or reject it");
+    // A tool allowed is reason enough: the agent tries again with it.
+    let mut marks = marks.clone();
+    let (work, always) = crate::refusals::allowed(&h.tools, &marks);
+    if opened.is_empty() && answers == 0 && work.is_empty() && always.is_empty() {
+        return err("you wrote nothing in its review to send back, nor allowed a tool the agent could not use: accept or reject it");
     }
+    // What is allowed from now on is saved for the next round to use, once
+    // nothing stops the work going back. Where it cannot be, it is allowed
+    // for this work instead, the agent told so.
+    let early = (!always.is_empty() && crate::refusals::local_of(db, &r).is_err()).then(|| crate::refusals::settle(db, &r, &mut marks, true));
     for (k, rp) in h.replies.iter().enumerate() {
         if !v.taken.contains(&k) {
             apply_reply(db, &r.stack, rp)?;
@@ -631,18 +670,23 @@ pub fn send_back(db: &mut Db, id: &str, marks: &BTreeMap<String, bool>) -> Resul
             db.set_note(Note { time: now(), ..n.clone() })?;
         }
     }
-    // A try push's: your answers to the reasons of its tasks, a turn of
-    // yours in the thread of the first comment that asked, still open;
-    // and how you marked each, which the next round is told.
+    // A try push's: your answers to the reasons of its tasks; and the tools
+    // the agent could not use, those you allowed and those you answered.
+    // Each a turn of yours in the thread of the first comment that asked,
+    // still open, as one: with it, that comment is asked again. How you
+    // marked each, the next round is told, and given what you allowed.
+    #[cfg_attr(not(feature = "try-push"), allow(unused_mut))]
+    let mut said: Vec<String> = Vec::new();
     #[cfg(feature = "try-push")]
     {
-        let first: Option<Note> = asking_open(db, &r).first().map(|(_, n)| (*n).clone());
-        if let Some(said) = crate::try_push::answers_turn(&h.tasks)
-            && let Some(n) = first
-        {
-            db.set_note(Note { text: append_turn(&n.text, Role::You, &said, None), ..n })?;
-        }
+        said.extend(crate::try_push::answers_turn(&h.tasks));
         v.marks.extend(marks.iter().filter(|(k, _)| matches!(Part::of_key(k), Some(Part::Task(_)))).map(|(k, m)| (k.clone(), *m)));
+    }
+    said.extend(crate::refusals::turn(&h.tools, &marks));
+    if !said.is_empty()
+        && let Some(n) = asking_open(db, &r).first().map(|(_, n)| (*n).clone())
+    {
+        db.set_note(Note { text: append_turn(&n.text, Role::You, &said.join("\n\n"), None), ..n })?;
     }
     let mut notes: Vec<(String, String)> = Vec::new();
     for at in i.notes.iter().map(|sh| (sh.change.clone(), sh.id.clone())).chain(opened) {
@@ -653,6 +697,12 @@ pub fn send_back(db: &mut Db, id: &str, marks: &BTreeMap<String, bool>) -> Resul
     if notes.is_empty() {
         return err("none of what you wrote in its review is open to send back");
     }
+    let settled = match early {
+        Some(s) => s,
+        None => crate::refusals::settle(db, &r, &mut marks, true),
+    };
+    v.marks.retain(|k, _| !crate::refusals::is_key(k));
+    v.marks.extend(marks.iter().filter(|(k, _)| crate::refusals::is_key(k)).map(|(k, m)| (k.clone(), *m)));
     // Asked together, as they were, unless they reach past the place the
     // ask was about.
     let places: std::collections::HashSet<crate::ask::Scope> = notes.iter().filter_map(|(c, i)| db.note(c, i)).map(crate::ask::scope_of).collect();
@@ -666,7 +716,7 @@ pub fn send_back(db: &mut Db, id: &str, marks: &BTreeMap<String, bool>) -> Resul
     let dropped = crate::ask::guessed_wrong(db, id, "sent back")?;
     let n = notes.len();
     db.add_run(Run {
-        summary: format!("reviewed: sent back to the agent, {}", count(n, "comment to ask again", "comments to ask again")),
+        summary: format!("reviewed: sent back to the agent, {}{}", count(n, "comment to ask again", "comments to ask again"), settled.said(i.way)),
         ..r
     })?;
     Ok(Round {
@@ -675,6 +725,8 @@ pub fn send_back(db: &mut Db, id: &str, marks: &BTreeMap<String, bool>) -> Resul
         whole,
         effort: i.effort,
         dropped,
+        allowed: crate::refusals::carried(db, id),
+        settled,
     })
 }
 
@@ -798,15 +850,25 @@ pub fn close_with(db: &mut Db, id: &str, marks: &BTreeMap<String, bool>, rest: O
     }
     v.marks.extend(all);
     v.marks.extend(marks.iter().filter(|(k, _)| k.starts_with("asking ")).map(|(k, m)| (k.clone(), *m)));
+    // The tools the agent could not use as you marked them: what you allowed
+    // from now on saved, accepted or rejected; what you allowed for this
+    // work ends here.
+    v.marks.retain(|k, _| !crate::refusals::is_key(k));
+    v.marks.extend(marks.iter().filter(|(k, _)| crate::refusals::is_key(k)).map(|(k, m)| (k.clone(), *m)));
+    let settled = crate::refusals::settle(db, &r, &mut v.marks, false);
     v.closed = true;
     db.set_review(id, v.clone())?;
-    // Nothing brought back: no part to say. What the linter reported and
-    // fixed nothing of is only read.
+    // Nothing brought back: no part to say, but the tools it could not use.
+    // What the linter reported and fixed nothing of is only read.
     let mut said = match (h.is_empty(), said(&h, &v.marks)) {
-        (true, _) => NOTHING_BACK.to_string(),
+        (true, s) if s.is_empty() => NOTHING_BACK.to_string(),
+        (true, s) => format!("{NOTHING_BACK}; {s}"),
         (false, s) if s.is_empty() && h.lint.is_some() => "what the linter reported, read".to_string(),
         (false, s) => s,
     };
+    if let Some(i) = crate::ask::info(&r) {
+        said += &settled.said(i.way);
+    }
     if closed > 0 {
         said += &format!("; {}", count(closed, "asking comment closed", "asking comments closed"));
     }
@@ -860,7 +922,28 @@ pub fn said(h: &Held, marks: &BTreeMap<String, bool>) -> String {
             (y, n) => out.push(format!("{} accepted, {n} rejected", of(y))),
         }
     }
+    if let Some(t) = tools_said(h, marks) {
+        out.push(t);
+    }
     out.join("; ")
+}
+
+/// What a review made of the tools the agent could not use, by its marks:
+/// `2 tools allowed from now on, 1 refused, 1 noted`. None without any.
+pub fn tools_said(h: &Held, marks: &BTreeMap<String, bool>) -> Option<String> {
+    use crate::refusals::{Allow, state};
+    let noted = h.tools.iter().filter(|t| !t.offered()).count();
+    let of = |a: Allow| h.tools.iter().enumerate().filter(|(k, t)| t.offered() && state(marks, *k) == a).count();
+    let parts: Vec<(usize, &str)> = [(of(Allow::Always), "allowed from now on"), (of(Allow::Work), "allowed for this work"), (of(Allow::Refused), "refused"), (noted, "noted")]
+        .into_iter()
+        .filter(|(n, _)| *n > 0)
+        .collect();
+    let ((n, first), rest) = parts.split_first()?;
+    let mut out = format!("{} {first}", count(*n, "tool", "tools"));
+    for (n, what) in rest {
+        out += &format!(", {n} {what}");
+    }
+    Some(out)
 }
 
 #[cfg(test)]

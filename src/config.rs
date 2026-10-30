@@ -222,11 +222,16 @@ pub struct Agent {
     /// and jq, to read the web, as answers.
     #[cfg(feature = "try-push")]
     pub try_tools: Vec<String>,
-    /// The setup of what each kind of ask may use, done (`stacked setup
-    /// agent`): the version of it that was. No ask goes before it is done,
-    /// nor an ask of a kind its version had no column for
-    /// (`setup::Kind::since`).
-    pub setup: Option<usize>,
+    /// What the reviews of the agent's work allowed from now on, of what it
+    /// was refused, for each kind of ask: a list of its own each, added to
+    /// that kind's tools, so that it never hides the lists the setup
+    /// writes. Written in a checkout's own settings alone, by its reviews
+    /// (`refusals::save`).
+    pub change_accepted: Vec<String>,
+    pub answer_accepted: Vec<String>,
+    pub test_accepted: Vec<String>,
+    #[cfg(feature = "try-push")]
+    pub try_accepted: Vec<String>,
     /// When a change's worktree is made.
     pub worktree: Workspace,
     /// When an answer's worktree is made, a try push's selection's too.
@@ -245,6 +250,34 @@ pub struct Agent {
     pub schema: bool,
 }
 
+impl Agent {
+    /// What the reviews of the agent's work allowed from now on, for the
+    /// asks made in `way`.
+    pub fn accepted(&self, way: crate::db::Way) -> &[String] {
+        use crate::db::Way;
+        match way {
+            Way::Change => &self.change_accepted,
+            Way::Answer => &self.answer_accepted,
+            Way::Test => &self.test_accepted,
+            #[cfg(feature = "try-push")]
+            Way::Try => &self.try_accepted,
+        }
+    }
+}
+
+/// The setting that holds what the reviews of the agent's work allowed from
+/// now on, for the asks made in `way`: `agent.answer_accepted`.
+pub fn accepted_key(way: crate::db::Way) -> &'static str {
+    use crate::db::Way;
+    match way {
+        Way::Change => "agent.change_accepted",
+        Way::Answer => "agent.answer_accepted",
+        Way::Test => "agent.test_accepted",
+        #[cfg(feature = "try-push")]
+        Way::Try => "agent.try_accepted",
+    }
+}
+
 impl Default for Agent {
     fn default() -> Agent {
         Agent {
@@ -256,7 +289,11 @@ impl Default for Agent {
             answer_tools: ANSWER_TOOLS.map(String::from).to_vec(),
             #[cfg(feature = "try-push")]
             try_tools: ANSWER_TOOLS.map(String::from).to_vec(),
-            setup: None,
+            change_accepted: Vec::new(),
+            answer_accepted: Vec::new(),
+            test_accepted: Vec::new(),
+            #[cfg(feature = "try-push")]
+            try_accepted: Vec::new(),
             worktree: Workspace::OnDemand,
             answer_only_worktree: Workspace::OnDemand,
             worktrees: None,
@@ -454,6 +491,14 @@ struct WrittenAgent {
     /// there: a file a stacked built with it wrote reads in any.
     #[cfg_attr(not(feature = "try-push"), allow(dead_code))]
     try_tools: Option<Vec<String>>,
+    change_accepted: Option<Vec<String>>,
+    answer_accepted: Option<Vec<String>>,
+    test_accepted: Option<Vec<String>>,
+    #[cfg_attr(not(feature = "try-push"), allow(dead_code))]
+    try_accepted: Option<Vec<String>>,
+    /// The setup's version, as a stacked of before wrote it once the setup
+    /// was saved, when no ask went before it: read, and passed over.
+    #[allow(dead_code)]
     setup: Option<usize>,
     worktree: Option<String>,
     answer_only_worktree: Option<String>,
@@ -561,8 +606,18 @@ impl Config {
         if let Some(tools) = a.try_tools {
             c.agent.try_tools = tools;
         }
-        if let Some(n) = a.setup {
-            c.agent.setup = Some(n);
+        for (written, at) in [
+            (a.change_accepted, &mut c.agent.change_accepted),
+            (a.answer_accepted, &mut c.agent.answer_accepted),
+            (a.test_accepted, &mut c.agent.test_accepted),
+        ] {
+            if let Some(tools) = written {
+                *at = tools;
+            }
+        }
+        #[cfg(feature = "try-push")]
+        if let Some(tools) = a.try_accepted {
+            c.agent.try_accepted = tools;
         }
         if let Some(d) = a.worktrees {
             c.agent.worktrees = Some(expand(&d));
@@ -832,14 +887,16 @@ impl Config {
             out.push_str(&format!("try_tools = {}\n", list(&self.agent.try_tools)));
         }
         out.push_str(
-            "# The setup of these lists done, as the version of it that was: `stacked setup agent`\n\
-             # writes it once you save what it shows. Until it is written, no ask goes: the editor\n\
-             # opens the setup before the first ask, and the command line says to run it.\n",
+            "# What the reviews of the agent's work allowed from now on, of the tools it could not\n\
+             # use, for each kind of ask: added to its tools above, never in their place. A\n\
+             # review writes them in its checkout's own .stacked/local.toml, never here, and\n\
+             # `stacked setup agent` lists them, to take out those you no longer allow.\n",
         );
-        out.push_str(&match self.agent.setup {
-            Some(n) => format!("setup = {n}\n"),
-            None => "# setup = ...   (not done)\n".into(),
-        });
+        out.push_str(&format!("change_accepted = {}\n", list(&self.agent.change_accepted)));
+        out.push_str(&format!("answer_accepted = {}\n", list(&self.agent.answer_accepted)));
+        out.push_str(&format!("test_accepted = {}\n", list(&self.agent.test_accepted)));
+        #[cfg(feature = "try-push")]
+        out.push_str(&format!("try_accepted = {}\n", list(&self.agent.try_accepted)));
         out.push_str(
             "# Every ask runs in a worktree of its own, never in your checkout. A change works in\n\
              # a worktree of the stack's own, .stacked/NAME/agent: \"ondemand\", made the first time\n\
@@ -1030,7 +1087,11 @@ const SETTINGS: &[(&str, Kind)] = &[
     ("agent.answer_tools", Kind::List),
     #[cfg(feature = "try-push")]
     ("agent.try_tools", Kind::List),
-    ("agent.setup", Kind::Count),
+    ("agent.change_accepted", Kind::List),
+    ("agent.answer_accepted", Kind::List),
+    ("agent.test_accepted", Kind::List),
+    #[cfg(feature = "try-push")]
+    ("agent.try_accepted", Kind::List),
     ("agent.worktree", Kind::Workspace),
     ("agent.answer_only_worktree", Kind::Workspace),
     ("agent.worktrees", Kind::Text),
@@ -1074,9 +1135,16 @@ fn kind_of(key: &str) -> Result<Kind, String> {
 /// (`keys::GONE`): a file that still sets it is told so, and taking it out
 /// of the file is all `stacked config` does with it.
 fn gone_key(key: &str) -> Option<String> {
+    if key == "agent.setup" {
+        return Some(SETUP_GONE.into());
+    }
     let name = key.strip_prefix("keys.")?;
     crate::keys::GONE.iter().find(|(n, _)| *n == name).map(|(n, why)| crate::keys::gone(n, why))
 }
+
+/// Why `agent.setup` is no longer a setting: a file that still sets it is
+/// read all the same, the setting passed over, as it says nothing now.
+const SETUP_GONE: &str = "agent.setup is no longer a setting: no ask waits for the setup of the agent's tools any more";
 
 /// The value of `key` as `values` say it, in the file's form.
 fn literal(key: &str, kind: Kind, values: &[String]) -> Result<String, String> {
@@ -1139,7 +1207,11 @@ pub fn value_of(c: &Config, key: &str) -> Result<Vec<String>, String> {
         "agent.answer_tools" => c.agent.answer_tools.clone(),
         #[cfg(feature = "try-push")]
         "agent.try_tools" => c.agent.try_tools.clone(),
-        "agent.setup" => c.agent.setup.iter().map(|n| n.to_string()).collect(),
+        "agent.change_accepted" => c.agent.change_accepted.clone(),
+        "agent.answer_accepted" => c.agent.answer_accepted.clone(),
+        "agent.test_accepted" => c.agent.test_accepted.clone(),
+        #[cfg(feature = "try-push")]
+        "agent.try_accepted" => c.agent.try_accepted.clone(),
         "agent.worktree" => vec![c.agent.worktree.name().into()],
         "agent.answer_only_worktree" => vec![c.agent.answer_only_worktree.name().into()],
         "agent.worktrees" => path(&c.agent.worktrees),
@@ -2006,21 +2078,22 @@ mod tests {
     }
 
     #[test]
-    fn the_setup_writes_both_lists_and_that_it_was_done_in_one_go() {
+    fn the_setup_writes_each_list_in_one_go_and_its_old_mark_is_passed_over() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("settings.toml");
         let read = || std::fs::read_to_string(&path).unwrap();
         let vals = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
         // Not set: nothing for changes, curl and jq for answers, as before
-        // there were lists; the setup not done.
+        // there were lists; nothing the reviews allowed.
         let d = Config::default();
         assert_eq!(value_of(&d, "agent.change_tools"), Ok(vec![]));
         assert_eq!(value_of(&d, "agent.answer_tools"), Ok(vals(&["Bash(curl *)", "Bash(jq *)"])));
-        assert_eq!(value_of(&d, "agent.setup"), Ok(vec![]));
-        for line in ["\nchange_tools = []\n", "\nanswer_tools = [\"Bash(curl *)\", \"Bash(jq *)\"]\n", "\n# setup = ...   (not done)\n"] {
+        assert_eq!(value_of(&d, "agent.answer_accepted"), Ok(vec![]));
+        for line in ["\nchange_tools = []\n", "\nanswer_tools = [\"Bash(curl *)\", \"Bash(jq *)\"]\n", "\nanswer_accepted = []\n", "\ntest_accepted = []\n"] {
             assert!(d.render().contains(line), "{line:?} in {}", d.render());
         }
-        // Saved: each list, and the setup done, the rest as it was.
+        assert!(!d.render().contains("setup ="), "{}", d.render());
+        // Saved: each list, the rest as it was.
         std::fs::write(&path, "# mine\n[agent]\ntools = [\"mcp__moz__*\"]\n").unwrap();
         let saved = crate::setup::Chosen {
             answer: vals(&["Bash(curl *)"]),
@@ -2029,25 +2102,42 @@ mod tests {
             ..Default::default()
         };
         set_all(&path, &saved.settings()).unwrap();
-        let (tried, version) = if cfg!(feature = "try-push") { ("try_tools = [\"Bash(jq *)\"]\n", 2) } else { ("", 1) };
-        assert_eq!(
-            read(),
-            format!("# mine\n[agent]\ntools = [\"mcp__moz__*\"]\nchange_tools = []\nanswer_tools = [\"Bash(curl *)\"]\n{tried}setup = {version}\n")
-        );
+        let tried = if cfg!(feature = "try-push") { "try_tools = [\"Bash(jq *)\"]\n" } else { "" };
+        assert_eq!(read(), format!("# mine\n[agent]\ntools = [\"mcp__moz__*\"]\nchange_tools = []\nanswer_tools = [\"Bash(curl *)\"]\n{tried}"));
         let (c, wrong) = Config::load(&path);
         assert!(wrong.is_empty(), "{wrong:?}");
-        assert_eq!((c.agent.change_tools.clone(), c.agent.answer_tools.clone(), c.agent.setup), (vec![], vals(&["Bash(curl *)"]), Some(version)));
+        assert_eq!((c.agent.change_tools.clone(), c.agent.answer_tools.clone()), (vec![], vals(&["Bash(curl *)"])));
         #[cfg(feature = "try-push")]
         assert_eq!(value_of(&c, "agent.try_tools"), Ok(vals(&["Bash(jq *)"])));
-        assert_eq!(value_of(&c, "agent.setup"), Ok(vals(&[&version.to_string()])));
         // A file a stacked built with the try push wrote reads in any.
-        let (_, wrong) = Config::parse("[agent]\ntry_tools = [\"Bash(curl *)\"]\n").unwrap();
+        let (_, wrong) = Config::parse("[agent]\ntry_tools = [\"Bash(curl *)\"]\ntry_accepted = [\"WebFetch\"]\n").unwrap();
         assert!(wrong.is_empty(), "{wrong:?}");
+        // What a review allowed from now on: a list of its own for each
+        // kind of ask, added to its tools.
+        let (c, _) = Config::parse("[agent]\nanswer_tools = [\"Bash(jq *)\"]\nanswer_accepted = [\"Bash(searchfox-cli *)\"]\ntest_accepted = [\"WebFetch\"]\n").unwrap();
+        assert_eq!(c.agent.accepted(crate::db::Way::Answer), ["Bash(searchfox-cli *)"]);
+        assert_eq!(c.agent.accepted(crate::db::Way::Test), ["WebFetch"]);
+        assert!(c.agent.accepted(crate::db::Way::Change).is_empty());
+        assert_eq!(value_of(&c, "agent.answer_tools"), Ok(vals(&["Bash(jq *)"])), "its own list as it was");
+        // The setup's old mark, as a stacked of before wrote it: read, and
+        // passed over, nothing said; not written again; taken out.
+        std::fs::write(&path, "[agent]\nsetup = 2\nchange_tools = []\n").unwrap();
+        let (_, wrong) = Config::load(&path);
+        assert!(wrong.is_empty(), "{wrong:?}");
+        let gone = "agent.setup is no longer a setting: no ask waits for the setup of the agent's tools any more";
+        assert_eq!(set(&path, "agent.setup", &vals(&["2"])), Err(format!("{gone}; nothing written")));
+        assert_eq!(value_of(&c, "agent.setup"), Err(gone.to_string()));
+        unset(&path, "agent.setup").unwrap();
+        assert_eq!(read(), "[agent]\nchange_tools = []\n");
         // One of them wrong: none written.
         let before = read();
-        let e = set_all(&path, &[("agent.change_tools", vals(&["WebFetch"])), ("agent.setup", vals(&["soon"]))]).unwrap_err();
-        assert!(e.contains("agent.setup is a number"), "{e}");
-        assert_eq!(read(), before);
+        let e = set_all(&path, &[("agent.change_tools", vals(&["WebFetch"])), ("agent.answer_accepted", vals(&[]))]).map(|_| ());
+        assert!(e.is_ok(), "{e:?}");
+        let before_wrong = read();
+        let e = set_all(&path, &[("agent.answer_tools", vals(&["Read"])), ("view.stream_lines", vals(&["many"]))]).unwrap_err();
+        assert!(e.contains("view.stream_lines is a number"), "{e}");
+        assert_eq!(read(), before_wrong);
+        assert_ne!(before, before_wrong);
     }
 
     #[test]

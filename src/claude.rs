@@ -267,7 +267,7 @@ fn dumps(v: &Value) -> String {
 }
 
 /// A one-line gist of a tool call: its command, path or query.
-fn tool_summary(inp: Option<&Value>) -> String {
+pub(crate) fn tool_summary(inp: Option<&Value>) -> String {
     match inp {
         Some(Value::Object(m)) => {
             for f in ["command", "file_path", "path", "pattern", "query", "url"] {

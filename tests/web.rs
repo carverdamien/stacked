@@ -623,3 +623,52 @@ fn the_database_the_editor_opens_is_on_the_list_stacked_s_open_recent_reads() {
         assert_eq!(menu, listed, "as StackED's menu lists them");
     }
 }
+
+/// Work landed on stack `s` of `db`: an answer, the tool it could not use,
+/// searchfox-cli, waiting for your review, with the agent's word on it.
+fn refused_work(db: &Path) {
+    stacked::db::Db::edit(db, |d| {
+        let from = d.head("s").unwrap().0;
+        d.add_run(stacked::db::Run {
+            id: "run-refused".into(),
+            what: "answer".into(),
+            stack: "s".into(),
+            state: stacked::db::RunState::Done,
+            ask: Some(serde_json::json!({"way": "answer", "scope": "stack", "from": from, "notes": []})),
+            held: Some(stacked::held::Held {
+                at: stacked::db::now(),
+                tools: vec![stacked::refusals::Refusal {
+                    rules: vec!["Bash(searchfox-cli *)".into()],
+                    calls: vec!["searchfox-cli --define Foo".into()],
+                    why: "To find Foo; I used rg instead.".into(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }),
+            ..Default::default()
+        })
+        .map(|_| ())
+    })
+    .unwrap();
+}
+
+#[test]
+fn the_tools_the_agent_could_not_use_are_reviewed_in_the_browser_too() {
+    let (_tmp, db) = setup();
+    refused_work(&db);
+    stacked::config::init(stacked::config::Config::default());
+    let (port, token) = stacked::web::start(db.clone()).unwrap();
+    let (host, input) = (format!("127.0.0.1:{port}"), format!("POST /input?t={token}"));
+    let mut events = events(port, &token, 100);
+    until(&mut events, "the banner", |l| text(l).contains("1 tool the agent could not use"));
+    // From the banner, its review: the section, the item refused, what the
+    // agent said of it beside them.
+    ask(port, &host, &input, "k Esc -\n");
+    ask(port, &host, &input, "k Enter -\n");
+    let seen = until(&mut events, "the item", |l| text(l).contains("✗ Bash(searchfox-cli *) · refused"));
+    assert!(seen.iter().any(|l| text(l).contains(" tools the agent could not use")), "{seen:#?}");
+    until(&mut events, "the agent's word", |l| text(l).contains("To find Foo; I used rg instead."));
+    // Enter: allowed from now on.
+    ask(port, &host, &input, "k Enter -\n");
+    until(&mut events, "allowed", |l| text(l).contains("✓ Bash(searchfox-cli *) · from now on"));
+}

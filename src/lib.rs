@@ -47,6 +47,7 @@ pub mod progress;
 pub mod reading;
 pub mod reconcile;
 pub mod refs;
+pub mod refusals;
 #[cfg(feature = "moz-phab")]
 pub mod review;
 pub mod rows;

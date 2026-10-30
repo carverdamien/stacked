@@ -65,13 +65,9 @@ fn quiet(dir: &Path) {
 
 const TEN: &str = "one\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nten\n";
 
-/// The settings of a test's home, as a user's are once `stacked setup
-/// agent` is saved: the setup done, so that its asks go.
-const SET_UP: &str = "[agent]\nsetup = 1\n";
-
-/// The version of the setup this stacked saves: with the `try-push`
-/// feature, the one with a column for try pushes.
-const VERSION: usize = if cfg!(feature = "try-push") { 2 } else { 1 };
+/// The settings of a test's home: the agent's table alone, which a test
+/// adds to. No ask waits for a setup: the first goes at once.
+const HOME_SETTINGS: &str = "[agent]\n";
 
 /// `line`, a row of the setup as one with two columns draws it (read only's
 /// box from column 1, change's from 12, what the row says from 21), as this
@@ -124,12 +120,12 @@ fn try_line(tools: &str) -> String {
 
 /// A repo with a base commit and three on top that apply in any order, the
 /// last with a title that is not ASCII and long enough to be folded. The
-/// test's home holds the settings of one whose setup is done (`SET_UP`).
+/// test's home holds settings of its own (`HOME_SETTINGS`).
 fn env() -> Env {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().canonicalize().unwrap();
     std::fs::create_dir(root.join("home")).unwrap();
-    std::fs::write(root.join("home/config.toml"), SET_UP).unwrap();
+    std::fs::write(root.join("home/config.toml"), HOME_SETTINGS).unwrap();
     let src = root.join("src");
     std::fs::create_dir(&src).unwrap();
     git(&src, &["init", "-q", "-b", "main"]);
@@ -956,7 +952,7 @@ fn the_agents_work_in_worktrees_of_the_stack_s_own_reused_while_clean() {
     // "ondemand", and said; the answer and the change each work in a
     // worktree of the stack's own, your checkout as it was.
     let settings = e.root.join("settings.toml");
-    std::fs::write(&settings, format!("{SET_UP}answer_only_worktree = \"pwd\"\nworktree = \"pwd\"\n")).unwrap();
+    std::fs::write(&settings, format!("{HOME_SETTINGS}answer_only_worktree = \"pwd\"\nworktree = \"pwd\"\n")).unwrap();
     let said = |key: &str| {
         format!(
             "stacked: {}: {key} = \"pwd\" is no longer supported: asks run in a worktree of their own; read as \"ondemand\"",
@@ -1026,7 +1022,7 @@ fn stacked_config_refuses_pwd_every_ask_running_in_a_worktree_of_its_own() {
             assert!(!fine && err.contains(&why), "{args:?}: {err}");
         }
     }
-    assert_eq!(std::fs::read_to_string(&settings).unwrap(), SET_UP);
+    assert_eq!(std::fs::read_to_string(&settings).unwrap(), HOME_SETTINGS);
     assert!(!e.src.join(".stacked/local.toml").exists());
     // What is neither, refused too; ondemand and precreate written.
     let (fine, _, err) = e.run(&["config", "agent.worktree", "here"]);
@@ -1035,7 +1031,7 @@ fn stacked_config_refuses_pwd_every_ask_running_in_a_worktree_of_its_own() {
     assert_eq!(e.ok(&["config", "agent.answer_only_worktree"]), "precreate\n");
     // A file that still says pwd is read as ondemand, and said: by every
     // command, and by `config`, which prints it as it is read.
-    std::fs::write(&settings, format!("{SET_UP}worktree = \"pwd\"\n")).unwrap();
+    std::fs::write(&settings, format!("{HOME_SETTINGS}worktree = \"pwd\"\n")).unwrap();
     let said = format!(
         "{}: agent.worktree = \"pwd\" is no longer supported: asks run in a worktree of their own; read as \"ondemand\"",
         settings.display()
@@ -1335,7 +1331,7 @@ fn what_the_agent_brings_back_waits_for_review_and_may_be_rejected() {
     );
     // Unchained: a change waits for the review of the one before it.
     let unchained = e.root.join("unchained.toml");
-    std::fs::write(&unchained, format!("{SET_UP}chain = false\n")).unwrap();
+    std::fs::write(&unchained, format!("{HOME_SETTINGS}chain = false\n")).unwrap();
     let env = [("STACKED_CLAUDE", claude.as_path()), ("STACKED_CONFIG", unchained.as_path())];
     let (fine, out, err) = stacked_in(&e.src, &e.db, &["send", "s", &id, "--wait"], "", &env);
     assert!(fine, "{err}");
@@ -1851,7 +1847,7 @@ fn several_asks_wait_their_turn() {
     );
     // Unchained: each waits for what goes before it, as self-review's do.
     let unchained = e.root.join("unchained.toml");
-    std::fs::write(&unchained, format!("{SET_UP}chain = false\n")).unwrap();
+    std::fs::write(&unchained, format!("{HOME_SETTINGS}chain = false\n")).unwrap();
     let env = [("STACKED_CLAUDE", claude.as_path()), ("STACKED_CONFIG", unchained.as_path())];
     let (fine, out, err) = stacked_in(&e.src, &e.db, &["send", "s", &one], "", &env);
     assert!(fine && out.contains("sent"), "{out}{err}");
@@ -2322,7 +2318,7 @@ fn a_round_sent_back_goes_first_and_the_stack_waits_for_it() {
     );
     // Unchained: a change waits for the review of the one before it.
     let unchained = e.root.join("unchained.toml");
-    std::fs::write(&unchained, format!("{SET_UP}chain = false\n")).unwrap();
+    std::fs::write(&unchained, format!("{HOME_SETTINGS}chain = false\n")).unwrap();
     let env = [("STACKED_CLAUDE", claude.as_path()), ("STACKED_CONFIG", unchained.as_path())];
     let (fine, out, err) = stacked_in(&e.src, &e.db, &["send", "s", &id, "--wait"], "", &env);
     assert!(fine, "{out}{err}");
@@ -3359,7 +3355,7 @@ fn the_agents_answer_is_asked_as_structured_output_and_read_from_it() {
     // Off in the settings: none of it, the answer read from what the agent
     // writes, the prose around it left out.
     let settings = e.root.join("settings.toml");
-    std::fs::write(&settings, format!("{SET_UP}schema = false\n")).unwrap();
+    std::fs::write(&settings, format!("{HOME_SETTINGS}schema = false\n")).unwrap();
     let said = fake_claude(&e, "claude-said.sh", &keeps, r#"Seen `${x}`: {"replies": {"c1": "As said."}}"#);
     let id = comment(&e, &["And?"]);
     let (fine, out, err) = send(&e, &said, &[&id, "--answer-only"], &[("STACKED_CONFIG", &settings)]);
@@ -3520,7 +3516,7 @@ fn each_kind_of_ask_may_use_what_the_settings_add_for_it() {
     let settings = e.root.join("settings.toml");
     std::fs::write(
         &settings,
-        format!("{SET_UP}tools = [\"mcp__bugzilla__*\"]\nanswer_tools = [\"Bash(jq *)\"]\nchange_tools = [\"Bash(make check *)\"]\n"),
+        format!("{HOME_SETTINGS}tools = [\"mcp__bugzilla__*\"]\nanswer_tools = [\"Bash(jq *)\"]\nchange_tools = [\"Bash(make check *)\"]\n"),
     )
     .unwrap();
     // Its arguments a line each: the one after --allowedTools, the tools.
@@ -3563,7 +3559,8 @@ fn each_kind_of_ask_may_use_what_the_settings_add_for_it() {
     let (fine, _, err) = stacked_in(&e.src, &e.db, &["send", "s", &id, "--answer-only", "--wait"], "", &[("STACKED_CLAUDE", &refused)]);
     assert!(fine, "{err}");
     let runs = e.ok(&["runs"]);
-    let said = "the agent was not allowed to use mcp__moz__get_bug, Bash(curl …): agent.answer_tools lets answer-only asks use more, and `stacked setup agent` sets it; your claude settings can allow more too";
+    // A pipe's commands each its own: curl, which answers may run, is none.
+    let said = "the agent was not allowed to use mcp__moz__get_bug, Bash(python3 -m json.tool *): the review of its work lists each, to allow for this work or from now on; agent.answer_tools lets answer-only asks use more, and `stacked setup agent` sets it; your claude settings can allow more too";
     assert!(runs.contains(said), "{runs}");
     let run = runs.lines().last().unwrap().split('\t').next().unwrap().to_string();
     let transcript = e.ok(&["transcript", &run]);
@@ -3571,7 +3568,7 @@ fn each_kind_of_ask_may_use_what_the_settings_add_for_it() {
     let id = comment(&e, &["And", "change", "it."]);
     let (fine, _, err) = stacked_in(&e.src, &e.db, &["send", "s", &id, "--wait"], "", &[("STACKED_CLAUDE", &refused)]);
     assert!(fine, "{err}");
-    let said = "the agent was not allowed to use mcp__moz__get_bug, Bash(curl …): agent.change_tools lets asks that change the stack use more, and `stacked setup agent` sets it; your claude settings can allow more too";
+    let said = "the agent was not allowed to use mcp__moz__get_bug, Bash(curl *), Bash(python3 -m json.tool *): the review of its work lists each, to allow for this work or from now on; agent.change_tools lets asks that change the stack use more, and `stacked setup agent` sets it; your claude settings can allow more too";
     assert!(e.ok(&["runs"]).contains(said), "{}", e.ok(&["runs"]));
 }
 
@@ -3589,23 +3586,29 @@ fn what_your_claude_settings_deny_in_the_checkout_is_refused_to_every_ask() {
     let args = e.root.join("args");
     let claude = fake_claude(&e, "claude-args.sh", &format!("printf '%s\\n' \"$@\" > {}", args.display()), r#"{"replies": {"c1": "Seen."}}"#);
     let refused = || std::fs::read_to_string(&args).unwrap().lines().skip_while(|l| *l != "--disallowedTools").nth(1).map(String::from);
-    // A change: what stacked refuses it, then what you deny.
-    let id = comment(&e, &["Change", "nothing."]);
-    let (fine, _, err) = send(&e, &claude, &[&id], &[]);
-    assert!(fine, "{err}");
-    let r = refused().unwrap();
-    assert!(r.starts_with("Bash(git rebase *--exec*),") && r.ends_with(",Bash(rm:*),WebFetch") && !r.contains("tracked"), "{r}");
-    // An answer, and a build and test: what you deny.
-    for way in ["--answer-only", "--build-and-test"] {
+    // A change, and an answer: what stacked refuses every ask but builds and
+    // tests, then what you deny.
+    for way in [None, Some("--answer-only")] {
         let id = comment(&e, &["Look", "at", "it."]);
-        let (fine, _, err) = send(&e, &claude, &[&id, way], &[]);
-        assert!(fine, "{way}: {err}");
-        assert_eq!(refused().as_deref(), Some("Bash(rm:*),WebFetch"), "{way}");
+        let (fine, _, err) = send(&e, &claude, &[&[id.as_str()][..], way.as_slice()].concat(), &[]);
+        assert!(fine, "{way:?}: {err}");
+        let r = refused().unwrap();
+        assert!(r.starts_with("Bash(git rebase *--exec*),") && r.ends_with(",Bash(rm:*),WebFetch") && !r.contains("tracked"), "{way:?}: {r}");
     }
-    // Nothing denied: an answer is refused nothing.
+    // A build and test, which runs what the project needs: what you deny.
+    let id = comment(&e, &["Look", "at", "it."]);
+    let (fine, _, err) = send(&e, &claude, &[&id, "--build-and-test"], &[]);
+    assert!(fine, "{err}");
+    assert_eq!(refused().as_deref(), Some("Bash(rm:*),WebFetch"));
+    // Nothing denied: a build and test is refused nothing, an answer what
+    // stacked refuses.
     std::fs::remove_file(e.src.join(".claude/settings.local.json")).unwrap();
     let id = comment(&e, &["And", "now?"]);
     let (fine, _, err) = send(&e, &claude, &[&id, "--answer-only"], &[]);
+    assert!(fine, "{err}");
+    assert_eq!(refused(), Some(stacked::claude::refused_tools()));
+    let id = comment(&e, &["And", "built?"]);
+    let (fine, _, err) = send(&e, &claude, &[&id, "--build-and-test"], &[]);
     assert!(fine, "{err}");
     assert_eq!(refused(), None);
 }
@@ -3640,7 +3643,7 @@ fn send_asks_at_the_effort_given_else_at_the_one_the_editor_picked_last() {
     ask(&[], &[]);
     // The settings' own taken out, the ask's in its place.
     let settings = e.root.join("settings.toml");
-    std::fs::write(&settings, format!("{SET_UP}args = [\"--effort\", \"max\"]\n")).unwrap();
+    std::fs::write(&settings, format!("{HOME_SETTINGS}args = [\"--effort\", \"max\"]\n")).unwrap();
     ask(&["--effort", "medium"], &[("STACKED_CONFIG", &settings)]);
     ask(&[], &[("STACKED_CONFIG", &settings)]);
     let said: Vec<String> = std::fs::read_to_string(&efforts).unwrap().lines().map(String::from).collect();
@@ -3688,49 +3691,50 @@ fn a_batch_and_work_sent_back_go_at_the_effort_they_were_asked_at_unless_another
 }
 
 #[test]
-fn no_ask_goes_before_the_setup_is_done() {
+fn the_first_ask_goes_at_once_with_stacked_s_defaults() {
     let e = env();
     e.ok(&["import", "s", "base"]);
-    // The settings of one who never set up what each kind of ask may use.
+    // The settings of one who never set up what each kind of ask may use;
+    // then of one whose stacked of before saved the setup, its mark passed
+    // over.
     let fresh = e.root.join("fresh.toml");
-    std::fs::write(&fresh, "").unwrap();
-    let claude = fake_claude(&e, "claude-seen.sh", "", r#"{"replies": {"c1": "Seen."}}"#);
+    let args = e.root.join("args");
+    let claude = fake_claude(&e, "claude-seen.sh", &format!("printf '%s\\n' \"$@\" > {}", args.display()), r#"{"replies": {"c1": "Seen."}}"#);
+    let tools = || std::fs::read_to_string(&args).unwrap().lines().skip_while(|l| *l != "--allowedTools").nth(1).unwrap().to_string();
     let env = [("STACKED_CLAUDE", claude.as_path()), ("STACKED_CONFIG", fresh.as_path())];
-    let id = comment(&e, &["Why?"]);
-    let refused = "the tools each kind of ask may use are not set up yet: run `stacked setup agent s` first, to check them and save them; nothing was sent";
-    for args in [&["send", "s", &id][..], &["send", "s", &id, "--answer-only", "--wait"], &["send", "s", &id, "--build-and-test"]] {
-        let (fine, _, err) = stacked_in(&e.src, &e.db, args, "", &env);
-        assert!(!fine && err.contains(refused), "{args:?}: {err}");
+    for settings in ["", "[agent]\nsetup = 1\n"] {
+        std::fs::write(&fresh, settings).unwrap();
+        // Each kind of ask goes at once, with stacked's defaults: curl and
+        // jq for answers, nothing more for changes.
+        let id = comment(&e, &["Why?"]);
+        let (fine, out, err) = stacked_in(&e.src, &e.db, &["send", "s", &id, "--answer-only", "--wait", "--accept"], "", &env);
+        assert!(fine && out.contains("Seen."), "{out}{err}");
+        assert!(!err.contains("setup"), "{err}");
+        assert!(tools().ends_with(",Bash(curl *),Bash(jq *)"), "{}", tools());
+        let id = comment(&e, &["Change", "nothing."]);
+        let (fine, out, err) = stacked_in(&e.src, &e.db, &["send", "s", &id, "--wait", "--accept"], "", &env);
+        assert!(fine && out.contains("Seen."), "{out}{err}");
+        assert!(tools().ends_with(" export *),StructuredOutput"), "{}", tools());
+        // Batched, it goes with the batch.
+        let id = comment(&e, &["Later?"]);
+        let (fine, _, err) = stacked_in(&e.src, &e.db, &["send", "s", &id, "--later"], "", &env);
+        assert!(fine, "{err}");
+        let (fine, out, err) = stacked_in(&e.src, &e.db, &["send", "s", "--batch", "--wait", "--accept"], "", &env);
+        assert!(fine && out.contains("Seen."), "{out}{err}");
+        // Nothing written in the settings.
+        assert_eq!(std::fs::read_to_string(&fresh).unwrap(), settings);
     }
-    // Batched, it goes nowhere yet; the batch sent, it would.
-    let (fine, _, err) = stacked_in(&e.src, &e.db, &["send", "s", &id, "--later"], "", &env);
-    assert!(fine, "{err}");
-    let (fine, _, err) = stacked_in(&e.src, &e.db, &["send", "s", "--batch"], "", &env);
-    assert!(!fine && err.contains(refused), "{err}");
-    assert_eq!(e.ok(&["runs"]), "", "nothing was asked");
-    // Set up, every list kept as it is shown: it goes, and the next too.
+    // The setup still saves each list, and no mark of its own.
     let init = serde_json::json!({"type": "system", "subtype": "init", "model": "fake", "tools": ["Read", "Bash"], "mcp_servers": []});
     let agent = e.script("claude-init.sh", &format!("echo '{init}'\nsleep 30\n"));
+    std::fs::write(&fresh, "").unwrap();
     let (fine, _, err) = stacked_in(&e.src, &e.db, &["setup", "agent", "s", "--global"], "", &[("STACKED_CLAUDE", &agent), ("STACKED_CONFIG", &fresh)]);
     assert!(fine, "{err}");
     assert!(err.contains(&format!("stacked: the setup is saved in {}: change_tools: none; answer_tools: Bash(curl *), Bash(jq *)", fresh.display())), "{err}");
     assert_eq!(
         std::fs::read_to_string(&fresh).unwrap(),
-        format!(
-            "[agent]\nchange_tools = []\nanswer_tools = [\"Bash(curl *)\", \"Bash(jq *)\"]\n{}setup = {VERSION}\n",
-            try_line("\"Bash(curl *)\", \"Bash(jq *)\"")
-        )
+        format!("[agent]\nchange_tools = []\nanswer_tools = [\"Bash(curl *)\", \"Bash(jq *)\"]\n{}", try_line("\"Bash(curl *)\", \"Bash(jq *)\""))
     );
-    let (fine, out, err) = stacked_in(&e.src, &e.db, &["send", "s", "--batch", "--wait", "--accept"], "", &env);
-    assert!(fine && out.contains("Seen."), "{out}{err}");
-    let id = comment(&e, &["And", "now?"]);
-    let (fine, _, err) = send(&e, &claude, &[&id, "--answer-only"], &[("STACKED_CONFIG", &fresh)]);
-    assert!(fine, "{err}");
-    // A setup before any there is: asked again.
-    std::fs::write(&fresh, "[agent]\nsetup = 0\n").unwrap();
-    let id = comment(&e, &["Again?"]);
-    let (fine, _, err) = stacked_in(&e.src, &e.db, &["send", "s", &id], "", &env);
-    assert!(!fine && err.contains(refused), "{err}");
 }
 
 #[test]
@@ -3796,7 +3800,7 @@ fn what_each_kind_of_ask_may_use_is_set_up_with_the_agent() {
     );
     assert!(err.contains(&format!("stacked: the setup is saved in {}: {said}", local.display())), "{err}");
     let saved = format!(
-        "[agent]\nchange_tools = [\"mcp__moz__*\", \"mcp__notes__read\", \"Bash(make check *)\"]\nanswer_tools = [\"Bash(curl *)\", \"Bash(jq *)\", \"Bash(lint *)\"]\n{}setup = {VERSION}\n",
+        "[agent]\nchange_tools = [\"mcp__moz__*\", \"mcp__notes__read\", \"Bash(make check *)\"]\nanswer_tools = [\"Bash(curl *)\", \"Bash(jq *)\", \"Bash(lint *)\"]\n{}",
         try_line("\"Bash(curl *)\", \"Bash(jq *)\", \"Bash(lint *)\"")
     );
     assert_eq!(std::fs::read_to_string(&local).unwrap(), saved);
@@ -3836,11 +3840,10 @@ fn what_each_kind_of_ask_may_use_is_set_up_with_the_agent() {
     assert!(fine, "{err}");
     assert!(err.contains(&format!("What each kind of ask may use is saved in {};", settings.display())), "{err}");
     assert!(err.contains("sets agent.change_tools too, and is the one used in its checkout"), "{err}");
-    assert!(err.contains("sets agent.setup too, and is the one used in its checkout"), "{err}");
     assert_eq!(
         std::fs::read_to_string(&settings).unwrap(),
         format!(
-            "[agent]\ntools = [\"mcp__notes__write\"]\nchange_tools = []\nanswer_tools = [\"Bash(curl *)\", \"Bash(jq *)\", \"Bash(lint *)\"]\n{}setup = {VERSION}\n",
+            "[agent]\ntools = [\"mcp__notes__write\"]\nchange_tools = []\nanswer_tools = [\"Bash(curl *)\", \"Bash(jq *)\", \"Bash(lint *)\"]\n{}",
             try_line("\"Bash(curl *)\", \"Bash(jq *)\", \"Bash(lint *)\"")
         )
     );
@@ -3856,7 +3859,7 @@ fn a_checkout_s_own_settings_override_the_others_there() {
     let e = env();
     e.ok(&["import", "s", "base"]);
     let settings = e.root.join("settings.toml");
-    std::fs::write(&settings, format!("{SET_UP}tools = [\"mcp__bugzilla__*\"]\n[view]\nlayout = \"compact\"\n")).unwrap();
+    std::fs::write(&settings, format!("{HOME_SETTINGS}tools = [\"mcp__bugzilla__*\"]\n[view]\nlayout = \"compact\"\n")).unwrap();
     let config = |dir: &Path, args: &[&str]| {
         let mut all = vec!["config"];
         all.extend(args);
@@ -3937,7 +3940,7 @@ fn the_linter_is_set_in_the_checkout_s_own_settings_alone() {
     assert!(fine, "{err}");
     assert!(err.contains(&format!("the linter of this checkout is `./lint.sh --fix 'my file'`, written in {}", local.display())), "{err}");
     assert_eq!(std::fs::read_to_string(&local).unwrap(), "[lint]\ncommand = \"./lint.sh --fix 'my file'\"\n");
-    assert_eq!(std::fs::read_to_string(&global).unwrap(), SET_UP);
+    assert_eq!(std::fs::read_to_string(&global).unwrap(), HOME_SETTINGS);
     assert_eq!(git(&e.src, &["status", "--porcelain"]), "");
     // Printed, with where it comes from; read as any setting is.
     let (fine, out, err) = e.run(&["setup", "lint"]);
@@ -3951,7 +3954,7 @@ fn the_linter_is_set_in_the_checkout_s_own_settings_alone() {
         let (fine, _, err) = e.run(args);
         assert!(!fine && err.contains("lint.command is written by `stacked setup lint COMMAND…`"), "{args:?}: {err}");
     }
-    assert_eq!(std::fs::read_to_string(&global).unwrap(), SET_UP);
+    assert_eq!(std::fs::read_to_string(&global).unwrap(), HOME_SETTINGS);
     // Turned off: an empty command, said so.
     let (fine, _, err) = e.run(&["setup", "lint", "--off"]);
     assert!(fine && err.contains("lint is turned off in this checkout: command = \"\" is written in"), "{err}");
@@ -3971,7 +3974,7 @@ fn the_linter_is_set_in_the_checkout_s_own_settings_alone() {
     assert!(!fine && err.contains("lint.command is not set in"), "nothing written: {err}");
     // A settings' file that sets one: passed over, and said.
     let settings = e.root.join("settings.toml");
-    std::fs::write(&settings, format!("{SET_UP}[lint]\ncommand = \"rm -rf\"\n")).unwrap();
+    std::fs::write(&settings, format!("{HOME_SETTINGS}[lint]\ncommand = \"rm -rf\"\n")).unwrap();
     let (fine, out, err) = stacked_in(&e.src, &e.db, &["setup", "lint"], "", &[("STACKED_CONFIG", &settings)]);
     assert!(fine && out == "./mach lint --fix\n", "{out}{err}");
     assert!(err.contains("lint.command is a checkout's own setting, read only from its .stacked/local.toml"), "{err}");
@@ -4679,10 +4682,10 @@ fn a_run_of_stacked_as_the_tests_run_it_reaches_nothing_in_the_home() {
     let (fine, out, err) = stacked_in(&e.src, &e.db, &["config"], "", &[("HOME", &home)]);
     assert!(fine, "{err}");
     // Where it reads its settings, as it says: the test's folder, beside
-    // the database, holding the test's own (`SET_UP`).
+    // the database, holding the test's own (`HOME_SETTINGS`).
     let settings = e.root.join("home/config.toml");
     assert_eq!(out.lines().next(), Some(format!("# read from {}", settings.display()).as_str()), "{out}");
-    assert_eq!(std::fs::read_to_string(&settings).unwrap(), SET_UP);
+    assert_eq!(std::fs::read_to_string(&settings).unwrap(), HOME_SETTINGS);
     assert!(out.contains("\n# editor = ...") && !out.contains("editor = \"hx\""), "the home's settings not read: {out}");
     // Nothing of the home's read, moved, made or said.
     assert_eq!(listing(&home), before);
@@ -4954,4 +4957,326 @@ fn a_word_that_is_no_command_is_not_taken_for_a_database() {
     opens("./bug123");
     std::fs::write(e.src.join("mine"), "").unwrap();
     opens("mine");
+}
+
+/// A denial of claude's: a call of `tool`, given `input`, as its result
+/// lists it (`permission_denials`).
+fn denial(tool: &str, input: serde_json::Value) -> serde_json::Value {
+    serde_json::json!({"tool_name": tool, "tool_input": input})
+}
+
+/// A stand-in for claude, `name`: as it starts, it adds to `tools` the
+/// tools it was let use (`--allowedTools`), a line for each ask. Asked to
+/// spell a line out, it changes patch 1 as `chain_claude`'s does, and
+/// answers `Done.`; asked anything else, its result says it was refused
+/// `denials`, and it answers `answer`, then exits with `exit`.
+fn refusing_claude(e: &Env, name: &str, tools: &Path, denials: &[serde_json::Value], answer: &serde_json::Value, exit: i32) -> PathBuf {
+    let result = serde_json::json!({"type": "result", "is_error": exit != 0, "result": answer.to_string(), "permission_denials": denials});
+    let done = serde_json::json!({"type": "result", "result": r#"{"replies": {"c1": "Done."}}"#});
+    e.script(
+        name,
+        &format!(
+            "prev=; for a in \"$@\"; do if test \"$prev\" = --allowedTools; then printf '%s\\n' \"$a\" >> '{tools}'; fi; prev=$a; done\n\
+             echo '{{\"type\":\"system\",\"subtype\":\"init\",\"model\":\"fake\"}}'\n\
+             case \"$2\" in\n\
+             *'Spell it'*)\n\
+             sed -i '' 's/^2$/deux/' a.txt\n\
+             git -c user.name=C -c user.email=c@x commit -q --amend --no-edit -a\n\
+             cat <<'EOF'\n{done}\nEOF\n\
+             ;;\n\
+             *)\n\
+             cat <<'EOF'\n{result}\nEOF\n\
+             exit {exit} ;;\n\
+             esac\n",
+            tools = tools.display()
+        ),
+    )
+}
+
+/// Tool `k` the agent could not use, of the work run `run` holds, marked `a`
+/// in its review, as the editor marks it, and saved.
+fn mark_tool(e: &Env, run: &str, k: usize, a: stacked::refusals::Allow) {
+    Db::edit(&e.db, |d| {
+        let mut marks = d.review(run).map(|v| v.marks.clone()).unwrap_or_default();
+        stacked::refusals::set_state(&mut marks, k, a);
+        stacked::held::save(d, run, &marks)
+    })
+    .unwrap();
+}
+
+/// The tools the stand-in was let use by the ask that started last, as
+/// `refusing_claude` wrote them in `tools`.
+fn last_given(tools: &Path) -> String {
+    std::fs::read_to_string(tools).unwrap().lines().last().unwrap().to_string()
+}
+
+#[test]
+fn the_calls_the_agent_was_refused_land_as_items_one_a_rule_even_from_a_failed_run() {
+    let e = env();
+    e.ok(&["import", "s", "base"]);
+    let tools = e.root.join("tools");
+    let denials = [
+        denial("Bash", serde_json::json!({"command": "searchfox-cli --define Foo"})),
+        denial("Bash", serde_json::json!({"command": "searchfox-cli --define Bar"})),
+        denial("Bash", serde_json::json!({"command": "./mach try fuzzy --no-push -q x"})),
+        denial("mcp__moz__get_bug", serde_json::json!({"id": 1})),
+        denial("Edit", serde_json::json!({"file_path": "a.txt"})),
+    ];
+    let answer = serde_json::json!({"replies": {"c1": "Read otherwise."}, "refused": [{"tool": "Bash: searchfox-cli --define Foo", "why": "To find Foo; I used rg instead."}]});
+    let claude = refusing_claude(&e, "claude-refused.sh", &tools, &denials, &answer, 0);
+    let id = comment(&e, &["Where", "is", "Foo?"]);
+    let (fine, _, err) = stacked_in(&e.src, &e.db, &["send", "s", &id, "--answer-only", "--wait"], "", &[("STACKED_CLAUDE", &claude)]);
+    assert!(fine, "{err}");
+    // In the work's review: one item a rule, in the order refused, each
+    // with the first call it tried; Edit noted, as an answer only reads.
+    let landed = e.ok(&["landed", "s"]);
+    assert!(landed.lines().next().unwrap().ends_with("\t1 reply, 4 tools the agent could not use"), "{landed}");
+    for line in [
+        "  tool\tBash(searchfox-cli *)\trefused\tsearchfox-cli --define Foo",
+        "  tool\tBash(./mach try fuzzy *)\trefused\t./mach try fuzzy --no-push -q x",
+        "  tool\tmcp__moz__get_bug\trefused\tmcp__moz__get_bug: {\"id\": 1}",
+        "  tool\tEdit\tnoted\tEdit: a.txt",
+    ] {
+        assert!(landed.lines().any(|l| l == line), "{line:?} in:\n{landed}");
+    }
+    let run = landed.split('\t').next().unwrap().to_string();
+    let d = Db::load(&e.db).unwrap();
+    let h = d.run(&run).unwrap().held.clone().unwrap();
+    assert_eq!(h.tools[0].calls, ["searchfox-cli --define Foo", "searchfox-cli --define Bar"]);
+    assert_eq!((h.tools[0].why.as_str(), h.tools[1].why.as_str()), ("To find Foo; I used rg instead.", ""), "unexplained, an item all the same");
+    assert_eq!(h.tools[1].rules, ["Bash(./mach try fuzzy *)", "Bash(./mach try *)", "Bash(./mach *)"]);
+    assert_eq!(h.tools[2].rules, ["mcp__moz__get_bug", "mcp__moz__*"]);
+    assert_eq!(h.tools[3].noted.as_deref(), Some("it changes things, and answer-only asks only read"));
+    // Told not to stop at a refusal, but to work around it, and to say why
+    // it needed each tool refused.
+    let prompt = stacked::ask::info(d.run(&run).unwrap()).unwrap().prompt;
+    drop(d);
+    for said in [
+        "Do not stop there: work around the refusal with what you may use, and finish what you were asked as well as you can.",
+        "And list each tool you were refused in your answer, as \"refused\": [{\"tool\": the tool as you called it",
+        "\"why\": why you needed it, and how you worked around it}]: the user reviews each, and may let you use it.",
+    ] {
+        assert!(prompt.contains(said), "{said:?} in {prompt}");
+    }
+    e.ok(&["review", "s", "--reject-all"]);
+    // A run that failed, and was refused tools: it lands for review all the
+    // same, failed, to allow them and send it back.
+    let failing = refusing_claude(&e, "claude-failing.sh", &tools, &denials[..1], &serde_json::json!({"replies": {}}), 1);
+    let id = comment(&e, &["And", "Bar?"]);
+    let (fine, _, err) = stacked_in(&e.src, &e.db, &["send", "s", &id, "--answer-only", "--wait"], "", &[("STACKED_CLAUDE", &failing)]);
+    assert!(!fine && err.contains("1 of them failed"), "{err}");
+    let landed = e.ok(&["landed", "s"]);
+    assert!(landed.lines().next().unwrap().ends_with("\t1 tool the agent could not use"), "{landed}");
+    let d = Db::load(&e.db).unwrap();
+    let r = stacked::held::queue(&d, "s")[0].clone();
+    assert_eq!(r.state, RunState::Failed);
+    assert!(r.summary.starts_with("the agent failed (1)"), "{}", r.summary);
+    assert!(r.summary.contains("; the agent was not allowed to use Bash(searchfox-cli *): the review of its work lists each, to allow for this work or from now on"), "{}", r.summary);
+}
+
+#[test]
+fn a_tool_allowed_from_now_on_is_saved_in_the_checkout_s_own_list_for_its_kind_alone() {
+    use stacked::refusals::Allow;
+    let e = env();
+    e.ok(&["import", "s", "base"]);
+    let tools = e.root.join("tools");
+    let local = e.src.join(".stacked/local.toml");
+    let read = |p: &Path| std::fs::read_to_string(p).unwrap();
+    let searchfox = [denial("Bash", serde_json::json!({"command": "searchfox-cli --define Foo"}))];
+    let claude = refusing_claude(&e, "claude-refused.sh", &tools, &searchfox, &serde_json::json!({"replies": {"c1": "Seen."}}), 0);
+    let env = [("STACKED_CLAUDE", claude.as_path())];
+    let ask = |args: &[&str]| -> String {
+        let id = comment(&e, &["Where", "is", "Foo?"]);
+        let mut all = vec!["send", "s", id.as_str()];
+        all.extend(args);
+        all.push("--wait");
+        let (fine, _, err) = stacked_in(&e.src, &e.db, &all, "", &env);
+        assert!(fine, "{args:?}: {err}");
+        landed_ids(&e).pop().unwrap()
+    };
+    // Closed, accepted: what its review allowed from now on is saved in the
+    // checkout's own settings, in answers' list of their own; neither the
+    // settings' file nor any file of the repository written.
+    let run = ask(&["--answer-only"]);
+    mark_tool(&e, &run, 0, Allow::Always);
+    let (fine, out, err) = e.run(&["review", "s", &run, "--accept-all"]);
+    let saved = format!("; saved for good in {}, for answer-only asks: `Bash(searchfox-cli *)`", local.display());
+    assert!(fine && out.contains(&saved), "{out}{err}");
+    assert_eq!(read(&local), "[agent]\nanswer_accepted = [\"Bash(searchfox-cli *)\"]\n");
+    assert_eq!(read(&e.root.join("home/config.toml")), HOME_SETTINGS);
+    assert_eq!(git(&e.src, &["status", "--porcelain"]), "");
+    // The next answer is given it, after its own list; a change is not.
+    let run = ask(&["--answer-only"]);
+    assert!(last_given(&tools).ends_with(",Bash(curl *),Bash(jq *),Bash(searchfox-cli *)"), "{}", last_given(&tools));
+    e.ok(&["review", "s", &run, "--reject-all"]);
+    let run = ask(&[]);
+    assert!(!last_given(&tools).contains("searchfox"), "{}", last_given(&tools));
+    // Rejected: saved all the same, for changes, in their own list.
+    mark_tool(&e, &run, 0, Allow::Always);
+    let (fine, out, err) = e.run(&["review", "s", &run, "--reject-all"]);
+    assert!(fine && out.contains(&format!("; saved for good in {}, for the asks that change the stack: `Bash(searchfox-cli *)`", local.display())), "{out}{err}");
+    assert_eq!(read(&local), "[agent]\nanswer_accepted = [\"Bash(searchfox-cli *)\"]\nchange_accepted = [\"Bash(searchfox-cli *)\"]\n");
+    // Sent back, nothing written but the tool allowed: saved first, for
+    // builds and tests in their own list, and the next round given it.
+    let web = [denial("WebFetch", serde_json::json!({"url": "https://example.com/a"}))];
+    let fetching = refusing_claude(&e, "claude-fetching.sh", &tools, &web, &serde_json::json!({"replies": {"c1": "Built."}}), 0);
+    let id = comment(&e, &["Build", "it."]);
+    let (fine, _, err) = stacked_in(&e.src, &e.db, &["send", "s", &id, "--build-and-test", "--wait"], "", &[("STACKED_CLAUDE", &fetching)]);
+    assert!(fine, "{err}");
+    let run = landed_ids(&e).pop().unwrap();
+    assert!(!last_given(&tools).contains("WebFetch"), "{}", last_given(&tools));
+    mark_tool(&e, &run, 0, Allow::Always);
+    let (fine, out, err) = stacked_in(&e.src, &e.db, &["review", "s", &run, "--send-back"], "", &[("STACKED_CLAUDE", &fetching)]);
+    assert!(fine && out.contains(&format!("; saved for good in {}, for builds and tests: `WebFetch`", local.display())), "{out}{err}");
+    assert!(read(&local).ends_with("\ntest_accepted = [\"WebFetch\"]\n"), "{}", read(&local));
+    landed(&e, 5);
+    assert!(last_given(&tools).ends_with(",WebFetch"), "{}", last_given(&tools));
+    e.ok(&["review", "s", "--reject-all"]);
+    // Where git tracks the checkout's own settings, nothing is saved there,
+    // and the work sent back is allowed it for this work instead, as said.
+    git(&e.src, &["add", "-f", ".stacked/local.toml"]);
+    let run = ask(&["--answer-only"]);
+    mark_tool(&e, &run, 0, Allow::Always);
+    let (fine, out, err) = stacked_in(&e.src, &e.db, &["review", "s", &run, "--send-back"], "", &env);
+    let not = format!("; `Bash(searchfox-cli *)` could not be saved: {}: git tracks it", local.display());
+    assert!(fine && out.contains(&not) && out.contains("; allowed for this work instead"), "{out}{err}");
+    assert!(out.contains("; allowed for this work: Bash(searchfox-cli *)"), "{out}");
+    landed(&e, 7);
+    assert!(last_given(&tools).ends_with(",Bash(searchfox-cli *)"), "{}", last_given(&tools));
+    git(&e.src, &["rm", "-q", "--cached", ".stacked/local.toml"]);
+}
+
+#[test]
+fn a_tool_allowed_for_this_work_is_given_every_round_of_it_until_its_review_closes() {
+    use stacked::refusals::Allow;
+    let e = env();
+    e.ok(&["import", "s", "base"]);
+    let tools = e.root.join("tools");
+    let searchfox = [denial("Bash", serde_json::json!({"command": "searchfox-cli --define Foo"}))];
+    let claude = refusing_claude(&e, "claude-refused.sh", &tools, &searchfox, &serde_json::json!({"replies": {"c1": "Seen."}}), 0);
+    let env = [("STACKED_CLAUDE", claude.as_path())];
+    let run = |args: &[&str]| {
+        let (fine, out, err) = stacked_in(&e.src, &e.db, args, "", &env);
+        assert!(fine, "{args:?}: {out}{err}");
+        out
+    };
+    let rule = "Bash(searchfox-cli *)";
+    let why = comment(&e, &["--patch", "2", "Why", "b?"]);
+    run(&["send", "s", &why, "--answer-only", "--wait"]);
+    let first = landed_ids(&e).pop().unwrap();
+    assert!(!last_given(&tools).contains("searchfox"));
+    // Allowed for this work, and sent back: the next round given it, its
+    // stream and the status saying so, the comment told; nothing saved.
+    mark_tool(&e, &first, 0, Allow::Work);
+    let out = run(&["review", "s", "--send-back"]);
+    assert!(out.contains(&format!("; allowed for this work: {rule}")), "{out}");
+    landed(&e, 2);
+    assert!(last_given(&tools).ends_with(&format!(",{rule}")), "{}", last_given(&tools));
+    let second = landed_ids(&e).pop().unwrap();
+    assert!(e.ok(&["transcript", &second]).starts_with(&format!("✓ allowed for this work: {rule}\n")), "{}", e.ok(&["transcript", &second]));
+    assert!(e.ok(&["comments", "s"]).contains(&format!("- `{rule}`: you may use it now, for this work.")), "{}", e.ok(&["comments", "s"]));
+    assert!(!e.src.join(".stacked/local.toml").exists(), "never saved");
+    // Sent back again, for what you wrote: given it still.
+    run(&["reply", "s", &why, "--answer", "And", "c?"]);
+    run(&["review", "s", "--send-back"]);
+    landed(&e, 3);
+    assert!(last_given(&tools).ends_with(&format!(",{rule}")), "{}", last_given(&tools));
+    // A change accepted meanwhile, chained: the answer asked again on the
+    // stack it makes, by stacked, given it still.
+    let spell = comment(&e, &["--patch", "1", "Spell", "it", "out."]);
+    run(&["send", "s", &spell, "--wait"]);
+    let change = landed_ids(&e).pop().unwrap();
+    let out = run(&["review", "s", &change, "--accept-all"]);
+    assert!(out.contains("; 1 answer-only ask asked again"), "{out}");
+    landed(&e, 5);
+    assert!(last_given(&tools).ends_with(&format!(",{rule}")), "{}", last_given(&tools));
+    let again = landed_ids(&e).pop().unwrap();
+    assert!(e.ok(&["transcript", &again]).starts_with(&format!("✓ allowed for this work: {rule}\n")), "{}", e.ok(&["transcript", &again]));
+    // Its review closed: no other ask is given it.
+    run(&["review", "s", "--reject-all"]);
+    let other = comment(&e, &["And", "this?"]);
+    run(&["send", "s", &other, "--answer-only", "--wait"]);
+    assert!(!last_given(&tools).contains("searchfox"), "{}", last_given(&tools));
+}
+
+/// A line of the setup asked line by line, of a rule the reviews allowed
+/// from now on: its box `mark` in the first column, then `text`, as this
+/// stacked draws it (what the row says from column 21, or 30 with the
+/// `try-push` feature).
+fn accepted_line(mark: &str, text: &str) -> String {
+    let at = if cfg!(feature = "try-push") { 30 } else { 21 };
+    format!("    {mark}{}{text}", " ".repeat(at - 7))
+}
+
+#[test]
+fn the_setup_lists_what_reviews_allowed_from_now_on_and_takes_out_what_you_untick() {
+    let e = env();
+    e.ok(&["import", "s", "base"]);
+    let local = e.src.join(".stacked/local.toml");
+    e.ok(&["config", "--local", "agent.answer_accepted", "Bash(searchfox-cli *)", "WebFetch"]);
+    e.ok(&["config", "--local", "agent.test_accepted", "Bash(./mach build *)"]);
+    let init = serde_json::json!({"type": "system", "subtype": "init", "model": "fake", "tools": ["Read"], "mcp_servers": []});
+    let agent = e.script("claude-init.sh", &format!("echo '{init}'\nsleep 30\n"));
+    let env = [("STACKED_CLAUDE", agent.as_path())];
+    // Listed, a line each, under where they are; kept as they are.
+    let (fine, _, err) = stacked_in(&e.src, &e.db, &["setup", "agent", "s"], "", &env);
+    assert!(fine, "{err}");
+    for line in [
+        format!(" Allowed from now on in reviews of the agent's work, in {}: untick a rule to take it out", local.display()),
+        accepted_line("[x]", "Bash(searchfox-cli *)   for answer-only asks"),
+        accepted_line("[x]", "WebFetch   for answer-only asks"),
+        accepted_line("[x]", "Bash(./mach build *)   for builds and tests"),
+    ] {
+        assert!(err.lines().any(|l| l == line), "{line:?} in:\n{err}");
+    }
+    assert!(!err.contains("taken out of"), "{err}");
+    assert!(std::fs::read_to_string(&local).unwrap().contains("answer_accepted = [\"Bash(searchfox-cli *)\", \"WebFetch\"]"));
+    // One by one: WebFetch taken out, the rest kept; written in the
+    // checkout's own settings, with --global too.
+    let input = "n\n\nn\n\n\n\n\n\n";
+    let (fine, _, err) = stacked_in(&e.src, &e.db, &["setup", "agent", "s", "--global"], input, &env);
+    assert!(fine, "{err}");
+    assert!(err.contains("  Keep WebFetch, allowed from now on in a review, for answer-only asks? [Y/n]"), "{err}");
+    assert!(err.contains(&format!("stacked: taken out of what reviews allowed from now on, in {}: answer_accepted: Bash(searchfox-cli *)", local.display())), "{err}");
+    let now = std::fs::read_to_string(&local).unwrap();
+    assert!(now.contains("answer_accepted = [\"Bash(searchfox-cli *)\"]") && now.contains("test_accepted = [\"Bash(./mach build *)\"]"), "{now}");
+    assert!(!std::fs::read_to_string(e.root.join("home/config.toml")).unwrap().contains("accepted"), "never in the settings' file");
+}
+
+#[test]
+fn work_dropped_to_be_asked_again_saves_what_its_review_allowed_from_now_on() {
+    use stacked::refusals::Allow;
+    let e = env();
+    e.ok(&["import", "s", "base"]);
+    let (tools, local) = (e.root.join("tools"), e.src.join(".stacked/local.toml"));
+    let searchfox = [denial("Bash", serde_json::json!({"command": "searchfox-cli --define Foo"}))];
+    let claude = refusing_claude(&e, "claude-refused.sh", &tools, &searchfox, &serde_json::json!({"replies": {"c1": "Seen."}}), 0);
+    let env = [("STACKED_CLAUDE", claude.as_path())];
+    let run = |args: &[&str]| {
+        let (fine, out, err) = stacked_in(&e.src, &e.db, args, "", &env);
+        assert!(fine, "{args:?}: {out}{err}");
+        out
+    };
+    // An answer's tool marked allowed from now on, its review saved, not
+    // closed.
+    let why = comment(&e, &["--patch", "2", "Why", "b?"]);
+    run(&["send", "s", &why, "--answer-only", "--wait"]);
+    let answer = landed_ids(&e).pop().unwrap();
+    mark_tool(&e, &answer, 0, Allow::Always);
+    assert!(!local.exists());
+    // A change accepted meanwhile, chained: the answer dropped, to be asked
+    // again, its review closed, and what it allowed from now on saved, as
+    // its run says.
+    let spell = comment(&e, &["--patch", "1", "Spell", "it", "out."]);
+    run(&["send", "s", &spell, "--wait"]);
+    let change = landed_ids(&e).pop().unwrap();
+    run(&["review", "s", &change, "--accept-all"]);
+    landed(&e, 3);
+    assert_eq!(std::fs::read_to_string(&local).unwrap(), "[agent]\nanswer_accepted = [\"Bash(searchfox-cli *)\"]\n");
+    let d = Db::load(&e.db).unwrap();
+    let summary = d.run(&answer).unwrap().summary.clone();
+    assert!(summary.starts_with("dropped: an edit of the stack was accepted meanwhile; asked again; saved for good in "), "{summary}");
+    drop(d);
+    // The answer asked again is given it, from now on.
+    assert!(last_given(&tools).ends_with(",Bash(curl *),Bash(jq *),Bash(searchfox-cli *)"), "{}", last_given(&tools));
 }

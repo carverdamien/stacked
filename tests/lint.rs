@@ -40,14 +40,13 @@ fn git(dir: &Path, args: &[&str]) -> String {
 }
 
 /// stacked run in `dir` on the database `db`, as the tests run it: its own
-/// things kept in `home` beside the database, the setup of what each kind
-/// of ask may use done there; what it writes in the temporary directory in
-/// `tmp` beside it. Whether it did, what it printed, and what it said.
+/// things kept in `home` beside the database; what it writes in the
+/// temporary directory in `tmp` beside it. Whether it did, what it printed,
+/// and what it said.
 fn stacked(dir: &Path, db: &Path, args: &[&str]) -> (bool, String, String) {
     let (home, tmp) = (db.with_file_name("home"), db.with_file_name("tmp"));
     std::fs::create_dir_all(&home).unwrap();
     std::fs::create_dir_all(&tmp).unwrap();
-    std::fs::write(home.join("config.toml"), format!("[agent]\nsetup = {}\n", stacked::setup::VERSION)).unwrap();
     let out = Command::new(env!("CARGO_BIN_EXE_stacked"))
         .current_dir(dir)
         .arg("-f")
@@ -128,12 +127,10 @@ fn two_fixes() -> (String, String) {
     (one, two)
 }
 
-/// The settings of these tests: the defaults, with the setup of what each
-/// kind of ask may use done, as a user's are once it is saved.
+/// The settings of these tests: the defaults, with which every ask goes
+/// as the first does, no setup before it.
 fn settings() -> stacked::config::Config {
-    let mut c = stacked::config::Config::default();
-    c.agent.setup = Some(stacked::setup::VERSION);
-    c
+    stacked::config::Config::default()
 }
 
 /// The editor on `db`, with the tests' settings and the stand-ins for

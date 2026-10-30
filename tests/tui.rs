@@ -89,35 +89,12 @@ fn setup() -> (tempfile::TempDir, PathBuf, PathBuf) {
     (tmp, db, src)
 }
 
-/// A row of the setup's screen as this stacked draws it: read only's cell
-/// `r`, change's `c`, with the `try-push` feature try push's `t`, then
-/// `text`; its end trimmed.
-fn three(r: &str, c: &str, t: &str, text: &str) -> String {
-    let centred = |s: &str, w: usize| {
-        let left = (w - s.chars().count()) / 2;
-        format!("{}{s}{}", " ".repeat(left), " ".repeat(w - s.chars().count() - left))
-    };
-    let (cells, cols, at): (Vec<&str>, Vec<(usize, usize)>, usize) = match cfg!(feature = "try-push") {
-        true => (vec![r, c, t], vec![(1, 9), (12, 6), (20, 8)], 30),
-        false => (vec![r, c], vec![(1, 9), (12, 6)], 21),
-    };
-    let mut out = String::new();
-    for (s, (start, w)) in cells.iter().zip(cols) {
-        out += &" ".repeat(start - out.chars().count());
-        out += &centred(s, w);
-    }
-    out += &" ".repeat(at - out.chars().count());
-    (out + text).trim_end().to_string()
-}
-
 /// The settings of the editor's tests, rather than a file's: the defaults,
-/// with the setup of what each kind of ask may use done, as a user's are
-/// once it is saved, so that their asks go. The tests share their process,
-/// and with it these settings: each one sets them before any reads them.
+/// with which every ask goes as the first does, no setup before it. The
+/// tests share their process, and with it these settings: each one sets
+/// them before any reads them.
 fn settings() -> stacked::config::Config {
-    let mut c = stacked::config::Config::default();
-    c.agent.setup = Some(stacked::setup::VERSION);
-    c
+    stacked::config::Config::default()
 }
 
 /// The editor on `db`, with the tests' settings (`settings`): a
@@ -4308,7 +4285,9 @@ fn the_comments_pane_previews_without_moving_the_patch() {
 /// repository it works in, where `setup` puts the test's database too. It
 /// answers `Seen.`, or what the file `answer` there holds (`answer_with`).
 /// As it starts, it adds to the file `efforts` there the effort it was
-/// given, a line for each ask (`efforts`).
+/// given, a line for each ask (`efforts`); and to the file `tools` there
+/// the tools it was let use (`--allowedTools`), a line for each ask
+/// (`given`).
 fn fake_claude() -> PathBuf {
     static FAKE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
     FAKE.get_or_init(|| {
@@ -4316,7 +4295,7 @@ fn fake_claude() -> PathBuf {
         let script = format!(
             "#!/bin/sh\necho '{{\"type\":\"system\",\"subtype\":\"init\",\"model\":\"fake\"}}'\necho '{{\"type\":\"assistant\",\"message\":{{\"content\":[{{\"type\":\"text\",\"text\":\"Reading the patch.\"}}]}}}}'\n\
              git=$(git rev-parse --path-format=absolute --git-common-dir)\n\
-             e=; prev=; for a in \"$@\"; do if test \"$prev\" = --effort; then e=\"$e${{e:+ }}$a\"; fi; prev=$a; done\n\
+             e=; prev=; for a in \"$@\"; do if test \"$prev\" = --effort; then e=\"$e${{e:+ }}$a\"; fi; if test \"$prev\" = --allowedTools; then printf '%s\\n' \"$a\" >> \"$git/../../tools\"; fi; prev=$a; done\n\
              echo \"${{e:-none}}\" >> \"$git/../../efforts\"\n\
              while test -e \"$git/../../hold\"; do sleep 0.1; done\n\
              if test -e \"$git/../../answer\"; then cat \"$git/../../answer\"; else cat <<'EOF'\n{result}\nEOF\nfi\n"
@@ -7174,94 +7153,19 @@ fn an_ask_whose_agent_is_gone_without_landing_lands_at_the_next_look() {
 }
 
 #[test]
-fn the_first_ask_opens_the_setup_and_goes_once_it_is_saved() {
+fn the_first_ask_goes_at_once_with_stacked_s_defaults_and_no_setup() {
     let (_tmp, db, src) = setup();
-    // The setup not done in the stack's checkout, as its own settings say,
-    // over the tests' own, which have it done.
-    stacked(&src, &db, &["config", "--local", "agent.setup", "0"]);
-    // Where the setup is saved: there, as the stack names its checkout.
-    let local = src.canonicalize().unwrap().join(".stacked/local.toml");
-    let sent = || {
-        let d = Db::load(&db).unwrap();
-        (d.runs().len(), notes_of(&db, "s", 0).iter().filter(|n| n.queued.is_some()).count())
-    };
+    // The stack's checkout's own settings as a stacked of before left them,
+    // the setup's old mark in them: passed over.
+    std::fs::create_dir_all(src.join(".stacked")).unwrap();
+    std::fs::write(src.join(".stacked/local.toml"), "[agent]\nsetup = 0\n").unwrap();
     let mut app = open(&db).unwrap();
     keys(&mut app, &[KeyCode::Right]);
     down_to(&mut app, "+TWO");
     keys(&mut app, &[KeyCode::Enter]);
     typed(&mut app, "why so loud?");
     keys(&mut app, &[KeyCode::Esc]);
-    choose_as(&mut app, "Ask agent", "answer only");
-    // Saved, not sent: the setup first, the agent asked what tools it has
-    // away from the screen, as the screen says.
-    assert!(matches!(&app.mode, Mode::Setup(su) if su.screen.is_none()), "{:?}", app.mode);
-    let screen = draw(&mut app);
-    assert!(screen.contains("is being asked what tools it has") && screen.contains(" · asking the agent what tools it has…"), "{screen}");
-    assert!(screen.contains(" esc: send nothing"), "{screen}");
-    assert_eq!((notes_of(&db, "s", 0).len(), sent()), (1, (0, 0)), "saved, and nothing sent");
-    // Esc while it is asked: nothing sent, the bar saying why.
-    keys(&mut app, &[KeyCode::Esc]);
-    let why = "nothing was sent: what each kind of ask may use is not set up yet, and sending again opens the setup again";
-    assert_eq!((&app.mode, app.status.as_str()), (&Mode::Normal, why));
-    // Asked again: once the agent said what it has, the screen `stacked
-    // setup agent --tui` shows, over all of the editor; Esc there, nothing
-    // changed, sends nothing either, and writes nothing.
-    keys(&mut app, &[KeyCode::Down]);
-    choose_as(&mut app, "Ask agent", "answer only");
-    let screen = wait_for(&mut app, " What each kind of ask may use, besides what stacked always gives it: the agent's tools, in ");
-    let heading = three("read only", "change", "try push", "read only is for answer-only asks; change is for asks that change the stack");
-    assert!(screen.lines().any(|l| l.trim_end().starts_with(&heading)), "{heading:?} in:\n{screen}");
-    let curl = three("[x]", "[ ]", "[x]", "Bash(curl *)   stacked's default for answers");
-    assert!(screen.lines().any(|l| l.trim_end() == curl), "{curl:?} in:\n{screen}");
-    assert!(screen.contains(&format!(" To be, in {}: ", local.display())), "{screen}");
-    let Mode::Setup(su) = &app.mode else { panic!("{:?}", app.mode) };
-    let to_be = su.screen.as_ref().unwrap().chosen();
-    assert_eq!((to_be.change, to_be.answer, to_be.every), (vec![], vec!["Bash(curl *)".to_string(), "Bash(jq *)".to_string()], None));
-    assert!(!screen.contains("why so loud?"), "the editor under it is not drawn: {screen}");
-    keys(&mut app, &[KeyCode::Esc]);
-    assert_eq!((&app.mode, app.status.as_str()), (&Mode::Normal, why));
-    assert_eq!(sent(), (0, 0));
-    assert_eq!(std::fs::read_to_string(&local).unwrap(), "[agent]\nsetup = 0\n");
-    // Saved: written in the checkout's own settings, both lists and the
-    // setup done; and the ask goes.
-    choose_as(&mut app, "Ask agent", "answer only");
-    wait_for(&mut app, " What each kind of ask may use");
-    keys(&mut app, &[KeyCode::Char('s')]);
-    assert_eq!(app.mode, Mode::Normal);
-    let said = format!("the setup is saved in {}; asked the agent about 1 comment (answer only)", local.display());
-    assert!(app.status.starts_with(&said), "{}", app.status);
-    let (version, tried) = match cfg!(feature = "try-push") {
-        true => (2, "try_tools = [\"Bash(curl *)\", \"Bash(jq *)\"]\n"),
-        false => (1, ""),
-    };
-    assert_eq!(
-        std::fs::read_to_string(&local).unwrap(),
-        format!("[agent]\nsetup = {version}\nchange_tools = []\nanswer_tools = [\"Bash(curl *)\", \"Bash(jq *)\"]\n{tried}")
-    );
-    accept_landed(&mut app, &db);
-    wait_for(&mut app, "agent replied (answer only)");
-    // Never again: the next goes at once.
-    down_to(&mut app, "+LINE 39");
-    keys(&mut app, &[KeyCode::Enter]);
-    typed(&mut app, "and this one?");
-    keys(&mut app, &[KeyCode::Esc]);
-    choose_as(&mut app, "Ask agent", "answer only");
-    assert_eq!(app.mode, Mode::Normal);
-    assert!(app.status.starts_with("asked the agent about 1 comment (answer only)"), "{}", app.status);
-}
-
-#[test]
-fn the_setup_before_the_first_ask_ticks_the_box_clicked_or_the_column_s() {
-    let (_tmp, db, src) = setup();
-    stacked(&src, &db, &["config", "--local", "agent.setup", "0"]);
-    let local = src.canonicalize().unwrap().join(".stacked/local.toml");
-    let mut app = open(&db).unwrap();
-    keys(&mut app, &[KeyCode::Right]);
-    down_to(&mut app, "+TWO");
-    keys(&mut app, &[KeyCode::Enter]);
-    typed(&mut app, "why so loud?");
-    keys(&mut app, &[KeyCode::Esc]);
-    // Ask agent, answer only, at an effort of its own: the setup first.
+    // Ask agent, answer only, at an effort of its own: it goes at once.
     let ask = items(&app).iter().position(|(l, _)| l == "Ask agent").unwrap();
     while !matches!(&app.mode, Mode::Menu(m) if m.sel == ask) {
         key(&mut app, KeyCode::Down);
@@ -7275,46 +7179,16 @@ fn the_setup_before_the_first_ask_ticks_the_box_clicked_or_the_column_s() {
     keys(&mut app, &[KeyCode::Tab, KeyCode::Right]);
     assert!(draw(&mut app).contains("[x] answer only    Effort [xhigh]"), "{}", draw(&mut app));
     assert_eq!(key(&mut app, KeyCode::Enter), Effect::None);
-    let screen = wait_for(&mut app, " What each kind of ask may use, besides what stacked always gives it");
-    let chosen = |app: &App| {
-        let Mode::Setup(su) = &app.mode else { panic!("{:?}", app.mode) };
-        let c = su.screen.as_ref().unwrap().chosen();
-        (c.change, c.answer)
-    };
-    let jq = three("[x]", "[ ]", "[x]", "Bash(jq *)   stacked's default for answers");
-    let jq = screen.lines().position(|l| l.trim_end() == jq).unwrap() as u16;
-    // The mouse over jq's change box, then a click on it: ticked.
-    app.hover(13, jq);
-    app.click(13, jq, false);
-    assert_eq!(chosen(&app), (vec!["Bash(jq *)".to_string()], vec!["Bash(curl *)".to_string(), "Bash(jq *)".to_string()]));
-    // ↑ to curl, in the change column still; ← to the read-only one, and
-    // Space takes curl out of the answers' list.
-    keys(&mut app, &[KeyCode::Up, KeyCode::Left, KeyCode::Char(' ')]);
-    assert_eq!(chosen(&app), (vec!["Bash(jq *)".to_string()], vec!["Bash(jq *)".to_string()]));
-    let screen = draw(&mut app);
-    // Try pushes keep curl: their column was not touched.
-    for line in [
-        three("[ ]", "[ ]", "[x]", "Bash(curl *)   stacked's default for answers"),
-        three("[x]", "[x]", "[x]", "Bash(jq *)   stacked's default for answers"),
-    ] {
-        assert!(screen.lines().any(|l| l.trim_end() == line), "{line:?} in:\n{screen}");
-    }
-    // Saved, as ticked; and the ask goes, at the effort picked before.
-    keys(&mut app, &[KeyCode::Char('s')]);
     assert_eq!(app.mode, Mode::Normal);
-    let said = format!("the setup is saved in {}; asked the agent about 1 comment (answer only)", local.display());
-    assert!(app.status.starts_with(&said), "{}", app.status);
-    let (version, tried) = match cfg!(feature = "try-push") {
-        true => (2, "try_tools = [\"Bash(curl *)\", \"Bash(jq *)\"]\n"),
-        false => (1, ""),
-    };
-    assert_eq!(
-        std::fs::read_to_string(&local).unwrap(),
-        format!("[agent]\nsetup = {version}\nchange_tools = [\"Bash(jq *)\"]\nanswer_tools = [\"Bash(jq *)\"]\n{tried}")
-    );
+    assert!(app.status.starts_with("asked the agent about 1 comment (answer only)"), "{}", app.status);
     assert_eq!(efforts(&mut app, 1), ["xhigh"]);
+    // With what stacked gives an answer, curl and jq its list unless set.
     accept_landed(&mut app, &db);
     wait_for(&mut app, "agent replied (answer only)");
+    let d = Db::load(&db).unwrap();
+    let given = d.runs().iter().find_map(|r| stacked::ask::info(r)).unwrap().given;
+    assert!(given.contains("Bash(git show *)") && given.ends_with(",StructuredOutput,Bash(curl *),Bash(jq *)"), "{given}");
+    assert_eq!(std::fs::read_to_string(src.join(".stacked/local.toml")).unwrap(), "[agent]\nsetup = 0\n", "nothing written");
 }
 
 #[test]
@@ -13634,7 +13508,6 @@ fn phab_setup(messages: [&str; 3]) -> (tempfile::TempDir, PathBuf) {
 }
 
 /// What git says in `dir`, trimmed.
-#[cfg(feature = "moz-phab")]
 fn git_said(dir: &Path, args: &[&str]) -> String {
     let out = Command::new("git").args(args).current_dir(dir).output().unwrap();
     assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
@@ -14847,4 +14720,343 @@ fn a_read_of_the_phabricator_line_that_fails_keeps_what_was_known_and_says_nothi
     assert_eq!(phab_line(&mut app).as_deref(), Some("Phabricator: D12 · Changes Planned · …"));
     assert_eq!(app.status, "");
     stacked::phab::statuses_stand_in(&db, None);
+}
+
+/// Has the stand-in answer the asks on `db` (`fake_claude`) with `answer`,
+/// its result saying it was refused each of `denied`, a tool and what it
+/// was given (`permission_denials`), as claude's says it.
+fn refused_with(db: &Path, answer: &serde_json::Value, denied: &[(&str, serde_json::Value)]) {
+    let denials: Vec<serde_json::Value> = denied.iter().map(|(t, i)| serde_json::json!({"tool_name": t, "tool_input": i})).collect();
+    let result = serde_json::json!({"type": "result", "result": answer.to_string(), "permission_denials": denials});
+    std::fs::write(db.with_file_name("answer"), format!("{result}\n")).unwrap();
+}
+
+/// What the stand-in (`fake_claude`) was let use by each ask on `app`'s
+/// database, once `n` asked, in the order they started: its
+/// `--allowedTools`, a line each.
+fn given(app: &mut App, n: usize) -> Vec<String> {
+    let at = app.path.with_file_name("tools");
+    let read = || std::fs::read_to_string(&at).unwrap_or_default().lines().map(String::from).collect::<Vec<_>>();
+    for _ in 0..300 {
+        if read().len() >= n {
+            break;
+        }
+        app.refresh();
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    read()
+}
+
+/// Waits until `n` works wait for review on stack `s`, and no ask goes.
+fn waiting(app: &mut App, db: &Path, n: usize) {
+    for _ in 0..300 {
+        app.refresh();
+        let d = Db::load(db).unwrap();
+        let going = d.runs().iter().any(|r| r.state == stacked::db::RunState::Started);
+        if !going && stacked::held::queue(&d, "s").len() == n {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    panic!("never landed: {n} works");
+}
+
+/// What an answer the editor's tests ask, on `+TWO`, was refused: two
+/// calls of searchfox-cli, a try push of mach's, an MCP server's tool, and
+/// Edit; the agent saying why it needed the first.
+fn refused_answer(db: &Path) {
+    refused_with(
+        db,
+        &serde_json::json!({"replies": {"c1": "Seen."}, "refused": [{"tool": "Bash: searchfox-cli --define Foo", "why": "To find Foo; I used rg instead."}]}),
+        &[
+            ("Bash", serde_json::json!({"command": "searchfox-cli --define Foo"})),
+            ("Bash", serde_json::json!({"command": "searchfox-cli --define Bar"})),
+            ("Bash", serde_json::json!({"command": "./mach try fuzzy --no-push -q x"})),
+            ("mcp__moz__get_bug", serde_json::json!({"id": 1})),
+            ("Edit", serde_json::json!({"file_path": "a.txt"})),
+        ],
+    );
+}
+
+/// The editor on `db`, an answer asked on `+TWO` (`refused_answer`) landed,
+/// its review open.
+fn refused_review(db: &Path) -> Editor {
+    refused_answer(db);
+    let mut app = open(db).unwrap();
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Enter]);
+    typed(&mut app, "where is Foo?");
+    keys(&mut app, &[KeyCode::Esc]);
+    choose_as(&mut app, "Ask agent", "answer only");
+    waiting(&mut app, db, 1);
+    assert!(draw(&mut app).contains("the next: 1 reply, 4 tools the agent could not use"), "{}", draw(&mut app));
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Enter]);
+    assert_eq!(app.screen, Screen::Review);
+    app
+}
+
+/// The boxes of the menu open: each item's label that has one, whether it
+/// is checked, and whether it can be chosen.
+fn boxes(app: &App) -> Vec<(String, bool, bool)> {
+    match &app.mode {
+        Mode::Menu(m) => m.items.iter().filter_map(|i| Some((i.label.clone(), i.check?, i.enabled))).collect(),
+        other => panic!("no menu open: {other:?}"),
+    }
+}
+
+/// The text of comment `id`'s thread, of stack `s`'s patch 1.
+fn thread_of(db: &Path, starts: &str) -> String {
+    notes_of(db, "s", 0).into_iter().find(|n| n.text.starts_with(starts)).map(|n| n.text).unwrap_or_default()
+}
+
+#[test]
+fn the_tools_the_agent_could_not_use_are_items_of_its_review_refused_until_allowed() {
+    let (_tmp, db, src) = setup();
+    let local = src.canonicalize().unwrap().join(".stacked/local.toml");
+    let mut app = refused_review(&db);
+    let screen = draw(&mut app);
+    for line in [
+        " tools the agent could not use",
+        "   ✗ Bash(searchfox-cli *) · refused",
+        "   ✗ Bash(./mach try fuzzy *) · refused",
+        "   ✗ mcp__moz__get_bug · refused",
+        "   · Edit · noted",
+    ] {
+        assert!(screen.contains(line), "{line:?} in:\n{screen}");
+    }
+    // On an item: what the agent said of it, as its comment, the calls it
+    // tried under it.
+    down_to_review(&mut app, "Bash(searchfox-cli *)");
+    let screen = draw(&mut app);
+    for said in [
+        " why the agent needed this tool, as its comment",
+        "To find Foo; I used rg instead.",
+        "The calls the agent tried, each refused:",
+        "  searchfox-cli --define Foo",
+        "  searchfox-cli --define Bar",
+        "Bash(searchfox-cli *) is refused: the agent is not let use it.",
+        "enter: allow it from now on",
+    ] {
+        assert!(screen.contains(said), "{said:?} in:\n{screen}");
+    }
+    // Enter: allowed from now on, as accepting it.
+    keys(&mut app, &[KeyCode::Enter]);
+    assert!(draw(&mut app).contains("   ✓ Bash(searchfox-cli *) · from now on"), "{}", draw(&mut app));
+    let said = format!(
+        "Bash(searchfox-cli *) is allowed from now on: the rule is saved in {}, for answer-only asks, once the work is sent back or its review closes",
+        local.display()
+    );
+    assert_eq!(app.status, said);
+    // Delete refuses it now, as the bar says once the status is gone.
+    app.status.clear();
+    assert!(draw(&mut app).contains("delete: refuse it"), "{}", draw(&mut app));
+    // Delete: refused, the default, again; again, nothing to do.
+    keys(&mut app, &[KeyCode::Delete]);
+    assert!(draw(&mut app).contains("   ✗ Bash(searchfox-cli *) · refused"), "{}", draw(&mut app));
+    keys(&mut app, &[KeyCode::Delete]);
+    assert_eq!(app.status, "this tool is refused already");
+    // Its menu: the three as radio boxes, each naming its rule, from now on
+    // the file it is saved in; and a reply.
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    assert_eq!(
+        boxes(&app),
+        [
+            ("Refused: Bash(searchfox-cli *)".to_string(), true, true),
+            ("Allowed for this work: Bash(searchfox-cli *)".to_string(), false, true),
+            (format!("Allowed from now on: Bash(searchfox-cli *), saved in {}", local.display()), false, true),
+        ]
+    );
+    assert!(items(&app).iter().any(|(l, ok)| l == "Reply to it" && *ok), "{:?}", items(&app));
+    // Allowed for this work from it: its box checked, the menu still open.
+    choose(&mut app, "Allowed for this work: Bash(searchfox-cli *)");
+    assert_eq!(boxes(&app)[1], ("Allowed for this work: Bash(searchfox-cli *)".to_string(), true, true));
+    assert!(matches!(&app.mode, Mode::Menu(m) if m.items[m.sel].label == "Allowed for this work: Bash(searchfox-cli *)"), "{:?}", app.mode);
+    keys(&mut app, &[KeyCode::Esc]);
+    assert!(draw(&mut app).contains("   ✓ Bash(searchfox-cli *) · for this work"), "{}", draw(&mut app));
+    // A broad program's rule, narrower, widened from its menu: the states
+    // name the rule as it is then.
+    down_to_review(&mut app, "Bash(./mach try fuzzy *)");
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    let all: Vec<String> = items(&app).into_iter().map(|(l, _)| l).collect();
+    for item in ["Widen the rule to Bash(./mach try *)", "Widen the rule to Bash(./mach *)"] {
+        assert!(all.iter().any(|l| l == item), "{item:?} in {all:?}");
+    }
+    choose(&mut app, "Widen the rule to Bash(./mach try *)");
+    let all: Vec<String> = items(&app).into_iter().map(|(l, _)| l).collect();
+    for item in ["Refused: Bash(./mach try *)", "Narrow the rule to Bash(./mach try fuzzy *)", "Widen the rule to Bash(./mach *)"] {
+        assert!(all.iter().any(|l| l == item), "{item:?} in {all:?}");
+    }
+    keys(&mut app, &[KeyCode::Esc]);
+    assert!(draw(&mut app).contains("   ✗ Bash(./mach try *) · refused"), "{}", draw(&mut app));
+    // Noted, not offered: said why, nothing to allow, nothing to refuse.
+    down_to_review(&mut app, "· Edit");
+    let noted = "it changes things, and answer-only asks only read";
+    assert!(draw(&mut app).contains("This tool is not offered: it changes things, and answer-only asks only"), "{}", draw(&mut app));
+    keys(&mut app, &[KeyCode::Enter]);
+    assert_eq!(app.status, format!("this tool is noted, not offered: {noted}"));
+    keys(&mut app, &[KeyCode::Delete]);
+    assert_eq!(app.status, "this tool is noted, not offered: it stays refused");
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    assert!(boxes(&app).is_empty(), "{:?}", items(&app));
+    keys(&mut app, &[KeyCode::Esc]);
+    // What the review makes of them, said as Esc asks what to do: a tool
+    // allowed, the work may go back to the agent though nothing is written.
+    keys(&mut app, &[KeyCode::Esc]);
+    let note = menu_note(&app);
+    assert!(note.contains("tools the agent could not use: 1 allowed for this work, 2 refused, 1 noted"), "{note}");
+    assert!(items(&app).iter().any(|(l, ok)| l == "Send it back to the agent" && *ok), "{:?}", items(&app));
+}
+
+#[test]
+fn sent_back_a_tool_allowed_goes_to_the_next_rounds_and_from_now_on_is_saved_first() {
+    let (_tmp, db, src) = setup();
+    let local = src.canonicalize().unwrap().join(".stacked/local.toml");
+    let mut app = refused_review(&db);
+    down_to_review(&mut app, "Bash(searchfox-cli *)");
+    choose(&mut app, "Allowed for this work: Bash(searchfox-cli *)");
+    keys(&mut app, &[KeyCode::Esc]);
+    down_to_review(&mut app, "mcp__moz__get_bug");
+    keys(&mut app, &[KeyCode::Enter]);
+    // Nothing written in the review: it goes back all the same, asked
+    // first, what the work may use and what is saved for good said.
+    keys(&mut app, &[KeyCode::Esc]);
+    choose(&mut app, "Send it back to the agent");
+    let note = menu_note(&app);
+    assert!(note.contains("This work may use, from the next round until its review closes: `Bash(searchfox-cli *)`."), "{note}");
+    assert!(note.contains(&format!("Sending it back saves for good, in {}, for answer-only asks: `mcp__moz__get_bug`.", local.display())), "{note}");
+    assert!(!local.exists(), "nothing saved before it is sent back");
+    refused_with(&db, &serde_json::json!({"replies": {"c1": "Found it."}}), &[]);
+    choose(&mut app, "Send it back");
+    assert!(
+        app.status.starts_with("sent back to the agent (answer only): 1 comment to ask again; allowed for this work: Bash(searchfox-cli *)"),
+        "{}",
+        app.status
+    );
+    assert!(app.status.contains(&format!("; saved for good in {}, for answer-only asks: `mcp__moz__get_bug`", local.display())), "{}", app.status);
+    // Saved in the checkout's own settings alone, in answers' list of their
+    // own: its other settings, and the settings' file, as they were.
+    assert_eq!(std::fs::read_to_string(&local).unwrap(), "[agent]\nanswer_accepted = [\"mcp__moz__get_bug\"]\n");
+    assert_eq!(git_said(&src, &["status", "--porcelain"]), "", "nothing of the repository's");
+    // The comment told, as a turn of yours.
+    let thread = thread_of(&db, "where is Foo?");
+    assert!(
+        thread.ends_with("On the tools you could not use:\n- `Bash(searchfox-cli *)`: you may use it now, for this work.\n- `mcp__moz__get_bug`: you may use it now, and from now on."),
+        "{thread}"
+    );
+    // The next round given both, its stream saying what it may use for this
+    // work.
+    waiting(&mut app, &db, 1);
+    let tools = given(&mut app, 2);
+    assert!(tools[1].ends_with(",Bash(curl *),Bash(jq *),mcp__moz__get_bug,Bash(searchfox-cli *)"), "{}", tools[1]);
+    assert!(!tools[0].contains("searchfox") && !tools[0].contains("mcp__moz"), "{}", tools[0]);
+    let d = Db::load(&db).unwrap();
+    let round = stacked::held::queue(&d, "s")[0].id.clone();
+    let stream = stacked::ask::tail(&d, &round, 50);
+    assert_eq!(stream.first().map(String::as_str), Some("✓ allowed for this work: Bash(searchfox-cli *)"), "{stream:?}");
+    drop(d);
+    // Its review closed: what it was allowed for itself ends there, as the
+    // close says it; the next ask is given what was saved, not that.
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Enter]);
+    assert_eq!(app.screen, Screen::Review);
+    keys(&mut app, &[KeyCode::Esc]);
+    choose(&mut app, "Accept all remaining and Close");
+    let note = menu_note(&app);
+    assert!(note.contains("What this work was allowed for itself ends with its review: `Bash(searchfox-cli *)`."), "{note}");
+    choose(&mut app, "Accept them and close");
+    assert!(app.status.starts_with("reviewed: 1 reply accepted"), "{}", app.status);
+    down_to(&mut app, "+LINE 39");
+    keys(&mut app, &[KeyCode::Enter]);
+    typed(&mut app, "and here?");
+    keys(&mut app, &[KeyCode::Esc]);
+    choose_as(&mut app, "Ask agent", "answer only");
+    waiting(&mut app, &db, 1);
+    let tools = given(&mut app, 3);
+    assert!(tools[2].ends_with(",Bash(curl *),Bash(jq *),mcp__moz__get_bug"), "{}", tools[2]);
+}
+
+#[test]
+fn closed_what_is_allowed_from_now_on_is_saved_accepted_or_rejected() {
+    let (_tmp, db, src) = setup();
+    let local = src.canonicalize().unwrap().join(".stacked/local.toml");
+    let mut app = refused_review(&db);
+    down_to_review(&mut app, "Bash(./mach try fuzzy *)");
+    choose(&mut app, "Widen the rule to Bash(./mach try *)");
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Enter]);
+    // Rejected, all of it: what is allowed from now on is saved all the
+    // same, as the close says first, the rule as widened.
+    keys(&mut app, &[KeyCode::Esc]);
+    choose(&mut app, "Reject all remaining and Close");
+    let note = menu_note(&app);
+    assert!(note.contains(&format!("Closing the review saves for good, in {}, for answer-only asks: `Bash(./mach try *)`.", local.display())), "{note}");
+    choose(&mut app, "Reject them and close");
+    assert!(
+        app.status.starts_with(&format!(
+            "reviewed: 1 reply rejected; 1 tool allowed from now on, 2 refused, 1 noted; saved for good in {}, for answer-only asks: `Bash(./mach try *)`",
+            local.display()
+        )),
+        "{}",
+        app.status
+    );
+    assert_eq!(std::fs::read_to_string(&local).unwrap(), "[agent]\nanswer_accepted = [\"Bash(./mach try *)\"]\n");
+    // Accepted: added to that list, each rule once.
+    down_to(&mut app, "+LINE 39");
+    keys(&mut app, &[KeyCode::Enter]);
+    typed(&mut app, "and here?");
+    keys(&mut app, &[KeyCode::Esc]);
+    choose_as(&mut app, "Ask agent", "answer only");
+    waiting(&mut app, &db, 1);
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Enter]);
+    down_to_review(&mut app, "Bash(searchfox-cli *)");
+    keys(&mut app, &[KeyCode::Enter]);
+    keys(&mut app, &[KeyCode::Esc]);
+    choose(&mut app, "Accept all remaining and Close");
+    choose(&mut app, "Accept them and close");
+    assert_eq!(std::fs::read_to_string(&local).unwrap(), "[agent]\nanswer_accepted = [\"Bash(./mach try *)\", \"Bash(searchfox-cli *)\"]\n");
+}
+
+#[test]
+fn allowed_from_now_on_is_not_offered_where_git_tracks_the_checkout_s_own_settings() {
+    let (_tmp, db, src) = setup();
+    std::fs::create_dir_all(src.join(".stacked")).unwrap();
+    std::fs::write(src.join(".stacked/local.toml"), "[view]\nreading = false\n").unwrap();
+    git(&src, &["add", "-f", ".stacked/local.toml"]);
+    let local = src.canonicalize().unwrap().join(".stacked/local.toml");
+    let why = format!("{}: git tracks it, and a checkout's own settings are yours, not the repository's", local.display());
+    let mut app = refused_review(&db);
+    down_to_review(&mut app, "Bash(searchfox-cli *)");
+    let screen = draw(&mut app);
+    assert!(screen.contains("enter: allow it for this work"), "{screen}");
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    assert_eq!(boxes(&app)[2], ("Allowed from now on: Bash(searchfox-cli *)".to_string(), false, false));
+    assert_eq!(menu_note(&app), format!("Allowed from now on is not offered: {why}."));
+    keys(&mut app, &[KeyCode::Esc]);
+    // Enter: allowed for this work, the status saying why not from now on.
+    keys(&mut app, &[KeyCode::Enter]);
+    assert!(app.status.starts_with("Bash(searchfox-cli *) is allowed for this work: every round of this work may use the rule until the work's review closes"), "{}", app.status);
+    assert!(app.status.ends_with(&format!("; allowed from now on is not offered: {why}")), "{}", app.status);
+    assert!(draw(&mut app).contains("   ✓ Bash(searchfox-cli *) · for this work"), "{}", draw(&mut app));
+}
+
+#[test]
+fn a_reply_on_a_tool_the_agent_could_not_use_sends_the_work_back_with_it() {
+    let (_tmp, db, _src) = setup();
+    let mut app = refused_review(&db);
+    down_to_review(&mut app, "Bash(searchfox-cli *)");
+    choose(&mut app, "Reply to it");
+    assert!(draw(&mut app).contains("your answer to what the agent said of this tool"), "{}", draw(&mut app));
+    save(&mut app, "Use rg as you did.");
+    let screen = draw(&mut app);
+    for line in [" what you wrote, to send back", "   ✎ your answer on Bash(searchfox-cli *) · Use"] {
+        assert!(screen.contains(line), "{line:?} in:\n{screen}");
+    }
+    // Esc: it goes back to the agent, neither accepted nor rejected.
+    keys(&mut app, &[KeyCode::Esc]);
+    assert!(menu_note(&app).starts_with("You wrote 1 answer to what the agent said of a tool it could not use in this review"), "{}", menu_note(&app));
+    refused_with(&db, &serde_json::json!({"replies": {"c1": "Found it."}}), &[]);
+    choose(&mut app, "Send it back to the agent");
+    assert!(app.status.starts_with("sent back to the agent (answer only): 1 comment to ask again"), "{}", app.status);
+    let thread = thread_of(&db, "where is Foo?");
+    assert!(thread.ends_with("On the tools you could not use:\n- `Bash(searchfox-cli *)`: still refused. Use rg as you did."), "{thread}");
+    waiting(&mut app, &db, 1);
 }

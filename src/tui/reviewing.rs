@@ -8,14 +8,22 @@
 //! on later, thrown away, or closed, what was accepted applied. Work that
 //! brought nothing back has no part: it is reviewed for the comments its
 //! ask was about, to close or keep.
+//!
+//! The tools the agent could not use are a section of their own, each
+//! item refused (Delete), allowed for this work, or allowed from now on
+//! (Enter), as its menu picks too; on the right, what the agent said of it,
+//! the calls it tried under that. Work that holds one lands though it failed
+//! or brought nothing back, to allow a tool and send it back.
 
 use std::collections::BTreeMap;
 use std::ops::Range;
+use std::path::PathBuf;
 
 use super::*;
 use crate::db::Run;
 use crate::held::{Held as Work, Part};
 use crate::history::Diffed;
+use crate::refusals::{Allow, Refusal};
 #[cfg(feature = "try-push")]
 use crate::try_push::thousands;
 
@@ -122,6 +130,10 @@ pub struct Reviewing {
     /// cursor on once it is drawn, the one Enter went to from the stack diff.
     pub in_patch: bool,
     goto: Option<usize>,
+    /// Where what the review allows from now on is saved: the stack's
+    /// checkout's own settings; else why it cannot be. Looked at as the
+    /// review opens, when its work holds a tool the agent could not use.
+    pub local: Option<std::result::Result<PathBuf, String>>,
 }
 
 /// What you wrote in the review a line of its list is: a comment you opened
@@ -133,6 +145,7 @@ pub(super) enum Yours {
     Answer(usize),
     #[cfg(feature = "try-push")]
     TaskAnswer(usize),
+    ToolAnswer(usize),
 }
 
 /// A line of the review's list: what it says, how, and the part it is of
@@ -154,14 +167,17 @@ pub(super) struct Line {
     /// Of a reconcile with HEAD's work, stacked's comment: what to run in
     /// your checkout should you reject it, to read.
     stacked: bool,
+    /// A tool the agent could not use, by its place among those the work
+    /// holds: refused, or allowed for this work or from now on.
+    tool: Option<usize>,
 }
 
 impl Line {
     /// Whether the cursor goes on it: a part, a comment that asked, what
-    /// you wrote, what the linter reported, or stacked's comment; not a
-    /// section's title.
+    /// you wrote, what the linter reported, stacked's comment, or a tool the
+    /// agent could not use; not a section's title.
     fn selectable(&self) -> bool {
-        self.part.is_some() || self.asking.is_some() || self.yours.is_some() || self.report.is_some() || self.stacked
+        self.part.is_some() || self.asking.is_some() || self.yours.is_some() || self.report.is_some() || self.stacked || self.tool.is_some()
     }
 }
 
@@ -279,6 +295,7 @@ impl App {
         self.reviewing = Some(Reviewing {
             run: run.into(),
             marks,
+            local: self.local_of(run),
             ..Default::default()
         });
         self.screen = Screen::Review;
@@ -290,8 +307,13 @@ impl App {
             Some(p) => lines.iter().position(|l| l.part == Some(p)),
             None => was.or_else(|| lines.iter().position(|l| l.part.is_some_and(|p| !marks.contains_key(&p.key())))),
         };
-        // No part left: on the first comment that asked.
-        let at = at.or_else(|| lines.iter().position(|l| l.part.is_some())).or_else(|| lines.iter().position(Line::selectable)).unwrap_or(0);
+        // No part left: on the first tool the agent could not use, else on
+        // the first comment that asked.
+        let at = at
+            .or_else(|| lines.iter().position(|l| l.part.is_some()))
+            .or_else(|| lines.iter().position(|l| l.tool.is_some()))
+            .or_else(|| lines.iter().position(Line::selectable))
+            .unwrap_or(0);
         if let Some(rv) = &mut self.reviewing {
             rv.sel = at;
         }
@@ -333,7 +355,7 @@ impl App {
         let Some(rv) = &self.reviewing else { return false };
         self.review_lines()
             .get(rv.sel)
-            .is_some_and(|l| l.asking.is_none() && l.yours.is_none() && l.report.is_none() && !l.stacked && matches!(l.part, Some(Part::Stack) | None))
+            .is_some_and(|l| l.asking.is_none() && l.yours.is_none() && l.report.is_none() && !l.stacked && l.tool.is_none() && matches!(l.part, Some(Part::Stack) | None))
             && self.review_stacks().is_some()
     }
 
@@ -601,6 +623,20 @@ impl App {
         self.review_lines().get(rv.sel)?.yours.clone()
     }
 
+    /// Your answer to what the agent said of tool `k` it could not use,
+    /// written in the review: again, if you wrote one. The cursor goes on
+    /// that tool, for its comment to show where the answer is written.
+    pub(super) fn review_tool_answer(&mut self, k: usize) {
+        let Some(run) = self.reviewing.as_ref().map(|rv| rv.run.clone()) else { return };
+        let was = self.work(&run).and_then(|(_, h)| h.tools.get(k)?.answer.clone()).unwrap_or_default();
+        if let Some(at) = self.review_lines().iter().position(|l| l.tool == Some(k))
+            && let Some(rv) = self.reviewing.as_mut()
+        {
+            (rv.sel, rv.in_main, rv.in_patch) = (at, false, false);
+        }
+        self.write(Target::ToolAnswer { run, k }, Focus::Diff, &was);
+    }
+
     /// What you wrote in the review, `y`, written again: what you said last
     /// in your comment, or your answer to the work's reply.
     pub(super) fn review_write_yours(&mut self, y: Yours) {
@@ -609,6 +645,7 @@ impl App {
             Yours::Answer(k) => self.review_answer(k),
             #[cfg(feature = "try-push")]
             Yours::TaskAnswer(k) => self.review_task_answer(k),
+            Yours::ToolAnswer(k) => self.review_tool_answer(k),
         }
     }
 
@@ -625,6 +662,7 @@ impl App {
             Yours::Answer(k) => self.edit(|db| crate::held::answer(db, &run, k, "")),
             #[cfg(feature = "try-push")]
             Yours::TaskAnswer(k) => self.edit(|db| crate::held::answer_task(db, &run, k, "")),
+            Yours::ToolAnswer(k) => self.edit(|db| crate::held::answer_tool(db, &run, k, "")),
         };
         if done.is_none() {
             return;
@@ -647,6 +685,7 @@ impl App {
             Yours::Answer(_) => ("take your answer back? it does not go back to the agent with the work", "Take your answer back"),
             #[cfg(feature = "try-push")]
             Yours::TaskAnswer(_) => ("take your answer back? it does not go back to the agent with the work", "Take your answer back"),
+            Yours::ToolAnswer(_) => ("take your answer back? it does not go back to the agent with the work", "Take your answer back"),
         };
         Some(Menu::ask(title, Item::new(yes, Action::TakeYoursBack), "Keep it", true))
     }
@@ -668,6 +707,16 @@ impl App {
                 false => Ok(Action::CloseAsking(k, true)),
             });
         }
+        // A tool the agent could not use: refused, unless it is, or is
+        // noted, not offered.
+        if let Some(k) = line.tool {
+            let t = self.tool_item(k)?;
+            return Some(match (&t.noted, crate::refusals::state(&rv.marks, k)) {
+                (Some(_), _) => Err("this tool is noted, not offered: it stays refused".into()),
+                (None, Allow::Refused) => Err("this tool is refused already".into()),
+                _ => Ok(Action::ToolState(k, Allow::Refused)),
+            });
+        }
         let p = line.part?;
         Some(match rv.marks.get(&p.key()) {
             Some(false) => Err("this part is rejected already".into()),
@@ -681,7 +730,89 @@ impl App {
         Reviewing {
             run: run.into(),
             marks: self.db.review(run).map(|v| v.marks.clone()).unwrap_or_default(),
+            local: self.local_of(run),
             ..Default::default()
+        }
+    }
+
+    /// Where the review of what run `run` brought back saves what it allows
+    /// from now on, or why it cannot: looked at only when that work holds a
+    /// tool the agent could not use.
+    fn local_of(&self, run: &str) -> Option<std::result::Result<PathBuf, String>> {
+        let (r, h) = self.work(run)?;
+        h.offers_tools().then(|| crate::refusals::local_of(&self.db, r))
+    }
+
+    /// Where the review saves what it allows from now on, or why it cannot.
+    pub(super) fn tool_local(&self) -> std::result::Result<PathBuf, String> {
+        let Some(rv) = &self.reviewing else { return Err("no review is open".into()) };
+        match &rv.local {
+            Some(l) => l.clone(),
+            None => self.db.run(&rv.run).map_or(Err(format!("run {} is gone", rv.run)), |r| crate::refusals::local_of(&self.db, r)),
+        }
+    }
+
+    /// Tool `k` the agent could not use, of the work reviewed.
+    fn tool_item(&self, k: usize) -> Option<&Refusal> {
+        let rv = self.reviewing.as_ref()?;
+        self.work(&rv.run)?.1.tools.get(k)
+    }
+
+    /// The kind of ask the work reviewed was asked in: whose list a tool
+    /// allowed from now on goes in.
+    fn review_way(&self) -> Option<Way> {
+        ask::way_of(&self.db, &self.reviewing.as_ref()?.run)
+    }
+
+    /// Tool `k` the agent could not use marked `a` in the review, the status
+    /// line saying so; from now on, only where it can be saved.
+    pub(super) fn tool_state(&mut self, k: usize, a: Allow) {
+        let Some(t) = self.tool_item(k).cloned() else { return };
+        if let Some(why) = &t.noted {
+            self.status = format!("this tool is noted, not offered: {why}");
+            return;
+        }
+        let local = self.tool_local();
+        let kind = self.review_way().map_or("this kind of ask", crate::refusals::kind_said);
+        let Some(rv) = self.reviewing.as_mut() else { return };
+        let rule = crate::refusals::rule_of(&t, &rv.marks, k).to_string();
+        let (said, done) = match (a, &local) {
+            (Allow::Always, Err(why)) => (format!("{rule} cannot be allowed from now on: {why}; the rule can be allowed for this work"), false),
+            (Allow::Always, Ok(at)) => (
+                format!("{rule} is allowed from now on: the rule is saved in {}, for {kind}, once the work is sent back or its review closes", at.display()),
+                true,
+            ),
+            (Allow::Work, _) => (format!("{rule} is allowed for this work: every round of this work may use the rule until the work's review closes; nothing is saved"), true),
+            (Allow::Refused, _) => (format!("{rule} is refused"), true),
+        };
+        if done {
+            crate::refusals::set_state(&mut rv.marks, k, a);
+        }
+        self.status = said;
+    }
+
+    /// Tool `k` the agent could not use allowed with its rule `j` instead,
+    /// narrower or wider, marked as it was.
+    pub(super) fn tool_rule(&mut self, k: usize, j: usize) {
+        let Some(t) = self.tool_item(k).cloned() else { return };
+        let Some(rv) = self.reviewing.as_mut() else { return };
+        crate::refusals::set_picked(&mut rv.marks, k, &t, j);
+        let rule = crate::refusals::rule_of(&t, &rv.marks, k).to_string();
+        self.status = format!("the item's rule is now {rule}, and the item is {}", crate::refusals::state(&rv.marks, k).said());
+    }
+
+    /// Enter on tool `k` the agent could not use: allowed from now on, where
+    /// that can be saved; else allowed for this work, the status line saying
+    /// why. A tool noted is not offered.
+    fn tool_enter(&mut self, k: usize) {
+        match self.tool_local() {
+            Ok(_) => self.tool_state(k, Allow::Always),
+            Err(why) => {
+                self.tool_state(k, Allow::Work);
+                if self.tool_item(k).is_some_and(Refusal::offered) {
+                    self.status += &format!("; allowed from now on is not offered: {why}");
+                }
+            }
         }
     }
 
@@ -719,6 +850,7 @@ impl App {
         // A try push's: what closing pushes, of the tasks accepted already.
         #[cfg(feature = "try-push")]
         said.extend(self.push_said(Some(false)));
+        said.extend(self.tools_note(Closing::Rejecting));
         self.reviewing = was;
         let yes = Item::new("Reject them and close", Action::RejectWork(run.into()));
         let mut m = Menu::ask("reject every part of this work not marked yet, then close its review?", yes, "Keep it for review", true);
@@ -741,9 +873,6 @@ impl App {
     /// asked at; the review left.
     pub(super) fn review_send_back(&mut self, effort: Option<Effort>) {
         let Some(rv) = self.reviewing.clone() else { return };
-        if self.set_up_first(super::Then::SendBack(effort)) {
-            return;
-        }
         let sent = ask::send_back(&self.path, &self.stack, &rv.run, &rv.marks, effort);
         self.reload();
         match sent {
@@ -774,6 +903,7 @@ impl App {
             yours: None,
             report: None,
             stacked: false,
+            tool: None,
         };
         let asking = self.asking_open();
         if !asking.is_empty() {
@@ -864,6 +994,26 @@ impl App {
                 });
             }
         }
+        // The tools the agent could not use, each by the rule that would let
+        // it, as the review marks it, in a word or two after it, the list
+        // being narrow: refused, allowed for this work or from now on; those
+        // noted, not offered.
+        if !h.tools.is_empty() {
+            out.push(title(&format!(" {}", crate::refusals::HEADING)));
+            for (k, t) in h.tools.iter().enumerate() {
+                let rule = crate::refusals::rule_of(t, &rv.marks, k);
+                let (m, said, st) = match (&t.noted, crate::refusals::state(&rv.marks, k)) {
+                    (Some(_), _) => ("·", "noted", color::dim()),
+                    (None, Allow::Refused) => ("✗", "refused", color::del()),
+                    (None, Allow::Work) => ("✓", "for this work", color::add()),
+                    (None, Allow::Always) => ("✓", "from now on", color::add()),
+                };
+                out.push(Line {
+                    tool: Some(k),
+                    ..line(format!("   {m} {rule} · {said}"), st)
+                });
+            }
+        }
         // What the linter reported and did not fix: each run of it that did,
         // to read, nothing to accept or reject.
         if let Some(l) = h.lint.as_ref().filter(|l| !l.errors.is_empty()) {
@@ -906,6 +1056,11 @@ impl App {
         for (k, t) in h.tasks.iter().enumerate().filter(|(_, t)| t.answer.is_some()) {
             let text = format!("   ✎ your answer on {} · {}", t.label, crate::markdown::first_line(t.answer.as_deref().unwrap_or("")));
             yours.push((text, Yours::TaskAnswer(k)));
+        }
+        for (k, t) in h.tools.iter().enumerate().filter(|(_, t)| t.answer.is_some()) {
+            let rule = crate::refusals::rule_of(t, &rv.marks, k);
+            let text = format!("   ✎ your answer on {rule} · {}", crate::markdown::first_line(t.answer.as_deref().unwrap_or("")));
+            yours.push((text, Yours::ToolAnswer(k)));
         }
         if !yours.is_empty() {
             out.push(title(" what you wrote, to send back"));
@@ -953,6 +1108,10 @@ impl App {
             && let Some(job) = r.reconcile.as_deref()
         {
             return stacked_view(job, w);
+        }
+        // A tool the agent could not use: what it said of it, as its comment.
+        if let Some(k) = line.tool {
+            return self.tool_view(h, k, w);
         }
         match line.part {
             Some(Part::Stack) | None => {
@@ -1055,7 +1214,74 @@ impl App {
             }
             #[cfg(feature = "try-push")]
             Yours::TaskAnswer(k) => self.task_view(h, *k, w),
+            Yours::ToolAnswer(k) => self.tool_view(h, *k, w),
         }
+    }
+
+    /// Tool `k` the agent could not use, of work `h`, `w` wide: why the agent
+    /// needed it and how it worked around it, as its comment on the tool, by
+    /// its rule; your answer to it after, if you wrote one; then the calls it
+    /// tried, and where the tool stands. And the lines that are the comment.
+    fn tool_view(&self, h: &Work, k: usize, w: usize) -> View {
+        let (Some(t), Some(rv)) = (h.tools.get(k), self.reviewing.as_ref()) else { return (String::new(), vec![], 0..0) };
+        let rule = crate::refusals::rule_of(t, &rv.marks, k).to_string();
+        let why = if t.why.trim().is_empty() { "The agent did not say why it needed this tool." } else { t.why.as_str() };
+        let mut text = append_turn("", Role::Agent, why, Some("tool"));
+        if let Some(a) = &t.answer {
+            text = append_turn(&text, Role::You, a, None);
+        }
+        let n = Note {
+            change: stack_change(&self.stack),
+            id: format!("tool {k}"),
+            text,
+            by: Some("agent".into()),
+            ..Default::default()
+        };
+        let said = match (&t.noted, &t.answer) {
+            (Some(_), _) => " why the agent needed this tool, as its comment: noted, it is not offered",
+            (None, Some(_)) => " why the agent needed this tool, and your answer, which sends the work back to the agent",
+            (None, None) => " why the agent needed this tool, as its comment: a reply to it sends the work back to the agent",
+        };
+        let mut rows = vec![Row {
+            kind: Kind::File,
+            text: rule.clone(),
+            ..Default::default()
+        }];
+        rows.extend(crate::rows::comment_rows(&n, w, &Deco::default()));
+        let end = rows.len();
+        let mut lines: Vec<Vec<(String, Style)>> = rows.iter().map(|row| row_parts(row, false)).collect();
+        let blank = || vec![(String::new(), Style::new())];
+        lines.push(blank());
+        let tried = if t.calls.len() == 1 { "The call the agent tried, which was refused:" } else { "The calls the agent tried, each refused:" };
+        lines.push(vec![(tried.to_string(), color::dim())]);
+        for c in &t.calls {
+            lines.extend(wrap(c, w.saturating_sub(2).max(20)).into_iter().map(|l| vec![(format!("  {l}"), Style::new())]));
+        }
+        lines.push(blank());
+        let kind = self.review_way().map_or("this kind of ask", crate::refusals::kind_said);
+        let mut stands = match (&t.noted, crate::refusals::state(&rv.marks, k)) {
+            (Some(why), _) => vec![format!("This tool is not offered: {why}.")],
+            (None, Allow::Refused) => vec![format!("{rule} is refused: the agent is not let use it.")],
+            (None, Allow::Work) => vec![format!("{rule} is allowed for this work: every round of this work may use the tool until the work's review closes, and nothing is saved.")],
+            (None, Allow::Always) => vec![match self.tool_local() {
+                Ok(at) => format!("{rule} is allowed from now on: once the work is sent back or its review closes, the rule is saved in {}, for {kind}.", at.display()),
+                Err(why) => format!("{rule} is marked allowed from now on, which cannot be saved: {why}."),
+            }],
+        };
+        if t.offered() {
+            if let Err(why) = self.tool_local() {
+                stands.push(format!("Allowed from now on is not offered: {why}."));
+            }
+            let at = crate::refusals::picked(&rv.marks, k, t);
+            let others: Vec<&str> = t.rules.iter().enumerate().filter(|(j, _)| *j != at).map(|(_, r)| r.as_str()).collect();
+            if !others.is_empty() {
+                stands.push(format!("The item's menu can allow the tool with another rule instead: {}.", others.join(", ")));
+            }
+        }
+        for said in stands {
+            lines.extend(wrap(&said, w.max(20)).into_iter().map(|l| vec![(l, color::note())]));
+        }
+        (said.to_string(), lines, 1..end)
     }
 
     /// Why the agent selected task `k` of the try push work `h`, `w` wide,
@@ -1333,6 +1559,9 @@ impl App {
                     // A comment that asked: closed with the review, or kept.
                     let close = rv.marks.get(&crate::held::asking_key(k)) != Some(&true);
                     self.mark_asking(k, close);
+                } else if let Some(k) = lines.get(rv.sel).and_then(|l| l.tool) {
+                    // A tool the agent could not use: allowed from now on.
+                    self.tool_enter(k);
                 } else if let Some(p) = lines.get(rv.sel).and_then(|l| l.part) {
                     match rv.marks.get(&p.key()) {
                         Some(true) => {
@@ -1503,6 +1732,13 @@ impl App {
         if line.stacked {
             return "enter: nothing, stacked's comment is to read";
         }
+        if let Some(k) = line.tool {
+            return match self.tool_item(k) {
+                Some(t) if !t.offered() => "enter: nothing, this tool is noted, not offered",
+                _ if self.tool_local().is_ok() => "enter: allow it from now on",
+                _ => "enter: allow it for this work",
+            };
+        }
         match (line.asking, line.part) {
             (Some(k), _) if rv.marks.get(&crate::held::asking_key(k)) == Some(&true) => "enter: keep it open",
             (Some(_), _) => "enter: close it with the review",
@@ -1555,6 +1791,16 @@ impl App {
         }
         if self.work(&rv.run).is_some_and(|(r, _)| r.reconcile.is_some()) {
             out.push("stacked's comment: to read, nothing to accept or reject".to_string());
+        }
+        if let Some((_, h)) = self.work(&rv.run).filter(|(_, h)| !h.tools.is_empty()) {
+            let of = |a: Allow| h.tools.iter().enumerate().filter(|(k, t)| t.offered() && crate::refusals::state(&rv.marks, *k) == a).count();
+            let noted = h.tools.iter().filter(|t| !t.offered()).count();
+            let said: Vec<String> = [(of(Allow::Always), Allow::Always.said()), (of(Allow::Work), Allow::Work.said()), (of(Allow::Refused), Allow::Refused.said()), (noted, "noted")]
+                .into_iter()
+                .filter(|(n, _)| *n > 0)
+                .map(|(n, what)| format!("{n} {what}"))
+                .collect();
+            out.push(format!("{}: {}", crate::refusals::HEADING, said.join(", ")));
         }
         let asking = self.asking_open();
         if !asking.is_empty() {
@@ -1610,7 +1856,10 @@ impl App {
         // nor rejected.
         let (comments, answers) = self.review_yours();
         if comments + answers > 0 {
-            let back = if self.review_again(Closing::SendingBack).is_some() { Action::AskSendBack } else { Action::SendBack };
+            // What goes back with it asked first: what it drops, and what
+            // the next round may use.
+            let asks = self.review_again(Closing::SendingBack).is_some() || self.tools_note(Closing::SendingBack).is_some();
+            let back = if asks { Action::AskSendBack } else { Action::SendBack };
             let items = vec![
                 Item::new("Send it back to the agent", back).with(self.effort_choices(self.review_effort())),
                 Item::new("Save", Action::ReviewSave),
@@ -1625,10 +1874,12 @@ impl App {
             let tasks = self.reviewing.as_ref().and_then(|rv| self.work(&rv.run)).map_or(0, |(_, h)| h.tasks.iter().filter(|t| t.answer.is_some()).count());
             #[cfg(not(feature = "try-push"))]
             let tasks = 0;
+            let tools = self.reviewing.as_ref().and_then(|rv| self.work(&rv.run)).map_or(0, |(_, h)| h.tools.iter().filter(|t| t.answer.is_some()).count());
             for (n, one, many) in [
                 (comments, "1 comment", "comments"),
-                (answers.saturating_sub(tasks), "1 answer to the agent's replies", "answers to the agent's replies"),
+                (answers.saturating_sub(tasks + tools), "1 answer to the agent's replies", "answers to the agent's replies"),
                 (tasks, "1 answer to why the agent selected a task", "answers to why the agent selected its tasks"),
+                (tools, "1 answer to what the agent said of a tool it could not use", "answers to what the agent said of the tools it could not use"),
             ] {
                 match n {
                     0 => {}
@@ -1650,11 +1901,16 @@ impl App {
             Item::new("Save", Action::ReviewSave),
             Item::new("Discard", Action::ReviewDiscard),
             Item::new("Close review", if self.review_close_menu().is_some() { Action::AskClose } else { Action::ReviewClose(None) }).when(done),
-            // What remains, accepted or rejected together, a section of its
-            // own; over it, whether the comments that asked close with it,
-            // and whether HEAD follows the stack.
-            Item::line(),
         ];
+        // A tool allowed: the work may go back to the agent, to try again
+        // with it, though you wrote nothing; asked first.
+        if self.review_writable() && self.tools_allowed() {
+            items.push(Item::new("Send it back to the agent", Action::AskSendBack).with(self.effort_choices(self.review_effort())));
+        }
+        // What remains, accepted or rejected together, a section of its
+        // own; over it, whether the comments that asked close with it, and
+        // whether HEAD follows the stack.
+        items.push(Item::line());
         items.extend(self.asking_row());
         items.extend(self.head_row());
         items.extend([
@@ -1780,6 +2036,7 @@ impl App {
         // A try push's: what closing pushes.
         #[cfg(feature = "try-push")]
         said.extend(self.push_said(Some(accept)));
+        said.extend(self.tools_note(if accepting { Closing::Accepting } else { Closing::Rejecting }));
         self.close_choices(title, yes, Some(accept), said, stop)
     }
 
@@ -1795,7 +2052,66 @@ impl App {
         said.extend(builds);
         #[cfg(feature = "try-push")]
         said.extend(self.push_said(None));
+        said.extend(self.tools_note(if accepting { Closing::Accepting } else { Closing::Rejecting }));
         (!said.is_empty()).then(|| self.close_choices("close the review?", "Close it", None, said, stop))
+    }
+
+    /// Whether the review allows a tool the agent could not use, for this
+    /// work or from now on.
+    fn tools_allowed(&self) -> bool {
+        let Some(rv) = &self.reviewing else { return false };
+        self.work(&rv.run).is_some_and(|(_, h)| {
+            let (work, always) = crate::refusals::allowed(&h.tools, &rv.marks);
+            !work.is_empty() || !always.is_empty()
+        })
+    }
+
+    /// What the review does with the tools the agent could not use as it
+    /// closes `how`, said: sent back, what the next round may use for this
+    /// work, and what is saved for good, in the checkout's own settings;
+    /// closed, accepted or rejected, what is saved for good, and that what
+    /// this work was allowed for itself ends. None for nothing.
+    fn tools_note(&self, how: Closing) -> Option<String> {
+        let rv = self.reviewing.as_ref()?;
+        let (r, h) = self.work(&rv.run)?;
+        let (mut work, always) = crate::refusals::allowed(&h.tools, &rv.marks);
+        // What the work was given for itself already goes on too.
+        let mut given = ask::info(r).map(|i| i.allowed).unwrap_or_default();
+        given.retain(|g| !work.contains(g));
+        given.append(&mut work);
+        let work = given;
+        let kind = self.review_way().map_or("this kind of ask", crate::refusals::kind_said);
+        let mut out = Vec::new();
+        let saved = |how: &str, rules: &[String]| match self.tool_local() {
+            Ok(at) => format!("{how} saves for good, in {}, for {kind}: {}.", at.display(), crate::refusals::listed(rules)),
+            Err(why) => format!("{} cannot be saved for good: {why}.", crate::refusals::listed(rules)),
+        };
+        match how {
+            Closing::SendingBack => {
+                let mut may = work.clone();
+                if !always.is_empty() && self.tool_local().is_err() {
+                    may.extend(always.iter().cloned());
+                }
+                if !may.is_empty() {
+                    out.push(format!("This work may use, from the next round until its review closes: {}.", crate::refusals::listed(&may)));
+                }
+                if !always.is_empty() {
+                    out.push(match self.tool_local() {
+                        Ok(_) => saved("Sending it back", &always),
+                        Err(why) => format!("{} cannot be saved for good, so it is allowed for this work instead: {why}.", crate::refusals::listed(&always)),
+                    });
+                }
+            }
+            Closing::Accepting | Closing::Rejecting => {
+                if !always.is_empty() {
+                    out.push(saved("Closing the review", &always));
+                }
+                if !work.is_empty() {
+                    out.push(format!("What this work was allowed for itself ends with its review: {}.", crate::refusals::listed(&work)));
+                }
+            }
+        }
+        (!out.is_empty()).then(|| out.join("\n"))
     }
 
     /// What closing the review of a try push's work does with its tasks,
@@ -1859,7 +2175,8 @@ impl App {
     pub(super) fn review_send_back_ask(&self) -> Menu {
         let back = Item::new("Send it back", Action::SendBack).with(self.effort_choices(self.at_effort.or(self.review_effort())));
         let mut m = Menu::ask("send the work back to the agent?", back, "Keep reviewing", true);
-        m.note = self.review_again(Closing::SendingBack);
+        let said: Vec<String> = self.review_again(Closing::SendingBack).into_iter().chain(self.tools_note(Closing::SendingBack)).collect();
+        m.note = (!said.is_empty()).then(|| said.join("\n"));
         m
     }
 
@@ -1982,7 +2299,7 @@ impl App {
         if let Some(y) = lines.get(rv.sel).and_then(|l| l.yours.as_ref()) {
             let (edit, back) = match y {
                 Yours::Comment(..) => ("Edit it", "Take it back"),
-                Yours::Answer(_) => ("Edit your answer to it", "Take your answer back"),
+                Yours::Answer(_) | Yours::ToolAnswer(_) => ("Edit your answer to it", "Take your answer back"),
                 #[cfg(feature = "try-push")]
                 Yours::TaskAnswer(_) => ("Edit your answer to it", "Take your answer back"),
             };
@@ -2004,6 +2321,38 @@ impl App {
         {
             let answered = self.work(&rv.run).is_some_and(|(_, h)| h.tasks.get(k).is_some_and(|t| t.answer.is_some()));
             items.push(Item::new(if answered { "Edit your answer to it" } else { "Reply to it" }, Action::AnswerTask(k)));
+        }
+        // A tool the agent could not use: refused, allowed for this work or
+        // allowed from now on, a box each, the one it is checked, each naming
+        // the rule, from now on the file it is saved in; then the other rules
+        // it may be allowed with; then your answer to what the agent said.
+        if let Some(k) = lines.get(rv.sel).and_then(|l| l.tool)
+            && let Some(t) = self.tool_item(k)
+        {
+            if t.offered() {
+                let rule = crate::refusals::rule_of(t, &rv.marks, k);
+                let now = crate::refusals::state(&rv.marks, k);
+                let local = self.tool_local();
+                let always = match &local {
+                    Ok(at) => format!("Allowed from now on: {rule}, saved in {}", at.display()),
+                    Err(_) => format!("Allowed from now on: {rule}"),
+                };
+                items.push(Item::new(format!("Refused: {rule}"), Action::ToolState(k, Allow::Refused)).checked(now == Allow::Refused));
+                items.push(Item::new(format!("Allowed for this work: {rule}"), Action::ToolState(k, Allow::Work)).checked(now == Allow::Work));
+                items.push(Item::new(always, Action::ToolState(k, Allow::Always)).checked(now == Allow::Always).when(local.is_ok()));
+                let at = crate::refusals::picked(&rv.marks, k, t);
+                if t.rules.len() > 1 {
+                    items.push(Item::line());
+                    for (j, r) in t.rules.iter().enumerate().filter(|(j, _)| *j != at) {
+                        let how = if j > at { "Widen the rule to" } else { "Narrow the rule to" };
+                        items.push(Item::new(format!("{how} {r}"), Action::ToolRule(k, j)));
+                    }
+                }
+                items.push(Item::line());
+            }
+            if self.review_writable() {
+                items.push(Item::new(if t.answer.is_some() { "Edit your answer to it" } else { "Reply to it" }, Action::AnswerTool(k)));
+            }
         }
         // A comment that asked: closed with the review, or kept.
         if let Some(k) = lines.get(rv.sel).and_then(|l| l.asking) {

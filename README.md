@@ -123,7 +123,7 @@ stacked config editor hx           # one written in the settings file; KEY alone
 stacked config --unset editor      # ... taken out of it
 stacked config --local editor vim  # ... in this checkout's own settings, over the file's here
 stacked setup agent bug123         # what each kind of ask may use, one list of tools, checked line by line, for its checkout
-stacked setup agent bug123 --tui   # ... on a screen, a box for each kind of ask on each tool, as the editor shows it before the first ask
+stacked setup agent bug123 --tui   # ... on a screen, a box for each kind of ask on each tool, and the rules reviews allowed, to keep or take out
 stacked setup lint eslint --fix    # the linter of this checkout, which the stack's menu runs: Lint the stack (eslint --fix)
 stacked setup lint                 # ... the one in use, and where it comes from (./mach lint --fix where ./mach is)
 ```
@@ -1299,11 +1299,13 @@ comment editor's `Ask agent`:
   stacked's `agent.tools` add (the stack's checkout's own, if it sets them:
   Settings, below), your MCP servers' tools among them. What it was not let use
   is said in its stream (`⛔ not allowed: mcp__moz__get_bug: …`) and in its
-  run's summary, with the list that lets its kind of ask use more
-  (`agent.answer_tools`, `agent.change_tools`; for a build and test,
-  `agent.tools`), to allow it if it should be; every ask, a change's too,
-  is told to say so in what it writes, the tool not allowed, never that the
-  service behind it (Bugzilla, Phabricator) refused. It works in a worktree
+  run's summary, and each tool it could not use is an item of the review of
+  its work, to allow for this work or from now on (The tools the agent
+  could not use, below); every ask, a change's too, is told not to stop at
+  a refusal but to work around it, to say so in what it writes, the tool
+  not allowed, never that the service behind it (Bugzilla, Phabricator)
+  refused, and to say why it needed each tool and how it worked around
+  it. It works in a worktree
   of the stack's own for answers (below), never in your checkout, the stack
   up to its place applied, as a change's worktree is: it reads the patches
   there with `git show`, and the whole stack with `stacked export`. Only the
@@ -1380,35 +1382,31 @@ the settings' (Settings, below): `agent.change_tools` for the asks that
 change the stack, nothing unless set; `agent.answer_tools` for answer-only
 asks, `curl` and `jq` unless set, as answers could always run them before
 there were lists; with the `try-push` feature, `agent.try_tools` for the
-asks that select a try push's tasks, `curl` and `jq` unless set; and
-`agent.tools` for every ask, builds and tests too. `stacked setup agent`
-sets those lists up with you, as one list of tools with a box for each
-kind of ask. Every ask is refused, too, what the stack's
+asks that select a try push's tasks, `curl` and `jq` unless set; then
+what the reviews of the agent's work allowed from now on for that kind of
+ask, a list of its own (`agent.change_accepted`, `agent.answer_accepted`,
+`agent.test_accepted`, `agent.try_accepted`: The tools the agent could not
+use, below); and `agent.tools` for every ask, builds and tests too.
+`stacked setup agent` sets those lists up with you, as one list of tools
+with a box for each kind of ask. Every ask is refused, too, what the stack's
 checkout's claude settings of yours deny (`permissions.deny` of
 `.claude/settings.local.json`), wherever it works: claude refuses it in the
 checkout, and stacked has it refused in the agents' worktrees too, which do
 not have that file, as git does not track it (`--disallowedTools`). What
 the tracked `.claude/settings.json` denies is in the worktrees already.
+Every ask but a build and test, which runs what the project needs, is
+refused what would make the commands it may run run another program or
+delete files (`git rebase --exec`, `find -exec`, `find -delete`, `rg
+--pre`, `sort --compress-program`), whatever its lists let it run.
 
-No ask goes before that setup is saved, in the settings that apply to the
-stack's checkout (the settings' file, or the checkout's own): `agent.setup`
-says it is. In the editor, asking (`Ask agent`, `Ask agent about all`,
-`Send it now`, sending the batch, sending work back from its review) opens
-the setup first, the screen `stacked setup agent --tui` shows, over the
-editor; while the agent is asked what tools it has, a box says so, and the
-editor goes on. Saving the setup writes it in the stack's checkout's own
-settings, `.stacked/local.toml`, and the ask goes; Esc sends nothing, and
-the bottom line says why: sending again opens the setup again. On the
-command line, `stacked send` (but `--later`, which only batches) and
-`stacked review --send-back` refuse, saying to run `stacked setup agent
-NAME` first. Once the setup is saved, it is not asked again, unless a later
-stacked's setup is a new version of it (`agent.setup` says which was
-saved) with a column for a kind of ask the one saved had none for: built
-with the `try-push` feature, the setup is version 2, whose column `try
-push` version 1 had not, so that a try push is asked only once a setup
-showing that column is saved; the other kinds of ask go on as before,
-their columns checked already. The tour's stand-in for the agent needs
-none.
+No ask waits for a setup: the first goes at once, with stacked's defaults
+(`curl` and `jq` for answers and for a try push's selection, nothing more
+for changes), and what an ask could not use lands for your review with its
+work. `stacked setup agent` sets the lists up with you whenever you want
+it to. A settings' file of a stacked of before that says the setup was
+done (`agent.setup`) is read all the same, that setting passed over:
+`stacked config --unset agent.setup` takes it out. The tour's stand-in for
+the agent needs no list.
 
 Whatever it writes, a reply or a comment it opens, the agent may attach
 references to it: lines of a file, a union of ranges (`120-140,200-210`),
@@ -1799,7 +1797,9 @@ stack, or with comments the agent opened, is reviewed with them: Enter on
 the comment opens the review of that work, on the reply. A reply of work
 that goes on from an edit under review waits until that edit is reviewed.
 No other review closes by itself: the review of an ask that brought
-nothing back waits until you close it.
+nothing back waits until you close it. Work that holds a tool the agent
+could not use waits for your review too, though the agent failed or
+brought nothing back (The tools the agent could not use, below).
 
 In the editor, a banner under the top bar says what waits on you on the
 stack, in a line: what waits for your review (`⟳ 2 landed asks wait for
@@ -1973,6 +1973,110 @@ was asked at unless `--effort LEVEL` says otherwise (`--accept-all`
 refuses while you wrote in it). `stacked send NAME ID --wait`
 says what waits for your review once it lands; `--wait --accept` accepts
 all of it as soon as it lands, for a script.
+
+## The tools the agent could not use
+
+claude refuses a tool the agent is not let use before it runs, and its
+result lists each call it refused. Each refusal is an item of the review
+of the work, by the rule that would have let the call run: one item a
+rule, with the calls that needed it. Five calls of `searchfox-cli` are one
+item, `Bash(searchfox-cli *)`, which lists the calls. A plain program's
+rule is `Bash(PROGRAM *)`. A broad program's is narrower: for `./mach` and
+`git`, what it is asked to do (a refused `./mach try fuzzy --no-push -q …`
+is `Bash(./mach try fuzzy *)`, `git log --oneline` is `Bash(git log *)`);
+for `sh`, `bash` and `python`, the script it runs (`Bash(bash
+./tools/run.sh *)`, `Bash(python3 -m pytest *)`). Each command of a pipe
+is matched on its own, as claude matches it: of `curl … | jq .`, only the
+command that was not let run is an item. An MCP server's tool is its rule,
+`mcp__SERVER__TOOL`; another tool is its name (`WebFetch`). Only the calls
+claude refused are items, never what the agent says it would have liked.
+Work that holds an item lands for your review though the agent failed or
+brought nothing back, so that a tool can be allowed and the work sent back.
+
+Every ask is told not to stop at a refusal: to work around it with what it
+may use, and to finish what it was asked as well as it can; and to say,
+for each tool it was refused, why it needed it and how it worked around
+it (`"refused"` in its answer, structured output or JSON). What it said is
+its comment on the item. A refusal the agent did not explain is an item
+all the same, its comment saying that the agent did not say why.
+
+The review lists the items in a section of their own, `tools the agent
+could not use`, a line each: `✗ Bash(searchfox-cli *) · refused`, `✓
+Bash(./mach try *) · for this work`, `✓ WebFetch · from now on`, `·
+Edit · noted`. On an item, the right pane shows the agent's comment on it,
+then the calls the agent tried, then where the item stands and, when the
+item is not offered, why. Each item is in one of three states:
+
+- refused, the default: the agent is not let use the tool. Delete refuses
+  an item.
+- allowed for this work: every round of this work may use the tool, until
+  its review closes. That is the rounds sent back from its review, and the
+  rounds stacked starts by itself for that work: an answer asked again
+  once a chained edit is accepted, an edit asked again once the work it
+  went on from is rejected. claude is given the rule with the other tools
+  the ask may use, and the rule is never saved. The stream of each such
+  round starts by saying so (`✓ allowed for this work:
+  Bash(searchfox-cli *)`), and so does the status line once the work is
+  sent back. The rule ends with the review, whether the work is accepted
+  or rejected.
+- allowed from now on: Enter allows an item from now on, as accepting it.
+  The rule is saved once the work is sent back (first, so that the next
+  round may use it) or once its review closes, whether the work is
+  accepted or rejected, or stacked drops the work to ask it again (its run
+  saying so). It is saved only in the stack's checkout's own
+  settings, `.stacked/local.toml`, never in `~/.stacked/config.toml`, nor
+  in any other file of the checkout (claude's settings, the repository's
+  files). It goes in a list of its own for the kind of ask the work was:
+  `agent.change_accepted`, `agent.answer_accepted`, `agent.test_accepted`
+  for builds and tests, and, with the `try-push` feature,
+  `agent.try_accepted` for a try push's selection. That list is added to
+  the tools of that kind of ask alone, after its own list, so that it never
+  hides the lists `stacked setup agent` writes, global or local.
+
+Space has the item's menu: the three states as boxes, the one the item is
+in checked, each naming the rule (`Refused: Bash(searchfox-cli *)`,
+`Allowed for this work: Bash(searchfox-cli *)`, `Allowed from now on:
+Bash(searchfox-cli *), saved in /src/firefox/.stacked/local.toml`); Enter
+on one picks it, the menu staying. Under them, a broad program's other
+rules, to allow the item with instead: `Widen the rule to Bash(./mach try
+*)`, `Widen the rule to Bash(./mach *)`, then `Narrow the rule to …` back.
+Then `Reply to it`: your answer to what the agent said of the tool, which
+goes back to the agent with the work, as any answer written in a review
+does. Where the checkout's own settings cannot be written, git tracking
+`.stacked/local.toml` or the stack's checkout being no checkout any more,
+`Allowed from now on` is grayed, the menu and the right pane saying why,
+and Enter allows the item for this work; should a rule allowed from now on
+fail to be saved as the work goes back, it is allowed for this work
+instead, and the status line says so.
+
+Noted items are said, and not offered: no state but refused, as no allow
+would let the call run. They are what the checkout's claude settings deny
+(`.claude/settings.local.json`, `.claude/settings.json`), a deny winning
+over any allow; what stacked refuses every ask but builds and tests (`find
+-exec`, `rg --pre`…); what changes things, to an answer-only ask and to a
+try push's selection, which only read (`Edit`, `Write`, `rm`, `git
+commit`, `sed -i`, a redirection to a file); a command the shell runs
+itself (`cd` elsewhere); and a call whose rule the ask was given already,
+which claude refused for a reason of its own.
+
+With a tool allowed, for this work or from now on, Esc has `Send it back
+to the agent` though you wrote nothing in the review: the agent tries
+again with the tool, which is how a failed attempt goes on. The work goes
+back as when you wrote in its review, and a turn of yours in the thread of
+the comment that asked says what you allowed and what you answered (`On
+the tools you could not use:`, then ``- `Bash(searchfox-cli *)`: you may
+use it now, for this work.``). Before it goes, its question says what this
+work may use from the next round on, and what is saved for good, and
+where. Closing the review asks first when it saves a rule, saying what is
+saved and where, and that what this work was allowed for itself ends
+there.
+
+On the command line, `stacked landed NAME` lists each item of a work on a
+line of its own: `tool`, its rule, its state (`refused`, `allowed for this
+work`, `allowed from now on` or `noted`) and the first call it tried, a
+tab between each. `stacked review NAME --send-back`, `--accept-all` and
+`--reject-all` go by the states saved in the review. The editor marks the
+items, in the terminal, in the browser and in StackED alike.
 
 ## Try push
 
@@ -2579,12 +2683,13 @@ settings:
   for the asks that select a try push's tasks: `["Bash(curl *)", "Bash(jq
   *)"]` unless set, as for answers. `tools`, for every ask, builds and
   tests too, as before there were lists: an answer may use them too, so give
-  only tools that read. `setup`, the setup of the lists done, as the
-  version of it that was: until it is, no ask goes (Asking the agent,
-  above).
+  only tools that read. `change_accepted`, `answer_accepted`,
+  `test_accepted` and `try_accepted`: what the reviews of the agent's work
+  allowed from now on for each kind of ask, added to its tools (The tools
+  the agent could not use, above), which a review writes in a checkout's own
+  settings alone.
 
-  `stacked setup agent [NAME]` sets the lists up with you, and writes
-  `setup` once you save them. It starts the agent in the stack's repository
+  `stacked setup agent [NAME]` sets the lists up with you. It starts the agent in the stack's repository
   (else where it is run), where it has your MCP servers, and stops it as
   soon as it has said what tools it has. The lists are shown as one list
   of tools, a row each, with a box for each list under the columns'
@@ -2683,11 +2788,22 @@ settings:
   name: a command is let run as Bash(make check)`). The row comes last,
   said `added here`, neither box ticked, the cursor on it, for you to tick
   what should use it; a rule that a row lets use already, however it is
-  written, is that row, as it is. Saving writes each list, `tools` if it
-  changed, and `setup`, in that checkout's own settings (below; with
-  `--global`, in `~/.stacked/config.toml`, for the checkouts without their
-  own), the rest of the file as it was; saved unchanged, the setup is done
-  all the same. Outside a checkout, only `--global` can be written.
+  written, is that row, as it is. Saving writes each list, and `tools` if it
+  changed, in that checkout's own settings (below; with `--global`, in
+  `~/.stacked/config.toml`, for the checkouts without their own), the rest
+  of the file as it was. Outside a checkout, only `--global` can be
+  written.
+
+  Above the list, what the reviews of the agent's work allowed from now on,
+  as the checkout's own settings say it, under `Allowed from now on in
+  reviews of the agent's work, in …/.stacked/local.toml: untick a rule to
+  take it out`: a row a rule, its one box ticked, and the kind of ask it is
+  for (`Bash(searchfox-cli *)   for answer-only asks`). Space unticks a
+  row, and saving takes that rule out of its list, in the checkout's own
+  settings, with `--global` too; the bottom line says what is left of each
+  list a rule was taken out of. Asked line by line, each is asked in turn
+  (`Keep Bash(searchfox-cli *), allowed from now on in a review, for
+  answer-only asks? [Y/n]`).
 
   Asked line by line, the setup shows the list, a line a row as the screen
   draws it, to keep as it is (Enter) or to go through a row at a time. Each
@@ -2699,8 +2815,7 @@ settings:
   try pushes apart); an MCP server's
   tools are asked all at once, or each in turn (`e`). Then it asks for a
   command or a tool to add, until a line is left empty, and asks the same
-  question of each. With `--tui`, and in the editor before the first ask,
-  the setup is a screen of its own, with what saving writes, in the file
+  question of each. With `--tui`, the setup is a screen of its own, with what saving writes, in the file
   it writes, at the bottom; once the list scrolls past the columns'
   heading, the heading stays on its first line. ↑↓ pick a row; ← and →, or
   Tab and shift-Tab, the column; Space ticks the box of the row picked in
@@ -3218,8 +3333,15 @@ is typed: `import.rs`). A fix to one may belong in the other.
   list with a box for each kind: where what it lists comes from (the agent,
   the checkout's claude settings, its skills and its instructions), which
   rules mean the same and are one row, what the checkout's claude settings
-  of yours deny, refused to every ask, on a screen (`--tui`, and the
-  editor's before the first ask) or line by line, and what saving writes.
+  of yours deny, refused to every ask, what the reviews allowed from now
+  on, to keep or take out, on a screen (`--tui`) or line by line, and what
+  saving writes.
+- `refusals.rs`: the tools the agent could not use, as items of the
+  review of its work: the rule each call refused needs, narrow for a broad
+  program and wider to pick, one item a rule, what is noted and why, the
+  agent's word on each; their three states as the review's marks; what this
+  work may use for itself, round after round; and what is saved from now
+  on, in the checkout's own settings.
 - `editor.rs`: the inline comment editor.
 - `paint.rs`: colours, and drawing text and boxes.
 - `tui.rs`: the editor, and the work it does away from the screen; what a
@@ -3319,15 +3441,12 @@ removed only once its asks are over, with no process working in the folder
 any more: an ask the test left going would write in the folder as it is
 removed, and leave some of it.
 
-Every test that asks the agent has the setup of what each kind of ask may
-use done, as a user's is once it is saved, so that its asks go. In
-`tests/cli.rs`, the test's home holds a settings' file that says so
-(`[agent] setup = 1`), and a test that names a settings' file of its own
-(`$STACKED_CONFIG`) says so in it too; the editor's tests share settings
-of their own that say so (`settings()` in `tests/tui.rs`). The tests of the
-setup itself, and of an ask before it, start from settings that do not: a
-file of their own, or, for the editor's, the stack's checkout's own
-settings, `agent.setup = 0`, over the tests' own.
+No ask waits for a setup, so no test sets one up first. In
+`tests/cli.rs`, the test's home holds a settings' file of its own
+(`[agent]` alone), which a test adds to; the editor's tests share settings
+of their own (`settings()` in `tests/tui.rs`), the defaults. The tests of
+the first ask start from settings of before that say the setup was done
+(`agent.setup`), to see that setting passed over.
 
 With `STACKED_TEST_CHECKPOINTS=1` set, every write writes a checkpoint, and
 every database read from one is read whole too and the two compared, a
@@ -3422,8 +3541,13 @@ command saved the newer way, though your claude settings or the
 checkout's own list write it the older, and your claude settings never
 written; each kind given its own list and every ask's, and the
 refusal of a tool naming its kind's list; what your claude settings deny
-in the checkout refused to a change, an answer and a build and test; no
-ask sent before the setup is saved, and every ask once it is), Phabricator's comments
+in the checkout refused to a change, an answer and a build and test; the
+first ask sent at once, with no setup; the calls an ask was refused landing
+as items of the review of its work, one a rule, a failed run's too; a tool
+allowed from now on saved in the checkout's own list for its kind alone,
+sent back or closed, and one allowed for this work given to every round of
+it until its review closes; the setup listing what reviews allowed, to
+take out), Phabricator's comments
 held for review then filed (none twice, none rejected again, an edit held
 as an edit of its turn), a stack imported from Phabricator's revisions (by
 number or link, named or not), Phabricator's commands there only when
@@ -3460,11 +3584,21 @@ while it is open searched again, Esc going back to the row found again),
 the
 menus by place, what `?` says where, writing in every pane, the regions it
 says it drew (its panes, then the boxes over them, inside their borders:
-what StackED's selections keep to), the first ask opening the setup of
-what each kind of ask may use (the agent asked what it has away from the
-screen, Esc sending nothing, a box ticked with a click or by its column
-with the arrows and Space, saving writing the checkout's own settings
-and sending, the next ask going at once), a comment asked
+what StackED's selections keep to), the first ask going at once with no
+setup, at the effort picked, given stacked's defaults, the setup's old
+mark in the checkout's own settings passed over; the tools an answer was
+refused as items of its review (one a rule, the calls under the agent's
+comment on the right, a broad program's rule widened from the menu, what
+changes things noted), each refused by Delete, allowed from now on by
+Enter and for this work from the menu, its three boxes naming the rule
+and the file; sent back with a tool allowed though nothing is written,
+the question saying what the work may use and what is saved, the next
+round given both and its stream saying so, the comment told in a turn of
+yours, and what it was allowed for itself ending as its review closes,
+the close saying so; what is allowed from now on saved closing,
+accepted or rejected, in the checkout's own list for answers alone, not
+offered where git tracks that file; and a reply on an item sending the
+work back; a comment asked
 about and its stream and answer shown in place, its agent stopped from its
 menu (the ask landed at once as failed, said so, its stream folded, the
 comment's menu whole again, and the agent's wrapper, a child of the
@@ -3805,9 +3939,8 @@ round told what it selected before as you marked it, and its tasks in
 place of the others; closing with tasks accepted saying what it pushes,
 with none accepted that nothing is pushed, and past mach's 1,000 tasks,
 each task counted as many times as it runs, that they would run at the
-lowest priority; the setup asked again before a try push alone when a
-setup without its column was saved, an answer going at once meanwhile,
-the column then written; and a try push batched, sent from the banner on
+lowest priority; the first try push going at once, with no setup, the
+setup's old mark passed over; and a try push batched, sent from the banner on
 its own, and with the batch that `stacked send NAME --batch` sends. The
 push runs a stand-in for mach (`$STACKED_MACH`, which a stacked that keeps
 nothing, as the tests' own, needs, never running a mach of a worktree's),
@@ -3852,8 +3985,9 @@ not seen), its summary, and where Lando answers, as `.lando.ini` says;
 `ask.rs`, that a try push's ask is given what an answer is and its own
 list, and is asked for its tasks and their runs; `setup.rs`, the column of
 try pushes, ticked at first as the read-only one, its own once ticked, in
-what saving writes with the setup's version 2, and line by line `read
-only` for both read-only kinds; `config.rs`, `try_tools` written and read
+what saving writes, and line by line `read only` for both read-only kinds;
+`refusals.rs`, what changes things noted for a try push's selection, as
+for an answer; `config.rs`, `try_tools` written and read
 back, and read built without the feature too. `tests/lint.rs` drives the
 editor as `tests/tui.rs` does, a stand-in run in place of the linter
 (`lint::stand_in`, `$STACKED_LINT` to the job's process, which keeps
@@ -3957,8 +4091,22 @@ deny, what its skills let run (their headers' every form, a rule several
 allow, what is no rule left out), and what its instructions name (a
 program on PATH, one not, a builtin and a tool stacked gives left out),
 nothing read out of the checkout; the row of claude's tool for skills,
-with what it lets an answer do; and the setup asked line by line, a
-question a row for every kind; those in `search.rs`, which lines of a file a hunk shows
+with what it lets an answer do; the rules the reviews allowed from now on,
+a row each, unticked and ticked again, what saving takes out of their
+list; and the setup asked line by line, a question a row for every kind.
+Those in `refusals.rs` show a command line cut into the commands claude
+matches apart, quotes and `$(…)` kept whole; a command's rule, its program
+for a plain one, narrower for a broad one with the wider ones to pick,
+what claude passes over first passed over, none for a shell's own; how a
+rule lets a call (the older prefix form, a pattern, an MCP server's tools,
+WebFetch's domain); the calls refused as items, one a rule, each with its
+calls and the agent's word, a pipe's command given already left out; what
+is noted (denied, refused by stacked, changing things for an answer, given
+already), and that one call that needs it offered offers it; the three
+states and the rule picked in the review's marks, and the turn the agent is
+told; what the agent said of each tool, read from its answer; and what is
+saved from now on, where, and why not outside a checkout. Those in
+`search.rs`, which lines of a file a hunk shows
 already; those in `rows.rs`, a web link's line under its comment cut to
 the pane, its start kept, each file whole keeping the rows of its hunks'
 lines, a file too long and one past what a patch shows whole shown as

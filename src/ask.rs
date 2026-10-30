@@ -160,8 +160,9 @@ pub struct Info {
     /// Dropped, its guess wrong: its worktree is free to be taken again.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub dropped: bool,
-    /// Asked again: the run before it, whose landed work was dropped, shown
-    /// to the agent to reuse what still holds.
+    /// Asked again: the run before it, dropped. What it brought back, if it
+    /// landed, is shown to the agent to reuse what still holds; what it was
+    /// given for this work, it is given again.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub was: Option<String>,
     /// The folder of its own its agent writes in, outside its worktree,
@@ -175,6 +176,16 @@ pub struct Info {
     /// which goes at the agent's own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort: Option<Effort>,
+    /// What it may use for this work, besides what its kind of ask is
+    /// given: what the review of the work it goes on with, sent back or
+    /// asked again, allowed for this work of what the agent was refused
+    /// (`refusals::carried`). Never saved in any settings.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed: Vec<String>,
+    /// What it was let use, as claude was given it (`--allowedTools`): what
+    /// it was refused is read against it as it lands.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub given: String,
 }
 
 /// The stack ask `i` works on: the stack at `i.from`; or, a round sent
@@ -504,37 +515,6 @@ fn agent_of(db: &Db, name: &str) -> crate::config::Agent {
     crate::config::of(&dir).0.agent
 }
 
-/// Why stack `name` cannot be asked anything in `way` yet, if it cannot:
-/// what each kind of ask may use is not set up in the settings of its
-/// checkout (`agent.setup`, global or the checkout's own), or was set up by
-/// a version of the setup that had no column for `way`'s kind
-/// (`setup::Kind::since`). A stack kept in memory, the tour's, is answered
-/// by a stand-in, with nothing to set up.
-pub fn not_set_up(db: &Db, name: &str, way: Way) -> Option<String> {
-    #[cfg(feature = "demo")]
-    if db.stack(name).ok().and_then(|s| s.repo.as_deref()).is_some_and(|r| crate::memory::is_repo(Path::new(r))) {
-        return None;
-    }
-    let run = format!("run `stacked setup agent {name}` first");
-    let kind = crate::setup::kind_of(way);
-    match agent_of(db, name).setup.unwrap_or(0) {
-        n if n >= kind.since() => None,
-        0 => Some(format!("the tools each kind of ask may use are not set up yet: {run}, to check them and save them; nothing was sent")),
-        _ => Some(format!(
-            "the tools {} may use are not set up yet, as the setup was saved by a stacked that had no column for them: {run}, to check them and save them; nothing was sent",
-            kind.named()
-        )),
-    }
-}
-
-/// As `not_set_up`, an error.
-fn set_up(db: &Db, name: &str, way: Way) -> Result<()> {
-    match not_set_up(db, name, way) {
-        Some(why) => err(why),
-        None => Ok(()),
-    }
-}
-
 /// Whether, with `agent`'s settings, a change or an answer goes on from the
 /// change waiting for your review, guessing you accept it: unless the
 /// setting says not.
@@ -587,9 +567,14 @@ pub fn guessed_right(db: &mut Db, id: &str, rev: usize) -> Result<()> {
 fn drop_run(db: &mut Db, r: &Run, mut i: Info, why: String) -> Result<()> {
     i.dropped = true;
     let running = r.state == RunState::Started;
+    // Landed, its review closes: what it allowed from now on is saved, as
+    // when a review closes, and where it cannot be, allowed for this work
+    // instead, which the work asked again is given.
+    let mut v = db.review(&r.id).cloned().unwrap_or_default();
+    let settled = if running { crate::refusals::Settled::default() } else { crate::refusals::settle(db, r, &mut v.marks, true) };
     db.add_run(Run {
         state: if running { RunState::Failed } else { r.state },
-        summary: why,
+        summary: format!("{why}{}", settled.said(i.way)),
         ask: Some(serde_json::to_value(&i).unwrap()),
         ..r.clone()
     })?;
@@ -599,12 +584,11 @@ fn drop_run(db: &mut Db, r: &Run, mut i: Info, why: String) -> Result<()> {
             signal(pid, libc::SIGTERM);
         }
     } else {
-        let v = db.review(&r.id).cloned().unwrap_or_default();
         db.set_review(&r.id, crate::held::Review { closed: true, ..v })?;
     }
-    // Landed, what it brought back is shown to the agent asked again.
-    let landed = (!running && r.held.is_some()).then(|| r.id.clone());
-    ask_again(db, &i, landed)
+    // Landed, what it brought back is shown to the agent asked again; and,
+    // landed or not, what this work may use goes on with it.
+    ask_again(db, &i, Some(r.id.clone()))
 }
 
 /// Landed work `id` rejected, sent back or edited by hand (`why`): what
@@ -687,7 +671,7 @@ pub fn builds_going(db: &Db, name: &str) -> Vec<Run> {
 /// The comments ask `i` was about back in the queue, ready, in the batch
 /// they were sent in: they go again as they were asked, at the effort they
 /// were asked at, the agent shown what run `was` brought back, if it
-/// landed.
+/// landed, and given what that run was given for this work.
 fn ask_again(db: &mut Db, i: &Info, was: Option<String>) -> Result<()> {
     let batch = if i.batch.is_empty() { format!("b{}", crate::db::unique()) } else { i.batch.clone() };
     for sh in &i.notes {
@@ -888,7 +872,6 @@ pub fn queue(db_path: &Path, name: &str, notes: &[(String, String)], way: Way, w
     }
     check_ahead(db_path, name);
     Db::edit(db_path, |db| {
-        set_up(db, name, way)?;
         applies(db, name)?;
         enqueue(db, notes, way, whole, Stage::Ready, None, Some(effort))
     })
@@ -908,7 +891,6 @@ pub fn way_of(db: &Db, id: &str) -> Option<Way> {
 pub fn send_back(db_path: &Path, name: &str, id: &str, marks: &std::collections::BTreeMap<String, bool>, effort: Option<Effort>) -> Result<String> {
     check_ahead(db_path, name);
     Db::edit(db_path, |db| {
-        set_up(db, name, way_of(db, id).unwrap_or(Way::Change))?;
         applies(db, name)?;
         let round = crate::held::send_back(db, id, marks)?;
         enqueue(db, &round.notes, round.way, round.whole, Stage::Ready, Some(id), effort.or(round.effort))?;
@@ -920,6 +902,10 @@ pub fn send_back(db_path: &Path, name: &str, id: &str, marks: &std::collections:
             1 => out += "; 1 edit that went on from it asked again",
             k => out += &format!("; {k} edits that went on from it asked again"),
         }
+        if !round.allowed.is_empty() {
+            out += &format!("; {ALLOWED_SAID}: {}", round.allowed.join(", "));
+        }
+        out += &round.settled.said(round.way);
         Ok(out)
     })
 }
@@ -1080,7 +1066,6 @@ pub fn release_batch(db_path: &Path, name: &str, way: Way, fan: bool, effort: Op
         if all.is_empty() {
             return Ok((0, Vec::new()));
         }
-        set_up(db, name, way)?;
         applies(db, name)?;
         let own = |db: &Db, (c, i): &(String, String)| db.note(c, i).and_then(|n| n.queued.as_ref()?.effort);
         // A try push of a line, batched as an older stacked let it be: out
@@ -1337,6 +1322,10 @@ fn claim(db: &mut Db) -> Result<(Vec<String>, Vec<String>)> {
                 id: n.id.clone(),
             })
             .collect();
+        // What this work may use for itself, as the work it goes on with
+        // was given and its review allowed: the run asked before it, else
+        // the work it was sent back from.
+        let allowed = was.as_deref().or(on.as_deref()).map(|w| crate::refusals::carried(db, w)).unwrap_or_default();
         let info = Info {
             way,
             scope,
@@ -1356,6 +1345,8 @@ fn claim(db: &mut Db) -> Result<(Vec<String>, Vec<String>)> {
             was,
             todo: None,
             effort,
+            allowed,
+            given: String::new(),
         };
         db.add_run(Run {
             id: id.clone(),
@@ -1537,9 +1528,12 @@ pub const GIVEN_SAID: [(&str, bool, bool); 5] = [
 /// What an ask in `way` may use, `cmd` being stacked on its database, as
 /// claude takes it (`--allowedTools`): what stacked gives that kind of ask,
 /// then what the settings `agent` add for that kind (`change_tools`,
-/// `answer_tools`, `try_tools`), then what they add for every ask (`tools`).
-/// A build and test runs what the project needs: Bash at large, and every
-/// ask's. A try push's selection is given what an answer is: it reads only.
+/// `answer_tools`, `try_tools`), then what reviews allowed it from now on,
+/// in a list of its own (`change_accepted`, `answer_accepted`,
+/// `test_accepted`, `try_accepted`), then what they add for every ask
+/// (`tools`). A build and test runs what the project needs: Bash at large,
+/// and every ask's. A try push's selection is given what an answer is: it
+/// reads only.
 pub fn tools_for(way: Way, cmd: &str, agent: &crate::config::Agent) -> String {
     let (mut tools, own): (String, &[String]) = match way {
         Way::Change => (change_given(cmd), &agent.change_tools),
@@ -1553,12 +1547,28 @@ pub fn tools_for(way: Way, cmd: &str, agent: &crate::config::Agent) -> String {
     if agent.schema {
         tools.push_str(",StructuredOutput");
     }
-    for t in own.iter().chain(&agent.tools) {
+    for t in own.iter().chain(agent.accepted(way)).chain(&agent.tools) {
         tools.push(',');
         tools.push_str(t);
     }
     tools
 }
+
+/// `tools`, as claude takes them, with `more` after them, those it has
+/// not already.
+fn with_more(tools: String, more: &[String]) -> String {
+    let had: Vec<String> = tools.split(',').map(String::from).collect();
+    let mut out = tools;
+    for t in more.iter().filter(|t| !had.contains(t)) {
+        out.push(',');
+        out.push_str(t);
+    }
+    out
+}
+
+/// What the stream and the status say of what an ask may use for its work
+/// alone, before the rules.
+pub const ALLOWED_SAID: &str = "allowed for this work";
 
 /// What an ask to answer only is told of the web: that it may read it with
 /// curl, when its tools let it run curl; and with the tools of the MCP
@@ -1946,18 +1956,31 @@ fn prompt(db: &Db, i: &Info, s: &Stack, cmd: &str, run: &str, structured: bool, 
         Way::Try => crate::try_push::answer_said(end),
     });
     p.push_str(REFS);
-    p.push_str(NOT_ALLOWED);
+    p.push_str(&not_allowed(said));
+    // What it was refused before and may use now, for this work.
+    if !i.allowed.is_empty() {
+        p.push_str(&format!(" You may use, for this work, what you were refused before: {}.", crate::refusals::listed(&i.allowed)));
+    }
     p
 }
 
 /// What an ask is told of a tool it is not let use: that nothing it would
 /// have reached said no, so that it says not allowed, not that a service
-/// refused.
-const NOT_ALLOWED: &str = " A tool you are not let use is refused before it runs (\"Claude \
-requested permissions to use …, but you haven't granted it yet\"): nothing it would have reached \
-was asked. Say so in what you write: that the tool was not allowed, naming it \
-(`mcp__moz__get_bugzilla_bug`, `Bash: curl …`), never that the service behind it refused, failed or \
-would not let you read; then go on with what you can read. The user can let this kind of ask use it.";
+/// refused; that it is not to stop there, but to work around it; and to
+/// say, `said` saying where (`in your answer`), for each tool refused, why
+/// it needed it and how it worked around it, for the user to review.
+fn not_allowed(said: &str) -> String {
+    format!(
+        " A tool you are not let use is refused before it runs (\"Claude requested permissions to use …, \
+         but you haven't granted it yet\"): nothing it would have reached was asked. Do not stop there: work \
+         around the refusal with what you may use, and finish what you were asked as well as you can. Say so \
+         in what you write: that the tool was not allowed, naming it (`mcp__moz__get_bugzilla_bug`, `Bash: \
+         curl …`), never that the service behind it refused, failed or would not let you read. And list each \
+         tool you were refused {said}, as \"refused\": [{{\"tool\": the tool as you called it \
+         (`mcp__moz__get_bugzilla_bug`, `Bash: searchfox-cli --define Foo`), \"why\": why you needed it, and \
+         how you worked around it}}]: the user reviews each, and may let you use it."
+    )
+}
 
 /// What the agent's answer to ask `i`, on stack `s`, is to be, as a JSON
 /// Schema: what its prompt asks for, given back as structured output
@@ -1996,6 +2019,15 @@ fn answer_schema(i: &Info, s: &Stack) -> Value {
     };
     let mut props = Map::new();
     props.insert("replies".into(), keyed(i.notes.iter().map(|sh| sh.label.clone()).collect()));
+    // Each tool it was refused: as it called it, and why it needed it and
+    // how it worked around it.
+    let refused = json!({
+        "type": "object",
+        "properties": {"tool": {"type": "string"}, "why": written.clone()},
+        "required": ["tool", "why"],
+        "additionalProperties": false
+    });
+    props.insert("refused".into(), json!({"type": "array", "items": refused}));
     match (i.way, &i.scope) {
         (Way::Change, Scope::Stack) => {
             props.insert("base".into(), json!({"type": "string"}));
@@ -2507,6 +2539,11 @@ fn start(db_path: &Path, id: &str) -> Result<()> {
         let event = serde_json::json!({"type": STARTING, "text": text});
         let _ = Db::append(db_path, &[Record::Event { run: id.into(), event }]);
     };
+    // What it may use for this work alone, said first in its stream.
+    if !i.allowed.is_empty() {
+        let event = serde_json::json!({"type": ALLOWED, "text": i.allowed.join(", ")});
+        let _ = Db::append(db_path, &[Record::Event { run: id.into(), event }]);
+    }
     let upto = match &i.scope {
         Scope::Stack => s.patches.len(),
         Scope::Patch(c) => {
@@ -2555,8 +2592,10 @@ fn start(db_path: &Path, id: &str) -> Result<()> {
     let db_abs = db_path.canonicalize().map_err(|e| Error(e.to_string()))?;
     let cmd = format!("{} -f {}", exe.display(), db_abs.display());
     // What it may use: what stacked gives its kind of ask, and what the
-    // settings add, for its kind and for every ask.
-    let tools = tools_for(i.way, &cmd, agent);
+    // settings add, for its kind and for every ask; then what it may use
+    // for this work alone. Kept, to read what it is refused against.
+    let tools = with_more(tools_for(i.way, &cmd, agent), &i.allowed);
+    i.given = tools.clone();
     let curl = tools.split(',').any(|t| t == "Bash(curl *)");
     let plans = plans(&db_abs);
     // A try push's selection that may run curl downloads the task graph, to
@@ -2617,12 +2656,14 @@ fn start(db_path: &Path, id: &str) -> Result<()> {
     if let Some(dir) = &i.todo {
         c.arg("--add-dir").arg(dir);
     }
-    // What would run another program, of what a change may run: refused.
-    // And to every ask, what the checkout's claude settings of yours deny,
-    // as claude does in the checkout: a worktree of the stack's own has no
+    // What would run another program, or delete files, of what a change may
+    // run, and of what an ask that reads may be let run: refused, to every
+    // ask but a build and test, which runs what the project needs. And to
+    // every ask, what the checkout's claude settings of yours deny, as
+    // claude does in the checkout: a worktree of the stack's own has no
     // file of yours, git tracking none.
     let mut refused: Vec<String> = Vec::new();
-    if i.way == Way::Change {
+    if i.way != Way::Test {
         refused.push(crate::claude::refused_tools());
     }
     refused.extend(crate::setup::denied(&repo));
@@ -2761,39 +2802,39 @@ fn ended_badly(events: &[&Value]) -> Option<String> {
     })
 }
 
-/// The tools the agent was not let use, as its result says
-/// (`permission_denials`): each once, a command by its program.
-fn refused(events: &[&Value]) -> Vec<String> {
-    let result = events.iter().rev().find(|v| v.get("type").and_then(Value::as_str) == Some("result"));
-    let mut out: Vec<String> = Vec::new();
-    for d in result.and_then(|r| r.get("permission_denials")).and_then(Value::as_array).into_iter().flatten() {
-        let name = d.get("tool_name").and_then(Value::as_str).unwrap_or("a tool");
-        let said = match d.get("tool_input").and_then(|i| i.get("command")).and_then(Value::as_str) {
-            Some(c) if name == "Bash" => format!("Bash({} …)", c.split_whitespace().next().unwrap_or("")),
-            _ => name.to_string(),
-        };
-        if !out.contains(&said) {
-            out.push(said);
-        }
-    }
-    out
+/// What the run of ask `i` was refused, as its stream `events` say, as the
+/// items of its review (`refusals::items`): read against what it was given,
+/// what stacked refuses it, and what the checkout's claude settings deny;
+/// the agent's word on each, from its answer `output`.
+fn refusals_of(events: &[&Value], i: &Info, output: &str) -> Vec<crate::refusals::Refusal> {
+    let given: Vec<String> = i.given.split(',').filter(|t| !t.is_empty()).map(String::from).collect();
+    let refused: Vec<String> = match i.way {
+        Way::Test => vec![],
+        _ => crate::claude::refused_tools().split(',').map(String::from).collect(),
+    };
+    let denied = if i.repo.is_empty() { vec![] } else { crate::refusals::denied_in(Path::new(&i.repo)) };
+    crate::refusals::items(events, i.way, &given, &refused, &denied, &crate::refusals::said_of(output))
 }
 
 /// How an ask in `way` may be let use more, said after what it was not let
-/// use: the list of the settings for its kind, which `stacked setup agent`
-/// sets; for a build and test, which runs any command already, every ask's.
+/// use: in the review of its work, each tool allowed for this work or from
+/// now on; the list of the settings for its kind, which `stacked setup
+/// agent` sets; for a build and test, which runs any command already, every
+/// ask's.
 fn allow_more(way: Way) -> &'static str {
     match way {
         Way::Change => {
-            "agent.change_tools lets asks that change the stack use more, and `stacked setup agent` sets it; your claude settings can allow more too"
+            "the review of its work lists each, to allow for this work or from now on; agent.change_tools lets asks that change the stack use more, and `stacked setup agent` sets it; your claude settings can allow more too"
         }
-        Way::Answer => "agent.answer_tools lets answer-only asks use more, and `stacked setup agent` sets it; your claude settings can allow more too",
+        Way::Answer => {
+            "the review of its work lists each, to allow for this work or from now on; agent.answer_tools lets answer-only asks use more, and `stacked setup agent` sets it; your claude settings can allow more too"
+        }
         Way::Test => {
-            "agent.tools lets every ask use more, builds and tests too, and `stacked config agent.tools` sets it; your claude settings can allow more too"
+            "the review of its work lists each, to allow for this work or from now on; agent.tools lets every ask use more, builds and tests too, and `stacked config agent.tools` sets it; your claude settings can allow more too"
         }
         #[cfg(feature = "try-push")]
         Way::Try => {
-            "agent.try_tools lets the asks that select a try push's tasks use more, and `stacked setup agent` sets it; your claude settings can allow more too"
+            "the review of its work lists each, to allow for this work or from now on; agent.try_tools lets the asks that select a try push's tasks use more, and `stacked setup agent` sets it; your claude settings can allow more too"
         }
     }
 }
@@ -2891,8 +2932,10 @@ fn file_landed(db_path: &Path, id: &str, exit: Option<&str>) -> Result<Run> {
         let events = db.events(id);
         let code = exit_code(db, id, exit);
         let output = result_text(&events);
-        // What it was not let use, said, so that it may be allowed.
-        let refused = refused(&events);
+        // What it was not let use, each an item of its review, so that it
+        // may be allowed: then it waits for your review, though it failed
+        // or brought nothing back.
+        let refusals = refusals_of(&events, &i, &output);
         let mut landed = if code != "0" {
             let said: Vec<String> = events
                 .iter()
@@ -2921,15 +2964,27 @@ fn file_landed(db_path: &Path, id: &str, exit: Option<&str>) -> Result<Run> {
                 Landed::failed(format!("could not file what the agent did: {}{at}", e.0), true)
             })
         };
+        landed.held.tools = refusals;
+        let tools = landed.held.tools.len();
         // Bringing nothing back, it waits for your review all the same while
         // a comment it was asked about is still open: to close or keep.
         let open = crate::held::asking_open(db, &started).len();
-        let waits = landed.ok && (!landed.held.is_empty() || open > 0);
-        if landed.ok && landed.held.is_empty() && open > 0 {
-            landed.summary = format!("{}: its work waits for your review", crate::held::nothing_back(open, i.notes.len()));
+        let waits = (landed.ok && (!landed.held.is_empty() || open > 0)) || tools > 0;
+        match (landed.ok, landed.held.is_empty()) {
+            (true, false) if tools > 0 => landed.summary = format!("its work waits for your review: {}", landed.held.said()),
+            (true, true) if tools > 0 || open > 0 => {
+                let with = match tools {
+                    0 => String::new(),
+                    1 => ", with 1 tool the agent could not use".to_string(),
+                    n => format!(", with {n} tools the agent could not use"),
+                };
+                landed.summary = format!("{}: its work waits for your review{with}", crate::held::nothing_back(open, i.notes.len()));
+            }
+            _ => {}
         }
-        if !refused.is_empty() {
-            landed.summary += &format!("; the agent was not allowed to use {}: {}", refused.join(", "), allow_more(i.way));
+        if tools > 0 {
+            let rules: Vec<&str> = landed.held.tools.iter().map(crate::refusals::Refusal::rule).collect();
+            landed.summary += &format!("; the agent was not allowed to use {}: {}", rules.join(", "), allow_more(i.way));
         }
         if !landed.ok {
             mark_failed(db, &i, &landed.summary)?;
@@ -3507,6 +3562,10 @@ fn pushes_orphaned(db_path: &Path, db: &Db) -> usize {
 /// start it, before its agent writes.
 const STARTING: &str = "stacked";
 
+/// The type of the event that says, first in its stream, what an ask may
+/// use for its work alone.
+const ALLOWED: &str = "allowed";
+
 /// What run `id` is doing as it starts, while its agent has written
 /// nothing yet: the command it runs, as one line.
 pub fn starting(db: &Db, id: &str) -> Option<String> {
@@ -3542,6 +3601,7 @@ pub fn tail(db: &Db, id: &str, n: usize) -> Vec<String> {
         let lines = match v.get("type").and_then(Value::as_str) {
             Some("text") => vec![str_of(v.get("text"))],
             Some(STARTING) => vec![format!("$ {}", str_of(v.get("text")))],
+            Some(ALLOWED) => vec![format!("✓ {ALLOWED_SAID}: {}", str_of(v.get("text")))],
             Some(STOP) => vec![format!("■ {STOPPED_SAID}")],
             Some("exit") => vec![format!("exit {}", str_of(v.get("code")))],
             Some("result") if more || (!exit && going) => {
@@ -3701,10 +3761,13 @@ mod tests {
         let keys = |v: &Value| v["properties"].as_object().unwrap().keys().cloned().collect::<Vec<_>>();
         // Replies by the comments' labels, nothing else.
         let change = answer_schema(&i(Way::Change, Scope::Stack), &s);
-        assert_eq!((keys(&change), change["required"].clone()), (vec!["replies".to_string(), "base".into()], serde_json::json!(["replies"])));
+        assert_eq!((keys(&change), change["required"].clone()), (vec!["replies".to_string(), "refused".into(), "base".into()], serde_json::json!(["replies"])));
         assert_eq!(keys(&change["properties"]["replies"]), ["c1", "c2"]);
         assert_eq!(change["properties"]["replies"]["additionalProperties"], false);
-        assert_eq!(keys(&answer_schema(&i(Way::Change, Scope::Patch("x".into())), &s)), ["replies", "promote"]);
+        assert_eq!(keys(&answer_schema(&i(Way::Change, Scope::Patch("x".into())), &s)), ["replies", "refused", "promote"]);
+        // Each tool it was refused, every ask's: as it called it, and why.
+        let refused = &change["properties"]["refused"]["items"];
+        assert_eq!((refused["required"].clone(), refused["properties"]["why"]["anyOf"][1]["required"].clone()), (serde_json::json!(["tool", "why"]), serde_json::json!(["text"])));
         // An answer's comments; a build and test's findings by the patches'
         // numbers.
         let answer = answer_schema(&i(Way::Answer, Scope::Stack), &s);
@@ -3735,7 +3798,7 @@ mod tests {
         let i: Info = serde_json::from_value(serde_json::json!({"way": "try", "scope": "stack", "from": 0, "notes": [{"label": "c1", "change": "x", "id": "1"}]})).unwrap();
         let schema = answer_schema(&i, &s);
         let keys: Vec<&String> = schema["properties"].as_object().unwrap().keys().collect();
-        assert_eq!(keys, ["replies", "tasks", "rebuild"]);
+        assert_eq!(keys, ["replies", "refused", "tasks", "rebuild"]);
         let task = &schema["properties"]["tasks"]["items"];
         assert_eq!(task["required"], serde_json::json!(["label", "why"]));
         assert_eq!(task["properties"]["why"]["anyOf"][1]["required"], serde_json::json!(["text"]), "why written as anything is, with references");
@@ -3749,7 +3812,7 @@ mod tests {
         let tools = tools_for(Way::Try, cmd, &agent);
         assert!(tools.starts_with(&answer_given(cmd)), "what an answer is given: {tools}");
         assert!(tools.contains("mcp__moz__*") && !tools.contains("Bash(curl *)"), "its own list, not the answers': {tools}");
-        assert!(allow_more(Way::Try).starts_with("agent.try_tools lets the asks that select a try push's tasks use more"));
+        assert!(allow_more(Way::Try).contains("; agent.try_tools lets the asks that select a try push's tasks use more"));
         assert!(reads(Way::Try) && each_on_its_own(Way::Try) && !reads(Way::Test));
         assert_eq!(Way::Try.said(), "try push");
     }

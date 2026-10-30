@@ -622,10 +622,12 @@ enum SetupWhat {
     /// and saved as Bash(cmd *), which reads better, an older form in
     /// stacked's own settings rewritten so. What the checkout's claude
     /// settings of yours deny is said, refused to every ask. You check
-    /// them, add to them, and save them: saving is the setup done
-    /// (agent.setup), and until it is, no ask goes. They are written in
-    /// that checkout's own settings, .stacked/local.toml at its top, which
-    /// override the others there.
+    /// them, add to them, and save them; no ask waits for it, each going
+    /// with stacked's defaults until it is saved. They are written in that
+    /// checkout's own settings, .stacked/local.toml at its top, which
+    /// override the others there. What the reviews of the agent's work
+    /// allowed from now on, of the tools it could not use, is listed too,
+    /// from that file, each rule to keep or take out there.
     Agent {
         name: Option<String>,
         /// On a screen of its own, a box for each kind of ask and each
@@ -1632,6 +1634,16 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
                     };
                     println!("  {what}{mark}");
                 }
+                // The tools the agent could not use, each as the review marks
+                // it, and a call it tried.
+                for (k, t) in h.tools.iter().enumerate() {
+                    let state = match t.noted {
+                        Some(_) => "noted".to_string(),
+                        None => stacked::refusals::state(&review.marks, k).said().to_string(),
+                    };
+                    let rule = stacked::refusals::rule_of(t, &review.marks, k);
+                    println!("  tool\t{rule}\t{state}\t{}", t.calls.first().map_or("", String::as_str));
+                }
                 // What the linter reported and did not fix, to read: where
                 // each run of it that did ran, then its lines.
                 if let Some(l) = &h.lint {
@@ -1834,7 +1846,8 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
             };
             let top = git::toplevel(&dir).ok().map(PathBuf::from);
             let path_var = std::env::var_os("PATH").unwrap_or_default();
-            let start = stacked::setup::Start::new(&agent, set, top.as_deref(), &path_var);
+            // What the reviews allowed from now on, the checkout's own.
+            let start = stacked::setup::Start::new(&agent, set, top.as_deref(), &path_var).accepted_in(&dir);
             if tui {
                 eprintln!("stacked: asking the agent, in {}, what tools it has…", dir.display());
             }
@@ -1846,10 +1859,7 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
                 false => Some(setup_lines(&mut s, &dir, &to, tools.len())),
             };
             let Some(chosen) = chosen else {
-                match agent.setup.unwrap_or(0) < stacked::setup::VERSION {
-                    true => eprintln!("stacked: left; nothing written, and no ask goes until the setup is saved"),
-                    false => eprintln!("stacked: left; nothing written"),
-                }
+                eprintln!("stacked: left; nothing written");
                 return Ok(());
             };
             let settings = chosen.settings();
@@ -1859,6 +1869,12 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
             }
             .map_err(Error)?;
             eprintln!("stacked: the setup is saved in {}: {}", to.display(), chosen.said());
+            // What the reviews allowed that you took out: in the checkout's
+            // own settings, where they are, with --global too.
+            if !chosen.accepted.is_empty() {
+                let at = stacked::config::set_local_all(&dir, &chosen.accepted).map_err(Error)?;
+                eprintln!("stacked: taken out of what reviews allowed from now on, in {}: {}", at.display(), chosen.accepted_said());
+            }
             if global {
                 for (key, _) in &settings {
                     overridden(&dir, key, &to);

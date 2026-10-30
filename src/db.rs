@@ -530,6 +530,17 @@ pub enum Way {
 }
 
 impl Way {
+    /// Every way of asking, as each kind of ask is said: a change, an
+    /// answer, a build and test, and, with the `try-push` feature, a try
+    /// push's selection.
+    pub const ALL: &'static [Way] = &[
+        Way::Change,
+        Way::Answer,
+        Way::Test,
+        #[cfg(feature = "try-push")]
+        Way::Try,
+    ];
+
     pub fn name(self) -> &'static str {
         match self {
             Way::Change => "change",
