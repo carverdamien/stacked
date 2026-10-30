@@ -1175,6 +1175,10 @@ pub enum Action {
     /// Reconcile with HEAD: each patch whose commit is marked takes its
     /// commit's message, as one edit stacked makes, queued as edits are.
     Reconcile,
+    /// The reconcile with HEAD of run `0`, waiting its turn, dropped from
+    /// the queue once asked, as if it was never asked.
+    AskDropReconcile(String),
+    DropReconcile(String),
     EditPatch,
     EditCode,
     EditAgain,
@@ -1308,7 +1312,11 @@ pub enum Action {
     /// patch.
     SendWhole,
     SendAll(Way),
-    Unsend,
+    /// Comment (change, id) taken back from the agent's queue, where it
+    /// waits its turn, once asked: its ask is not sent, and the comment
+    /// stays open, as it is.
+    AskUnsend(String, String),
+    Unsend(String, String),
     /// The row above an ask, picking when it asks: now, or later, in the
     /// batch. Enter on it does the ask.
     When,
@@ -1460,6 +1468,9 @@ fn about(action: &Action) -> String {
         Action::Reconcile => {
             "give each patch whose commit in your checkout is marked ≠ or ! that commit's whole message, as a new version: one edit, made by stacked with no agent, which joins the queue as an edit does and waits for your review in turn; the edits asked after it wait until you have reviewed it".into()
         }
+        Action::AskDropReconcile(_) | Action::DropReconcile(_) => {
+            "drop the reconcile with HEAD that waits its turn, as if it was never asked: nothing is taken from HEAD, nothing changes in the stack, and the marks stay; what waits after it in the queue goes on".into()
+        }
         Action::EditPatch => "edit this patch in $EDITOR, as mail, opened where the cursor is".into(),
         Action::EditCode => "edit this file as the patch leaves it, in $EDITOR, opened at this line".into(),
         Action::EditAgain => "edit it again, as you left it; conflicts you resolved since are thrown away".into(),
@@ -1583,7 +1594,7 @@ fn about(action: &Action) -> String {
         Action::SendAll(Way::Test) => "ask the agent to build and test, for every comment listed".into(),
         #[cfg(feature = "try-push")]
         Action::SendAll(Way::Try) => "ask the agent to select the CI tasks of a try push, for every comment listed, each its own push".into(),
-        Action::Unsend => "take it back from the agent's queue".into(),
+        Action::AskUnsend(..) | Action::Unsend(..) => "take this comment's ask back from the agent's queue: the ask is not sent, and the comment stays open".into(),
         Action::When => {
             "pick when the agent is asked: now, or later, the comment waiting in the batch, which the banner sends with the rest; enter asks".into()
         }
@@ -2916,6 +2927,10 @@ impl App {
         if matches!(&h.at, At::Stack(o) if !o.marks.is_empty()) {
             out.push("Reconcile with HEAD, in HEAD's menu, gives each patch marked its commit's message, in one edit for your review: accepted, the marks are gone.".into());
         }
+        // One waiting its turn: dropped from HEAD's menu.
+        if self.reconcile_drop_item().is_some() {
+            out.push("Reconcile with HEAD waits its turn: Drop the waiting reconcile with HEAD…, in HEAD's menu, takes it out of the queue, as if it was never asked.".into());
+        }
         out.push("Press Enter or Space for HEAD's menu, with Move HEAD… and Reconcile with HEAD; ↑↓ for a patch, or the stack's header.".into());
         out
     }
@@ -3139,24 +3154,29 @@ impl App {
 
     /// What stopping lint job `run` asks first, if the run is one under
     /// way: the linter stopped, the job landing as stopped, nothing changed;
-    /// or the job waiting its turn dropped.
+    /// or the job waiting its turn dropped, and the edits asked after it
+    /// no longer waiting for it.
     fn lint_stop_menu(&self, run: &str) -> Option<Menu> {
-        let (title, yes, no, said) = match crate::lint::step_of(self.db.run(run)?)? {
+        let r = self.db.run(run)?;
+        let (title, yes, no, mut said) = match crate::lint::step_of(r)? {
             crate::lint::Step::Running => (
                 "stop the linter?",
                 "Stop it",
                 "Let it go on",
-                "Its process is stopped, the linter with it, and the lint job lands at once, as stopped: nothing changes in the stack, and the fixes it made so far are thrown away.",
+                vec!["Its process is stopped, the linter with it, and the lint job lands at once, as stopped: nothing changes in the stack, and the fixes it made so far are thrown away.".to_string()],
             ),
             crate::lint::Step::Waiting => (
-                "drop the waiting lint job?",
+                "drop the lint job that waits its turn? Nothing was linted yet",
                 "Drop it",
                 "Keep it",
-                "It is taken off the queue: nothing is linted, and nothing changes in the stack.",
+                vec!["It is taken off the queue: nothing is linted, and nothing changes in the stack.".to_string()],
             ),
         };
+        if crate::lint::step_of(r) == Some(crate::lint::Step::Waiting) {
+            said.extend(banner::edits_after_said(&self.db, &r.stack, run));
+        }
         let mut m = Menu::ask(title, Item::new(yes, Action::Stop(run.to_string())), no, true);
-        m.note = Some(said.into());
+        m.note = Some(said.join("\n"));
         Some(m)
     }
 
@@ -4115,6 +4135,18 @@ impl App {
                     "stop the linter: the lint job lands at once, as stopped; nothing changes in the stack, and the fixes it made so far are thrown away".into()
                 }
                 _ => "drop the waiting lint job: nothing is linted, and nothing changes in the stack".into(),
+            },
+            // A lint job's stream: the linter's, not the agent's.
+            Action::Transcript(run) if self.db.run(run).is_some_and(crate::held::linted) => "read what the linter writes, all of which its run keeps".into(),
+            // A comment's ask waiting its turn: of its kind; a round sent
+            // back, not going back with the work.
+            Action::AskUnsend(change, id) | Action::Unsend(change, id) => match self.db.note(change, id).and_then(|n| n.queued.as_ref()) {
+                Some(q) if q.on.is_some() => format!(
+                    "take the {} on this comment back from the agent's queue: the comment does not go back to the agent with the work you sent back, and stays open",
+                    banner::ask_said(q)
+                ),
+                Some(q) => format!("take the {} on this comment back from the agent's queue: the ask is not sent, and the comment stays open", banner::ask_said(q)),
+                None => about(action),
             },
             // A view this middle is too narrow for: the room it takes.
             Action::View(l) => match self.room_for(*l) {
@@ -5507,6 +5539,8 @@ impl App {
                 // The stack's lint job: the linter stopped, or the job
                 // dropped.
                 BannerLine::Lint(run) => self.lint_stop_said(run).map(|_| Ok(Action::AskStop(run.clone()))),
+                // The stack's reconcile with HEAD waiting its turn: dropped.
+                BannerLine::Reconcile(run) => Some(Ok(Action::AskDropReconcile(run.clone()))),
                 _ => None,
             },
             Screen::Main => match self.focus {
@@ -5534,6 +5568,10 @@ impl App {
             Screen::Review => self.review_deleting(),
             Screen::Runs => {
                 let r = *self.runs_newest().get(self.pick)?;
+                // A reconcile with HEAD waiting its turn: dropped.
+                if crate::reconcile::is(r) && r.state == RunState::Started {
+                    return Some(Ok(Action::AskDropReconcile(r.id.clone())));
+                }
                 // A lint job under way, running or waiting its turn.
                 let lint = crate::lint::step_of(r).is_some();
                 (lint || (ask::running(r) && !crate::held::linted(r))).then(|| Ok(Action::AskStop(r.id.clone())))
@@ -5544,9 +5582,9 @@ impl App {
 
     /// What Delete does on comment `c`, as its menu has it: the agent that
     /// works on it stopped; taken out of the batch, or back from the agent's
-    /// queue; else closed, with the comments its answer opened if it opened
-    /// some. Nothing on one closed, nor on one whose reply waits for your
-    /// review, as the status line says.
+    /// queue, once asked, the comment open; else closed, with the comments
+    /// its answer opened if it opened some. Nothing on one closed, nor on one
+    /// whose reply waits for your review, as the status line says.
     fn comment_deleting(&self, c: &Note) -> Option<std::result::Result<Action, String>> {
         if self.is_closed(c) {
             return Some(Err("this comment is closed already".into()));
@@ -5560,7 +5598,7 @@ impl App {
         }
         Some(Ok(match &c.queued {
             Some(q) if q.batched() => Action::Unbatch,
-            Some(_) => Action::Unsend,
+            Some(_) => Action::AskUnsend(c.change.clone(), c.id.clone()),
             None if !self.db.opened_from(&self.stack, &c.change, &c.id).is_empty() => Action::AskCloseOpened,
             None => Action::AskCloseComment,
         }))
@@ -5599,7 +5637,8 @@ impl App {
             Action::AskCloseOpened => "close it and those it opened",
             Action::AskStop(run) if self.screen == Screen::Runs => self.lint_stop_said(&run).unwrap_or("stop it"),
             Action::AskStop(run) => self.push_stop_said(&run).or_else(|| self.lint_stop_said(&run)).unwrap_or("stop the agent"),
-            Action::Unsend => "take it back from the queue",
+            Action::AskUnsend(..) => "take it back from the queue",
+            Action::AskDropReconcile(_) => "drop the waiting reconcile",
             Action::Unbatch => "remove it from the batch",
             Action::AskDrop => "drop it",
             Action::AskDeleteStack => "delete the stack",
@@ -5624,6 +5663,8 @@ impl App {
             Action::AskCloseComment
                 | Action::AskCloseOpened
                 | Action::AskStop(_)
+                | Action::AskUnsend(..)
+                | Action::AskDropReconcile(_)
                 | Action::AskDrop
                 | Action::AskDeleteStack
                 | Action::AskDropFile(_)
@@ -5725,11 +5766,11 @@ impl App {
                     Some(BannerLine::Lint(_)) => {
                         "The linter lints the stack, patch by patch, away from the screen, one lint at a time of every stack: what it fixes lands here for your review. Press Enter to read what it writes.".into()
                     }
-                    Some(BannerLine::Reconcile(_)) => format!("{}.", self.reconcile_waits()),
+                    Some(BannerLine::Reconcile(_)) => format!("{}. Press Enter for its menu, to drop it.", self.reconcile_waits()),
                     _ => "Press Enter to go to this comment.".into(),
                 });
                 out.extend(self.delete_help());
-                out.push("Press ↑↓ for another line, and ↓ past the last for the stack; Space to pick one, to review, send or go to; Esc to go back where you were.".into());
+                out.push("Press ↑↓ for another line, and ↓ past the last for the stack; Space to pick one, to review, send, go to, or take out of the queue; Esc to go back where you were.".into());
             }
             Screen::Review if self.review_pulled() => {
                 out.push(
@@ -5910,6 +5951,13 @@ impl App {
             }
             Screen::Runs => {
                 match self.runs_newest().get(self.pick) {
+                    // What waits its turn: its menu, to drop it.
+                    Some(r) if crate::reconcile::is(r) && r.state == RunState::Started => {
+                        out.push(format!("{}. Press Enter for its menu, to drop it.", self.reconcile_waits_of(&r.stack)));
+                    }
+                    Some(r) if crate::lint::step_of(r) == Some(crate::lint::Step::Waiting) => {
+                        out.push("This lint job waits its turn. Press Enter to see what the linter writes, or to drop it.".into());
+                    }
                     Some(r) if ask::running(r) => out.push("Press Enter to see what the agent is writing, or to stop it.".into()),
                     Some(_) => out.push("Press Enter to see how it went.".into()),
                     None => out.push("Nothing has run yet.".into()),
@@ -6925,6 +6973,8 @@ impl App {
                 move_why = self.move_head_why();
                 items.push(Item::new("Reconcile with HEAD", Action::Reconcile).when(self.reconcile_why().is_none()));
                 reconcile_why = self.reconcile_why();
+                // One waiting its turn: dropped from the queue.
+                items.extend(self.reconcile_drop_item());
             }
             (Screen::Main, Focus::List) if self.on_stack => {
                 title = format!("the stack {}", self.stack);
@@ -6943,6 +6993,10 @@ impl App {
                     let (item, why) = self.lint_item();
                     items.push(item);
                     lint_why = why;
+                    // The stack's lint job waiting its turn: dropped from the
+                    // queue.
+                    let waiting = crate::lint::pending(&self.db, &self.stack).filter(|r| crate::lint::step_of(r) == Some(crate::lint::Step::Waiting));
+                    items.extend(waiting.and_then(|r| self.lint_stop_item(&r.id)));
                     items.push(Item::new("Tree of edits…", Action::Tree));
                     items.push(Item::new("History…", Action::History));
                     #[cfg(feature = "moz-phab")]
@@ -6984,6 +7038,7 @@ impl App {
                 if self.mark_here().is_some() {
                     items.push(Item::new("Reconcile with HEAD", Action::Reconcile).when(self.reconcile_why().is_none()));
                     reconcile_why = self.reconcile_why();
+                    items.extend(self.reconcile_drop_item());
                 }
                 items.push(Item::new("Edit this patch in $EDITOR", Action::EditPatch).when(h));
                 if let Some((item, said)) = self.wrap_item([self.sel], |_, w| format!("Wrap the long lines of this patch's message at {w} columns")) {
@@ -7272,7 +7327,8 @@ impl App {
                 items.push(Item::new(format!("Send it now ({said})"), Action::SendNow).when(w).with(self.effort_choices(at)));
                 items.push(Item::new("Remove it from the batch", Action::Unbatch));
             }
-            None if c.queued.is_some() => items.push(Item::new("Take it back from the agent's queue", Action::Unsend)),
+            // Waiting its turn: taken back, once asked, the comment open.
+            None if c.queued.is_some() => items.push(Item::new("Take it back from the agent's queue…", Action::AskUnsend(c.change.clone(), c.id.clone()))),
             None if c.about.is_some() => {
                 let ask = Item::new("Ask agent, answer only", Action::Send(Way::Answer)).when(w && ask::sendable(c));
                 self.push_ask(items, ask.with(self.effort_choices(None)), "Ask agent later, answer only");
@@ -7365,6 +7421,11 @@ impl App {
             }
             Action::GoToNote => self.go_to_note(),
             Action::Reconcile => self.reconcile(),
+            Action::AskDropReconcile(run) => match self.drop_reconcile_ask(&run) {
+                Some(m) => self.mode = Mode::Menu(m),
+                None => self.status = "this reconcile with HEAD no longer waits its turn".into(),
+            },
+            Action::DropReconcile(run) => self.drop_reconcile(&run),
             // Not while it would not move HEAD; from the place picked, or
             // HEAD's, never below its last commit marked `!`.
             Action::MoveHead(at) => match self.head_moves_here() {
@@ -7737,14 +7798,11 @@ impl App {
                 let notes = self.listed_sendable(way);
                 self.send(notes, way, false, self.asked_at());
             }
-            Action::Unsend => {
-                if let Some(c) = self.comment_here() {
-                    if let Err(e) = ask::unsend(&self.path, &[(c.change, c.id)]) {
-                        self.status = e.0;
-                    }
-                    self.reload();
-                }
-            }
+            Action::AskUnsend(change, id) => match self.unsend_ask(&change, &id) {
+                Some(m) => self.mode = Mode::Menu(m),
+                None => self.status = "this comment does not wait its turn in the agent's queue".into(),
+            },
+            Action::Unsend(change, id) => self.take_back(&change, &id),
             Action::OpenStream => {
                 if let Some(c) = self.picked() {
                     self.mode = Mode::Stream {
@@ -9632,6 +9690,12 @@ impl App {
                 let Some(r) = self.runs_newest().get(self.pick).map(|r| (*r).clone()) else {
                     return;
                 };
+                // A reconcile with HEAD waiting its turn: what it waits for,
+                // and its drop.
+                if let Some(m) = self.reconcile_menu(&r.id) {
+                    self.mode = Mode::Menu(m);
+                    return;
+                }
                 // A lint job under way: what the linter wrote, or the linter
                 // stopped (the job dropped, waiting its turn).
                 if let Some(stop) = self.lint_stop_item(&r.id) {
@@ -10332,7 +10396,7 @@ impl App {
                     Some(BannerLine::Pulling) => "say what the pull brings",
                     Some(BannerLine::Batch) => "pick what to send",
                     Some(BannerLine::Lint(_)) => "read what the linter writes",
-                    Some(BannerLine::Reconcile(_)) => "say what it waits for",
+                    Some(BannerLine::Reconcile(_)) => "say what it waits for, or drop it",
                     _ => "go to it",
                 };
                 let delete = self.delete_hint().map_or(String::new(), |d| format!("{d} · "));

@@ -6256,9 +6256,10 @@ fn reconcile_with_head_waits_its_turn_as_an_edit_and_the_edits_after_it_wait_for
     app.banner_sel = line;
     let screen = draw(&mut app);
     assert!(screen.contains("   ◌ Reconcile with HEAD, waiting its turn: the commit messages of patch 1 taken from HEAD"), "{screen}");
+    // Enter: its menu, saying what it waits for.
     keys(&mut app, &[KeyCode::Enter]);
-    assert_eq!(app.status, "Reconcile with HEAD waits its turn: stacked makes it once the agent's change on the stack lands, and it then waits for your review");
-    keys(&mut app, &[KeyCode::Esc]);
+    assert_eq!(menu_note(&app), "Reconcile with HEAD waits its turn: stacked makes it once the agent's change on the stack lands, and it then waits for your review.");
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Esc]);
     // An edit asked after it waits until it is reviewed; an answer goes at
     // once.
     let edit = stack_note(&db, "s-c2", "Make it shorter.");
@@ -6334,6 +6335,121 @@ fn a_reconcile_going_on_from_work_rejected_is_made_again_from_the_stack_as_it_is
     assert_eq!((again.state, stacked::ask::guessing(&d, &again)), (RunState::Done, None));
     let c = again.held.as_ref().and_then(|h| h.stack.clone()).unwrap();
     assert!(d.patch(&c.patches[0]).diff.contains("+TWO") && c.from == Some(d.head("s").unwrap().0), "made from the stack as it is");
+}
+
+#[test]
+fn a_reconcile_waiting_its_turn_is_dropped_once_asked_from_its_banner_line_head_s_menu_and_the_runs_and_the_edit_after_it_goes() {
+    use stacked::db::{Effort, RunState, Way};
+    use stacked::tui::BannerLine;
+    let (_tmp, db, src) = setup();
+    first_reworded(&src, "Bug 1 - shout TWO\n\nBecause it is loud.");
+    // The agent changes the stack: Reconcile with HEAD, asked meanwhile,
+    // waits its turn, and so does an edit asked after it.
+    let (change, id) = stack_note(&db, "s-c1", "Make it better.");
+    changing(&db, &change, &id, serde_json::json!("stack"));
+    let mut app = open_in(&db, &src);
+    on_patch(&mut app, 0);
+    choose(&mut app, "Reconcile with HEAD");
+    app.settle();
+    let edit = stack_note(&db, "s-c2", "Make it shorter.");
+    let waits = stacked::ask::send(&db, "s", std::slice::from_ref(&edit), Way::Change, false, Effort::High).unwrap();
+    assert_eq!(waits.as_deref(), Some("once the reconcile with HEAD before it is made and you have reviewed it"));
+    app.refresh();
+    let run = stacked::reconcile::pending(&Db::load(&db).unwrap(), "s").map(|r| r.id.clone()).unwrap();
+    let confirm = (
+        "drop the reconcile with HEAD that waits its turn? Nothing was changed yet".to_string(),
+        labels(&["Drop it", "Keep it"]),
+        1,
+    );
+    let note = "It is taken off the queue: nothing is taken from HEAD, nothing changes in the stack, and the marks stay.\nThe edit asked after it no longer waits for it.";
+    // HEAD's menu, and the patch marked's, offer its drop beside Reconcile
+    // with HEAD, grayed.
+    keys(&mut app, &[KeyCode::Home]);
+    while !app.on_head() {
+        keys(&mut app, &[KeyCode::Down]);
+    }
+    keys(&mut app, &[KeyCode::Char('?')]);
+    let Mode::Help { lines, .. } = &app.mode else { panic!("{:?}", app.mode) };
+    let said = "Reconcile with HEAD waits its turn: Drop the waiting reconcile with HEAD…, in HEAD's menu, takes it out of the queue, as if it was never asked.";
+    assert!(lines.iter().any(|l| l == said), "{lines:?}");
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Enter]);
+    assert_eq!((offered(&app, "Reconcile with HEAD"), offered(&app, "Drop the waiting reconcile with HEAD…")), (Some(false), Some(true)));
+    choose(&mut app, "Drop the waiting reconcile with HEAD…");
+    assert_eq!((asked(&app), menu_note(&app)), (confirm.clone(), note.to_string()));
+    keys(&mut app, &[KeyCode::Esc]);
+    on_patch(&mut app, 0);
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    assert_eq!(offered(&app, "Drop the waiting reconcile with HEAD…"), Some(true));
+    keys(&mut app, &[KeyCode::Esc]);
+    assert!(stacked::reconcile::pending(&Db::load(&db).unwrap(), "s").is_some_and(|r| r.state == RunState::Started), "kept");
+    // On its line of the banner: the bottom bar and ? say what Enter and
+    // Delete do; Enter opens its menu, what it waits for under its drop.
+    keys(&mut app, &[KeyCode::Esc]);
+    app.banner_sel = app.banner_lines().iter().position(|l| *l == BannerLine::Reconcile(run.clone())).expect("its line");
+    draw(&mut app);
+    assert!(app.hint().contains("enter: say what it waits for, or drop it · delete: drop the waiting reconcile · space: pick one"), "{}", app.hint());
+    keys(&mut app, &[KeyCode::Char('?')]);
+    let Mode::Help { lines, .. } = &app.mode else { panic!("{:?}", app.mode) };
+    let said = [
+        "Reconcile with HEAD waits its turn: stacked makes it once the agent's change on the stack lands, and it then waits for your review. Press Enter for its menu, to drop it.",
+        "Press Delete to drop the reconcile with HEAD that waits its turn, as if it was never asked: nothing is taken from HEAD, nothing changes in the stack, and the marks stay; what waits after it in the queue goes on. Delete asks first.",
+    ];
+    for l in said {
+        assert!(lines.iter().any(|m| m == l), "{l:?}: {lines:?}");
+    }
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Enter]);
+    assert_eq!(asked(&app), ("reconcile with HEAD, waiting its turn".to_string(), labels(&["Drop the waiting reconcile with HEAD…"]), 0));
+    assert_eq!(menu_note(&app), "Reconcile with HEAD waits its turn: stacked makes it once the agent's change on the stack lands, and it then waits for your review.");
+    choose(&mut app, "Drop the waiting reconcile with HEAD…");
+    assert_eq!((asked(&app), menu_note(&app)), (confirm.clone(), note.to_string()));
+    keys(&mut app, &[KeyCode::Esc]);
+    // Delete on its line asks the same; so does the banner's menu.
+    keys(&mut app, &[KeyCode::Delete]);
+    assert_eq!((asked(&app), menu_note(&app)), (confirm.clone(), note.to_string()));
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Char(' ')]);
+    choose(&mut app, "Drop the waiting reconcile with HEAD…");
+    assert_eq!(asked(&app), confirm);
+    keys(&mut app, &[KeyCode::Esc]);
+    // In the runs too: Delete on it, and its menu, as ? says.
+    app.screen = Screen::Runs;
+    app.pick = 0;
+    draw(&mut app);
+    keys(&mut app, &[KeyCode::Char('?')]);
+    let Mode::Help { lines, .. } = &app.mode else { panic!("{:?}", app.mode) };
+    assert_eq!(lines[..2], said);
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Delete]);
+    assert_eq!(asked(&app), confirm);
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Enter]);
+    assert_eq!(asked(&app).1, labels(&["Drop the waiting reconcile with HEAD…"]));
+    choose(&mut app, "Drop the waiting reconcile with HEAD…");
+    choose(&mut app, "Drop it");
+    assert_eq!(app.status, "the waiting reconcile with HEAD was dropped: nothing was taken from HEAD, and the stack is as it was");
+    // As if it was never asked: nothing changed, the marks still there; the
+    // banner without it, and Reconcile with HEAD offered again.
+    let d = Db::load(&db).unwrap();
+    let r = d.run(&run).unwrap();
+    assert_eq!((r.state, r.summary.as_str()), (RunState::Failed, stacked::reconcile::DROPPED));
+    assert!(stacked::reconcile::pending(&d, "s").is_none());
+    drop(d);
+    assert_eq!(patch_message(&db, 0), "Bug 1 - shout two\n\nBecause.");
+    assert!(!app.banner_lines().iter().any(|l| matches!(l, BannerLine::Reconcile(_))), "{:?}", app.banner_lines());
+    app.screen = Screen::Main;
+    on_patch(&mut app, 0);
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    assert_eq!((offered(&app, "Reconcile with HEAD"), offered(&app, "Drop the waiting reconcile with HEAD…")), (Some(true), None));
+    keys(&mut app, &[KeyCode::Esc]);
+    // The edit asked after it waits only for the agent's change now: once
+    // that lands, it goes, from the stack as it is.
+    assert_eq!(stacked::ask::waits_on(&Db::load(&db).unwrap(), "s", Way::Change).as_deref(), Some("once the agent's change on the stack lands"));
+    Db::edit(&db, |d| {
+        let r = d.run("run-changing").cloned().unwrap();
+        d.add_run(stacked::db::Run { state: RunState::Done, ..r }).map(|_| ())
+    })
+    .unwrap();
+    app.launch();
+    app.settle();
+    let asked_about = |id: &str| Db::load(&db).unwrap().runs().iter().any(|r| stacked::ask::info(r).is_some_and(|i| i.notes.iter().any(|n| n.id == id)));
+    assert!(asked_about("s-c2"), "the edit went");
 }
 
 #[test]
@@ -12398,7 +12514,7 @@ fn delete_stops_the_agent_once_asked_on_its_comment_and_on_the_runs() {
 }
 
 #[test]
-fn delete_takes_a_comment_back_from_the_queue_or_out_of_the_batch_at_once() {
+fn delete_takes_a_comment_back_from_the_queue_once_asked_its_comment_open_or_out_of_the_batch_at_once() {
     use stacked::db::{Queued, Stage, Way};
     let (_tmp, db, _src) = setup();
     let mut app = open(&db).unwrap();
@@ -12420,14 +12536,36 @@ fn delete_takes_a_comment_back_from_the_queue_or_out_of_the_batch_at_once() {
         };
         Db::edit(&db, |d| d.set_note(Note { queued: Some(queued), ..n })).unwrap();
     };
-    // Waiting its turn on the agent's queue: taken back at once, as "Take it
-    // back from the agent's queue", with no question.
+    // Waiting its turn on the agent's queue: taken back once asked, as "Take
+    // it back from the agent's queue…" does, rather than closed; Esc keeps it
+    // in the queue.
     queue(Stage::Ready);
     app.refresh();
     assert!(app.hint().contains("delete: take it back from the queue"), "{}", app.hint());
+    keys(&mut app, &[KeyCode::Char('?')]);
+    let Mode::Help { lines, .. } = &app.mode else { panic!("{:?}", app.mode) };
+    let said = "Press Delete to take the answer-only ask on this comment back from the agent's queue: the ask is not sent, and the comment stays open. Delete asks first.";
+    assert!(lines.iter().any(|l| l == said), "{lines:?}");
+    keys(&mut app, &[KeyCode::Esc]);
+    let confirm = (
+        "take the answer-only ask on patch 1's comment out of the queue? The comment stays open".to_string(),
+        labels(&["Take it back", "Keep it in the queue"]),
+        1,
+    );
     keys(&mut app, &[KeyCode::Delete]);
-    assert_eq!(app.mode, Mode::Normal);
-    assert!(notes_of(&db, "s", 0)[0].queued.is_none(), "off the queue");
+    assert_eq!(asked(&app), confirm);
+    keys(&mut app, &[KeyCode::Esc]);
+    assert!(notes_of(&db, "s", 0)[0].queued.is_some(), "kept in the queue");
+    // Its menu's item asks the same.
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    assert_eq!(offered(&app, "Take it back from the agent's queue…"), Some(true));
+    choose(&mut app, "Take it back from the agent's queue…");
+    assert_eq!(asked(&app), confirm);
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Delete]);
+    choose(&mut app, "Take it back");
+    assert_eq!(app.status, "the answer-only ask on patch 1's comment is taken out of the queue: the comment stays open, and is not sent");
+    let n = notes_of(&db, "s", 0).remove(0);
+    assert!(n.queued.is_none() && n.text == "why so loud?", "off the queue, open as it was: {n:?}");
     // In the batch: taken out at once, as "Remove it from the batch".
     queue(Stage::Batch);
     app.refresh();
@@ -12438,6 +12576,149 @@ fn delete_takes_a_comment_back_from_the_queue_or_out_of_the_batch_at_once() {
     // Then neither: closed, once asked.
     keys(&mut app, &[KeyCode::Delete]);
     assert_eq!(menu_title(&app), "close this comment? Show…, closed, can reopen it");
+}
+
+#[test]
+fn an_edit_ask_waiting_its_turn_is_taken_back_once_asked_from_its_banner_line_and_on_its_comment_which_stays_open() {
+    use stacked::db::{Effort, Way};
+    use stacked::tui::BannerLine;
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Enter]);
+    save(&mut app, "why so loud?");
+    down_to(&mut app, "+LINE 39");
+    keys(&mut app, &[KeyCode::Enter]);
+    save(&mut app, "and this?");
+    // The agent changes the stack: the two, asked together as an edit, wait
+    // their turn.
+    let (change, id) = stack_note(&db, "s-c1", "Make it better.");
+    changing(&db, &change, &id, serde_json::json!("stack"));
+    let both: Vec<(String, String)> = notes_of(&db, "s", 0).iter().map(|n| (n.change.clone(), n.id.clone())).collect();
+    let waits = stacked::ask::send(&db, "s", &both, Way::Change, false, Effort::High).unwrap();
+    assert_eq!(waits.as_deref(), Some("once the agent's change on the stack lands"));
+    app.refresh();
+    let of = |text: &str| notes_of(&db, "s", 0).into_iter().find(|n| n.text == text).unwrap();
+    let loud = of("why so loud?");
+    // On its line of the banner: Delete asks first, saying what is taken out
+    // and what stays.
+    keys(&mut app, &[KeyCode::Esc]);
+    app.banner_sel = app.banner_lines().iter().position(|l| *l == BannerLine::Comment(loud.change.clone(), loud.id.clone())).expect("its line");
+    let line = selected_banner(&mut app);
+    assert!(line.contains("◌ patch 1 · a.txt: TWO · \"why so loud?\" · ready (may change the code), once the agent's change on the stack lands"), "{line}");
+    assert!(app.hint().contains("enter: go to it · delete: take it back from the queue · space: pick one"), "{}", app.hint());
+    let confirm = (
+        "take the edit ask on patch 1's comment out of the queue? The comment stays open".to_string(),
+        labels(&["Take it back", "Keep it in the queue"]),
+        1,
+    );
+    keys(&mut app, &[KeyCode::Delete]);
+    assert_eq!(asked(&app), confirm);
+    assert_eq!(menu_note(&app), "1 other comment, asked together with this one, still waits its turn.");
+    keys(&mut app, &[KeyCode::Esc]);
+    assert!(of("why so loud?").queued.is_some(), "kept in the queue");
+    // The banner's menu has its take-back next to going to it; it asks the
+    // same.
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    let all = items(&app);
+    let go = all.iter().position(|(l, _)| l == "Go to patch 1 · a.txt: TWO · \"why so loud?\"").expect("its Go to");
+    let back = "Take back the ask on patch 1 · a.txt: TWO · \"why so loud?\"…";
+    assert_eq!(all[go + 1], (back.to_string(), true), "{all:?}");
+    choose(&mut app, back);
+    assert_eq!(asked(&app), confirm);
+    choose(&mut app, "Take it back");
+    assert_eq!(app.status, "the edit ask on patch 1's comment is taken out of the queue: the comment stays open, and is not sent");
+    // Open as it was, and unsent: its line, which the cursor follows, no
+    // longer waits. The other still waits its turn.
+    let n = of("why so loud?");
+    assert!(n.queued.is_none() && n.text == "why so loud?", "{n:?}");
+    assert!(of("and this?").queued.is_some(), "the other waits its turn");
+    let line = selected_banner(&mut app);
+    assert!(line.contains("patch 1 · a.txt: TWO · \"why so loud?\"") && !line.contains('◌') && !line.contains("ready"), "{line}");
+    // On the other comment itself, in the middle: Delete takes its ask back
+    // once asked, rather than closing it.
+    keys(&mut app, &[KeyCode::Esc]);
+    (app.focus, app.on_stack) = (Focus::Diff, false);
+    keys(&mut app, &[KeyCode::Home]);
+    down_to(&mut app, "+LINE 39");
+    keys(&mut app, &[KeyCode::Down]);
+    assert!(app.hint().contains("delete: take it back from the queue"), "{}", app.hint());
+    keys(&mut app, &[KeyCode::Delete]);
+    assert_eq!(asked(&app), confirm);
+    assert!(menu_note(&app).is_empty(), "alone in its ask now: {}", menu_note(&app));
+    choose(&mut app, "Take it back");
+    assert_eq!(app.status, "the edit ask on patch 1's comment is taken out of the queue: the comment stays open, and is not sent");
+    let n = of("and this?");
+    assert!(n.queued.is_none() && n.text == "and this?", "{n:?}");
+}
+
+#[test]
+fn a_round_sent_back_waiting_its_turn_is_taken_back_once_asked_the_work_staying_as_you_sent_it_back() {
+    use stacked::tui::BannerLine;
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Enter]);
+    save(&mut app, "why so loud?");
+    let n = notes_of(&db, "s", 0).remove(0);
+    // The agent's work on it landed, its change waiting for review; then the
+    // agent changes the stack, asked by a comment on it.
+    held(&db, "run-1", &n.change, &n.id, "Quieter now.", true);
+    let (change, id) = stack_note(&db, "s-c1", "Make it better.");
+    changing(&db, &change, &id, serde_json::json!("stack"));
+    // Your answer to its reply sends the work back: the round waits its turn.
+    Db::edit(&db, |d| stacked::held::answer(d, "run-1", 0, "Still too loud.")).unwrap();
+    let said = stacked::ask::send_back(&db, "s", "run-1", &Default::default(), None).unwrap();
+    assert_eq!(said, "sent back to the agent (may change the code): 1 comment to ask again");
+    let rev = Db::load(&db).unwrap().head("s").unwrap().0;
+    app.refresh();
+    assert_eq!(notes_of(&db, "s", 0)[0].queued.as_ref().and_then(|q| q.on.as_deref()), Some("run-1"));
+    // Delete on its line of the banner asks first, saying what goes back to
+    // the agent then, and what stays.
+    keys(&mut app, &[KeyCode::Esc]);
+    app.banner_sel = app.banner_lines().iter().position(|l| *l == BannerLine::Comment(n.change.clone(), n.id.clone())).expect("its line");
+    draw(&mut app);
+    let confirm = (
+        "take the edit ask on patch 1's comment out of the queue? The comment stays open".to_string(),
+        labels(&["Take it back", "Keep it in the queue"]),
+        1,
+    );
+    let note = "This comment goes back to the agent with the work you sent back, and nothing else does: taken out of the queue, nothing goes back to the agent. The work stays as you sent it back, its review closed and its change not applied.";
+    keys(&mut app, &[KeyCode::Delete]);
+    assert_eq!((asked(&app), menu_note(&app)), (confirm.clone(), note.to_string()));
+    keys(&mut app, &[KeyCode::Esc]);
+    // Its comment's menu has its take-back, and ? says what it does.
+    keys(&mut app, &[KeyCode::Enter]);
+    assert!(!app.on_banner);
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    let want = items(&app).iter().position(|(l, _)| l == "Take it back from the agent's queue…").expect("its take-back");
+    while !matches!(&app.mode, Mode::Menu(m) if m.sel == want) {
+        key(&mut app, KeyCode::Down);
+    }
+    keys(&mut app, &[KeyCode::Char('?')]);
+    let Mode::Help { lines, .. } = &app.mode else { panic!("{:?}", app.mode) };
+    let said = "Press Enter to take the edit ask on this comment back from the agent's queue: the comment does not go back to the agent with the work you sent back, and stays open.";
+    assert_eq!(lines[0], said);
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Enter]);
+    assert_eq!((asked(&app), menu_note(&app)), (confirm, note.to_string()));
+    choose(&mut app, "Take it back");
+    assert_eq!(
+        app.status,
+        "the edit ask on patch 1's comment is taken out of the queue: the comment stays open, and nothing goes back to the agent with the work you sent back"
+    );
+    // The comment open, unsent, your answer its last turn; the work as you
+    // sent it back, its review closed and its change not applied.
+    let after = notes_of(&db, "s", 0).remove(0);
+    assert!(after.queued.is_none(), "{after:?}");
+    let thread: Vec<String> = stacked::thread::thread_turns(&after.text).into_iter().map(|t| t.body).collect();
+    assert_eq!(thread, ["why so loud?", "Quieter now.", "Still too loud."]);
+    let d = Db::load(&db).unwrap();
+    assert!(d.review("run-1").is_some_and(|v| v.closed && v.marks.get("stack") == Some(&false)));
+    assert_eq!(d.run("run-1").unwrap().summary, "reviewed: sent back to the agent, 1 comment to ask again");
+    assert_eq!(d.head("s").unwrap().0, rev, "the stack as it was");
+    assert!(stacked::held::queue(&d, "s").is_empty());
 }
 
 #[test]

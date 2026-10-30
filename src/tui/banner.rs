@@ -11,6 +11,11 @@
 //! recently updated first. Enter reviews what landed, sends the batch, goes
 //! to a comment, or, on the pull under way, says what it brings. Esc goes
 //! to it from the panes, and from it back where the cursor was.
+//!
+//! What waits its turn in the agent's queue is taken out of it from here,
+//! as from its own menus, each asked first: a comment's ask, the comment
+//! staying open; the stack's lint job; the stack's reconcile with HEAD,
+//! which Enter on its line offers to drop. What waits after it goes on.
 
 use super::reviewing::first_words;
 use super::*;
@@ -41,6 +46,44 @@ pub(super) fn landed_how(r: &crate::db::Run, room: usize) -> String {
 /// What a pull under way brings, said on its banner line.
 #[cfg(feature = "moz-phab")]
 pub(super) const PULL_BRINGS: &str = "what is new from Phabricator will wait here for your review once the pull is done";
+
+/// The kind of ask a comment waiting its turn is queued as, as taking it
+/// out of the queue names it: `edit ask`, `answer-only ask`.
+pub(super) fn ask_said(q: &crate::db::Queued) -> &'static str {
+    match q.way {
+        Way::Change => "edit ask",
+        Way::Answer => "answer-only ask",
+        Way::Test => "build and test ask",
+        #[cfg(feature = "try-push")]
+        Way::Try => "try push ask",
+    }
+}
+
+/// Whose comment `n` of stack `name` is, as taking its ask out of the
+/// queue names it: `patch 2's comment`, `the stack's comment`.
+fn comment_of(db: &crate::db::Db, name: &str, n: &Note) -> String {
+    if let Some(rev) = n.about {
+        return format!("the comment on @{rev}");
+    }
+    if n.on_stack() {
+        return "the stack's comment".into();
+    }
+    match db.stack(name).ok().and_then(|s| s.patches.iter().position(|id| db.patch(id).change == n.change)) {
+        Some(k) => format!("patch {}'s comment", k + 1),
+        None => "the comment on a patch no longer in the stack".into(),
+    }
+}
+
+/// What dropping run `id` of stack `name`, a lint job or a reconcile with
+/// HEAD waiting its turn, frees, said: the edits asked after it, which no
+/// longer wait for it. None when no edit waits after it.
+pub(super) fn edits_after_said(db: &crate::db::Db, name: &str, id: &str) -> Option<String> {
+    match ask::edits_after(db, name, id) {
+        0 => None,
+        1 => Some("The edit asked after it no longer waits for it.".into()),
+        k => Some(format!("The {k} edits asked after it no longer wait for it.")),
+    }
+}
 
 /// `a`, `a and b`, `a, b and c`.
 fn and(parts: &[String]) -> String {
@@ -154,8 +197,122 @@ impl App {
     /// What the stack's reconcile with HEAD, waiting its turn, waits for,
     /// said.
     pub(super) fn reconcile_waits(&self) -> String {
-        let on = crate::ask::reconcile_waits_on(&self.db, &self.stack).unwrap_or_else(|| "next".into());
+        self.reconcile_waits_of(&self.stack)
+    }
+
+    /// As `reconcile_waits`, of stack `name`'s reconcile.
+    pub(super) fn reconcile_waits_of(&self, name: &str) -> String {
+        let on = crate::ask::reconcile_waits_on(&self.db, name).unwrap_or_else(|| "next".into());
         format!("Reconcile with HEAD waits its turn: stacked makes it {on}, and it then waits for your review")
+    }
+
+    // -- what waits its turn, taken out of the queue ------------------------ //
+
+    /// The item that drops the stack's reconcile with HEAD waiting its
+    /// turn, asking first, if one waits.
+    pub(super) fn reconcile_drop_item(&self) -> Option<Item> {
+        let r = crate::reconcile::pending(&self.db, &self.stack).filter(|r| r.state == RunState::Started)?;
+        Some(Item::new("Drop the waiting reconcile with HEAD…", Action::AskDropReconcile(r.id.clone())))
+    }
+
+    /// Reconcile `run`, if it waits its turn.
+    fn reconcile_waiting(&self, run: &str) -> Option<&crate::db::Run> {
+        self.db.run(run).filter(|r| crate::reconcile::is(r) && r.state == RunState::Started)
+    }
+
+    /// The menu of reconcile `run` waiting its turn, which Enter on its line
+    /// opens, in the banner and in the runs: what it waits for, and its
+    /// drop. None once it no longer waits.
+    pub(super) fn reconcile_menu(&self, run: &str) -> Option<Menu> {
+        let r = self.reconcile_waiting(run)?;
+        let items = vec![Item::new("Drop the waiting reconcile with HEAD…", Action::AskDropReconcile(run.into()))];
+        let mut m = Menu::new("reconcile with HEAD, waiting its turn", items, None);
+        m.note = Some(format!("{}.", self.reconcile_waits_of(&r.stack)));
+        Some(m)
+    }
+
+    /// What dropping reconcile `run`, waiting its turn, asks first: that
+    /// nothing was changed, and what is then of the edits asked after it.
+    /// None once it no longer waits.
+    pub(super) fn drop_reconcile_ask(&self, run: &str) -> Option<Menu> {
+        let r = self.reconcile_waiting(run)?;
+        let mut said = vec!["It is taken off the queue: nothing is taken from HEAD, nothing changes in the stack, and the marks stay.".to_string()];
+        said.extend(edits_after_said(&self.db, &r.stack, run));
+        let yes = Item::new("Drop it", Action::DropReconcile(run.into()));
+        let mut m = Menu::ask("drop the reconcile with HEAD that waits its turn? Nothing was changed yet", yes, "Keep it", true);
+        m.note = Some(said.join("\n"));
+        Some(m)
+    }
+
+    /// Reconcile `run`, waiting its turn, dropped: the status line says so,
+    /// and what waited behind it goes.
+    pub(super) fn drop_reconcile(&mut self, run: &str) {
+        match crate::reconcile::drop_waiting(&self.path, run) {
+            Ok((r, dropped)) => {
+                self.reload();
+                self.status = match (dropped, crate::held::waiting(&self.db, &r)) {
+                    (true, _) => "the waiting reconcile with HEAD was dropped: nothing was taken from HEAD, and the stack is as it was".into(),
+                    (false, true) => "the reconcile with HEAD was made before it could be dropped: it waits for your review".into(),
+                    (false, false) => format!("the reconcile with HEAD was over before it could be dropped: {}", r.summary),
+                };
+                self.launch();
+            }
+            Err(e) => self.status = e.0,
+        }
+    }
+
+    /// What taking comment (change, id) back from the agent's queue asks
+    /// first, if it waits its turn there: what is taken out, the comment
+    /// staying open; the comments asked with it, which still wait their
+    /// turn; of a round sent back, what still goes back to the agent, the
+    /// work staying as you sent it back. None if it does not wait.
+    pub(super) fn unsend_ask(&self, change: &str, id: &str) -> Option<Menu> {
+        let n = self.db.note(change, id)?;
+        let q = n.queued.as_ref().filter(|q| !q.batched())?;
+        let title = format!("take the {} on {} out of the queue? The comment stays open", ask_said(q), comment_of(&self.db, &self.stack, n));
+        let note = match (q.on.is_some(), ask::asked_with(&self.db, &self.stack, &q.batch, change, id)) {
+            (true, 0) => Some(
+                "This comment goes back to the agent with the work you sent back, and nothing else does: taken out of the queue, nothing goes back to the agent. The work stays as you sent it back, its review closed and its change not applied."
+                    .to_string(),
+            ),
+            (true, 1) => Some("This comment goes back to the agent with the work you sent back, as 1 other comment does: that one still goes back with the work.".to_string()),
+            (true, k) => Some(format!("This comment goes back to the agent with the work you sent back, as {k} other comments do: those still go back with the work.")),
+            (false, 0) => None,
+            (false, 1) => Some("1 other comment, asked together with this one, still waits its turn.".to_string()),
+            (false, k) => Some(format!("{k} other comments, asked together with this one, still wait their turn.")),
+        };
+        let yes = Item::new("Take it back", Action::Unsend(change.into(), id.into()));
+        let mut m = Menu::ask(title, yes, "Keep it in the queue", true);
+        m.note = note;
+        Some(m)
+    }
+
+    /// Comment (change, id) taken back from the agent's queue, the comment
+    /// open: the status line says what was taken out, and what waited behind
+    /// it goes. The agent's turn come meanwhile, it says so.
+    pub(super) fn take_back(&mut self, change: &str, id: &str) {
+        let taken = ask::take_back(&self.path, change, id);
+        self.reload();
+        match taken {
+            Ok(Some(q)) => {
+                let of = self.db.note(change, id).map_or_else(|| "the comment".to_string(), |n| comment_of(&self.db, &self.stack, n));
+                let alone = q.on.is_some() && ask::asked_with(&self.db, &self.stack, &q.batch, change, id) == 0;
+                let then = if alone { "nothing goes back to the agent with the work you sent back" } else { "is not sent" };
+                self.status = format!("the {} on {of} is taken out of the queue: the comment stays open, and {then}", ask_said(&q));
+                // Written again, its line moved among the banner's comments,
+                // the most recently updated first: the cursor goes with it.
+                let line = BannerLine::Comment(change.to_string(), id.to_string());
+                if let Some(k) = self.banner_lines().iter().position(|l| *l == line).filter(|_| self.on_banner) {
+                    self.banner_sel = k;
+                }
+                self.launch();
+            }
+            Ok(None) if self.busy().contains_key(&(change.to_string(), id.to_string())) => {
+                self.status = "the agent's turn came for this comment meanwhile: the agent works on it now".into();
+            }
+            Ok(None) => self.status = "this comment no longer waits its turn in the agent's queue".into(),
+            Err(e) => self.status = e.0,
+        }
     }
 
     /// The try pushes of the stack under way: their runs, the first started
@@ -309,9 +466,11 @@ impl App {
     }
 
     /// The banner's menu, to pick from, all of it: each landed ask and each
-    /// pull, to review; the batch, to send; every comment the agent can be
-    /// asked about, checked if it is in the batch; then each comment open,
-    /// the most recently updated first, to go to.
+    /// pull, to review; the stack's reconcile with HEAD waiting its turn, to
+    /// drop; the stack's lint job, to read and to stop or drop; the batch, to
+    /// send; every comment the agent can be asked about, checked if it is in
+    /// the batch; then each comment open, the most recently updated first,
+    /// to go to, and, waiting its turn, to take back from the queue.
     pub(super) fn banner_items(&self, items: &mut Vec<Item>) {
         for id in self.queue() {
             let Some((r, _)) = self.work(&id) else { continue };
@@ -319,9 +478,12 @@ impl App {
             let left = crate::held::left(&self.db, r);
             items.push(Item::new(format!("Review {left}{}", landed_how(r, 40)), Action::Review(id.clone(), None)).when(first));
         }
-        // The stack's lint job: the linter stopped, or the job dropped.
-        if let Some(stop) = crate::lint::pending(&self.db, &self.stack).and_then(|r| self.lint_stop_item(&r.id)) {
-            items.push(stop);
+        items.extend(self.reconcile_drop_item());
+        // The stack's lint job: what the linter writes, as Enter on its line
+        // shows it; the linter stopped, or the job dropped.
+        if let Some(r) = crate::lint::pending(&self.db, &self.stack) {
+            items.push(Item::new("Read what the linter writes", Action::Transcript(r.id.clone())));
+            items.extend(self.lint_stop_item(&r.id));
         }
         let batch = self.batch_items();
         if !items.is_empty() && !batch.is_empty() {
@@ -341,7 +503,13 @@ impl App {
         }
         for (change, id) in comments {
             let Some(n) = self.db.note(&change, &id) else { continue };
-            items.push(Item::new(format!("Go to {}", self.comment_said(n)), Action::GoToComment(change, id)));
+            let said = self.comment_said(n);
+            let waiting = n.queued.as_ref().is_some_and(|q| !q.batched());
+            items.push(Item::new(format!("Go to {said}"), Action::GoToComment(change.clone(), id.clone())));
+            // Waiting its turn: taken back, once asked, the comment open.
+            if waiting {
+                items.push(Item::new(format!("Take back the ask on {said}…"), Action::AskUnsend(change, id)));
+            }
         }
     }
 
@@ -516,7 +684,8 @@ impl App {
 
     /// A key on the banner, open: ↑↓ another line, past the last the
     /// stack's header; Enter reviews what landed, opens the menu on the
-    /// batch, or goes to the comment; Esc goes back where the cursor was.
+    /// batch, goes to the comment, or, on a reconcile with HEAD waiting its
+    /// turn, opens its menu; Esc goes back where the cursor was.
     pub(super) fn banner_key(&mut self, k: KeyEvent) -> Effect {
         let lines = self.banner_lines();
         let last = lines.len().saturating_sub(1);
@@ -551,8 +720,13 @@ impl App {
                     self.on_banner = false;
                     return self.perform(Action::Transcript(run));
                 }
-                // A reconcile with HEAD waiting its turn: what it waits for.
-                Some(BannerLine::Reconcile(_)) => self.status = self.reconcile_waits(),
+                // A reconcile with HEAD waiting its turn: its menu, what it
+                // waits for, and its drop.
+                Some(BannerLine::Reconcile(run)) => {
+                    if let Some(m) = self.reconcile_menu(&run) {
+                        self.mode = Mode::Menu(m);
+                    }
+                }
                 None => {}
             },
             KeyCode::Esc => self.on_banner = false,

@@ -755,6 +755,77 @@ fn closed_on_two(tmp: &Path, db: &Path) {
     .unwrap();
 }
 
+/// On stack `s` of `db`: the agent changing the stack, its process this
+/// one, for as long as the test runs; and, waiting their turn behind it, a
+/// reconcile with HEAD, a lint job, and a comment on the first patch asked
+/// as an edit.
+fn waiting_their_turn(db: &Path) {
+    use stacked::db::{Note, Queued, Run, RunState, Stage, Way};
+    stacked::db::Db::edit(db, |d| {
+        let first = d.patch(&d.stack("s").unwrap().patches[0]).clone();
+        let from = d.head("s").unwrap().0;
+        let asking = Note {
+            change: stacked::db::stack_change("s"),
+            id: "s-c1".into(),
+            text: "Make it better.".into(),
+            ..Default::default()
+        };
+        d.set_note(asking.clone())?;
+        let ask = serde_json::json!({"way": "change", "scope": "stack", "from": from, "notes": [{"label": "c1", "change": asking.change, "id": asking.id}]});
+        d.add_run(Run {
+            id: "run-changing".into(),
+            what: "edit".into(),
+            stack: "s".into(),
+            state: RunState::Started,
+            pid: Some(std::process::id()),
+            ask: Some(ask),
+            time: stacked::db::now(),
+            ..Default::default()
+        })?;
+        d.add_run(Run {
+            id: stacked::db::unique(),
+            what: stacked::reconcile::WHAT.into(),
+            stack: "s".into(),
+            state: RunState::Started,
+            request: "the commit messages of patch 1 taken from HEAD".into(),
+            reconcile: Some(Box::default()),
+            ..Default::default()
+        })?;
+        d.add_run(Run {
+            id: stacked::db::unique(),
+            what: stacked::db::LINT.into(),
+            stack: "s".into(),
+            state: RunState::Started,
+            request: "./lint.sh".into(),
+            lint: Some(Box::new(stacked::lint::Job {
+                command: "./lint.sh".into(),
+                ..Default::default()
+            })),
+            ..Default::default()
+        })?;
+        let queued = Queued {
+            way: Way::Change,
+            batch: format!("b{}", stacked::db::unique()),
+            stack: false,
+            stage: Stage::Ready,
+            on: None,
+            was: None,
+            effort: None,
+        };
+        d.set_note(Note {
+            change: first.change.clone(),
+            id: "c-loud".into(),
+            line: stacked::view::title_key(&first),
+            file: stacked::view::MSG_PATH.into(),
+            preview: first.title().into(),
+            text: "Shout less.".into(),
+            queued: Some(queued),
+            ..Default::default()
+        })
+    })
+    .unwrap();
+}
+
 /// The box of the comment being written in `buf`, if there is one: the
 /// lines inside it, and the row of its bottom edge.
 fn editor_box(buf: &Buffer) -> Option<(Vec<String>, u16)> {
@@ -800,4 +871,56 @@ fn what_was_closed_here_scrolls_to_its_end_with_the_arrows_and_the_wheel_in_the_
     assert!(inside.last().is_some_and(|l| l == "  reason 30") && bottom < 15, "{}", text(&buf));
     press(&s, KeyCode::Up);
     screen(&s, "a line back up", first("  reason 25"));
+}
+
+#[test]
+fn what_waits_its_turn_is_taken_out_of_the_queue_from_the_banner_once_asked_in_the_window_too() {
+    let (tmp, db) = setup();
+    waiting_their_turn(&db);
+    let s = Session::open(&db, tmp.path()).unwrap();
+    s.send(Input::Size(140, 30));
+    screen(&s, "the banner", |b| text(b).contains("Reconcile with HEAD waits its turn"));
+    // On the banner, its first line the reconcile's: Delete asks first, and
+    // Drop it, over Keep it, drops it.
+    press(&s, KeyCode::Esc);
+    screen(&s, "the reconcile's line", |b| text(b).contains("◌ Reconcile with HEAD, waiting its turn: the commit messages of patch 1 taken from HEAD"));
+    press(&s, KeyCode::Delete);
+    screen(&s, "the reconcile's drop asked", |b| text(b).contains("drop the reconcile with HEAD that waits its turn? Nothing was changed yet"));
+    press(&s, KeyCode::Up);
+    press(&s, KeyCode::Enter);
+    let dropped = "the waiting reconcile with HEAD was dropped: nothing was taken from HEAD, and the stack is as it was";
+    screen(&s, "the reconcile dropped", |b| text(b).contains(dropped));
+    // Then the lint job's line.
+    press(&s, KeyCode::Delete);
+    screen(&s, "the lint job's drop asked", |b| text(b).contains("drop the lint job that waits its turn? Nothing was linted yet"));
+    press(&s, KeyCode::Up);
+    press(&s, KeyCode::Enter);
+    screen(&s, "the lint job dropped", |b| text(b).contains("the waiting lint job was dropped: nothing was linted, and the stack is as it was"));
+    // Then the comment's: its ask taken back, the comment open.
+    press(&s, KeyCode::Delete);
+    screen(&s, "the ask's take-back asked", |b| text(b).contains("take the edit ask on patch 1's comment out of the queue? The comment stays open"));
+    press(&s, KeyCode::Up);
+    press(&s, KeyCode::Enter);
+    let taken = "the edit ask on patch 1's comment is taken out of the queue: the comment stays open, and is not sent";
+    screen(&s, "the ask taken back", |b| text(b).contains(taken));
+    let d = stacked::db::Db::load(&db).unwrap();
+    assert!(stacked::reconcile::pending(&d, "s").is_none() && stacked::lint::pending(&d, "s").is_none());
+    let n = d.note(&d.patch(&d.stack("s").unwrap().patches[0]).change, "c-loud").unwrap();
+    assert!(n.queued.is_none() && n.text == "Shout less.", "{n:?}");
+    // The agent's change over, so that leaving says nothing of it.
+    over_now(&db, "run-changing");
+}
+
+/// Run `id` of `db` landed, as failed, nothing brought back.
+fn over_now(db: &Path, id: &str) {
+    stacked::db::Db::edit(db, |d| {
+        let r = d.run(id).cloned().unwrap();
+        d.add_run(stacked::db::Run {
+            state: stacked::db::RunState::Failed,
+            pid: None,
+            ..r
+        })
+        .map(|_| ())
+    })
+    .unwrap();
 }

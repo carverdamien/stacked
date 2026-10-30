@@ -517,7 +517,12 @@ waits for your review, as chained edits are. It then waits for your review
 in the banner, in turn (`⟳ Review a change of patch 2, reconciled with
 HEAD: its commits' messages`); while it waits its turn, the banner says so
 (`◌ Reconcile with HEAD, waiting its turn: the commit messages of patch 2
-taken from HEAD`), and Enter on that line says what it waits for. Edits
+taken from HEAD`), and Enter on that line opens its menu, which says what
+it waits for. Its `Drop the waiting reconcile with HEAD…`, there, on
+HEAD's menu and the patch marked's, and Delete on its line, takes it out
+of the queue once asked, as if it was never asked: nothing changes, the
+marks stay, and the edits asked after it no longer wait for it (What the
+agent brings back waits for your review, below). Edits
 asked after it do not start before it is accepted or rejected, and then go
 on from the stack that leaves (`ready (may change the code), it goes once
 you have reviewed the reconcile with HEAD`); answers go at once, as ever.
@@ -688,9 +693,11 @@ them other keys, and the help then names those:
   drops, stops or rejects what the cursor is on does. On a comment, in the
   middle or the comments pane, it is `Close this comment…`, or `Close it
   and the comments it opened…` when its answer opened some; while the agent
-  works on the comment, it is `Stop the agent…`; while the comment waits
-  its turn, it is `Take it back from the agent's queue`; and while the
-  comment is in the batch, it is `Remove it from the batch`. On a patch, it
+  works on the comment, it is `Stop the agent…`; while the comment's ask
+  waits its turn, it is `Take it back from the agent's queue…`, which takes
+  the ask out of the queue and leaves the comment open rather than closing
+  it; and while the comment is in the batch, it is `Remove it from the
+  batch`. On a patch, it
   is `Drop this patch…`; on the stack's header, it is `Delete this
   stack…`; on a file the patches pane lists under a patch, it drops the
   patch's changes to that file (Editing a patch by hand, below). In the
@@ -701,8 +708,11 @@ them other keys, and the help then names those:
   banner, it rejects all that remains of the landed work picked and closes
   its review, as the review's `Reject all remaining and Close` does, but
   for a pull's, which it does not reject; on a comment's line, it
-  does what it does on the comment. On the runs, it stops an ask that
-  runs. An item ending with `…` asks first, and so does Delete; Delete also
+  does what it does on the comment; on the stack's lint job, it is `Drop
+  the waiting lint job…`, or `Stop the linter…` once it runs; on a
+  reconcile with HEAD waiting its turn, it is `Drop the waiting reconcile
+  with HEAD…`. On the runs, it stops an ask that runs, and drops a lint
+  job or a reconcile with HEAD that waits its turn. An item ending with `…` asks first, and so does Delete; Delete also
   asks before it takes back what you wrote in a review, and before it
   rejects landed work from the banner. On a comment closed, it does
   nothing, and the status line says so. In the reading mode, on the code
@@ -1552,7 +1562,10 @@ its stack, one at a time of every stack, as builds take the machine (a
 build asked on another stack meanwhile says it goes `once the running build
 and test of s lands`); a change waiting holds back the answers asked after
 it. An asked comment that cannot go yet waits as ready, says what it waits
-on, and goes on its own when that lands. Nothing is asked on a stack that
+on, and goes on its own when that lands; `Take it back from the agent's
+queue…`, in its menu, and Delete on it, take its ask out of the queue once
+asked, the comment staying open (What the agent brings back waits for your
+review, below). Nothing is asked on a stack that
 does not apply. A lint job of the stack takes its turn as a change does,
 the changes asked after it waiting for it (Linting, below); so does a
 reconcile with HEAD (The editor, above), the changes asked after it
@@ -1882,6 +1895,36 @@ the batch as it was last asked, else as the stack's asks are) or unchecks
 (it is taken out); then the comments, to go to. ↓ past the last line goes
 to the stack's header, and Esc goes back where the cursor was, the banner
 closed again. A comment you are done with, closed, leaves it.
+
+What waits its turn in the agent's queue is taken out of it from its line
+of the banner, with Delete or the banner's menu, as from its own menus,
+each asking first what it takes out and what stays; the status line then
+says what was done, and the queue goes on with what waits after it. A
+comment's ask waiting its turn (`◌`): `Take it back from the agent's
+queue…`, in the comment's menu, and Delete on the comment and on its line,
+asks `take the edit ask on patch 2's comment out of the queue? The comment
+stays open` (or the answer-only ask, the build and test ask, the try push
+ask), saying under it how many comments asked together with it still wait
+their turn; the banner's menu has `Take back the ask on patch 2 · a.txt:
+TWO · "…"…` after `Go to` the comment. Taken back, the
+comment stays open, as it is, unsent, and the cursor on the banner
+follows its line. One of a round you sent back from a review no longer
+goes back to the agent with the work: taken back, the last of the round,
+nothing goes back to the agent, and the work stays as you sent it back,
+its review closed and its change not applied; edits by hand no longer
+wait for it. The stack's lint job waiting its turn: `Drop the
+waiting lint job…`, in the banner's menu after `Read what the linter
+writes`, which Enter on its line does, and in the stack's menu, asks
+`drop the lint job that waits its turn? Nothing was linted yet`. The
+stack's reconcile with HEAD waiting its turn: Enter on its line opens its
+menu, which says what it waits for, with `Drop the waiting reconcile with
+HEAD…`, which the banner's menu, HEAD's, the patch marked's and the runs
+have too; it asks `drop the reconcile with HEAD that waits its turn?
+Nothing was changed yet`. Dropped, either is as if it was never asked:
+nothing is linted or taken from HEAD, nothing changes in the stack, the
+marks stay, and the edits asked after it no longer wait for it (the
+question says how many), so that they go in their turn. What runs keeps
+its `Stop…` items.
 
 A review lists the parts on the left, in three sections, under the
 comments the agent was asked about, for its work, on top (`asking
@@ -2410,7 +2453,9 @@ meanwhile. Nothing changes in the stack: the fixes folded so far are
 thrown away, nothing lands for review, and the status line says so. The
 stack can be edited by hand again, and the edits that waited for the
 linter go. A job waiting its turn is dropped the same way, `Drop the
-waiting lint job…`, and nothing is linted. Delete on the job in `Runs…`,
+waiting lint job…`, on the banner's menu and the stack's, asking `drop the
+lint job that waits its turn? Nothing was linted yet`: nothing is linted,
+and the edits asked after it no longer wait for it. Delete on the job in `Runs…`,
 or its menu there, does the same, and so does `stacked stop RUN`, the run
 as `stacked runs` lists it. What the linter left in the worktree is thrown
 away as the next job starts, so that the next job starts clean.
@@ -3657,14 +3702,24 @@ that no letter but 1, 2, 3 and / does anything, keys mapped by the settings
 (the bottom bar naming them, but as they are where what is typed is read),
 Delete and Backspace as the menus' items that close, drop, stop or reject
 (a comment closed, with those its answer opened, its agent stopped and
-its ask landed at once as failed, taken
-back from the queue or out of the batch; a patch dropped and the stack
+its ask landed at once as failed, its ask taken
+back from the queue once asked, the comment open, or taken out of the batch at once; a patch dropped and the stack
 deleted; a file's changes dropped from its patch for review, refused when
 a later patch needs them, a rename, an added file and a deleted one
 dropped whole, and the patch's drop offered for its only file; in a
 review, a part rejected, a comment closed with it, what you wrote taken
 back; landed work rejected and a comment closed from the banner; an ask
-stopped from the runs, landed at once too; each asking first where its item does, Esc then
+stopped from the runs, landed at once too; what waits its turn taken out
+of the queue, the confirmation saying what is taken out and what stays,
+the status line what was done: an edit ask from its line of the banner,
+the banner's menu and its comment in the middle, the comment staying open
+and the one asked with it still waiting, the cursor on the banner
+following its line; a round sent back, the work staying as you sent it
+back, its review closed and the stack as it was; a reconcile with HEAD
+from its line, its menu (Enter there, saying what it waits for), HEAD's,
+the patch marked's, the banner's and the runs, as if it was never asked,
+the marks still there, and the edit asked after it, which no longer waits
+for it, going once the change before it lands; each asking first where its item does, Esc then
 doing nothing; on a comment closed, the status line saying so), their key
 a setting, and nothing done in a menu, History…, the tree, the versions or
 the search, nor in the comment editor and `/`'s bar, where they edit what is
@@ -3909,8 +3964,8 @@ under way; its review saying what it takes, stacked's comment saying what
 to run from the top down, `git commit --amend` for HEAD's own commit and
 `git rebase -i` for one below; accepted, the messages taken and the marks
 gone; rejected, nothing changed and the marks there; asked while the
-agent changes the stack, waiting its turn, the banner and Enter there
-saying so, made once that change lands, going on from it, then from the
+agent changes the stack, waiting its turn, the banner saying so and its
+menu, Enter there, what it waits for, made once that change lands, going on from it, then from the
 stack its acceptance made, an edit asked after it waiting until it is
 reviewed and an answer going at once; going on from an edit by hand
 rejected, dropped and made again from the stack as it is; grayed with no
@@ -3976,7 +4031,9 @@ and the editor left, the worktree made ahead removed (Quit in the page;
 runs, on the list StackED's Open Recent shows, the effort picked in a
 menu kept in the state file of its home, where the next `stacked web`
 starts, a message's long lines wrapped from its patch's menu, the edit
-landing for review, a link of a line of a message opened from the
+landing for review, what waits its turn (a reconcile with HEAD, a lint
+job, an edit ask) taken out of the queue from the banner with Delete, each
+asked first, a link of a line of a message opened from the
 menu of a right click on it and with `o`, and one of a line of a comment
 from its menu, by a stand-in, and the comment closed last on a line,
 longer than its box in a small page, scrolled down to its last line with
@@ -4003,7 +4060,9 @@ pgdn, as the wheel's ↓ do, and a database
 that cannot be read said before any window; two editors in one process,
 as two windows, each in its own
 folder (HEAD said in the checkout's, none elsewhere); a message's long
-lines wrapped from its patch's menu, the edit landing for review; with
+lines wrapped from its patch's menu, the edit landing for review; what
+waits its turn (a reconcile with HEAD, a lint job, an edit ask) taken out
+of the queue from the banner with Delete, each asked first; with
 moz-phab, the status of a patch's revision after its number, a letter,
 and the Phabricator line over its message, Space on it showing what
 differs under it, read by a stand-in for its database; and the File menu,
@@ -4145,7 +4204,10 @@ whose process is gone landed as failed, the stack free again; and a
 linter that hangs stopped from the banner, asked first, and by `stacked
 stop`, the job landing as stopped with nothing landed and the stack as it
 was, the stack free again and the edit that waited for it going, and a
-job waiting its turn dropped the same way.
+job waiting its turn dropped the same way, asked first, by Delete on its
+line of the banner and from the banner's menu, where it is next to `Read
+what the linter writes`, and the stack's, the edit asked after it going
+then while another stack's linter still runs.
 `tests/cli.rs` sets the linter up: in the checkout's own settings alone,
 kept out of git's sight, never in the settings' file, which is passed over
 and said if it sets one; printed with where it comes from; turned off,

@@ -791,6 +791,77 @@ fn closed_on_two(tmp: &Path, db: &Path) {
     .unwrap();
 }
 
+/// On stack `s` of `db`: the agent changing the stack, its process this
+/// one, for as long as the test runs; and, waiting their turn behind it, a
+/// reconcile with HEAD, a lint job, and a comment on the first patch asked
+/// as an edit.
+fn waiting_their_turn(db: &Path) {
+    use stacked::db::{Note, Queued, Run, RunState, Stage, Way};
+    stacked::db::Db::edit(db, |d| {
+        let first = d.patch(&d.stack("s").unwrap().patches[0]).clone();
+        let from = d.head("s").unwrap().0;
+        let asking = Note {
+            change: stacked::db::stack_change("s"),
+            id: "s-c1".into(),
+            text: "Make it better.".into(),
+            ..Default::default()
+        };
+        d.set_note(asking.clone())?;
+        let ask = serde_json::json!({"way": "change", "scope": "stack", "from": from, "notes": [{"label": "c1", "change": asking.change, "id": asking.id}]});
+        d.add_run(Run {
+            id: "run-changing".into(),
+            what: "edit".into(),
+            stack: "s".into(),
+            state: RunState::Started,
+            pid: Some(std::process::id()),
+            ask: Some(ask),
+            time: stacked::db::now(),
+            ..Default::default()
+        })?;
+        d.add_run(Run {
+            id: stacked::db::unique(),
+            what: stacked::reconcile::WHAT.into(),
+            stack: "s".into(),
+            state: RunState::Started,
+            request: "the commit messages of patch 1 taken from HEAD".into(),
+            reconcile: Some(Box::default()),
+            ..Default::default()
+        })?;
+        d.add_run(Run {
+            id: stacked::db::unique(),
+            what: stacked::db::LINT.into(),
+            stack: "s".into(),
+            state: RunState::Started,
+            request: "./lint.sh".into(),
+            lint: Some(Box::new(stacked::lint::Job {
+                command: "./lint.sh".into(),
+                ..Default::default()
+            })),
+            ..Default::default()
+        })?;
+        let queued = Queued {
+            way: Way::Change,
+            batch: format!("b{}", stacked::db::unique()),
+            stack: false,
+            stage: Stage::Ready,
+            on: None,
+            was: None,
+            effort: None,
+        };
+        d.set_note(Note {
+            change: first.change.clone(),
+            id: "c-loud".into(),
+            line: stacked::view::title_key(&first),
+            file: stacked::view::MSG_PATH.into(),
+            preview: first.title().into(),
+            text: "Shout less.".into(),
+            queued: Some(queued),
+            ..Default::default()
+        })
+    })
+    .unwrap();
+}
+
 /// The screen `rows`, a row of text each, as event `l` leaves it.
 fn shown(rows: &mut Vec<String>, l: &str) {
     if let Some(size) = l.strip_prefix("data: s ") {
@@ -862,4 +933,53 @@ fn what_was_closed_here_scrolls_to_its_end_with_the_arrows_and_the_wheel_in_the_
             inside.first().is_some_and(|l| l == "  reason 26") && inside.last().is_some_and(|l| l == "  reason 30") && !edge.contains('▼') && bottom < 15
         })
     });
+}
+
+#[test]
+fn what_waits_its_turn_is_taken_out_of_the_queue_from_the_banner_once_asked_in_the_browser_too() {
+    let (_tmp, db) = setup();
+    waiting_their_turn(&db);
+    stacked::config::init(stacked::config::Config::default());
+    let (port, token) = stacked::web::start(db.clone()).unwrap();
+    let (host, input) = (format!("127.0.0.1:{port}"), format!("POST /input?t={token}"));
+    let mut events = events(port, &token, 140);
+    until(&mut events, "the banner", |l| text(l).contains("Reconcile with HEAD waits its turn"));
+    // On the banner, its first line the reconcile's: Delete asks first, and
+    // Drop it, over Keep it, drops it.
+    ask(port, &host, &input, "k Esc -\n");
+    until(&mut events, "the reconcile's line", |l| text(l).contains("◌ Reconcile with HEAD, waiting its turn: the commit messages of patch 1 taken from HEAD"));
+    ask(port, &host, &input, "k Delete -\n");
+    until(&mut events, "the reconcile's drop asked", |l| text(l).contains("drop the reconcile with HEAD that waits its turn? Nothing was changed yet"));
+    ask(port, &host, &input, "k Up -\n");
+    ask(port, &host, &input, "k Enter -\n");
+    let dropped = "the waiting reconcile with HEAD was dropped: nothing was taken from HEAD, and the stack is as it was";
+    until(&mut events, "the reconcile dropped", |l| text(l).contains(dropped));
+    // Then the lint job's line.
+    ask(port, &host, &input, "k Delete -\n");
+    until(&mut events, "the lint job's drop asked", |l| text(l).contains("drop the lint job that waits its turn? Nothing was linted yet"));
+    ask(port, &host, &input, "k Up -\n");
+    ask(port, &host, &input, "k Enter -\n");
+    until(&mut events, "the lint job dropped", |l| text(l).contains("the waiting lint job was dropped: nothing was linted, and the stack is as it was"));
+    // Then the comment's: its ask taken back, the comment open.
+    ask(port, &host, &input, "k Delete -\n");
+    until(&mut events, "the ask's take-back asked", |l| text(l).contains("take the edit ask on patch 1's comment out of the queue? The comment stays open"));
+    ask(port, &host, &input, "k Up -\n");
+    ask(port, &host, &input, "k Enter -\n");
+    let taken = "the edit ask on patch 1's comment is taken out of the queue: the comment stays open, and is not sent";
+    until(&mut events, "the ask taken back", |l| text(l).contains(taken));
+    let d = stacked::db::Db::load(&db).unwrap();
+    assert!(stacked::reconcile::pending(&d, "s").is_none() && stacked::lint::pending(&d, "s").is_none());
+    let n = d.note(&d.patch(&d.stack("s").unwrap().patches[0]).change, "c-loud").unwrap();
+    assert!(n.queued.is_none() && n.text == "Shout less.", "{n:?}");
+    // The agent's change over, so that nothing is left running.
+    stacked::db::Db::edit(&db, |d| {
+        let r = d.run("run-changing").cloned().unwrap();
+        d.add_run(stacked::db::Run {
+            state: stacked::db::RunState::Failed,
+            pid: None,
+            ..r
+        })
+        .map(|_| ())
+    })
+    .unwrap();
 }

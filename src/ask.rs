@@ -1110,6 +1110,46 @@ pub fn requeue(db_path: &Path, change: &str, id: &str, q: Queued) -> Result<()> 
     })
 }
 
+/// Takes comment (change, id) back from the agent's queue, where it waits
+/// its turn, unsent: the comment stays open, as it is. What it was queued
+/// as, if it waited its turn; none if it did not, the agent having taken it
+/// meanwhile, or it being in the batch.
+pub fn take_back(db_path: &Path, change: &str, id: &str) -> Result<Option<Queued>> {
+    Db::edit(db_path, |db| {
+        let Some(n) = db.note(change, id).filter(|n| n.queued.as_ref().is_some_and(|q| !q.batched())).cloned() else {
+            return Ok(None);
+        };
+        let was = n.queued.clone();
+        db.set_note(Note { queued: None, ..n })?;
+        Ok(was)
+    })
+}
+
+/// How many edits of stack `name` wait their turn behind run `id`, a lint
+/// job or a reconcile with HEAD waiting its turn, asked after it: each an
+/// ask of comments together, as `claim` takes them in their turn (a round
+/// sent back goes first, before it).
+pub fn edits_after(db: &Db, name: &str, id: &str) -> usize {
+    let key = format!("b{id}");
+    let batches: HashSet<&str> = db
+        .stack_notes(name)
+        .into_iter()
+        .filter_map(|n| n.queued.as_ref())
+        .filter(|q| !q.batched() && q.way == Way::Change && q.on.is_none() && q.batch > key)
+        .map(|q| q.batch.as_str())
+        .collect();
+    batches.len()
+}
+
+/// The other comments of stack `name` waiting their turn in the agent's
+/// queue in batch `batch`, asked together with comment (change, id).
+pub fn asked_with(db: &Db, name: &str, batch: &str, change: &str, id: &str) -> usize {
+    db.stack_notes(name)
+        .iter()
+        .filter(|n| (n.change.as_str(), n.id.as_str()) != (change, id) && n.queued.as_ref().is_some_and(|q| !q.batched() && q.batch == batch))
+        .count()
+}
+
 /// Takes `notes` off claude's queue, unsent.
 pub fn unsend(db_path: &Path, notes: &[(String, String)]) -> Result<()> {
     Db::edit(db_path, |db| {

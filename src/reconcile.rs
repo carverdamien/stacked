@@ -10,7 +10,8 @@
 //! accepted or rejected: they then go on from the stack that decision
 //! leaves. Answers go at once, as ever. The work it chained on accepted,
 //! it goes on from the stack that made; rejected, it is dropped, and made
-//! again at its next turn.
+//! again at its next turn. While it waits its turn, you may drop it
+//! (`drop_waiting`), as if it was never asked: what waits after it goes on.
 //!
 //! Its review shows what it takes from your checkout, each new version's
 //! message compared with the patch's where their lines wrap aside, and a
@@ -152,6 +153,34 @@ pub fn ask(db_path: &Path, name: &str, here: &Path) -> Result<String> {
 
 /// Why there is nothing to reconcile.
 pub const NOTHING: &str = "no commit of HEAD's is marked: each has its patch's message";
+
+/// What a reconcile you dropped before its turn came to: nothing.
+pub const DROPPED: &str = "you dropped the reconcile with HEAD before its turn: nothing was taken from HEAD";
+
+/// Reconcile `id`, waiting its turn, dropped from the queue as if it was
+/// never asked: it ends as failed, `DROPPED` its summary, nothing taken from
+/// HEAD and nothing changed in the stack. One made meanwhile, waiting for
+/// your review, or over, stays as it is. The run as it is then, and whether
+/// it was dropped. What waited behind it is started by the caller
+/// (`ask::launch`).
+pub fn drop_waiting(db_path: &Path, id: &str) -> Result<(Run, bool)> {
+    Db::edit(db_path, |db| {
+        let r = db.run(id).cloned().ok_or_else(|| Error(format!("no run {id}")))?;
+        if !is(&r) {
+            return err(format!("run {id} is not a reconcile with HEAD"));
+        }
+        if r.state != RunState::Started {
+            return Ok((r, false));
+        }
+        let r = Run {
+            state: RunState::Failed,
+            summary: DROPPED.into(),
+            ..r
+        };
+        db.add_run(r.clone())?;
+        Ok((r, true))
+    })
+}
 
 /// Under the lock, from `ask::claim`: reconcile `id`'s turn come, made at
 /// once, from the stack the work `after` makes, if it is chained on that

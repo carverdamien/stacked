@@ -887,8 +887,8 @@ fn a_waiting_lint_job_is_dropped_from_the_banner_a_hanging_one_stopped_by_stacke
     assert!(screen.contains("◌ The linter waits its turn to lint the stack (./lint.sh)"), "{screen}");
     keys(&mut app, &[KeyCode::Char(' ')]);
     choose(&mut app, "Drop the waiting lint job…");
-    assert!(menu_title(&app).starts_with("drop the waiting lint job?"), "{}", menu_title(&app));
-    assert!(menu_note(&app).contains("It is taken off the queue: nothing is linted, and nothing changes in the stack."), "{}", menu_note(&app));
+    assert_eq!(menu_title(&app), "drop the lint job that waits its turn? Nothing was linted yet");
+    assert_eq!(menu_note(&app), "It is taken off the queue: nothing is linted, and nothing changes in the stack.");
     choose(&mut app, "Drop it");
     app.settle();
     assert_eq!(app.status, "the waiting lint job was dropped: nothing was linted, and the stack is as it was");
@@ -931,4 +931,92 @@ fn a_waiting_lint_job_is_dropped_from_the_banner_a_hanging_one_stopped_by_stacke
     let d = Db::load(&db).unwrap();
     let p1 = d.patch(&d.stack("t").unwrap().patches[0]);
     assert!(!p1.diff.contains("stray.txt") && !p1.diff.contains("b.txt"), "{}", p1.diff);
+}
+
+#[test]
+fn a_waiting_lint_job_is_dropped_once_asked_by_delete_on_its_line_or_from_the_stack_s_menu_and_the_edit_after_it_goes() {
+    let (one, two) = two_fixes();
+    let (_tmp, db, _src) = setup(&[&[("a.txt", &one)], &[("a.txt", &two)]], false, Some(&["./lint.sh"]));
+    let mut app = open(&db);
+    let held = hold(&db);
+    // Stack t's job runs, its linter hanging; s's, asked then, waits its
+    // turn, and an edit of s asked after it waits for it.
+    stacked::lint::ask(&db, "t").unwrap();
+    stacked::ask::launch(&db).unwrap();
+    wait_lint(&mut app, &db, |r| r.stack == "t" && r.pid.is_some() && r.lint.as_deref().is_some_and(|j| j.at == 1));
+    lint(&mut app, "Lint the stack (./lint.sh)");
+    let s = wait_lint(&mut app, &db, |r| r.stack == "s");
+    assert_eq!(s.lint.as_deref().map(|j| j.step), Some(stacked::lint::Step::Waiting));
+    let note = stacked::db::Note {
+        change: stacked::db::stack_change("s"),
+        id: "s-after-lint".into(),
+        text: "Make it better.".into(),
+        ..Default::default()
+    };
+    Db::edit(&db, |d| d.set_note(note.clone())).unwrap();
+    let waits = stacked::ask::send(&db, "s", &[(note.change.clone(), note.id.clone())], stacked::db::Way::Change, false, stacked::db::Effort::High).unwrap();
+    assert_eq!(waits.as_deref(), Some("once the linter's work on the stack lands"));
+    let title = "drop the lint job that waits its turn? Nothing was linted yet".to_string();
+    let said = "It is taken off the queue: nothing is linted, and nothing changes in the stack.\nThe edit asked after it no longer waits for it.".to_string();
+    // Delete on its line of the banner asks first, as the bottom bar and ?
+    // say; Esc keeps it.
+    on_lint_line(&mut app, &s.id);
+    assert!(app.hint().contains("enter: read what the linter writes · delete: drop the waiting lint job · space: pick one"), "{}", app.hint());
+    keys(&mut app, &[KeyCode::Char('?')]);
+    let Mode::Help { lines, .. } = &app.mode else { panic!("{:?}", app.mode) };
+    let delete = "Press Delete to drop the waiting lint job: nothing is linted, and nothing changes in the stack. Delete asks first.";
+    assert!(lines.iter().any(|l| l == delete), "{lines:?}");
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Delete]);
+    assert_eq!((menu_title(&app), menu_note(&app)), (title.clone(), said.clone()));
+    assert_eq!(items(&app), [("Drop it".to_string(), true), ("Keep it".to_string(), true)]);
+    keys(&mut app, &[KeyCode::Esc]);
+    assert_eq!(lint_runs(&db).into_iter().find(|r| r.id == s.id).map(|r| r.state), Some(RunState::Started), "kept");
+    // The banner's menu has its drop next to what Enter does on its line.
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    let all = items(&app);
+    let read = all.iter().position(|(l, _)| l == "Read what the linter writes").expect("what Enter does");
+    assert_eq!(all[read + 1], ("Drop the waiting lint job…".to_string(), true), "{all:?}");
+    while !matches!(&app.mode, Mode::Menu(m) if m.sel == read) {
+        key(&mut app, KeyCode::Down);
+    }
+    keys(&mut app, &[KeyCode::Char('?')]);
+    let Mode::Help { lines, .. } = &app.mode else { panic!("{:?}", app.mode) };
+    assert_eq!(lines[0], "Press Enter to read what the linter writes, all of which its run keeps.");
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Esc]);
+    // So does the stack's menu, beside Lint the stack, grayed meanwhile.
+    stack_menu(&mut app);
+    let all = items(&app);
+    assert!(all.contains(&("Lint the stack (./lint.sh)".to_string(), false)) && all.contains(&("Drop the waiting lint job…".to_string(), true)), "{all:?}");
+    choose(&mut app, "Drop the waiting lint job…");
+    assert_eq!((menu_title(&app), menu_note(&app)), (title, said));
+    choose(&mut app, "Drop it");
+    app.settle();
+    assert_eq!(app.status, "the waiting lint job was dropped: nothing was linted, and the stack is as it was");
+    let dropped = lint_runs(&db).into_iter().find(|r| r.id == s.id).unwrap();
+    assert_eq!((dropped.state, dropped.summary.as_str()), (RunState::Failed, stacked::lint::DROPPED));
+    // The edit asked after it goes, from the stack as it is: t's linter,
+    // still running, holds back only another lint job.
+    let mut asked = None;
+    for _ in 0..300 {
+        app.refresh();
+        let d = Db::load(&db).unwrap();
+        asked = d.runs().into_iter().find(|a| a.what == "change").cloned();
+        if asked.as_ref().is_some_and(|a| a.state != RunState::Started) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    let asked = asked.expect("the edit asked after it went");
+    assert!(stacked::ask::info(&asked).unwrap().notes.iter().any(|n| n.id == "s-after-lint"));
+    let t = || lint_runs(&db).into_iter().find(|r| r.stack == "t").unwrap();
+    assert_eq!(t().state, RunState::Started, "t's linter still runs");
+    // Let go, t's lands.
+    drop(held);
+    for _ in 0..600 {
+        if t().state != RunState::Started {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    assert_eq!(t().state, RunState::Done, "{}", t().summary);
 }
