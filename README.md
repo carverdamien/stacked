@@ -254,7 +254,12 @@ alone.
 
 The server runs the editor as the terminal does, drawn into a buffer of the
 page's size, and sends the page the rows that changed (server-sent events);
-the page sends its keys and clicks back. What the page does is wasm
+the page sends its keys and clicks back. Keys that come together are drawn
+once, after the last, and each is done on the screen as the keys before it
+left it, as in a terminal, which draws the screen after each key: Home,
+then Space at once, opens the stack's menu with the stack's comments to
+ask about, as a right click on the stack's header does. What the page does
+is wasm
 (`web/client.rs`: the rows made HTML, the keys and clicks made lines for
 the server), carried by fifty lines of JS (`web/index.html`).
 
@@ -4164,7 +4169,9 @@ while it is open searched again, Esc going back to the row found again),
 the
 menus by place, what `?` says where, writing in every pane, the keys in
 a patch looked at closer in a review going from the line Enter went to
-in its stack diff, though nothing was drawn since, the comment
+in its stack diff, though nothing was drawn since, the stack's menu
+with the stack's comments to ask about after Home, or a right click on
+its header, with nothing drawn since, the comment
 closed last on a line shown dimmed in the box until you write (↑↓ said only
 when it is longer than the box, which ↑↓ and pgdn then scroll down to its
 last line, the box above the bottom bar), the regions it

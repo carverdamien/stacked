@@ -12909,6 +12909,30 @@ fn keys_in_the_patch_looked_at_closer_go_from_the_line_enter_went_to_though_noth
     assert_eq!(work_row(&mut app).as_deref(), Some("three"));
 }
 
+#[test]
+fn the_stack_s_menu_has_the_stack_s_comments_though_home_or_a_click_on_its_header_came_with_nothing_drawn_since() {
+    let (_tmp, db, src) = setup();
+    stacked(&src, &db, &["comment", "s", "Why?"]);
+    let mut app = open(&db).unwrap();
+    draw(&mut app);
+    let ask_all = |app: &App| items(app).into_iter().find(|(l, _)| l == "Ask agent about all…").map(|(_, ok)| ok);
+    // Patch 1 in the middle, Home, then Space at once, as keys come together
+    // from the browser and StackED: the stack's menu, from what the middle
+    // shows of the stack, its comment to ask about.
+    assert!(draw(&mut app).contains("+TWO"));
+    key(&mut app, KeyCode::Home);
+    key(&mut app, KeyCode::Char(' '));
+    assert_eq!(ask_all(&app), Some(true), "{:?}", items(&app));
+    // A right click on its header, patch 1 in the middle again: the same.
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Down]);
+    let screen = draw(&mut app);
+    assert!(screen.contains("+TWO"), "{screen}");
+    let (x, y) = at(&screen, "≡ s · 2 patches");
+    assert_eq!(app.click(x, y, true), Effect::None);
+    assert!(app.on_stack, "on the stack's header");
+    assert_eq!(ask_all(&app), Some(true), "{:?}", items(&app));
+}
+
 /// The edits by hand the open menu has: its items ending in `in $EDITOR`.
 fn edits_of(app: &App) -> Vec<String> {
     items(app).into_iter().map(|(l, _)| l).filter(|l| l.ends_with("in $EDITOR")).collect()

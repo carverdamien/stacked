@@ -2203,6 +2203,11 @@ pub struct App {
     edit_box: std::cell::Cell<Option<Rect>>,
     /// The panes the screen was last drawn in: what `regions` says.
     areas: std::cell::RefCell<Vec<Rect>>,
+    /// How big the screen was last drawn, and whether anything was done
+    /// since (a key, a click, what came read): the next key is done on the
+    /// screen as it would be drawn now (`caught_up`).
+    drawn: Option<Rect>,
+    undrawn: bool,
 }
 
 /// The stack's history, as last made: of which stack, at how many records
@@ -2670,6 +2675,8 @@ impl App {
             spots: std::cell::RefCell::new(Vec::new()),
             edit_box: std::cell::Cell::new(None),
             areas: std::cell::RefCell::new(Vec::new()),
+            drawn: None,
+            undrawn: false,
             db,
             cfg,
         };
@@ -3369,6 +3376,7 @@ impl App {
     /// Waits for the work away from the screen to be done, the files read
     /// to show whole too, and the ask dialog's check of the network.
     pub fn settle(&mut self) {
+        self.undrawn = true;
         while self.bg.launching
             || !self.bg.doing.is_empty()
             || self.bg.judging.is_some()
@@ -3982,6 +3990,11 @@ impl App {
     /// map: Enter is Enter. A menu the click opens is drawn next to the cell
     /// clicked; the menu open before stays where it is, built again or not.
     pub fn click(&mut self, x: u16, y: u16, right: bool) -> Effect {
+        // A click is on the screen as it was last drawn; what it does once
+        // it picked what is there (Space for a right click, Enter for a
+        // second) is done on the screen as it would be drawn then, as a key
+        // after it is (`caught_up`).
+        self.undrawn = true;
         // The menu open before the click, under what `?` says too.
         let was = match &self.mode {
             Mode::Help { back, .. } => match &**back {
@@ -4382,6 +4395,7 @@ impl App {
     /// from it: where HEAD is looked at, the statuses of the stack's
     /// revisions read, and what the Phabricator lines of its patches need.
     pub fn refresh(&mut self) {
+        self.undrawn = true;
         self.poll_search();
         let polled = self.poll();
         let len = Db::file_len(&self.path);
@@ -4562,8 +4576,7 @@ impl App {
         // which reads what is typed. A key that does nothing still closes
         // what `?` said.
         // The search reads what is typed too.
-        let typed = self.screen == Screen::Search && matches!(self.mode, Mode::Normal);
-        let k = if matches!(self.mode, Mode::Edit(_) | Mode::Lines(_) | Mode::Prompt(_) | Mode::Find(_)) || typed {
+        let k = if self.typing() {
             k
         } else {
             match self.cfg.keys.translate(&k) {
@@ -4589,12 +4602,40 @@ impl App {
         self.pressed(key.event())
     }
 
+    /// Whether the keys are typed as text, as they are: in the comment
+    /// editor, the lines named to attach, a line typed for a prompt, the
+    /// search of the middle, and the search's own screen.
+    fn typing(&self) -> bool {
+        matches!(self.mode, Mode::Edit(_) | Mode::Lines(_) | Mode::Prompt(_) | Mode::Find(_))
+            || (self.screen == Screen::Search && matches!(self.mode, Mode::Normal))
+    }
+
+    /// The screen drawn again away from the terminal, at the size it was
+    /// last drawn, if anything was done since: so that a key does what it
+    /// does on the screen as the keys and what came before it left it, as
+    /// the terminal draws it after each key, though keys come together from
+    /// the browser and from StackED, which draw once all are done. What the
+    /// middle shows is built as it is drawn: Home, then Space before
+    /// anything was drawn, opened the stack's menu from the patch's rows.
+    /// Not while the keys are typed as text, which nothing drawn changes:
+    /// a paste, many keys, is drawn once.
+    fn caught_up(&mut self) {
+        if self.undrawn
+            && !self.typing()
+            && let Some(area) = self.drawn
+        {
+            self.draw(&mut Buffer::empty(area));
+        }
+    }
+
     /// Key `k`, as the settings map it: done.
     fn pressed(&mut self, k: KeyEvent) -> Effect {
         // ctrl-c is the terminal's, as in every program: out.
         if k.code == KeyCode::Char('c') && k.modifiers.contains(KeyModifiers::CONTROL) {
             return Effect::Quit;
         }
+        self.caught_up();
+        self.undrawn = true;
         // The search reads every key: ? and space are typed.
         if self.screen == Screen::Search && matches!(self.mode, Mode::Normal) {
             self.status.clear();
@@ -10103,6 +10144,7 @@ impl App {
         let cursor = self.draw_lines(buf, body).or(cursor);
         let cursor = self.draw_prompt(buf, body).or(cursor);
         self.draw_status(buf, area);
+        (self.drawn, self.undrawn) = (Some(area), false);
         // The search of the middle, over the bottom bar.
         self.draw_find(buf, area).or(cursor)
     }
