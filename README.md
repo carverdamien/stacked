@@ -758,7 +758,12 @@ them other keys, and the help then names those:
 
 - The arrows move. ↑↓ go through the patches (the header is above the
   first), the lines of the patch, or the comments (their header above the
-  first); pgup, pgdn, home and end go further. ← and → go from pane to
+  first); pgup, pgdn, home and end go further. A pane longer than the
+  screen stays as it is while the cursor moves within it, and scrolls
+  only once the cursor would go past its top line or its bottom one, as
+  far as it takes to show what the cursor goes to whole (a patch whose
+  title folds, all of its lines): from the top line going up, down to the
+  bottom line going down. ← and → go from pane to
   pane, and past the side panes cycle what they show; in the unified view
   split in two (`1`, below), each half of the middle is a pane of its own
   for them. ← on the expanded
@@ -4237,7 +4242,15 @@ click picking nothing, the menu and
 `?` saying why, an edit there as the stack's menus last picked it
 refused), the comment editor hiding
 nothing in each view of the code, each pane keeping where its cursor
-was, the patch's title kept at the top of the middle, the patches pane's
+was, the patches pane longer than the screen scrolling only once the
+cursor would leave it, as far as the cursor needs (down to the end and up
+again, a page at a time, Home and End, titles folded, files listed, HEAD's
+rows and its line pinned to either edge, a patch and HEAD being moved,
+HEAD moved, a comment on the patch written from a file, the cursor in the
+middle, the screen smaller and larger, wider and narrower, the stack
+losing patches, and another stack shown, its pane as if never drawn) and
+the comments pane likewise, the patch's title kept at the top of the
+middle, the patches pane's
 states (expanded, files, hidden) and its files (listed under the patch
 picked, gone through with the arrows past their ends, gone into with
 Enter and →, clicked, and picked from the middle, where ← comes back to

@@ -5928,6 +5928,581 @@ fn heads_line_stays_in_sight_when_the_stack_is_too_long_for_the_pane() {
     assert!(!screen.contains("↑ HEAD"), "{screen}");
 }
 
+/// A repository of a base and `n` patches, patch K `Bug K - ` and
+/// `title(K)`, adding the files `files(K)` names; the database holding
+/// them as stack `s`, the one shown. With `other`, stack `t` too, of `n`
+/// patches of its own on a branch of the base, `Other K - add oK`.
+fn long_stack(n: usize, title: impl Fn(usize) -> String, files: impl Fn(usize) -> Vec<String>, other: bool) -> (tempfile::TempDir, PathBuf, PathBuf) {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("src");
+    std::fs::create_dir(&src).unwrap();
+    git(&src, &["init", "-q", "-b", "main"]);
+    git(&src, &["config", "commit.gpgsign", "false"]);
+    git(&src, &["config", "tag.gpgsign", "false"]);
+    std::fs::write(src.join("base.txt"), "base\n").unwrap();
+    git(&src, &["add", "."]);
+    git(&src, &["commit", "-qm", "base"]);
+    let db = tmp.path().join("db.jsonl");
+    let range = format!("HEAD~{n}");
+    if other {
+        git(&src, &["checkout", "-q", "-b", "other"]);
+        for k in 1..=n {
+            std::fs::write(src.join(format!("o{k}.txt")), format!("o{k}\n")).unwrap();
+            git(&src, &["add", "."]);
+            git(&src, &["commit", "-qm", &format!("Other {k} - add o{k}")]);
+        }
+        stacked(&src, &db, &["import", "t", &range]);
+        git(&src, &["checkout", "-q", "main"]);
+    }
+    for k in 1..=n {
+        for f in files(k) {
+            std::fs::write(src.join(&f), format!("{f}\n")).unwrap();
+        }
+        git(&src, &["add", "."]);
+        git(&src, &["commit", "-qm", &format!("Bug {k} - {}", title(k))]);
+    }
+    stacked(&src, &db, &["import", "s", &range]);
+    (tmp, db, src)
+}
+
+/// Which of the lines of a screen drawn the patches pane's header is on:
+/// under the top bar, and under the banner when there is one.
+fn header_row(lines: &[&str]) -> usize {
+    lines.iter().position(|l| l.starts_with(" ≡ ")).unwrap_or_else(|| panic!("no header:\n{}", lines.join("\n")))
+}
+
+/// The patches pane's lines under its header, on a screen `w` by `h`: down
+/// to the status line, each cut where the pane ends.
+fn pane_rows(app: &mut App, w: u16, h: u16) -> Vec<String> {
+    let screen = draw_sized(app, w, h);
+    let lines: Vec<&str> = screen.lines().collect();
+    let y = header_row(&lines);
+    let x = lines[y].chars().position(|c| c == '│').unwrap_or_else(|| panic!("no pane:\n{screen}"));
+    lines[y + 1..lines.len() - 1].iter().map(|l| l.chars().take(x).collect::<String>().trim_end().to_string()).collect()
+}
+
+/// Which of `rows` has `text`.
+fn row_with(rows: &[String], text: &str) -> Option<usize> {
+    rows.iter().position(|r| r.contains(text))
+}
+
+/// Which of `rows` patch K's first line is, by its title.
+fn row_of(rows: &[String], k: usize) -> Option<usize> {
+    row_with(rows, &format!("Bug {k} - "))
+}
+
+/// As `choose`, the screen not drawn: for a test that draws it at a size
+/// of its own.
+fn choose_unseen(app: &mut App, label: &str) {
+    if !matches!(app.mode, Mode::Menu(_)) {
+        key(app, KeyCode::Char(' '));
+    }
+    let all = items(app);
+    let want = all.iter().position(|(l, _)| l.starts_with(label)).unwrap_or_else(|| panic!("no {label:?} in {all:?}"));
+    assert!(all[want].1, "{label:?} cannot be chosen: {all:?}");
+    for _ in 0..all.len() * 2 {
+        match &app.mode {
+            Mode::Menu(m) if m.sel == want => break,
+            _ => {
+                key(app, KeyCode::Down);
+            }
+        }
+    }
+    key(app, KeyCode::Enter);
+}
+
+#[test]
+fn the_patches_pane_moves_only_when_the_cursor_would_leave_it() {
+    let (_tmp, db, _src) = long_stack(20, |k| format!("add {k}"), |k| vec![format!("{k}.txt")], false);
+    let mut app = open(&db).unwrap();
+    // A screen of 12 lines: 9 under the pane's header, for 20 patches.
+    let shown = |app: &mut App| pane_rows(app, 120, 12);
+    let rows = shown(&mut app);
+    assert_eq!(rows.len(), 9, "{rows:#?}");
+    assert_eq!((row_of(&rows, 1), row_of(&rows, 9), row_of(&rows, 10)), (Some(0), Some(8), None), "{rows:#?}");
+    // The cursor on patch K, patch `top` on the top line.
+    let at = |app: &mut App, k: usize, top: usize, what: &str| {
+        let rows = shown(app);
+        assert_eq!((app.sel, app.on_stack), (k - 1, false), "{what}");
+        assert_eq!((row_of(&rows, top), row_of(&rows, k)), (Some(0), Some(k - top)), "{what}: {rows:#?}");
+    };
+    // Down to the last line, the list as it is; past it, a patch at a time,
+    // the cursor on the last line.
+    for k in 2..=20 {
+        key(&mut app, KeyCode::Down);
+        at(&mut app, k, k.saturating_sub(8).max(1), &format!("down to {k}"));
+    }
+    // Up: the list as it is until the cursor is on the top line, on patch
+    // 12; past it, a patch at a time, the cursor on the top line.
+    for k in (1..20).rev() {
+        key(&mut app, KeyCode::Up);
+        at(&mut app, k, k.min(12), &format!("up to {k}"));
+    }
+    // From the header, a page down or up at a time: the list moves as far
+    // as the cursor needs, no further.
+    key(&mut app, KeyCode::Up);
+    assert!(app.on_stack);
+    shown(&mut app);
+    for (code, k, top) in [
+        (KeyCode::PageDown, 1, 1),
+        (KeyCode::PageDown, 10, 2),
+        (KeyCode::PageDown, 19, 11),
+        (KeyCode::PageDown, 20, 12),
+        (KeyCode::PageUp, 11, 11),
+        (KeyCode::PageUp, 2, 2),
+        (KeyCode::PageUp, 1, 1),
+        (KeyCode::End, 20, 12),
+    ] {
+        key(&mut app, code);
+        at(&mut app, k, top, &format!("{code:?} to {k}"));
+    }
+    // Home: the header, the list as it is; down from there, patch 1 on the
+    // top line.
+    key(&mut app, KeyCode::Home);
+    let rows = shown(&mut app);
+    assert!(app.on_stack);
+    assert_eq!(row_of(&rows, 12), Some(0), "{rows:#?}");
+    key(&mut app, KeyCode::Down);
+    at(&mut app, 1, 1, "down from the header");
+    // A patch being moved goes down the list as it is, which moves only
+    // once the patch would go past its last line, or its first.
+    key(&mut app, KeyCode::End);
+    shown(&mut app);
+    for _ in 0..4 {
+        key(&mut app, KeyCode::Up);
+        shown(&mut app);
+    }
+    at(&mut app, 16, 12, "on patch 16");
+    choose_unseen(&mut app, "Move this patch");
+    assert!(matches!(app.mode, Mode::Moving { from: 15, to: 15 }), "{:?}", app.mode);
+    let moved = |app: &mut App, top: usize, row: usize, what: &str| {
+        let rows = shown(app);
+        assert_eq!((row_of(&rows, top), row_of(&rows, 16)), (Some(0), Some(row)), "{what}: {rows:#?}");
+    };
+    moved(&mut app, 12, 4, "picked up");
+    for to in [16, 17, 18, 19, 19] {
+        key(&mut app, KeyCode::Down);
+        moved(&mut app, 12, to - 11, &format!("down to {to}"));
+    }
+    for to in (12..19).rev() {
+        key(&mut app, KeyCode::Up);
+        moved(&mut app, 12, to - 11, &format!("up to {to}"));
+    }
+    key(&mut app, KeyCode::Up);
+    moved(&mut app, 16, 0, "up to the top line");
+    assert_eq!(row_of(&shown(&mut app), 12), Some(1));
+    key(&mut app, KeyCode::Up);
+    moved(&mut app, 16, 0, "up past it");
+    assert_eq!(row_of(&shown(&mut app), 11), Some(1));
+    // Left where it was: the list as it is.
+    key(&mut app, KeyCode::Esc);
+    assert!(matches!(app.mode, Mode::Normal), "{:?}", app.mode);
+    at(&mut app, 16, 11, "left where it was");
+}
+
+#[test]
+fn the_patches_pane_moves_by_whole_patches_their_titles_folded() {
+    let title = |k: usize| if k % 2 == 1 { "a title folded in two".to_string() } else { "short".to_string() };
+    let (_tmp, db, _src) = long_stack(12, title, |k| vec![format!("{k}.txt")], false);
+    let mut app = open(&db).unwrap();
+    // 120 wide, the pane is 30: the odd patches' titles fold on two lines
+    // of it, the even ones' fit on one.
+    let shown = |app: &mut App| pane_rows(app, 120, 12);
+    let lines = |k: usize| -> usize { if k % 2 == 1 { 2 } else { 1 } };
+    let rows = shown(&mut app);
+    assert_eq!((row_of(&rows, 1), row_of(&rows, 2), row_of(&rows, 3)), (Some(0), Some(2), Some(3)), "{rows:#?}");
+    assert_eq!(rows[1].trim(), "two", "{rows:#?}");
+    // The cursor on patch K, patch `top` on the top line, all of the
+    // cursor's lines in sight.
+    let at = |app: &mut App, k: usize, top: usize, what: &str| {
+        let rows = shown(app);
+        assert_eq!(app.sel, k - 1, "{what}");
+        let row: usize = (top..k).map(lines).sum();
+        assert_eq!((row_of(&rows, top), row_of(&rows, k)), (Some(0), Some(row)), "{what}: {rows:#?}");
+        assert!(row + lines(k) <= rows.len(), "{what}: {rows:#?}");
+    };
+    // Down: once the cursor's patch would end under the last line, the list
+    // moves until its last line is on the last line.
+    for k in 2..=12 {
+        key(&mut app, KeyCode::Down);
+        at(&mut app, k, k.saturating_sub(5).max(1), &format!("down to {k}"));
+    }
+    // Up: the list as it is until the cursor is on the top line, on patch
+    // 7; past it, a patch at a time.
+    for k in (1..12).rev() {
+        key(&mut app, KeyCode::Up);
+        at(&mut app, k, k.min(7), &format!("up to {k}"));
+    }
+    // Wider, each title on a line of its own: the list from as far up as
+    // fills the pane; narrower again, as the cursor needs.
+    key(&mut app, KeyCode::End);
+    at(&mut app, 12, 7, "at the end");
+    let rows = pane_rows(&mut app, 160, 12);
+    assert_eq!((row_of(&rows, 4), row_of(&rows, 12)), (Some(0), Some(8)), "{rows:#?}");
+    at(&mut app, 12, 7, "narrower again");
+}
+
+#[test]
+fn listing_files_the_patches_pane_moves_only_when_the_cursor_would_leave_it() {
+    // Patch 3 of twelve files, patch 4 of two, the others of one.
+    let files = |k: usize| match k {
+        3 => (1..=12).map(|j| format!("p3-{j:02}.txt")).collect(),
+        4 => vec!["p4-1.txt".to_string(), "p4-2.txt".to_string()],
+        k => vec![format!("p{k}.txt")],
+    };
+    let (_tmp, db, _src) = long_stack(10, |k| format!("add {k}"), files, false);
+    let mut app = open(&db).unwrap();
+    let shown = |app: &mut App| pane_rows(app, 120, 12);
+    let file = |j: usize| format!("p3-{j:02}.txt");
+    // Listing files, down to patch 3, its files under it.
+    for code in [KeyCode::Left, KeyCode::Down, KeyCode::Down, KeyCode::Down, KeyCode::Down] {
+        key(&mut app, code);
+        shown(&mut app);
+    }
+    let rows = shown(&mut app);
+    assert_eq!((app.list, app.sel, app.file_on()), (PatchesPane::Files, 2, None));
+    assert_eq!((row_of(&rows, 1), row_of(&rows, 3), row_with(&rows, &file(6))), (Some(0), Some(2), Some(8)), "{rows:#?}");
+    // What the list shows `t`th: patches 1 to 3, then patch 3's files. The
+    // cursor on file J, the `t`th on the top line.
+    let listed = |t: usize| if t < 3 { format!("Bug {} - ", t + 1) } else { file(t - 2) };
+    let on_file = |app: &mut App, j: usize, t: usize, what: &str| {
+        let rows = shown(app);
+        assert_eq!((app.sel, app.file_on()), (2, Some(j - 1)), "{what}");
+        assert_eq!((row_with(&rows, &listed(t)), row_with(&rows, &file(j))), (Some(0), Some(2 + j - t)), "{what}: {rows:#?}");
+    };
+    // Down its files: the list as it is to its last line, then a line at a
+    // time.
+    for j in 1..=12 {
+        key(&mut app, KeyCode::Down);
+        on_file(&mut app, j, j.saturating_sub(6), &format!("down to file {j}"));
+    }
+    // Up: as it is until the cursor is on the top line, then a line at a
+    // time, up to the patch itself.
+    for j in (1..12).rev() {
+        key(&mut app, KeyCode::Up);
+        on_file(&mut app, j, (j + 2).min(6), &format!("up to file {j}"));
+    }
+    key(&mut app, KeyCode::Up);
+    let rows = shown(&mut app);
+    assert_eq!((app.sel, app.file_on()), (2, None));
+    assert_eq!(row_of(&rows, 3), Some(0), "{rows:#?}");
+    for j in 1..=12 {
+        key(&mut app, KeyCode::Down);
+        on_file(&mut app, j, j.saturating_sub(6).max(2), &format!("down again to file {j}"));
+    }
+    // A comment on patch 3 written from its last file: the box goes under
+    // the patch, which comes in sight with it, the files under the box.
+    choose_unseen(&mut app, "Comment on this patch");
+    assert!(matches!(app.mode, Mode::Edit(_)), "{:?}", app.mode);
+    let rows = shown(&mut app);
+    assert_eq!(row_of(&rows, 3), Some(0), "{rows:#?}");
+    assert!(rows[1].contains("a comment on the patch"), "{rows:#?}");
+    key(&mut app, KeyCode::Esc);
+    assert!(matches!(app.mode, Mode::Normal), "{:?}", app.mode);
+    on_file(&mut app, 12, 6, "the comment put away");
+    // The cursor in the middle, the file picked there: the list as it is.
+    key(&mut app, KeyCode::Right);
+    let rows = shown(&mut app);
+    assert_eq!(app.focus, Focus::Diff);
+    assert_eq!((row_with(&rows, &file(4)), row_with(&rows, &file(12))), (Some(0), Some(8)), "{rows:#?}");
+    key(&mut app, KeyCode::Left);
+    on_file(&mut app, 12, 6, "back from the middle");
+    // Down onto patch 4: patch 3's files gone from over it, the list from
+    // its top, all of patch 4's in sight.
+    key(&mut app, KeyCode::Down);
+    let rows = shown(&mut app);
+    assert_eq!((app.sel, app.file_on()), (3, None));
+    assert_eq!((row_of(&rows, 1), row_of(&rows, 4), row_of(&rows, 7)), (Some(0), Some(3), Some(8)), "{rows:#?}");
+    assert_eq!(row_with(&rows, "p4-2.txt"), Some(5), "{rows:#?}");
+    // Back up onto patch 3: its files under it again, the list as it is.
+    key(&mut app, KeyCode::Up);
+    let rows = shown(&mut app);
+    assert_eq!((app.sel, app.file_on()), (2, None));
+    assert_eq!((row_of(&rows, 1), row_of(&rows, 3), row_with(&rows, &file(6))), (Some(0), Some(2), Some(8)), "{rows:#?}");
+}
+
+#[test]
+fn heads_rows_and_its_line_pinned_move_with_the_patches_only_as_the_cursor_needs() {
+    let (_tmp, db, src) = long_stack(12, |k| format!("add {k}"), |k| vec![format!("{k}.txt")], false);
+    // HEAD forked after patch 9, two commits of its own: patches 1 to 9,
+    // its two rows, its line, then patches 10 to 12.
+    git(&src, &["checkout", "-q", "--detach", "main~3"]);
+    own(&src, &["Mine 1", "Mine 2"]);
+    let mut app = open_in(&db, &src);
+    let shown = |app: &mut App| pane_rows(app, 120, 12);
+    // What is on the top line, and on line `line`.
+    let at = |app: &mut App, top: &str, line: usize, there: &str, what: &str| {
+        let rows = shown(app);
+        assert_eq!((row_with(&rows, top), row_with(&rows, there)), (Some(0), Some(line)), "{what}: {rows:#?}");
+    };
+    let bug = |k: usize| format!("Bug {k} - ");
+    // HEAD's line out of sight, further down: pinned to the last line.
+    at(&mut app, &bug(1), 8, "↓ HEAD", "at first");
+    for k in 2..=8 {
+        key(&mut app, KeyCode::Down);
+        at(&mut app, &bug(1), 8, "↓ HEAD", &format!("down to {k}"));
+    }
+    key(&mut app, KeyCode::Down);
+    at(&mut app, &bug(2), 7, &bug(9), "down to 9");
+    at(&mut app, &bug(2), 8, "↓ HEAD", "down to 9");
+    // Onto HEAD's line, past the rows of its commits: the list up as far as
+    // all three need.
+    key(&mut app, KeyCode::Down);
+    assert!(app.on_head());
+    at(&mut app, &bug(4), 6, "○ Mine 1", "on HEAD");
+    at(&mut app, &bug(4), 8, "▶ HEAD", "on HEAD");
+    for (k, top) in [(10, 5), (11, 6), (12, 7)] {
+        key(&mut app, KeyCode::Down);
+        at(&mut app, &bug(top), 8, &bug(k), &format!("down to {k}"));
+    }
+    // Up, over HEAD's rows: the list as it is until the cursor is on the
+    // top line.
+    for _ in 0..6 {
+        key(&mut app, KeyCode::Up);
+        at(&mut app, &bug(7), 5, "▶ HEAD", "up to 7");
+    }
+    assert_eq!((app.sel, app.on_head()), (6, false));
+    for (k, head) in [(6, 6), (5, 7), (4, 8)] {
+        key(&mut app, KeyCode::Up);
+        at(&mut app, &bug(k), head, "▶ HEAD", &format!("up to {k}"));
+    }
+    // HEAD's line out of sight again: pinned.
+    key(&mut app, KeyCode::Up);
+    at(&mut app, &bug(3), 7, "○ Mine 1", "up to 3");
+    at(&mut app, &bug(3), 8, "↓ HEAD", "up to 3");
+    for k in [2, 1] {
+        key(&mut app, KeyCode::Up);
+        at(&mut app, &bug(k), 8, "↓ HEAD", &format!("up to {k}"));
+    }
+    // HEAD at the base: its line over patch 1. On patch 12, pinned under
+    // the header.
+    git(&src, &["checkout", "-q", "--detach", "main~12"]);
+    app.look_at_head();
+    app.settle();
+    at(&mut app, "▶ HEAD", 1, &bug(1), "HEAD at the base");
+    key(&mut app, KeyCode::End);
+    at(&mut app, "↑ HEAD", 1, &bug(5), "at the end");
+    at(&mut app, "↑ HEAD", 8, &bug(12), "at the end");
+    // Up: the list as it is until the cursor is on the line under the
+    // pinned one; then a patch at a time, and on patch 1, HEAD's line in
+    // its place over it.
+    for _ in 0..7 {
+        key(&mut app, KeyCode::Up);
+        at(&mut app, "↑ HEAD", 1, &bug(5), "up to 5");
+    }
+    for k in [4, 3, 2] {
+        key(&mut app, KeyCode::Up);
+        at(&mut app, "↑ HEAD", 1, &bug(k), &format!("up to {k}"));
+    }
+    key(&mut app, KeyCode::Up);
+    at(&mut app, "▶ HEAD", 1, &bug(1), "up to 1");
+    key(&mut app, KeyCode::Up);
+    assert!(app.on_head());
+    at(&mut app, "▶ HEAD", 1, &bug(1), "on HEAD");
+    // HEAD being moved goes down the list as it is, which moves only once
+    // HEAD would go past its last line, or its first.
+    choose_unseen(&mut app, "Move HEAD");
+    assert!(matches!(app.mode, Mode::MovingHead { to: 0 }), "{:?}", app.mode);
+    at(&mut app, "↕ HEAD", 1, &bug(1), "picked up");
+    for to in 1..=8 {
+        key(&mut app, KeyCode::Down);
+        at(&mut app, &bug(1), to, "↕ HEAD", &format!("down to {to}"));
+    }
+    key(&mut app, KeyCode::Down);
+    at(&mut app, &bug(2), 8, "↕ HEAD", "down to 9");
+    for to in (2..=8).rev() {
+        key(&mut app, KeyCode::Up);
+        at(&mut app, &bug(2), to - 1, "↕ HEAD", &format!("up to {to}"));
+    }
+    key(&mut app, KeyCode::Up);
+    at(&mut app, "↕ HEAD", 1, &bug(2), "up to 1");
+    key(&mut app, KeyCode::Up);
+    at(&mut app, "↕ HEAD", 1, &bug(1), "up to 0");
+    key(&mut app, KeyCode::Esc);
+    assert!(matches!(app.mode, Mode::Normal), "{:?}", app.mode);
+    at(&mut app, "▶ HEAD", 1, &bug(1), "left where it was");
+    // Moved to patch 5: the pane as it is, HEAD's line on the top line until
+    // HEAD is seen moved, then under patch 5.
+    choose_unseen(&mut app, "Move HEAD");
+    for to in 1..=5 {
+        key(&mut app, KeyCode::Down);
+        at(&mut app, &bug(1), to, "↕ HEAD", &format!("down to {to} again"));
+    }
+    key(&mut app, KeyCode::Enter);
+    at(&mut app, "▶ HEAD", 1, &bug(1), "being moved");
+    app.settle();
+    assert!(app.status.starts_with("HEAD is at patch 5 of s"), "{}", app.status);
+    at(&mut app, &bug(1), 5, "▶ HEAD", "moved");
+}
+
+#[test]
+fn the_patches_pane_keeps_its_place_on_a_screen_made_smaller_or_larger() {
+    let (_tmp, db, _src) = long_stack(20, |k| format!("add {k}"), |k| vec![format!("{k}.txt")], false);
+    let mut app = open(&db).unwrap();
+    // On patch 10, patch 8 on the top line: to the end, up to 8, down to 10.
+    let mut press = |code: KeyCode, n: usize| {
+        for _ in 0..n {
+            key(&mut app, code);
+            pane_rows(&mut app, 120, 12);
+        }
+    };
+    press(KeyCode::End, 1);
+    press(KeyCode::Up, 12);
+    press(KeyCode::Down, 2);
+    let at = |app: &mut App, h: u16, top: usize, what: &str| {
+        let rows = pane_rows(app, 120, h);
+        assert_eq!(rows.len(), usize::from(h) - 3, "{what}");
+        assert_eq!((row_of(&rows, top), row_of(&rows, 10)), (Some(0), Some(10 - top)), "{what}: {rows:#?}");
+    };
+    at(&mut app, 12, 8, "9 lines");
+    // Smaller: as it is while the cursor's patch is in sight, then that
+    // patch on the last line.
+    at(&mut app, 8, 8, "5 lines");
+    at(&mut app, 6, 8, "3 lines");
+    at(&mut app, 5, 9, "2 lines");
+    // Larger: never past the end of the list, all of it; smaller again, as
+    // the cursor needs.
+    at(&mut app, 30, 1, "27 lines");
+    at(&mut app, 12, 2, "9 lines again");
+}
+
+/// Stack `s` of `db` left with its first `n` patches.
+fn keep_first(db: &Path, n: usize) {
+    Db::edit(db, |d| {
+        let mut patches = d.stack("s")?.patches.clone();
+        patches.truncate(n);
+        d.set_stack("s", patches, "edit").map(|_| ())
+    })
+    .unwrap();
+}
+
+#[test]
+fn the_patches_pane_never_shows_past_the_end_of_a_stack_that_loses_patches() {
+    let (_tmp, db, _src) = long_stack(20, |k| format!("add {k}"), |k| vec![format!("{k}.txt")], false);
+    let mut app = open(&db).unwrap();
+    let shown = |app: &mut App| pane_rows(app, 120, 12);
+    key(&mut app, KeyCode::End);
+    let rows = shown(&mut app);
+    assert_eq!((row_of(&rows, 12), row_of(&rows, 20)), (Some(0), Some(8)), "{rows:#?}");
+    // Patches 15 to 20 gone: the cursor on 14, the last, on the last line,
+    // the pane full.
+    keep_first(&db, 14);
+    app.refresh();
+    let rows = shown(&mut app);
+    assert_eq!(app.sel, 13);
+    assert_eq!((row_of(&rows, 6), row_of(&rows, 14)), (Some(0), Some(8)), "{rows:#?}");
+    // All but five gone: all of them, from the top.
+    keep_first(&db, 5);
+    app.refresh();
+    let rows = shown(&mut app);
+    assert_eq!(app.sel, 4);
+    assert_eq!((row_of(&rows, 1), row_of(&rows, 5)), (Some(0), Some(4)), "{rows:#?}");
+    assert!(rows[5..].iter().all(|r| r.is_empty()), "{rows:#?}");
+}
+
+#[test]
+fn another_stack_shown_starts_its_patches_pane_as_if_never_drawn() {
+    let (_tmp, db, _src) = long_stack(20, |k| format!("add {k}"), |k| vec![format!("{k}.txt")], true);
+    // A comment on patch 15 of stack t, to search for.
+    let d = Db::load(&db).unwrap();
+    let p = d.patch(&d.stack("t").unwrap().patches[14]).clone();
+    let note = Note {
+        change: p.change.clone(),
+        id: "p15".into(),
+        line: stacked::view::title_key(&p),
+        text: stacked::thread::yours("a needle in t"),
+        file: stacked::view::MSG_PATH.into(),
+        ..Default::default()
+    };
+    Db::edit(&db, |d| d.set_note(note.clone())).unwrap();
+    let mut app = open(&db).unwrap();
+    let shown = |app: &mut App| pane_rows(app, 120, 12);
+    let other = |k: usize| format!("Other {k} - ");
+    let press = |app: &mut App, code: KeyCode| {
+        key(app, code);
+        shown(app);
+    };
+    // Stack s at its end; t shown from the stack's menu, on its first patch,
+    // from its top.
+    press(&mut app, KeyCode::End);
+    let rows = shown(&mut app);
+    assert_eq!((app.stack.as_str(), row_of(&rows, 12)), ("s", Some(0)), "{rows:#?}");
+    press(&mut app, KeyCode::Home);
+    choose_unseen(&mut app, "Switch stack");
+    down_to_pick(&mut app, "t");
+    press(&mut app, KeyCode::Enter);
+    let rows = shown(&mut app);
+    assert_eq!((app.stack.as_str(), app.sel), ("t", 0));
+    assert_eq!(row_with(&rows, &other(1)), Some(0), "{rows:#?}");
+    // Back on s, at its end. Searched for, the comment on t's patch 15 is
+    // gone to: t's list as on a first draw, patch 15 on its last line, not
+    // as s's was. (Its comment open, t has the banner over the panes: 8
+    // lines under the pane's header.)
+    press(&mut app, KeyCode::Home);
+    choose_unseen(&mut app, "Switch stack");
+    down_to_pick(&mut app, "s");
+    press(&mut app, KeyCode::Enter);
+    press(&mut app, KeyCode::End);
+    let rows = shown(&mut app);
+    assert_eq!((app.stack.as_str(), row_of(&rows, 12)), ("s", Some(0)), "{rows:#?}");
+    choose_unseen(&mut app, "Search");
+    assert_eq!(app.screen, Screen::Search);
+    typed(&mut app, "needle");
+    assert_eq!(searched(&mut app).len(), 1);
+    key(&mut app, KeyCode::Enter);
+    let rows = shown(&mut app);
+    assert_eq!((app.screen, app.stack.as_str(), app.sel), (Screen::Main, "t", 14));
+    assert_eq!(rows.len(), 8, "{rows:#?}");
+    assert_eq!((row_with(&rows, &other(8)), row_with(&rows, &other(15))), (Some(0), Some(7)), "{rows:#?}");
+}
+
+/// The comments pane's lines under its header, on a screen 120 wide and
+/// `h` high: down to the status line, right of the line before the pane.
+/// Its header is on the patches pane's line.
+fn notes_rows(app: &mut App, h: u16) -> Vec<String> {
+    let screen = draw_sized(app, 120, h);
+    let lines: Vec<&str> = screen.lines().collect();
+    let y = header_row(&lines);
+    let header: Vec<char> = lines[y].chars().collect();
+    let x = header.iter().rposition(|&c| c == '│').unwrap_or_else(|| panic!("no pane:\n{screen}")) + 1;
+    lines[y + 1..lines.len() - 1].iter().map(|l| l.chars().skip(x).collect::<String>().trim_end().to_string()).collect()
+}
+
+#[test]
+fn the_comments_pane_moves_only_when_the_comment_picked_would_leave_it() {
+    let (_tmp, db, _src) = setup();
+    for k in 1..=12 {
+        stack_note(&db, &format!("n{k:02}"), &format!("comment number {k:02}"));
+    }
+    let mut app = open(&db).unwrap();
+    // In the stack's comments, expanded, two lines each: four of them under
+    // the pane's header, on a screen of 12 lines, the banner over the panes
+    // saying they are open.
+    let shown = |app: &mut App| notes_rows(app, 12);
+    for code in [KeyCode::Home, KeyCode::Right, KeyCode::Right] {
+        key(&mut app, code);
+        shown(&mut app);
+    }
+    assert_eq!((app.focus, app.notes_head, app.note_sel), (Focus::Notes, false, 0));
+    // The cursor on comment `i`, comment `first` on the top lines: what was
+    // said last, each one's second line.
+    let at = |app: &mut App, i: usize, first: usize, what: &str| {
+        let rows = shown(app);
+        let said = |k: usize| format!("comment number {}", &app.notes()[k].1[1..]);
+        assert_eq!(app.note_sel, i, "{what}");
+        assert_eq!((row_with(&rows, &said(first)), row_with(&rows, &said(i))), (Some(1), Some(2 * (i - first) + 1)), "{what}: {rows:#?}");
+    };
+    at(&mut app, 0, 0, "at first");
+    for i in 1..12 {
+        key(&mut app, KeyCode::Down);
+        at(&mut app, i, i.saturating_sub(3), &format!("down to {i}"));
+    }
+    for i in (0..11).rev() {
+        key(&mut app, KeyCode::Up);
+        at(&mut app, i, i.min(8), &format!("up to {i}"));
+    }
+}
+
 #[test]
 fn lines_too_wide_for_the_pane_are_folded_each_the_same_line() {
     use stacked::rows::Kind;

@@ -529,6 +529,48 @@ fn path_end(path: &str, w: usize) -> String {
     }
 }
 
+/// The first of the patches pane's `entries` that fit in `room` lines
+/// with entry `to`, all of their lines and all of its, walking up from it:
+/// `to` itself when it alone takes more.
+fn list_up_from(entries: &[ListEntry], to: usize, room: usize) -> usize {
+    let mut top = to.min(entries.len().saturating_sub(1));
+    let mut used = entries.get(top).map_or(1, |(_, its)| its.len());
+    while top > 0 && used + entries[top - 1].1.len() <= room {
+        top -= 1;
+        used += entries[top].1.len();
+    }
+    top
+}
+
+/// How far the patches pane's `entries` from `top` go, whole, in `room`
+/// lines: the first one past them.
+fn list_end(entries: &[ListEntry], top: usize, room: usize) -> usize {
+    let (mut k, mut used) = (top, 0);
+    while k < entries.len() && used + entries[k].1.len() <= room {
+        used += entries[k].1.len();
+        k += 1;
+    }
+    k
+}
+
+/// The first of the patches pane's `entries` shown in `room` lines, the
+/// pane having shown `kept` first when last drawn: that one still, unless
+/// the entry the cursor is on, `on`, is then out of sight, any of its
+/// lines. Above it, the pane scrolls up until its first line is on the top
+/// line; under it, down until its last line is on the bottom one, the
+/// entries above it filling the lines over it. Never past the end of the
+/// list: entries above it, the last entry's last line is on the bottom
+/// line at the most.
+fn list_scrolled(entries: &[ListEntry], on: usize, kept: usize, room: usize) -> usize {
+    let mut top = kept.min(entries.len().saturating_sub(1));
+    if on < top {
+        top = on;
+    } else if list_end(entries, top, room) <= on {
+        top = list_up_from(entries, on, room);
+    }
+    top.min(list_up_from(entries, entries.len().saturating_sub(1), room))
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
     /// The patches, on the left.
@@ -2033,12 +2075,19 @@ pub struct App {
     /// patch of this id, its place among them (`files_of`). None, on the
     /// patch itself.
     file_sel: Option<(String, usize)>,
+    /// Where the patches pane started when last drawn: it starts there
+    /// again, and scrolls only as far as the entry the cursor is on needs
+    /// to be in sight. None at first, and for another stack.
+    patches_top: Option<ListTop>,
     /// How the comments are shown, on the right, when there are any.
     pub comments: Pane,
     /// The comment selected in the comments pane, of `notes()`.
     pub note_sel: usize,
     /// The comments pane's cursor is on its header.
     pub notes_head: bool,
+    /// Where the comments pane started when last drawn, and the change
+    /// whose comments it listed: as the patches pane's start, kept.
+    notes_top: Option<(String, usize)>,
     pub layout: Layout,
     /// The unified view split in two, while it is the view: the middle's
     /// fields are the half the cursor is in, and this holds the other.
@@ -2209,6 +2258,16 @@ enum Listed {
     File(usize),
     Head,
     Commit(usize),
+}
+
+/// The entry the patches pane started with when last drawn, to start with
+/// again: what it is, a file with the id of the patch whose files were
+/// listed, and its place among the entries.
+#[derive(Debug, Clone, PartialEq)]
+struct ListTop {
+    entry: Listed,
+    of: Option<String>,
+    at: usize,
 }
 
 /// A line of the patches pane the cursor stops on: the stack's header, a
@@ -2565,9 +2624,11 @@ impl App {
             focus: Focus::List,
             list: cfg.view.patches,
             file_sel: None,
+            patches_top: None,
             comments: cfg.view.comments,
             note_sel: 0,
             notes_head: false,
+            notes_top: None,
             layout: Layout::Unified,
             halves: None,
             drawing_beside: false,
@@ -9405,6 +9466,7 @@ impl App {
     fn switch_stack(&mut self, name: &str) {
         self.keep_list_of_patches();
         self.stack = name.to_string();
+        self.patches_top = None;
         self.back_to_list_of_patches();
         self.built = None;
         self.show = self.db.view(&self.stack).and_then(Show::parse).unwrap_or(Show::All);
@@ -10953,36 +11015,35 @@ impl App {
             Focus::List => self.file_on(),
             _ => self.file_at_cursor(),
         };
+        // The entry kept in sight: the one the cursor is on; while a comment
+        // on the patch is written, the patch, as its box goes under it.
+        let box_under = matches!(editing, Some(Target::Patch(_)));
         let on_entry = entries
             .iter()
             .position(|(e, _)| match (moving_head || on_head, file_pick) {
+                _ if box_under => matches!(e, Listed::Patch(at, _) if *at == on),
                 (true, _) => *e == Listed::Head,
                 (false, Some(k)) => *e == Listed::File(k),
                 (false, None) => matches!(e, Listed::Patch(at, _) if *at == on),
             })
             .unwrap_or(0);
-        // The first shown: the one the cursor is on in sight, all its lines.
         let h = area.height as usize;
         let room = h.saturating_sub(1 + edit_h);
-        let first = |room: usize| {
-            let mut top = on_entry.min(entries.len().saturating_sub(1));
-            let mut used = entries.get(top).map_or(1, |(_, its)| its.len());
-            while top > 0 && used + entries[top - 1].1.len() <= room {
-                top -= 1;
-                used += entries[top].1.len();
-            }
-            top
-        };
-        // How far the entries from `top` go, whole, in `room`.
-        let end = |top: usize, room: usize| {
-            let (mut k, mut used) = (top, 0);
-            while k < entries.len() && used + entries[k].1.len() <= room {
-                used += entries[k].1.len();
-                k += 1;
-            }
-            k
-        };
-        let mut top = first(room);
+        let end = |top: usize, room: usize| list_end(&entries, top, room);
+        // The first shown: the entry shown first when last drawn, found
+        // again, which `list_scrolled` moves only as far as the cursor
+        // needs. A patch by its place, else where it was among the entries;
+        // a file among those of the same patch, gone with them as from the
+        // top of the list; HEAD's rows by where they were, so that the pane
+        // stays as HEAD moves along it.
+        let listed_of = self.patch_id().filter(|_| !files.is_empty());
+        let kept = self.patches_top.as_ref().map_or(0, |t| match t.entry {
+            Listed::Patch(a, _) => entries.iter().position(|(e, _)| matches!(e, Listed::Patch(b, _) if *b == a)).unwrap_or(t.at),
+            Listed::File(k) if t.of == listed_of => entries.iter().position(|(e, _)| *e == Listed::File(k)).unwrap_or(0),
+            Listed::File(_) => 0,
+            Listed::Head | Listed::Commit(_) => t.at,
+        });
+        let mut top = list_scrolled(&entries, on_entry, kept, room);
         // HEAD's line out of sight, the stack too long for the pane: a line
         // is taken from the patches for it. Next to those shown, it is in
         // its place; else it is on the pane's edge it is beyond, `↓` (`↑`)
@@ -10995,8 +11056,10 @@ impl App {
             && (k < top || k >= end(top, room))
         {
             let room = room.saturating_sub(1);
-            top = first(room);
-            if k + 1 == top {
+            top = list_scrolled(&entries, on_entry, kept, room);
+            // Just above, in its place, as long as it takes no more than the
+            // line pinned would.
+            if k + 1 == top && entries[k].1.len() == 1 {
                 top = k;
             } else if k < top {
                 pinned = Some((true, plain.replacen('▶', "↑", 1)));
@@ -11004,6 +11067,8 @@ impl App {
                 pinned = Some((false, plain.replacen('▶', "↓", 1)));
             }
         }
+        let top_entry = entries.get(top).map(|(e, _)| *e);
+        self.patches_top = top_entry.map(|entry| ListTop { entry, of: listed_of.filter(|_| matches!(entry, Listed::File(_))), at: top });
         if let Some((true, line)) = &pinned {
             put(buf, area, 0, y, w, &fit(line, w), color::meta());
             y += 1;
@@ -11678,7 +11743,17 @@ impl App {
         let edit_h = self.editor_height(area, Focus::Notes);
         let fits = ((h.saturating_sub(1 + edit_h)) / per).max(1);
         let on = lit.unwrap_or(0);
-        let first = on.saturating_sub(fits.saturating_sub(1));
+        // The first shown: the one shown first when last drawn, of the same
+        // change's comments, moved only to keep the one lit in sight, as the
+        // patches pane's first is (`list_scrolled`); never past the end.
+        let mut first = self.notes_top.as_ref().filter(|(c, _)| *c == change).map_or(0, |(_, k)| *k);
+        if on < first {
+            first = on;
+        } else if on >= first + fits {
+            first = on + 1 - fits;
+        }
+        let first = first.min(all.len().saturating_sub(fits));
+        self.notes_top = Some((change, first));
         let held = self.held_replies();
         let mut cursor = None;
         let mut y = 1;
