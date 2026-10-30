@@ -16919,16 +16919,19 @@ fn each_revision_s_status_follows_its_patch_s_number_a_letter_listing_files_and_
     app.refresh();
     assert_eq!(pane_lines(&draw(&mut app))[0], "  1 Bug 1 - one");
     app.settle();
-    let line = |n: usize, status: &str| format!(" {n:>2} {status:<3} Bug {n} - {}", words[n - 1]);
+    let line = |n: usize, status: &str, mark: &str| format!(" {n:>2} {status:<3}{mark:<1} Bug {n} - {}", words[n - 1]);
     // Expanded: a letter each, as listing files; the words are the
-    // Phabricator line's, over the message.
+    // Phabricator line's, over the message. Each revision found has its
+    // title and diff otherwise (both empty), so each mark after the letter
+    // is ✗; none for the one not found, nor for the patch naming none.
     let letters = ["[D]", "[W]", "[R]", "[C]", "[A]", "[L]", "[X]", "[?]", "", ""];
     let screen = draw(&mut app);
-    let want: Vec<String> = letters.iter().enumerate().map(|(k, s)| line(k + 1, s)).collect();
+    let want: Vec<String> = letters.iter().enumerate().map(|(k, s)| line(k + 1, s, if s.is_empty() { "" } else { "✗" })).collect();
     assert_eq!(pane_lines(&screen), want, "{screen}");
     assert!(!screen.contains("[Draft]") && !screen.contains("[WIP]"), "{screen}");
-    // The pane wider by the column: a quarter of the screen, and 4.
-    assert_eq!(screen.lines().nth(2).unwrap().chars().position(|c| c == '│'), Some(30 + 4), "{screen}");
+    // The pane wider by the column: a quarter of the screen, and 5, the
+    // letters, the marks and a space.
+    assert_eq!(screen.lines().nth(2).unwrap().chars().position(|c| c == '│'), Some(30 + 5), "{screen}");
     // Listing files: a letter each, the files of the patch picked under it.
     keys(&mut app, &[KeyCode::Left]);
     let mut lines = pane_lines(&draw(&mut app));
@@ -16958,22 +16961,23 @@ fn the_titles_start_together_with_a_status_or_none_and_fold_under_themselves_as_
     assert!(before[0].starts_with("  1 Bug 1 - one") && before[0].ends_with(" [1]"), "{before:#?}");
     app.refresh();
     app.settle();
-    // Expanded: the column of letters, each title after it, and the pane
-    // wider by as much, so that each title folds as it did, under itself,
-    // and its tag stays where it was.
+    // Expanded: the column of letters, then of marks (both revisions'
+    // titles and diffs are otherwise: ✗), each title after it, and the
+    // pane wider by as much, so that each title folds as it did, under
+    // itself, and its tag stays where it was.
     let after = under_header(&draw(&mut app));
-    let with = |l: &String, status: &str| format!("{}{status:<3} {}", &l[..4], &l[4..]);
-    let mut want = vec![with(&before[0], "[C]")];
+    let with = |l: &String, status: &str| format!("{}{status:<4} {}", &l[..4], &l[4..]);
+    let mut want = vec![with(&before[0], "[C]✗")];
     want.extend(before[1..5].iter().map(|l| with(l, "")));
-    want.push(with(&before[5], "[W]"));
+    want.push(with(&before[5], "[W]✗"));
     assert_eq!(after, want);
-    // Listing files: each title after the letters.
+    // Listing files: each title after the letters and the marks.
     keys(&mut app, &[KeyCode::Left]);
     let screen = draw(&mut app);
     let lines = under_header(&screen);
-    let at = |text: &str| lines.iter().find_map(|l| l.find(text)).unwrap_or_else(|| panic!("no {text:?}: {screen}"));
-    assert!(lines[0].starts_with("  1 [C] Bug 1 - one") && lines[0].ends_with(" [1]"), "{screen}");
-    assert_eq!((at("Bug 1 - one"), at("Bug 2 - the"), at("Bug 3 - three")), (8, 8, 8), "{screen}");
+    let at = |text: &str| lines.iter().find_map(|l| l.find(text).map(|k| l[..k].chars().count())).unwrap_or_else(|| panic!("no {text:?}: {screen}"));
+    assert!(lines[0].starts_with("  1 [C]✗ Bug 1 - one") && lines[0].ends_with(" [1]"), "{screen}");
+    assert_eq!((at("Bug 1 - one"), at("Bug 2 - the"), at("Bug 3 - three")), (9, 9, 9), "{screen}");
     stacked::phab::statuses_stand_in(&db, None);
 }
 
@@ -16987,7 +16991,8 @@ fn the_stack_s_revisions_are_read_in_one_search_as_it_is_shown_and_again_once_it
     let mut app = open(&db).unwrap();
     app.refresh();
     app.settle();
-    assert_eq!(pane_lines(&draw(&mut app)), ["  1 [R] Bug 1 - one", "  2 [A] Bug 2 - two", "  3     Bug 3 - three"]);
+    // Their titles and diffs otherwise (both empty): ✗ after each letter.
+    assert_eq!(pane_lines(&draw(&mut app)), ["  1 [R]✗ Bug 1 - one", "  2 [A]✗ Bug 2 - two", "  3      Bug 3 - three"]);
     // One search, for both, and no other call but those of the Phabricator
     // lines, of both, D11's first as patch 1 is shown; none again while the
     // stack's revisions are the same.
@@ -17014,7 +17019,7 @@ fn the_stack_s_revisions_are_read_in_one_search_as_it_is_shown_and_again_once_it
     app.refresh();
     app.settle();
     assert_eq!(phab.lock().unwrap().searched, [serde_json::json!([11, 12]), serde_json::json!([11, 12, 13])]);
-    assert_eq!(pane_lines(&draw(&mut app))[2], "  3 [X] Bug 3 - three");
+    assert_eq!(pane_lines(&draw(&mut app))[2], "  3 [X]✗ Bug 3 - three");
     stacked::phab::statuses_stand_in(&db, None);
 }
 
@@ -17031,7 +17036,8 @@ fn the_statuses_are_read_again_right_after_a_submit() {
     let mut app = open(&db).unwrap();
     app.refresh();
     app.settle();
-    assert_eq!(pane_lines(&draw(&mut app))[2], "  3 [D] Bug 3 - three");
+    // In sync, as its Phabricator line says below: ✓.
+    assert_eq!(pane_lines(&draw(&mut app))[2], "  3 [D]✓ Bug 3 - three");
     // Submitted, it is Changes Planned, though Phabricator still says it
     // is a draft, never sent for review: read again at once, `[W]`; and
     // what the Phabricator line of the patch reads too.
@@ -17050,10 +17056,12 @@ fn the_statuses_are_read_again_right_after_a_submit() {
     let r = phab.lock().unwrap().revisions[&13].clone();
     assert_eq!((r.status.as_str(), r.draft), ("changes-planned", true));
     assert_eq!(phab.lock().unwrap().searched, [serde_json::json!([13]), serde_json::json!([13])]);
-    assert_eq!(pane_lines(&draw(&mut app))[2], "  3 [W] Bug 3 - three");
+    assert_eq!(pane_lines(&draw(&mut app))[2], "  3 [W]✓ Bug 3 - three");
     assert_eq!(comments_read(&phab), 2);
     assert_eq!(phab_line(&mut app).as_deref(), Some("Phabricator: D13 · Changes Planned · in sync · no new comments"));
-    // A new revision, of patch 1: its status at once, with its link.
+    // A new revision, of patch 1: its status at once, with its link. Its
+    // latest diff as the stand-in keeps a diff made, empty, is not the
+    // patch's: ✗, as its line says.
     keys(&mut app, &[KeyCode::Up, KeyCode::Up]);
     choose(&mut app, "Submit to Phabricator as WIP");
     app.settle();
@@ -17061,7 +17069,8 @@ fn the_statuses_are_read_again_right_after_a_submit() {
     app.settle();
     assert!(app.status.starts_with("Patch 1 is D124 on Phabricator now"), "{}", app.status);
     assert_eq!(phab.lock().unwrap().searched.last(), Some(&serde_json::json!([124, 13])));
-    assert_eq!(pane_lines(&draw(&mut app))[0], "  1 [W] Bug 1 - one");
+    assert_eq!(pane_lines(&draw(&mut app))[0], "  1 [W]✗ Bug 1 - one");
+    assert_eq!(phab_line(&mut app).as_deref(), Some("Phabricator: D124 · Changes Planned · the diff differs · no new comments"));
     stacked::phab::statuses_stand_in(&db, None);
     stacked::submit::stand_in(None);
 }
@@ -17076,7 +17085,8 @@ fn a_read_that_fails_keeps_the_statuses_known_and_says_so_once() {
     let mut app = open(&db).unwrap();
     app.refresh();
     app.settle();
-    let known = ["  1 [R] Bug 1 - one", "  2 [A] Bug 2 - two"];
+    // Their titles and diffs otherwise (both empty): ✗ after each letter.
+    let known = ["  1 [R]✗ Bug 1 - one", "  2 [A]✗ Bug 2 - two"];
     assert_eq!(pane_lines(&draw(&mut app))[..2], known);
     // Patch 3 names revision `rev` now: read at once, as the stack's
     // revisions are others.
@@ -17086,10 +17096,11 @@ fn a_read_that_fails_keeps_the_statuses_known_and_says_so_once() {
         app.refresh();
         app.settle();
     };
-    // Phabricator down: those known kept, D13's not known, and why said.
+    // Phabricator down: those known kept, their marks too, D13's not known,
+    // and why said.
     phab.lock().unwrap().down = true;
     names(&mut app, 13);
-    assert_eq!(pane_lines(&draw(&mut app)), [known[0], known[1], "  3     Bug 3 - three"]);
+    assert_eq!(pane_lines(&draw(&mut app)), [known[0], known[1], "  3      Bug 3 - three"]);
     let again = "The statuses of the stack's revisions could not be read from Phabricator again, so the patches pane shows them as they were: differential.revision.search: Phabricator is down";
     assert_eq!(app.status, again);
     // Failing again, nothing more is said.
@@ -17100,7 +17111,7 @@ fn a_read_that_fails_keeps_the_statuses_known_and_says_so_once() {
     // Up again, read; down once more, said once more.
     phab.lock().unwrap().down = false;
     names(&mut app, 13);
-    assert_eq!(pane_lines(&draw(&mut app))[2], "  3 [X] Bug 3 - three");
+    assert_eq!(pane_lines(&draw(&mut app))[2], "  3 [X]✗ Bug 3 - three");
     assert_eq!(app.status, "");
     phab.lock().unwrap().down = true;
     names(&mut app, 14);
@@ -18045,6 +18056,7 @@ fn a_reordered_stack_s_parents_differ_what_differs_shows_them_first_and_a_submit
     for (n, d) in [(1, "D11"), (2, "D12"), (3, "D13")] {
         assert_eq!(line_of(&mut app, n), Some(format!("Phabricator: {d} · Changes Planned · in sync · no new comments")));
     }
+    assert_eq!(marks_agree(&mut app), ['✓', '✓', '✓']);
     assert_eq!(
         space_said(&mut app, 3),
         "Phabricator has this exact version of patch 3: the latest diff of D13 does what this version does, the title and summary of D13 are those of this version, and its parent is D12, the revision of patch 2."
@@ -18060,6 +18072,9 @@ fn a_reordered_stack_s_parents_differ_what_differs_shows_them_first_and_a_submit
     assert_eq!(line_of(&mut app, 2).as_deref(), Some("Phabricator: D13 · Changes Planned · the parent differs · no new comments"));
     assert_eq!(line_of(&mut app, 3).as_deref(), Some("Phabricator: D12 · Changes Planned · the parent differs · no new comments"));
     assert_eq!(line_calls(&phab).len(), read);
+    // The patches pane says the same: ✗ where the parent differs.
+    assert_eq!(marks_agree(&mut app), ['✓', '✗', '✗']);
+    assert_eq!(pane_lines(&draw(&mut app)), ["  1 [W]✓ Bug 1 - one", "  2 [W]✗ Bug 3 - three", "  3 [W]✗ Bug 2 - two"]);
     // Space on patch 2's line: the parent first, Phabricator's, then the
     // one a submit sets; nothing else differs, nothing shown under it.
     line_of(&mut app, 2);
@@ -18104,6 +18119,7 @@ fn a_reordered_stack_s_parents_differ_what_differs_shows_them_first_and_a_submit
     );
     // D12, over it, until it is submitted too.
     assert_eq!(line_of(&mut app, 3).as_deref(), Some("Phabricator: D12 · Changes Planned · the parent differs · no new comments"));
+    assert_eq!(marks_agree(&mut app), ['✓', '✓', '✗']);
     choose(&mut app, "Submit to Phabricator as WIP");
     app.settle();
     keys(&mut app, &[KeyCode::Enter]);
@@ -18111,6 +18127,7 @@ fn a_reordered_stack_s_parents_differ_what_differs_shows_them_first_and_a_submit
     assert_eq!(app.status, "D12 keeps its diff, title and summary. The parent of D12 is D13 now.");
     assert_eq!(edges(&phab), 3);
     assert_eq!(line_of(&mut app, 3).as_deref(), Some("Phabricator: D12 · Changes Planned · in sync · no new comments"));
+    assert_eq!(marks_agree(&mut app), ['✓', '✓', '✓']);
     stacked::phab::statuses_stand_in(&db, None);
     stacked::submit::stand_in(None);
 }
@@ -18163,6 +18180,10 @@ fn the_parent_differs_only_where_a_submit_would_set_one_and_in_sync_space_says_w
     names(&mut app, "D13");
     assert_eq!(space_said(&mut app, 3), format!("{} Patch 2 names D13 too, so the parents of D13 are left as they are.", same(3, "D13")));
     assert_eq!(line_of(&mut app, 2).as_deref(), Some("Phabricator: D13 · Changes Planned · the diff, the title or summary, and the parent differ · no new comments"));
+    // The patches pane marks each patch as its line says it: D13's letter
+    // twice, ✗ on patch 2 and ✓ on patch 3.
+    assert_eq!(marks_agree(&mut app), ['✓', '✗', '✓']);
+    assert_eq!(pane_lines(&draw(&mut app)), ["  1 [W]✓ Bug 1 - one", "  2 [W]✗ Bug 2 - two", "  3 [W]✓ Bug 3 - three"]);
     // On D12, open: a submit sets it, D13 being on D10, which the read names
     // in a search of its own.
     let before = line_calls(&phab).len();
@@ -18195,6 +18216,9 @@ fn the_parent_differs_only_where_a_submit_would_set_one_and_in_sync_space_says_w
     phab.lock().unwrap().down = true;
     names(&mut app, "D14");
     assert_eq!(line_of(&mut app, 3).as_deref(), Some("Phabricator: D13 · Changes Planned · … · no new comments"));
+    // The patches pane: a blank there too, and for D14, not read.
+    assert_eq!(marks_agree(&mut app), ['✓', ' ', ' ']);
+    assert_eq!(pane_lines(&draw(&mut app)), ["  1 [W]✓ Bug 1 - one", "  2      Bug 2 - two", "  3 [W]  Bug 3 - three"]);
     stacked::phab::statuses_stand_in(&db, None);
 }
 
@@ -18228,6 +18252,220 @@ fn what_differs_with_the_parent_is_listed_plainly_the_view_showing_the_parent_fi
         lines[1],
         "Press Space to see what differs from D12 on Phabricator, on a screen of its own: the parent of D12 on Phabricator, then the one a submit sets; and the latest diff of D12, then this version's diff, as an interdiff. Esc there comes back to this line."
     );
+    stacked::phab::statuses_stand_in(&db, None);
+}
+
+// -- the marks after the statuses, as the Phabricator lines say them ------- //
+
+/// The mark of each patch in the patches pane, in the stack's order, the
+/// screen drawn as `screen`: what its first line has right after its
+/// revision's status, `✓` or `✗`; else a blank, as where the pane has no
+/// cell for marks. A file listed, or a title folded, is no patch's line.
+#[cfg(feature = "moz-phab")]
+fn pane_marks(screen: &str) -> Vec<char> {
+    let marked = |l: &String| -> Option<char> {
+        let c: Vec<char> = l.chars().collect();
+        c.get(1..3)?.iter().collect::<String>().trim().parse::<usize>().ok()?;
+        Some(c.get(7).copied().filter(|m| matches!(m, '✓' | '✗')).unwrap_or(' '))
+    };
+    under_header(screen).iter().filter_map(marked).collect()
+}
+
+/// The mark the Phabricator line of patch `n` (from 1) says, as the
+/// patches pane is to show it: `✓` in sync, `✗` when something differs,
+/// else a blank (`…` in its place, a revision not found, no line). The
+/// patches pane on the patch.
+#[cfg(feature = "moz-phab")]
+fn line_mark(app: &mut App, n: usize) -> char {
+    match line_of(app, n) {
+        Some(l) if l.contains(" · in sync") => '✓',
+        Some(l) if l.contains(" differ") => '✗',
+        _ => ' ',
+    }
+}
+
+/// The marks of the patches pane, expanded (`pane_marks`), once each is
+/// found to be the one the patch's Phabricator line says (`line_mark`),
+/// patch by patch. The patches pane on the patch picked again.
+#[cfg(feature = "moz-phab")]
+fn marks_agree(app: &mut App) -> Vec<char> {
+    assert_eq!((app.focus, app.list), (Focus::List, PatchesPane::Expanded));
+    let (picked, pane) = (app.sel, pane_marks(&draw(app)));
+    let lines: Vec<char> = (1..=pane.len()).map(|n| line_mark(app, n)).collect();
+    line_of(app, picked + 1);
+    assert_eq!(pane, lines, "the patches pane's marks, then those the lines say");
+    pane
+}
+
+/// Where the patches pane ends on a screen drawn, `screen`: the column of
+/// the line after it, beside its header.
+#[cfg(feature = "moz-phab")]
+fn pane_end(screen: &str) -> Option<usize> {
+    screen.lines().find(|l| l.starts_with(" ≡ "))?.chars().position(|c| c == '│')
+}
+
+/// What `?` says in the patches pane of the marks after the statuses, while
+/// the pane has their column.
+#[cfg(feature = "moz-phab")]
+const MARKS_SAID: &str = "After the letter in brackets, the status of a patch's revision on Phabricator, ✓ says that Phabricator has this exact version of the patch, as the Phabricator line over the patch's message says in sync: the revision's latest diff does what the patch does, its title and summary are those a submit sends, and a submit would not change its parent. ✗ says that the diff, the title or summary, or the parent differs; the line says which. With neither mark after the letter, the revision is not read and compared yet, or Phabricator does not have it.";
+
+/// What `?` says, the screen drawn: its lines. Closed again.
+#[cfg(feature = "moz-phab")]
+fn help_said(app: &mut App) -> Vec<String> {
+    keys(app, &[KeyCode::Char('?')]);
+    draw(app);
+    let Mode::Help { lines, .. } = &app.mode else { panic!("{:?}", app.mode) };
+    let lines = lines.clone();
+    keys(app, &[KeyCode::Esc]);
+    lines
+}
+
+#[cfg(feature = "moz-phab")]
+#[test]
+fn after_each_status_a_mark_says_whether_phabricator_has_that_exact_version_as_its_line_says_listing_files_and_expanded() {
+    // D11 as patch 1 is; D12 its diff otherwise; D13 an older title; D14
+    // on D11, where a submit sets D13, patch 3's; patch 5 naming no
+    // revision; patch 6 naming D16, which Phabricator does not have. The
+    // others each on the one below it, as a submit leaves them.
+    let words = ["one", "two", "three", "four", "five", "six"];
+    let messages: Vec<String> = words
+        .iter()
+        .enumerate()
+        .map(|(k, w)| match k {
+            4 => format!("Bug 5 - {w}"),
+            _ => format!("Bug {} - {w}\n\n{LINK}{}", k + 1, 11 + k),
+        })
+        .collect();
+    let (_tmp, db) = stack_of(&messages);
+    let diffs: Vec<String> = (0..6).map(|k| patch_of(&db, k).diff).collect();
+    let mut p = Phab::default()
+        .with(11, "needs-review", "Bug 1 - one", &diffs[0])
+        .with(12, "changes-planned", "WIP: Bug 2 - two", &diffs[1].replace("\n+2\n", "\n+II\n"))
+        .with(13, "accepted", "Bug 3 - an older title", &diffs[2])
+        .with(14, "needs-review", "Bug 4 - four", &diffs[3]);
+    for (n, on) in [(12, 11), (13, 12), (14, 11)] {
+        p.revisions.get_mut(&n).unwrap().parents = vec![format!("PHID-DREV-{on}")];
+    }
+    let phab = std::sync::Arc::new(std::sync::Mutex::new(p));
+    statuses_from(&db, &phab);
+    let mut app = open(&db).unwrap();
+    // A comment on patch 1: its tag at the end of its first line.
+    choose(&mut app, "Comment on this patch…");
+    save(&mut app, "Why?");
+    app.refresh();
+    app.settle();
+    // Each patch's line: in sync; the diff, the title or summary, the
+    // parent differing; none; not found.
+    let said = [
+        Some("Phabricator: D11 · Needs Review · in sync · no new comments"),
+        Some("Phabricator: D12 · Changes Planned · the diff differs · no new comments"),
+        Some("Phabricator: D13 · Accepted · the title or summary differs · no new comments"),
+        Some("Phabricator: D14 · Needs Review · the parent differs · no new comments"),
+        None,
+        Some("Phabricator: D16 · not found on Phabricator"),
+    ];
+    for (k, line) in said.iter().enumerate() {
+        assert_eq!(line_of(&mut app, k + 1).as_deref(), *line);
+    }
+    // Expanded, the pane says the same right after each letter: ✓ in sync,
+    // ✗ where anything differs; a blank for D16, nothing for patch 5, its
+    // column blank. The titles start together, the tag at the end of patch
+    // 1's line; the pane wider by the column: the letters, the marks and a
+    // space.
+    line_of(&mut app, 1);
+    let screen = draw(&mut app);
+    let expanded = [
+        format!("{:<31} [1]", "  1 [R]✓ Bug 1 - one"),
+        "  2 [W]✗ Bug 2 - two".to_string(),
+        "  3 [A]✗ Bug 3 - three".to_string(),
+        "  4 [R]✗ Bug 4 - four".to_string(),
+        "  5      Bug 5 - five".to_string(),
+        "  6      Bug 6 - six".to_string(),
+    ];
+    assert_eq!(under_header(&screen), expanded, "{screen}");
+    assert_eq!(pane_end(&screen), Some(30 + 5), "{screen}");
+    assert_eq!(marks_agree(&mut app), ['✓', '✗', '✗', '✗', ' ', ' ']);
+    // `?` says what ✓ and ✗ mean; reading, that the ✓ at the end of a line
+    // is another.
+    assert!(help_said(&mut app).contains(&MARKS_SAID.to_string()));
+    keys(&mut app, &[KeyCode::Char('2')]);
+    let reading = format!("{MARKS_SAID} In the reading mode, the ✓ at the end of a patch's line says something else: all of the patch's lines are read.");
+    assert!(help_said(&mut app).contains(&reading), "{:#?}", help_said(&mut app));
+    keys(&mut app, &[KeyCode::Char('2')]);
+    // Listing files: the same, the files of the patch picked under it, the
+    // pane as wide as listing files, the tag at its end.
+    keys(&mut app, &[KeyCode::Left]);
+    let screen = draw(&mut app);
+    let mut listed = under_header(&screen);
+    assert!(listed.remove(1).trim_start().starts_with("f1.txt"), "{screen}");
+    let end = pane_end(&screen).unwrap();
+    let mut want = expanded.to_vec();
+    want[0] = format!("{:<w$} [1]", "  1 [R]✓ Bug 1 - one", w = end - 4);
+    assert_eq!(listed, want, "{screen}");
+    assert_eq!(pane_marks(&screen), ['✓', '✗', '✗', '✗', ' ', ' ']);
+    assert!(help_said(&mut app).contains(&MARKS_SAID.to_string()));
+    // Patch 2 given D12's diff: in sync, ✓, as its line says; the patches
+    // over it compared again, as they were.
+    keys(&mut app, &[KeyCode::Left, KeyCode::Left]);
+    next_version(&db, 1, &messages[1], &diffs[1].replace("\n+2\n", "\n+II\n"));
+    app.refresh();
+    app.settle();
+    assert_eq!(line_of(&mut app, 2).as_deref(), Some("Phabricator: D12 · Changes Planned · in sync · no new comments"));
+    assert_eq!(under_header(&draw(&mut app))[1], "  2 [W]✓ Bug 2 - two");
+    assert_eq!(marks_agree(&mut app), ['✓', '✓', '✗', '✗', ' ', ' ']);
+    stacked::phab::statuses_stand_in(&db, None);
+}
+
+#[cfg(feature = "moz-phab")]
+#[test]
+fn a_mark_is_blank_until_what_differs_is_read_and_the_column_a_cell_wider_once_any_patch_shows_one() {
+    // Each revision in work, in sync; D14 too, as patch 3 is, on D12.
+    let (_tmp, db, phab) = three_in_sync();
+    {
+        let mut p = phab.lock().unwrap();
+        *p = std::mem::take(&mut *p).with(14, "changes-planned", "WIP: Bug 3 - three", &patch_of(&db, 2).diff);
+        p.revisions.get_mut(&14).unwrap().parents = vec!["PHID-DREV-12".into()];
+        // What the lines read refused from its first call: the statuses
+        // alone are read.
+        p.refused = vec!["edge.search"];
+    }
+    let mut app = open(&db).unwrap();
+    // Nothing read: no column, nor anything said of it.
+    assert_eq!(pane_lines(&draw(&mut app)), ["  1 Bug 1 - one", "  2 Bug 2 - two", "  3 Bug 3 - three"]);
+    assert_eq!(marks_agree(&mut app), [' ', ' ', ' ']);
+    assert!(!help_said(&mut app).contains(&MARKS_SAID.to_string()));
+    // The statuses read, not what differs: the letters, and no cell for
+    // the marks, the pane wider by the letters and a space; the lines' `…`.
+    app.refresh();
+    app.settle();
+    let screen = draw(&mut app);
+    assert_eq!(pane_lines(&screen), ["  1 [W] Bug 1 - one", "  2 [W] Bug 2 - two", "  3 [W] Bug 3 - three"]);
+    assert_eq!(pane_end(&screen), Some(30 + 4), "{screen}");
+    assert_eq!(line_of(&mut app, 3).as_deref(), Some("Phabricator: D13 · Changes Planned · …"));
+    assert_eq!(marks_agree(&mut app), [' ', ' ', ' ']);
+    assert!(help_said(&mut app).contains(&MARKS_SAID.to_string()));
+    // Read in the next round (patch 3 names D14 now): ✓ for each, a cell
+    // wider.
+    phab.lock().unwrap().refused.clear();
+    next_version(&db, 2, &format!("Bug 3 - three\n\n{LINK}14"), &patch_of(&db, 2).diff);
+    app.refresh();
+    app.settle();
+    let screen = draw(&mut app);
+    assert_eq!(pane_lines(&screen), ["  1 [W]✓ Bug 1 - one", "  2 [W]✓ Bug 2 - two", "  3 [W]✓ Bug 3 - three"]);
+    assert_eq!(pane_end(&screen), Some(30 + 5), "{screen}");
+    assert_eq!(marks_agree(&mut app), ['✓', '✓', '✓']);
+    // Patch 3 naming D13 again, whose latest diff was never read, and that
+    // read refused: D13 blank, the others' marks kept, the cell still
+    // there.
+    phab.lock().unwrap().refused = vec!["differential.getrawdiff"];
+    next_version(&db, 2, &format!("Bug 3 - three\n\n{LINK}13"), &patch_of(&db, 2).diff);
+    app.refresh();
+    app.settle();
+    let screen = draw(&mut app);
+    assert_eq!(pane_lines(&screen), ["  1 [W]✓ Bug 1 - one", "  2 [W]✓ Bug 2 - two", "  3 [W]  Bug 3 - three"]);
+    assert_eq!(pane_end(&screen), Some(30 + 5), "{screen}");
+    assert_eq!(line_of(&mut app, 3).as_deref(), Some("Phabricator: D13 · Changes Planned · …"));
+    assert_eq!(marks_agree(&mut app), ['✓', '✓', ' ']);
     stacked::phab::statuses_stand_in(&db, None);
 }
 

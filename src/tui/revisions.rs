@@ -5,19 +5,21 @@
 //! which says its revision's status by name, whether Phabricator's latest
 //! diff and the revision's title and summary are this version's, its
 //! parent the one a submit sets, and how many of the revision's comments
-//! are not pulled yet. Space there, or its menu, shows what differs on a
-//! screen of its own, Phabricator's version then this one as an interdiff
-//! compares two versions; the menu pulls the reviews of that revision
-//! alone, too. All read away from the screen: the statuses as the stack is
-//! shown, again as those revisions change and right after a submit, and
-//! every few minutes while the editor runs; then the latest diff, the
-//! comments and the parents of every revision the stack's patches name,
-//! in a few calls for all of them, each time the statuses are read, and
-//! again after a pull, kept by revision, its diff kept by id; and what
-//! differs in the code of each patch, one at a time, the one shown first.
-//! Kept in memory as long as the editor runs, nothing written; a read that
-//! fails leaves what was known as it was. Not while reviews come from
-//! nowhere, nor in the tour. Built with the `moz-phab` feature.
+//! are not pulled yet. Space on the line, or its menu, shows what differs
+//! on a screen of its own, Phabricator's version then this one as an
+//! interdiff compares two versions; the menu pulls the reviews of that
+//! revision alone, too. Whether each patch is in sync so, the patches pane
+//! marks right after its status (`✓`, `✗`), from the same reading as its
+//! line (`Synced`). All read away from the screen: the statuses as the
+//! stack is shown, again as those revisions change and right after a
+//! submit, and every few minutes while the editor runs; then the latest
+//! diff, the comments and the parents of every revision the stack's
+//! patches name, in a few calls for all of them, each time the statuses
+//! are read, and again after a pull, kept by revision, its diff kept by id;
+//! and what differs in the code of each patch, one at a time, the one shown
+//! first. Kept in memory as long as the editor runs, nothing written; a
+//! read that fails leaves what was known as it was. Not while reviews come
+//! from nowhere, nor in the tour. Built with the `moz-phab` feature.
 
 use super::compared::{ONLY_WRAPPED, row};
 use super::*;
@@ -122,6 +124,34 @@ impl Differs<'_> {
             all => format!("Parents: {}", crate::submit::and(all)),
         };
         Some(format!("{now} on Phabricator; a submit sets {id}, the revision of patch {below}."))
+    }
+}
+
+/// Whether Phabricator has the exact version of a patch, read once
+/// (`App::synced`) for all that says it: the Phabricator line over the
+/// patch's message, in words, and the patches pane, a mark after the
+/// revision's status (`mark`); so that the two never disagree.
+enum Synced<'a> {
+    /// Phabricator does not have the revision: the line says so, alone.
+    NotFound,
+    /// Not known yet: the revision, its latest diff and its parents, the
+    /// comparison of its code with this version, or the revision of the
+    /// patch below, not read yet. The line has `…` in its place.
+    Unknown,
+    /// Known: what differs, or that nothing does.
+    Known(Differs<'a>),
+}
+
+impl Synced<'_> {
+    /// What the patches pane marks after the revision's status: `✓` where
+    /// the line says in sync, `✗` where it says what differs; none, a
+    /// blank, where it says neither.
+    fn mark(&self) -> Option<&'static str> {
+        match self {
+            Synced::Known(x) if x.none() => Some("✓"),
+            Synced::Known(_) => Some("✗"),
+            Synced::NotFound | Synced::Unknown => None,
+        }
     }
 }
 
@@ -458,6 +488,18 @@ impl App {
         self.statuses.known.get(&link).map(|s| s.status)
     }
 
+    /// The mark the patches pane shows right after the status of patch
+    /// `id`'s revision: `✓` where Phabricator has this exact version of the
+    /// patch, `✗` where anything differs, as its Phabricator line says it,
+    /// from the same reading (`synced`). None, a blank, while that is not
+    /// known, or Phabricator does not have the revision; and when the patch
+    /// names no revision.
+    pub(super) fn sync_mark(&self, id: &str) -> Option<&'static str> {
+        let p = self.db.patch(id);
+        let (_, link) = crate::phab::revision_of(&p.message)?;
+        self.synced(p, &link).mark()
+    }
+
     /// Whether what Phabricator has is being read, or compared with a
     /// patch.
     pub(super) fn reading_phabricator(&self) -> bool {
@@ -673,19 +715,33 @@ impl App {
         crate::submit::parent_with(&self.db, s, at, Some((d.as_str(), parents.as_slice())), |_, below| self.below(below)).ok()
     }
 
-    /// The Phabricator line of patch `p`, of revision `d` at `link`, `x`
-    /// what differs, if it is known: the revision; its status, by name;
-    /// whether its latest diff, title and summary are this version's, and
-    /// its parent the one a submit sets; how many of its comments are not
-    /// pulled yet. What is not known yet is
-    /// `…`, once for those in a row; a revision the search did not find,
-    /// said so, and nothing else.
-    fn line_said(&self, p: &Patch, d: &str, link: &str, x: Option<&Differs>) -> String {
+    /// Whether Phabricator has the exact version of patch `p`, of its
+    /// revision at `link` (`Synced`): the one place the Phabricator line,
+    /// its view of what differs, its menu and `?`, and the patches pane's
+    /// mark read it from. Not found, when the search did not find it and
+    /// nothing is known of it; else what differs (`differs`), once all of
+    /// that is known.
+    fn synced(&self, p: &Patch, link: &str) -> Synced<'_> {
         if self.not_found(link) {
-            return format!("Phabricator: {d} · not found on Phabricator");
+            return Synced::NotFound;
         }
+        self.differs(p, link).map_or(Synced::Unknown, Synced::Known)
+    }
+
+    /// The Phabricator line of patch `p`, of revision `d` at `link`, `sync`
+    /// whether Phabricator has this version (`synced`): the revision; its
+    /// status, by name; whether its latest diff, title and summary are this
+    /// version's, and its parent the one a submit sets; how many of its
+    /// comments are not pulled yet. What is not known yet is `…`, once for
+    /// those in a row; a revision the search did not find, said so, and
+    /// nothing else.
+    fn line_said(&self, p: &Patch, d: &str, link: &str, sync: &Synced) -> String {
+        let sync = match sync {
+            Synced::NotFound => return format!("Phabricator: {d} · not found on Phabricator"),
+            Synced::Unknown => None,
+            Synced::Known(x) => Some(x.said().to_string()),
+        };
         let status = self.statuses.known.get(link).map(|s| s.status.name().to_string());
-        let sync = x.map(|x| x.said().to_string());
         let comments = self.statuses.latest.get(link).map(|l| comments_said(crate::review::not_pulled(&self.db, &self.stack, &p.change, &l.comments)));
         let mut out = format!("Phabricator: {d}");
         let mut unknown = false;
@@ -714,8 +770,7 @@ impl App {
             return Vec::new();
         }
         let Some((d, link)) = crate::phab::revision_of(&p.message) else { return Vec::new() };
-        let x = self.differs(p, &link);
-        fold_line(&self.line_said(p, &d, &link, x.as_ref()), w)
+        fold_line(&self.line_said(p, &d, &link, &self.synced(p, &link)), w)
             .into_iter()
             .enumerate()
             .map(|(k, text)| Row { cont: k > 0, phab: true, ..row(Kind::Meta, text) })
@@ -826,12 +881,10 @@ impl App {
         let Some((d, link)) = crate::phab::revision_of(&p.message) else {
             return Err(format!("Patch {n} names no revision, so nothing of it is compared with Phabricator."));
         };
-        if self.not_found(&link) {
-            return Err(format!("Phabricator has no revision {d}, so nothing of it is compared with patch {n}."));
-        }
-        match self.differs(p, &link) {
-            Some(x) => Ok(self.view_of(p, &d, &link, &x, self.body_w)),
-            None => Err(format!("What differs between patch {n} and {d} on Phabricator is not known yet: the line says it once {d} is read and compared.")),
+        match self.synced(p, &link) {
+            Synced::NotFound => Err(format!("Phabricator has no revision {d}, so nothing of it is compared with patch {n}.")),
+            Synced::Known(x) => Ok(self.view_of(p, &d, &link, &x, self.body_w)),
+            Synced::Unknown => Err(format!("What differs between patch {n} and {d} on Phabricator is not known yet: the line says it once {d} is read and compared.")),
         }
     }
 
@@ -854,7 +907,10 @@ impl App {
         let Some(p) = self.shown_patch() else { return };
         let Some((d, link)) = crate::phab::revision_of(&p.message) else { return };
         let n = self.sel + 1;
-        let same = self.differs(p, &link).filter(|x| x.none()).map(|x| x.same_said(&d, "this version"));
+        let same = match self.synced(p, &link) {
+            Synced::Known(x) if x.none() => Some(x.same_said(&d, "this version")),
+            _ => None,
+        };
         match same {
             Some(same) => self.status = format!("Phabricator has this exact version of patch {n}: {same}"),
             None => self.open_differs(),
@@ -873,10 +929,10 @@ impl App {
         }
         let p = self.shown_patch()?;
         let (d, link) = crate::phab::revision_of(&p.message)?;
-        let why = match self.differs(p, &link) {
-            Some(_) => None,
-            None if self.not_found(&link) => Some(format!("Phabricator has no revision {d}.")),
-            None => Some(format!("{d} is not read from Phabricator and compared with this patch yet.")),
+        let why = match self.synced(p, &link) {
+            Synced::Known(_) => None,
+            Synced::NotFound => Some(format!("Phabricator has no revision {d}.")),
+            Synced::Unknown => Some(format!("{d} is not read from Phabricator and compared with this patch yet.")),
         };
         items.push(Item::new(format!("What differs from {d} on Phabricator…"), Action::Differs).when(why.is_none()));
         items.push(Item::new(format!("Pull the reviews of {d} from Phabricator"), Action::PullPatch(p.change.clone())));
@@ -940,13 +996,13 @@ impl App {
         let Some((d, link)) = crate::phab::revision_of(&p.message) else { return Vec::new() };
         let n = self.sel + 1;
         let mut out = vec![format!(
-            "This line says what Phabricator has of patch {n}: its revision, {d}; the status of {d}, by its name; whether {d} is in sync with this version; and how many of the comments of {d} are not pulled yet. In sync, the latest diff of {d} does what this version does; the title and summary of {d} are exactly those a submit sends, where their lines wrap too; and a submit would not change the parent of {d}, which a submit sets to the revision of the patch below, when that is open. What this line says is read from Phabricator, away from the screen, for every patch of the stack: as the stack is shown, every three minutes, and again after a submit or a pull. Where something is not read yet, the line says … in its place."
+            "This line says what Phabricator has of patch {n}: its revision, {d}; the status of {d}, by its name; whether {d} is in sync with this version; and how many of the comments of {d} are not pulled yet. In sync, the latest diff of {d} does what this version does; the title and summary of {d} are exactly those a submit sends, where their lines wrap too; and a submit would not change the parent of {d}, which a submit sets to the revision of the patch below, when that is open. What this line says is read from Phabricator, away from the screen, for every patch of the stack: as the stack is shown, every three minutes, and again after a submit or a pull. Where something is not read yet, the line says … in its place. The patches pane says the same after the status of each patch's revision: ✓ in sync, ✗ when something differs."
         )];
-        out.push(match self.differs(p, &link) {
-            _ if self.not_found(&link) => format!("Phabricator has no revision {d}, so nothing of it is compared with this patch, and Space only says so."),
-            Some(x) if x.none() => "Phabricator has this exact version: Space says so on the bottom line, and opens nothing.".into(),
+        out.push(match self.synced(p, &link) {
+            Synced::NotFound => format!("Phabricator has no revision {d}, so nothing of it is compared with this patch, and Space only says so."),
+            Synced::Known(x) if x.none() => "Phabricator has this exact version: Space says so on the bottom line, and opens nothing.".into(),
             // What Space shows, of what differs, the parent first.
-            Some(x) => {
+            Synced::Known(x) => {
                 let mut shown: Vec<String> = Vec::new();
                 if x.parent_differs() {
                     shown.push(format!("the parent of {d} on Phabricator, then the one a submit sets"));
@@ -966,7 +1022,7 @@ impl App {
                 };
                 format!("Press Space to see what differs from {d} on Phabricator, on a screen of its own: {shown}. Esc there comes back to this line.")
             }
-            None => format!(
+            Synced::Unknown => format!(
                 "Press Space to see what differs from {d} on Phabricator, on a screen of its own, once {d} is read and compared: until then, Space says that it is not known yet."
             ),
         });
@@ -1244,5 +1300,31 @@ mod tests {
         assert_eq!(now(&["D10"]).parent_said().as_deref(), Some("Parent: D10 on Phabricator; a submit sets D11, the revision of patch 1."));
         assert_eq!(now(&["D10", "D9"]).parent_said().as_deref(), Some("Parents: D10 and D9 on Phabricator; a submit sets D11, the revision of patch 1."));
         assert_eq!(differs(true, true, false).parent_said(), None);
+    }
+
+    #[test]
+    fn the_patches_pane_marks_in_sync_and_what_differs_as_the_line_says_them() {
+        let code = (String::new(), None);
+        let message = Some((String::new(), String::new()));
+        let differs = |c: bool, m: bool, parent: Parent| Differs {
+            code: c.then_some((&code.0, &code.1)),
+            message: if m { message.clone() } else { None },
+            parent,
+            parents_now: vec![],
+        };
+        let set = || Parent::Set { id: "D11".into(), phid: "PHID-DREV-11".into(), below: 1 };
+        let already = || Parent::Already { id: "D11".into(), below: 1 };
+        let nothing = || Parent::Nothing("Patch 1 is at the bottom of the stack, so D12 gets no parent.".into());
+        // ✓ where the line says in sync, ✗ wherever it says what differs,
+        // for every one of them.
+        for (c, m) in [(false, false), (true, false), (false, true), (true, true)] {
+            for parent in [set(), already(), nothing()] {
+                let x = differs(c, m, parent);
+                let said = x.said();
+                assert_eq!(Synced::Known(x).mark(), Some(if said == "in sync" { "✓" } else { "✗" }), "{said}");
+            }
+        }
+        // Neither while it is not known, nor for a revision not found: a blank.
+        assert_eq!((Synced::Unknown.mark(), Synced::NotFound.mark()), (None, None));
     }
 }

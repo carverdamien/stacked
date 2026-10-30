@@ -463,12 +463,12 @@ have (yours, or main pulled since, or the stack moved on since HEAD was
 put there), is drawn as a graph:
 
 ```
-● 1 [R] Bug 1 - first part
-≠ 2 [W] Bug 2 - second part
+● 1 [R]✓ Bug 1 - first part
+≠ 2 [W]✗ Bug 2 - second part
 ├○ Fix the thing
 │▶ HEAD main
-└● 3     Bug 3 - third part
- ● 4     Bug 4 - fourth part
+└● 3      Bug 3 - third part
+ ● 4      Bug 4 - fourth part
 ```
 
 First the trunk the two share, the patches whose commits HEAD has, each
@@ -508,17 +508,29 @@ expanded and listing files alike: `[D]` Draft, `[W]` Changes Planned, `[R]`
 Needs Review, `[C]` Needs Revision, `[A]` Accepted, `[L]` Closed (landed),
 `[X]` Abandoned, and `[?]` a status stacked does not know (`  2 [W] Bug 2 -
 add b`). The Phabricator line over the patch's message says it in full
-(below). The statuses are a column of their own, as wide as the widest of
-the stack's, so that the titles start together: a patch that names no
-revision, or whose revision's status is not read yet, has its column
-blank, and while no status is known there is no column at all. Expanded,
-the pane is wider by the column, up to half the screen, so that each title
-keeps the room it had and folds as it did. The tags at the end of a
-patch's first line (`[2]`, and `✓` or `3/7` in the reading mode) are where
-they were. A revision is a draft when its status is Draft: one in Changes
-Planned that was never sent for review, as `Submit to Phabricator as WIP`
-makes one, is `[W]`, though Phabricator says it is a draft too (`isDraft`,
-as it says of every revision it has not sent to reviewers yet). The
+(below). Right after the letter, a mark says whether Phabricator has this
+exact version of the patch, as that line says it: `✓` where the line says
+`in sync` (the revision's latest diff does what the patch does, its title
+and summary are those a submit sends, and a submit would not change its
+parent), `✗` where it says what differs, the diff, the title or summary,
+or the parent (`  2 [W]✓ Bug 2 - add b`, `  3 [R]✗ Bug 3 - add c`). The
+mark is blank while what differs is not read and compared yet, or when
+Phabricator does not have the revision; the pane and the line read it in
+one place, so that they never disagree. `?` in the patches pane says what
+the two marks mean. The statuses are a column of their own, as wide as
+the widest of the stack's, so that the titles start together: a patch
+that names no revision, or whose revision's status is not read yet, has
+its column blank, and while no status is known there is no column at
+all; the marks are one more cell of it, there once any patch shows one.
+Expanded, the pane is wider by the column, up to half the screen, so that
+each title keeps the room it had and folds as it did. The tags at the end
+of a patch's first line (`[2]`, and `✓` or `3/7` in the reading mode) are
+where they were: the reading mode's `✓` there says that all of the
+patch's lines are read, not that Phabricator has this version. A revision
+is a draft when its status is Draft: one in Changes Planned that was never
+sent for review, as `Submit to Phabricator as WIP` makes one, is `[W]`,
+though Phabricator says it is a draft too (`isDraft`, as it says of every
+revision it has not sent to reviewers yet). The
 statuses are read away from the screen, over Conduit with the token a pull
 uses, all of the stack's revisions in one search
 (differential.revision.search; one for each Phabricator, should their
@@ -707,7 +719,9 @@ the history, a new reply or edit there is not told from the comments filed
 in it before you closed it. What is not read yet is `…` (`Phabricator: D123 ·
 Needs Review · …`), whether it is in sync too while the revision of the
 patch below is not; a revision Phabricator does not have is said so,
-alone (`Phabricator: D123 · not found on Phabricator`). The line is a row
+alone (`Phabricator: D123 · not found on Phabricator`). Whether each patch
+is in sync, the patches pane marks too, after its revision's status (`✓`,
+`✗`, above), from the same reading as its line. The line is a row
 of the patch, over its message's header, and folds between words where
 the middle is narrower; it is not pinned, and scrolls away with the rows,
 the title pinned in its place. The cursor comes to a patch on its
@@ -754,8 +768,9 @@ D12 on Phabricator…` opens the same screen, grayed, the menu saying why, while
 read and compared yet, or Phabricator does not have it; and `Pull the
 reviews of D12 from Phabricator` pulls the reviews of that revision alone
 (Phabricator, below). The patch's menu in the patches pane has both too,
-after `Submit to Phabricator as WIP`. `?` says what the line says, what
-Space shows there, and what the menu has.
+after `Submit to Phabricator as WIP`. `?` says what the line says, and
+that the patches pane marks the same, what Space shows there, and what
+the menu has.
 
 What the lines say is read away from the screen, with the token the
 statuses use, for every revision the stack's patches name, as the stack is
@@ -4457,7 +4472,17 @@ patch's number, a letter listing files and expanded alike, `[?]` for one
 stacked does not know, no words; none before it is read, nor for a patch
 naming no revision or one Phabricator does not have; the titles starting
 together, those folded folding as they did, the pane wider by the column,
-and the tags where they were; the stack's revisions read in one search,
+and the tags where they were; right after the letter, `✓` in sync and `✗`
+for a diff, a title or summary, or a parent that differs, listing files
+and expanded alike, each patch's mark the one its Phabricator line says,
+patch by patch, a revision two patches name marked for each, as a patch
+changes and as a reordered stack is submitted again; a blank while what
+differs is not read, no cell for the marks while no patch shows one and
+one more once one does, the pane a cell wider, a revision named since
+blank while the others keep theirs; none for a patch naming no revision
+or one Phabricator does not have; `?` saying what the marks mean, and in
+the reading mode that the `✓` at a line's end is another, nothing of
+them while there is no column; the stack's revisions read in one search,
 no other call made but the Phabricator lines', not again while they are
 the same, again once its patches name others and right after a submit, a
 new revision's status shown at once; Changes Planned shown as such though
@@ -4553,7 +4578,10 @@ from its menu, by a stand-in, and the comment closed last on a line,
 longer than its box in a small page, scrolled down to its last line with
 ↓, the wheel's ↓ and pgdn, and, with
 moz-phab, the status of a patch's revision after its number, a letter,
-and the Phabricator line over its message, Space on it showing what
+then its mark (`✗`, its diff otherwise) on the screen its Phabricator
+line says so, the next patch's title after the column all the same,
+expanded and listing files, a title folded there, and the Phabricator line
+over its message, Space on it showing what
 differs on a screen of its own, Esc going back to the line, read by a
 stand-in for its database, and the reviews of its revision pulled alone
 from its menu, an item clicked, by a stand-in too; and
@@ -4590,7 +4618,10 @@ Ask Later putting the comment in the batch; the agent's turns headed
 with the effort it was asked at, and its landed work named with it, in
 the banner and its review, a turn of before as ever; with
 moz-phab, the status of a patch's revision after its number, a letter,
-and the Phabricator line over its message, Space on it showing what
+then its mark (`✗`, its diff otherwise) on the screen its Phabricator
+line says so, the next patch's title after the column all the same,
+expanded and listing files, a title folded there, and the Phabricator line
+over its message, Space on it showing what
 differs on a screen of its own, Esc going back to the line, read by a
 stand-in for its database, and the reviews of its revision pulled alone
 from its menu, an item clicked, by a stand-in too; the File menu, its
@@ -5060,7 +5091,10 @@ the patch, a line otherwise at the same place, the same hunk elsewhere, a
 file one makes and the other finds, but not by more of a file around a
 hunk, nor by another file; the tour pulling nothing from Phabricator, a
 patch's revision alone neither; the comments to pull and what differs
-said in plain words; and the line folded between words, its pieces under
+said in plain words; the patches pane's mark `✓` exactly where the line
+says in sync and `✗` wherever it says what differs, the parent set,
+already its parent or none set, and none while that is not known or for a
+revision not found; and the line folded between words, its pieces under
 its first.
 
 ## Not done yet

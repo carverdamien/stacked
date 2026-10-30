@@ -285,15 +285,18 @@ fn the_status_of_each_patch_s_revision_and_its_phabricator_line_show_in_the_wind
     );
     let s = Session::open(&db, tmp.path()).unwrap();
     s.send(Input::Size(100, 30));
-    // A letter after the number; the patch naming no revision blank, its
-    // title after the column all the same. The Phabricator line over the
-    // message, in the middle.
+    // A letter after the number, then ✗, as D11's diff is otherwise; the
+    // patch naming no revision blank, its title after the column all the
+    // same. The Phabricator line over the message, in the middle, saying
+    // so on the same screen.
     let line = "Phabricator: D11 · Needs Review · the diff differs · no new comments";
-    screen(&s, "the status", |b| row(b, 2).starts_with("  1 [R] Bug 1 - shout two") && row(b, 3).starts_with("  2     Bug 2 - add b"));
-    screen(&s, "the Phabricator line", |b| find(b, line).is_some());
-    // Listing files, a letter too.
+    screen(&s, "the status, its mark and the Phabricator line", |b| {
+        row(b, 2).starts_with("  1 [R]✗ Bug 1 - shout two") && row(b, 3).starts_with("  2      Bug 2 - add b") && find(b, line).is_some()
+    });
+    // Listing files, a letter and a mark too, the title folded under itself
+    // where the pane, as wide as listing files needs, is narrower.
     press(&s, KeyCode::Left);
-    screen(&s, "the letter", |b| row(b, 2).starts_with("  1 [R] Bug 1 - shout two"));
+    screen(&s, "the letter", |b| row(b, 2).starts_with("  1 [R]✗ Bug 1 - shout ") && row(b, 3).starts_with("         two "));
     // Space on the line: what differs, on a screen of its own, Phabricator's
     // line of the diff taken out; Esc, back on the line.
     for k in [KeyCode::Right, KeyCode::Up, KeyCode::Char(' ')] {

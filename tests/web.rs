@@ -335,16 +335,21 @@ fn the_status_of_each_patch_s_revision_and_its_phabricator_line_show_in_the_brow
     let (port, token) = stacked::web::start(db.clone()).unwrap();
     let (host, input) = (format!("127.0.0.1:{port}"), format!("POST /input?t={token}"));
     let mut events = events(port, &token, 100);
-    // A letter after the number; the patch naming no revision blank, its
-    // title after the column all the same.
-    until(&mut events, "the status", |l| l.starts_with("data: r 2 ") && text(l).starts_with("  1 [R] Bug 1 - shout two"));
-    until(&mut events, "the title after it", |l| l.starts_with("data: r 3 ") && text(l).starts_with("  2     Bug 2 - add b"));
-    // The Phabricator line over the message, in the middle.
+    // The Phabricator line over the message, in the middle; and, on the
+    // rows under it as they come with it, a letter after the number, then
+    // ✗, as the line says D11's diff is otherwise; the patch naming no
+    // revision blank, its title after the column all the same.
     let line = "Phabricator: D11 · Needs Review · the diff differs · no new comments";
     until(&mut events, "the Phabricator line", |l| text(l).contains(line));
-    // Listing files, a letter too.
+    until(&mut events, "the status", |l| l.starts_with("data: r 2 ") && text(l).starts_with("  1 [R]✗ Bug 1 - shout two"));
+    until(&mut events, "the title after it", |l| l.starts_with("data: r 3 ") && text(l).starts_with("  2      Bug 2 - add b"));
+    // Listing files, a letter and a mark too, the title folded under itself
+    // where the pane, as wide as listing files needs, is narrower.
     ask(port, &host, &input, "k Left -\n");
-    until(&mut events, "the letter", |l| l.starts_with("data: r 2 ") && text(l).starts_with("  1 [R] Bug 1 - shout two"));
+    until(&mut events, "the letter", |l| {
+        l.starts_with("data: r 2 ") && text(l).starts_with("  1 [R]✗ Bug 1 - shout ") && !text(l).starts_with("  1 [R]✗ Bug 1 - shout two")
+    });
+    until(&mut events, "the title folded", |l| l.starts_with("data: r 3 ") && text(l).starts_with("         two "));
     // Space on the line: what differs, on a screen of its own, Phabricator's
     // line of the diff taken out; Esc, back on the line.
     for k in ["k Right -\n", "k Up -\n", "k c 20 -\n"] {

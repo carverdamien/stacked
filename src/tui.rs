@@ -6108,6 +6108,7 @@ impl App {
                         if self.reading && !self.files_listed().is_empty() {
                             out.push("Each file listed under the patch says how many of its changed lines are left to mark read, as 7 left, or ✓ once all of them are read.".into());
                         }
+                        out.extend(self.sync_help());
                     }
                     Focus::Diff => out.push(self.arrows_help()),
                     // Listing nothing: where ← goes, and whether the pane
@@ -6258,6 +6259,22 @@ impl App {
         ]
         .into_iter()
         .fold(text, |t, (from, to)| t.replace(from, &to))
+    }
+
+    /// What `?` says in the patches pane of the mark after the status of
+    /// each patch's revision, while the pane has the column of the
+    /// statuses: what `✓` and `✗` say, as the Phabricator line says it, and
+    /// what neither says; reading, that the `✓` at the end of a patch's line
+    /// says something else.
+    fn sync_help(&self) -> Option<String> {
+        if Self::status_col(&self.statuses_said()).0 == 0 {
+            return None;
+        }
+        let mut said = "After the letter in brackets, the status of a patch's revision on Phabricator, ✓ says that Phabricator has this exact version of the patch, as the Phabricator line over the patch's message says in sync: the revision's latest diff does what the patch does, its title and summary are those a submit sends, and a submit would not change its parent. ✗ says that the diff, the title or summary, or the parent differs; the line says which. With neither mark after the letter, the revision is not read and compared yet, or Phabricator does not have it.".to_string();
+        if self.reading {
+            said += " In the reading mode, the ✓ at the end of a patch's line says something else: all of the patch's lines are read.";
+        }
+        Some(said)
     }
 
     /// Where the arrows go from the middle.
@@ -10093,11 +10110,11 @@ impl App {
     /// How wide the side panes are, of `w`, as `left` and `right` show
     /// them: expanded, a quarter of the width (what does not fit in it
     /// folds: the patches' titles whole), the patches' wider by the column
-    /// of their revisions' statuses, half the width at most; the patches
-    /// listing files, as wide as their paths need, from as wide as expanded
-    /// without that column to a third of the width; the comments compact,
-    /// what they show needs, a fifth at most; hidden, not at all. The pane
-    /// a comment is written in, `wide`, takes half the width.
+    /// of their revisions' statuses and marks, half the width at most; the
+    /// patches listing files, as wide as their paths need, from as wide as
+    /// expanded without that column to a third of the width; the comments
+    /// compact, what they show needs, a fifth at most; hidden, not at all.
+    /// The pane a comment is written in, `wide`, takes half the width.
     fn side_widths(&self, w: usize, left: PatchesPane, right: Pane, wide: Option<Focus>) -> (usize, usize) {
         let expanded = (w / 4).clamp(20, 40);
         let mut left_w = match left {
@@ -10195,34 +10212,46 @@ impl App {
 
     /// What the patches pane shows after patch `id`'s number, listing files
     /// or expanded: the status on Phabricator of the revision it names, a
-    /// letter in brackets (`[W]`); the Phabricator line over the patch's
-    /// message says it in full. None when it names no revision, or its
-    /// status is not known yet; always, built without the `moz-phab`
-    /// feature.
-    fn status_said(&self, id: &str) -> Option<&'static str> {
+    /// letter in brackets (`[W]`), which the Phabricator line over the
+    /// patch's message says in full; and right after it, whether
+    /// Phabricator has this exact version of the patch, `✓`, or anything
+    /// differs, `✗`, as that line says it (`sync_mark`). The letter none
+    /// when the patch names no revision, or its status is not known yet;
+    /// the mark none, a blank, while what differs is not known, or the
+    /// revision is not found, and when the patch names no revision. Both
+    /// none, built without the `moz-phab` feature.
+    fn status_said(&self, id: &str) -> (Option<&'static str>, Option<&'static str>) {
         #[cfg(feature = "moz-phab")]
-        return self.revision_status(id).map(|s| s.letter());
+        return (self.revision_status(id).map(|s| s.letter()), self.sync_mark(id));
         #[cfg(not(feature = "moz-phab"))]
         {
             let _ = id;
-            None
+            (None, None)
         }
     }
 
-    /// How wide the column of the statuses is in the patches pane: as the
-    /// widest of the stack's patches', so that their titles start together;
-    /// 0, no column, while none is known.
-    fn status_col(&self) -> usize {
-        let Some(s) = self.current() else { return 0 };
-        s.patches.iter().filter_map(|id| self.status_said(id)).map(|t| t.chars().count()).max().unwrap_or(0)
+    /// What the patches pane shows after the number of each of the stack's
+    /// patches (`status_said`), in the stack's order.
+    fn statuses_said(&self) -> Vec<(Option<&'static str>, Option<&'static str>)> {
+        self.current().map_or(Vec::new(), |s| s.patches.iter().map(|id| self.status_said(id)).collect())
+    }
+
+    /// How wide the column of the statuses is in the patches pane, of what
+    /// it shows of each patch, `said` (`statuses_said`): its letters as
+    /// wide as the widest, so that the titles start together, 0, no
+    /// column, while none is known; then its marks, a cell where any patch
+    /// shows one, else none.
+    fn status_col(said: &[(Option<&str>, Option<&str>)]) -> (usize, usize) {
+        let w = |t: &Option<&str>| t.map_or(0, |t| t.chars().count());
+        said.iter().fold((0, 0), |(letters, marks), (letter, mark)| (letters.max(w(letter)), marks.max(w(mark))))
     }
 
     /// The room the column of the statuses takes on a patch's line: its
-    /// width and a space after it, or none.
+    /// letters, its marks and a space after them, or none.
     fn status_room(&self) -> usize {
-        match self.status_col() {
-            0 => 0,
-            n => n + 1,
+        match Self::status_col(&self.statuses_said()) {
+            (0, _) => 0,
+            (letters, marks) => letters + marks + 1,
         }
     }
 
@@ -10782,20 +10811,23 @@ impl App {
         let lead = |at: usize| graph.as_ref().and_then(|g| g.leads.get(at)).cloned().unwrap_or_else(|| (" ".into(), " ".into()));
         // Each patch's lines: its lead (the mark of its commit in your
         // checkout, or where HEAD forks, the graph), its number, the status
-        // of its revision on Phabricator, in a column as wide as the widest
-        // (blank where none is known; no column while none is), its title
-        // whole, folded under itself where the pane is narrower, and its
-        // tags at the end of its first.
-        let col = self.status_col();
+        // of its revision on Phabricator and right after it whether
+        // Phabricator has this exact version, in a column as wide as the
+        // widest (blank where none is known; no column while none is, and
+        // no cell for the marks while none is shown), its title whole,
+        // folded under itself where the pane is narrower, and its tags at
+        // the end of its first.
+        let statuses = self.statuses_said();
+        let (letters, marks) = Self::status_col(&statuses);
         let lines: Vec<Vec<String>> = order
             .iter()
             .enumerate()
             .map(|(at, &i)| {
                 let (said, tag) = self.patch_said(&s.patches[i]);
                 let mark = if moving && at == on { " ↕".to_string() } else { format!("{:>2}", at + 1) };
-                let status = match col {
-                    0 => String::new(),
-                    _ => format!("{} ", fit(self.status_said(&s.patches[i]).unwrap_or_default(), col)),
+                let status = match (letters, statuses.get(i).copied().unwrap_or_default()) {
+                    (0, _) => String::new(),
+                    (_, (letter, synced)) => format!("{}{} ", fit(letter.unwrap_or_default(), letters), fit(synced.unwrap_or_default(), marks)),
                 };
                 let (first, next) = lead(at);
                 let head = format!("{first}{mark} {status}");
