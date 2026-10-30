@@ -317,7 +317,8 @@ fn d11_needs_review(db: &Path) {
         Some(Box::new(move |m, _| match m {
             "differential.revision.search" => Ok(serde_json::json!({"data": [{"id": 11, "phid": "PHID-DREV-11",
                 "fields": {"status": {"value": "needs-review"}, "title": "Bug 1 - shout two", "summary": ""}}]})),
-            "differential.diff.search" => Ok(serde_json::json!({"data": [{"id": 5}]})),
+            "edge.search" => Ok(serde_json::json!({"data": []})),
+            "differential.diff.search" => Ok(serde_json::json!({"data": [{"id": 5, "fields": {"revisionPHID": "PHID-DREV-11"}}]})),
             "differential.getrawdiff" => Ok(serde_json::Value::String(raw.clone())),
             "transaction.search" => Ok(serde_json::json!({"data": [], "cursor": {"after": null}})),
             _ => Err(format!("{m}: not asked in this test")),

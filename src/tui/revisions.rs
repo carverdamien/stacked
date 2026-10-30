@@ -3,24 +3,27 @@
 //! read in one search of all the revisions the stack's patches name; and
 //! the Phabricator line over the message of the patch the middle shows,
 //! which says its revision's status by name, whether Phabricator's latest
-//! diff and the revision's title and summary are this version's, and how
-//! many of the revision's comments are not pulled yet. Space there, or its
-//! menu, shows what differs on a screen of its own, Phabricator's version
-//! then this one as an interdiff compares two versions; the menu pulls the
-//! reviews of that revision alone, too. All read away from the screen: the
-//! statuses as the stack is shown, again as those revisions change and
-//! right after a submit, and every few minutes while the editor runs; the
-//! latest diff and the comments of the patch shown alone, once each time
-//! the statuses are read, and again after a submit or a pull, kept by
-//! revision, its diff kept by id. Kept in memory as long as the editor
-//! runs, nothing written; a read that fails leaves what was known as it
-//! was. Not while reviews come from nowhere, nor in the tour. Built with
-//! the `moz-phab` feature.
+//! diff and the revision's title and summary are this version's, its
+//! parent the one a submit sets, and how many of the revision's comments
+//! are not pulled yet. Space there, or its menu, shows what differs on a
+//! screen of its own, Phabricator's version then this one as an interdiff
+//! compares two versions; the menu pulls the reviews of that revision
+//! alone, too. All read away from the screen: the statuses as the stack is
+//! shown, again as those revisions change and right after a submit, and
+//! every few minutes while the editor runs; then the latest diff, the
+//! comments and the parents of every revision the stack's patches name,
+//! in a few calls for all of them, each time the statuses are read, and
+//! again after a pull, kept by revision, its diff kept by id; and what
+//! differs in the code of each patch, one at a time, the one shown first.
+//! Kept in memory as long as the editor runs, nothing written; a read that
+//! fails leaves what was known as it was. Not while reviews come from
+//! nowhere, nor in the tour. Built with the `moz-phab` feature.
 
 use super::compared::{ONLY_WRAPPED, row};
 use super::*;
 use crate::diff::{FileDiff, Hunk};
-use crate::phab::{Latest, Searched, Status};
+use crate::phab::{Latest, Searched, Status, Wanted};
+use crate::submit::{Below, Parent};
 
 /// How long the statuses go between reads while the stack's revisions are
 /// the same: a few minutes, as a try push followed does between looks.
@@ -56,28 +59,69 @@ pub(super) enum Code {
     Differs(String, Option<String>),
 }
 
-/// What differs between a version of a patch and its revision, once both
-/// are known: the code, as a diff, and what it is; the title and summary,
-/// Phabricator's then this version's. None of either where it is the same.
+/// What differs between a version of a patch and its revision, once all of
+/// it is known: the code, as a diff, and what it is; the title and summary,
+/// Phabricator's then this version's; none of either where it is the same.
+/// And the parent a submit gives the revision, by the submit's own rule
+/// (`submit::parent_with`), which differs where a submit sets one; with
+/// the parents the revision has, by name.
 struct Differs<'a> {
     code: Option<(&'a String, &'a Option<String>)>,
     message: Option<(String, String)>,
+    parent: Parent,
+    parents_now: Vec<String>,
 }
 
 impl Differs<'_> {
-    /// Whether nothing differs: Phabricator has this exact version.
+    /// Whether the parent differs: a submit sets one.
+    fn parent_differs(&self) -> bool {
+        matches!(self.parent, Parent::Set { .. })
+    }
+
+    /// Whether nothing differs: Phabricator has this exact version, and a
+    /// submit would set no parent.
     fn none(&self) -> bool {
-        self.code.is_none() && self.message.is_none()
+        self.code.is_none() && self.message.is_none() && !self.parent_differs()
     }
 
     /// What the Phabricator line says of it.
     fn said(&self) -> &'static str {
-        match (self.code.is_some(), self.message.is_some()) {
-            (false, false) => "in sync",
-            (true, false) => "the diff differs",
-            (false, true) => "the title or summary differs",
-            (true, true) => "the diff and the title or summary differ",
+        match (self.code.is_some(), self.message.is_some(), self.parent_differs()) {
+            (false, false, false) => "in sync",
+            (true, false, false) => "the diff differs",
+            (false, true, false) => "the title or summary differs",
+            (false, false, true) => "the parent differs",
+            (true, true, false) => "the diff and the title or summary differ",
+            (true, false, true) => "the diff and the parent differ",
+            (false, true, true) => "the title or summary and the parent differ",
+            (true, true, true) => "the diff, the title or summary, and the parent differ",
         }
+    }
+
+    /// What is the same, in sync, said, of revision `d` and `this`, the
+    /// version of the patch: the code, the title and summary, and the
+    /// parent, the one a submit sets, or why a submit sets none, as the
+    /// submit says it.
+    fn same_said(&self, d: &str, this: &str) -> String {
+        let code = format!("the latest diff of {d} does what {this} does");
+        let message = format!("the title and summary of {d} are those of this version");
+        match &self.parent {
+            Parent::Already { id, below } => format!("{code}, {message}, and its parent is {id}, the revision of patch {below}."),
+            Parent::Nothing(why) => format!("{code}, and {message}. {why}"),
+            Parent::Set { .. } => format!("{code}, and {message}."),
+        }
+    }
+
+    /// The parent, when a submit sets one, said: the parents the revision
+    /// has on Phabricator, then the one a submit sets.
+    fn parent_said(&self) -> Option<String> {
+        let Parent::Set { id, below, .. } = &self.parent else { return None };
+        let now = match self.parents_now.as_slice() {
+            [] => "Parent: none".to_string(),
+            [one] => format!("Parent: {one}"),
+            all => format!("Parents: {}", crate::submit::and(all)),
+        };
+        Some(format!("{now} on Phabricator; a submit sets {id}, the revision of patch {below}."))
     }
 }
 
@@ -281,20 +325,19 @@ pub(super) struct Statuses {
     /// A read failed and the status line said so: not again until one
     /// works.
     failed: bool,
-    /// How many times the statuses were read, or a submit or a pull ended:
-    /// what the Phabricator line read before is read again once shown.
+    /// How many times the statuses were read, or a pull ended: what the
+    /// Phabricator lines read is read again each time.
     round: u64,
-    /// The latest diff and the comments of each revision the line was
-    /// drawn for, by link, as last read; and the round each was last read
-    /// in, whether that worked or not.
+    /// The latest diff, the comments and the parents of each revision the
+    /// stack's patches name, by link, as last read; the round they were
+    /// last read in, whether that worked or not; and whether they are being
+    /// read.
     latest: HashMap<String, Latest>,
-    tried: HashMap<String, u64>,
-    /// The revision whose latest diff and comments are being read: its
-    /// link.
-    reading_latest: Option<String>,
+    read_in: Option<u64>,
+    reading_latest: bool,
     /// What differs in the code between a revision's latest diff and a
-    /// version of its patch, by what it was worked out from
-    /// (`compare_key`); and the one being worked out.
+    /// version of its patch, on the patches below it, by what it was worked
+    /// out from (`compare_key`); and the one being worked out.
     compared: HashMap<String, Code>,
     comparing: Option<String>,
     /// How many times what the line may say changed: the middle's rows
@@ -331,10 +374,12 @@ impl App {
     /// away from the screen, when they are due: never read, or for other
     /// revisions (the stack shown, or its patches naming others), a submit
     /// ended since, or a few minutes gone by. Not while a read is under
-    /// way, nor while the editor does not read Phabricator. What the
-    /// Phabricator line read before is read again with them.
+    /// way, theirs or the revisions' (`check_latest`), one read of
+    /// Phabricator after another, nor while the editor does not read
+    /// Phabricator. What the Phabricator lines read is read again after
+    /// them.
     pub(super) fn check_statuses(&mut self) {
-        if self.statuses.reading || !self.reads_phabricator() {
+        if self.statuses.reading || self.statuses.reading_latest || !self.reads_phabricator() {
             return;
         }
         let named = self.revisions_named();
@@ -351,7 +396,7 @@ impl App {
 
     /// Right after a submit: the database read again, for the link of a new
     /// revision, and the statuses with it, at once, or once the read under
-    /// way is done.
+    /// way is done; then what the Phabricator lines read.
     pub(super) fn statuses_again(&mut self) {
         self.reload();
         self.statuses.stale = true;
@@ -359,8 +404,8 @@ impl App {
         self.check_line();
     }
 
-    /// Right after a pull: the latest diff and the comments of the patch
-    /// shown read again, those pulled in the database now.
+    /// Right after a pull: the latest diff, the comments and the parents of
+    /// every revision read again, those pulled in the database now.
     pub(super) fn line_again(&mut self) {
         self.statuses.round += 1;
         self.check_line();
@@ -413,10 +458,10 @@ impl App {
         self.statuses.known.get(&link).map(|s| s.status)
     }
 
-    /// Whether what Phabricator has is being read, or compared with the
-    /// patch shown.
+    /// Whether what Phabricator has is being read, or compared with a
+    /// patch.
     pub(super) fn reading_phabricator(&self) -> bool {
-        self.statuses.reading || self.statuses.reading_latest.is_some() || self.statuses.comparing.is_some()
+        self.statuses.reading || self.statuses.reading_latest || self.statuses.comparing.is_some()
     }
 
     // -- the Phabricator line over the patch's message ---------------------- //
@@ -452,57 +497,138 @@ impl App {
         })
     }
 
-    /// What the Phabricator line of the patch shown needs, started away
-    /// from the screen when it is due: its revision's latest diff and
-    /// comments, read once each round, once its search has found its PHID;
-    /// then what differs in the code, worked out once for each version of
-    /// the patch, on the patches below it. One read and one comparison at a
-    /// time. Not while the editor does not read Phabricator.
+    /// What the Phabricator lines of the stack's patches need, started away
+    /// from the screen when it is due: the latest diff, the comments and
+    /// the parents of every revision the patches name, read once each
+    /// round, once the statuses' search has found their PHIDs
+    /// (`check_latest`); then what differs in the code of each patch,
+    /// worked out once for each version of it on the patches below it, the
+    /// one the middle shows first (`check_compare`). One read and one
+    /// comparison at a time. Not while the editor does not read
+    /// Phabricator.
     pub(super) fn check_line(&mut self) {
         if !self.reads_phabricator() {
             return;
         }
-        let Some(id) = self.patch_id().filter(|_| !self.on_stack) else { return };
-        let p = self.db.patch(&id);
-        let Some((d, link)) = crate::phab::revision_of(&p.message) else { return };
-        let round = self.statuses.round;
-        if self.statuses.reading_latest.is_none()
-            && self.statuses.tried.get(&link) != Some(&round)
-            && let Some(s) = self.statuses.known.get(&link)
-        {
-            self.statuses.tried.insert(link.clone(), round);
-            self.statuses.reading_latest = Some(link.clone());
-            let had = self.statuses.latest.get(&link).map(|l| (l.diff, l.raw.clone()));
-            let (db, phid, at) = (self.path.clone(), s.phid.clone(), link.clone());
-            self.spawn(move || {
-                let read = crate::phab::latest(&db, &d, &phid, &at, had);
-                Done::Latest(at, read)
-            });
-        }
-        if self.statuses.comparing.is_none()
-            && let Some(key) = self.compare_key(p, &link)
-            && !self.statuses.compared.contains_key(&key)
-            && let Some(job) = self.compare_job(p, &link)
-        {
-            self.statuses.comparing = Some(key.clone());
-            self.spawn(move || Done::Compared(key, compare(job)));
+        self.check_latest();
+        self.check_compare();
+    }
+
+    /// The revision at `link`, the one of a patch below another, as the
+    /// statuses' search found it, for the parent's rule
+    /// (`submit::parent_with`): not known while it is not read.
+    fn below(&self, link: &str) -> std::result::Result<Below, ()> {
+        match self.statuses.known.get(link) {
+            Some(s) => Ok(Below::Found { phid: s.phid.clone(), open: s.status.open(), status: s.status.name().to_string() }),
+            None if self.statuses.missing.contains(link) => Ok(Below::Missing),
+            None => Err(()),
         }
     }
 
-    /// What a read of revision `link`'s latest diff and comments came to:
-    /// kept; or, failed, what was known kept as it was, nothing said, as
-    /// the statuses' reads say what is wrong. Then what the line needs next.
-    pub(super) fn latest_read(&mut self, link: String, read: std::result::Result<Latest, String>) {
-        self.statuses.reading_latest = None;
-        if let Ok(l) = read {
-            self.statuses.latest.insert(link, l);
-            self.statuses.seq += 1;
+    /// The revisions the current stack's patches name that the statuses'
+    /// search found, as the Phabricator lines read them (`phab::Wanted`):
+    /// that of the patch the middle shows first, then the others, bottom
+    /// first, each once; each with its latest diff as read before, and
+    /// whether its parents are to be named, as a submit of a patch naming
+    /// it would set it one, whatever parents it has.
+    fn wanted(&self) -> Vec<Wanted> {
+        let Some(s) = self.current() else { return Vec::new() };
+        let shown = self.patch_id().filter(|_| !self.on_stack).and_then(|id| s.patches.iter().position(|p| *p == id));
+        let none: &[String] = &[];
+        let mut out: Vec<Wanted> = Vec::new();
+        for at in shown.into_iter().chain(0..s.patches.len()) {
+            let p = self.db.patch(&s.patches[at]);
+            let Some((d, link)) = crate::phab::revision_of(&p.message) else { continue };
+            let Some(found) = self.statuses.known.get(&link).filter(|f| !f.phid.is_empty()) else { continue };
+            let sets = crate::submit::parent_with(&self.db, s, at, Some((d.as_str(), none)), |_, below| self.below(below));
+            let sets = matches!(sets, Ok(Parent::Set { .. }));
+            match out.iter_mut().find(|w| w.link == link) {
+                Some(w) => w.name_parents |= sets,
+                None => {
+                    let had = self.statuses.latest.get(&link).map(|l| (l.diff, l.raw.clone()));
+                    out.push(Wanted { d, link, phid: found.phid.clone(), had, name_parents: sets });
+                }
+            }
         }
+        out
+    }
+
+    /// The latest diff, the comments and the parents of every revision the
+    /// current stack's patches name (`wanted`), read away from the screen
+    /// in a few calls for all of them (`phab::latests`), once each round,
+    /// each revision kept as soon as it is read. Not while the statuses
+    /// are read, nor while the revisions are, for a round before.
+    fn check_latest(&mut self) {
+        let st = &self.statuses;
+        if st.reading || st.reading_latest || st.read_in == Some(st.round) {
+            return;
+        }
+        let wanted = self.wanted();
+        if wanted.is_empty() {
+            return;
+        }
+        self.statuses.read_in = Some(self.statuses.round);
+        self.statuses.reading_latest = true;
+        let (db, tx) = (self.path.clone(), self.bg.tx.clone());
+        self.spawn(move || {
+            let mut got = |link: &str, l: Latest| {
+                let _ = tx.send(Done::Latest(link.to_string(), l));
+            };
+            // A read that fails keeps what was known, and says nothing: the
+            // statuses' reads say what is wrong.
+            let _ = crate::phab::latests(&db, &wanted, &mut got);
+            Done::LatestAll
+        });
+    }
+
+    /// What differs in the code of the next patch due a comparison,
+    /// worked out away from the screen (`next_compare`), one at a time.
+    fn check_compare(&mut self) {
+        if self.statuses.comparing.is_some() {
+            return;
+        }
+        let Some((key, job)) = self.next_compare() else { return };
+        self.statuses.comparing = Some(key.clone());
+        self.spawn(move || Done::Compared(key, compare(job)));
+    }
+
+    /// The next patch of the current stack whose code is due a comparison
+    /// with its revision's latest diff, once that is read: the one the
+    /// middle shows first, then the others, bottom first, each compared
+    /// once until it, the patches below it, or the diff changes
+    /// (`compare_key`). What it is compared by, and what that takes.
+    fn next_compare(&self) -> Option<(String, Job)> {
+        let s = self.current()?;
+        let shown = self.patch_id().filter(|_| !self.on_stack);
+        shown.iter().chain(&s.patches).find_map(|id| {
+            let p = self.db.patch(id);
+            let (_, link) = crate::phab::revision_of(&p.message)?;
+            let key = self.compare_key(p, &link).filter(|k| !self.statuses.compared.contains_key(k))?;
+            Some((key, self.compare_job(p, &link)?))
+        })
+    }
+
+    /// Revision `link`'s latest diff, comments and parents, read: kept, in
+    /// place of what was known of it. Then what the lines need next.
+    pub(super) fn latest_read(&mut self, link: String, l: Latest) {
+        self.statuses.latest.insert(link, l);
+        self.statuses.seq += 1;
+        self.check_line();
+    }
+
+    /// The revisions of a round read, or their read stopped at a call that
+    /// failed, what was known of the others kept as it was, nothing said,
+    /// as the statuses' reads say what is wrong. Then what is due next:
+    /// the statuses, should a submit have ended meanwhile, and what the
+    /// lines need.
+    pub(super) fn latests_done(&mut self) {
+        self.statuses.reading_latest = false;
+        self.check_statuses();
         self.check_line();
     }
 
     /// What differs in the code, worked out from `key`, kept; then what the
-    /// line needs next.
+    /// lines need next.
     pub(super) fn code_compared(&mut self, key: String, code: Code) {
         self.statuses.comparing = None;
         self.statuses.compared.insert(key, code);
@@ -517,10 +643,12 @@ impl App {
     }
 
     /// What differs between patch `p` and its revision at `link`, once the
-    /// revision's search, its latest diff and the comparison of its code
-    /// with this version are known.
+    /// revision's search, its latest diff and its parents, the comparison
+    /// of its code with this version, and what a submit gives it as its
+    /// parent (`parent_of`) are known.
     fn differs(&self, p: &Patch, link: &str) -> Option<Differs<'_>> {
         let s = self.statuses.known.get(link)?;
+        let l = self.statuses.latest.get(link)?;
         let code = self.statuses.compared.get(&self.compare_key(p, link)?)?;
         Some(Differs {
             code: match code {
@@ -528,13 +656,28 @@ impl App {
                 Code::Differs(code, said) => Some((code, said)),
             },
             message: message_against(s, p, &self.cfg.reviews.trailer),
+            parent: self.parent_of(p, l)?,
+            parents_now: l.parents.iter().map(|(_, d)| d.clone()).collect(),
         })
+    }
+
+    /// The parent a submit gives the revision of patch `p`, `l` what was
+    /// read of it, its parents with the rest, by the submit's own rule
+    /// (`submit::parent_with`), the revision of the patch below as the
+    /// statuses' search found it: none while that is not known.
+    fn parent_of(&self, p: &Patch, l: &Latest) -> Option<Parent> {
+        let s = self.current()?;
+        let at = s.patches.iter().position(|id| *id == p.id)?;
+        let (d, _) = crate::phab::revision_of(&p.message)?;
+        let parents: Vec<String> = l.parents.iter().map(|(phid, _)| phid.clone()).collect();
+        crate::submit::parent_with(&self.db, s, at, Some((d.as_str(), parents.as_slice())), |_, below| self.below(below)).ok()
     }
 
     /// The Phabricator line of patch `p`, of revision `d` at `link`, `x`
     /// what differs, if it is known: the revision; its status, by name;
-    /// whether its latest diff, title and summary are this version's; how
-    /// many of its comments are not pulled yet. What is not known yet is
+    /// whether its latest diff, title and summary are this version's, and
+    /// its parent the one a submit sets; how many of its comments are not
+    /// pulled yet. What is not known yet is
     /// `…`, once for those in a row; a revision the search did not find,
     /// said so, and nothing else.
     fn line_said(&self, p: &Patch, d: &str, link: &str, x: Option<&Differs>) -> String {
@@ -596,16 +739,17 @@ impl App {
 
     /// The view of what differs, `x`, between patch `p`, the one picked,
     /// and its revision `d` at `link`: its title, and its lines `w` wide.
-    /// What it shows, said first, then Phabricator's version of the patch,
-    /// the revision's title and summary as a submit compares them
-    /// (`message_against`) over its latest diff, then the patch as it is,
-    /// as two versions of a patch are compared (`ops::letter_interdiff_lines`,
-    /// the title and summary where their lines wrap aside, to the letter),
-    /// the code as an interdiff of the two diffs, each without what git
-    /// derives in it (`bare`); or, the latest diff on another base, each
-    /// file as each leaves it, under the title and summary (`shown_code`).
-    /// The code the same, the title and summary alone. In sync, only that
-    /// nothing differs.
+    /// What it shows, said first, the parent first when a submit sets one,
+    /// then Phabricator's version of the patch, the revision's title and
+    /// summary as a submit compares them (`message_against`) over its
+    /// latest diff, then the patch as it is, as two versions of a patch are
+    /// compared (`ops::letter_interdiff_lines`, the title and summary where
+    /// their lines wrap aside, to the letter), the code as an interdiff of
+    /// the two diffs, each without what git derives in it (`bare`); or, the
+    /// latest diff on another base, each file as each leaves it, under the
+    /// title and summary (`shown_code`). The code the same, the title and
+    /// summary alone; both the same, nothing under what it says. In sync,
+    /// only that nothing differs, the parent named.
     fn view_of(&self, p: &Patch, d: &str, link: &str, x: &Differs, w: usize) -> (String, Vec<Parts>) {
         let n = self.sel + 1;
         let title = format!("{d} on Phabricator, then patch {n} as it is");
@@ -617,10 +761,9 @@ impl App {
             inter_parts(&refs).iter().flat_map(|parts| fold_parts(parts, w, 1)).collect()
         };
         if x.none() {
-            said.push(format!(
-                "Nothing differs: the latest diff of {d} does what this version of patch {n} does, and the title and summary of {d} are those of this version."
-            ));
+            said.push(format!("Nothing differs: {}", x.same_said(d, &format!("this version of patch {n}"))));
         } else {
+            said.extend(x.parent_said());
             let shown = self.shown_code(p, link, x);
             said.push(match &x.message {
                 Some((before, after)) if only_wrapped(before, after) => format!(
@@ -705,19 +848,17 @@ impl App {
 
     /// Space on the Phabricator line: what differs, on a screen of its own
     /// (`open_differs`). With nothing that differs, the status line says
-    /// that Phabricator has this exact version, and nothing opens; with what
-    /// differs not known yet, it says so.
+    /// that Phabricator has this exact version, the parent named, and
+    /// nothing opens; with what differs not known yet, it says so.
     pub(super) fn line_space(&mut self) {
         let Some(p) = self.shown_patch() else { return };
         let Some((d, link)) = crate::phab::revision_of(&p.message) else { return };
-        if self.differs(p, &link).is_some_and(|x| x.none()) {
-            let n = self.sel + 1;
-            self.status = format!(
-                "Phabricator has this exact version of patch {n}: the latest diff of {d} does what this version does, and the title and summary of {d} are those of this version."
-            );
-            return;
+        let n = self.sel + 1;
+        let same = self.differs(p, &link).filter(|x| x.none()).map(|x| x.same_said(&d, "this version"));
+        match same {
+            Some(same) => self.status = format!("Phabricator has this exact version of patch {n}: {same}"),
+            None => self.open_differs(),
         }
-        self.open_differs();
     }
 
     /// The items about the revision of the patch the middle shows, on the
@@ -799,22 +940,29 @@ impl App {
         let Some((d, link)) = crate::phab::revision_of(&p.message) else { return Vec::new() };
         let n = self.sel + 1;
         let mut out = vec![format!(
-            "This line says what Phabricator has of patch {n}: its revision, {d}; the status of {d}, by its name; whether the latest diff of {d}, and its title and summary, are those of this version (in sync), the diff by what it does, the title and summary exactly as a submit sends them, where their lines wrap too; and how many of the comments of {d} are not pulled yet. What this line says is read from Phabricator, away from the screen, for the patch the middle shows: every three minutes, and again after a submit or a pull. Where something is not read yet, the line says … in its place."
+            "This line says what Phabricator has of patch {n}: its revision, {d}; the status of {d}, by its name; whether {d} is in sync with this version; and how many of the comments of {d} are not pulled yet. In sync, the latest diff of {d} does what this version does; the title and summary of {d} are exactly those a submit sends, where their lines wrap too; and a submit would not change the parent of {d}, which a submit sets to the revision of the patch below, when that is open. What this line says is read from Phabricator, away from the screen, for every patch of the stack: as the stack is shown, every three minutes, and again after a submit or a pull. Where something is not read yet, the line says … in its place."
         )];
         out.push(match self.differs(p, &link) {
             _ if self.not_found(&link) => format!("Phabricator has no revision {d}, so nothing of it is compared with this patch, and Space only says so."),
             Some(x) if x.none() => "Phabricator has this exact version: Space says so on the bottom line, and opens nothing.".into(),
-            // What Space shows, of what differs.
+            // What Space shows, of what differs, the parent first.
             Some(x) => {
-                let message = format!("the title and summary of {d}, then those a submit of this version sends, compared where their lines wrap aside");
-                let code = match self.shown_code(p, &link, &x) {
-                    Shown::Files(_) => format!("each file as the latest diff of {d} leaves it, then as this version leaves it, {}, as that diff is on another base", below(n)),
-                    _ => format!("the latest diff of {d}, then this version's diff, as an interdiff"),
-                };
-                let shown = match (x.message.is_some(), x.code.is_some()) {
-                    (true, true) => format!("{message}; and {code}"),
-                    (true, false) => message,
-                    _ => code,
+                let mut shown: Vec<String> = Vec::new();
+                if x.parent_differs() {
+                    shown.push(format!("the parent of {d} on Phabricator, then the one a submit sets"));
+                }
+                if x.message.is_some() {
+                    shown.push(format!("the title and summary of {d}, then those a submit of this version sends, compared where their lines wrap aside"));
+                }
+                if x.code.is_some() {
+                    shown.push(match self.shown_code(p, &link, &x) {
+                        Shown::Files(_) => format!("each file as the latest diff of {d} leaves it, then as this version leaves it, {}, as that diff is on another base", below(n)),
+                        _ => format!("the latest diff of {d}, then this version's diff, as an interdiff"),
+                    });
+                }
+                let shown = match shown.split_last() {
+                    Some((last, rest)) if !rest.is_empty() => format!("{}; and {last}", rest.join("; ")),
+                    _ => shown.concat(),
                 };
                 format!("Press Space to see what differs from {d} on Phabricator, on a screen of its own: {shown}. Esc there comes back to this line.")
             }
@@ -1055,11 +1203,46 @@ mod tests {
     fn what_differs_is_said_in_plain_words() {
         let code = (String::new(), None);
         let message = Some((String::new(), String::new()));
-        let differs = |c: bool, m: bool| Differs { code: c.then_some((&code.0, &code.1)), message: if m { message.clone() } else { None } };
+        let set = Parent::Set { id: "D11".into(), phid: "PHID-DREV-11".into(), below: 1 };
+        let differs = |c: bool, m: bool, p: bool| Differs {
+            code: c.then_some((&code.0, &code.1)),
+            message: if m { message.clone() } else { None },
+            parent: if p { set.clone() } else { Parent::Already { id: "D11".into(), below: 1 } },
+            parents_now: vec![],
+        };
+        let all = [(false, false, false), (true, false, false), (false, true, false), (false, false, true), (true, true, false), (true, false, true), (false, true, true), (true, true, true)];
         assert_eq!(
-            [differs(false, false).said(), differs(true, false).said(), differs(false, true).said(), differs(true, true).said()],
-            ["in sync", "the diff differs", "the title or summary differs", "the diff and the title or summary differ"]
+            all.map(|(c, m, p)| differs(c, m, p).said()),
+            [
+                "in sync",
+                "the diff differs",
+                "the title or summary differs",
+                "the parent differs",
+                "the diff and the title or summary differ",
+                "the diff and the parent differ",
+                "the title or summary and the parent differ",
+                "the diff, the title or summary, and the parent differ",
+            ]
         );
-        assert!(differs(false, false).none() && !differs(true, false).none());
+        assert!(differs(false, false, false).none() && !differs(true, false, false).none() && !differs(false, false, true).none());
+        // A submit setting none: in sync, whatever parents it has.
+        let nothing = Differs { parent: Parent::Nothing("Patch 1 is at the bottom of the stack, so D12 gets no parent.".into()), ..differs(false, false, false) };
+        assert!(nothing.none() && !nothing.parent_differs());
+        // In sync, the parent named, or why a submit sets none.
+        assert_eq!(
+            differs(false, false, false).same_said("D12", "this version"),
+            "the latest diff of D12 does what this version does, the title and summary of D12 are those of this version, and its parent is D11, the revision of patch 1."
+        );
+        assert_eq!(
+            nothing.same_said("D12", "this version"),
+            "the latest diff of D12 does what this version does, and the title and summary of D12 are those of this version. Patch 1 is at the bottom of the stack, so D12 gets no parent."
+        );
+        // A submit setting one: the parents the revision has, by name, then
+        // the one a submit sets.
+        let now = |names: &[&str]| Differs { parents_now: names.iter().map(|n| n.to_string()).collect(), ..differs(false, false, true) };
+        assert_eq!(now(&[]).parent_said().as_deref(), Some("Parent: none on Phabricator; a submit sets D11, the revision of patch 1."));
+        assert_eq!(now(&["D10"]).parent_said().as_deref(), Some("Parent: D10 on Phabricator; a submit sets D11, the revision of patch 1."));
+        assert_eq!(now(&["D10", "D9"]).parent_said().as_deref(), Some("Parents: D10 and D9 on Phabricator; a submit sets D11, the revision of patch 1."));
+        assert_eq!(differs(true, true, false).parent_said(), None);
     }
 }

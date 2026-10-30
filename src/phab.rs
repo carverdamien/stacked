@@ -711,6 +711,12 @@ impl Status {
         }
     }
 
+    /// Whether a revision of this status is open, as `open` reads one:
+    /// neither landed nor abandoned.
+    pub fn open(self) -> bool {
+        !matches!(self, Status::Published | Status::Abandoned)
+    }
+
     /// The status by its full name, as the Phabricator line over a patch's
     /// message says it: Closed, as Phabricator names it, Landed.
     pub fn name(self) -> &'static str {
@@ -767,30 +773,158 @@ pub(crate) fn statuses_over(call: &mut Call, ids: &[String]) -> Result<HashMap<S
 
 /// What the Phabricator line over a patch's message reads of its revision
 /// beyond what the statuses' search says: the id of its latest diff, and
-/// that diff, raw; and its comments, each as it was last edited, what it
-/// was before kept with it, as a pull reads them (`comments_of`), but for
-/// their authors and the lines they are on, which are not read.
+/// that diff, raw; its comments, each as it was last edited, what it was
+/// before kept with it, as a pull reads them (`comments_of`), but for their
+/// authors and the lines they are on, which are not read; and its parents,
+/// each its PHID and its `D123`, by PHID (`parents_named`).
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Latest {
     pub diff: u64,
     pub raw: String,
     pub comments: Vec<Remote>,
+    pub parents: Vec<(String, String)>,
 }
 
-/// As `latest`, Conduit called with `call`: the latest diff of revision
-/// `rev` (`D123`), of PHID `phid`, by differential.diff.search, the newest
-/// alone; that diff, raw, unless `had` is it, as read before; then every
-/// transaction of the revision, for its comments.
-pub(crate) fn latest_over(call: &mut Call, rev: &str, phid: &str, had: Option<(u64, String)>) -> Result<Latest, String> {
-    let found = call("differential.diff.search", json!({"constraints": {"revisionPHIDs": [phid]}, "order": "newest", "limit": 1}))?;
-    let diff = found.pointer("/data/0/id").and_then(Value::as_u64).ok_or(format!("{rev} has no diff"))?;
-    let raw = match had {
-        Some((id, raw)) if id == diff => raw,
-        _ => call("differential.getrawdiff", json!({"diffID": diff}))?.as_str().unwrap_or_default().to_string(),
-    };
-    let txns = transactions(call, rev)?;
-    let comments = comments_of(&txns, &HashMap::new(), |_, _, _| None);
-    Ok(Latest { diff, raw, comments })
+/// A revision whose latest diff, comments and parents the Phabricator line
+/// reads (`latests`): its `D123`, its link and its PHID, as the statuses'
+/// search found it; its latest diff as read before, its id and the diff
+/// raw, which is not read again while it is the latest; and whether the
+/// parents it has are to be named, as a submit would set it one (not at
+/// the stack's bottom, say), so that the view of what differs names them.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Wanted {
+    pub d: String,
+    pub link: String,
+    pub phid: String,
+    pub had: Option<(u64, String)>,
+    pub name_parents: bool,
+}
+
+/// Where the edges of kind `revision.parent` from each of revisions `phids`
+/// go, by revision: their PHIDs, sorted, none for one with no parent. One
+/// edge.search for all of them, page after page.
+pub(crate) fn parents_over(call: &mut Call, phids: &[String]) -> Result<HashMap<String, Vec<String>>, String> {
+    let mut out: HashMap<String, Vec<String>> = phids.iter().map(|p| (p.clone(), Vec::new())).collect();
+    let mut after: Option<String> = None;
+    loop {
+        let mut params = json!({"sourcePHIDs": phids, "types": ["revision.parent"]});
+        if let Some(a) = &after {
+            params["after"] = a.clone().into();
+        }
+        let r = call("edge.search", params)?;
+        for e in r.get("data").and_then(Value::as_array).into_iter().flatten() {
+            let (Some(from), Some(to)) = (e.get("sourcePHID").and_then(Value::as_str), e.get("destinationPHID").and_then(Value::as_str)) else { continue };
+            if let Some(these) = out.get_mut(from) {
+                these.push(to.to_string());
+            }
+        }
+        after = r.pointer("/cursor/after").and_then(Value::as_str).map(String::from);
+        if after.is_none() {
+            break;
+        }
+    }
+    for these in out.values_mut() {
+        these.sort();
+        these.dedup();
+    }
+    Ok(out)
+}
+
+/// The id of the latest diff of each of revisions `phids`, by revision (its
+/// `fields.revisionPHID`): differential.diff.search for all of them, the
+/// newest first, page after page until each has its newest, or no page is
+/// left. None for a revision with no diff.
+pub(crate) fn newest_diffs(call: &mut Call, phids: &[String]) -> Result<HashMap<String, u64>, String> {
+    let mut out: HashMap<String, u64> = HashMap::new();
+    let mut after: Option<String> = None;
+    loop {
+        let mut params = json!({"constraints": {"revisionPHIDs": phids}, "order": "newest"});
+        if let Some(a) = &after {
+            params["after"] = a.clone().into();
+        }
+        let r = call("differential.diff.search", params)?;
+        for d in r.get("data").and_then(Value::as_array).into_iter().flatten() {
+            let (Some(id), Some(rev)) = (d.get("id").and_then(Value::as_u64), d.pointer("/fields/revisionPHID").and_then(Value::as_str)) else { continue };
+            let newest = out.entry(rev.to_string()).or_insert(id);
+            *newest = (*newest).max(id);
+        }
+        after = r.pointer("/cursor/after").and_then(Value::as_str).map(String::from);
+        // The newest first: once each revision has one, the rest are older.
+        if after.is_none() || phids.iter().all(|p| out.contains_key(p)) {
+            break;
+        }
+    }
+    Ok(out)
+}
+
+/// The parents of revisions `wanted`, `parents` by revision, named, `D123`,
+/// by PHID: those that are revisions of `wanted`, as their search found
+/// them; the others, of those whose parents are to be named, in one search,
+/// if there are any. One it does not find, or a search that fails, leaves
+/// a parent unnamed.
+fn parents_named(call: &mut Call, wanted: &[&Wanted], parents: &HashMap<String, Vec<String>>) -> HashMap<String, String> {
+    let mut names: HashMap<String, String> = wanted.iter().map(|w| (w.phid.clone(), w.d.clone())).collect();
+    let mut others: Vec<String> = wanted
+        .iter()
+        .filter(|w| w.name_parents)
+        .flat_map(|w| parents.get(&w.phid).into_iter().flatten())
+        .filter(|p| !names.contains_key(*p))
+        .cloned()
+        .collect();
+    others.sort();
+    others.dedup();
+    if others.is_empty() {
+        return names;
+    }
+    let found = call("differential.revision.search", json!({"constraints": {"phids": others}})).unwrap_or(Value::Null);
+    for r in found.get("data").and_then(Value::as_array).into_iter().flatten() {
+        if let (Some(phid), Some(n)) = (r.get("phid").and_then(Value::as_str), r.get("id").and_then(Value::as_u64)) {
+            names.insert(phid.to_string(), format!("D{n}"));
+        }
+    }
+    names
+}
+
+/// As `latests`, Conduit called with `call`, for revisions `wanted` of one
+/// Phabricator, in turn: the parents of all of them (`parents_over`), and
+/// their latest diffs (`newest_diffs`), first; those parents named
+/// (`parents_named`); then, for each, its latest diff, raw, unless it is
+/// the one read before, and every transaction of the revision, for its
+/// comments, `got` told it as soon as it is read. A revision with no diff
+/// is passed over. Up to the first call that fails, and what is wrong
+/// with it.
+pub(crate) fn latests_over(call: &mut Call, wanted: &[&Wanted], got: &mut dyn FnMut(&str, Latest)) -> Result<(), String> {
+    let phids: Vec<String> = wanted.iter().map(|w| w.phid.clone()).collect();
+    let parents = parents_over(call, &phids)?;
+    let diffs = newest_diffs(call, &phids)?;
+    let names = parents_named(call, wanted, &parents);
+    for w in wanted {
+        let Some(&diff) = diffs.get(&w.phid) else { continue };
+        let raw = match &w.had {
+            Some((id, raw)) if *id == diff => raw.clone(),
+            _ => call("differential.getrawdiff", json!({"diffID": diff}))?.as_str().unwrap_or_default().to_string(),
+        };
+        let txns = transactions(call, &w.d)?;
+        let comments = comments_of(&txns, &HashMap::new(), |_, _, _| None);
+        let named = |p: &String| (p.clone(), names.get(p).cloned().unwrap_or_else(|| p.clone()));
+        let parents = parents.get(&w.phid).into_iter().flatten().map(named).collect();
+        got(&w.link, Latest { diff, raw, comments, parents });
+    }
+    Ok(())
+}
+
+/// Items `all`, each of the Phabricator its link (`link`) names, by
+/// Phabricator, in the order each first comes.
+fn by_host<T>(all: &[T], link: impl Fn(&T) -> &str) -> Vec<Vec<&T>> {
+    let mut out: Vec<(String, Vec<&T>)> = Vec::new();
+    for t in all {
+        let host = link(t).split('/').take(3).collect::<Vec<_>>().join("/");
+        match out.iter_mut().find(|(h, _)| *h == host) {
+            Some((_, these)) => these.push(t),
+            None => out.push((host, vec![t])),
+        }
+    }
+    out.into_iter().map(|(_, these)| these).collect()
 }
 
 /// A stand-in for Phabricator, answering Conduit's calls as a submit's does
@@ -857,16 +991,8 @@ pub fn statuses(db: &Path, revisions: &[(String, String)]) -> Result<HashMap<Str
         return Err("Phabricator is not reached from a process that keeps nothing, as the tests' own".into());
     }
     // By Phabricator, as `pull` reads the comments.
-    let mut by_host: Vec<(String, Vec<&(String, String)>)> = Vec::new();
-    for r in revisions {
-        let host = r.1.split('/').take(3).collect::<Vec<_>>().join("/");
-        match by_host.iter_mut().find(|(h, _)| *h == host) {
-            Some((_, these)) => these.push(r),
-            None => by_host.push((host, vec![r])),
-        }
-    }
     let mut out = HashMap::new();
-    for (_, these) in by_host {
+    for these in by_host(revisions, |(_, link)| link.as_str()) {
         let ids: Vec<String> = these.iter().map(|(d, _)| d.clone()).collect();
         let found = calling(db, &these[0].1, |call| statuses_over(call, &ids))?;
         for (d, link) in these {
@@ -878,14 +1004,20 @@ pub fn statuses(db: &Path, revisions: &[(String, String)]) -> Result<HashMap<Str
     Ok(out)
 }
 
-/// What the Phabricator line over a patch's message reads of revision
-/// `rev` (`D123`), of PHID `phid`, at `link`, beyond its search: its latest
-/// diff, raw, but when `had` is that diff, as read before; and its comments
-/// (`latest_over`). Through the stand-in set for the database at `db`, as
-/// the statuses are read, else over Conduit; never from a process that
-/// keeps nothing. What is wrong, said, when a call fails.
-pub fn latest(db: &Path, rev: &str, phid: &str, link: &str, had: Option<(u64, String)>) -> Result<Latest, String> {
-    calling(db, link, |call| latest_over(call, rev, phid, had))
+/// What the Phabricator lines over the patches' messages read of revisions
+/// `wanted`, beyond their search: the latest diff of each, raw, but when it
+/// is the one read before; its comments; and its parents, named
+/// (`latests_over`): `got` told each revision, by its link, as soon as it
+/// is read, in the order given. The calls of each Phabricator, as the
+/// revisions' links name it, one after another. Through the stand-in set
+/// for the database at `db`, as the statuses are read, else over Conduit;
+/// never from a process that keeps nothing. What is wrong, said, when a
+/// call fails: no call is made after it.
+pub fn latests(db: &Path, wanted: &[Wanted], got: &mut dyn FnMut(&str, Latest)) -> Result<(), String> {
+    for these in by_host(wanted, |w| w.link.as_str()) {
+        calling(db, &these[0].link, |call| latests_over(call, &these, got))?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1149,39 +1281,178 @@ mod tests {
         assert!(!statuses_read(&db));
     }
 
+    /// A revision the Phabricator line reads (`Wanted`): D`n`, of PHID
+    /// `PHID-DREV-n`, its parents named or not, its latest diff as read
+    /// before.
+    fn wanted(n: u64, name_parents: bool, had: Option<(u64, &str)>) -> Wanted {
+        Wanted {
+            d: format!("D{n}"),
+            link: format!("https://p.example/D{n}"),
+            phid: format!("PHID-DREV-{n}"),
+            had: had.map(|(id, raw)| (id, raw.to_string())),
+            name_parents,
+        }
+    }
+
     #[test]
-    fn a_revision_s_latest_diff_is_read_raw_once_and_its_comments_each_time() {
+    fn the_revisions_are_read_in_few_calls_their_parents_and_latest_diffs_all_at_once_each_raw_diff_once() {
         let comment = |phid: &str, text: &str| json!({"type": "comment", "authorPHID": "PHID-USER-ann", "fields": {}, "comments": [{"phid": phid, "version": 1, "dateCreated": 5, "content": {"raw": text}}]});
+        let edge = |from: u64, to: u64| json!({"sourcePHID": format!("PHID-DREV-{from}"), "edgeType": "revision.parent", "destinationPHID": format!("PHID-DREV-{to}")});
+        let diff = |id: u64, of: u64| json!({"id": id, "phid": format!("PHID-DIFF-{id}"), "fields": {"revisionPHID": format!("PHID-DREV-{of}")}});
         let asked = std::cell::RefCell::new(Vec::new());
+        // D12 on D11; D13 on D12 and on D9, which none of them is. D13's
+        // diffs 7 and 9, its latest; D12's 8; D11's 5; another of D11's, 3,
+        // older than all of them, on a page not read.
         let mut call = |method: &str, params: Value| -> Result<Value, String> {
-            asked.borrow_mut().push(method.to_string());
+            asked.borrow_mut().push((method.to_string(), params.clone()));
             Ok(match method {
-                "differential.diff.search" => {
-                    assert_eq!(params, json!({"constraints": {"revisionPHIDs": ["PHID-DREV-11"]}, "order": "newest", "limit": 1}));
-                    json!({"data": [{"id": 7}]})
-                }
+                // Two pages of edges, then of diffs, the newest first.
+                "edge.search" => match params.get("after") {
+                    None => json!({"data": [edge(12, 11)], "cursor": {"after": "e1"}}),
+                    Some(_) => json!({"data": [edge(13, 12), edge(13, 9)], "cursor": {"after": null}}),
+                },
+                "differential.diff.search" => match params.get("after").and_then(Value::as_str) {
+                    None => json!({"data": [diff(9, 13), diff(8, 12)], "cursor": {"after": "8"}}),
+                    Some("8") => json!({"data": [diff(7, 13), diff(5, 11)], "cursor": {"after": "5"}}),
+                    Some(_) => json!({"data": [diff(3, 11)], "cursor": {"after": null}}),
+                },
+                "differential.revision.search" => json!({"data": [{"id": 9, "phid": "PHID-DREV-9", "fields": {}}]}),
                 "differential.getrawdiff" => json!(format!("raw {}", params["diffID"])),
-                // Two pages of transactions, a comment on each.
-                "transaction.search" => match params.get("after") {
-                    None => json!({"data": [comment("c1", "Why?")], "cursor": {"after": "1"}}),
-                    Some(_) => json!({"data": [comment("c2", "Because."), {"type": "accept", "fields": {}}], "cursor": {"after": null}}),
+                // D13's comments on two pages; none on the others.
+                "transaction.search" => match (params["objectIdentifier"].as_str(), params.get("after")) {
+                    (Some("D13"), None) => json!({"data": [comment("c1", "Why?")], "cursor": {"after": "1"}}),
+                    (Some("D13"), Some(_)) => json!({"data": [comment("c2", "Because."), {"type": "accept", "fields": {}}], "cursor": {"after": null}}),
+                    _ => json!({"data": [], "cursor": {"after": null}}),
                 },
                 m => return Err(format!("not as Phabricator is asked: {m}")),
             })
         };
-        let read = latest_over(&mut call, "D11", "PHID-DREV-11", None).unwrap();
-        assert_eq!((read.diff, read.raw.as_str()), (7, "raw 7"));
-        assert_eq!(read.comments.iter().map(|c| (c.phid.as_str(), c.text.as_str())).collect::<Vec<_>>(), [("c1", "Why?"), ("c2", "Because.")]);
-        // Its authors and lines are not read: no user.search, no diff's lines.
-        assert_eq!(*asked.borrow(), ["differential.diff.search", "differential.getrawdiff", "transaction.search", "transaction.search"]);
-        // That diff read before: not read again; another, read.
-        asked.borrow_mut().clear();
-        let again = latest_over(&mut call, "D11", "PHID-DREV-11", Some((7, "as before".into()))).unwrap();
-        assert_eq!((again.raw.as_str(), asked.borrow().contains(&"differential.getrawdiff".to_string())), ("as before", false));
-        assert_eq!(latest_over(&mut call, "D11", "PHID-DREV-11", Some((6, "older".into()))).unwrap().raw, "raw 7");
-        // No diff: said.
-        let mut none = |_: &str, _: Value| -> Result<Value, String> { Ok(json!({"data": []})) };
-        assert_eq!(latest_over(&mut none, "D11", "PHID-DREV-11", None), Err("D11 has no diff".to_string()));
+        // D13 first, as the patch shown names it; D12's latest diff read
+        // before; D11 at the bottom, its parents not named.
+        let all = [wanted(13, true, None), wanted(11, false, None), wanted(12, true, Some((8, "as before")))];
+        let mut got = Vec::new();
+        latests_over(&mut call, &all.iter().collect::<Vec<_>>(), &mut |link, l| got.push((link.to_string(), l))).unwrap();
+        let phids = json!(["PHID-DREV-13", "PHID-DREV-11", "PHID-DREV-12"]);
+        let asked = asked.into_inner();
+        let methods: Vec<&str> = asked.iter().map(|(m, _)| m.as_str()).collect();
+        // The parents and the latest diffs of all three at once, page after
+        // page, the diffs until each has its newest; the parent that is none
+        // of them named in one search; then each in turn, D12's raw diff not
+        // read again, its comments read all the same. Their authors and
+        // lines are not read: no user.search, no diff's lines.
+        assert_eq!(
+            methods,
+            [
+                "edge.search",
+                "edge.search",
+                "differential.diff.search",
+                "differential.diff.search",
+                "differential.revision.search",
+                "differential.getrawdiff",
+                "transaction.search",
+                "transaction.search",
+                "differential.getrawdiff",
+                "transaction.search",
+                "transaction.search",
+            ]
+        );
+        assert_eq!(asked[0].1, json!({"sourcePHIDs": phids, "types": ["revision.parent"]}));
+        assert_eq!(asked[1].1, json!({"sourcePHIDs": phids, "types": ["revision.parent"], "after": "e1"}));
+        assert_eq!(asked[2].1, json!({"constraints": {"revisionPHIDs": phids}, "order": "newest"}));
+        assert_eq!(asked[3].1, json!({"constraints": {"revisionPHIDs": phids}, "order": "newest", "after": "8"}));
+        assert_eq!(asked[4].1, json!({"constraints": {"phids": ["PHID-DREV-9"]}}));
+        assert_eq!((asked[5].1.clone(), asked[8].1.clone()), (json!({"diffID": 9}), json!({"diffID": 5})));
+        // Each as soon as it is read, in the order given: its latest diff,
+        // its comments, and its parents, each named.
+        assert_eq!(
+            got.iter().map(|(link, l)| (link.as_str(), l.diff, l.raw.as_str())).collect::<Vec<_>>(),
+            [("https://p.example/D13", 9, "raw 9"), ("https://p.example/D11", 5, "raw 5"), ("https://p.example/D12", 8, "as before")]
+        );
+        assert_eq!(got[0].1.comments.iter().map(|c| (c.phid.as_str(), c.text.as_str())).collect::<Vec<_>>(), [("c1", "Why?"), ("c2", "Because.")]);
+        let named = |ps: &[(&str, &str)]| ps.iter().map(|(p, d)| (p.to_string(), d.to_string())).collect::<Vec<_>>();
+        assert_eq!(got[0].1.parents, named(&[("PHID-DREV-12", "D12"), ("PHID-DREV-9", "D9")]));
+        assert_eq!((got[1].1.parents.clone(), got[2].1.parents.clone()), (vec![], named(&[("PHID-DREV-11", "D11")])));
+    }
+
+    #[test]
+    fn a_revision_s_parents_are_named_only_where_a_submit_sets_one_and_left_unnamed_when_not_found() {
+        let mut searched = Vec::new();
+        let mut call = |method: &str, params: Value| -> Result<Value, String> {
+            assert_eq!(method, "differential.revision.search");
+            searched.push(params["constraints"]["phids"].clone());
+            Ok(json!({"data": []}))
+        };
+        let parents: HashMap<String, Vec<String>> = [("PHID-DREV-11", vec!["PHID-DREV-9"]), ("PHID-DREV-12", vec!["PHID-DREV-11", "PHID-DREV-7"])]
+            .map(|(p, to)| (p.to_string(), to.into_iter().map(String::from).collect::<Vec<String>>()))
+            .into();
+        // D11's parents are not to be named: none searched; D12's other
+        // parent, searched, is not found: unnamed.
+        let all = [wanted(11, false, None), wanted(12, true, None)];
+        let names = parents_named(&mut call, &all.iter().collect::<Vec<_>>(), &parents);
+        assert_eq!(searched, [json!(["PHID-DREV-7"])]);
+        assert_eq!((names.get("PHID-DREV-11").map(String::as_str), names.get("PHID-DREV-7"), names.get("PHID-DREV-9")), (Some("D11"), None, None));
+        // Every parent one of theirs: no search at all.
+        let mut none = |_: &str, _: Value| -> Result<Value, String> { panic!("nothing to search") };
+        let all = [wanted(11, true, None), wanted(12, true, None), wanted(9, false, None), wanted(7, false, None)];
+        assert_eq!(parents_named(&mut none, &all.iter().collect::<Vec<_>>(), &parents).len(), 4);
+    }
+
+    #[test]
+    fn a_read_of_the_revisions_passes_over_one_with_no_diff_and_stops_at_a_call_that_fails() {
+        let mut call = |method: &str, params: Value| -> Result<Value, String> {
+            Ok(match method {
+                "edge.search" => json!({"data": []}),
+                // D11 and D13 have no diff.
+                "differential.diff.search" => json!({"data": [{"id": 4, "fields": {"revisionPHID": "PHID-DREV-12"}}]}),
+                "differential.getrawdiff" => json!("raw 4"),
+                "transaction.search" => json!({"data": []}),
+                m => return Err(format!("not as Phabricator is asked: {m}: {params}")),
+            })
+        };
+        let all = [wanted(11, true, None), wanted(12, true, None), wanted(13, true, None)];
+        let mut got = Vec::new();
+        let read = latests_over(&mut call, &all.iter().collect::<Vec<_>>(), &mut |link, l| got.push((link.to_string(), l.diff)));
+        assert_eq!((read, got), (Ok(()), vec![("https://p.example/D12".to_string(), 4)]));
+        // A call refused: what is wrong said, nothing more read.
+        let mut refused = |m: &str, _: Value| -> Result<Value, String> { Err(format!("{m}: refused")) };
+        let read = latests_over(&mut refused, &all.iter().collect::<Vec<_>>(), &mut |_, _| panic!("nothing read"));
+        assert_eq!(read, Err("edge.search: refused".to_string()));
+    }
+
+    #[test]
+    fn the_revisions_of_an_editor_are_read_by_its_database_s_stand_in_each_phabricator_on_its_own() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db = tmp.path().join("db.jsonl");
+        let mut b = wanted(21, false, None);
+        b.link = "https://b.example/D21".into();
+        let all = [wanted(11, false, None), b, wanted(12, false, None)];
+        // The tests' own process keeps nothing: with no stand-in, none read.
+        let nowhere = "Phabricator is not reached from a process that keeps nothing, as the tests' own";
+        assert_eq!(latests(&db, &all, &mut |_, _| panic!("nothing read")), Err(nowhere.to_string()));
+        let edges = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = edges.clone();
+        statuses_stand_in(
+            &db,
+            Some(Box::new(move |m, params: Value| {
+                Ok(match m {
+                    "edge.search" => {
+                        seen.lock().unwrap().push(params["sourcePHIDs"].clone());
+                        json!({"data": []})
+                    }
+                    "differential.diff.search" => {
+                        let phids = params["constraints"]["revisionPHIDs"].as_array().cloned().unwrap_or_default();
+                        json!({"data": phids.iter().map(|p| json!({"id": 1, "fields": {"revisionPHID": p}})).collect::<Vec<_>>()})
+                    }
+                    "differential.getrawdiff" => json!("raw"),
+                    _ => json!({"data": []}),
+                })
+            })),
+        );
+        let mut got = Vec::new();
+        latests(&db, &all, &mut |link, _| got.push(link.to_string())).unwrap();
+        assert_eq!(*edges.lock().unwrap(), [json!(["PHID-DREV-11", "PHID-DREV-12"]), json!(["PHID-DREV-21"])], "one read for each Phabricator");
+        assert_eq!(got, ["https://p.example/D11", "https://p.example/D12", "https://b.example/D21"]);
+        statuses_stand_in(&db, None);
     }
 
     #[test]

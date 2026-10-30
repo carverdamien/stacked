@@ -2325,10 +2325,14 @@ enum Done {
     /// link, each with what else its search says: or what was wrong.
     #[cfg(feature = "moz-phab")]
     Statuses(std::result::Result<HashMap<String, crate::phab::Searched>, String>),
-    /// The latest diff and the comments of revision `0`, by its link, read
-    /// for the Phabricator line: or what was wrong.
+    /// The latest diff, the comments and the parents of revision `0`, by
+    /// its link, read for the Phabricator lines, as soon as each is.
     #[cfg(feature = "moz-phab")]
-    Latest(String, std::result::Result<crate::phab::Latest, String>),
+    Latest(String, crate::phab::Latest),
+    /// The stack's revisions read for the Phabricator lines, or their read
+    /// stopped at a call that failed.
+    #[cfg(feature = "moz-phab")]
+    LatestAll,
     /// What differs in the code between a revision's latest diff and a
     /// version of its patch, worked out from `0` (`revisions::compare_key`).
     #[cfg(feature = "moz-phab")]
@@ -3096,11 +3100,13 @@ impl App {
             #[cfg(feature = "moz-phab")]
             Done::Latest(link, read) => self.latest_read(link, read),
             #[cfg(feature = "moz-phab")]
+            Done::LatestAll => self.latests_done(),
+            #[cfg(feature = "moz-phab")]
             Done::Compared(key, code) => self.code_compared(key, code),
             Done::Said(what, said) => {
                 self.bg.doing.retain(|d| *d != what);
-                // Pulled: the comments the Phabricator line counts, read
-                // again with the revision's latest diff.
+                // Pulled: the comments the Phabricator lines count, read
+                // again with every revision's latest diff and parents.
                 #[cfg(feature = "moz-phab")]
                 if what == "pulling" {
                     self.bg.pull = None;
@@ -4374,8 +4380,7 @@ impl App {
     /// Reads what someone appended to the database, if anything, and what
     /// the work away from the screen came to; and starts what is due away
     /// from it: where HEAD is looked at, the statuses of the stack's
-    /// revisions read, and what the Phabricator line of the patch shown
-    /// needs.
+    /// revisions read, and what the Phabricator lines of its patches need.
     pub fn refresh(&mut self) {
         self.poll_search();
         let polled = self.poll();
