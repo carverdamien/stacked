@@ -1284,8 +1284,8 @@ pub enum Action {
     /// A web link a reference points at: shown whole, to open in the
     /// browser.
     ShowLink(String),
-    /// A link of the line of a commit message the cursor is on: opened in
-    /// the browser at once.
+    /// A link of the line the cursor is on, of a commit message or of a
+    /// comment's text: opened in the browser at once.
     OpenLink(String),
     /// A line of a comment naming its references: the one it names, or a
     /// menu of them.
@@ -7025,6 +7025,10 @@ impl App {
                         title = format!("{title}, closed");
                     }
                     self.comment_items(&c, &mut items, w);
+                    // On a line of its text: each of the line's links, to
+                    // open in your browser, after the rest.
+                    items.push(Item::line());
+                    items.extend(self.comment_link_items(&c));
                 } else {
                     if self.commentable().is_some() {
                         // A file's name: the file as a whole.
@@ -9343,11 +9347,14 @@ impl App {
     }
 
     /// The menu's item for link `l`: `Open bug 1234567 in your browser`,
-    /// `Open D123 in your browser`, or the web link, shortened to fit the
-    /// screen.
+    /// `Open D123 in your browser`, the web link, or a markdown link's text
+    /// in quotes (`Open "the docs" in your browser`), either shortened to
+    /// fit the screen.
     fn link_item(&self, l: &crate::links::Link) -> Item {
+        let room = self.body_w.saturating_sub(28).clamp(16, 60);
         let shown = match l.what {
-            crate::links::What::Web => short(&l.url, self.body_w.saturating_sub(28).clamp(16, 60)),
+            crate::links::What::Web => short(&l.url, room),
+            crate::links::What::Named => format!("\"{}\"", short(&l.said, room)),
             _ => l.said.clone(),
         };
         Item::new(format!("Open {shown} in your browser"), Action::OpenLink(l.url.clone()))
@@ -9357,6 +9364,32 @@ impl App {
     /// cursor is on: one for each, which opens it in your browser.
     fn link_items(&self) -> Vec<Item> {
         self.links_here().iter().map(|l| self.link_item(l)).collect()
+    }
+
+    /// The line of comment `c`'s text the cursor is on, as it is written,
+    /// when it is prose, not a line of a code block: in the middle, the line
+    /// a row of the comment draws, every piece of a line folded the same, or
+    /// the first line a comment collapsed says; in the comments pane
+    /// expanded, the first line of what was said last, which the pane shows
+    /// under the comment. None elsewhere: in the comments pane compact, no
+    /// line of the comment is under the cursor.
+    fn comment_line_here(&self, c: &Note) -> Option<String> {
+        match self.focus {
+            Focus::Diff => self.rows.get(self.cursor).filter(|r| r.note.as_deref() == Some(c.id.as_str()))?.prose.clone(),
+            Focus::Notes if self.comments == Pane::Expanded => {
+                let last = thread_turns(&c.text).pop()?;
+                crate::markdown::first_prose(&last.body).map(String::from)
+            }
+            _ => None,
+        }
+    }
+
+    /// The menu's items for the links of the line of comment `c`'s text the
+    /// cursor is on (`comment_line_here`): one for each, as a line of a
+    /// commit message has, which opens it in your browser.
+    fn comment_link_items(&self, c: &Note) -> Vec<Item> {
+        let Some(line) = self.comment_line_here(c) else { return Vec::new() };
+        crate::links::of_line(&line, &self.cfg.reviews).iter().map(|l| self.link_item(l)).collect()
     }
 
     /// The key that opens links (`o`): on a line of a commit message, its
@@ -9386,7 +9419,7 @@ impl App {
         let o = self.cfg.keys.label(crate::keys::Key::OpenLink);
         match self.links_here().as_slice() {
             [] => String::new(),
-            [l] if l.what == crate::links::What::Web => format!("{o}: open the link · "),
+            [l] if matches!(l.what, crate::links::What::Web | crate::links::What::Named) => format!("{o}: open the link · "),
             [l] => format!("{o}: open {} · ", l.said),
             _ => format!("{o}: open a link · "),
         }
@@ -9397,7 +9430,7 @@ impl App {
     fn open_help(&self) -> Option<String> {
         let o = self.cfg.keys.label(crate::keys::Key::OpenLink);
         let links = self.links_here();
-        match links.iter().map(|l| l.said.as_str()).collect::<Vec<_>>().as_slice() {
+        match links.iter().map(crate::links::Link::name).collect::<Vec<_>>().as_slice() {
             [] => None,
             [one] => Some(format!("Press {o} to open {one} in your browser.")),
             [rest @ .., last] => Some(format!("Press {o} to pick a link of this line to open in your browser: {} or {last}.", rest.join(", "))),

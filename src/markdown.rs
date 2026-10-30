@@ -41,9 +41,18 @@ pub type Line = Vec<(String, Mark)>;
 
 /// `text`, a turn of a comment, as lines `width` wide.
 pub fn render(text: &str, width: usize) -> Vec<Line> {
+    drawn(text, width).into_iter().map(|(l, _)| l).collect()
+}
+
+/// `text`, a turn of a comment, as `render` draws it, each line with the
+/// line of `text` it is drawn from, from 0, when that is prose: every piece
+/// of a line folded from the same, each line of a table from its row; none
+/// for a line of a code block. What is prose is so at any width.
+pub fn drawn(text: &str, width: usize) -> Vec<(Line, Option<usize>)> {
     let width = width.max(10);
     let lines: Vec<&str> = text.lines().collect();
-    let mut out: Vec<Line> = Vec::new();
+    let mut out: Vec<(Line, Option<usize>)> = Vec::new();
+    let of = |at: usize, drawn: Vec<Line>| drawn.into_iter().map(move |l| (l, Some(at)));
     let mut i = 0;
     while i < lines.len() {
         let line = lines[i];
@@ -52,7 +61,7 @@ pub fn render(text: &str, width: usize) -> Vec<Line> {
         // A code block: its lines to its fence, or to the end, as they are.
         if let Some((c, n)) = opens(t) {
             let end = (i..lines.len()).find(|&k| closes(lines[k].trim_start(), c, n)).unwrap_or(lines.len());
-            out.extend(block(&lines[i..end], width));
+            out.extend(block(&lines[i..end], width).into_iter().map(|l| (l, None)));
             i = end + 1;
             continue;
         }
@@ -60,32 +69,37 @@ pub fn render(text: &str, width: usize) -> Vec<Line> {
         // have pipes.
         if let Some((rows, aligns, used)) = table(&lines[i - 1..]) {
             match draw_table(&rows, &aligns, width) {
-                Some(drawn) => out.extend(drawn),
+                Some(drawn) => out.extend(drawn.into_iter().map(|(l, k)| (l, Some(i - 1 + k)))),
                 // Too narrow even folded: as it is written.
-                None => out.extend(lines[i - 1..i - 1 + used].iter().flat_map(|l| fold(&inline(l), width, &[], &[]))),
+                None => {
+                    for (k, l) in lines[i - 1..i - 1 + used].iter().enumerate() {
+                        out.extend(of(i - 1 + k, fold(&inline(l), width, &[], &[])));
+                    }
+                }
             }
             i += used - 1;
             continue;
         }
+        let at = i - 1;
         if t.is_empty() {
-            out.push(Vec::new());
+            out.push((Vec::new(), Some(at)));
         } else if is_rule(t) {
-            out.push(vec![("─".repeat(width.min(40)), Mark::Rule)]);
+            out.push((vec![("─".repeat(width.min(40)), Mark::Rule)], Some(at)));
         } else if let Some(rest) = heading(t) {
             let pieces = marked(inline(rest), Mark::Heading);
-            out.extend(fold(&pieces, width, &[], &[]));
+            out.extend(of(at, fold(&pieces, width, &[], &[])));
         } else if let Some(rest) = t.strip_prefix('>') {
             let rest = rest.strip_prefix(' ').unwrap_or(rest);
             let bar = [("▏ ".to_string(), Mark::Quote)];
-            out.extend(fold(&inline(rest), width, &bar, &bar));
+            out.extend(of(at, fold(&inline(rest), width, &bar, &bar)));
         } else if let Some((marker, rest)) = item(t) {
             // Nested by its indent; its lines after the first under its text.
             let indent = " ".repeat(line.len() - t.len());
             let first = [(indent.clone(), Mark::Plain), (marker.clone(), Mark::Bullet), (" ".to_string(), Mark::Plain)];
             let next = [(" ".repeat(indent.len() + marker.chars().count() + 1), Mark::Plain)];
-            out.extend(fold(&inline(rest), width, &first, &next));
+            out.extend(of(at, fold(&inline(rest), width, &first, &next)));
         } else {
-            out.extend(fold(&inline(line), width, &[], &[]));
+            out.extend(of(at, fold(&inline(line), width, &[], &[])));
         }
     }
     out
@@ -94,7 +108,20 @@ pub fn render(text: &str, width: usize) -> Vec<Line> {
 /// What `text` says first, in a line: its first line that is not blank nor
 /// a code block's fence, without what marks it up.
 pub fn first_line(text: &str) -> String {
-    text.lines().map(str::trim).find(|l| !l.is_empty() && opens(l).is_none()).map(plain).unwrap_or_default()
+    first_at(text).and_then(|k| text.lines().nth(k)).map(|l| plain(l.trim())).unwrap_or_default()
+}
+
+/// Where the line `first_line` says is in `text`, from 0.
+fn first_at(text: &str) -> Option<usize> {
+    text.lines().map(str::trim).position(|l| !l.is_empty() && opens(l).is_none())
+}
+
+/// The line `first_line` says of `text`, as it is written, if it is prose:
+/// none when it is a line of a code block (`drawn`).
+pub fn first_prose(text: &str) -> Option<&str> {
+    let k = first_at(text)?;
+    let prose = drawn(text, 80).iter().any(|(_, at)| *at == Some(k));
+    text.lines().nth(k).filter(|_| prose)
 }
 
 /// `text`, a line, without what marks it up: for a comment said in a line,
@@ -422,9 +449,10 @@ fn fit_columns(natural: &[usize], room: usize) -> Option<Vec<usize>> {
 
 /// Table `rows` drawn `width` wide: its columns aligned as `aligns` says,
 /// `│` between them, its header bold with a rule under it; each cell folded
-/// within its column when the table is wider than that. None when it
-/// cannot fit even so.
-fn draw_table(rows: &[Vec<String>], aligns: &[Align], width: usize) -> Option<Vec<Line>> {
+/// within its column when the table is wider than that. Each line with the
+/// line of the table it is drawn from, from 0: the header's, its rule the
+/// row of dashes', then each row's. None when it cannot fit even so.
+fn draw_table(rows: &[Vec<String>], aligns: &[Align], width: usize) -> Option<Vec<(Line, usize)>> {
     let n = aligns.len();
     let wide = |l: &[(String, Mark)]| l.iter().map(|(s, _)| s.chars().count()).sum::<usize>();
     let pieces: Vec<Vec<Line>> = rows
@@ -465,11 +493,11 @@ fn draw_table(rows: &[Vec<String>], aligns: &[Align], width: usize) -> Option<Ve
                     push(&mut line, &" ".repeat(after), Mark::Plain);
                 }
             }
-            out.push(line);
+            out.push((line, if r == 0 { 0 } else { r + 1 }));
         }
         if r == 0 {
             let rule: Vec<String> = widths.iter().map(|w| "─".repeat(*w)).collect();
-            out.push(vec![(rule.join("─┼─"), Mark::Rule)]);
+            out.push((vec![(rule.join("─┼─"), Mark::Rule)], 1));
         }
     }
     Some(out)
@@ -642,5 +670,28 @@ mod tests {
         assert_eq!(said(&render("```\n  0123456789abc\n", 10)), ["   012345 ", " 6789abc  "]);
         // A word wider than a line is cut where the line ends.
         assert_eq!(said(&render("0123456789abcdef", 10)), ["0123456789", "abcdef"]);
+    }
+
+    #[test]
+    fn each_line_drawn_is_of_its_line_of_prose_and_a_code_block_s_of_none() {
+        let text = "Intro https://a.\n\n- a long item that folds under its text\n```\ncode https://b\n```\n| a | b |\n|---|---|\n| 1 | x |\nend";
+        let lines = drawn(text, 20);
+        assert_eq!(
+            said(&lines.iter().map(|(l, _)| l.clone()).collect::<Vec<_>>()),
+            ["Intro https://a.", "", "• a long item that", "  folds under its", "  text", " code https://b ", "a │ b", "──┼──", "1 │ x", "end"]
+        );
+        // A line folded: each piece of it. A table: each of its lines, the
+        // rule the row of dashes'. The code block's: none.
+        let of: Vec<Option<usize>> = lines.iter().map(|(_, at)| *at).collect();
+        assert_eq!(of, [Some(0), Some(1), Some(2), Some(2), Some(2), None, Some(6), Some(7), Some(8), Some(9)]);
+        assert_eq!(drawn(text, 20).into_iter().map(|(l, _)| l).collect::<Vec<_>>(), render(text, 20));
+        // A table too narrow, as it is written: each line its own.
+        let narrow: Vec<Option<usize>> = drawn("|a|b|c|d|\n|-|-|-|-|", 10).into_iter().map(|(_, at)| at).collect();
+        assert_eq!(narrow, [Some(0), Some(1)]);
+        // The line said first, as it is written, if it is prose.
+        assert_eq!(first_prose("\n  See [the docs](https://a).\nmore"), Some("  See [the docs](https://a)."));
+        assert_eq!(first_line("\n  See [the docs](https://a).\nmore"), "See the docs.");
+        assert_eq!(first_prose("\n```rust\nlet `a` = 1;\n```"), None);
+        assert_eq!(first_prose(""), None);
     }
 }

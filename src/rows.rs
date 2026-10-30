@@ -93,6 +93,11 @@ pub struct Row {
     /// A line of a turn of a comment, as markdown reads it: what it says
     /// after the bar's indent, piece by piece, each with what it is.
     pub pieces: crate::markdown::Line,
+    /// The line of a turn's text a row of a comment draws, as it is
+    /// written, when it is prose, not a line of a code block: every piece
+    /// of a line folded has it; a comment collapsed, the first line it
+    /// says. Its menu opens its links.
+    pub prose: Option<String>,
     /// A reference a turn of the comment attached, under the comment:
     /// Enter previews its lines.
     pub reference: Option<crate::refs::Ref>,
@@ -446,7 +451,11 @@ pub fn comment_rows(n: &Note, width: usize, deco: &Deco) -> Vec<Row> {
         } else {
             first
         };
-        return vec![row(Kind::Stream, format!("{head}{first}{more}"), true)];
+        let prose = turns.first().and_then(|t| crate::markdown::first_prose(&t.body)).map(String::from);
+        return vec![Row {
+            prose,
+            ..row(Kind::Stream, format!("{head}{first}{more}"), true)
+        }];
     }
     // Where it stands, on its first line; under it when that is too long.
     let tag = deco.tags.get(&n.id).map_or(String::new(), |t| format!(" · {t}"));
@@ -508,13 +517,16 @@ pub fn comment_rows(n: &Note, width: usize, deco: &Deco) -> Vec<Row> {
                 ..of(row(Kind::Comment, format!("     {BAR} {piece}"), false))
             });
         }
-        // What they said, read as markdown.
-        for pieces in crate::markdown::render(&body, width.saturating_sub(9)) {
+        // What they said, read as markdown, each row with the line it is
+        // of when that is prose.
+        let lines: Vec<&str> = body.lines().collect();
+        for (pieces, at) in crate::markdown::drawn(&body, width.saturating_sub(9)) {
             let (pieces, names) = marked(pieces, &nums);
             let line: String = pieces.iter().map(|(s, _)| s.as_str()).collect();
             out.push(Row {
                 pieces,
                 names,
+                prose: at.and_then(|k| lines.get(k)).map(|l| l.to_string()),
                 ..of(row(Kind::Comment, format!("     {BAR}   {line}"), false))
             });
         }
@@ -1092,6 +1104,38 @@ mod tests {
         assert!(links(60).iter().all(|(text, _)| text.chars().count() == 60 || text.ends_with("/b")));
         // Wide enough, whole.
         assert_eq!(links(200)[0].0, format!("     ▎   r1 ⇗ {long}"));
+    }
+
+    #[test]
+    fn a_row_of_a_comment_s_text_has_the_line_it_draws_when_that_is_prose() {
+        use super::{Deco, comment_rows};
+        use crate::thread::{Role, append_turn};
+        let line = "See https://example.com/a for why, as it says at some length.";
+        let n = crate::db::Note {
+            change: "c".into(),
+            id: "n".into(),
+            text: append_turn("Why so loud?", Role::Agent, &format!("{line}\n```\nhttps://example.com/code\n```"), Some("answer")),
+            ..Default::default()
+        };
+        let rows = comment_rows(&n, 40, &Deco::default());
+        let of = |text: &str| rows.iter().find(|r| r.text.contains(text)).unwrap_or_else(|| panic!("no {text:?} in {rows:#?}")).prose.clone();
+        // Each piece of a line folded: the whole line, as it is written.
+        assert_eq!(of("Why so loud?").as_deref(), Some("Why so loud?"));
+        assert_eq!((of("See https://example.com/a").as_deref(), of("why, as it says").as_deref()), (Some(line), Some(line)));
+        assert_eq!(rows.iter().filter(|r| r.prose.as_deref() == Some(line)).count(), 2, "{rows:#?}");
+        // A line of a code block, the comment's head, who said each turn:
+        // none.
+        assert_eq!(of("https://example.com/code"), None);
+        assert!(rows.iter().filter(|r| r.head || r.who).all(|r| r.prose.is_none()), "{rows:#?}");
+        // Collapsed: the first line it says, when that is prose.
+        let mut deco = Deco::default();
+        deco.collapsed.insert("n".into());
+        assert_eq!(comment_rows(&n, 40, &deco)[0].prose.as_deref(), Some("Why so loud?"));
+        let code = crate::db::Note {
+            text: "```\nhttps://example.com/code\n```".into(),
+            ..n.clone()
+        };
+        assert_eq!(comment_rows(&code, 40, &deco)[0].prose, None);
     }
 
     /// A patch changing f.txt, of 20 lines, at its lines 2 and 18: two

@@ -1,13 +1,15 @@
-//! The links a line of a commit message has, each to open in your browser
-//! (`refs::open_link`): every web link written in it, `https://…` or
-//! `http://…`; and, with the moz-phab feature, each bug it names
-//! (`Bug 1234567`, `b=123`), `bug` a word of its own and the rest as
-//! moz-phab reads a bug in a title, on the settings' Bugzilla
-//! (`reviews.bugzilla`), and the revision its trailer names (`Differential
-//! Revision:`), at the trailer's link or, a bare `D123`, on the settings'
-//! Phabricator, as `phab::revision_of` reads it. A bug written in a web link
-//! is the link's, not one of its own; a link is there once, the revision's
-//! link not again as a web link.
+//! The links a line of a commit message or of a comment's text has, each to
+//! open in your browser (`refs::open_link`): every web link written in it,
+//! `https://…` or `http://…`, as markdown writes one too (`[its
+//! text](https://…)`, named by its text, and `<https://…>`); and, with the
+//! moz-phab feature, each bug it names (`Bug 1234567`, `b=123`), `bug` a
+//! word of its own and the rest as moz-phab reads a bug in a title, on the
+//! settings' Bugzilla (`reviews.bugzilla`), and the revision its trailer
+//! names (`Differential Revision:`), at the trailer's link or, a bare
+//! `D123`, on the settings' Phabricator, as `phab::revision_of` reads it. A
+//! bug written in a web link is the link's, not one of its own, as is one in
+//! a markdown link's text; a link is there once, the revision's link not
+//! again as a web link.
 
 use crate::config::Reviews;
 
@@ -21,6 +23,9 @@ pub enum What {
     Bug,
     /// A web link, as it is written.
     Web,
+    /// The web link of a markdown link, `[its text](https://…)`, named by
+    /// its text.
+    Named,
 }
 
 /// A link of a line: what it is, what the menu names it, and the web link it
@@ -28,9 +33,21 @@ pub enum What {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Link {
     pub what: What,
-    /// `bug 1234567`, `D123`, or the web link as it is written.
+    /// `bug 1234567`, `D123`, the web link as it is written, or a markdown
+    /// link's text, its markup left out.
     pub said: String,
     pub url: String,
+}
+
+impl Link {
+    /// What a sentence says of it: `bug 1234567`, `D123`, the web link as it
+    /// is written, or a markdown link's text in quotes, `"the docs"`.
+    pub fn name(&self) -> String {
+        match self.what {
+            What::Named => format!("\"{}\"", self.said),
+            _ => self.said.clone(),
+        }
+    }
 }
 
 /// A word character, as Python's `re` reads `\w` in a pattern of text.
@@ -38,24 +55,15 @@ pub(crate) fn word(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
 }
 
-/// The links of `line`, a line of a commit message, in the order they come
-/// in it, each once: its web links; and, with the moz-phab feature, the
-/// revision its trailer names and the bugs it names, `reviews` saying where
-/// those are. Only those `refs::link` takes, which open.
+/// The links of `line`, a line of a commit message or of a comment's text,
+/// in the order they come in it, each once: its web links; and, with the
+/// moz-phab feature, the revision its trailer names and the bugs it names,
+/// `reviews` saying where those are. Only those `refs::link` takes, which
+/// open.
 pub fn of_line(line: &str, reviews: &Reviews) -> Vec<Link> {
     let chars: Vec<char> = line.chars().collect();
     let web = web_links(&chars);
-    let mut found: Vec<(usize, Link)> = web
-        .iter()
-        .map(|(at, _, url)| {
-            let link = Link {
-                what: What::Web,
-                said: url.clone(),
-                url: url.clone(),
-            };
-            (*at, link)
-        })
-        .collect();
+    let mut found: Vec<(usize, Link)> = web.iter().map(|(at, _, link)| (*at, link.clone())).collect();
     #[cfg(feature = "moz-phab")]
     {
         // The trailer's revision, where its value starts.
@@ -89,17 +97,24 @@ fn starts_lower(s: &[char], prefix: &str) -> bool {
 }
 
 /// The web links written in `s`, a line's characters, as they are written:
-/// each `https://` or `http://`, in any case, that no word runs on into from
-/// before it, up to the white space after it or what a link as written
-/// cannot hold (`<`, `>`, `"`, `` ` ``), less what then ends it that ends a
-/// sentence or what holds the link (`.`, `,`, `;`, `:`, `!`, `?`, `'`, `*`,
-/// `_`, `~`; a `)`, `]` or `}` that no `(`, `[` or `{` of the link opens);
-/// each one naming a site (`refs::link`). Where each starts and ends, and the
+/// each markdown link to one (`markdown_link`) and each `<https://…>`
+/// (`angle_link`); and each other `https://` or `http://`, in any case, that
+/// no word runs on into from before it, up to the white space after it or
+/// what a link as written cannot hold (`<`, `>`, `"`, `` ` ``), less what
+/// then ends it that ends a sentence or what holds the link (`.`, `,`, `;`,
+/// `:`, `!`, `?`, `'`, `*`, `_`, `~`; a `)`, `]` or `}` that no `(`, `[` or
+/// `{` of the link opens); each one naming a site (`refs::link`). Where each
+/// starts and ends, a markdown link's text and brackets with it, and the
 /// link.
-fn web_links(s: &[char]) -> Vec<(usize, usize, String)> {
+fn web_links(s: &[char]) -> Vec<(usize, usize, Link)> {
     let mut out = Vec::new();
     let mut i = 0;
     while i < s.len() {
+        if let Some((end, link)) = markdown_link(s, i).or_else(|| angle_link(s, i)) {
+            out.push((i, end, link));
+            i = end;
+            continue;
+        }
         let scheme = ["https://", "http://"].into_iter().find(|p| starts_lower(&s[i..], p));
         let Some(scheme) = scheme.filter(|_| i == 0 || !word(s[i - 1])) else {
             i += 1;
@@ -121,11 +136,86 @@ fn web_links(s: &[char]) -> Vec<(usize, usize, String)> {
         }
         let url: String = s[i..end].iter().collect();
         if crate::refs::link(&url).is_ok() {
-            out.push((i, end, url));
+            out.push((i, end, web(url)));
         }
         i = end;
     }
     out
+}
+
+/// Web link `url`, said as it is written.
+fn web(url: String) -> Link {
+    Link { what: What::Web, said: url.clone(), url }
+}
+
+/// The markdown link that starts at `i` of `s`, if one does and goes to a
+/// web link: `[its text](https://…)`, its text up to the first `]`, as
+/// markdown draws it (`markdown::inline`), its link from the `(` right after
+/// that up to the `)` that closes it, a `(` and `)` of the link's own kept
+/// in it, or up to a space, a title in quotes after it (`"a title"`). Where
+/// it ends, after its `)`; and the link, named by its text, its markup left
+/// out: said as it is written when the text is blank or holds a web link,
+/// so that a link is never named by another.
+fn markdown_link(s: &[char], i: usize) -> Option<(usize, Link)> {
+    if s[i] != '[' {
+        return None;
+    }
+    let close = i + 1 + s[i + 1..].iter().position(|&c| c == ']')?;
+    if s.get(close + 1) != Some(&'(') {
+        return None;
+    }
+    let from = close + 2;
+    let (mut to, mut depth) = (from, 0usize);
+    while let Some(&c) = s.get(to).filter(|c| !c.is_whitespace()) {
+        match c {
+            ')' if depth == 0 => break,
+            ')' => depth -= 1,
+            '(' => depth += 1,
+            _ => {}
+        }
+        to += 1;
+    }
+    // Its `)`: right after the link, or after its title.
+    let mut end = to;
+    while s.get(end).is_some_and(|c| c.is_whitespace()) {
+        end += 1;
+    }
+    if end > to && let Some(&quote) = s.get(end).filter(|&&c| c == '"' || c == '\'') {
+        end += 1 + s.get(end + 1..)?.iter().position(|&c| c == quote)? + 1;
+        while s.get(end).is_some_and(|c| c.is_whitespace()) {
+            end += 1;
+        }
+    }
+    if s.get(end) != Some(&')') {
+        return None;
+    }
+    let url: String = s[from..to].iter().collect();
+    crate::refs::link(&url).ok()?;
+    let text: String = s[i + 1..close].iter().collect();
+    let named: String = crate::markdown::inline(&text).into_iter().filter(|(_, m)| *m != crate::markdown::Mark::Url).map(|(t, _)| t).collect();
+    let named = named.split_whitespace().collect::<Vec<_>>().join(" ");
+    let chars: Vec<char> = text.chars().collect();
+    let link = match named.is_empty() || !web_links(&chars).is_empty() {
+        true => web(url),
+        false => Link { what: What::Named, said: named, url },
+    };
+    Some((end + 1, link))
+}
+
+/// The link `<https://…>` that starts at `i` of `s`, if one does: what is
+/// between its brackets, as it is written, with no space in it, a web link
+/// naming a site. Where it ends, after its `>`; and the link.
+fn angle_link(s: &[char], i: usize) -> Option<(usize, Link)> {
+    if s[i] != '<' {
+        return None;
+    }
+    let close = i + 1 + s[i + 1..].iter().position(|&c| c == '>' || c == '<' || c.is_whitespace())?;
+    if s[close] != '>' || !["https://", "http://"].into_iter().any(|p| starts_lower(&s[i + 1..close], p)) {
+        return None;
+    }
+    let url: String = s[i + 1..close].iter().collect();
+    crate::refs::link(&url).ok()?;
+    Some((close + 1, web(url)))
 }
 
 /// moz-phab's BUG_ID_RE, `(?:(?:bug|b=)(?:\s*)(\d+)(?=\b))` in any case: its
@@ -201,7 +291,7 @@ mod tests {
     #[test]
     fn a_web_link_is_found_as_it_is_written_less_what_ends_it() {
         let r = reviews();
-        let web = |line: &str| -> Vec<String> { of_line(line, &r).into_iter().filter(|l| l.what == What::Web).map(|l| l.url).collect() };
+        let web = |line: &str| -> Vec<String> { of_line(line, &r).into_iter().filter(|l| matches!(l.what, What::Web | What::Named)).map(|l| l.url).collect() };
         assert_eq!(web("See https://example.com/a/b."), ["https://example.com/a/b"]);
         assert_eq!(web("HTTP://Example.com/A, then http://example.org:8080/x?y=1#z!"), ["HTTP://Example.com/A", "http://example.org:8080/x?y=1#z"]);
         // In what holds it: what it opens is its own; what it closes is not.
@@ -216,6 +306,38 @@ mod tests {
         }
         // The same link twice: once.
         assert_eq!(web("https://example.com/a or https://example.com/a"), ["https://example.com/a"]);
+    }
+
+    #[test]
+    fn markdown_writes_a_link_named_by_its_text_or_whole_between_angle_brackets() {
+        let r = reviews();
+        let found = |line: &str| -> Vec<(What, String, String)> { of_line(line, &r).into_iter().map(|l| (l.what, l.said, l.url)).collect() };
+        let named = |said: &str, url: &str| (What::Named, said.to_string(), url.to_string());
+        let web = |url: &str| (What::Web, url.to_string(), url.to_string());
+        // Named by its text, its markup left out; the sentence's end and
+        // what holds it not of it.
+        assert_eq!(found("Read [the docs](https://example.com/a)."), [named("the docs", "https://example.com/a")]);
+        assert_eq!(found("(see [**the**  `docs`](https://example.com/a))"), [named("the docs", "https://example.com/a")]);
+        // Its link up to the `)` that closes it, its own brackets kept; two
+        // with nothing between them, two; a title after it, not of it.
+        assert_eq!(found("[Foo](https://en.wikipedia.org/wiki/Foo_(bar))."), [named("Foo", "https://en.wikipedia.org/wiki/Foo_(bar)")]);
+        assert_eq!(found("[a](https://example.com/a),[b](https://example.com/b)"), [named("a", "https://example.com/a"), named("b", "https://example.com/b")]);
+        assert_eq!(found("[a](https://example.com/a \"The title\") then"), [named("a", "https://example.com/a")]);
+        assert_eq!(found("![a picture](https://example.com/p.png)"), [named("a picture", "https://example.com/p.png")]);
+        // Its text a link, or holding one: said as the link it goes to,
+        // never named by another.
+        assert_eq!(found("[https://example.com/a](https://example.com/a)"), [web("https://example.com/a")]);
+        assert_eq!(found("[see https://example.com/x](https://example.com/y)"), [web("https://example.com/y")]);
+        // To no web link, or no markdown link: what is written as a link is.
+        assert!(found("[a](#here) and [b](b.html)").is_empty());
+        assert_eq!(found("[a] (https://example.com/a)"), [web("https://example.com/a")]);
+        assert_eq!(found("[a](https://example.com/a and more"), [web("https://example.com/a")]);
+        // Between angle brackets, whole; with a space in it, no such link.
+        assert_eq!(found("<https://example.com/a.>, <HTTP://example.com/b>"), [web("https://example.com/a."), web("HTTP://example.com/b")]);
+        assert_eq!(found("<https://example.com/a b>"), [web("https://example.com/a")]);
+        assert!(found("<https://> <ftp://example.com/a>").is_empty());
+        // The same link named and bare: once, the first.
+        assert_eq!(found("[a](https://example.com/a) or https://example.com/a"), [named("a", "https://example.com/a")]);
     }
 
     #[cfg(feature = "moz-phab")]
@@ -238,6 +360,12 @@ mod tests {
         assert_eq!(
             links("Bug 9: see https://example.com/bug10?b=11, then bug 12.", &r),
             [bug("9"), pair("https://example.com/bug10?b=11", "https://example.com/bug10?b=11"), bug("12")]
+        );
+        // A bug in a markdown link's text, or between angle brackets, is the
+        // link's too.
+        assert_eq!(
+            links("[Bug 6](https://example.com/b), <https://example.com/bug7>, bug 8", &r),
+            [pair("Bug 6", "https://example.com/b"), pair("https://example.com/bug7", "https://example.com/bug7"), bug("8")]
         );
         // The first is the one moz-phab takes for a title.
         let title: Vec<char> = "WIP: bug 3 and Bug 4".chars().collect();

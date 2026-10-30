@@ -4430,7 +4430,6 @@ fn with_message(message: impl FnOnce(&str) -> String) -> (tempfile::TempDir, Pat
 
 /// A bug's number of the test's own, from `here`, the name of its folder:
 /// no other test's links name it.
-#[cfg(feature = "moz-phab")]
 fn number_of(here: &str) -> u64 {
     here.bytes().fold(7u64, |h, b| h.wrapping_mul(31).wrapping_add(u64::from(b))) % 9_000_000 + 1_000_000
 }
@@ -4768,6 +4767,204 @@ fn in_the_history_a_line_of_a_message_in_a_stack_diff_opens_its_links() {
     // On the history's list, o does nothing.
     keys(&mut app, &[KeyCode::Left, KeyCode::Char('o')]);
     assert_eq!((app.status.as_str(), app.screen), ("", Screen::History));
+}
+
+/// `setup`'s database, with a comment of yours on `+TWO` saying `mine`,
+/// and the agent's answer to it saying `answer`, both made of the name of
+/// the test's folder (`here`), for the test's links to be its own; the
+/// editor on it, the settings' Bugzilla and Phabricator the test's own
+/// too, the cursor in the middle on the comment's first row. And `here`.
+fn with_links_answered(mine: impl FnOnce(&str) -> String, answer: impl FnOnce(&str) -> String) -> (tempfile::TempDir, PathBuf, Editor, String) {
+    let (tmp, db, _src) = setup();
+    let here = tmp.path().file_name().unwrap().to_string_lossy().to_string();
+    let mut app = open_set(&db, |c| {
+        c.reviews.bugzilla = format!("https://bugzilla.example.com/{here}");
+        c.reviews.url = Some(format!("https://phabricator.example.com/{here}"));
+    });
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Enter]);
+    save(&mut app, &mine(&here));
+    let n = notes_of(&db, "s", 0).remove(0);
+    let text = append_turn(&n.text, Role::Agent, &answer(&here), Some("answer"));
+    Db::edit(&db, |d| d.set_note(Note { text, ..n.clone() })).unwrap();
+    app.refresh();
+    keys(&mut app, &[KeyCode::Home]);
+    down_to(&mut app, "   └ comment");
+    (tmp, db, app, here)
+}
+
+#[test]
+fn a_line_of_a_comment_opens_its_links_from_its_menu_as_a_line_of_a_message_does() {
+    let long = "This line goes on and on, as an answer may, so that the middle folds it in pieces; and it goes on and on again, as long as the middle is wide";
+    let (_tmp, _db, mut app, here) = with_links_answered(
+        |here| format!("Why so loud? See https://example.com/{here}/first"),
+        |here| {
+            let n = number_of(here);
+            format!(
+                "See https://example.com/{here}/bare. Read [the docs](https://example.com/{here}/docs), <https://example.com/{here}/angle> and bug {n}.\nDifferential Revision: D{n}\n```\nhttps://example.com/{here}/code\n```\n{long}, ending with https://example.com/{here}/folded"
+            )
+        },
+    );
+    let link = |end: &str| format!("https://example.com/{here}/{end}");
+    let open = |url: &str| format!("Open {url} in your browser");
+    let n = number_of(&here);
+    let moz = cfg!(feature = "moz-phab");
+    // The comment's head: no line of its text, no link.
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    assert!(link_items(&app).is_empty(), "{:?}", items(&app));
+    keys(&mut app, &[KeyCode::Esc]);
+    // A line of what the agent said: an item for each of its links, after
+    // the comment's own, in a section of their own, the menu's first item
+    // still the first. A markdown link is named by its text; one between
+    // angle brackets is whole; with moz-phab, the bug on the settings'
+    // Bugzilla.
+    down_to(&mut app, "     ▎   See https://");
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    let mut line = vec![open(&link("bare")), open("\"the docs\""), open(&link("angle"))];
+    if moz {
+        line.push(format!("Open bug {n} in your browser"));
+    }
+    assert_eq!(link_items(&app), line);
+    assert_eq!(links_after(&app, "Edit the agent's reply", "Close this comment…"), line.len());
+    let labels: Vec<String> = items(&app).into_iter().map(|(l, _)| l).collect();
+    let at = labels.iter().position(|l| l.starts_with("Open ")).unwrap();
+    assert!(labels[at - 2] == "Close this comment…" && labels[at - 1].is_empty(), "{labels:?}");
+    // What Enter does there said, where it goes; chosen, it is opened away
+    // from the screen, by the stand-in and never a browser.
+    let docs = labels.iter().position(|l| l == &open("\"the docs\"")).unwrap();
+    for _ in 0..labels.len() * 2 {
+        if matches!(&app.mode, Mode::Menu(m) if m.sel == docs) {
+            break;
+        }
+        keys(&mut app, &[KeyCode::Down]);
+    }
+    assert_eq!(app.help()[0], format!("Press Enter to open {} in your browser.", link("docs")));
+    assert_eq!(key(&mut app, KeyCode::Enter), Effect::None);
+    assert_eq!(app.status, format!("opening {}…", link("docs")));
+    app.settle();
+    assert_eq!(app.status, format!("opened {} in your browser", link("docs")));
+    assert!(opened(&link("docs")) && !opened(&link("bare")) && !opened(&link("angle")));
+    // o stays a key of the lines of a message: on a comment's, nothing, and
+    // the bar does not say it.
+    assert!(!app.hint().contains("o: open"), "{}", app.hint());
+    keys(&mut app, &[KeyCode::Char('o')]);
+    assert_eq!(app.mode, Mode::Normal);
+    assert!(!app.status.starts_with("opening"), "{}", app.status);
+    // A trailer naming a revision: with moz-phab, the revision on the
+    // settings' Phabricator.
+    down_to(&mut app, "     ▎   Differential Revision: D");
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    let revision: Vec<String> = if moz { vec![format!("Open D{n} in your browser")] } else { vec![] };
+    assert_eq!(link_items(&app), revision);
+    keys(&mut app, &[KeyCode::Esc]);
+    // A line of a code block: no link.
+    down_to(&mut app, &format!("     ▎    {}", link("code")));
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    assert!(link_items(&app).is_empty(), "{:?}", items(&app));
+    keys(&mut app, &[KeyCode::Esc]);
+    // A line folded is one line: its link from each of its pieces, the first
+    // too, which does not show it.
+    down_to(&mut app, "     ▎   This line goes on");
+    assert!(!app.rows[app.cursor].text.contains("/folded"), "{:?}", app.rows[app.cursor]);
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    assert_eq!(link_items(&app), [open(&link("folded"))]);
+    keys(&mut app, &[KeyCode::Esc]);
+    for _ in 0..6 {
+        if app.rows[app.cursor].text.contains("/folded") {
+            break;
+        }
+        keys(&mut app, &[KeyCode::Down]);
+    }
+    assert!(app.rows[app.cursor].text.contains(&link("folded")), "{}", draw(&mut app));
+    choose(&mut app, &open(&link("folded")));
+    app.settle();
+    assert_eq!(app.status, format!("opened {} in your browser", link("folded")));
+    assert!(opened(&link("folded")));
+    // Your comment's line, and, collapsed, the line it says.
+    keys(&mut app, &[KeyCode::Home]);
+    down_to(&mut app, "     ▎   Why so loud?");
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    assert_eq!(link_items(&app), [open(&link("first"))]);
+    keys(&mut app, &[KeyCode::Esc]);
+    choose(&mut app, "Collapse this comment");
+    keys(&mut app, &[KeyCode::Home]);
+    down_to(&mut app, "   ▸ comment: Why so loud?");
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    assert_eq!(links_after(&app, "Expand this comment", "Close this comment…"), 1);
+    assert_eq!(link_items(&app), [open(&link("first"))]);
+}
+
+#[test]
+fn in_the_comments_pane_the_line_said_under_a_comment_opens_its_links_from_its_menu() {
+    let (_tmp, db, mut app, here) = with_links_answered(
+        |_| "Why so loud?".into(),
+        |here| format!("Read [the docs](https://example.com/{here}/docs) or https://example.com/{here}/bare.\nThe rest."),
+    );
+    let link = |end: &str| format!("https://example.com/{here}/{end}");
+    // Expanded, the pane says the first line of what was said last under
+    // the comment: its links, in the comment's menu there, after the rest.
+    keys(&mut app, &[KeyCode::Right]);
+    assert_eq!((app.focus, app.comments), (Focus::Notes, Pane::Expanded));
+    assert!(draw(&mut app).contains("   Read the docs or https://"), "{}", draw(&mut app));
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    let both = ["Open \"the docs\" in your browser".to_string(), format!("Open {} in your browser", link("bare"))];
+    assert_eq!(link_items(&app), both);
+    assert_eq!(links_after(&app, "Reply", "Close this comment…"), 2);
+    choose(&mut app, &both[1]);
+    app.settle();
+    assert_eq!(app.status, format!("opened {} in your browser", link("bare")));
+    assert!(opened(&link("bare")) && !opened(&link("docs")));
+    // Compact, no line of the comment is under the cursor: no link.
+    keys(&mut app, &[KeyCode::Right]);
+    assert_eq!((app.focus, app.comments), (Focus::Notes, Pane::Compact));
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    assert!(link_items(&app).is_empty(), "{:?}", items(&app));
+    keys(&mut app, &[KeyCode::Esc]);
+    // What was said last opening with a code block: the line said is code,
+    // and no link.
+    let n = notes_of(&db, "s", 0).remove(0);
+    let text = append_turn(&n.text, Role::You, &format!("```\n{}\n```", link("code")), None);
+    Db::edit(&db, |d| d.set_note(Note { text, ..n.clone() })).unwrap();
+    app.refresh();
+    keys(&mut app, &[KeyCode::Right, KeyCode::Right]);
+    assert_eq!((app.focus, app.comments), (Focus::Notes, Pane::Expanded));
+    let screen = draw(&mut app);
+    let (x, y) = at(&screen, "you · a.txt: TWO");
+    let under: String = screen.lines().nth(y as usize + 1).unwrap().chars().skip(x as usize - 2).collect();
+    assert!(under.starts_with("   https://example.com/"), "{screen}");
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    assert!(link_items(&app).is_empty(), "{:?}", items(&app));
+}
+
+#[test]
+fn a_markdown_link_in_a_line_of_a_message_is_named_by_its_text_and_one_in_angle_brackets_is_whole() {
+    let (_tmp, db, here) = with_message(|here| {
+        format!("Bug 7 - shout two\n\nRead [the docs](https://example.com/{here}/docs) or <https://example.com/{here}/angle>.\nSee [the page](https://example.com/{here}/page).")
+    });
+    let link = |end: &str| format!("https://example.com/{here}/{end}");
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Right]);
+    // One: o opens it, and the bar and ? say so, by its text.
+    down_to(&mut app, "   See [the page](");
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    assert_eq!(link_items(&app), ["Open \"the page\" in your browser"]);
+    keys(&mut app, &[KeyCode::Esc]);
+    assert!(app.hint().contains("· o: open the link · "), "{}", app.hint());
+    assert!(app.help().contains(&"Press o to open \"the page\" in your browser.".to_string()), "{:?}", app.help());
+    assert_eq!(opened_with(&mut app, 'o'), format!("opened {} in your browser", link("page")));
+    // Two: o opens the menu of them.
+    keys(&mut app, &[KeyCode::Home]);
+    down_to(&mut app, "   Read [the docs](");
+    let a = link("angle");
+    assert!(app.help().contains(&format!("Press o to pick a link of this line to open in your browser: \"the docs\" or {a}.")), "{:?}", app.help());
+    keys(&mut app, &[KeyCode::Char('o')]);
+    assert_eq!(menu_title(&app), "the links of this line");
+    assert_eq!(link_items(&app), ["Open \"the docs\" in your browser".to_string(), format!("Open {a} in your browser")]);
+    choose(&mut app, "Open \"the docs\"");
+    app.settle();
+    assert_eq!(app.status, format!("opened {} in your browser", link("docs")));
+    assert!(opened(&link("docs")) && !opened(&a));
 }
 
 #[test]

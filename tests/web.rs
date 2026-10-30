@@ -399,12 +399,32 @@ fn cell_of(l: &str, said: &str) -> (usize, String) {
     (line[..line.find(said).unwrap()].chars().count() + 1, y)
 }
 
+/// A comment of yours on the title of stack `s`'s first patch in `db`,
+/// saying `said`.
+fn on_title(db: &Path, said: &str) {
+    stacked::db::Db::edit(db, |d| {
+        let p = d.patch(&d.stack("s")?.patches[0]).clone();
+        d.set_note(stacked::db::Note {
+            change: p.change.clone(),
+            id: "on-title".into(),
+            line: stacked::view::title_key(&p),
+            file: stacked::view::MSG_PATH.into(),
+            preview: p.title().into(),
+            text: said.into(),
+            ..Default::default()
+        })
+    })
+    .unwrap();
+}
+
 #[test]
-fn a_link_of_a_line_of_a_message_opens_from_its_menu_and_with_o_in_the_browser_too() {
+fn a_link_of_a_line_of_a_message_or_of_a_comment_opens_from_its_menu_and_one_of_a_message_with_o_in_the_browser_too() {
     let (tmp, db) = setup();
     let here = tmp.path().file_name().unwrap().to_string_lossy().to_string();
     let why = format!("https://example.com/{here}/why");
+    let docs = format!("https://example.com/{here}/docs");
     reworded(&db, &format!("Bug 1 - shout two\n\nSee {why}"));
+    on_title(&db, &format!("Read [the docs]({docs}) first."));
     let log = stand_in_opener(tmp.path());
     stacked::config::init(stacked::config::Config::default());
     let (port, token) = stacked::web::start(db).unwrap();
@@ -414,6 +434,10 @@ fn a_link_of_a_line_of_a_message_opens_from_its_menu_and_with_o_in_the_browser_t
     // opens the link, the status line saying so.
     let seen = until(&mut events, "the line", |l| text(l).contains("See https://"));
     let (x, y) = cell_of(seen.last().unwrap(), "See https://");
+    // The comment, under the title, is drawn above it.
+    let comment = "▎   Read the docs";
+    let line = seen.iter().find(|l| text(l).contains(comment)).cloned();
+    let line = line.unwrap_or_else(|| until(&mut events, "the comment's line", |l| text(l).contains(comment)).pop().unwrap());
     ask(port, &host, &input, &format!("m {x} {y} r\n"));
     let item = format!("Open {why} in your browser");
     let seen = until(&mut events, "the line's menu", |l| text(l).contains(&item));
@@ -423,7 +447,17 @@ fn a_link_of_a_line_of_a_message_opens_from_its_menu_and_with_o_in_the_browser_t
     assert_eq!(links_opened(&log, 1), std::slice::from_ref(&why));
     // o, the cursor on the line, opens it again.
     ask(port, &host, &input, "k c 6f -\n");
-    assert_eq!(links_opened(&log, 2), [why.clone(), why]);
+    assert_eq!(links_opened(&log, 2), [why.clone(), why.clone()]);
+    // A right click on the line of the comment: its menu has the link,
+    // named by its text, which opens it.
+    let (x, y) = cell_of(&line, comment);
+    ask(port, &host, &input, &format!("m {x} {y} r\n"));
+    let item = "Open \"the docs\" in your browser";
+    let seen = until(&mut events, "the comment's menu", |l| text(l).contains(item));
+    let (x, y) = cell_of(seen.last().unwrap(), item);
+    ask(port, &host, &input, &format!("m {x} {y} l\n"));
+    until(&mut events, "the comment's link opened", |l| text(l).contains(&format!("opened {docs} in your browser")));
+    assert_eq!(links_opened(&log, 3), [why.clone(), why, docs]);
 }
 
 #[test]

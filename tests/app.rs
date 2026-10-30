@@ -367,11 +367,13 @@ fn opened_by_stand_in(dir: &Path) -> impl Fn(usize) -> Vec<String> {
 }
 
 #[test]
-fn a_link_of_a_line_of_a_message_opens_from_its_menu_and_with_o_in_the_window_too() {
+fn a_link_of_a_line_of_a_message_or_of_a_comment_opens_from_its_menu_and_one_of_a_message_with_o_in_the_window_too() {
     let (tmp, db) = setup();
     let here = tmp.path().file_name().unwrap().to_string_lossy().to_string();
     let why = format!("https://example.com/{here}/why");
-    // Patch 1's message says where to read why.
+    let docs = format!("https://example.com/{here}/docs");
+    // Patch 1's message says where to read why; your comment on its title,
+    // where to read the docs.
     stacked::db::Db::edit(&db, |d| {
         let old = d.patch(&d.stack("s")?.patches[0]).clone();
         let draft = stacked::mbox::Draft {
@@ -379,6 +381,19 @@ fn a_link_of_a_line_of_a_message_opens_from_its_menu_and_with_o_in_the_window_to
             ..stacked::mbox::Draft::from(&old)
         };
         stacked::ops::replace(d, "s", 0, draft, "reword").map(|_| ())
+    })
+    .unwrap();
+    stacked::db::Db::edit(&db, |d| {
+        let p = d.patch(&d.stack("s")?.patches[0]).clone();
+        d.set_note(stacked::db::Note {
+            change: p.change.clone(),
+            id: "on-title".into(),
+            line: stacked::view::title_key(&p),
+            file: stacked::view::MSG_PATH.into(),
+            preview: p.title().into(),
+            text: format!("Read [the docs]({docs}) first."),
+            ..Default::default()
+        })
     })
     .unwrap();
     let opened = opened_by_stand_in(tmp.path());
@@ -397,7 +412,19 @@ fn a_link_of_a_line_of_a_message_opens_from_its_menu_and_with_o_in_the_window_to
     assert_eq!(opened(1), std::slice::from_ref(&why));
     // o, the cursor on the line, opens it again.
     press(&s, KeyCode::Char('o'));
-    assert_eq!(opened(2), [why.clone(), why]);
+    assert_eq!(opened(2), [why.clone(), why.clone()]);
+    // A right click on the line of the comment: its menu has the link,
+    // named by its text, which opens it.
+    let comment = "▎   Read the docs";
+    let buf = screen(&s, "the comment's line", |b| find(b, comment).is_some());
+    let (x, y) = find(&buf, comment).unwrap();
+    s.send(Input::Click { x, y, right: true });
+    let item = "Open \"the docs\" in your browser";
+    let menu = screen(&s, "the comment's menu", |b| find(b, item).is_some());
+    let (x, y) = find(&menu, item).unwrap();
+    s.send(Input::Click { x, y, right: false });
+    screen(&s, "the comment's link opened", |b| text(b).contains(&format!("opened {docs} in your browser")));
+    assert_eq!(opened(3), [why.clone(), why, docs]);
 }
 
 /// The File menu's panels and alerts, as the test answers them: the

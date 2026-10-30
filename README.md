@@ -715,8 +715,12 @@ them other keys, and the help then names those:
 - `o`, on a line of a commit message, opens its link in your browser, as
   the line's item in its menu does: `Open https://example.org/a in your
   browser`, for a web link written in the line (`https://` or `http://`,
-  what ends a sentence after it or a bracket around it left out; in the
-  menu, a long one is shortened to fit the screen); and, with the
+  what ends a sentence after it or a bracket around it left out; between
+  angle brackets, `<https://…>`, all they hold; in the menu, a long one is
+  shortened to fit the screen); `Open "the docs" in your browser`, for a
+  markdown link, `[the docs](https://…)`, named by its text, its link up
+  to the `)` that closes it (a text that is a link itself, or holds one,
+  is not said: the item says the link it goes to); and, with the
   `moz-phab` feature, `Open bug 1234567 in your browser`, for a bug the
   line names (`Bug 123`, `bug123`, `b=123`, in any case), `bug` a word of
   its own, so that `debug 7` names none, and the rest as moz-phab reads a
@@ -726,7 +730,8 @@ them other keys, and the help then names those:
   Revision:` trailer names (the settings' `reviews.trailer`), at the
   trailer's link, or, a bare `D123`, on the settings' Phabricator
   (`reviews.url`). A bug written in a web link is the link's, not one of
-  its own, and the trailer's link is one link, the revision. On a line with
+  its own, as is one in a markdown link's text, and the trailer's link is
+  one link, the revision. On a line with
   several, `o` opens the menu of them, `the links of this line`; on a line
   of the message with none, the status line says so; anywhere else, it does
   nothing. A right click on the line opens its menu, with the items; a
@@ -744,7 +749,9 @@ them other keys, and the help then names those:
   version: no line of theirs is under a cursor. The bottom bar says it where it opens
   something (`o: open bug 1234567`, `o: open the link`, `o: open a link`),
   and so does `?`; `open_link` in `[keys]` (Settings, below) makes it
-  another key. In the browser (`stacked web`) and in StackED, the same.
+  another key. A line of what a comment says has the same items in its
+  menu (Writing comments, below), but `o` opens nothing there. In the
+  browser (`stacked web`) and in StackED, the same.
 - Every pane keeps where its cursor was, while the editor is open: the
   middle and the comments of each patch (whichever its version, so an edit
   keeps the line) and of the stack, the patches of each stack, the history
@@ -960,6 +967,23 @@ fold within their columns, and too narrow even so, it shows as written. A line b
 written, and again where it is too wide. Where a comment is said in a line
 (listed, folded), its markup is left out. The editor shows what was written
 as it was written.
+
+The menu on a line of what was said has an item for each link the line
+has, to open it in your browser, as a line of a commit message has (`o`,
+The editor, above), in a section of their own after the comment's items:
+`Open https://example.org/a in your browser` for a web link, `Open "the
+docs" in your browser` for a markdown link, `[the docs](https://…)`,
+named by its text, and, with the `moz-phab` feature, `Open bug 1234567 in
+your browser` for a bug the line names and `Open D123 in your browser`
+for a revision a `Differential Revision:` line names. A line folded to
+fit the pane is one line: each of its pieces has all of its links. A line
+of a code block has none, and neither does the line that heads the
+comment (`└ comment:`) nor the name of who said a turn. A comment
+collapsed has the links of the first line it says; in the comments pane
+expanded, a comment has those of the line said under it, the first line
+of what was said last, and none when the pane is compact. `o` opens
+nothing there: it opens the links of a line of a commit message. In the
+browser (`stacked web`) and in StackED, the same.
 
 Comments are written where they will show, in an editor inline: a comment
 on the stack under the left pane's header, on a patch under its title in
@@ -3199,7 +3223,8 @@ reviewer's comment can be asked about like any.
 A line of a commit message that names a bug (`Bug 123`), or the revision
 (`Differential Revision:`), opens it in your browser: `o` there, or the
 line's `Open bug 123 in your browser` (The editor, above), the bug on
-Bugzilla, `reviews.bugzilla` (Settings, below).
+Bugzilla, `reviews.bugzilla` (Settings, below). A line of what a comment
+says opens them from its menu too (Writing comments, above).
 
 The patches pane shows the status of each patch's revision after its number
 (`[W]`: The editor, above), read over Conduit with the same token, all of
@@ -3345,9 +3370,10 @@ is typed: `import.rs`). A fix to one may belong in the other.
   each section of a message says, for the reading marks to hold.
 - `wrap.rs`: a commit message's long lines wrapped at a width, its
   paragraphs of prose filled again, for the menus to offer.
-- `links.rs`: the links a line of a commit message has, to open in your
-  browser: its web links, and, with the `moz-phab` feature, the bugs it
-  names and the revision its trailer names.
+- `links.rs`: the links a line of a commit message or of a comment's text
+  has, to open in your browser: its web links, markdown's too, and, with
+  the `moz-phab` feature, the bugs it names and the revision its trailer
+  names.
 - `review.rs`, `phab.rs`, `submit.rs`: Phabricator, built with the
   `moz-phab` feature (on by default): the reviews pulled, the stacks
   imported, a patch submitted as work in progress, the statuses of
@@ -3802,7 +3828,8 @@ the agent's own link given through the stand-in for claude, both listed
 in $EDITOR, and the link detached by a rewind of the only turn that names
 it, the links of a line of a commit message (a web link, two on a line
 picked from their menu, none on a line of the message said and nothing
-done on a line of code; with moz-phab, the bug a title names on Bugzilla
+done on a line of code; a markdown link named by its text, and one
+between angle brackets; with moz-phab, the bug a title names on Bugzilla
 and on the settings' own, the trailer's revision at its link, and a bare
 one on the settings' Phabricator, none without it; without moz-phab, the
 web links alone) opened by the stand-in from the line's menu, from the
@@ -3810,7 +3837,15 @@ menu of a right click on it and with `o` (which the settings make another
 key), a click opening none, in the middle, reading too, in the review of
 landed work (a line of an interdiff in the stack diff, one taken out too,
 and a patch looked at closer), in History…'s stack diff and in what a
-submit sends (side by side too), a stack made with none there (imported from the workspace, a
+submit sends (side by side too), the links of a line of what a comment
+says opened from its menu, after the comment's items, the same items (a
+web link, a markdown link by its text, one between angle brackets, and,
+with moz-phab, a bug and a revision on the settings' Bugzilla and
+Phabricator), none on a line of a code block nor on the comment's
+heading, a line folded one line from each of its pieces, a comment
+collapsed the first line it says, the comments pane expanded the line it
+says under the comment (none compact, none when that line is code), and
+`o` opening none there, a stack made with none there (imported from the workspace, a
 range typed and refused until it holds a commit, the changes staged on top;
 from Phabricator, its revisions read by a stand-in; or by the agent), a
 comment moved to the stack
@@ -3942,9 +3977,10 @@ runs, on the list StackED's Open Recent shows, the effort picked in a
 menu kept in the state file of its home, where the next `stacked web`
 starts, a message's long lines wrapped from its patch's menu, the edit
 landing for review, a link of a line of a message opened from the
-menu of a right click on it and with `o`, by a stand-in, and the comment
-closed last on a line, longer than its box in a small page, scrolled down
-to its last line with ↓, the wheel's ↓ and pgdn, and, with
+menu of a right click on it and with `o`, and one of a line of a comment
+from its menu, by a stand-in, and the comment closed last on a line,
+longer than its box in a small page, scrolled down to its last line with
+↓, the wheel's ↓ and pgdn, and, with
 moz-phab, the status of a patch's revision after its number, a letter,
 and the Phabricator line over its message, Space on it showing what
 differs under it, read by a stand-in for its database; and
@@ -3960,9 +3996,10 @@ it, with no window: nothing drawn before the window's size, a key, a click,
 the mouse over a patch then gone, a window too small, the wait while
 `$EDITOR` runs (an editor that edits nothing, set in the test's settings),
 quit, the command there, a link of a line of a message opened from the
-menu of a right click on it and with `o`, by a stand-in, the comment
-closed last on a line, longer than its box in a small window, scrolled
-down to its last line with ↓ and pgdn, as the wheel's ↓ do, and a database
+menu of a right click on it and with `o`, and one of a line of a comment
+from its menu, by a stand-in, the comment closed last on a line, longer
+than its box in a small window, scrolled down to its last line with ↓ and
+pgdn, as the wheel's ↓ do, and a database
 that cannot be read said before any window; two editors in one process,
 as two windows, each in its own
 folder (HEAD said in the checkout's, none elsewhere); a message's long
@@ -4215,7 +4252,10 @@ told; what the agent said of each tool, read from its answer; and what is
 saved from now on, where, and why not outside a checkout. Those in
 `search.rs`, which lines of a file a hunk shows
 already; those in `rows.rs`, a web link's line under its comment cut to
-the pane, its start kept, each file whole keeping the rows of its hunks'
+the pane, its start kept, each row of what a comment says holding the
+line it draws when that is prose (each piece of a line folded the same,
+none in a code block nor on the comment's heading, a comment collapsed
+the first line it says), each file whole keeping the rows of its hunks'
 lines, a file too long and one past what a patch shows whole shown as
 their hunks, a note saying so, and a row found again in the rows built
 otherwise (whole or in hunks, folded to another width), a line in no hunk
@@ -4270,10 +4310,15 @@ opens a link, read on the screens, made another key, and clashing there
 alone; those in `links.rs`, the links of a line of a message: its web
 links as written, less what ends a sentence or a bracket around them,
 none with no site, with another scheme or with a word running into it;
+a markdown link named by its text, its markup left out (a text that is
+a link, or holds one, said as the link it goes to), its link up to the
+`)` that closes it, its own brackets kept, a title after it not of it,
+two with nothing between them two, none to no web link; one between
+angle brackets whole, none with a space in it;
 with moz-phab, the bugs it names, `bug` a word of its own (none in `debug
 7`, which a title submitted still reads as moz-phab does), the rest as
-moz-phab reads them, none in a web link, on the settings' Bugzilla, and
-the revision its trailer names, at
+moz-phab reads them, none in a web link nor in a markdown link's text,
+on the settings' Bugzilla, and the revision its trailer names, at
 its link or bare on the settings' Phabricator, as the settings name the
 trailer; without moz-phab, its web links alone; those in
 `messages.rs`, two versions of a commit message compared where their lines
