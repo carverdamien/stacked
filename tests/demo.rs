@@ -68,6 +68,11 @@ fn titles(app: &App) -> Vec<String> {
     s.patches.iter().map(|p| app.db.patch(p).title().to_string()).collect()
 }
 
+/// How long a test waits for what it waits for before it fails: long, as
+/// the tests of this file run at once, and other suites may run meanwhile.
+/// Nothing waits that long but a test that fails.
+const PATIENCE: Duration = Duration::from_secs(120);
+
 /// The step done as Tab does it, until the tour goes on: a step that
 /// opens a screen, done again, leaves it.
 fn tab(app: &mut App, tour: &mut Tour) {
@@ -75,7 +80,7 @@ fn tab(app: &mut App, tour: &mut Tour) {
     tour.show(app);
     let started = Instant::now();
     while tour.index() == was && !tour.over() {
-        assert!(started.elapsed() < Duration::from_secs(20), "{:?} never done", tour.step());
+        assert!(started.elapsed() < PATIENCE, "{:?} never done", tour.step());
         std::thread::sleep(Duration::from_millis(5));
         app.refresh();
         tour.tick(app);
@@ -89,7 +94,7 @@ fn tab(app: &mut App, tour: &mut Tour) {
 fn until(app: &mut App, tour: &mut Tour, what: &str, mut cond: impl FnMut(&App, &Tour) -> bool) {
     let started = Instant::now();
     while !cond(app, tour) {
-        assert!(started.elapsed() < Duration::from_secs(20), "never {what}, at {:?}", tour.step());
+        assert!(started.elapsed() < PATIENCE, "never {what}, at {:?}", tour.step());
         std::thread::sleep(Duration::from_millis(5));
         app.refresh();
         tour.tick(app);

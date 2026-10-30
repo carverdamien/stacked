@@ -4573,9 +4573,11 @@ asked about, written in its review, listed with what you wrote and
 sending the work back, `Move HEAD…` on the stack's menu
 not grayed while it would not move HEAD, and the view of why opened from
 it, then left, a link of a line of a message opened from the
-menu of a right click on it and with `o`, and one of a line of a comment
-from its menu, by a stand-in, and the comment closed last on a line,
-longer than its box in a small page, scrolled down to its last line with
+menu of a right click on it and with `o` (the status line saying it is
+opening it while the stand-in is held, then that it opened it), and one
+of a line of a comment from its menu, by a stand-in, and the comment
+closed last on a line, longer than its box in a small page, scrolled
+down to its last line with
 ↓, the wheel's ↓ and pgdn, and, with
 moz-phab, the status of a patch's revision after its number, a letter,
 then its mark (`✗`, its diff otherwise) on the screen its Phabricator
@@ -4597,8 +4599,10 @@ it, with no window: nothing drawn before the window's size, a key, a click,
 the mouse over a patch then gone, a window too small, the wait while
 `$EDITOR` runs (an editor that edits nothing, set in the test's settings),
 quit, the command there, a link of a line of a message opened from the
-menu of a right click on it and with `o`, and one of a line of a comment
-from its menu, by a stand-in, the comment closed last on a line, longer
+menu of a right click on it and with `o` (the status line saying it is
+opening it while the stand-in is held, then that it opened it), and one
+of a line of a comment from its menu, by a stand-in, the comment closed
+last on a line, longer
 than its box in a small window, scrolled down to its last line with ↓ and
 pgdn, as the wheel's ↓ do, and a database
 that cannot be read said before any window; two editors in one process,

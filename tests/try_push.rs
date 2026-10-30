@@ -205,18 +205,45 @@ fn treeherder_job(label: &str, state: &str, result: &str, task: &str, retry: u64
     (label.into(), state.into(), result.into(), task.into(), retry)
 }
 
-/// The editor launching what may go, the pushes followed looked at, until
-/// `there` holds of the try push as the database has it.
-fn look_until(app: &mut App, db: &Path, there: impl Fn(&stacked::db::Run) -> bool) -> stacked::db::Run {
-    for _ in 0..100 {
-        app.launch();
-        app.settle();
-        if let Some(r) = push_run(db).filter(|r| there(r)) {
-            return r;
+/// How long a test waits for what it waits for before it fails: long, as
+/// the tests of this file run at once, each its asks, its worktrees and its
+/// pushes, and other suites may run meanwhile. Nothing waits that long but
+/// a test that fails.
+const PATIENCE: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// Looks for what `there` finds in the editor, every tenth of a second, the
+/// editor reading what came before each look: the database, and the work
+/// away from the screen. What `there` found. It looks at what the editor
+/// has, and so acts on next, never at a newer reading of the file: a test
+/// that went on from the file's could act on an editor that has not read
+/// it yet. Once `PATIENCE` is over, the test fails, `never` saying what
+/// never came.
+fn until<T>(app: &mut App, mut there: impl FnMut(&mut App) -> Option<T>, never: impl FnOnce(&mut App) -> String) -> T {
+    let started = std::time::Instant::now();
+    loop {
+        app.refresh();
+        if let Some(found) = there(app) {
+            return found;
         }
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        if started.elapsed() > PATIENCE {
+            panic!("{}", never(app));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
     }
-    panic!("the try push followed never got there: {:?}", push_run(db));
+}
+
+/// The editor launching what may go, the pushes followed looked at, until
+/// `there` holds of the try push as the editor has it then: its run.
+fn look_until(app: &mut App, db: &Path, there: impl Fn(&stacked::db::Run) -> bool) -> stacked::db::Run {
+    until(
+        app,
+        |app| {
+            app.launch();
+            app.settle();
+            push_run_in(&app.db).filter(|r| there(r))
+        },
+        |_| format!("the try push followed never got there: {:?}", push_run(db)),
+    )
 }
 
 /// The stand-in for mach, for every test of this file, run as `./mach try
@@ -334,24 +361,20 @@ fn mach_calls(db: &Path) -> String {
     std::fs::read_to_string(db.with_file_name("mach-calls")).unwrap_or_default()
 }
 
-/// The try push's run on `db`, the last one.
-fn push_run(db: &Path) -> Option<stacked::db::Run> {
-    let d = Db::load(db).unwrap();
+/// The try push's run in `d`, the last one.
+fn push_run_in(d: &Db) -> Option<stacked::db::Run> {
     d.runs().into_iter().rev().find(|r| r.what == stacked::db::TRY_PUSH).cloned()
 }
 
-/// Waits for the try push on `db` to be where `there` says, the editor
-/// looking meanwhile: its run then.
+/// The try push's run on `db`, the last one.
+fn push_run(db: &Path) -> Option<stacked::db::Run> {
+    push_run_in(&Db::load(db).unwrap())
+}
+
+/// Waits for the try push on `db` to be where `there` says, as the editor
+/// has it: its run then.
 fn wait_push(app: &mut App, db: &Path, there: impl Fn(&stacked::db::Run) -> bool) -> stacked::db::Run {
-    for _ in 0..300 {
-        app.refresh();
-        if let Some(r) = push_run(db).filter(|r| there(r)) {
-            app.refresh();
-            return r;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(100));
-    }
-    panic!("the try push never got there: {:?}\n{}", push_run(db), mach_calls(db));
+    until(app, |app| push_run_in(&app.db).filter(|r| there(r)), |_| format!("the try push never got there: {:?}\n{}", push_run(db), mach_calls(db)))
 }
 
 /// The cursor moved onto the head of comment `id`, in the middle.
@@ -412,7 +435,8 @@ fn asks_over(app: &mut App) {
     let Ok(real) = given.canonicalize() else { return };
     let inside: Vec<String> = [&given, &real].iter().filter(|d| d.is_absolute()).map(|d| format!("{}/", d.display())).collect();
     let mut working = String::new();
-    for _ in 0..300 {
+    let started = std::time::Instant::now();
+    while started.elapsed() < PATIENCE {
         let Ok(ps) = Command::new("ps").args(["axww", "-o", "command="]).output() else { break };
         working = String::from_utf8_lossy(&ps.stdout).lines().filter(|l| inside.iter().any(|i| l.contains(i.as_str()))).collect::<Vec<_>>().join("\n");
         if working.is_empty() {
@@ -647,18 +671,19 @@ fn down_to_review(app: &mut App, text: &str) {
     panic!("no line {text:?} in the review:\n{}", draw(app));
 }
 
-/// Waits for the asks to land, `n` works then waiting for review on `s`.
+/// Whether in `d` no ask goes, and `n` works wait for review on `s`.
+fn landed_in(d: &Db, n: usize) -> bool {
+    !d.runs().iter().any(|r| r.state == stacked::db::RunState::Started) && stacked::held::queue(d, "s").len() == n
+}
+
+/// Waits for the asks to land, `n` works then waiting for review on `s`,
+/// as the editor has them: the keys after go to what landed.
 fn landed(app: &mut App, db: &Path, n: usize) {
-    for _ in 0..300 {
-        app.refresh();
-        let d = Db::load(db).unwrap();
-        let going = d.runs().iter().any(|r| r.state == stacked::db::RunState::Started);
-        if !going && stacked::held::queue(&d, "s").len() == n {
-            return;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(100));
-    }
-    panic!("never landed: {n} works");
+    until(
+        app,
+        |app| landed_in(&app.db, n).then_some(()),
+        |app| format!("never landed: {n} works; the database landed them: {}\n{}", landed_in(&Db::load(db).unwrap(), n), draw(app)),
+    )
 }
 
 /// The comments of stack `s`'s patch `k`.
@@ -724,22 +749,18 @@ fn claude_args(db: &Path) -> Vec<String> {
 /// id, with the folder of its own that copy is in. The editor launches
 /// what waits meanwhile.
 fn tries_going(app: &mut App, db: &Path, n: usize) -> Vec<(String, PathBuf)> {
-    let mut going = Vec::new();
-    for _ in 0..300 {
-        app.refresh();
-        let d = Db::load(db).unwrap();
-        going = d
-            .runs()
+    let going = |d: &Db| -> Vec<(String, PathBuf)> {
+        d.runs()
             .into_iter()
             .filter(|r| r.what == "try" && r.state == stacked::db::RunState::Started)
             .filter_map(|r| Some((r.id.clone(), PathBuf::from(stacked::ask::info(r)?.todo?))))
-            .collect();
-        if going.len() == n && going.iter().all(|(_, dir)| dir.join(stacked::try_push::GRAPH).exists()) {
-            return going;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(100));
-    }
-    panic!("not {n} try push asks going, each its copy of the task graph downloaded: {going:?}");
+            .collect()
+    };
+    until(
+        app,
+        |app| Some(going(&app.db)).filter(|g| g.len() == n && g.iter().all(|(_, dir)| dir.join(stacked::try_push::GRAPH).exists())),
+        |_| format!("not {n} try push asks going, each its copy of the task graph downloaded: {:?}", going(&Db::load(db).unwrap())),
+    )
 }
 
 #[test]

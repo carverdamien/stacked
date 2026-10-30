@@ -3375,18 +3375,21 @@ mod tests {
         // Given back after: the next takes it.
         Db::edit(&path, |db| db.set_view("s", "none")).unwrap();
         assert_eq!(Db::load(&path).unwrap().view("s"), Some("none"));
-        // Two threads take it in turn: the second waits for the first.
+        // Two threads take it in turn: the second waits for the first, which
+        // says once it holds it.
         let started = std::time::Instant::now();
+        let (holding, holds) = std::sync::mpsc::channel();
         let held = {
             let path = path.clone();
             std::thread::spawn(move || {
                 Db::edit(&path, |_| {
+                    holding.send(()).unwrap();
                     std::thread::sleep(std::time::Duration::from_millis(300));
                     Ok(())
                 })
             })
         };
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        holds.recv().unwrap();
         Db::edit(&path, |db| db.set_view("s", "all")).unwrap();
         assert!(started.elapsed() >= std::time::Duration::from_millis(300), "it waited its turn");
         held.join().unwrap().unwrap();

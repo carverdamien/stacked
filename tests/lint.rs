@@ -179,7 +179,8 @@ fn over(app: &mut App) {
     let Ok(real) = given.canonicalize() else { return };
     let inside: Vec<String> = [&given, &real].iter().filter(|d| d.is_absolute()).map(|d| format!("{}/", d.display())).collect();
     let mut working = String::new();
-    for _ in 0..300 {
+    let started = std::time::Instant::now();
+    while started.elapsed() < PATIENCE {
         let Ok(ps) = Command::new("ps").args(["axww", "-o", "command="]).output() else { break };
         working = String::from_utf8_lossy(&ps.stdout).lines().filter(|l| inside.iter().any(|i| l.contains(i.as_str()))).collect::<Vec<_>>().join("\n");
         if working.is_empty() {
@@ -350,28 +351,68 @@ fn lint(app: &mut App, label: &str) {
 
 /// The lint jobs of `db`, the first asked first.
 fn lint_runs(db: &Path) -> Vec<Run> {
-    let d = Db::load(db).unwrap();
-    d.runs().into_iter().filter(|r| r.what == stacked::db::LINT).cloned().collect()
+    lint_runs_in(&Db::load(db).unwrap())
 }
 
-/// Waits for the last lint job of `db` to be where `there` says, the
-/// editor looking meanwhile: its run then.
-fn wait_lint(app: &mut App, db: &Path, there: impl Fn(&Run) -> bool) -> Run {
-    for _ in 0..600 {
-        app.refresh();
-        if let Some(r) = lint_runs(db).pop().filter(|r| there(r)) {
-            app.refresh();
-            draw(app);
-            return r;
+/// How long a test waits for what it waits for before it fails: long, as
+/// the tests of this file run at once, each its lint jobs, its asks and its
+/// worktrees, and other suites may run meanwhile. Nothing waits that long
+/// but a test that fails.
+const PATIENCE: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// Looks for what `there` finds, every tenth of a second, until it finds
+/// it: that. Once `PATIENCE` is over, the test fails, `never` saying what
+/// never came.
+fn eventually<T>(mut there: impl FnMut() -> Option<T>, never: impl FnOnce() -> String) -> T {
+    let started = std::time::Instant::now();
+    loop {
+        if let Some(found) = there() {
+            return found;
+        }
+        if started.elapsed() > PATIENCE {
+            panic!("{}", never());
         }
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
-    panic!("the lint job never got there: {:?}\n{}", lint_runs(db).pop(), lint_calls(db));
+}
+
+/// The lint jobs in `d`, the first asked first.
+fn lint_runs_in(d: &Db) -> Vec<Run> {
+    d.runs().into_iter().filter(|r| r.what == stacked::db::LINT).cloned().collect()
+}
+
+/// Waits for the last lint job of `db` to be where `there` says, as the
+/// editor has it, the editor reading what came before each look: its run
+/// then. The keys after go to what the editor has, not to a newer reading
+/// of the file that it may not have read yet.
+fn wait_lint(app: &mut App, db: &Path, there: impl Fn(&Run) -> bool) -> Run {
+    let r = eventually(
+        || {
+            app.refresh();
+            lint_runs_in(&app.db).pop().filter(|r| there(r))
+        },
+        || format!("the lint job never got there: {:?}\n{}", lint_runs(db).pop(), lint_calls(db)),
+    );
+    draw(app);
+    r
 }
 
 /// Waits for the last lint job of `db` to be over.
 fn linted(app: &mut App, db: &Path) -> Run {
     wait_lint(app, db, |r| r.state != RunState::Started)
+}
+
+/// The edit asked of `db`, the first one, once it is over, the editor
+/// reading what came meanwhile; `asked` saying that it was asked, as the
+/// test fails if it never is.
+fn edit_over(app: &mut App, db: &Path, asked: &str) -> Run {
+    eventually(
+        || {
+            app.refresh();
+            Db::load(db).unwrap().runs().into_iter().find(|a| a.what == "change").filter(|a| a.state != RunState::Started).cloned()
+        },
+        || format!("{asked}, and over: {:?}", Db::load(db).unwrap().runs().into_iter().find(|a| a.what == "change")),
+    )
 }
 
 /// File `path` as patch `n` (from 1) of stack `s` leaves it, read with
@@ -689,13 +730,7 @@ fn an_edit_asked_while_the_linter_runs_waits_for_it_then_goes_on_from_what_it_ma
     Db::edit(&db, |d| d.set_note(question.clone())).unwrap();
     let answer = (question.change.clone(), question.id.clone());
     assert_eq!(stacked::ask::send(&db, "s", &[answer], stacked::db::Way::Answer, false, stacked::db::Effort::High).unwrap(), None);
-    for _ in 0..300 {
-        let d = Db::load(&db).unwrap();
-        if d.runs().iter().any(|r| r.what == "answer" && r.state != RunState::Started) {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(100));
-    }
+    eventually(|| Db::load(&db).unwrap().runs().iter().any(|r| r.what == "answer" && r.state != RunState::Started).then_some(()), || "never answered".into());
     let d = Db::load(&db).unwrap();
     assert!(d.runs().iter().any(|r| r.what == "answer" && r.state == RunState::Done), "answered while the linter ran");
     assert!(lint_runs(&db).pop().is_some_and(|r| r.state == RunState::Started), "the linter still runs");
@@ -705,17 +740,7 @@ fn an_edit_asked_while_the_linter_runs_waits_for_it_then_goes_on_from_what_it_ma
     drop(held);
     let r = wait_lint(&mut app, &db, |l| l.id == r.id && l.state != RunState::Started);
     assert!(r.held.as_ref().is_some_and(|h| h.stack.is_some()), "{}", r.summary);
-    let mut asked = None;
-    for _ in 0..300 {
-        app.refresh();
-        let d = Db::load(&db).unwrap();
-        asked = d.runs().into_iter().find(|a| a.what == "change").cloned();
-        if asked.as_ref().is_some_and(|a| a.state != RunState::Started) {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(100));
-    }
-    let asked = asked.expect("the edit was asked");
+    let asked = edit_over(&mut app, &db, "the edit was asked");
     assert_eq!(stacked::ask::info(&asked).unwrap().after.as_deref(), Some(r.id.as_str()));
     // What the agent found: the stack as the linter left it.
     let saw = std::fs::read_to_string(db.with_file_name("claude-saw")).unwrap();
@@ -852,17 +877,7 @@ fn a_linter_that_hangs_is_stopped_from_the_banner_nothing_landing_and_the_edit_t
     drop(held);
     assert_eq!(linted_meanwhile(&db), "", "the linter went on");
     // The edit that waited goes, from the stack as it was.
-    let mut asked = None;
-    for _ in 0..300 {
-        app.refresh();
-        let d = Db::load(&db).unwrap();
-        asked = d.runs().into_iter().find(|a| a.what == "change").cloned();
-        if asked.as_ref().is_some_and(|a| a.state != RunState::Started) {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(100));
-    }
-    let asked = asked.expect("the edit that waited was asked");
+    let asked = edit_over(&mut app, &db, "the edit that waited was asked");
     assert_eq!(stacked::ask::info(&asked).unwrap().after, None, "not from the linter's work");
     assert_eq!(std::fs::read_to_string(db.with_file_name("claude-saw")).unwrap(), two);
 }
@@ -996,27 +1011,12 @@ fn a_waiting_lint_job_is_dropped_once_asked_by_delete_on_its_line_or_from_the_st
     assert_eq!((dropped.state, dropped.summary.as_str()), (RunState::Failed, stacked::lint::DROPPED));
     // The edit asked after it goes, from the stack as it is: t's linter,
     // still running, holds back only another lint job.
-    let mut asked = None;
-    for _ in 0..300 {
-        app.refresh();
-        let d = Db::load(&db).unwrap();
-        asked = d.runs().into_iter().find(|a| a.what == "change").cloned();
-        if asked.as_ref().is_some_and(|a| a.state != RunState::Started) {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(100));
-    }
-    let asked = asked.expect("the edit asked after it went");
+    let asked = edit_over(&mut app, &db, "the edit asked after it went");
     assert!(stacked::ask::info(&asked).unwrap().notes.iter().any(|n| n.id == "s-after-lint"));
     let t = || lint_runs(&db).into_iter().find(|r| r.stack == "t").unwrap();
     assert_eq!(t().state, RunState::Started, "t's linter still runs");
     // Let go, t's lands.
     drop(held);
-    for _ in 0..600 {
-        if t().state != RunState::Started {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(100));
-    }
+    eventually(|| (t().state != RunState::Started).then_some(()), || "t's linter never landed".into());
     assert_eq!(t().state, RunState::Done, "{}", t().summary);
 }

@@ -77,11 +77,19 @@ fn ask(port: u16, host: &str, request: &str, body: &str) -> (String, Vec<u8>) {
     (head.lines().next().unwrap().to_string(), all[at + 4..].to_vec())
 }
 
-/// The events' lines, read until one is as `wanted` says: what it is.
+/// How long a test waits for what it waits for before it fails: long, as
+/// the tests of this file run at once, each its editor and its worktrees,
+/// and other suites may run meanwhile. Nothing waits that long but a test
+/// that fails.
+const PATIENCE: Duration = Duration::from_secs(120);
+
+/// The events' lines, read until one is as `wanted` says: what it is. The
+/// server says that it is still there every fifteen seconds, so the wait
+/// ends though nothing changes.
 fn until(events: &mut BufReader<TcpStream>, what: &str, wanted: impl Fn(&str) -> bool) -> Vec<String> {
     let started = Instant::now();
     let mut seen = Vec::new();
-    while started.elapsed() < Duration::from_secs(20) {
+    while started.elapsed() < PATIENCE {
         let mut line = String::new();
         if events.read_line(&mut line).unwrap() == 0 {
             break;
@@ -119,13 +127,14 @@ const MADE: &str = "is not ondemand or precreate";
 
 /// Waits for `dir` to be gone: whether it is.
 fn gone(dir: &Path) -> bool {
-    for _ in 0..300 {
+    let started = Instant::now();
+    while started.elapsed() < PATIENCE {
         if !dir.exists() {
             return true;
         }
         std::thread::sleep(Duration::from_millis(100));
     }
-    false
+    !dir.exists()
 }
 
 /// `stacked web`, run: killed if the test fails before it exits.
@@ -207,7 +216,7 @@ fn left(mut child: Running, mut said: BufReader<ChildStderr>, events: &mut BufRe
         if let Some(s) = child.0.try_wait().unwrap() {
             break s;
         }
-        assert!(started.elapsed() < Duration::from_secs(20), "still running");
+        assert!(started.elapsed() < PATIENCE, "still running");
         std::thread::sleep(Duration::from_millis(50));
     };
     let mut rest = String::new();
@@ -401,11 +410,13 @@ fn reworded(db: &Path, message: &str) {
 }
 
 /// The program the editor served from this process opens web links with: a
-/// stand-in, in `dir`, that opens nothing and writes each link it is given
-/// on a line of the file this gives. No test opens a browser.
+/// stand-in, in `dir`, that opens nothing, writes each link it is given on
+/// a line of the file this gives, and ends once no `hold` is beside it, for
+/// the editor to be seen opening a link. No test opens a browser.
 fn stand_in_opener(dir: &Path) -> PathBuf {
     let path = dir.join("open.sh");
-    std::fs::write(&path, "#!/bin/sh\nprintf '%s\\n' \"$1\" >> \"$(dirname \"$0\")/opened.txt\"\n").unwrap();
+    let script = "#!/bin/sh\nd=\"$(dirname \"$0\")\"\nprintf '%s\\n' \"$1\" >> \"$d/opened.txt\"\nwhile [ -e \"$d/hold\" ]; do sleep 0.05; done\n";
+    std::fs::write(&path, script).unwrap();
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
     stacked::refs::open_links_with(&path);
     dir.join("opened.txt")
@@ -417,7 +428,7 @@ fn links_opened(log: &Path, n: usize) -> Vec<String> {
     let started = Instant::now();
     loop {
         let all: Vec<String> = std::fs::read_to_string(log).unwrap_or_default().lines().map(String::from).collect();
-        if all.len() >= n || started.elapsed() > Duration::from_secs(20) {
+        if all.len() >= n || started.elapsed() > PATIENCE {
             return all;
         }
         std::thread::sleep(Duration::from_millis(50));
@@ -478,8 +489,15 @@ fn a_link_of_a_line_of_a_message_or_of_a_comment_opens_from_its_menu_and_one_of_
     ask(port, &host, &input, &format!("m {x} {y} l\n"));
     until(&mut events, "the link opened", |l| text(l).contains(&format!("opened {why} in your browser")));
     assert_eq!(links_opened(&log, 1), std::slice::from_ref(&why));
-    // o, the cursor on the line, opens it again.
+    // o, the cursor on the line, opens it again: the status line says so
+    // while the stand-in is held, then once it has, the editor free to open
+    // the next.
+    let hold = tmp.path().join("hold");
+    std::fs::write(&hold, "").unwrap();
     ask(port, &host, &input, "k c 6f -\n");
+    until(&mut events, "the link opening", |l| text(l).contains(&format!("opening {why}…")));
+    std::fs::remove_file(&hold).unwrap();
+    until(&mut events, "the link opened again", |l| text(l).contains(&format!("opened {why} in your browser")));
     assert_eq!(links_opened(&log, 2), [why.clone(), why.clone()]);
     // A right click on the line of the comment: its menu has the link,
     // named by its text, which opens it.

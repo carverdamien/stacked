@@ -110,11 +110,16 @@ fn find(buf: &Buffer, said: &str) -> Option<(u16, u16)> {
     })
 }
 
+/// How long a test waits for what it waits for before it fails: long, as
+/// the tests of this file run at once, each its editor, and other suites
+/// may run meanwhile. Nothing waits that long but a test that fails.
+const PATIENCE: Duration = Duration::from_secs(120);
+
 /// What the editor sends, read until it sends what `wanted` says: that.
 fn until(s: &Session, what: &str, wanted: impl Fn(&Output) -> bool) -> Output {
     let started = Instant::now();
     let mut last = None;
-    while started.elapsed() < Duration::from_secs(20) {
+    while started.elapsed() < PATIENCE {
         match s.recv(Duration::from_millis(100)) {
             Some(o) if wanted(&o) => return o,
             Some(o) => last = Some(o),
@@ -454,12 +459,14 @@ fn the_ask_dialog_opens_with_nothing_set_is_clicked_and_asks_later_in_the_window
 
 /// The links a stand-in for the program that opens web links, in `dir`,
 /// writes once it was given `n` of them, or the wait given up: the editor
-/// of this process opens them with it from now on. It opens nothing: no test
-/// opens a browser.
+/// of this process opens them with it from now on. It opens nothing (no
+/// test opens a browser), and ends once no `hold` is beside it, for the
+/// editor to be seen opening a link.
 fn opened_by_stand_in(dir: &Path) -> impl Fn(usize) -> Vec<String> {
     use std::os::unix::fs::PermissionsExt;
     let path = dir.join("open.sh");
-    std::fs::write(&path, "#!/bin/sh\nprintf '%s\\n' \"$1\" >> \"$(dirname \"$0\")/opened.txt\"\n").unwrap();
+    let script = "#!/bin/sh\nd=\"$(dirname \"$0\")\"\nprintf '%s\\n' \"$1\" >> \"$d/opened.txt\"\nwhile [ -e \"$d/hold\" ]; do sleep 0.05; done\n";
+    std::fs::write(&path, script).unwrap();
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
     stacked::refs::open_links_with(&path);
     let log = dir.join("opened.txt");
@@ -467,7 +474,7 @@ fn opened_by_stand_in(dir: &Path) -> impl Fn(usize) -> Vec<String> {
         let started = Instant::now();
         loop {
             let all: Vec<String> = std::fs::read_to_string(&log).unwrap_or_default().lines().map(String::from).collect();
-            if all.len() >= n || started.elapsed() > Duration::from_secs(20) {
+            if all.len() >= n || started.elapsed() > PATIENCE {
                 return all;
             }
             std::thread::sleep(Duration::from_millis(50));
@@ -519,14 +526,20 @@ fn a_link_of_a_line_of_a_message_or_of_a_comment_opens_from_its_menu_and_one_of_
     s.send(Input::Click { x, y, right: false });
     screen(&s, "the link opened", |b| text(b).contains(&format!("opened {why} in your browser")));
     assert_eq!(opened(1), std::slice::from_ref(&why));
-    // o, the cursor on the line, opens it again.
+    // o, the cursor on the line, opens it again: the status line says so
+    // while the stand-in is held, then once it has, the editor free to open
+    // the next.
+    let hold = tmp.path().join("hold");
+    std::fs::write(&hold, "").unwrap();
     press(&s, KeyCode::Char('o'));
+    screen(&s, "the link opening", |b| text(b).contains(&format!("opening {why}…")));
+    std::fs::remove_file(&hold).unwrap();
+    let buf = screen(&s, "the link opened again", |b| text(b).contains(&format!("opened {why} in your browser")));
     assert_eq!(opened(2), [why.clone(), why.clone()]);
-    // A right click on the line of the comment: its menu has the link,
-    // named by its text, which opens it.
+    // A right click on the line of the comment, on that screen, the last
+    // sent: its menu has the link, named by its text, which opens it.
     let comment = "▎   Read the docs";
-    let buf = screen(&s, "the comment's line", |b| find(b, comment).is_some());
-    let (x, y) = find(&buf, comment).unwrap();
+    let (x, y) = find(&buf, comment).unwrap_or_else(|| panic!("no comment's line:\n{}", text(&buf)));
     s.send(Input::Click { x, y, right: true });
     let item = "Open \"the docs\" in your browser";
     let menu = screen(&s, "the comment's menu", |b| find(b, item).is_some());

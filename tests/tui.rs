@@ -151,7 +151,8 @@ fn asks_over(app: &mut App) {
     let Ok(real) = given.canonicalize() else { return };
     let inside: Vec<String> = [&given, &real].iter().filter(|d| d.is_absolute()).map(|d| format!("{}/", d.display())).collect();
     let mut working = String::new();
-    for _ in 0..300 {
+    let started = std::time::Instant::now();
+    while started.elapsed() < PATIENCE {
         let Ok(ps) = Command::new("ps").args(["axww", "-o", "command="]).output() else { break };
         working = String::from_utf8_lossy(&ps.stdout)
             .lines()
@@ -164,6 +165,47 @@ fn asks_over(app: &mut App) {
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
     assert!(working.is_empty(), "still at work in {}:\n{working}", real.display());
+}
+
+/// How long a test waits for what it waits for before it fails: long, as
+/// every test of this file runs at once, each its asks and its worktrees,
+/// and other suites may run meanwhile. Nothing waits that long but a test
+/// that fails.
+const PATIENCE: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// Looks for what `there` finds, every tenth of a second, until it finds
+/// it: that. Once `PATIENCE` is over, the test fails, `never` saying what
+/// never came.
+fn eventually<T>(mut there: impl FnMut() -> Option<T>, never: impl FnOnce() -> String) -> T {
+    let started = std::time::Instant::now();
+    loop {
+        if let Some(found) = there() {
+            return found;
+        }
+        if started.elapsed() > PATIENCE {
+            panic!("{}", never());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+}
+
+/// Looks for what `there` finds in the editor, as `eventually` does, the
+/// editor reading what came before each look: the database, and the work
+/// away from the screen. It looks at what the editor has, and so acts on
+/// next, never at a newer reading of the file: a test that went on from
+/// the file's could act on an editor that has not read it yet.
+fn until<T>(app: &mut App, mut there: impl FnMut(&mut App) -> Option<T>, never: impl FnOnce(&mut App) -> String) -> T {
+    let started = std::time::Instant::now();
+    loop {
+        app.refresh();
+        if let Some(found) = there(app) {
+            return found;
+        }
+        if started.elapsed() > PATIENCE {
+            panic!("{}", never(app));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
 }
 
 /// Draws the screen; what it shows, and where the terminal's cursor is.
@@ -282,31 +324,20 @@ fn down_to(app: &mut App, text: &str) {
 
 /// Draws until the screen shows `what`, the file read again meanwhile.
 fn wait_for(app: &mut App, what: &str) -> String {
-    // Patient: the asks of every test run at once, each its worktree to
-    // make.
-    for _ in 0..300 {
-        app.refresh();
-        let screen = draw(app);
-        if screen.contains(what) {
-            return screen;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(100));
-    }
-    panic!("never shown: {what:?}\n{}", draw(app));
+    until(app, |app| Some(draw(app)).filter(|screen| screen.contains(what)), |app| format!("never shown: {what:?}\n{}", draw(app)))
+}
+
+/// Whether in `d` no ask goes, and `n` works wait for review on stack `s`;
+/// any number but none, for `None`.
+fn landed_in(d: &Db, n: Option<usize>) -> bool {
+    let waiting = stacked::held::queue(d, "s").len();
+    !d.runs().iter().any(|r| r.state == stacked::db::RunState::Started) && n.map_or(waiting > 0, |n| waiting == n)
 }
 
 /// Waits for what the agent brings back to land, then accepts all of it,
 /// as a review accepting everything does.
 fn accept_landed(app: &mut App, db: &Path) {
-    for _ in 0..300 {
-        app.refresh();
-        let d = Db::load(db).unwrap();
-        let going = d.runs().iter().any(|r| r.state == stacked::db::RunState::Started);
-        if !going && !stacked::held::queue(&d, "s").is_empty() {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(100));
-    }
+    until(app, |app| landed_in(&app.db, None).then_some(()), |app| format!("nothing landed\n{}", draw(app)));
     Db::edit(db, |d| {
         let ids: Vec<String> = stacked::held::queue(d, "s").into_iter().map(|r| r.id.clone()).collect();
         for id in ids {
@@ -4590,14 +4621,7 @@ fn hold(db: &Path) -> Held {
 fn efforts(app: &mut App, n: usize) -> Vec<String> {
     let at = app.path.with_file_name("efforts");
     let read = || std::fs::read_to_string(&at).unwrap_or_default().lines().map(String::from).collect::<Vec<_>>();
-    for _ in 0..300 {
-        if read().len() >= n {
-            break;
-        }
-        app.refresh();
-        std::thread::sleep(std::time::Duration::from_millis(100));
-    }
-    read()
+    until(app, |_| Some(read()).filter(|all| all.len() >= n), |_| format!("not {n} asks started: {:?}", read()))
 }
 
 /// Has the stand-in answer the asks on `db` (`fake_claude`) with
@@ -7870,16 +7894,17 @@ fn hold_moves(src: &Path) -> PathBuf {
 
 /// Reads what came, and draws, until `done` says so.
 fn refresh_until(app: &mut App, done: impl Fn(&App) -> bool) {
-    for _ in 0..300 {
-        app.refresh();
-        draw(app);
-        if done(app) {
-            return;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(100));
-    }
-    let screen = draw(app);
-    panic!("never came, the status saying {:?}:\n{screen}", app.status);
+    until(
+        app,
+        |app| {
+            draw(app);
+            done(app).then_some(())
+        },
+        |app| {
+            let screen = draw(app);
+            format!("never came, the status saying {:?}:\n{screen}", app.status)
+        },
+    )
 }
 
 #[test]
@@ -8802,16 +8827,18 @@ fn an_agent_stopped_lands_its_ask_as_failed_at_once_its_comment_free_again() {
     // was, and the bar no longer does.
     wait_for(&mut app, "ask failed: you stopped the agent");
     let stopped = "the agent was stopped, and its ask landed as failed";
-    let mut screen = draw(&mut app);
-    for _ in 0..300 {
+    let over = |app: &mut App| {
+        let screen = draw(app);
         if app.status == stopped {
-            break;
+            return Some(screen);
         }
         assert!(screen.contains("stopping the agent…"), "the bar says so until the stop is over: {}\n{screen}", app.status);
-        std::thread::sleep(std::time::Duration::from_millis(100));
-        app.refresh();
-        screen = draw(&mut app);
-    }
+        None
+    };
+    let screen = match over(&mut app) {
+        Some(screen) => screen,
+        None => until(&mut app, over, |app| format!("the stop never over, the status saying {:?}", app.status)),
+    };
     assert_eq!(app.status, stopped);
     assert!(!screen.contains("Reading the patch.") && !screen.contains("stopping the agent…"), "{screen}");
     assert!(screen.contains("✗ you · a.txt: TWO"), "{screen}");
@@ -8839,13 +8866,13 @@ fn an_ask_done_leaves_no_zombie_once_the_editor_looks_again() {
     drop(held);
     wait_for(&mut app, "⟳ 1 landed ask waits for your review");
     // Its wrapper lands the ask, starts what waits, then exits...
-    for _ in 0..300 {
-        let s = state_of(pid);
-        if s.is_empty() || s.starts_with('Z') {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(100));
-    }
+    eventually(
+        || {
+            let s = state_of(pid);
+            (s.is_empty() || s.starts_with('Z')).then_some(())
+        },
+        || format!("the wrapper never exited: {}", state_of(pid)),
+    );
     // ...and the editor's next look waits for it, as every few seconds.
     app.launch();
     app.settle();
@@ -8873,12 +8900,8 @@ fn an_ask_whose_agent_is_gone_without_landing_lands_at_the_next_look() {
     // with: left for who started it to wait for.
     let mut zombie = Working::start();
     zombie.0.kill().unwrap();
-    for _ in 0..300 {
-        if state_of(zombie.0.id()).starts_with('Z') {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
+    let pid = zombie.0.id();
+    eventually(|| state_of(pid).starts_with('Z').then_some(()), || format!("never a zombie: {}", state_of(pid)));
     asked_in(&db, "run-gone", &said("why so loud?"), gone.id());
     asked_in(&db, "run-zombie", &said("and this?"), zombie.0.id());
     app.refresh();
@@ -8929,13 +8952,7 @@ fn a_stream_read_from_the_help_folds_there() {
     assert!(draw(&mut app).contains("Once the agent is done, the stream folds on its own."));
     // Its answer lands: the help goes back to the screen, not the stream.
     drop(held);
-    for _ in 0..300 {
-        app.refresh();
-        if matches!(&app.mode, Mode::Help { back, .. } if **back == Mode::Normal) {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(100));
-    }
+    until(&mut app, |app| matches!(&app.mode, Mode::Help { back, .. } if **back == Mode::Normal).then_some(()), |app| format!("{:?}", app.mode));
     let Mode::Help { back, .. } = &app.mode else { panic!("{:?}", app.mode) };
     assert_eq!(**back, Mode::Normal);
     assert_eq!(app.status, "the agent is done: what it brought waits for your review");
@@ -11421,14 +11438,14 @@ fn where_a_file_is_edited_is_a_choice_of_its_item_kept_per_stack() {
 /// Draws until the search has looked everywhere it looks: what it found,
 /// each where and its line.
 fn searched(app: &mut App) -> Vec<String> {
-    for _ in 0..300 {
-        app.refresh();
-        draw(app);
-        if app.searching.as_ref().is_some_and(|s| s.done) {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(50));
-    }
+    until(
+        app,
+        |app| {
+            draw(app);
+            app.searching.as_ref().is_none_or(|s| s.done).then_some(())
+        },
+        |_| "the search never ended".into(),
+    );
     let s = app.searching.as_ref().expect("a search open");
     assert!(s.done, "it never ended");
     s.found.iter().map(|f| format!("{} · {}", f.at, f.line)).collect()
@@ -11532,24 +11549,13 @@ fn the_agents_worktrees_are_made_ahead_as_the_stack_s_checkout_says() {
     std::fs::write(src.join(".stacked/local.toml"), "[agent]\nanswer_only_worktree = \"precreate\"\nworktree = \"sometimes\"\n").unwrap();
     let mut app = open(&db).unwrap();
     let made = src.join(".stacked/s/answer-only-agent");
-    for _ in 0..300 {
-        app.refresh();
-        if made.join(".git").exists() && !app.status.is_empty() {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(100));
-    }
+    until(&mut app, |app| (made.join(".git").exists() && !app.status.is_empty()).then_some(()), |app| format!("not made ahead: {}", app.status));
     assert!(made.join(".git").exists(), "made ahead");
     assert!(!src.join(".stacked/s/agent").exists(), "a change's is made when one is asked");
     assert!(app.status.ends_with(".stacked/local.toml: agent.worktree: \"sometimes\" is not ondemand or precreate"), "{}", app.status);
     // Removed once the editor exits.
     app.leave();
-    for _ in 0..300 {
-        if !made.exists() {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(100));
-    }
+    eventually(|| (!made.exists()).then_some(()), || "not removed".into());
     assert!(!made.exists(), "removed");
 }
 
@@ -11761,17 +11767,12 @@ fn a_comment_asked_later_waits_in_the_batch() {
 }
 
 /// What each ask of stack `s` was started with: how, where, and how many
-/// comments; once `n` are.
-fn asks_made(db: &Path, n: usize) -> Vec<(stacked::db::Way, stacked::ask::Scope, usize)> {
-    for _ in 0..300 {
-        let d = Db::load(db).unwrap();
-        let all: Vec<_> = d.runs().into_iter().filter_map(stacked::ask::info).map(|i| (i.way, i.scope, i.notes.len())).collect();
-        if all.len() >= n {
-            return all;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(100));
-    }
-    panic!("not {n} asks made");
+/// comments; once `n` are, as the editor has them. The editor does its
+/// work away from the screen meanwhile, as its asks start there: one sent
+/// while those sent before were still being started goes once they are.
+fn asks_made(app: &mut App, n: usize) -> Vec<(stacked::db::Way, stacked::ask::Scope, usize)> {
+    let made = |d: &Db| -> Vec<_> { d.runs().into_iter().filter_map(stacked::ask::info).map(|i| (i.way, i.scope, i.notes.len())).collect() };
+    until(app, |app| Some(made(&app.db)).filter(|all| all.len() >= n), |app| format!("not {n} asks made: {:?}", made(&Db::load(&app.path).unwrap())))
 }
 
 #[test]
@@ -11854,7 +11855,7 @@ fn the_banner_sends_the_batch_its_edits_to_one_agent_its_answers_to_one_or_each_
     // on two patches.
     choose(&mut app, "Send 2 edits to a single agent");
     assert_eq!(app.status, "sent the batch (may change the whole stack): 2 comments to a single agent");
-    assert_eq!(asks_made(&db, 1), [(Way::Change, Scope::Stack, 2)]);
+    assert_eq!(asks_made(&mut app, 1), [(Way::Change, Scope::Stack, 2)]);
     assert_eq!(batched(&db).len(), 2, "the answers wait in the batch");
     // The answers fanned out, from the banner still: an ask each.
     assert!(app.on_banner && app.mode == Mode::Normal);
@@ -11863,7 +11864,7 @@ fn the_banner_sends_the_batch_its_edits_to_one_agent_its_answers_to_one_or_each_
     keys(&mut app, &[KeyCode::Enter]);
     assert!(app.status.starts_with("sent the batch (answer only): 2 questions, an agent each"), "{}", app.status);
     assert!(batched(&db).is_empty());
-    let mut all = asks_made(&db, 3);
+    let mut all = asks_made(&mut app, 3);
     all.sort_by_key(|(w, _, n)| (*w == Way::Change, *n));
     let one = (Way::Answer, Scope::Patch(notes_of(&db, "s", 0)[0].change.clone()), 1);
     assert_eq!(all[..2], [one.clone(), one]);
@@ -13270,18 +13271,15 @@ fn what_you_write_in_the_review_of_the_agent_s_work_sends_it_back_to_the_agent()
     drop(d);
     // The next round goes on from that work, told so: its work lands in
     // place of the one sent back, the change carried.
-    let mut next = None;
-    for _ in 0..300 {
-        let d = Db::load(&db).unwrap();
-        let going = d.runs().iter().any(|r| r.state == stacked::db::RunState::Started);
-        if let Some(r) = stacked::held::queue(&d, "s").first().filter(|_| !going) {
-            next = Some(r.id.clone());
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(100));
-    }
+    let next = until(
+        &mut app,
+        |app| {
+            let going = app.db.runs().iter().any(|r| r.state == stacked::db::RunState::Started);
+            stacked::held::queue(&app.db, "s").first().filter(|_| !going).map(|r| r.id.clone())
+        },
+        |app| format!("never landed: {:?}", app.db.runs().iter().map(|r| (&r.id, &r.state, &r.summary)).collect::<Vec<_>>()),
+    );
     let d = Db::load(&db).unwrap();
-    let next = next.unwrap_or_else(|| panic!("never landed: {:?}", d.runs().iter().map(|r| (&r.id, &r.state, &r.summary)).collect::<Vec<_>>()));
     assert_ne!(next, "run-agent");
     let r = d.run(&next).unwrap();
     assert!(stacked::ask::info(r).unwrap().prompt.contains("This is another round"));
@@ -14243,13 +14241,7 @@ fn a_pull_from_phabricator_says_in_the_banner_where_it_is_until_it_is_done() {
     assert_eq!(app.banner_lines(), [stacked::tui::BannerLine::Pulling]);
     // D11 read, D12 being read: the banner says which.
     let reading = " ⇣ pulling the reviews from Phabricator: D12, revision 2 of 2…";
-    for _ in 0..500 {
-        app.refresh();
-        if banner(&mut app).starts_with(reading) {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
+    until(&mut app, |app| banner(app).starts_with(reading).then_some(()), |app| banner(app));
     assert!(banner(&mut app).starts_with(reading), "{}", banner(&mut app));
     // Open, its line is the read only section's.
     keys(&mut app, &[KeyCode::Esc]);
@@ -14567,9 +14559,10 @@ impl Working {
         Working(Command::new("sleep").arg("600").process_group(0).spawn().unwrap())
     }
 
-    /// Whether it is stopped, waiting a few seconds for it to be.
+    /// Whether it is stopped, waiting for it to be as long as a test waits.
     fn stopped(&mut self) -> bool {
-        for _ in 0..100 {
+        let started = std::time::Instant::now();
+        while started.elapsed() < PATIENCE {
             if self.0.try_wait().unwrap().is_some() {
                 return true;
             }
@@ -18484,28 +18477,17 @@ fn refused_with(db: &Path, answer: &serde_json::Value, denied: &[(&str, serde_js
 fn given(app: &mut App, n: usize) -> Vec<String> {
     let at = app.path.with_file_name("tools");
     let read = || std::fs::read_to_string(&at).unwrap_or_default().lines().map(String::from).collect::<Vec<_>>();
-    for _ in 0..300 {
-        if read().len() >= n {
-            break;
-        }
-        app.refresh();
-        std::thread::sleep(std::time::Duration::from_millis(100));
-    }
-    read()
+    until(app, |_| Some(read()).filter(|all| all.len() >= n), |_| format!("not {n} asks started: {:?}", read()))
 }
 
-/// Waits until `n` works wait for review on stack `s`, and no ask goes.
+/// Waits until `n` works wait for review on stack `s`, and no ask goes, as
+/// the editor has them: the keys after go to what landed.
 fn waiting(app: &mut App, db: &Path, n: usize) {
-    for _ in 0..300 {
-        app.refresh();
-        let d = Db::load(db).unwrap();
-        let going = d.runs().iter().any(|r| r.state == stacked::db::RunState::Started);
-        if !going && stacked::held::queue(&d, "s").len() == n {
-            return;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(100));
-    }
-    panic!("never landed: {n} works");
+    until(
+        app,
+        |app| landed_in(&app.db, Some(n)).then_some(()),
+        |app| format!("never landed: {n} works; the database landed them: {}\n{}", landed_in(&Db::load(db).unwrap(), Some(n)), draw(app)),
+    )
 }
 
 /// What an answer the editor's tests ask, on `+TWO`, was refused: two

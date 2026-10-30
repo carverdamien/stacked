@@ -46,21 +46,38 @@ impl Drop for Env {
     }
 }
 
+/// How long a test waits for what it waits for before it fails: long, as
+/// the tests of this file run at once, each its asks and its worktrees,
+/// and other suites may run meanwhile. Nothing waits that long but a test
+/// that fails.
+const PATIENCE: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// Looks for what `there` finds, every tenth of a second, until it finds
+/// it: that. Once `PATIENCE` is over, the test fails, `never` saying what
+/// never came.
+fn eventually<T>(mut there: impl FnMut() -> Option<T>, never: impl FnOnce() -> String) -> T {
+    let started = std::time::Instant::now();
+    loop {
+        if let Some(found) = there() {
+            return found;
+        }
+        if started.elapsed() > PATIENCE {
+            panic!("{}", never());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+}
+
 /// Waits until no process works in `dir`, a test's folder: none whose
 /// command names what is in it, as those of an ask do. With no `ps` to
 /// say, it does not wait.
 fn quiet(dir: &Path) {
     let inside = format!("{}/", dir.display());
-    let mut working = String::new();
-    for _ in 0..300 {
-        let Ok(ps) = Command::new("ps").args(["axww", "-o", "command="]).output() else { return };
-        working = String::from_utf8_lossy(&ps.stdout).lines().filter(|l| l.contains(&inside)).collect::<Vec<_>>().join("\n");
-        if working.is_empty() {
-            return;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(100));
-    }
-    panic!("still at work in {}:\n{working}", dir.display());
+    let working = || -> Option<String> {
+        let ps = Command::new("ps").args(["axww", "-o", "command="]).output().ok()?;
+        Some(String::from_utf8_lossy(&ps.stdout).lines().filter(|l| l.contains(&inside)).collect::<Vec<_>>().join("\n"))
+    };
+    eventually(|| working().is_none_or(|w| w.is_empty()).then_some(()), || format!("still at work in {}:\n{}", dir.display(), working().unwrap_or_default()));
 }
 
 const TEN: &str = "one\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nten\n";
@@ -813,17 +830,15 @@ fn fake_claude(e: &Env, name: &str, body: &str, result: &str) -> PathBuf {
 
 /// Waits for `n` runs to have landed, and none to be going.
 fn landed(e: &Env, n: usize) {
-    for _ in 0..200 {
-        let db = Db::load(&e.db).unwrap();
-        let runs = db.runs();
-        if runs.iter().filter(|r| r.state != RunState::Started).count() >= n
-            && runs.iter().all(|r| r.state != RunState::Started)
-        {
-            return;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(100));
-    }
-    panic!("the runs did not land:\n{}", e.ok(&["runs"]));
+    eventually(
+        || {
+            let db = Db::load(&e.db).unwrap();
+            let runs = db.runs();
+            (runs.iter().filter(|r| r.state != RunState::Started).count() >= n && runs.iter().all(|r| r.state != RunState::Started))
+                .then_some(())
+        },
+        || format!("the runs did not land:\n{}", e.ok(&["runs"])),
+    )
 }
 
 #[test]
@@ -1013,12 +1028,7 @@ fn the_agents_worktrees_are_made_ahead_and_removed_away_from_the_editor() {
     // uncommitted, as git refuses to.
     std::fs::write(answering.join("mine.txt"), "x\n").unwrap();
     forget(&e.db, &[(repo, dir.clone(), vec![AGENT, ANSWERING])]);
-    for _ in 0..100 {
-        if !agent.exists() {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(50));
-    }
+    eventually(|| (!agent.exists()).then_some(()), || "not removed".into());
     assert!(!agent.exists(), "removed");
     assert!(answering.join("mine.txt").exists(), "kept: it holds something uncommitted");
 }
@@ -2438,9 +2448,11 @@ fn landed_ids(e: &Env) -> Vec<String> {
     e.ok(&["landed", "s"]).lines().filter(|l| !l.starts_with(' ')).map(|l| l.split('\t').next().unwrap().to_string()).collect()
 }
 
-/// Whether process `pid` is still there, a moment given to go.
+/// Whether process `pid` is still there, given as long as a test waits to
+/// go.
 fn still_there(pid: u32) -> bool {
-    for _ in 0..40 {
+    let started = std::time::Instant::now();
+    while started.elapsed() < PATIENCE {
         let there = std::process::Command::new("kill").args(["-0", &pid.to_string()]).stderr(std::process::Stdio::null()).status().is_ok_and(|s| s.success());
         if !there {
             return false;
@@ -2495,16 +2507,13 @@ fn what_went_on_from_a_change_rejected_is_dropped_its_agent_stopped_and_asked_ag
     // The next goes on from it, and works on, waiting for the gate.
     let (fine, out, err) = stacked_in(&e.src, &e.db, &["send", "s", &second], "", &env);
     assert!(fine, "{out}{err}");
-    let mut going = None;
-    for _ in 0..200 {
-        let d = Db::load(&e.db).unwrap();
-        going = d.runs().into_iter().find(|r| r.state == RunState::Started).and_then(|r| Some((r.id.clone(), r.pid?)));
-        if going.is_some() {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(50));
-    }
-    let (guess, pid) = going.expect("the guess works");
+    let (guess, pid) = eventually(
+        || {
+            let d = Db::load(&e.db).unwrap();
+            d.runs().into_iter().find(|r| r.state == RunState::Started).and_then(|r| Some((r.id.clone(), r.pid?)))
+        },
+        || "the guess never worked".into(),
+    );
     // Rejected: what went on from it is dropped, its agent stopped, and it
     // is asked again, from the stack as it is.
     let (fine, out, err) = stacked_in(&e.src, &e.db, &["review", "s", "--reject-all"], "", &env);
@@ -5015,15 +5024,7 @@ fn an_agent_stopped_lands_its_ask_at_once_killed_if_it_will_not_exit() {
     let claude = fake_claude(&e, "claude-deaf.sh", &body, r#"{"replies": {"c1": "Too late."}}"#);
     let (fine, out, err) = stacked_in(&e.src, &e.db, &["send", "s", &id, "--answer-only"], "", &[("STACKED_CLAUDE", claude.as_path())]);
     assert!(fine, "{out}{err}");
-    let mut agent = None;
-    for _ in 0..300 {
-        agent = std::fs::read_to_string(&at).ok().and_then(|p| p.trim().parse::<u32>().ok());
-        if agent.is_some() {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(100));
-    }
-    let agent = agent.expect("the agent works");
+    let agent = eventually(|| std::fs::read_to_string(&at).ok().and_then(|p| p.trim().parse::<u32>().ok()), || "the agent never worked".into());
     let (run, pid) = Db::load(&e.db).unwrap().runs().iter().find(|r| r.state == RunState::Started).map(|r| (r.id.clone(), r.pid)).unwrap();
     let _deaf = Deaf(pid.expect("its wrapper runs"));
     // The shell offers it to stop, as it runs.
