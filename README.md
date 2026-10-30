@@ -60,11 +60,25 @@ as a run of its own, `try-push`).
 
 The `app` feature adds StackED, the editor in a window of its own
 (`stacked app`, below). Its window is drawn by eframe (egui), on OpenGL,
-which the build fetches: on macOS and on Linux, the build needs nothing
-more. On Linux, eframe loads X11's or Wayland's libraries, xkbcommon's and
-OpenGL's (EGL or GLX) only when StackED starts, and a Linux desktop has
-them. On macOS, `stacked app --bundle` then makes StackED.app, for the
-Dock.
+its dialogs are rfd's, and its fonts are the system's, as fontdb finds
+them: the build fetches them all, and on macOS and on Linux it needs
+nothing more. `stacked app --bundle` then makes StackED an app of the
+system's: StackED.app on macOS, for the Dock; elsewhere, a launcher among
+the desktop's applications.
+
+On Linux, StackED loads what it needs of the system only when it starts,
+and a Linux desktop has all of it: X11's libraries or Wayland's,
+xkbcommon's and OpenGL's (EGL or GLX), for its windows (eframe); D-Bus's
+library and the desktop portal, for the Open and Save dialogs (rfd), else
+zenity, which also shows the alerts; and DejaVu Sans Mono with DejaVu
+Sans, for the text, else egui's own Hack. On a Debian or Ubuntu system
+that lacks them, this installs them all:
+
+```sh
+sudo apt install libx11-xcb1 libxcursor1 libxi6 libxrandr2 libxkbcommon-x11-0 \
+  libwayland-client0 libwayland-egl1 libegl1 libgl1 \
+  libdbus-1-3 xdg-desktop-portal xdg-desktop-portal-gtk zenity fonts-dejavu-core
+```
 
 ### Completion in zsh
 
@@ -93,7 +107,7 @@ stacked new bug124 --base main     # an empty stack, to add patches to
 stacked stacks.jsonl               # open the editor on that database
 stacked                            # ... on $STACKED_FILE, the settings' file, else ./stacked.jsonl
 stacked app                        # ... in a window of its own: StackED (app)
-stacked app --bundle               # StackED.app, in ~/Applications, for the Dock (macOS)
+stacked app --bundle               # StackED as an app: StackED.app for the Dock on macOS, a launcher elsewhere
 stacked show bug123                # its patches, bottom first
 stacked show bug123 2 --path a.txt # a file as patch 2 leaves it, no checkout made
 stacked edit bug123                # as `git rebase -i`: reorder, drop, reword, edit
@@ -252,12 +266,16 @@ it) opens StackED, the editor in a window of its own, with no terminal and
 no browser: the same editor, the same keys, drawn as in a terminal. The
 window paints the editor's screen as a terminal would, a grid of cells in
 their colours, bold and italic, underlined or struck through, and draws
-the lines of boxes itself, so that they meet from row to row. On macOS
-its text is in Menlo, the system's monospace font, with Apple Symbols for
-the few characters Menlo lacks; elsewhere it is in Hack, egui's own font,
-its bold drawn twice a pixel apart and its italics slanted. ⌘+ and ⌘−
-(ctrl elsewhere) make the text larger and smaller, ⌘0 brings it back, and
-the window holds as many cells as fit in it.
+the lines of boxes itself, so that they meet from row to row. Its text is
+in the system's monospace font, as fontdb finds it where the system keeps
+its fonts: on macOS Menlo, with Apple Symbols for the few characters Menlo
+lacks; on Linux DejaVu Sans Mono, which Menlo was made from, with DejaVu
+Sans for those (else Noto Sans Symbols2 or Noto Sans Symbols); each with
+its own bold and italics. Where neither is found, the text is in Hack,
+egui's own font, its bold drawn twice a pixel apart and its italics
+slanted. ⌘+ and ⌘− (ctrl elsewhere) make the text larger and smaller, ⌘0
+brings it back, and the window holds as many cells as fit in it, under its
+menu bar.
 
 The mouse works as in the browser (above): over the patches and the
 comments it marks the line under it, and a click picks the line, a second
@@ -272,9 +290,12 @@ follows the mouse only while it is the active one, as the page does: over
 a window in the background, the mouse marks and picks nothing, but a
 click and the wheel act there all the same. A paste (⌘V on
 macOS, ctrl-v elsewhere) types what is pasted where text is being written,
-and does nothing elsewhere. On macOS ⌘ is StackED's own (⌘Q quits it, ⌘H
-hides it, ⌘W closes the window), and option types the characters it makes
-(é, ∂), as Terminal does.
+and does nothing elsewhere. On macOS ⌘ is never the editor's: ⌘Q quits
+StackED and ⌘H hides it, as the application menu has them, which is the
+system's (below); ⌘C and ⌘V copy and paste; and the other ⌘ keys do
+nothing. Option types the characters it makes (é, ∂), as Terminal does.
+StackED's menus take no key, on any system: every other key goes to the
+editor, as in a terminal.
 
 A drag selects the text it goes over, as in a terminal, but kept to the
 pane it starts in, or to the box (a menu, a preview, a comment being
@@ -294,80 +315,130 @@ the editor exits; an editor with a window of its own
 (`editor = "code --wait"` in the settings) opens that window instead. Quit
 (ctrl-c) closes the window, and closing the window quits its editor;
 either way, the agent's asks still running are listed in the terminal, as
-the editor in the terminal lists them. Elsewhere than on macOS, StackED
-then exits.
+the editor in the terminal lists them.
 
-On macOS, StackED has many windows, as a Mac app does, and the menu bar's
-File menu: New… (⌘N), Open… (⌘O), Open Recent and Close Window (⌘W).
-Open… shows the system's Open panel, where any number of databases (.jsonl
-files) can be picked: each opens in a new window, even one open in another
-window already. New… shows the Save panel, then makes an empty database
-where it says and opens it. New… never replaces a file: the panel offers
+StackED has many windows, on every system, and each has a menu bar at its
+top, egui's own, the same in every window and on every system, with one
+menu, File: New…, Open…, Open Recent, Close Window and Quit StackED. It is
+used with the mouse: none of its items has a shortcut, on any system, and
+the bar takes no key, so that every key goes to the editor. Open… shows the
+system's Open dialog, where any number of databases (.jsonl files) can be
+picked: each opens in a new window, even one open in another window
+already. New… shows the system's Save dialog, then makes an empty database
+where it says and opens it. New… never replaces a file: the dialog offers
 to, but a file there already is said in an alert and nothing is made
-(delete it first, outside StackED). Open Recent lists the eight databases
-opened last, the latest first, whether StackED opened them or stacked's
-editor did, in a terminal or in a browser (`stacked web`); one no longer
-there is taken off the list, and Clear Menu empties it. Each window has an
-editor of its own, which runs as if started in its database's folder: HEAD
-is the HEAD of the checkout there, and `$EDITOR` runs there; only the first
-window of `stacked app` runs where it was started. Close Window, like the
-window's close button, closes the window and quits its editor, as ctrl-c
-does. Closing the last window leaves StackED running, its menu bar there,
-until ⌘Q quits it, and each window's editor with it. The databases opened
-last are kept, with the windows StackED.app has open, in
-~/.stacked/state.json, never in the settings' file (`$STACKED_HOME` names
-another folder than ~/.stacked, and `$STACKED_APP_STATE` another file).
-StackED and a terminal's stacked may change that file at once: each change
-is made under a lock, on the file state.json.lock beside it, so that
-neither loses what the other wrote. StackED kept the file in
-~/Library/Application Support/StackED/state.json before; your first run of
-this stacked moves it (Settings, below).
+(delete it first, outside StackED). The dialogs are rfd's: on macOS
+AppKit's Open and Save panels, and the system's alerts; on Linux the
+desktop portal's file chooser, asked over D-Bus, else zenity's, and
+zenity's alerts, which are also written on stderr. While a dialog is open,
+the windows go on, and the items that open another are greyed out. Open
+Recent lists the eight databases opened last, the latest first, whether
+StackED opened them or stacked's editor did, in a terminal or in a browser
+(`stacked web`); one no longer there is taken off the list, and Clear Menu
+empties it. Each window has an editor of its own, which runs as if started
+in its database's folder: HEAD is the HEAD of the checkout there, and
+`$EDITOR` runs there; only the first window of `stacked app` runs where it
+was started. Close Window, like the window's close button, closes the
+window and quits its editor, as ctrl-c does. Closing the last window quits
+StackED, as Quit StackED does: every window's editor leaves, and is waited
+for. The databases opened last are kept, with the windows StackED has open
+when opened as an app (below), in ~/.stacked/state.json, never in the
+settings' file (`$STACKED_HOME` names another folder than ~/.stacked, and
+`$STACKED_APP_STATE` another file). StackED and a terminal's stacked may
+change that file at once: each change is made under a lock, on the file
+state.json.lock beside it, so that neither loses what the other wrote.
+StackED kept the file in ~/Library/Application Support/StackED/state.json
+before; your first run of this stacked moves it (Settings, below).
 
-The menu bar also has an Edit menu, after File, with Undo, Redo, Cut, Copy,
-Paste and Select All. Its items act on the panels' text fields, such as the
-name in the Save panel and the folder typed after ⇧⌘G (Go to Folder). While
-a panel is open, ⌘Z, ⇧⌘Z, ⌘X, ⌘C, ⌘V and ⌘A do in its fields what they do
-in any Mac app, so that a name can be pasted. Outside the panels, the Edit
-menu's items have no shortcuts and are greyed out, and StackED's windows
-keep those keys: ⌘C still copies the text selected, and ⌘V still types the
-clipboard where text is being written.
+There is no Edit menu: to copy, select the text with the mouse, then press
+the system's copy key (⌘C on macOS, ctrl-c elsewhere); to paste, press its
+paste key (⌘V, ctrl-v elsewhere) where you write. On macOS, the menu bar at
+the top of the screen is the system's, not StackED's: the application menu,
+as winit gives it (About, Hide with ⌘H, Quit with ⌘Q); and, only while an
+Open or Save panel is open, an Edit menu, so that ⌘Z, ⇧⌘Z, ⌘X, ⌘C, ⌘V and
+⌘A do in the panel's text fields what they do in any Mac app, such as the
+name in the Save panel and the folder typed after ⇧⌘G (Go to Folder):
+AppKit gives those keys to a text field only through the menu bar's items,
+and egui's copy and paste do not reach the panel.
 
-On macOS, `stacked app --bundle` makes StackED.app in ~/Applications
-(`--bundle DIR` makes it in DIR), for the Dock and the Finder: drag it to
-the Dock to keep it there. It holds a copy of this stacked, so make it again
-once stacked is updated; made again, it replaces the StackED.app there, but
-nothing else of that name. Opened from the Dock or the Finder, StackED has
-no terminal, nor what a terminal's shell sets. It first takes what your
-login shell sets (`$SHELL -ilc`, given ten seconds): `PATH`, to find git and
-claude with, `EDITOR`, `STACKED_FILE`. It then opens again the windows that
-were open when it was last quit, but those whose database is no longer
-there. With none to open again, it opens the database `$STACKED_FILE` or
-the settings' `file` names, if either does, and else no window at all, only
-its menu bar: File → Open… opens one. What goes wrong is said in an alert.
-`$EDITOR` has no terminal to run in there, so it runs in a window of
-Terminal's: StackED writes the command in a script of its own (a .command
-file, which removes itself as it runs) and has `open -a Terminal` run it,
-so that macOS asks for no permission to control Terminal. StackED goes on
-once the editor exits; closing that window before it does changes nothing.
-An editor with a window of its own (`code --wait`, `zed --wait`, `open -W
--n -a TextEdit`) opens that window instead.
+`stacked app --bundle` makes StackED an app of the system's. On macOS, it
+makes StackED.app in ~/Applications (`--bundle DIR` makes it in DIR), for
+the Dock and the Finder: drag it to the Dock to keep it there. It holds a
+copy of this stacked, so make it again once stacked is updated; made again,
+it replaces the StackED.app there, but nothing else of that name.
+Elsewhere, on Linux and the other desktops that follow freedesktop.org, it
+makes StackED's launcher: a file
+`io.github.carverdamien.stacked.desktop` in ~/.local/share/applications
+(in `$XDG_DATA_HOME/applications` if `$XDG_DATA_HOME` is set, and in
+DIR/applications for `--bundle DIR`), and StackED's icon, drawn at each
+size of the icon theme's, in ~/.local/share/icons/hicolor/NxN/apps beside
+it. StackED is then among the desktop's applications. The launcher runs
+this stacked where it is, as `stacked app --launched`, not in a terminal:
+make it again if you move stacked. Made again, it replaces StackED's
+launcher there, but nothing else of that name. Either way, stacked prints
+where it made it, and says what to do next. The launcher holds:
+
+```
+[Desktop Entry]
+Type=Application
+Version=1.5
+Name=StackED
+GenericName=Stack editor
+Comment=Review a stack of patches, and have an agent edit it
+TryExec=/home/me/.cargo/bin/stacked
+Exec="/home/me/.cargo/bin/stacked" app --launched
+Icon=io.github.carverdamien.stacked
+Terminal=false
+Categories=Development;RevisionControl;
+Keywords=git;patch;stack;review;
+StartupNotify=true
+StartupWMClass=stacked
+```
+
+Opened from the Dock, the Finder or the launcher, StackED has no terminal,
+nor what a terminal's shell sets. It first takes what your login shell
+sets (`$SHELL -ilc`, else the shell the user database names for you, given
+ten seconds): `PATH`, to find git and claude with, `EDITOR`,
+`STACKED_FILE`. It then opens again the windows that were open when it was
+last quit, but those whose database is no longer there. With none to open
+again, it opens the database `$STACKED_FILE` or the settings' `file`
+names, if either does, and else an empty window, its menu bar there: File
+→ Open… opens one. What goes wrong is said in an alert. `$EDITOR` has no
+terminal to run in there, so it runs in a terminal window of its own:
+StackED writes the command in a script of its own, which removes itself as
+it runs. On macOS, a window of Terminal's runs it: the script is a
+.command file, and `open -a Terminal` runs it, so that macOS asks for no
+permission to control Terminal. On Linux, the terminal runs it with sh:
+the one `$TERMINAL` names, else x-terminal-emulator, else the first there
+is of gnome-terminal, ptyxis, kgx, konsole, xfce4-terminal, mate-terminal,
+tilix, terminator, alacritty, kitty, foot, wezterm and xterm. With none,
+the status line says so, and the editor does not run. StackED goes on once
+the editor exits; closing that window before it does changes nothing. An
+editor with a window of its own (`code --wait`, `zed --wait`, `open -W -n
+-a TextEdit`, `gedit --wait`) opens that window instead.
 
 StackED's icon is drawn rather than kept as a picture (`icon.rs`): an S of
 white sheets of paper, stacked along the letter, each a little further
 along than the one under it so that their edges show, fanned where the S
 turns, on a black rounded square. Small, as in the Finder's lists, the
-sheets' edges are left out, and the S is plain white. It is the window's
+sheets' edges are left out, and the S is plain white. It is the windows'
 icon, and the Dock's on macOS, whether StackED is started from a terminal
-or from StackED.app, whose icon file is drawn from it at every size macOS
-asks for.
+or as an app; StackED.app's icon file is drawn from it at every size macOS
+asks for, and so is the launcher's icon, at every size of the icon theme's.
 
 The editor runs on a thread of its own, drawn into a buffer of the window's
 size, as `stacked web` runs it for a page; the window (eframe: egui, on
-OpenGL) paints what the buffer holds, and sends the editor its keys, clicks
-and size (`app.rs`). On macOS each window is a viewport of eframe's, which
-paints itself, and eframe's root viewport is hidden (`app/windows.rs`); the
-File and Edit menus, the panels and the alerts are AppKit's, called through
-objc2 (`app/menu.rs`).
+OpenGL) paints what the buffer holds, under its menu bar, and sends the
+editor its keys, clicks and size (`app.rs`). Each window is a viewport of
+eframe's (`app/windows.rs`): the first is eframe's root viewport, which
+eframe cannot do without, and the others paint themselves. The first
+window closed while others are open takes over the latest of them, its
+editor, its title, its place and its size; on Wayland, which lets no
+program place its windows, the window that stays shows up where the closed
+one was. The menu bar is egui's (`app/menu.rs`), the dialogs rfd's
+(`app/dialogs.rs`), and what StackED is to each system (StackED.app, its
+launcher, the terminal `$EDITOR` runs in, and the Edit menu macOS's panels
+need) is in one module (`launcher.rs`).
 
 ## The editor
 
@@ -3167,7 +3238,8 @@ with a wrong value keeps its default, and that is said too.
 The settings were once in `~/.stacked.toml`, and StackED's state in
 ~/Library/Application Support/StackED/state.json. The first run of yours
 that finds either, with nothing in its place in ~/.stacked, moves it there
-and says so on stderr (StackED opened from the Dock says so in an alert);
+and says so on stderr (StackED opened as an app, from the Dock or from its
+launcher, says so in an alert);
 a link moves as a link, to the same file. A run that finds both reads the
 one in ~/.stacked, never writes over it, and says each time that the other
 is no longer read. Nothing is moved when `$STACKED_HOME`, or the file's own
@@ -3661,13 +3733,21 @@ is typed: `import.rs`). A fix to one may belong in the other.
   or, where Rust lacks the wasm target, stops the build and says what to
   run.
 - `app.rs`: `stacked app`, StackED: the editor on a thread of its own, and
-  the window that paints its screen and sends it what is done there.
-  `app/windows.rs`: its windows on macOS, one for each database opened,
-  and what the File menu's items do; `app/menu.rs`, the File menu itself,
-  its panels and its alerts, and the Edit menu (AppKit's).
-  `icon.rs`: StackED's icon, drawn at any size. `bundle.rs`:
-  StackED.app (macOS), made by `stacked app --bundle`, and opened from
-  the Dock.
+  the window that paints its screen and sends it what is done there; the
+  fonts the system has for it, as fontdb finds them.
+  `app/windows.rs`: its windows, on every system, one for each database
+  opened, the first in eframe's root viewport, and what the File menu's
+  items do; `app/menu.rs`, the menu bar at the top of each window (egui's),
+  its one menu, File, used with the mouse; `app/dialogs.rs`, the
+  system's Open and Save dialogs and its alerts (rfd's), asked on a thread
+  of their own. `icon.rs`: StackED's icon, drawn at any size.
+  `launcher.rs`: what StackED is to each system, made by `stacked app
+  --bundle` and read when the system opens it: StackED.app on macOS, its
+  launcher and icon on the desktops that follow freedesktop.org, the
+  terminal `$EDITOR` runs in on each, and the Edit menu macOS's panels
+  need; the one place that tells the systems apart. `bundle.rs`:
+  StackED opened as an app, with no terminal: the login shell's
+  environment taken, and `$EDITOR` run in a terminal window of its own.
 - `demo.rs`, `memory.rs`: `stacked demo`, the tour; and the database and
   repository it keeps in memory, with a stand-in for the agent.
 
@@ -4277,12 +4357,17 @@ moz-phab, the status of a patch's revision after its number, a letter,
 and the Phabricator line over its message, Space on it showing what
 differs on a screen of its own, Esc going back to the line, read by a
 stand-in for its database, and the reviews of its revision pulled alone
-from its menu, an item clicked, by a stand-in too; and the File menu,
-its panels answered by the test: Open… opening each database picked in a
+from its menu, an item clicked, by a stand-in too; the File menu, its
+dialogs answered by the test: Open… opening each database picked in a
 window of its own (one picked twice, one that cannot be read said, the
-panel cancelled), New… making an empty database that stacked reads and
+dialog cancelled), New… making an empty database that stacked reads and
 never replacing a file there (its bytes the same), and Open Recent taking
-a database deleted off the menu and off the state kept, then Clear Menu.
+a database deleted off the menu and off the state kept, then Clear Menu;
+and, elsewhere than on macOS, `stacked app --bundle` making StackED's
+launcher in the test's own data folder (`$XDG_DATA_HOME`, else the test's
+home's ~/.local/share, else the folder named), the file the desktop
+reads, this stacked in its Exec line and its icon at every size, made
+again, and something else of its name left alone.
 `app.rs` tests what the window paints of a screen (the colours, reversed
 and dim, the faces, wide characters, the lines of boxes and blocks), what
 it makes of keys, clicks, the wheel (while a comment is written too) and
@@ -4291,13 +4376,29 @@ by egui with no window: the grid's size sent, the screen painted, what is
 done sent, the wait for `$EDITOR`, and closing, and text dragged over lit
 and copied, kept to its pane (a block with alt, a drag past the grid up to
 its edge, a key letting it go), and the mouse followed only while the
-window is the active one. `app/windows.rs` tests StackED's windows,
-run by egui with no window as eframe runs them: the root's window hidden,
-a window for each database opened (one twice), each telling its own editor
-its size and following the mouse only while it is the active one, a
-window closed telling its editor to leave, the last closed
-leaving StackED running, and Quit keeping the windows open for StackED.app
-and waiting for each editor to leave. `state.rs` tests what is kept
+window is the active one; and the fonts, the system's monospace font
+where it has one (Menlo where macOS keeps it, its own bold and italics,
+and Apple Symbols; DejaVu Sans Mono where Linux keeps it), else Hack, each
+face holding every character stacked draws where a font for symbols is
+found. `app/menu.rs` tests the menu bar, run by egui with no window: File
+its only menu, its items with no shortcut beside them on either system;
+ctrl-n, ctrl-o, ctrl-w and ctrl-q, and ⌘ with them on macOS, left as they
+came, nothing picked; Tab, Enter and Space taking no item; an item
+clicked once its menu opens, Open… asking the dialogs on their thread (a
+stand-in's), Open Recent read as the menu opens, Close Window and Quit
+StackED. `app/windows.rs` tests StackED's
+windows, run by egui with no window as eframe runs them: the first's empty
+with no database, its menu bar there, then a window for each database
+opened (one twice), the first in the root's, each telling its own editor
+its size under the bar and following the mouse only while it is the
+active one, what is done in a menu open not sent the editor, ctrl-n,
+ctrl-o, ctrl-w and ctrl-q sent the editor on either system and ⌘ with them
+neither the editor's nor the menu's on macOS, no shortcut in the File
+menu, egui's own text font drawing all the bar and the empty window show,
+a window closed telling its editor to leave, the root's closed taking over
+the latest other (its title, its place and its size), the last closed
+letting StackED quit, its window kept, and Quit keeping the windows open,
+from the File menu too, and waiting for each editor to leave. `state.rs` tests what is kept
 between runs: the recent databases, the latest first, once each and eight
 at most, cleared; the searches of the middle, the latest first, once each
 and twenty at most, kept beside them; the effort last picked, kept beside
@@ -4305,21 +4406,29 @@ them too, one this stacked does not know read as none, the rest as it is;
 those deleted taken off both lists; a file that cannot be
 read; writers at once, each keeping what it wrote (with no lock, some
 would not); a file of another kind (the null device) keeping nothing; and
-the editor's database kept nowhere in a test's own process. On macOS,
-`app.rs` tests that the fonts hold every character
-stacked draws, `app/menu.rs` that the File menu's target is a class the
-Objective-C runtime takes, with a method for each item's action, and that
-the Edit menu's items have the titles and shortcuts they have in any Mac
-app, with actions that AppKit's text fields and windows answer, and
-`tests/app.rs` makes StackED.app as macOS reads an app
+the editor's database kept nowhere in a test's own process.
+`launcher.rs` tests, on every system, when stacked is opened as macOS
+opens StackED.app and as the launcher opens it, StackED.app's Info.plist,
+the launcher's file (and what its Exec line escapes), the launcher and its
+icon made in a data folder of the test's and made again, the terminal
+found (the one `$TERMINAL` names, with its own words, else the first of
+the list on `$PATH`, a file there that does not run passed over), and an
+edit run in a terminal window, a stand-in for x-terminal-emulator given
+`-e`, sh and the script, a terminal that fails at once said, and no
+terminal found said, nothing run; on macOS, it tests that the Edit menu
+put on the menu bar for the panels has the titles and shortcuts it has in
+any Mac app, with actions that AppKit's text fields and windows answer. On
+macOS, `tests/app.rs` makes StackED.app as macOS reads an app
 (its Info.plist, its signature, its icon at every size, the stacked in it,
-which runs), makes it again, and leaves alone something else of its name;
-`bundle.rs` tests when stacked is opened as the app, the login shell's
-environment read (a shell that never ends given up), an edit in a window
-of its own waited for (in its folder, it failing, its window closed before
-it exits), and the script Terminal is given to run it (for its owner
-alone, removing itself as it runs the edit, removed if Terminal cannot be
-opened); `icon.rs`, what the icon shows where, at its largest (the sheets' edges)
+which runs), makes it again, and leaves alone something else of its name.
+`bundle.rs` tests the login shell's environment read (a shell that never
+ends given up, the shell the user's), an edit in a window of its own
+waited for (in its folder, it failing, its window closed before it exits),
+the editors with windows of their own, and the script a terminal is given
+to run it (for its owner alone, removing itself as it runs the edit,
+removed if the terminal cannot be opened); `refs.rs`, that what is not a
+web link is never handed to the system's way of opening links;
+`icon.rs`, what the icon shows where, at its largest (the sheets' edges)
 and at its smallest (a plain white S), and that it is grey all over. With
 the `demo` feature, `tests/demo.rs` takes the tour, each step done as Tab
 does it: the
@@ -4722,14 +4831,14 @@ its first.
   that is not text, and each file whole as the diff's context (so that
   reviewers can see more of it) are still moz-phab's, once `stacked head
   NAME --to N` (or `Move HEAD…`) has put the stack in your checkout.
-- StackED's windows are on macOS only: elsewhere it has one, on one
-  database, and no File or Edit menu. A database is not opened by dropping
-  it on StackED's icon or by double-clicking it in the Finder, and there is
-  no Window menu. Its text is not yet a setting: it is Menlo (Hack
-  elsewhere), at 14 points before ⌘+ and ⌘−, which change it in every
-  window at once. The editor the settings name for `$EDITOR` is read where
-  StackED runs (where `stacked app` was started, the home folder from the
-  Dock), not in each window's checkout.
+- A database is not opened by dropping it on StackED's icon, nor by
+  double-clicking it in the Finder or in a file manager (the launcher names
+  no kind of file), and there is no Window menu. Its text is not yet a
+  setting: it is Menlo on macOS, DejaVu Sans Mono on Linux (else Hack), at
+  14 points before ⌘+ and ⌘−, which change it in every window at once.
+  The editor the settings name for
+  `$EDITOR` is read where StackED runs (where `stacked app` was started,
+  the home folder opened as an app), not in each window's checkout.
 
 ## License
 

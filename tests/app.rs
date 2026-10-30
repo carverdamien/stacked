@@ -1,12 +1,14 @@
 //! `stacked app`, its editor run as the window runs it, with no window:
-//! what the window sends it, and the screens it sends back; and what the
-//! File menu opens, its panels answered by the tests.
+//! what the window sends it, and the screens it sends back; what the File
+//! menu opens, its dialogs answered by the tests; and StackED made an app
+//! of the system's, StackED.app on macOS, its launcher elsewhere.
 #![cfg(feature = "app")]
 
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
 
@@ -541,13 +543,26 @@ impl Ask for Answers {
     }
 }
 
+/// How many times the File menu woke the window set, from the thread its
+/// dialogs are asked on.
+struct Woken(Arc<AtomicUsize>);
+
+impl Woken {
+    fn get(&self) -> usize {
+        self.0.load(Ordering::Relaxed)
+    }
+}
+
 /// The File menu, its recent databases kept in `state`: what it opens, and
 /// how many times it woke the window set.
-fn file_menu(state: &Path) -> (File, Receiver<Opened>, Rc<Cell<usize>>) {
+fn file_menu(state: &Path) -> (File, Receiver<Opened>, Woken) {
     let (to, from) = mpsc::channel();
-    let woken = Rc::new(Cell::new(0));
+    let woken = Arc::new(AtomicUsize::new(0));
     let woke = woken.clone();
-    (File::new(to, Box::new(move || woke.set(woke.get() + 1)), state.to_path_buf()), from, woken)
+    let wake = move || {
+        woke.fetch_add(1, Ordering::Relaxed);
+    };
+    (File::new(to, Box::new(wake), state.to_path_buf()), from, Woken(woken))
 }
 
 #[test]
@@ -713,6 +728,67 @@ fn the_bundle_is_made_as_macos_reads_an_app_and_made_again() {
     let said = String::from_utf8_lossy(&out.stderr);
     assert!(!out.status.success() && said.contains("is there, and is not StackED: nothing changed"), "{said}");
     assert_eq!(std::fs::read_to_string(other.join("StackED.app/Contents/Info.plist")).unwrap(), "not ours");
+}
+
+#[cfg(not(target_os = "macos"))]
+#[test]
+fn the_launcher_is_made_where_the_desktop_reads_it_and_made_again() {
+    let tmp = tempfile::tempdir().unwrap();
+    // The home and the data folder of the test's: never the real ones.
+    let (home, data) = (tmp.path().join("home"), tmp.path().join("data"));
+    let bundle = |data: Option<&Path>, dir: Option<&Path>| {
+        let mut cmd = stacked(&home);
+        cmd.env("HOME", &home).args(["app", "--bundle"]);
+        match data {
+            Some(data) => cmd.env("XDG_DATA_HOME", data),
+            None => cmd.env_remove("XDG_DATA_HOME"),
+        };
+        cmd.args(dir).output().unwrap()
+    };
+    let entry = |data: &Path| data.join("applications/io.github.carverdamien.stacked.desktop");
+    // In $XDG_DATA_HOME: the launcher in its applications, said on stdout,
+    // and the icon in its icons, at each size of the theme's.
+    let out = bundle(Some(&data), None);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), entry(&data).display().to_string());
+    let said = String::from_utf8_lossy(&out.stderr);
+    let icons = data.join("icons/hicolor");
+    assert!(said.contains("StackED's launcher is made") && said.contains(&icons.display().to_string()), "{said}");
+    // What the desktop reads: StackED, its icon, this stacked run as the
+    // launcher runs it, with no terminal.
+    let exe = std::fs::canonicalize(env!("CARGO_BIN_EXE_stacked")).unwrap();
+    let text = std::fs::read_to_string(entry(&data)).unwrap();
+    for line in [
+        "[Desktop Entry]".to_string(),
+        "Type=Application".into(),
+        "Name=StackED".into(),
+        format!("Exec=\"{}\" app --launched", exe.display()),
+        "Icon=io.github.carverdamien.stacked".into(),
+        "Terminal=false".into(),
+        "Categories=Development;RevisionControl;".into(),
+    ] {
+        assert!(text.lines().any(|l| l == line), "{line}\n{text}");
+    }
+    for size in [16, 24, 32, 48, 64, 128, 256, 512] {
+        let png = std::fs::read(icons.join(format!("{size}x{size}/apps/io.github.carverdamien.stacked.png"))).unwrap();
+        assert!(png.starts_with(b"\x89PNG") && u32::from_be_bytes(png[16..20].try_into().unwrap()) == size, "{size}");
+    }
+    // Without $XDG_DATA_HOME: in ~/.local/share. In DIR, if named: there.
+    assert!(bundle(None, None).status.success());
+    assert!(entry(&home.join(".local/share")).is_file());
+    let dir = tmp.path().join("elsewhere");
+    assert!(bundle(Some(&data), Some(&dir)).status.success());
+    assert!(entry(&dir).is_file() && dir.join("icons/hicolor/512x512/apps/io.github.carverdamien.stacked.png").is_file());
+    // Made again: anew.
+    std::fs::write(entry(&data), text.replace("Name=StackED", "Name=Old")).unwrap();
+    assert!(bundle(Some(&data), None).status.success());
+    assert_eq!(std::fs::read_to_string(entry(&data)).unwrap(), text);
+    // Something else of its name: left alone.
+    std::fs::write(entry(&data), "[Desktop Entry]\nExec=other\n").unwrap();
+    let out = bundle(Some(&data), None);
+    let said = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success() && said.contains("is there, and is not StackED's launcher: nothing changed"), "{said}");
+    assert_eq!(std::fs::read_to_string(entry(&data)).unwrap(), "[Desktop Entry]\nExec=other\n");
 }
 
 /// Work landed on stack `s` of `db`: an answer, the tool it could not use,

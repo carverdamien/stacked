@@ -25,11 +25,14 @@ default = ["web", "demo", "moz-phab", "app", "try-push"]
 # build stops and says to add it, or to build without `web`.
 web = ["dep:unicode-width"]
 # `stacked app`: StackED, the editor in a window of its own, drawn as the
-# terminal draws it, with eframe (egui) on OpenGL. On macOS, its File and
-# Edit menus, panels and alerts are AppKit's, called through objc2. On
-# Linux, building it needs no X11, Wayland or OpenGL package: eframe loads
-# their libraries (and xkbcommon's) when StackED starts.
-app = ["dep:eframe", "dep:ttf-parser", "dep:unicode-width", "dep:objc2", "dep:objc2-foundation", "dep:objc2-app-kit"]
+# terminal draws it, with eframe (egui) on OpenGL, egui's menu bar in each
+# window. Its dialogs are rfd's (AppKit's on macOS; the desktop portal's
+# elsewhere, over D-Bus, else zenity's), its fonts the system's as fontdb
+# finds them. On macOS, objc2 puts the Edit menu's shortcuts on the menu bar
+# while a dialog is open, as AppKit's text fields need. On Linux, building
+# it needs no X11, Wayland, OpenGL, GTK or D-Bus package: eframe loads their
+# libraries (and xkbcommon's) when StackED starts, and rfd loads D-Bus's.
+app = ["dep:eframe", "dep:fontdb", "dep:pollster", "dep:rfd", "dep:unicode-width", "dep:objc2", "dep:objc2-foundation", "dep:objc2-app-kit", "dep:dispatch2"]
 # `stacked demo`: a tour of the editor on a game of tic-tac-toe, its
 # database and repository kept in memory: nothing is written on disk.
 demo = []
@@ -49,9 +52,12 @@ try-push = []
 [dependencies]
 clap = { version = "4.6.7", features = ["derive"] }
 eframe = { version = "0.33.3", optional = true, default-features = false, features = ["default_fonts", "glow", "wayland", "x11"] }
+fontdb = { version = "0.23.0", optional = true, default-features = false, features = ["std", "fs", "memmap", "fontconfig"] }
 libc = "0.2.190"
 open = "5.4.5"
+pollster = { version = "0.4.0", optional = true }
 ratatui = "0.30.2"
+rfd = { version = "0.17.2", optional = true, default-features = false, features = ["xdg-portal"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = { version = "1.0.154", features = ["preserve_order"] }
 sha1_smol = "1.0.1"
@@ -66,13 +72,13 @@ tree-sitter-javascript = "0.25.0"
 tree-sitter-python = "0.25.0"
 tree-sitter-rust = "0.24.2"
 tree-sitter-typescript = "0.23.2"
-ttf-parser = { version = "0.25.1", optional = true }
 unicode-width = { version = "0.2.2", optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
+dispatch2 = { version = "0.3.1", optional = true }
 objc2 = { version = "0.6.5", optional = true }
-objc2-foundation = { version = "0.3.2", optional = true, default-features = false, features = ["std", "NSArray", "NSObject", "NSString", "NSURL"] }
-objc2-app-kit = { version = "0.3.2", optional = true, default-features = false, features = ["std", "NSAlert", "NSApplication", "NSMenu", "NSMenuItem", "NSOpenPanel", "NSPanel", "NSResponder", "NSSavePanel", "NSWindow"] }
+objc2-foundation = { version = "0.3.2", optional = true, default-features = false, features = ["std", "NSString"] }
+objc2-app-kit = { version = "0.3.2", optional = true, default-features = false, features = ["std", "NSApplication", "NSMenu", "NSMenuItem", "NSResponder"] }
 
 [dev-dependencies]
 tempfile = "3.27.0"

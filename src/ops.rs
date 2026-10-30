@@ -1830,11 +1830,12 @@ fn run_editor(file: &std::path::Path, line: Option<usize>, dir: &std::path::Path
     }
     let cfg = crate::config::get();
     let editor = cfg.editor();
-    // Opened from the Dock, stacked has no terminal: the editor runs in a
-    // window of Terminal's, unless it opens a window of its own.
-    #[cfg(all(feature = "app", target_os = "macos"))]
+    // Opened as an app (from the Dock, from its launcher), stacked has no
+    // terminal: the editor runs in a terminal window of its own, unless it
+    // opens a window of its own.
+    #[cfg(feature = "app")]
     if crate::bundle::no_terminal() && !crate::bundle::own_window(&editor) {
-        return crate::bundle::edit_in_window(&cfg.editing(line), file, dir, &crate::bundle::terminal)
+        return crate::bundle::edit_in_window(&cfg.editing(line), file, dir, &crate::launcher::terminal)
             .map_err(|e| Error(format!("{editor} {}", e.0)));
     }
     let mut cmd = std::process::Command::new("sh");

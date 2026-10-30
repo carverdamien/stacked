@@ -1,388 +1,439 @@
-//! StackED's File and Edit menus on macOS's menu bar, and the panels and
-//! alerts the File menu shows: AppKit's, called through objc2. The File
-//! menu's items have an object of StackED's own class (`Target`) as their
-//! target, whose methods do what `File` says; Close Window goes to the
-//! window in front, as its close button would. The Edit menu's items go to
-//! what is in front too, a panel's text field, and have their shortcuts
-//! only while a panel runs (`Shortcuts`).
+//! StackED's menu bar: egui's own, at the top of each of its windows, the
+//! same on every system, with one menu, File: New…, Open…, Open Recent,
+//! Close Window and Quit StackED. It is used with the mouse: none of its
+//! items has a shortcut, on any system, and it takes no key, so that every
+//! key goes to the editor, as in a terminal. What its items open or make,
+//! they ask of the system's dialogs, away from the windows (`dialogs`).
+//!
+//! There is no Edit menu: copy and paste are egui's, from the system's
+//! keys, as the window reads them (`app::inputs`): the text selected with
+//! the mouse copied, the clipboard typed where text is written.
 
-use std::cell::{OnceCell, RefCell};
-use std::ffi::CStr;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
-use objc2::rc::Retained;
-use objc2::runtime::{AnyObject, NSObjectProtocol, ProtocolObject, Sel};
-use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
-use objc2_app_kit::{
-    NSAlert, NSAlertStyle, NSApplication, NSMenu, NSMenuDelegate, NSMenuItem, NSMenuItemValidation, NSModalResponse, NSModalResponseOK,
-    NSOpenPanel, NSSavePanel,
-};
-use objc2_foundation::{NSArray, NSObject, NSString, ns_string};
+use eframe::egui::containers::menu::{MenuButton, SubMenuButton};
+use eframe::egui::{self, Sense};
 
+use super::dialogs::{Dialogs, Job};
 use super::windows::{Ask, File, titles};
 
-/// What the menu's target holds: what the File menu's items do, the
-/// databases Open Recent listed when last built, and the Edit menu's items,
-/// whose shortcuts the panels set.
-struct Ivars {
-    file: File,
-    recent: RefCell<Vec<PathBuf>>,
-    edit: Vec<EditItem>,
+/// An item of the File menu.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Item {
+    New,
+    Open,
+    /// An item of Open Recent: its database.
+    Recent(PathBuf),
+    /// Open Recent's Clear Menu.
+    Clear,
+    Close,
+    Quit,
 }
 
-define_class!(
-    // SAFETY: NSObject has nothing a class of its must do, and `Target`
-    // does not implement Drop.
-    #[unsafe(super(NSObject))]
-    #[thread_kind = MainThreadOnly]
-    #[ivars = Ivars]
-    struct Target;
-
-    impl Target {
-        /// File → New…
-        #[unsafe(method(newDocument:))]
-        fn new_document(&self, _sender: Option<&AnyObject>) {
-            self.ivars().file.create(&Panels(self));
-        }
-
-        /// File → Open…
-        #[unsafe(method(openDocument:))]
-        fn open_document(&self, _sender: Option<&AnyObject>) {
-            self.ivars().file.open(&Panels(self));
-        }
-
-        /// An item of File → Open Recent, its database's path its object.
-        #[unsafe(method(openRecent:))]
-        fn open_recent(&self, sender: Option<&NSMenuItem>) {
-            let Some(path) = sender.and_then(|item| item.representedObject()) else { return };
-            let Some(path) = path.downcast_ref::<NSString>() else { return };
-            self.ivars().file.open_recent(Path::new(&path.to_string()), &Panels(self));
-        }
-
-        /// File → Open Recent → Clear Menu.
-        #[unsafe(method(clearRecentDocuments:))]
-        fn clear_recent(&self, _sender: Option<&AnyObject>) {
-            self.ivars().file.clear();
-        }
-
-        /// `alert_later`'s alert, said.
-        #[unsafe(method(sayLater:))]
-        fn say_later(&self, text: &NSString) {
-            alert(&text.to_string());
-        }
-    }
-
-    unsafe impl NSObjectProtocol for Target {}
-
-    unsafe impl NSMenuDelegate for Target {
-        /// Open Recent, as it opens: built again from the state kept.
-        #[unsafe(method(menuNeedsUpdate:))]
-        fn menu_needs_update(&self, menu: &NSMenu) {
-            self.fill_recent(menu);
-        }
-    }
-
-    unsafe impl NSMenuItemValidation for Target {
-        /// Clear Menu, only with databases to clear; the rest always.
-        #[unsafe(method(validateMenuItem:))]
-        fn validate_menu_item(&self, item: &NSMenuItem) -> bool {
-            item.action() != Some(sel!(clearRecentDocuments:)) || !self.ivars().recent.borrow().is_empty()
-        }
-    }
-);
-
-impl Target {
-    fn new(mtm: MainThreadMarker, file: File, edit: Vec<EditItem>) -> Retained<Target> {
-        let this = Target::alloc(mtm).set_ivars(Ivars {
-            file,
-            recent: RefCell::new(Vec::new()),
-            edit,
-        });
-        // SAFETY: NSObject's init, as it is.
-        unsafe { msg_send![super(this), init] }
-    }
-
-    /// `menu`, Open Recent, made of the recent databases, the most recent
-    /// first, each titled by its file's name and holding its path; then
-    /// Clear Menu.
-    fn fill_recent(&self, menu: &NSMenu) {
-        let mtm = self.mtm();
-        let recent = self.ivars().file.recent();
-        menu.removeAllItems();
-        for (db, title) in recent.iter().zip(titles(&recent)) {
-            let it = item(mtm, &title, Some(sel!(openRecent:)), "", Some(self));
-            let path = NSString::from_str(&db.to_string_lossy());
-            let object: &AnyObject = &path;
-            // SAFETY: an NSString, which the item keeps.
-            unsafe { it.setRepresentedObject(Some(object)) };
-            it.setToolTip(Some(&path));
-            menu.addItem(&it);
-        }
-        if !recent.is_empty() {
-            menu.addItem(&NSMenuItem::separatorItem(mtm));
-        }
-        menu.addItem(&item(mtm, "Clear Menu", Some(sel!(clearRecentDocuments:)), "", Some(self)));
-        *self.ivars().recent.borrow_mut() = recent;
-    }
+/// A row of the File menu: an item and its title; Open Recent, a menu of
+/// its own; or a separator.
+enum Row {
+    Item(Item, &'static str),
+    Recent,
+    Separator,
 }
 
-thread_local! {
-    /// The menu's target, kept for as long as StackED runs: an item does not
-    /// keep its target.
-    static TARGET: OnceCell<Retained<Target>> = const { OnceCell::new() };
-}
-
-/// An item of a menu titled `title`, sending `action` to `target` (else to
-/// what is in front: the window, the text field being edited), with ⌘ and
-/// `key` as its shortcut if `key` is not empty.
-fn item(mtm: MainThreadMarker, title: &str, action: Option<Sel>, key: &str, target: Option<&Target>) -> Retained<NSMenuItem> {
-    // SAFETY: each action is a method of `Target`'s, `performClose:`,
-    // NSWindow's, or one of `EDIT`'s, which AppKit's text fields and their
-    // windows have; each takes the item that sends it.
-    let it = unsafe { NSMenuItem::initWithTitle_action_keyEquivalent(NSMenuItem::alloc(mtm), &NSString::from_str(title), action, &NSString::from_str(key)) };
-    if let Some(target) = target {
-        let target: &AnyObject = target;
-        // SAFETY: the target is kept in `TARGET` for as long as StackED runs.
-        unsafe { it.setTarget(Some(target)) };
-    }
-    it
-}
-
-/// An item of the Edit menu: its title, the action it sends to what is in
-/// front (a panel's text field, or its window, which undoes), and the key
-/// of its shortcut, with ⌘, and with ⇧ too if it is a capital.
-struct Edit {
-    title: &'static str,
-    action: &'static CStr,
-    key: &'static str,
-}
-
-/// The Edit menu: Undo and Redo, a separator (`None`), then Cut, Copy,
-/// Paste and Select All.
-const EDIT: [Option<Edit>; 7] = [
-    Some(Edit { title: "Undo", action: c"undo:", key: "z" }),
-    Some(Edit { title: "Redo", action: c"redo:", key: "Z" }),
-    None,
-    Some(Edit { title: "Cut", action: c"cut:", key: "x" }),
-    Some(Edit { title: "Copy", action: c"copy:", key: "c" }),
-    Some(Edit { title: "Paste", action: c"paste:", key: "v" }),
-    Some(Edit { title: "Select All", action: c"selectAll:", key: "a" }),
+/// The File menu.
+const FILE: [Row; 6] = [
+    Row::Item(Item::New, "New…"),
+    Row::Item(Item::Open, "Open…"),
+    Row::Recent,
+    Row::Separator,
+    Row::Item(Item::Close, "Close Window"),
+    Row::Item(Item::Quit, "Quit StackED"),
 ];
 
-/// An item of the Edit menu, with the key of its shortcut.
-type EditItem = (Retained<NSMenuItem>, &'static str);
+/// The menus as the bar shows them, each row its title and nothing after
+/// it, as no item has a shortcut; a separator `—`.
+pub fn rows() -> Vec<(&'static str, Vec<String>)> {
+    let shown = FILE
+        .iter()
+        .map(|r| match r {
+            Row::Item(_, title) => title.to_string(),
+            Row::Recent => format!("Open Recent {}", SubMenuButton::RIGHT_ARROW),
+            Row::Separator => "—".into(),
+        })
+        .collect();
+    vec![("File", shown)]
+}
 
-/// The Edit menu as `EDIT` has it, its items sending their actions to what
-/// is in front, with no shortcut until a panel runs; and those items.
-fn edit_menu(mtm: MainThreadMarker) -> (Retained<NSMenu>, Vec<EditItem>) {
-    let menu = NSMenu::initWithTitle(NSMenu::alloc(mtm), ns_string!("Edit"));
-    let mut items = Vec::new();
-    for e in &EDIT {
-        match e {
-            Some(e) => {
-                let it = item(mtm, e.title, Some(Sel::register(e.action)), "", None);
-                menu.addItem(&it);
-                items.push((it, e.key));
+/// What a window's bar keeps from pass to pass: Open Recent as it was when
+/// the File menu last opened, and whether that menu is open.
+#[derive(Debug, Default)]
+pub struct Bar {
+    recent: Vec<PathBuf>,
+    open: bool,
+}
+
+/// The bar of every window of the set: what the File menu does (`File`),
+/// the dialogs it asks, and whether StackED is quitting.
+pub struct Menu {
+    file: Arc<File>,
+    dialogs: Dialogs,
+    quitting: AtomicBool,
+}
+
+/// A button of the bar's, sensing clicks but never taking the keyboard's
+/// focus: Tab, Enter and Space stay the editor's.
+fn button(text: impl Into<egui::WidgetText>) -> egui::Button<'static> {
+    egui::Button::new(text.into()).sense(Sense::CLICK)
+}
+
+impl Menu {
+    /// The bar of the window set whose File menu `file` is, its dialogs
+    /// asked of `ask`, on a thread of their own.
+    pub fn new(file: Arc<File>, ask: Arc<dyn Ask + Send + Sync>) -> Arc<Menu> {
+        let dialogs = Dialogs::start(file.clone(), ask);
+        Arc::new(Menu {
+            file,
+            dialogs,
+            quitting: AtomicBool::new(false),
+        })
+    }
+
+    /// `text` said in an alert, after those said before, on the dialogs'
+    /// thread.
+    pub fn alert(&self, text: String) {
+        self.dialogs.ask(Job::Alert(text));
+    }
+
+    /// Whether StackED is quitting, by File → Quit StackED.
+    pub fn quitting(&self) -> bool {
+        self.quitting.load(Ordering::Acquire)
+    }
+
+    /// Whether an item of the File menu runs, its dialog open: those that
+    /// open one are greyed out meanwhile.
+    pub fn busy(&self) -> bool {
+        self.dialogs.busy()
+    }
+
+    /// The bar, drawn at the top of the window `ctx` paints, in a panel of
+    /// its own: the item picked with the mouse, if one was. It takes no
+    /// key: every key goes to the editor. `bar` is the window's.
+    pub fn bar(&self, ctx: &egui::Context, bar: &mut Bar) -> Option<Item> {
+        let mut picked = None;
+        let busy = self.busy();
+        let frame = egui::Frame::side_top_panel(&ctx.style()).fill(super::BG);
+        // Each window's bar its own, as egui keeps a panel by its id.
+        egui::TopBottomPanel::top(egui::Id::new(("StackED's menu bar", ctx.viewport_id()))).frame(frame).show(ctx, |ui| {
+            egui::MenuBar::new().ui(ui, |ui| {
+                let (_, file) = MenuButton::from_button(button("File")).ui(ui, |ui| {
+                    // As it opens: Open Recent read again from the state kept.
+                    if !bar.open {
+                        bar.recent = self.file.recent();
+                        bar.open = true;
+                    }
+                    for r in &FILE {
+                        match r {
+                            Row::Item(item, title) => {
+                                let enabled = !busy || !matches!(item, Item::New | Item::Open);
+                                if ui.add_enabled(enabled, button(*title)).clicked() {
+                                    picked = Some(item.clone());
+                                }
+                            }
+                            Row::Recent => {
+                                let open_recent = button("Open Recent").right_text(SubMenuButton::RIGHT_ARROW);
+                                SubMenuButton::from_button(open_recent).ui(ui, |ui| {
+                                    for (db, title) in bar.recent.iter().zip(titles(&bar.recent)) {
+                                        if ui.add_enabled(!busy, button(title)).on_hover_text(db.display().to_string()).clicked() {
+                                            picked = Some(Item::Recent(db.clone()));
+                                        }
+                                    }
+                                    if !bar.recent.is_empty() {
+                                        ui.separator();
+                                    }
+                                    if ui.add_enabled(!bar.recent.is_empty(), button("Clear Menu")).clicked() {
+                                        picked = Some(Item::Clear);
+                                    }
+                                });
+                            }
+                            Row::Separator => {
+                                ui.separator();
+                            }
+                        }
+                    }
+                });
+                bar.open = file.is_some();
+            });
+        });
+        picked
+    }
+
+    /// `item` done, from the window `ctx` paints: on the dialogs' thread if
+    /// it opens one, unless another runs; Close Window closes this window,
+    /// Quit StackED every window.
+    pub fn act(&self, ctx: &egui::Context, item: Item) {
+        match item {
+            Item::New => {
+                self.dialogs.ask(Job::New);
             }
-            None => menu.addItem(&NSMenuItem::separatorItem(mtm)),
+            Item::Open => {
+                self.dialogs.ask(Job::Open);
+            }
+            Item::Recent(db) => {
+                self.dialogs.ask(Job::Recent(db));
+            }
+            Item::Clear => self.file.clear(),
+            Item::Close => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+            Item::Quit => {
+                self.quitting.store(true, Ordering::Release);
+                ctx.send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::Close);
+            }
         }
     }
-    (menu, items)
-}
-
-/// Puts StackED's File and Edit menus on the menu bar, after the
-/// application menu winit makes. File: New… (⌘N), Open… (⌘O), Open Recent,
-/// and Close Window (⌘W), which closes the window in front as its close
-/// button does; what its items open goes to the window set as `file` says.
-/// Edit: Undo, Redo, Cut, Copy, Paste and Select All, with their shortcuts
-/// only while a panel runs. Once, as eframe starts, on the main thread.
-pub fn install(file: File) {
-    let Some(mtm) = MainThreadMarker::new() else { return };
-    let Some(bar) = NSApplication::sharedApplication(mtm).mainMenu() else { return };
-    let (edit, edit_items) = edit_menu(mtm);
-    let target = Target::new(mtm, file, edit_items);
-    let menu = NSMenu::initWithTitle(NSMenu::alloc(mtm), ns_string!("File"));
-    menu.addItem(&item(mtm, "New…", Some(sel!(newDocument:)), "n", Some(&target)));
-    menu.addItem(&item(mtm, "Open…", Some(sel!(openDocument:)), "o", Some(&target)));
-    let recent = NSMenu::initWithTitle(NSMenu::alloc(mtm), ns_string!("Open Recent"));
-    recent.setDelegate(Some(ProtocolObject::from_ref(&*target)));
-    target.fill_recent(&recent);
-    let open_recent = item(mtm, "Open Recent", None, "", None);
-    open_recent.setSubmenu(Some(&recent));
-    menu.addItem(&open_recent);
-    menu.addItem(&NSMenuItem::separatorItem(mtm));
-    menu.addItem(&item(mtm, "Close Window", Some(sel!(performClose:)), "w", None));
-    let file_item = item(mtm, "File", None, "", None);
-    file_item.setSubmenu(Some(&menu));
-    bar.insertItem_atIndex(&file_item, 1);
-    let edit_item = item(mtm, "Edit", None, "", None);
-    edit_item.setSubmenu(Some(&edit));
-    bar.insertItem_atIndex(&edit_item, 2);
-    TARGET.with(|t| {
-        let _ = t.set(target);
-    });
-}
-
-/// AppKit's panels and alerts, as the File menu asks for them, from the
-/// menu's target, which holds the Edit menu's items: a panel has their
-/// shortcuts while it runs.
-struct Panels<'a>(&'a Target);
-
-impl Panels<'_> {
-    /// `panel` run until it is closed, its text fields given the Edit
-    /// menu's shortcuts meanwhile.
-    fn run(&self, panel: &NSSavePanel) -> NSModalResponse {
-        let _shortcuts = Shortcuts::set(&self.0.ivars().edit);
-        panel.runModal()
-    }
-}
-
-impl Ask for Panels<'_> {
-    fn databases(&self) -> Vec<PathBuf> {
-        let panel = NSOpenPanel::openPanel(self.0.mtm());
-        panel.setCanChooseFiles(true);
-        panel.setCanChooseDirectories(false);
-        panel.setAllowsMultipleSelection(true);
-        #[allow(deprecated)]
-        panel.setAllowedFileTypes(Some(&jsonl()));
-        panel.setMessage(Some(ns_string!("Pick stacked databases (.jsonl files): each opens in a window of its own.")));
-        if self.run(&panel) != NSModalResponseOK {
-            return Vec::new();
-        }
-        panel.URLs().iter().filter_map(|url| url.to_file_path()).collect()
-    }
-
-    fn new_database(&self) -> Option<PathBuf> {
-        let panel = NSSavePanel::savePanel(self.0.mtm());
-        #[allow(deprecated)]
-        panel.setAllowedFileTypes(Some(&jsonl()));
-        panel.setCanCreateDirectories(true);
-        panel.setNameFieldStringValue(ns_string!("stacked.jsonl"));
-        panel.setPrompt(Some(ns_string!("Create")));
-        panel.setMessage(Some(ns_string!("Name the new database: an empty one is made there. StackED never replaces a file.")));
-        if self.run(&panel) != NSModalResponseOK {
-            return None;
-        }
-        panel.URL().and_then(|url| url.to_file_path())
-    }
-
-    fn alert(&self, text: &str) {
-        alert(text);
-    }
-}
-
-/// The Edit menu's shortcuts (⌘Z, ⇧⌘Z, ⌘X, ⌘C, ⌘V, ⌘A), set for as long as
-/// this is kept. AppKit gives these keys to a text field only through items
-/// of the menu bar that have them. The menu bar takes the keys of its items
-/// even when they are greyed out, though, which would leave StackED's
-/// windows without ⌘C and ⌘V: the shortcuts are cleared once this is
-/// dropped, whatever happened meanwhile.
-struct Shortcuts<'a>(&'a [EditItem]);
-
-impl<'a> Shortcuts<'a> {
-    /// Each of `items` given its shortcut.
-    fn set(items: &'a [EditItem]) -> Shortcuts<'a> {
-        for (it, key) in items {
-            it.setKeyEquivalent(&NSString::from_str(key));
-        }
-        Shortcuts(items)
-    }
-}
-
-impl Drop for Shortcuts<'_> {
-    fn drop(&mut self) {
-        for (it, _) in self.0 {
-            it.setKeyEquivalent(ns_string!(""));
-        }
-    }
-}
-
-/// What the panels let be picked and named: .jsonl files.
-fn jsonl() -> Retained<NSArray<NSString>> {
-    NSArray::from_retained_slice(&[NSString::from_str("jsonl")])
-}
-
-/// `text` said in an alert of StackED's, StackED brought forward for it: on
-/// stderr if this is not the main thread, which alone may show one.
-pub fn alert(text: &str) {
-    let Some(mtm) = MainThreadMarker::new() else {
-        use std::io::Write;
-        let _ = writeln!(std::io::stderr(), "stacked: {text}");
-        return;
-    };
-    #[allow(deprecated)]
-    NSApplication::sharedApplication(mtm).activateIgnoringOtherApps(true);
-    let alert = NSAlert::new(mtm);
-    alert.setMessageText(ns_string!("StackED"));
-    alert.setInformativeText(&NSString::from_str(text));
-    alert.setAlertStyle(NSAlertStyle::Critical);
-    alert.runModal();
-}
-
-/// `text` said in an alert once AppKit next waits for events: from within
-/// eframe's passes, where none may be shown. On stderr if the File menu is
-/// not there to say it.
-pub fn alert_later(text: &str) {
-    TARGET.with(|t| match t.get() {
-        Some(target) => {
-            let text = NSString::from_str(text);
-            // SAFETY: `sayLater:` is `Target`'s, and takes an NSString.
-            let _: () = unsafe { msg_send![&**target, performSelector: sel!(sayLater:), withObject: &*text, afterDelay: 0.0f64] };
-        }
-        None => {
-            use std::io::Write;
-            let _ = writeln!(std::io::stderr(), "stacked: {text}");
-        }
-    });
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use objc2::ClassType;
-    use objc2::runtime::{AnyClass, AnyProtocol};
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::{Mutex, mpsc};
+    use std::time::{Duration, Instant};
 
-    #[test]
-    fn the_menu_s_target_is_a_class_appkit_can_send_its_items_to() {
-        // Made as the Objective-C runtime has it, which checks its methods
-        // against the protocols': each item's action is a method of its,
-        // and so is what its menu and items ask it.
-        let class = Target::class();
-        for action in [
-            sel!(newDocument:),
-            sel!(openDocument:),
-            sel!(openRecent:),
-            sel!(clearRecentDocuments:),
-            sel!(sayLater:),
-            sel!(menuNeedsUpdate:),
-            sel!(validateMenuItem:),
-        ] {
-            assert!(class.instance_method(action).is_some(), "{action:?}");
+    use super::super::windows::Opened;
+    use egui::os::OperatingSystem;
+    use egui::{Key, Modifiers};
+
+    /// The dialogs' answers, as the test gives them: the databases picked,
+    /// how many times they were asked, and what is said.
+    #[derive(Default)]
+    struct Answers {
+        databases: Vec<PathBuf>,
+        asked: AtomicUsize,
+        said: Mutex<Vec<String>>,
+    }
+
+    impl Ask for Answers {
+        fn databases(&self) -> Vec<PathBuf> {
+            self.asked.fetch_add(1, Ordering::Relaxed);
+            self.databases.clone()
         }
-        let delegate = AnyProtocol::get(c"NSMenuDelegate").expect("AppKit's");
-        assert!(class.conforms_to(delegate));
+
+        fn new_database(&self) -> Option<PathBuf> {
+            self.asked.fetch_add(1, Ordering::Relaxed);
+            None
+        }
+
+        fn alert(&self, text: &str) {
+            self.said.lock().unwrap().push(text.to_string());
+        }
+    }
+
+    /// Where the text `said` was painted in `out`, the middle of it.
+    fn at(out: &egui::FullOutput, said: &str) -> Option<egui::Pos2> {
+        out.shapes.iter().find_map(|s| match &s.shape {
+            egui::Shape::Text(t) if t.galley.text() == said => Some(t.pos + t.galley.rect.center().to_vec2()),
+            _ => None,
+        })
+    }
+
+    /// The texts painted in `out`.
+    fn texts(out: &egui::FullOutput) -> Vec<String> {
+        out.shapes
+            .iter()
+            .filter_map(|s| match &s.shape {
+                egui::Shape::Text(t) => Some(t.galley.text().to_string()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// A pass of a window of 800 by 600 holding only the bar, `events` done
+    /// in it: what it painted, the item picked, and the events left to the
+    /// rest of the window, which is the editor's.
+    fn pass(ctx: &egui::Context, menu: &Menu, bar: &mut Bar, events: Vec<egui::Event>) -> (egui::FullOutput, Option<Item>, Vec<egui::Event>) {
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0))),
+            events,
+            ..Default::default()
+        };
+        let (mut picked, mut left) = (None, Vec::new());
+        let out = ctx.run(input, |ctx| {
+            picked = menu.bar(ctx, bar);
+            left = ctx.input(|i| i.events.clone());
+            if let Some(item) = picked.clone() {
+                menu.act(ctx, item);
+            }
+        });
+        (out, picked, left)
+    }
+
+    /// A click at `pos`: the mouse there, pressed and let go.
+    fn click(pos: egui::Pos2) -> Vec<egui::Event> {
+        let button = |pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        };
+        vec![egui::Event::PointerMoved(pos), button(true), button(false)]
+    }
+
+    /// `key` pressed with `modifiers`.
+    fn press(key: Key, modifiers: Modifiers) -> egui::Event {
+        egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers,
+        }
+    }
+
+    /// The bar of a window set on the state file `state`, its dialogs
+    /// answered by `answers`: and what it opens.
+    fn menu(state: &std::path::Path, answers: Arc<Answers>) -> (Arc<Menu>, mpsc::Receiver<Opened>, Arc<AtomicUsize>) {
+        let (to, from) = mpsc::channel::<Opened>();
+        let woken = Arc::new(AtomicUsize::new(0));
+        let woke = woken.clone();
+        let wake = move || {
+            woke.fetch_add(1, Ordering::Relaxed);
+        };
+        (Menu::new(Arc::new(File::new(to, Box::new(wake), state.to_path_buf())), answers), from, woken)
     }
 
     #[test]
-    fn the_edit_menu_has_a_mac_app_s_items_shortcuts_and_actions() {
-        // As the menu shows them while a panel runs: ⌘ and the key, and ⇧
-        // too for a capital, which AppKit reads as ⇧ and the letter.
-        let shown: Vec<String> = EDIT
-            .iter()
-            .map(|e| match e {
-                Some(e) if e.key.chars().all(|c| c.is_ascii_uppercase()) => format!("{} ⇧⌘{}", e.title, e.key),
-                Some(e) => format!("{} ⌘{}", e.title, e.key.to_uppercase()),
-                None => "—".into(),
-            })
-            .collect();
-        assert_eq!(shown, ["Undo ⌘Z", "Redo ⇧⌘Z", "—", "Cut ⌘X", "Copy ⌘C", "Paste ⌘V", "Select All ⌘A"]);
-        // Each action is AppKit's: the text view that edits a field has it,
-        // or the field's window, which undoes.
-        let text = AnyClass::get(c"NSTextView").expect("AppKit's");
-        let window = AnyClass::get(c"NSWindow").expect("AppKit's");
-        for e in EDIT.iter().flatten() {
-            let action = Sel::register(e.action);
-            assert!(text.instance_method(action).is_some() || window.instance_method(action).is_some(), "{action:?}");
+    fn the_file_menu_is_the_only_one_and_has_no_shortcut_on_either_system() {
+        assert_eq!(rows(), [("File", ["New…", "Open…", "Open Recent ⏵", "—", "Close Window", "Quit StackED"].map(String::from).to_vec())]);
+        let tmp = tempfile::tempdir().unwrap();
+        let (menu, _, _) = menu(&tmp.path().join("state.json"), Arc::default());
+        for os in [OperatingSystem::Mac, OperatingSystem::Nix] {
+            let ctx = egui::Context::default();
+            ctx.set_fonts(super::super::fonts().0);
+            ctx.set_os(os);
+            let mut bar = Bar::default();
+            // Closed: File, and no other menu.
+            let (out, _, _) = pass(&ctx, &menu, &mut bar, vec![]);
+            assert_eq!(texts(&out), ["File"], "{os:?}");
+            // Open: its items, each alone on its row, with no shortcut beside
+            // it.
+            pass(&ctx, &menu, &mut bar, click(at(&out, "File").unwrap()));
+            let (out, _, _) = pass(&ctx, &menu, &mut bar, vec![]);
+            assert_eq!(texts(&out), ["File", "New…", "Open…", "Open Recent", "⏵", "Close Window", "Quit StackED"], "{os:?}");
         }
+    }
+
+    #[test]
+    fn the_bar_s_items_do_what_they_say_with_the_mouse_and_it_takes_no_key() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = tmp.path().join("state.json");
+        let (a, b) = (tmp.path().join("a.jsonl"), tmp.path().join("b.jsonl"));
+        for db in [&a, &b] {
+            crate::db::Db::create(db).unwrap();
+        }
+        crate::state::opened(&state, &a);
+        let answers = Arc::new(Answers {
+            databases: vec![b.clone()],
+            ..Default::default()
+        });
+        let (menu, from, woken) = menu(&state, answers.clone());
+        let opened = |n: usize| {
+            let started = Instant::now();
+            let mut got = Vec::new();
+            while got.len() < n && started.elapsed() < Duration::from_secs(20) {
+                got.extend(from.recv_timeout(Duration::from_millis(100)).ok().map(|o| o.path));
+            }
+            got
+        };
+        let idle = || {
+            let started = Instant::now();
+            while menu.busy() && started.elapsed() < Duration::from_secs(20) {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            assert!(!menu.busy());
+        };
+        let ctx = egui::Context::default();
+        ctx.set_os(OperatingSystem::Nix);
+        let mut bar = Bar::default();
+        let (out, _, _) = pass(&ctx, &menu, &mut bar, vec![]);
+        assert_eq!(texts(&out), ["File"]);
+        // No key is the bar's, on either system: ctrl-n, ctrl-o, ctrl-w and
+        // ctrl-q, and ⌘ and those keys on macOS, are left as they came, for
+        // the editor; nothing is picked, no dialog asked.
+        for (os, modifiers) in [
+            (OperatingSystem::Nix, Modifiers::CTRL | Modifiers::COMMAND),
+            (OperatingSystem::Mac, Modifiers::CTRL),
+            (OperatingSystem::Mac, Modifiers::MAC_CMD | Modifiers::COMMAND),
+        ] {
+            ctx.set_os(os);
+            // Each pressed then let go, so that egui takes none for a repeat.
+            let keys: Vec<egui::Event> = [Key::N, Key::O, Key::W, Key::Q]
+                .into_iter()
+                .flat_map(|k| {
+                    let up = egui::Event::Key {
+                        key: k,
+                        physical_key: None,
+                        pressed: false,
+                        repeat: false,
+                        modifiers,
+                    };
+                    [press(k, modifiers), up]
+                })
+                .collect();
+            let (out, picked, left) = pass(&ctx, &menu, &mut bar, keys.clone());
+            assert_eq!((picked, left), (None, keys), "{os:?}");
+            assert!(out.viewport_output[&egui::ViewportId::ROOT].commands.is_empty(), "{os:?}");
+        }
+        // Tab, then Enter and Space: none of its buttons takes the focus, nor
+        // is clicked, as these keys are the editor's.
+        ctx.set_os(OperatingSystem::Nix);
+        for k in [Key::Tab, Key::Enter, Key::Space] {
+            let (_, picked, _) = pass(&ctx, &menu, &mut bar, vec![press(k, Modifiers::NONE)]);
+            assert_eq!((picked, ctx.memory(|m| m.focused())), (None, None), "{k:?}");
+        }
+        assert_eq!(answers.asked.load(Ordering::Relaxed), 0);
+        // A click on File opens it; on Open…, the Open dialog is asked, on the
+        // dialogs' thread: the database picked opened, and the window set
+        // woken to take it.
+        let (out, _, _) = pass(&ctx, &menu, &mut bar, vec![]);
+        pass(&ctx, &menu, &mut bar, click(at(&out, "File").unwrap()));
+        let (out, _, _) = pass(&ctx, &menu, &mut bar, vec![]);
+        let (_, picked, _) = pass(&ctx, &menu, &mut bar, click(at(&out, "Open…").unwrap()));
+        assert_eq!(picked, Some(Item::Open));
+        assert_eq!(opened(1), std::slice::from_ref(&b));
+        assert_eq!((woken.load(Ordering::Relaxed), answers.asked.load(Ordering::Relaxed)), (1, 1));
+        idle();
+        // Open Recent, read as the File menu opens: the database opened last,
+        // then a, then Clear Menu; a, clicked, opened.
+        crate::state::opened(&state, &b);
+        let (out, _, _) = pass(&ctx, &menu, &mut bar, vec![]);
+        pass(&ctx, &menu, &mut bar, click(at(&out, "File").unwrap()));
+        let (out, _, _) = pass(&ctx, &menu, &mut bar, vec![]);
+        let recent = at(&out, "Open Recent").unwrap();
+        pass(&ctx, &menu, &mut bar, vec![egui::Event::PointerMoved(recent)]);
+        let (out, _, _) = pass(&ctx, &menu, &mut bar, vec![egui::Event::PointerMoved(recent + egui::vec2(1.0, 0.0))]);
+        let shown = texts(&out);
+        let (first, second, clear) = (
+            shown.iter().position(|t| t == "b.jsonl"),
+            shown.iter().position(|t| t == "a.jsonl"),
+            shown.iter().position(|t| t == "Clear Menu"),
+        );
+        assert!(first < second && second < clear && first.is_some(), "{shown:?}");
+        let (_, picked, _) = pass(&ctx, &menu, &mut bar, click(at(&out, "a.jsonl").unwrap()));
+        assert_eq!(picked, Some(Item::Recent(a.clone())));
+        assert_eq!(opened(1), std::slice::from_ref(&a));
+        assert!(answers.said.lock().unwrap().is_empty());
+        idle();
+        // Close Window closes this window; Quit StackED, every window,
+        // StackED quitting.
+        let ctx = egui::Context::default();
+        let mut bar = Bar::default();
+        let (out, _, _) = pass(&ctx, &menu, &mut bar, vec![]);
+        pass(&ctx, &menu, &mut bar, click(at(&out, "File").unwrap()));
+        let (out, _, _) = pass(&ctx, &menu, &mut bar, vec![]);
+        let (out, picked, _) = pass(&ctx, &menu, &mut bar, click(at(&out, "Close Window").unwrap()));
+        assert_eq!(picked, Some(Item::Close));
+        assert!(out.viewport_output[&egui::ViewportId::ROOT].commands.contains(&egui::ViewportCommand::Close));
+        assert!(!menu.quitting());
+        menu.act(&ctx, Item::Quit);
+        assert!(menu.quitting());
     }
 }

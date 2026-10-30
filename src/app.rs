@@ -9,12 +9,13 @@
 //! What runs `$EDITOR` runs it where `stacked app` was started, in its
 //! terminal; the window waits meanwhile, and says so.
 //!
-//! On macOS, StackED is an app of many windows (`windows`), one for each
-//! database opened, each with an editor of its own. Its File menu (`menu`)
-//! opens them, and the databases opened last are kept between runs, with
-//! those stacked's editor opens (`crate::state`).
+//! StackED is an app of many windows (`windows`), on every system, one for
+//! each database opened, each with an editor of its own. Each window has
+//! egui's menu bar at its top (`menu`), whose File menu opens them,
+//! through the system's dialogs (`dialogs`); the databases opened last are
+//! kept between runs, with those stacked's editor opens (`crate::state`).
 
-#[cfg(target_os = "macos")]
+pub mod dialogs;
 pub mod menu;
 pub mod windows;
 
@@ -22,7 +23,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -34,6 +35,7 @@ use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier};
 use unicode_width::UnicodeWidthStr;
 
+use self::menu::{Bar, Menu};
 use crate::db::{Error, Result};
 use crate::tui::{App, Effect};
 
@@ -43,9 +45,13 @@ const FONT_SIZE: f32 = 14.0;
 /// The room around the grid, in points: the window's corners are round.
 const PAD: f32 = 6.0;
 
-/// A cell of Menlo, or of Hack, at `FONT_SIZE`, as a fraction of it: to
-/// size the window before its fonts are loaded.
+/// A cell of Menlo, of DejaVu Sans Mono or of Hack, at `FONT_SIZE`, as a
+/// fraction of it: to size the window before its fonts are loaded.
 const CELL: (f32, f32) = (0.602, 1.165);
+
+/// The menu bar's height, in points, about: to size the window before it
+/// is drawn.
+const BAR: f32 = 24.0;
 
 /// The terminal's sixteen colours, as web/client.rs has them: a dark
 /// terminal's.
@@ -116,22 +122,21 @@ pub enum Output {
 /// `stacked app`: StackED's window on the database at `path`, its editor
 /// run where `stacked app` was started, as the editor in a terminal is.
 /// The File menu opens more, each database's editor in that database's
-/// folder; StackED runs until it is quit, its last window closed or not.
-#[cfg(target_os = "macos")]
+/// folder; StackED runs until it is quit, or its last window is closed.
 pub fn run(path: &Path) -> Result<()> {
     let path = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
     let session = Session::open(&path, &std::env::current_dir().unwrap_or_default())?;
-    windows::run(vec![windows::Opened { path, session }], Vec::new(), false)
+    windows::run(vec![windows::Opened { path, session }], Vec::new(), false, Arc::new(dialogs::System))
 }
 
-/// StackED as StackED.app opens it, from the Dock or the Finder: a window
-/// again for each database whose window was open when it was last quit,
-/// those no longer there left out; with none, a window on `named` (from
-/// `$STACKED_FILE`, the settings' `file`) if there is one; else no window,
-/// only the menu bar. Each database's editor runs in its folder. What goes
+/// StackED as the system opens its app (from the Dock or the Finder on
+/// macOS, from its launcher elsewhere): a window again for each database
+/// whose window was open when it was last quit, those no longer there left
+/// out; with none, a window on `named` (from `$STACKED_FILE`, the
+/// settings' `file`) if there is one; else an empty window, its menu bar
+/// there to open one. Each database's editor runs in its folder. What goes
 /// wrong opening one is said in an alert once StackED runs, after `said`,
 /// what StackED says as it starts.
-#[cfg(target_os = "macos")]
 pub fn dock(named: Option<std::path::PathBuf>, mut said: Vec<String>) -> Result<()> {
     let mut dbs = crate::state::reopen(&crate::home::get().state);
     if dbs.is_empty() {
@@ -144,39 +149,32 @@ pub fn dock(named: Option<std::path::PathBuf>, mut said: Vec<String>) -> Result<
             Err(e) => said.push(windows::not_opened(&db, &e)),
         }
     }
-    windows::run(first, said, true)
+    windows::run(first, said, true, Arc::new(dialogs::System))
 }
 
-/// Opens StackED's window on the database at `path`, its editor run where
-/// `stacked app` was started, until the editor is quit or the window
-/// closed.
-#[cfg(not(target_os = "macos"))]
-pub fn run(path: &Path) -> Result<()> {
-    let session = Session::open(path, &std::env::current_dir().unwrap_or_default())?;
-    let failed = session.failed.clone();
-    let options = eframe::NativeOptions {
-        viewport: builder(path).with_icon(Arc::new(crate::icon::data(512))),
-        ..Default::default()
-    };
-    eframe::run_native("StackED", options, Box::new(|cc| Ok(Box::new(Window::new(cc, session)))))
-        .map_err(|e| Error(format!("StackED cannot open its window: {e}")))?;
-    if failed.load(Ordering::Relaxed) {
-        return Err(Error("the editor stopped: what went wrong is said above".into()));
-    }
-    Ok(())
+/// `text` said in an alert of the system's, as StackED says what went
+/// wrong where there is no terminal to say it in, and on stderr.
+pub fn alert(text: &str) {
+    dialogs::alert(text);
 }
 
-/// The window of the database at `path`: named after it, as large as 120
-/// cells by 36, and no smaller than the editor draws well.
-fn builder(path: &Path) -> egui::ViewportBuilder {
-    let name = path.file_name().unwrap_or(path.as_os_str()).to_string_lossy();
-    let room = |cols: f32, rows: f32| vec2(cols * CELL.0 * FONT_SIZE + 2.0 * PAD, rows * CELL.1 * FONT_SIZE + 2.0 * PAD);
+/// The window of the database at `path`, or of none: named after it, as
+/// large as 120 cells by 36 under its menu bar, and no smaller than the
+/// editor draws well; its icon StackED's, the Dock's on macOS.
+fn builder(path: Option<&Path>) -> egui::ViewportBuilder {
+    static ICON: OnceLock<Arc<egui::IconData>> = OnceLock::new();
+    let room = |cols: f32, rows: f32| vec2(cols * CELL.0 * FONT_SIZE + 2.0 * PAD, rows * CELL.1 * FONT_SIZE + 2.0 * PAD + BAR);
     egui::ViewportBuilder::default()
-        .with_title(format!("StackED · {name}"))
-        .with_app_id("stacked")
+        .with_title(path.map_or_else(|| "StackED".to_string(), windows::title))
+        .with_app_id(crate::launcher::ID)
+        .with_icon(ICON.get_or_init(|| Arc::new(crate::icon::data(512))).clone())
         .with_inner_size(room(120.0, 36.0))
         .with_min_inner_size(room(MIN.0 as f32, MIN.1 as f32))
 }
+
+/// The window an editor wakes: its context and viewport, once there is
+/// one. The root's window taking another's over, it changes.
+type Waker = Arc<Mutex<Option<(egui::Context, egui::ViewportId)>>>;
 
 /// The editor on a thread of its own, for a window: what is done in the
 /// window sent to it, what it draws sent back.
@@ -186,7 +184,7 @@ pub struct Session {
     thread: Option<JoinHandle<()>>,
     /// The window's context and viewport once there is one, woken by what
     /// is sent.
-    waker: Arc<OnceLock<(egui::Context, egui::ViewportId)>>,
+    waker: Waker,
     /// Whether the editor's thread ended in a panic.
     failed: Arc<AtomicBool>,
 }
@@ -199,7 +197,7 @@ impl Session {
         let (to, inputs) = mpsc::channel();
         let (outputs, from) = mpsc::channel();
         let (opened, open) = mpsc::channel();
-        let waker: Arc<OnceLock<(egui::Context, egui::ViewportId)>> = Arc::default();
+        let waker: Waker = Arc::default();
         let wake = waker.clone();
         let (path, dir) = (path.to_path_buf(), dir.to_path_buf());
         let thread = std::thread::Builder::new()
@@ -214,7 +212,7 @@ impl Session {
                 };
                 let _ = opened.send(Ok(()));
                 work(app, &inputs, &outputs, &|| {
-                    if let Some((ctx, id)) = wake.get() {
+                    if let Some((ctx, id)) = &*wake.lock().unwrap_or_else(std::sync::PoisonError::into_inner) {
                         ctx.request_repaint_of(*id);
                     }
                 });
@@ -240,6 +238,12 @@ impl Session {
             waker: Arc::default(),
             failed: Arc::default(),
         }
+    }
+
+    /// From now on, what the editor sends wakes the viewport `id` of `ctx`:
+    /// the window that shows it.
+    fn wakes(&self, ctx: &egui::Context, id: egui::ViewportId) {
+        *self.waker.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some((ctx.clone(), id));
     }
 
     /// Sends the editor what was done in the window.
@@ -371,8 +375,8 @@ fn work(mut app: App, inputs: &Receiver<Input>, outputs: &Sender<Output>, wake: 
 /// written, and its regions.
 type Screen = (Buffer, Option<(u16, u16)>, Vec<Rect>);
 
-/// StackED's window, as eframe runs it: the editor's screen painted, what
-/// is done in the window sent to the editor.
+/// StackED's window, as eframe runs it: its menu bar, the editor's screen
+/// painted under it, what is done in the window sent to the editor.
 pub struct Window {
     session: Session,
     /// Which faces the fonts have of their own, by `Face`: the others are
@@ -386,6 +390,8 @@ pub struct Window {
     /// For the cell they were found with.
     fits: HashMap<(char, Face), bool>,
     cell: Vec2,
+    /// Where the grid's first cell was last painted.
+    origin: Pos2,
     /// The grid's size last sent.
     sent: Option<(u16, u16)>,
     pointer: Pointer,
@@ -396,19 +402,19 @@ pub struct Window {
     /// The editor is gone, or the window was closed: the window closes,
     /// and its editor is let go.
     gone: bool,
+    /// The menu bar, the window set's: none in a window alone, as the tests
+    /// paint one.
+    menu: Option<Arc<Menu>>,
+    /// What the bar keeps of this window's.
+    bar: Bar,
+    /// The viewport that shows the window: the root's, or one of its own.
+    viewport: egui::ViewportId,
 }
 
 impl Window {
-    /// The window of `session`, eframe's root viewport in its context `cc`:
-    /// its fonts set, and the editor told how to wake it.
-    pub fn new(cc: &eframe::CreationContext<'_>, session: Session) -> Window {
-        let (fonts, real) = fonts();
-        cc.egui_ctx.set_fonts(fonts);
-        let _ = session.waker.set((cc.egui_ctx.clone(), egui::ViewportId::ROOT));
-        Window::with(session, real, program(&crate::config::get().editor()))
-    }
-
-    fn with(session: Session, real: [bool; 4], program: String) -> Window {
+    /// The window of `session`, with the fonts' faces `real`, `$EDITOR`
+    /// running `program`, and the menu bar `menu`.
+    fn with(session: Session, real: [bool; 4], program: String, menu: Option<Arc<Menu>>) -> Window {
         Window {
             session,
             real,
@@ -416,16 +422,21 @@ impl Window {
             painted: None,
             fits: HashMap::new(),
             cell: Vec2::ZERO,
+            origin: Pos2::ZERO,
             sent: None,
             pointer: Pointer::default(),
             editing: false,
             program,
             gone: false,
+            menu,
+            bar: Bar::default(),
+            viewport: egui::ViewportId::ROOT,
         }
     }
 
-    /// A frame: what the editor sent taken, what was done in the window
-    /// sent it, the screen painted.
+    /// A frame: what the editor sent taken, the menu bar drawn and what is
+    /// picked in it done, what was done in the window sent the editor, the
+    /// screen painted under the bar.
     fn frame(&mut self, ctx: &egui::Context) {
         loop {
             match self.session.from.try_recv() {
@@ -445,6 +456,15 @@ impl Window {
                 Err(TryRecvError::Empty) => break,
             }
         }
+        let writing = self.screen.as_ref().and_then(|(_, cursor, _)| *cursor);
+        // A menu of the bar's open, as the pass before left it: what is done
+        // in the window is the menu's, not the editor's.
+        let menu_open = egui::Popup::is_any_open(ctx);
+        if let Some(menu) = self.menu.clone()
+            && let Some(item) = menu.bar(ctx, &mut self.bar)
+        {
+            menu.act(ctx, item);
+        }
         let regular = FontId::new(FONT_SIZE, Face::Regular.family());
         let cell = ctx.fonts_mut(|f| vec2(f.glyph_width(&regular, 'M'), f.row_height(&regular)));
         if cell != self.cell {
@@ -452,20 +472,29 @@ impl Window {
             self.fits.clear();
             self.painted = None;
         }
-        let grid = Grid::new(ctx.content_rect(), cell);
+        // Under the bar.
+        let area = ctx.available_rect();
+        let grid = Grid::new(area, cell);
+        self.origin = grid.origin;
         if self.sent != Some((grid.cols, grid.rows)) {
             self.sent = Some((grid.cols, grid.rows));
             self.session.send(Input::Size(grid.cols, grid.rows));
             // Another grid: what was selected is not where it was.
             self.pointer.selected = None;
         }
-        let writing = self.screen.as_ref().and_then(|(_, cursor, _)| *cursor);
         if !self.editing && !self.gone {
             // Whether the window is the active one, as egui has it for this
             // window's viewport: what eframe asks the window at each pass,
             // else what the window was last told.
-            let (events, focused) = ctx.input(|i| (i.events.clone(), i.viewport().focused.unwrap_or(i.focused)));
-            for input in inputs(&events, &grid, &mut self.pointer, focused, writing.is_some(), cfg!(target_os = "macos")) {
+            let (mut events, focused) = ctx.input(|i| (i.events.clone(), i.viewport().focused.unwrap_or(i.focused)));
+            // A menu open, or egui's text field with the focus: what is done
+            // is theirs, and the mouse is gone from the grid.
+            if menu_open || ctx.wants_keyboard_input() {
+                events = vec![egui::Event::PointerGone];
+            }
+            // ⌘ is the window's own on macOS, as egui knows the system.
+            let mac = ctx.os() == egui::os::OperatingSystem::Mac;
+            for input in inputs(&events, &grid, &mut self.pointer, focused, writing.is_some(), mac) {
                 self.session.send(input);
             }
         }
@@ -497,7 +526,7 @@ impl Window {
             }
         }
         if self.editing {
-            waiting(&painter, ctx.content_rect(), &self.program);
+            waiting(&painter, area, &self.program);
         } else if let Some((x, y)) = writing {
             // Where text is written: an input method composes there.
             ctx.output_mut(|o| {
@@ -507,21 +536,6 @@ impl Window {
                 })
             });
         }
-    }
-}
-
-impl eframe::App for Window {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        self.frame(ctx);
-    }
-
-    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
-        BG.to_normalized_gamma_f32()
-    }
-
-    /// Closed, by the editor or the window: the editor waited for.
-    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
-        self.session.close();
     }
 }
 
@@ -568,14 +582,95 @@ impl Face {
     }
 }
 
+/// The families the grid's text is in, the first of them the system has:
+/// Menlo, macOS's monospace font; DejaVu Sans Mono, Linux's, which Menlo
+/// was made from. With neither, it is in egui's own Hack, made from it too.
+const GRID: [&str; 2] = ["Menlo", "DejaVu Sans Mono"];
+
+/// The families that draw what the grid's font and Hack lack (⟳), the first
+/// of them the system has: Apple Symbols on macOS; on Linux DejaVu Sans,
+/// else Noto's symbols.
+const SYMBOLS: [&str; 4] = ["Apple Symbols", "DejaVu Sans", "Noto Sans Symbols2", "Noto Sans Symbols"];
+
+/// A face of a font of the system's: its family, its file's bytes, kept
+/// for as long as the program runs (egui holds its fonts so), and the
+/// face's index among those of the file.
+struct Found {
+    family: String,
+    data: &'static [u8],
+    index: u32,
+}
+
+/// The system's fonts for the grid, as fontdb finds them where the system
+/// keeps its fonts (on Linux, where fontconfig's settings say): the faces
+/// of the first of `GRID` the system has, by `Face`, each the one nearest
+/// its weight; and the first of `SYMBOLS`. Found once, however many windows
+/// there are, each file read once.
+fn found() -> &'static ([Option<Found>; 4], Option<Found>) {
+    static FOUND: OnceLock<([Option<Found>; 4], Option<Found>)> = OnceLock::new();
+    FOUND.get_or_init(|| {
+        let mut db = fontdb::Database::new();
+        db.load_system_fonts();
+        let mut files: HashMap<std::path::PathBuf, &'static [u8]> = HashMap::new();
+        // The face `info` of `family`, its file read unless it was already.
+        let mut read = |info: &fontdb::FaceInfo, family: &str| -> Option<Found> {
+            let path = match &info.source {
+                fontdb::Source::File(path) | fontdb::Source::SharedFile(path, _) => path.clone(),
+                fontdb::Source::Binary(_) => return None,
+            };
+            let data = match files.get(&path) {
+                Some(data) => *data,
+                None => {
+                    let data: &'static [u8] = Box::leak(db.with_face_data(info.id, |data, _| data.to_vec())?.into_boxed_slice());
+                    files.insert(path, data);
+                    data
+                }
+            };
+            Some(Found {
+                family: family.to_string(),
+                data,
+                index: info.index,
+            })
+        };
+        let of = |family: &str| db.faces().filter(|i| i.families.iter().any(|(name, _)| name == family)).collect::<Vec<_>>();
+        let plain = |i: &&fontdb::FaceInfo| i.style == fontdb::Style::Normal && i.weight == fontdb::Weight::NORMAL;
+        let mut faces: [Option<Found>; 4] = Default::default();
+        if let Some((family, all)) = GRID.into_iter().map(|f| (f, of(f))).find(|(_, all)| all.iter().any(plain)) {
+            for face in Face::ALL {
+                let weight = if face.bold() { 700 } else { 400 };
+                let nearest = all
+                    .iter()
+                    .filter(|i| (i.weight.0 >= 600) == face.bold() && (i.style != fontdb::Style::Normal) == face.italic())
+                    .min_by_key(|i| i.weight.0.abs_diff(weight));
+                faces[face as usize] = nearest.and_then(|i| read(i, family));
+            }
+        }
+        let symbols = SYMBOLS.into_iter().find_map(|family| of(family).into_iter().find(plain).and_then(|i| read(i, family)));
+        (faces, symbols)
+    })
+}
+
 /// The fonts the grid is drawn with, and which of its faces they have of
-/// their own. On macOS, Menlo, the system's monospace font, its four faces,
-/// then egui's Hack, then Apple Symbols for what both lack (⟳); elsewhere,
-/// Hack alone. After them, the rest of egui's own: its emoji, among others.
+/// their own: the first of `GRID` the system has (Menlo on macOS, DejaVu
+/// Sans Mono on Linux), its four faces, then egui's Hack, then the first of
+/// `SYMBOLS` for what both lack (⟳). With none of `GRID`, Hack, its bold and
+/// italics made. After them, the rest of egui's own: its emoji, among
+/// others.
 fn fonts() -> (egui::FontDefinitions, [bool; 4]) {
     let mut defs = egui::FontDefinitions::default();
     let own = defs.families.get(&FontFamily::Monospace).cloned().unwrap_or_default();
-    let (faces, symbols) = system_fonts(&mut defs);
+    let (found, symbols) = found();
+    let mut add = |name: String, f: &Found| {
+        let data = egui::FontData {
+            font: std::borrow::Cow::Borrowed(f.data),
+            index: f.index,
+            tweak: Default::default(),
+        };
+        defs.font_data.insert(name.clone(), Arc::new(data));
+        name
+    };
+    let faces: [Option<String>; 4] = Face::ALL.map(|face| found[face as usize].as_ref().map(|f| add(format!("{} {face:?}", f.family), f)));
+    let symbols = symbols.as_ref().map(|f| add(f.family.clone(), f));
     let mut regular: Vec<String> = faces[Face::Regular as usize].iter().cloned().collect();
     let mut own = own.into_iter();
     regular.extend(own.next());
@@ -594,52 +689,6 @@ fn fonts() -> (egui::FontDefinitions, [bool; 4]) {
         defs.families.insert(face.family(), chain);
     }
     (defs, real)
-}
-
-/// On macOS: Menlo's faces, by `Face`, and Apple Symbols, put in `defs`
-/// under their names.
-#[cfg(target_os = "macos")]
-fn system_fonts(defs: &mut egui::FontDefinitions) -> ([Option<String>; 4], Option<String>) {
-    // Each file read once, however many windows there are.
-    static MENLO: OnceLock<Option<&[u8]>> = OnceLock::new();
-    static SYMBOLS: OnceLock<Option<&[u8]>> = OnceLock::new();
-    let mut faces: [Option<String>; 4] = Default::default();
-    if let Some(menlo) = *MENLO.get_or_init(|| read_font("/System/Library/Fonts/Menlo.ttc")) {
-        for index in 0..ttf_parser::fonts_in_collection(menlo).unwrap_or(1) {
-            let Ok(face) = ttf_parser::Face::parse(menlo, index) else { continue };
-            let slot = &mut faces[Face::of(face.is_bold(), face.is_italic()) as usize];
-            if slot.is_none() {
-                let name = format!("Menlo {index}");
-                let data = egui::FontData {
-                    font: std::borrow::Cow::Borrowed(menlo),
-                    index,
-                    tweak: Default::default(),
-                };
-                defs.font_data.insert(name.clone(), Arc::new(data));
-                *slot = Some(name);
-            }
-        }
-    }
-    let mut symbols = None;
-    if let Some(data) = *SYMBOLS.get_or_init(|| read_font("/System/Library/Fonts/Apple Symbols.ttf"))
-        && ttf_parser::Face::parse(data, 0).is_ok()
-    {
-        defs.font_data.insert("Apple Symbols".into(), Arc::new(egui::FontData::from_static(data)));
-        symbols = Some("Apple Symbols".to_string());
-    }
-    (faces, symbols)
-}
-
-#[cfg(not(target_os = "macos"))]
-fn system_fonts(_defs: &mut egui::FontDefinitions) -> ([Option<String>; 4], Option<String>) {
-    Default::default()
-}
-
-/// The font file at `path`, kept for as long as the program runs: egui
-/// holds its fonts so.
-#[cfg(target_os = "macos")]
-fn read_font(path: &str) -> Option<&'static [u8]> {
-    std::fs::read(path).ok().map(|bytes| &*Box::leak(bytes.into_boxed_slice()))
 }
 
 /// A colour of the editor's: none for the window's own, one of the sixteen,
@@ -1398,13 +1447,9 @@ fn program(editor: &str) -> String {
 /// Over the screen while `$EDITOR` runs `program`, in `area`: what the
 /// window waits for.
 fn waiting(painter: &egui::Painter, area: egui::Rect, program: &str) {
-    // Opened from the Dock, in a window of Terminal's.
-    #[cfg(target_os = "macos")]
-    let window = crate::bundle::no_terminal();
-    #[cfg(not(target_os = "macos"))]
-    let window = false;
-    let place = match window {
-        true => "in a window of Terminal's",
+    // Opened as an app: in a terminal window of its own.
+    let place = match crate::bundle::no_terminal() {
+        true => crate::launcher::IN_TERMINAL,
         false => "in the terminal StackED was started from",
     };
     painter.rect_filled(area, 0.0, Color32::from_black_alpha(190));
@@ -1894,7 +1939,7 @@ mod tests {
         let ctx = egui::Context::default();
         let (fonts, real) = fonts();
         ctx.set_fonts(fonts);
-        let mut window = Window::with(session, real, program("/usr/bin/vim -p"));
+        let mut window = Window::with(session, real, program("/usr/bin/vim -p"), None);
         assert_eq!(window.program, "vim");
         // The first frame says the grid's size: as many cells as fit.
         frame(&ctx, &mut window, vec![]);
@@ -1980,7 +2025,7 @@ mod tests {
         let ctx = egui::Context::default();
         let (fonts, real) = fonts();
         ctx.set_fonts(fonts);
-        let mut window = Window::with(session, real, program("vim"));
+        let mut window = Window::with(session, real, program("vim"), None);
         frame(&ctx, &mut window, vec![]);
         let cell = window.cell;
         let Some(Input::Size(cols, rows)) = inputs.try_iter().next() else { panic!("no size") };
@@ -2021,7 +2066,7 @@ mod tests {
         let ctx = egui::Context::default();
         let (fonts, real) = fonts();
         ctx.set_fonts(fonts);
-        let mut window = Window::with(session, real, program("vim"));
+        let mut window = Window::with(session, real, program("vim"), None);
         frame(&ctx, &mut window, vec![]);
         let cell = window.cell;
         let Some(Input::Size(cols, rows)) = inputs.try_iter().next() else { panic!("no size") };
@@ -2086,12 +2131,37 @@ mod tests {
         assert_eq!(inputs.try_iter().collect::<Vec<_>>(), [Input::Unhover]);
     }
 
-    #[cfg(target_os = "macos")]
     #[test]
-    fn on_macos_the_grid_is_menlo_and_has_every_glyph_stacked_draws() {
+    fn the_grid_is_the_system_s_monospace_font_else_hack_and_has_every_glyph_stacked_draws() {
         let (fonts, real) = fonts();
-        assert_eq!(real, [true; 4], "Menlo's own bold and italics");
-        assert_eq!(fonts.families[&Face::Regular.family()][0], "Menlo 0");
+        let (found, symbols) = found();
+        let chain = &fonts.families[&Face::Regular.family()];
+        // The first of the families the system has, its four faces, then
+        // egui's Hack; else Hack first, its bold and italics made.
+        match &found[Face::Regular as usize] {
+            Some(f) => {
+                assert!(GRID.contains(&f.family.as_str()), "{}", f.family);
+                assert_eq!(chain[..2], [format!("{} Regular", f.family), "Hack".to_string()]);
+                assert_eq!(real, found.each_ref().map(|f| f.is_some()));
+            }
+            None => assert_eq!((chain[0].as_str(), real), ("Hack", [true, false, false, false])),
+        }
+        // Where macOS keeps Menlo, the grid is Menlo, its own bold and
+        // italics, then Apple Symbols, as it always was; where Linux keeps
+        // DejaVu Sans Mono, the grid is that, DejaVu Sans after it.
+        let first = found[Face::Regular as usize].as_ref().map(|f| f.family.as_str());
+        let symbols = symbols.as_ref().map(|f| f.family.as_str());
+        if Path::new("/System/Library/Fonts/Menlo.ttc").exists() {
+            assert_eq!((first, real, symbols), (Some("Menlo"), [true; 4], Some("Apple Symbols")));
+        }
+        if Path::new("/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf").exists() {
+            assert_eq!(first, Some("DejaVu Sans Mono"));
+        }
+        // With a font for symbols, each face has every character stacked
+        // draws.
+        if symbols.is_none() {
+            return;
+        }
         let ctx = egui::Context::default();
         ctx.set_fonts(fonts);
         let _ = ctx.run(egui::RawInput::default(), |_| {});
@@ -2099,7 +2169,7 @@ mod tests {
         for face in Face::ALL {
             let font = FontId::new(FONT_SIZE, face.family());
             let missing: String = drawn.chars().filter(|c| !ctx.fonts_mut(|f| f.has_glyph(&font, *c))).collect();
-            assert_eq!(missing, "", "{face:?}");
+            assert_eq!(missing, "", "{face:?}, with {symbols:?}");
         }
     }
 }

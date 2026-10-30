@@ -109,20 +109,21 @@ enum Cmd {
     /// StackED: the editor in a window of its own, drawn as in a terminal,
     /// the mouse as in `stacked web`: the cursor follows it, a click is
     /// Enter, a right click Space; writing a comment, a click outside its
-    /// box is Esc. `$EDITOR` opens where it was started.
-    /// On macOS, File → Open… opens more databases, each in a window of its
-    /// own. `stacked app` is built by default, with the `app` feature:
-    /// `--no-default-features --features demo,moz-phab,web` builds stacked
-    /// without it.
+    /// box is Esc. `$EDITOR` opens where it was started. The window's File
+    /// menu opens more databases, each in a window of its own. `stacked app`
+    /// is built by default, with the `app` feature: `--no-default-features
+    /// --features demo,moz-phab,web` builds stacked without it.
     #[cfg(feature = "app")]
     App {
-        /// StackED.app made in DIR (else ~/Applications), for the Dock and
-        /// the Finder: this stacked copied into it, with StackED's icon, so
-        /// made again once stacked is updated. Opened, it opens again the
-        /// windows open when it was last quit, else the database
-        /// $STACKED_FILE or the settings name, else none: File → Open…
-        /// opens one.
-        #[cfg(target_os = "macos")]
+        /// StackED made an app of the system's: on macOS, StackED.app in DIR
+        /// (else ~/Applications), for the Dock and the Finder, this stacked
+        /// copied into it with StackED's icon, so made again once stacked is
+        /// updated; elsewhere, StackED's launcher in DIR/applications and its
+        /// icon in DIR/icons (DIR else $XDG_DATA_HOME, else ~/.local/share),
+        /// running this stacked, for the desktop's applications. Opened, it
+        /// opens again the windows open when it was last quit, else the
+        /// database $STACKED_FILE or the settings name, else an empty window:
+        /// File → Open… opens one.
         #[arg(long, value_name = "DIR", num_args = 0..=1)]
         bundle: Option<Option<PathBuf>>,
     },
@@ -914,20 +915,14 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
             stacked::web::catch_signals();
             bound.serve(path)?;
         }
-        #[cfg(all(feature = "app", target_os = "macos"))]
+        #[cfg(feature = "app")]
         Cmd::App { bundle: Some(dir) } => {
-            let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
-            let dir = dir.unwrap_or_else(|| home.join("Applications"));
-            std::fs::create_dir_all(&dir).map_err(|e| Error(format!("{}: {e}", dir.display())))?;
-            let app = stacked::bundle::make(&dir)?;
-            println!("{}", app.display());
-            eprintln!(
-                "stacked: StackED.app is made. Drag it from the Finder to the Dock to keep it there (`open -R {}` shows it). Make it again once stacked is updated: it runs a copy of this stacked.",
-                app.display()
-            );
+            let made = stacked::launcher::make(dir)?;
+            println!("{}", made.at.display());
+            eprintln!("stacked: {}", made.said);
         }
         #[cfg(feature = "app")]
-        Cmd::App { .. } => stacked::app::run(path)?,
+        Cmd::App { bundle: None } => stacked::app::run(path)?,
         Cmd::Plan { plan, todo } => {
             let text = std::fs::read_to_string(&plan)
                 .map_err(|e| Error(format!("no plan in {}: {e}; write it there first", plan.display())))?;
@@ -1988,16 +1983,16 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
     Ok(())
 }
 
-/// StackED.app, opened from the Dock or the Finder: StackED with what the
-/// user's login shell sets, opening again the windows that were open when
-/// it was last quit, else one on the database `$STACKED_FILE` or the
-/// settings name, else none (`app::dock`). What goes wrong is said in an
-/// alert, as there is no terminal to say it in.
-#[cfg(all(feature = "app", target_os = "macos"))]
+/// StackED's app, opened by the system (from the Dock or the Finder on
+/// macOS, from its launcher elsewhere): StackED with what the user's login
+/// shell sets, opening again the windows that were open when it was last
+/// quit, else one on the database `$STACKED_FILE` or the settings name,
+/// else an empty one (`app::dock`). What goes wrong is said in an alert, as
+/// there is no terminal to say it in.
+#[cfg(feature = "app")]
 fn opened_as_app() {
     use stacked::bundle;
-    let shell = std::env::var_os("SHELL").map_or_else(|| PathBuf::from("/bin/zsh"), PathBuf::from);
-    if let Some(env) = bundle::login_env(&shell, std::time::Duration::from_secs(10)) {
+    if let Some(env) = bundle::login_env(&bundle::login_shell(), std::time::Duration::from_secs(10)) {
         bundle::adopt(env);
     }
     // A path the settings give is from the home folder; each window's
@@ -2016,10 +2011,10 @@ fn opened_as_app() {
         .collect();
     let settings = stacked::config::Config::load(&stacked::config::path()).0;
     let named = std::env::var_os("STACKED_FILE").map(PathBuf::from).or(settings.file);
-    // No terminal for $EDITOR: a window of Terminal's for it.
+    // No terminal for $EDITOR: a terminal window of its own for it.
     bundle::set_no_terminal();
     if let Err(e) = stacked::app::dock(named, said) {
-        stacked::app::menu::alert(&e.0);
+        stacked::app::alert(&e.0);
         std::process::exit(1);
     }
 }
@@ -2043,9 +2038,9 @@ fn names_database(word: &str) -> bool {
 }
 
 fn main() {
-    // Opened as StackED.app is, given nothing to do: StackED, as an app.
-    #[cfg(all(feature = "app", target_os = "macos"))]
-    if std::env::current_exe().is_ok_and(|exe| stacked::bundle::opened(&exe, &std::env::args().collect::<Vec<_>>())) {
+    // Opened as the system opens StackED's app: StackED, as an app.
+    #[cfg(feature = "app")]
+    if std::env::current_exe().is_ok_and(|exe| stacked::launcher::opened(&exe, &std::env::args().collect::<Vec<_>>())) {
         return opened_as_app();
     }
     // A first argument that is not a command is the file to open, if it
