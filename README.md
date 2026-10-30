@@ -125,7 +125,7 @@ stacked send bug123 4f1c2a --wait  # the agent works on it; its answer lands in 
 stacked send bug123 --all --answer-only   # every comment that can be sent
 stacked send bug123 4f1c2a --later   # in the stack's batch, to go with the rest
 stacked send bug123 --batch --fan-out   # the batch: edits to one agent, answers an agent each
-stacked send bug123 4f1c2a --effort max   # at claude's --effort max, rather than the editor's last pick
+stacked send bug123 4f1c2a --effort max   # at claude's --effort max, rather than high
 stacked stop 1761650000000-4242    # the agent of that run (stacked runs lists them) stopped: its ask lands as failed at once
 stacked reply bug123 4f1c2a and keep the title
 stacked moz-phab pull bug123       # reviewers' comments from Phabricator, held for your review (moz-phab)
@@ -819,12 +819,14 @@ them other keys, and the help then names those:
   stop at either end rather than go round, so that ← held ends on the first
   and → held on the last; a click
   on one picks it, and Enter does the item with the one picked, which is
-  kept for the stack in the database. An item that asks the agent ends
-  with a dropdown of the effort it asks at, `Effort [high]` (Asking the
-  agent, below), after its choices if it has some. On an item with more
-  than one dropdown, ← → pick in the one underlined, which is the first
-  until Tab goes to the next one; shift-Tab goes back, as the bottom bar
-  says (`←→: how · tab: effort`). A click picks in the dropdown it is on:
+  kept for the stack in the database. Every `Ask agent…` item opens the
+  ask dialog rather than asking from the menu (Asking the agent, below).
+  An item that sends again what was asked before ends with a dropdown of
+  the effort it goes at, `Effort [high]`: `Send it now`, the batch's
+  items, `Send it back to the agent`. On an item with more than one
+  dropdown, ← → pick in the one underlined, which is the first until Tab
+  goes to the next one; shift-Tab goes back, as the bottom bar says
+  (`←→: to whom · tab: effort`). A click picks in the dropdown it is on:
   the choice clicked, or, on `Effort [high]`, the next level, round from
   `max` to `low`.
 - `?` says what can be done where the cursor is, as `Press Enter to create a
@@ -1075,8 +1077,9 @@ with stacks, the stack's own menu has them under `New stack…`:
 - `Ask the agent to make a stack…`: named after the branch checked out, as
   no stack is, the stack is made empty, on HEAD of the checkout stacked
   runs in, and a comment on it opens, to say what the agent should make of
-  it. `Ask agent` saves the comment and asks the agent; what it makes waits
-  for your review, as any of its work does.
+  it. Esc, then `Ask agent…`, opens the ask dialog, which saves the comment
+  and asks the agent; what it makes waits for your review, as any of its
+  work does.
 - `Import from the workspace…`: the branch checked out, on its upstream
   (else `origin/HEAD`, else main or master: `feature on origin/main: 3
   commits`); `Another branch…`, each on its own; or `A range…`, typed, and
@@ -1182,25 +1185,23 @@ comment or in the next one. ctrl-← and ctrl-→ go a word back and a word on,
 as alt-← and alt-→ (alt-b and alt-f) do; a word is what is between blanks.
 On a Mac, ctrl-← and ctrl-→ switch desktops unless that is turned off in
 the keyboard settings, so use alt (option) there. Esc
-asks what to do with the comment: `Save it`, `Ask agent`, which saves it
-first and then asks the agent about it, `Attach a reference…` (below),
-`Throw it away`, `Keep writing`; under the ask, `Send it`, `[x] now  [ ]
-later`, picks when it asks (later, the comment waits in the stack's batch:
-Asking the agent, below). The menu opens under the comment (above it when
-there is no room under), and the comment stays where it was written, to
-read again before it is saved. How the agent is asked is the choice of `Ask
-agent`, `[x] change  [ ] the whole stack  [ ] answer only  [ ] build and
-test  [ ] try push` (the whole stack for a patch's comment; build and test,
-and try push, which is built with the `try-push` feature, for the stack's
-or a patch's as a whole, as you write it, reply to it or write it again),
-as it is of a comment's own `Ask agent`: one pick, kept for the
-stack. Its line ends with the effort the agent is
-asked at, `Effort [high]`, which Tab goes to (Asking the agent, below). Esc
+asks what to do with the comment: `Save it`, `Ask agent…`, which opens
+the ask dialog, to save the comment first and then ask the agent about
+it, now or later (Asking the agent, below), `Attach a reference…`
+(below), `Throw it away`, `Keep writing`. The menu opens under the
+comment (above it when there is no room under), and the comment stays
+where it was written, to read again before it is saved; so does the
+dialog. What the agent may do there is as it is from a comment's own
+`Ask agent…`: change its patch or the whole stack for a patch's comment,
+the stack for the stack's; build and test, and try push, which is built
+with the `try-push` feature, for the stack's or a patch's as a whole, as
+you write it, reply to it or write it again. The dialog's Cancel, and
+Esc there, go back to writing the comment, as it was. Esc
 asks even when nothing changed, so that what you wrote earlier can be sent
 as it is: as nothing would be saved or thrown away, the menu is then `Ask
-agent` (the same choices), `Leave it as it is`, `Keep writing`; `?` says
-which way `Ask agent` goes, saving first or asking about the comment as it
-is. Changed, what you wrote earlier (your reply, a turn written
+agent…`, `Leave it as it is`, `Keep writing`; the dialog's title, and `?`
+on the item, say which way it goes, saving first or asking about the
+comment as it is. Changed, what you wrote earlier (your reply, a turn written
 again) has `Throw the changes away` rather than `Throw it away`: the
 comment stays as it was. With nothing written (or,
 when you rewind a conversation, nothing but the lines stacked wrote), Esc
@@ -1289,7 +1290,7 @@ agent works on it. A comment waiting its turn
 leaves the agent's queue while it is edited, so that it is not asked as it
 was: its changes thrown away, or left as it is, it goes back on, as it was
 asked and at the same effort; edited, it waits to be asked again (or `Ask
-agent` saves it and asks it again). In $EDITOR it opens
+agent…` saves it and asks it again, as its dialog sets). In $EDITOR it opens
 as a reply does: the conversation above what you said, the cursor on it,
 the comment's references under it. Only the lines stacked wrote are
 dropped when you save; any other line is yours, `#` or not. The comment's
@@ -1483,20 +1484,70 @@ comment is, is what the agent may change:
   the answer needs more than the patch (another patch changed, a new one on
   top), as a comment on the stack would.
 
-A comment's menu asks with `Ask agent`, and `Ask agent about all` on the
-left header (the stack's comments) or the comments pane's header (what the
-list shows) asks about each comment listed. How it asks is the item's
-choice, picked with ← →, kept for the stack, and the same as that of the
-comment editor's `Ask agent`:
+Every item that asks the agent opens the ask dialog rather than asking
+from the menu: a comment's `Ask agent…` (`Ask agent, answer only…` on a
+question on the history), `Ask agent about all…` on the left header (the
+stack's comments) or on the comments pane's header (each comment the list
+shows), and the comment editor's `Ask agent…` (above). Its title says what
+is asked about; under it are two lines, then three buttons:
 
-- `change`: it may change the code within the comment's place; its reply
-  says what changed. It may run the checkout's linter on the files it
-  changes, to check them (Linting, below).
-- `the whole stack`, on a patch's comment: a change, with the whole stack in
-  its worktree, as for the stack's own comments: it may change any patch,
-  add patches anywhere, reorder them. The comment stays on its line, and
-  its reply goes in its thread. On the command line, `stacked send NAME ID
-  --whole-stack`.
+```
+┌─ ask the agent about the comment on patch 1 · a.txt: TWO ────┐
+│ Permission: [ — ]                                            │
+│   Not set yet: Enter sets answer only first, then change     │
+│   patch and change stack, round past the last.               │
+│                                                              │
+│ Effort: [ — ]                                                │
+│   Not set yet: Enter sets low first, then medium, high,      │
+│   xhigh and max, round past the last.                        │
+│                                                              │
+│ < Ask Now >   < Ask Later >   < Cancel >                     │
+│                                                              │
+│ Ask Now and Ask Later are grayed until the permission and    │
+│ the effort are set.                                          │
+└──────────────────────────────────────────────────────────────┘
+```
+
+Both lines are unset as the dialog opens, every time: nothing set in a
+dialog is kept for the next one, for the stack or between runs, so that no
+ask goes as the one before it went by mistake. Enter on a line sets its
+first option, then each Enter the next, round past the last; ← → do
+nothing there, so that nothing changes by accident. ↑↓ go from line to
+line and to the buttons, where ← → go from one button to the next, past
+those grayed, and Enter presses the one the cursor is on. A click on a
+line steps it as Enter does, a click on a button presses it, and a click
+out of the dialog cancels it, as Esc and Cancel do: nothing is asked, and
+from the comment editor you are back to writing the comment. Ask Now and
+Ask Later are grayed until both lines are set, and the dialog says which
+one is missing. Ask Later puts the ask in the stack's batch (below). Ask
+Now is grayed as well while the agent cannot be reached, and the dialog
+says why:
+
+- `Ask Now is grayed: claude is not found on the PATH.` The program the
+  asks run as claude (`$STACKED_CLAUDE`, else `agent.command`, else
+  `claude`) is looked for as the dialog opens: a name in each folder of
+  the PATH, a path as it is.
+- `Ask Now is grayed while stacked checks that the network reaches
+  api.anthropic.com.` As the dialog opens, stacked makes a TCP connection,
+  away from the screen, to where claude connects first: the proxy that
+  `HTTPS_PROXY` (or `https_proxy`) names, when one is set; else the host
+  of `ANTHROPIC_BASE_URL`, when it is set; else `api.anthropic.com`, port
+  443. Nothing is sent over it, and it is given 2 seconds. What it found
+  holds for 30 seconds, so that dialogs opened one after the other do not
+  check again.
+- `Ask Now is grayed: the network does not reach api.anthropic.com.` No
+  connection was made in time. Ask Later still puts the ask in the batch.
+  Where the check is wrong though claude works, `stacked config
+  agent.reach_check false` turns it off, as the dialog says too.
+
+The tour checks neither: its agent is a stand-in, in memory.
+
+The permission, what the agent may do, offers what applies where the
+agent is asked, in this order; the line under the permission says what
+the one set lets the agent do. Of the comments listed (`Ask agent about
+all…`), those that can be asked so are asked: that line says how many,
+and Ask Now and Ask Later are grayed while none can be.
+
 - `answer only`: read-only, enforced by its tools: it reads the code and
   the stack, and, unless its list says otherwise (`agent.answer_tools`,
   below), it may read the web with `curl` (a bug on Bugzilla, a revision on
@@ -1519,7 +1570,17 @@ comment editor's `Ask agent`:
   answer may open comments of its own on lines within the place, as a
   review does, each about one issue (a line with two issues gets two
   comments, both on it): the asking comment then says `opened 4 comments, 1 with your
-  replies`, and its menu goes to them, or closes it and them.
+  replies`, and its menu goes to them, or closes it and them. A question
+  on the history has this permission alone.
+- `change patch`, on a patch's comment: it may change the code within the
+  comment's place, its patch and no other; its reply says what changed.
+  It may run the checkout's linter on the files it changes, to check them
+  (Linting, below).
+- `change stack`: a change, with the whole stack in its worktree: it may
+  change any patch, add patches anywhere, reorder them. It is how the
+  stack's own comments change the stack; on a patch's comment, the comment
+  stays on its line, and its reply goes in its thread. On the command
+  line, `stacked send NAME ID --whole-stack`.
 - `build and test`, on the stack's comments and a patch's as a whole: it may
   run any command, in the stack's build worktree (below), by its own rules
   (CLAUDE.md), never the user's worktree; it changes nothing in the stack.
@@ -1537,25 +1598,21 @@ comment editor's `Ask agent`:
   push, below).
 
 How hard the agent works on an ask is its effort, as claude's `--effort`
-takes it: `low`, `medium`, `high`, `xhigh` or `max`. Every item that asks
-the agent ends with the effort it asks at, `Effort [high]`: the comment
-editor's `Ask agent` (and `Ask agent, answer only`, for a question on the
-history), a comment's own `Ask agent`, `Ask agent about all`, `Send it now`,
-the batch's items (below) and `Send it back to the agent`, in a review. The
-items that open something to write first, `Ask agent about this, answer
-only…` on the history and `Ask the agent to make a stack…`, end with
-`Effort [high]` too: the menu of what you write then starts at the effort
-picked there.
-On an item with choices of its own, Tab goes to the effort, shift-Tab
-goes back, and ← → pick in the one the menu is on. Neither goes round
-past its end: ← held ends on `low`, and → held on `max`. A click on
-`Effort [high]` picks the next level, round from `max` to `low`. The
-effort picked last is where every next
-menu starts, in every stack: stacked keeps it between runs, in
-`~/.stacked/state.json` (Settings, below), and it is `high` until one is
-picked. The tour keeps none.
+takes it: `low`, `medium`, `high`, `xhigh` or `max`, the dialog's second
+line. What sends again what was asked before ends with the effort it goes
+at, `Effort [high]`: `Send it now`, the batch's items (below) and `Send it
+back to the agent`, in a review, each at the effort it was asked at unless
+another is picked there. On an item with choices of its own, Tab goes to
+the effort, shift-Tab goes back, and ← → pick in the one the menu is on.
+Neither goes round past its end: ← held ends on `low`, and → held on
+`max`. A click on `Effort [high]` picks the next level, round from `max`
+to `low`. What is picked there is that item's alone: no other ask starts
+at it, and nothing is kept between runs. The items that open something to
+write first, `Ask agent about this, answer only…` on the history and `Ask
+the agent to make a stack…`, pick no effort: the dialog of what you write
+there does.
 
-An ask goes at the effort its item picked, whenever its turn comes: the
+An ask goes at the effort set for it, whenever its turn comes: the
 comment keeps that effort while it waits, ready or in the batch, and the
 ask keeps it once it starts. claude is given `--effort LEVEL` after the
 settings' `agent.args`, in place of an `--effort` they give, and the
@@ -1602,7 +1659,7 @@ shows as it always did. What the agent is told of the earlier turns of a
 thread says none of it either.
 
 On the command line, `stacked send` takes `--effort LEVEL`. Without it, an
-ask goes at the effort the editor picked last (`high` until one is), and
+ask goes at `high`, and
 `--batch` sends each comment at the effort it was batched at, an ask of
 several at the highest of theirs. `stacked review --send-back` takes
 `--effort` too; without it, the work goes back at the effort it was asked
@@ -1685,11 +1742,10 @@ comments, above). A turn deleted by stacked's first way of deleting one
 counts nowhere: its references are not the comment's (not shown, not
 listed in $EDITOR, not told the agent), and its mentions name nothing.
 
-An ask goes now, or later, as in self-review's batch: under `Ask agent`,
-`Send it`, `[x] now  [ ] later`, picks when, kept for the stack, and Enter
-on it asks as the ask over it does, at the effort of the ask's line, which
-then says so (`Ask agent later`). Asked later, a comment waits in the
-stack's batch, marked `◇` and said `batched (may change the code)`; nothing
+An ask goes now, or later, as in self-review's batch: the dialog's Ask
+Now, or its Ask Later, each time, as nothing of it is kept. Asked later, a
+comment waits in the stack's batch, at the permission and the effort its
+dialog set, marked `◇` and said `batched (may change the code)`; nothing
 is started. Its menu has `Send it now (…)`, alone, as it was batched, and
 `Remove it from the batch`; written again, it stays in the batch, to go as
 it is then. The banner sends the batch (below), as you pick: its edits to a
@@ -2404,14 +2460,15 @@ without it (Install). A comment on the stack, or on a patch as a whole
 (its title), asks which of Firefox's CI tasks to run on a try push: `Run
 the tests a.txt touches, on Linux and Windows`, or `as many as you see
 fit`. A comment on a line or a file is not asked as a try push, as it is
-not sent to build and test: its `Ask agent` has no `try push`. One that an
+not sent to build and test: its `Ask agent…` dialog has no `try push`. One that an
 older stacked batched or queued as a try push is refused as it would go,
 from the banner's batch, from `stacked send NAME --batch` or from the
 queue, saying why: `A try push is asked of a patch as a whole or of the
 stack, not of a line or a file: comment on the patch's title or on the
 stack.` It stays a comment, its ask failed with that reason, and the rest
-of the batch goes. Asked as a try push (`Ask agent`, `[x] try push`; or
-later, in the batch, whose `Send 2 try pushes, each on its own` sends each
+of the batch goes. Asked as a try push (`Ask agent…`, its permission set
+to `try push`, then Ask Now; or Ask Later, in the batch, whose `Send 2 try
+pushes, each on its own` sends each
 in an ask of its own), the agent
 selects the tasks the comment asks for, as few or as many as it says, each
 by its exact label in the task graph (`test-linux2404-64/opt-xpcshell-1`;
@@ -2948,8 +3005,9 @@ the command line.
 
 On a record of `History…`, Space, `Ask agent about this, answer only…`
 writes a question under it (`why was it dropped?`, `what changed since?`),
-and `Ask agent, answer only`, in the menu Esc opens, asks it at the effort
-its line ends with: answer only, so the agent changes nothing. It is told the
+and `Ask agent, answer only…`, in the menu Esc opens, asks it from the ask
+dialog, at the effort set there: answer only, the dialog's one permission
+here, so the agent changes nothing. It is told the
 stack's history, oldest first, and that record in full: when, what it was,
 from which stack to which, and its stack diff, each new version's
 interdiff in it. It may run stacked's read-only commands to look further: `log`, `tree`, `export --rev @N`, `versions`, `interdiff`,
@@ -2985,8 +3043,9 @@ nothing is written.
 
 `~/.stacked/config.toml` holds the settings, in stacked's own folder,
 beside what stacked keeps between runs (`state.json`: the databases opened
-last, StackED above; the searches of the middle, The editor above; and the
-effort last picked in a menu, Asking the agent below);
+last, StackED above; and the searches of the middle, The editor above; not
+how the agent is asked, nor at what effort, which each ask dialog sets
+anew, Asking the agent above);
 `$STACKED_HOME` names another folder than ~/.stacked, and `$STACKED_CONFIG`
 another file. A checkout's own settings, `.stacked/local.toml`, override
 them there (below); each is optional, and `stacked config` prints them all
@@ -3184,7 +3243,12 @@ settings:
   comments, a build and test's findings by the patches' numbers; on
   unless set): off for an agent that does not take it, its answer is read
   from what it writes, the JSON it ends with, the prose around it left
-  out. Given up on by claude, the ask fails and says so.
+  out. Given up on by claude, the ask fails and says so. `reach_check`,
+  whether the ask dialog checks, as it opens, that the network reaches the
+  host claude talks to, and grays Ask Now while it does not (Asking the
+  agent, above; on unless set): `false` turns that check off, for a setup
+  where it is wrong though claude works, a proxy the check does not go
+  through, say. The program run as claude is looked for all the same.
 - `[reviews]` (built with the `moz-phab` feature, on by default; read
   either way, so one file serves both builds): `source`, `"phabricator"`
   or `"none"` (no pulling, no importing, no statuses of revisions read);
@@ -3673,6 +3737,9 @@ is typed: `import.rs`). A fix to one may belong in the other.
 - `ask.rs`, `claude.rs`: asking the agent about comments, from the queue to
   landing, and the folders of the agent's rebase plans; claude's command
   line, its stream and its replies.
+- `reach.rs`: whether the agent can be reached, for the ask dialog's Ask
+  Now: its program found, and the network reaching the host claude talks
+  to, a stand-in answering for the tests.
 - `held.rs`: what an ask brought back, held for your review.
 - `head.rs`: where HEAD of your checkout is against a stack, its commits
   marked, and HEAD moved along it, only as stacked left it or with no mark;
@@ -3774,7 +3841,9 @@ is typed: `import.rs`). A fix to one may belong in the other.
   move HEAD, and what you can do in your checkout so that it can;
   `tui/banner.rs`, the banner of the agent's work; `tui/places.rs`, where
   each pane's cursor was, each half's of the middle split in two;
-  `tui/finding.rs`, the search of the middle (`/`).
+  `tui/finding.rs`, the search of the middle (`/`); `tui/ask_dialog.rs`,
+  the dialog every `Ask agent…` item opens, its permission and effort set
+  each time, then Ask Now, Ask Later or Cancel.
 - `web.rs`, `web/client.rs`, `web/index.html`, `build.rs`: `stacked web`,
   its server, its wasm and its page; the build script compiles the wasm,
   or, where Rust lacks the wasm target, stops the build and says what to
@@ -3817,7 +3886,10 @@ Phabricator line reads, are answered by one set for the test's database
 alone, as every editor reads the statuses of the stack it shows, so that no
 test's stand-in answers another's editors; and
 in a test's own process, which keeps nothing, an editor with no stand-in
-reads none. None opens a window, nor a browser: a script stands in
+reads none. Nor does the ask dialog reach the network: whether it reaches
+the agent's host is answered by a stand-in set for the test's database
+alone (reached, not reached, or only once the test says), and in a test's
+own process an editor with no stand-in checks nothing. None opens a window, nor a browser: a script stands in
 for the program that opens a web link, and only writes down the links it
 is given. No sleep decides what a test sees:
 when a test looks at the agent's stand-in at work, the stand-in goes on
@@ -3917,8 +3989,8 @@ out, with its number), asks waiting their turn, an agent stopped with
 runs that run) and killed as it will not exit on SIGTERM, its ask landed
 at once as failed and said so on its comment and in its transcript, a
 second stop refused, the effort each ask goes
-at (`--effort`, else the one the editor picked last, kept in the test's
-home, else `high`; the settings' own taken out; a level claude does not
+at (`--effort`, else `high`, an effort an editor of before kept in the
+test's home no longer read; the settings' own taken out; a level claude does not
 take refused, nothing sent; a batch at the effort its comments were
 batched at, and work sent back at the effort it was asked at unless
 `--effort` says otherwise; the effort an ask was asked at said by
@@ -4033,7 +4105,7 @@ when it is longer than the box, which ↑↓ and pgdn then scroll down to its
 last line, the box above the bottom bar), the regions it
 says it drew (its panes, then the boxes over them, inside their borders:
 what StackED's selections keep to), the first ask going at once with no
-setup, at the effort picked, given stacked's defaults, the setup's old
+setup, at the effort its dialog set, given stacked's defaults, the setup's old
 mark in the checkout's own settings passed over; the tools an answer was
 refused as items of its review (one a rule, the calls under the agent's
 comment on the right, a broad program's rule widened from the menu, what
@@ -4055,24 +4127,36 @@ editor looks again, an ask whose agent is gone without landing it landed
 at the next look (its process gone, or a zombie the editor did not start,
 left for whoever started it to wait for), a build and test stopped as a
 review closes landed at once though it had no process yet, the review's
-word kept, the effort an ask goes at
-(`Ask agent` saving what changed first, and asking about what did not as
-it is; the effort at the end of its line, picked with Tab, ← → and a
-click, as `?` and the bar say, ← → no further than `low` and `max` and a
-click going round from `max` to `low`, the other dropdown picked each way too; the
-stand-in started at the effort picked, `high` until one is, the settings'
-own taken out; the effort picked where the next menus start, kept nowhere
-in a test's own process; a batched comment, sent now or with the batch,
-at the effort it was batched at, one waiting its turn at its own, one
-queued by an older stacked at the agent's default; work sent back at the
-effort it was asked at, unless another is picked; the effort the agent
-was asked at shown wherever its work is named: its comment's state with
-the agent and replied to, in the middle and the banner, the banner's
-landed line, `Runs…` and the transcript, the review's title, the comment
-it opened and its reply in the review, then their turns in the middle,
-the comments pane, the search, the turn's name in its menu and in the
-editor's title, the comment's history, a reply added keeping each turn's
-mark, and a thread of before as it always was), the screen never waiting on
+word kept, the ask dialog (every `Ask agent…` item opening it with the
+permissions that apply there: a line's, a patch's as a whole, the
+stack's, a question's on the history, the comments listed with how many
+each asks about, the comment editor's, changed or as it is; both lines
+unset, Ask Now and Ask Later grayed and the dialog saying what is
+missing; Enter stepping each line round, ← → doing nothing on them, ↑↓
+going round to the buttons, ← → there past those grayed; Ask Now saving
+what changed first and asking at the permission and the effort set, the
+stand-in given that `--effort` and the tools of that way; Ask Later
+putting it in the batch; Cancel and Esc asking nothing, back to writing
+the comment; a second dialog unset, nothing kept for the stack; clicks
+stepping a line, pressing a button, cancelling out of the box; Ask Now
+grayed while the network is checked, saying so, and while it is not
+reached, saying how to turn the check off, Ask Later going all the same,
+a dialog opened a moment later not checking again; reached, Ask Now
+asking; `agent.reach_check` off, nothing checked; the items that open
+something to write first picking no effort), the effort an ask goes at
+(the stand-in started at the effort the dialog set, the settings' own
+taken out; a batched comment, sent now or with the batch, at the effort
+it was batched at, one waiting its turn at its own, one queued by an
+older stacked at the agent's default; work sent back at the effort it was
+asked at, unless another is picked on its item, which is that item's
+alone; the effort the agent was asked at shown wherever its work is
+named: its comment's state with the agent and replied to, in the middle
+and the banner, the banner's landed line, `Runs…` and the transcript, the
+review's title, the comment it opened and its reply in the review, then
+their turns in the middle, the comments pane, the search, the turn's name
+in its menu and in the editor's title, the comment's history, a reply
+added keeping each turn's mark, and a thread of before as it always
+was), the screen never waiting on
 the agent, redrawing not slowing as the agent writes (a frame timed as the
 time the editor ran to read and draw it, not by the clock, which counts
 too the time a busy machine gives to other work), the filter kept in
@@ -4373,13 +4457,17 @@ and the editor left, the worktree made ahead removed (Quit in the page;
 `stacked web` itself sent SIGINT, SIGTERM or SIGHUP, the first while
 `$EDITOR` runs left to `$EDITOR`, the second waiting for it), and two
 `stacked web` at once, each putting its database, named from where it
-runs, on the list StackED's Open Recent shows, the effort picked in a
-menu kept in the state file of its home, where the next `stacked web`
-starts, its ← → no further than `low` and `max` and a click on it going
-round from `max` to `low`, the agent's turns headed with the effort it was
-asked at and its landed work named with it, in the banner and its review,
-a turn of before as ever, a message's long lines wrapped from its patch's
-menu, the edit landing for review, what waits its turn (a reconcile with HEAD, a lint
+runs, on the list StackED's Open Recent shows, the ask dialog (opened with
+nothing set from `Ask agent about all…`, clicked, its permission stepped
+by clicks, its effort by Enter, ← → doing nothing on its lines, Ask Now
+grayed as claude is not found, saying so, Ask Later putting the comments
+in the batch; Esc closing it, a second one unset), the effort of `Send it
+now`, picked there alone, ← → no further than `low` and `max` and a click
+on it going round from `max` to `low`, the agent's turns headed with the
+effort it was asked at and its landed work named with it, in the banner
+and its review, a turn of before as ever, a message's long lines wrapped
+from its patch's menu, the edit landing for review, what waits its turn
+(a reconcile with HEAD, a lint
 job, an edit ask) taken out of the queue from the banner with Delete, each
 asked first, → opening the comments pane of a patch with none, saying why,
 its menu there, and ← putting it away, `Move HEAD…` on the stack's menu
@@ -4419,8 +4507,10 @@ of the queue from the banner with Delete, each asked first; → opening the
 comments pane of a patch with none, saying why, its menu there, and ←
 putting it away; `Move HEAD…` on the stack's menu drawn as any item while
 it would not move HEAD, and the view of why opened from it, then left; the
-effort of a menu's item, its ← → no further than `low` and `max` and a
-click on it going round from `max` to `low`; the agent's turns headed
+ask dialog opened with nothing set from a click on `Ask agent about all…`,
+Ask Now and Ask Later drawn dim, Ask Now as claude is not found, which it
+says, a click stepping its permission, Enter its effort, and a click on
+Ask Later putting the comment in the batch; the agent's turns headed
 with the effort it was asked at, and its landed work named with it, in
 the banner and its review, a turn of before as ever; with
 moz-phab, the status of a patch's revision after its number, a letter,
@@ -4471,9 +4561,9 @@ letting StackED quit, its window kept, and Quit keeping the windows open,
 from the File menu too, and waiting for each editor to leave. `state.rs` tests what is kept
 between runs: the recent databases, the latest first, once each and eight
 at most, cleared; the searches of the middle, the latest first, once each
-and twenty at most, kept beside them; the effort last picked, kept beside
-them too, one this stacked does not know read as none, the rest as it is;
-those deleted taken off both lists; a file that cannot be
+and twenty at most, kept beside them; the effort a stacked of before kept
+beside them passed over, the rest read as it is, and gone once the file
+is written; those deleted taken off both lists; a file that cannot be
 read; writers at once, each keeping what it wrote (with no lock, some
 would not); a file of another kind (the null device) keeping nothing; and
 the editor's database kept nowhere in a test's own process.

@@ -399,41 +399,53 @@ fn the_stack_s_lint_is_offered_on_its_menu_in_the_window_too() {
 }
 
 #[test]
-fn the_effort_s_arrows_stop_at_low_and_at_max_and_a_click_on_it_goes_round_in_the_window_too() {
+fn the_ask_dialog_opens_with_nothing_set_is_clicked_and_asks_later_in_the_window_too() {
     let (tmp, db) = setup();
     // A comment on the stack, for its menu to ask about.
     let (home, file) = (tmp.path().join("home"), db.to_str().unwrap());
     let out = stacked(&home).current_dir(tmp.path()).args(["-f", file, "comment", "s", "Why?"]).output().unwrap();
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
-    // Wide enough for the whole of that item's row; the banner, saying the
-    // comment is open, over the patches.
+    // The editors of this process run as claude a program no folder of the
+    // PATH holds: Ask Now grayed, saying so, no network checked, and no
+    // agent ever asked.
+    let none = "stacked-no-such-claude";
+    stacked::ask::stand_in(Path::new(none), Path::new(env!("CARGO_BIN_EXE_stacked")));
     let s = Session::open(&db, tmp.path()).unwrap();
     s.send(Input::Size(120, 30));
     screen(&s, "the patches", |b| text(b).contains("Bug 2 - add b"));
-    // The stack's menu, on its header, once the middle shows the stack's
-    // comment: `Ask agent about all` ends with the effort, high at first.
     press(&s, KeyCode::Home);
     screen(&s, "the stack in the middle", |b| text(b).contains("the stack s · 2 patches"));
     press(&s, KeyCode::Char(' '));
-    let effort = |b: &Buffer, level: &str| find(b, "Ask agent about all").and(find(b, &format!("Effort [{level}]")));
-    // A click on the effort: the next level picked, and the menu on it, for
-    // ← → to pick in it.
     let click = |(x, y): (u16, u16)| s.send(Input::Click { x, y, right: false });
-    let menu = screen(&s, "high, at first", |b| effort(b, "high").is_some());
-    click(effort(&menu, "high").unwrap());
-    screen(&s, "xhigh, clicked", |b| effort(b, "xhigh").is_some());
-    // → no further than max; a click there goes round, to low.
-    for _ in 0..4 {
-        press(&s, KeyCode::Right);
+    // Ask agent about all…, clicked: its dialog, nothing set, its buttons
+    // under its lines, Ask Now and Ask Later dim, and why they are.
+    let menu = screen(&s, "the stack's menu", |b| find(b, "Ask agent about all…").is_some());
+    click(find(&menu, "Ask agent about all…").unwrap());
+    let dialog = screen(&s, "the dialog", |b| find(b, "Permission: [ — ]").is_some());
+    for said in ["ask the agent about the comments listed on the stack", "Effort: [ — ]", "< Ask Now >   < Ask Later >   < Cancel >"] {
+        assert!(find(&dialog, said).is_some(), "{said:?} in:\n{}", text(&dialog));
     }
-    let menu = screen(&s, "max", |b| effort(b, "max").is_some());
-    click(effort(&menu, "max").unwrap());
-    screen(&s, "low, clicked", |b| effort(b, "low").is_some());
-    // ← no further than low: → from there picks medium.
-    for k in [KeyCode::Left, KeyCode::Left, KeyCode::Left, KeyCode::Right] {
-        press(&s, k);
+    assert!(find(&dialog, &format!("Ask Now is grayed: {none} is not found")).is_some(), "{}", text(&dialog));
+    for button in ["< Ask Now >", "< Ask Later >"] {
+        let (x, y) = find(&dialog, button).unwrap();
+        assert!(dialog[(x, y)].style().add_modifier.contains(Modifier::DIM), "{button} dim");
     }
-    screen(&s, "medium", |b| effort(b, "medium").is_some());
+    let (x, y) = find(&dialog, "< Cancel >").unwrap();
+    assert!(!dialog[(x, y)].style().add_modifier.contains(Modifier::DIM), "Cancel can be pressed");
+    // A click on the permission's line steps it; Enter on the effort's.
+    click(find(&dialog, "Permission: [ — ]").unwrap());
+    screen(&s, "answer only", |b| find(b, "Permission: [answer only]").is_some());
+    press(&s, KeyCode::Down);
+    press(&s, KeyCode::Enter);
+    let set = screen(&s, "low", |b| find(b, "Effort: [low]").is_some());
+    let (x, y) = find(&set, "< Ask Later >").unwrap();
+    assert!(!set[(x, y)].style().add_modifier.contains(Modifier::DIM), "Ask Later can be pressed");
+    // Ask Later, clicked: in the batch, at what the dialog set.
+    click((x + 2, y));
+    screen(&s, "batched", |b| text(b).contains("batched (answer only): 1 ask in the batch"));
+    let d = stacked::db::Db::load(&db).unwrap();
+    let q = d.stack_notes("s").into_iter().find_map(|n| n.queued.clone()).expect("batched");
+    assert_eq!((q.batched(), q.way, q.effort), (true, stacked::db::Way::Answer, Some(stacked::db::Effort::Low)));
 }
 
 /// The links a stand-in for the program that opens web links, in `dir`,

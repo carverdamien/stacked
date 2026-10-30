@@ -1,12 +1,14 @@
 //! What stacked keeps between runs, besides the settings: the databases
 //! opened last, for StackED's File → Open Recent, which stacked's editor
 //! adds to as well (in a terminal, in a browser); those whose windows
-//! StackED.app has open, to open again when it next starts; the searches
-//! made in the editor's middle with `/`, for its next runs; and the effort
-//! last picked in the editor's menus, which the next asks go at. A file of
-//! JSON, `state.json` in stacked's folder (`home`); never the settings'
-//! file. A database no longer there is taken off both lists whenever the
-//! file is read.
+//! StackED.app has open, to open again when it next starts; and the
+//! searches made in the editor's middle with `/`, for its next runs. Not
+//! how the agent is asked, nor at what effort: each ask dialog starts with
+//! nothing set. A file of JSON, `state.json` in stacked's folder (`home`);
+//! never the settings' file. A database no longer there is taken off both
+//! lists whenever the file is read. What a stacked of before kept besides,
+//! the effort last picked in its menus, is passed over, and goes the next
+//! time the file is written.
 //!
 //! StackED and a terminal's stacked may change the file at once. Each
 //! change is made under a lock, on the file `state.json.lock` beside it,
@@ -39,11 +41,6 @@ struct State {
     /// The searches made in the editor's middle with `/`, the latest first.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     searches: Vec<String>,
-    /// The effort last picked in the editor's menus, by its name: one this
-    /// stacked does not know, as a later one might write, is read as none,
-    /// the rest of the file as it is.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    effort: Option<String>,
 }
 
 impl State {
@@ -195,17 +192,6 @@ pub fn searched(file: &Path, query: &str) {
     })
 }
 
-/// The effort last picked in the editor's menus, if one was.
-pub fn effort(file: &Path) -> Option<crate::db::Effort> {
-    change(file, |s| s.effort.as_deref().and_then(crate::db::Effort::parse))
-}
-
-/// `effort` picked in a menu of the editor: the one the next asks go at,
-/// in this run and the next.
-pub fn picked_effort(file: &Path, effort: crate::db::Effort) {
-    change(file, |s| s.effort = Some(effort.name().to_string()))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -293,32 +279,20 @@ mod tests {
     }
 
     #[test]
-    fn the_effort_last_picked_is_kept_beside_the_rest() {
-        use crate::db::Effort;
+    fn the_effort_a_stacked_of_before_kept_is_passed_over_and_goes_once_the_file_is_written() {
         let tmp = tempfile::tempdir().unwrap();
         let file = tmp.path().join("state.json");
-        // None picked yet: none, and nothing written.
-        assert_eq!(effort(&file), None);
-        assert!(!file.exists());
         let d = dbs(tmp.path(), &["a.jsonl"]);
-        opened(&file, &d[0]);
-        searched(&file, "two");
-        picked_effort(&file, Effort::Max);
-        picked_effort(&file, Effort::Xhigh);
-        assert_eq!(effort(&file), Some(Effort::Xhigh));
-        assert_eq!((recent(&file), searches(&file)), (d.clone(), vec!["two".to_string()]), "each as it was");
-        assert_eq!(kept(&file).effort.as_deref(), Some("xhigh"));
-        // One this stacked does not know, as a later one might write: none,
-        // the rest read as it is, and kept.
-        let text = std::fs::read_to_string(&file).unwrap().replace("xhigh", "huge");
-        std::fs::write(&file, text).unwrap();
-        assert_eq!((effort(&file), recent(&file)), (None, d.clone()));
-        picked_effort(&file, Effort::Low);
-        assert_eq!((effort(&file), searches(&file)), (Some(Effort::Low), vec!["two".to_string()]));
-        // A file of another kind keeps none.
-        let null = Path::new(crate::home::NOWHERE);
-        picked_effort(null, Effort::Max);
-        assert_eq!(effort(null), None);
+        // As a stacked of before wrote it, beside the rest: the rest read as
+        // it is.
+        let before = serde_json::json!({"recent": [d[0]], "open": [], "searches": ["two"], "effort": "xhigh"});
+        std::fs::write(&file, before.to_string()).unwrap();
+        assert_eq!((recent(&file), searches(&file)), (d.clone(), vec!["two".to_string()]));
+        // Written again: without it.
+        searched(&file, "three");
+        let text = std::fs::read_to_string(&file).unwrap();
+        assert!(!text.contains("effort") && !text.contains("xhigh"), "{text}");
+        assert_eq!((recent(&file), searches(&file)), (d, vec!["three".to_string(), "two".to_string()]));
     }
 
     #[test]

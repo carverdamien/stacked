@@ -249,6 +249,10 @@ pub struct Agent {
     /// against what the ask asks for (`--json-schema`): off for an agent
     /// that does not take it, its answer then read from what it writes.
     pub schema: bool,
+    /// Whether the ask dialog checks that the network reaches the host
+    /// claude talks to before it offers Ask Now (`reach`): off for a setup
+    /// where that check is wrong though claude works.
+    pub reach_check: bool,
 }
 
 impl Agent {
@@ -300,6 +304,7 @@ impl Default for Agent {
             worktrees: None,
             chain: true,
             schema: true,
+            reach_check: true,
         }
     }
 }
@@ -506,6 +511,7 @@ struct WrittenAgent {
     worktrees: Option<String>,
     chain: Option<bool>,
     schema: Option<bool>,
+    reach_check: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -625,6 +631,7 @@ impl Config {
         }
         c.agent.chain = a.chain.unwrap_or(c.agent.chain);
         c.agent.schema = a.schema.unwrap_or(c.agent.schema);
+        c.agent.reach_check = a.reach_check.unwrap_or(c.agent.reach_check);
         for (key, written, at) in [
             ("agent.worktree", &a.worktree, &mut c.agent.worktree),
             ("agent.answer_only_worktree", &a.answer_only_worktree, &mut c.agent.answer_only_worktree),
@@ -927,6 +934,13 @@ impl Config {
              # its answer then read from what it writes.\n",
         );
         out.push_str(&format!("schema = {}\n", self.agent.schema));
+        out.push_str(
+            "# Whether the dialog that asks the agent checks, as it opens, that the network\n\
+             # reaches the host claude talks to (the proxy of $HTTPS_PROXY, else the host of\n\
+             # $ANTHROPIC_BASE_URL, else api.anthropic.com), and grays Ask Now while it does\n\
+             # not: false turns the check off, where it is wrong though claude works.\n",
+        );
+        out.push_str(&format!("reach_check = {}\n", self.agent.reach_check));
         // Phabricator's, built with it (the moz-phab feature).
         if cfg!(feature = "moz-phab") {
             out.push_str("\n[reviews]\n# Where `moz-phab pull` reads reviews from, and `moz-phab import` revisions: \"phabricator\", or \"none\".\n");
@@ -1098,6 +1112,7 @@ const SETTINGS: &[(&str, Kind)] = &[
     ("agent.worktrees", Kind::Text),
     ("agent.chain", Kind::Flag),
     ("agent.schema", Kind::Flag),
+    ("agent.reach_check", Kind::Flag),
     ("reviews.source", Kind::Text),
     ("reviews.url", Kind::Text),
     ("reviews.arcrc", Kind::Text),
@@ -1218,6 +1233,7 @@ pub fn value_of(c: &Config, key: &str) -> Result<Vec<String>, String> {
         "agent.worktrees" => path(&c.agent.worktrees),
         "agent.chain" => vec![c.agent.chain.to_string()],
         "agent.schema" => vec![c.agent.schema.to_string()],
+        "agent.reach_check" => vec![c.agent.reach_check.to_string()],
         "reviews.source" => vec![match c.reviews.source {
             Source::Phabricator => "phabricator".into(),
             Source::None => "none".into(),
@@ -2052,6 +2068,24 @@ mod tests {
         set(&path, "view.whitespace_needs_review", &["true".to_string()]).unwrap();
         assert!(Config::load(&path).0.view.whitespace_needs_review);
         assert!(set(&path, "view.whitespace_needs_review", &["yes".to_string()]).unwrap_err().contains("true or false"));
+    }
+
+    #[test]
+    fn the_ask_dialog_checks_the_network_unless_set_not_to() {
+        assert!(Config::default().agent.reach_check);
+        let text = Config::default().render();
+        assert!(text.contains("\n# Whether the dialog that asks the agent checks, as it opens, that the network\n"), "{text}");
+        assert!(text.contains("\n# not: false turns the check off, where it is wrong though claude works.\nreach_check = true\n"), "{text}");
+        let (c, wrong) = Config::parse("[agent]\nreach_check = false\n").unwrap();
+        assert!(wrong.is_empty(), "{wrong:?}");
+        assert!(!c.agent.reach_check);
+        assert_eq!(value_of(&c, "agent.reach_check"), Ok(vec!["false".to_string()]));
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("settings.toml");
+        set(&path, "agent.reach_check", &["false".to_string()]).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "[agent]\nreach_check = false\n");
+        assert!(!Config::load(&path).0.agent.reach_check);
+        assert!(set(&path, "agent.reach_check", &["no".to_string()]).unwrap_err().contains("true or false"));
     }
 
     #[test]

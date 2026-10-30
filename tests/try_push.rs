@@ -519,11 +519,49 @@ fn menu_title(app: &App) -> String {
     }
 }
 
-/// The choices of how the agent is asked, of the menu open's `Ask agent`.
-fn hows(app: &App) -> Vec<String> {
-    let Mode::Menu(m) = &app.mode else { panic!("no menu open: {:?}", app.mode) };
-    let ask = m.items.iter().find(|i| i.label == "Ask agent").unwrap_or_else(|| panic!("no Ask agent in {:?}", items(app)));
-    ask.choices[0].list.iter().map(|c| c.shown.clone()).collect()
+/// What the agent may be asked to do, as the dialog the open menu's `Ask
+/// agent…` opens offers it; the menu open again after, the dialog
+/// cancelled: from the comment being written, Esc opens it again.
+fn hows(app: &mut App) -> Vec<String> {
+    choose(app, "Ask agent…");
+    let Mode::Ask(d) = &app.mode else { panic!("no ask dialog open: {:?}", app.mode) };
+    let all = d.permission_labels().into_iter().map(String::from).collect();
+    keys(app, &[KeyCode::Esc]);
+    let again = if matches!(app.mode, Mode::Edit(_)) { KeyCode::Esc } else { KeyCode::Char(' ') };
+    keys(app, &[again]);
+    all
+}
+
+/// The open menu's `Ask agent…` chosen, and in the dialog it opens,
+/// `permission` set and the effort high, each with Enter on its line, then
+/// `button` pressed: Ask Now, or Ask Later.
+fn ask_as(app: &mut App, permission: &str, button: &str) {
+    ask_at(app, permission, stacked::db::Effort::High, button);
+}
+
+/// As `ask_as`, the effort set to `effort`.
+fn ask_at(app: &mut App, permission: &str, effort: stacked::db::Effort, button: &str) {
+    choose(app, "Ask agent…");
+    let step = |app: &mut App, done: &dyn Fn(&stacked::tui::AskDialog) -> bool| {
+        for _ in 0..8 {
+            if let Mode::Ask(d) = &app.mode
+                && done(d)
+            {
+                return;
+            }
+            key(app, KeyCode::Enter);
+        }
+        panic!("never so: {:?}", app.mode);
+    };
+    step(app, &|d| d.permission().map(|p| p.label()) == Some(permission));
+    key(app, KeyCode::Down);
+    step(app, &|d| d.effort == Some(effort));
+    key(app, KeyCode::Down);
+    if button == "Ask Later" {
+        key(app, KeyCode::Right);
+    }
+    key(app, KeyCode::Enter);
+    draw(app);
 }
 
 /// The menu's items: label, and whether it can be chosen.
@@ -558,35 +596,6 @@ fn choose(app: &mut App, label: &str) {
                 key(app, KeyCode::Down);
             }
         }
-    }
-    key(app, KeyCode::Enter);
-    draw(app);
-}
-
-/// As `choose`, its first dropdown on the choice drawn as `pick` first.
-fn choose_as(app: &mut App, label: &str, pick: &str) {
-    if !matches!(app.mode, Mode::Menu(_)) {
-        assert_eq!(key(app, KeyCode::Char(' ')), Effect::None);
-    }
-    let all = items(app);
-    let want = all.iter().position(|(l, _)| l.starts_with(label)).unwrap_or_else(|| panic!("no {label:?} in {all:?}"));
-    for _ in 0..all.len() * 2 {
-        match &app.mode {
-            Mode::Menu(m) if m.sel == want => break,
-            _ => {
-                key(app, KeyCode::Down);
-            }
-        }
-    }
-    for _ in 0..8 {
-        let shown = match &app.mode {
-            Mode::Menu(m) => m.items[want].choices.first().map(|c| c.list[c.picked].shown.clone()),
-            _ => None,
-        };
-        if shown.is_some_and(|s| s.starts_with(pick)) {
-            break;
-        }
-        key(app, KeyCode::Right);
     }
     key(app, KeyCode::Enter);
     draw(app);
@@ -674,13 +683,18 @@ fn last_prompt(db: &Path) -> String {
 }
 
 /// A comment on patch 1 as a whole, `text`, written from the patches pane,
-/// and asked as a try push as it is saved.
+/// and asked as a try push as it is saved, at high.
 fn ask_try(app: &mut App, text: &str) {
+    ask_try_at(app, text, stacked::db::Effort::High);
+}
+
+/// As `ask_try`, at `effort`.
+fn ask_try_at(app: &mut App, text: &str, effort: stacked::db::Effort) {
     keys(app, &[KeyCode::Home, KeyCode::Down]);
     choose(app, "Comment on this patch…");
     typed(app, text);
     keys(app, &[KeyCode::Esc]);
-    choose_as(app, "Ask agent", "try push");
+    ask_at(app, "try push", effort, "Ask Now");
 }
 
 /// A comment on the stack, `text`, written from the patches pane, and
@@ -690,7 +704,7 @@ fn ask_try_on_stack(app: &mut App, text: &str) {
     choose(app, "Comment on the stack…");
     typed(app, text);
     keys(app, &[KeyCode::Esc]);
-    choose_as(app, "Ask agent", "try push");
+    ask_as(app, "try push", "Ask Now");
 }
 
 /// What the stand-in for claude was run with by each ask, as it wrote it
@@ -744,9 +758,9 @@ fn a_try_push_asked_lands_the_tasks_the_comment_asks_for_each_with_why() {
     save(&mut app, "Run what tests a.txt, as many as you see fit.");
     to_comment(&mut app, &notes_of(&db, 0)[0].id);
     keys(&mut app, &[KeyCode::Char(' ')]);
-    assert_eq!(hows(&app), ["change", "the whole stack", "answer only", "build and test", "try push"]);
+    assert_eq!(hows(&mut app), ["answer only", "change patch", "change stack", "build and test", "try push"]);
     keys(&mut app, &[KeyCode::Esc]);
-    choose_as(&mut app, "Ask agent", "try push");
+    ask_as(&mut app, "try push", "Ask Now");
     assert!(app.status.starts_with("asked the agent about 1 comment (try push)"), "{}", app.status);
     landed(&mut app, &db, 1);
     // Its prompt: the tasks the comment asks for, as few or as many, exact
@@ -971,13 +985,13 @@ fn a_try_push_is_asked_of_the_stack_or_a_patch_as_a_whole_never_of_a_line() {
     choose(&mut app, "Comment on the stack…");
     typed(&mut app, "Run it all.");
     keys(&mut app, &[KeyCode::Esc]);
-    assert_eq!(hows(&app), ["change", "answer only", "build and test", "try push"]);
+    assert_eq!(hows(&mut app), ["answer only", "change stack", "build and test", "try push"]);
     choose(&mut app, "Save it");
     keys(&mut app, &[KeyCode::Home, KeyCode::Down]);
     choose(&mut app, "Comment on this patch…");
     typed(&mut app, "Run its tests.");
     keys(&mut app, &[KeyCode::Esc]);
-    assert_eq!(hows(&app), ["change", "the whole stack", "answer only", "build and test", "try push"]);
+    assert_eq!(hows(&mut app), ["answer only", "change patch", "change stack", "build and test", "try push"]);
     choose(&mut app, "Save it");
     // One on a line may not: neither as it is written, nor on its menu.
     keys(&mut app, &[KeyCode::Right]);
@@ -985,10 +999,10 @@ fn a_try_push_is_asked_of_the_stack_or_a_patch_as_a_whole_never_of_a_line() {
     keys(&mut app, &[KeyCode::Enter]);
     typed(&mut app, "Test this line.");
     keys(&mut app, &[KeyCode::Esc]);
-    assert_eq!(hows(&app), ["change", "the whole stack", "answer only"]);
+    assert_eq!(hows(&mut app), ["answer only", "change patch", "change stack"]);
     choose(&mut app, "Save it");
     keys(&mut app, &[KeyCode::Down, KeyCode::Char(' ')]);
-    assert_eq!(hows(&app), ["change", "the whole stack", "answer only"]);
+    assert_eq!(hows(&mut app), ["answer only", "change patch", "change stack"]);
     keys(&mut app, &[KeyCode::Esc]);
     // Batched as a try push, as an older stacked let it be: sent from the
     // banner, it is refused, saying why. It stays a comment, out of the
@@ -1215,11 +1229,10 @@ fn a_try_push_s_replies_say_the_effort_its_tasks_were_selected_at() {
     let (_tmp, db, _src) = setup();
     let mut app = open(&db);
     let job = new_job(&db);
-    // Asked at max: in its review, why the agent selected the task headed
-    // with it, and the title.
+    // Asked at max, from the dialog: in its review, why the agent selected
+    // the task headed with it, and the title.
     tasks_answer(&db, &[("build-linux64/debug", "Its build.")], "One task.");
-    app.effort = Effort::Max;
-    ask_try(&mut app, "Build it.");
+    ask_try_at(&mut app, "Build it.", Effort::Max);
     landed(&mut app, &db, 1);
     let id = notes_of(&db, 0)[0].id.clone();
     keys(&mut app, &[KeyCode::Esc, KeyCode::Enter]);
@@ -1651,15 +1664,8 @@ fn batch_try(app: &mut App, text: &str) {
     choose(app, "Comment on this patch…");
     typed(app, text);
     keys(app, &[KeyCode::Esc]);
-    // Later: in the batch.
-    let Mode::Menu(m) = &app.mode else { panic!("{:?}", app.mode) };
-    let when = m.items.iter().position(|i| i.label == "Send it").unwrap();
-    while !matches!(&app.mode, Mode::Menu(m) if m.sel == when) {
-        key(app, KeyCode::Down);
-    }
-    keys(app, &[KeyCode::Right]);
-    keys(app, &[KeyCode::Up]);
-    choose_as(app, "Ask agent later", "try push");
+    // Later: the dialog's Ask Later, in the batch.
+    ask_as(app, "try push", "Ask Later");
     assert!(app.status.starts_with("batched (try push)"), "{}", app.status);
     assert!(draw(app).contains("1 batched ask"), "{}", draw(app));
 }

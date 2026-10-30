@@ -19,8 +19,8 @@
 //! `o`, on a line of a commit message, its item that opens the line's link
 //! in the browser, or the menu of them when the line has several. Nothing
 //! else is: what the menu does, only the menu does. Comments are written in
-//! an editor inline where they will show, and sent to claude from their
-//! menu.
+//! an editor inline where they will show, and sent to claude from the
+//! dialog their menu opens, which sets how the agent is asked each time.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -50,6 +50,8 @@ use crate::thread::{
 use crate::tree;
 use crate::view::{MSG_PATH, note_keys, title_key};
 
+pub mod ask_dialog;
+pub use ask_dialog::{AskDialog, AskOf, Button, Permission};
 pub mod banner;
 pub use banner::BannerLine;
 mod compared;
@@ -632,6 +634,10 @@ pub enum Spot {
     /// Line `i` of the list of the view of why Move HEAD does not move
     /// HEAD.
     WhyLine(usize),
+    /// Line `i` of the ask dialog, the permission's or the effort's, which
+    /// a click steps; a button of it, which a click presses.
+    AskLine(usize),
+    AskButton(Button),
 }
 
 /// That `spot` is drawn at `(x, y)` of `area`, `w` by `h`: what a click
@@ -930,6 +936,10 @@ pub enum Mode {
     Normal,
     /// All that can be done: ↑↓ to choose, enter to do it.
     Menu(Menu),
+    /// The dialog that asks the agent, which every "Ask agent…" item opens:
+    /// the permission and the effort to set, then Ask Now, Ask Later or
+    /// Cancel.
+    Ask(Box<AskDialog>),
     /// A comment being written, inline.
     Edit(Box<Edit>),
     /// The patch at `from` being moved, now at `to`: ↑↓ to place it.
@@ -1091,9 +1101,6 @@ pub struct Item {
     /// choices with one of them picked: ← → pick another in the one the
     /// menu is on, and Enter does the item with what is picked.
     pub choices: Vec<Choices>,
-    /// Its label when the agent is asked now, and when later: an ask,
-    /// under the row that picks when.
-    pub labels: Option<(String, String)>,
     /// A box before its label, checked or not: Enter checks or unchecks it.
     pub check: Option<bool>,
 }
@@ -1101,13 +1108,12 @@ pub struct Item {
 /// A dropdown of an item: its choices, drawn as radio buttons after its
 /// label, `[x]` on the one picked; or, named, as one, its name then the
 /// one picked, `Effort [high]`. What is picked is kept per stack, in the
-/// database; the effort, for every ask, in the state kept between runs.
+/// database; but the effort, which is the item's alone, kept nowhere.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Choices {
-    /// What they are a choice of, as kept: `edit`, `ask`, `write`,
-    /// `effort`.
+    /// What they are a choice of, as kept: `edit`, `write`, `effort`.
     pub of: &'static str,
-    /// What is picked, as the bar and `?` say it: `where`, `how`.
+    /// What is picked, as the bar and `?` say it: `where`, `to whom`.
     pub what: &'static str,
     pub list: Vec<Choice>,
     pub picked: usize,
@@ -1377,19 +1383,14 @@ pub enum Action {
     DetachRef,
     /// Reference `r{0}` detached from the comment being written.
     Detach(usize),
-    Send(Way),
-    /// A patch's comment sent to the whole stack: the agent may change any
-    /// patch.
-    SendWhole,
-    SendAll(Way),
+    /// The dialog that asks the agent about `0`, opened: the permission and
+    /// the effort set there, then asked now, or later, in the batch.
+    AskAgent(AskOf),
     /// Comment (change, id) taken back from the agent's queue, where it
     /// waits its turn, once asked: its ask is not sent, and the comment
     /// stays open, as it is.
     AskUnsend(String, String),
     Unsend(String, String),
-    /// The row above an ask, picking when it asks: now, or later, in the
-    /// batch. Enter on it does the ask.
-    When,
     /// In the review of landed work, an edit by hand of the stack it makes,
     /// where the cursor is: as a list; the patch at place `0` as mail,
     /// opened at line `1` if the cursor is on a line of it; or file `1` of
@@ -1483,30 +1484,15 @@ pub enum Action {
     AskDeleteStack,
     DeleteStack,
     Transcript(String),
-    /// What to do with a comment written: save it, and send it if `way`.
-    Save(Option<Way>),
-    /// Save a patch's comment, and send it to the whole stack.
-    SaveWhole,
-    /// A comment written again but left as it was: sent as it is (a
-    /// patch's, to the whole stack), or the editor closed on it.
-    SendAsItIs(Way),
-    SendWholeAsItIs,
+    /// What to do with a comment written: save it, without asking.
+    Save,
+    /// A comment written again but left as it was: the editor closed on it.
     LeaveAsItIs,
     ThrowAway,
     /// What was changed of a comment written again thrown away.
     ThrowChanges,
     KeepWriting,
     Quit,
-}
-
-/// What saving a comment and asking about it, `a`, is for one left as it
-/// was: asking about it as it is.
-fn as_it_is(a: Action) -> Action {
-    match a {
-        Action::Save(Some(way)) => Action::SendAsItIs(way),
-        Action::SaveWhole => Action::SendWholeAsItIs,
-        a => a,
-    }
 }
 
 /// Whether `action` reaches Phabricator.
@@ -1657,25 +1643,18 @@ fn about(action: &Action) -> String {
         }
         Action::DetachRef => "detach a reference from the comment".into(),
         Action::Detach(_) => "detach this reference: a mention of it then names nothing".into(),
-        Action::Send(Way::Change) => "ask the agent, which may change the code within this comment's place".into(),
-        Action::Send(Way::Answer) => "ask the agent, to answer only: nothing changes".into(),
-        Action::Send(Way::Test) => "ask the agent to build and test, in the stack's build worktree, .stacked/NAME/build".into(),
-        #[cfg(feature = "try-push")]
-        Action::Send(Way::Try) => {
-            "ask the agent to select the CI tasks the comment asks for, for a try push: it pushes nothing, and the tasks wait for your review, each to accept or reject".into()
+        Action::AskAgent(about) => {
+            let what = match about {
+                AskOf::Comment(..) => "asks the agent about this comment",
+                AskOf::Listed { .. } => "asks the agent about every comment listed",
+                AskOf::Written { changed: true } => "saves the comment, then asks the agent about it",
+                AskOf::Written { changed: false } => "asks the agent about the comment as it is",
+            };
+            format!(
+                "open the dialog that {what}: there, Enter on each line sets what the agent may do and how hard it works, both unset at first, then Ask Now asks, Ask Later puts the ask in the batch, and Cancel asks nothing"
+            )
         }
-        Action::SendWhole => {
-            "ask the agent, which may change the whole stack, as for the stack's own comments: any patch, new patches anywhere, their order".into()
-        }
-        Action::SendAll(Way::Change) => "ask the agent about every comment listed; it may change the code".into(),
-        Action::SendAll(Way::Answer) => "ask the agent about every comment listed, to answer only".into(),
-        Action::SendAll(Way::Test) => "ask the agent to build and test, for every comment listed".into(),
-        #[cfg(feature = "try-push")]
-        Action::SendAll(Way::Try) => "ask the agent to select the CI tasks of a try push, for every comment listed, each its own push".into(),
         Action::AskUnsend(..) | Action::Unsend(..) => "take this comment's ask back from the agent's queue: the ask is not sent, and the comment stays open".into(),
-        Action::When => {
-            "pick when the agent is asked: now, or later, the comment waiting in the batch, which the banner sends with the rest; enter asks".into()
-        }
         Action::EditWorkList => {
             "edit the stack this work makes as a list, as `git rebase -i` does, in $EDITOR: saved, it lands in place of this work, which is rejected, its replies and comments going with it".into()
         }
@@ -1768,11 +1747,7 @@ fn about(action: &Action) -> String {
         Action::Stacks => "switch to another stack".into(),
         Action::AskDeleteStack | Action::DeleteStack => "delete this stack (undo brings it back)".into(),
         Action::Transcript(_) => "see what the agent wrote".into(),
-        Action::Save(None) => "save the comment".into(),
-        Action::Save(Some(w)) => format!("save the comment and ask the agent ({})", w.said()),
-        Action::SaveWhole => format!("save the comment and ask the agent ({})", crate::db::WHOLE),
-        Action::SendAsItIs(w) => format!("ask the agent about the comment as it is ({})", w.said()),
-        Action::SendWholeAsItIs => format!("ask the agent about the comment as it is ({})", crate::db::WHOLE),
+        Action::Save => "save the comment".into(),
         Action::LeaveAsItIs => "close the editor: the comment stays as it is".into(),
         Action::ThrowAway => "throw what you wrote away".into(),
         Action::ThrowChanges => "throw your changes away: the comment stays as it was".into(),
@@ -1788,7 +1763,6 @@ impl Item {
             action,
             enabled: true,
             choices: Vec::new(),
-            labels: None,
             check: None,
         }
     }
@@ -1817,7 +1791,6 @@ impl Item {
             action: Action::Line,
             enabled: false,
             choices: Vec::new(),
-            labels: None,
             check: None,
         }
     }
@@ -1894,11 +1867,9 @@ impl Menu {
         }
         // An item grayed, or a choice of one: the note says why.
         let blocked = out.iter().any(|i| (!i.enabled && i.action != Action::Line) || i.choices.iter().any(|c| c.list.iter().any(|ch| !ch.enabled)));
-        // Not on the row picking when an ask goes: on the ask.
-        let first = out.iter().position(|i| i.enabled && i.action != Action::When);
         Menu {
             title: title.into(),
-            sel: first.or_else(|| out.iter().position(|i| i.enabled)).unwrap_or(0),
+            sel: out.iter().position(|i| i.enabled).unwrap_or(0),
             items: out,
             note: note.filter(|_| blocked),
             at: None,
@@ -1939,15 +1910,6 @@ impl Menu {
         let c = &mut self.items.get_mut(self.sel).filter(|i| i.enabled)?.choices;
         let last = c.len().saturating_sub(1);
         c.get_mut(at.min(last))
-    }
-
-    /// Its asks labelled as they ask: `later`, or now.
-    fn relabel(&mut self, later: bool) {
-        for i in &mut self.items {
-            if let Some((now, then)) = &i.labels {
-                i.label = if later { then } else { now }.clone();
-            }
-        }
     }
 }
 
@@ -2061,12 +2023,13 @@ pub struct App {
     /// The searches of the middle made with `/`, the latest first: kept
     /// between runs too.
     pub finds: Vec<String>,
-    /// The effort last picked in a menu, which the next asks start at:
-    /// kept between runs too; `high` until one is picked.
-    pub effort: Effort,
     /// While an item of a menu is done, the effort its dropdown picks, for
     /// the ask it makes.
     at_effort: Option<Effort>,
+    /// What the last check of whether the network reaches the agent found,
+    /// for the ask dialog: where it was checked to reach, whether it did,
+    /// and when it was checked (`reach::KEPT`).
+    reached: Option<(crate::reach::Target, bool, Instant)>,
     pub focus: Focus,
     /// How the patches are shown, on the left: expanded, listing the files
     /// of the patch picked, or hidden.
@@ -2398,6 +2361,9 @@ enum Done {
     /// The agent of run `0` stopped, its ask landed: what the status says
     /// of it, if anything.
     Stopped(String, Option<String>),
+    /// Whether the network reaches the host `0` the agent talks to, as the
+    /// ask dialog checked it.
+    Reached(crate::reach::Target, bool),
     /// The try pushes followed looked at: what came of those now over.
     #[cfg(feature = "try-push")]
     Followed(Vec<String>),
@@ -2454,6 +2420,8 @@ struct Background {
     /// The runs whose agent is being stopped: what landing them says is
     /// said once they are stopped.
     stopping: Vec<String>,
+    /// Where the network is being checked to reach, for the ask dialog.
+    reaching: Option<crate::reach::Target>,
     /// Where each try push under way was when the screen last looked, by
     /// its run: what the status line said of it last. None until it looks.
     #[cfg(feature = "try-push")]
@@ -2481,6 +2449,7 @@ impl Background {
             heading: false,
             moved: 0,
             stopping: vec![],
+            reaching: None,
             #[cfg(feature = "try-push")]
             pushes: None,
             #[cfg(feature = "try-push")]
@@ -2619,8 +2588,8 @@ impl App {
             searching: None,
             searches: Vec::new(),
             finds: Vec::new(),
-            effort: Effort::default(),
             at_effort: None,
+            reached: None,
             focus: Focus::List,
             list: cfg.view.patches,
             file_sel: None,
@@ -2708,7 +2677,6 @@ impl App {
         app.judge();
         app.precreate();
         app.finds = app.kept_finds();
-        app.effort = app.kept_effort();
         Ok(app)
     }
 
@@ -3089,6 +3057,7 @@ impl App {
     /// What some work away from the screen came to.
     fn done(&mut self, d: Done) {
         match d {
+            Done::Reached(t, ok) => self.reach_found(t, ok),
             #[cfg(feature = "try-push")]
             Done::Followed(news) => {
                 self.bg.following = false;
@@ -3392,9 +3361,16 @@ impl App {
     }
 
     /// Waits for the work away from the screen to be done, the files read
-    /// to show whole too.
+    /// to show whole too, and the ask dialog's check of the network.
     pub fn settle(&mut self) {
-        while self.bg.launching || !self.bg.doing.is_empty() || self.bg.judging.is_some() || self.bg.heading || self.following() || self.reading_statuses() {
+        while self.bg.launching
+            || !self.bg.doing.is_empty()
+            || self.bg.judging.is_some()
+            || self.bg.heading
+            || self.following()
+            || self.reading_statuses()
+            || self.bg.reaching.is_some()
+        {
             match self.bg.rx.recv_timeout(Duration::from_secs(60)) {
                 Ok(d) => self.done(d),
                 Err(_) => break,
@@ -3986,7 +3962,7 @@ impl App {
             Spot::ReviewLine(i) => self.reviewing.as_ref().is_some_and(|r| r.sel == i && !r.in_main),
             Spot::Found(i) => self.searching.as_ref().is_some_and(|s| s.sel == i),
             Spot::WhyLine(i) => self.on_why_line(i),
-            Spot::Item(_) | Spot::Choice(..) | Spot::Box | Spot::Editor | Spot::SearchScope => false,
+            Spot::Item(_) | Spot::Choice(..) | Spot::Box | Spot::Editor | Spot::SearchScope | Spot::AskLine(_) | Spot::AskButton(_) => false,
         }
     }
 
@@ -4009,12 +3985,22 @@ impl App {
             Mode::Menu(m) => Some(m.title.clone()),
             _ => None,
         };
+        let asking = match &self.mode {
+            Mode::Help { back, .. } => matches!(**back, Mode::Ask(_)),
+            mode => matches!(mode, Mode::Ask(_)),
+        };
         let e = self.click_on(x, y, right);
         // Another menu than that one: opened by the click, next to it.
         if let Mode::Menu(m) = &mut self.mode
             && was.as_ref() != Some(&m.title)
         {
             m.at = Some((x, y));
+        }
+        // The ask dialog the click opened, next to it too.
+        if let Mode::Ask(d) = &mut self.mode
+            && !asking
+        {
+            d.at = Some((x, y));
         }
         e
     }
@@ -4051,11 +4037,6 @@ impl App {
                             });
                         if let Some((of, pick)) = picked {
                             self.picked_choice(of, pick);
-                            if of == "when"
-                                && let Mode::Menu(m) = &mut self.mode
-                            {
-                                m.relabel(pick == "later");
-                            }
                         }
                         Effect::None
                     }
@@ -4063,6 +4044,23 @@ impl App {
                     // Out of the menu, on the comment it asks about as well:
                     // Esc, which closes the menu, or goes back to writing
                     // that comment.
+                    _ => press(self, KeyCode::Esc),
+                };
+            }
+            // The ask dialog: a click on a line steps it, as Enter there
+            // does; on a button, presses it; out of the box, Esc, which
+            // cancels.
+            Mode::Ask(d) => {
+                return match spot {
+                    Some(Spot::AskLine(k)) => {
+                        d.line = k;
+                        press(self, KeyCode::Enter)
+                    }
+                    Some(Spot::AskButton(b)) => {
+                        (d.line, d.button) = (ask_dialog::BUTTONS_LINE, b);
+                        press(self, KeyCode::Enter)
+                    }
+                    Some(Spot::Box) => Effect::None,
                     _ => press(self, KeyCode::Esc),
                 };
             }
@@ -4161,6 +4159,12 @@ impl App {
         self.hovered = spot.filter(|s| side(s) && matches!(self.mode, Mode::Normal));
         let Some(spot) = spot else { return };
         let low = self.head_here().map_or(0, crate::head::Head::locked);
+        // The ask dialog's buttons that can be pressed: the mouse picks
+        // those alone.
+        let pressable = match &self.mode {
+            Mode::Ask(d) => self.ask_buttons(d),
+            _ => [true; 3],
+        };
         match &mut self.mode {
             Mode::Menu(m) => {
                 // Over a dropdown, ← → pick in it.
@@ -4170,6 +4174,13 @@ impl App {
                     _ => {}
                 }
             }
+            Mode::Ask(d) => match spot {
+                Spot::AskLine(k) => d.line = k,
+                Spot::AskButton(b) if pressable[b.at()] => {
+                    (d.line, d.button) = (ask_dialog::BUTTONS_LINE, b);
+                }
+                _ => {}
+            },
             Mode::Moving { to, .. } => {
                 if let Spot::Patch(Some(at)) = spot {
                     *to = at;
@@ -4203,7 +4214,7 @@ impl App {
 
     /// `spot` picked, as the arrows would: whether it is one to pick.
     fn pick_spot(&mut self, spot: Spot) -> bool {
-        if !matches!(spot, Spot::Item(_) | Spot::Choice(..) | Spot::Box | Spot::Editor) {
+        if !matches!(spot, Spot::Item(_) | Spot::Choice(..) | Spot::Box | Spot::Editor | Spot::AskLine(_) | Spot::AskButton(_)) {
             let banner = matches!(spot, Spot::Banner | Spot::BannerLine(_));
             if banner && !self.on_banner {
                 self.open_banner(0);
@@ -4284,7 +4295,7 @@ impl App {
                 self.hist_focus = HistFocus::Diff;
                 self.hist_cursor = i;
             }
-            Spot::Item(_) | Spot::Choice(..) | Spot::Box | Spot::Editor => return false,
+            Spot::Item(_) | Spot::Choice(..) | Spot::Box | Spot::Editor | Spot::AskLine(_) | Spot::AskButton(_) => return false,
         }
         true
     }
@@ -4485,7 +4496,7 @@ impl App {
         let why = thread_turns(&n.text).pop().map(|t| t.body).unwrap_or_default();
         let why = why.strip_prefix("This needs more than the patch: ").unwrap_or(&why);
         self.status = format!(
-            "moved to the stack's comments, the cursor with it: there, Ask agent may change the whole stack · {}",
+            "moved to the stack's comments, the cursor with it: there, the agent may be asked to change the whole stack · {}",
             short(why, 200)
         );
     }
@@ -4605,6 +4616,7 @@ impl App {
         match std::mem::replace(&mut self.mode, Mode::Normal) {
             Mode::Normal | Mode::Help { .. } => {}
             Mode::Menu(m) => return self.menu_key(m, k),
+            Mode::Ask(d) => return self.ask_key(*d, k),
             Mode::Preview(p) => return self.preview_key(*p, k),
             Mode::Edit(e) => return self.edit_key(*e, k),
             Mode::Lines(l) => return self.lines_key(*l, k),
@@ -5864,14 +5876,7 @@ impl App {
         match &self.mode {
             Mode::Menu(m) => {
                 if let Some(item) = m.chosen() {
-                    // On the row picking when an ask goes, Enter does the ask
-                    // over it; later, in the batch.
-                    let (ask, does) = match (&item.action, m.sel.checked_sub(1).and_then(|k| m.items.get(k))) {
-                        (Action::When, Some(over)) => (over, over.doing()),
-                        _ => (item, item.doing()),
-                    };
-                    let later = if ask.labels.is_some() && self.later() { ", later: it waits in the batch, which the banner sends" } else { "" };
-                    out.push(format!("Press Enter to {}{later}.", self.about_here(&does)));
+                    out.push(format!("Press Enter to {}.", self.about_here(&item.doing())));
                     // Each dropdown: ← → pick in the one the menu is on, and
                     // Tab goes to another.
                     let on = m.choice.min(item.choices.len().saturating_sub(1));
@@ -5879,7 +5884,7 @@ impl App {
                         let keys = if d == on { "Press ← →" } else { "Press Tab, then ← →," };
                         out.push(match c.of {
                             EFFORT => format!(
-                                "{keys} to pick the effort the agent is asked at, as claude's --effort takes it: {}. The effort picked is kept for the next asks, in every stack and in the next runs.",
+                                "{keys} to pick the effort the agent is asked at, as claude's --effort takes it: {}. The effort picked is this item's alone, and kept for no other ask.",
                                 Effort::listed()
                             ),
                             _ => {
@@ -5892,6 +5897,7 @@ impl App {
                 out.push("Press ↑↓ for another item, Esc to close the menu.".into());
                 return out;
             }
+            Mode::Ask(d) => return self.ask_help(d),
             Mode::Moving { to, .. } => {
                 out.push(format!("Press Enter to put {} there, at {}.", self.patch_title(), to + 1));
                 out.push("Press ↑↓ to place it elsewhere, Esc to leave it where it was.".into());
@@ -6409,9 +6415,6 @@ impl App {
             KeyCode::Left | KeyCode::Right => {
                 if let Some((of, pick)) = m.dropdown_mut().and_then(|c| c.step(k.code == KeyCode::Right)) {
                     self.picked_choice(of, pick);
-                    if of == "when" {
-                        m.relabel(pick == "later");
-                    }
                 }
             }
             // On an item with more than one dropdown, the next one, or the
@@ -6451,12 +6454,7 @@ impl App {
                 m = again;
             }
             KeyCode::Enter => {
-                // On the row picking when an ask goes, the ask over it.
-                let item = match m.chosen() {
-                    Some(i) if i.action == Action::When => m.sel.checked_sub(1).and_then(|k| m.items.get(k)).filter(|i| i.enabled),
-                    chosen => chosen,
-                };
-                return match item {
+                return match m.chosen() {
                     Some(item) => {
                         // An ask goes at the effort its dropdown picks.
                         self.at_effort = item.effort();
@@ -6527,20 +6525,19 @@ impl App {
             },
             Item::new("Keep writing", Action::KeepWriting),
         ];
-        // Changed, a comment is saved first, then asked about; left as it
-        // was, asked about as it is.
+        // The ask dialog: changed, it saves the comment first, then asks
+        // about it; left as it was, it asks about it as it is.
+        let asking = Item::new("Ask agent…", Action::AskAgent(AskOf::Written { changed })).when(named && (w || !changed));
         if self.answer_only(&e.target) {
             let mut items = vec![];
             if send {
-                let (does, ok) = match changed {
-                    true => (Action::Save(Some(Way::Answer)), w && named),
-                    false => (Action::SendAsItIs(Way::Answer), named),
-                };
-                let ask = Item::new("Ask agent, answer only", does).when(ok).with(self.effort_choices(None));
-                self.push_ask(&mut items, ask, "Ask agent later, answer only");
+                items.push(Item {
+                    label: "Ask agent, answer only…".into(),
+                    ..asking
+                });
             }
             if changed {
-                items.push(Item::new("Save it", Action::Save(None)));
+                items.push(Item::new("Save it", Action::Save));
             }
             items.extend(refs);
             items.extend(rest);
@@ -6550,38 +6547,10 @@ impl App {
         }
         let mut items = vec![];
         if changed {
-            items.push(Item::new("Save it", Action::Save(None)));
+            items.push(Item::new("Save it", Action::Save));
         }
         if send {
-            let a_patch_s = match &e.target {
-                Target::Patch(_) | Target::Line { .. } => true,
-                Target::Reply { change, .. } | Target::Edit { change, .. } | Target::Turn { change, .. } | Target::Rewind { change, .. } => {
-                    *change != stack_change(&self.stack)
-                }
-                _ => false,
-            };
-            // A build and test, and a try push, of the stack or of a patch as
-            // a whole: a comment written there, or one there replied to or
-            // written again, as its own menu has them.
-            let test = match &e.target {
-                Target::Stack | Target::Patch(_) => true,
-                Target::Reply { change, id } | Target::Edit { change, id } | Target::Turn { change, id, .. } | Target::Rewind { change, id, .. } => {
-                    self.db.note(change, id).is_some_and(|n| ask::can_test(&self.db, n))
-                }
-                _ => false,
-            };
-            let mut choices = self.ask_choices(a_patch_s, test, true);
-            let (does, ok) = match changed {
-                true => (Action::Save(Some(Way::Change)), w && named),
-                false => {
-                    for c in &mut choices.list {
-                        c.action = c.action.take().map(as_it_is);
-                    }
-                    (Action::SendAsItIs(Way::Change), named)
-                }
-            };
-            let ask = Item::new("Ask agent", does).when(ok).with(choices).with(self.effort_choices(None));
-            self.push_ask(&mut items, ask, "Ask agent later");
+            items.push(asking);
         }
         items.extend(refs);
         items.extend(rest);
@@ -6974,108 +6943,16 @@ impl App {
         Choices::new("edit", "where", list, self.db.choice(&self.stack, "edit"))
     }
 
-    /// How the agent is asked about a comment, as radio buttons: to change
-    /// the code (and `whole`, for a patch's: the whole stack), to answer
-    /// only, and, for one on the stack or a patch as a whole (`test`), to
-    /// build and test, or, built with the `try-push` feature, to select the
-    /// CI tasks of a try push. Each asks, or, `saving` a comment being
-    /// written, saves it and asks.
-    fn ask_choices(&self, whole: bool, test: bool, saving: bool) -> Choices {
-        let act = |way: Way| Some(if saving { Action::Save(Some(way)) } else { Action::Send(way) });
-        let mut list = vec![Choice::new("change", "change", "it may change the code within the comment's place", act(Way::Change))];
-        if whole {
-            let a = if saving { Action::SaveWhole } else { Action::SendWhole };
-            list.push(Choice::new(
-                "whole",
-                "the whole stack",
-                "a change with the whole stack in its worktree: it may change any patch, add or reorder them",
-                Some(a),
-            ));
-        }
-        list.push(Choice::new("answer", "answer only", "it answers, and changes nothing", act(Way::Answer)));
-        if test {
-            list.push(Choice::new(
-                "test",
-                "build and test",
-                "it builds and tests in the stack's build worktree, and changes nothing",
-                act(Way::Test),
-            ));
-        }
-        // Where a build and test is: of the stack, or of a patch as a whole,
-        // never of a line (`ask::can_try`). Not in the tour, whose game has
-        // no CI to push to.
-        #[cfg(feature = "try-push")]
-        if test && !self.in_memory() {
-            list.push(Choice::new(
-                "try",
-                "try push",
-                "it selects the CI tasks the comment asks for, for a try push, each with why: it pushes nothing and changes nothing, and the tasks wait for your review",
-                act(Way::Try),
-            ));
-        }
-        Choices::new("ask", "how", list, self.db.choice(&self.stack, "ask"))
-    }
-
-    /// When the agent is asked, as radio buttons: now, or later, the comment
-    /// waiting in the stack's batch until the banner sends it.
-    fn when_choices(&self) -> Choices {
-        let list = vec![
-            Choice::new("now", "now", "the agent is asked at once", None),
-            Choice::new("later", "later", "the comment waits in the batch, which the banner sends with the rest", None),
-        ];
-        Choices::new("when", "when", list, self.db.choice(&self.stack, "when"))
-    }
-
-    /// Whether the stack's asks are made later, in its batch, as its menus
-    /// picked.
-    fn later(&self) -> bool {
-        self.db.choice(&self.stack, "when") == Some("later")
-    }
-
     /// The effort an ask goes at, as a dropdown drawn as one, `Effort
     /// [high]`: the effort `at`, that of what was asked before, if given;
-    /// else the one picked last.
+    /// else high. What is picked in it is the item's alone: no other ask
+    /// starts at it.
     fn effort_choices(&self, at: Option<Effort>) -> Choices {
         let list = Effort::ALL.iter().map(|e| Choice::new(e.name(), e.name(), format!("claude's --effort {}", e.name()), None)).collect();
         Choices {
             named: Some("Effort"),
-            ..Choices::new(EFFORT, "effort", list, Some(at.unwrap_or(self.effort).name()))
+            ..Choices::new(EFFORT, "effort", list, Some(at.unwrap_or_default().name()))
         }
-    }
-
-    /// The effort the ask being made goes at: its item's, picked in its
-    /// dropdown; else, made otherwise than from a menu, the one picked last.
-    fn asked_at(&self) -> Effort {
-        self.at_effort.unwrap_or(self.effort)
-    }
-
-    /// The effort picked last, kept from the runs before: `high` until one
-    /// is, and for the tour, which keeps nothing on disk.
-    fn kept_effort(&self) -> Effort {
-        match self.in_memory() {
-            true => Effort::default(),
-            false => crate::state::effort(&crate::home::get().state).unwrap_or_default(),
-        }
-    }
-
-    /// `effort` picked in a menu: the next asks start at it, in this run and
-    /// in the next (`state`), but for the tour's database.
-    fn pick_effort(&mut self, effort: Effort) {
-        self.effort = effort;
-        if !self.in_memory() {
-            crate::state::picked_effort(&crate::home::get().state, effort);
-        }
-    }
-
-    /// Ask `ask`, over the row that picks when it asks, labelled `later`
-    /// while it asks later: under it, as it is seldom picked otherwise.
-    fn push_ask(&self, items: &mut Vec<Item>, mut ask: Item, later: &str) {
-        let enabled = ask.enabled;
-        let now = std::mem::take(&mut ask.label);
-        ask.label = if self.later() { later.to_string() } else { now.clone() };
-        ask.labels = Some((now, later.to_string()));
-        items.push(ask);
-        items.push(Item::new("Send it", Action::When).when(enabled).with(self.when_choices()));
     }
 
     /// Where a comment is written, as radio buttons: here, in an editor in
@@ -7102,12 +6979,12 @@ impl App {
     /// A choice picked in a menu: kept for the stack; but the review's own
     /// rows, not kept for the stack: the comments that asked marked so in
     /// the review, and whether HEAD follows the stack kept for the review;
-    /// and the effort, kept for every ask.
+    /// and the effort, kept nowhere, the item's alone.
     fn picked_choice(&mut self, of: &str, pick: &str) {
         match of {
             "asking" => self.mark_all_asking(pick == "close"),
             "head" => self.head_stays(pick == "stay"),
-            EFFORT => self.pick_effort(Effort::parse(pick).unwrap_or_default()),
+            EFFORT => {}
             _ => self.pick_choice(of, pick),
         }
     }
@@ -7325,9 +7202,9 @@ impl App {
             (Screen::History, _) => {
                 if let Some(e) = self.history().get(self.pick) {
                     title = format!("@{}", e.rev);
-                    // The question written first, which its menu asks at
-                    // the effort picked here, unless another is picked there.
-                    items.push(Item::new("Ask agent about this, answer only…", Action::AskAbout(e.rev)).with(self.effort_choices(None)));
+                    // The question written first, which the menu Esc opens
+                    // there asks about, through the ask dialog.
+                    items.push(Item::new("Ask agent about this, answer only…", Action::AskAbout(e.rev)));
                     if !self.about(e.rev).is_empty() {
                         items.push(Item::new("Go to its comments", Action::GoToAbout(e.rev)));
                     }
@@ -7421,26 +7298,17 @@ impl App {
         (Item::new(label, Action::Lint).when(ok), why.map(String::from))
     }
 
-    /// The Send all items of a header: the comments listed that can be sent.
+    /// The item of a header that asks about the comments listed that can be
+    /// asked about, through the ask dialog: build and test among the ways
+    /// there if `test`. Grayed while none can be.
     fn send_all_items(&self, items: &mut Vec<Item>, test: bool) {
         let w = self.read_only().is_none();
-        let n = self.listed_sendable(Way::Change).len();
-        let t = if test { self.listed_sendable(Way::Test).len() } else { 0 };
-        let mut list = vec![
-            Choice::new("change", format!("change ({n})"), "each may change the code within its place", Some(Action::SendAll(Way::Change))),
-            Choice::new("answer", format!("answer only ({n})"), "each is answered, and nothing changes", Some(Action::SendAll(Way::Answer))),
-        ];
+        let mut ways = vec![Way::Answer, Way::Change];
         if test {
-            list.push(Choice::new(
-                "test",
-                format!("build and test ({t})"),
-                "the agent builds and tests, for each, and changes nothing",
-                Some(Action::SendAll(Way::Test)),
-            ));
+            ways.push(Way::Test);
         }
-        let choices = Choices::new("ask", "how", list, self.db.choice(&self.stack, "ask"));
-        let ask = Item::new("Ask agent about all", Action::SendAll(Way::Change)).when(w && (n > 0 || t > 0));
-        items.push(ask.with(choices).with(self.effort_choices(None)));
+        let any = ways.into_iter().any(|way| !self.listed_sendable(way).is_empty());
+        items.push(Item::new("Ask agent about all…", Action::AskAgent(AskOf::Listed { test })).when(w && any));
     }
 
     fn comment_items(&self, c: &Note, items: &mut Vec<Item>, w: bool) {
@@ -7540,15 +7408,11 @@ impl App {
             }
             // Waiting its turn: taken back, once asked, the comment open.
             None if c.queued.is_some() => items.push(Item::new("Take it back from the agent's queue…", Action::AskUnsend(c.change.clone(), c.id.clone()))),
-            None if c.about.is_some() => {
-                let ask = Item::new("Ask agent, answer only", Action::Send(Way::Answer)).when(w && ask::sendable(c));
-                self.push_ask(items, ask.with(self.effort_choices(None)), "Ask agent later, answer only");
-            }
+            // The ask dialog, now or later: on the history, to answer only.
             None => {
-                let s = ask::sendable(c);
-                let choices = self.ask_choices(!c.on_stack(), ask::can_test(&self.db, c), false);
-                let ask = Item::new("Ask agent", Action::Send(Way::Change)).when(w && s).with(choices).with(self.effort_choices(None));
-                self.push_ask(items, ask, "Ask agent later");
+                let label = if c.about.is_some() { "Ask agent, answer only…" } else { "Ask agent…" };
+                let action = Action::AskAgent(AskOf::Comment(c.change.clone(), c.id.clone()));
+                items.push(Item::new(label, action).when(w && ask::sendable(c)));
             }
         }
         if let Some(rev) = c.about {
@@ -7975,23 +7839,12 @@ impl App {
                 };
                 return Effect::EditComment(target);
             }
-            Action::Send(way) => {
-                if let Some(c) = self.picked() {
-                    self.ask_agent(vec![(c.change, c.id)], way, false, self.asked_at());
-                }
-            }
-            Action::SendWhole => {
-                if let Some(c) = self.picked() {
-                    self.ask_agent(vec![(c.change, c.id)], Way::Change, true, self.asked_at());
-                }
-            }
-            // Done by the ask under it.
-            Action::When => {}
+            Action::AskAgent(about) => self.open_ask(about),
             Action::SendNow => {
                 if let Some(c) = self.picked()
                     && let Some(q) = c.queued.clone()
                 {
-                    let effort = self.at_effort.or(q.effort).unwrap_or(self.effort);
+                    let effort = self.at_effort.or(q.effort).unwrap_or_default();
                     self.send(vec![(c.change, c.id)], q.way, q.stack, effort);
                 }
             }
@@ -8006,10 +7859,6 @@ impl App {
             }
             Action::SendBatch(way, fan) => self.send_batch(way, fan, self.at_effort),
             Action::Toggle(change, id) => self.toggle_batched(&change, &id),
-            Action::SendAll(way) => {
-                let notes = self.listed_sendable(way);
-                self.send(notes, way, false, self.asked_at());
-            }
             Action::AskUnsend(change, id) => match self.unsend_ask(&change, &id) {
                 Some(m) => self.mode = Mode::Menu(m),
                 None => self.status = "this comment does not wait its turn in the agent's queue".into(),
@@ -8299,7 +8148,7 @@ impl App {
                 self.transcript = Some(id);
                 self.screen = Screen::Transcript;
             }
-            Action::Save(way) => {
+            Action::Save => {
                 if let Some(e) = self.pending.take() {
                     // Taken by the agent meanwhile: what you wrote stays in
                     // the editor.
@@ -8310,30 +8159,11 @@ impl App {
                     }
                     let text = e.ed.text();
                     let was = self.mine_of(&e.target);
-                    match (self.save_attached(&e.target, &text, &e.attached), way) {
-                        (Some(saved), Some(way)) => self.ask_agent(vec![saved], way, false, self.asked_at()),
-                        (saved, _) => self.settle_edit(&e, saved.is_some() && was.as_deref() != Some(text.trim())),
-                    }
+                    let saved = self.save_attached(&e.target, &text, &e.attached);
+                    self.settle_edit(&e, saved.is_some() && was.as_deref() != Some(text.trim()));
                     self.say_detached();
                 }
             }
-            Action::SaveWhole => {
-                if let Some(e) = self.pending.take() {
-                    if let Some(why) = self.locked_target(&e.target) {
-                        self.status = why;
-                        self.mode = Mode::Edit(Box::new(e));
-                        return Effect::None;
-                    }
-                    let text = e.ed.text();
-                    if let Some(saved) = self.save_attached(&e.target, &text, &e.attached) {
-                        self.ask_agent(vec![saved], Way::Change, true, self.asked_at());
-                    }
-                    self.say_detached();
-                }
-            }
-            // Saving what did not change writes nothing: it is asked as it is.
-            Action::SendAsItIs(way) => return self.perform(Action::Save(Some(way))),
-            Action::SendWholeAsItIs => return self.perform(Action::SaveWhole),
             Action::ThrowAway | Action::ThrowChanges | Action::LeaveAsItIs => {
                 self.status = match action {
                     Action::ThrowAway => "thrown away",
@@ -8729,9 +8559,9 @@ impl App {
     /// The ways to make a new stack: by the agent, from the checkout's
     /// commits, from Phabricator's revisions.
     fn new_stack_items(&self, items: &mut Vec<Item>) {
-        // The comment on it written first, which its menu asks at the
-        // effort picked here, unless another is picked there.
-        items.push(Item::new("Ask the agent to make a stack…", Action::AgentStack).with(self.effort_choices(None)));
+        // The comment on it written first, which the menu Esc opens there
+        // asks about, through the ask dialog.
+        items.push(Item::new("Ask the agent to make a stack…", Action::AgentStack));
         items.push(Item::new("Import from the workspace…", Action::FromWorkspace));
         #[cfg(feature = "moz-phab")]
         if self.cfg.reviews.source != crate::config::Source::None {
@@ -8799,7 +8629,7 @@ impl App {
         self.switch_stack(name);
         self.write(Target::Stack, Focus::List, "");
         self.status = format!(
-            "the stack {name} is made, empty, on HEAD {}: say what the agent should make of it, then press Esc and choose Ask agent",
+            "the stack {name} is made, empty, on HEAD {}: say what the agent should make of it, then press Esc and choose Ask agent…",
             &base[..12.min(base.len())]
         );
     }
@@ -9286,16 +9116,6 @@ impl App {
         };
     }
 
-    /// Asks the agent about `notes`, to the whole stack if `whole`, at
-    /// `effort`: now, or later, in the batch, as the stack's menus picked.
-    fn ask_agent(&mut self, notes: Vec<(String, String)>, way: Way, whole: bool, effort: Effort) {
-        if self.later() {
-            self.batch(notes, way, whole, effort);
-        } else {
-            self.send(notes, way, whole, effort);
-        }
-    }
-
     /// Puts `notes` in the stack's batch, to the whole stack if `whole`, at
     /// `effort`: they wait there until the banner sends the batch.
     fn batch(&mut self, notes: Vec<(String, String)>, way: Way, whole: bool, effort: Effort) {
@@ -9352,9 +9172,9 @@ impl App {
         self.launch();
     }
 
-    /// From the banner's menu: comment (change, id) put in the batch, as the
-    /// stack's asks are made, at the effort it was last asked at, else the
-    /// one picked last; or taken out. The menu open again on it.
+    /// From the banner's menu: comment (change, id) put in the batch, as it
+    /// was last asked (`way_for`), at the effort it was last asked at, else
+    /// high; or taken out. The menu open again on it.
     fn toggle_batched(&mut self, change: &str, id: &str) {
         let Some(n) = self.db.note(change, id).cloned() else { return };
         let at = [(change.to_string(), id.to_string())];
@@ -9362,7 +9182,7 @@ impl App {
             Some(q) if q.batched() => ask::unsend(&self.path, &at),
             _ => {
                 let (way, whole) = self.way_for(&n);
-                let effort = self.db.last_queued(change, id).and_then(|q| q.effort).unwrap_or(self.effort);
+                let effort = self.db.last_queued(change, id).and_then(|q| q.effort).unwrap_or_default();
                 ask::batch(&self.path, &self.stack, &at, way, whole, effort)
             }
         };
@@ -9378,12 +9198,12 @@ impl App {
     }
 
     /// How comment `n` is asked once checked in the banner's menu: as it was
-    /// last batched or asked, if it was; else as the stack's menus last
-    /// asked, if that fits it (the whole stack, for a patch's; build and
-    /// test, and a try push, for the stack's or a patch's as a whole), else
-    /// to change the code; on the history, to answer only. One on a line
-    /// last batched as a try push, as an older stacked let it be, is asked
-    /// so again: the batch refuses it, saying why.
+    /// last batched or asked, if it was and that fits it (the whole stack,
+    /// for a patch's; build and test, and a try push, for the stack's or a
+    /// patch's as a whole); else to change the code; on the history, to
+    /// answer only. One on a line last batched as a try push, as an older
+    /// stacked let it be, is asked so again: the batch refuses it, saying
+    /// why.
     fn way_for(&self, n: &Note) -> (Way, bool) {
         if n.about.is_some() {
             return (Way::Answer, false);
@@ -9399,14 +9219,7 @@ impl App {
         if last.is_some_and(|q| q.way == Way::Try) {
             return (Way::Try, false);
         }
-        match self.db.choice(&self.stack, "ask") {
-            Some("whole") if !n.on_stack() => (Way::Change, true),
-            Some("answer") => (Way::Answer, false),
-            Some("test") if ask::can_test(&self.db, n) => (Way::Test, false),
-            #[cfg(feature = "try-push")]
-            Some("try") if ask::can_try(&self.db, n) => (Way::Try, false),
-            _ => (Way::Change, false),
-        }
+        (Way::Change, false)
     }
 
     /// Puts `notes` on the agent's queue, to the whole stack if `whole`, at
@@ -10259,6 +10072,7 @@ impl App {
         }
         self.draw_bar(buf, area);
         self.draw_menu(buf, body);
+        self.draw_ask(buf, body);
         self.draw_help(buf, body);
         self.draw_ref_preview(buf, body);
         let cursor = self.draw_lines(buf, body).or(cursor);
@@ -10583,6 +10397,7 @@ impl App {
                 }
                 _ => "↑↓ choose · enter: do it · esc: close · ?: what it does".into(),
             },
+            Mode::Ask(d) => App::ask_hint(d),
             Mode::Moving { .. } => "↑↓ to place it · enter: put it there · esc: leave it where it was".into(),
             Mode::MovingHead { .. } => "↑↓ to place HEAD · enter: move your checkout there · esc: leave it where it was".into(),
             // What was closed here, taller than its box: ↑↓ scroll it. Whole
@@ -10745,31 +10560,9 @@ impl App {
             m.top = m.sel + 1 - rows;
         }
         let bh = rows + 2 + below;
-        // Beside the comment being written, not over it: under it where
-        // there is room, else above it.
-        let centered = h.saturating_sub(bh) / 2;
-        let y = match (self.pending.is_some(), self.edit_box.get()) {
-            (true, Some(b)) => {
-                let top = (b.y as usize).saturating_sub(area.y as usize);
-                let bottom = top + b.height as usize;
-                if bottom + bh <= h {
-                    bottom
-                } else if top >= bh {
-                    top - bh
-                } else {
-                    centered
-                }
-            }
-            _ => centered,
-        };
-        let x = w.saturating_sub(bw) / 2;
-        // Opened by a click: next to the cell clicked instead, over the
-        // comment being written too, as a click out of the menu goes back
-        // to that comment.
-        let (x, y) = match m.at {
-            Some((cx, cy)) => (next_to(cx, area.x, bw, w), next_to(cy, area.y, bh, h)),
-            None => (x, y),
-        };
+        let at = m.at;
+        let (x, y) = self.boxed_at(area, bw, bh, at);
+        let Mode::Menu(m) = &self.mode else { return };
         window(buf, area, x, y, bw, bh, &m.title, color::meta());
         spot_in(&self.spots, area, (x, y, bw, bh), Spot::Box);
         for (r, (i, item)) in m.items.iter().enumerate().skip(m.top).take(rows).enumerate() {
@@ -10813,6 +10606,34 @@ impl App {
         }
     }
 
+    /// Where a box `bw` by `bh`, a menu or the ask dialog, is drawn in
+    /// `area`: opened by a click on the cell `at`, next to that cell, over
+    /// the comment being written too, as a click out of the box goes back
+    /// to that comment. Else beside the comment being written, not over
+    /// it: under it where there is room, else above it; else in the middle.
+    fn boxed_at(&self, area: Rect, bw: usize, bh: usize, at: Option<(u16, u16)>) -> (usize, usize) {
+        let (w, h) = (area.width as usize, area.height as usize);
+        if let Some((cx, cy)) = at {
+            return (next_to(cx, area.x, bw, w), next_to(cy, area.y, bh, h));
+        }
+        let centered = h.saturating_sub(bh) / 2;
+        let y = match (self.pending.is_some(), self.edit_box.get()) {
+            (true, Some(b)) => {
+                let top = (b.y as usize).saturating_sub(area.y as usize);
+                let bottom = top + b.height as usize;
+                if bottom + bh <= h {
+                    bottom
+                } else if top >= bh {
+                    top - bh
+                } else {
+                    centered
+                }
+            }
+            _ => centered,
+        };
+        (w.saturating_sub(bw) / 2, y)
+    }
+
     fn draw_help(&self, buf: &mut Buffer, area: Rect) {
         let Mode::Help { lines, .. } = &self.mode else { return };
         let (w, h) = (area.width as usize, area.height as usize);
@@ -10838,7 +10659,7 @@ impl App {
     fn writing(&self) -> Option<&Edit> {
         match &self.mode {
             Mode::Edit(e) => Some(e),
-            Mode::Menu(_) => self.pending.as_ref(),
+            Mode::Menu(_) | Mode::Ask(_) => self.pending.as_ref(),
             Mode::Lines(l) => Some(&l.back),
             _ => None,
         }

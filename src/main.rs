@@ -398,9 +398,8 @@ enum Cmd {
         #[arg(long, requires = "batch")]
         fan_out: bool,
         /// How hard the agent works on them, as claude's --effort takes it:
-        /// low, medium, high, xhigh or max. Unless given, the effort last
-        /// picked in the editor's menus (high until one is); with --batch,
-        /// the effort each comment was batched at.
+        /// low, medium, high, xhigh or max. Unless given, high; with
+        /// --batch, the effort each comment was batched at.
         #[arg(long, value_name = "LEVEL", value_parser = effort_arg())]
         effort: Option<stacked::db::Effort>,
         /// Wait for them to be answered, and print the threads.
@@ -1430,8 +1429,8 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
                 (true, _) => Way::Answer,
                 _ => Way::Change,
             };
-            // Unless given, the effort the editor's menus picked last.
-            let at = effort.or_else(|| stacked::state::effort(&stacked::home::get().state)).unwrap_or_default();
+            // Unless given, high: nothing picked before is kept.
+            let at = effort.unwrap_or_default();
             let db = Db::load(path)?;
             let since = db.last_rev();
             let busy = ask::with_agent(&db);

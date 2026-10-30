@@ -637,118 +637,119 @@ fn a_kill_or_its_terminal_closing_leaves_it_as_quit_does() {
     left(child, said, &mut events, &made);
 }
 
-#[test]
-fn the_effort_picked_in_a_menu_is_where_the_next_run_starts() {
-    let (tmp, db) = setup();
-    let home = tmp.path().join("home");
-    let file = db.to_str().unwrap();
-    // A comment on the stack, for its menu to ask about.
-    let out = stacked(&home).current_dir(tmp.path()).args(["-f", file, "comment", "s", "Why?"]).output().unwrap();
+/// The program the editors served from this process run as claude: one no
+/// folder of the PATH holds, so that their ask dialogs gray Ask Now, saying
+/// so, and check no network; no agent is ever asked from here.
+const NO_CLAUDE: &str = "stacked-no-such-claude";
+
+fn no_claude() {
+    stacked::ask::stand_in(Path::new(NO_CLAUDE), Path::new(env!("CARGO_BIN_EXE_stacked")));
+}
+
+/// Stack `s` of `db` served from this process, with a comment on the stack,
+/// its menu opened on its header: the server's port, its token, and its
+/// events, 120 columns wide. Its claude is `NO_CLAUDE`.
+fn served_with_a_stack_comment(home: &Path, db: &Path) -> (u16, String, BufReader<TcpStream>) {
+    let out = stacked(home).args(["-f", db.to_str().unwrap(), "comment", "s", "Why?"]).output().unwrap();
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
-    // `stacked web`, its home the test's; the stack's menu opened on its
-    // header, on `Ask agent about all`. What it said first, where it is.
-    let serve = || {
-        let mut child = stacked(&home)
-            .args(["-f", file, "web", "--no-open"])
-            .current_dir(tmp.path())
-            .stdin(Stdio::null())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap();
-        let mut said = BufReader::new(child.stderr.take().unwrap());
-        let child = Running(child);
-        let mut line = String::new();
-        said.read_line(&mut line).unwrap();
-        let url = line.split_whitespace().find_map(|w| w.strip_prefix("http://127.0.0.1:")).expect(&line).to_string();
-        let (port, token) = url.split_once("/?t=").unwrap();
-        let (port, token): (u16, String) = (port.parse().unwrap(), token.to_string());
-        let mut events = events(port, &token, 120);
-        until(&mut events, "the patches", |l| l.contains("Bug 2 - add b"));
-        let press = move |k: &str| {
-            ask(port, &format!("127.0.0.1:{port}"), &format!("POST /input?t={token}"), &format!("k {k}\n"));
-        };
-        for k in ["Home -", "c 20 -", "Down -"] {
-            press(k);
-        }
-        (child, events, press)
-    };
-    let asking = |l: &str| text(l).contains("Ask agent about all");
-    // High at first; Tab goes to the effort, → twice picks max.
-    let (mut child, mut events, press) = serve();
-    until(&mut events, "high, at first", |l| asking(l) && text(l).contains("Effort [high]"));
-    for k in ["Tab -", "Right -", "Right -"] {
-        press(k);
-    }
-    until(&mut events, "max, picked", |l| asking(l) && text(l).contains("Effort [max]"));
-    // Quit: kept in the state file of its home, beside the database opened.
-    press("c 63 c");
-    until(&mut events, "bye", |l| l == "data: bye");
-    assert!(child.0.wait().unwrap().success());
-    let state = home.join("state.json");
-    assert_eq!(stacked::state::effort(&state), Some(stacked::db::Effort::Max));
-    // The next run starts at it.
-    let (_child, mut events, _) = serve();
-    until(&mut events, "max, kept", |l| asking(l) && text(l).contains("Effort [max]"));
+    no_claude();
+    stacked::config::init(stacked::config::Config::default());
+    let (port, token) = stacked::web::start(db.to_path_buf()).unwrap();
+    let mut events = events(port, &token, 120);
+    until(&mut events, "the patches", |l| l.contains("Bug 2 - add b"));
+    let input = format!("POST /input?t={token}");
+    ask(port, &format!("127.0.0.1:{port}"), &input, "k Home -\n");
+    until(&mut events, "the stack in the middle", |l| text(l).contains("the stack s · 2 patches"));
+    ask(port, &format!("127.0.0.1:{port}"), &input, "k c 20 -\n");
+    (port, token, events)
 }
 
 #[test]
-fn the_effort_s_arrows_stop_at_low_and_at_max_and_a_click_on_it_goes_round_in_the_browser_too() {
+fn the_ask_dialog_opens_with_nothing_set_is_clicked_and_asks_later_in_the_browser_too() {
     let (tmp, db) = setup();
     let home = tmp.path().join("home");
-    let file = db.to_str().unwrap();
-    // A comment on the stack, for its menu to ask about.
-    let out = stacked(&home).current_dir(tmp.path()).args(["-f", file, "comment", "s", "Why?"]).output().unwrap();
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
-    let mut web = stacked(&home);
-    web.args(["-f", file, "web", "--no-open"]).current_dir(tmp.path()).stdin(Stdio::null()).stderr(Stdio::piped());
-    let mut child = web.spawn().unwrap();
-    let mut said = BufReader::new(child.stderr.take().unwrap());
-    let mut child = Running(child);
-    let mut line = String::new();
-    said.read_line(&mut line).unwrap();
-    let url = line.split_whitespace().find_map(|w| w.strip_prefix("http://127.0.0.1:")).expect(&line).to_string();
-    let (port, token) = url.split_once("/?t=").unwrap();
-    let port: u16 = port.parse().unwrap();
-    let mut events = events(port, token, 120);
-    until(&mut events, "the patches", |l| l.contains("Bug 2 - add b"));
+    let (port, token, mut events) = served_with_a_stack_comment(&home, &db);
     let (host, input) = (format!("127.0.0.1:{port}"), format!("POST /input?t={token}"));
     let send = |lines: &[&str]| {
         for l in lines {
             ask(port, &host, &input, &format!("{l}\n"));
         }
     };
-    // The stack's menu, on its header, once the middle shows the stack's
-    // comment: `Ask agent about all` ends with the effort, high at first.
-    send(&["k Home -"]);
-    until(&mut events, "the stack in the middle", |l| text(l).contains("the stack s · 2 patches"));
-    send(&["k c 20 -"]);
-    let asking = |l: &str, level: &str| {
-        let t = text(l);
-        t.contains("Ask agent about all") && t.contains(&format!("Effort [{level}]"))
-    };
-    // A click on the effort, in the row seen last: the next level picked,
-    // and the menu on it, for ← → to pick in it.
-    let click = |seen: Vec<String>| {
-        let row = seen.last().unwrap();
-        let y = row.strip_prefix("data: r ").and_then(|r| r.split(' ').next()).unwrap();
-        let line = text(row);
-        let x = line[..line.find("Effort [").unwrap()].chars().count() + 1;
+    let click = |seen: &[String], said: &str| {
+        let (x, y) = cell_of(seen.iter().rev().find(|l| text(l).contains(said)).unwrap(), said);
         send(&[format!("m {x} {y} l").as_str()]);
     };
-    click(until(&mut events, "high, at first", |l| asking(l, "high")));
-    until(&mut events, "xhigh, clicked", |l| asking(l, "xhigh"));
-    // → no further than max; a click there goes round, to low.
-    send(&["k Right -"; 4]);
-    click(until(&mut events, "max", |l| asking(l, "max")));
-    until(&mut events, "low, clicked", |l| asking(l, "low"));
-    // ← no further than low: → from there picks medium.
-    send(&["k Left -", "k Left -", "k Left -", "k Right -"]);
-    until(&mut events, "medium", |l| asking(l, "medium"));
-    // Quit: medium kept.
-    send(&["k c 63 c"]);
-    until(&mut events, "bye", |l| l == "data: bye");
-    assert!(child.0.wait().unwrap().success());
-    assert_eq!(stacked::state::effort(&home.join("state.json")), Some(stacked::db::Effort::Medium));
+    // Ask agent about all…, clicked: its dialog, nothing set, Ask Now
+    // grayed as claude is not found, Ask Later until both are set.
+    let item = "Ask agent about all…";
+    click(&until(&mut events, "the stack's menu", |l| text(l).contains(item)), item);
+    let seen = until(&mut events, "the dialog", |l| text(l).contains("Permission: [ — ]"));
+    assert!(seen.iter().any(|l| text(l).contains("ask the agent about the comments listed on the stack")), "{seen:#?}");
+    until(&mut events, "its buttons", |l| text(l).contains("< Ask Now >   < Ask Later >   < Cancel >"));
+    until(&mut events, "why Ask Now is grayed", |l| text(l).contains(&format!("Ask Now is grayed: {NO_CLAUDE} is not found")));
+    // A click on the permission's line steps it: answer only, then change
+    // stack.
+    click(&seen, "Permission: [ — ]");
+    let seen = until(&mut events, "answer only", |l| text(l).contains("Permission: [answer only]"));
+    click(&seen, "Permission: [answer only]");
+    until(&mut events, "change stack", |l| text(l).contains("Permission: [change stack]"));
+    // ← → do nothing there; Enter on the effort's line sets low.
+    send(&["k Right -", "k Down -", "k Left -", "k Enter -"]);
+    until(&mut events, "low", |l| text(l).contains("Effort: [low]"));
+    // The buttons: → from Ask Now, grayed, to Ask Later, which batches it.
+    send(&["k Down -", "k Right -", "k Enter -"]);
+    until(&mut events, "batched", |l| text(l).contains("batched (may change the code): 1 ask in the batch"));
+    let d = stacked::db::Db::load(&db).unwrap();
+    let q = d.stack_notes("s").into_iter().find_map(|n| n.queued.clone()).expect("batched");
+    assert_eq!((q.batched(), q.way, q.effort), (true, stacked::db::Way::Change, Some(stacked::db::Effort::Low)));
+}
+
+#[test]
+fn the_ask_dialog_s_esc_cancels_and_the_effort_of_send_it_now_stops_at_either_end_in_the_browser_too() {
+    let (tmp, db) = setup();
+    let home = tmp.path().join("home");
+    let (port, token, mut events) = served_with_a_stack_comment(&home, &db);
+    let (host, input) = (format!("127.0.0.1:{port}"), format!("POST /input?t={token}"));
+    let send = |lines: &[&str]| {
+        for l in lines {
+            ask(port, &host, &input, &format!("{l}\n"));
+        }
+    };
+    // Ask agent about all… with Enter, both lines set, then Esc: closed,
+    // nothing asked, as Space opens the menu again; opened again, nothing
+    // set.
+    until(&mut events, "the stack's menu", |l| text(l).contains("Ask agent about all…"));
+    send(&["k Down -", "k Enter -"]);
+    until(&mut events, "the dialog", |l| text(l).contains("Permission: [ — ]"));
+    send(&["k Enter -", "k Down -", "k Enter -", "k Esc -", "k c 20 -"]);
+    until(&mut events, "the menu again", |l| text(l).contains("Ask agent about all…"));
+    send(&["k Down -", "k Enter -"]);
+    until(&mut events, "opened again, unset", |l| text(l).contains("Permission: [ — ]"));
+    // Asked later, at low, from the dialog: the comment's own menu, in the
+    // comments pane, then has Send it now, at the effort it was batched at.
+    send(&["k Enter -", "k Down -", "k Enter -", "k Down -", "k Right -", "k Enter -"]);
+    until(&mut events, "batched", |l| text(l).contains("batched (answer only)"));
+    send(&["k Right -", "k Right -", "k c 20 -"]);
+    let sending = |l: &str, level: &str| {
+        let t = text(l);
+        t.contains("Send it now (answer only)") && t.contains(&format!("Effort [{level}]"))
+    };
+    let click = |seen: Vec<String>| {
+        let row = seen.last().unwrap();
+        let (x, y) = cell_of(row, "Effort [");
+        send(&[format!("m {x} {y} l").as_str()]);
+    };
+    // A click on it, the next level, the menu on it; ← no further than low;
+    // → no further than max, and a click there goes round, to low.
+    click(until(&mut events, "low, as batched", |l| sending(l, "low")));
+    until(&mut events, "medium, clicked", |l| sending(l, "medium"));
+    send(&["k Left -"; 3]);
+    until(&mut events, "low, no further", |l| sending(l, "low"));
+    send(&["k Right -"; 5]);
+    click(until(&mut events, "max", |l| sending(l, "max")));
+    until(&mut events, "low, clicked", |l| sending(l, "low"));
+    // Nothing kept for the next runs: the state of this process is nowhere.
+    assert_eq!(stacked::home::get().state, Path::new(stacked::home::NOWHERE));
 }
 
 #[test]

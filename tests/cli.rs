@@ -3953,7 +3953,7 @@ fn effort_said(file: &Path) -> String {
 }
 
 #[test]
-fn send_asks_at_the_effort_given_else_at_the_one_the_editor_picked_last() {
+fn send_asks_at_the_effort_given_else_at_high() {
     let e = env();
     e.ok(&["import", "s", "base"]);
     let efforts = e.root.join("efforts");
@@ -3965,11 +3965,14 @@ fn send_asks_at_the_effort_given_else_at_the_one_the_editor_picked_last() {
         let (fine, _, err) = send(&e, &claude, &all, env);
         assert!(fine, "{args:?}: {err}");
     };
-    // None given, nor picked in the editor: high. Given: that one.
+    // None given: high. Given: that one.
     ask(&[], &[]);
     ask(&["--effort", "xhigh"], &[]);
-    // The editor's last pick, kept in the state file of its home.
-    stacked::state::picked_effort(&e.root.join("home/state.json"), stacked::db::Effort::Low);
+    // The effort an editor of before kept in the state file of its home,
+    // as the one its menus picked last: no longer read, high still.
+    let state = e.root.join("home/state.json");
+    std::fs::create_dir_all(state.parent().unwrap()).unwrap();
+    std::fs::write(&state, "{\"recent\": [], \"open\": [], \"effort\": \"low\"}\n").unwrap();
     ask(&[], &[]);
     // The settings' own taken out, the ask's in its place.
     let settings = e.root.join("settings.toml");
@@ -3977,7 +3980,7 @@ fn send_asks_at_the_effort_given_else_at_the_one_the_editor_picked_last() {
     ask(&["--effort", "medium"], &[("STACKED_CONFIG", &settings)]);
     ask(&[], &[("STACKED_CONFIG", &settings)]);
     let said: Vec<String> = std::fs::read_to_string(&efforts).unwrap().lines().map(String::from).collect();
-    assert_eq!(said, ["high", "xhigh", "low", "medium", "low"]);
+    assert_eq!(said, ["high", "xhigh", "high", "medium", "high"]);
     // A level claude does not take is refused, the levels it takes said:
     // nothing is sent.
     let id = comment(&e, &["Harder?"]);
@@ -4000,10 +4003,9 @@ fn a_batch_and_work_sent_back_go_at_the_effort_they_were_asked_at_unless_another
         assert!(fine, "{args:?}: {out}{err}");
     };
     let said = || std::fs::read_to_string(&efforts).unwrap().lines().map(String::from).collect::<Vec<_>>();
-    // Batched at low, it goes at low, whatever the editor picked since.
+    // Batched at low, it goes at low.
     let id = comment(&e, &["Why?"]);
     run(&["send", "s", &id, "--later", "--answer-only", "--effort", "low"]);
-    stacked::state::picked_effort(&e.root.join("home/state.json"), stacked::db::Effort::Max);
     run(&["send", "s", "--batch", "--wait"]);
     assert_eq!(said(), ["low"]);
     // Its work answered in its review, it goes back at the effort it was
