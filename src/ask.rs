@@ -660,32 +660,107 @@ fn answers_in_flight(db: &Db, name: &str, but: &str) -> Vec<Run> {
         .collect()
 }
 
-/// A change of stack `name` accepted, in the review of run `id`: chained,
-/// the answer-only asks made on the stack before it, running or waiting for
-/// your review, are dropped and asked again, on the stack as it is now. How
-/// many.
-pub fn reask_answers(db: &mut Db, name: &str, id: &str) -> Result<usize> {
+/// The answers made on stack `name` before the change of the work run `id`
+/// holds, that accepting that change leaves behind, chained: the asks that
+/// only read (answers, and a try push's selection) running, or landed and
+/// waiting for your review, made on the stack as it was. The review of the
+/// change marks each keep, restart or stop before it closes with the change
+/// accepted (`leave_answers`). None unchained: a change then waits for the
+/// answers running, and accepting it touches none of them.
+pub fn answers_left(db: &Db, name: &str, id: &str) -> Vec<Run> {
     if !chains(&agent_of(db, name)) {
-        return Ok(0);
+        return vec![];
     }
-    let runs = answers_in_flight(db, name, id);
-    for r in &runs {
-        let Some(i) = info(r) else { continue };
-        drop_run(db, r, i, "dropped: an edit of the stack was accepted meanwhile; asked again".into())?;
-    }
-    Ok(runs.len())
+    answers_in_flight(db, name, id)
 }
 
-/// What accepting a change of stack `name`, in the review of run `id`, asks
-/// again, chained: the answer-only asks running, and waiting for your
-/// review.
-pub fn answers_reasked(db: &Db, name: &str, id: &str) -> (usize, usize) {
-    if !chains(&agent_of(db, name)) {
-        return (0, 0);
+/// The answers `answers`, made on the stack before a change now accepted,
+/// each as the change's review `marks` it (`held::answer_mark`): kept, it
+/// goes on as it is, or waits for your review as it is, on the stack it was
+/// asked on; restarted, it is dropped and asked again on the stack as it is
+/// now, shown what it brought back if it landed; stopped, its agent is
+/// stopped and its ask landed as failed, or its work is thrown away unseen,
+/// and its comments stay open, not asked again (`stop_left`). One not
+/// marked is kept. What came of them, said, a count each.
+pub fn leave_answers(db: &mut Db, answers: &[Run], marks: &std::collections::BTreeMap<String, bool>) -> Result<Vec<String>> {
+    use crate::held::AnswerMark;
+    let (mut again, mut kept, mut stopped) = (0, 0, 0);
+    for r in answers {
+        let Some(i) = info(r) else { continue };
+        match crate::held::answer_mark(marks, &r.id) {
+            Some(AnswerMark::Restart) => {
+                drop_run(db, r, i, "dropped: an edit of the stack was accepted meanwhile; asked again".into())?;
+                again += 1;
+            }
+            Some(AnswerMark::Stop) => {
+                stop_left(db, r, i)?;
+                stopped += 1;
+            }
+            Some(AnswerMark::Keep) | None => kept += 1,
+        }
     }
-    let runs = answers_in_flight(db, name, id);
-    let running = runs.iter().filter(|r| r.state == RunState::Started).count();
-    (running, runs.len() - running)
+    let said = |n: usize, what: &str| match n {
+        1 => format!("1 answer-only ask {what}"),
+        n => format!("{n} answer-only asks {what}"),
+    };
+    Ok([(again, "asked again"), (kept, "kept"), (stopped, "stopped")].into_iter().filter(|(n, _)| *n > 0).map(|(n, what)| said(n, what)).collect())
+}
+
+/// What the summary of an answer stopped running as the change made on the
+/// stack after it is accepted says, and its comments: why its ask failed.
+pub const STOPPED_LEFT: &str = "you stopped the agent when you accepted an edit of the stack";
+
+/// Answer run `r`, of ask `i`, made on the stack before a change, stopped as
+/// that change is accepted. Running, its agent is stopped as `stop` stops
+/// it, under the lock: said first in its stream, its ask landed as failed
+/// and its comments said so, then its process group sent SIGTERM, which
+/// ends it; its worktree free to be taken again. Landed, its work is thrown
+/// away unseen, as a rejected one's is: its review closed, what it allowed
+/// from now on saved, as a review closing saves it. Either way, its
+/// comments stay open, and are not asked again.
+fn stop_left(db: &mut Db, r: &Run, mut i: Info) -> Result<()> {
+    if r.state == RunState::Started {
+        i.dropped = true;
+        db.add_event(&r.id, serde_json::json!({"type": STOP}))?;
+        db.add_run(Run {
+            state: RunState::Failed,
+            summary: STOPPED_LEFT.into(),
+            ask: Some(serde_json::to_value(&i).unwrap()),
+            ..r.clone()
+        })?;
+        mark_failed(db, &i, STOPPED_LEFT)?;
+        if let Some(pid) = r.pid {
+            signal(pid, libc::SIGTERM);
+        }
+        return Ok(());
+    }
+    let mut v = db.review(&r.id).cloned().unwrap_or_default();
+    let settled = crate::refusals::settle(db, r, &mut v.marks, true);
+    db.add_run(Run {
+        summary: format!("reviewed: thrown away unseen, as you stopped it when you accepted an edit of the stack{}", settled.said(i.way)),
+        ..r.clone()
+    })?;
+    db.set_review(&r.id, crate::held::Review { closed: true, ..v })?;
+    Ok(())
+}
+
+/// The comments run `r` was asked about, by (change, id), read from its
+/// run without the rest, as it is read on every redraw: none for a run
+/// that is no ask.
+pub fn asked_about(r: &Run) -> Vec<(String, String)> {
+    light(r).map(|l| l.notes.into_iter().map(|sh| (sh.change, sh.id)).collect()).unwrap_or_default()
+}
+
+/// Whether run `r` is a try push's selection, read from its run without
+/// the rest: the asks that only read are answers but for those.
+pub fn selects_tasks(r: &Run) -> bool {
+    #[cfg(feature = "try-push")]
+    return light(r).is_some_and(|l| l.way == Way::Try);
+    #[cfg(not(feature = "try-push"))]
+    return {
+        let _ = r;
+        false
+    };
 }
 
 /// The builds and tests of stack `name` going: of the stack as it is, which
@@ -3222,7 +3297,8 @@ fn named_comment(db: &Db, i: &Info, stack: &str, name: &str) -> Option<(String, 
 }
 
 /// Claude's replies to the comments it was sent, held: turns `way` names,
-/// at the effort the ask was asked at.
+/// at the effort the ask was asked at; an answer-only ask's naming the
+/// stack it was asked on.
 fn held_replies(db: &Db, i: &Info, replies: &Map<String, Value>) -> Vec<crate::held::Reply> {
     let stack = db.node(i.from).map(|s| s.name.clone()).unwrap_or_default();
     i.notes
@@ -3240,6 +3316,7 @@ fn held_replies(db: &Db, i: &Info, replies: &Map<String, Value>) -> Vec<crate::h
                 })?,
                 tag: i.way.name().into(),
                 effort: i.effort,
+                asked_on: (i.way == Way::Answer).then_some(i.from),
                 ..Default::default()
             })
         })
@@ -3634,7 +3711,7 @@ fn opened_notes(db: &Db, run: &Run, i: &Info, result: &str) -> Result<Vec<Note>>
             id: format!("agent:{}:{n}", run.id),
             line,
             text: fenced(
-                &agent_open(Way::Answer.name(), i.effort.map(Effort::name)),
+                &agent_open(Way::Answer.name(), i.effort.map(Effort::name), Some(i.from)),
                 &crate::refs::attach(
                     str_of(note.get("text")).trim(),
                     &crate::refs::resolved(crate::refs::of_json(note.get("refs")), Some(1), &|c| named_comment(db, i, &from.name, c)),
@@ -3675,7 +3752,7 @@ fn test_notes(db: &Db, run: &Run, i: &Info, result: &str) -> Result<Vec<Note>> {
             text: {
                 let (found, refs) = crate::refs::text_and_refs(v);
                 let refs = crate::refs::resolved(refs, Some(1), &|c| named_comment(db, i, &from.name, c));
-                let open = agent_open(Way::Test.name(), i.effort.map(Effort::name));
+                let open = agent_open(Way::Test.name(), i.effort.map(Effort::name), None);
                 fenced(&open, &crate::refs::attach(&format!("{} (tested @{})", found.trim(), i.from), &refs))
             },
             file: MSG_PATH.into(),

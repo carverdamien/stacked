@@ -1256,6 +1256,7 @@ mod tests {
             edit: None,
             redacted: false,
             effort: None,
+            stack: None,
         };
         // The agent's reply, deleted the first way, names r1 and points at
         // a comment, r2.

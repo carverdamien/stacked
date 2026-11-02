@@ -19,6 +19,12 @@
 //! brought nothing back has no part: it waits until you close its review,
 //! which closes the comments it was asked about or keeps them.
 //!
+//! A change of the stack accepted leaves behind the answers made on the
+//! stack before it, running or waiting for your review, chained: its
+//! review marks each keep, restart or stop (`AnswerMark`), and closes with
+//! the change accepted only once each is marked. Rejected or sent back,
+//! the change leaves the stack as it is, and the answers go on as they are.
+//!
 //! Your own edits by hand land the same way, in a run of their own
 //! (`hand`), to review before they change anything. An edit made in the
 //! review of landed work replaces it: that work is rejected, and the work
@@ -30,7 +36,7 @@ use std::collections::{BTreeMap, HashMap};
 use serde::{Deserialize, Serialize};
 
 use crate::db::{Db, Error, Note, Patch, Result, Run, err, now};
-use crate::thread::{Role, Turn, all_turns, append_agent, append_turn, render_thread};
+use crate::thread::{Role, Turn, all_turns, append_agent_on, append_turn, render_thread};
 
 /// What an ask brought back, held until it is reviewed.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
@@ -129,6 +135,12 @@ pub struct Reply {
     /// before efforts were picked brought back.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort: Option<crate::db::Effort>,
+    /// An answer-only ask's: the stack it was asked on, by its rev, which
+    /// its turn's fence names, its heading saying how many edits old that
+    /// stack is while the stack has changed since. None for another ask's,
+    /// a reviewer's, and one of before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asked_on: Option<usize>,
 }
 
 /// A thread you closed, as a pull keeps it with a reviewer's reply to it:
@@ -144,14 +156,15 @@ pub struct Closed {
 
 impl Reply {
     /// Thread `text` with this reply as its last turn: the reviewer's who
-    /// wrote it, or the agent's, the effort its run was asked at on it; your
-    /// answer to it after, if you wrote one. A reviewer's edit is their edit
-    /// of their turn as it was, which it redacts (`edited`).
+    /// wrote it, or the agent's, the effort its run was asked at on it, and
+    /// an answer-only ask's the stack it was asked on; your answer to it
+    /// after, if you wrote one. A reviewer's edit is their edit of their
+    /// turn as it was, which it redacts (`edited`).
     pub fn after(&self, text: &str) -> String {
         let text = match (&self.reviewer, &self.was) {
             (Some(who), Some(was)) => edited(text, who, was, &self.text),
             (Some(who), None) => append_turn(text, Role::Reviewer, &self.text, Some(who)),
-            (None, _) => append_agent(text, &self.text, &self.tag, self.effort_said()),
+            (None, _) => append_agent_on(text, &self.text, &self.tag, self.effort_said(), self.asked_on),
         };
         match &self.answer {
             Some(a) => append_turn(&text, Role::You, a, None),
@@ -206,6 +219,7 @@ fn edited(text: &str, who: &str, was: &str, now: &str) -> String {
         edit,
         redacted: false,
         effort: None,
+        stack: None,
     });
     render_thread(&turns)
 }
@@ -941,6 +955,104 @@ pub fn asking_key(k: usize) -> String {
     format!("asking {k}")
 }
 
+/// What becomes of an answer made on the stack before a change once the
+/// change is accepted, as the change's review marks it (`answer_mark`):
+/// kept, it goes on, or waits for your review, as it is, on the stack it
+/// was asked on; restarted, it is asked again on the stack the change
+/// makes; stopped, its agent is stopped, or its work thrown away unseen,
+/// and its comments stay open, not asked again (`ask::leave_answers`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AnswerMark {
+    Keep,
+    Restart,
+    Stop,
+}
+
+impl AnswerMark {
+    pub const ALL: [AnswerMark; 3] = [AnswerMark::Keep, AnswerMark::Restart, AnswerMark::Stop];
+
+    /// It, in a word, as the review's list says it: `keep`, `restart`,
+    /// `stop`; and as its mark in the review's marks starts.
+    pub fn word(self) -> &'static str {
+        match self {
+            AnswerMark::Keep => "keep",
+            AnswerMark::Restart => "restart",
+            AnswerMark::Stop => "stop",
+        }
+    }
+}
+
+/// The mark, in a review, saying that the answer of run `run`, made on the
+/// stack before the change, is marked `m`: true.
+pub fn answer_key(m: AnswerMark, run: &str) -> String {
+    format!("{} {run}", m.word())
+}
+
+/// How `marks` mark the answer of run `run`, if they do.
+pub fn answer_mark(marks: &BTreeMap<String, bool>, run: &str) -> Option<AnswerMark> {
+    AnswerMark::ALL.into_iter().find(|m| marks.get(&answer_key(*m, run)) == Some(&true))
+}
+
+/// The answer of run `run` marked `m` in `marks`, in place of how it was.
+pub fn set_answer_mark(marks: &mut BTreeMap<String, bool>, run: &str, m: AnswerMark) {
+    for other in AnswerMark::ALL {
+        marks.remove(&answer_key(other, run));
+    }
+    marks.insert(answer_key(m, run), true);
+}
+
+/// Whether `key` is a review's mark of an answer made on the stack before
+/// the change.
+pub fn is_answer_key(key: &str) -> bool {
+    AnswerMark::ALL.iter().any(|m| key.strip_prefix(m.word()).is_some_and(|rest| rest.starts_with(' ')))
+}
+
+/// What the answer of run `r` was asked about, as a review's list says a
+/// comment: where its first comment is (`a.txt: TWO`, `the stack`), then
+/// the first words of that comment; `and 2 more comments` after, when it
+/// was asked about more. Read from its run without the rest, as it is read
+/// on every redraw.
+pub fn answer_about(db: &Db, r: &Run) -> String {
+    let notes = crate::ask::asked_about(r);
+    let Some((change, id)) = notes.first() else { return "no comment".into() };
+    let mut out = match db.note(change, id) {
+        Some(n) => {
+            let at = if n.on_stack() { "the stack".to_string() } else { n.where_said() };
+            let words = crate::thread::thread_turns(&n.text).first().map(|t| crate::markdown::first_line(&t.body)).unwrap_or_default();
+            format!("{at} · {words}")
+        }
+        None => "a comment closed since".into(),
+    };
+    match notes.len() {
+        1 => {}
+        2 => out += " · and 1 more comment",
+        n => out += &format!(" · and {} more comments", n - 1),
+    }
+    out
+}
+
+/// Whether the answer of run `r` is running, else landed and waiting for
+/// your review, said: `running`, `waiting for your review`.
+pub fn answer_state(r: &Run) -> &'static str {
+    if r.state == crate::db::RunState::Started { "running" } else { "waiting for your review" }
+}
+
+/// What refusing to close a review with its change accepted says, while
+/// `unmarked`, answers made on the stack before the change, are not marked
+/// keep, restart or stop: each by its run, where it stands, and what it was
+/// asked about; and where to mark them.
+fn unmarked_said(db: &Db, unmarked: &[&Run]) -> String {
+    let each: Vec<String> = unmarked.iter().map(|r| format!("{} ({}, on {})", r.id, answer_state(r), answer_about(db, r))).collect();
+    let (n, is) = match unmarked.len() {
+        1 => ("1 answer".to_string(), "is"),
+        n => (format!("{n} answers"), "are"),
+    };
+    format!(
+        "{n} made on the stack before this change {is} not marked keep, restart or stop: {}. Mark each in the review of this work in the editor, then close the review there, or save it",
+        each.join("; ")
+    )
+}
+
 /// The comments the ask of run `r` was about, by (change, id): an agent's
 /// work's; none for a pull's, or an edit by hand's.
 pub fn asking_of(r: &Run) -> Vec<(String, String)> {
@@ -960,7 +1072,10 @@ pub fn asking_open<'a>(db: &'a Db, r: &Run) -> Vec<(usize, &'a Note)> {
 /// if the stack is still the one the agent took; the rest is dropped. A
 /// pull's parts are all accepted, a mark or `rest` rejecting any refused:
 /// each comment is filed, a reviewer's reply to a thread you closed
-/// reopening it. What came of it, said.
+/// reopening it. Its change accepted, chained, each answer made on the
+/// stack before it, running or waiting for your review, goes as `marks`
+/// mark it, kept, restarted or stopped (`answer_mark`), and none may be
+/// left unmarked: `rest` marks none of them. What came of it, said.
 pub fn close(db: &mut Db, id: &str, marks: &BTreeMap<String, bool>, rest: Option<bool>) -> Result<String> {
     close_with(db, id, marks, rest, false)
 }
@@ -1009,6 +1124,17 @@ pub fn close_with(db: &mut Db, id: &str, marks: &BTreeMap<String, bool>, rest: O
     {
         return err("the stack changed since this change was made from it: it can only be rejected");
     }
+    // Its change accepted, chained: the answers made on the stack before it,
+    // running or waiting for your review, each go as marked, kept, restarted
+    // or stopped. None goes unmarked: nothing is done before each is.
+    let left = match change {
+        Some((_, true)) => crate::ask::answers_left(db, &r.stack, id),
+        _ => vec![],
+    };
+    let unmarked: Vec<&Run> = left.iter().filter(|a| answer_mark(marks, &a.id).is_none()).collect();
+    if !unmarked.is_empty() {
+        return err(unmarked_said(db, &unmarked));
+    }
     // The replies where their comments are, then the change, the comments
     // on its lines following them, then the comments opened. A reviewer's
     // reply to a thread you closed reopens it.
@@ -1055,16 +1181,13 @@ pub fn close_with(db: &mut Db, id: &str, marks: &BTreeMap<String, bool>, rest: O
         }
     }
     // What went on from it, guessing it would be accepted: right, or wrong.
-    // Its change accepted, the answers made on the stack before it are asked
-    // again, on the stack as it is now.
+    // Its change accepted, the answers made on the stack before it go as
+    // marked: kept, asked again on the stack as it is now, or stopped.
     let mut again = Vec::new();
     match (change, rev) {
         (Some((_, true)), Some(at)) => {
             crate::ask::guessed_right(db, id, at)?;
-            let n = crate::ask::reask_answers(db, &r.stack, id)?;
-            if n > 0 {
-                again.push(count(n, "answer-only ask asked again", "answer-only asks asked again"));
-            }
+            again.extend(crate::ask::leave_answers(db, &left, marks)?);
         }
         (Some((_, false)), _) => {
             let n = crate::ask::guessed_wrong(db, id, "rejected")?;
@@ -1081,6 +1204,10 @@ pub fn close_with(db: &mut Db, id: &str, marks: &BTreeMap<String, bool>, rest: O
     }
     v.marks.extend(all);
     v.marks.extend(marks.iter().filter(|(k, _)| k.starts_with("asking ")).map(|(k, m)| (k.clone(), *m)));
+    // The answers made on the stack before it, as they went: those of the
+    // marks saved that went nowhere left out.
+    v.marks.retain(|k, _| !is_answer_key(k));
+    v.marks.extend(left.iter().filter_map(|a| Some((answer_key(answer_mark(marks, &a.id)?, &a.id), true))));
     // The tools the agent could not use as you marked them: what you allowed
     // from now on saved, accepted or rejected; what you allowed for this
     // work ends here.

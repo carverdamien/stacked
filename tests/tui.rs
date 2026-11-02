@@ -26,11 +26,12 @@ fn git(dir: &Path, args: &[&str]) {
 /// things (its settings, the databases opened last) kept in `home` beside
 /// the database (`$STACKED_HOME`), never in the home of whoever runs the
 /// tests; what it writes in the temporary directory, in `tmp` beside it
-/// (`$TMPDIR`), removed with the test's folder. What it printed.
-fn stacked(dir: &Path, db: &Path, args: &[&str]) -> String {
+/// (`$TMPDIR`), removed with the test's folder. How it ended, and what it
+/// printed.
+fn stacked_run(dir: &Path, db: &Path, args: &[&str]) -> std::process::Output {
     let tmp = db.with_file_name("tmp");
     std::fs::create_dir_all(&tmp).unwrap();
-    let out = Command::new(env!("CARGO_BIN_EXE_stacked"))
+    Command::new(env!("CARGO_BIN_EXE_stacked"))
         .current_dir(dir)
         .arg("-f")
         .arg(db)
@@ -40,9 +41,21 @@ fn stacked(dir: &Path, db: &Path, args: &[&str]) -> String {
         .env_remove("STACKED_CONFIG")
         .env_remove("STACKED_APP_STATE")
         .output()
-        .unwrap();
+        .unwrap()
+}
+
+/// stacked run as `stacked_run` runs it, which succeeds: what it printed.
+fn stacked(dir: &Path, db: &Path, args: &[&str]) -> String {
+    let out = stacked_run(dir, db, args);
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+/// stacked run as `stacked_run` runs it, which fails: what it said why.
+fn stacked_fails(dir: &Path, db: &Path, args: &[&str]) -> String {
+    let out = stacked_run(dir, db, args);
+    assert!(!out.status.success(), "{}", String::from_utf8_lossy(&out.stdout));
+    String::from_utf8_lossy(&out.stderr).into_owned()
 }
 
 #[test]
@@ -5805,6 +5818,51 @@ fn held(db: &Path, run: &str, change: &str, id: &str, text: &str, with_change: b
     .unwrap();
 }
 
+/// An answer-only ask landed, its work held for review, as stacked files
+/// one: its reply `text` to comment (change, id), on the stack or on a
+/// patch, asked on the stack as it is, which its reply names.
+fn answer_landed(db: &Path, run: &str, change: &str, id: &str, text: &str) {
+    Db::edit(db, |d| {
+        let from = d.head("s").map(|(r, _)| r).unwrap();
+        let scope = if change.starts_with("stack:") { serde_json::json!("stack") } else { serde_json::json!({"patch": change}) };
+        let ask = serde_json::json!({"way": "answer", "scope": scope, "from": from, "notes": [{"label": "c1", "change": change, "id": id}]});
+        let reply = stacked::held::Reply {
+            change: change.into(),
+            id: id.into(),
+            text: text.into(),
+            tag: "answer".into(),
+            asked_on: Some(from),
+            ..Default::default()
+        };
+        d.add_run(stacked::db::Run {
+            id: run.into(),
+            what: "answer".into(),
+            stack: "s".into(),
+            state: stacked::db::RunState::Done,
+            ask: Some(ask),
+            held: Some(stacked::held::Held {
+                at: stacked::db::now(),
+                replies: vec![reply],
+                ..Default::default()
+            }),
+            ..Default::default()
+        })
+        .map(|_| ())
+    })
+    .unwrap();
+}
+
+/// The marks of the review of the work run `run` holds, each answer made
+/// on the stack before its change marked keep: what a review closing with
+/// the change accepted needs.
+fn answers_kept(d: &Db, run: &str) -> std::collections::BTreeMap<String, bool> {
+    let mut marks = std::collections::BTreeMap::new();
+    for a in stacked::ask::answers_left(d, "s", run) {
+        stacked::held::set_answer_mark(&mut marks, &a.id, stacked::held::AnswerMark::Keep);
+    }
+    marks
+}
+
 #[test]
 fn a_comment_is_read_as_markdown() {
     let (_tmp, db, _src) = setup();
@@ -8192,9 +8250,10 @@ fn reconcile_with_head_waits_its_turn_as_an_edit_and_the_edits_after_it_wait_for
     assert_eq!(stacked::ask::guessing(&d, &r).as_deref(), Some("run-changing"));
     drop(d);
     assert!(!asked(&db, "s-c2"), "the edit waits");
-    // The agent's change accepted: the reconcile goes on from the stack it
-    // made; the edit waits still, until the reconcile is reviewed.
-    Db::edit(&db, |d| stacked::held::close(d, "run-changing", &Default::default(), Some(true)).map(|_| ())).unwrap();
+    // The agent's change accepted, the answer made on the stack before it
+    // kept: the reconcile goes on from the stack it made; the edit waits
+    // still, until the reconcile is reviewed.
+    Db::edit(&db, |d| stacked::held::close(d, "run-changing", &answers_kept(d, "run-changing"), Some(true)).map(|_| ())).unwrap();
     app.launch();
     app.settle();
     assert!(!asked(&db, "s-c2"), "the edit waits for the reconcile's review");
@@ -8203,8 +8262,9 @@ fn reconcile_with_head_waits_its_turn_as_an_edit_and_the_edits_after_it_wait_for
     let r = stacked::reconcile::pending(&d, "s").cloned().unwrap();
     assert_eq!((r.held.as_ref().and_then(|h| h.stack.as_ref()).and_then(|c| c.from), stacked::ask::guessing(&d, &r)), (Some(rev), None));
     drop(d);
-    // Accepted: the edit goes, from the stack the reconcile made.
-    Db::edit(&db, |d| stacked::held::close(d, &r.id, &Default::default(), Some(true)).map(|_| ())).unwrap();
+    // Accepted, the answer kept again: the edit goes, from the stack the
+    // reconcile made.
+    Db::edit(&db, |d| stacked::held::close(d, &r.id, &answers_kept(d, &r.id), Some(true)).map(|_| ())).unwrap();
     assert_eq!(patch_message(&db, 0), loud);
     app.launch();
     app.settle();
@@ -11858,7 +11918,10 @@ fn the_effort_the_agent_was_asked_at_is_shown_wherever_its_work_is_named() {
     choose_as(&mut app, "Reply", "here");
     save(&mut app, "louder?");
     let text = notes_of(&db, "s", 0).into_iter().find(|n| n.id == ours.id).unwrap().text;
-    assert!(text.contains("\n```agent answer effort max\n") && text.ends_with("\nlouder?"), "{text}");
+    // The answer's fence names the stack it was asked on too, after the
+    // effort: the stack as it is, edited since by none.
+    let rev = Db::load(&db).unwrap().head("s").unwrap().0;
+    assert!(text.contains(&format!("\n```agent answer effort max stack {rev}\n")) && text.ends_with("\nlouder?"), "{text}");
     let turns = stacked::thread::thread_turns(&text);
     assert_eq!(turns.iter().map(|t| t.effort.as_deref()).collect::<Vec<_>>(), [None, Some("max"), None]);
     let old = notes_of(&db, "s", 0).into_iter().find(|n| n.id == old.id).unwrap().text;
@@ -12859,6 +12922,25 @@ fn hand_edit(db: &Path, work: Option<&str>) -> String {
         patches[0] = id.clone();
         let op = format!("edit {} as {}", &old.id[..8], &id[..8]);
         stacked::held::hold_by_hand(d, "s", patches, &op, "patch 1", "edited a.txt in Bug 1 - shout two", work)
+    })
+    .unwrap()
+}
+
+/// As `hand_edit` of the stack as it is, its line `from` of patch 1 made
+/// `to` (`+Two`, `+TWo`): an edit each time, of the edit before it.
+fn hand_edit_to(db: &Path, from: &str, to: &str) -> String {
+    Db::edit(db, |d| {
+        let s = d.stack("s")?.patches.clone();
+        let old = d.patch(&s[0]).clone();
+        let draft = stacked::mbox::Draft {
+            diff: old.diff.replace(from, to),
+            ..stacked::mbox::Draft::from(&old)
+        };
+        let id = d.add_patch(stacked::ops::revise(&old, draft))?;
+        let mut patches = s.clone();
+        patches[0] = id.clone();
+        let op = format!("edit {} as {}", &old.id[..8], &id[..8]);
+        stacked::held::hold_by_hand(d, "s", patches, &op, "patch 1", &format!("edited a.txt in Bug 1 - shout two: {to}"), None)
     })
     .unwrap()
 }
@@ -14726,17 +14808,22 @@ fn landed_kinds(kinds: &[(&str, &str)], build: bool) -> (tempfile::TempDir, Path
 }
 
 #[test]
-fn accepting_an_edit_says_first_the_answers_it_asks_again_and_offers_to_stop_a_build() {
+fn accepting_an_edit_says_first_what_becomes_of_the_answers_as_marked_and_offers_to_stop_a_build() {
     let (_tmp, db, mut app) = landed_kinds(&[("run-1", "edit"), ("run-2", "answer")], true);
     // The edit's review, below the answer's in the banner.
     keys(&mut app, &[KeyCode::Esc, KeyCode::Down, KeyCode::Enter]);
     assert_eq!(app.reviewing.as_ref().map(|rv| rv.run.as_str()), Some("run-1"));
-    keys(&mut app, &[KeyCode::Esc]);
+    // The answer made on the stack before it, marked restart in its menu.
+    down_to_review(&mut app, "landed · a.txt: TWO · why so loud?");
+    choose(&mut app, "Restarted: ");
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Esc]);
     choose(&mut app, "Accept all remaining and Close");
     let Mode::Menu(m) = &app.mode else { panic!("{:?}", app.mode) };
     let note = m.note.clone().unwrap();
     assert!(
-        note.contains("Closing this review applies its change. The 1 answer-only ask made on the stack before it is asked again: 1 waiting for your review is thrown away."),
+        note.contains(
+            "Closing this review applies its change. Of the answers made on the stack before it, 1 waiting for your review is asked again on the stack the change makes, shown what it brought back."
+        ),
         "{note}"
     );
     assert!(note.contains("A build and test of the stack as it was is going: it is not asked again, and you may stop it."), "{note}");
@@ -14754,7 +14841,9 @@ fn accepting_an_edit_says_first_the_answers_it_asks_again_and_offers_to_stop_a_b
 fn a_build_stopped_as_a_review_closes_lands_at_once_being_started_still() {
     let (_tmp, db, mut app) = landed_kinds(&[("run-1", "edit"), ("run-2", "answer")], true);
     keys(&mut app, &[KeyCode::Esc, KeyCode::Down, KeyCode::Enter]);
-    keys(&mut app, &[KeyCode::Esc]);
+    // The answer made on the stack before it, kept.
+    down_to_review(&mut app, "landed · a.txt: TWO");
+    keys(&mut app, &[KeyCode::Enter, KeyCode::Esc]);
     choose(&mut app, "Accept all remaining and Close");
     // The build has no process yet, its worktree being made: it lands all
     // the same, stopped, and the review's word stays the last.
@@ -14799,6 +14888,386 @@ fn rejecting_or_sending_back_says_first_the_edits_it_asks_again() {
     );
     choose(&mut app, "Send it back");
     assert!(app.status.ends_with("; 1 edit that went on from it asked again"), "{}", app.status);
+}
+
+/// On stack `s`, with the stand-in held at work: an answer landed, waiting
+/// for your review, on a comment on the stack (`and the stack?`, run
+/// `run-landed`); another asked from the editor, running, on line
+/// `+LINE 39` of patch 1 (`why so loud?`); then an edit by hand of patch 1
+/// landed, its review open. The running answer's run, and the edit's.
+fn answers_before_an_edit(db: &Path, app: &mut App) -> (String, String) {
+    let (change, id) = stack_note(db, "s-c1", "and the stack?");
+    answer_landed(db, "run-landed", &change, &id, "It stacks.");
+    app.refresh();
+    keys(app, &[KeyCode::Right]);
+    down_to(app, "+LINE 39");
+    keys(app, &[KeyCode::Enter]);
+    typed(app, "why so loud?");
+    keys(app, &[KeyCode::Esc]);
+    ask_now(app, "Ask agent…", "answer only");
+    wait_for(app, "with the agent (answer only, at high)");
+    let running = until(
+        app,
+        |app| app.db.runs().into_iter().find(|r| r.state == stacked::db::RunState::Started).map(|r| r.id.clone()),
+        |_| "no answer running".into(),
+    );
+    let run = hand_edit(db, None);
+    app.edited(stacked::ops::Edited::Landed { said: "edited a.txt in Bug 1 - shout two".into(), run: run.clone() }, None, None);
+    assert_eq!(app.screen, Screen::Review);
+    (running, run)
+}
+
+#[test]
+fn accepting_a_change_waits_until_each_answer_made_on_the_stack_before_it_is_marked() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    let held = hold(&db);
+    answers_before_an_edit(&db, &mut app);
+    // Its review lists them, in a section of their own, each not marked yet,
+    // then whether it runs or landed, then what it was asked about.
+    let screen = draw(&mut app);
+    for line in [
+        " answers made on the stack before the change",
+        "   ·         landed · the stack · and the stack?",
+        "   ·         running · a.txt: LINE 39 · why so l",
+    ] {
+        assert!(screen.contains(line), "{line:?}:\n{screen}");
+    }
+    // Not marked, they keep the review from closing with the change
+    // accepted: Accept all remaining is grayed, not Reject all remaining.
+    keys(&mut app, &[KeyCode::Esc]);
+    assert!(items(&app).contains(&("Accept all remaining and Close".to_string(), false)), "{:?}", items(&app));
+    assert!(items(&app).contains(&("Reject all remaining and Close".to_string(), true)), "{:?}", items(&app));
+    keys(&mut app, &[KeyCode::Esc]);
+    // The change accepted: Close review grayed, the menu saying which wait.
+    keys(&mut app, &[KeyCode::Home, KeyCode::Enter, KeyCode::Esc]);
+    assert!(items(&app).contains(&("Close review".to_string(), false)), "{:?}", items(&app));
+    let note = menu_note(&app);
+    assert!(note.contains("answers made on the stack before the change: · 2 to mark"), "{note}");
+    let waits = "The review closes with the change accepted only once each answer made on the stack before it is marked keep, restart or stop. Not marked yet:";
+    assert!(
+        note.ends_with(&format!("{waits} the stack · and the stack? (waiting for your review); a.txt: LINE 39 · why so loud? (running).")),
+        "{note}"
+    );
+    keys(&mut app, &[KeyCode::Esc]);
+    // On one, the right pane shows the comment it answers and what its mark
+    // does; the bottom bar and ? say the keys. Enter keeps it.
+    down_to_review(&mut app, "running · a.txt: LINE 39");
+    let screen = draw(&mut app);
+    assert!(screen.contains(" an answer running, asked on the stack before the change: the comment"), "{screen}");
+    assert!(screen.contains("Not marked yet: Enter keeps the answer, Delete stops it"), "{screen}");
+    assert!(app.hint().contains("enter: keep it · delete: stop it · "), "{}", app.hint());
+    assert!(app.help().iter().any(|l| l.starts_with("The answers made on the stack before the change are a section of their own")), "{:?}", app.help());
+    keys(&mut app, &[KeyCode::Enter]);
+    assert_eq!(app.status, "marked keep: once the change is accepted, the answer goes on, and lands for your review on the stack it was asked on");
+    assert!(selected_line(&mut app).is_some_and(|l| l.starts_with("   ✓ keep    running · a.txt: LINE 39")), "{}", draw(&mut app));
+    keys(&mut app, &[KeyCode::Esc]);
+    assert!(items(&app).contains(&("Close review".to_string(), false)), "{:?}", items(&app));
+    assert!(menu_note(&app).ends_with(&format!("{waits} the stack · and the stack? (waiting for your review).")), "{}", menu_note(&app));
+    keys(&mut app, &[KeyCode::Esc]);
+    // The other, from its menu: three boxes, none checked yet, each saying
+    // what its mark does; picked, its box checked, the menu staying.
+    keys(&mut app, &[KeyCode::Home]);
+    down_to_review(&mut app, "landed · the stack");
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    let boxes = [
+        "Kept: the answer waits for your review as it is",
+        "Restarted: the answer is asked again on the stack the change makes, shown what it brought back",
+        "Stopped: what the answer brought back is thrown away unseen, and the comment stays open, not asked again",
+    ];
+    let checks = |app: &App| -> Vec<(String, Option<bool>)> {
+        let Mode::Menu(m) = &app.mode else { panic!("{:?}", app.mode) };
+        m.items.iter().filter(|i| boxes.contains(&i.label.as_str())).map(|i| (i.label.clone(), i.check)).collect()
+    };
+    assert_eq!(checks(&app), boxes.map(|b| (b.to_string(), Some(false))));
+    for all in ["Mark all answers kept", "Mark all answers restarted", "Mark all answers stopped"] {
+        assert!(items(&app).contains(&(all.to_string(), true)), "{all:?} in {:?}", items(&app));
+    }
+    choose(&mut app, "Stopped: ");
+    assert_eq!(checks(&app), [(boxes[0].to_string(), Some(false)), (boxes[1].to_string(), Some(false)), (boxes[2].to_string(), Some(true))]);
+    keys(&mut app, &[KeyCode::Esc]);
+    assert!(selected_line(&mut app).is_some_and(|l| l.starts_with("   ✗ stop    landed · the stack")), "{}", draw(&mut app));
+    // Both marked: it closes.
+    keys(&mut app, &[KeyCode::Esc]);
+    assert!(items(&app).contains(&("Close review".to_string(), true)), "{:?}", items(&app));
+    let note = menu_note(&app);
+    assert!(note.contains("answers made on the stack before the change: ✓ 1 kept, ✗ 1 stopped") && !note.contains("Not marked yet"), "{note}");
+    keys(&mut app, &[KeyCode::Esc]);
+    // The one running lands while the review is open: its line says so, its
+    // mark kept, which goes for what it brought back.
+    drop(held);
+    let landed = "   ✓ keep    landed · a.txt: LINE 39 · why so l";
+    until(&mut app, |app| Some(()).filter(|_| draw(app).contains(landed)), |app| format!("never {landed:?}:\n{}", draw(app)));
+}
+
+#[test]
+fn an_answer_kept_lands_on_the_stack_it_was_asked_on_its_heading_saying_how_many_edits_ago() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    let held = hold(&db);
+    let (running, _) = answers_before_an_edit(&db, &mut app);
+    let asked_on = Db::load(&db).unwrap().head("s").unwrap().0;
+    // The change accepted, both answers kept.
+    keys(&mut app, &[KeyCode::Home, KeyCode::Enter]);
+    choose(&mut app, "Mark all answers kept");
+    assert_eq!(app.status, "the 2 answers made on the stack before the change are marked keep");
+    keys(&mut app, &[KeyCode::Esc]);
+    choose(&mut app, "Close review");
+    // Asked first: what becomes of each.
+    let note = menu_note(&app);
+    assert!(
+        note.contains("Closing this review applies its change. Of the answers made on the stack before it, 1 running goes on, and lands for your review on the stack it was asked on; 1 waiting for your review stays as it is."),
+        "{note}"
+    );
+    choose(&mut app, "Close it");
+    assert!(app.status.ends_with("; 2 answer-only asks kept"), "{}", app.status);
+    // The stack edited, the one running goes on, and the one landed waits
+    // as it was.
+    let d = Db::load(&db).unwrap();
+    assert_ne!(d.head("s").unwrap().0, asked_on);
+    assert_eq!(d.run(&running).unwrap().state, stacked::db::RunState::Started);
+    assert!(stacked::held::waiting(&d, d.run("run-landed").unwrap()), "the landed one waits for your review as it was");
+    drop(d);
+    // Let go, it lands, on the stack it was asked on; accepted into its
+    // thread, its reply's heading says how old that stack is.
+    drop(held);
+    accept_landed(&mut app, &db);
+    let d = Db::load(&db).unwrap();
+    assert_eq!(stacked::ask::info(d.run(&running).unwrap()).unwrap().from, asked_on);
+    drop(d);
+    draw(&mut app);
+    let texts = row_texts(&app);
+    assert!(texts.iter().any(|t| t == "     ▎ agent(high), on the stack 1 edit ago:"), "{texts:#?}");
+    assert!(texts.iter().any(|t| t == "     ▎   Seen."), "{texts:#?}");
+}
+
+#[test]
+fn an_answer_restarted_is_asked_again_on_the_stack_the_change_makes_shown_what_it_brought_back() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    let held = hold(&db);
+    let (running, _) = answers_before_an_edit(&db, &mut app);
+    // The change accepted, both answers restarted.
+    keys(&mut app, &[KeyCode::Home, KeyCode::Enter]);
+    choose(&mut app, "Mark all answers restarted");
+    keys(&mut app, &[KeyCode::Esc]);
+    choose(&mut app, "Close review");
+    let note = menu_note(&app);
+    assert!(
+        note.contains(
+            "Of the answers made on the stack before it, 1 running is stopped, and asked again on the stack the change makes; 1 waiting for your review is asked again on the stack the change makes, shown what it brought back."
+        ),
+        "{note}"
+    );
+    choose(&mut app, "Close it");
+    assert!(app.status.ends_with("; 2 answer-only asks asked again"), "{}", app.status);
+    let d = Db::load(&db).unwrap();
+    let rev = d.head("s").unwrap().0;
+    for was in [running.as_str(), "run-landed"] {
+        let r = d.run(was).unwrap();
+        assert!(r.summary.starts_with("dropped: an edit of the stack was accepted meanwhile; asked again"), "{r:?}");
+    }
+    assert!(d.review("run-landed").is_some_and(|v| v.closed));
+    drop(d);
+    // Each asked again on the stack the change made; the one that had landed
+    // shown what it brought back.
+    let again = |app: &mut App, was: &str| {
+        let found = |app: &mut App| app.db.runs().into_iter().filter_map(stacked::ask::info).find(|i| i.was.as_deref() == Some(was) && !i.prompt.is_empty());
+        until(app, found, |_| format!("{was} never asked again"))
+    };
+    let landed = again(&mut app, "run-landed");
+    assert_eq!(landed.from, rev);
+    assert!(landed.prompt.contains("This was asked before, on the stack as it was before an edit of it was accepted"), "{}", landed.prompt);
+    assert!(landed.prompt.contains("What was answered then to c1:\nIt stacks."), "{}", landed.prompt);
+    assert_eq!(again(&mut app, &running).from, rev);
+    drop(held);
+}
+
+#[test]
+fn an_answer_stopped_has_its_agent_stopped_or_its_work_thrown_away_its_comment_open_not_asked_again() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    let held = hold(&db);
+    let (running, _) = answers_before_an_edit(&db, &mut app);
+    // The change accepted; Delete stops each answer.
+    keys(&mut app, &[KeyCode::Home, KeyCode::Enter]);
+    down_to_review(&mut app, "landed · the stack");
+    keys(&mut app, &[KeyCode::Delete]);
+    keys(&mut app, &[KeyCode::Home]);
+    down_to_review(&mut app, "running · a.txt: LINE 39");
+    assert!(app.hint().contains("delete: stop it"), "{}", app.hint());
+    keys(&mut app, &[KeyCode::Delete]);
+    assert!(selected_line(&mut app).is_some_and(|l| l.starts_with("   ✗ stop    running · a.txt: LINE 39")), "{}", draw(&mut app));
+    keys(&mut app, &[KeyCode::Delete]);
+    assert_eq!(app.status, "this answer is marked stop already");
+    keys(&mut app, &[KeyCode::Esc]);
+    choose(&mut app, "Close review");
+    let note = menu_note(&app);
+    assert!(
+        note.contains(
+            "Of the answers made on the stack before it, 1 running is stopped, its comment left open, not asked again; 1 waiting for your review is thrown away unseen, its comment left open, not asked again."
+        ),
+        "{note}"
+    );
+    choose(&mut app, "Close it");
+    assert!(app.status.ends_with("; 2 answer-only asks stopped"), "{}", app.status);
+    // The running one's agent stopped, its ask landed as failed, said so on
+    // its comment, which stays open; the landed one's work thrown away
+    // unseen, its comment as it was.
+    let d = Db::load(&db).unwrap();
+    let r = d.run(&running).unwrap();
+    assert_eq!((r.state, r.summary.as_str()), (stacked::db::RunState::Failed, "you stopped the agent when you accepted an edit of the stack"));
+    assert!(stacked::ask::tail(&d, &running, usize::MAX).iter().any(|l| l == "■ you stopped the agent"), "{:?}", stacked::ask::tail(&d, &running, usize::MAX));
+    let landed = d.run("run-landed").unwrap();
+    assert!(landed.summary.starts_with("reviewed: thrown away unseen, as you stopped it when you accepted an edit of the stack"), "{}", landed.summary);
+    assert!(d.review("run-landed").is_some_and(|v| v.closed));
+    let on_stack = d.note(&stack_change("s"), "s-c1").unwrap();
+    assert_eq!((on_stack.text.as_str(), on_stack.queued.is_none(), on_stack.failed.is_none()), ("and the stack?", true, true));
+    drop(d);
+    let line = notes_of(&db, "s", 0).into_iter().find(|n| n.text == "why so loud?").expect("its comment open, as it was");
+    assert_eq!((line.queued, line.failed.as_deref()), (None, Some("you stopped the agent when you accepted an edit of the stack")));
+    // Nothing is asked again.
+    drop(held);
+    app.launch();
+    app.settle();
+    let d = Db::load(&db).unwrap();
+    assert!(!d.runs().iter().any(|r| r.state == stacked::db::RunState::Started), "nothing asked again");
+    assert!(stacked::held::queue(&d, "s").is_empty(), "nothing waits for review");
+}
+
+#[test]
+fn a_change_rejected_passes_over_the_answers_made_before_it_which_go_on_as_they_are() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    let held = hold(&db);
+    let (running, _) = answers_before_an_edit(&db, &mut app);
+    // Both marked stop, then the change rejected: the review closes, the
+    // answers left as they are.
+    choose(&mut app, "Mark all answers stopped");
+    keys(&mut app, &[KeyCode::Home, KeyCode::Delete, KeyCode::Esc]);
+    choose(&mut app, "Close review");
+    assert!(app.status.starts_with("reviewed: its change rejected") && !app.status.contains("answer-only"), "{}", app.status);
+    let d = Db::load(&db).unwrap();
+    assert_eq!(d.run(&running).unwrap().state, stacked::db::RunState::Started, "the running answer goes on");
+    assert!(stacked::held::waiting(&d, d.run("run-landed").unwrap()), "the landed answer waits for your review");
+    drop(d);
+    // Let go, it lands, as any answer does.
+    drop(held);
+    until(
+        &mut app,
+        |app| app.db.run(&running).filter(|r| r.state == stacked::db::RunState::Done && stacked::held::waiting(&app.db, r)).map(|_| ()),
+        |_| "never landed".into(),
+    );
+}
+
+#[test]
+fn the_heading_of_an_answer_says_how_many_edits_old_its_stack_is_while_its_thread_is_open() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    let headings = |app: &mut App| -> Vec<String> {
+        app.refresh();
+        draw(app);
+        row_texts(app).into_iter().filter(|t| t.starts_with("     ▎ agent")).collect()
+    };
+    let accept = |db: &Path, run: &str| Db::edit(db, |d| stacked::held::close(d, run, &Default::default(), Some(true)).map(|_| ())).unwrap();
+    // An answer on line +LINE 39, accepted into its thread: of the stack as
+    // it is, it says nothing more.
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "+LINE 39");
+    keys(&mut app, &[KeyCode::Enter]);
+    typed(&mut app, "why so loud?");
+    keys(&mut app, &[KeyCode::Esc]);
+    ask_now(&mut app, "Ask agent…", "answer only");
+    accept_landed(&mut app, &db);
+    assert_eq!(headings(&mut app), ["     ▎ agent(high):"]);
+    // Two edits accepted since: 1 edit ago, then 2.
+    accept(&db, &hand_edit(&db, None));
+    assert_eq!(headings(&mut app), ["     ▎ agent(high), on the stack 1 edit ago:"]);
+    accept(&db, &hand_edit_to(&db, "+Two", "+TWo"));
+    assert_eq!(headings(&mut app), ["     ▎ agent(high), on the stack 2 edits ago:"]);
+    // Another, on line 40, asked on the stack as it is now.
+    down_to(&mut app, " line 40");
+    keys(&mut app, &[KeyCode::Enter]);
+    typed(&mut app, "and this one?");
+    keys(&mut app, &[KeyCode::Esc]);
+    ask_now(&mut app, "Ask agent…", "answer only");
+    accept_landed(&mut app, &db);
+    assert_eq!(headings(&mut app), ["     ▎ agent(high), on the stack 2 edits ago:", "     ▎ agent(high):"]);
+    // The last edit undone, then another made in its place: the stack the
+    // second was asked on is not on the way to it, another version; the
+    // first, 2 edits ago again, along the stack's history.
+    Db::edit(&db, |d| d.undo("s").map(|_| ())).unwrap();
+    assert_eq!(headings(&mut app), ["     ▎ agent(high), on the stack 1 edit ago:", "     ▎ agent(high), on another version of the stack:"]);
+    accept(&db, &hand_edit_to(&db, "+Two", "+tWo"));
+    assert_eq!(headings(&mut app), ["     ▎ agent(high), on the stack 2 edits ago:", "     ▎ agent(high), on another version of the stack:"]);
+    // Closed, a thread says it no more: as it was.
+    let first = notes_of(&db, "s", 0).into_iter().find(|n| n.text.starts_with("why so loud?")).unwrap();
+    Db::edit(&db, |d| d.set_note(Note { text: String::new(), ..first })).unwrap();
+    app.show = Show::Closed;
+    assert_eq!(headings(&mut app), ["     ▎ agent(high):"]);
+}
+
+#[test]
+fn accept_all_refuses_while_an_answer_made_on_the_stack_before_the_change_is_not_marked() {
+    let (_tmp, db, src) = setup();
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "+LINE 39");
+    keys(&mut app, &[KeyCode::Enter]);
+    save(&mut app, "why so loud?");
+    let n = notes_of(&db, "s", 0).remove(0);
+    answer_landed(&db, "run-landed", &n.change, &n.id, "It shouts.");
+    let run = hand_edit(&db, None);
+    // Refused on the command line, the answer named, and where to mark it.
+    let err = stacked_fails(&src, &db, &["review", "s", &run, "--accept-all"]);
+    assert!(
+        err.contains(
+            "1 answer made on the stack before this change is not marked keep, restart or stop: run-landed (waiting for your review, on a.txt: LINE 39 · why so loud?). Mark each in the review of this work in the editor, then close the review there, or save it"
+        ),
+        "{err}"
+    );
+    // Marked keep in the editor, the review saved: accepted, the answer
+    // waiting for your review as it was.
+    app.refresh();
+    app.edited(stacked::ops::Edited::Landed { said: "edited a.txt in Bug 1 - shout two".into(), run: run.clone() }, None, None);
+    down_to_review(&mut app, "landed · a.txt: LINE 39");
+    keys(&mut app, &[KeyCode::Enter, KeyCode::Esc]);
+    choose(&mut app, "Save");
+    let out = stacked(&src, &db, &["review", "s", &run, "--accept-all"]);
+    assert!(out.contains("reviewed: its change accepted; 1 answer-only ask kept"), "{out}");
+    let d = Db::load(&db).unwrap();
+    assert!(stacked::held::waiting(&d, d.run("run-landed").unwrap()), "kept, it waits for your review");
+}
+
+#[test]
+fn unchained_the_review_of_a_change_lists_no_answer_and_the_answers_go_on_as_they_are() {
+    let (_tmp, db, src) = setup();
+    std::fs::create_dir_all(src.join(".stacked")).unwrap();
+    std::fs::write(src.join(".stacked/local.toml"), "[agent]\nchain = false\n").unwrap();
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "+LINE 39");
+    keys(&mut app, &[KeyCode::Enter]);
+    save(&mut app, "why so loud?");
+    let n = notes_of(&db, "s", 0).remove(0);
+    answer_landed(&db, "run-landed", &n.change, &n.id, "It shouts.");
+    let run = hand_edit(&db, None);
+    app.refresh();
+    app.edited(stacked::ops::Edited::Landed { said: "edited a.txt in Bug 1 - shout two".into(), run }, None, None);
+    let screen = draw(&mut app);
+    assert!(!screen.contains("answers made on the stack before the change"), "{screen}");
+    // Accepted at once: the answer goes on as it is, waiting for your review.
+    keys(&mut app, &[KeyCode::Home, KeyCode::Enter, KeyCode::Esc]);
+    choose(&mut app, "Close review");
+    assert!(app.status.starts_with("reviewed: its change accepted") && !app.status.contains("answer-only"), "{}", app.status);
+    let d = Db::load(&db).unwrap();
+    assert!(stacked::held::waiting(&d, d.run("run-landed").unwrap()), "it waits for your review");
+    drop(d);
+    // Its reply, taken into its thread, says how old the stack it was asked
+    // on is, all the same.
+    accept_landed(&mut app, &db);
+    draw(&mut app);
+    assert!(row_texts(&app).iter().any(|t| t == "     ▎ agent, on the stack 1 edit ago:"), "{:#?}", row_texts(&app));
 }
 
 #[test]

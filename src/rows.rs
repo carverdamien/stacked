@@ -396,6 +396,12 @@ pub struct Deco {
     /// Each file of the patch shown whole, once read (`whole::lines`), or
     /// why its files could not be read; None, as its hunks.
     pub whole: Option<crate::whole::Read>,
+    /// The stacks the answer-only asks were asked on that the turns of the
+    /// comments shown name (`Turn::stack`), by rev, while the stack has
+    /// changed since: how old each is, said (`on the stack 2 edits ago`),
+    /// after the agent on the heading of each of those turns. None for a
+    /// comment closed.
+    pub ages: HashMap<usize, String>,
 }
 
 /// `3/10`: how many of `keys` are read, of how many.
@@ -426,7 +432,9 @@ pub const BAR: char = '▎';
 /// it on its first line and under it: under its turns, the agent's stream,
 /// then its references. Each turn is headed by who said it, the agent's
 /// with the effort its run was asked at when it says one (`agent(max)`),
-/// and a comment the agent opened is the agent's comment at that effort.
+/// and an answer's with how old the stack it was asked on is, as `deco`
+/// says it (`agent(max), on the stack 2 edits ago`); a comment the agent
+/// opened is the agent's comment at that effort.
 pub fn comment_rows(n: &Note, width: usize, deco: &Deco) -> Vec<Row> {
     let by = by_of(n);
     let who = match (&by, n.by.as_deref()) {
@@ -482,8 +490,12 @@ pub fn comment_rows(n: &Note, width: usize, deco: &Deco) -> Vec<Row> {
             continue;
         }
         // Who: a reviewer's edit by what it edits, a turn an edit replaces
-        // said redacted.
-        let name = crate::thread::said_by(&t);
+        // said redacted; an answer asked on a stack the stack has changed
+        // since, with how old that stack is.
+        let name = match t.stack.filter(|_| t.role == Role::Agent).and_then(|rev| deco.ages.get(&rev)) {
+            Some(age) => format!("{}, {age}", crate::thread::said_by(&t)),
+            None => crate::thread::said_by(&t),
+        };
         let author = match t.role {
             Role::You => By::You,
             Role::Agent => By::Agent,

@@ -426,6 +426,18 @@ pub struct Head {
     pub time: i64,
 }
 
+/// Where a state of a stack stands from the state the stack is on now
+/// (`Db::since`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Since {
+    /// The state it is on was edited from it, this many edits ago: none
+    /// when it is that state.
+    Edits(usize),
+    /// The state it is on was not edited from it: it is another version of
+    /// the stack, an edit undone and another made in its place, say.
+    Elsewhere,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
 pub struct Note {
     pub change: String,
@@ -2331,6 +2343,27 @@ impl Db {
         }
     }
 
+    /// Where the stack at `rev`, a state of stack `name`, stands from the
+    /// state `name` is on now, along the tree of edits: how many edits were
+    /// made since, when the state it is on was edited from it, each a step
+    /// from a stack to its parent; else another version. By the index of
+    /// the stacks alone, no record read: a parent is older than its child,
+    /// so the steps stop once they are past `rev`. None when `rev` is no
+    /// state of `name`, or `name` is on none.
+    pub fn since(&self, name: &str, rev: usize) -> Option<Since> {
+        self.stacks.get(&rev.checked_sub(1)?).filter(|(n, _)| n == name)?;
+        let mut at = (*self.heads.get(name)?)? + 1;
+        let mut edits = 0;
+        while at > rev {
+            match self.stacks.get(&(at - 1)).and_then(|(_, parent)| *parent) {
+                Some(parent) => at = parent,
+                None => return Some(Since::Elsewhere),
+            }
+            edits += 1;
+        }
+        Some(if at == rev { Since::Edits(edits) } else { Since::Elsewhere })
+    }
+
     /// The patch `spec` names in `stack`: its position, counting from 1 at
     /// the bottom, or a prefix of its id or of its change.
     pub fn resolve(&self, stack: &Stack, spec: &str) -> Result<usize> {
@@ -3160,6 +3193,49 @@ mod tests {
         // Taken in before anything changes.
         db.catch_up().unwrap();
         assert!(db.cp.is_none() && db.records == whole.records);
+    }
+
+    #[test]
+    fn the_edits_since_a_state_of_a_stack_are_counted_along_its_tree_by_the_index_alone() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("db.jsonl");
+        let patch = |n: usize| Patch::new("c".into(), None, None, format!("Bug 1 - take {n}"), "diff --git a/a b/a\n".into());
+        let stack = |p: &Patch, parent: Option<usize>| {
+            Record::Stack(Stack {
+                name: "s".into(),
+                patches: vec![p.id.clone()],
+                base: None,
+                repo: None,
+                parent,
+                op: "edit".into(),
+                time: 1,
+            })
+        };
+        let (p1, p2, p3, p4) = (patch(1), patch(2), patch(3), patch(4));
+        // Made at @3, edited at @5, then at @7.
+        Db::append(&path, &[Record::Patch(p1.clone()), stack(&p1, None), Record::Patch(p2.clone()), stack(&p2, Some(3)), Record::Patch(p3.clone()), stack(&p3, Some(5))]).unwrap();
+        let db = Db::load(&path).unwrap();
+        assert_eq!([3, 5, 7].map(|rev| db.since("s", rev)), [Some(Since::Edits(2)), Some(Since::Edits(1)), Some(Since::Edits(0))]);
+        // Of no state of the stack's, nothing: a patch's rev, another name.
+        assert_eq!((db.since("s", 2), db.since("t", 3)), (None, None));
+        drop(db);
+        // The last edit undone, and another made in its place, at @10: @7 is
+        // another version; the rest counted along the way to @10. Read from
+        // a checkpoint, as read whole, the history not read for it.
+        let undo = Record::Head(Head {
+            name: "s".into(),
+            rev: Some(5),
+            op: "undo edit".into(),
+            time: 2,
+        });
+        Db::append(&path, &[undo, Record::Patch(p4.clone()), stack(&p4, Some(5))]).unwrap();
+        checkpoint(&path);
+        let db = Db::load(&path).unwrap();
+        let whole = Db::from_bytes(&path, &std::fs::read(&path).unwrap()).unwrap();
+        let since = [3, 5, 7, 10].map(|rev| db.since("s", rev));
+        assert_eq!(since, [Some(Since::Edits(2)), Some(Since::Edits(1)), Some(Since::Elsewhere), Some(Since::Edits(0))]);
+        assert_eq!(since, [3, 5, 7, 10].map(|rev| whole.since("s", rev)));
+        assert!(db.cp.is_some() && db.shadow.get().is_none(), "read from its checkpoint, nothing read of the whole history");
     }
 
     #[test]

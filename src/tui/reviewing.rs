@@ -14,6 +14,14 @@
 //! (Enter), as its menu picks too; on the right, what the agent said of it,
 //! the calls it tried under that. Work that holds one lands though it failed
 //! or brought nothing back, to allow a tool and send it back.
+//!
+//! So are the answers made on the stack before the change, chained, that
+//! accepting the change leaves behind, as the review finds them when it
+//! opens: each running or waiting for your review, marked keep (Enter),
+//! restart, or stop (Delete), as its menu picks too, before the review
+//! closes with the change accepted; on the right, the comment it answers.
+//! An answer asked once the review is open is none of them: it goes on as
+//! it is.
 
 use std::collections::BTreeMap;
 use std::ops::Range;
@@ -21,7 +29,7 @@ use std::path::PathBuf;
 
 use super::*;
 use crate::db::Run;
-use crate::held::{Goes, Held as Work, Part};
+use crate::held::{AnswerMark, Goes, Held as Work, Part};
 use crate::history::Diffed;
 use crate::refusals::{Allow, Refusal};
 #[cfg(feature = "try-push")]
@@ -33,6 +41,78 @@ type View = (String, Vec<Vec<(String, Style)>>, Range<usize>);
 
 /// What leaving the review of a pull's comments says: they wait for it.
 pub(super) const PULL_WAITS: &str = "the comments pulled wait for your review: closing it files every one of them";
+
+/// What the review's section of the answers made on the stack before the
+/// change is called, as its heading says it, and its line of what Esc says.
+pub(super) const ANSWERS: &str = "answers made on the stack before the change";
+
+/// Where an answer made on the stack before the change stands, as its line
+/// of the review says it: running, or landed and waiting for your review,
+/// to mark; or, since the review opened, failed, or reviewed, with nothing
+/// to mark.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) enum Going {
+    Running,
+    Waiting,
+    Failed,
+    Reviewed,
+}
+
+impl Going {
+    /// Whether an answer standing so is to mark: running, or waiting for
+    /// your review.
+    fn markable(self) -> bool {
+        matches!(self, Going::Running | Going::Waiting)
+    }
+
+    /// It in a word, as the answer's line says it after its mark, the list
+    /// being narrow: `running`, `landed` (waiting for your review),
+    /// `failed`, `reviewed`.
+    fn word(self) -> &'static str {
+        match self {
+            Going::Running => "running",
+            Going::Waiting => "landed",
+            Going::Failed => "failed",
+            Going::Reviewed => "reviewed",
+        }
+    }
+
+    /// Why an answer standing so has nothing to mark, said, if it has not:
+    /// `this answer failed since the review opened: nothing to mark`.
+    fn unmarkable(self) -> Option<&'static str> {
+        match self {
+            Going::Failed => Some("this answer failed since the review opened: nothing to mark"),
+            Going::Reviewed => Some("this answer was reviewed since the review opened: nothing to mark"),
+            _ => None,
+        }
+    }
+}
+
+/// What mark `m` does, once the change is accepted, to an answer made on
+/// the stack before it, standing as `going`: said after the mark's word, in
+/// the box of its menu and on the status line.
+fn answer_does(m: AnswerMark, going: Going) -> &'static str {
+    match (m, going) {
+        (AnswerMark::Keep, Going::Running) => "the answer goes on, and lands for your review on the stack it was asked on",
+        (AnswerMark::Keep, _) => "the answer waits for your review as it is",
+        (AnswerMark::Restart, Going::Running) => "the agent is stopped, and the answer is asked again on the stack the change makes",
+        (AnswerMark::Restart, _) => "the answer is asked again on the stack the change makes, shown what it brought back",
+        (AnswerMark::Stop, Going::Running) => "the agent is stopped, and the comment stays open, not asked again",
+        (AnswerMark::Stop, _) => "what the answer brought back is thrown away unseen, and the comment stays open, not asked again",
+    }
+}
+
+/// What an answer's mark says, as the list shows it: `✓ keep` as a part
+/// accepted is marked, `✗ stop` as one rejected, `↻ restart` with no colour
+/// of its own, and `·` while it is not marked.
+fn answer_mark_of(m: Option<AnswerMark>) -> (&'static str, Style) {
+    match m {
+        Some(AnswerMark::Keep) => ("✓ keep", color::add()),
+        Some(AnswerMark::Stop) => ("✗ stop", color::del()),
+        Some(AnswerMark::Restart) => ("↻ restart", Style::new()),
+        None => ("·", Style::new()),
+    }
+}
 
 /// The stack diff of the change, as the right pane shows it: what it is,
 /// said; its lines. For each of its entries: the lines it takes; where
@@ -137,6 +217,12 @@ pub struct Reviewing {
     /// checkout's own settings; else why it cannot be. Looked at as the
     /// review opens, when its work holds a tool the agent could not use.
     pub local: Option<std::result::Result<PathBuf, String>>,
+    /// The answers made on the stack before the change that accepting it
+    /// leaves behind, by their runs, as the review found them when it
+    /// opened (`ask::answers_left`): each to mark keep, restart or stop, as
+    /// `marks` hold it, while it runs or waits for your review. An answer
+    /// asked since is none of them, and goes on as it is.
+    pub answers: Vec<String>,
 }
 
 /// What you wrote in the review a line of its list is: a comment you opened
@@ -173,6 +259,9 @@ pub(super) struct Line {
     /// A tool the agent could not use, by its place among those the work
     /// holds: refused, or allowed for this work or from now on.
     tool: Option<usize>,
+    /// An answer made on the stack before the change, by its run: kept,
+    /// restarted or stopped once the change is accepted.
+    answer: Option<String>,
 }
 
 impl Line {
@@ -188,14 +277,16 @@ impl Line {
             report: None,
             stacked: false,
             tool: None,
+            answer: None,
         }
     }
 
     /// Whether the cursor goes on it: a part, a comment that asked, what
-    /// you wrote, what the linter reported, stacked's comment, or a tool the
-    /// agent could not use; not a section's title.
+    /// you wrote, what the linter reported, stacked's comment, a tool the
+    /// agent could not use, or an answer made on the stack before the
+    /// change; not a section's title.
     fn selectable(&self) -> bool {
-        self.part.is_some() || self.asking.is_some() || self.yours.is_some() || self.report.is_some() || self.stacked || self.tool.is_some()
+        self.part.is_some() || self.asking.is_some() || self.yours.is_some() || self.report.is_some() || self.stacked || self.tool.is_some() || self.answer.is_some()
     }
 }
 
@@ -337,6 +428,7 @@ impl App {
             run: run.into(),
             marks,
             local: self.local_of(run),
+            answers: self.answers_of(run),
             ..Default::default()
         });
         self.screen = Screen::Review;
@@ -402,7 +494,9 @@ impl App {
         let Some(rv) = &self.reviewing else { return false };
         self.review_lines()
             .get(rv.sel)
-            .is_some_and(|l| l.asking.is_none() && l.yours.is_none() && l.report.is_none() && !l.stacked && l.tool.is_none() && matches!(l.part, Some(Part::Stack) | None))
+            .is_some_and(|l| {
+                l.asking.is_none() && l.yours.is_none() && l.report.is_none() && !l.stacked && l.tool.is_none() && l.answer.is_none() && matches!(l.part, Some(Part::Stack) | None)
+            })
             && self.review_stacks().is_some()
     }
 
@@ -585,6 +679,7 @@ impl App {
         }
         let mut deco = Deco {
             pointed: self.pointed_of(&notes),
+            ages: self.ages_of(&notes),
             ..Default::default()
         };
         if let Some((id, turns)) = self.written_turns() {
@@ -773,6 +868,16 @@ impl App {
                 _ => Ok(Action::ToolState(k, Allow::Refused)),
             });
         }
+        // An answer made on the stack before the change: stopped, unless it
+        // is marked so, or has nothing to mark.
+        if let Some(id) = &line.answer {
+            let going = self.answer_items().into_iter().find(|(k, _)| k == id).map_or(Going::Reviewed, |(_, g)| g);
+            return Some(match (going.unmarkable(), crate::held::answer_mark(&rv.marks, id)) {
+                (Some(why), _) => Err(why.into()),
+                (None, Some(AnswerMark::Stop)) => Err("this answer is marked stop already".into()),
+                (None, _) => Ok(Action::MarkAnswer(id.clone(), AnswerMark::Stop)),
+            });
+        }
         let p = line.part?;
         if self.review_pulled() {
             return Some(Err(crate::held::FILED.into()));
@@ -790,8 +895,98 @@ impl App {
             run: run.into(),
             marks: self.db.run(run).map(|r| crate::held::marks(&self.db, r)).unwrap_or_default(),
             local: self.local_of(run),
+            answers: self.answers_of(run),
             ..Default::default()
         }
+    }
+
+    /// The answers made on the stack before the change of the work run
+    /// `run` holds, that accepting it leaves behind, by their runs, as the
+    /// review finds them as it opens: running, or landed and waiting for
+    /// your review (`ask::answers_left`). None for work that does not change
+    /// the stack, nor unchained.
+    fn answers_of(&self, run: &str) -> Vec<String> {
+        match self.work(run) {
+            Some((r, h)) if h.stack.is_some() && !crate::held::pulled(r) => ask::answers_left(&self.db, &r.stack, run).into_iter().map(|a| a.id).collect(),
+            _ => vec![],
+        }
+    }
+
+    /// The answers of the review `rv`, made on the stack before the change,
+    /// each with where it stands now: running or waiting for your review, to
+    /// mark; else failed, or reviewed, since the review opened.
+    fn answers_in(&self, rv: &Reviewing) -> Vec<(String, Going)> {
+        if rv.answers.is_empty() {
+            return vec![];
+        }
+        let live: HashMap<&str, &Run> = self.db.live_runs().into_iter().map(|r| (r.id.as_str(), r)).collect();
+        rv.answers
+            .iter()
+            .map(|id| {
+                let going = match live.get(id.as_str()) {
+                    Some(r) if r.state == RunState::Started => Going::Running,
+                    Some(_) => Going::Waiting,
+                    // No longer either: its run as it ended, read again.
+                    None if self.db.run(id).is_some_and(|r| r.state == RunState::Failed) => Going::Failed,
+                    None => Going::Reviewed,
+                };
+                (id.clone(), going)
+            })
+            .collect()
+    }
+
+    /// The answers of the review, made on the stack before the change, each
+    /// with where it stands now (`answers_in`).
+    pub(super) fn answer_items(&self) -> Vec<(String, Going)> {
+        self.reviewing.as_ref().map(|rv| self.answers_in(rv)).unwrap_or_default()
+    }
+
+    /// The answers of review `rv`, made on the stack before the change,
+    /// running or waiting for your review, that it does not mark yet: the
+    /// review does not close with the change accepted while one is.
+    fn unmarked_in(&self, rv: &Reviewing) -> Vec<String> {
+        self.answers_in(rv).into_iter().filter(|(id, g)| g.markable() && crate::held::answer_mark(&rv.marks, id).is_none()).map(|(id, _)| id).collect()
+    }
+
+    /// Whether closing the review, the parts not marked yet as `rest` says,
+    /// accepts its change while an answer made on the stack before it is not
+    /// marked: then it does not close.
+    fn waits_for_answers(&self, rest: Option<bool>) -> bool {
+        let Some(rv) = &self.reviewing else { return false };
+        rv.marks.get(&Part::Stack.key()).copied().or(rest) == Some(true) && !self.unmarked_in(rv).is_empty()
+    }
+
+    /// The answer of run `id`, made on the stack before the change, marked
+    /// `m` in the review, for when the change is accepted: the status line
+    /// says what that does; or, no longer running nor waiting for your
+    /// review, why nothing is marked.
+    pub(super) fn mark_answer(&mut self, id: &str, m: AnswerMark) {
+        let Some(going) = self.answer_items().into_iter().find(|(a, _)| a == id).map(|(_, g)| g) else { return };
+        if let Some(why) = going.unmarkable() {
+            self.status = why.into();
+            return;
+        }
+        if let Some(rv) = self.reviewing.as_mut() {
+            crate::held::set_answer_mark(&mut rv.marks, id, m);
+        }
+        self.status = format!("marked {}: once the change is accepted, {}", m.word(), answer_does(m, going));
+    }
+
+    /// Every answer made on the stack before the change, running or waiting
+    /// for your review, marked `m`, as the review's menu marks them all.
+    pub(super) fn mark_answers(&mut self, m: AnswerMark) {
+        let items: Vec<String> = self.answer_items().into_iter().filter(|(_, g)| g.markable()).map(|(id, _)| id).collect();
+        let n = items.len();
+        if let Some(rv) = self.reviewing.as_mut() {
+            for id in &items {
+                crate::held::set_answer_mark(&mut rv.marks, id, m);
+            }
+        }
+        self.status = match n {
+            0 => "no answer made on the stack before the change is running nor waiting for your review: nothing to mark".into(),
+            1 => format!("the answer made on the stack before the change is marked {}", m.word()),
+            n => format!("the {n} answers made on the stack before the change are marked {}", m.word()),
+        };
     }
 
     /// Where the review of what run `run` brought back saves what it allows
@@ -889,9 +1084,16 @@ impl App {
         if ask::guessing(&self.db, r).is_some() {
             return Err("this work goes on from the work landed before it, which waits for your review: review that one first".into());
         }
-        let marks = self.review_of(run).marks;
-        if crate::held::parts_left(&self.db, r).iter().all(|p| marks.contains_key(&p.key())) {
+        let rv = self.review_of(run);
+        if crate::held::parts_left(&self.db, r).iter().all(|p| rv.marks.contains_key(&p.key())) {
             return Err(self.say_keys("nothing of this work is left to reject: press Enter to review it, and close the review there".into()));
+        }
+        // Its change marked accepted, it closes accepted: once each answer
+        // made on the stack before it is marked.
+        if rv.marks.get(&Part::Stack.key()) == Some(&true) && !self.unmarked_in(&rv).is_empty() {
+            return Err(self.say_keys(
+                "its change is marked accepted, and an answer made on the stack before it is not marked keep, restart or stop: press Enter to review it, and mark each there".into(),
+            ));
         }
         Ok(Action::AskRejectWork(run.into()))
     }
@@ -1076,6 +1278,27 @@ impl App {
                 });
             }
         }
+        // The answers made on the stack before the change, each marked and
+        // coloured for when the change is accepted, kept as a part accepted
+        // is, stopped as one rejected is; then, in a word, whether it runs or
+        // landed and waits for your review, the list being narrow; then what
+        // it was asked about. One neither any more, since the review opened,
+        // says so, dim: nothing to mark.
+        let answers = self.answer_items();
+        if !answers.is_empty() {
+            out.push(title(&format!(" {ANSWERS}")));
+            for (id, going) in answers {
+                let about = self.db.run(&id).map_or(String::new(), |a| crate::held::answer_about(&self.db, a));
+                let (m, st) = match going.markable() {
+                    true => answer_mark_of(crate::held::answer_mark(&rv.marks, &id)),
+                    false => ("·", color::dim()),
+                };
+                out.push(Line {
+                    answer: Some(id),
+                    ..line(format!("   {m:<9} {} · {about}", going.word()), st)
+                });
+            }
+        }
         // What the linter reported and did not fix: each run of it that did,
         // to read, nothing to accept or reject.
         if let Some(l) = h.lint.as_ref().filter(|l| !l.errors.is_empty()) {
@@ -1175,6 +1398,11 @@ impl App {
         if let Some(k) = line.tool {
             return self.tool_view(h, k, w);
         }
+        // An answer made on the stack before the change: the comment it
+        // answers, and what each mark does.
+        if let Some(id) = &line.answer {
+            return self.answer_view(r, id, w);
+        }
         match line.part {
             Some(Part::Stack) | None => {
                 let Some(v) = self.review_diff(w) else {
@@ -1235,6 +1463,7 @@ impl App {
     fn comment_view(&self, r: &Run, n: &Note, said: String, w: usize) -> View {
         let deco = Deco {
             pointed: self.pointed_of([n]),
+            ages: self.ages_of([n]),
             ..Default::default()
         };
         let rows = if n.on_stack() {
@@ -1364,6 +1593,59 @@ impl App {
             lines.extend(wrap(&said, w.max(20)).into_iter().map(|l| vec![(l, color::note())]));
         }
         (said.to_string(), lines, 1..end)
+    }
+
+    /// The answer of run `id`, made on the stack before the change of the
+    /// work of run `r`, `w` wide: the comment it was asked about, where it
+    /// is, with its reply after it as it would be in its thread once it
+    /// waits for your review; then how it is marked, and what that does
+    /// once the change is accepted. And the lines that are the comment.
+    fn answer_view(&self, r: &Run, id: &str, w: usize) -> View {
+        let (Some(rv), Some(a)) = (self.reviewing.as_ref(), self.db.run(id)) else { return (String::new(), vec![], 0..0) };
+        let going = self.answer_items().into_iter().find(|(k, _)| k == id).map_or(Going::Reviewed, |(_, g)| g);
+        let what = if ask::selects_tasks(a) { "a try push's selection" } else { "an answer" };
+        let said = match going {
+            Going::Running => format!(" {what} running, asked on the stack before the change: the comment it answers"),
+            Going::Waiting => format!(" {what} waiting for your review, asked on the stack before the change: its reply as it would be in its thread"),
+            Going::Failed => format!(" {what} that failed since the review opened: nothing to mark"),
+            Going::Reviewed => format!(" {what} reviewed since the review opened: nothing to mark"),
+        };
+        let note = ask::asked_about(a).first().and_then(|(c, i)| self.db.note(c, i)).cloned();
+        let (said, mut lines, at) = match note {
+            Some(n) => {
+                // Landed: its reply after the comment, as it would be.
+                let reply = a
+                    .held
+                    .as_ref()
+                    .filter(|_| going == Going::Waiting)
+                    .and_then(|h| h.replies.iter().find(|rp| rp.change == n.change && rp.id == n.id));
+                let n = match reply {
+                    Some(rp) => Note { text: rp.after(&n.text), ..n },
+                    None => n,
+                };
+                self.comment_view(r, &n, said, w)
+            }
+            None => (said, vec![], 0..0),
+        };
+        let stands: Vec<String> = match (going.markable(), crate::held::answer_mark(&rv.marks, id)) {
+            (false, _) => vec!["The answer is no longer running nor waiting for your review, so it needs no mark.".into()],
+            (true, mark) => vec![
+                match mark {
+                    Some(m) => format!("Marked {}: once the change is accepted, {}.", m.word(), answer_does(m, going)),
+                    None => "Not marked yet: Enter keeps the answer, Delete stops it, and Space has its menu, to restart it too. The review closes with the change accepted only once each answer made on the stack before it is marked.".into(),
+                },
+                "The mark counts only once the change is accepted: rejected or sent back, the change leaves the stack as it is, and the answer goes on as it is.".into(),
+            ],
+        };
+        // Said right under the comment, in sight with it.
+        let mut under = vec![vec![(String::new(), Style::new())]];
+        for said in stands {
+            under.extend(wrap(&said, w.max(20)).into_iter().map(|l| vec![(l, color::note())]));
+        }
+        let n = under.len();
+        let end = at.end.min(lines.len());
+        lines.splice(end..end, under);
+        (said, lines, at.start.min(end)..end + n)
     }
 
     /// Why the agent selected task `k` of the try push work `h`, `w` wide,
@@ -1661,6 +1943,9 @@ impl App {
                 } else if let Some(k) = lines.get(rv.sel).and_then(|l| l.tool) {
                     // A tool the agent could not use: allowed from now on.
                     self.tool_enter(k);
+                } else if let Some(id) = lines.get(rv.sel).and_then(|l| l.answer.clone()) {
+                    // An answer made on the stack before the change: kept.
+                    self.mark_answer(&id, AnswerMark::Keep);
                 } else if let Some(p) = lines.get(rv.sel).and_then(|l| l.part).filter(|_| !pulled) {
                     match rv.marks.get(&p.key()) {
                         Some(true) => {
@@ -1842,6 +2127,12 @@ impl App {
                 _ => "enter: allow it for this work",
             };
         }
+        if let Some(id) = &line.answer {
+            return match self.answer_items().into_iter().find(|(k, _)| k == id) {
+                Some((_, g)) if g.markable() => "enter: keep it",
+                _ => "enter: nothing, this answer has nothing to mark",
+            };
+        }
         match (line.asking, line.part) {
             (Some(k), _) if rv.marks.get(&crate::held::asking_key(k)) == Some(&true) => "enter: keep it open",
             (Some(_), _) => "enter: close it with the review",
@@ -1949,6 +2240,31 @@ impl App {
             };
             out.push(vec![("the change of the stack: ".into(), rest), marked(m, said.into())]);
         }
+        // The answers made on the stack before the change: kept, as a part
+        // accepted is counted; stopped, as one rejected; restarted, and those
+        // not marked yet, as neither; those no longer going, which need no
+        // mark, as neither too.
+        let answers = self.answer_items();
+        if !answers.is_empty() {
+            let of = |m: Option<AnswerMark>| answers.iter().filter(|(id, g)| g.markable() && crate::held::answer_mark(&rv.marks, id) == m).count();
+            let now = |going: Going| answers.iter().filter(|(_, g)| *g == going).count();
+            let counts = [
+                (of(Some(AnswerMark::Keep)), "✓", "kept", color::add()),
+                (of(Some(AnswerMark::Restart)), "↻", "restarted", rest),
+                (of(Some(AnswerMark::Stop)), "✗", "stopped", color::del()),
+                (of(None), "·", "to mark", rest),
+                (now(Going::Failed), "·", "failed", rest),
+                (now(Going::Reviewed), "·", "reviewed", rest),
+            ];
+            let mut line = vec![(format!("{ANSWERS}: "), rest)];
+            for (k, (n, sign, word, st)) in counts.into_iter().filter(|(n, ..)| *n > 0).enumerate() {
+                if k > 0 {
+                    line.push((", ".into(), rest));
+                }
+                line.push((format!("{sign} {n} {word}"), st));
+            }
+            out.push(line);
+        }
         // Each kind of part apart: a try push's tasks, the comments
         // opened, the replies.
         let group = |p: &Part| match p {
@@ -2016,11 +2332,14 @@ impl App {
         }
         let parts = self.review_parts();
         let done = self.reviewing.as_ref().is_some_and(|rv| parts.iter().all(|p| rv.marks.contains_key(&p.key())));
+        // Closing with the change accepted waits for each answer made on the
+        // stack before it to be marked.
+        let waits = |rest: Option<bool>| self.waits_for_answers(rest);
         // Every part marked, nothing remains for the others to mark.
         let mut items = vec![
             Item::new("Save", Action::ReviewSave),
             Item::new("Discard", Action::ReviewDiscard),
-            Item::new("Close review", if self.review_close_menu().is_some() { Action::AskClose } else { Action::ReviewClose(None) }).when(done),
+            Item::new("Close review", if self.review_close_menu().is_some() { Action::AskClose } else { Action::ReviewClose(None) }).when(done && !waits(None)),
         ];
         // A tool allowed: the work may go back to the agent, to try again
         // with it, though you wrote nothing; asked first.
@@ -2036,8 +2355,8 @@ impl App {
         // A pull's: every part accepted already, none to reject.
         if !self.review_pulled() {
             items.extend([
-                Item::new("Accept all remaining and Close", Action::AskReviewClose(true)).when(!done),
-                Item::new("Reject all remaining and Close", Action::AskReviewClose(false)).when(!done),
+                Item::new("Accept all remaining and Close", Action::AskReviewClose(true)).when(!done && !waits(Some(true))),
+                Item::new("Reject all remaining and Close", Action::AskReviewClose(false)).when(!done && !waits(Some(false))),
                 Item::line(),
             ]);
         }
@@ -2052,7 +2371,29 @@ impl App {
         };
         let mut m = Menu::new(format!("your review of {of}"), items, None);
         m.say_parts(self.review_summary());
+        // A closing grayed for the answers not marked yet: which they are,
+        // under the rest.
+        if (done && waits(None)) || (!done && (waits(Some(true)) || waits(Some(false)))) {
+            let said = self.answers_wait_said();
+            m.note = Some(m.note.take().map_or(said.clone(), |n| format!("{n}\n{said}")));
+        }
         m
+    }
+
+    /// Why closing the review with the change accepted is grayed, while an
+    /// answer made on the stack before the change is not marked: which are
+    /// not, each by what it was asked about and where it stands.
+    fn answers_wait_said(&self) -> String {
+        let unmarked = self.reviewing.as_ref().map(|rv| self.unmarked_in(rv)).unwrap_or_default();
+        let each: Vec<String> = unmarked
+            .iter()
+            .filter_map(|id| self.db.run(id))
+            .map(|a| format!("{} ({})", crate::held::answer_about(&self.db, a), crate::held::answer_state(a)))
+            .collect();
+        format!(
+            "The review closes with the change accepted only once each answer made on the stack before it is marked keep, restart or stop. Not marked yet: {}.",
+            each.join("; ")
+        )
     }
 
     /// The row picking whether the comments that asked are kept open or
@@ -2334,17 +2675,18 @@ impl App {
         m
     }
 
-    /// What closing the review as `how` asks again, said: its change
-    /// accepted, the answer-only asks made on the stack before it; rejected,
-    /// or the work sent back, the edits that went on from it. None for
-    /// nothing, or for work with no change of the stack.
+    /// What closing the review as `how` does to the asks it leaves behind,
+    /// said: its change accepted, to the answers made on the stack before
+    /// it, each as marked (`answers_closing`); rejected, or the work sent
+    /// back, the edits that went on from it, asked again. None for nothing,
+    /// or for work with no change of the stack.
     fn review_again(&self, how: Closing) -> Option<String> {
         let rv = self.reviewing.as_ref()?;
         self.work(&rv.run).filter(|(_, h)| h.stack.is_some())?;
-        let (running, waiting) = match how {
-            Closing::Accepting => ask::answers_reasked(&self.db, &self.stack, &rv.run),
-            _ => ask::guesses_after(&self.db, &rv.run),
-        };
+        if how == Closing::Accepting {
+            return self.answers_closing();
+        }
+        let (running, waiting) = ask::guesses_after(&self.db, &rv.run);
         let n = running + waiting;
         if n == 0 {
             return None;
@@ -2361,18 +2703,61 @@ impl App {
         let they = if n == 1 { "It is" } else { "They are" };
         let edits = if n == 1 { "1 edit".to_string() } else { format!("{n} edits") };
         Some(match how {
-            Closing::Accepting => format!(
-                "Closing this review applies its change. The {} made on the stack before it {} asked again: {each}.",
-                if n == 1 { "1 answer-only ask".to_string() } else { format!("{n} answer-only asks") },
-                is(n)
-            ),
             Closing::Rejecting => format!(
                 "Rejecting this change throws away the {edits} that went on from it, as if you accepted it: {each}. {they} asked again from the stack as it is."
             ),
-            Closing::SendingBack => format!(
-                "Sending this work back throws away the {edits} that went on from it: {each}. {they} asked again once the agent's new work lands."
-            ),
+            _ => format!("Sending this work back throws away the {edits} that went on from it: {each}. {they} asked again once the agent's new work lands."),
         })
+    }
+
+    /// What closing the review with its change accepted does to the answers
+    /// made on the stack before it, running or waiting for your review, as
+    /// each is marked: kept, restarted and stopped, a count each, said. None
+    /// without any.
+    fn answers_closing(&self) -> Option<String> {
+        let rv = self.reviewing.as_ref()?;
+        let items: Vec<(String, Going)> = self.answer_items().into_iter().filter(|(_, g)| g.markable()).collect();
+        let of = |m: AnswerMark, going: Going| items.iter().filter(|(id, g)| *g == going && crate::held::answer_mark(&rv.marks, id) == Some(m)).count();
+        let one = |n: usize, one: &'static str, many: &'static str| if n == 1 { one } else { many };
+        let mut each = Vec::new();
+        let n = of(AnswerMark::Keep, Going::Running);
+        if n > 0 {
+            each.push(format!(
+                "{n} running {} on, and {} for your review on the stack {} asked on",
+                one(n, "goes", "go"),
+                one(n, "lands", "land"),
+                one(n, "it was", "they were")
+            ));
+        }
+        let n = of(AnswerMark::Keep, Going::Waiting);
+        if n > 0 {
+            each.push(format!("{n} waiting for your review {} as {}", one(n, "stays", "stay"), one(n, "it is", "they are")));
+        }
+        let n = of(AnswerMark::Restart, Going::Running);
+        if n > 0 {
+            each.push(format!("{n} running {} stopped, and asked again on the stack the change makes", one(n, "is", "are")));
+        }
+        let n = of(AnswerMark::Restart, Going::Waiting);
+        if n > 0 {
+            each.push(format!(
+                "{n} waiting for your review {} asked again on the stack the change makes, shown what {} brought back",
+                one(n, "is", "are"),
+                one(n, "it", "they")
+            ));
+        }
+        let n = of(AnswerMark::Stop, Going::Running);
+        if n > 0 {
+            each.push(format!("{n} running {} stopped, {} left open, not asked again", one(n, "is", "are"), one(n, "its comment", "their comments")));
+        }
+        let n = of(AnswerMark::Stop, Going::Waiting);
+        if n > 0 {
+            each.push(format!(
+                "{n} waiting for your review {} thrown away unseen, {} left open, not asked again",
+                one(n, "is", "are"),
+                one(n, "its comment", "their comments")
+            ));
+        }
+        (!each.is_empty()).then(|| format!("Closing this review applies its change. Of the answers made on the stack before it, {}.", each.join("; ")))
     }
 
     /// The build and test of the stack as it was, going, that accepting a
@@ -2486,6 +2871,18 @@ impl App {
                 items.push(Item::new(if t.answer.is_some() { "Edit your answer to it" } else { "Reply to it" }, Action::AnswerTool(k)));
             }
         }
+        // An answer made on the stack before the change: kept, restarted or
+        // stopped once the change is accepted, a box each, the one it is
+        // marked checked, each saying what it does.
+        if let Some(id) = lines.get(rv.sel).and_then(|l| l.answer.as_ref())
+            && let Some((_, going)) = self.answer_items().into_iter().find(|(k, _)| k == id).filter(|(_, g)| g.markable())
+        {
+            let now = crate::held::answer_mark(&rv.marks, id);
+            for (m, word) in [(AnswerMark::Keep, "Kept"), (AnswerMark::Restart, "Restarted"), (AnswerMark::Stop, "Stopped")] {
+                items.push(Item::new(format!("{word}: {}", answer_does(m, going)), Action::MarkAnswer(id.clone(), m)).checked(now == Some(m)));
+            }
+            items.push(Item::line());
+        }
         // A comment that asked: closed with the review, or kept.
         if let Some(k) = lines.get(rv.sel).and_then(|l| l.asking) {
             let closing = rv.marks.get(&crate::held::asking_key(k)) == Some(&true);
@@ -2519,6 +2916,13 @@ impl App {
         if parts.iter().any(|p| matches!(p, Part::Reply(_))) {
             items.push(Item::new("Mark all replies accepted", Action::MarkReplies(true)).when(!rejected));
             items.push(Item::new("Mark all replies rejected", Action::MarkReplies(false)));
+        }
+        // The answers made on the stack before the change, all marked at
+        // once, for when the change is accepted.
+        if self.answer_items().iter().any(|(_, g)| g.markable()) {
+            items.push(Item::new("Mark all answers kept", Action::MarkAnswers(AnswerMark::Keep)));
+            items.push(Item::new("Mark all answers restarted", Action::MarkAnswers(AnswerMark::Restart)));
+            items.push(Item::new("Mark all answers stopped", Action::MarkAnswers(AnswerMark::Stop)));
         }
         // Edited by hand from here, the stack the work makes, where the
         // cursor is, as in the middle: the file of the code the cursor is
@@ -2633,7 +3037,18 @@ impl App {
         // was seen in sync with the stack at.
         let seen = self.head_here().map(|h| h.commit.clone()).unwrap_or_default();
         let moving = follow && self.head_to_move();
+        let stack = self.stack.clone();
         let closed = self.edit(|db| {
+            // An answer asked since the review opened is none of its items:
+            // it goes on as it is, kept, the change accepted.
+            let mut marks = marks.clone();
+            if accepted {
+                for a in ask::answers_left(db, &stack, &rv.run) {
+                    if !rv.answers.contains(&a.id) && crate::held::answer_mark(&marks, &a.id).is_none() {
+                        crate::held::set_answer_mark(&mut marks, &a.id, AnswerMark::Keep);
+                    }
+                }
+            }
             let said = crate::held::close(db, &rv.run, &marks, rest)?;
             #[cfg(feature = "try-push")]
             if !pushed.is_empty() {

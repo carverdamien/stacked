@@ -457,10 +457,11 @@ fn fold_parts(parts: &[(String, Style)], w: usize, indent: usize) -> Vec<Parts> 
     out
 }
 
-/// The marks of a review's parts (`reviewing::mark_of`), which its summary
+/// The marks of a review's parts (`reviewing::mark_of`), and of the answers
+/// made on the stack before its change, restarted `↻`, which its summary
 /// puts before what it counts (`✓ 2 accepted`): a line of them folded
 /// keeps each on the line of the word after it.
-const MARKS: [char; 3] = ['✓', '✗', '·'];
+const MARKS: [char; 4] = ['✓', '✗', '·', '↻'];
 
 /// A line of `parts` folded at spaces into lines of at most `w` characters,
 /// as `wrap` folds a text, but never between a mark (`MARKS`) and the word
@@ -1402,6 +1403,11 @@ pub enum Action {
     ToolState(usize, crate::refusals::Allow),
     ToolRule(usize, usize),
     AnswerTool(usize),
+    /// In the review of a change: the answer of run `0`, made on the stack
+    /// before it, marked keep, restart or stop (`1`), for when the change is
+    /// accepted; every one of those answers marked so.
+    MarkAnswer(String, crate::held::AnswerMark),
+    MarkAnswers(crate::held::AnswerMark),
     /// In the review: what you wrote there, on the list's line the cursor
     /// is on, written again, or taken back (asked first, from Delete).
     EditYours,
@@ -1681,6 +1687,18 @@ fn about(action: &Action) -> String {
         }
         Action::ToolRule(..) => "allow the tool with this rule instead, narrower or wider, as it is marked".into(),
         Action::AnswerTool(_) => "answer what the agent said of this tool: the work goes back to the agent with your answer".into(),
+        Action::MarkAnswer(_, crate::held::AnswerMark::Keep) => {
+            "keep this answer once the change is accepted: it goes on as it is, or waits for your review as it is, on the stack it was asked on, and its reply's heading then says how many edits old that stack is".into()
+        }
+        Action::MarkAnswer(_, crate::held::AnswerMark::Restart) => {
+            "restart this answer once the change is accepted: it is asked again on the stack the change makes, its agent stopped first if it still works, and shown what it brought back if it landed".into()
+        }
+        Action::MarkAnswer(_, crate::held::AnswerMark::Stop) => {
+            "stop this answer once the change is accepted: its agent is stopped if it still works, or what it brought back is thrown away unseen, and its comment stays open, not asked again".into()
+        }
+        Action::MarkAnswers(crate::held::AnswerMark::Keep) => "mark every answer made on the stack before the change kept".into(),
+        Action::MarkAnswers(crate::held::AnswerMark::Restart) => "mark every answer made on the stack before the change restarted".into(),
+        Action::MarkAnswers(crate::held::AnswerMark::Stop) => "mark every answer made on the stack before the change stopped".into(),
         Action::EditYours => "write it again: what you said last in your comment, or your answer to the agent's reply".into(),
         Action::AskTakeYoursBack | Action::TakeYoursBack => "take it back: it does not go back to the agent with the work".into(),
         Action::AskRejectWork(_) | Action::RejectWork(_) => {
@@ -3619,6 +3637,22 @@ impl App {
         note_state(&self.db, &self.stack, n, busy)
     }
 
+    /// The stacks the answer-only asks were asked on that the turns of
+    /// `notes` name, by rev, while the stack has changed since: how old each
+    /// is, said, for the headings of those turns (`Deco::ages`). Counted
+    /// along the tree of edits by its index alone, each stack once.
+    fn ages_of<'a>(&self, notes: impl IntoIterator<Item = &'a Note>) -> HashMap<usize, String> {
+        let mut out: HashMap<usize, Option<String>> = HashMap::new();
+        for n in notes {
+            for t in thread_turns(&n.text) {
+                if let Some(rev) = t.stack.filter(|_| t.role == Role::Agent) {
+                    out.entry(rev).or_insert_with(|| self.db.since(&self.stack, rev).and_then(crate::thread::asked_on_said));
+                }
+            }
+        }
+        out.into_iter().filter_map(|(rev, said)| Some((rev, said?))).collect()
+    }
+
     /// The tags and streams of `notes`.
     fn deco(&self, notes: &[Note]) -> Deco {
         let busy = self.busy();
@@ -3632,6 +3666,10 @@ impl App {
             _ => HashMap::new(),
         };
         deco.pointed = self.pointed_of(notes);
+        // A closed comment as it was: its answers said as they were too.
+        if self.show != Show::Closed {
+            deco.ages = self.ages_of(notes);
+        }
         for n in notes {
             let tag = match deleted.get(&n.id) {
                 Some(rev) => format!("closed @{rev}"),
@@ -6003,6 +6041,7 @@ impl App {
             Action::MarkUnread => "unread",
             Action::MarkPart(_) => "reject",
             Action::ToolState(..) => "refuse it",
+            Action::MarkAnswer(..) => "stop it",
             Action::CloseAsking(..) => "close it with the review",
             Action::AskTakeYoursBack => "take it back",
             Action::AskRejectWork(_) => "reject all remaining",
@@ -6152,6 +6191,11 @@ impl App {
                 // The tools the agent could not use: their three states.
                 if self.reviewing.as_ref().and_then(|rv| self.work(&rv.run)).is_some_and(|(_, h)| !h.tools.is_empty()) {
                     out.push("The tools the agent could not use are a section of their own, each refused until you allow it. On a tool, the right pane shows why the agent needed it, as its comment, and the calls it tried. Press Enter to allow the tool from now on: its rule is saved in the checkout's own .stacked/local.toml, for this kind of ask, once the work is sent back or its review closes. Press Delete to refuse it again. Space has its menu, to allow it for this work alone (every round of this work until its review closes, and nothing saved), to widen its rule, or to reply to what the agent said of it. With a tool allowed, Esc can send the work back to the agent though you wrote nothing.".into());
+                }
+                // The answers made on the stack before the change: their
+                // three marks, and when they count.
+                if !self.answer_items().is_empty() {
+                    out.push("The answers made on the stack before the change are a section of their own, each running or waiting for your review. Each is marked keep, restart or stop before the review can close with the change accepted. Kept, an answer goes on as it is, or waits for your review as it is, and the heading of its reply then says how many edits old the stack it was asked on is. Restarted, it is asked again on the stack the change makes. Stopped, its agent is stopped, or what it brought back is thrown away unseen, and its comment stays open, not asked again. On an answer, the right pane shows its comment, and what each mark does. Press Enter to keep it, and Delete to stop it; Space has its menu, to restart it too, or to mark every answer at once. The marks count only once the change is accepted: rejected or sent back, the change leaves the stack as it is, and the answers go on as they are.".into());
                 }
                 out.push("What you write in the review of the agent's work sends that work back to the agent: the work is not accepted, and the agent is asked again, starting from this work.".into());
                 if self.review_yours() > (0, 0) {
@@ -6622,9 +6666,10 @@ impl App {
                 }
             }
             // On a tool the agent could not use, its state or its rule
-            // picked: the menu again as it is now, its box checked, the
+            // picked, or on an answer made on the stack before the change,
+            // its mark: the menu again as it is now, its box checked, the
             // cursor where it was, or on its state once its rule changed.
-            KeyCode::Enter if m.chosen().is_some_and(|i| matches!(i.action, Action::ToolState(..) | Action::ToolRule(..))) => {
+            KeyCode::Enter if m.chosen().is_some_and(|i| matches!(i.action, Action::ToolState(..) | Action::ToolRule(..) | Action::MarkAnswer(..))) => {
                 let action = m.chosen().map(|i| i.action.clone()).unwrap_or(Action::Cancel);
                 self.perform(action.clone());
                 let mut again = self.main_menu();
@@ -7978,6 +8023,8 @@ impl App {
             Action::ToolState(k, a) => self.tool_state(k, a),
             Action::ToolRule(k, j) => self.tool_rule(k, j),
             Action::AnswerTool(k) => self.review_tool_answer(k),
+            Action::MarkAnswer(run, m) => self.mark_answer(&run, m),
+            Action::MarkAnswers(m) => self.mark_answers(m),
             Action::EditYours => {
                 if let Some(y) = self.review_yours_line() {
                     self.review_write_yours(y);

@@ -1742,7 +1742,7 @@ acceptEdits --effort high, in …`). A comment in the batch keeps the effort
 it was asked at: its `Send it now` starts at that effort, and each of the
 batch's items at the highest effort of the comments it sends. An ask asked
 again goes at the effort it had: a change dropped because the work it went
-on from was rejected, an answer asked again once a change is accepted, a
+on from was rejected, an answer restarted as a change is accepted, a
 comment put back on the queue as it was. Work sent back from its review
 starts at the effort it was asked at as well, unless another is picked on
 `Send it back to the agent`. An ask queued by an older stacked has no
@@ -1778,6 +1778,25 @@ the effort its tasks were selected at. A turn written before efforts were
 picked, or by an ask that went at the agent's own, says nothing of it, and
 shows as it always did. What the agent is told of the earlier turns of a
 thread says none of it either.
+
+The heading of each turn an answer-only ask brought back, its reply or a
+comment it opened, also says how old the stack it was asked on is, while
+the thread is open and the stack has changed since: `agent(max), on the
+stack 2 edits ago:` (`on the stack 1 edit ago` for one). The edits are
+counted along the tree of edits (The tree of edits, below), from the state
+the answer was asked on to the state the stack is on now. Once the stack
+is on a state that was not edited from that one (that edit undone, say,
+and another made in its place), the heading says `agent(max), on another
+version of the stack:`. On the stack it was asked on, it says nothing
+more; nor does a closed thread, a turn of any other ask, a change's, a
+build and test's or a try push's, nor one written before. Only the heading
+in the thread says it, in the middle and in a review's right pane: the
+comments pane, the search, the history, `$EDITOR` and `stacked comments`
+say who wrote each turn as ever. So an answer kept as a change of the stack
+is accepted (below) shows that it answered the stack as it was, for you to
+ask it again on the stack as it is if need be. The stack an answer was
+asked on goes with its turns, on their fence (One file, only appended to,
+below).
 
 On the command line, `stacked send` takes `--effort LEVEL`. Without it, an
 ask goes at `high`, and
@@ -1955,14 +1974,24 @@ its comments go back to their turn, to start again from the stack as it
 then is (a round sent back goes first). It reads the stack it went on from
 with `stacked export NAME --work RUN` and `stacked show NAME --work RUN`,
 the stack a landed work makes. An answer-only ask runs at once, alongside
-the changes, on the stack as it is: accepting a change asks again the
+the changes, on the stack as it is. Accepting a change leaves behind the
 answers made on the stack before it, still running or waiting for your
-review. Asked again, an ask whose work had landed is shown that work, to
-reuse what still holds: its replies, the comments it opened, and, for a
-change, what it changed. A build and test is not asked again: it goes on,
-of the stack as it was, unless you stop it as you close the review.
-Closing a review, or sending the work back, says first what that asks
-again, and offers to stop a build and test going.
+review: the review of the change lists them, and you mark each keep,
+restart or stop before that review can close with the change accepted
+(What the agent brings back waits for your review, below). Kept, an
+answer goes on, or waits for your review, as it is, on the stack it was
+asked on, and the heading of its reply says how many edits old that stack
+is (below). Restarted, it is asked again on the stack the change makes.
+Stopped, its agent is stopped, or what it brought back is thrown away
+unseen, and its comment stays open, not asked again. Asked again, an ask
+whose work had landed is shown that work, to reuse what still holds: its
+replies, the comments it opened, and, for a change, what it changed. A
+build and test is not asked again: it goes on, of the stack as it was,
+unless you stop it as you close the review. Closing a review, or sending
+the work back, says first what becomes of the asks it leaves behind, and
+offers to stop a build and test going. Unchained, a change waits for the
+answers running, and accepting it leaves those waiting for your review as
+they are: its review lists none.
 
 While the agent changes a stack, the stack is not edited by hand: the
 agent's change is made from the stack as it took it. The menus' edits of
@@ -2398,6 +2427,60 @@ kept for the stack. A reply that goes with a change of the stack
 opens that review, on the reply, from its comment (Enter, or `Review the
 agent's work…` in its menu).
 
+The review of a change of the stack, chained (Asking the agent, above),
+lists in a section of its own, `answers made on the stack before the
+change`, the answers that accepting it leaves behind: the answer-only
+asks, and a try push's selections, running or landed and waiting for your
+review, as the review finds them when it opens. An answer asked once the
+review is open is none of them: it goes on, on the stack as it is. Each
+is a line: its mark, then `running`, or `landed` while it waits for your
+review, then what it was asked about, where its comment is and how that
+comment starts (`·         running · a.txt: LINE 39 · why so loud?`). There
+is no default: `·` says it is not marked yet, and each is marked, for when
+the change is accepted:
+
+- `✓ keep`, in green: the answer goes on as it is, on the stack it was
+  asked on, and lands for your review as any answer does; landed, it
+  waits for your review as it is. Its reply's heading then says how many
+  edits old the stack it answered is (Asking the agent, above).
+- `↻ restart`, with no colour of its own: it is asked again on the stack
+  the change makes, its agent stopped first if it still works, and shown
+  what it brought back if it landed, to reuse what still holds.
+- `✗ stop`, in red: its agent is stopped, as `Stop the agent…` stops it,
+  its ask landed as failed and said so on its comment; landed, what it
+  brought back is thrown away unseen, as a rejected answer's is. Either
+  way, its comment stays open, and is not asked again.
+
+Enter keeps the answer the cursor is on, Delete stops it, and Space has
+its menu: the three marks as boxes, the one it has checked, each saying
+what it does (`Kept: the answer goes on, and lands for your review on the
+stack it was asked on`), Enter on one picking it, the menu staying. On any
+line, Space also has `Mark all answers kept`, `Mark all answers restarted`
+and `Mark all answers stopped`. On an answer, the right pane shows the
+comment it answers, its reply after it once it waits for your review, then
+how it is marked and what that does. One that fails, or is reviewed, while
+the review is open says so, dim, and needs no mark; one running that lands
+keeps its mark, which then goes for the work it brought back. The marks
+count only once the change is accepted: rejected or sent back, the change
+leaves the stack as it is, and the answers go on as they are. Until each
+answer is marked, the review does not close with its change accepted:
+`Close review` and `Accept all remaining and Close` are grayed, and so is
+`Reject all remaining and Close` while the change is marked accepted, Esc
+saying what they wait for (`Not marked yet: the stack · and the stack?
+(waiting for your review)`) under how they are marked (`answers made on
+the stack before the change: ✓ 1 kept, · 1 to mark`). `Accept all
+remaining and Close` marks none of them. Closing with the change accepted
+asks first, saying what becomes of each (`Closing this review applies its
+change. Of the answers made on the stack before it, 1 running goes on, and
+lands for your review on the stack it was asked on; 1 waiting for your
+review is thrown away unseen, its comment left open, not asked again.`),
+in place of what closing asked again before; and the status line, then
+the run, says what came of them (`1 answer-only ask kept`, `… asked
+again`, `… stopped`). The review of an edit by hand, of a reconcile with
+HEAD and of a lint job lists them the same. A build and test is none of
+them: it goes on, of the stack as it was, and closing offers to stop it,
+as ever.
+
 The review of a pull from Phabricator rejects nothing: each part shows as
 accepted (`✓`), Enter, Delete and Space mark none of them (Delete says
 `a comment pulled from Phabricator cannot be rejected: close the review to
@@ -2480,7 +2563,15 @@ landed if no run is given: the parts not marked yet are accepted (or
 rejected), and what is accepted is applied; `--close-asking` closes the
 comments the agent was asked about too. A pull's review is not rejected:
 `--reject-all` refuses it, and `--accept-all` files every comment it
-pulled. In the review of landed work RUN,
+pulled. Accepting a change, chained, `--accept-all` goes by the marks its
+review saved for the answers made on the stack before the change, and
+marks none of them: while one is not marked keep, restart or stop, it
+refuses, naming each by its run, where it stands and what it was asked
+about, and saying to mark each in the review of that work in the editor,
+then to close that review there or save it. So do `stacked send NAME ID
+--wait --accept`, and `stacked edit … --accept`, whose edit then waits for
+your review. `--reject-all` and `--send-back` leave those answers as they
+are. In the review of landed work RUN,
 `stacked comment NAME --patch N --line … --work RUN TEXT` writes a comment
 on the patch as that work leaves it, and `stacked reply NAME ID --answer
 TEXT` answers the agent's reply to comment ID; then `stacked review NAME
@@ -2542,9 +2633,9 @@ item is not offered, why. Each item is in one of three states:
   an item.
 - allowed for this work: every round of this work may use the tool, until
   its review closes. That is the rounds sent back from its review, and the
-  rounds stacked starts by itself for that work: an answer asked again
-  once a chained edit is accepted, an edit asked again once the work it
-  went on from is rejected. claude is given the rule with the other tools
+  rounds stacked starts by itself for that work: an answer restarted as a
+  chained edit is accepted, an edit asked again once the work it went on
+  from is rejected. claude is given the rule with the other tools
   the ask may use, and the rule is never saved. The stream of each such
   round starts by saying so (`✓ allowed for this work:
   Bash(searchfox-cli *)`), and so does the status line once the work is
@@ -3600,7 +3691,10 @@ bytes long, padded with spaces.
   (```` ```claude ````, as the first files have them, reads the same) and
   the way they were asked (```` ```agent answer ````), then, when their run
   was asked at an effort, `effort` and its name (```` ```agent answer
-  effort max ````), a turn of before having none; and
+  effort max ````), a turn of before having none; then, an answer-only
+  ask's, `stack` and the rev of the stack it was asked on (```` ```agent
+  answer effort max stack 12 ````), which its heading counts the edits
+  since, by the stacks' index alone, no record read; and
   a reviewer's ```` ```reviewer ```` and their name; a reviewer's turn an
   edit of it replaces has `redacted` after the name (```` ```reviewer ann
   redacted ````), and their edit `edit` and the first line of the comment it
@@ -3618,13 +3712,16 @@ bytes long, padded with spaces.
   naming it.
 - An ask's run, once landed, holds what it brought back for review: the
   stack its change makes (its patches stored already, by their content),
-  each reply, each comment it opened. Nothing of it is applied before its
+  each reply (an answer-only ask's with the rev of the stack it was asked
+  on), each comment it opened. Nothing of it is applied before its
   review closes. Bringing nothing back, it holds none of them, and is held
   all the same while a comment it was asked about is still open. A lint
   job's run holds the command it runs and where it stands, waiting its turn
   or running, and the stack it lints once it runs; landed, what it brought
   back, as an ask's does, with what the linter reported. A review
-  record holds the marks saved for a run's review,
+  record holds the marks saved for a run's review (each answer made on the
+  stack before its change, kept, restarted or stopped, by that answer's
+  run: `keep RUN`, `restart RUN`, `stop RUN`),
   the replies taken already, and whether it is closed; the last one is
   what stands.
 - A reconcile with HEAD's run holds what it takes, each patch's change,
@@ -3932,7 +4029,9 @@ is typed: `import.rs`). A fix to one may belong in the other.
 - `reach.rs`: whether the agent can be reached, for the ask dialog's Ask
   Now: its program found, and the network reaching the host claude talks
   to, a stand-in answering for the tests.
-- `held.rs`: what an ask brought back, held for your review.
+- `held.rs`: what an ask brought back, held for your review; and the marks
+  of the answers made on the stack before a change, kept, restarted or
+  stopped as the change is accepted (`ask.rs` does what each mark says).
 - `head.rs`: where HEAD of your checkout is against a stack, its commits
   marked, and HEAD moved along it, only as stacked left it or with no mark;
   what the view of why Move HEAD does not move HEAD reads of the checkout.
@@ -4144,7 +4243,11 @@ or to what reads it, as `STACKED_TEST_CHECKPOINTS=1 cargo test`. The tests
 in `db.rs` show where stacked left HEAD kept per stack and checkout, each
 move replacing it and the same again writing nothing, read from a
 checkpoint as when read whole, and a checkpoint of before, with no index
-of them, read all the same, as one with none.
+of them, read all the same, as one with none; and the edits since a state
+of a stack counted along its tree of edits by the index of the stacks
+alone (another version once an edit is undone and another made in its
+place, nothing for what is no state of it), read from a checkpoint as
+when read whole, its history not read.
 
 `tests/cli.rs` builds a repo and drives the binary. It covers a round trip
 through `git am`, a stack imported again (a patch whose lines a new
@@ -4179,7 +4282,10 @@ agent's reference by `--edit --turn` (said so), and a rewind keeping one
 never named, a web link attached told the agent as one it need not fetch
 (the prompt asking it to point at the stack first) and listed with its
 comment, the agent's own link kept in its reply (one not of the web left
-out, with its number), asks waiting their turn, an agent stopped with
+out, with its number), asks waiting their turn, an answer made on the
+stack before a change accepted asked again on the stack it makes once the
+change's review marks it restart (and given what it was allowed for this
+work, what it allowed from now on saved), an agent stopped with
 `stacked stop` (by the start of its run's id, the shell offering only the
 runs that run) and killed as it will not exit on SIGTERM, its ask landed
 at once as failed and said so on its comment and in its transcript, a
@@ -4553,7 +4659,29 @@ each its own; a line under the cursor in the cursor's colours, its mark
 too, and picked in its own; a comment that asked `✓ keep` in green and
 `✗ close` in red, cell by cell) and Esc's summary of it (each count
 marked so, in green or red, what is to review and the rest dim, and what
-else the menu says, `You wrote 1 answer…`, in the note's colour), a commit message that differs from its patch's
+else the menu says, `You wrote 1 answer…`, in the note's colour), the
+answers made on the stack before a change in its review (one landed and
+one running, a section of their own, each `·` until it is marked, saying
+whether it runs or landed and what it was asked about; `Close review`
+and `Accept all remaining and Close` grayed until each is marked, `Reject
+all remaining and Close` not, Esc saying which are not marked yet; the
+right pane, the bottom bar and `?` on one; Enter keeping one, Delete
+stopping one, Space's three boxes, the one picked checked, the menu
+staying, and its items marking them all; the one running landing while
+the review is open, its line saying so, its mark kept; kept, the closing saying so, the
+one running going on and landing on the stack it was asked on, its reply's
+heading in its open thread saying `on the stack 1 edit ago`; restarted,
+each asked again on the stack the change made, the one that had landed
+shown what it brought back; stopped, the agent stopped and its ask landed
+as failed, said so on its comment and in its stream, the landed work
+thrown away unseen, both comments open and nothing asked again; the change
+rejected, each going on as it was; unchained, none listed, the answer
+waiting as it was, its heading saying how old its stack is all the same;
+`stacked review --accept-all` refusing, naming the answer and where to
+mark it, then accepting once it is marked keep and the review saved), the
+heading of an answer's turn counting the edits since the stack it was
+asked on (1, then 2; `on another version of the stack` once an edit is
+undone and another made in its place; nothing in a closed thread), a commit message that differs from its patch's
 holding back nothing (none of it in the banner, landed work reviewed and a
 reply taken at once meanwhile, the stack and the commit each keeping its
 own message, s and w doing nothing), HEAD shown where it was while stacked
@@ -5040,7 +5168,11 @@ the agent's turn, after the way, read, headed and named with it, kept as
 the thread is written again, a reply added, a turn edited or one holding
 a code block, a turn of before read and written as it was, a comment the
 agent opened at an effort, and a reviewer named `effort` a name as ever;
-in `ask.rs`, the thread the agent is told says none of it. The
+the stack an answer was asked on, last on its fence, after the effort or
+alone, read as the way and the effort as ever, kept as the thread is
+written again, a word after `stack` that is no rev read as part of the
+way, and how old that stack is said; in `ask.rs`, the thread the agent is
+told says none of it. The
 tests in `check.rs` show
 the check's index holds only what the patches touch, that it writes nothing
 to the repository (nor does the tree a patch leaves, written for a

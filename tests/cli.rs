@@ -2539,7 +2539,7 @@ fn rev_in(prompt: &str) -> String {
 }
 
 #[test]
-fn an_answer_runs_on_the_stack_as_it_is_and_accepting_an_edit_asks_it_again() {
+fn an_answer_runs_on_the_stack_as_it_is_and_accepting_an_edit_asks_it_again_once_marked_restart() {
     let e = env();
     e.ok(&["import", "s", "base"]);
     let first = comment(&e, &["--patch", "1", "Spell", "it", "out."]);
@@ -2560,7 +2560,9 @@ fn an_answer_runs_on_the_stack_as_it_is_and_accepting_an_edit_asks_it_again() {
     assert!(asked.contains("a git worktree made for you") && asked.contains("export s --rev ") && !asked.contains("--work"), "{told}");
     assert!(e.ok(&["show", "s", "1", "--work", &one]).contains("+deux\n"));
     assert!(!e.ok(&["landed", "s"]).contains("goes on from"));
-    // The change accepted, the answer is asked again, on the stack it makes.
+    // The change accepted, once the answer is marked restart in its review,
+    // the answer is asked again, on the stack it makes.
+    mark_answers(&e, &one, stacked::held::AnswerMark::Restart);
     let (fine, out, err) = stacked_in(&e.src, &e.db, &["review", "s", &one, "--accept-all"], "", &env);
     assert!(fine && out.contains("; 1 answer-only ask asked again"), "{out}{err}");
     landed(&e, 3);
@@ -4121,11 +4123,13 @@ fn the_effort_the_agent_was_asked_at_is_said_wherever_the_command_line_names_its
     assert!(c.contains("\tpatch 1 · a.txt: 2\tagent replied (answer only, at max)\n  agent(max): Say two.\n"), "{c}");
     assert!(c.contains(&format!("{old}\tpatch 2, as a whole\tagent replied (answer only)\n  you: Why b?\n  agent: It was so.\n")), "{c}");
     // The effort is on the fence of the agent's turn, kept as the thread is
-    // written again; the turn of before has none.
+    // written again, the stack the answer was asked on after it; the turn
+    // of before has none.
     e.ok(&["reply", "s", &id, "Thanks."]);
     let db = Db::load(&e.db).unwrap();
     let text = db.find_note("s", &id).unwrap().text.clone();
-    assert!(text.contains("\n```agent answer effort max\nBecause.\n```\nThanks."), "{text}");
+    let rev = db.head("s").unwrap().0;
+    assert!(text.contains(&format!("\n```agent answer effort max stack {rev}\nBecause.\n```\nThanks.")), "{text}");
     let efforts: Vec<Option<String>> = thread_turns(&text).into_iter().map(|t| t.effort).collect();
     assert_eq!(efforts, [None, Some("max".to_string()), None]);
     let old = db.find_note("s", &old).unwrap().text.clone();
@@ -5455,6 +5459,20 @@ fn mark_tool(e: &Env, run: &str, k: usize, a: stacked::refusals::Allow) {
     .unwrap();
 }
 
+/// Each answer made on stack `s` before the change of the work run `run`
+/// holds marked `m` in its review, saved, as the editor's review marks
+/// them: what `review --accept-all` needs to accept the change.
+fn mark_answers(e: &Env, run: &str, m: stacked::held::AnswerMark) {
+    Db::edit(&e.db, |d| {
+        let mut marks = d.review(run).map(|v| v.marks.clone()).unwrap_or_default();
+        for a in stacked::ask::answers_left(d, "s", run) {
+            stacked::held::set_answer_mark(&mut marks, &a.id, m);
+        }
+        stacked::held::save(d, run, &marks)
+    })
+    .unwrap();
+}
+
 /// The tools the stand-in was let use by the ask that started last, as
 /// `refusing_claude` wrote them in `tools`.
 fn last_given(tools: &Path) -> String {
@@ -5632,11 +5650,13 @@ fn a_tool_allowed_for_this_work_is_given_every_round_of_it_until_its_review_clos
     run(&["review", "s", "--send-back"]);
     landed(&e, 3);
     assert!(last_given(&tools).ends_with(&format!(",{rule}")), "{}", last_given(&tools));
-    // A change accepted meanwhile, chained: the answer asked again on the
-    // stack it makes, by stacked, given it still.
+    // A change accepted meanwhile, chained, the answer marked restart in its
+    // review: the answer asked again on the stack it makes, by stacked,
+    // given it still.
     let spell = comment(&e, &["--patch", "1", "Spell", "it", "out."]);
     run(&["send", "s", &spell, "--wait"]);
     let change = landed_ids(&e).pop().unwrap();
+    mark_answers(&e, &change, stacked::held::AnswerMark::Restart);
     let out = run(&["review", "s", &change, "--accept-all"]);
     assert!(out.contains("; 1 answer-only ask asked again"), "{out}");
     landed(&e, 5);
@@ -5715,12 +5735,13 @@ fn work_dropped_to_be_asked_again_saves_what_its_review_allowed_from_now_on() {
     let answer = landed_ids(&e).pop().unwrap();
     mark_tool(&e, &answer, 0, Allow::Always);
     assert!(!local.exists());
-    // A change accepted meanwhile, chained: the answer dropped, to be asked
-    // again, its review closed, and what it allowed from now on saved, as
-    // its run says.
+    // A change accepted meanwhile, chained, the answer marked restart in its
+    // review: the answer dropped, to be asked again, its review closed, and
+    // what it allowed from now on saved, as its run says.
     let spell = comment(&e, &["--patch", "1", "Spell", "it", "out."]);
     run(&["send", "s", &spell, "--wait"]);
     let change = landed_ids(&e).pop().unwrap();
+    mark_answers(&e, &change, stacked::held::AnswerMark::Restart);
     run(&["review", "s", &change, "--accept-all"]);
     landed(&e, 3);
     assert_eq!(std::fs::read_to_string(&local).unwrap(), "[agent]\nanswer_accepted = [\"Bash(searchfox-cli *)\"]\n");

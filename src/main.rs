@@ -422,7 +422,10 @@ enum Cmd {
     /// not marked yet, or reject it. What is accepted is applied; what is
     /// rejected is dropped for good. Rejecting a change of the stack
     /// rejects its replies too. A pull's reviews are not rejected:
-    /// --accept-all files every comment it pulled.
+    /// --accept-all files every comment it pulled. Accepting a change of
+    /// the stack waits until each answer made on the stack before it is
+    /// marked keep, restart or stop, in the review of that work in the
+    /// editor: --accept-all marks none of them.
     Review {
         name: String,
         run: Option<String>,
