@@ -25,8 +25,10 @@
 //! and, to an ask that only reads, what changes things. Nor is an ask that
 //! only reads ever offered a rule that can write files or run programs,
 //! whatever the call that needed it (`can_write`): `Bash(sed *)` of `sed -n
-//! 1p`, `Bash(git *)` of `git -C x log`; that is noted too, and no item
-//! offered to it widens to such a rule.
+//! 1p`, `Bash(git *)` of `git -C x log`; nor one of a program whose short
+//! options can be bundled, so that no rule refuses the one that writes
+//! (`bundled`): `Bash(sort *)`, `Bash(file *)`, `Bash(git grep *)`. Those are
+//! noted too, and no item offered to it widens to such a rule.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -702,6 +704,40 @@ fn can_write(cmd: &str) -> bool {
         || (base == "git" && !args.first().is_some_and(|s| crate::claude::GIT_READS.contains(&s.as_str())))
 }
 
+/// The programs, and git's command, whose short options can be bundled,
+/// so that no rule refuses the one that writes a file or runs a program:
+/// `sort -uo FILE` for `-u -o FILE`, `file -bC`, `git grep -nOCMD`, whose
+/// pager is any command stuck to `-O`. An ask that only reads is not given
+/// them (`claude::ONLY_READ`, `claude::GIT_READS`), and no rule of theirs
+/// is offered it, however they are called.
+const BUNDLED: [&str; 3] = ["sort", "file", "git grep"];
+
+/// Whether the program of command `cmd`, or git's command of it, is one
+/// of `BUNDLED`. A rule's prefix is such a command too.
+fn bundled(cmd: &str) -> bool {
+    let all = words(cmd);
+    let ws: Vec<&String> = unwrapped(&all).iter().skip_while(|w| assigns(w)).collect();
+    let Some((program, args)) = ws.split_first() else { return false };
+    let base = program.rsplit('/').next().unwrap_or(program);
+    BUNDLED.iter().any(|b| match b.split_once(' ') {
+        Some((p, sub)) => base == p && args.first().is_some_and(|a| a.as_str() == sub),
+        None => base == *b,
+    })
+}
+
+/// Why a rule of command `cmd` is never offered an ask in `way`, one that
+/// only reads, whatever the call, if it is not: its options can be bundled
+/// (`bundled`), or it can write files or run programs (`can_write`).
+fn never_offered(cmd: &str, way: Way) -> Option<String> {
+    if bundled(cmd) {
+        Some(bundled_said(way))
+    } else if can_write(cmd) {
+        Some(can_write_said(way))
+    } else {
+        None
+    }
+}
+
 // -- the items ----------------------------------------------------------- //
 
 /// Why an item is not offered, when the checkout's claude settings `file`
@@ -737,6 +773,12 @@ fn can_write_said(way: Way) -> String {
     format!("it can write files or run programs, and {} only read", kind_said(way))
 }
 
+/// Why an item is not offered, when its program's short options can be
+/// bundled (`bundled`), and asks in `way` only read.
+fn bundled_said(way: Way) -> String {
+    format!("its options can be bundled, so that no rule refuses the one that writes a file or runs a program, and {} only read", kind_said(way))
+}
+
 /// Why an item is not offered, when what it needs was allowed already.
 pub const ALREADY: &str = "it is allowed already: claude refused this call for a reason of its own, which no rule changes";
 
@@ -767,10 +809,11 @@ const CALL_CHARS: usize = 300;
 /// offered, if it is. Noted: what the checkout's claude settings deny
 /// (`denied`, each rule with its file), what stacked refuses (`refused`),
 /// what it was `given` already, and, to an ask that only reads, what
-/// changes things, and a call whose rule can write files or run programs,
-/// however it was called (`can_write`): to such an ask, no wider rule that
-/// can is offered either. An item that some call needs offered is offered.
-/// The
+/// changes things, and a call whose rule is never offered it, however it
+/// was called (`never_offered`): one whose options can be bundled, or that
+/// can write files or run programs. To such an ask, no wider rule of that
+/// kind is offered either. An item that some call needs offered is
+/// offered. The
 /// agent's word on each, as it said it in its answer (`said`, its tool and
 /// why: `said_of`), is the item's comment: each goes to the items whose
 /// rule matches most of the tool it names.
@@ -804,8 +847,10 @@ pub fn items(events: &[&Value], way: Way, given: &[String], refused: &[String], 
             if crate::ask::reads(way) && writes(&tool, cmd) {
                 return (Some(writes_said(way)), false);
             }
-            if crate::ask::reads(way) && cmd.is_some_and(can_write) {
-                return (Some(can_write_said(way)), false);
+            if crate::ask::reads(way)
+                && let Some(why) = cmd.and_then(|c| never_offered(c, way))
+            {
+                return (Some(why), false);
             }
             (None, false)
         };
@@ -815,14 +860,13 @@ pub fn items(events: &[&Value], way: Way, given: &[String], refused: &[String], 
                 let call: String = line.trim().chars().take(CALL_CHARS).collect();
                 let mut first_given = None;
                 for cmd in commands(line) {
-                    // To an ask that only reads, no wider rule that can
-                    // write files or run programs: `git grep`'s is
-                    // `Bash(git grep *)` alone, never widened to `Bash(git
-                    // *)`.
+                    // To an ask that only reads, no wider rule that is never
+                    // offered it: `git blame`'s is `Bash(git blame *)`
+                    // alone, never widened to `Bash(git *)`.
                     let rules: Vec<String> = command_rules(&cmd)
                         .into_iter()
                         .enumerate()
-                        .filter(|(k, r)| *k == 0 || !crate::ask::reads(way) || !prefix_of(r).is_some_and(can_write))
+                        .filter(|(k, r)| *k == 0 || !crate::ask::reads(way) || prefix_of(r).is_none_or(|p| never_offered(p, way).is_none()))
                         .map(|(_, r)| r)
                         .collect();
                     if rules.is_empty() {
@@ -1370,15 +1414,19 @@ mod tests {
     }
 
     #[test]
-    fn a_rule_that_can_write_or_run_programs_is_never_offered_an_ask_that_only_reads() {
-        // Calls that only read, of programs that can write files or run
-        // programs whatever they are given; git at large, and what git does
-        // that changes things, or does not only read; what stacked refuses
-        // an ask that only reads; and a program of no such kind.
+    fn a_rule_that_can_write_run_programs_or_bundle_its_options_is_never_offered_an_ask_that_only_reads() {
+        // Calls that only read: of programs that can write files or run
+        // programs whatever they are given; of those whose short options can
+        // be bundled; git at large, and what git does that changes things,
+        // or does not only read; what stacked refuses an ask that only
+        // reads, and what it refuses every ask but builds and tests; and a
+        // program of no such kind.
         let result = refusing(&[
             ("Bash", command("sed -n 1,5p f")),
             ("Bash", command("awk '{print $1}' f")),
             ("Bash", command("sort f | uniq -c")),
+            ("Bash", command("file -b a.txt")),
+            ("Bash", command("git grep -n Foo")),
             ("Bash", command("git -C x log")),
             ("Bash", command("git commit -m x")),
             ("Bash", command("git reflog")),
@@ -1387,7 +1435,8 @@ mod tests {
             ("Bash", command("python3 -m json.tool f")),
             ("Bash", command("rg -n Foo src | sed -n 1,5p")),
             ("Bash", command("sort -o out f")),
-            ("Bash", command("git grep -O less Foo")),
+            ("Bash", command("git diff --output=x.diff")),
+            ("Bash", command("rg --hostname-bin=./x Foo")),
             ("Bash", command("searchfox-cli --define Foo")),
         ]);
         // An answer, given and refused what stacked gives and refuses one.
@@ -1397,6 +1446,7 @@ mod tests {
         let answer = items(&[&result], Way::Answer, &given, &refused, &[], &[]);
         let noted: Vec<(&str, Option<&str>)> = answer.iter().map(|r| (r.rule(), r.noted.as_deref())).collect();
         let can = "it can write files or run programs, and answer-only asks only read";
+        let bundles = "its options can be bundled, so that no rule refuses the one that writes a file or runs a program, and answer-only asks only read";
         let writes = "it changes things, and answer-only asks only read";
         let refuses = "stacked refuses it to answer-only asks, as it could write a file or run another program, and a deny wins over any allow";
         assert_eq!(
@@ -1404,33 +1454,44 @@ mod tests {
             [
                 ("Bash(sed *)", Some(can)),
                 ("Bash(awk *)", Some(can)),
+                ("Bash(sort *)", Some(bundles)),
                 ("Bash(uniq *)", Some(can)),
+                ("Bash(file *)", Some(bundles)),
+                ("Bash(git grep *)", Some(bundles)),
                 ("Bash(git *)", Some(can)),
                 ("Bash(git commit *)", Some(writes)),
                 ("Bash(git reflog *)", Some(can)),
                 ("Bash(env *)", Some(can)),
                 ("Bash(xargs *)", Some(can)),
                 ("Bash(python3 -m json.tool *)", Some(can)),
-                ("Bash(sort *)", Some(refuses)),
-                ("Bash(git grep *)", Some(refuses)),
+                ("Bash(git diff *)", Some(refuses)),
+                ("Bash(rg *)", Some(STACKED_REFUSES)),
                 ("Bash(searchfox-cli *)", None),
             ]
         );
-        // rg, sort and grep are given: no item of theirs where another
-        // command of the pipe needs one.
+        // rg is given: no item of its where another command of the pipe
+        // needs one. sort's calls, plain and writing, one item.
         assert_eq!(answer[0].calls, ["sed -n 1,5p f", "rg -n Foo src | sed -n 1,5p"]);
-        assert_eq!(answer[2].calls, ["sort f | uniq -c"]);
-        // No rule wider than one that can write files or run programs.
-        assert_eq!((answer[5].rules.clone(), answer[8].rules.clone(), answer[10].rules.clone()), (strings(&["Bash(git reflog *)"]), strings(&["Bash(python3 -m json.tool *)"]), strings(&["Bash(git grep *)"])));
+        assert_eq!(answer[2].calls, ["sort f | uniq -c", "sort -o out f"]);
+        assert_eq!(answer[13].calls, ["rg --hostname-bin=./x Foo"]);
+        // No rule wider than one never offered.
+        assert_eq!(
+            (answer[5].rules.clone(), answer[8].rules.clone(), answer[11].rules.clone()),
+            (strings(&["Bash(git grep *)"]), strings(&["Bash(git reflog *)"]), strings(&["Bash(python3 -m json.tool *)"]))
+        );
         // rg alone, given though refused: noted as allowed already.
         let alone = items(&[&refusing(&[("Bash", command("rg -n Foo src"))])], Way::Answer, &given, &refused, &[], &[]);
         assert_eq!(alone.iter().map(|r| (r.rule(), r.noted.as_deref())).collect::<Vec<_>>(), [("Bash(rg *)", Some(ALREADY))]);
-        // A run of before, given what an answer was then: git grep and rg
-        // offered, as they only read, git grep's rule never widened to the
-        // whole of git.
+        // A run of before, given what an answer was then: git blame and rg
+        // offered, as they only read, git blame's rule never widened to the
+        // whole of git; git grep noted all the same.
         let before = strings(&["Read", "Grep", "Glob", "LS", "Bash(git show *)", "Bash(git log *)", "Bash(git diff *)"]);
-        let then = items(&[&refusing(&[("Bash", command("git grep -n Foo")), ("Bash", command("rg Foo"))])], Way::Answer, &before, &refused, &[], &[]);
-        assert_eq!(then.iter().map(|r| (r.rules.clone(), r.offered())).collect::<Vec<_>>(), [(strings(&["Bash(git grep *)"]), true), (strings(&["Bash(rg *)"]), true)]);
+        let calls = refusing(&[("Bash", command("git blame -L 1,5 f")), ("Bash", command("rg Foo")), ("Bash", command("git grep -n Foo"))]);
+        let then = items(&[&calls], Way::Answer, &before, &refused, &[], &[]);
+        assert_eq!(
+            then.iter().map(|r| (r.rules.clone(), r.noted.as_deref())).collect::<Vec<_>>(),
+            [(strings(&["Bash(git blame *)"]), None), (strings(&["Bash(rg *)"]), None), (strings(&["Bash(git grep *)"]), Some(bundles))]
+        );
         // A change may write and run programs: each offered, as before,
         // with its wider rules.
         let change = items(&[&result], Way::Change, &strings(&["Read"]), &crate::ask::refused_of(Way::Change), &[], &[]);
@@ -1442,6 +1503,8 @@ mod tests {
                 "Bash(awk *)",
                 "Bash(sort *)",
                 "Bash(uniq *)",
+                "Bash(file *)",
+                "Bash(git grep *)",
                 "Bash(git *)",
                 "Bash(git commit *)",
                 "Bash(git reflog *)",
@@ -1449,12 +1512,18 @@ mod tests {
                 "Bash(xargs *)",
                 "Bash(python3 -m json.tool *)",
                 "Bash(rg *)",
-                "Bash(git grep *)",
+                "Bash(git diff *)",
                 "Bash(searchfox-cli *)",
             ]
         );
-        assert_eq!(change[6].rules, ["Bash(git reflog *)", "Bash(git *)"]);
-        assert_eq!(change[9].rules, ["Bash(python3 -m json.tool *)", "Bash(python3 *)"]);
+        assert_eq!(change[5].rules, ["Bash(git grep *)", "Bash(git *)"]);
+        assert_eq!(change[8].rules, ["Bash(git reflog *)", "Bash(git *)"]);
+        assert_eq!(change[11].rules, ["Bash(python3 -m json.tool *)", "Bash(python3 *)"]);
+        // But what stacked now refuses every ask but builds and tests, as it
+        // runs a program: rg's hostname program, sort's shortened one.
+        let calls = refusing(&[("Bash", command("rg --hostname-bin=./x Foo")), ("Bash", command("sort --co=sh f"))]);
+        let holes = items(&[&calls], Way::Change, &strings(&["Read"]), &crate::ask::refused_of(Way::Change), &[], &[]);
+        assert_eq!(holes.iter().map(|r| (r.rule(), r.noted.as_deref())).collect::<Vec<_>>(), [("Bash(rg *)", Some(STACKED_REFUSES)), ("Bash(sort *)", Some(STACKED_REFUSES))]);
     }
 
     #[test]
@@ -1493,15 +1562,16 @@ mod tests {
         let writes = "it changes things, and the asks that select a try push's tasks only read";
         let noted: Vec<Option<&str>> = items.iter().map(|r| r.noted.as_deref()).collect();
         assert_eq!(noted, [Some(writes), Some(writes), None]);
-        // What can write files or run programs, and what stacked refuses it
-        // as an answer, likewise.
-        let result = refusing(&[("Bash", command("sed -n 1p graph.json")), ("Bash", command("sort -o out labels.txt"))]);
+        // What can write files or run programs, what bundles its options,
+        // and what stacked refuses it as an answer, likewise.
+        let result = refusing(&[("Bash", command("sed -n 1p graph.json")), ("Bash", command("git grep -n label")), ("Bash", command("sort -o out labels.txt"))]);
         let items = super::items(&[&result], Way::Try, &[], &crate::ask::refused_of(Way::Try), &[], &[]);
         let noted: Vec<Option<&str>> = items.iter().map(|r| r.noted.as_deref()).collect();
         assert_eq!(
             noted,
             [
                 Some("it can write files or run programs, and the asks that select a try push's tasks only read"),
+                Some("its options can be bundled, so that no rule refuses the one that writes a file or runs a program, and the asks that select a try push's tasks only read"),
                 Some("stacked refuses it to the asks that select a try push's tasks, as it could write a file or run another program, and a deny wins over any allow"),
             ]
         );

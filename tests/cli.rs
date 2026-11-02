@@ -4229,7 +4229,7 @@ fn what_each_kind_of_ask_may_use_is_set_up_with_the_agent() {
     for line in [
         format!("stacked: the agent, in {}, has 12 tools. What each kind of ask may use is saved in {}; Enter keeps what is ticked.", e.src.display(), local.display()),
         two(" read only  change   read only is for answer-only asks; change is for asks that change the stack"),
-        two("  always             commands that only read: grep, rg, cat, sort, diff…, and git grep, blame, ls-files…"),
+        two("  always             commands that only read: grep, rg, cat, ls, diff…, and git blame, ls-files, rev-parse…"),
         two("            always   commands that read: grep, rg, find, cat, sed, sort…"),
         two("            always   the checkout's linter, when it has one: this checkout has none"),
         two("    [x]      [ ]     Bash(lint *)   allowed in .claude/settings.local.json"),

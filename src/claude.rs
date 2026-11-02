@@ -110,22 +110,25 @@ pub const READ_COMMANDS: [&str; 20] = [
 ];
 
 /// The commands that only read, whatever they are given, but for the
-/// options of theirs that `read_refused` and `refused_tools` refuse (`sort
-/// -o`, `file -C`, `find -exec`, `rg --pre`): what an ask that only reads,
-/// an answer or a try push's selection, may run. Not sed, uniq and tree,
-/// which `READ_COMMANDS` has: whatever the call, what they are given can
-/// write a file (sed's `w`, `uniq IN OUT`, `tree -o`); nor awk, whose
-/// `system` runs a program.
-pub const ONLY_READ: [&str; 20] = [
-    "grep", "rg", "cat", "head", "tail", "wc", "ls", "find", "cut", "tr", "sort", "file", "stat", "which", "dirname",
-    "basename", "realpath", "diff", "cmp", "comm",
+/// options of theirs that `refused_tools` refuses (`find -exec`, `rg
+/// --pre`, `rg --hostname-bin`): what an ask that only reads, an answer or
+/// a try push's selection, may run. Not sort and file, which
+/// `READ_COMMANDS` has: their short options can be bundled (`sort -uo FILE`
+/// for `-u -o FILE`, `file -bC`), so that no rule refuses the one that
+/// writes a file. Nor sed, uniq and tree: whatever the call, what they are
+/// given can write a file (sed's `w`, `uniq IN OUT`, `tree -o`); nor awk,
+/// whose `system` runs a program.
+pub const ONLY_READ: [&str; 18] = [
+    "grep", "rg", "cat", "head", "tail", "wc", "ls", "find", "cut", "tr", "stat", "which", "dirname", "basename",
+    "realpath", "diff", "cmp", "comm",
 ];
 
 /// What git does that only reads, which an ask that only reads may run,
-/// but for the options that `read_refused` refuses (`--output`, `git grep
-/// -O`).
-pub const GIT_READS: [&str; 11] =
-    ["show", "log", "diff", "grep", "ls-files", "rev-parse", "blame", "cat-file", "ls-tree", "merge-base", "describe"];
+/// but for the option that `read_refused` refuses, `--output`. Not grep,
+/// whose `-O` runs the pager stuck to it, any command, bundled after
+/// another option too (`git grep -nOCMD`), so that no rule refuses it.
+pub const GIT_READS: [&str; 10] =
+    ["show", "log", "diff", "ls-files", "rev-parse", "blame", "cat-file", "ls-tree", "merge-base", "describe"];
 
 /// The git history operations, and read-only tools, an editing ask may run
 /// without asking: no network, so an ask can never touch a remote. No
@@ -141,15 +144,20 @@ pub fn allowed_tools() -> String {
     tools.join(",")
 }
 
-/// What an editing ask may not run, though `allowed_tools` would let it:
-/// what makes those commands run another program, which could reach the
-/// network. Claude refuses what one of these matches, whatever allows it.
+/// What an ask may not run, but a build and test, though what it is given
+/// would let it (`allowed_tools`, `ONLY_READ`): what makes those commands
+/// run another program, which could reach the network, or delete files;
+/// `sort --compress-program` as short as `--co` too, which GNU sort takes,
+/// and `rg --hostname-bin`, the program rg runs for the hostname. Claude
+/// refuses what one of these matches, whatever allows it.
 pub fn refused_tools() -> String {
     [
         "git rebase *--exec*",
         "git rebase * -x*",
         "rg *--pre*",
+        "rg *--hostname-bin*",
         "sort *--compress-program*",
+        "sort *--co*",
         "find *-exec*",
         "find *-ok*",
         "find *-delete*",
@@ -162,28 +170,18 @@ pub fn refused_tools() -> String {
     .join(",")
 }
 
-/// What an ask that only reads may not run, on top of `refused_tools`,
-/// though what it is given would let it (`ONLY_READ`, `GIT_READS`): what
-/// makes those commands write a file, `sort -o` (`--output` too), `git
-/// diff`, `log` or `show` with `--output`, `file -C` (`--compile`, as short
-/// as `--co`), which writes the magic it compiles; or run a program, `sort
-/// --compress-program` as short as `--co`, which `refused_tools` refuses
-/// only whole, `git grep -O` (`--open-files-in-pager`, as short as `--op`),
-/// its pager, and `rg --hostname-bin`, the program it runs for the
-/// hostname. A short option bundled after another (`sort -uo`) is not
-/// caught: claude's rules are what it is let do, not a wall around what it
-/// runs.
+/// What an ask that only reads may not run, on top of `refused_tools`:
+/// what makes git's commands that only read (`GIT_READS`) write a file,
+/// `git diff`, `log` or `show` with `--output`; and what makes the commands
+/// it is not given, as their short options can be bundled, write a file or
+/// run a program, should its lists give them all the same: `sort -o`
+/// (`--output` too), `file -C` (`--compile`, as short as `--co`), which
+/// writes the magic it compiles, `git grep -O` (`--open-files-in-pager`,
+/// as short as `--op`), its pager. Those bundled after another option
+/// (`sort -uo`) are not caught: claude's rules are what it is let do, not a
+/// wall around what it runs.
 pub fn read_refused() -> String {
-    [
-        "sort *-o*",
-        "sort *--co*",
-        "git *--output*",
-        "git grep *-O*",
-        "git grep *--op*",
-        "file *-C*",
-        "file *--co*",
-        "rg *--hostname-bin*",
-    ]
+    ["git *--output*", "sort *-o*", "file *-C*", "file *--co*", "git grep *-O*", "git grep *--op*"]
         .iter()
         .map(|r| format!("Bash({r})"))
         .collect::<Vec<_>>()
@@ -550,7 +548,14 @@ mod tests {
         assert!(tools.contains(&"Bash(git config --get *)"));
         // And what would, of what it lets run, refused.
         let refused = refused_tools();
-        for r in ["Bash(git rebase *--exec*)", "Bash(rg *--pre*)", "Bash(find *-exec*)", "Bash(sort *--compress-program*)"] {
+        for r in [
+            "Bash(git rebase *--exec*)",
+            "Bash(rg *--pre*)",
+            "Bash(find *-exec*)",
+            "Bash(sort *--compress-program*)",
+            "Bash(sort *--co*)",
+            "Bash(rg *--hostname-bin*)",
+        ] {
             assert!(refused.split(',').any(|x| x == r), "{r}");
         }
     }

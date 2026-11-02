@@ -1649,7 +1649,7 @@ fn change_given(cmd: &str, linter: &Linter) -> String {
 /// the checkout it is run in, naming its command (`setup::linter_said`).
 pub const GIVEN_SAID: [(&str, bool, bool); 7] = [
     ("Read, Grep, Glob, LS, and git show, log and diff", true, true),
-    ("commands that only read: grep, rg, cat, sort, diff…, and git grep, blame, ls-files…", true, false),
+    ("commands that only read: grep, rg, cat, ls, diff…, and git blame, ls-files, rev-parse…", true, false),
     ("commands that read: grep, rg, find, cat, sed, sort…", false, true),
     ("git's other history commands (status, add, commit, reset, rebase -i…), and git config to read", false, true),
     ("stacked's commands that read the stack: export, show, log, tree, versions, interdiff, comments", true, false),
@@ -4235,43 +4235,40 @@ mod tests {
         // An answer: the commands that only read, and git's that do.
         let answer = tools_of(Way::Answer);
         let reads = [
-            "grep", "rg", "cat", "head", "tail", "wc", "ls", "find", "cut", "tr", "sort", "file", "stat", "which", "dirname", "basename", "realpath", "diff",
-            "cmp", "comm", "git show", "git log", "git diff", "git grep", "git ls-files", "git rev-parse", "git blame", "git cat-file", "git ls-tree",
-            "git merge-base", "git describe",
+            "grep", "rg", "cat", "head", "tail", "wc", "ls", "find", "cut", "tr", "stat", "which", "dirname", "basename", "realpath", "diff", "cmp", "comm",
+            "git show", "git log", "git diff", "git ls-files", "git rev-parse", "git blame", "git cat-file", "git ls-tree", "git merge-base", "git describe",
         ];
         for read in reads {
             assert!(answer.contains(&format!("Bash({read} *)")), "{read} in {answer:?}");
         }
-        // Not what can write files or run programs, whatever the call, nor
-        // git at large, nor what it does that changes things.
-        for no in ["sed", "awk", "uniq", "tree", "xargs", "tee", "perl", "python3", "sh", "bash", "git commit", "git config", "git push"] {
+        assert!(answer.iter().any(|t| t == "Grep"), "{answer:?}");
+        // Not what bundles its short options, so that no rule refuses the
+        // one that writes a file or runs a program; nor what can write files
+        // or run programs, whatever the call; nor git at large, nor what it
+        // does that changes things.
+        for no in [
+            "sort", "file", "git grep", "sed", "awk", "uniq", "tree", "xargs", "tee", "perl", "python3", "sh", "bash", "git commit", "git config", "git push",
+        ] {
             assert!(!answer.iter().any(|t| t.starts_with(&format!("Bash({no} "))), "{no} in {answer:?}");
         }
         assert!(!answer.iter().any(|t| t == "Bash(git *)" || t == "Bash"), "{answer:?}");
         // A try push's selection, as an answer.
         #[cfg(feature = "try-push")]
         assert_eq!(tools_of(Way::Try), answer);
-        // Refused what would make those write a file or run a program, on
-        // top of what every ask but a build and test is refused.
+        // Refused what would make those write a file or run a program, and
+        // the bundling ones, should a list give them by hand, on top of what
+        // every ask but a build and test is refused; none twice.
         let stacked = crate::claude::refused_tools();
         let refused = refused_of(Way::Answer);
         assert_eq!(refused.join(","), format!("{stacked},{}", crate::claude::read_refused()));
-        for r in [
-            "Bash(sort *-o*)",
-            "Bash(sort *--co*)",
-            "Bash(git *--output*)",
-            "Bash(git grep *-O*)",
-            "Bash(git grep *--op*)",
-            "Bash(file *-C*)",
-            "Bash(file *--co*)",
-            "Bash(rg *--hostname-bin*)",
-        ] {
-            assert!(refused.iter().any(|x| x == r), "{r} in {refused:?}");
-        }
+        let reads_only = ["Bash(git *--output*)", "Bash(sort *-o*)", "Bash(file *-C*)", "Bash(file *--co*)", "Bash(git grep *-O*)", "Bash(git grep *--op*)"];
+        assert_eq!(crate::claude::read_refused(), reads_only.join(","));
+        assert!(reads_only.iter().all(|r| !stacked.split(',').any(|s| s == *r)), "{stacked}");
         #[cfg(feature = "try-push")]
         assert_eq!(refused_of(Way::Try), refused);
         // What they refuse: each call that writes a file or runs a program,
-        // its long option shortened too; no call that only reads.
+        // its long option shortened too; no call that only reads, of those
+        // given or of those a list may give.
         let refuses = |call: &str| refused.iter().any(|r| crate::refusals::lets(r, "Bash", &Value::Null, Some(call)));
         for writes in [
             "sort -o out.txt a.txt",
@@ -4295,12 +4292,16 @@ mod tests {
         for reads in ["sort -u a.txt", "sort -k2 -n --check a.txt", "git diff HEAD~1", "git log --oneline -5", "git grep -n -o Foo", "file -b a.txt", "rg -n Foo src", "find . -name x"] {
             assert!(!refuses(reads), "{reads}");
         }
-        // A change: given what it was, and refused what it was, which lets
-        // it write with sort, sed and the rest. A build and test: nothing.
+        // A change: given what it was, which lets it write with sort, sed
+        // and the rest, and refused what every ask but a build and test is,
+        // rg's hostname program and sort's shortened one now among them. A
+        // build and test: nothing.
         let change = tools_of(Way::Change);
         assert_eq!(change.join(","), format!("{},Bash({cmd} fits *),Bash({cmd} export *)", allowed_tools()));
         assert!(change.iter().any(|t| t == "Bash(sed *)") && !change.iter().any(|t| t == "Bash(diff *)" || t == "Bash(git grep *)"), "{change:?}");
         assert_eq!(refused_of(Way::Change).join(","), stacked);
+        let changes = |call: &str| refused_of(Way::Change).iter().any(|r| crate::refusals::lets(r, "Bash", &Value::Null, Some(call)));
+        assert!(changes("rg --hostname-bin=./x Foo") && changes("sort --co=sh a.txt") && !changes("sort -o out.txt a.txt"));
         assert!(refused_of(Way::Test).is_empty());
     }
 

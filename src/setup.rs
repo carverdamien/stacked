@@ -2182,7 +2182,7 @@ mod tests {
             &format!("   mcp__notes__write: {EVERY_SAID}"),
             " read only  change   read only is for answer-only asks; change is for asks that change the stack",
             "  always    always   Read, Grep, Glob, LS, and git show, log and diff",
-            "  always             commands that only read: grep, rg, cat, sort, diff…, and git grep, blame, ls-files…",
+            "  always             commands that only read: grep, rg, cat, ls, diff…, and git blame, ls-files, rev-parse…",
             "            always   commands that read: grep, rg, find, cat, sed, sort…",
             "            always   git's other history commands (status, add, commit, reset, rebase -i…), and git config to read",
             "  always             stacked's commands that read the stack: export, show, log, tree, versions, interdiff, comments",
@@ -2382,7 +2382,7 @@ mod tests {
         assert_eq!(curl, "    [x]      [ ]      [x]     Bash(curl *)   stacked's default for answers", "the try push column at 20, 8 wide");
         for line in [
             three("always", "always", "always", "Read, Grep, Glob, LS, and git show, log and diff"),
-            three("always", "", "always", "commands that only read: grep, rg, cat, sort, diff…, and git grep, blame, ls-files…"),
+            three("always", "", "always", "commands that only read: grep, rg, cat, ls, diff…, and git blame, ls-files, rev-parse…"),
             three("", "always", "", "commands that read: grep, rg, find, cat, sed, sort…"),
             three("always", "", "always", "stacked's commands that read the stack: export, show, log, tree, versions, interdiff, comments"),
             curl.clone(),
