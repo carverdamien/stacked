@@ -1958,7 +1958,12 @@ what it is asked about, and leaves it there when it lands, for the next
 ask to take: only what differs is written. One busy, the next ask takes
 `agent-2`, `agent-3`. One an agent left work unfinished in is left as it
 is, for you to look at; the ask says so when it fails (`it is left in
-…/.stacked/NAME/agent`), and the next takes another. A setting of
+…/.stacked/NAME/agent`), and the next takes another. Looking at a
+checkout, to tell whether it holds anything uncommitted, stacked's git
+takes no lock it can do without (`GIT_OPTIONAL_LOCKS=0`): an ask that
+starts in a worktree as another ask's start looks at it, or a git command
+of yours in your checkout as the editor looks at HEAD, never finds the
+index locked by that look. A setting of
 `[agent]` (the stack's checkout's own, if it sets it) says when each is
 made: `worktree` for a change, and `answer_only_worktree` for an answer,
 each `ondemand` or `precreate`:
@@ -4668,7 +4673,10 @@ your answer and nothing filed on the patch's title; the review closed
 while the follow-up runs, its menu saying so, closing asking first, the
 follow-up stopped, its ask landed as failed and said so on its comment,
 nothing of it waiting for review; a comment asked
-about and its stream and answer shown in place, its agent stopped from its
+about and its stream and answer shown in place, the stream folded in the
+step that reads its landing, as the banner says what landed (its line
+read first cut short, as it is being written, then whole), its agent
+stopped from its
 menu (the ask landed at once as failed, said so, its stream folded, the
 comment's menu whole again, and the agent's wrapper, a child of the
 tests' process, waited for), an ask done leaving no zombie once the
@@ -5458,6 +5466,9 @@ submit), how a patch's files are read before and after it, and where a
 diff of the same effect as its draft does otherwise (git applying
 it at another copy of its lines, it not applying), the drafts not
 applying an error;
+those in `git.rs`, that stacked's looks at a checkout, its worktree or
+yours, take no lock of its index (a file touched as it was, the index
+left as it was, where git's own status writes it again);
 those in `ops.rs`, that two code edits saved at once, on two threads, each
 make their diff in a folder of their own and leave nothing in the
 temporary directory, which diffs have the same effect (a hunk moved down

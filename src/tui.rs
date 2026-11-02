@@ -2287,7 +2287,7 @@ pub struct App {
     statuses: revisions::Statuses,
     /// The work done away from the screen.
     bg: Background,
-    /// The comments the agent works on, as last read, and how many records
+    /// The comments the agent works on, as last read, and how many changes
     /// the database had then.
     busy_memo: std::cell::RefCell<Option<(usize, std::rc::Rc<Busy>)>>,
     /// The files each patch modifies, by its id, as the patches pane lists
@@ -3500,9 +3500,14 @@ impl App {
     }
 
     /// The comments the agent is working on: read again only when the
-    /// database has.
+    /// database has read more than an agent's stream (`Db::changes`), which
+    /// they do not depend on. Not when it has more records: a line read cut
+    /// short, as it was being written, holds its record's place, so the
+    /// same line read whole adds none, though it may be an ask landing; the
+    /// stream open in place would then fold only once something more is
+    /// written.
     fn busy(&self) -> std::rc::Rc<Busy> {
-        let key = self.db.last_rev();
+        let key = self.db.changes();
         if let Some((k, b)) = &*self.busy_memo.borrow()
             && *k == key
         {

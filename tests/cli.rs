@@ -3852,10 +3852,18 @@ fn each_kind_of_ask_may_use_what_the_settings_add_for_it() {
     )
     .unwrap();
     // Its arguments a line each: the one after --allowedTools, the tools.
+    // stacked's own commands among them name the test's folder and stacked
+    // itself, whose paths may hold any word (a folder `.tmpjqtZEB`): those
+    // are left out, as no tool's.
     let args = e.root.join("args");
     let claude = fake_claude(&e, "claude-tools.sh", &format!("printf '%s\\n' \"$@\" > {}", args.display()), r#"{"replies": {"c1": "Read it."}}"#);
     let said = || std::fs::read_to_string(&args).unwrap();
-    let tools = || said().lines().skip_while(|l| *l != "--allowedTools").nth(1).unwrap().to_string();
+    let exe = Path::new(env!("CARGO_BIN_EXE_stacked"));
+    let paths = [e.root.display().to_string(), exe.canonicalize().unwrap().display().to_string(), exe.display().to_string()];
+    let tools = || {
+        let t = said().lines().skip_while(|l| *l != "--allowedTools").nth(1).unwrap().to_string();
+        paths.iter().fold(t, |t, p| t.replace(p.as_str(), "…"))
+    };
     let id = comment(&e, &["What", "does", "bug", "1", "say?"]);
     let (fine, _, err) = send(&e, &claude, &[&id, "--answer-only"], &[("STACKED_CONFIG", &settings)]);
     assert!(fine, "{err}");

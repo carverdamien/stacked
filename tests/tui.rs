@@ -4835,11 +4835,16 @@ fn hold(db: &Path) -> Held {
 /// The efforts the stand-in (`fake_claude`) was started at for the asks of
 /// `app`'s database, once `n` were, in the order they started: for each,
 /// what followed each `--effort` it was given, or `none`. The editor does
-/// its work away from the screen meanwhile, as its asks start there.
+/// its work away from the screen meanwhile, as its asks start there. Never
+/// `n`, the test fails saying where each ask stands, as the editor read
+/// it: why one did not start.
 fn efforts(app: &mut App, n: usize) -> Vec<String> {
     let at = app.path.with_file_name("efforts");
     let read = || std::fs::read_to_string(&at).unwrap_or_default().lines().map(String::from).collect::<Vec<_>>();
-    until(app, |_| Some(read()).filter(|all| all.len() >= n), |_| format!("not {n} asks started: {:?}", read()))
+    until(app, |_| Some(read()).filter(|all| all.len() >= n), |app| {
+        let runs: Vec<String> = app.db.runs().iter().map(|r| format!("{} {:?}: {}", r.id, r.state, r.summary)).collect();
+        format!("not {n} asks started: {:?}\n{}", read(), runs.join("\n"))
+    })
 }
 
 /// Has the stand-in answer the asks on `db` (`fake_claude`) with
@@ -9548,6 +9553,55 @@ fn a_stream_read_in_place_folds_once_the_agent_is_done() {
     assert!(!screen.contains("● session started · fake"), "{screen}");
     keys(&mut app, &[KeyCode::Char(' ')]);
     assert!(matches!(app.mode, Mode::Menu(_)), "{:?}", app.mode);
+}
+
+#[test]
+fn a_stream_read_in_place_folds_as_its_landing_is_read_though_first_read_cut_short() {
+    use std::io::Write;
+    let (_tmp, db, _src) = setup();
+    let (mut app, held) = asked_and_streamed(&db);
+    // Its start over, its pid written: the agent, held, writes nothing more.
+    app.settle();
+    // Its landing, its reply waiting for review, as the line the agent's
+    // wrapper appends: read first cut short, as it is being written, then
+    // whole. Cut short, it is not read: the agent still works on it.
+    let r = Db::load(&db).unwrap().runs().last().map(|r| (*r).clone()).unwrap();
+    assert!(r.pid.is_some(), "{r:?}");
+    let n = notes_of(&db, "s", 0).remove(0);
+    let landed = stacked::db::Record::Run(stacked::db::Run {
+        state: stacked::db::RunState::Done,
+        summary: "its work waits for your review: 1 reply".into(),
+        pid: None,
+        held: Some(stacked::held::Held {
+            at: stacked::db::now(),
+            replies: vec![stacked::held::Reply {
+                change: n.change.clone(),
+                id: n.id.clone(),
+                text: "Seen.".into(),
+                tag: "answer".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }),
+        ..r
+    });
+    let line = format!("{}\n", serde_json::to_string(&landed).unwrap());
+    let (cut, rest) = line.as_bytes().split_at(line.len() / 2);
+    let add = |bytes: &[u8]| std::fs::File::options().append(true).open(&db).unwrap().write_all(bytes).unwrap();
+    add(cut);
+    app.refresh();
+    let screen = draw(&mut app);
+    assert!(matches!(app.mode, Mode::Stream { .. }), "{:?}", app.mode);
+    assert!(screen.contains("the agent works on 1 ask") && !screen.contains("landed ask"), "{screen}");
+    // Read whole: the step that reads it folds the stream, as the banner
+    // says what landed, never one before the other.
+    add(rest);
+    app.refresh();
+    let screen = draw(&mut app);
+    assert!(screen.contains("⟳ 1 landed ask waits for your review"), "{screen}");
+    assert_eq!(app.mode, Mode::Normal);
+    assert_eq!(app.status, "the agent is done: what it brought waits for your review");
+    drop(held);
 }
 
 /// What `ps` says of process `pid`'s state (`Z` for a zombie): nothing

@@ -18,6 +18,13 @@ pub fn git_in(dir: &Path, args: &[&str], stdin: Option<&str>) -> Result<String> 
 }
 
 /// As `git_in`, with `env` set for git.
+///
+/// git takes no lock it can do without (`GIT_OPTIONAL_LOCKS=0`): a look at
+/// a checkout, `git status`, would else hold its index's lock while it
+/// looks, to write again what it read of the files, and any git that
+/// writes the index there meanwhile would fail, the index locked: an ask
+/// starting in a worktree of the stack's that another ask's start looks
+/// at, or a git of yours in your checkout as the editor looks at HEAD.
 pub fn git_env(
     dir: &Path,
     args: &[&str],
@@ -27,6 +34,7 @@ pub fn git_env(
     let mut child = Command::new("git")
         .args(args)
         .current_dir(dir)
+        .env("GIT_OPTIONAL_LOCKS", "0")
         .envs(env.iter().map(|(k, v)| (*k, *v)))
         .stdin(if stdin.is_some() { Stdio::piped() } else { Stdio::null() })
         .stdout(Stdio::piped())
@@ -360,5 +368,40 @@ mod tests {
         std::fs::create_dir(gitdir.join("worktrees/wt/rebase-merge")).unwrap();
         assert_eq!((under_way(&wt).unwrap(), under_way(&repo).unwrap()), (Some(Operation::Rebase), None));
         assert!(unfinished_tracked(&wt).unwrap() && !unfinished_tracked(&repo).unwrap());
+    }
+
+    #[test]
+    fn a_look_at_a_checkout_takes_no_lock_of_its_index() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().canonicalize().unwrap().join("repo");
+        std::fs::create_dir(&repo).unwrap();
+        run(&repo, &["init", "-q", "-b", "main"]);
+        run(&repo, &["config", "commit.gpgsign", "false"]);
+        std::fs::write(repo.join("a.txt"), "a\n").unwrap();
+        run(&repo, &["add", "."]);
+        run(&repo, &["commit", "-qm", "base"]);
+        let wt = repo.with_file_name("wt");
+        run(&repo, &["worktree", "add", "-q", "--detach", &wt.to_string_lossy()]);
+        // A file touched, as it was: what git's index keeps of it no longer
+        // matches, which git status, looking, writes again, under the
+        // index's lock, held while it looks. A git run there meanwhile, an
+        // ask's switch as it starts in that worktree, or yours in your
+        // checkout, would fail to take it.
+        let index = |dir: &Path| PathBuf::from(run(dir, &["rev-parse", "--path-format=absolute", "--git-path", "index"]).trim());
+        let touch = |dir: &Path| {
+            let f = std::fs::File::options().write(true).open(dir.join("a.txt")).unwrap();
+            f.set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(3600)).unwrap();
+        };
+        for dir in [&repo, &wt] {
+            touch(dir);
+            let was = std::fs::read(index(dir)).unwrap();
+            // stacked's looks take no lock: the index stays as it was.
+            assert!(!dirty(dir).unwrap() && !unfinished(dir).unwrap() && !unfinished_tracked(dir).unwrap());
+            assert!(std::fs::read(index(dir)).unwrap() == was, "the index of {} written again: its lock was taken", dir.display());
+            // git's own status takes it, and writes the index again.
+            let own = Command::new("git").args(["status", "--porcelain"]).current_dir(dir).env("GIT_OPTIONAL_LOCKS", "1").output().unwrap();
+            assert!(own.status.success(), "{}", String::from_utf8_lossy(&own.stderr));
+            assert!(std::fs::read(index(dir)).unwrap() != was, "the index of {} not written again by git's own status", dir.display());
+        }
     }
 }
