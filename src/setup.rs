@@ -2182,6 +2182,7 @@ mod tests {
             &format!("   mcp__notes__write: {EVERY_SAID}"),
             " read only  change   read only is for answer-only asks; change is for asks that change the stack",
             "  always    always   Read, Grep, Glob, LS, and git show, log and diff",
+            "  always             commands that only read: grep, rg, cat, sort, diff…, and git grep, blame, ls-files…",
             "            always   commands that read: grep, rg, find, cat, sed, sort…",
             "            always   git's other history commands (status, add, commit, reset, rebase -i…), and git config to read",
             "  always             stacked's commands that read the stack: export, show, log, tree, versions, interdiff, comments",
@@ -2381,6 +2382,7 @@ mod tests {
         assert_eq!(curl, "    [x]      [ ]      [x]     Bash(curl *)   stacked's default for answers", "the try push column at 20, 8 wide");
         for line in [
             three("always", "always", "always", "Read, Grep, Glob, LS, and git show, log and diff"),
+            three("always", "", "always", "commands that only read: grep, rg, cat, sort, diff…, and git grep, blame, ls-files…"),
             three("", "always", "", "commands that read: grep, rg, find, cat, sed, sort…"),
             three("always", "", "always", "stacked's commands that read the stack: export, show, log, tree, versions, interdiff, comments"),
             curl.clone(),
@@ -2896,7 +2898,8 @@ mod tests {
             ..fresh()
         };
         let mut s = Setup::new(&tools, &[], &start, "settings.toml", "here");
-        let shown = screen_of(&mut s, 20);
+        // At the top, the server's row under what stacked always gives.
+        let shown = screen_of(&mut s, 21);
         assert!(shown.contains(&format!(" {SAVED_SAID}")), "{shown}");
         let moz = two("    [x]      [ ]     all of the MCP server moz's tools, those to come too (mcp__moz__*)");
         assert!(shown.contains(&format!("\n{moz}\n")), "{shown}");

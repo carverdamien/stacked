@@ -1595,14 +1595,36 @@ fn history_part(db: &Db, i: &Info, s: &Stack, cmd: &str) -> String {
 
 /// What stacked always gives an ask to answer only, `cmd` being stacked on
 /// its database: it reads the code and the stack, and changes nothing.
-/// What else it may run is the settings' (`agent.answer_tools`: curl and
-/// jq unless set, to read the web), each command of a pipe needing its own.
+/// Claude's tools that read (`GIVEN`), git's commands that only read
+/// (`claude::GIT_READS`), the commands that only read (`claude::ONLY_READ`),
+/// the options of theirs that write a file or run a program refused
+/// (`refused_of`), and stacked's own that read the stack. What else it may
+/// run is the settings' (`agent.answer_tools`: curl and jq unless set, to
+/// read the web), each command of a pipe needing its own.
 fn answer_given(cmd: &str) -> String {
-    format!(
-        "Read,Grep,Glob,LS,Bash(git show *),Bash(git log *),Bash(git diff *),Bash({cmd} export *),\
-         Bash({cmd} log *),Bash({cmd} tree *),Bash({cmd} versions *),Bash({cmd} interdiff *),\
-         Bash({cmd} show *),Bash({cmd} comments *)"
-    )
+    let mut tools: Vec<String> = GIVEN.map(String::from).to_vec();
+    tools.extend(crate::claude::GIT_READS.iter().map(|s| format!("Bash(git {s} *)")));
+    tools.extend(crate::claude::ONLY_READ.iter().map(|c| format!("Bash({c} *)")));
+    tools.extend(["export", "log", "tree", "versions", "interdiff", "show", "comments"].map(|s| format!("Bash({cmd} {s} *)")));
+    tools.join(",")
+}
+
+/// What stacked refuses an ask in `way`, whatever its lists let it run, a
+/// rule each, as claude takes them (`--disallowedTools`): to every ask but
+/// a build and test, which runs what the project needs, what would make the
+/// commands it may run run another program or delete files
+/// (`claude::refused_tools`); to an ask that only reads, an answer or a try
+/// push's selection, what would make those it is given write a file or run
+/// a program, too (`claude::read_refused`).
+pub(crate) fn refused_of(way: Way) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    if way != Way::Test {
+        out.extend(crate::claude::refused_tools().split(',').map(String::from));
+    }
+    if reads(way) {
+        out.extend(crate::claude::read_refused().split(',').map(String::from));
+    }
+    out
 }
 
 /// What stacked always gives an ask that changes the stack, `cmd` being
@@ -1625,8 +1647,9 @@ fn change_given(cmd: &str, linter: &Linter) -> String {
 /// asks have it (`answer_given`), and whether asks that change the stack
 /// do (`change_given`). The last, the checkout's linter, the setup says of
 /// the checkout it is run in, naming its command (`setup::linter_said`).
-pub const GIVEN_SAID: [(&str, bool, bool); 6] = [
+pub const GIVEN_SAID: [(&str, bool, bool); 7] = [
     ("Read, Grep, Glob, LS, and git show, log and diff", true, true),
+    ("commands that only read: grep, rg, cat, sort, diff…, and git grep, blame, ls-files…", true, false),
     ("commands that read: grep, rg, find, cat, sed, sort…", false, true),
     ("git's other history commands (status, add, commit, reset, rebase -i…), and git config to read", false, true),
     ("stacked's commands that read the stack: export, show, log, tree, versions, interdiff, comments", true, false),
@@ -2804,14 +2827,12 @@ fn start(db_path: &Path, id: &str) -> Result<()> {
     }
     // What would run another program, or delete files, of what a change may
     // run, and of what an ask that reads may be let run: refused, to every
-    // ask but a build and test, which runs what the project needs. And to
-    // every ask, what the checkout's claude settings of yours deny, as
-    // claude does in the checkout: a worktree of the stack's own has no
-    // file of yours, git tracking none.
-    let mut refused: Vec<String> = Vec::new();
-    if i.way != Way::Test {
-        refused.push(crate::claude::refused_tools());
-    }
+    // ask but a build and test, which runs what the project needs; and to
+    // an ask that only reads, what would make what it is given write a file
+    // or run a program. And to every ask, what the checkout's claude
+    // settings of yours deny, as claude does in the checkout: a worktree of
+    // the stack's own has no file of yours, git tracking none.
+    let mut refused = refused_of(i.way);
     refused.extend(crate::setup::denied(&repo));
     if !refused.is_empty() {
         c.args(["--disallowedTools", &refused.join(",")]);
@@ -2950,14 +2971,11 @@ fn ended_badly(events: &[&Value]) -> Option<String> {
 
 /// What the run of ask `i` was refused, as its stream `events` say, as the
 /// items of its review (`refusals::items`): read against what it was given,
-/// what stacked refuses it, and what the checkout's claude settings deny;
-/// the agent's word on each, from its answer `output`.
+/// what stacked refuses it (`refused_of`), and what the checkout's claude
+/// settings deny; the agent's word on each, from its answer `output`.
 fn refusals_of(events: &[&Value], i: &Info, output: &str) -> Vec<crate::refusals::Refusal> {
     let given: Vec<String> = i.given.split(',').filter(|t| !t.is_empty()).map(String::from).collect();
-    let refused: Vec<String> = match i.way {
-        Way::Test => vec![],
-        _ => crate::claude::refused_tools().split(',').map(String::from).collect(),
-    };
+    let refused = refused_of(i.way);
     let denied = if i.repo.is_empty() { vec![] } else { crate::refusals::denied_in(Path::new(&i.repo)) };
     crate::refusals::items(events, i.way, &given, &refused, &denied, &crate::refusals::said_of(output))
 }
@@ -4207,6 +4225,83 @@ mod tests {
         // what stacked gives.
         let schema = tools_for(Way::Answer, cmd, &crate::config::Agent::default(), &Linter::None);
         assert_eq!(schema, format!("{given},StructuredOutput,Bash(curl *),Bash(jq *)"));
+    }
+
+    #[test]
+    fn an_ask_that_only_reads_may_run_the_commands_that_only_read_their_options_that_write_refused() {
+        let cmd = "stacked -f db";
+        let none = crate::config::Agent { schema: false, ..Default::default() };
+        let tools_of = |way: Way| -> Vec<String> { tools_for(way, cmd, &none, &Linter::None).split(',').map(String::from).collect() };
+        // An answer: the commands that only read, and git's that do.
+        let answer = tools_of(Way::Answer);
+        let reads = [
+            "grep", "rg", "cat", "head", "tail", "wc", "ls", "find", "cut", "tr", "sort", "file", "stat", "which", "dirname", "basename", "realpath", "diff",
+            "cmp", "comm", "git show", "git log", "git diff", "git grep", "git ls-files", "git rev-parse", "git blame", "git cat-file", "git ls-tree",
+            "git merge-base", "git describe",
+        ];
+        for read in reads {
+            assert!(answer.contains(&format!("Bash({read} *)")), "{read} in {answer:?}");
+        }
+        // Not what can write files or run programs, whatever the call, nor
+        // git at large, nor what it does that changes things.
+        for no in ["sed", "awk", "uniq", "tree", "xargs", "tee", "perl", "python3", "sh", "bash", "git commit", "git config", "git push"] {
+            assert!(!answer.iter().any(|t| t.starts_with(&format!("Bash({no} "))), "{no} in {answer:?}");
+        }
+        assert!(!answer.iter().any(|t| t == "Bash(git *)" || t == "Bash"), "{answer:?}");
+        // A try push's selection, as an answer.
+        #[cfg(feature = "try-push")]
+        assert_eq!(tools_of(Way::Try), answer);
+        // Refused what would make those write a file or run a program, on
+        // top of what every ask but a build and test is refused.
+        let stacked = crate::claude::refused_tools();
+        let refused = refused_of(Way::Answer);
+        assert_eq!(refused.join(","), format!("{stacked},{}", crate::claude::read_refused()));
+        for r in [
+            "Bash(sort *-o*)",
+            "Bash(sort *--co*)",
+            "Bash(git *--output*)",
+            "Bash(git grep *-O*)",
+            "Bash(git grep *--op*)",
+            "Bash(file *-C*)",
+            "Bash(file *--co*)",
+            "Bash(rg *--hostname-bin*)",
+        ] {
+            assert!(refused.iter().any(|x| x == r), "{r} in {refused:?}");
+        }
+        #[cfg(feature = "try-push")]
+        assert_eq!(refused_of(Way::Try), refused);
+        // What they refuse: each call that writes a file or runs a program,
+        // its long option shortened too; no call that only reads.
+        let refuses = |call: &str| refused.iter().any(|r| crate::refusals::lets(r, "Bash", &Value::Null, Some(call)));
+        for writes in [
+            "sort -o out.txt a.txt",
+            "sort --output=out.txt a.txt",
+            "sort --co=sh a.txt",
+            "git diff --output=x.diff",
+            "git log -p --output x.diff",
+            "git show HEAD --output=x.diff",
+            "git grep -O less Foo",
+            "git grep -Oless Foo",
+            "git grep --open-files-in-pager=vim Foo",
+            "git grep --open=vim Foo",
+            "file -C -m magic",
+            "file --compile -m magic",
+            "find . -exec rm {} ;",
+            "rg --pre cat Foo",
+            "rg --hostname-bin=./x --hyperlink-format=default Foo",
+        ] {
+            assert!(refuses(writes), "{writes}");
+        }
+        for reads in ["sort -u a.txt", "sort -k2 -n --check a.txt", "git diff HEAD~1", "git log --oneline -5", "git grep -n -o Foo", "file -b a.txt", "rg -n Foo src", "find . -name x"] {
+            assert!(!refuses(reads), "{reads}");
+        }
+        // A change: given what it was, and refused what it was, which lets
+        // it write with sort, sed and the rest. A build and test: nothing.
+        let change = tools_of(Way::Change);
+        assert_eq!(change.join(","), format!("{},Bash({cmd} fits *),Bash({cmd} export *)", allowed_tools()));
+        assert!(change.iter().any(|t| t == "Bash(sed *)") && !change.iter().any(|t| t == "Bash(diff *)" || t == "Bash(git grep *)"), "{change:?}");
+        assert_eq!(refused_of(Way::Change).join(","), stacked);
+        assert!(refused_of(Way::Test).is_empty());
     }
 
     #[test]

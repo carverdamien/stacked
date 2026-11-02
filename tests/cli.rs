@@ -3971,13 +3971,16 @@ fn what_your_claude_settings_deny_in_the_checkout_is_refused_to_every_ask() {
     let claude = fake_claude(&e, "claude-args.sh", &format!("printf '%s\\n' \"$@\" > {}", args.display()), r#"{"replies": {"c1": "Seen."}}"#);
     let refused = || std::fs::read_to_string(&args).unwrap().lines().skip_while(|l| *l != "--disallowedTools").nth(1).map(String::from);
     // A change, and an answer: what stacked refuses every ask but builds and
-    // tests, then what you deny.
+    // tests, then what you deny; to an answer, between them, what would make
+    // the commands it is given write a file or run a program.
+    let reads = stacked::claude::read_refused();
     for way in [None, Some("--answer-only")] {
         let id = comment(&e, &["Look", "at", "it."]);
         let (fine, _, err) = send(&e, &claude, &[&[id.as_str()][..], way.as_slice()].concat(), &[]);
         assert!(fine, "{way:?}: {err}");
         let r = refused().unwrap();
         assert!(r.starts_with("Bash(git rebase *--exec*),") && r.ends_with(",Bash(rm:*),WebFetch") && !r.contains("tracked"), "{way:?}: {r}");
+        assert_eq!(r.contains(&format!(",{reads},Bash(rm:*),")), way.is_some(), "{way:?}: {r}");
     }
     // A build and test, which runs what the project needs: what you deny.
     let id = comment(&e, &["Look", "at", "it."]);
@@ -3990,7 +3993,7 @@ fn what_your_claude_settings_deny_in_the_checkout_is_refused_to_every_ask() {
     let id = comment(&e, &["And", "now?"]);
     let (fine, _, err) = send(&e, &claude, &[&id, "--answer-only"], &[]);
     assert!(fine, "{err}");
-    assert_eq!(refused(), Some(stacked::claude::refused_tools()));
+    assert_eq!(refused(), Some(format!("{},{reads}", stacked::claude::refused_tools())));
     let id = comment(&e, &["And", "built?"]);
     let (fine, _, err) = send(&e, &claude, &[&id, "--build-and-test"], &[]);
     assert!(fine, "{err}");
@@ -4226,6 +4229,7 @@ fn what_each_kind_of_ask_may_use_is_set_up_with_the_agent() {
     for line in [
         format!("stacked: the agent, in {}, has 12 tools. What each kind of ask may use is saved in {}; Enter keeps what is ticked.", e.src.display(), local.display()),
         two(" read only  change   read only is for answer-only asks; change is for asks that change the stack"),
+        two("  always             commands that only read: grep, rg, cat, sort, diff…, and git grep, blame, ls-files…"),
         two("            always   commands that read: grep, rg, find, cat, sed, sort…"),
         two("            always   the checkout's linter, when it has one: this checkout has none"),
         two("    [x]      [ ]     Bash(lint *)   allowed in .claude/settings.local.json"),

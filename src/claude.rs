@@ -109,6 +109,24 @@ pub const READ_COMMANDS: [&str; 20] = [
     "file", "stat", "dirname", "basename", "realpath",
 ];
 
+/// The commands that only read, whatever they are given, but for the
+/// options of theirs that `read_refused` and `refused_tools` refuse (`sort
+/// -o`, `file -C`, `find -exec`, `rg --pre`): what an ask that only reads,
+/// an answer or a try push's selection, may run. Not sed, uniq and tree,
+/// which `READ_COMMANDS` has: whatever the call, what they are given can
+/// write a file (sed's `w`, `uniq IN OUT`, `tree -o`); nor awk, whose
+/// `system` runs a program.
+pub const ONLY_READ: [&str; 20] = [
+    "grep", "rg", "cat", "head", "tail", "wc", "ls", "find", "cut", "tr", "sort", "file", "stat", "which", "dirname",
+    "basename", "realpath", "diff", "cmp", "comm",
+];
+
+/// What git does that only reads, which an ask that only reads may run,
+/// but for the options that `read_refused` refuses (`--output`, `git grep
+/// -O`).
+pub const GIT_READS: [&str; 11] =
+    ["show", "log", "diff", "grep", "ls-files", "rev-parse", "blame", "cat-file", "ls-tree", "merge-base", "describe"];
+
 /// The git history operations, and read-only tools, an editing ask may run
 /// without asking: no network, so an ask can never touch a remote. No
 /// stash either: a worktree shares it with the user's.
@@ -142,6 +160,34 @@ pub fn refused_tools() -> String {
     .map(|r| format!("Bash({r})"))
     .collect::<Vec<_>>()
     .join(",")
+}
+
+/// What an ask that only reads may not run, on top of `refused_tools`,
+/// though what it is given would let it (`ONLY_READ`, `GIT_READS`): what
+/// makes those commands write a file, `sort -o` (`--output` too), `git
+/// diff`, `log` or `show` with `--output`, `file -C` (`--compile`, as short
+/// as `--co`), which writes the magic it compiles; or run a program, `sort
+/// --compress-program` as short as `--co`, which `refused_tools` refuses
+/// only whole, `git grep -O` (`--open-files-in-pager`, as short as `--op`),
+/// its pager, and `rg --hostname-bin`, the program it runs for the
+/// hostname. A short option bundled after another (`sort -uo`) is not
+/// caught: claude's rules are what it is let do, not a wall around what it
+/// runs.
+pub fn read_refused() -> String {
+    [
+        "sort *-o*",
+        "sort *--co*",
+        "git *--output*",
+        "git grep *-O*",
+        "git grep *--op*",
+        "file *-C*",
+        "file *--co*",
+        "rg *--hostname-bin*",
+    ]
+        .iter()
+        .map(|r| format!("Bash({r})"))
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 /// Text with a leading ```lang and a trailing ``` taken off, as

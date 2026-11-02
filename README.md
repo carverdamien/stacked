@@ -1638,7 +1638,22 @@ and Ask Now and Ask Later are grayed while none can be.
 - `answer only`: read-only, enforced by its tools: it reads the code and
   the stack, and, unless its list says otherwise (`agent.answer_tools`,
   below), it may read the web with `curl` (a bug on Bugzilla, a revision on
-  Phabricator, a page of documentation), through `jq` if need be. It may
+  Phabricator, a page of documentation), through `jq` if need be. To read,
+  stacked gives it `Read`, `Grep`, `Glob` and `LS`; the commands that only
+  read: `grep`, `rg`, `cat`, `head`, `tail`, `wc`, `ls`, `find`, `cut`,
+  `tr`, `sort`, `file`, `stat`, `which`, `dirname`, `basename`, `realpath`,
+  `diff`, `cmp` and `comm`; git's commands that only read: `git show`,
+  `log`, `diff`, `grep`, `ls-files`, `rev-parse`, `blame`, `cat-file`,
+  `ls-tree`, `merge-base` and `describe`; and stacked's commands that read
+  the stack. The options of these that write a file or run a program are
+  refused, whatever its lists allow: `sort -o`, `sort --compress-program`
+  however shortened (`--co`), git's `--output`, `git grep -O`
+  (`--open-files-in-pager`, however shortened), `file -C` (`--compile`),
+  `rg --hostname-bin`, and, as to every ask but a build and test, `find
+  -exec` and `rg --pre`. It is not given `sed`, `awk`, `uniq` or `tree`,
+  which can write files or run programs however they are called, and the
+  review of its work never offers them (The tools the agent could not use,
+  below). It may
   also use what your own claude settings allow, and what its list and
   stacked's `agent.tools` add (the stack's checkout's own, if it sets them:
   Settings, below), your MCP servers' tools among them. What it was not let use
@@ -1759,8 +1774,9 @@ the commands that read, and its own `stacked fits` and `stacked export`,
 none of which reaches the network, so that a change cannot touch a remote
 (below), and the checkout's linter, when it has one, to run on the files
 it changes (Linting, below); an answer, and a try push's selection,
-`Read`, `Grep`, `Glob`, `LS`, `git show`, `log` and `diff`, and stacked's
-commands that read the stack; a build and test, any command. What else
+`Read`, `Grep`, `Glob`, `LS`, the commands that only read and git's that
+only read (`answer only`, above), and stacked's commands that read the
+stack; a build and test, any command. What else
 each may use is a list of
 the settings' (Settings, below): `agent.change_tools` for the asks that
 change the stack, nothing unless set; `agent.answer_tools` for answer-only
@@ -1781,7 +1797,9 @@ the tracked `.claude/settings.json` denies is in the worktrees already.
 Every ask but a build and test, which runs what the project needs, is
 refused what would make the commands it may run run another program or
 delete files (`git rebase --exec`, `find -exec`, `find -delete`, `rg
---pre`, `sort --compress-program`), whatever its lists let it run.
+--pre`, `sort --compress-program`), whatever its lists let it run. An
+answer and a try push's selection are refused, too, the options that make
+what they are given write a file or run a program (`answer only`, above).
 
 No ask waits for a setup: the first goes at once, with stacked's defaults
 (`curl` and `jq` for answers and for a try push's selection, nothing more
@@ -2527,11 +2545,24 @@ Noted items are said, and not offered: no state but refused, as no allow
 would let the call run. They are what the checkout's claude settings deny
 (`.claude/settings.local.json`, `.claude/settings.json`), a deny winning
 over any allow; what stacked refuses every ask but builds and tests (`find
--exec`, `rg --pre`…); what changes things, to an answer-only ask and to a
-try push's selection, which only read (`Edit`, `Write`, `rm`, `git
-commit`, `sed -i`, a redirection to a file); a command the shell runs
-itself (`cd` elsewhere); and a call whose rule the ask was given already,
-which claude refused for a reason of its own.
+-exec`, `rg --pre`…), and what it refuses an answer-only ask and a try
+push's selection (`sort -o`, `git diff --output`, `git grep -O`, `file
+-C`, `rg --hostname-bin`…); what changes things, to an answer-only ask and to a try push's
+selection, which only read (`Edit`, `Write`, `rm`, `git commit`, `sed -i`,
+a redirection to a file); to those two again, a rule that can write files
+or run programs, whatever the call that needed it, so that a refused `sed
+-n 1,5p f` is noted as `sed -i` is; a command the shell runs itself (`cd`
+elsewhere); and a call whose rule the ask was given already, which claude
+refused for a reason of its own. The rules that can write files or run
+programs are those of `sed`, `awk` (`gawk`, `mawk`, `nawk`), `uniq`,
+`tree`, `xargs`, `env`, `command`, `perl`, `python`, `python3`, `ruby`,
+`node`, the shells (`sh`, `bash`, `zsh`) and the programs that write files
+(`rm`, `mv`, `cp`, `tee`…), and git's but for its commands that only read
+(`git show`, `log`, `diff`, `grep`, `ls-files`, `rev-parse`, `blame`,
+`cat-file`, `ls-tree`, `merge-base` and `describe`), `Bash(git *)` among
+them, which a refused `git -C x log` would need. No item offered to an
+answer-only ask or a try push's selection widens to one of them either.
+An ask that changes the stack is offered these rules, as before.
 
 With a tool allowed, for this work or from now on, Esc has `Send it back
 to the agent` though you wrote nothing in the review: the agent tries
@@ -4163,7 +4194,9 @@ command saved the newer way, though your claude settings or the
 checkout's own list write it the older, and your claude settings never
 written; each kind given its own list and every ask's, and the
 refusal of a tool naming its kind's list; what your claude settings deny
-in the checkout refused to a change, an answer and a build and test; the
+in the checkout refused to a change, an answer and a build and test, and
+an answer refused too what would make the commands it is given write a
+file or run a program, a change not; the
 first ask sent at once, with no setup; the calls an ask was refused landing
 as items of the review of its work, one a rule, a failed run's too; a tool
 allowed from now on saved in the checkout's own list for its kind alone,
@@ -4846,7 +4879,8 @@ their runs; `setup.rs`, the column of
 try pushes, ticked at first as the read-only one, its own once ticked, in
 what saving writes, and line by line `read only` for both read-only kinds;
 `refusals.rs`, what changes things noted for a try push's selection, as
-for an answer; `config.rs`, `try_tools` written and read
+for an answer, and what can write files or run programs, and what stacked
+refuses it as an answer, too; `config.rs`, `try_tools` written and read
 back, and read built without the feature too. `tests/lint.rs` drives the
 editor as `tests/tui.rs` does, a stand-in run in place of the linter
 (`lint::stand_in`, `$STACKED_LINT` to the job's process, which keeps
@@ -4898,7 +4932,13 @@ with those written again, and the patches' run itself on a repository of
 its own: each fix in the earliest patch it shows in, a fix that would keep
 a patch above from applying stopping it with the rest in a patch at the
 end (its message wrapped), a clean stack left as it is with what is
-reported kept, and a fix that adds a file going at the end. The
+reported kept, and a fix that adds a file going at the end. In
+`ask.rs`, an answer and a try push's selection are given the commands
+that only read and git's that only read, not `sed`, `awk`, `uniq`, `tree`
+nor git at large, and refused the options of those that write a file or
+run a program, long or shortened (`file --compile`, `git grep --open`,
+`sort --co`, `rg --hostname-bin`), none that only reads; a change is
+given and refused what it was, a build and test refused nothing. The
 stream's thinking is tested in `ask.rs`, with the prompt asking the agent
 to point at the stack before the web and its answer's schema taking a web
 link, the ask's effort given to claude after the settings' arguments, in
@@ -5021,7 +5061,16 @@ rule lets a call (the older prefix form, a pattern, an MCP server's tools,
 WebFetch's domain); the calls refused as items, one a rule, each with its
 calls and the agent's word, a pipe's command given already left out; what
 is noted (denied, refused by stacked, changing things for an answer, given
-already), and that one call that needs it offered offers it; the three
+already), and that one call that needs it offered offers it; that an
+answer is offered no rule that can write files or run programs whatever
+the call (`sed -n`, `awk`, `uniq -c`, `env`, `xargs`, `python3 -m`, git at
+large, what git does that changes things or does not only read), each
+noted, nor such a rule to widen to, what stacked refuses it alone noted
+as that (`sort -o`, `git grep -O`), while a change is offered each, with
+its wider rules, as before; that a command an answer is given, `rg`, is
+no item where another command of its pipe needs one, and alone is noted
+as allowed already; that a run of before, not given `git grep` nor `rg`,
+is offered them, `git grep`'s rule never widened to the whole of git; the three
 states and the rule picked in the review's marks, and the turn the agent is
 told; what the agent said of each tool, read from its answer; and what is
 saved from now on, where, and why not outside a checkout. Those in
