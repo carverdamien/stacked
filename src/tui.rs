@@ -2310,12 +2310,14 @@ enum Listed {
 
 /// The entry the patches pane started with when last drawn, to start with
 /// again: what it is, a file with the id of the patch whose files were
-/// listed, and its place among the entries.
+/// listed, its place among the entries, and how many lines of that patch
+/// were pinned over it.
 #[derive(Debug, Clone, PartialEq)]
 struct ListTop {
     entry: Listed,
     of: Option<String>,
     at: usize,
+    own_pinned: usize,
 }
 
 /// A line of the patches pane the cursor stops on: the stack's header, a
@@ -11084,7 +11086,8 @@ impl App {
         // needs. A patch by its place, else where it was among the entries;
         // a file among those of the same patch. A file gone with them, no
         // longer listed: the entry that came after them, when it was in
-        // sight, so that the pane stays as it was without them (as when ↑
+        // sight (under the lines of their patch pinned over them, if they
+        // were), so that the pane stays as it was without them (as when ↑
         // went onto the last of them from the top line, and ↓ goes back);
         // else as from the top of the list. HEAD's rows by where they were,
         // so that the pane stays as HEAD moves along it.
@@ -11097,7 +11100,7 @@ impl App {
                 let below = self.files_of(of).len().saturating_sub(k);
                 let i = s.patches.iter().position(|p| p == of);
                 match entries.iter().position(|(e, _)| matches!(e, Listed::Patch(_, j) if Some(*j) == i)) {
-                    Some(at) if below < room => at + 1,
+                    Some(at) if below + t.own_pinned < room => at + 1,
                     _ => 0,
                 }
             }
@@ -11108,27 +11111,58 @@ impl App {
         // is taken from the patches for it. Next to those shown, it is in
         // its place; else it is on the pane's edge it is beyond, `↓` (`↑`)
         // saying the patches go on between.
+        let head_at = entries.iter().position(|(e, _)| *e == Listed::Head);
+        let head_out = |top: usize, rows: usize| head_at.is_some_and(|k| k < top || k >= end(top, rows));
+        // The lines left for the entries from `top`, the lines pinned aside.
+        let mut rows = room;
+        let mut head_line = head_out(top, room);
+        if head_line {
+            rows = room.saturating_sub(1);
+            top = list_scrolled(&entries, on_entry, kept, rows);
+        }
+        // The cursor on a file listed (from another pane, the file the
+        // middle's cursor is in), the lines of its patch scrolled past: they
+        // are pinned on the pane's top, whole, as they are drawn in their
+        // place, the files going on under them, and the pane scrolls only
+        // once the cursor would leave the lines under them. In a pane too
+        // small for all of them and a line for the file, the first of them,
+        // as many as leave that line: none in a pane of a line. HEAD's line,
+        // out of sight, keeps the line it takes.
+        let own_at = match entries.get(on_entry) {
+            Some((Listed::File(_), _)) => entries.iter().position(|(e, _)| matches!(e, Listed::Patch(at, _) if *at == on)),
+            _ => None,
+        };
+        let mut own_pinned = 0;
+        if let Some(p) = own_at.filter(|&p| p < top) {
+            own_pinned = entries[p].1.len().min(rows.saturating_sub(1));
+            top = list_scrolled(&entries, on_entry, kept, rows - own_pinned);
+            // HEAD's line in sight until then, and no longer: a line taken
+            // for it too.
+            if !head_line && head_out(top, rows - own_pinned) {
+                head_line = true;
+                rows = room.saturating_sub(1);
+                own_pinned = own_pinned.min(rows.saturating_sub(1));
+                top = list_scrolled(&entries, on_entry, kept, rows - own_pinned);
+            }
+        }
+        let rows = rows - own_pinned;
         let mut pinned: Option<(bool, String)> = None;
         // Pinned, HEAD's row has no graph beside it, and says where HEAD
         // is alone.
         let plain = graph.as_ref().map_or(String::new(), |g| format!(" ▶ {}", g.head_pinned));
-        if let Some(k) = entries.iter().position(|(e, _)| *e == Listed::Head)
-            && (k < top || k >= end(top, room))
-        {
-            let room = room.saturating_sub(1);
-            top = list_scrolled(&entries, on_entry, kept, room);
+        if let Some(k) = head_at.filter(|_| head_line) {
             // Just above, in its place, as long as it takes no more than the
             // line pinned would.
             if k + 1 == top && entries[k].1.len() == 1 {
                 top = k;
             } else if k < top {
                 pinned = Some((true, plain.replacen('▶', "↑", 1)));
-            } else if k > end(top, room) {
+            } else if k > end(top, rows) {
                 pinned = Some((false, plain.replacen('▶', "↓", 1)));
             }
         }
         let top_entry = entries.get(top).map(|(e, _)| *e);
-        self.patches_top = top_entry.map(|entry| ListTop { entry, of: listed_of.filter(|_| matches!(entry, Listed::File(_))), at: top });
+        self.patches_top = top_entry.map(|entry| ListTop { entry, of: listed_of.filter(|_| matches!(entry, Listed::File(_))), at: top, own_pinned });
         if let Some((true, line)) = &pinned {
             put(buf, area, 0, y, w, &fit(line, w), color::meta());
             y += 1;
@@ -11139,6 +11173,26 @@ impl App {
         // banner, it is in none.
         let here = (self.focus == Focus::List && !self.on_banner) || moving;
         let pick = |st: Style| if here { on_cursor(st) } else { st.patch(color::picked()) };
+        // A patch's lines: the patch picked, unless one of its files is the
+        // pick, or HEAD's row; underlined under the mouse.
+        let patch_st = |at: usize| {
+            let mut st = Style::new();
+            if at == on && !self.on_stack && !moving_head && !on_head && file_pick.is_none() {
+                st = pick(st);
+            }
+            self.hovered_style(Spot::Patch(Some(at)), st)
+        };
+        // Pinned, the patch's lines are drawn as in their place, and a click
+        // on them goes to the patch.
+        if let Some(p) = own_at.filter(|_| own_pinned > 0)
+            && let (Listed::Patch(at, _), its) = &entries[p]
+        {
+            for line in its.iter().take(own_pinned) {
+                put(buf, area, 0, y, w, &fit(line, w), patch_st(*at));
+                self.spot(area, (0, y, w), Spot::Patch(Some(*at)));
+                y += 1;
+            }
+        }
         for (entry, its) in entries.iter().skip(top) {
             if y >= bottom {
                 break;
@@ -11176,13 +11230,7 @@ impl App {
                     continue;
                 }
             };
-            let mut st = Style::new();
-            // The patch picked, unless one of its files is the pick, or
-            // HEAD's row.
-            if at == on && !self.on_stack && !moving_head && !on_head && file_pick.is_none() {
-                st = pick(st);
-            }
-            let st = self.hovered_style(Spot::Patch(Some(at)), st);
+            let st = patch_st(at);
             for line in its {
                 if y >= bottom {
                     break;

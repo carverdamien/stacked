@@ -840,7 +840,17 @@ them other keys, and the help then names those:
   down; when the patch above has no file to list, ↑ goes to that patch
   itself. Enter or → on a file goes into the middle there, and a click on
   a file goes to it. While the cursor is in the middle, the pane shows the
-  file the cursor is in as picked, and ← comes back to that file. ← again
+  file the cursor is in as picked, and ← comes back to that file. While
+  one of a patch's files is picked, the patch's own lines, once scrolled
+  past, stay on the pane's top lines, drawn as they are in their place:
+  its number, its revision's status and mark when it has them, and its
+  title, folded as it folds there. The files scroll under them, and the
+  pane moves only once the cursor would go past the line under them or
+  the bottom one. In a pane too short for all of them and a line for the
+  file, the first of them stay, as many as leave that line (HEAD's line,
+  when it is pinned, keeping its own), and none in a pane of one line. ↑
+  above the first file shows them in their place again, the cursor on the
+  patch, and a click on them goes to the patch itself. ← again
   hides the patches, for the middle to have the width, and ←
   from the middle brings them back expanded. → on the comments makes them
   compact, a line for each (who, and where it is); → again hides them, the
@@ -4600,7 +4610,15 @@ was, the patches pane longer than the screen scrolling only once the
 cursor would leave it, as far as the cursor needs (down to the end and up
 again, a page at a time, Home and End, titles folded, files listed, ↑
 from a patch onto the last file of the patch above and ↓ back again, from
-the top line too, HEAD's rows and its line pinned to either edge, a patch
+the top line too, the lines of a patch whose files are listed pinned on
+the top lines once scrolled past (drawn as in their place, its title
+folded, its revision's status and mark, reading too; the files scrolling
+under them, the pane still while the cursor moves in the lines under
+them; ↑ above the first file and Esc showing them in their place, ↓
+under the last picking the next patch; the mouse over them underlining
+them, a click on them going to the patch; a pane too small for them and
+a file; HEAD's line in sight with them), HEAD's rows and its line pinned
+to either edge, a patch
 and HEAD being moved, HEAD moved, a comment on the patch written from a
 file, the cursor in the middle, the screen smaller and larger, wider and
 narrower, the stack losing patches, and another stack shown, its pane as

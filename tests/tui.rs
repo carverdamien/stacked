@@ -6466,24 +6466,31 @@ fn listing_files_the_patches_pane_moves_only_when_the_cursor_would_leave_it() {
     assert_eq!((app.list, app.sel, app.file_on()), (PatchesPane::Files, 2, None));
     assert_eq!((row_of(&rows, 1), row_of(&rows, 3), row_with(&rows, &file(6))), (Some(0), Some(2), Some(8)), "{rows:#?}");
     // What the list shows `t`th: patches 1 to 3, then patch 3's files. The
-    // cursor on file J, the `t`th on the top line.
+    // cursor on file J, the `t`th on the top line; once patch 3 itself is
+    // scrolled past, its line pinned on the top line, the `t`th under it.
     let listed = |t: usize| if t < 3 { format!("Bug {} - ", t + 1) } else { file(t - 2) };
     let on_file = |app: &mut App, j: usize, t: usize, what: &str| {
         let rows = shown(app);
         assert_eq!((app.sel, app.file_on()), (2, Some(j - 1)), "{what}");
-        assert_eq!((row_with(&rows, &listed(t)), row_with(&rows, &file(j))), (Some(0), Some(2 + j - t)), "{what}: {rows:#?}");
+        let pinned = t > 2;
+        let under = usize::from(pinned);
+        assert_eq!((row_with(&rows, &listed(t)), row_with(&rows, &file(j))), (Some(under), Some(2 + j - t + under)), "{what}: {rows:#?}");
+        if pinned {
+            assert_eq!(row_of(&rows, 3), Some(0), "{what}: {rows:#?}");
+        }
     };
     // Down its files: the list as it is to its last line, then a line at a
-    // time.
+    // time, patch 3's line staying on the top line once it would go past
+    // it, the files going on under it.
     for j in 1..=12 {
         key(&mut app, KeyCode::Down);
-        on_file(&mut app, j, j.saturating_sub(6), &format!("down to file {j}"));
+        on_file(&mut app, j, if j <= 8 { j.saturating_sub(6) } else { j - 5 }, &format!("down to file {j}"));
     }
-    // Up: as it is until the cursor is on the top line, then a line at a
-    // time, up to the patch itself.
+    // Up: as it is until the cursor is on the line under patch 3's, then a
+    // line at a time, up to the patch itself.
     for j in (1..12).rev() {
         key(&mut app, KeyCode::Up);
-        on_file(&mut app, j, (j + 2).min(6), &format!("up to file {j}"));
+        on_file(&mut app, j, (j + 2).min(7), &format!("up to file {j}"));
     }
     key(&mut app, KeyCode::Up);
     let rows = shown(&mut app);
@@ -6491,7 +6498,7 @@ fn listing_files_the_patches_pane_moves_only_when_the_cursor_would_leave_it() {
     assert_eq!(row_of(&rows, 3), Some(0), "{rows:#?}");
     for j in 1..=12 {
         key(&mut app, KeyCode::Down);
-        on_file(&mut app, j, j.saturating_sub(6).max(2), &format!("down again to file {j}"));
+        on_file(&mut app, j, if j <= 8 { 2 } else { j - 5 }, &format!("down again to file {j}"));
     }
     // A comment on patch 3 written from its last file: the box goes under
     // the patch, which comes in sight with it, the files under the box.
@@ -6502,14 +6509,15 @@ fn listing_files_the_patches_pane_moves_only_when_the_cursor_would_leave_it() {
     assert!(rows[1].contains("a comment on the patch"), "{rows:#?}");
     key(&mut app, KeyCode::Esc);
     assert!(matches!(app.mode, Mode::Normal), "{:?}", app.mode);
-    on_file(&mut app, 12, 6, "the comment put away");
-    // The cursor in the middle, the file picked there: the list as it is.
+    on_file(&mut app, 12, 7, "the comment put away");
+    // The cursor in the middle, the file picked there: the list as it is,
+    // patch 3's line still pinned over its files.
     key(&mut app, KeyCode::Right);
     let rows = shown(&mut app);
     assert_eq!(app.focus, Focus::Diff);
-    assert_eq!((row_with(&rows, &file(4)), row_with(&rows, &file(12))), (Some(0), Some(8)), "{rows:#?}");
+    assert_eq!((row_of(&rows, 3), row_with(&rows, &file(5)), row_with(&rows, &file(12))), (Some(0), Some(1), Some(8)), "{rows:#?}");
     key(&mut app, KeyCode::Left);
-    on_file(&mut app, 12, 6, "back from the middle");
+    on_file(&mut app, 12, 7, "back from the middle");
     // Down onto patch 4: patch 3's files gone from over it, the list from
     // its top, all of patch 4's in sight.
     key(&mut app, KeyCode::Down);
@@ -6520,7 +6528,7 @@ fn listing_files_the_patches_pane_moves_only_when_the_cursor_would_leave_it() {
     // Back up, onto patch 3's last file: its files under it again, the
     // list down as far as that file needs, as it was before.
     key(&mut app, KeyCode::Up);
-    on_file(&mut app, 12, 6, "back up onto patch 3's last file");
+    on_file(&mut app, 12, 7, "back up onto patch 3's last file");
 }
 
 #[test]
@@ -6556,17 +6564,344 @@ fn listing_files_up_from_a_patch_the_patches_pane_moves_only_when_the_cursor_wou
         key(&mut app, KeyCode::Up);
         at(&mut app, k, false, &format!("up to patch {k}"));
     }
-    // Past it: patch 11's file on the top line, patch 12 under it.
+    // Past it: patch 11's file, under patch 11's line, pinned on the top
+    // line, and patch 12 under them.
     key(&mut app, KeyCode::Up);
     let rows = shown(&mut app);
     assert_eq!((app.sel, app.file_on()), (10, Some(0)));
-    assert_eq!((row_with(&rows, "11.txt"), row_of(&rows, 12)), (Some(0), Some(1)), "{rows:#?}");
+    assert_eq!((row_of(&rows, 11), row_with(&rows, "11.txt"), row_of(&rows, 12)), (Some(0), Some(1), Some(2)), "{rows:#?}");
     // Down again, patch 11's file gone: the list as it was, patch 12 on the
     // top line, its file under it.
     key(&mut app, KeyCode::Down);
     let rows = shown(&mut app);
     assert_eq!((app.sel, app.file_on()), (11, None));
     assert_eq!((row_of(&rows, 12), row_with(&rows, "12.txt")), (Some(0), Some(1)), "{rows:#?}");
+}
+
+/// A stack of `n` patches, `Bug K - add K` but patch 3, `Bug 3 - ` and
+/// `title`, which adds twelve files, more than the patches pane has lines
+/// for on a screen 12 high (9, under its header); each of the others adds
+/// one. The database, and the checkout, at the top of the stack.
+fn many_files(n: usize, title: &str) -> (tempfile::TempDir, PathBuf, PathBuf) {
+    let files = |k: usize| match k {
+        3 => (1..=12).map(p3).collect(),
+        k => vec![format!("p{k}.txt")],
+    };
+    long_stack(n, |k| if k == 3 { title.to_string() } else { format!("add {k}") }, files, false)
+}
+
+/// File J of patch 3 of `many_files`.
+fn p3(j: usize) -> String {
+    format!("p3-{j:02}.txt")
+}
+
+/// Patch 3's lines in the patches pane, listing files on a screen 120 wide,
+/// where the pane is 30: its title, `a title folded in two`, folded on two.
+const FOLDED: [&str; 2] = ["  3 Bug 3 - a title folded in", "    two"];
+
+/// Lines `at` and `at + 1` of the patches pane's `rows`, as `FOLDED` has
+/// them.
+fn two_at(rows: &[String], at: usize) -> [&str; 2] {
+    [rows[at].as_str(), rows[at + 1].as_str()]
+}
+
+/// Listing files, the screen drawn 120 by `h` at each key: down from patch
+/// 1 onto patch 3, its files listed under it, then down `files` of them.
+/// The lines of the patches pane.
+fn down_patch_3(app: &mut App, h: u16, files: usize) -> Vec<String> {
+    for code in [KeyCode::Left, KeyCode::Down, KeyCode::Down, KeyCode::Down, KeyCode::Down] {
+        key(app, code);
+        pane_rows(app, 120, h);
+    }
+    assert_eq!((app.list, app.sel, app.file_on()), (PatchesPane::Files, 2, None));
+    for _ in 0..files {
+        key(app, KeyCode::Down);
+        pane_rows(app, 120, h);
+    }
+    pane_rows(app, 120, h)
+}
+
+/// How each cell of line `y` of the screen drawn 120 by `h` looks, in the
+/// patches pane, listing files: its first 30 columns.
+fn pane_looks(app: &mut App, h: u16, y: u16) -> Vec<(Shown, Shown, ratatui::style::Modifier)> {
+    let buf = drawn(app, h);
+    (0..30).map(|x| looks(&buf[(x, y)])).collect()
+}
+
+#[test]
+fn listing_files_a_patch_s_lines_scrolled_past_stay_on_the_pane_s_top_lines_its_files_scrolling_under_them() {
+    use ratatui::style::Modifier;
+    let (_tmp, db, _src) = many_files(6, "a title folded in two");
+    let mut app = open(&db).unwrap();
+    let shown = |app: &mut App| pane_rows(app, 120, 12);
+    // On patch 3: its number and its title, folded on two lines, then its
+    // files, more than the 9 lines of the pane hold.
+    let rows = down_patch_3(&mut app, 12, 0);
+    assert_eq!(rows[2..4], FOLDED, "{rows:#?}");
+    assert_eq!(row_with(&rows, &p3(5)), Some(8), "{rows:#?}");
+    // Down its files: the list as it is to its last line, then a line at a
+    // time, until patch 3's lines are on the top lines, with the cursor on
+    // file 7. Further down, they stay there, pinned, drawn as they are in
+    // their place with the cursor on a file of the patch, and the files go
+    // on under them, the cursor's on the last line.
+    let mut in_place = Vec::new();
+    for j in 1..=12 {
+        key(&mut app, KeyCode::Down);
+        let rows = shown(&mut app);
+        let what = format!("down to file {j}");
+        assert_eq!((app.sel, app.file_on()), (2, Some(j - 1)), "{what}");
+        assert_eq!(row_with(&rows, &p3(j)), Some((3 + j).min(8)), "{what}: {rows:#?}");
+        if j < 7 {
+            continue;
+        }
+        assert_eq!(rows[..2], FOLDED, "{what}: {rows:#?}");
+        let under: Vec<String> = (j - 6..=j).map(p3).collect();
+        assert!(rows[2..].iter().zip(&under).all(|(r, f)| r.trim_start().starts_with(f.as_str())), "{what}: {rows:#?}");
+        let drawn_as: Vec<_> = [2, 3].map(|y| pane_looks(&mut app, 12, y)).into();
+        match j {
+            7 => in_place = drawn_as,
+            _ => assert_eq!(drawn_as, in_place, "{what}"),
+        }
+    }
+    // Not as the cursor is drawn: it is on the file, on the last line.
+    let buf = drawn(&mut app, 12);
+    assert!(buf[(6, 10)].modifier.contains(Modifier::REVERSED), "{}", text_of(&buf));
+    assert!(!buf[(6, 2)].modifier.contains(Modifier::REVERSED) && !buf[(4, 3)].modifier.contains(Modifier::REVERSED), "{}", text_of(&buf));
+    // Reading, the same: the patch's lines, with what of it is read at the
+    // end of its first, the title folded to leave room for it, pinned over
+    // the files, each saying what is left of it to mark read.
+    key(&mut app, KeyCode::Char('2'));
+    let rows = shown(&mut app);
+    assert!(app.reading);
+    assert!(rows[0].starts_with("  3 Bug 3 - a title ") && rows[0].ends_with(" 0/13"), "{rows:#?}");
+    assert_eq!(rows[1], "    folded in two", "{rows:#?}");
+    assert!(rows[8].trim_start().starts_with(&p3(12)) && rows[8].ends_with("1 left"), "{rows:#?}");
+}
+
+#[test]
+fn listing_files_the_pane_moves_only_once_the_cursor_would_leave_the_lines_under_the_patch_s_pinned_lines() {
+    let (_tmp, db, _src) = many_files(6, "a title folded in two");
+    let mut app = open(&db).unwrap();
+    let shown = |app: &mut App| pane_rows(app, 120, 12);
+    down_patch_3(&mut app, 12, 12);
+    // The cursor on file J, file `first` on the line under patch 3's two,
+    // pinned on the top lines.
+    let on_file = |app: &mut App, j: usize, first: usize, what: &str| {
+        let rows = shown(app);
+        assert_eq!((app.sel, app.file_on()), (2, Some(j - 1)), "{what}");
+        assert_eq!(rows[..2], FOLDED, "{what}: {rows:#?}");
+        assert_eq!((row_with(&rows, &p3(first)), row_with(&rows, &p3(j))), (Some(2), Some(2 + j - first)), "{what}: {rows:#?}");
+    };
+    on_file(&mut app, 12, 6, "on the last file");
+    // Up: the pane as it is until the cursor is on the line under the
+    // patch's; past it, a line at a time.
+    for j in (6..12).rev() {
+        key(&mut app, KeyCode::Up);
+        on_file(&mut app, j, 6, &format!("up to file {j}"));
+    }
+    for j in (3..6).rev() {
+        key(&mut app, KeyCode::Up);
+        on_file(&mut app, j, j, &format!("up to file {j}"));
+    }
+    // Down: as it is until the cursor is on the last line; past it, a line
+    // at a time.
+    for j in 4..=9 {
+        key(&mut app, KeyCode::Down);
+        on_file(&mut app, j, 3, &format!("down to file {j}"));
+    }
+    for j in 10..=12 {
+        key(&mut app, KeyCode::Down);
+        on_file(&mut app, j, j - 6, &format!("down to file {j}"));
+    }
+}
+
+#[test]
+fn listing_files_up_above_the_first_file_shows_the_patch_s_lines_in_their_place_and_down_under_the_last_the_next_patch() {
+    use ratatui::style::Modifier;
+    let (_tmp, db, _src) = many_files(6, "a title folded in two");
+    let mut app = open(&db).unwrap();
+    let shown = |app: &mut App| pane_rows(app, 120, 12);
+    down_patch_3(&mut app, 12, 12);
+    // Up the files to the first, the patch's lines pinned over them.
+    for _ in 1..12 {
+        key(&mut app, KeyCode::Up);
+        shown(&mut app);
+    }
+    let rows = shown(&mut app);
+    assert_eq!(app.file_on(), Some(0));
+    assert_eq!((two_at(&rows, 0), row_with(&rows, &p3(1))), (FOLDED, Some(2)), "{rows:#?}");
+    // Above it: the patch itself, the middle on it from its start; its lines
+    // in their place on the top lines, the cursor on them, its files under
+    // them.
+    key(&mut app, KeyCode::Up);
+    let rows = shown(&mut app);
+    assert_eq!((app.sel, app.file_on(), app.cursor), (2, None, 0));
+    assert_eq!((two_at(&rows, 0), row_with(&rows, &p3(1)), row_with(&rows, &p3(7))), (FOLDED, Some(2), Some(8)), "{rows:#?}");
+    let buf = drawn(&mut app, 12);
+    assert!(buf[(6, 2)].modifier.contains(Modifier::REVERSED) && buf[(4, 3)].modifier.contains(Modifier::REVERSED), "{}", text_of(&buf));
+    // From the last file, Esc goes up to the patch too, and the pane as far
+    // as its lines need, in their place.
+    for _ in 0..12 {
+        key(&mut app, KeyCode::Down);
+        shown(&mut app);
+    }
+    assert_eq!(app.file_on(), Some(11));
+    key(&mut app, KeyCode::Esc);
+    let rows = shown(&mut app);
+    assert_eq!((app.sel, app.file_on()), (2, None));
+    assert_eq!((two_at(&rows, 0), row_with(&rows, &p3(1))), (FOLDED, Some(2)), "{rows:#?}");
+    // Down under the last file: the next patch picked, its file under it;
+    // patch 3's lines no longer pinned, in their place, its files gone.
+    for _ in 0..12 {
+        key(&mut app, KeyCode::Down);
+        shown(&mut app);
+    }
+    key(&mut app, KeyCode::Down);
+    let rows = shown(&mut app);
+    assert_eq!((app.sel, app.file_on()), (3, None));
+    assert_eq!((row_of(&rows, 1), two_at(&rows, 2), row_of(&rows, 4), row_with(&rows, "p4.txt")), (Some(0), FOLDED, Some(4), Some(5)), "{rows:#?}");
+    assert_eq!(row_with(&rows, &p3(1)), None, "{rows:#?}");
+}
+
+#[test]
+fn a_click_on_a_patch_s_lines_pinned_over_its_files_goes_to_the_patch() {
+    use ratatui::style::Modifier;
+    let (_tmp, db, _src) = many_files(6, "a title folded in two");
+    let mut app = open(&db).unwrap();
+    let shown = |app: &mut App| pane_rows(app, 120, 12);
+    down_patch_3(&mut app, 12, 12);
+    // The mouse over the second of patch 3's lines, pinned on the pane's
+    // top lines: both of them underlined, as a patch's lines are, and
+    // nothing picked.
+    app.hover(4, 3);
+    assert_eq!(app.hovered, Some(Spot::Patch(Some(2))));
+    assert_eq!((app.focus, app.sel, app.file_on()), (Focus::List, 2, Some(11)));
+    let buf = drawn(&mut app, 12);
+    assert!(buf[(6, 2)].modifier.contains(Modifier::UNDERLINED) && buf[(4, 3)].modifier.contains(Modifier::UNDERLINED), "{}", text_of(&buf));
+    assert!(!buf[(6, 4)].modifier.contains(Modifier::UNDERLINED), "not the file under them:\n{}", text_of(&buf));
+    // A click: the patch itself, from its start, as ↑ above its first file
+    // goes; its lines in their place on the top lines, its files under
+    // them.
+    app.click(4, 3, false);
+    let rows = shown(&mut app);
+    assert_eq!((app.focus, app.sel, app.file_on(), app.cursor), (Focus::List, 2, None, 0));
+    assert_eq!((two_at(&rows, 0), row_with(&rows, &p3(1))), (FOLDED, Some(2)), "{rows:#?}");
+    let buf = drawn(&mut app, 12);
+    assert!(buf[(6, 2)].modifier.contains(Modifier::REVERSED), "{}", text_of(&buf));
+    // A click on its first line, pinned, the same.
+    for _ in 0..12 {
+        key(&mut app, KeyCode::Down);
+        shown(&mut app);
+    }
+    assert_eq!(app.file_on(), Some(11));
+    app.click(6, 2, false);
+    let rows = shown(&mut app);
+    assert_eq!((app.focus, app.sel, app.file_on(), app.cursor), (Focus::List, 2, None, 0));
+    assert_eq!((two_at(&rows, 0), row_with(&rows, &p3(1))), (FOLDED, Some(2)), "{rows:#?}");
+}
+
+#[test]
+fn listing_files_a_pane_too_small_for_a_patch_s_lines_and_a_file_pins_as_many_of_them_as_leave_a_line_for_the_file() {
+    let (_tmp, db, src) = many_files(6, "a title folded in two");
+    let mut app = open(&db).unwrap();
+    down_patch_3(&mut app, 12, 12);
+    let file = |row: &String, j: usize| row.trim_start().starts_with(&p3(j));
+    // Three lines under the pane's header: both of the patch's lines, then
+    // the cursor's file.
+    let rows = pane_rows(&mut app, 120, 6);
+    assert_eq!((two_at(&rows, 0), rows.len()), (FOLDED, 3), "{rows:#?}");
+    assert!(file(&rows[2], 12), "{rows:#?}");
+    // Two: the first of them, its number and the start of its title, then
+    // the file; so as the cursor goes up the files.
+    let rows = pane_rows(&mut app, 120, 5);
+    assert_eq!((rows[0].as_str(), rows.len()), (FOLDED[0], 2), "{rows:#?}");
+    assert!(file(&rows[1], 12), "{rows:#?}");
+    for j in (1..12).rev() {
+        key(&mut app, KeyCode::Up);
+        let rows = pane_rows(&mut app, 120, 5);
+        assert!(rows[0] == FOLDED[0] && file(&rows[1], j), "up to file {j}: {rows:#?}");
+    }
+    // Above the first file, the patch itself: its two lines in their place.
+    key(&mut app, KeyCode::Up);
+    let rows = pane_rows(&mut app, 120, 5);
+    assert_eq!((app.sel, app.file_on()), (2, None));
+    assert_eq!(rows, FOLDED, "{rows:#?}");
+    key(&mut app, KeyCode::Down);
+    let rows = pane_rows(&mut app, 120, 5);
+    assert!(rows[0] == FOLDED[0] && file(&rows[1], 1), "down to file 1: {rows:#?}");
+    // One: the file alone.
+    let rows = pane_rows(&mut app, 120, 4);
+    assert!(rows.len() == 1 && file(&rows[0], 1), "{rows:#?}");
+    // HEAD's line out of sight too, the editor in the checkout: pinned on
+    // the pane's last line, as ever, the patch's lines pinned over the
+    // files in what it leaves.
+    drop(app);
+    let mut app = open_in(&db, &src);
+    let rows = down_patch_3(&mut app, 12, 12);
+    assert_eq!((two_at(&rows, 0), rows[8].as_str()), (FOLDED, " ↓ HEAD main"), "{rows:#?}");
+    assert!(file(&rows[2], 7) && file(&rows[7], 12), "{rows:#?}");
+    let rows = pane_rows(&mut app, 120, 6);
+    assert_eq!((rows[0].as_str(), rows[2].as_str()), (FOLDED[0], " ↓ HEAD main"), "{rows:#?}");
+    assert!(file(&rows[1], 12), "{rows:#?}");
+}
+
+#[test]
+fn listing_files_head_s_line_stays_in_sight_under_the_files_the_patch_s_lines_pinned_over_them() {
+    // Patch 3 the last, HEAD at it: HEAD's line right under its files.
+    let (_tmp, db, src) = many_files(3, "a title folded in two");
+    let mut app = open_in(&db, &src);
+    down_patch_3(&mut app, 12, 7);
+    // The cursor on file J: patch 3's lines on the pane's top lines, HEAD's
+    // on its last line, in its place under the files or pinned there, and
+    // the cursor's file between them.
+    let on_file = |app: &mut App, j: usize, what: &str| {
+        let rows = pane_rows(app, 120, 12);
+        assert_eq!((app.sel, app.file_on()), (2, Some(j - 1)), "{what}");
+        assert_eq!(two_at(&rows, 0), FOLDED, "{what}: {rows:#?}");
+        assert!(rows[8].contains("HEAD main"), "{what}: {rows:#?}");
+        assert!(row_with(&rows, &p3(j)).is_some_and(|r| (2..8).contains(&r)), "{what}: {rows:#?}");
+    };
+    on_file(&mut app, 7, "on file 7");
+    // Down to the last file, and up again to the first.
+    for j in 8..=12 {
+        key(&mut app, KeyCode::Down);
+        on_file(&mut app, j, &format!("down to file {j}"));
+    }
+    let rows = pane_rows(&mut app, 120, 12);
+    assert!(rows[8].contains("▶ HEAD main"), "in its place: {rows:#?}");
+    for j in (1..12).rev() {
+        key(&mut app, KeyCode::Up);
+        on_file(&mut app, j, &format!("up to file {j}"));
+    }
+}
+
+#[cfg(feature = "moz-phab")]
+#[test]
+fn listing_files_a_patch_s_lines_pinned_over_its_files_have_its_revision_s_status_letter_and_mark() {
+    // Patch 3 names a revision, which Phabricator has as Needs Review, with
+    // a title and a diff of its own.
+    let (_tmp, db, _src) = many_files(6, &format!("a title folded in two\n\n{LINK}3"));
+    let phab = std::sync::Arc::new(std::sync::Mutex::new(Phab::default().with(3, "needs-review", "", "")));
+    statuses_from(&db, &phab);
+    let mut app = open(&db).unwrap();
+    draw(&mut app);
+    app.refresh();
+    draw(&mut app);
+    app.settle();
+    // On patch 3: its number, its revision's status and its mark, then its
+    // title, folded after them.
+    let own = ["  3 [R]✗ Bug 3 - a title", "         folded in two"];
+    let rows = down_patch_3(&mut app, 12, 0);
+    assert_eq!(rows[2..4], own, "{rows:#?}");
+    // On its last file: those lines, pinned on the pane's top lines.
+    for _ in 0..12 {
+        key(&mut app, KeyCode::Down);
+        pane_rows(&mut app, 120, 12);
+    }
+    let rows = pane_rows(&mut app, 120, 12);
+    assert_eq!(rows[..2], own, "{rows:#?}");
+    assert!(rows[8].trim_start().starts_with(&p3(12)), "{rows:#?}");
+    stacked::phab::statuses_stand_in(&db, None);
 }
 
 #[test]
