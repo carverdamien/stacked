@@ -441,10 +441,17 @@ fn the_ask_dialog_opens_with_nothing_set_is_clicked_and_asks_later_in_the_window
     }
     let (x, y) = find(&dialog, "< Cancel >").unwrap();
     assert!(!dialog[(x, y)].style().add_modifier.contains(Modifier::DIM), "Cancel can be pressed");
-    // A click on the permission's line steps it; Enter on the effort's.
+    // A click on the permission's line opens the list of its options under
+    // it, and a click on one of them picks it; on the effort's line, Enter
+    // opens its list, on low, and Enter again sets it.
     click(find(&dialog, "Permission: [ — ]").unwrap());
-    screen(&s, "answer only", |b| find(b, "Permission: [answer only]").is_some());
+    let list = screen(&s, "the permission's list", |b| find(b, "│ answer only ").is_some());
+    let (x, y) = find(&list, "│ answer only ").unwrap();
+    click((x + 2, y));
+    screen(&s, "answer only", |b| find(b, "Permission: [answer only]").is_some() && find(b, "│ answer only ").is_none());
     press(&s, KeyCode::Down);
+    press(&s, KeyCode::Enter);
+    screen(&s, "the effort's list", |b| find(b, "│ xhigh  │").is_some());
     press(&s, KeyCode::Enter);
     let set = screen(&s, "low", |b| find(b, "Effort: [low]").is_some());
     let (x, y) = find(&set, "< Ask Later >").unwrap();

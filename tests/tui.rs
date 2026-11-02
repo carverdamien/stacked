@@ -1453,28 +1453,45 @@ fn dialog_line(app: &mut App, line: usize) {
     assert_eq!(dialog(app).line, line);
 }
 
-/// In the ask dialog open, the permission drawn as `permission` and the
-/// effort `effort`, each set with Enter on its line, from wherever it is;
+/// Where the list open in the ask dialog draws its option `option`, on a
+/// screen drawn: on the option itself, past the list's border and the
+/// space before it.
+fn option_at(screen: &str, option: &str) -> (u16, u16) {
+    let (x, y) = at(screen, &format!("│ {option} "));
+    (x + 2, y)
+}
+
+/// In the ask dialog open, the permission drawn as `permission` set with
+/// ← → on its line, from wherever it is: → from unset, which sets the
+/// first, then towards it, as neither goes round past its end. Then the
+/// effort `effort` picked in the list Enter opens on its line, ↓ to it;
 /// then `button` (`Ask Now`, `Ask Later`, `Cancel`) pressed, gone to with
 /// ← →: what pressing it did.
 fn in_dialog(app: &mut App, permission: &str, effort: &str, button: &str) -> Effect {
     let labels = dialog(app).permission_labels();
-    assert!(labels.contains(&permission), "no {permission:?} among {labels:?}");
+    let to = labels.iter().position(|l| *l == permission).unwrap_or_else(|| panic!("no {permission:?} among {labels:?}"));
     dialog_line(app, 0);
     for _ in 0..labels.len() + 1 {
-        if dialog(app).permission().map(|p| p.label()) == Some(permission) {
-            break;
-        }
-        key(app, KeyCode::Enter);
+        let arrow = match dialog(app).permission {
+            Some(at) if at == to => break,
+            Some(at) if at > to => KeyCode::Left,
+            _ => KeyCode::Right,
+        };
+        key(app, arrow);
     }
+    assert_eq!(dialog(app).permission().map(|p| p.label()), Some(permission));
     dialog_line(app, 1);
+    key(app, KeyCode::Enter);
+    assert!(dialog(app).list.is_some(), "Enter opened no list on the effort's line");
     for _ in 0..6 {
-        if dialog(app).effort.map(|e| e.name()) == Some(effort) {
+        let on = dialog(app).list.and_then(|at| dialog(app).options(1).get(at).copied());
+        if on == Some(effort) {
             break;
         }
-        key(app, KeyCode::Enter);
+        key(app, KeyCode::Down);
     }
-    assert_eq!(dialog(app).effort.map(|e| e.name()), Some(effort));
+    key(app, KeyCode::Enter);
+    assert_eq!((dialog(app).effort.map(|e| e.name()), dialog(app).list), (Some(effort), None));
     dialog_line(app, 2);
     let want = Button::ALL.iter().position(|b| b.label() == button).unwrap_or_else(|| panic!("no button {button:?}"));
     for _ in 0..3 {
@@ -10536,7 +10553,7 @@ fn a_stack_is_imported_from_the_workspace_seen_first() {
 }
 
 #[test]
-fn the_ask_dialog_opens_with_nothing_set_steps_each_line_with_enter_and_keeps_nothing() {
+fn the_ask_dialog_opens_with_nothing_set_steps_each_line_with_the_arrows_and_keeps_nothing() {
     let (_tmp, db, _src) = setup();
     let mut app = open(&db).unwrap();
     keys(&mut app, &[KeyCode::Right]);
@@ -10549,57 +10566,56 @@ fn the_ask_dialog_opens_with_nothing_set_steps_each_line_with_enter_and_keeps_no
     choose(&mut app, "Ask agent…");
     let d = dialog(&app).clone();
     assert_eq!(d.title, "save the comment on patch 1 · a.txt: TWO, then ask the agent about it");
-    assert_eq!((d.permission, d.effort, d.line, d.button), (None, None, 0, Button::Now));
+    assert_eq!((d.permission, d.effort, d.line, d.list, d.button), (None, None, 0, None, Button::Now));
     assert_eq!(app.ask_buttons(&d), [false, false, true]);
     assert_eq!(app.ask_note(&d), ["Ask Now and Ask Later are grayed until the permission and the effort are set."]);
     assert_eq!(
         app.ask_lines(&d),
         [
             "Permission: [ — ]",
-            "Not set yet: Enter sets answer only first, then change patch and change stack, round past the last.",
+            "Not set yet: ← or → sets answer only, then steps to change patch and change stack. Enter opens the list of them.",
             "Effort: [ — ]",
-            "Not set yet: Enter sets low first, then medium, high, xhigh and max, round past the last.",
+            "Not set yet: ← or → sets low, then steps to medium, high, xhigh and max. Enter opens the list of them.",
         ]
     );
     let screen = draw(&mut app);
     for said in [
         "save the comment on patch 1 · a.txt: TWO, then ask the agent about it",
         " Permission: [ — ] ",
-        "   Not set yet: Enter sets answer only first",
+        "   Not set yet: ← or → sets answer only, then steps to change",
         " Effort: [ — ] ",
-        "   Not set yet: Enter sets low first",
+        "   Not set yet: ← or → sets low, then steps to medium",
         "< Ask Now >   < Ask Later >   < Cancel >",
         "Ask Now and Ask Later are grayed until the permission",
         "why so loud?",
     ] {
         assert!(screen.contains(said), "{said:?} in:\n{screen}");
     }
-    assert_eq!(app.hint(), "↑↓ choose · enter: set the permission · esc: cancel · ?: what it does");
-    // ← → change nothing on the lines.
-    keys(&mut app, &[KeyCode::Right, KeyCode::Left, KeyCode::Right]);
-    assert_eq!((dialog(&app).permission, dialog(&app).line), (None, 0));
-    // Enter steps the permission from unset, round past the last; under it,
+    assert_eq!(app.hint(), "↑↓ choose · ←→: set the permission · enter: open the list · esc: cancel · ?: what it does");
+    // → sets the permission's first option from unset, then steps on, and
+    // stops on the last; ← steps back, and stops on the first. Under it,
     // what the one set lets the agent do.
     let mut seen = Vec::new();
-    for _ in 0..4 {
-        keys(&mut app, &[KeyCode::Enter]);
-        seen.push(dialog(&app).permission().map(|p| p.label()));
+    for code in [KeyCode::Right, KeyCode::Right, KeyCode::Right, KeyCode::Right, KeyCode::Left, KeyCode::Left, KeyCode::Left] {
+        keys(&mut app, &[code]);
+        seen.push(dialog(&app).permission().map(|p| p.label()).unwrap_or_default());
     }
-    assert_eq!(seen, [Some("answer only"), Some("change patch"), Some("change stack"), Some("answer only")]);
+    assert_eq!(seen, ["answer only", "change patch", "change stack", "change stack", "change patch", "answer only", "answer only"]);
+    assert_eq!((dialog(&app).line, dialog(&app).list), (0, None));
     let screen = draw(&mut app);
     assert!(screen.contains(" Permission: [answer only] ") && screen.contains("The agent answers, and changes nothing."), "{screen}");
     assert_eq!(app.ask_note(dialog(&app)), ["Ask Now and Ask Later are grayed until the effort is set."]);
-    // ↓ to the effort: the same, low first.
+    // ↓ to the effort: the same, ← from unset setting low too; then →
+    // held ends on max, and ← held on low.
     keys(&mut app, &[KeyCode::Down]);
-    assert_eq!(app.hint(), "↑↓ choose · enter: set the effort · esc: cancel · ?: what it does");
-    keys(&mut app, &[KeyCode::Left, KeyCode::Right]);
+    assert_eq!(app.hint(), "↑↓ choose · ←→: set the effort · enter: open the list · esc: cancel · ?: what it does");
     assert_eq!(dialog(&app).effort, None);
     let mut seen = Vec::new();
-    for _ in 0..6 {
-        keys(&mut app, &[KeyCode::Enter]);
-        seen.push(dialog(&app).effort.map(|e| e.name()));
+    for code in [KeyCode::Left].into_iter().chain([KeyCode::Right; 5]).chain([KeyCode::Left; 5]) {
+        keys(&mut app, &[code]);
+        seen.push(dialog(&app).effort.map(|e| e.name()).unwrap_or_default());
     }
-    assert_eq!(seen, ["low", "medium", "high", "xhigh", "max", "low"].map(Some));
+    assert_eq!(seen, ["low", "medium", "high", "xhigh", "max", "max", "xhigh", "high", "medium", "low", "low"]);
     assert!(draw(&mut app).contains(" Effort: [low] "), "{}", draw(&mut app));
     assert!(draw(&mut app).contains("claude is given --effort low."), "{}", draw(&mut app));
     // Both set: Ask Now and Ask Later can be pressed, and nothing is said.
@@ -10633,17 +10649,18 @@ fn the_ask_dialog_opens_with_nothing_set_steps_each_line_with_enter_and_keeps_no
 }
 
 #[test]
-fn the_ask_dialog_opens_on_the_permission_line_and_the_first_enter_sets_answer_only() {
+fn the_ask_dialog_opens_on_the_permission_line_where_the_first_enter_opens_its_list_on_answer_only() {
     let (_tmp, db, _src) = setup();
     let mut app = open(&db).unwrap();
     let cursor = as_drawn(stacked::paint::on_cursor(ratatui::style::Style::new()));
     // The dialog opened from `what`: the cursor on the permission's line,
     // drawn there, not on the effort's line nor on Ask Now, and the bottom
-    // bar and `?` say what Enter does there. The first Enter sets the first
-    // option, answer only, and nothing else; then Esc.
+    // bar and `?` say what Enter does there. The first Enter opens the list
+    // of the permissions on the first, answer only, and sets nothing; the
+    // second sets answer only, and nothing else; then Esc.
     let first_enter = |app: &mut App, what: &str| {
         let d = dialog(app).clone();
-        assert_eq!((d.line, d.permission, d.effort), (0, None, None), "{what}");
+        assert_eq!((d.line, d.permission, d.effort, d.list), (0, None, None, None), "{what}");
         assert_eq!(d.permission_labels()[0], "answer only", "{what}");
         let buf = drawn(app, 30);
         let screen = text_of(&buf);
@@ -10654,11 +10671,16 @@ fn the_ask_dialog_opens_on_the_permission_line_and_the_first_enter_sets_answer_o
         assert_eq!(looks_at("Permission: [ — ]"), cursor, "{what}: the cursor on the permission's line\n{screen}");
         assert_ne!(looks_at("Effort: [ — ]"), cursor, "{what}: not on the effort's line\n{screen}");
         assert_ne!(looks_at("< Ask Now >"), cursor, "{what}: not on Ask Now\n{screen}");
-        assert_eq!(app.hint(), "↑↓ choose · enter: set the permission · esc: cancel · ?: what it does", "{what}");
-        assert!(app.help()[0].starts_with("Press Enter to set what the agent may do: answer only first"), "{what}: {:?}", app.help());
+        assert_eq!(app.hint(), "↑↓ choose · ←→: set the permission · enter: open the list · esc: cancel · ?: what it does", "{what}");
+        let help = app.help();
+        assert!(help[0].starts_with("Press Enter to open the list of what the agent may do here, to pick one: answer only, "), "{what}: {help:?}");
         keys(app, &[KeyCode::Enter]);
         let d = dialog(app);
-        assert_eq!((d.line, d.permission().map(|p| p.label()), d.effort), (0, Some("answer only"), None), "{what}");
+        assert_eq!((d.line, d.permission, d.effort, d.list), (0, None, None, Some(0)), "{what}");
+        assert_eq!(app.hint(), "↑↓ choose · enter: set the permission · esc: close the list · ?: what it does", "{what}");
+        keys(app, &[KeyCode::Enter]);
+        let d = dialog(app);
+        assert_eq!((d.line, d.permission().map(|p| p.label()), d.effort, d.list), (0, Some("answer only"), None, None), "{what}");
         assert!(draw(app).contains(" Permission: [answer only] "), "{what}");
         keys(app, &[KeyCode::Esc]);
     };
@@ -10691,6 +10713,247 @@ fn the_ask_dialog_opens_on_the_permission_line_and_the_first_enter_sets_answer_o
     assert_eq!(app.mode, Mode::Normal);
 }
 
+/// The editor on a database of `setup`, with a comment saved on line
+/// `+TWO` of patch 1, the cursor on it, and the ask dialog its `Ask
+/// agent…` opens, open: its permissions answer only, change patch and
+/// change stack.
+fn asking_about_a_line(db: &Path) -> Editor {
+    let mut app = open(db).unwrap();
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Enter]);
+    save(&mut app, "why so loud?");
+    keys(&mut app, &[KeyCode::Down]);
+    assert!(app.rows[app.cursor].head);
+    choose(&mut app, "Ask agent…");
+    assert_eq!(dialog(&app).permission_labels(), ["answer only", "change patch", "change stack"]);
+    app
+}
+
+/// What the ask dialog open has set: its permission, as drawn, and its
+/// effort.
+fn dialog_set(app: &App) -> (Option<&'static str>, Option<&'static str>) {
+    let d = dialog(app);
+    (d.permission().map(|p| p.label()), d.effort.map(|e| e.name()))
+}
+
+#[test]
+fn the_arrows_set_each_line_of_the_ask_dialog_to_its_first_option_from_unset_then_step_and_stop_at_either_end() {
+    let (_tmp, db, _src) = setup();
+    let mut app = asking_about_a_line(&db);
+    // From unset, ← and → alike set a line's first option, on each line:
+    // answer only, and low; never the most permissive, nor the most
+    // expensive. Ask Now and Ask Later stay grayed until both lines are
+    // set, and the dialog says which one is missing.
+    for arrow in [KeyCode::Left, KeyCode::Right] {
+        if !matches!(app.mode, Mode::Ask(_)) {
+            choose(&mut app, "Ask agent…");
+        }
+        keys(&mut app, &[KeyCode::Down, arrow]);
+        assert_eq!(dialog_set(&app), (None, Some("low")), "{arrow:?}");
+        assert_eq!(app.ask_buttons(dialog(&app)), [false, false, true], "{arrow:?}");
+        assert_eq!(app.ask_note(dialog(&app)), ["Ask Now and Ask Later are grayed until the permission is set."], "{arrow:?}");
+        keys(&mut app, &[KeyCode::Up, arrow]);
+        assert_eq!(dialog_set(&app), (Some("answer only"), Some("low")), "{arrow:?}");
+        assert_eq!(app.ask_buttons(dialog(&app)), [true, true, true], "{arrow:?}");
+        assert!(app.ask_note(dialog(&app)).is_empty(), "{arrow:?}");
+        keys(&mut app, &[KeyCode::Esc]);
+        assert_eq!(app.mode, Mode::Normal, "{arrow:?}");
+    }
+    // Then → steps on through the options that apply here, in their order,
+    // and → held ends on the last; ← held ends on the first. Nothing goes
+    // round, and the cursor stays on its line.
+    let held = |app: &mut App, arrow: KeyCode, n: usize| -> Vec<&'static str> {
+        let line = dialog(app).line;
+        (0..n)
+            .map(|_| {
+                keys(app, &[arrow]);
+                dialog(app).set_at(line).map_or("unset", |k| dialog(app).options(line)[k])
+            })
+            .collect()
+    };
+    choose(&mut app, "Ask agent…");
+    assert_eq!(held(&mut app, KeyCode::Right, 5), ["answer only", "change patch", "change stack", "change stack", "change stack"]);
+    assert_eq!(held(&mut app, KeyCode::Left, 5), ["change patch", "answer only", "answer only", "answer only", "answer only"]);
+    assert_eq!(app.ask_buttons(dialog(&app)), [false, false, true]);
+    keys(&mut app, &[KeyCode::Down]);
+    assert_eq!(held(&mut app, KeyCode::Right, 7), ["low", "medium", "high", "xhigh", "max", "max", "max"]);
+    assert_eq!(held(&mut app, KeyCode::Left, 7), ["xhigh", "high", "medium", "low", "low", "low", "low"]);
+    assert_eq!((dialog(&app).line, dialog(&app).list), (1, None));
+    // The lines say what is set, and what the effort set does.
+    let lines = app.ask_lines(dialog(&app));
+    assert_eq!([&lines[0], &lines[2], &lines[3]], ["Permission: [answer only]", "Effort: [low]", "claude is given --effort low."]);
+    keys(&mut app, &[KeyCode::Esc]);
+    assert_eq!(app.mode, Mode::Normal);
+    assert!(Db::load(&db).unwrap().runs().is_empty(), "nothing asked");
+}
+
+#[test]
+fn enter_on_a_line_of_the_ask_dialog_opens_the_list_of_its_options_under_it_where_the_arrows_and_enter_pick_one() {
+    let (_tmp, db, _src) = setup();
+    let mut app = asking_about_a_line(&db);
+    let cursor = as_drawn(stacked::paint::on_cursor(ratatui::style::Style::new()));
+    let frame = as_drawn(stacked::paint::color::meta());
+    // Unset, Enter opens the list on the first option, and sets nothing.
+    keys(&mut app, &[KeyCode::Enter]);
+    let d = dialog(&app).clone();
+    assert_eq!((d.list, d.permission, d.line), (Some(0), None, 0));
+    // Drawn just under the line, from the column of its value, over the
+    // dialog, framed as a menu is: each option that applies here, in
+    // order, the one the list's cursor is on under the cursor.
+    let buf = drawn(&mut app, 30);
+    let screen = text_of(&buf);
+    let (vx, vy) = at(&screen, "Permission: [ — ]");
+    let (lx, ly) = (vx + "Permission: ".len() as u16, vy + 1);
+    let row = |y: u16| -> String { (lx..lx + 16).map(|x| buf[(x, y)].symbol()).collect() };
+    let rows: Vec<String> = (ly..ly + 5).map(row).collect();
+    assert_eq!(rows, ["┌──────────────┐", "│ answer only  │", "│ change patch │", "│ change stack │", "└──────────────┘"], "{screen}");
+    let looks_at = |x: u16, y: u16| {
+        let c = &buf[(x, y)];
+        (c.fg, c.bg, c.modifier)
+    };
+    assert_eq!(looks_at(lx, ly), frame, "the frame, as a menu's\n{screen}");
+    assert_eq!(looks_at(lx + 2, ly + 1), cursor, "answer only under the cursor\n{screen}");
+    assert_ne!(looks_at(lx + 2, ly + 2), cursor, "change patch not\n{screen}");
+    // The bottom bar and `?` say what Enter sets there, and how to leave.
+    assert_eq!(app.hint(), "↑↓ choose · enter: set the permission · esc: close the list · ?: what it does");
+    assert_eq!(
+        app.help(),
+        [
+            "Press Enter to set the permission to answer only and close the list. The agent answers, and changes nothing.",
+            "Press ↑↓ for another option, Esc to close the list and leave the permission as it was.",
+            "Nothing is set as the dialog opens, and nothing set in it is kept: each dialog opens unset.",
+        ]
+    );
+    // ↑ from the first goes round to the last, and ↓ from the last round
+    // to the first, as in a menu; End and Home go to either end. Nothing
+    // else in the dialog takes keys meanwhile: ← → set nothing, and the
+    // cursor stays on the line.
+    let mut seen = Vec::new();
+    for code in [KeyCode::Up, KeyCode::Down, KeyCode::Down, KeyCode::End, KeyCode::Home, KeyCode::Down] {
+        keys(&mut app, &[code]);
+        seen.push(dialog(&app).list.unwrap_or(9));
+    }
+    assert_eq!(seen, [2, 0, 1, 2, 0, 1]);
+    keys(&mut app, &[KeyCode::Left, KeyCode::Right, KeyCode::Right]);
+    assert_eq!((dialog(&app).list, dialog(&app).permission, dialog(&app).line), (Some(1), None, 0));
+    // Enter picks the option under the cursor and closes the list: the
+    // dialog still open, its cursor still on the line. Ask Now and Ask
+    // Later stay grayed, the effort unset.
+    keys(&mut app, &[KeyCode::Enter]);
+    let d = dialog(&app).clone();
+    assert_eq!((d.list, d.line), (None, 0));
+    assert_eq!(dialog_set(&app), (Some("change patch"), None));
+    assert_eq!(app.ask_buttons(&d), [false, false, true]);
+    assert_eq!(app.ask_note(&d), ["Ask Now and Ask Later are grayed until the effort is set."]);
+    let screen = draw(&mut app);
+    assert!(screen.contains(" Permission: [change patch] ") && !screen.contains("│ change stack │"), "the list closed:\n{screen}");
+    // Opened again, the list is on the one set; Esc closes it and leaves
+    // the line as it was, the dialog open.
+    keys(&mut app, &[KeyCode::Enter]);
+    assert_eq!(dialog(&app).list, Some(1));
+    keys(&mut app, &[KeyCode::Down, KeyCode::Esc]);
+    assert_eq!((dialog(&app).list, dialog(&app).line), (None, 0));
+    assert_eq!(dialog_set(&app), (Some("change patch"), None));
+    // The effort's list: low to max, on low while unset.
+    keys(&mut app, &[KeyCode::Down, KeyCode::Enter]);
+    assert_eq!((dialog(&app).line, dialog(&app).list, dialog(&app).effort), (1, Some(0), None));
+    assert_eq!(dialog(&app).options(1), ["low", "medium", "high", "xhigh", "max"]);
+    let screen = draw(&mut app);
+    let (ex, ey) = at(&screen, "Effort: [ — ]");
+    let list = ["┌────────┐", "│ low    │", "│ medium │", "│ high   │", "│ xhigh  │", "│ max    │", "└────────┘"];
+    for (k, level) in list.into_iter().enumerate() {
+        assert_eq!(at_from(&screen, level, ex as usize + 8), (ex + 8, ey + 1 + k as u16), "{level:?} under the line\n{screen}");
+    }
+    assert_eq!(app.hint(), "↑↓ choose · enter: set the effort · esc: close the list · ?: what it does");
+    assert_eq!(app.help()[0], "Press Enter to set the effort to low and close the list. claude is given --effort low.");
+    // ↑ round to max, and Enter sets it: both lines set, Ask Now and Ask
+    // Later can be pressed.
+    keys(&mut app, &[KeyCode::Up]);
+    assert_eq!(app.help()[0], "Press Enter to set the effort to max and close the list. claude is given --effort max.");
+    keys(&mut app, &[KeyCode::Enter]);
+    assert_eq!((dialog(&app).list, dialog(&app).line), (None, 1));
+    assert_eq!(dialog_set(&app), (Some("change patch"), Some("max")));
+    assert_eq!(app.ask_buttons(dialog(&app)), [true, true, true]);
+    // Opened again on max; Esc there leaves max set.
+    keys(&mut app, &[KeyCode::Enter]);
+    assert_eq!(dialog(&app).list, Some(4));
+    keys(&mut app, &[KeyCode::Home, KeyCode::Esc]);
+    assert_eq!((dialog(&app).list, dialog_set(&app)), (None, (Some("change patch"), Some("max"))));
+    // No list open, Esc cancels the dialog: nothing asked.
+    keys(&mut app, &[KeyCode::Esc]);
+    assert_eq!(app.mode, Mode::Normal);
+    assert!(Db::load(&db).unwrap().runs().is_empty(), "nothing asked");
+}
+
+#[test]
+fn a_click_on_a_line_of_the_ask_dialog_opens_its_list_one_on_an_option_picks_it_and_one_anywhere_else_closes_the_list_alone() {
+    let (_tmp, db, _src) = setup();
+    let mut app = asking_about_a_line(&db);
+    // A click on the permission's line opens its list, as Enter there does:
+    // on the first option, nothing set.
+    let screen = draw(&mut app);
+    let (px, py) = at(&screen, "Permission: [ — ]");
+    let (ex, ey) = at(&screen, "Effort: [ — ]");
+    app.click(px, py, false);
+    assert_eq!((dialog(&app).list, dialog(&app).permission, dialog(&app).line), (Some(0), None, 0));
+    // The mouse over an option takes the list's cursor there, and over the
+    // effort's line, nothing moves.
+    let (ox, oy) = option_at(&draw(&mut app), "change stack");
+    app.hover(ox, oy);
+    assert_eq!(dialog(&app).list, Some(2));
+    app.hover(ex, ey);
+    assert_eq!((dialog(&app).list, dialog(&app).line), (Some(2), 0));
+    // A click on an option picks it and closes the list, the dialog open.
+    let (ox, oy) = option_at(&draw(&mut app), "change patch");
+    app.click(ox, oy, false);
+    assert_eq!((dialog(&app).list, dialog(&app).line), (None, 0));
+    assert_eq!(dialog_set(&app), (Some("change patch"), None));
+    // Where the dialog draws its lines now: its note, saying that the
+    // effort alone is missing, is shorter, and so may the box be.
+    let screen = draw(&mut app);
+    let (px, py) = at(&screen, "Permission: [change patch]");
+    let (ex, ey) = at(&screen, "Effort: [ — ]");
+    let (cx, cy) = at(&screen, "< Cancel >");
+    // The list open again, a click anywhere else closes the list alone, as
+    // Esc there does, the line as it was: on the line itself, on the
+    // list's frame, on the effort's line, on a button, in the box on
+    // nothing, out of the box. None of them cancels the dialog, nor
+    // presses the button.
+    for (x, y, on) in [
+        (px, py, "the line"),
+        (px + 12, py + 1, "the list's frame"),
+        (ex, ey, "the effort's line"),
+        (cx, cy, "Cancel"),
+        (cx + 12, cy, "the box"),
+        (0, 2, "out of the box"),
+    ] {
+        app.click(px, py, false);
+        assert_eq!(dialog(&app).list, Some(1), "{on}");
+        draw(&mut app);
+        app.click(x, y, false);
+        assert!(matches!(app.mode, Mode::Ask(_)), "{on}: {:?}", app.mode);
+        assert_eq!((dialog(&app).list, dialog(&app).line), (None, 0), "{on}");
+        assert_eq!(dialog_set(&app), (Some("change patch"), None), "{on}");
+        assert!(!draw(&mut app).contains("│ change stack │"), "{on}: the list closed");
+    }
+    // The effort the same: a click on its line opens its list, on low, and
+    // a click on high sets it. Ask Now and Ask Later were grayed until then.
+    assert_eq!(app.ask_buttons(dialog(&app)), [false, false, true]);
+    app.click(ex, ey, false);
+    assert_eq!((dialog(&app).list, dialog(&app).line), (Some(0), 1));
+    let (ox, oy) = option_at(&draw(&mut app), "high");
+    app.click(ox, oy, false);
+    assert_eq!((dialog(&app).list, dialog(&app).line), (None, 1));
+    assert_eq!(dialog_set(&app), (Some("change patch"), Some("high")));
+    assert_eq!(app.ask_buttons(dialog(&app)), [true, true, true]);
+    // No list open, a click out of the box cancels: nothing asked.
+    draw(&mut app);
+    app.click(0, 2, false);
+    assert_eq!(app.mode, Mode::Normal);
+    assert!(Db::load(&db).unwrap().runs().is_empty(), "nothing asked");
+}
+
 #[test]
 fn ask_now_saves_what_changed_first_and_asks_at_the_permission_and_effort_set() {
     let (_tmp, db, _src) = setup();
@@ -10709,7 +10972,9 @@ fn ask_now_saves_what_changed_first_and_asks_at_the_permission_and_effort_set() 
     }
     assert!(app.help()[0].starts_with("Press Enter to open the dialog that saves the comment, then asks the agent about it: "), "{:?}", app.help());
     keys(&mut app, &[KeyCode::Enter]);
-    assert!(app.help()[0].starts_with("Press Enter to set what the agent may do: answer only first, then change patch and change stack"), "{:?}", app.help());
+    let help = app.help();
+    let opens = "Press Enter to open the list of what the agent may do here, to pick one: answer only, change patch or change stack.";
+    assert!(help[0].starts_with(opens), "{help:?}");
     assert_eq!(app.help()[2], "Nothing is set as the dialog opens, and nothing set in it is kept: each dialog opens unset.");
     // On a button grayed, Enter does nothing, and says why.
     keys(&mut app, &[KeyCode::Up]);
@@ -11011,7 +11276,7 @@ fn every_ask_agent_item_opens_the_dialog_with_the_permissions_that_apply_there()
     let counts: Vec<(&str, Option<usize>)> = dialog(&app).permissions.iter().map(|(p, n)| (p.label(), *n)).collect();
     assert_eq!(counts, [("answer only", Some(1)), ("change stack", Some(1)), ("build and test", Some(1))]);
     assert_eq!(dialog(&app).title, "ask the agent about the comments listed on the stack");
-    keys(&mut app, &[KeyCode::Enter, KeyCode::Enter]);
+    keys(&mut app, &[KeyCode::Right, KeyCode::Right]);
     let lines = app.ask_lines(dialog(&app));
     assert!(lines[1].starts_with("The agent works with the whole stack") && lines[1].ends_with(" 1 comment listed is asked about."), "{lines:?}");
     keys(&mut app, &[KeyCode::Esc]);
@@ -11092,7 +11357,7 @@ fn ask_now_is_grayed_while_the_network_is_checked_and_while_it_does_not_reach_th
     // Checked as the dialog opens: Ask Now grayed meanwhile, the dialog
     // saying so, though both lines are set; Ask Later not.
     choose(&mut app, "Ask agent…");
-    keys(&mut app, &[KeyCode::Enter, KeyCode::Down, KeyCode::Enter]);
+    keys(&mut app, &[KeyCode::Right, KeyCode::Down, KeyCode::Right]);
     let said = dialog(&app).target.clone().expect("checked").said;
     assert_eq!(app.ask_buttons(dialog(&app)), [false, true, true]);
     let checking = format!("Ask Now is grayed while stacked checks that the network reaches {said}.");
@@ -11170,7 +11435,9 @@ fn reached_ask_now_asks_and_the_settings_can_turn_the_network_s_check_off() {
     keys(&mut app, &[KeyCode::Esc]);
     choose(&mut app, "Ask agent…");
     assert_eq!(dialog(&app).target, None);
-    keys(&mut app, &[KeyCode::Enter, KeyCode::Down, KeyCode::Enter]);
+    // Each line set through its list: Enter opens it on the first, and
+    // Enter picks that.
+    keys(&mut app, &[KeyCode::Enter, KeyCode::Enter, KeyCode::Down, KeyCode::Enter, KeyCode::Enter]);
     assert_eq!(app.ask_buttons(dialog(&app)), [true, true, true]);
     assert!(app.ask_note(dialog(&app)).is_empty());
     keys(&mut app, &[KeyCode::Esc, KeyCode::Esc]);
@@ -11190,17 +11457,26 @@ fn the_ask_dialog_is_clicked_as_a_menu_is() {
     save(&mut app, "why so loud?");
     keys(&mut app, &[KeyCode::Down]);
     choose(&mut app, "Ask agent…");
-    // A click on a line steps it, as Enter there does; the mouse over a
-    // line takes the cursor there.
+    // A click on a line opens the list of its options, as Enter there
+    // does, and a click on an option picks it; the mouse over a line takes
+    // the cursor there.
     let (x, y) = at(&draw(&mut app), "Permission: [ — ]");
     app.click(x, y, false);
+    assert_eq!((dialog(&app).permission, dialog(&app).list), (None, Some(0)));
+    let (ox, oy) = option_at(&draw(&mut app), "answer only");
+    app.click(ox, oy, false);
     assert_eq!(dialog(&app).permission().map(|p| p.label()), Some("answer only"));
     app.click(x, y, false);
+    assert_eq!(dialog(&app).list, Some(0));
+    let (ox, oy) = option_at(&draw(&mut app), "change patch");
+    app.click(ox, oy, false);
     assert_eq!(dialog(&app).permission().map(|p| p.label()), Some("change patch"));
     let (x, y) = at(&draw(&mut app), "Effort: [ — ]");
     app.hover(x, y);
     assert_eq!(dialog(&app).line, 1);
     app.click(x, y, false);
+    let (ox, oy) = option_at(&draw(&mut app), "low");
+    app.click(ox, oy, false);
     assert_eq!(dialog(&app).effort.map(|e| e.name()), Some("low"));
     // A click in the box, on nothing, does nothing; on a button, presses
     // it: Ask Later, in the batch.
@@ -11706,7 +11982,7 @@ fn a_comment_asked_later_waits_in_the_batch() {
     // Later, the dialog's Ask Later: saved, then put in the batch, as `?`
     // says on it.
     choose(&mut app, "Ask agent…");
-    keys(&mut app, &[KeyCode::Enter, KeyCode::Down, KeyCode::Enter, KeyCode::Down, KeyCode::Right]);
+    keys(&mut app, &[KeyCode::Right, KeyCode::Down, KeyCode::Right, KeyCode::Down, KeyCode::Right]);
     assert_eq!(dialog(&app).button, Button::Later);
     assert_eq!(
         app.help()[0],

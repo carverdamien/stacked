@@ -634,10 +634,13 @@ pub enum Spot {
     /// Line `i` of the list of the view of why Move HEAD does not move
     /// HEAD.
     WhyLine(usize),
-    /// Line `i` of the ask dialog, the permission's or the effort's, which
-    /// a click steps; a button of it, which a click presses.
+    /// Line `i` of the ask dialog, the permission's or the effort's, where
+    /// a click opens the list of the line's options; a button of it, which
+    /// a click presses.
     AskLine(usize),
     AskButton(Button),
+    /// Option `k` of the list open in the ask dialog, which a click picks.
+    AskOption(usize),
 }
 
 /// That `spot` is drawn at `(x, y)` of `area`, `w` by `h`: what a click
@@ -1651,7 +1654,7 @@ fn about(action: &Action) -> String {
                 AskOf::Written { changed: false } => "asks the agent about the comment as it is",
             };
             format!(
-                "open the dialog that {what}: there, Enter on each line sets what the agent may do and how hard it works, both unset at first, then Ask Now asks, Ask Later puts the ask in the batch, and Cancel asks nothing"
+                "open the dialog that {what}: there, ← → on each line, or the list Enter opens there, set what the agent may do and how hard it works, both unset at first; then Ask Now asks, Ask Later puts the ask in the batch, and Cancel asks nothing"
             )
         }
         Action::AskUnsend(..) | Action::Unsend(..) => "take this comment's ask back from the agent's queue: the ask is not sent, and the comment stays open".into(),
@@ -3976,7 +3979,14 @@ impl App {
             Spot::ReviewLine(i) => self.reviewing.as_ref().is_some_and(|r| r.sel == i && !r.in_main),
             Spot::Found(i) => self.searching.as_ref().is_some_and(|s| s.sel == i),
             Spot::WhyLine(i) => self.on_why_line(i),
-            Spot::Item(_) | Spot::Choice(..) | Spot::Box | Spot::Editor | Spot::SearchScope | Spot::AskLine(_) | Spot::AskButton(_) => false,
+            Spot::Item(_)
+            | Spot::Choice(..)
+            | Spot::Box
+            | Spot::Editor
+            | Spot::SearchScope
+            | Spot::AskLine(_)
+            | Spot::AskButton(_)
+            | Spot::AskOption(_) => false,
         }
     }
 
@@ -4066,9 +4076,20 @@ impl App {
                     _ => press(self, KeyCode::Esc),
                 };
             }
-            // The ask dialog: a click on a line steps it, as Enter there
-            // does; on a button, presses it; out of the box, Esc, which
-            // cancels.
+            // The ask dialog: a click on a line opens the list of its
+            // options, as Enter there does; on a button, presses it; out of
+            // the box, Esc, which cancels. The list open, a click on one of
+            // its options picks it, as Enter there does, and a click
+            // anywhere else closes the list alone, as Esc there does.
+            Mode::Ask(d) if d.list.is_some() => {
+                return match spot {
+                    Some(Spot::AskOption(k)) => {
+                        d.list = Some(k);
+                        press(self, KeyCode::Enter)
+                    }
+                    _ => press(self, KeyCode::Esc),
+                };
+            }
             Mode::Ask(d) => {
                 return match spot {
                     Some(Spot::AskLine(k)) => {
@@ -4193,6 +4214,13 @@ impl App {
                     _ => {}
                 }
             }
+            // The list of a line's options open: over an option, the list's
+            // cursor goes there, and nothing else moves.
+            Mode::Ask(d) if d.list.is_some() => {
+                if let Spot::AskOption(k) = spot {
+                    d.list = Some(k);
+                }
+            }
             Mode::Ask(d) => match spot {
                 Spot::AskLine(k) => d.line = k,
                 Spot::AskButton(b) if pressable[b.at()] => {
@@ -4233,7 +4261,7 @@ impl App {
 
     /// `spot` picked, as the arrows would: whether it is one to pick.
     fn pick_spot(&mut self, spot: Spot) -> bool {
-        if !matches!(spot, Spot::Item(_) | Spot::Choice(..) | Spot::Box | Spot::Editor | Spot::AskLine(_) | Spot::AskButton(_)) {
+        if !matches!(spot, Spot::Item(_) | Spot::Choice(..) | Spot::Box | Spot::Editor | Spot::AskLine(_) | Spot::AskButton(_) | Spot::AskOption(_)) {
             let banner = matches!(spot, Spot::Banner | Spot::BannerLine(_));
             if banner && !self.on_banner {
                 self.open_banner(0);
@@ -4314,7 +4342,7 @@ impl App {
                 self.hist_focus = HistFocus::Diff;
                 self.hist_cursor = i;
             }
-            Spot::Item(_) | Spot::Choice(..) | Spot::Box | Spot::Editor | Spot::AskLine(_) | Spot::AskButton(_) => return false,
+            Spot::Item(_) | Spot::Choice(..) | Spot::Box | Spot::Editor | Spot::AskLine(_) | Spot::AskButton(_) | Spot::AskOption(_) => return false,
         }
         true
     }

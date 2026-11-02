@@ -1547,12 +1547,12 @@ is asked about; under it are two lines, then three buttons:
 ```
 ┌─ ask the agent about the comment on patch 1 · a.txt: TWO ────┐
 │ Permission: [ — ]                                            │
-│   Not set yet: Enter sets answer only first, then change     │
-│   patch and change stack, round past the last.               │
+│   Not set yet: ← or → sets answer only, then steps to change │
+│   patch and change stack. Enter opens the list of them.      │
 │                                                              │
 │ Effort: [ — ]                                                │
-│   Not set yet: Enter sets low first, then medium, high,      │
-│   xhigh and max, round past the last.                        │
+│   Not set yet: ← or → sets low, then steps to medium, high,  │
+│   xhigh and max. Enter opens the list of them.               │
 │                                                              │
 │ < Ask Now >   < Ask Later >   < Cancel >                     │
 │                                                              │
@@ -1563,18 +1563,52 @@ is asked about; under it are two lines, then three buttons:
 
 Both lines are unset as the dialog opens, every time: nothing set in a
 dialog is kept for the next one, for the stack or between runs, so that no
-ask goes as the one before it went by mistake. Enter on a line sets its
-first option, then each Enter the next, round past the last; ← → do
-nothing there, so that nothing changes by accident. ↑↓ go from line to
+ask goes as the one before it went by mistake. On a line, ← or → sets its
+first option, `answer only` or `low`, whichever the arrow, so that a stray
+key never sets the most permissive or the most expensive one; then → steps
+to the next option and ← to the one before, and neither goes round past
+either end, as the menus' dropdowns do: ← held ends on the first, and →
+held on the last.
+
+Enter on a line opens the list of its options, every one the line offers
+here, in their order, just under the line and over the dialog, framed as
+a menu is, the cursor on the one set, or on the first while the line is
+unset:
+
+```
+┌─ ask the agent about the comment on patch 1 · a.txt: TWO ────┐
+│ Permission: [ — ]                                            │
+│   Not set ye┌──────────────┐nswer only, then steps to change │
+│   patch and │ answer only  │ter opens the list of them.      │
+│             │ change patch │                                 │
+│ Effort: [ — │ change stack │                                 │
+│   Not set ye└──────────────┘ow, then steps to medium, high,  │
+│   xhigh and max. Enter opens the list of them.               │
+│                                                              │
+│ < Ask Now >   < Ask Later >   < Cancel >                     │
+│                                                              │
+│ Ask Now and Ask Later are grayed until the permission and    │
+│ the effort are set.                                          │
+└──────────────────────────────────────────────────────────────┘
+```
+
+In the list, ↑↓ go from option to option, round past either end as in a
+menu, and Home and End go to the first and the last; Enter sets the line
+to the option the cursor is on, and Esc leaves the line as it was. Either
+closes the list alone: the dialog stays open, the cursor on that line.
+While the list is open, the other keys of the dialog do nothing; the
+bottom bar and `?` say what Enter and Esc do there. ↑↓ go from line to
 line and to the buttons, where ← → go from one button to the next, past
 those grayed, and Enter presses the one the cursor is on. A click on a
-line steps it as Enter does, a click on a button presses it, and a click
-out of the dialog cancels it, as Esc and Cancel do: nothing is asked, and
-from the comment editor you are back to writing the comment. Ask Now and
-Ask Later are grayed until both lines are set, and the dialog says which
-one is missing. Ask Later puts the ask in the stack's batch (below). Ask
-Now is grayed as well while the agent cannot be reached, and the dialog
-says why:
+line opens its list, as Enter does, and a click on an option of the list
+sets the line to it; while the list is open, a click anywhere else closes
+the list alone, as Esc does there, and the dialog stays open. A click on
+a button presses it, and a click out of the dialog cancels it, as Esc and
+Cancel do: nothing is asked, and from the comment editor you are back to
+writing the comment. Ask Now and Ask Later are grayed until both lines
+are set, and the dialog says which one is missing. Ask Later puts the ask
+in the stack's batch (below). Ask Now is grayed as well while the agent
+cannot be reached, and the dialog says why:
 
 - `Ask Now is grayed: claude is not found on the PATH.` The program the
   asks run as claude (`$STACKED_CLAUDE`, else `agent.command`, else
@@ -4230,13 +4264,21 @@ permissions that apply there: a line's, a patch's as a whole, the
 stack's, a question's on the history, the comments listed with how many
 each asks about, the comment editor's, changed or as it is; both lines
 unset, Ask Now and Ask Later grayed and the dialog saying what is
-missing; Enter stepping each line round, ← → doing nothing on them, ↑↓
-going round to the buttons, ← → there past those grayed; Ask Now saving
-what changed first and asking at the permission and the effort set, the
-stand-in given that `--effort` and the tools of that way; Ask Later
-putting it in the batch; Cancel and Esc asking nothing, back to writing
-the comment; a second dialog unset, nothing kept for the stack; clicks
-stepping a line, pressing a button, cancelling out of the box; Ask Now
+missing; ← and → setting each line's first option from unset, then
+stepping on and stopping at either end; Enter opening the list of a
+line's options under it, on the one set or on the first, ↑↓ going round
+it, Home and End to its ends, ← → doing nothing in it, Enter picking an
+option and Esc leaving the line as it was, either closing the list alone,
+the dialog open on that line, and Ask Now and Ask Later grayed until both
+lines are set; ↑↓ going round to the buttons, ← → there past those
+grayed; Ask Now saving what changed first and asking at the permission
+and the effort set, the stand-in given that `--effort` and the tools of
+that way; Ask Later putting it in the batch; Cancel and Esc asking
+nothing, back to writing the comment; a second dialog unset, nothing
+kept for the stack; clicks opening a line's list, picking an option of
+it, closing the list alone from anywhere else, the mouse over an option
+taking the list's cursor there, pressing a button, cancelling out of the
+box; Ask Now
 grayed while the network is checked, saying so, and while it is not
 reached, saying how to turn the check off, Ask Later going all the same,
 a dialog opened a moment later not checking again; reached, Ask Now
@@ -4584,10 +4626,12 @@ first while `$EDITOR` runs left to `$EDITOR`, the second waiting for it),
 and two
 `stacked web` at once, each putting its database, named from where it
 runs, on the list StackED's Open Recent shows, the ask dialog (opened with
-nothing set from `Ask agent about all…`, clicked, its permission stepped
-by clicks, its effort by Enter, ← → doing nothing on its lines, Ask Now
-grayed as claude is not found, saying so, Ask Later putting the comments
-in the batch; Esc closing it, a second one unset), the effort of `Send it
+nothing set from `Ask agent about all…`, clicked, its permission set by
+clicks on its line and on an option of the list that opens under it, then
+stepped by → and back by ←, its effort picked in the list Enter opens, ↑
+and ↓ going round it, its lines set by → alone too, Ask Now grayed as
+claude is not found, saying so, Ask Later putting the comments in the
+batch; Esc closing it, a second one unset), the effort of `Send it
 now`, picked there alone, ← → no further than `low` and `max` and a click
 on it going round from `max` to `low`, the agent's turns headed with the
 effort it was asked at and its landed work named with it, in the banner
@@ -4646,8 +4690,10 @@ its review, listed with what you wrote and sending the work back; `Move HEAD…`
 it would not move HEAD, and the view of why opened from it, then left; the
 ask dialog opened with nothing set from a click on `Ask agent about all…`,
 Ask Now and Ask Later drawn dim, Ask Now as claude is not found, which it
-says, a click stepping its permission, Enter its effort, and a click on
-Ask Later putting the comment in the batch; the agent's turns headed
+says, a click on its permission's line opening the list of its options
+and a click on one of them picking it, Enter on its effort's line opening
+that line's list and Enter again picking low, and a click on Ask Later
+putting the comment in the batch; the agent's turns headed
 with the effort it was asked at, and its landed work named with it, in
 the banner and its review, a turn of before as ever; with
 moz-phab, the status of a patch's revision after its number, a letter,

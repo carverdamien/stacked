@@ -557,8 +557,9 @@ fn hows(app: &mut App) -> Vec<String> {
 }
 
 /// The open menu's `Ask agent…` chosen, and in the dialog it opens,
-/// `permission` set and the effort high, each with Enter on its line, then
-/// `button` pressed: Ask Now, or Ask Later.
+/// `permission` set and the effort high, each with → on its line (from
+/// unset, the first, then on), then `button` pressed: Ask Now, or Ask
+/// Later.
 fn ask_as(app: &mut App, permission: &str, button: &str) {
     ask_at(app, permission, stacked::db::Effort::High, button);
 }
@@ -573,7 +574,7 @@ fn ask_at(app: &mut App, permission: &str, effort: stacked::db::Effort, button: 
             {
                 return;
             }
-            key(app, KeyCode::Enter);
+            key(app, KeyCode::Right);
         }
         panic!("never so: {:?}", app.mode);
     };

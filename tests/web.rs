@@ -711,14 +711,27 @@ fn the_ask_dialog_opens_with_nothing_set_is_clicked_and_asks_later_in_the_browse
     assert!(seen.iter().any(|l| text(l).contains("ask the agent about the comments listed on the stack")), "{seen:#?}");
     until(&mut events, "its buttons", |l| text(l).contains("< Ask Now >   < Ask Later >   < Cancel >"));
     until(&mut events, "why Ask Now is grayed", |l| text(l).contains(&format!("Ask Now is grayed: {NO_CLAUDE} is not found")));
-    // A click on the permission's line steps it: answer only, then change
-    // stack.
+    // A click on the permission's line opens the list of its options under
+    // it, and a click on one of them picks it: answer only, then, the list
+    // opened again, change stack.
     click(&seen, "Permission: [ — ]");
+    let seen = until(&mut events, "the permission's list", |l| text(l).contains("│ answer only "));
+    click(&seen, "│ answer only ");
     let seen = until(&mut events, "answer only", |l| text(l).contains("Permission: [answer only]"));
     click(&seen, "Permission: [answer only]");
+    let seen = until(&mut events, "the list again", |l| text(l).contains("│ change stack "));
+    click(&seen, "│ change stack ");
     until(&mut events, "change stack", |l| text(l).contains("Permission: [change stack]"));
-    // ← → do nothing there; Enter on the effort's line sets low.
-    send(&["k Right -", "k Down -", "k Left -", "k Enter -"]);
+    // → steps it to the next, ← back.
+    send(&["k Right -"]);
+    until(&mut events, "build and test", |l| text(l).contains("Permission: [build and test]"));
+    send(&["k Left -"]);
+    until(&mut events, "change stack again", |l| text(l).contains("Permission: [change stack]"));
+    // Enter on the effort's line opens its list, on low: ↑ goes round to
+    // max, ↓ back round to low, and Enter sets it.
+    send(&["k Down -", "k Enter -"]);
+    until(&mut events, "the effort's list", |l| text(l).contains("│ xhigh  │"));
+    send(&["k Up -", "k Down -", "k Enter -"]);
     until(&mut events, "low", |l| text(l).contains("Effort: [low]"));
     // The buttons: → from Ask Now, grayed, to Ask Later, which batches it.
     send(&["k Down -", "k Right -", "k Enter -"]);
@@ -739,19 +752,20 @@ fn the_ask_dialog_s_esc_cancels_and_the_effort_of_send_it_now_stops_at_either_en
             ask(port, &host, &input, &format!("{l}\n"));
         }
     };
-    // Ask agent about all… with Enter, both lines set, then Esc: closed,
-    // nothing asked, as Space opens the menu again; opened again, nothing
-    // set.
+    // Ask agent about all… with Enter, both lines set with →, then Esc:
+    // closed, nothing asked, as Space opens the menu again; opened again,
+    // nothing set.
     until(&mut events, "the stack's menu", |l| text(l).contains("Ask agent about all…"));
     send(&["k Down -", "k Enter -"]);
     until(&mut events, "the dialog", |l| text(l).contains("Permission: [ — ]"));
-    send(&["k Enter -", "k Down -", "k Enter -", "k Esc -", "k c 20 -"]);
+    send(&["k Right -", "k Down -", "k Right -", "k Esc -", "k c 20 -"]);
     until(&mut events, "the menu again", |l| text(l).contains("Ask agent about all…"));
     send(&["k Down -", "k Enter -"]);
     until(&mut events, "opened again, unset", |l| text(l).contains("Permission: [ — ]"));
-    // Asked later, at low, from the dialog: the comment's own menu, in the
-    // comments pane, then has Send it now, at the effort it was batched at.
-    send(&["k Enter -", "k Down -", "k Enter -", "k Down -", "k Right -", "k Enter -"]);
+    // Asked later, at low, from the dialog, each line set with →: the
+    // comment's own menu, in the comments pane, then has Send it now, at
+    // the effort it was batched at.
+    send(&["k Right -", "k Down -", "k Right -", "k Down -", "k Right -", "k Enter -"]);
     until(&mut events, "batched", |l| text(l).contains("batched (answer only)"));
     send(&["k Right -", "k Right -", "k c 20 -"]);
     let sending = |l: &str, level: &str| {

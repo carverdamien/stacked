@@ -2,16 +2,23 @@
 //! the menu: a comment's, a question's on the history, the comments listed
 //! (`Ask agent about all…`), and the comment being written, from the menu
 //! Esc opens. On its first line, what the agent may do, its permission; on
-//! the second, how hard it works, its effort. Both are unset as it opens,
-//! and each is set with Enter on its line: the first option, then each
-//! Enter the next, round past the last; ← → change nothing there, so that
-//! nothing is set by mistake. Under them, its buttons: Ask Now, Ask Later
-//! (in the stack's batch) and Cancel, which Esc is too. Ask Now and Ask
-//! Later are grayed until both lines are set, and Ask Now while the agent
-//! cannot be reached (`reach`): its program not found, or the network not
-//! reaching the host claude talks to, checked away from the screen as the
-//! dialog opens, unless it was a moment ago. The dialog says what keeps
-//! each one grayed. Nothing set in it is kept: each dialog opens unset.
+//! the second, how hard it works, its effort. Both are unset as it opens.
+//! On a line, ← or → sets its first option, whichever the arrow, so that a
+//! stray key never sets the most permissive or the most expensive; then →
+//! the next and ← the one before, never round past either end, as the
+//! menus' dropdowns go. Enter on a line opens the list of its options under
+//! it, over the dialog, its cursor on the one set (the first, unset): ↑↓
+//! there go round past either end as in a menu, Home and End to the first
+//! and the last; Enter sets the line to the option the cursor is on, Esc
+//! leaves the line as it was, and either closes the list alone. While it is
+//! open, nothing else in the dialog takes keys. Under the lines, its
+//! buttons: Ask Now, Ask Later (in the stack's batch) and Cancel, which Esc
+//! is too. Ask Now and Ask Later are grayed until both lines are set, and
+//! Ask Now while the agent cannot be reached (`reach`): its program not
+//! found, or the network not reaching the host claude talks to, checked
+//! away from the screen as the dialog opens, unless it was a moment ago.
+//! The dialog says what keeps each one grayed. Nothing set in it is kept:
+//! each dialog opens unset.
 
 use super::*;
 use crate::reach;
@@ -147,14 +154,18 @@ pub struct AskDialog {
     /// The permissions that apply here, in order; of the comments listed,
     /// each with how many of them it asks about.
     pub permissions: Vec<(Permission, Option<usize>)>,
-    /// The permission set, by its place among those: none until Enter sets
-    /// one.
+    /// The permission set, by its place among those: none until ← →, or
+    /// the list Enter opens, sets one.
     pub permission: Option<usize>,
-    /// The effort set: none until Enter sets one.
+    /// The effort set: none until ← →, or the list Enter opens, sets one.
     pub effort: Option<Effort>,
     /// The line the cursor is on: `PERMISSION_LINE`, `EFFORT_LINE` or
     /// `BUTTONS_LINE`.
     pub line: usize,
+    /// The list of the options of the line the cursor is on, open under
+    /// that line: the place in it of the option its cursor is on. None
+    /// while no list is open.
+    pub list: Option<usize>,
     /// The button the cursor is on, on the buttons' line.
     pub button: Button,
     /// Why the agent's program cannot be run, if it cannot: Ask Now is
@@ -193,35 +204,111 @@ impl AskDialog {
         self.permission.and_then(|k| self.permissions.get(k)).and_then(|(_, n)| *n)
     }
 
-    /// Enter on the permission's line: the first, then the next, round
-    /// past the last.
-    fn step_permission(&mut self) {
-        let n = self.permissions.len().max(1);
-        self.permission = Some(self.permission.map_or(0, |k| (k + 1) % n));
+    /// The options of line `line`, as drawn, in order: the permissions that
+    /// apply here, or the efforts, low to max; none on the buttons' line.
+    pub fn options(&self, line: usize) -> Vec<&'static str> {
+        match line {
+            PERMISSION_LINE => self.permission_labels(),
+            EFFORT_LINE => Effort::NAMES.to_vec(),
+            _ => vec![],
+        }
     }
 
-    /// Enter on the effort's line: low, then the next level, round past the
+    /// The place among line `line`'s options of the one set, if one is.
+    pub fn set_at(&self, line: usize) -> Option<usize> {
+        match line {
+            PERMISSION_LINE => self.permission,
+            EFFORT_LINE => self.effort.map(|e| e as usize),
+            _ => None,
+        }
+    }
+
+    /// Line `line` set to its option at place `k`, if it has one there.
+    fn set_to(&mut self, line: usize, k: usize) {
+        match line {
+            PERMISSION_LINE if k < self.permissions.len() => self.permission = Some(k),
+            EFFORT_LINE if k < Effort::ALL.len() => self.effort = Some(Effort::ALL[k]),
+            _ => {}
+        }
+    }
+
+    /// ← (not `forward`) or → on line `line`: unset, its first option,
+    /// whichever the arrow; else the next or the one before, never round
+    /// past either end, so that ← held ends on the first and → held on the
     /// last.
-    fn step_effort(&mut self) {
-        let n = Effort::ALL.len();
-        self.effort = Some(self.effort.map_or(Effort::ALL[0], |e| Effort::ALL[(e as usize + 1) % n]));
+    fn step(&mut self, line: usize, forward: bool) {
+        let n = self.options(line).len();
+        if n == 0 {
+            return;
+        }
+        let k = match (self.set_at(line), forward) {
+            (None, _) => 0,
+            (Some(k), true) => (k + 1).min(n - 1),
+            (Some(k), false) => k.saturating_sub(1),
+        };
+        self.set_to(line, k);
+    }
+
+    /// Enter on the line the cursor is on: the list of its options opened,
+    /// its cursor on the one set, or on the first while the line is unset.
+    fn open_list(&mut self) {
+        self.list = Some(self.set_at(self.line).unwrap_or(0));
+    }
+
+    /// A key in the list open, the only keys the dialog takes while it is
+    /// open: ↑↓ from option to option, round past either end as in a menu,
+    /// Home and End to the first and the last; Enter sets the line to the
+    /// option the cursor is on, and Esc leaves the line as it was: either
+    /// closes the list alone, the cursor staying on that line. Any other key
+    /// does nothing.
+    fn list_key(&mut self, code: KeyCode) {
+        let Some(at) = self.list else { return };
+        let n = self.options(self.line).len().max(1);
+        match code {
+            KeyCode::Down => self.list = Some((at + 1) % n),
+            KeyCode::Up => self.list = Some((at + n - 1) % n),
+            KeyCode::Home => self.list = Some(0),
+            KeyCode::End => self.list = Some(n - 1),
+            KeyCode::Enter => {
+                self.set_to(self.line, at);
+                self.list = None;
+            }
+            KeyCode::Esc => self.list = None,
+            _ => {}
+        }
     }
 }
 
-/// `labels`, in the order Enter sets them, round past the last: `answer
-/// only first, then change patch and change stack, round past the last`;
-/// one alone, `answer only, the only one here`.
-fn in_turn(labels: &[&str]) -> String {
+/// `labels` one after the other, the last after `and`: `low, medium and
+/// high`.
+fn and_list(labels: &[&str]) -> String {
+    match labels.split_last() {
+        None => String::new(),
+        Some((last, [])) => last.to_string(),
+        Some((last, rest)) => format!("{} and {last}", rest.join(", ")),
+    }
+}
+
+/// `labels`, one to pick, the last after `or`: `answer only, change patch
+/// or change stack`; one alone, `answer only, the only one here`.
+fn one_of(labels: &[&str]) -> String {
+    match labels.split_last() {
+        None => String::new(),
+        Some((last, [])) => format!("{last}, the only one here"),
+        Some((last, rest)) => format!("{} or {last}", rest.join(", ")),
+    }
+}
+
+/// What ← → and Enter do on a line not set yet, of options `labels` in
+/// order: `← or → sets answer only, then steps to change patch and change
+/// stack. Enter opens the list of them`; one alone, `← or → sets answer
+/// only, the only one here. Enter opens the list, which holds that one
+/// alone`.
+fn unset_keys(labels: &[&str]) -> String {
     match labels {
         [] => String::new(),
-        [one] => format!("{one}, the only one here"),
-        [first, rest @ ..] => {
-            let (last, between) = rest.split_last().unwrap_or((first, &[]));
-            match between {
-                [] => format!("{first} first, then {last}, round past the last"),
-                _ => format!("{first} first, then {} and {last}, round past the last", between.join(", ")),
-            }
-        }
+        [one] => format!("← or → sets {one}, the only one here. Enter opens the list, which holds that one alone"),
+        [first, rest @ ..] => format!("← or → sets {first}, then steps to {}. Enter opens the list of them", and_list(rest)),
     }
 }
 
@@ -264,6 +351,7 @@ impl App {
             permission: None,
             effort: None,
             line: PERMISSION_LINE,
+            list: None,
             button: Button::Now,
             missing,
             target,
@@ -477,11 +565,11 @@ impl App {
 
     /// What the line under dialog `d`'s permission says: what the one set
     /// lets the agent do, and of the comments listed, how many it asks
-    /// about; unset, what Enter sets.
+    /// about; unset, what ← → set and what Enter opens.
     fn permission_said(&self, d: &AskDialog) -> String {
         let listed = matches!(d.about, AskOf::Listed { .. });
         match (d.permission(), d.count()) {
-            (None, _) => format!("Not set yet: Enter sets {}.", in_turn(&d.permission_labels())),
+            (None, _) => format!("Not set yet: {}.", unset_keys(&d.permission_labels())),
             (Some(p), Some(0)) => format!("{} No comment listed can be asked so.", p.said(listed)),
             (Some(p), Some(1)) => format!("{} 1 comment listed is asked about.", p.said(listed)),
             (Some(p), Some(n)) => format!("{} {n} comments listed are asked about.", p.said(listed)),
@@ -492,7 +580,7 @@ impl App {
     /// What the line under dialog `d`'s effort says.
     fn effort_said(d: &AskDialog) -> String {
         match d.effort {
-            None => format!("Not set yet: Enter sets {}.", in_turn(&Effort::NAMES)),
+            None => format!("Not set yet: {}.", unset_keys(&Effort::NAMES)),
             Some(e) => format!("claude is given --effort {}.", e.name()),
         }
     }
@@ -510,10 +598,17 @@ impl App {
     }
 
     /// A key in the ask dialog `d`: ↑↓ from line to line and to the
-    /// buttons; Enter steps a line, or presses the button the cursor is on;
-    /// ← → from button to button, past those grayed, and nothing on the two
-    /// lines; Esc cancels.
+    /// buttons; on the two lines, ← → step the option set, the first from
+    /// unset, and Enter opens the list of the line's options; on the
+    /// buttons, ← → from button to button, past those grayed, and Enter
+    /// presses the one the cursor is on; Esc cancels. The list open, its own
+    /// keys alone (`AskDialog::list_key`).
     pub(super) fn ask_key(&mut self, mut d: AskDialog, k: KeyEvent) -> Effect {
+        if d.list.is_some() {
+            d.list_key(k.code);
+            self.mode = Mode::Ask(Box::new(d));
+            return Effect::None;
+        }
         match k.code {
             KeyCode::Down => d.line = (d.line + 1) % 3,
             KeyCode::Up => d.line = (d.line + 2) % 3,
@@ -530,11 +625,11 @@ impl App {
                     d.button = Button::ALL[n];
                 }
             }
-            // On the two lines, nothing: Enter alone sets them.
-            KeyCode::Left | KeyCode::Right => {}
+            // On the two lines, the option set stepped: the first from
+            // unset, whichever the arrow, then none past either end.
+            KeyCode::Left | KeyCode::Right => d.step(d.line, k.code == KeyCode::Right),
             KeyCode::Enter => match d.line {
-                PERMISSION_LINE => d.step_permission(),
-                EFFORT_LINE => d.step_effort(),
+                PERMISSION_LINE | EFFORT_LINE => d.open_list(),
                 _ => return self.press_ask(d),
             },
             KeyCode::Esc => return self.cancel_ask(d),
@@ -619,8 +714,22 @@ impl App {
     }
 
     /// What can be done in dialog `d`, said: what Enter does first, then
-    /// where the arrows go, and that nothing is kept.
+    /// where the arrows go, and that nothing is kept. The list open, what
+    /// Enter sets there, and how to go through the list or leave it.
     pub(super) fn ask_help(&self, d: &AskDialog) -> Vec<String> {
+        let kept = "Nothing is set as the dialog opens, and nothing set in it is kept: each dialog opens unset.".to_string();
+        if let Some(at) = d.list {
+            let (what, said) = match d.line {
+                PERMISSION_LINE => ("permission", self.permission_said(&AskDialog { permission: Some(at), ..d.clone() })),
+                _ => ("effort", App::effort_said(&AskDialog { effort: Effort::ALL.get(at).copied(), ..d.clone() })),
+            };
+            let option = d.options(d.line).get(at).copied().unwrap_or_default();
+            return vec![
+                format!("Press Enter to set the {what} to {option} and close the list. {said}"),
+                format!("Press ↑↓ for another option, Esc to close the list and leave the {what} as it was."),
+                kept,
+            ];
+        }
         let on = self.ask_buttons(d);
         let written = match d.about {
             AskOf::Written { changed: true } => "save the comment, then ",
@@ -628,12 +737,12 @@ impl App {
         };
         let first = match (d.line, d.button) {
             (PERMISSION_LINE, _) => format!(
-                "Press Enter to set what the agent may do: {}. The line under the permission says what the one set lets the agent do.",
-                in_turn(&d.permission_labels())
+                "Press Enter to open the list of what the agent may do here, to pick one: {}. The line under the permission says what the one set lets the agent do.",
+                one_of(&d.permission_labels())
             ),
             (EFFORT_LINE, _) => format!(
-                "Press Enter to set how hard the agent works, as claude's --effort takes it: {}.",
-                in_turn(&Effort::NAMES)
+                "Press Enter to open the list of how hard the agent works, as claude's --effort takes it, to pick one: {}.",
+                one_of(&Effort::NAMES)
             ),
             (_, b) if !on[b.at()] => self.ask_note(d).into_iter().find(|l| l.contains(b.label())).unwrap_or_else(|| format!("{} is grayed.", b.label())),
             (_, Button::Now) => format!("Press Enter to {written}ask the agent now, as the two lines say: the ask starts at once, or waits its turn."),
@@ -645,19 +754,29 @@ impl App {
                 _ => "Press Enter to close the dialog: nothing is asked.".into(),
             },
         };
-        vec![
-            first,
-            "Press ↑↓ to go from line to line and to the buttons. On the buttons, ← → go from one to the next; on the two lines, they change nothing. Esc closes the dialog, as Cancel does."
+        let arrows = match d.line {
+            PERMISSION_LINE | EFFORT_LINE => {
+                let (what, from_unset) = match d.line {
+                    PERMISSION_LINE => ("permission", d.permission_labels().first().copied().unwrap_or_default()),
+                    _ => ("effort", Effort::NAMES[0]),
+                };
+                format!(
+                    "Press ← or → to set the {what} without the list: from unset, either sets {from_unset}; then → steps to the next and ← to the one before, and neither goes round past either end. Press ↑↓ to go from line to line and to the buttons. Esc closes the dialog, as Cancel does."
+                )
+            }
+            _ => "Press ↑↓ to go from line to line and to the buttons. On the buttons, ← → go from one to the next, past those grayed; on the two lines, they set the permission and the effort. Esc closes the dialog, as Cancel does."
                 .into(),
-            "Nothing is set as the dialog opens, and nothing set in it is kept: each dialog opens unset.".into(),
-        ]
+        };
+        vec![first, arrows, kept]
     }
 
     /// The keys there are in dialog `d`.
     pub(super) fn ask_hint(d: &AskDialog) -> String {
-        match d.line {
-            PERMISSION_LINE => "↑↓ choose · enter: set the permission · esc: cancel · ?: what it does".into(),
-            EFFORT_LINE => "↑↓ choose · enter: set the effort · esc: cancel · ?: what it does".into(),
+        match (d.line, d.list) {
+            (PERMISSION_LINE, Some(_)) => "↑↓ choose · enter: set the permission · esc: close the list · ?: what it does".into(),
+            (EFFORT_LINE, Some(_)) => "↑↓ choose · enter: set the effort · esc: close the list · ?: what it does".into(),
+            (PERMISSION_LINE, None) => "↑↓ choose · ←→: set the permission · enter: open the list · esc: cancel · ?: what it does".into(),
+            (EFFORT_LINE, None) => "↑↓ choose · ←→: set the effort · enter: open the list · esc: cancel · ?: what it does".into(),
             _ => "↑↓ choose · ←→: another button · enter: press it · esc: cancel · ?: what it does".into(),
         }
     }
@@ -697,6 +816,10 @@ impl App {
         let mut under_effort = wrap(&effort_said, said_w);
         under_effort.resize(unset.max(under_effort.len()), String::new());
         let note: Vec<String> = note.iter().flat_map(|l| wrap(l, bw.saturating_sub(4))).collect();
+        // Where each line's value starts, `[ — ]`: the list of its options
+        // opens under it.
+        let value_at = |line: &str| line.chars().take_while(|c| *c != '[').count();
+        let (permission_col, effort_col) = (value_at(&permission), value_at(&effort));
         // Each line from the top: what it says, in its style, and what a
         // click there is on; none for the buttons' line.
         let line_st = |k: usize| if d.line == k { on_cursor(Style::new()) } else { Style::new() };
@@ -745,6 +868,33 @@ impl App {
                 }
             }
         }
+        // The list of the options of the line the cursor is on, open: just
+        // under that line, from the column of its value, over the dialog and
+        // past its edge if need be; above the line where the area has no
+        // room under it. Framed as a menu is, the option its cursor is on
+        // under the cursor, each option a spot of its own, which a click
+        // picks.
+        let Some(at) = d.list else { return };
+        let (k, col) = match d.line {
+            PERMISSION_LINE => (0, permission_col),
+            EFFORT_LINE => (1 + under_permission.len(), effort_col),
+            _ => return,
+        };
+        // The line itself not drawn, the box too small for it: no list.
+        if k + 2 >= bh {
+            return;
+        }
+        let options = d.options(d.line);
+        let lw = options.iter().map(|o| o.chars().count()).max().unwrap_or(0) + 4;
+        let lh = options.len() + 2;
+        let lx = (x + 2 + col).min(w.saturating_sub(lw));
+        let ly = next_to(area.y + (y + 1 + k) as u16, area.y, lh, h);
+        window(buf, area, lx, ly, lw, lh, "", color::meta());
+        for (j, option) in options.iter().enumerate() {
+            let st = if j == at { on_cursor(Style::new()) } else { Style::new() };
+            put(buf, area, lx + 1, ly + 1 + j, lw - 2, &fit(&format!(" {option}"), lw - 2), st);
+            spot_in(&self.spots, area, (lx + 1, ly + 1 + j, lw - 2, 1), Spot::AskOption(j));
+        }
     }
 }
 
@@ -753,19 +903,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_options_are_said_in_the_order_enter_sets_them() {
-        assert_eq!(in_turn(&["answer only"]), "answer only, the only one here");
-        assert_eq!(in_turn(&["answer only", "change stack"]), "answer only first, then change stack, round past the last");
+    fn the_options_are_said_in_the_order_the_arrows_step_through_them() {
+        assert_eq!(unset_keys(&["answer only"]), "← or → sets answer only, the only one here. Enter opens the list, which holds that one alone");
+        assert_eq!(unset_keys(&["answer only", "change stack"]), "← or → sets answer only, then steps to change stack. Enter opens the list of them");
         assert_eq!(
-            in_turn(&["answer only", "change patch", "change stack"]),
-            "answer only first, then change patch and change stack, round past the last"
+            unset_keys(&["answer only", "change patch", "change stack"]),
+            "← or → sets answer only, then steps to change patch and change stack. Enter opens the list of them"
         );
-        assert_eq!(in_turn(&Effort::NAMES), "low first, then medium, high, xhigh and max, round past the last");
+        assert_eq!(unset_keys(&Effort::NAMES), "← or → sets low, then steps to medium, high, xhigh and max. Enter opens the list of them");
+        // As `?` says what the list holds, to pick one.
+        assert_eq!(one_of(&["answer only"]), "answer only, the only one here");
+        assert_eq!(one_of(&["answer only", "change stack"]), "answer only or change stack");
+        assert_eq!(one_of(&Effort::NAMES), Effort::listed());
     }
 
-    #[test]
-    fn enter_steps_each_line_from_unset_round_past_the_last() {
-        let mut d = AskDialog {
+    /// A dialog of the comments listed, nothing set, the cursor on its
+    /// permission's line.
+    fn listed() -> AskDialog {
+        AskDialog {
             title: String::new(),
             about: AskOf::Listed { test: false },
             on_stack: false,
@@ -773,23 +928,42 @@ mod tests {
             permission: None,
             effort: None,
             line: PERMISSION_LINE,
+            list: None,
             button: Button::Now,
             missing: None,
             target: None,
             at: None,
-        };
-        let mut seen = Vec::new();
-        for _ in 0..4 {
-            d.step_permission();
-            seen.push(d.permission().map(Permission::label));
         }
-        assert_eq!(seen, [Some("answer only"), Some("change patch"), Some("change stack"), Some("answer only")]);
-        let mut seen = Vec::new();
-        for _ in 0..6 {
-            d.step_effort();
-            seen.push(d.effort.map(Effort::name));
+    }
+
+    #[test]
+    fn the_arrows_step_each_line_from_unset_to_its_first_option_and_stop_at_either_end() {
+        // From unset, either arrow sets the first option.
+        for forward in [false, true] {
+            let mut d = listed();
+            d.step(PERMISSION_LINE, forward);
+            d.step(EFFORT_LINE, forward);
+            assert_eq!((d.permission().map(Permission::label), d.effort.map(Effort::name)), (Some("answer only"), Some("low")), "{forward}");
         }
-        assert_eq!(seen, ["low", "medium", "high", "xhigh", "max", "low"].map(Some));
+        // Then → steps on, and stops on the last; ← back, and stops on the
+        // first.
+        let mut d = listed();
+        let mut seen = Vec::new();
+        for forward in [true, true, true, true, false, false, false] {
+            d.step(PERMISSION_LINE, forward);
+            seen.push(d.permission().map(Permission::label).unwrap_or_default());
+        }
+        assert_eq!(seen, ["answer only", "change patch", "change stack", "change stack", "change patch", "answer only", "answer only"]);
+        let mut seen = Vec::new();
+        for forward in [true; 6].into_iter().chain([false; 6]) {
+            d.step(EFFORT_LINE, forward);
+            seen.push(d.effort.map(Effort::name).unwrap_or_default());
+        }
+        assert_eq!(seen, ["low", "medium", "high", "xhigh", "max", "max", "xhigh", "high", "medium", "low", "low", "low"]);
+        // The buttons' line has no options: nothing set there.
+        let before = d.clone();
+        d.step(BUTTONS_LINE, true);
+        assert_eq!(d, before);
         // Of the comments listed, a change is never of the whole stack; of a
         // patch's comment, change stack is.
         assert!(!d.whole(Permission::ChangeStack));
@@ -797,5 +971,46 @@ mod tests {
         assert!(d.whole(Permission::ChangeStack) && !d.whole(Permission::ChangePatch));
         d.on_stack = true;
         assert!(!d.whole(Permission::ChangeStack));
+    }
+
+    #[test]
+    fn the_list_of_a_line_s_options_goes_round_as_a_menu_does_and_closes_with_enter_or_esc() {
+        let mut d = listed();
+        // Unset, it opens on the first; ↑ from there goes round to the
+        // last, ↓ from the last round to the first; Home and End go to
+        // either end. Nothing is set meanwhile.
+        d.open_list();
+        assert_eq!(d.list, Some(0));
+        let mut seen = Vec::new();
+        for code in [KeyCode::Up, KeyCode::Down, KeyCode::Down, KeyCode::End, KeyCode::Home] {
+            d.list_key(code);
+            seen.push(d.list.unwrap_or(9));
+        }
+        assert_eq!(seen, [2, 0, 1, 2, 0]);
+        // ← →, and the keys the list does not take, do nothing in it.
+        for code in [KeyCode::Left, KeyCode::Right, KeyCode::Tab, KeyCode::Char(' ')] {
+            d.list_key(code);
+        }
+        assert_eq!((d.list, d.permission), (Some(0), None));
+        // Enter sets the option the cursor is on and closes the list, the
+        // cursor still on that line.
+        d.list_key(KeyCode::End);
+        d.list_key(KeyCode::Enter);
+        assert_eq!((d.list, d.permission().map(Permission::label), d.line), (None, Some("change stack"), PERMISSION_LINE));
+        // Opened again, it is on the one set; Esc leaves the line as it was.
+        d.open_list();
+        assert_eq!(d.list, Some(2));
+        d.list_key(KeyCode::Up);
+        d.list_key(KeyCode::Esc);
+        assert_eq!((d.list, d.permission().map(Permission::label)), (None, Some("change stack")));
+        // The effort's: low to max, on the level set.
+        d.line = EFFORT_LINE;
+        d.open_list();
+        assert_eq!((d.list, d.options(EFFORT_LINE).len()), (Some(0), 5));
+        d.list_key(KeyCode::Up);
+        d.list_key(KeyCode::Enter);
+        assert_eq!(d.effort.map(Effort::name), Some("max"));
+        d.open_list();
+        assert_eq!(d.list, Some(4));
     }
 }
