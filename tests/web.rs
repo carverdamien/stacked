@@ -1188,6 +1188,23 @@ fn what_was_closed_here_scrolls_to_its_end_with_the_arrows_and_the_wheel_in_the_
 }
 
 #[test]
+fn up_on_a_patch_listing_files_goes_to_the_last_file_of_the_one_above_with_the_wheel_in_the_browser_too() {
+    let (_tmp, db) = setup();
+    stacked::config::init(stacked::config::Config::default());
+    let (port, token) = stacked::web::start(db).unwrap();
+    let (host, input) = (format!("127.0.0.1:{port}"), format!("POST /input?t={token}"));
+    let mut events = events(port, &token, 100);
+    until(&mut events, "the patches", |l| l.starts_with("data: r 3 ") && l.contains("Bug 2 - add b"));
+    // Listing files, down to patch 2's line, its file under it.
+    ask(port, &host, &input, "k Left -\nk Down -\nk Down -\n");
+    until(&mut events, "patch 2's file", |l| l.starts_with("data: r 4 ") && text(l).contains("b.txt"));
+    // The wheel turned a notch up, which the page sends as ↑: patch 1's
+    // file listed in place of patch 2's, the cursor on it.
+    ask(port, &host, &input, "k Up -\n");
+    until(&mut events, "patch 1's last file", |l| l.starts_with("data: r 3 ") && l.contains(",,64\u{1f}      a.txt"));
+}
+
+#[test]
 fn what_waits_its_turn_is_taken_out_of_the_queue_from_the_banner_once_asked_in_the_browser_too() {
     let (_tmp, db) = setup();
     waiting_their_turn(&db);

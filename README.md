@@ -834,10 +834,14 @@ them other keys, and the help then names those:
   list: on a file, the middle shows it at once, its name at the top; ↑
   above the first file goes back to the patch itself, from its start, and
   ↓ under the last picks the next patch, whose files are listed in place
-  of the others. Enter or → on a file goes into the middle there, and a
-  click on a file goes to it. While the cursor is in the middle, the pane
-  shows the file the cursor is in as picked, and ← comes back to that
-  file. ← again hides the patches, for the middle to have the width, and ←
+  of the others. ↑ from a patch, or from HEAD's row, to the patch above
+  picks it in the same way, its files listed in place of the others, and
+  goes to the last of them, so that ↑ goes back up the lines that ↓ came
+  down; when the patch above has no file to list, ↑ goes to that patch
+  itself. Enter or → on a file goes into the middle there, and a click on
+  a file goes to it. While the cursor is in the middle, the pane shows the
+  file the cursor is in as picked, and ← comes back to that file. ← again
+  hides the patches, for the middle to have the width, and ←
   from the middle brings them back expanded. → on the comments makes them
   compact, a line for each (who, and where it is); → again hides them, the
   bar saying how many there are; and → from the middle brings them back
@@ -4567,20 +4571,25 @@ refused), the comment editor hiding
 nothing in each view of the code, each pane keeping where its cursor
 was, the patches pane longer than the screen scrolling only once the
 cursor would leave it, as far as the cursor needs (down to the end and up
-again, a page at a time, Home and End, titles folded, files listed, HEAD's
-rows and its line pinned to either edge, a patch and HEAD being moved,
-HEAD moved, a comment on the patch written from a file, the cursor in the
-middle, the screen smaller and larger, wider and narrower, the stack
-losing patches, and another stack shown, its pane as if never drawn) and
+again, a page at a time, Home and End, titles folded, files listed, ↑
+from a patch onto the last file of the patch above and ↓ back again, from
+the top line too, HEAD's rows and its line pinned to either edge, a patch
+and HEAD being moved, HEAD moved, a comment on the patch written from a
+file, the cursor in the middle, the screen smaller and larger, wider and
+narrower, the stack losing patches, and another stack shown, its pane as
+if never drawn) and
 the comments pane likewise, the patch's title kept at the top of the
 middle, the patches pane's
 states (expanded, files, hidden) and its files (listed under the patch
-picked, gone through with the arrows past their ends, gone into with
-Enter and →, clicked, and picked from the middle, where ← comes back to
-the file; reading, each saying the lines left to mark read as marks are
-made and taken back, those of white space alone counted only as the
-settings say, a file with no newline at its end ticked once read whole,
-its patch too, the pane keeping its width from patch to patch), the
+picked, gone through with the arrows past their ends, over the same lines
+up as down, ↑ on a patch or on HEAD's row going to the last file of the
+patch above, reading too, or to that patch itself when it has no file to
+list, gone into with Enter and →, clicked, and picked from the middle,
+where ← comes back to the file; reading, each saying the lines left to
+mark read as marks are made and taken back, those of white space alone
+counted only as the settings say, a file with no newline at its end ticked
+once read whole, its patch too, the pane keeping its width from patch to
+patch), the
 statuses of the revisions there (with moz-phab, each status after its
 patch's number, a letter listing files and expanded alike, `[?]` for one
 stacked does not know, no words; none before it is read, nor for a patch
@@ -4664,10 +4673,11 @@ view showing the parent first, then the code), and the comments pane's states (e
 compact, hidden) and the compact view of the code as they were. With the `web` feature, `tests/web.rs`
 serves the editor and asks it over HTTP as a browser would: the token
 needed, the page, the wasm, the rows as they change, a key and a click,
-and the editor left, the page told, the worktree made ahead removed (Quit
-in the page; `stacked web` itself sent SIGINT, SIGTERM or SIGHUP, the
-first while `$EDITOR` runs left to `$EDITOR`, the second waiting for it),
-and two
+the wheel's ↑ on a patch, listing files, going to the last file of the
+patch above, and the editor left, the page told, the worktree made ahead
+removed (Quit in the page; `stacked web` itself sent SIGINT, SIGTERM or
+SIGHUP, the first while `$EDITOR` runs left to `$EDITOR`, the second
+waiting for it), and two
 `stacked web` at once, each putting its database, named from where it
 runs, on the list StackED's Open Recent shows, the ask dialog (opened with
 nothing set from `Ask agent about all…`, clicked, its permission set by
@@ -4712,10 +4722,12 @@ when the page has it again (unless the mouse left the page), so that the
 click that gives the page the focus back acts on that cell, whether the
 browser sends the click before the focus or after. With
 the `app` feature, `tests/app.rs` runs StackED's editor as its window runs
-it, with no window: nothing drawn before the window's size, a key, a click,
-the mouse over a patch then gone, a window too small, the wait while
-`$EDITOR` runs (an editor that edits nothing, set in the test's settings),
-quit, the command there, a link of a line of a message opened from the
+it, with no window: nothing drawn before the window's size, a key, a
+click, ↑ on a patch, listing files, going to the last file of the patch
+above, as the wheel's ↑ does, the mouse over a patch then gone, a window
+too small, the wait while `$EDITOR` runs (an editor that edits nothing,
+set in the test's settings), quit, the command there, a link of a line of
+a message opened from the
 menu of a right click on it and with `o` (the status line saying it is
 opening it while the stand-in is held, then that it opened it), and one
 of a line of a comment from its menu, by a stand-in, the comment closed

@@ -2746,25 +2746,199 @@ fn down_past_the_last_file_picks_the_next_patch_its_files_listed() {
 fn up_past_the_first_file_reaches_the_patch_then_the_one_above() {
     let (_tmp, db, _src) = setup_files();
     let mut app = open(&db).unwrap();
-    keys(&mut app, &[KeyCode::Left, KeyCode::End, KeyCode::Up, KeyCode::Down]);
+    keys(&mut app, &[KeyCode::Left, KeyCode::Down, KeyCode::Down, KeyCode::Down, KeyCode::Down]);
     assert_eq!((app.sel, app.file_on()), (1, Some(0)));
     assert_eq!(app.rows[app.cursor].text, "b.txt");
     // The patch itself, the middle on it from its start.
     keys(&mut app, &[KeyCode::Up]);
     assert_eq!((app.sel, app.file_on(), app.cursor, app.top), (1, None, 0, 0));
     assert!(pane_cell(&mut app, "2 Bug 2").modifier.contains(ratatui::style::Modifier::REVERSED));
-    // Then the one above, picked as any: its own files listed in place.
+    // Then the one above, on its last file: its own files listed in place.
     keys(&mut app, &[KeyCode::Up]);
-    assert_eq!((app.sel, app.file_on()), (0, None));
+    assert_eq!((app.sel, app.file_on()), (0, Some(1)));
     let words = pane_words(&draw(&mut app));
     assert_eq!(words[..3], ["1 Bug 1 - two files", "a.txt +4 −4", "…/urlbar/src/tui/banner.rs"], "{words:?}");
     assert!(!words.iter().any(|w| w.starts_with("b.txt")), "{words:?}");
     // Esc from a file goes up to its patch too; from the patch, to the
     // header.
-    keys(&mut app, &[KeyCode::Down, KeyCode::Down, KeyCode::Esc]);
+    keys(&mut app, &[KeyCode::Esc]);
     assert_eq!((app.sel, app.file_on(), app.on_stack), (0, None, false));
     keys(&mut app, &[KeyCode::Esc]);
     assert!(app.on_stack);
+}
+
+#[test]
+fn up_on_a_patch_goes_to_the_last_file_of_the_one_above_its_files_listed_in_place() {
+    use ratatui::style::Modifier;
+    let (_tmp, db, _src) = setup_files();
+    let mut app = open(&db).unwrap();
+    // Listing files, on patch 2's line, its files under it: `?` says where
+    // ↑ goes.
+    keys(&mut app, &[KeyCode::Left, KeyCode::Down, KeyCode::Down, KeyCode::Down]);
+    assert_eq!((app.sel, app.file_on()), (1, None));
+    let said = "Press ↑↓ for another patch, or the stack at the top; → to read it; ← to hide the patches. From the patch picked, ↓ goes to its files, listed under it, and ↑ goes to the last file of the patch above, whose files are listed in place of them.";
+    assert!(app.help().iter().any(|l| l == said), "{:?}", app.help());
+    // ↑: patch 1 picked, its files listed in place of patch 2's, the cursor
+    // on the last of them, not on the patch; the middle on that file at
+    // once, its name on the middle's first line, under the patch's title.
+    keys(&mut app, &[KeyCode::Up]);
+    assert_eq!((app.focus, app.sel, app.file_on()), (Focus::List, 0, Some(1)));
+    assert_eq!(app.rows[app.cursor].text, DEEP);
+    let screen = draw(&mut app);
+    assert_eq!(
+        pane_words(&screen),
+        ["1 Bug 1 - two files", "a.txt +4 −4", "…/urlbar/src/tui/banner.rs", "2 Bug 2 - three files", "3 Bug 3 - one file"],
+        "{screen}"
+    );
+    let lines: Vec<&str> = screen.lines().collect();
+    assert!(right_of_list(lines[1]).starts_with("   Bug 1 - two files"), "{screen}");
+    assert!(right_of_list(lines[2]).starts_with(DEEP), "{screen}");
+    assert!(pane_cell(&mut app, "…/urlbar").modifier.contains(Modifier::REVERSED), "the cursor on it");
+    assert!(!pane_cell(&mut app, "1 Bug 1").modifier.contains(Modifier::REVERSED), "not on its patch");
+    // ↑ again: patch 1's first file, then patch 1 itself, from its start,
+    // then the stack's header.
+    keys(&mut app, &[KeyCode::Up]);
+    assert_eq!((app.sel, app.file_on()), (0, Some(0)));
+    assert_eq!(app.rows[app.cursor].text, "a.txt");
+    keys(&mut app, &[KeyCode::Up]);
+    assert_eq!((app.sel, app.file_on(), app.cursor, app.on_stack), (0, None, 0, false));
+    keys(&mut app, &[KeyCode::Up]);
+    assert!(app.on_stack);
+    // Reading, the same: from patch 2's line onto patch 1's last file,
+    // which says how many of its lines are left to mark read.
+    keys(&mut app, &[KeyCode::Char('2'), KeyCode::Down, KeyCode::Down, KeyCode::Down, KeyCode::Down]);
+    assert_eq!((app.sel, app.file_on()), (1, None));
+    keys(&mut app, &[KeyCode::Up]);
+    assert_eq!((app.sel, app.file_on()), (0, Some(1)));
+    let words = pane_words(&draw(&mut app));
+    assert_eq!(words[1..3], ["a.txt 8 left", "…/urlbar/src/tui/banner.rs 2 left"], "{words:?}");
+    assert!(pane_cell(&mut app, "2 left").modifier.contains(Modifier::REVERSED), "the cursor on it");
+}
+
+/// The line of the patches pane the cursor is on, the screen drawn: the
+/// stack's header, patch K, or a file of patch K by its name, which the
+/// middle's cursor is on and the middle shows on its first line.
+fn listed_line(app: &mut App) -> String {
+    let screen = draw(app);
+    let patch = format!("patch {}", app.sel + 1);
+    match app.file_on() {
+        _ if app.on_stack => "the header".into(),
+        None => patch,
+        Some(_) => {
+            let name = app.rows[app.cursor].text.clone();
+            let first = screen.lines().nth(2).map(right_of_list).unwrap_or_default();
+            assert!(first.starts_with(&name), "{name} on the middle's first line:\n{screen}");
+            format!("{patch}: {name}")
+        }
+    }
+}
+
+#[test]
+fn up_and_down_go_through_the_same_lines_of_the_patches_and_their_files() {
+    let (_tmp, db, _src) = setup_files();
+    let mut app = open(&db).unwrap();
+    // Listing files, from the stack's header down to the end of the list,
+    // each patch's files listed under it in turn; then back up to the
+    // header: the same lines, the other way round.
+    keys(&mut app, &[KeyCode::Left, KeyCode::Home]);
+    let deep = format!("patch 1: {DEEP}");
+    let down = [
+        "the header",
+        "patch 1",
+        "patch 1: a.txt",
+        deep.as_str(),
+        "patch 2",
+        "patch 2: b.txt",
+        "patch 2: c.txt",
+        "patch 2: d.txt",
+        "patch 3",
+        "patch 3: a.txt",
+    ];
+    let mut seen = vec![listed_line(&mut app)];
+    for _ in 1..down.len() {
+        keys(&mut app, &[KeyCode::Down]);
+        seen.push(listed_line(&mut app));
+    }
+    assert_eq!(seen, down);
+    let mut seen = vec![listed_line(&mut app)];
+    for _ in 1..down.len() {
+        keys(&mut app, &[KeyCode::Up]);
+        seen.push(listed_line(&mut app));
+    }
+    seen.reverse();
+    assert_eq!(seen, down);
+}
+
+#[test]
+fn up_on_a_patch_under_one_with_no_file_to_list_goes_to_that_patch_itself() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = tmp.path().join("db.jsonl");
+    // As a stacked from before the check wrote it, with no base, which took
+    // a patch with no diff: patch 2 has no file to list.
+    let add = |f: &str| format!("diff --git a/{f} b/{f}\nnew file mode 100644\n--- /dev/null\n+++ b/{f}\n@@ -0,0 +1 @@\n+{f}\n");
+    let drafts = [("Bug 1 - two files", add("a.txt") + &add("b.txt")), ("Bug 2 - no file", String::new()), ("Bug 3 - one file", add("c.txt"))];
+    let patches: Vec<stacked::db::Patch> = drafts
+        .into_iter()
+        .map(|(message, diff)| {
+            stacked::ops::new_patch(stacked::mbox::Draft {
+                message: message.into(),
+                diff,
+                author: Some("A <a@b>".into()),
+                ..Default::default()
+            })
+        })
+        .collect();
+    let mut recs: Vec<stacked::db::Record> = patches.iter().cloned().map(stacked::db::Record::Patch).collect();
+    recs.push(stacked::db::Record::Stack(stacked::db::Stack {
+        name: "s".into(),
+        patches: patches.iter().map(|p| p.id.clone()).collect(),
+        base: None,
+        repo: None,
+        parent: None,
+        op: "from before".into(),
+        time: 0,
+    }));
+    Db::append(&db, &recs).unwrap();
+    let mut app = open(&db).unwrap();
+    // Listing files, on patch 3's line: ↑ goes to patch 2 itself, the
+    // middle on it as on any patch picked; ↑ again, to patch 1's last file.
+    keys(&mut app, &[KeyCode::Left, KeyCode::End, KeyCode::Up]);
+    assert_eq!((app.sel, app.file_on()), (1, None));
+    let screen = draw(&mut app);
+    assert_eq!(pane_words(&screen), ["1 Bug 1 - two files", "2 Bug 2 - no file", "3 Bug 3 - one file"], "{screen}");
+    assert!(screen.contains("│   Bug 2 - no file"), "{screen}");
+    keys(&mut app, &[KeyCode::Up]);
+    assert_eq!((app.sel, app.file_on()), (0, Some(1)));
+    assert_eq!(app.rows[app.cursor].text, "b.txt");
+    // Down again over the same lines: patch 2 itself, then patch 3.
+    keys(&mut app, &[KeyCode::Down]);
+    assert_eq!((app.sel, app.file_on()), (1, None));
+    keys(&mut app, &[KeyCode::Down]);
+    assert_eq!((app.sel, app.file_on()), (2, None));
+}
+
+#[test]
+fn up_from_head_s_row_listing_files_goes_to_the_last_file_of_the_patch_above_too() {
+    let (_tmp, db, src) = setup_files();
+    // HEAD at patch 2: its row between patch 2 and patch 3.
+    git(&src, &["checkout", "-q", "--detach", "HEAD~1"]);
+    let mut app = open_in(&db, &src);
+    // Listing files, on patch 3's line: ↑ goes to HEAD's row, patch 3 still
+    // picked, then to patch 2's last file, its files listed in place of
+    // patch 3's, the middle on it.
+    keys(&mut app, &[KeyCode::Left, KeyCode::End, KeyCode::Up]);
+    assert_eq!((app.on_head(), app.sel), (true, 2));
+    keys(&mut app, &[KeyCode::Up]);
+    assert_eq!((app.on_head(), app.sel, app.file_on()), (false, 1, Some(2)));
+    assert_eq!(app.rows[app.cursor].text, "d.txt");
+    // Down again over the same lines: HEAD's row, patch 2 still picked,
+    // then patch 3; and up from HEAD's row, patch 2's last file again.
+    keys(&mut app, &[KeyCode::Down]);
+    assert_eq!((app.on_head(), app.sel), (true, 1));
+    keys(&mut app, &[KeyCode::Up]);
+    assert_eq!((app.on_head(), app.sel, app.file_on()), (false, 1, Some(2)));
+    keys(&mut app, &[KeyCode::Down, KeyCode::Down]);
+    assert_eq!((app.on_head(), app.sel, app.file_on()), (false, 2, None));
 }
 
 #[test]
@@ -6343,11 +6517,56 @@ fn listing_files_the_patches_pane_moves_only_when_the_cursor_would_leave_it() {
     assert_eq!((app.sel, app.file_on()), (3, None));
     assert_eq!((row_of(&rows, 1), row_of(&rows, 4), row_of(&rows, 7)), (Some(0), Some(3), Some(8)), "{rows:#?}");
     assert_eq!(row_with(&rows, "p4-2.txt"), Some(5), "{rows:#?}");
-    // Back up onto patch 3: its files under it again, the list as it is.
+    // Back up, onto patch 3's last file: its files under it again, the
+    // list down as far as that file needs, as it was before.
+    key(&mut app, KeyCode::Up);
+    on_file(&mut app, 12, 6, "back up onto patch 3's last file");
+}
+
+#[test]
+fn listing_files_up_from_a_patch_the_patches_pane_moves_only_when_the_cursor_would_leave_it() {
+    let (_tmp, db, _src) = long_stack(20, |k| format!("add {k}"), |k| vec![format!("{k}.txt")], false);
+    let mut app = open(&db).unwrap();
+    let shown = |app: &mut App| pane_rows(app, 120, 12);
+    // Listing files, on the last patch, on the last line.
+    for code in [KeyCode::Left, KeyCode::End] {
+        key(&mut app, code);
+        shown(&mut app);
+    }
+    let rows = shown(&mut app);
+    assert_eq!((app.sel, app.file_on()), (19, None));
+    assert_eq!((row_of(&rows, 12), row_of(&rows, 20)), (Some(0), Some(8)), "{rows:#?}");
+    // The cursor on patch K's file, or on patch K itself; patch 12 on the
+    // top line.
+    let at = |app: &mut App, k: usize, file: bool, what: &str| {
+        let rows = shown(app);
+        assert_eq!((app.sel, app.file_on()), (k - 1, file.then_some(0)), "{what}");
+        let (row, line) = match file {
+            true => (row_with(&rows, &format!("{k}.txt")), k - 11),
+            false => (row_of(&rows, k), k - 12),
+        };
+        assert_eq!((row_of(&rows, 12), row), (Some(0), Some(line)), "{what}: {rows:#?}");
+    };
+    // Up: from each patch onto the file of the one above, then onto that
+    // patch, the list as it is until the cursor is on the top line, on
+    // patch 12.
+    for k in (12..20).rev() {
+        key(&mut app, KeyCode::Up);
+        at(&mut app, k, true, &format!("up to {k}.txt"));
+        key(&mut app, KeyCode::Up);
+        at(&mut app, k, false, &format!("up to patch {k}"));
+    }
+    // Past it: patch 11's file on the top line, patch 12 under it.
     key(&mut app, KeyCode::Up);
     let rows = shown(&mut app);
-    assert_eq!((app.sel, app.file_on()), (2, None));
-    assert_eq!((row_of(&rows, 1), row_of(&rows, 3), row_with(&rows, &file(6))), (Some(0), Some(2), Some(8)), "{rows:#?}");
+    assert_eq!((app.sel, app.file_on()), (10, Some(0)));
+    assert_eq!((row_with(&rows, "11.txt"), row_of(&rows, 12)), (Some(0), Some(1)), "{rows:#?}");
+    // Down again, patch 11's file gone: the list as it was, patch 12 on the
+    // top line, its file under it.
+    key(&mut app, KeyCode::Down);
+    let rows = shown(&mut app);
+    assert_eq!((app.sel, app.file_on()), (11, None));
+    assert_eq!((row_of(&rows, 12), row_with(&rows, "12.txt")), (Some(0), Some(1)), "{rows:#?}");
 }
 
 #[test]

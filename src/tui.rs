@@ -5021,8 +5021,12 @@ impl App {
     /// The patches pane's cursor `delta` lines down (up, negative) the list
     /// as it shows it: the stack's header, the patches, HEAD's row and,
     /// listing files, those of the patch picked under it (`list_stops`).
-    /// Onto another patch, that one is picked. Up, it stops on the first
-    /// line under the header before the header.
+    /// Onto another patch, that one is picked. A line up onto another
+    /// patch, the cursor goes on to the last of its files, listed in place
+    /// of the others, as a line down from a patch's last file goes on to
+    /// the next patch: ↑ goes back up the lines ↓ came down. With no file
+    /// listed under that patch, the cursor stays on the patch itself. Up,
+    /// it stops on the first line under the header before the header.
     fn list_step(&mut self, delta: isize) {
         if self.patch_count() == 0 {
             return;
@@ -5048,6 +5052,12 @@ impl App {
             Stop::Header => {
                 self.on_stack = true;
                 self.file_sel = None;
+            }
+            Stop::Patch(i) if delta == -1 && i != self.sel => {
+                self.list_to(i, None);
+                if let Some(last) = self.files_listed().len().checked_sub(1) {
+                    self.list_to(i, Some(last));
+                }
             }
             Stop::Patch(i) => self.list_to(i, None),
             Stop::File(k) => self.list_to(self.sel, Some(k)),
@@ -6170,7 +6180,7 @@ impl App {
                     Focus::List => {
                         out.push(match (self.list, self.file_on()) {
                             (_, Some(_)) => "Press ↑↓ for another file of this patch, ↑ above the first for the patch itself, ↓ under the last for the next patch; → to read this file; ← to hide the patches.",
-                            (PatchesPane::Files, None) => "Press ↑↓ for another patch, or the stack at the top, and ↓ from the patch picked for its files, listed under it; → to read it; ← to hide the patches.",
+                            (PatchesPane::Files, None) => "Press ↑↓ for another patch, or the stack at the top; → to read it; ← to hide the patches. From the patch picked, ↓ goes to its files, listed under it, and ↑ goes to the last file of the patch above, whose files are listed in place of them.",
                             _ => "Press ↑↓ for another patch, or the stack at the top; → to read it; ← to list the files of the patch picked under it, then ← again to hide the patches.",
                         }
                         .into());
@@ -10981,14 +10991,25 @@ impl App {
         // The first shown: the entry shown first when last drawn, found
         // again, which `list_scrolled` moves only as far as the cursor
         // needs. A patch by its place, else where it was among the entries;
-        // a file among those of the same patch, gone with them as from the
-        // top of the list; HEAD's rows by where they were, so that the pane
-        // stays as HEAD moves along it.
+        // a file among those of the same patch. A file gone with them, no
+        // longer listed: the entry that came after them, when it was in
+        // sight, so that the pane stays as it was without them (as when ↑
+        // went onto the last of them from the top line, and ↓ goes back);
+        // else as from the top of the list. HEAD's rows by where they were,
+        // so that the pane stays as HEAD moves along it.
         let listed_of = self.patch_id().filter(|_| !files.is_empty());
         let kept = self.patches_top.as_ref().map_or(0, |t| match t.entry {
             Listed::Patch(a, _) => entries.iter().position(|(e, _)| matches!(e, Listed::Patch(b, _) if *b == a)).unwrap_or(t.at),
             Listed::File(k) if t.of == listed_of => entries.iter().position(|(e, _)| *e == Listed::File(k)).unwrap_or(0),
-            Listed::File(_) => 0,
+            Listed::File(k) => {
+                let Some(of) = t.of.as_deref() else { return 0 };
+                let below = self.files_of(of).len().saturating_sub(k);
+                let i = s.patches.iter().position(|p| p == of);
+                match entries.iter().position(|(e, _)| matches!(e, Listed::Patch(_, j) if Some(*j) == i)) {
+                    Some(at) if below < room => at + 1,
+                    _ => 0,
+                }
+            }
             Listed::Head | Listed::Commit(_) => t.at,
         });
         let mut top = list_scrolled(&entries, on_entry, kept, room);

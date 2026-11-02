@@ -1149,6 +1149,23 @@ fn what_was_closed_here_scrolls_to_its_end_with_the_arrows_and_the_wheel_in_the_
 }
 
 #[test]
+fn up_on_a_patch_listing_files_goes_to_the_last_file_of_the_one_above_with_the_wheel_in_the_window_too() {
+    let (tmp, db) = setup();
+    let s = Session::open(&db, tmp.path()).unwrap();
+    s.send(Input::Size(100, 30));
+    screen(&s, "the patches", |b| row(b, 3).contains("Bug 2 - add b"));
+    // Listing files, down to patch 2's line, its file under it.
+    for k in [KeyCode::Left, KeyCode::Down, KeyCode::Down] {
+        press(&s, k);
+    }
+    screen(&s, "patch 2's file", |b| row(b, 4).contains("b.txt"));
+    // The wheel turned a notch up, which the window sends as ↑: patch 1's
+    // file listed in place of patch 2's, the cursor on it.
+    press(&s, KeyCode::Up);
+    screen(&s, "patch 1's last file", |b| row(b, 3).starts_with("      a.txt") && b[(6, 3)].modifier.contains(Modifier::REVERSED));
+}
+
+#[test]
 fn what_waits_its_turn_is_taken_out_of_the_queue_from_the_banner_once_asked_in_the_window_too() {
     let (tmp, db) = setup();
     waiting_their_turn(&db);
