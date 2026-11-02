@@ -15,14 +15,19 @@
 //! reading says what differs (`App::submit_item`). All read away from the
 //! screen: the statuses as the stack is shown, again as those revisions
 //! change and right after a submit, and every few minutes while the editor
-//! runs; then the latest
-//! diff, the comments and the parents of every revision the stack's
-//! patches name, in a few calls for all of them, each time the statuses
-//! are read, and again after a pull, kept by revision, its diff kept by id;
-//! and what differs in the code of each patch, one at a time, the one shown
-//! first. Kept in memory as long as the editor runs, nothing written; a
-//! read that fails leaves what was known as it was. Not while reviews come
-//! from nowhere, nor in the tour. Built with the `moz-phab` feature.
+//! runs; then the parents and the latest diffs of every revision the
+//! stack's patches name, in a few calls for all of them, each time the
+//! statuses are read, and again after a pull, and the comments and the
+//! latest diff, raw, of each revision modified since it was read, as its
+//! search says, or that a submit or a pull touched, kept by revision, its
+//! diff kept by id; and what differs in the code of each patch, one at a
+//! time, the one shown first. Kept in memory as long as the editor runs,
+//! nothing written; a read that fails leaves what was known as it was.
+//! While Phabricator turns this machine away (HTTP 429), nothing is read
+//! away from the screen for a while, longer at each refusal in a row, the
+//! bottom line saying until when (`Statuses::turned_away`). Not while
+//! reviews come from nowhere, nor in the tour. Built with the `moz-phab`
+//! feature.
 
 use super::compared::{ONLY_WRAPPED, row};
 use super::*;
@@ -33,6 +38,20 @@ use crate::submit::{Below, Parent};
 /// How long the statuses go between reads while the stack's revisions are
 /// the same: a few minutes, as a try push followed does between looks.
 const EVERY: Duration = Duration::from_secs(180);
+
+/// How long the reads away from the screen wait once Phabricator turns this
+/// machine away (HTTP 429), when it does not say how long: at first, and
+/// at most, however many times in a row it does.
+const FIRST_WAIT: Duration = Duration::from_secs(300);
+const LONGEST_WAIT: Duration = Duration::from_secs(1800);
+
+/// How long the reads away from the screen wait after the `n`th time in a
+/// row (from 1) that Phabricator turned this machine away: as long as it
+/// asked, `asked`, if it did; else five minutes, twice as long each time
+/// after, up to half an hour.
+fn wait(asked: Option<Duration>, n: u32) -> Duration {
+    asked.unwrap_or_else(|| FIRST_WAIT.saturating_mul(1 << n.saturating_sub(1).min(3)).min(LONGEST_WAIT))
+}
 
 /// What the Phabricator line says of what differs in the code when the
 /// files cannot be read as the patches below leave them.
@@ -347,6 +366,10 @@ pub(super) struct Statuses {
     /// A read failed and the status line said so: not again until one
     /// works.
     failed: bool,
+    /// Phabricator turning this machine away (HTTP 429): how many times in
+    /// a row, and until when nothing is read away from the screen. None
+    /// once a read works.
+    away: Option<(u32, Instant)>,
     /// How many times the statuses were read, or a pull ended: what the
     /// Phabricator lines read is read again each time.
     round: u64,
@@ -357,6 +380,15 @@ pub(super) struct Statuses {
     latest: HashMap<String, Latest>,
     read_in: Option<u64>,
     reading_latest: bool,
+    /// The revisions, by link, that a submit or a pull touched while they
+    /// were being read: what that read brings of them is forgotten as it
+    /// comes (`App::forget`).
+    forgot: HashSet<String>,
+    /// The revision the submit under way sends to, by link, if it names
+    /// one; and those the pull under way reads: forgotten once each is
+    /// done.
+    sending: Option<String>,
+    pulling: Vec<String>,
     /// What differs in the code between a revision's latest diff and a
     /// version of its patch, on the patches below it, by what it was worked
     /// out from (`compare_key`); and the one being worked out.
@@ -365,6 +397,25 @@ pub(super) struct Statuses {
     /// How many times what the line may say changed: the middle's rows
     /// are built again each time.
     seq: u64,
+}
+
+impl Statuses {
+    /// Phabricator turned this machine away at `now`, asking to wait
+    /// `asked`, if it did: how long nothing is read away from the screen,
+    /// from then, by how many times in a row it did since a read worked
+    /// (`wait`).
+    fn turned_away(&mut self, asked: Option<Duration>, now: Instant) -> Duration {
+        let n = self.away.map_or(0, |(n, _)| n) + 1;
+        let wait = wait(asked, n);
+        self.away = Some((n, now + wait));
+        wait
+    }
+
+    /// Whether nothing is read away from the screen at `now`, Phabricator
+    /// having turned this machine away.
+    fn waiting(&self, now: Instant) -> bool {
+        self.away.is_some_and(|(_, until)| now < until)
+    }
 }
 
 impl App {
@@ -397,11 +448,11 @@ impl App {
     /// revisions (the stack shown, or its patches naming others), a submit
     /// ended since, or a few minutes gone by. Not while a read is under
     /// way, theirs or the revisions' (`check_latest`), one read of
-    /// Phabricator after another, nor while the editor does not read
-    /// Phabricator. What the Phabricator lines read is read again after
-    /// them.
+    /// Phabricator after another, nor while Phabricator turns this machine
+    /// away, nor while the editor does not read Phabricator. What the
+    /// Phabricator lines read is read again after them.
     pub(super) fn check_statuses(&mut self) {
-        if self.statuses.reading || self.statuses.reading_latest || !self.reads_phabricator() {
+        if self.statuses.reading || self.statuses.reading_latest || self.statuses.waiting(Instant::now()) || !self.reads_phabricator() {
             return;
         }
         let named = self.revisions_named();
@@ -416,29 +467,73 @@ impl App {
         self.spawn(move || Done::Statuses(crate::phab::statuses(&db, &named)));
     }
 
-    /// Right after a submit: the database read again, for the link of a new
+    /// Right after a submit: what was read of the revision it sent to
+    /// forgotten (`forget`); the database read again, for the link of a new
     /// revision, and the statuses with it, at once, or once the read under
     /// way is done; then what the Phabricator lines read.
     pub(super) fn statuses_again(&mut self) {
+        let sent: Vec<String> = self.statuses.sending.take().into_iter().collect();
+        self.forget(&sent);
         self.reload();
         self.statuses.stale = true;
         self.check_statuses();
         self.check_line();
     }
 
-    /// Right after a pull: the latest diff, the comments and the parents of
-    /// every revision read again, those pulled in the database now.
+    /// Right after a pull: what was read of the revisions it read forgotten
+    /// (`forget`); then the parents and the latest diffs of every revision
+    /// read again, and the comments of those forgotten or modified since,
+    /// those pulled in the database now.
     pub(super) fn line_again(&mut self) {
+        let pulled = std::mem::take(&mut self.statuses.pulling);
+        self.forget(&pulled);
         self.statuses.round += 1;
         self.check_line();
     }
 
+    /// The submit under way sends version `id` of a patch: the revision it
+    /// names, if it does, forgotten once the submit is done
+    /// (`statuses_again`).
+    pub(super) fn sends(&mut self, id: &str) {
+        self.statuses.sending = crate::phab::revision_of(&self.db.patch(id).message).map(|(_, link)| link);
+    }
+
+    /// What was read of the revisions at `links`, which a submit or a pull
+    /// touched, forgotten as not read since they were last modified: their
+    /// comments and latest diff are read again in the next round, whatever
+    /// their search says, and so, should they come in the read under way,
+    /// in the round after it.
+    fn forget(&mut self, links: &[String]) {
+        for link in links {
+            if let Some(l) = self.statuses.latest.get_mut(link) {
+                l.modified = None;
+            }
+            if self.statuses.reading_latest {
+                self.statuses.forgot.insert(link.clone());
+            }
+        }
+    }
+
+    /// Phabricator turned this machine away (HTTP 429) as it was read away
+    /// from the screen, asking to wait `asked`, if it did: nothing is read
+    /// so until the wait is over (`Statuses::turned_away`), and the bottom
+    /// line says when that is.
+    fn turned_away(&mut self, asked: Option<Duration>) {
+        let wait = self.statuses.turned_away(asked, Instant::now());
+        let at = local_time(crate::db::now() + wait.as_secs() as i64);
+        let at = at.rsplit(' ').next().unwrap_or_default();
+        self.status = format!("Phabricator is turning away requests from this machine for now (HTTP 429): stacked reads it again at {at}.");
+    }
+
     /// What a read of the statuses came to: those read, each revision read
-    /// that Phabricator did not give known no more, and known to be missing;
-    /// or, failed, those known kept, and why said, unless the last read
-    /// failed too. A submit ended meanwhile, they are read again at once.
-    /// Then what the Phabricator line needs next.
-    pub(super) fn statuses_read(&mut self, read: std::result::Result<HashMap<String, Searched>, String>) {
+    /// that Phabricator did not give known no more, and known to be missing,
+    /// and no wait any more; or, failed, those known kept, and why said,
+    /// unless the last read failed too; or, Phabricator turning this machine
+    /// away, those known kept, and nothing read until the wait is over, the
+    /// bottom line saying when that is, the statuses read then. A submit
+    /// ended meanwhile, they are read again at once. Then what the
+    /// Phabricator line needs next.
+    pub(super) fn statuses_read(&mut self, read: std::result::Result<HashMap<String, Searched>, crate::phab::Error>) {
         self.statuses.reading = false;
         let asked = self.statuses.asked.as_ref().map(|(a, _)| a.clone()).unwrap_or_default();
         match read {
@@ -452,7 +547,12 @@ impl App {
                 }
                 self.statuses.known.extend(found);
                 self.statuses.failed = false;
+                self.statuses.away = None;
                 self.statuses.seq += 1;
+            }
+            Err(crate::phab::Error::TurnedAway(asked)) => {
+                self.statuses.stale = true;
+                self.turned_away(asked);
             }
             Err(e) if !self.statuses.failed => {
                 self.statuses.failed = true;
@@ -562,9 +662,10 @@ impl App {
     /// The revisions the current stack's patches name that the statuses'
     /// search found, as the Phabricator lines read them (`phab::Wanted`):
     /// that of the patch the middle shows first, then the others, bottom
-    /// first, each once; each with its latest diff as read before, and
-    /// whether its parents are to be named, as a submit of a patch naming
-    /// it would set it one, whatever parents it has.
+    /// first, each once; each with when it was last modified, as its search
+    /// says, what was read of it before, and whether its parents are to be
+    /// named, as a submit of a patch naming it would set it one, whatever
+    /// parents it has.
     fn wanted(&self) -> Vec<Wanted> {
         let Some(s) = self.current() else { return Vec::new() };
         let shown = self.patch_id().filter(|_| !self.on_stack).and_then(|id| s.patches.iter().position(|p| *p == id));
@@ -579,8 +680,8 @@ impl App {
             match out.iter_mut().find(|w| w.link == link) {
                 Some(w) => w.name_parents |= sets,
                 None => {
-                    let had = self.statuses.latest.get(&link).map(|l| (l.diff, l.raw.clone()));
-                    out.push(Wanted { d, link, phid: found.phid.clone(), had, name_parents: sets });
+                    let had = self.statuses.latest.get(&link).cloned();
+                    out.push(Wanted { d, link, phid: found.phid.clone(), modified: found.modified, had, name_parents: sets });
                 }
             }
         }
@@ -590,11 +691,13 @@ impl App {
     /// The latest diff, the comments and the parents of every revision the
     /// current stack's patches name (`wanted`), read away from the screen
     /// in a few calls for all of them (`phab::latests`), once each round,
-    /// each revision kept as soon as it is read. Not while the statuses
-    /// are read, nor while the revisions are, for a round before.
+    /// the comments and the latest diff only of those modified since they
+    /// were read, each revision kept as soon as it is read. Not while the
+    /// statuses are read, nor while the revisions are, for a round before,
+    /// nor while Phabricator turns this machine away.
     fn check_latest(&mut self) {
         let st = &self.statuses;
-        if st.reading || st.reading_latest || st.read_in == Some(st.round) {
+        if st.reading || st.reading_latest || st.read_in == Some(st.round) || st.waiting(Instant::now()) {
             return;
         }
         let wanted = self.wanted();
@@ -603,15 +706,13 @@ impl App {
         }
         self.statuses.read_in = Some(self.statuses.round);
         self.statuses.reading_latest = true;
+        self.statuses.forgot.clear();
         let (db, tx) = (self.path.clone(), self.bg.tx.clone());
         self.spawn(move || {
             let mut got = |link: &str, l: Latest| {
                 let _ = tx.send(Done::Latest(link.to_string(), l));
             };
-            // A read that fails keeps what was known, and says nothing: the
-            // statuses' reads say what is wrong.
-            let _ = crate::phab::latests(&db, &wanted, &mut got);
-            Done::LatestAll
+            Done::LatestAll(crate::phab::latests(&db, &wanted, &mut got).err())
         });
     }
 
@@ -643,20 +744,35 @@ impl App {
     }
 
     /// Revision `link`'s latest diff, comments and parents, read: kept, in
-    /// place of what was known of it. Then what the lines need next.
-    pub(super) fn latest_read(&mut self, link: String, l: Latest) {
+    /// place of what was known of it, but forgotten as not read since it
+    /// was last modified, if a submit or a pull touched it meanwhile. Then
+    /// what the lines need next.
+    pub(super) fn latest_read(&mut self, link: String, mut l: Latest) {
+        if self.statuses.forgot.contains(&link) {
+            l.modified = None;
+        }
         self.statuses.latest.insert(link, l);
         self.statuses.seq += 1;
         self.check_line();
     }
 
-    /// The revisions of a round read, or their read stopped at a call that
-    /// failed, what was known of the others kept as it was, nothing said,
-    /// as the statuses' reads say what is wrong. Then what is due next:
-    /// the statuses, should a submit have ended meanwhile, and what the
-    /// lines need.
-    pub(super) fn latests_done(&mut self) {
+    /// The revisions of a round read, and no wait any more; or their read
+    /// stopped at a call that `failed`, what was known of the others kept
+    /// as it was, nothing said, as the statuses' reads say what is wrong,
+    /// but for Phabricator turning this machine away: then nothing is read
+    /// until the wait is over, the bottom line saying when that is, and the
+    /// revisions are read then. Then what is due next: the statuses, should
+    /// a submit have ended meanwhile, and what the lines need.
+    pub(super) fn latests_done(&mut self, failed: Option<crate::phab::Error>) {
         self.statuses.reading_latest = false;
+        match failed {
+            None => self.statuses.away = None,
+            Some(crate::phab::Error::TurnedAway(asked)) => {
+                self.statuses.read_in = None;
+                self.turned_away(asked);
+            }
+            Some(_) => {}
+        }
         self.check_statuses();
         self.check_line();
     }
@@ -1006,8 +1122,14 @@ impl App {
         let alone = only.as_ref().and_then(|change| {
             let s = self.current()?;
             let p = s.patches.iter().map(|id| self.db.patch(id)).find(|p| p.change == *change)?;
-            crate::phab::revision_of(&p.message).map(|(d, _)| d)
+            crate::phab::revision_of(&p.message)
         });
+        // What it reads, forgotten once it is done (`line_again`).
+        self.statuses.pulling = match (&only, &alone) {
+            (None, _) => self.revisions_named().into_iter().map(|(_, link)| link).collect(),
+            (Some(_), alone) => alone.iter().map(|(_, link)| link.clone()).collect(),
+        };
+        let alone = alone.map(|(d, _)| d);
         self.bg.doing.push("pulling");
         self.status = match &alone {
             Some(d) => format!("pulling the reviews of {d} from Phabricator…"),
@@ -1109,6 +1231,37 @@ mod tests {
     }
 
     #[test]
+    fn turned_away_nothing_is_read_for_as_long_as_phabricator_asks_else_five_minutes_doubling_up_to_thirty() {
+        let then = Instant::now();
+        let minutes = |m: u64| Duration::from_secs(60 * m);
+        // Two minutes asked: not read before they are over, read once they
+        // are.
+        let mut s = Statuses::default();
+        assert!(!s.waiting(then));
+        assert_eq!(s.turned_away(Some(Duration::from_secs(120)), then), Duration::from_secs(120));
+        assert!(s.waiting(then) && s.waiting(then + Duration::from_secs(119)), "for two minutes");
+        assert!(!s.waiting(then + Duration::from_secs(120)), "not after");
+        // Nothing asked: five minutes, then ten, twice as long each time in
+        // a row, up to thirty; a time asked in between taken as it is, and
+        // counted.
+        let mut s = Statuses::default();
+        let mut at = then;
+        let mut waits = Vec::new();
+        for asked in [None, None, Some(Duration::from_secs(90)), None, None, None] {
+            let w = s.turned_away(asked, at);
+            assert!(s.waiting(at + w - Duration::from_secs(1)) && !s.waiting(at + w));
+            waits.push(w);
+            at += w;
+        }
+        assert_eq!(waits, [minutes(5), minutes(10), Duration::from_secs(90), minutes(30), minutes(30), minutes(30)]);
+        assert_eq!((wait(None, 1), wait(None, 2), wait(None, 3), wait(None, 4), wait(None, 40)), (minutes(5), minutes(10), minutes(20), minutes(30), minutes(30)));
+        // A read that works: back to five minutes at the next.
+        s.away = None;
+        assert!(!s.waiting(at));
+        assert_eq!(s.turned_away(None, at), minutes(5));
+    }
+
+    #[test]
     fn a_title_is_in_work_as_moz_phab_reads_it() {
         use crate::submit::title_in_work as in_work;
         for t in ["WIP: Bug 1 - one", "wip: Bug 1", "WIP Bug 1", "WIP", "Wip:x"] {
@@ -1122,7 +1275,7 @@ mod tests {
     #[test]
     fn the_title_and_summary_are_compared_as_a_submit_sends_them_in_work_or_not_as_the_revision_s_title_is() {
         let p = |message: &str| Patch::new("c".into(), None, None, message.into(), String::new());
-        let searched = |title: &str, summary: &str| Searched { status: Status::NeedsReview, title: title.into(), summary: summary.into(), phid: String::new() };
+        let searched = |title: &str, summary: &str| Searched { status: Status::NeedsReview, title: title.into(), summary: summary.into(), phid: String::new(), modified: None };
         let trailer = "Differential Revision";
         let mine = p("Bug 1 - one r?alice\n\nThe parser reads the whole file\nbefore it checks the header.\n\nDifferential Revision: https://p.example/D1");
         // In work, or not: the title as moz-phab writes it, either way; the
@@ -1180,6 +1333,7 @@ mod tests {
                 title: crate::submit::wip_title(p.title()).title,
                 summary: crate::submit::summary_of(&p.message, trailer),
                 phid: String::new(),
+                modified: None,
             };
             assert_eq!(message_against(&sent, &p, trailer), None, "{message:?}");
         }

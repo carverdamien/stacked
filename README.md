@@ -545,7 +545,26 @@ revisions its patches name change and right after a submit, and every three
 minutes while the editor runs. They are kept as long as it runs, and
 written nowhere. A read that fails leaves them as they were, and the bottom
 line says so once (`The statuses of the stack's revisions could not be read
-from Phabricator: …`), then again only after a read that worked. Nothing is
+from Phabricator: …`), then again only after a read that worked. The
+message names what Phabricator answered: a status other than 200 with the
+first line of the page that came with it, cut short
+(`differential.revision.search: Phabricator answered HTTP 502 with a page
+starting "<html>"`), and a page that is not JSON by its first line too.
+When Phabricator turns away the requests of this machine (HTTP 429, too
+many requests), nothing more is read away from the screen for a while,
+neither the statuses nor what the Phabricator lines read (below): for as
+long as Phabricator's `Retry-After` says, when it says a time to come, else
+for five minutes, then twice as long at each refusal in a row, up to half
+an hour; a read that works ends the row. The bottom line says so, in the
+place of the message above, with when stacked reads Phabricator again
+(`Phabricator is turning away requests from this machine for now (HTTP
+429): stacked reads it again at 14:32.`), and the statuses and the lines
+keep what they had meanwhile. What you ask for is tried all the same,
+once: a submit, a pull, the pull of one revision, an import; turned away
+too, each says so plainly (`Phabricator is turning away requests from this
+machine for now (HTTP 429, too many requests)`). The wait lasts as long as
+the editor runs, each editor waiting on its own, and nothing of it is
+written. Nothing is
 read while reviews come from nowhere (`reviews.source = "none"`, Settings
 below), nor in the tour. In the browser (`stacked web`) and in StackED, the
 same.
@@ -795,17 +814,33 @@ submit would set another, named in one search of their own
 (differential.revision.search); then each revision in turn, that of the
 patch the middle shows first: its latest diff, raw
 (differential.getrawdiff), unless it was read before, and its comments
-(transaction.search). One read of Phabricator after another, the
-statuses' and this: all of it again each time the statuses are read,
-every three minutes, and right after a submit and after a pull. It is
-kept in memory by revision as long as the editor runs, and the raw diff by
-its id, not read again while it is the latest. What differs in the code of
-each patch is worked out away from the screen too, one patch at a time,
-the one the middle shows first, once for each version of the patch on
-the patches below it and each latest diff. A read that fails keeps what
-was known, and the bottom line says nothing more than the statuses' read
-says. Nothing is read, and no line drawn, while reviews come from nowhere,
-nor in the tour. In the browser and in StackED, the same.
+(transaction.search). Those two are read only for a revision not read yet,
+or modified since it was read, as the statuses' search says when each was
+last modified (its `dateModified`): what was read of the others is kept,
+and only their parents are read again, as a revision's parents also change
+when another revision is edited to take it as its child. A submit forgets
+what was read of the revision it sends to, and a pull what was read of the
+revisions it reads, so that those are read again in the next round.
+Phabricator says that a revision was modified at each change to it, a new
+comment among them, but not when one of its comments is edited or removed:
+the line counts such a comment once the revision changes otherwise, or
+once a pull reads it. One read of Phabricator after another, the statuses' and
+this: the calls for all of the revisions again each time the statuses are
+read, every three minutes, and right after a submit and after a pull, and
+those of each revision as above. For 15 revisions none of which was
+modified, a round is three calls, as a rule: the statuses' search,
+edge.search and differential.diff.search; one modified adds its
+transaction.search, and its getrawdiff when its latest diff is a new one.
+All of it is kept in memory by revision as long as the editor runs, and
+the raw diff by its id, not read again while it is the latest. What
+differs in the code of each patch is worked out away from the screen too,
+one patch at a time, the one the middle shows first, once for each version
+of the patch on the patches below it and each latest diff. A read that
+fails keeps what was known, and the bottom line says nothing more than the
+statuses' read says, but when Phabricator turns this machine away: then
+nothing is read away from the screen for a while, and the bottom line says
+until when (above). Nothing is read, and no line drawn, while reviews come
+from nowhere, nor in the tour. In the browser and in StackED, the same.
 
 There are six keys, four more for the middle: three of self-review's
 (Copied from self-review-rs, below, says what it is) and one of stacked's
@@ -3804,7 +3839,12 @@ D11..D12 as D12`.
 Phabricator`, reads the revision in
 each patch's `Differential Revision:` trailer (the settings can name
 another) over Conduit, with the token moz-phab keeps in `~/.arcrc`, or the
-settings'. While it reads them, the banner says which revision it reads
+settings'. Every call of Conduit is made by curl, which is given the token
+and the call's parameters on its standard input, never on its command
+line, where any process of this machine could read them; what went wrong
+is said as Phabricator answered it (The editor, above): a status other
+than 200, a page that is not JSON, or its turning away the requests of
+this machine (HTTP 429). While it reads them, the banner says which revision it reads
 (`⇣ pulling the reviews from Phabricator: D12, revision 2 of 3…`), and the
 top bar `pulling…`; once it is done, the bottom line says what came of it
 (`1 new comment from 3 revisions: it waits for your review`), or what went
@@ -4110,7 +4150,9 @@ is typed: `import.rs`). A fix to one may belong in the other.
   imported, a patch submitted as work in progress, or its title, summary
   and parent alone to a revision in review, the statuses of
   revisions read, and what the Phabricator line over a patch's message
-  reads and counts.
+  reads and counts; Conduit called by curl, the token on its standard
+  input, what Phabricator answered said, and its refusals of this machine
+  (HTTP 429) an error of their own.
 - `try_push.rs`: the try push, built with the `try-push` feature (on by
   default): what an ask of a try push is told and answers with, its tasks
   read from its answer, and what a round asked again is told of them; the
@@ -4183,7 +4225,9 @@ is typed: `import.rs`). A fix to one may belong in the other.
   which the patches pane shows, and the Phabricator line over the message
   of the patch the middle shows, what differs on a screen of its own, the
   pull of its reviews alone, the submit item of a patch's menu as its
-  revision's status has it, and when each is read; `tui/compared.rs`, two
+  revision's status has it, and when each is read, which revisions are
+  read again, and how long nothing is read once Phabricator turns this
+  machine away; `tui/compared.rs`, two
   versions of a text compared word by word where their lines wrap aside,
   as rows: a title and summary in the review of a submit, a reviewer's
   comment edited on Phabricator in the review of a pull, a commit's
@@ -4237,7 +4281,11 @@ Phabricator line reads, are answered by one set for the test's database
 alone, as every editor reads the statuses of the stack it shows, so that no
 test's stand-in answers another's editors; and
 in a test's own process, which keeps nothing, an editor with no stand-in
-reads none. Nor does the ask dialog reach the network: whether it reaches
+reads none. How a call of Conduit is made is seen with a stand-in for
+curl, a script that `sh` runs, which keeps the arguments it is given and
+what it reads, and answers as the test says; and with curl itself,
+sending to a server that the test runs on the loopback (127.0.0.1), so
+that nothing leaves the machine. Nor does the ask dialog reach the network: whether it reaches
 the agent's host is answered by a stand-in set for the test's database
 alone (reached, not reached, or only once the test says), and in a test's
 own process an editor with no stand-in checks nothing. None opens a window, nor a browser: a script stands in
@@ -4843,9 +4891,15 @@ no other call made but the Phabricator lines', not again while they are
 the same, again once its patches name others and right after a submit, a
 new revision's status shown at once; Changes Planned shown as such though
 Phabricator says it is a draft; a read that fails keeping those known and
-saying so once, again only after one that worked; none read while reviews
-come from nowhere; built without moz-phab, none shown, nor a Phabricator
-line), the Phabricator line (with moz-phab, over the message's header,
+saying so once, again only after one that worked; Phabricator turning the
+machine away, two minutes asked: the bottom line saying until when, in the
+place of what a read that fails says, the statuses and the lines keeping
+what they had, nothing read while the wait goes on, though the stack's
+revisions change, and a pull of one revision made all the same, nothing
+read after it; a second asked, all read again once it is over, and a read
+that works making the next refusal the first again, five minutes; none
+read while reviews come from nowhere; built without moz-phab, none shown,
+nor a Phabricator line), the Phabricator line (with moz-phab, over the message's header,
 the cursor coming to the header: the revision alone and `…` before
 anything is read; in sync; the diff differing, the title or summary, the
 parent, and those together, listed plainly; a summary wrapped otherwise, every word the same, differing: Space
@@ -4889,6 +4943,11 @@ each, by their PHIDs, then each, that of the patch shown first, each
 patch's line whole as soon as it is shown, nothing read for it, nor as
 patches are shown again, all of it read again each round (the statuses
 read again, a pull), a raw diff not read again while it is the latest; a
+revision whose search says when it was last modified not read again
+while that stays the same, only its parents and its latest diff read,
+with the others'; one modified since read again, alone, its new comment
+counted; one submitted, or pulled alone, read again, alone, though its
+search says it was not modified since; a
 read that fails keeping what was known and saying nothing more than the
 statuses' read, a revision never read `…` but for its status; the
 parent: a reordered stack's revisions differing by their parents alone,
@@ -5502,8 +5561,21 @@ does not find left unnamed, none searched with none to name; then each
 revision in the order given, its diff raw unless it is the one read
 before, its comments from every page of its transactions, their authors
 and lines not read; a revision with no diff passed over, and nothing more
-read after a call that fails; by the stand-in for the editor's database,
-the calls of each Phabricator on their own. Those in `review.rs` show the comments not
+read after a call that fails; a revision not modified since it was read,
+its latest diff the same, not read again, but for its parents, and one
+modified since, given a new diff, never read, or whose modification is
+not known or was forgotten, read as before; by the stand-in for the
+editor's database, the calls of each Phabricator on their own, and a read
+turned away said as such, whatever its calls make of it. They show curl
+given the token and the call's parameters on its standard input, none of
+them in its arguments; a call turned away (HTTP 429) an error of its own,
+which says so, with the wait Phabricator asks for, in seconds or until a
+date, or none, after an answer that says to go on too; another status
+said with the first line of its page, cut short, or that the page is
+empty, as a page that is not JSON is; Conduit's own error and curl's said
+as before; and curl itself, to a server on the loopback, sending the
+token in the form of its request, and saying a 429, a gateway's error page
+and Conduit's answer. Those in `review.rs` show the comments not
 pulled yet counted from the comments open, the threads by their ids and
 the pulls waiting: those filed or waiting not counted, one edited since
 it was filed counted as edited, a thread closed not counted, nor a new
@@ -5512,7 +5584,11 @@ stack's pull not this one's, and one a review of before rejected counted,
 as a pull brings it again; and where a pull is said, one patch's revision
 pulled alone too. Those in
 `tui/revisions.rs` show when the statuses are due a read: never read, other
-revisions, a submit ended since, or three minutes gone by; a title in work
+revisions, a submit ended since, or three minutes gone by; how long
+nothing is read once Phabricator turns the machine away: as long as it
+asks, two minutes say, else five minutes, then ten, twice as long each
+time in a row up to thirty, a time it asks taken as it is and counted,
+and five minutes again once a read worked; a title in work
 as moz-phab reads it; the title and summary compared to the letter as a
 submit sends them, in work or not as the revision's title is, the white
 space at their end aside, their lines wrapped otherwise or other white

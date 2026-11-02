@@ -1,12 +1,15 @@
 //! Reviewers' comments from Phabricator: each patch's revision (its
 //! `Differential Revision:` trailer) read over Conduit with the token
-//! moz-phab and arc keep in `~/.arcrc`, or the one the settings give.
+//! moz-phab and arc keep in `~/.arcrc`, or the one the settings give, which
+//! curl is given on its standard input (`request`).
 //! Taken from self-review's, less what files them in its sessions:
 //! `review::pull` files them in the database.
 
 use std::collections::HashMap;
+use std::io::Write;
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::time::Duration;
 
 use serde_json::{Value, json};
 
@@ -16,6 +19,40 @@ use crate::view::{NoteLine, fold};
 pub struct Conduit {
     pub api: String,
     token: String,
+}
+
+/// What a call of Conduit came to, when not to its result: Phabricator
+/// turning away the requests of this machine for now (HTTP 429, too many
+/// requests), for as long as its `Retry-After` says, when it says a time to
+/// come; or anything else that went wrong, said.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Error {
+    TurnedAway(Option<Duration>),
+    Said(String),
+}
+
+/// What a call that Phabricator turned away says.
+pub const TURNED_AWAY: &str = "Phabricator is turning away requests from this machine for now (HTTP 429, too many requests)";
+
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            Error::TurnedAway(_) => f.write_str(TURNED_AWAY),
+            Error::Said(said) => f.write_str(said),
+        }
+    }
+}
+
+impl From<String> for Error {
+    fn from(said: String) -> Error {
+        Error::Said(said)
+    }
+}
+
+impl From<Error> for String {
+    fn from(e: Error) -> String {
+        e.to_string()
+    }
 }
 
 fn arcrc(path: &Path) -> Option<Value> {
@@ -75,30 +112,106 @@ impl Conduit {
         })
     }
 
-    /// Calls a Conduit method; its `result`.
-    pub fn call(&self, method: &str, params: Value) -> Result<Value, String> {
-        let mut params = params;
-        params["__conduit__"] = json!({"token": self.token});
-        let out = Command::new("curl")
-            .args(["-sS", "--max-time", "30", "-X", "POST"])
-            .arg(format!("{}{method}", self.api))
-            .args(["--data-urlencode", &format!("params={params}")])
-            .args(["--data", "output=json", "--data", "__conduit__=1"])
-            .output()
-            .map_err(|e| format!("curl: {e}"))?;
-        if !out.status.success() {
-            return Err(format!(
-                "{method}: {}",
-                String::from_utf8_lossy(&out.stderr).trim()
-            ));
-        }
-        let v: Value = serde_json::from_slice(&out.stdout)
-            .map_err(|_| format!("{method}: not JSON from {}", self.api))?;
-        if let Some(e) = v.get("error_info").and_then(Value::as_str) {
-            return Err(format!("{method}: {e}"));
-        }
-        Ok(v.get("result").cloned().unwrap_or(Value::Null))
+    /// Calls a Conduit method, by curl (`request`); its `result`.
+    pub fn call(&self, method: &str, params: Value) -> Result<Value, Error> {
+        request(Command::new("curl"), &self.api, &self.token, method, params)
     }
+}
+
+/// Conduit's method `method` called at `api` with `params` and the token
+/// `token`, by `curl`, the command curl's arguments are added to: curl, or
+/// the tests' stand-in. The token and the parameters are given on curl's
+/// standard input, never on its command line, where any process of this
+/// machine could read them. Its `result`; or what went wrong: curl failing,
+/// as it says it; Phabricator turning this machine away (HTTP 429), for as
+/// long as it says; a status other than 200, or a page that is not JSON,
+/// said with the page's first line; or the error Conduit gives.
+fn request(mut curl: Command, api: &str, token: &str, method: &str, params: Value) -> Result<Value, Error> {
+    let mut params = params;
+    params["__conduit__"] = json!({"token": token});
+    // The headers of the answer first, then its page (`-D -`).
+    curl.args(["-sS", "--max-time", "30", "-D", "-", "-X", "POST"])
+        .arg(format!("{api}{method}"))
+        .args(["--data-urlencode", "params@-", "--data", "output=json", "--data", "__conduit__=1"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = curl.spawn().map_err(|e| Error::Said(format!("curl: {e}")))?;
+    // curl reads it whole before it sends anything. Should it stop reading,
+    // what it says of why is what is said.
+    if let Some(mut input) = child.stdin.take() {
+        let _ = input.write_all(params.to_string().as_bytes());
+    }
+    let out = child.wait_with_output().map_err(|e| Error::Said(format!("curl: {e}")))?;
+    if !out.status.success() {
+        return Err(Error::Said(format!("{method}: {}", String::from_utf8_lossy(&out.stderr).trim())));
+    }
+    let (status, retry_after, page) = answered(&out.stdout);
+    let first = String::from_utf8_lossy(page).lines().map(str::trim).find(|l| !l.is_empty()).map(|l| match l.chars().count() > 80 {
+        true => format!("{}…", l.chars().take(80).collect::<String>()),
+        false => l.to_string(),
+    });
+    match (status, &first) {
+        (Some(429), _) => return Err(Error::TurnedAway(retry_after.as_deref().and_then(|v| wait_asked(v, crate::db::now())))),
+        (Some(s), Some(l)) if s != 200 => return Err(Error::Said(format!("{method}: Phabricator answered HTTP {s} with a page starting \"{l}\""))),
+        (Some(s), None) if s != 200 => return Err(Error::Said(format!("{method}: Phabricator answered HTTP {s} with an empty page"))),
+        _ => {}
+    }
+    let v: Value = serde_json::from_slice(page).map_err(|_| match &first {
+        Some(l) => Error::Said(format!("{method}: Phabricator answered with a page that is not JSON, starting \"{l}\"")),
+        None => Error::Said(format!("{method}: Phabricator answered with an empty page")),
+    })?;
+    if let Some(e) = v.get("error_info").and_then(Value::as_str) {
+        return Err(Error::Said(format!("{method}: {e}")));
+    }
+    Ok(v.get("result").cloned().unwrap_or(Value::Null))
+}
+
+/// What curl wrote with `-D -`: the status of the last answer, past those
+/// that only say to go on (`100 Continue`), its `Retry-After` if it has
+/// one, and its page. No status where curl wrote no headers.
+fn answered(out: &[u8]) -> (Option<u16>, Option<String>, &[u8]) {
+    let (mut status, mut retry_after, mut rest) = (None, None, out);
+    while rest.starts_with(b"HTTP/") {
+        let end = rest
+            .windows(4)
+            .position(|w| w == b"\r\n\r\n")
+            .map(|k| k + 4)
+            .or_else(|| rest.windows(2).position(|w| w == b"\n\n").map(|k| k + 2))
+            .unwrap_or(rest.len());
+        let headers = String::from_utf8_lossy(&rest[..end]);
+        status = headers.split_whitespace().nth(1).and_then(|s| s.parse().ok());
+        retry_after = headers.lines().skip(1).find_map(|l| {
+            let (name, value) = l.split_once(':')?;
+            name.trim().eq_ignore_ascii_case("retry-after").then(|| value.trim().to_string())
+        });
+        rest = &rest[end..];
+    }
+    (status, retry_after, rest)
+}
+
+/// How long a `Retry-After` of `value` says to wait, at `now` (seconds since
+/// 1970): its number of seconds, or until its date, as HTTP writes one
+/// (`Wed, 21 Oct 2015 07:28:00 GMT`). None for no time to come.
+fn wait_asked(value: &str, now: i64) -> Option<Duration> {
+    if let Ok(secs) = value.trim().parse::<u64>() {
+        return (secs > 0).then(|| Duration::from_secs(secs));
+    }
+    let [_, day, month, year, time, "GMT"] = value.split_whitespace().collect::<Vec<_>>()[..] else { return None };
+    const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    let month = MONTHS.iter().position(|m| *m == month)? as i64 + 1;
+    let (day, year): (i64, i64) = (day.parse().ok()?, year.parse().ok()?);
+    let hms: Vec<i64> = time.split(':').map(|n| n.parse().ok()).collect::<Option<_>>()?;
+    let [h, m, s] = hms[..] else { return None };
+    // Days since 1970-01-01, as Howard Hinnant's days_from_civil counts
+    // them: from March, so that February's last day ends a year.
+    let y = if month <= 2 { year - 1 } else { year };
+    let era = y.div_euclid(400);
+    let of_era = y - era * 400;
+    let of_year = (153 * ((month + 9) % 12) + 2) / 5 + day - 1;
+    let days = era * 146_097 + of_era * 365 + of_era / 4 - of_era / 100 + of_year - 719_468;
+    let at = days * 86_400 + h * 3600 + m * 60 + s;
+    (at > now).then(|| Duration::from_secs((at - now) as u64))
 }
 
 /// A comment as Phabricator has it, as it was last edited: its id is that
@@ -217,7 +330,7 @@ fn transactions(call: &mut Call, revision: &str) -> Result<Vec<Value>, String> {
 
 /// Reads every comment on `revision`.
 pub fn fetch(conduit: &Conduit, revision: &str, source: &str) -> Result<RevisionComments, String> {
-    let txns = transactions(&mut |m, v| conduit.call(m, v), revision)?;
+    let txns = transactions(&mut |m, v| conduit.call(m, v).map_err(String::from), revision)?;
     let mut authors: Vec<String> = txns
         .iter()
         .filter_map(|t| {
@@ -427,7 +540,7 @@ pub fn read_stack(rev: &str, link: Option<&str>) -> Result<Vec<Revision>, String
     }
     let conduit = Conduit::for_url(link)?;
     let trailer = crate::config::get().reviews.trailer.clone();
-    stack_over(&mut |method, params| conduit.call(method, params), &conduit.api, &trailer, rev)
+    stack_over(&mut |method, params| conduit.call(method, params).map_err(String::from), &conduit.api, &trailer, rev)
 }
 
 /// How Conduit is called: a method, its parameters; its `result`.
@@ -735,18 +848,21 @@ impl Status {
 
 /// A revision as the statuses' search finds it: its status, its title and
 /// summary, and its PHID, which the Phabricator line over a patch's message
-/// reads the revision's latest diff by.
+/// reads the revision's latest diff by; and when it was last modified
+/// (`dateModified`, seconds since 1970), when the search says, which the
+/// line reads the rest of the revision again by.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Searched {
     pub status: Status,
     pub title: String,
     pub summary: String,
     pub phid: String,
+    pub modified: Option<i64>,
 }
 
 /// The statuses of revisions `ids` (`D123`), Conduit called with `call`:
 /// one search for all of them. By revision, those Phabricator has, each
-/// with its title, summary and PHID.
+/// with its title, summary and PHID, and when it was last modified.
 pub(crate) fn statuses_over(call: &mut Call, ids: &[String]) -> Result<HashMap<String, Searched>, String> {
     let numbers: Vec<u64> = ids.iter().filter_map(|d| d.strip_prefix('D')?.parse().ok()).collect();
     if numbers.is_empty() {
@@ -765,6 +881,7 @@ pub(crate) fn statuses_over(call: &mut Call, ids: &[String]) -> Result<HashMap<S
                 title: text(r, "title"),
                 summary: text(r, "summary"),
                 phid: r.get("phid").and_then(Value::as_str).unwrap_or_default().to_string(),
+                modified: r.pointer("/fields/dateModified").and_then(Value::as_i64),
             };
             Some((format!("D{}", r.get("id")?.as_u64()?), searched))
         })
@@ -775,28 +892,35 @@ pub(crate) fn statuses_over(call: &mut Call, ids: &[String]) -> Result<HashMap<S
 /// beyond what the statuses' search says: the id of its latest diff, and
 /// that diff, raw; its comments, each as it was last edited, what it was
 /// before kept with it, as a pull reads them (`comments_of`), but for their
-/// authors and the lines they are on, which are not read; and its parents,
-/// each its PHID and its `D123`, by PHID (`parents_named`).
+/// authors and the lines they are on, which are not read; its parents,
+/// each its PHID and its `D123`, by PHID (`parents_named`); and when the
+/// revision was last modified as its diff and comments were read, as the
+/// statuses' search said it (`Searched::modified`): none when that is not
+/// known, or what was read is not to be taken as the revision's since.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Latest {
     pub diff: u64,
     pub raw: String,
     pub comments: Vec<Remote>,
     pub parents: Vec<(String, String)>,
+    pub modified: Option<i64>,
 }
 
 /// A revision whose latest diff, comments and parents the Phabricator line
-/// reads (`latests`): its `D123`, its link and its PHID, as the statuses'
-/// search found it; its latest diff as read before, its id and the diff
-/// raw, which is not read again while it is the latest; and whether the
-/// parents it has are to be named, as a submit would set it one (not at
-/// the stack's bottom, say), so that the view of what differs names them.
+/// reads (`latests`): its `D123`, its link and its PHID, and when it was
+/// last modified, as the statuses' search found it; what was read of it
+/// before, if anything, which is not read again while the revision was not
+/// modified since, its parents aside, and its raw diff not while it is the
+/// latest; and whether the parents it has are to be named, as a submit
+/// would set it one (not at the stack's bottom, say), so that the view of
+/// what differs names them.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Wanted {
     pub d: String,
     pub link: String,
     pub phid: String,
-    pub had: Option<(u64, String)>,
+    pub modified: Option<i64>,
+    pub had: Option<Latest>,
     pub name_parents: bool,
 }
 
@@ -888,11 +1012,12 @@ fn parents_named(call: &mut Call, wanted: &[&Wanted], parents: &HashMap<String, 
 /// As `latests`, Conduit called with `call`, for revisions `wanted` of one
 /// Phabricator, in turn: the parents of all of them (`parents_over`), and
 /// their latest diffs (`newest_diffs`), first; those parents named
-/// (`parents_named`); then, for each, its latest diff, raw, unless it is
-/// the one read before, and every transaction of the revision, for its
-/// comments, `got` told it as soon as it is read. A revision with no diff
-/// is passed over. Up to the first call that fails, and what is wrong
-/// with it.
+/// (`parents_named`); then, for each modified since it was read, or never
+/// read, its latest diff, raw, unless it is the one read before, and every
+/// transaction of the revision, for its comments, `got` told it as soon as
+/// it is read; for each other, what was read of it before, its parents
+/// as they are now. A revision with no diff is passed over. Up to the
+/// first call that fails, and what is wrong with it.
 pub(crate) fn latests_over(call: &mut Call, wanted: &[&Wanted], got: &mut dyn FnMut(&str, Latest)) -> Result<(), String> {
     let phids: Vec<String> = wanted.iter().map(|w| w.phid.clone()).collect();
     let parents = parents_over(call, &phids)?;
@@ -900,15 +1025,23 @@ pub(crate) fn latests_over(call: &mut Call, wanted: &[&Wanted], got: &mut dyn Fn
     let names = parents_named(call, wanted, &parents);
     for w in wanted {
         let Some(&diff) = diffs.get(&w.phid) else { continue };
+        let named = |p: &String| (p.clone(), names.get(p).cloned().unwrap_or_else(|| p.clone()));
+        let parents = parents.get(&w.phid).into_iter().flatten().map(named).collect();
+        // Not modified since it was read, its latest diff the same: as it
+        // was read, but for its parents, which change from the other side
+        // too, when another revision is edited to take it as its child.
+        let unchanged = |h: &&Latest| h.diff == diff && h.modified.is_some() && h.modified == w.modified;
+        if let Some(had) = w.had.as_ref().filter(unchanged) {
+            got(&w.link, Latest { parents, ..had.clone() });
+            continue;
+        }
         let raw = match &w.had {
-            Some((id, raw)) if *id == diff => raw.clone(),
+            Some(h) if h.diff == diff => h.raw.clone(),
             _ => call("differential.getrawdiff", json!({"diffID": diff}))?.as_str().unwrap_or_default().to_string(),
         };
         let txns = transactions(call, &w.d)?;
         let comments = comments_of(&txns, &HashMap::new(), |_, _, _| None);
-        let named = |p: &String| (p.clone(), names.get(p).cloned().unwrap_or_else(|| p.clone()));
-        let parents = parents.get(&w.phid).into_iter().flatten().map(named).collect();
-        got(&w.link, Latest { diff, raw, comments, parents });
+        got(&w.link, Latest { diff, raw, comments, parents, modified: w.modified });
     }
     Ok(())
 }
@@ -927,9 +1060,14 @@ fn by_host<T>(all: &[T], link: impl Fn(&T) -> &str) -> Vec<Vec<&T>> {
     out.into_iter().map(|(_, these)| these).collect()
 }
 
-/// A stand-in for Phabricator, answering Conduit's calls as a submit's does
-/// (`submit::stand_in`), shared with the read under way.
-type StatusStandIn = std::sync::Arc<std::sync::Mutex<crate::submit::Phabricator>>;
+/// What answers Conduit's calls in place of Phabricator for the editors of a
+/// database (`statuses_stand_in`): the tests', which never reach it. Each
+/// call, a method and its parameters; its `result`, or what went wrong, as
+/// `Conduit::call` says it, Phabricator turning this machine away too.
+pub type StandIn = Box<dyn FnMut(&str, Value) -> Result<Value, Error> + Send>;
+
+/// A stand-in for Phabricator, shared with the read under way.
+type StatusStandIn = std::sync::Arc<std::sync::Mutex<StandIn>>;
 
 /// What answers the statuses' searches of the editors of a database in
 /// place of Phabricator, by the database's path: the tests', which never
@@ -941,7 +1079,7 @@ static STATUS_STAND_INS: std::sync::Mutex<Vec<(std::path::PathBuf, StatusStandIn
 
 /// Has `p` answer the statuses' searches of the editors of the database at
 /// `db` rather than Phabricator; with none, Phabricator again.
-pub fn statuses_stand_in(db: &Path, p: Option<crate::submit::Phabricator>) {
+pub fn statuses_stand_in(db: &Path, p: Option<StandIn>) {
     let mut all = STATUS_STAND_INS.lock().unwrap_or_else(|e| e.into_inner());
     all.retain(|(at, _)| at != db);
     if let Some(p) = p {
@@ -963,20 +1101,39 @@ pub fn statuses_read(db: &Path) -> bool {
     status_stand_in(db).is_some() || crate::home::get().dir != Path::new(crate::home::NOWHERE)
 }
 
+/// What a process that keeps nothing, as the tests' own, says it reads of
+/// Phabricator without a stand-in.
+const NOT_REACHED: &str = "Phabricator is not reached from a process that keeps nothing, as the tests' own";
+
 /// What `f` comes to, Conduit called with what it is given for the editors
 /// of the database at `db`, on the Phabricator of revision link `link`: the
 /// stand-in set for that database, if one is; else Conduit, with the token
-/// for that Phabricator, never from a process that keeps nothing.
-fn calling<T>(db: &Path, link: &str, f: impl FnOnce(&mut Call) -> Result<T, String>) -> Result<T, String> {
-    if let Some(p) = status_stand_in(db) {
-        let mut p = p.lock().unwrap_or_else(|e| e.into_inner());
-        return f(&mut |m, v| p(m, v));
-    }
-    if crate::home::get().dir == Path::new(crate::home::NOWHERE) {
-        return Err("Phabricator is not reached from a process that keeps nothing, as the tests' own".into());
-    }
-    let conduit = Conduit::for_url(Some(link))?;
-    f(&mut |m, v| conduit.call(m, v))
+/// for that Phabricator, never from a process that keeps nothing. Should
+/// `f` fail once a call was turned away, that is what went wrong, of its
+/// own kind (`Error::TurnedAway`), whatever `f` makes of it.
+fn calling<T>(db: &Path, link: &str, f: impl FnOnce(&mut Call) -> Result<T, String>) -> Result<T, Error> {
+    let mut away: Option<Error> = None;
+    let done = {
+        // What went wrong, as `f` takes it; a call turned away, kept.
+        let mut told = |e: Error| {
+            if away.is_none() && matches!(e, Error::TurnedAway(_)) {
+                away = Some(e.clone());
+            }
+            e.to_string()
+        };
+        match status_stand_in(db) {
+            Some(p) => {
+                let mut p = p.lock().unwrap_or_else(|e| e.into_inner());
+                f(&mut |m, v| p(m, v).map_err(&mut told))
+            }
+            None if crate::home::get().dir == Path::new(crate::home::NOWHERE) => return Err(Error::Said(NOT_REACHED.into())),
+            None => {
+                let conduit = Conduit::for_url(Some(link))?;
+                f(&mut |m, v| conduit.call(m, v).map_err(&mut told))
+            }
+        }
+    };
+    done.map_err(|e| away.unwrap_or(Error::Said(e)))
 }
 
 /// The statuses of revisions `revisions` (`D123`, and its link) on
@@ -985,10 +1142,10 @@ fn calling<T>(db: &Path, link: &str, f: impl FnOnce(&mut Call) -> Result<T, Stri
 /// (`statuses_over`). Through the stand-in set for the database at `db`, if
 /// one is; else over Conduit, with the token for that Phabricator, never
 /// from a process that keeps nothing. What is wrong, said, when a search
-/// fails.
-pub fn statuses(db: &Path, revisions: &[(String, String)]) -> Result<HashMap<String, Searched>, String> {
+/// fails: Phabricator turning this machine away, as such.
+pub fn statuses(db: &Path, revisions: &[(String, String)]) -> Result<HashMap<String, Searched>, Error> {
     if status_stand_in(db).is_none() && crate::home::get().dir == Path::new(crate::home::NOWHERE) {
-        return Err("Phabricator is not reached from a process that keeps nothing, as the tests' own".into());
+        return Err(Error::Said(NOT_REACHED.into()));
     }
     // By Phabricator, as `pull` reads the comments.
     let mut out = HashMap::new();
@@ -1006,14 +1163,16 @@ pub fn statuses(db: &Path, revisions: &[(String, String)]) -> Result<HashMap<Str
 
 /// What the Phabricator lines over the patches' messages read of revisions
 /// `wanted`, beyond their search: the latest diff of each, raw, but when it
-/// is the one read before; its comments; and its parents, named
+/// is the one read before; its comments; and its parents, named; of a
+/// revision not modified since it was read, its parents alone
 /// (`latests_over`): `got` told each revision, by its link, as soon as it
 /// is read, in the order given. The calls of each Phabricator, as the
 /// revisions' links name it, one after another. Through the stand-in set
 /// for the database at `db`, as the statuses are read, else over Conduit;
 /// never from a process that keeps nothing. What is wrong, said, when a
-/// call fails: no call is made after it.
-pub fn latests(db: &Path, wanted: &[Wanted], got: &mut dyn FnMut(&str, Latest)) -> Result<(), String> {
+/// call fails, Phabricator turning this machine away as such: no call is
+/// made after it.
+pub fn latests(db: &Path, wanted: &[Wanted], got: &mut dyn FnMut(&str, Latest)) -> Result<(), Error> {
     for these in by_host(wanted, |w| w.link.as_str()) {
         calling(db, &these[0].link, |call| latests_over(call, &these, got))?;
     }
@@ -1223,17 +1382,24 @@ mod tests {
             let mut d12 = revision(12, Some("accepted"), false);
             d12["fields"]["title"] = json!("Bug 12 - twelve");
             d12["fields"]["summary"] = json!("Why.");
+            d12["fields"]["dateModified"] = json!(1_700_000_012);
             Ok(json!({"data": [d12, revision(11, Some("changes-planned"), true)]}))
         };
         let ids = ["D11", "D12", "D13"].map(String::from);
         let found = statuses_over(&mut call, &ids).unwrap();
         assert_eq!(asked, [("differential.revision.search".to_string(), json!({"constraints": {"ids": [11, 12, 13]}}))]);
         // D13, not given: not known. Each with its title, summary and PHID,
-        // none when the search gives none.
-        let searched = |status: Status, title: &str, summary: &str, n: u64| Searched { status, title: title.into(), summary: summary.into(), phid: format!("PHID-DREV-{n}") };
+        // and when it was last modified, none when the search gives none.
+        let searched = |status: Status, title: &str, summary: &str, n: u64, modified: Option<i64>| Searched {
+            status,
+            title: title.into(),
+            summary: summary.into(),
+            phid: format!("PHID-DREV-{n}"),
+            modified,
+        };
         let want: HashMap<String, Searched> = [
-            ("D11".to_string(), searched(Status::ChangesPlanned, "", "", 11)),
-            ("D12".to_string(), searched(Status::Accepted, "Bug 12 - twelve", "Why.", 12)),
+            ("D11".to_string(), searched(Status::ChangesPlanned, "", "", 11, None)),
+            ("D12".to_string(), searched(Status::Accepted, "Bug 12 - twelve", "Why.", 12, Some(1_700_000_012))),
         ]
         .into();
         assert_eq!(found, want);
@@ -1255,7 +1421,7 @@ mod tests {
         // The tests' own process keeps nothing: with no stand-in for the
         // database, Phabricator is not reached, and the editor reads none.
         assert!(!statuses_read(&db));
-        assert_eq!(statuses(&db, &revisions), Err("Phabricator is not reached from a process that keeps nothing, as the tests' own".to_string()));
+        assert_eq!(statuses(&db, &revisions), Err(Error::Said("Phabricator is not reached from a process that keeps nothing, as the tests' own".to_string())));
         let searched = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let seen = searched.clone();
         statuses_stand_in(
@@ -1283,14 +1449,15 @@ mod tests {
 
     /// A revision the Phabricator line reads (`Wanted`): D`n`, of PHID
     /// `PHID-DREV-n`, its parents named or not, its latest diff as read
-    /// before.
+    /// before, and nothing else of it; when it was last modified not known.
     fn wanted(n: u64, name_parents: bool, had: Option<(u64, &str)>) -> Wanted {
         Wanted {
             d: format!("D{n}"),
             link: format!("https://p.example/D{n}"),
             phid: format!("PHID-DREV-{n}"),
-            had: had.map(|(id, raw)| (id, raw.to_string())),
+            had: had.map(|(id, raw)| Latest { diff: id, raw: raw.to_string(), ..Default::default() }),
             name_parents,
+            ..Default::default()
         }
     }
 
@@ -1428,7 +1595,7 @@ mod tests {
         let all = [wanted(11, false, None), b, wanted(12, false, None)];
         // The tests' own process keeps nothing: with no stand-in, none read.
         let nowhere = "Phabricator is not reached from a process that keeps nothing, as the tests' own";
-        assert_eq!(latests(&db, &all, &mut |_, _| panic!("nothing read")), Err(nowhere.to_string()));
+        assert_eq!(latests(&db, &all, &mut |_, _| panic!("nothing read")), Err(Error::Said(nowhere.to_string())));
         let edges = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let seen = edges.clone();
         statuses_stand_in(
@@ -1472,5 +1639,325 @@ mod tests {
         assert_eq!(on(3, None), added("three"));
         assert_eq!(on(3, Some("three")), added("three"));
         assert_eq!(on(2, Some("gone since")), added("two"));
+    }
+
+    #[test]
+    fn a_revision_not_modified_since_it_was_read_is_not_read_again_but_for_its_parents() {
+        let asked = std::cell::RefCell::new(Vec::new());
+        let mut call = |method: &str, params: Value| -> Result<Value, String> {
+            asked.borrow_mut().push(format!("{method} {}", params.get("objectIdentifier").or(params.get("diffID")).map(Value::to_string).unwrap_or_default()));
+            Ok(match method {
+                // D12 on D11 now, set from D11's side.
+                "edge.search" => json!({"data": [{"sourcePHID": "PHID-DREV-12", "destinationPHID": "PHID-DREV-11"}]}),
+                // D14's latest diff a new one, 9; the others' as read.
+                "differential.diff.search" => {
+                    json!({"data": (11..=15).map(|n| json!({"id": if n == 14 { 9 } else { n - 10 }, "fields": {"revisionPHID": format!("PHID-DREV-{n}")}})).collect::<Vec<_>>()})
+                }
+                "differential.getrawdiff" => json!(format!("raw {}", params["diffID"])),
+                "transaction.search" => json!({"data": [{"type": "comment", "fields": {}, "comments": [{"phid": "new", "version": 1, "content": {"raw": "New."}}]}]}),
+                m => return Err(format!("not as Phabricator is asked: {m}")),
+            })
+        };
+        let old = vec![Remote { phid: "old".into(), text: "Old.".into(), ..Default::default() }];
+        let read = |n: u64, modified: Option<i64>| Latest { diff: n - 10, raw: format!("raw of D{n}"), comments: old.clone(), modified, ..Default::default() };
+        let at = |n: u64, modified: Option<i64>, had: Option<Latest>| Wanted { modified, had, ..wanted(n, false, None) };
+        let all = [
+            // D11 and D12 not modified since they were read; D13 modified
+            // since; D14 neither, but given a new diff; D15 never read.
+            at(11, Some(100), Some(read(11, Some(100)))),
+            at(12, Some(100), Some(read(12, Some(100)))),
+            at(13, Some(200), Some(read(13, Some(100)))),
+            at(14, Some(100), Some(read(14, Some(100)))),
+            at(15, Some(100), None),
+        ];
+        let mut got = Vec::new();
+        latests_over(&mut call, &all.iter().collect::<Vec<_>>(), &mut |link, l| got.push((link.to_string(), l))).unwrap();
+        // The parents and the latest diffs of all at once, as ever; then
+        // only those modified since, given a new diff, or never read: their
+        // comments, and a raw diff not read before.
+        assert_eq!(
+            asked.into_inner(),
+            [
+                "edge.search ",
+                "differential.diff.search ",
+                "transaction.search \"D13\"",
+                "differential.getrawdiff 9",
+                "transaction.search \"D14\"",
+                "differential.getrawdiff 5",
+                "transaction.search \"D15\"",
+            ]
+        );
+        // Each told all the same: as it was read, its parents as they are
+        // now; those read again, their comments as they are, and when
+        // they were last modified as the search says.
+        let each: Vec<(&str, &str, &str, Option<i64>)> = got.iter().map(|(link, l)| (link.as_str(), l.raw.as_str(), l.comments[0].text.as_str(), l.modified)).collect();
+        assert_eq!(
+            each,
+            [
+                ("https://p.example/D11", "raw of D11", "Old.", Some(100)),
+                ("https://p.example/D12", "raw of D12", "Old.", Some(100)),
+                ("https://p.example/D13", "raw of D13", "New.", Some(200)),
+                ("https://p.example/D14", "raw 9", "New.", Some(100)),
+                ("https://p.example/D15", "raw 5", "New.", Some(100)),
+            ]
+        );
+        assert_eq!(got[1].1.parents, [("PHID-DREV-11".to_string(), "D11".to_string())]);
+        // When it was last modified not known, or not kept with what was
+        // read (a submit or a pull forgot it): read again.
+        for (modified, had) in [(None, Some(100)), (Some(100), None), (None, None)] {
+            let asked = std::cell::RefCell::new(0);
+            let mut call = |method: &str, _: Value| -> Result<Value, String> {
+                *asked.borrow_mut() += usize::from(method == "transaction.search");
+                Ok(match method {
+                    "differential.diff.search" => json!({"data": [{"id": 1, "fields": {"revisionPHID": "PHID-DREV-11"}}]}),
+                    _ => json!({"data": []}),
+                })
+            };
+            let one = at(11, modified, Some(read(11, had)));
+            latests_over(&mut call, &[&one], &mut |_, _| {}).unwrap();
+            assert_eq!(asked.into_inner(), 1, "{modified:?}, {had:?}");
+        }
+    }
+
+    /// The token of the tests' calls by curl: no one's.
+    const TOKEN: &str = "api-scratchtokenofthetests";
+
+    /// A stand-in for curl, a script that `sh` runs, so that it is never
+    /// run as a program just written, which another test's fork might
+    /// still hold: it writes its arguments to `args` beside it, one a line,
+    /// and what it reads to `read`; then, as curl with `-D -`, the headers
+    /// and the page of `answer`. Or, the answer `curl:` and more, it says
+    /// that alone, as curl says it cannot connect.
+    fn curl_answering(dir: &Path, answer: &str) -> Command {
+        std::fs::write(dir.join("answer"), answer).unwrap();
+        let here = "\"$(dirname \"$0\")\"";
+        let script = dir.join("curl.sh");
+        std::fs::write(
+            &script,
+            format!("printf '%s\\n' \"$@\" > {here}/args\ncat > {here}/read\nif grep -q '^curl:' {here}/answer; then cat {here}/answer >&2; exit 7; fi\ncat {here}/answer\n"),
+        )
+        .unwrap();
+        let mut c = Command::new("sh");
+        c.arg(script);
+        c
+    }
+
+    /// What a call of `method` by the stand-in for curl, answering
+    /// `answer`, comes to.
+    fn answer_of(dir: &Path, method: &str, answer: &str) -> Result<Value, Error> {
+        request(curl_answering(dir, answer), "https://p.example/api/", TOKEN, method, json!({"constraints": {"ids": [11]}}))
+    }
+
+    #[test]
+    fn curl_is_given_the_token_and_the_parameters_on_its_standard_input_never_on_its_command_line() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ok = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{\"result\": {\"data\": []}, \"error_code\": null, \"error_info\": null}";
+        assert_eq!(answer_of(tmp.path(), "differential.revision.search", ok), Ok(json!({"data": []})));
+        let args = std::fs::read_to_string(tmp.path().join("args")).unwrap();
+        assert_eq!(
+            args.lines().collect::<Vec<_>>(),
+            [
+                "-sS",
+                "--max-time",
+                "30",
+                "-D",
+                "-",
+                "-X",
+                "POST",
+                "https://p.example/api/differential.revision.search",
+                "--data-urlencode",
+                "params@-",
+                "--data",
+                "output=json",
+                "--data",
+                "__conduit__=1",
+            ]
+        );
+        assert!(!args.contains(TOKEN) && !args.contains("constraints"), "{args}");
+        let read: Value = serde_json::from_str(&std::fs::read_to_string(tmp.path().join("read")).unwrap()).unwrap();
+        assert_eq!(read, json!({"constraints": {"ids": [11]}, "__conduit__": {"token": TOKEN}}));
+    }
+
+    #[test]
+    fn a_call_turned_away_says_http_429_and_how_long_phabricator_asks_to_wait() {
+        let tmp = tempfile::tempdir().unwrap();
+        let away = |retry_after: &str| format!("HTTP/1.1 429 Too Many Requests\r\n{retry_after}Content-Length: 0\r\n\r\n");
+        // Two minutes asked, the page empty: its own kind of error, which
+        // says HTTP 429 plainly.
+        let e = answer_of(tmp.path(), "conduit.ping", &away("Retry-After: 120\r\n")).unwrap_err();
+        assert_eq!(e, Error::TurnedAway(Some(Duration::from_secs(120))));
+        assert_eq!(e.to_string(), "Phabricator is turning away requests from this machine for now (HTTP 429, too many requests)");
+        assert_eq!(String::from(e), TURNED_AWAY);
+        // Nothing asked, or no time to come: turned away all the same.
+        assert_eq!(answer_of(tmp.path(), "conduit.ping", &away("")), Err(Error::TurnedAway(None)));
+        assert_eq!(answer_of(tmp.path(), "conduit.ping", &away("retry-after: 0\r\n")), Err(Error::TurnedAway(None)));
+        // As HTTP/2 writes it, after an answer that says to go on.
+        let continued = "HTTP/1.1 100 Continue\r\n\r\nHTTP/2 429 \r\nretry-after: 30\r\n\r\n";
+        assert_eq!(answer_of(tmp.path(), "conduit.ping", continued), Err(Error::TurnedAway(Some(Duration::from_secs(30)))));
+        // A Retry-After that is a date: until then.
+        let at = 1_445_412_480;
+        assert_eq!(wait_asked("Wed, 21 Oct 2015 07:28:00 GMT", at - 90), Some(Duration::from_secs(90)));
+        assert_eq!(wait_asked("Tue, 29 Feb 2000 23:59:59 GMT", 951_868_799 - 1), Some(Duration::from_secs(1)));
+        assert_eq!(wait_asked("Sun, 01 Mar 2026 00:00:00 GMT", 1_772_323_200 - 3600), Some(Duration::from_secs(3600)));
+        for gone in ["Wed, 21 Oct 2015 07:28:00 GMT", "Thu, 01 Jan 1970 00:00:00 GMT"] {
+            assert_eq!(wait_asked(gone, at), None, "{gone}");
+        }
+        for wrong in ["soon", "", "-5", "Wed, 21 Oct 2015 07:28 GMT", "Wed, 21 Foo 2015 07:28:00 GMT", "Wed, 21 Oct 2015 07:28:00 CET"] {
+            assert_eq!(wait_asked(wrong, 0), None, "{wrong:?}");
+        }
+    }
+
+    #[test]
+    fn another_status_or_a_page_that_is_not_json_is_said_with_the_page_s_first_line() {
+        let tmp = tempfile::tempdir().unwrap();
+        let method = "differential.revision.search";
+        // A gateway's error page: the status, and the page's first line.
+        let page = "HTTP/1.1 502 Bad Gateway\r\nContent-Type: text/html\r\n\r\n<html><head><title>502 Bad Gateway</title></head>\r\n<body><center><h1>502 Bad Gateway</h1></center></body>\r\n</html>\r\n";
+        assert_eq!(
+            answer_of(tmp.path(), method, page),
+            Err(Error::Said("differential.revision.search: Phabricator answered HTTP 502 with a page starting \"<html><head><title>502 Bad Gateway</title></head>\"".into()))
+        );
+        // Its first line long: cut short. None: said so.
+        let long = format!("HTTP/1.1 503 Service Unavailable\r\n\r\n\r\n  {}  \r\nmore", "x".repeat(100));
+        assert_eq!(
+            answer_of(tmp.path(), method, &long),
+            Err(Error::Said(format!("differential.revision.search: Phabricator answered HTTP 503 with a page starting \"{}…\"", "x".repeat(80))))
+        );
+        assert_eq!(
+            answer_of(tmp.path(), method, "HTTP/1.1 500 Internal Server Error\r\n\r\n"),
+            Err(Error::Said("differential.revision.search: Phabricator answered HTTP 500 with an empty page".into()))
+        );
+        // Another status that is not 429 is no refusal of this machine.
+        assert!(matches!(answer_of(tmp.path(), method, "HTTP/1.1 403 Forbidden\r\n\r\nNo."), Err(Error::Said(_))));
+        // HTTP 200, but a page that is not JSON, or none.
+        assert_eq!(
+            answer_of(tmp.path(), method, "HTTP/1.1 200 OK\r\n\r\n<!DOCTYPE html>\n<p>Log in.</p>"),
+            Err(Error::Said("differential.revision.search: Phabricator answered with a page that is not JSON, starting \"<!DOCTYPE html>\"".into()))
+        );
+        assert_eq!(
+            answer_of(tmp.path(), method, "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"),
+            Err(Error::Said("differential.revision.search: Phabricator answered with an empty page".into()))
+        );
+        // Conduit's own error, and curl's, as before.
+        let refused = "HTTP/1.1 200 OK\r\n\r\n{\"result\": null, \"error_code\": \"ERR-INVALID-AUTH\", \"error_info\": \"API token is invalid.\"}";
+        assert_eq!(answer_of(tmp.path(), method, refused), Err(Error::Said("differential.revision.search: API token is invalid.".into())));
+        assert_eq!(
+            answer_of(tmp.path(), method, "curl: (7) Failed to connect to p.example port 443"),
+            Err(Error::Said("differential.revision.search: curl: (7) Failed to connect to p.example port 443".into()))
+        );
+    }
+
+    /// The request a server on the loopback was sent, read from `c`: its
+    /// headers, then its body, as long as its `Content-Length` says.
+    fn request_read(c: &mut std::net::TcpStream) -> String {
+        use std::io::Read;
+        let mut got = Vec::new();
+        let mut buf = [0u8; 4096];
+        let body_at = loop {
+            if let Some(k) = got.windows(4).position(|w| w == b"\r\n\r\n") {
+                break k + 4;
+            }
+            let n = c.read(&mut buf).unwrap();
+            assert!(n > 0, "the request ended before its headers");
+            got.extend_from_slice(&buf[..n]);
+        };
+        let head = String::from_utf8_lossy(&got[..body_at]).to_lowercase();
+        let length: usize = head.lines().find_map(|l| l.strip_prefix("content-length:")).map_or(0, |n| n.trim().parse().unwrap());
+        while got.len() < body_at + length {
+            let n = c.read(&mut buf).unwrap();
+            assert!(n > 0, "the request ended before its body");
+            got.extend_from_slice(&buf[..n]);
+        }
+        String::from_utf8_lossy(&got).into_owned()
+    }
+
+    /// Form field `name` of `body`, as a form encodes it, decoded.
+    fn form_field(body: &str, name: &str) -> Option<String> {
+        let value = body.split('&').find_map(|f| f.strip_prefix(&format!("{name}=")))?;
+        let bytes = value.as_bytes();
+        let mut out = Vec::new();
+        let mut k = 0;
+        while k < bytes.len() {
+            match bytes[k] {
+                b'+' => out.push(b' '),
+                b'%' => {
+                    out.push(u8::from_str_radix(std::str::from_utf8(bytes.get(k + 1..k + 3)?).ok()?, 16).ok()?);
+                    k += 2;
+                }
+                b => out.push(b),
+            }
+            k += 1;
+        }
+        String::from_utf8(out).ok()
+    }
+
+    #[test]
+    fn curl_itself_sends_the_token_in_its_request_and_says_what_a_server_on_the_loopback_answered() {
+        // On the loopback alone, never the network: a 429 asking for two
+        // minutes, a gateway's error page, then Conduit's answer.
+        let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let api = format!("http://127.0.0.1:{}/api/", server.local_addr().unwrap().port());
+        let page = "<html><head><title>502 Bad Gateway</title></head>\r\n</html>\r\n";
+        let json = "{\"result\": \"pong\", \"error_code\": null, \"error_info\": null}";
+        let answers = [
+            "HTTP/1.1 429 Too Many Requests\r\nRetry-After: 120\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_string(),
+            format!("HTTP/1.1 502 Bad Gateway\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{page}", page.len()),
+            format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{json}", json.len()),
+        ];
+        let served = std::thread::spawn(move || {
+            answers.map(|a| {
+                let (mut c, _) = server.accept().unwrap();
+                let request = request_read(&mut c);
+                c.write_all(a.as_bytes()).unwrap();
+                request
+            })
+        });
+        // curl itself, without the settings of anyone's ~/.curlrc (`-q`),
+        // nor a proxy.
+        let curl = || {
+            let mut c = Command::new("curl");
+            c.args(["-q", "--noproxy", "*"]);
+            c
+        };
+        let ping = || request(curl(), &api, TOKEN, "conduit.ping", json!({"x": "a b&c=d"}));
+        assert_eq!(ping(), Err(Error::TurnedAway(Some(Duration::from_secs(120)))));
+        assert_eq!(ping(), Err(Error::Said("conduit.ping: Phabricator answered HTTP 502 with a page starting \"<html><head><title>502 Bad Gateway</title></head>\"".into())));
+        assert_eq!(ping(), Ok(json!("pong")));
+        // Each a POST of the form Conduit reads, the token in its
+        // parameters, which curl read on its standard input.
+        for request in served.join().unwrap() {
+            assert!(request.starts_with("POST /api/conduit.ping HTTP/1.1\r\n"), "{request}");
+            let body = &request[request.find("\r\n\r\n").unwrap() + 4..];
+            let params: Value = serde_json::from_str(&form_field(body, "params").unwrap()).unwrap();
+            assert_eq!(params, json!({"x": "a b&c=d", "__conduit__": {"token": TOKEN}}));
+            assert_eq!((form_field(body, "output").as_deref(), form_field(body, "__conduit__").as_deref()), (Some("json"), Some("1")));
+        }
+    }
+
+    #[test]
+    fn a_read_turned_away_says_so_of_its_kind_whatever_the_calls_make_of_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db = tmp.path().join("db.jsonl");
+        // Phabricator turning this machine away, asking for two minutes.
+        let asked = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = asked.clone();
+        statuses_stand_in(
+            &db,
+            Some(Box::new(move |m, _| {
+                seen.lock().unwrap().push(m.to_string());
+                Err(Error::TurnedAway(Some(Duration::from_secs(120))))
+            })),
+        );
+        let revisions = [("D11".to_string(), "https://p.example/D11".to_string())];
+        assert_eq!(statuses(&db, &revisions), Err(Error::TurnedAway(Some(Duration::from_secs(120)))));
+        // The lines' read, though its calls take what went wrong as text,
+        // stopped at its first call.
+        let all = [wanted(11, false, None)];
+        assert_eq!(latests(&db, &all, &mut |_, _| panic!("nothing read")), Err(Error::TurnedAway(Some(Duration::from_secs(120)))));
+        assert_eq!(*asked.lock().unwrap(), ["differential.revision.search", "edge.search"]);
+        // Another error is said as it was.
+        statuses_stand_in(&db, Some(Box::new(|m, _| Err(format!("{m}: Phabricator is down").into()))));
+        assert_eq!(statuses(&db, &revisions), Err(Error::Said("differential.revision.search: Phabricator is down".into())));
+        statuses_stand_in(&db, None);
     }
 }

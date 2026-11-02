@@ -71,7 +71,7 @@ impl Via {
                 Some(p) => p(method, params),
                 None => Err(format!("{method}: Phabricator's stand-in is gone")),
             },
-            Via::Conduit(c) => c.call(method, params),
+            Via::Conduit(c) => c.call(method, params).map_err(String::from),
         }
     }
 

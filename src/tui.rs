@@ -2436,15 +2436,15 @@ enum Done {
     /// The statuses of the stack's revisions read from Phabricator, by
     /// link, each with what else its search says: or what was wrong.
     #[cfg(feature = "moz-phab")]
-    Statuses(std::result::Result<HashMap<String, crate::phab::Searched>, String>),
+    Statuses(std::result::Result<HashMap<String, crate::phab::Searched>, crate::phab::Error>),
     /// The latest diff, the comments and the parents of revision `0`, by
     /// its link, read for the Phabricator lines, as soon as each is.
     #[cfg(feature = "moz-phab")]
     Latest(String, crate::phab::Latest),
     /// The stack's revisions read for the Phabricator lines, or their read
-    /// stopped at a call that failed.
+    /// stopped at a call that failed: what was wrong.
     #[cfg(feature = "moz-phab")]
-    LatestAll,
+    LatestAll(Option<crate::phab::Error>),
     /// What differs in the code between a revision's latest diff and a
     /// version of its patch, worked out from `0` (`revisions::compare_key`).
     #[cfg(feature = "moz-phab")]
@@ -3214,7 +3214,7 @@ impl App {
             #[cfg(feature = "moz-phab")]
             Done::Latest(link, read) => self.latest_read(link, read),
             #[cfg(feature = "moz-phab")]
-            Done::LatestAll => self.latests_done(),
+            Done::LatestAll(failed) => self.latests_done(failed),
             #[cfg(feature = "moz-phab")]
             Done::Compared(key, code) => self.code_compared(key, code),
             Done::Said(what, said) => {

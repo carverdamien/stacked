@@ -285,7 +285,7 @@ fn the_status_of_each_patch_s_revision_and_its_phabricator_line_show_in_the_wind
             "differential.diff.search" => Ok(serde_json::json!({"data": [{"id": 5, "fields": {"revisionPHID": "PHID-DREV-11"}}]})),
             "differential.getrawdiff" => Ok(serde_json::Value::String(raw.clone())),
             "transaction.search" => Ok(serde_json::json!({"data": [], "cursor": {"after": null}})),
-            _ => Err(format!("{m}: not asked in this test")),
+            _ => Err(format!("{m}: not asked in this test").into()),
         })),
     );
     let s = Session::open(&db, tmp.path()).unwrap();

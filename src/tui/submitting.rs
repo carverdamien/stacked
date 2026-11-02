@@ -236,6 +236,7 @@ impl App {
             return;
         }
         self.bg.doing.push(SUBMITTING);
+        self.sends(&sub.ready.patch);
         self.status = match sub.ready.revision.as_ref().filter(|_| !sub.ready.in_work()) {
             Some(r) => format!("updating {} on Phabricator…", r.id),
             None => format!("sending patch {} to Phabricator…", sub.ready.number()),

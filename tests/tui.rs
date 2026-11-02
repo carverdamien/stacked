@@ -17634,7 +17634,9 @@ const LINK: &str = "Differential Revision: https://phabricator.example.com/D";
 
 /// A revision as the stand-in for Phabricator has it: a draft when it was
 /// never sent for review (`isDraft`); its comments, as transaction.search
-/// gives them (`said`).
+/// gives them (`said`); and when it was last modified, as its search says
+/// it (`dateModified`), if the test says, else not said at all: the
+/// stand-in leaves it as the test sets it, whatever is sent to it.
 #[cfg(feature = "moz-phab")]
 #[derive(Clone, Default)]
 struct Rev {
@@ -17646,6 +17648,7 @@ struct Rev {
     diffs: Vec<u64>,
     parents: Vec<String>,
     comments: Vec<serde_json::Value>,
+    modified: Option<i64>,
 }
 
 /// The stand-in for Phabricator, shared by the editor's reads and the test.
@@ -17673,7 +17676,10 @@ fn said(phid: &str, reply_to: Option<&str>) -> serde_json::Value {
 /// statuses' searches of an editor and what its Phabricator lines read
 /// (`statuses_from`), it keeps the revisions each search asked for, and
 /// the other calls apart, those of the lines; and refuses every call while
-/// it is down, and the calls of the methods `refused`.
+/// it is down, and the calls of the methods `refused`. While it is `away`,
+/// it turns away every call of those, as Phabricator turns away a machine
+/// (HTTP 429), asking to wait as long as it says, if it says, and keeps
+/// the calls it turned away.
 #[cfg(feature = "moz-phab")]
 #[derive(Default)]
 struct Phab {
@@ -17686,6 +17692,8 @@ struct Phab {
     line_reads: Vec<String>,
     down: bool,
     refused: Vec<&'static str>,
+    away: Option<Option<std::time::Duration>>,
+    turned_away: Vec<String>,
 }
 
 #[cfg(feature = "moz-phab")]
@@ -17736,9 +17744,13 @@ impl Phab {
             "draft" => "Draft",
             _ => "Closed",
         };
-        serde_json::json!({"id": n, "phid": format!("PHID-DREV-{n}"), "fields": {
+        let mut found = serde_json::json!({"id": n, "phid": format!("PHID-DREV-{n}"), "fields": {
             "title": r.title, "summary": r.summary, "status": {"value": r.status, "name": name}, "isDraft": r.draft,
-            "bugzilla.bug-id": r.bug, "repositoryPHID": "PHID-REPO-1"}})
+            "bugzilla.bug-id": r.bug, "repositoryPHID": "PHID-REPO-1"}});
+        if let Some(at) = r.modified {
+            found["fields"]["dateModified"] = at.into();
+        }
+        found
     }
 
     fn call(&mut self, method: &str, p: serde_json::Value) -> Result<serde_json::Value, String> {
@@ -18568,14 +18580,18 @@ fn statuses_from(db: &Path, phab: &std::sync::Arc<std::sync::Mutex<Phab>>) {
         db,
         Some(Box::new(move |m, v| {
             let mut p = p.lock().unwrap();
+            if let Some(asked) = p.away {
+                p.turned_away.push(m.to_string());
+                return Err(stacked::phab::Error::TurnedAway(asked));
+            }
             if p.down || p.refused.contains(&m) {
-                return Err(format!("{m}: Phabricator is down"));
+                return Err(format!("{m}: Phabricator is down").into());
             }
             match m == "differential.revision.search" && v["constraints"]["ids"].is_array() {
                 true => p.searched.push(v["constraints"]["ids"].clone()),
                 false => p.line_reads.push(m.to_string()),
             }
-            p.call(m, v)
+            Ok(p.call(m, v)?)
         })),
     );
 }
@@ -19721,6 +19737,177 @@ fn a_read_of_the_phabricator_lines_that_fails_keeps_what_was_known_and_says_noth
     assert_eq!(phab_line(&mut app).as_deref(), Some("Phabricator: D13 · Accepted · …"));
     assert_eq!(app.status, "");
     stacked::phab::statuses_stand_in(&db, None);
+}
+
+/// Whether the bottom line of `app` says that Phabricator turned this
+/// machine away, and that stacked reads it again `secs` seconds after the
+/// refusal, which came between `before` (seconds since 1970) and now.
+#[cfg(feature = "moz-phab")]
+fn says_turned_away(app: &App, before: i64, secs: i64) -> bool {
+    (before..=stacked::db::now()).any(|at| {
+        let then = stacked::db::local_time(at + secs);
+        app.status == format!("Phabricator is turning away requests from this machine for now (HTTP 429): stacked reads it again at {}.", then.rsplit(' ').next().unwrap())
+    })
+}
+
+#[cfg(feature = "moz-phab")]
+#[test]
+fn phabricator_turning_this_machine_away_stops_the_reads_away_from_the_screen_the_bottom_line_saying_until_when() {
+    let (_tmp, db, phab, diffs) = three_revisions();
+    let mut app = open(&db).unwrap();
+    app.refresh();
+    app.settle();
+    let in_sync = "Phabricator: D11 · Needs Review · in sync · no new comments";
+    assert_eq!(phab_line(&mut app).as_deref(), Some(in_sync));
+    let pane = pane_lines(&draw(&mut app));
+    // How many statuses' searches, how many calls of the lines, and how
+    // many calls turned away, so far: each read on its own, as the
+    // stand-in's lock cannot be taken twice at once.
+    let counts = |phab: &Shared| {
+        let searched = phab.lock().unwrap().searched.len();
+        let away = phab.lock().unwrap().turned_away.len();
+        (searched, line_calls(phab).len(), away)
+    };
+    let (searched, read, _) = counts(&phab);
+    // Turned away as all is read again (patch 3 names D14), Phabricator
+    // asking for two minutes: the bottom line says until when, in the place
+    // of what a read that fails says.
+    phab.lock().unwrap().away = Some(Some(std::time::Duration::from_secs(120)));
+    let before = stacked::db::now();
+    next_version(&db, 2, &format!("Bug 3 - three\n\n{LINK}14"), &diffs[2]);
+    app.refresh();
+    app.settle();
+    assert!(says_turned_away(&app, before, 120), "{}", app.status);
+    assert_eq!(phab.lock().unwrap().turned_away, ["differential.revision.search"]);
+    // The statuses and the lines as they were, D14's not known; nothing
+    // asked while the wait goes on, though patch 3 names D13 again.
+    let now = pane_lines(&draw(&mut app));
+    assert_eq!((&now[..2], now[2].as_str()), (&pane[..2], "  3      Bug 3 - three"));
+    assert_eq!(phab_line(&mut app).as_deref(), Some(in_sync));
+    next_version(&db, 2, &format!("Bug 3 - three\n\n{LINK}13"), &diffs[2]);
+    for _ in 0..3 {
+        app.refresh();
+        app.settle();
+    }
+    assert_eq!(counts(&phab), (searched, read, 1));
+    // A pull you ask for is made all the same, and says what came of it;
+    // nothing is read after it while the wait goes on.
+    let _one = pull_stand_in(two_on_d11);
+    choose(&mut app, "Pull the reviews of D11 from Phabricator");
+    app.settle();
+    assert_eq!(app.status, "2 new comments from D11: they wait for your review");
+    assert_eq!(counts(&phab), (searched, read, 1));
+    stacked::phab::stand_in(None);
+    stacked::phab::statuses_stand_in(&db, None);
+}
+
+#[cfg(feature = "moz-phab")]
+#[test]
+fn once_the_wait_phabricator_asked_for_is_over_all_is_read_again_and_a_read_that_works_ends_the_refusals_in_a_row() {
+    let (_tmp, db, phab, diffs) = three_revisions();
+    let mut app = open(&db).unwrap();
+    app.refresh();
+    app.settle();
+    // Turned away for a second, as all is read again (patch 3 names D14).
+    phab.lock().unwrap().away = Some(Some(std::time::Duration::from_secs(1)));
+    let before = stacked::db::now();
+    next_version(&db, 2, &format!("Bug 3 - three\n\n{LINK}14"), &diffs[2]);
+    app.refresh();
+    app.settle();
+    assert!(says_turned_away(&app, before, 1), "{}", app.status);
+    // Phabricator answering again: once the second is over, the statuses
+    // are read, then the lines.
+    phab.lock().unwrap().away = None;
+    let read = line_calls(&phab).len();
+    until(&mut app, |_| (phab.lock().unwrap().searched.len() == 2).then_some(()), |app| format!("not read again: {}", app.status));
+    app.settle();
+    assert_eq!(phab.lock().unwrap().searched[1], serde_json::json!([11, 12, 14]));
+    assert_eq!(line_calls(&phab)[read..read + 2], ["edge.search", "differential.diff.search"]);
+    // Turned away again, Phabricator saying nothing of how long: five
+    // minutes, as the first time in a row, a read having worked since.
+    phab.lock().unwrap().away = Some(None);
+    let before = stacked::db::now();
+    next_version(&db, 2, &format!("Bug 3 - three\n\n{LINK}13"), &diffs[2]);
+    app.refresh();
+    app.settle();
+    assert!(says_turned_away(&app, before, 300), "{}", app.status);
+    stacked::phab::statuses_stand_in(&db, None);
+}
+
+#[cfg(feature = "moz-phab")]
+#[test]
+fn a_revision_not_modified_since_it_was_read_is_read_no_more_but_one_modified_submitted_or_pulled_is() {
+    let (_tmp, db, phab, diffs) = three_revisions();
+    // When Phabricator says each was last modified, which its stand-in
+    // leaves as it is, whatever is sent to it.
+    for n in [11, 12, 13] {
+        phab.lock().unwrap().revisions.get_mut(&n).unwrap().modified = Some(1_700_000_000 + n as i64);
+    }
+    let _submit = phab_stand_in(&phab);
+    let mut app = open(&db).unwrap();
+    app.refresh();
+    app.settle();
+    // The revisions whose comments were read, in turn.
+    let comments_read = |phab: &Shared| {
+        let p = phab.lock().unwrap();
+        p.calls.iter().filter(|(m, _)| m == "transaction.search").map(|(_, v)| v["objectIdentifier"].as_str().unwrap().to_string()).collect::<Vec<_>>()
+    };
+    assert_eq!(comments_read(&phab), ["D11", "D12", "D13"]);
+    // What the lines asked since the last time this was looked at.
+    let mut seen = line_calls(&phab).len();
+    let mut since = || {
+        let all = line_calls(&phab);
+        let new = all[seen..].to_vec();
+        seen = all.len();
+        new
+    };
+    // A round (patch 3 names D14, which Phabricator does not have): the
+    // parents and the latest diffs of D11 and D12, and nothing more, as
+    // neither was modified since; the lines as they were.
+    next_version(&db, 2, &format!("Bug 3 - three\n\n{LINK}14"), &diffs[2]);
+    app.refresh();
+    app.settle();
+    assert_eq!(since(), ["edge.search", "differential.diff.search"]);
+    assert_eq!(phab_line(&mut app).as_deref(), Some("Phabricator: D11 · Needs Review · in sync · no new comments"));
+    // D12 commented on, so modified since: read again in the next round
+    // (patch 3 names D13 again), alone, its new comment counted.
+    {
+        let mut p = phab.lock().unwrap();
+        let r = p.revisions.get_mut(&12).unwrap();
+        r.comments.push(said("c3", None));
+        r.modified = Some(1_700_000_100);
+    }
+    next_version(&db, 2, &format!("Bug 3 - three\n\n{LINK}13"), &diffs[2]);
+    app.refresh();
+    app.settle();
+    assert_eq!(since(), ["edge.search", "differential.diff.search", "transaction.search"]);
+    assert_eq!(comments_read(&phab)[3..], ["D12"]);
+    next_patch(&mut app);
+    assert_eq!(phab_line(&mut app).as_deref(), Some("Phabricator: D12 · Changes Planned · the diff differs · 3 new comments to pull"));
+    // The title of D13 submitted, which Phabricator's stand-in does not take
+    // as a modification: D13 read again all the same, alone, as the submit
+    // forgot what was read of it.
+    next_patch(&mut app);
+    choose(&mut app, "Update D13 on Phabricator: its title and summary");
+    app.settle();
+    assert_eq!(app.screen, Screen::Submit);
+    keys(&mut app, &[KeyCode::Enter]);
+    app.settle();
+    assert_eq!(app.status, "D13 has the title and summary of patch 3 now.");
+    assert_eq!(since(), ["edge.search", "differential.diff.search", "transaction.search"]);
+    assert_eq!(comments_read(&phab)[4..], ["D13"]);
+    // The reviews of D11 pulled alone: D11 read again, alone, as the pull
+    // forgot what was read of it.
+    keys(&mut app, &[KeyCode::Up, KeyCode::Up]);
+    let _one = pull_stand_in(two_on_d11);
+    choose(&mut app, "Pull the reviews of D11 from Phabricator");
+    app.settle();
+    assert_eq!(app.status, "2 new comments from D11: they wait for your review");
+    assert_eq!(since(), ["edge.search", "differential.diff.search", "transaction.search"]);
+    assert_eq!(comments_read(&phab)[5..], ["D11"]);
+    stacked::phab::stand_in(None);
+    stacked::phab::statuses_stand_in(&db, None);
+    stacked::submit::stand_in(None);
 }
 
 /// A stack of three patches naming D11, D12 and D13 (`phab_setup`), and the
