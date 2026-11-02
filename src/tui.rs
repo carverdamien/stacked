@@ -1545,6 +1545,11 @@ pub enum Action {
     /// nothing sent; the review's code side by side (true), or unified.
     #[cfg(feature = "moz-phab")]
     Submit,
+    /// The title, summary and parent of the patch picked sent alone to its
+    /// revision, open but not in work, once what is sent is read and seen
+    /// on the review of a submit.
+    #[cfg(feature = "moz-phab")]
+    SubmitMeta,
     #[cfg(feature = "moz-phab")]
     SendSubmit,
     #[cfg(feature = "moz-phab")]
@@ -1573,7 +1578,7 @@ pub enum Action {
 fn reaches_phabricator(action: &Action) -> bool {
     match action {
         #[cfg(feature = "moz-phab")]
-        Action::Pull | Action::PullPatch(_) | Action::FromPhabricator | Action::Submit | Action::SendSubmit => true,
+        Action::Pull | Action::PullPatch(_) | Action::FromPhabricator | Action::Submit | Action::SubmitMeta | Action::SendSubmit => true,
         _ => false,
     }
 }
@@ -1819,6 +1824,8 @@ fn about(action: &Action) -> String {
         Action::Differs => "see what differs between Phabricator's latest version of this patch's revision and this version, on a screen of its own: the title and summary as a submit sends them, and the code".into(),
         #[cfg(feature = "moz-phab")]
         Action::Submit => "send this patch alone to Phabricator as work in progress, in Changes Planned: as a new revision, or as a new diff of the revision its message names, once what is sent is read and you have seen it".into(),
+        #[cfg(feature = "moz-phab")]
+        Action::SubmitMeta => "send the title, summary and parent of this patch to its revision on Phabricator, once what is sent is read and you have seen it: only what differs is sent, and no new diff, as the revision is not in work, so its status stays as it is".into(),
         #[cfg(feature = "moz-phab")]
         Action::SendSubmit => "send it to Phabricator: a revision there already is read again first, and nothing is sent if it changed since it was read".into(),
         #[cfg(feature = "moz-phab")]
@@ -7236,10 +7243,13 @@ impl App {
         let n = self.patch_count();
         let mut title = self.stack.clone();
         let mut items = Vec::new();
-        // Why the patch's submit is grayed, if it is; and what differs from
-        // its revision on Phabricator.
+        // Why the patch's submit is grayed, if it is: HEAD holding it back,
+        // or a reason of its own; and what differs from its revision on
+        // Phabricator.
         #[cfg(feature = "moz-phab")]
         let mut held_submit: Option<String> = None;
+        #[cfg(feature = "moz-phab")]
+        let mut submit_why: Option<String> = None;
         #[cfg(feature = "moz-phab")]
         let mut differs_why: Option<String> = None;
         // What the menu says of the messages its item wraps, if it has one.
@@ -7345,13 +7355,17 @@ impl App {
                 }
                 items.push(Item::new("Drop this patch…", Action::AskDrop).when(h));
                 items.push(Item::new("Versions of this patch…", Action::Versions));
-                // This patch alone; not while reviews come from nowhere.
-                // Then its revision's: what differs from it, and its reviews.
+                // This patch alone, as work in progress, or its revision's
+                // title, summary and parent alone, as its status has it; not
+                // while reviews come from nowhere. Then its revision's: what
+                // differs from it, and its reviews.
                 #[cfg(feature = "moz-phab")]
                 if self.cfg.reviews.source != crate::config::Source::None {
                     items.push(Item::line());
                     held_submit = self.submit_held(self.sel);
-                    items.push(Item::new("Submit to Phabricator as WIP", Action::Submit).when(w && held_submit.is_none()));
+                    let (item, why) = self.submit_item(w && held_submit.is_none());
+                    items.push(item);
+                    submit_why = why;
                     differs_why = self.revision_items(&mut items);
                 }
             }
@@ -7468,6 +7482,8 @@ impl App {
         }
         #[cfg(feature = "moz-phab")]
         why.extend(held_submit);
+        #[cfg(feature = "moz-phab")]
+        why.extend(submit_why);
         #[cfg(feature = "moz-phab")]
         why.extend(differs_why);
         let mut m = Menu::new(title, items, (!why.is_empty()).then(|| why.join("\n")));
@@ -8308,7 +8324,9 @@ impl App {
             #[cfg(feature = "moz-phab")]
             Action::Differs => self.open_differs(),
             #[cfg(feature = "moz-phab")]
-            Action::Submit => self.submit_patch(),
+            Action::Submit => self.submit_patch(false),
+            #[cfg(feature = "moz-phab")]
+            Action::SubmitMeta => self.submit_patch(true),
             #[cfg(feature = "moz-phab")]
             Action::SendSubmit => self.submit_send(),
             #[cfg(feature = "moz-phab")]

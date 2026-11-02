@@ -10,9 +10,12 @@
 //! interdiff compares two versions; the menu pulls the reviews of that
 //! revision alone, too. Whether each patch is in sync so, the patches pane
 //! marks right after its status (`✓`, `✗`), from the same reading as its
-//! line (`Synced`). All read away from the screen: the statuses as the
-//! stack is shown, again as those revisions change and right after a
-//! submit, and every few minutes while the editor runs; then the latest
+//! line (`Synced`); and the patch's menu offers, for a revision open but not
+//! in work, the update of its title, summary and parent alone, as that
+//! reading says what differs (`App::submit_item`). All read away from the
+//! screen: the statuses as the stack is shown, again as those revisions
+//! change and right after a submit, and every few minutes while the editor
+//! runs; then the latest
 //! diff, the comments and the parents of every revision the stack's
 //! patches name, in a few calls for all of them, each time the statuses
 //! are read, and again after a pull, kept by revision, its diff kept by id;
@@ -186,31 +189,20 @@ fn compare(job: Job) -> Code {
     }
 }
 
-/// Whether title `t` says the revision is in work, as moz-phab reads it,
-/// and as `submit::wip_title` takes it off: `WIP` first, in any case, then
-/// `:`, a space or nothing.
-fn in_work(t: &str) -> bool {
-    let c: Vec<char> = t.chars().collect();
-    c.len() >= 3 && c[..3].iter().collect::<String>().eq_ignore_ascii_case("wip") && matches!(c.get(3), None | Some(':' | ' '))
-}
-
 /// The title and summary of revision `s`, as its search found them, and as
 /// patch `p` would send them, as a submit reads them (`submit::wip_title`,
 /// `submit::summary_of`, the lines naming a revision left out of both): its
-/// title `WIP: ` first, or not, as the revision's is. None when they are
-/// the same to the letter, the white space at their end aside, as a
-/// submit compares them before it sends them: where their lines wrap too,
-/// as that is what lands, so that a message wrapped again since it was
-/// submitted differs until it is submitted again. Phabricator gives a
-/// title and summary back as a submit sent them, over Conduit, to the
-/// letter: nothing else is to be allowed for.
+/// title `WIP: ` first, or not, as the revision's is
+/// (`submit::title_against`, which a submit to a revision not in work
+/// sends). None when they are the same to the letter, the white space at
+/// their end aside, as a submit compares them before it sends them: where
+/// their lines wrap too, as that is what lands, so that a message wrapped
+/// again since it was submitted differs until it is submitted again.
+/// Phabricator gives a title and summary back as a submit sent them, over
+/// Conduit, to the letter: nothing else is to be allowed for.
 fn message_against(s: &Searched, p: &Patch, trailer: &str) -> Option<(String, String)> {
     let before = format!("{}\n\n{}", s.title, crate::submit::summary_of(&format!("\n{}", s.summary), trailer)).trim_end().to_string();
-    let wip = crate::submit::wip_title(p.title()).title;
-    let title = match in_work(&s.title) {
-        true => wip,
-        false => wip.strip_prefix("WIP: ").unwrap_or(&wip).to_string(),
-    };
+    let title = crate::submit::title_against(p.title(), &s.title);
     let after = format!("{title}\n\n{}", crate::submit::summary_of(&p.message, trailer)).trim_end().to_string();
     (before != after).then_some((before, after))
 }
@@ -939,6 +931,59 @@ impl App {
         why.map(|why| format!("What differs from {d} on Phabricator is grayed: {why}"))
     }
 
+    /// The item of the patch's menu that sends the patch the middle shows
+    /// to Phabricator, by the status of its revision, as last read, and by
+    /// what its Phabricator line knows (`synced`); offered when `can` (the
+    /// stack can be changed, and HEAD does not hold the patch back). With
+    /// it, why it is grayed, when that is for a reason of its own, for the
+    /// menu to say. `Submit to Phabricator as WIP` for a patch that names
+    /// no revision, for a revision in work (Changes Planned, a draft), and
+    /// while the status is not read, is one stacked does not know, or for a
+    /// revision Phabricator does not have: what the submit reads decides
+    /// then. For a revision open but not in work, in its place, the update
+    /// of its title, summary and parent alone, named for what differs:
+    /// grayed when nothing but the diff differs, or nothing, as no diff is
+    /// sent to it, and while that is not read and compared yet. For a
+    /// revision that landed or was abandoned, `Submit to Phabricator as
+    /// WIP` grayed, as nothing is sent to it.
+    pub(super) fn submit_item(&self, can: bool) -> (Item, Option<String>) {
+        let wip = |why: Option<String>| (Item::new("Submit to Phabricator as WIP", Action::Submit).when(can && why.is_none()), why);
+        let Some(p) = self.shown_patch() else { return wip(None) };
+        let Some((d, link)) = crate::phab::revision_of(&p.message) else { return wip(None) };
+        let Some(status) = self.revision_status(&p.id) else { return wip(None) };
+        match status {
+            Status::Published => return wip(Some(format!("{d} has landed, so stacked sends it nothing."))),
+            Status::Abandoned => return wip(Some(format!("{d} was abandoned, so stacked sends it nothing."))),
+            Status::ChangesPlanned | Status::Draft | Status::Unknown => return wip(None),
+            Status::NeedsReview | Status::NeedsRevision | Status::Accepted => {}
+        }
+        let n = self.sel + 1;
+        let label = |what: &str| format!("Update {d} on Phabricator: its {what}");
+        let all = label("title, summary and parent");
+        let is = status.name();
+        let (label, why) = match self.synced(p, &link) {
+            Synced::Known(x) => match (x.message.is_some(), x.parent_differs()) {
+                (true, true) => (all, None),
+                (true, false) => (label("title and summary"), None),
+                (false, true) => (label("parent"), None),
+                (false, false) if x.code.is_some() => (
+                    all,
+                    Some(format!(
+                        "{d} is {is}, so stacked sends it no new diff, as only a revision in work gets one, and its title, summary and parent are those of patch {n} already."
+                    )),
+                ),
+                (false, false) => (all, Some(format!("{d} is in sync with patch {n}, so there is nothing to send."))),
+            },
+            Synced::Unknown | Synced::NotFound => (
+                all,
+                Some(format!(
+                    "{d} is {is}, so only its title, summary and parent would be sent, and they are not read from Phabricator and compared with patch {n} yet."
+                )),
+            ),
+        };
+        (Item::new(label, Action::SubmitMeta).when(can && why.is_none()), why)
+    }
+
     /// The title of the Phabricator line's menu: its revision, on
     /// Phabricator.
     pub(super) fn line_title(&self) -> Option<String> {
@@ -1065,6 +1110,7 @@ mod tests {
 
     #[test]
     fn a_title_is_in_work_as_moz_phab_reads_it() {
+        use crate::submit::title_in_work as in_work;
         for t in ["WIP: Bug 1 - one", "wip: Bug 1", "WIP Bug 1", "WIP", "Wip:x"] {
             assert!(in_work(t), "{t:?}");
         }

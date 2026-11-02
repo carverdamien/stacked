@@ -1,20 +1,22 @@
 //! A patch of a stack sent to Phabricator, one patch at a time, as
 //! moz-phab's `submit --wip` sends a single commit: as a new revision, or
 //! as a new diff of the revision its trailer (`Differential Revision:`)
-//! names, in Changes Planned, the status of work in progress. Built with
-//! the `moz-phab` feature.
+//! names, in Changes Planned, the status of work in progress. To a revision
+//! open but not in work (in review, accepted), only the patch's title,
+//! summary and parent: no new diff, the status kept. Built with the
+//! `moz-phab` feature.
 //!
 //! Nothing is sent before what will be is read and checked (`prepare`): a
-//! revision that is not in work is refused, and so is one whose latest diff
-//! is no version of the patch the database holds, as it came from
-//! elsewhere. Then only what changed is sent (`send`): a new diff and its
-//! commit's author and message, the title, the summary and the bug, the
-//! status kept or put in Changes Planned; after that, in a call of its own,
-//! so that a refusal undoes none of the rest, the parent set to the
-//! revision of the patch below. No reviewers are set, as `moz-phab submit
-//! --wip` sets none: those the title names stay in it, written as moz-phab
-//! writes them. A new revision's link goes into the patch, as a new
-//! version of it, at once. The workspace's commits are not touched.
+//! revision that landed or was abandoned is refused, and so is one in work
+//! whose latest diff is no version of the patch the database holds, as it
+//! came from elsewhere. Then only what changed is sent (`send`): a new diff
+//! and its commit's author and message, the title, the summary and the
+//! bug, the status kept or put in Changes Planned; after that, in a call
+//! of its own, so that a refusal undoes none of the rest, the parent set to
+//! the revision of the patch below. No reviewers are set, as `moz-phab
+//! submit --wip` sets none: those the title names stay in it, written as
+//! moz-phab writes them. A new revision's link goes into the patch, as a
+//! new version of it, at once. The workspace's commits are not touched.
 
 use std::path::Path;
 use std::sync::Mutex;
@@ -334,6 +336,26 @@ pub fn wip_title(first: &str) -> Titled {
     }
 }
 
+/// Whether title `t` says the revision is in work, as moz-phab reads it,
+/// and as `wip_title` takes it off: `WIP` first, in any case, then `:`, a
+/// space or nothing.
+pub fn title_in_work(t: &str) -> bool {
+    let c: Vec<char> = t.chars().collect();
+    c.len() >= 3 && c[..3].iter().collect::<String>().eq_ignore_ascii_case("wip") && matches!(c.get(3), None | Some(':' | ' '))
+}
+
+/// The title of commit title `first` as moz-phab writes it (`wip_title`),
+/// `WIP: ` first only when `theirs`, the revision's title, has it: what a
+/// submit sends a revision that is not in work, and how the Phabricator
+/// line compares the title of any revision.
+pub fn title_against(first: &str, theirs: &str) -> String {
+    let wip = wip_title(first).title;
+    match title_in_work(theirs) {
+        true => wip,
+        false => wip.strip_prefix("WIP: ").unwrap_or(&wip).to_string(),
+    }
+}
+
 /// Whether `line` names a revision: as moz-phab's ARC_DIFF_REV_RE has it
 /// (`Differential Revision: https://host/D123`), or as `revision_of` reads
 /// the settings' trailer, `trailer`.
@@ -384,7 +406,7 @@ pub fn summary_of(message: &str, trailer: &str) -> String {
 
 /// A revision as a submit reads it, before it sends anything, and again
 /// before it does: if any of it but `raw` changed meanwhile, nothing is.
-/// Its reviewers are not read: a submit in work sets none.
+/// Its reviewers are not read: a submit sets none, in work or not.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Remote {
     /// `D123`.
@@ -413,6 +435,12 @@ impl Remote {
     /// draft.
     pub fn in_work(&self) -> bool {
         self.status == "changes-planned" || self.draft
+    }
+
+    /// Whether it is open, as `phab::open` reads one: neither landed nor
+    /// abandoned.
+    pub fn open(&self) -> bool {
+        !matches!(self.status.as_str(), "published" | "abandoned")
     }
 
     /// Whether it is as `other` was, its raw diff aside.
@@ -582,13 +610,15 @@ pub struct Prepared {
     pub from: Option<String>,
     /// The revision updated, as it was read; none for a new one.
     pub revision: Option<Remote>,
-    /// How its latest diff is a version of the patch.
+    /// How its latest diff is a version of the patch: none for a revision
+    /// not in work whose latest diff is no version of it.
     pub known: Option<Known>,
     /// The title, the summary and the bug sent.
     pub title: String,
     pub summary: String,
     pub bug: Option<String>,
-    /// A new diff is made: the code changed, or the revision is new.
+    /// A new diff is made: the code changed, or the revision is new; never
+    /// for a revision that is not in work.
     pub new_diff: bool,
     pub repository: Repository,
     pub parent: Parent,
@@ -606,6 +636,29 @@ impl Prepared {
     /// The patch's number in the stack, from 1.
     pub fn number(&self) -> usize {
         self.at + 1
+    }
+
+    /// Whether the patch goes as work in progress: as a new revision, or to
+    /// one in work. Else the revision is open but not in work, and gets the
+    /// patch's title, summary and parent alone.
+    pub fn in_work(&self) -> bool {
+        self.revision.as_ref().is_none_or(Remote::in_work)
+    }
+
+    /// Why the code of the patch is not sent, when it differs from the
+    /// revision's latest diff and the revision is not in work, said at the
+    /// top of the review. None otherwise.
+    pub fn kept_said(&self) -> Option<String> {
+        let r = self.revision.as_ref().filter(|r| !r.in_work())?;
+        if self.known.as_ref().is_some_and(|k| k.current) {
+            return None;
+        }
+        Some(format!(
+            "The code of patch {} is not sent: {} is {}, not in work, and only a revision in work gets a new diff.",
+            self.number(),
+            r.id,
+            status_said(r)
+        ))
     }
 
     /// The revision's title and summary, as Phabricator has them; none for
@@ -639,10 +692,12 @@ impl Prepared {
     /// Whether Changes Planned is asked for: in the edit that sends the
     /// rest, for a new revision or one that is a draft; in an edit after
     /// it, for a revision in Changes Planned that takes a new diff, which
-    /// puts it back in Needs Review, as moz-phab says.
+    /// puts it back in Needs Review, as moz-phab says. Never for a revision
+    /// not in work: its status stays as it is.
     fn plan_changes(&self) -> (bool, bool) {
         match &self.revision {
             None => (true, false),
+            Some(r) if !r.in_work() => (false, false),
             Some(r) if r.status == "changes-planned" => (false, self.new_diff),
             Some(_) => (true, false),
         }
@@ -677,9 +732,11 @@ impl Prepared {
         self.revision.as_ref().map_or(String::new(), status_said)
     }
 
-    /// What becomes of the status, said: `stays Changes Planned`.
+    /// What becomes of the status, said: `stays Changes Planned`; for a
+    /// revision not in work, `stays Needs Review`.
     pub fn status_change(&self) -> String {
         match &self.revision {
+            Some(r) if !r.in_work() => format!("stays {}", status_said(r)),
             Some(r) if r.status != "changes-planned" => format!("goes from {} to Changes Planned", status_said(r)),
             Some(_) => "stays Changes Planned".into(),
             None => "is Changes Planned".into(),
@@ -697,6 +754,16 @@ impl Prepared {
                 self.title,
                 self.bug.as_ref().map_or(", and it names no bug".into(), |b| format!(", and its bug is {b}"))
             ),
+            // Not in work: no diff, whatever the code; the review's top
+            // says whether it differs.
+            Some(r) if !r.in_work() => {
+                let what = match (self.text_changes(), self.bug_changes()) {
+                    (true, _) => format!("gets the title and summary of patch {n}"),
+                    (false, true) => format!("gets the bug of patch {n}"),
+                    (false, false) => format!("keeps its title and summary, as they are those of patch {n} already"),
+                };
+                format!("{}, at {}/{}, {what}, and {}.", r.id, self.url, r.id, self.status_change())
+            }
             Some(r) => {
                 let same = format!("and no new diff, as its latest diff is patch {n} as it is now");
                 let what = match (self.new_diff, self.text_changes(), self.bug_changes()) {
@@ -716,9 +783,9 @@ impl Prepared {
     /// its changes alone (`Known::by_changes`), said at the top of the
     /// review: though it makes the changes of a version of the patch, it was
     /// made on what was below the patch before, and no longer applies there.
-    /// None otherwise.
+    /// None otherwise, and for a revision not in work, which gets no diff.
     pub fn changes_said(&self) -> Option<String> {
-        let k = self.known.as_ref().filter(|k| k.by_changes)?;
+        let k = self.known.as_ref().filter(|k| k.by_changes && self.new_diff)?;
         let id = self.revision.as_ref().map_or("the revision".to_string(), |r| r.id.clone());
         let n = self.number();
         Some(format!(
@@ -737,10 +804,18 @@ impl Prepared {
     }
 
     /// What the status line says when nothing is to be sent: and why no
-    /// parent is set, if that is so.
+    /// parent is set, if that is so. For a revision not in work whose code
+    /// differs, why the code is not sent.
     pub fn nothing_said(&self) -> String {
         let r = self.revision.as_ref().map_or("The revision".into(), |r| r.id.clone());
-        let mut out = vec![format!("{r} is patch {} as it is already, with its title and summary, so nothing was sent.", self.number())];
+        let n = self.number();
+        let mut out = match self.revision.as_ref().filter(|_| self.kept_said().is_some()) {
+            Some(remote) => vec![
+                format!("{r} is {}, not in work, so the code of patch {n} is not sent.", status_said(remote)),
+                format!("The title and summary of {r} are those of patch {n} already, so nothing was sent."),
+            ],
+            None => vec![format!("{r} is patch {n} as it is already, with its title and summary, so nothing was sent.")],
+        };
         if let Parent::Nothing(why) = &self.parent {
             out.push(why.clone());
         }
@@ -1031,7 +1106,13 @@ fn sendable(p: &Patch, n: usize) -> Result<(), String> {
 
 /// What submitting the patch at `at` of stack `s` sends, read from
 /// Phabricator at `url` with `call`: or why nothing can be, said. `arc`,
-/// the `.arcconfig` of the stack's checkout.
+/// the `.arcconfig` of the stack's checkout. For a revision in work, the
+/// patch must be one Phabricator can be sent (`sendable`), as for a new
+/// one (`prepare` checks that before anything is read). A revision open
+/// but not in work gets the title, the summary, the bug and the parent
+/// alone: its title `WIP: ` first only if it has it (`title_against`), its
+/// latest diff left as it is, of whatever version, so that neither its
+/// repository nor the patch's files are looked at.
 fn prepare_with(db: &Db, s: &Stack, at: usize, url: &str, arc: &Arc, call: &mut Call) -> Result<Prepared, String> {
     let p = db.patch(&s.patches[at]);
     let n = at + 1;
@@ -1040,22 +1121,26 @@ fn prepare_with(db: &Db, s: &Stack, at: usize, url: &str, arc: &Arc, call: &mut 
     let (revision, known, repository) = match crate::phab::revision_of(&p.message) {
         Some((d, _)) => {
             let r = read_remote(call, &d, true).map_err(|e| format!("{d} could not be read from Phabricator, so nothing was sent: {e}"))?;
+            if !r.open() {
+                return Err(format!("{d} is {}, not open: only an open revision is updated, and nothing was sent.", status_said(&r)));
+            }
             if !r.in_work() {
-                return Err(format!(
-                    "{d} is {}, not Changes Planned: only a revision in work is updated, and nothing was sent.",
-                    status_said(&r)
-                ));
+                let k = known(db, s, at, &r.raw);
+                let repository = Repository { phid: r.repository.clone(), vcs: "git".into() };
+                (Some(r), k, repository)
+            } else {
+                sendable(p, n)?;
+                let Some(k) = known(db, s, at, &r.raw) else {
+                    return Err(format!("{d}'s latest diff is not a version of patch {n} that stacked knows: it came from elsewhere, and nothing was sent."));
+                };
+                let repository = match (&r.repository, &arc.callsign) {
+                    (Some(phid), _) => repository_by(call, "phids", phid),
+                    (None, Some(cs)) => repository_by(call, "callsigns", cs),
+                    (None, None) => Ok(Repository { phid: None, vcs: "git".into() }),
+                }
+                .map_err(|e| format!("The repository of {d} could not be read from Phabricator, so nothing was sent: {e}"))?;
+                (Some(r), Some(k), repository)
             }
-            let Some(k) = known(db, s, at, &r.raw) else {
-                return Err(format!("{d}'s latest diff is not a version of patch {n} that stacked knows: it came from elsewhere, and nothing was sent."));
-            };
-            let repository = match (&r.repository, &arc.callsign) {
-                (Some(phid), _) => repository_by(call, "phids", phid),
-                (None, Some(cs)) => repository_by(call, "callsigns", cs),
-                (None, None) => Ok(Repository { phid: None, vcs: "git".into() }),
-            }
-            .map_err(|e| format!("The repository of {d} could not be read from Phabricator, so nothing was sent: {e}"))?;
-            (Some(r), Some(k), repository)
         }
         None => {
             let Some(cs) = &arc.callsign else {
@@ -1069,7 +1154,12 @@ fn prepare_with(db: &Db, s: &Stack, at: usize, url: &str, arc: &Arc, call: &mut 
             (None, None, repository)
         }
     };
-    let new_diff = known.as_ref().is_none_or(|k| !k.current);
+    let in_work = revision.as_ref().is_none_or(Remote::in_work);
+    let new_diff = in_work && known.as_ref().is_none_or(|k| !k.current);
+    let title = match &revision {
+        Some(r) if !in_work => title_against(p.title(), &r.title),
+        _ => titled.title,
+    };
     let parent = parent(db, s, at, call, revision.as_ref());
     let parents_now = revision.as_ref().map_or_else(Vec::new, |r| revision_names(call, &r.parents));
     let (code, code_said) = match (&revision, &known) {
@@ -1085,7 +1175,7 @@ fn prepare_with(db: &Db, s: &Stack, at: usize, url: &str, arc: &Arc, call: &mut 
         from: None,
         revision,
         known,
-        title: titled.title,
+        title,
         summary,
         bug: titled.bug,
         new_diff,
@@ -1111,15 +1201,21 @@ fn base_url(link: Option<&str>, arc: &Arc, via: &Via) -> String {
 }
 
 /// What submitting the patch at `at` of stack `name`, in the database at
-/// `path`, to Phabricator as work in progress sends, read and checked: or
-/// why nothing can be, said. Nothing is sent.
+/// `path`, to Phabricator sends, read and checked: as work in progress, as
+/// a new revision or to one in work; to one open but not in work, its
+/// title, summary and parent alone. Or why nothing can be, said. Nothing
+/// is sent.
 pub fn prepare(path: &Path, name: &str, at: usize) -> Result<Prepared, String> {
     let db = Db::load(path).map_err(|e| e.0)?;
     let s = db.stack(name).map_err(|e| e.0)?.clone();
     let p = s.patches.get(at).map(|id| db.patch(id).clone()).ok_or(format!("{name} has no patch {}", at + 1))?;
     crate::check::can_check(&s).map_err(|e| format!("{}, so nothing was sent.", e.0))?;
-    sendable(&p, at + 1)?;
     let named = crate::phab::revision_of(&p.message);
+    // A new revision is made of a diff; one there already is read first,
+    // as one not in work takes none.
+    if named.is_none() {
+        sendable(&p, at + 1)?;
+    }
     if named.is_none()
         && let Some(why) = crate::ask::blocked(&db, name)
     {
@@ -1855,7 +1951,16 @@ mod tests {
 
         fn revision(&self, n: u64) -> Value {
             let r = &self.revisions[&n];
-            let name = match r.status.as_str() { "changes-planned" => "Changes Planned", "needs-review" => "Needs Review", "draft" => "Draft", "published" => "Closed", _ => "?" };
+            let name = match r.status.as_str() {
+                "changes-planned" => "Changes Planned",
+                "needs-review" => "Needs Review",
+                "needs-revision" => "Needs Revision",
+                "accepted" => "Accepted",
+                "draft" => "Draft",
+                "published" => "Closed",
+                "abandoned" => "Abandoned",
+                _ => "?",
+            };
             json!({"id": n, "phid": format!("PHID-DREV-{n}"), "fields": {
                 "title": r.title, "summary": r.summary, "status": {"value": r.status, "name": name}, "isDraft": r.draft,
                 "bugzilla.bug-id": r.bug, "repositoryPHID": "PHID-REPO-1"}})
@@ -1965,12 +2070,27 @@ mod tests {
 
     /// As `submit`, HEAD looked at in the checkout at `here`.
     fn submit_in(db: &Path, at: usize, here: Option<&Path>, fake: &mut Fake) -> (Result<Prepared, String>, Option<String>) {
+        let ready = prepared(db, at, fake);
+        let sent = ready.as_ref().ok().map(|p| send_with(db, p, here, &mut |m, v| fake.call(m, v)));
+        (ready, sent)
+    }
+
+    /// What submitting patch `at` of `s` sends, read with `fake`: nothing is
+    /// sent.
+    fn prepared(db: &Path, at: usize, fake: &mut Fake) -> Result<Prepared, String> {
         let d = Db::load(db).unwrap();
         let s = d.stack("s").unwrap().clone();
         let arc = arcconfig(Path::new(s.repo.as_deref().unwrap()));
-        let ready = prepare_with(&d, &s, at, "https://phabricator.example.com", &arc, &mut |m, v| fake.call(m, v));
-        let sent = ready.as_ref().ok().map(|p| send_with(db, p, here, &mut |m, v| fake.call(m, v)));
-        (ready, sent)
+        prepare_with(&d, &s, at, "https://phabricator.example.com", &arc, &mut |m, v| fake.call(m, v))
+    }
+
+    /// Patch `at` of `s` given its next version at once, of diff `diff`.
+    fn new_code(db: &Path, at: usize, diff: &str) {
+        Db::edit(db, |d| {
+            let old = d.patch(&d.stack("s")?.patches[at]).clone();
+            crate::ops::replace(d, "s", at, crate::mbox::Draft { diff: diff.to_string(), ..crate::mbox::Draft::from(&old) }, "edit").map(|_| ())
+        })
+        .unwrap();
     }
 
     fn diff_of(db: &Path, at: usize) -> String {
@@ -2201,12 +2321,18 @@ mod tests {
     }
 
     #[test]
-    fn a_revision_not_in_work_is_refused_and_a_draft_is_put_in_changes_planned() {
+    fn a_revision_landed_or_abandoned_is_refused_and_a_draft_is_put_in_changes_planned() {
         let (_tmp, db, _r) = stack(["Bug 1 - one", "Bug 2 - two", &format!("Bug 3 - three\n\n{LINK}/D13")]);
-        let mut fake = Fake::default().with(13, "needs-review", &diff_of(&db, 2), "WIP: Bug 3 - three");
-        let (ready, _) = submit(&db, 2, &mut fake);
-        assert_eq!(ready.unwrap_err(), "D13 is Needs Review, not Changes Planned: only a revision in work is updated, and nothing was sent.");
-        assert!(fake.writes().is_empty());
+        // Its title otherwise, its code another version: nothing is sent all
+        // the same, nor read beyond the revision.
+        for (status, name) in [("published", "Closed"), ("abandoned", "Abandoned")] {
+            let mut fake = Fake::default().with(13, status, &diff_of(&db, 2).replace("+LINE 20", "+Line twenty"), "Bug 3 - an older title");
+            let (ready, _) = submit(&db, 2, &mut fake);
+            assert_eq!(ready.unwrap_err(), format!("D13 is {name}, not open: only an open revision is updated, and nothing was sent."));
+            assert!(fake.writes().is_empty());
+            let read: Vec<&str> = fake.calls.iter().map(|(m, _)| m.as_str()).collect();
+            assert_eq!(read, ["differential.revision.search", "edge.search", "differential.querydiffs", "differential.getrawdiff"], "{status}");
+        }
         // A draft is in work, as moz-phab takes it: it goes to Changes Planned.
         let mut fake = Fake::default().with(13, "draft", &diff_of(&db, 2), "WIP: Bug 3 - three");
         fake.revisions.get_mut(&13).unwrap().draft = true;
@@ -2214,6 +2340,127 @@ mod tests {
         assert_eq!(ready.unwrap().said()[0], "D13, at https://phabricator.example.com/D13, keeps its diff, title and summary, as they are those of patch 3 already, and goes from Draft to Changes Planned.");
         assert_eq!(fake.writes(), ["differential.revision.edit plan-changes"]);
         assert_eq!(sent.unwrap(), "D13 is Changes Planned now. Patch 2 has no revision, so D13 gets no parent.");
+    }
+
+    #[test]
+    fn a_revision_in_review_gets_the_title_and_summary_alone_and_keeps_its_status() {
+        let (_tmp, db, _r) = stack(["Bug 1 - one", "Bug 2 - two", &format!("Bug 3 - three\n\nBecause.\n\n{LINK}/D13")]);
+        let mut fake = Fake::default().with(13, "needs-review", &diff_of(&db, 2), "Bug 3 - an older title");
+        fake.revisions.get_mut(&13).unwrap().summary = "Why.".into();
+        let (ready, sent) = submit(&db, 2, &mut fake);
+        // Not refused: the title as moz-phab writes it, but for `WIP: `, as
+        // the revision's title has none; no new diff, and no code shown.
+        let p = ready.unwrap();
+        assert!(!p.in_work() && !p.new_diff && p.code.is_none(), "{p:?}");
+        assert_eq!((p.title.as_str(), p.summary.as_str()), ("Bug 3 - three", "Because."));
+        assert_eq!(p.kept_said(), None, "its latest diff is the patch as it is");
+        assert_eq!(
+            p.said(),
+            ["D13, at https://phabricator.example.com/D13, gets the title and summary of patch 3, and stays Needs Review.", "Patch 2 has no revision, so D13 gets no parent."]
+        );
+        // The title and summary alone: no diff made, so no repository read,
+        // and no Changes Planned.
+        assert_eq!(fake.writes(), ["differential.revision.edit title,summary"]);
+        assert!(!fake.calls.iter().any(|(m, _)| m == "diffusion.repository.search"), "{:?}", fake.calls);
+        assert!(fake.of_reviewers().is_empty(), "{:?}", fake.of_reviewers());
+        assert_eq!(sent.unwrap(), "D13 has the title and summary of patch 3 now. Patch 2 has no revision, so D13 gets no parent.");
+        let r = &fake.revisions[&13];
+        assert_eq!((r.status.as_str(), r.title.as_str(), r.summary.as_str(), r.diffs.len()), ("needs-review", "Bug 3 - three", "Because.", 1));
+    }
+
+    #[test]
+    fn an_accepted_revision_and_one_needing_revision_are_sent_the_same_wip_kept_where_their_title_has_it() {
+        for (status, name) in [("accepted", "Accepted"), ("needs-revision", "Needs Revision")] {
+            let (_tmp, db, _r) = stack(["Bug 1 - one", "Bug 2 - two", &format!("Bug 3 - three r=alice\n\n{LINK}/D13")]);
+            let mut fake = Fake::default().with(13, status, &diff_of(&db, 2), "WIP: Bug 3 - an older title");
+            let (ready, sent) = submit(&db, 2, &mut fake);
+            let p = ready.unwrap();
+            // The reviewers the title names stay in it, as moz-phab writes
+            // them; none is read or set.
+            assert_eq!(p.title, "WIP: Bug 3 - three r=alice", "{status}");
+            assert_eq!(p.said()[0], format!("D13, at https://phabricator.example.com/D13, gets the title and summary of patch 3, and stays {name}."));
+            assert_eq!(fake.writes(), ["differential.revision.edit title"], "{status}");
+            assert!(fake.of_reviewers().is_empty(), "{:?}", fake.of_reviewers());
+            assert_eq!(sent.unwrap(), "D13 has the title and summary of patch 3 now. Patch 2 has no revision, so D13 gets no parent.");
+            let r = &fake.revisions[&13];
+            assert_eq!((r.status.as_str(), r.title.as_str()), (status, "WIP: Bug 3 - three r=alice"));
+        }
+    }
+
+    #[test]
+    fn a_revision_in_review_whose_parent_alone_differs_gets_the_parent_edit_alone() {
+        let (_tmp, db, _r) = stack([&format!("Bug 1 - one\n\n{LINK}/D11"), &format!("Bug 2 - two\n\n{LINK}/D12"), "Bug 3 - three"]);
+        let mut fake = Fake::default().with(11, "needs-review", "", "Bug 1 - one").with(12, "needs-review", &diff_of(&db, 1), "Bug 2 - two");
+        fake.revisions.get_mut(&12).unwrap().parents = vec!["PHID-DREV-99".into()];
+        let (ready, sent) = submit(&db, 1, &mut fake);
+        let p = ready.unwrap();
+        assert!(!p.message_changes() && p.parent_changes() && !p.nothing(), "{p:?}");
+        assert_eq!(
+            p.said(),
+            [
+                "D12, at https://phabricator.example.com/D12, keeps its title and summary, as they are those of patch 2 already, and stays Needs Review.",
+                "Its parent is set to D11, the revision of patch 1.",
+            ]
+        );
+        assert_eq!(fake.writes(), ["differential.revision.edit parents.set"]);
+        assert_eq!(sent.unwrap(), "D12 keeps its diff, title and summary. The parent of D12 is D11 now.");
+        let r = &fake.revisions[&12];
+        assert_eq!((r.status.as_str(), r.parents.clone()), ("needs-review", vec!["PHID-DREV-11".to_string()]));
+    }
+
+    #[test]
+    fn a_revision_in_review_whose_diff_alone_differs_is_sent_nothing() {
+        let (_tmp, db, _r) = stack(["Bug 1 - one", "Bug 2 - two", &format!("Bug 3 - three\n\n{LINK}/D13")]);
+        // Its latest diff is the version of the patch before the one in the
+        // stack.
+        let earlier = diff_of(&db, 2);
+        new_code(&db, 2, &earlier.replace("+LINE 20", "+Line twenty"));
+        let mut fake = Fake::default().with(13, "needs-review", &earlier, "Bug 3 - three");
+        let p = prepared(&db, 2, &mut fake).unwrap();
+        assert_eq!(p.known.as_ref().map(|k| (k.version, k.current)), Some((1, false)));
+        assert!(p.nothing() && !p.new_diff && p.code.is_none(), "{p:?}");
+        assert_eq!(
+            p.kept_said().as_deref(),
+            Some("The code of patch 3 is not sent: D13 is Needs Review, not in work, and only a revision in work gets a new diff.")
+        );
+        assert_eq!(
+            p.nothing_said(),
+            "D13 is Needs Review, not in work, so the code of patch 3 is not sent. The title and summary of D13 are those of patch 3 already, so nothing was sent. Patch 2 has no revision, so D13 gets no parent."
+        );
+        // Its latest diff from elsewhere, no version of the patch: left as it
+        // is, as no code is sent, and nothing is sent either.
+        let mut fake = Fake::default().with(13, "needs-review", &earlier.replace("+LINE 20", "+Someone else's 20"), "Bug 3 - three");
+        let p = prepared(&db, 2, &mut fake).unwrap();
+        assert!(p.known.is_none() && p.nothing() && p.kept_said().is_some(), "{p:?}");
+        assert!(fake.writes().is_empty());
+        // Known by its changes alone, made before a rebase: no new diff
+        // either, and none said to be sent.
+        let (_tmp, db, r) = stack(["Bug 1 - one", "Bug 2 - two", &format!("Bug 3 - three\n\n{LINK}/D13")]);
+        let wide = git_ok(&r, &["diff", "-U10", "HEAD~1", "HEAD"]);
+        rebased_upstream(&db, &r);
+        let mut fake = Fake::default().with(13, "needs-review", &wide, "Bug 3 - three");
+        let p = prepared(&db, 2, &mut fake).unwrap();
+        assert_eq!(p.known.as_ref().map(|k| (k.current, k.by_changes)), Some((false, true)));
+        assert!(p.nothing() && p.changes_said().is_none() && p.kept_said().is_some(), "{p:?}");
+    }
+
+    #[test]
+    fn a_revision_in_review_changed_since_it_was_read_is_sent_nothing() {
+        let (_tmp, db, _r) = stack(["Bug 1 - one", "Bug 2 - two", &format!("Bug 3 - three\n\nNew.\n\n{LINK}/D13")]);
+        // Retitled meanwhile, or accepted.
+        for change in ["title", "status"] {
+            let mut fake = Fake::default().with(13, "needs-review", &diff_of(&db, 2), "Bug 3 - three");
+            let p = prepared(&db, 2, &mut fake).unwrap();
+            assert!(!p.in_work() && !p.nothing(), "{p:?}");
+            let r = fake.revisions.get_mut(&13).unwrap();
+            match change {
+                "title" => r.title = "Someone's title".into(),
+                _ => r.status = "accepted".into(),
+            }
+            let sent = send_with(&db, &p, None, &mut |m, v| fake.call(m, v));
+            assert_eq!(sent, "D13 changed on Phabricator since you reviewed it, so nothing was sent. Submit again to review it as it is now.", "{change}");
+            assert!(fake.writes().is_empty(), "{change}");
+        }
     }
 
     #[test]

@@ -18128,17 +18128,19 @@ fn a_revision_changed_on_phabricator_since_its_review_opened_is_sent_nothing() {
 
 #[cfg(feature = "moz-phab")]
 #[test]
-fn a_revision_not_in_work_or_whose_latest_diff_came_from_elsewhere_opens_no_review() {
+fn a_revision_landed_or_whose_latest_diff_came_from_elsewhere_opens_no_review() {
     let (_tmp, db) = phab_setup(["Bug 1 - one", "Bug 2 - two", &format!("Bug 3 - three\n\n{LINK}13")]);
     let diff = patch_of(&db, 2).diff;
-    let phab = std::sync::Arc::new(std::sync::Mutex::new(Phab::default().with(13, "needs-review", "WIP: Bug 3 - three", &diff)));
+    let phab = std::sync::Arc::new(std::sync::Mutex::new(Phab::default().with(13, "published", "WIP: Bug 3 - three", &diff)));
     let _one = phab_stand_in(&phab);
+    // Its status not read yet: the submit offered, and what it reads
+    // refuses.
     let mut app = open(&db).unwrap();
     keys(&mut app, &[KeyCode::Down, KeyCode::Down]);
     choose(&mut app, "Submit to Phabricator as WIP");
     app.settle();
     assert_eq!((app.screen, app.mode.clone()), (Screen::Main, Mode::Normal));
-    assert_eq!(app.status, "D13 is Needs Review, not Changes Planned: only a revision in work is updated, and nothing was sent.");
+    assert_eq!(app.status, "D13 is Closed, not open: only an open revision is updated, and nothing was sent.");
     // In work, but its latest diff is no version of patch 3.
     let mut p = phab.lock().unwrap();
     p.revisions.get_mut(&13).unwrap().status = "changes-planned".into();
@@ -18414,6 +18416,142 @@ fn a_commit_naming_a_revision_holds_back_no_submit_while_head_is_elsewhere() {
     assert_eq!(menu_title(&app), "send patch 3 to Phabricator as a new revision?");
     assert!(!phab.lock().unwrap().calls.is_empty());
     stacked::submit::stand_in(None);
+}
+
+/// The item of the menu open labelled `label`, picked with ↓, not chosen.
+#[cfg(feature = "moz-phab")]
+fn pick_item(app: &mut App, label: &str) {
+    let all = items(app);
+    let want = all.iter().position(|(l, _)| l == label).unwrap_or_else(|| panic!("no {label:?} in {all:?}"));
+    for _ in 0..all.len() * 2 {
+        match &app.mode {
+            Mode::Menu(m) if m.sel == want => return,
+            _ => {
+                key(app, KeyCode::Down);
+            }
+        }
+    }
+    panic!("{label:?} not picked in {all:?}");
+}
+
+#[cfg(feature = "moz-phab")]
+#[test]
+fn a_revision_in_review_is_offered_its_title_summary_and_parent_alone_in_the_place_of_the_submit() {
+    // D13 in review: Phabricator has the version of patch 3 before the one
+    // in the stack, and another summary.
+    let (_tmp, db) = phab_setup(["Bug 1 - one", "Bug 2 - two", &format!("Bug 3 - three\n\nOld why.\n\n{LINK}13")]);
+    let earlier = patch_of(&db, 2).diff;
+    next_version(&db, 2, &format!("Bug 3 - three\n\nNew why.\n\n{LINK}13"), &earlier.replace("+LINE 20", "+Line twenty"));
+    let mut p = Phab::default().with(13, "needs-review", "Bug 3 - three", &earlier);
+    p.revisions.get_mut(&13).unwrap().summary = "Old why.".into();
+    let phab = std::sync::Arc::new(std::sync::Mutex::new(p));
+    let _one = phab_stand_in(&phab);
+    statuses_from(&db, &phab);
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Down, KeyCode::Down]);
+    app.refresh();
+    app.settle();
+    assert_eq!(phab_line(&mut app).as_deref(), Some("Phabricator: D13 · Needs Review · the diff and the title or summary differ · no new comments"));
+    // The patch's menu: in the place of the submit, before what differs, the
+    // update of its title and summary; `?` on it says what it does.
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    let all = items(&app);
+    let update = "Update D13 on Phabricator: its title and summary";
+    let at = all.iter().position(|(l, _)| l == update).unwrap_or_else(|| panic!("{all:?}"));
+    assert!(all[at].1, "{all:?}");
+    assert_eq!(all[at + 1].0, "What differs from D13 on Phabricator…");
+    assert!(!all.iter().any(|(l, _)| l == "Submit to Phabricator as WIP"), "{all:?}");
+    pick_item(&mut app, update);
+    assert_eq!(
+        app.help()[0],
+        "Press Enter to send the title, summary and parent of this patch to its revision on Phabricator, once what is sent is read and you have seen it: only what differs is sent, and no new diff, as the revision is not in work, so its status stays as it is."
+    );
+    // Read first, away from the screen; then reviewed: at the top, that the
+    // code is not sent, and why; what is sent and where, the status kept;
+    // the summary, Phabricator's then this; no code.
+    key(&mut app, KeyCode::Enter);
+    assert_eq!(app.status, "reading Phabricator to show what updating D13 sends: nothing is sent yet");
+    app.settle();
+    assert_eq!((app.screen, app.status.as_str()), (Screen::Submit, ""));
+    let rows = submitted(&mut app);
+    let sent = rows.iter().position(|r| r.starts_with("   D13, at ")).unwrap_or_else(|| panic!("{rows:#?}"));
+    let top: Vec<&str> = rows[1..sent].iter().map(|r| r.trim_start()).collect();
+    assert_eq!(top.join(" "), "The code of patch 3 is not sent: D13 is Needs Review, not in work, and only a revision in work gets a new diff.");
+    assert_eq!(rows[sent], "   D13, at https://phabricator.example.com/D13, gets the title and summary of patch 3, and stays Needs Review.");
+    let order = ["the title and summary: Phabricator's, then what is sent", "-Old why.", "+New why.", "what else changes", " status: stays Needs Review"];
+    let places: Vec<usize> = order.iter().map(|t| rows.iter().position(|r| r == t).unwrap_or_else(|| panic!("no {t:?} in {rows:#?}"))).collect();
+    assert!(places.windows(2).all(|w| w[0] < w[1]), "{rows:#?}");
+    assert!(!rows.iter().any(|r| r.starts_with("the code") || r.starts_with("-status") || r.contains("The code does not change")), "{rows:#?}");
+    assert!(
+        app.help().contains(&"This is what is sent to Phabricator, for you to review before it is: at the top, what is sent and where; then, of what changes, the title and summary, Phabricator's then what is sent; and the parent and the bug, before then after, and the status, which stays as it is. No code is sent: D13 is Needs Review, not in work, and only a revision in work gets a new diff.".to_string()),
+        "{:?}",
+        app.help()
+    );
+    assert!(phab.lock().unwrap().writes().is_empty(), "nothing sent yet");
+    // Enter sends it: the summary alone, no diff, the status kept; the
+    // bottom line says what came of it.
+    keys(&mut app, &[KeyCode::Enter]);
+    assert_eq!((app.screen, app.status.as_str()), (Screen::Main, "updating D13 on Phabricator…"));
+    app.settle();
+    assert_eq!(app.status, "D13 has the title and summary of patch 3 now. Patch 2 has no revision, so D13 gets no parent.");
+    assert_eq!(phab.lock().unwrap().writes(), ["differential.revision.edit summary"]);
+    assert!(phab.lock().unwrap().of_reviewers().is_empty(), "no call of reviewers at all");
+    let r = phab.lock().unwrap().revisions[&13].clone();
+    assert_eq!((r.status.as_str(), r.summary.as_str(), r.diffs.len()), ("needs-review", "New why.", 1));
+    // Read again: only the diff differs, so the update is grayed, and the
+    // menu says why.
+    assert_eq!(phab_line(&mut app).as_deref(), Some("Phabricator: D13 · Needs Review · the diff differs · no new comments"));
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    assert!(items(&app).contains(&("Update D13 on Phabricator: its title, summary and parent".to_string(), false)), "{:?}", items(&app));
+    assert!(
+        menu_note(&app).contains("D13 is Needs Review, so stacked sends it no new diff, as only a revision in work gets one, and its title, summary and parent are those of patch 3 already."),
+        "{}",
+        menu_note(&app)
+    );
+    stacked::phab::statuses_stand_in(&db, None);
+    stacked::submit::stand_in(None);
+}
+
+#[cfg(feature = "moz-phab")]
+#[test]
+fn the_submit_of_a_patch_s_menu_follows_its_revision_s_status() {
+    // D11 in work, D12 in review, D13 landed; what the Phabricator lines
+    // read refused, so that what differs is not known.
+    let (_tmp, db) = phab_setup([&format!("Bug 1 - one\n\n{LINK}11"), &format!("Bug 2 - two\n\n{LINK}12"), &format!("Bug 3 - three\n\n{LINK}13")]);
+    let diffs: Vec<String> = (0..3).map(|k| patch_of(&db, k).diff).collect();
+    let mut p = Phab::default()
+        .with(11, "changes-planned", "WIP: Bug 1 - one", &diffs[0])
+        .with(12, "needs-review", "Bug 2 - two", &diffs[1])
+        .with(13, "published", "Bug 3 - three", &diffs[2]);
+    p.refused = vec!["edge.search"];
+    let phab = std::sync::Arc::new(std::sync::Mutex::new(p));
+    statuses_from(&db, &phab);
+    let mut app = open(&db).unwrap();
+    let update = ("Update D12 on Phabricator: its title, summary and parent".to_string(), false);
+    // The statuses not read yet: the submit, as ever, what it reads deciding.
+    keys(&mut app, &[KeyCode::Down, KeyCode::Char(' ')]);
+    assert_eq!(submit_offered(&app), Some(true));
+    assert!(!items(&app).contains(&update), "{:?}", items(&app));
+    keys(&mut app, &[KeyCode::Esc]);
+    // Read, D12 not compared yet: its update grayed, saying so.
+    app.refresh();
+    app.settle();
+    assert_eq!(phab_line(&mut app).as_deref(), Some("Phabricator: D12 · Needs Review · …"));
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    assert_eq!(submit_offered(&app), None);
+    assert!(items(&app).contains(&update), "{:?}", items(&app));
+    let why = "D12 is Needs Review, so only its title, summary and parent would be sent, and they are not read from Phabricator and compared with patch 2 yet.";
+    assert!(menu_note(&app).contains(why), "{}", menu_note(&app));
+    // In work: the submit as ever.
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Up, KeyCode::Char(' ')]);
+    assert_eq!(submit_offered(&app), Some(true));
+    assert!(!items(&app).iter().any(|(l, _)| l.starts_with("Update D")), "{:?}", items(&app));
+    // Landed: the submit grayed, and why said.
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Down, KeyCode::Down, KeyCode::Char(' ')]);
+    assert_eq!(submit_offered(&app), Some(false));
+    assert!(menu_note(&app).contains("D13 has landed, so stacked sends it nothing."), "{}", menu_note(&app));
+    assert!(phab.lock().unwrap().writes().is_empty());
+    stacked::phab::statuses_stand_in(&db, None);
 }
 
 // -- the statuses of the stack's revisions, in the patches pane ------------ //

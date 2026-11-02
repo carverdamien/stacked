@@ -777,9 +777,12 @@ D12 on Phabricator…` opens the same screen, grayed, the menu saying why, while
 read and compared yet, or Phabricator does not have it; and `Pull the
 reviews of D12 from Phabricator` pulls the reviews of that revision alone
 (Phabricator, below). The patch's menu in the patches pane has both too,
-after `Submit to Phabricator as WIP`. `?` says what the line says, and
-that the patches pane marks the same, what Space shows there, and what
-the menu has.
+after its submit item: `Submit to Phabricator as WIP`, or, for a revision
+open but not in work, the update of its title, summary and parent alone,
+which the line's comparison names, offers or grays (`Update D12 on
+Phabricator: its title and summary`, Submitting a patch, below). `?`
+says what the line says, and that the patches pane marks the same, what
+Space shows there, and what the menu has.
 
 What the lines say is read away from the screen, with the token the
 statuses use, for every revision the stack's patches name, as the stack is
@@ -3893,10 +3896,13 @@ commit: in Changes Planned, a status that asks no one for a review. In the
 browser (`stacked web`) and in StackED, the same. Nothing is sent before
 it is read and seen. First, away from the screen, the patch's revision is
 read: the one its trailer names (`Differential Revision:`), or none, and
-the submit makes a new one. A revision there already must be in work,
-Changes Planned or a draft, as moz-phab takes it: any other status refuses
-(`D123 is Needs Review, not Changes Planned: only a revision in work is
-updated, and nothing was sent.`). Its latest diff must be a version of the
+the submit makes a new one. A revision there already in work, Changes
+Planned or a draft, as moz-phab takes it, is sent the patch as work in
+progress; one open but not in work, Needs Review, Needs Revision or
+Accepted, only the patch's title, summary and parent (below); one that
+landed or was abandoned refuses (`D123 is Closed, not open: only an open
+revision is updated, and nothing was sent.`). In work, its latest diff
+must be a version of the
 patch the database holds, the one in the stack or an earlier one: of the
 same effect, or leaving the same files once both are applied on the
 patches below, so that a diff moz-phab sent with more context is still the
@@ -3992,6 +3998,58 @@ be written, nothing is sent, and the bottom line says why. The diff is in
 the repository the checkout's `.arcconfig` names (`repository.callsign`;
 a revision there already keeps its own).
 
+For a revision open but not in work (Needs Review, Needs Revision,
+Accepted), the patch's menu has, in the place of `Submit to Phabricator as
+WIP`, an item that sends the revision the patch's title, summary and
+parent alone, named for what differs as the Phabricator line says it (The
+editor, above): `Update D123 on Phabricator: its title and summary`,
+`Update D123 on Phabricator: its parent`, or `Update D123 on Phabricator:
+its title, summary and parent`. It sends no new diff, as only a revision
+in work gets one, and no status, so the revision stays as it is. The
+title is written as a submit in work writes it, but for `WIP: `, which
+goes first only when the revision's title has it now, as the Phabricator
+line compares it; it goes with the summary and the bug, where they differ,
+in one edit (differential.revision.edit); then the parent, in an edit of
+its own, by the same rule as a submit in work's. As a submit in work, it
+reads and changes no reviewers: those the title names stay in it, written
+as moz-phab writes them. The revision's latest diff is left as it is,
+whatever version of the patch it is, and its repository is not read. The
+item is grayed, and the menu says why, when only the diff differs (`D123
+is Needs Review, so stacked sends it no new diff, as only a revision in
+work gets one, and its title, summary and parent are those of patch 3
+already.`), when nothing differs (`D123 is in sync with patch 3, so there
+is nothing to send.`), and while what differs is not read and compared
+yet (`D123 is Needs Review, so only its title, summary and parent would be
+sent, and they are not read from Phabricator and compared with patch 3
+yet.`). `?` on the item says what it sends.
+
+Chosen, it reads the revision away from the screen, as a submit does
+(`reading Phabricator to show what updating D123 sends: nothing is sent
+yet`), then shows what is sent on the same screen as a submit's review:
+what is sent and where (`D123, at
+https://phabricator.services.mozilla.com/D123, gets the title and summary
+of patch 3, and stays Needs Review.`), then the title and summary
+compared, the parent and the bug before and after, and the status, said to
+stay as it is (`status: stays Needs Review`). It shows no code. When the
+code differs too, the screen says so at its top, and why it is not sent
+(`The code of patch 3 is not sent: D123 is Needs Review, not in work, and
+only a revision in work gets a new diff.`); else that the code does not
+change. Enter, or `Send it to Phabricator` in its menu, sends it, the
+bottom line saying `updating D123 on Phabricator…` meanwhile; Esc, or
+`Cancel: send nothing`, sends nothing. Before anything is sent, the
+revision is read again, as for a submit in work: if its latest diff, its
+status, its title, summary or bug, or its parents changed meanwhile,
+nothing is. When nothing differs, nothing is sent, and the bottom line
+says so. Once it is sent, the bottom line says what came of it, as after a
+submit (`D123 has the title and summary of patch 3 now.`), and the
+statuses and the Phabricator lines are read again. While the
+revision's status is not read yet, or is one stacked does not know, the
+menu has `Submit to Phabricator as WIP`, and the status the submit reads
+decides what is sent. For a revision that landed or was abandoned, `Submit
+to Phabricator as WIP` is grayed, and the menu says why (`D123 has landed,
+so stacked sends it nothing.`, `D123 was abandoned, so stacked sends it
+nothing.`).
+
 ## Copied from self-review-rs
 
 stacked started from self-review-rs, a reviewer of your own changes in the
@@ -4049,7 +4107,8 @@ is typed: `import.rs`). A fix to one may belong in the other.
   names.
 - `review.rs`, `phab.rs`, `submit.rs`: Phabricator, built with the
   `moz-phab` feature (on by default): the reviews pulled, the stacks
-  imported, a patch submitted as work in progress, the statuses of
+  imported, a patch submitted as work in progress, or its title, summary
+  and parent alone to a revision in review, the statuses of
   revisions read, and what the Phabricator line over a patch's message
   reads and counts.
 - `try_push.rs`: the try push, built with the `try-push` feature (on by
@@ -4123,7 +4182,8 @@ is typed: `import.rs`). A fix to one may belong in the other.
   `tui/revisions.rs`, the status on Phabricator of each patch's revision,
   which the patches pane shows, and the Phabricator line over the message
   of the patch the middle shows, what differs on a screen of its own, the
-  pull of its reviews alone, and when each is read; `tui/compared.rs`, two
+  pull of its reviews alone, the submit item of a patch's menu as its
+  revision's status has it, and when each is read; `tui/compared.rs`, two
   versions of a text compared word by word where their lines wrap aside,
   as rows: a title and summary in the review of a submit, a reviewer's
   comment edited on Phabricator in the review of a pull, a commit's
@@ -4842,7 +4902,17 @@ submit sets none as a submit does, no parent named; a parent that is
 none of the stack's revisions named in a search of its own, where a
 submit sets another; `…` while the revision below is not read; the
 parent with the code, the title or summary, or both, listed plainly, the
-view showing the parent first, then the code), and the comments pane's states (expanded,
+view showing the parent first, then the code; the patch's menu submitting
+as its revision's status has it: `Submit to Phabricator as WIP` while the
+status is not read, and for a revision in work; grayed for one that
+landed, the menu saying why; for one in review, the update of its title,
+summary and parent alone in its place, grayed while what differs is not
+read and compared, saying so, then offered for a summary that differs,
+`?` saying what it sends, its review saying at its top that the code is
+not sent and why, the status staying as it is, no code under it, Enter
+sending the summary alone, no diff, no Changes Planned and no reviewers,
+the bottom line saying what came of it, and once read again, the diff
+alone differing, the update grayed, the menu saying why), and the comments pane's states (expanded,
 compact, hidden) and the compact view of the code as they were. With the `web` feature, `tests/web.rs`
 serves the editor and asks it over HTTP as a browser would: the token
 needed, the page, the wasm, the rows as they change, a key and a click,
@@ -5222,8 +5292,18 @@ within those ten and not within three, and the stack is rebased onto it,
 the diff is known by its changes alone, never as the patch as it is, the
 review saying why, and a new diff is sent, which a submit after it finds
 to be the patch as it is; that once the patch is edited too, its code is
-compared from the version whose changes the diff makes; and that a latest
-diff of other changes is still refused, nothing written; those
+compared from the version whose changes the diff makes; that a latest
+diff of other changes is still refused, nothing written; that a revision
+in review, accepted or needing revision is sent its title and summary
+alone in one edit, `WIP: ` first only where its title has it, the
+reviewers its title names kept and none read, its status kept, no diff
+made and its repository not read; its parent alone, in an edit of its
+own, when only that differs; and nothing when only its diff differs, said
+so, its latest diff left as it is whatever version it is, one known by
+its changes alone with no new diff said to be sent, nor once it changed
+on Phabricator since it was read, retitled or accepted; and that a
+revision landed or abandoned is refused, nothing read but the revision and
+nothing written; those
 in `history.rs`, what the history leaves out (comments, runs, a move to
 where the stack is, a branch put straight back), how a stack diff follows
 each patch by its change, a move told from a shift, and a new version
@@ -5468,11 +5548,13 @@ its part's colour, but never between a mark and the count after it.
   and take `--json-schema`, unless `agent.schema` is off.
 - Only git mail is read: no `hg export`.
 - A patch is submitted to Phabricator one at a time, as work in progress
-  alone (Changes Planned), and so with no reviewers: a stack at once, a
-  revision sent for review with the reviewers its title names, a file
-  that is not text, and each file whole as the diff's context (so that
-  reviewers can see more of it) are still moz-phab's, once `stacked head
-  NAME --to N` (or `Move HEAD…`) has put the stack in your checkout.
+  alone (Changes Planned), and so with no reviewers; a revision in review
+  gets its title, summary and parent alone: a stack at once, a revision
+  sent for review with the reviewers its title names, a new diff of a
+  revision in review, a file that is not text, and each file whole as the
+  diff's context (so that reviewers can see more of it) are still
+  moz-phab's, once `stacked head NAME --to N` (or `Move HEAD…`) has put
+  the stack in your checkout.
 - A database is not opened by dropping it on StackED's icon, nor by
   double-clicking it in the Finder or in a file manager (the launcher names
   no kind of file), and there is no Window menu. Its text is not yet a

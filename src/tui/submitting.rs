@@ -1,16 +1,18 @@
-//! A patch sent to Phabricator as work in progress, from its menu: what is
-//! sent read first, away from the screen, nothing sent yet. For a new
-//! revision, a dialog then says what is sent and where. For a revision
+//! A patch sent to Phabricator as work in progress, from its menu, or its
+//! title, summary and parent alone to its revision, open but not in work:
+//! what is sent read first, away from the screen, nothing sent yet. For a
+//! new revision, a dialog then says what is sent and where. For a revision
 //! there already, a screen of its own shows what replaces what: what is
-//! sent and where, said; the title and summary, Phabricator's then what is
-//! sent; what else changes (the parent, the bug, the status); and the
-//! code, each file as Phabricator's latest diff leaves it, then as the
-//! patch does, both on the patches below it, as the other diffs are shown.
-//! Enter sends it, once the revision is read again and seen to be as it
-//! was; Esc sends nothing. While HEAD is on the stack, a patch whose
-//! commit in the workspace names a revision it does not is held back, its
-//! item grayed, before anything is read. Built with the `moz-phab`
-//! feature.
+//! sent and where, said, and, to a revision not in work, that the code is
+//! not sent when it differs; the title and summary, Phabricator's then
+//! what is sent; what else changes (the parent, the bug, the status); and
+//! the code, when a new diff is sent, each file as Phabricator's latest
+//! diff leaves it, then as the patch does, both on the patches below it,
+//! as the other diffs are shown. Enter sends it, once the revision is read
+//! again and seen to be as it was; Esc sends nothing. While HEAD is on the
+//! stack, a patch whose commit in the workspace names a revision it does
+//! not is held back, its item grayed, before anything is read. Built with
+//! the `moz-phab` feature.
 
 use super::compared::{code_rows, diff_rows, message_rows, row, said_rows};
 use super::*;
@@ -59,17 +61,21 @@ impl Submitting {
 }
 
 /// The rows of the review of `p`, folded to `w`: what is sent and where,
-/// said, and that the code does not change when it does not, or why a new
-/// diff is sent of a latest diff that makes the changes of a version of
-/// the patch; then only what changes: the title and summary, Phabricator's
-/// then what is sent; the parent and the bug, before then after, and the
-/// status; the code, each file from Phabricator's latest diff to the patch.
+/// said, and that the code does not change when it does not, that it is not
+/// sent when it differs but the revision is not in work, or why a new diff
+/// is sent of a latest diff that makes the changes of a version of the
+/// patch; then only what changes: the title and summary, Phabricator's then
+/// what is sent; the parent and the bug, before then after, and the
+/// status; the code, each file from Phabricator's latest diff to the patch,
+/// when a new diff is sent.
 fn review_rows(p: &Prepared, w: usize) -> Vec<Row> {
     let mut rows = vec![row(Kind::File, "what is sent")];
     let n = p.number();
     let id = p.revision.as_ref().map_or("the revision".to_string(), |r| r.id.clone());
-    if !p.new_diff {
-        said_rows(&mut rows, Kind::Meta, &format!("The code does not change: the latest diff of {id} is patch {n} as it is now."), w);
+    match p.kept_said() {
+        Some(kept) => said_rows(&mut rows, Kind::Meta, &kept, w),
+        None if !p.new_diff => said_rows(&mut rows, Kind::Meta, &format!("The code does not change: the latest diff of {id} is patch {n} as it is now."), w),
+        None => {}
     }
     if let Some(said) = p.changes_said() {
         said_rows(&mut rows, Kind::Meta, &said, w);
@@ -101,7 +107,7 @@ fn review_rows(p: &Prepared, w: usize) -> Vec<Row> {
         diff_rows(&mut rows, &format!("+bug: {b}"), &[], w);
     }
     match &p.revision {
-        Some(r) if r.status != "changes-planned" => {
+        Some(r) if r.in_work() && r.status != "changes-planned" => {
             diff_rows(&mut rows, &format!("-status: {}", p.status_was()), &[], w);
             diff_rows(&mut rows, "+status: Changes Planned", &[], w);
         }
@@ -131,10 +137,12 @@ impl App {
         crate::submit::held_by_head(seen.head.as_ref()?, at)
     }
 
-    /// Submit to Phabricator as WIP, from the patch's menu: what sending
-    /// the patch picked sends, read away from the screen; nothing is sent.
+    /// Submit to Phabricator as WIP, from the patch's menu, or the update
+    /// of its revision's title, summary and parent alone (`meta`): what
+    /// sending the patch picked sends, read away from the screen; nothing
+    /// is sent. What is read decides which it is: the revision's status.
     /// Not while its commit in the workspace names a revision it does not.
-    pub(super) fn submit_patch(&mut self) {
+    pub(super) fn submit_patch(&mut self, meta: bool) {
         if self.bg.doing.contains(&SUBMITTING) {
             self.status = "a patch is being submitted to Phabricator already: submit this one once that is done".into();
             return;
@@ -145,7 +153,11 @@ impl App {
             return;
         }
         self.bg.doing.push(SUBMITTING);
-        self.status = format!("reading Phabricator to show what submitting patch {} sends: nothing is sent yet", at + 1);
+        let revision = self.shown_patch().and_then(|p| crate::phab::revision_of(&p.message)).map(|(d, _)| d);
+        self.status = match revision.filter(|_| meta) {
+            Some(d) => format!("reading Phabricator to show what updating {d} sends: nothing is sent yet"),
+            None => format!("reading Phabricator to show what submitting patch {} sends: nothing is sent yet", at + 1),
+        };
         let (path, name) = (self.path.clone(), self.stack.clone());
         self.spawn(move || Done::Submitting(crate::submit::prepare(&path, &name, at).map(Box::new)));
     }
@@ -224,7 +236,10 @@ impl App {
             return;
         }
         self.bg.doing.push(SUBMITTING);
-        self.status = format!("sending patch {} to Phabricator…", sub.ready.number());
+        self.status = match sub.ready.revision.as_ref().filter(|_| !sub.ready.in_work()) {
+            Some(r) => format!("updating {} on Phabricator…", r.id),
+            None => format!("sending patch {} to Phabricator…", sub.ready.number()),
+        };
         // The commit it makes is the workspace's when HEAD of the checkout
         // stacked runs in has it.
         let (path, here) = (self.path.clone(), self.checkout.clone());
@@ -362,13 +377,22 @@ impl App {
         out
     }
 
-    /// What `?` says on the review.
+    /// What `?` says on the review: for a revision not in work, that no
+    /// code is sent.
     pub(super) fn submit_help(&self) -> Vec<String> {
-        let id = self.submitting.as_ref().and_then(|s| s.ready.revision.as_ref()).map_or("the revision".to_string(), |r| r.id.clone());
-        vec![
-            format!(
+        let ready = self.submitting.as_ref().map(|s| &s.ready);
+        let id = ready.and_then(|p| p.revision.as_ref()).map_or("the revision".to_string(), |r| r.id.clone());
+        let what = match ready.filter(|p| !p.in_work()) {
+            Some(p) => format!(
+                "This is what is sent to Phabricator, for you to review before it is: at the top, what is sent and where; then, of what changes, the title and summary, Phabricator's then what is sent; and the parent and the bug, before then after, and the status, which stays as it is. No code is sent: {id} is {}, not in work, and only a revision in work gets a new diff.",
+                p.status_was()
+            ),
+            None => format!(
                 "This is what is sent to Phabricator, for you to review before it is: at the top, what is sent and where; then, of what changes, the title and summary, Phabricator's then what is sent; the parent and the bug, before then after, and the status; and the code, each file as the latest diff of {id} leaves it, then as the patch leaves it, both on the patches below it."
             ),
+        };
+        vec![
+            what,
             format!("Press Enter to send it: {id} is read again first, and if it changed on Phabricator since this was read, nothing is sent. Press Esc to send nothing."),
             "Press ↑↓ (pgup pgdn home end) to scroll, and 1 to show the code side by side, or unified again.".into(),
         ]
