@@ -1657,6 +1657,21 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
                     let rule = stacked::refusals::rule_of(t, &review.marks, k);
                     println!("  tool\t{rule}\t{state}\t{}", t.calls.first().map_or("", String::as_str));
                 }
+                // What a build and test asked as a follow-up from the review
+                // found, to read: its replies, then what it found of each
+                // patch; and the follow-ups going, whose work comes into the
+                // review once they land.
+                for rp in h.replies.iter().filter(|rp| rp.read) {
+                    println!("  found\t{}\t{}", short_id(&rp.change, &rp.id), rp.text.lines().next().unwrap_or(""));
+                }
+                for n in h.follow_ups.iter().flat_map(|f| f.found.iter()) {
+                    let first = stacked::thread::thread_turns(&n.text).first().map(|t| t.body.lines().next().unwrap_or("").to_string());
+                    println!("  found\t{}\t{}", n.preview, first.unwrap_or_default());
+                }
+                for f in ask::follow_ups_going(&db, &r.id) {
+                    let at = if f.run.is_some() { "with the agent" } else { "waiting its turn" };
+                    println!("  following\t{}\t{at}\t{} comment{}", f.way.said(), f.notes.len(), if f.notes.len() == 1 { "" } else { "s" });
+                }
                 // What the linter reported and did not fix, to read: where
                 // each run of it that did ran, then its lines.
                 if let Some(l) = &h.lint {
@@ -1677,7 +1692,7 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
                 None => stacked::held::queue(&db, &name).first().map(|r| r.id.clone()).ok_or_else(|| Error(format!("nothing on {name} waits for your review")))?,
             };
             let marks = db.review(&id).map(|v| v.marks.clone()).unwrap_or_default();
-            let said = ask::send_back(path, &name, &id, &marks, effort)?;
+            let said = ask::send_back(path, &name, &id, &marks, effort, None)?;
             ask::launch(path)?;
             println!("{id}\t{said}");
         }

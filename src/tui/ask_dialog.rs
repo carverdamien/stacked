@@ -19,6 +19,13 @@
 //! away from the screen as the dialog opens, unless it was a moment ago.
 //! The dialog says what keeps each one grayed. Nothing set in it is kept:
 //! each dialog opens unset.
+//!
+//! The review's `Send it back to the agent…` opens it too, on the work it
+//! sends back, with the same two lines and keys, its buttons Send Now and
+//! Cancel. A permission that changes the stack sends the work back, a
+//! round of its own asked as the dialog sets it; one that only reads asks a
+//! follow-up, the work staying waiting for your review, and what the
+//! follow-up brings back comes into that review.
 
 use super::*;
 use crate::reach;
@@ -78,6 +85,43 @@ impl Permission {
         }
     }
 
+    /// Whether it changes the stack: sending work back with it rejects the
+    /// work, and asks a round of its own; with any other, a follow-up that
+    /// only reads, the work staying waiting for your review.
+    pub fn changes(self) -> bool {
+        matches!(self, Permission::ChangePatch | Permission::ChangeStack)
+    }
+
+    /// What sending work back with it does, as the line under the
+    /// permission says it: of `n` comments going back.
+    fn sent_said(self, n: usize) -> String {
+        let what = match (self, n) {
+            (Permission::Answer, _) => {
+                "This work stays waiting for your review: the agent answers on the stack this work makes, and changes nothing, and its replies come into this review."
+            }
+            (Permission::ChangePatch, 1) => {
+                "This work is rejected, its change not applied: the agent may change the code within the comment's place, its patch and no other, going on from the stack this work makes, and its new work lands for your review in place of this one."
+            }
+            (Permission::ChangePatch, _) => {
+                "This work is rejected, its change not applied: the agent may change the code within the comments' place, their patch and no other, going on from the stack this work makes, and its new work lands for your review in place of this one."
+            }
+            (Permission::ChangeStack, _) => {
+                "This work is rejected, its change not applied: the agent works with the whole stack this work makes in its worktree, and may change any patch, add patches anywhere and reorder them; its new work lands for your review in place of this one."
+            }
+            (Permission::Test, _) => {
+                "This work stays waiting for your review: the agent builds and tests the stack this work makes, in the stack's build worktree, and changes nothing; what it finds comes into this review, to read."
+            }
+            #[cfg(feature = "try-push")]
+            (Permission::Try, _) => {
+                "This work stays waiting for your review: the agent selects the CI tasks the comments ask for, for a try push of the stack this work makes, and pushes nothing; the tasks come into this review, to accept or reject."
+            }
+        };
+        match n {
+            1 => format!("{what} 1 comment goes back to the agent."),
+            n => format!("{what} {n} comments go back to the agent."),
+        }
+    }
+
     /// What a comment is asked for with it, as the dialog says that none of
     /// those listed can be.
     fn asked(self) -> &'static str {
@@ -103,6 +147,9 @@ pub enum AskOf {
     /// The comment being written, from the menu Esc opens: saved first if
     /// it `changed`, else asked about as it is.
     Written { changed: bool },
+    /// The work of run `0`, from its review's menu: sent back to the agent
+    /// with what you wrote there, or followed up.
+    SendBack(String),
 }
 
 /// The dialog's buttons, from the left.
@@ -124,16 +171,16 @@ impl Button {
         }
     }
 
-    /// As the dialog draws it: `< Ask Now >`.
-    pub fn drawn(self) -> String {
-        format!("< {} >", self.label())
-    }
-
-    /// Its place, from the left.
+    /// Its place among every button, from the left: what `ask_buttons`
+    /// says of it is there.
     pub fn at(self) -> usize {
         Button::ALL.iter().position(|b| *b == self).unwrap_or(0)
     }
 }
+
+/// The buttons of the dialog that sends work back: Send Now, which is
+/// `Now`, and Cancel.
+const SENDING: [Button; 2] = [Button::Now, Button::Cancel];
 
 /// The dialog's lines, from the top: the permission's, the effort's, the
 /// buttons'.
@@ -192,6 +239,31 @@ impl AskDialog {
     /// Whether both lines are set.
     pub fn set(&self) -> bool {
         self.permission.is_some() && self.effort.is_some()
+    }
+
+    /// Whether it sends work back, from the review of that work.
+    pub fn sends_back(&self) -> bool {
+        matches!(self.about, AskOf::SendBack(_))
+    }
+
+    /// Its buttons, from the left: Ask Now, Ask Later and Cancel; sending
+    /// work back, Send Now and Cancel.
+    pub fn buttons(&self) -> &'static [Button] {
+        if self.sends_back() { &SENDING } else { &Button::ALL }
+    }
+
+    /// Button `b` as this dialog names it: `Ask Now`, or `Send Now` sending
+    /// work back.
+    pub fn label(&self, b: Button) -> &'static str {
+        match (b, self.sends_back()) {
+            (Button::Now, true) => "Send Now",
+            (b, _) => b.label(),
+        }
+    }
+
+    /// Button `b` as the dialog draws it: `< Ask Now >`.
+    pub fn drawn(&self, b: Button) -> String {
+        format!("< {} >", self.label(b))
     }
 
     /// Whether `p` asks a patch's comment of the whole stack.
@@ -333,7 +405,10 @@ impl App {
     /// from the screen, unless it was a moment ago.
     pub(super) fn open_ask(&mut self, about: AskOf) {
         let Some((title, on_stack, permissions)) = self.asking_of(&about) else {
-            self.status = "there is nothing to ask the agent about here any more".into();
+            self.status = match about {
+                AskOf::SendBack(_) => "none of what you wrote in this review is open to send back".into(),
+                _ => "there is nothing to ask the agent about here any more".into(),
+            };
             return;
         };
         let missing = self.agent_missing();
@@ -413,7 +488,62 @@ impl App {
                 let (patch, test) = self.written_ways(&e.target);
                 Some((title, !patch, ways(patch, test)))
             }
+            AskOf::SendBack(run) => {
+                let notes = self.going_back(run);
+                if notes.is_empty() {
+                    return None;
+                }
+                Some((self.send_back_title(run), notes.iter().all(|n| n.on_stack()), self.sent_ways(&notes)))
+            }
         }
+    }
+
+    /// The comments that go back to the agent from the review of run
+    /// `run`, as it is marked (`held::going_back`): not those a follow-up
+    /// of it going is asked about.
+    fn going_back(&self, run: &str) -> Vec<Note> {
+        let (Some(r), Some(rv)) = (self.db.run(run), self.reviewing.as_ref().filter(|rv| rv.run == run)) else { return vec![] };
+        let busy = ask::following(&self.db, run);
+        crate::held::going_back(&self.db, r, &rv.marks, &busy).iter().filter_map(|(c, i)| self.db.note(c, i).cloned()).collect()
+    }
+
+    /// The permissions that apply to every one of `notes`, the comments
+    /// that go back, as each one's own dialog has them: to answer, always;
+    /// on one patch alone, to change that patch; to change the stack, but
+    /// on the history; and, all on one place, the stack or a patch as a
+    /// whole, to build and test, and for a try push (not in the tour).
+    fn sent_ways(&self, notes: &[Note]) -> Vec<(Permission, Option<usize>)> {
+        let mut out = vec![Permission::Answer];
+        let places: Vec<ask::Scope> = notes.iter().map(ask::scope_of).fold(Vec::new(), |mut all, s| {
+            if !all.contains(&s) {
+                all.push(s);
+            }
+            all
+        });
+        let one = places.len() == 1;
+        if notes.iter().all(|n| n.about.is_none()) {
+            if one && matches!(places.first(), Some(ask::Scope::Patch(_))) {
+                out.push(Permission::ChangePatch);
+            }
+            out.push(Permission::ChangeStack);
+            if one && notes.iter().all(|n| ask::can_test(&self.db, n)) {
+                out.push(Permission::Test);
+            }
+            #[cfg(feature = "try-push")]
+            if one && !self.in_memory() && notes.iter().all(|n| ask::can_try(&self.db, n)) {
+                out.push(Permission::Try);
+            }
+        }
+        out.into_iter().map(|p| (p, None)).collect()
+    }
+
+    /// What the dialog sending back the work of run `run` says on its top:
+    /// that it sends it back, whose work, what it holds, and what was asked.
+    fn send_back_title(&self, run: &str) -> String {
+        let Some(r) = self.db.run(run) else { return "send back the agent's work".into() };
+        let whose = crate::thread::named_at("the agent's work", ask::effort_said(r));
+        let asked = if r.request.is_empty() { String::new() } else { format!(" · asked \"{}\"", short(&r.request, 40)) };
+        format!("send back {whose}: {}{asked}", crate::held::left(&self.db, r))
     }
 
     /// Of a comment written for `t`: whether it is a patch's, which may be
@@ -529,36 +659,45 @@ impl App {
         }
     }
 
-    /// Which of dialog `d`'s buttons can be pressed, from the left: Ask Now
-    /// and Ask Later once both lines are set (and, of the comments listed,
-    /// one is asked about), Ask Now while the agent can be reached; Cancel
-    /// always.
+    /// Which of dialog `d`'s buttons can be pressed, by their places among
+    /// every button (`Button::at`): Ask Now and Ask Later once both lines are
+    /// set (and, of the comments listed, one is asked about), Ask Now while
+    /// the agent can be reached; Cancel always. Sending work back, Send Now
+    /// as Ask Now; it has no Ask Later.
     pub fn ask_buttons(&self, d: &AskDialog) -> [bool; 3] {
         let ready = d.set() && d.count() != Some(0);
-        [ready && matches!(self.reach_of(d), Reach::Yes), ready, true]
+        [ready && matches!(self.reach_of(d), Reach::Yes), ready && !d.sends_back(), true]
     }
 
     /// What dialog `d` says under its buttons: what keeps Ask Now and Ask
-    /// Later grayed, if anything does.
+    /// Later grayed, if anything does; sending work back, Send Now, and then
+    /// what sending the work back with the permission set does besides.
     pub fn ask_note(&self, d: &AskDialog) -> Vec<String> {
         let mut out = Vec::new();
+        let (now, both) = match d.sends_back() {
+            true => ("Send Now", "Send Now is"),
+            false => ("Ask Now", "Ask Now and Ask Later are"),
+        };
         match (d.permission(), d.effort) {
-            (None, None) => out.push("Ask Now and Ask Later are grayed until the permission and the effort are set.".to_string()),
-            (None, Some(_)) => out.push("Ask Now and Ask Later are grayed until the permission is set.".to_string()),
-            (Some(_), None) => out.push("Ask Now and Ask Later are grayed until the effort is set.".to_string()),
+            (None, None) => out.push(format!("{both} grayed until the permission and the effort are set.")),
+            (None, Some(_)) => out.push(format!("{both} grayed until the permission is set.")),
+            (Some(_), None) => out.push(format!("{both} grayed until the effort is set.")),
             (Some(p), Some(_)) if d.count() == Some(0) => {
-                out.push(format!("Ask Now and Ask Later are grayed: no comment listed can be asked {}.", p.asked()));
+                out.push(format!("{both} grayed: no comment listed can be asked {}.", p.asked()));
             }
             _ => {}
         }
         match self.reach_of(d) {
             Reach::Yes => {}
-            Reach::Checking(said) => out.push(format!("Ask Now is grayed while stacked checks that the network reaches {said}.")),
-            Reach::Missing(why) => out.push(format!("Ask Now is grayed: {why}.")),
+            Reach::Checking(said) => out.push(format!("{now} is grayed while stacked checks that the network reaches {said}.")),
+            Reach::Missing(why) => out.push(format!("{now} is grayed: {why}.")),
             Reach::Unreached(said) => {
-                out.push(format!("Ask Now is grayed: the network does not reach {said}."));
+                out.push(format!("{now} is grayed: the network does not reach {said}."));
                 out.push("If claude reaches it all the same, `stacked config agent.reach_check false` turns this check off.".to_string());
             }
+        }
+        if let (AskOf::SendBack(_), Some(p)) = (&d.about, d.permission()) {
+            out.extend(self.sending_back_said(p.changes()));
         }
         out
     }
@@ -570,6 +709,12 @@ impl App {
         let listed = matches!(d.about, AskOf::Listed { .. });
         match (d.permission(), d.count()) {
             (None, _) => format!("Not set yet: {}.", unset_keys(&d.permission_labels())),
+            // Sending work back: what that does with the work, and how many
+            // comments go back.
+            (Some(p), _) if d.sends_back() => {
+                let AskOf::SendBack(run) = &d.about else { return String::new() };
+                p.sent_said(self.going_back(run).len())
+            }
             (Some(p), Some(0)) => format!("{} No comment listed can be asked so.", p.said(listed)),
             (Some(p), Some(1)) => format!("{} 1 comment listed is asked about.", p.said(listed)),
             (Some(p), Some(n)) => format!("{} {n} comments listed are asked about.", p.said(listed)),
@@ -616,13 +761,14 @@ impl App {
             KeyCode::End => d.line = BUTTONS_LINE,
             KeyCode::Left | KeyCode::Right if d.line == BUTTONS_LINE => {
                 let on = self.ask_buttons(&d);
-                let at = d.button.at();
+                let list = d.buttons();
+                let at = list.iter().position(|b| *b == d.button).unwrap_or(0);
                 let next = match k.code {
-                    KeyCode::Right => (at + 1..Button::ALL.len()).find(|n| on[*n]),
-                    _ => (0..at).rev().find(|n| on[*n]),
+                    KeyCode::Right => (at + 1..list.len()).find(|n| on[list[*n].at()]),
+                    _ => (0..at).rev().find(|n| on[list[*n].at()]),
                 };
                 if let Some(n) = next {
-                    d.button = Button::ALL[n];
+                    d.button = list[n];
                 }
             }
             // On the two lines, the option set stepped: the first from
@@ -643,7 +789,7 @@ impl App {
     /// done, and the status says why.
     fn press_ask(&mut self, d: AskDialog) -> Effect {
         if !self.ask_buttons(&d)[d.button.at()] {
-            let label = d.button.label();
+            let label = d.label(d.button);
             self.status = self.ask_note(&d).into_iter().find(|l| l.contains(label)).unwrap_or_else(|| format!("{label} is grayed."));
             self.mode = Mode::Ask(Box::new(d));
             return Effect::None;
@@ -682,6 +828,10 @@ impl App {
                 self.now_or_later(notes, way, false, effort, later);
             }
             AskOf::Written { .. } => self.ask_written(way, whole, effort, later),
+            // Sent back: a round of its own, the work rejected; or a
+            // follow-up, the work staying for your review.
+            AskOf::SendBack(_) if p.changes() => self.review_send_back(way, whole, effort),
+            AskOf::SendBack(_) => self.review_follow_up(way, effort),
         }
     }
 
@@ -736,6 +886,10 @@ impl App {
             _ => "",
         };
         let first = match (d.line, d.button) {
+            (PERMISSION_LINE, _) if d.sends_back() => format!(
+                "Press Enter to open the list of what the agent may do with the work you send back, to pick one: {}. The line under the permission says what the one set does with this work: a permission that changes the stack rejects it, and one that only reads asks a follow-up, the work staying waiting for your review.",
+                one_of(&d.permission_labels())
+            ),
             (PERMISSION_LINE, _) => format!(
                 "Press Enter to open the list of what the agent may do here, to pick one: {}. The line under the permission says what the one set lets the agent do.",
                 one_of(&d.permission_labels())
@@ -744,13 +898,20 @@ impl App {
                 "Press Enter to open the list of how hard the agent works, as claude's --effort takes it, to pick one: {}.",
                 one_of(&Effort::NAMES)
             ),
-            (_, b) if !on[b.at()] => self.ask_note(d).into_iter().find(|l| l.contains(b.label())).unwrap_or_else(|| format!("{} is grayed.", b.label())),
+            (_, b) if !on[b.at()] => self.ask_note(d).into_iter().find(|l| l.contains(d.label(b))).unwrap_or_else(|| format!("{} is grayed.", d.label(b))),
+            (_, Button::Now) if d.sends_back() => match d.permission() {
+                Some(p) if p.changes() => {
+                    "Press Enter to send the work back now, as the two lines say: this work is rejected, and the agent is asked again, going on from it.".into()
+                }
+                _ => "Press Enter to ask the follow-up now, as the two lines say: this work stays waiting for your review, and what the agent brings back comes into it.".into(),
+            },
             (_, Button::Now) => format!("Press Enter to {written}ask the agent now, as the two lines say: the ask starts at once, or waits its turn."),
             (_, Button::Later) => {
                 format!("Press Enter to {written}put the ask in the stack's batch, as the two lines say: it waits there until the banner sends the batch.")
             }
             (_, Button::Cancel) => match d.about {
                 AskOf::Written { .. } => "Press Enter to close the dialog and go back to writing the comment: nothing is saved, and nothing is asked.".into(),
+                AskOf::SendBack(_) => "Press Enter to close the dialog and go back to the review: nothing is sent.".into(),
                 _ => "Press Enter to close the dialog: nothing is asked.".into(),
             },
         };
@@ -852,10 +1013,10 @@ impl App {
                 // the cursor is on, on the buttons' line, under the cursor.
                 None => {
                     let mut bx = x + 2;
-                    for (n, b) in Button::ALL.into_iter().enumerate() {
-                        let drawn = b.drawn();
+                    for b in d.buttons().iter().copied() {
+                        let drawn = d.drawn(b);
                         let len = drawn.chars().count();
-                        let mut st = if on[n] { Style::new() } else { color::dim() };
+                        let mut st = if on[b.at()] { Style::new() } else { color::dim() };
                         if d.line == BUTTONS_LINE && d.button == b {
                             st = on_cursor(st);
                         }

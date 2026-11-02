@@ -925,10 +925,11 @@ them other keys, and the help then names those:
   and → held on the last; a click
   on one picks it, and Enter does the item with the one picked, which is
   kept for the stack in the database. Every `Ask agent…` item opens the
-  ask dialog rather than asking from the menu (Asking the agent, below).
-  An item that sends again what was asked before ends with a dropdown of
-  the effort it goes at, `Effort [high]`: `Send it now`, the batch's
-  items, `Send it back to the agent`. On an item with more than one
+  ask dialog rather than asking from the menu (Asking the agent, below),
+  and so does a review's `Send it back to the agent…`. An item that
+  sends again what was asked before ends with a dropdown of the effort it
+  goes at, `Effort [high]`: `Send it now` and the batch's items. On an
+  item with more than one
   dropdown, ← → pick in the one underlined, which is the first until Tab
   goes to the next one; shift-Tab goes back, as the bottom bar says
   (`←→: to whom · tab: effort`). A click picks in the dropdown it is on:
@@ -1593,8 +1594,11 @@ Every item that asks the agent opens the ask dialog rather than asking
 from the menu: a comment's `Ask agent…` (`Ask agent, answer only…` on a
 question on the history), `Ask agent about all…` on the left header (the
 stack's comments) or on the comments pane's header (each comment the list
-shows), and the comment editor's `Ask agent…` (above). Its title says what
-is asked about; under it are two lines, then three buttons:
+shows), the comment editor's `Ask agent…` (above), and, in the review of
+the agent's work, `Send it back to the agent…`, whose dialog has Send Now
+and Cancel for its buttons (What the agent brings back waits for your
+review, below). Its title says what is asked about; under it are two
+lines, then three buttons:
 
 ```
 ┌─ ask the agent about the comment on patch 1 · a.txt: TWO ────┐
@@ -1759,9 +1763,9 @@ and Ask Now and Ask Later are grayed while none can be.
 How hard the agent works on an ask is its effort, as claude's `--effort`
 takes it: `low`, `medium`, `high`, `xhigh` or `max`, the dialog's second
 line. What sends again what was asked before ends with the effort it goes
-at, `Effort [high]`: `Send it now`, the batch's items (below) and `Send it
-back to the agent`, in a review, each at the effort it was asked at unless
-another is picked there. On an item with choices of its own, Tab goes to
+at, `Effort [high]`: `Send it now` and the batch's items (below), each at
+the effort it was asked at unless another is picked there. On an item
+with choices of its own, Tab goes to
 the effort, shift-Tab goes back, and ← → pick in the one the menu is on.
 Neither goes round past its end: ← held ends on `low`, and → held on
 `max`. A click on `Effort [high]` picks the next level, round from `max`
@@ -1782,10 +1786,11 @@ batch's items at the highest effort of the comments it sends. An ask asked
 again goes at the effort it had: a change dropped because the work it went
 on from was rejected, an answer restarted as a change is accepted, a
 comment put back on the queue as it was. Work sent back from its review
-starts at the effort it was asked at as well, unless another is picked on
-`Send it back to the agent`. An ask queued by an older stacked has no
-effort of its own: it goes at the agent's default, or at the settings'
-`--effort`.
+goes at the effort its dialog sets, unset as the dialog opens, as every
+ask's is, whatever the work was asked at; from the command line, it goes
+at the effort it was asked at, unless `--effort` says otherwise (below).
+An ask queued by an older stacked has no effort of its own: it goes at
+the agent's default, or at the settings' `--effort`.
 
 What the agent brings back says the effort it was asked at wherever the
 agent or its work is named, so that work done at `max` is told from work
@@ -2370,8 +2375,10 @@ follows its line. One of a round you sent back from a review no longer
 goes back to the agent with the work: taken back, the last of the round,
 nothing goes back to the agent, and the work stays as you sent it back,
 its review closed and its change not applied; edits by hand no longer
-wait for it. The stack's lint job waiting its turn: `Drop the
-waiting lint job…`, in the banner's menu after `Read what the linter
+wait for it. One of a follow-up you asked from a review is no longer
+asked about in it: taken back, the last of it, nothing is asked, and the
+work waits for your review as it did. The stack's lint job waiting its
+turn: `Drop the waiting lint job…`, in the banner's menu after `Read what the linter
 writes`, which Enter on its line does, and in the stack's menu, asks
 `drop the lint job that waits its turn? Nothing was linted yet`. The
 stack's reconcile with HEAD waiting its turn: Enter on its line opens its
@@ -2526,8 +2533,8 @@ file it`), and Esc offers `Close review`, which files every comment it
 pulled, with `Save` and `Discard` to leave it waiting for you; there is no
 `Accept all remaining and Close` nor `Reject all remaining and Close`.
 
-What you write in the review of the agent's work sends that work back to
-the agent. In the patch as the work leaves it, ↑↓ move from line to line,
+What you write in the review of the agent's work goes back to the agent
+with that work. In the patch as the work leaves it, ↑↓ move from line to line,
 and Enter writes a comment on the line in the inline editor, as in the
 main view: on a comment, what you said last written again if the last word
 is yours, a reply if not, and your answer to the agent's reply if this work
@@ -2547,29 +2554,106 @@ it where it would be, Enter writes it again, and Space has `Take it back`
 you opened there is closed, and a comment the ask was about is as it was
 before you wrote in it in the review. With any
 of it, the work is neither accepted nor rejected:
-Esc has `Send it back to the agent` in place of closing the review. The
-work is rejected, its change not applied; its replies go in their threads,
-your answers after them, and the comments it opened go as you marked them.
-Then the comments it was asked about whose last word is yours, and what you
-wrote in its review, are asked again, in a round that starts from the stack
-this work makes: the agent's worktree holds the change it made, and the
-agent is told it is another round. As a round asked again after its work
-was dropped is told, it is told what it changed in the round sent back (a
-stack diff from the stack that round went on from) and the comments it
-opened then, and `stacked export --work` prints the stack it made for it;
-its replies are in their threads already. Its session is not the one
-before: claude starts afresh each round. The round goes at the effort the
-work was asked at, which `Send it back to the agent` ends with, unless
-another is picked there. That round's work lands for review in
-place of the one sent back. A comment it is asked about on a patch the
-work sent back added stays there, open; should the stack never take that
-patch, the round's work rejected, or accepted without it, the comment
-moves to the stack's own comments as that review closes, open still,
-`moved from a patch · c.txt: cee` on its first line (`Move it back` grayed
-while the stack does not hold that patch), and the review says so. The
-round goes before anything else waiting
-for the agent, and the stack is not edited by hand until you have reviewed
-its work: nothing changes the stack it goes on from.
+Esc has `Send it back to the agent…` in place of closing the review. It
+opens the ask dialog (Asking the agent, above) on the work it sends back,
+its title saying so, what the work holds and what was asked (`send back
+the agent's work (max): a change of patch 1, 1 reply · asked "why so
+loud?"`). The dialog has the same two lines, unset as it opens, and the
+same keys, list and clicks; its buttons are Send Now and Cancel. Send Now
+is grayed until both lines are set, and while the agent cannot be
+reached, the dialog saying why as it says it of Ask Now (`Send Now is
+grayed: claude is not found on the PATH.`). Cancel, Esc and a click out of
+the dialog send nothing, and the review is as it was. The permissions
+offered are those that apply to every comment that goes back, as each
+one's own dialog offers them: to answer, always; to change the patch,
+when they are all on one patch; to change the stack, unless one is a
+question on the history; and, when they are all on one place, the stack
+or a patch as a whole, to build and test, and for a try push. The line
+under the permission says what the one set does with the work, and how
+many comments go back (`1 comment goes back to the agent.`).
+
+A permission that changes the stack, `change patch` or `change stack`,
+sends the work back. The work is rejected, its change not applied; its
+replies go in their threads, your answers after them, and the comments it
+opened go as you marked them. Then the comments it was asked about whose
+last word is yours, and what you wrote in its review, are asked again, in
+a round that starts from the stack this work makes, asked as the dialog
+set it, which may be otherwise than the work was asked: a patch's work
+sent back to change the stack is asked of the whole stack. The agent's
+worktree holds the change the work made, and the agent is told it is
+another round. As a round asked again after its work was dropped is told,
+it is told what it changed in the round sent back (a stack diff from the
+stack that round went on from) and the comments it opened then, and
+`stacked export --work` prints the stack it made for it; its replies are
+in their threads already. Its session is not the one before: claude
+starts afresh each round. The round goes at the effort the dialog set.
+That round's work lands for review in place of the one sent back. A
+comment it is asked about on a patch the work sent back added stays
+there, open; should the stack never take that patch, the round's work
+rejected, or accepted without it, the comment moves to the stack's own
+comments as that review closes, open still, `moved from a patch · c.txt:
+cee` on its first line (`Move it back` grayed while the stack does not
+hold that patch), and the review says so. The round goes before anything
+else waiting for the agent, and the stack is not edited by hand until you
+have reviewed its work: nothing changes the stack it goes on from.
+
+A permission that only reads, `answer only`, `build and test` or `try
+push`, asks a follow-up, and the work is not rejected: it stays waiting
+for your review, its review open and its marks as they are. The follow-up
+is asked about what you wrote in the review, and the comments the work
+was asked about whose last word is yours, each thread as it would be with
+the work's replies and your answers in it: those are not in the threads
+before the review closes. It is asked on the stack the work makes,
+which `stacked export --work` prints: an answer's worktree holds that
+stack, and so does the stack's build worktree for a build and test. It is
+told that the work waits for your review, what the work changed and the
+comments it opened. What goes back with the comment that asked first
+(your answers to why a try push's tasks were selected, and what the
+review allows of the tools the agent could not use) goes as your answer
+after that comment's reply, where the work going back would put it in the
+thread. What the follow-up brings back comes into the same review once it
+lands, and nothing of it waits for a review of its own:
+
+- An answer's replies are replies of the review, in its list after the
+  work's, each in its thread after your answer, for you to read and mark
+  as any reply; the comments it opens are among those the work opened.
+- A build and test's report is a section of its own, `what the build and
+  test found, to read`: its reply to each comment, by where the comment
+  is, and what it found of each patch, by the patch's title, each on the
+  right as it would be, with nothing to accept or reject. Its replies go
+  in their threads as the review closes, after the reply before them
+  there, unless the work's change, or that reply, is rejected; what it
+  found of each patch is not filed. Space on a reply of it has `Reply to
+  it`, as on any reply.
+- A try push's tasks are tasks of the review, to accept or reject as a
+  try push's tasks are, but those the work holds already, which keep their
+  marks; its replies are replies of the review. Closing the review with
+  tasks accepted pushes them as the work's own try push would; the work
+  being no try push, as the follow-up would, from its comment.
+
+Your answer to a reply that a reply of the follow-up follows went with the
+follow-up: it is no longer under `what you wrote, to send back`, and Space
+grays `Edit your answer to it` there. Then you go on reviewing the work:
+accept it, reject it, or send it back again. A follow-up that fails, or
+brings nothing back for a comment, leaves your last word there, to send
+back again or to take back.
+
+While the follow-up is with the agent, or waits its turn, the review says
+so, on top, in a section of its own (`the follow-up you asked, with the
+agent`), its line marked as the comments pane marks a comment with the
+agent (`●`) or waiting its turn (`◌`), and the right pane lists the
+comments it asks about and the last lines the agent wrote. What went with
+it is not under `what you wrote, to send back`, nor written again or taken
+back meanwhile, and `Send it back to the agent…` is grayed until it lands,
+the menu saying why. Closing the review then asks first, saying that the
+follow-up is stopped. Closed, the follow-up's agent is stopped as `Stop
+the agent…` stops it, its ask landed as failed, its comments saying `ask
+failed: you stopped the agent when you closed the review of the work it
+follows up`, and what it would bring back thrown away; the status line
+says `1 follow-up stopped`. The follow-up may use what this work was
+allowed for itself, as every round of it may, and what the review allows
+from now on is saved as the follow-up is asked, as when the work goes
+back.
 
 The change of the stack is edited by hand from its review, as the work
 leaves the stack, where the cursor is, as in the main view. On a line of a
@@ -2595,7 +2679,9 @@ On the command line, `stacked landed NAME` lists the queue: each landed ask
 by its run, what is left of it to review (with no part left, the comments
 the agent was asked about: `1 asking comment to close or keep, nothing
 brought back`), the effort it was asked at, if it was asked at one (`asked
-at max`), and each part of it. `stacked review NAME [RUN]
+at max`), and each part of it; then what a build and test asked as a
+follow-up found, a line each (`found`), and each follow-up going, how it
+was asked and where it stands (`following`). `stacked review NAME [RUN]
 --accept-all` (or `--reject-all`) closes the review of that ask, the first
 landed if no run is given: the parts not marked yet are accepted (or
 rejected), and what is accepted is applied; `--close-asking` closes the
@@ -2615,7 +2701,12 @@ on the patch as that work leaves it, and `stacked reply NAME ID --answer
 TEXT` answers the agent's reply to comment ID; then `stacked review NAME
 --send-back` sends the work back to the agent with them, at the effort it
 was asked at unless `--effort LEVEL` says otherwise (`--accept-all`
-refuses while you wrote in it). `stacked send NAME ID --wait`
+refuses while you wrote in it). It goes back as a round of the work's own
+kind, the work rejected, whatever its kind: the editor's dialog is where
+another permission is picked, and a follow-up asked. A follow-up asked
+from the editor that is still going is stopped as the review closes from
+the command line, and as the work goes back, what went with it going back
+with the work. `stacked send NAME ID --wait`
 says what waits for your review once it lands; `--wait --accept` accepts
 all of it as soon as it lands, for a script.
 
@@ -2670,18 +2761,18 @@ item is not offered, why. Each item is in one of three states:
 - refused, the default: the agent is not let use the tool. Delete refuses
   an item.
 - allowed for this work: every round of this work may use the tool, until
-  its review closes. That is the rounds sent back from its review, and the
-  rounds stacked starts by itself for that work: an answer restarted as a
-  chained edit is accepted, an edit asked again once the work it went on
-  from is rejected. claude is given the rule with the other tools
-  the ask may use, and the rule is never saved. The stream of each such
-  round starts by saying so (`✓ allowed for this work:
-  Bash(searchfox-cli *)`), and so does the status line once the work is
-  sent back. The rule ends with the review, whether the work is accepted
-  or rejected.
+  its review closes. That is the rounds sent back from its review, the
+  follow-ups asked from it, and the rounds stacked starts by itself for
+  that work: an answer restarted as a chained edit is accepted, an edit
+  asked again once the work it went on from is rejected. claude is given
+  the rule with the other tools the ask may use, and the rule is never
+  saved. The stream of each such round starts by saying so (`✓ allowed
+  for this work: Bash(searchfox-cli *)`), and so does the status line once
+  the work is sent back. The rule ends with the review, whether the work
+  is accepted or rejected.
 - allowed from now on: Enter allows an item from now on, as accepting it.
-  The rule is saved once the work is sent back (first, so that the next
-  round may use it) or once its review closes, whether the work is
+  The rule is saved once the work is sent back or followed up (first, so
+  that the next round may use it) or once its review closes, whether the work is
   accepted or rejected, or stacked drops the work to ask it again (its run
   saying so). It is saved only in the stack's checkout's own
   settings, `.stacked/local.toml`, never in `~/.stacked/config.toml`, nor
@@ -2737,13 +2828,16 @@ selection widens to one of them either. An ask that changes the stack is
 offered these rules, as before.
 
 With a tool allowed, for this work or from now on, Esc has `Send it back
-to the agent` though you wrote nothing in the review: the agent tries
+to the agent…` though you wrote nothing in the review: the agent tries
 again with the tool, which is how a failed attempt goes on. The work goes
-back as when you wrote in its review, and a turn of yours in the thread of
-the comment that asked says what you allowed and what you answered (`On
-the tools you could not use:`, then ``- `Bash(searchfox-cli *)`: you may
-use it now, for this work.``). Before it goes, its question says what this
-work may use from the next round on, and what is saved for good, and
+back as when you wrote in its review, from the ask dialog, and a turn of
+yours in the thread of the comment that asked says what you allowed and
+what you answered (`On the tools you could not use:`, then ``-
+`Bash(searchfox-cli *)`: you may use it now, for this work.``); asked as a
+follow-up that only reads, it is your answer after that comment's reply,
+where the work going back would put it in the thread. Before it goes, the
+dialog says, under its buttons, what this work may use from the next
+round on, or from the follow-up on, and what is saved for good, and
 where. Closing the review asks first when it saves a rule, saying what is
 saved and where, and that what this work was allowed for itself ends
 there.
@@ -2812,12 +2906,16 @@ agent selected it, as the agent's comment under the task's label. Space's
 `Reply to it` answers that comment: your answer shows under it, and on the
 left under `what you wrote, to send back`, where Enter writes it again and
 Delete takes it back. With an answer of yours, the work is not accepted:
-Esc has `Send it back to the agent`, which puts the agent's reply in the
-thread of the comment that asked, then your answers, a turn of yours (`On
-the tasks the agent selected:`, then each task's label with what you
-said), and asks the comment again. That round is told the tasks it
-selected, each as you marked it, with why and what you answered, and
-selects them again; its tasks land for review in place of those sent back.
+Esc has `Send it back to the agent…`, whose dialog sets how the comment
+that asked is asked again, your answers after the agent's reply in its
+thread, as a turn of yours (`On the tasks the agent selected:`, then each
+task's label with what you said). Asked as a try push again, a follow-up
+that only reads, the work stays waiting for your review, its marks as
+they are: the follow-up is told the tasks the work selected, each as you
+marked it, with why, and selects them again, and what it selects comes
+into the same review, but the tasks the work holds already, which keep
+their marks. Asked with a permission that changes the stack, the work is
+rejected, and the round's work lands for review in its place.
 
 Closing the review with tasks accepted is where they are pushed to try,
 with the patches up to the comment's (`patch 1 alone`, `patches 1 to 3`,
@@ -3753,7 +3851,15 @@ bytes long, padded with spaces.
   each reply (an answer-only ask's with the rev of the stack it was asked
   on), each comment it opened. Nothing of it is applied before its
   review closes. Bringing nothing back, it holds none of them, and is held
-  all the same while a comment it was asked about is still open. A lint
+  all the same while a comment it was asked about is still open. A
+  follow-up asked from a review is queued as the comments it asks about,
+  each naming the work it follows up (`on`) and saying it is one
+  (`follow`); landed, its run holds nothing for review, and the work's run
+  is written again with what it brought: its replies after the work's (a
+  build and test's marked `read`), the comments it opened, a try push's
+  tasks, the tools it could not use, and, among the work's follow-ups,
+  which comments it was asked about and what a build and test found of
+  each patch. A lint
   job's run holds the command it runs and where it stands, waiting its turn
   or running, and the stack it lints once it runs; landed, what it brought
   back, as an ask's does, with what the linter reported. A review
@@ -4127,9 +4233,11 @@ is typed: `import.rs`). A fix to one may belong in the other.
 - `reach.rs`: whether the agent can be reached, for the ask dialog's Ask
   Now: its program found, and the network reaching the host claude talks
   to, a stand-in answering for the tests.
-- `held.rs`: what an ask brought back, held for your review; and the marks
-  of the answers made on the stack before a change, kept, restarted or
-  stopped as the change is accepted (`ask.rs` does what each mark says).
+- `held.rs`: what an ask brought back, held for your review; work sent
+  back, and the follow-ups that only read asked from its review, what they
+  bring back coming into it (`come_in`); and the marks of the answers made
+  on the stack before a change, kept, restarted or stopped as the change
+  is accepted (`ask.rs` does what each mark says).
 - `head.rs`: where HEAD of your checkout is against a stack, its commits
   marked, and HEAD moved along it, only as stacked left it or with no mark;
   what the view of why Move HEAD does not move HEAD reads of the checkout.
@@ -4238,7 +4346,8 @@ is typed: `import.rs`). A fix to one may belong in the other.
   each pane's cursor was, each half's of the middle split in two;
   `tui/finding.rs`, the search of the middle (`/`); `tui/ask_dialog.rs`,
   the dialog every `Ask agent…` item opens, its permission and effort set
-  each time, then Ask Now, Ask Later or Cancel.
+  each time, then Ask Now, Ask Later or Cancel; and a review's `Send it
+  back to the agent…`, then Send Now or Cancel.
 - `web.rs`, `web/client.rs`, `web/index.html`, `build.rs`: `stacked web`,
   its server, its wasm and its page; the build script compiles the wasm,
   or, where Rust lacks the wasm target, stops the build and says what to
@@ -4526,11 +4635,12 @@ refused as items of its review (one a rule, the calls under the agent's
 comment on the right, a broad program's rule widened from the menu, what
 changes things noted), each refused by Delete, allowed from now on by
 Enter and for this work from the menu, its three boxes naming the rule
-and the file; sent back with a tool allowed though nothing is written,
-the question saying what the work may use and what is saved, the next
-round given both and its stream saying so, the comment told in a turn of
-yours, and what it was allowed for itself ending as its review closes,
-the close saying so; what is allowed from now on saved closing,
+and the file; followed up to answer only with a tool allowed though
+nothing is written, the dialog saying what the work may use and what is
+saved, the follow-up given both and its stream saying so, the comment told
+in your answer after its reply, the follow-up's reply in the same review,
+and what the work was allowed for itself ending as its review closes, the
+close saying so; what is allowed from now on saved closing,
 accepted or rejected, in the checkout's own list for answers alone, not
 offered where git tracks that file; and a reply on an item sending the
 work back; in the review of the agent's work, a comment on a patch it adds
@@ -4540,7 +4650,24 @@ with what you wrote, keeping the work from being accepted or rejected,
 taken back (that thread as it was before the review), and sent back, the
 next round asked about it, on that patch of the stack it goes on from;
 that round rejected, the comment on the patch it added moved to the
-stack's own comments, open, `Move it back` grayed; a comment asked
+stack's own comments, open, `Move it back` grayed; work sent back from
+its dialog to change its patch, rejected, its round landing in its place,
+asked of that patch, and that round's work sent back to change the
+stack, from a patch's comment, the next round asked of the whole stack;
+followed up to answer only, the work staying for your review, its change
+still marked accepted, the review saying the follow-up runs and the
+cursor on it, what you wrote gone with it, the follow-up asked on the
+stack the work makes with the work's reply and your answer in its thread,
+its reply coming into the same review after the work's, your answer to
+the reply before it grayed, nothing waiting for a review of its own, then
+the review closing as ever, the replies in their thread in turn; followed
+up to build and test from a comment on the stack, what it found a section
+to read (its reply, and what it found of a patch, each on the right, Enter
+marking nothing), the review closing with its reply in the thread after
+your answer and nothing filed on the patch's title; the review closed
+while the follow-up runs, its menu saying so, closing asking first, the
+follow-up stopped, its ask landed as failed and said so on its comment,
+nothing of it waiting for review; a comment asked
 about and its stream and answer shown in place, its agent stopped from its
 menu (the ask landed at once as failed, said so, its stream folded, the
 comment's menu whole again, and the agent's wrapper, a child of the
@@ -4573,13 +4700,21 @@ grayed while the network is checked, saying so, and while it is not
 reached, saying how to turn the check off, Ask Later going all the same,
 a dialog opened a moment later not checking again; reached, Ask Now
 asking; `agent.reach_check` off, nothing checked; the items that open
-something to write first picking no effort), the effort an ask goes at
+something to write first picking no effort; the review's `Send it back to
+the agent…` opening it on the work it sends back, its title saying so,
+nothing set, the permissions those of the comment going back, its
+buttons Send Now and Cancel, Send Now grayed until both lines are set and
+pressed grayed saying why, the line under the permission saying what each
+does with the work, `?` what Send Now does as the permission set does it,
+Cancel and a click out of it sending nothing, the review as it was, a
+second dialog unset; Send Now grayed, saying why, while the network does
+not reach the agent, nothing sent), the effort an ask goes at
 (the stand-in started at the effort the dialog set, the settings' own
 taken out; a batched comment, sent now or with the batch, at the effort
 it was batched at, one waiting its turn at its own, one queued by an
-older stacked at the agent's default; work sent back at the effort it was
-asked at, unless another is picked on its item, which is that item's
-alone; the effort the agent was asked at shown wherever its work is
+older stacked at the agent's default; work sent back at the effort its
+dialog sets, the work asked at low, its item no dropdown of its own; the
+effort the agent was asked at shown wherever its work is
 named: its comment's state with the agent and replied to, in the middle
 and the banner, the banner's landed line, `Runs…` and the transcript, the
 review's title, the comment it opened and its reply in the review, then
@@ -4999,7 +5134,9 @@ asked first, → opening the comments pane of a patch with none, saying why,
 its menu there, and ← putting it away, a comment on a patch the agent's
 work adds, and what you write in a thread the agent opened that it was
 asked about, written in its review, listed with what you wrote and
-sending the work back, Esc's summary in a review sent with its count of
+sending the work back (Esc's `Send it back to the agent…` opening the ask
+dialog, nothing set, Send Now and Cancel its buttons), Esc's summary in a
+review sent with its count of
 the tools refused in red, then of those allowed in green, the rest dim,
 in the runs of the row the page draws, `Move HEAD…` on the stack's menu
 not grayed while it would not move HEAD, and the view of why opened from
@@ -5046,7 +5183,9 @@ waits its turn (a reconcile with HEAD, a lint job, an edit ask) taken out
 of the queue from the banner with Delete, each asked first; → opening the
 comments pane of a patch with none, saying why, its menu there, and ←
 putting it away; a comment on a patch the agent's work adds, written in
-its review, listed with what you wrote and sending the work back; Esc's
+its review, listed with what you wrote and sending the work back, Esc's
+`Send it back to the agent…` opening the ask dialog, nothing set, Send Now
+and Cancel its buttons; Esc's
 summary in a review, its count of the tools refused in red, then of
 those allowed in green, the rest dim, cell by cell of the screen the
 window paints; `Move HEAD…` on the stack's menu drawn as any item while
@@ -5155,9 +5294,12 @@ asking for the tasks the comment asks for, as few or as many as it says,
 exact labels, why each, nothing pushed or changed; its tasks landing in
 the banner as read-only work, listed in the review, why each was selected
 shown as the agent's comment, marked by Enter and from the menu, answered
-there and sent back, the answer a turn of yours in the thread, the next
-round told what it selected before as you marked it, and its tasks in
-place of the others; closing with tasks accepted saying what it pushes,
+there and followed up as a try push, the work staying for your review,
+the answer yours after the agent's reply as the thread would be, the
+thread itself as it was, the follow-up told what was selected before as
+you marked it, and its tasks coming into the same review, but the one the
+work held already, which keeps its mark; closing with tasks accepted
+saying what it pushes,
 with none accepted that nothing is pushed, and past mach's 1,000 tasks,
 each task counted as many times as it runs, that they would run at the
 lowest priority; the first try push going at once, with no setup, the
@@ -5289,7 +5431,14 @@ reopening it once accepted, as the review closes, taken at once or sent
 back with the agent's work, as the pull kept it, as its history has it
 last when written since, filed where it is open since rather than
 reopened, read from a checkpoint without its history read, while the
-agent's goes nowhere and a pull's parts are not rejected. Those in
+agent's goes nowhere and a pull's parts are not rejected; and what a
+follow-up brings back coming into the review of the work it follows up:
+an answer's reply after the work's, your answer to the reply before it
+gone with it, the thread as it would be holding each in turn, the tools
+it could not use but those the work holds; a build and test's reply to
+read, no part, what it found of each patch with the follow-up; nothing
+from one failed with nothing to bring, nor once the work's review is
+closed. Those in
 `thread.rs` show the fences of a reviewer's edit and of a turn redacted
 read and written again, their headings, the first line an edit quotes cut
 short with `…`, and a name alone as ever; and the effort on the fence of

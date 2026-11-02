@@ -1385,9 +1385,8 @@ pub enum Action {
     /// In the review: the comment the ask was about at place `0` marked to
     /// close with the review (`1`), or to keep.
     CloseAsking(usize, bool),
-    /// In the review: the work sent back to the agent, with what you wrote
-    /// in it; your answer to its reply `0` written.
-    SendBack,
+    /// In the review: your answer to its reply `0` written. (The work goes
+    /// back to the agent from the dialog `AskAgent(AskOf::SendBack)` opens.)
     Answer(usize),
     /// In the review of a try push's work: your answer to why the agent
     /// selected its task `0` written; every task marked accepted (true), or
@@ -1418,11 +1417,10 @@ pub enum Action {
     /// all remaining and Close" closes it.
     AskRejectWork(String),
     RejectWork(String),
-    /// In the review: closing it, or sending the work back, asked first when
-    /// it asks something again; closing it and stopping the build and test of
+    /// In the review: closing it, asked first when it asks something again,
+    /// or stops a follow-up; closing it and stopping the build and test of
     /// the stack as it was.
     AskClose,
-    AskSendBack,
     ReviewCloseStop(Option<bool>),
     /// In the review's menu: the row picking whether the comments that
     /// asked are kept open or closed when the review closes.
@@ -1671,13 +1669,10 @@ fn about(action: &Action) -> String {
             "close this comment as the review closes, done with: its replies, which go with it, are accepted (Filter comments…, closed, lists it, to reopen)".into()
         }
         Action::CloseAsking(_, false) => "keep this comment open when the review closes; its replies as they were".into(),
-        Action::SendBack => {
-            "send the work back to the agent with what you wrote in this review: the work is not accepted, and the agent is asked again, starting from this work; the agent's new work lands for review in place of this one".into()
-        }
         Action::Answer(_) => "answer the agent's reply: the work goes back to the agent with your answer after the reply".into(),
         #[cfg(feature = "try-push")]
         Action::AnswerTask(_) => {
-            "answer why the agent selected this task: the work goes back to the agent with your answer, and the agent selects the tasks again".into()
+            "answer why the agent selected this task: the work goes back to the agent with your answer, and asked as a try push again, the agent selects the tasks again".into()
         }
         #[cfg(feature = "try-push")]
         Action::MarkTasks(true) => "mark every task the agent selected accepted: each is pushed to try when the review closes".into(),
@@ -1685,7 +1680,7 @@ fn about(action: &Action) -> String {
         Action::MarkTasks(false) => "mark every task the agent selected rejected: none of them is pushed to try".into(),
         Action::ToolState(_, crate::refusals::Allow::Refused) => "refuse this tool: the agent is not let use it, and nothing is saved".into(),
         Action::ToolState(_, crate::refusals::Allow::Work) => {
-            "allow this tool for this work: every round of it may use it until its review closes, sent back or asked again; nothing is saved".into()
+            "allow this tool for this work: every round of it may use it until its review closes, sent back, followed up or asked again; nothing is saved".into()
         }
         Action::ToolState(_, crate::refusals::Allow::Always) => {
             "allow this tool from now on: once the work is sent back or its review closes, the rule is saved in the checkout's own .stacked/local.toml, for every ask of this kind".into()
@@ -1709,8 +1704,7 @@ fn about(action: &Action) -> String {
         Action::AskRejectWork(_) | Action::RejectWork(_) => {
             "reject every part of this work not marked yet, then close its review: what you rejected is dropped for good, and what you accepted is applied".into()
         }
-        Action::AskClose => "close the review, once you say so: what you accepted is applied, and what that asks again is said first".into(),
-        Action::AskSendBack => "send the work back to the agent, once you say so: what went on from it is asked again".into(),
+        Action::AskClose => "close the review, once you say so: what you accepted is applied, and what that asks again, or stops, is said first".into(),
         Action::ReviewCloseStop(_) => "close the review, and stop the build and test of the stack as it was".into(),
         Action::AskingAll => "pick whether the comments that asked are kept open or closed when the review closes: ← → or Enter".into(),
         Action::HeadSync => {
@@ -1733,12 +1727,16 @@ fn about(action: &Action) -> String {
         }
         Action::DetachRef => "detach a reference from the comment".into(),
         Action::Detach(_) => "detach this reference: a mention of it then names nothing".into(),
+        Action::AskAgent(AskOf::SendBack(_)) => {
+            "open the dialog that sends this work back to the agent with what you wrote in the review: there, ← → on each line, or the list Enter opens there, set what the agent may do and how hard it works, both unset at first. A permission that changes the stack rejects this work, and the agent's new work lands in its place; one that only reads asks a follow-up, this work staying waiting for your review, and what the follow-up brings back comes into this review. Then Send Now sends it, and Cancel sends nothing".into()
+        }
         Action::AskAgent(about) => {
             let what = match about {
                 AskOf::Comment(..) => "asks the agent about this comment",
                 AskOf::Listed { .. } => "asks the agent about every comment listed",
                 AskOf::Written { changed: true } => "saves the comment, then asks the agent about it",
                 AskOf::Written { changed: false } => "asks the agent about the comment as it is",
+                AskOf::SendBack(_) => "sends this work back to the agent",
             };
             format!(
                 "open the dialog that {what}: there, ← → on each line, or the list Enter opens there, set what the agent may do and how hard it works, both unset at first; then Ask Now asks, Ask Later puts the ask in the batch, and Cancel asks nothing"
@@ -4498,6 +4496,10 @@ impl App {
             // A comment's ask waiting its turn: of its kind; a round sent
             // back, not going back with the work.
             Action::AskUnsend(change, id) | Action::Unsend(change, id) => match self.db.note(change, id).and_then(|n| n.queued.as_ref()) {
+                Some(q) if q.follow => format!(
+                    "take the {} on this comment back from the agent's queue: the follow-up you asked from the review does not ask about it, and the comment stays open",
+                    banner::ask_said(q)
+                ),
                 Some(q) if q.on.is_some() => format!(
                     "take the {} on this comment back from the agent's queue: the comment does not go back to the agent with the work you sent back, and stays open",
                     banner::ask_said(q)
@@ -4565,11 +4567,14 @@ impl App {
     /// Reads what was appended: what an edit just wrote, or another
     /// process.
     fn reload(&mut self) {
-        // The comment the cursor is on, should the agent move it away.
+        // The comment the cursor is on, should the agent move it away; the
+        // line of the review it is on, should what lands move that line.
         let on = self.picked().map(|n| (n.change, n.id));
+        let reviewed = self.review_line_key();
         if let Err(e) = self.db.catch_up() {
             self.status = e.0;
         }
+        self.review_line_back(reviewed);
         self.fold_done();
         // What landed says so, but what waits for review: the banner says
         // that, not to interrupt; and what is being stopped, said once it
@@ -6193,7 +6198,7 @@ impl App {
                 // A try push's: its tasks, and what closing does with them.
                 #[cfg(feature = "try-push")]
                 if self.reviewing.as_ref().and_then(|rv| self.work(&rv.run)).is_some_and(|(_, h)| !h.tasks.is_empty()) {
-                    out.push("The tasks are the CI tasks the agent selected for a try push, as the comment asked: accept those to push, and reject the others. On a task, the right pane shows why the agent selected it, as its comment, and Space has Reply to it: your answer sends the work back to the agent, which selects the tasks again. Closing the review with tasks accepted is where they are pushed to try; with none accepted, nothing is pushed.".into());
+                    out.push("The tasks are the CI tasks the agent selected for a try push, as the comment asked: accept those to push, and reject the others. On a task, the right pane shows why the agent selected it, as its comment, and Space has Reply to it: your answer goes back to the agent with the work, and asked as a try push again, the agent selects the tasks again, those it selects coming into this review. Closing the review with tasks accepted is where they are pushed to try; with none accepted, nothing is pushed.".into());
                 }
                 // The tools the agent could not use: their three states.
                 if self.reviewing.as_ref().and_then(|rv| self.work(&rv.run)).is_some_and(|(_, h)| !h.tools.is_empty()) {
@@ -6204,7 +6209,15 @@ impl App {
                 if !self.answer_items().is_empty() {
                     out.push("The answers made on the stack before the change are a section of their own, each running or waiting for your review. Each is marked keep, restart or stop before the review can close with the change accepted. Kept, an answer goes on as it is, or waits for your review as it is, and the heading of its reply then says how many edits old the stack it was asked on is. Restarted, it is asked again on the stack the change makes. Stopped, its agent is stopped, or what it brought back is thrown away unseen, and its comment stays open, not asked again. On an answer, the right pane shows its comment, and what each mark does. Press Enter to keep it, and Delete to stop it; Space has its menu, to restart it too, or to mark every answer at once. The marks count only once the change is accepted: rejected or sent back, the change leaves the stack as it is, and the answers go on as they are.".into());
                 }
-                out.push("What you write in the review of the agent's work sends that work back to the agent: the work is not accepted, and the agent is asked again, starting from this work.".into());
+                // A follow-up going, and what a build and test asked as one
+                // found: their sections.
+                if !self.review_following().is_empty() {
+                    out.push("The follow-up you asked from this review is a section of its own, on top, while it goes: what it brings back comes into this review once it lands. Closing the review stops it, and what it would bring back is thrown away.".into());
+                }
+                if self.reviewing.as_ref().and_then(|rv| self.work(&rv.run)).is_some_and(|(_, h)| h.found()) {
+                    out.push("What a build and test asked as a follow-up found is a section of its own, to read: nothing of it is accepted or rejected. Its replies go in their threads as the review closes, after the reply before them there, unless the work's change or that reply is rejected; what it found of each patch is not filed. Space on a reply of it has Reply to it.".into());
+                }
+                out.push("What you write in the review of the agent's work goes back to the agent with that work, from the dialog that Esc's Send it back to the agent… opens, which sets what the agent may do: a permission that changes the stack rejects the work, and the agent is asked again, starting from this work; one that only reads asks a follow-up, the work staying waiting for your review, and what the follow-up brings back comes into this review.".into());
                 if self.review_yours() > (0, 0) {
                     out.push("On a line of what you wrote, under \"what you wrote, to send back\", press Enter to write it again, and Delete to take it back.".into());
                 }
@@ -7955,13 +7968,11 @@ impl App {
             Action::AskReviewClose(accept) => self.mode = Mode::Menu(self.review_close_ask(accept)),
             Action::ReviewClose(rest) => self.review_close(rest),
             Action::CloseAsking(k, close) => self.mark_asking(k, close),
-            Action::SendBack => self.review_send_back(self.at_effort),
             Action::AskClose => {
                 if let Some(m) = self.review_close_menu() {
                     self.mode = Mode::Menu(m);
                 }
             }
-            Action::AskSendBack => self.mode = Mode::Menu(self.review_send_back_ask()),
             // Their rows pick in the menu itself.
             Action::AskingAll | Action::HeadSync => {}
             Action::ShowRef(r) => self.show_ref(&r),

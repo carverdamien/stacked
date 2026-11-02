@@ -174,10 +174,16 @@ pub struct Info {
     pub commits: Vec<(String, String)>,
     #[serde(default)]
     pub prompt: String,
-    /// A round sent back from the review of landed work: that work's run,
-    /// whose stack it starts from rather than the stack at `from`.
+    /// A round sent back from the review of landed work, or a follow-up
+    /// asked from it (`follow`): that work's run, whose stack it starts from
+    /// rather than the stack at `from`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on: Option<String>,
+    /// With `on`: a follow-up that only reads, asked from that work's
+    /// review, which stays waiting for your review: what it brings back
+    /// comes into that review (`held::come_in`), not into one of its own.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub follow: bool,
     /// A guess: the landed work, by its run, whose change waits for your
     /// review and which it goes on from, as if you accept it. Accepted, it
     /// guessed right and goes on from the stack as any ask; rejected, sent
@@ -248,6 +254,122 @@ struct Light {
 
 fn light(r: &Run) -> Option<Light> {
     Light::deserialize(r.ask.as_ref()?).ok()
+}
+
+/// What telling a follow-up needs of an ask: read from its run without the
+/// rest, as it is read on every redraw of a review.
+#[derive(Debug, Clone, Deserialize)]
+struct FollowLight {
+    way: Way,
+    notes: Vec<Shown>,
+    #[serde(default)]
+    on: Option<String>,
+    #[serde(default)]
+    follow: bool,
+    #[serde(default)]
+    effort: Option<Effort>,
+}
+
+/// A follow-up of landed work that is going: waiting its turn, or with the
+/// agent (its run); how it was asked, at what effort, and about which
+/// comments, by (change, id).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Following {
+    pub run: Option<String>,
+    pub way: Way,
+    pub effort: Option<Effort>,
+    pub notes: Vec<(String, String)>,
+}
+
+/// The follow-ups asked from the review of landed work `work` that are
+/// going: those with the agent, the first started first, then those
+/// waiting their turn, a batch each.
+pub fn follow_ups_going(db: &Db, work: &str) -> Vec<Following> {
+    let mut out = Vec::new();
+    for r in db.live_runs().into_iter().filter(|r| r.state == RunState::Started) {
+        let Some(f) = r.ask.as_ref().and_then(|a| FollowLight::deserialize(a).ok()) else { continue };
+        if f.follow && f.on.as_deref() == Some(work) {
+            out.push(Following {
+                run: Some(r.id.clone()),
+                way: f.way,
+                effort: f.effort,
+                notes: f.notes.into_iter().map(|sh| (sh.change, sh.id)).collect(),
+            });
+        }
+    }
+    let mut waiting: Vec<(String, Following)> = Vec::new();
+    for n in db.open_notes() {
+        let Some(q) = n.queued.as_ref().filter(|q| q.follow && !q.batched() && q.on.as_deref() == Some(work)) else { continue };
+        let at = (n.change.clone(), n.id.clone());
+        match waiting.iter_mut().find(|(b, _)| *b == q.batch) {
+            Some((_, f)) => f.notes.push(at),
+            None => waiting.push((
+                q.batch.clone(),
+                Following {
+                    run: None,
+                    way: q.way,
+                    effort: q.effort,
+                    notes: vec![at],
+                },
+            )),
+        }
+    }
+    waiting.sort_by(|a, b| a.0.cmp(&b.0));
+    out.extend(waiting.into_iter().map(|(_, f)| f));
+    out
+}
+
+/// The comments the follow-ups of landed work `work` that are going are
+/// asked about.
+pub fn following(db: &Db, work: &str) -> HashSet<(String, String)> {
+    follow_ups_going(db, work).into_iter().flat_map(|f| f.notes).collect()
+}
+
+/// Why a follow-up stopped as the review of the work it follows up closed
+/// failed, as its run and its comments say it.
+pub const FOLLOW_CLOSED: &str = "you stopped the agent when you closed the review of the work it follows up";
+
+/// Why a follow-up stopped as the work it follows up went back to the agent
+/// failed, as its run and its comments say it.
+pub const FOLLOW_SENT: &str = "you stopped the agent when you sent back the work it follows up";
+
+/// The follow-ups of landed work `work` that are going, stopped, `why`, as
+/// that work's review closes or the work goes back to the agent, under the
+/// lock: those waiting their turn taken off the queue, their comments as
+/// they were; those with the agent stopped as an answer left behind by an
+/// accepted change is (`stop_left`): said first in their stream, their ask
+/// landed as failed, saying `why` on their comments, then their process
+/// group sent SIGTERM, which ends it. How many.
+pub fn stop_follow_ups(db: &mut Db, work: &str, why: &str) -> Result<usize> {
+    let going = follow_ups_going(db, work);
+    for f in &going {
+        let Some(id) = &f.run else {
+            for (change, id) in &f.notes {
+                if let Some(n) = db.note(change, id).cloned() {
+                    db.set_note(Note { queued: None, ..n })?;
+                }
+            }
+            continue;
+        };
+        let Some(r) = db.run(id).cloned() else { continue };
+        let Some(mut i) = info(&r) else { continue };
+        i.dropped = true;
+        db.add_event(id, serde_json::json!({"type": STOP}))?;
+        db.add_run(Run {
+            state: RunState::Failed,
+            summary: why.into(),
+            ask: Some(serde_json::to_value(&i).unwrap()),
+            ..r.clone()
+        })?;
+        mark_failed(db, &i, why)?;
+        if let Some(dir) = &i.todo {
+            drop_plan(Path::new(dir), &plans_busy(db, id));
+        }
+        if let Some(pid) = r.pid {
+            signal(pid, libc::SIGTERM);
+        }
+    }
+    Ok(going.len())
 }
 
 /// Whether claude may be sent `n`: the last word is yours or a reviewer's,
@@ -650,11 +772,13 @@ pub fn guesses_after(db: &Db, id: &str) -> (usize, usize) {
 
 /// The asks of stack `name` that only read (answers, and a try push's
 /// selection), but run `but`, still running or waiting for your review:
-/// made on the stack as it was.
+/// made on the stack as it was. Not a follow-up asked from the review of
+/// landed work, which reads the stack that work makes, and whose work comes
+/// into that review.
 fn answers_in_flight(db: &Db, name: &str, but: &str) -> Vec<Run> {
     db.live_runs()
         .into_iter()
-        .filter(|r| r.stack == name && r.id != but && info(r).is_some_and(|i| reads(i.way) && !i.dropped))
+        .filter(|r| r.stack == name && r.id != but && info(r).is_some_and(|i| reads(i.way) && !i.dropped && !i.follow))
         .filter(|r| r.state == RunState::Started || crate::held::waiting(db, r))
         .cloned()
         .collect()
@@ -791,6 +915,7 @@ fn ask_again(db: &mut Db, i: &Info, was: Option<String>) -> Result<()> {
                 on: i.on.clone(),
                 was: was.clone(),
                 effort: i.effort,
+                follow: i.follow,
             }),
             failed: None,
             ..n
@@ -997,7 +1122,7 @@ pub fn queue(db_path: &Path, name: &str, notes: &[(String, String)], way: Way, w
     check_ahead(db_path, name);
     Db::edit(db_path, |db| {
         applies(db, name)?;
-        enqueue(db, notes, way, whole, Stage::Ready, None, Some(effort))
+        enqueue(db, notes, way, whole, Stage::Ready, None, Some(effort), false)
     })
 }
 
@@ -1009,23 +1134,71 @@ pub fn way_of(db: &Db, id: &str) -> Option<Way> {
 
 /// Sends the work run `id` holds back to the agent, as what you wrote in
 /// its review asks (`held::send_back`): another round, from that work's
-/// stack, whose own work lands to review in its place; at `effort`, else
-/// at the effort the work was asked at. What was sent, said. `launch`
-/// starts it.
-pub fn send_back(db_path: &Path, name: &str, id: &str, marks: &std::collections::BTreeMap<String, bool>, effort: Option<Effort>) -> Result<String> {
+/// stack, whose own work lands to review in its place; in the way the work
+/// was asked, of the whole stack as far as its comments reach, unless `how`
+/// says otherwise (the editor's dialog: a change, of the whole stack or
+/// not); at `effort`, else at the effort the work was asked at. What was
+/// sent, said. `launch` starts it.
+pub fn send_back(
+    db_path: &Path,
+    name: &str,
+    id: &str,
+    marks: &std::collections::BTreeMap<String, bool>,
+    effort: Option<Effort>,
+    how: Option<(Way, bool)>,
+) -> Result<String> {
     check_ahead(db_path, name);
     Db::edit(db_path, |db| {
         applies(db, name)?;
         let round = crate::held::send_back(db, id, marks)?;
-        enqueue(db, &round.notes, round.way, round.whole, Stage::Ready, Some(id), effort.or(round.effort))?;
+        let (way, whole) = how.unwrap_or((round.way, round.whole));
+        enqueue(db, &round.notes, way, whole, Stage::Ready, Some(id), effort.or(round.effort), false)?;
         let n = round.notes.len();
-        let said = if round.whole && round.way == Way::Change { crate::db::WHOLE } else { round.way.said() };
+        let said = if whole && way == Way::Change { crate::db::WHOLE } else { way.said() };
         let mut out = format!("sent back to the agent ({said}): {n} comment{} to ask again", if n == 1 { "" } else { "s" });
         match round.dropped {
             0 => {}
             1 => out += "; 1 edit that went on from it asked again",
             k => out += &format!("; {k} edits that went on from it asked again"),
         }
+        match round.stopped {
+            0 => {}
+            1 => out += "; the follow-up asked from its review stopped",
+            k => out += &format!("; the {k} follow-ups asked from its review stopped"),
+        }
+        if !round.allowed.is_empty() {
+            out += &format!("; {ALLOWED_SAID}: {}", round.allowed.join(", "));
+        }
+        out += &round.settled.said(round.way);
+        Ok(out)
+    })
+}
+
+/// Asks a follow-up that only reads, in `way` (an answer, a build and
+/// test, a try push's selection), at `effort`, from the review of the work
+/// run `id` holds, as what you wrote there asks (`held::follow_up`): that
+/// work stays waiting for your review, its marks as they are, and what the
+/// follow-up brings back comes into its review once it lands. It reads the
+/// stack that work makes. Its comments are asked together, with the whole
+/// stack in view when they are on more than one place, as an answer of
+/// several is. What was asked, said. `launch` starts it.
+pub fn follow_up(db_path: &Path, name: &str, id: &str, marks: &std::collections::BTreeMap<String, bool>, way: Way, effort: Effort) -> Result<String> {
+    if !reads(way) && way != Way::Test {
+        return err("a follow-up only reads: an answer, a build and test, or a try push's selection");
+    }
+    check_ahead(db_path, name);
+    Db::edit(db_path, |db| {
+        applies(db, name)?;
+        let round = crate::held::follow_up(db, id, marks)?;
+        let places: HashSet<Scope> = round.notes.iter().filter_map(|(c, i)| db.note(c, i)).map(scope_of).collect();
+        let whole = way == Way::Answer && places.len() > 1;
+        enqueue(db, &round.notes, way, whole, Stage::Ready, Some(id), Some(effort), true)?;
+        let n = round.notes.len();
+        let mut out = format!(
+            "asked as a follow-up ({}): {n} comment{}; what the agent brings back comes into this review",
+            way.said(),
+            if n == 1 { "" } else { "s" }
+        );
         if !round.allowed.is_empty() {
             out += &format!("; {ALLOWED_SAID}: {}", round.allowed.join(", "));
         }
@@ -1054,8 +1227,11 @@ fn applies(db: &Db, name: &str) -> Result<()> {
 
 /// Under the lock: `notes` on the agent's queue, at `stage`, in `way`,
 /// together, in a batch of their own, to be asked at `effort`; from the
-/// stack of landed work `on`, if a round sent back from it.
-fn enqueue(db: &mut Db, notes: &[(String, String)], way: Way, whole: bool, stage: Stage, on: Option<&str>, effort: Option<Effort>) -> Result<()> {
+/// stack of landed work `on`, if a round sent back from it, or, `follow`, a
+/// follow-up asked from its review, whose replies held there it is asked
+/// on.
+#[allow(clippy::too_many_arguments)]
+fn enqueue(db: &mut Db, notes: &[(String, String)], way: Way, whole: bool, stage: Stage, on: Option<&str>, effort: Option<Effort>, follow: bool) -> Result<()> {
     if notes.is_empty() {
         return err("no comment to send");
     }
@@ -1083,7 +1259,8 @@ fn enqueue(db: &mut Db, notes: &[(String, String)], way: Way, whole: bool, stage
                 broken.join(", ")
             ));
         }
-        if crate::held::reply_waiting(db, change, id).is_some() {
+        // A follow-up is asked on the replies the review of its work holds.
+        if crate::held::reply_waiting(db, change, id).is_some_and(|(run, _)| !follow || on != Some(run.as_str())) {
             return err("the agent's reply to it waits for your review: review it first");
         }
         if way == Way::Test && !can_test(db, &n) {
@@ -1111,6 +1288,7 @@ fn enqueue(db: &mut Db, notes: &[(String, String)], way: Way, whole: bool, stage
                 on: on.map(String::from),
                 was: None,
                 effort,
+                follow,
             }),
             failed: None,
             ..n
@@ -1132,7 +1310,7 @@ pub fn batch(db_path: &Path, name: &str, notes: &[(String, String)], way: Way, w
             if !db.stack_notes(name).iter().any(|n| (&n.change, &n.id) == (&at.0, &at.1)) {
                 return err(format!("that comment is not on {name}"));
             }
-            enqueue(db, std::slice::from_ref(at), way, whole, Stage::Batch, None, Some(effort))?;
+            enqueue(db, std::slice::from_ref(at), way, whole, Stage::Batch, None, Some(effort), false)?;
         }
         Ok(())
     })
@@ -1208,14 +1386,14 @@ pub fn release_batch(db_path: &Path, name: &str, way: Way, fan: bool, effort: Op
                     continue;
                 }
                 let at_effort = effort.or(own(db, at));
-                enqueue(db, std::slice::from_ref(at), way, *whole, Stage::Ready, None, at_effort)?;
+                enqueue(db, std::slice::from_ref(at), way, *whole, Stage::Ready, None, at_effort, false)?;
             }
         } else {
             let places: HashSet<Scope> = all.iter().filter_map(|((c, i), _)| db.note(c, i)).map(scope_of).collect();
             let whole = places.len() > 1 || all.iter().any(|(_, whole)| *whole);
             let notes: Vec<(String, String)> = all.iter().map(|(at, _)| at.clone()).collect();
             let at_effort = effort.or(batched_effort(db, name, way));
-            enqueue(db, &notes, way, whole, Stage::Ready, None, at_effort)?;
+            enqueue(db, &notes, way, whole, Stage::Ready, None, at_effort, false)?;
         }
         Ok((all.len() - refused.len(), refused))
     })
@@ -1324,10 +1502,11 @@ enum Turn {
 /// run ids: the asks', and the lint job's.
 fn claim(db: &mut Db) -> Result<(Vec<String>, Vec<String>)> {
     // The ready batches: stack, way, scope, comments, the landed work a
-    // round sent back starts from, the run asked before it, and the effort
-    // they were sent at (the highest, should they differ).
+    // round sent back starts from, the run asked before it, the effort they
+    // were sent at (the highest, should they differ), and whether they are
+    // a follow-up asked from the review of that work.
     let mut order: Vec<String> = Vec::new();
-    type Batch = (String, Way, Scope, Vec<Note>, Option<String>, Option<String>, Option<Effort>);
+    type Batch = (String, Way, Scope, Vec<Note>, Option<String>, Option<String>, Option<Effort>, bool);
     let mut batches: HashMap<String, Batch> = HashMap::new();
     // A try push of a line, queued as an older stacked let it be: refused
     // as it would go, a comment still, its ask failed saying why.
@@ -1354,7 +1533,7 @@ fn claim(db: &mut Db) -> Result<(Vec<String>, Vec<String>)> {
             }
             let entry = batches.entry(q.batch.clone()).or_insert_with(|| {
                 order.push(q.batch.clone());
-                (name.clone(), q.way, asked_scope(n), Vec::new(), q.on.clone(), q.was.clone(), q.effort)
+                (name.clone(), q.way, asked_scope(n), Vec::new(), q.on.clone(), q.was.clone(), q.effort, q.follow && q.on.is_some())
             });
             entry.3.push(n.clone());
             entry.6 = entry.6.max(q.effort);
@@ -1436,7 +1615,7 @@ fn claim(db: &mut Db) -> Result<(Vec<String>, Vec<String>)> {
                 continue;
             }
         };
-        let (name, way, scope, notes, on, was, effort) = batches[b].clone();
+        let (name, way, scope, notes, on, was, effort, follow) = batches[b].clone();
         let st = state.entry(name.clone()).or_insert_with(|| going_of(db, &name));
         let go = match way {
             // A change has the stack to itself, from the stack as the change
@@ -1514,6 +1693,7 @@ fn claim(db: &mut Db) -> Result<(Vec<String>, Vec<String>)> {
             commits: vec![],
             prompt: String::new(),
             on,
+            follow,
             after,
             batch: b.clone(),
             dropped: false,
@@ -2124,10 +2304,41 @@ fn prompt(db: &Db, i: &Info, s: &Stack, cmd: &str, run: &str, structured: bool, 
             crate::try_push::prompt(&what, &here, web, graph.as_deref())
         }
     };
+    // A follow-up: what it brought back waits for the user's review as it
+    // is, the stack it makes in the worktree. What it changed, and the
+    // comments it opened, shown; its replies are in their threads below, as
+    // they would be.
+    if let Some(on) = i.on.as_ref().filter(|_| i.follow) {
+        let changed = db.run(on).and_then(|r| r.held.as_ref()).is_some_and(|h| h.stack.is_some());
+        let made = if changed {
+            format!(", which the current directory holds as that work leaves it: `{cmd} export {} --work {on}` prints it", s.name)
+        } else {
+            String::new()
+        };
+        p.push_str(&match i.way {
+            Way::Test => format!(
+                " This is a follow-up: the user reviews the work you brought back, which waits for their review as it is, \
+                 and asks you, in the comments below, to build and test the stack that work makes{made}. The threads \
+                 below hold your replies, and what the user answered to them."
+            ),
+            #[cfg(feature = "try-push")]
+            Way::Try => format!(
+                " This is a follow-up: the user reviews the work you brought back, which waits for their review as it is, \
+                 and asks you, in the comments below, to select the CI tasks of a try push of the stack that work \
+                 makes{made}. The threads below hold your replies, and what the user answered to them."
+            ),
+            _ => format!(
+                " This is a follow-up: the user reviews the work you brought back, which waits for their review as it is, \
+                 and asks about it in the comments below, on the stack that work makes{made}. The threads below hold \
+                 your replies, and what the user answered to them."
+            ),
+        });
+        p.push_str(&brought(db, i, on, &s.name, cmd, false));
+    }
     // Another round: what it brought back was sent back. What it changed
     // then, and the comments it opened, shown, as to a round asked again;
     // its replies are in their threads.
-    if let Some(on) = &i.on {
+    if let Some(on) = i.on.as_ref().filter(|_| !i.follow) {
         let changed = db.run(on).and_then(|r| r.held.as_ref()).is_some_and(|h| h.stack.is_some());
         p.push_str(&match i.way {
             Way::Change if changed => format!(
@@ -2156,9 +2367,19 @@ fn prompt(db: &Db, i: &Info, s: &Stack, cmd: &str, run: &str, structured: bool, 
         p.push_str(&format!("  {} {}{mark}\n", at + 1, db.patch(id).title()));
     }
     p.push_str("\nThe comments, each a thread, the last word the user's or a reviewer's:\n");
+    // A follow-up's, with the replies the review of its work holds in them,
+    // and the user's answers to those.
+    let review = i.on.as_deref().filter(|_| i.follow).and_then(|on| {
+        let h = db.run(on)?.held.clone()?;
+        Some((h, db.review(on).map(|v| v.taken.clone()).unwrap_or_default()))
+    });
     for sh in &i.notes {
         let Some(n) = db.note(&sh.change, &sh.id) else { continue };
-        p.push_str(&format!("\n[{}] {}:\n{}\n", sh.label, place(db, s, n), transcript(&n.text)));
+        let text = match &review {
+            Some((h, taken)) => h.thread_but(&n.change, &n.id, &n.text, taken),
+            None => n.text.clone(),
+        };
+        p.push_str(&format!("\n[{}] {}:\n{}\n", sh.label, place(db, s, n), transcript(&text)));
         p.push_str(&attached_part(db, s, n));
         p.push_str(&format!("(The references you attach to your reply to it are numbered from r{} on.)\n", crate::refs::next_of(n)));
     }
@@ -3231,9 +3452,20 @@ fn file_landed(db_path: &Path, id: &str, exit: Option<&str>) -> Result<Run> {
         if landed.keep {
             after = None;
         }
+        // A follow-up's: into the review of the work it follows up, while
+        // that work waits for your review; held on its own only once that
+        // review is closed.
+        let came = crate::held::come_in(db, &started, &i, &landed.held, landed.ok)?;
+        if let Some(said) = &came {
+            landed.summary = match landed.ok {
+                true => said.clone(),
+                false => format!("{}; {said}", landed.summary),
+            };
+        }
         // Held for review: in the queue, unless it brought nothing back and
-        // no comment it was asked about is still open.
-        let held = waits.then(|| Held { at: now(), ..landed.held });
+        // no comment it was asked about is still open, or it came into the
+        // review of the work it follows up.
+        let held = (waits && came.is_none()).then(|| Held { at: now(), ..landed.held });
         let run = Run {
             state: if landed.ok { RunState::Done } else { RunState::Failed },
             summary: landed.summary,
@@ -3296,9 +3528,18 @@ fn named_comment(db: &Db, i: &Info, stack: &str, name: &str) -> Option<(String, 
     db.find_note(stack, name).ok().map(|n| (n.change.clone(), n.id.clone()))
 }
 
+/// The stack an answer-only ask `i` was asked on, by its rev, as its turns
+/// name it: none for another ask, nor for one asked on the stack a change
+/// waiting for your review makes (a follow-up asked from that review),
+/// which is no state of the stack.
+fn asked_on(db: &Db, i: &Info) -> Option<usize> {
+    let on_change = i.on.as_deref().and_then(|on| db.run(on)?.held.as_ref()?.stack.as_ref()).is_some();
+    (i.way == Way::Answer && !on_change).then_some(i.from)
+}
+
 /// Claude's replies to the comments it was sent, held: turns `way` names,
 /// at the effort the ask was asked at; an answer-only ask's naming the
-/// stack it was asked on.
+/// stack it was asked on (`asked_on`).
 fn held_replies(db: &Db, i: &Info, replies: &Map<String, Value>) -> Vec<crate::held::Reply> {
     let stack = db.node(i.from).map(|s| s.name.clone()).unwrap_or_default();
     i.notes
@@ -3316,7 +3557,7 @@ fn held_replies(db: &Db, i: &Info, replies: &Map<String, Value>) -> Vec<crate::h
                 })?,
                 tag: i.way.name().into(),
                 effort: i.effort,
-                asked_on: (i.way == Way::Answer).then_some(i.from),
+                asked_on: asked_on(db, i),
                 ..Default::default()
             })
         })
@@ -3679,7 +3920,9 @@ pub fn move_back(db: &mut Db, n: &Note) -> Result<()> {
 /// the ask's scope, each opened by the comment that asked.
 fn opened_notes(db: &Db, run: &Run, i: &Info, result: &str) -> Result<Vec<Note>> {
     let notes = parse_review_notes(result).unwrap_or_default();
-    let from = db.node(i.from)?.clone();
+    // The patches by their places in the stack it was asked on: a
+    // follow-up's, the stack the work it follows up makes.
+    let from = started_from(db, i)?;
     let asked = i.notes.first().map(|n| (n.change.clone(), n.id.clone()));
     let mut out = Vec::new();
     for (n, note) in notes.iter().enumerate() {
@@ -3711,7 +3954,7 @@ fn opened_notes(db: &Db, run: &Run, i: &Info, result: &str) -> Result<Vec<Note>>
             id: format!("agent:{}:{n}", run.id),
             line,
             text: fenced(
-                &agent_open(Way::Answer.name(), i.effort.map(Effort::name), Some(i.from)),
+                &agent_open(Way::Answer.name(), i.effort.map(Effort::name), asked_on(db, i)),
                 &crate::refs::attach(
                     str_of(note.get("text")).trim(),
                     &crate::refs::resolved(crate::refs::of_json(note.get("refs")), Some(1), &|c| named_comment(db, i, &from.name, c)),
@@ -3734,7 +3977,14 @@ fn test_notes(db: &Db, run: &Run, i: &Info, result: &str) -> Result<Vec<Note>> {
     let found = last_object(result)
         .and_then(|o| o.get("patches").and_then(Value::as_object).cloned())
         .unwrap_or_default();
-    let from = db.node(i.from)?.clone();
+    // The patches by their places in the stack it tested: a follow-up's,
+    // the stack the work it follows up makes, which is no state of the
+    // stack yet, but of that work.
+    let from = started_from(db, i)?;
+    let tested = match i.on.as_deref().filter(|_| i.follow) {
+        Some(_) if from.patches != db.node(i.from)?.patches || from.base != db.node(i.from)?.base => "tested on the stack this work makes".to_string(),
+        _ => format!("tested @{}", i.from),
+    };
     let asked = i.notes.first().map(|n| (n.change.clone(), n.id.clone()));
     let mut out = Vec::new();
     for (at, id) in from.patches.iter().enumerate() {
@@ -3753,7 +4003,7 @@ fn test_notes(db: &Db, run: &Run, i: &Info, result: &str) -> Result<Vec<Note>> {
                 let (found, refs) = crate::refs::text_and_refs(v);
                 let refs = crate::refs::resolved(refs, Some(1), &|c| named_comment(db, i, &from.name, c));
                 let open = agent_open(Way::Test.name(), i.effort.map(Effort::name), None);
-                fenced(&open, &crate::refs::attach(&format!("{} (tested @{})", found.trim(), i.from), &refs))
+                fenced(&open, &crate::refs::attach(&format!("{} ({tested})", found.trim()), &refs))
             },
             file: MSG_PATH.into(),
             preview: p.title().chars().take(80).collect(),

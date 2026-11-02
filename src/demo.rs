@@ -278,10 +278,11 @@ fn agent(path: &Path, id: &str) -> Result<()> {
                     replies: replies("", Some(MORE)),
                     ..Default::default()
                 };
+                let (summary, held) = held_or_in(db, &run, &info, held)?;
                 db.add_run(Run {
                     state: RunState::Done,
-                    summary: format!("its work waits for your review: {}", held.said()),
-                    held: Some(held),
+                    summary,
+                    held,
                     pid: None,
                     ..run
                 })?;
@@ -342,15 +343,27 @@ fn agent(path: &Path, id: &str) -> Result<()> {
             replies: replies(&reply, None),
             ..Default::default()
         };
+        let (summary, held) = held_or_in(db, &run, &info, held)?;
         db.add_run(Run {
             state: RunState::Done,
-            summary: format!("its work waits for your review: {}", held.said()),
+            summary,
             output: reply.clone(),
-            held: Some(held),
+            held,
             pid: None,
             ..run
         })?;
         Ok(())
+    })
+}
+
+/// What the tour's stand-in brought back for run `run`, of ask `info`,
+/// held for your review, as a real landing holds it: a follow-up's comes
+/// into the review of the work it follows up, while that work waits for
+/// your review (`held::come_in`). What its run says, and what it holds.
+fn held_or_in(db: &mut Db, run: &Run, info: &ask::Info, held: crate::held::Held) -> Result<(String, Option<crate::held::Held>)> {
+    Ok(match crate::held::come_in(db, run, info, &held, true)? {
+        Some(said) => (said, None),
+        None => (format!("its work waits for your review: {}", held.said()), Some(held)),
     })
 }
 

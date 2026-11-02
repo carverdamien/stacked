@@ -1137,6 +1137,7 @@ fn waiting_their_turn(db: &Path) {
             on: None,
             was: None,
             effort: None,
+            follow: false,
         };
         d.set_note(Note {
             change: first.change.clone(),
@@ -1407,10 +1408,15 @@ fn a_comment_on_a_patch_the_work_adds_sends_it_back_from_its_review_in_the_brows
     until(&mut events, "the editor", |l| text(l).contains("a comment on: cee"));
     typed_in(port, &host, &input, "Why a c?");
     ask(port, &host, &input, "k Esc -\nk Enter -\n");
-    // Listed with what you wrote, it sends the work back.
+    // Listed with what you wrote, it sends the work back, from the ask
+    // dialog the review's Esc menu opens, nothing set in it.
     until(&mut events, "what you wrote", |l| text(l).contains("✎ c.txt: cee · Why a c?"));
     ask(port, &host, &input, "k Esc -\n");
-    until(&mut events, "the dialog", |l| text(l).contains("Send it back to the agent"));
+    until(&mut events, "the dialog", |l| text(l).contains("Send it back to the agent…"));
+    ask(port, &host, &input, "k Enter -\n");
+    until(&mut events, "the ask dialog", |l| text(l).contains("send back the agent's work: a change of the stack"));
+    until(&mut events, "its buttons", |l| text(l).contains("< Send Now >   < Cancel >"));
+    until(&mut events, "its note", |l| text(l).contains("Send Now is grayed until the permission and the effort are set."));
 }
 
 #[test]

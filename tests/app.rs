@@ -1123,6 +1123,7 @@ fn waiting_their_turn(db: &Path) {
             on: None,
             was: None,
             effort: None,
+            follow: false,
         };
         d.set_note(Note {
             change: first.change.clone(),
@@ -1361,8 +1362,14 @@ fn a_comment_on_a_patch_the_work_adds_sends_it_back_from_its_review_in_the_windo
     }
     press(&s, KeyCode::Esc);
     press(&s, KeyCode::Enter);
-    // Listed with what you wrote, it sends the work back.
+    // Listed with what you wrote, it sends the work back, from the ask
+    // dialog the review's Esc menu opens, nothing set in it.
     screen(&s, "what you wrote", |b| text(b).contains("✎ c.txt: cee · Why a c?"));
     press(&s, KeyCode::Esc);
-    screen(&s, "the dialog", |b| find(b, "Send it back to the agent").is_some());
+    screen(&s, "the dialog", |b| find(b, "Send it back to the agent…").is_some());
+    press(&s, KeyCode::Enter);
+    let b = screen(&s, "the ask dialog", |b| text(b).contains("send back the agent's work: a change of the stack"));
+    for said in ["< Send Now >   < Cancel >", "Send Now is grayed until the permission and the effort are set."] {
+        assert!(text(&b).contains(said), "{said:?} in:\n{}", text(&b));
+    }
 }

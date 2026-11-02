@@ -31,7 +31,7 @@
 //! with your edit in it lands in its place, its replies and comments as
 //! they were.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -76,6 +76,36 @@ pub struct Held {
     /// lands for review though the agent failed or brought nothing back.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tools: Vec<crate::refusals::Refusal>,
+    /// The follow-ups that only read, asked from its review, that came into
+    /// it, the first landed first: what each was asked about, and a build
+    /// and test's findings on each patch, to read. Their replies are among
+    /// the replies above, a build and test's to read (`Reply::read`); the
+    /// comments an answer opened, among those opened; a try push's tasks,
+    /// among the tasks; what they could not use, among the tools.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub follow_ups: Vec<FollowUp>,
+}
+
+/// A follow-up that only reads, asked from the review of the work it came
+/// into once it landed.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct FollowUp {
+    /// Its run.
+    pub run: String,
+    /// How the agent was asked: to answer, to build and test, or for a try
+    /// push's tasks.
+    pub way: crate::db::Way,
+    /// The effort it was asked at, if it was asked at one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<crate::db::Effort>,
+    /// The comments it was asked about, by (change, id).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub asked: Vec<(String, String)>,
+    /// A build and test's: what it found of each patch, as the comments a
+    /// build and test opens on the patches' titles, to read in the review,
+    /// never filed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub found: Vec<Note>,
 }
 
 /// A change of the stack held: the stack it makes from the one the ask
@@ -138,9 +168,17 @@ pub struct Reply {
     /// An answer-only ask's: the stack it was asked on, by its rev, which
     /// its turn's fence names, its heading saying how many edits old that
     /// stack is while the stack has changed since. None for another ask's,
-    /// a reviewer's, and one of before.
+    /// a reviewer's, one of before, and a follow-up's on the stack a change
+    /// waiting for your review makes, which is no state of the stack yet.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub asked_on: Option<usize>,
+    /// To read, not to mark: a build and test's, asked as a follow-up from
+    /// the review of the work it came into, which shows it with what that
+    /// build and test found. Filed in its thread as the review closes,
+    /// after the reply before it there, unless the work's change, or that
+    /// reply, is rejected.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub read: bool,
 }
 
 /// A thread you closed, as a pull keeps it with a reviewer's reply to it:
@@ -363,7 +401,8 @@ pub struct Review {
 
 impl Held {
     /// Its parts in the order they are reviewed: the change of the stack,
-    /// the comments opened, a try push's tasks, the replies.
+    /// the comments opened, a try push's tasks, the replies; not those to
+    /// read, a build and test's asked as a follow-up.
     pub fn parts(&self) -> Vec<Part> {
         let mut out = Vec::new();
         if self.stack.is_some() {
@@ -372,7 +411,55 @@ impl Held {
         out.extend((0..self.opened.len()).map(Part::Opened));
         #[cfg(feature = "try-push")]
         out.extend((0..self.tasks.len()).map(Part::Task));
-        out.extend((0..self.replies.len()).map(Part::Reply));
+        out.extend((0..self.replies.len()).filter(|k| !self.replies[*k].read).map(Part::Reply));
+        out
+    }
+
+    /// Whether a build and test asked as a follow-up brought something into
+    /// it, to read: a reply, or what it found of a patch.
+    pub fn found(&self) -> bool {
+        self.replies.iter().any(|rp| rp.read) || self.follow_ups.iter().any(|f| !f.found.is_empty())
+    }
+
+    /// The replies to comment (change, id), by their places, the first
+    /// first: the work's own, then its follow-ups'.
+    pub fn replies_to(&self, change: &str, id: &str) -> Vec<usize> {
+        (0..self.replies.len()).filter(|&k| self.replies[k].change == change && self.replies[k].id == id).collect()
+    }
+
+    /// Whether reply `k` is the last one to its comment: the one that
+    /// answers what was said before it there, and the one to answer.
+    pub fn last_reply(&self, k: usize) -> bool {
+        self.replies.get(k).is_some_and(|rp| self.replies_to(&rp.change, &rp.id).last() == Some(&k))
+    }
+
+    /// Thread `text` of comment (change, id) as it would be once its replies
+    /// held here are in it, but those `taken` already, which it holds: each
+    /// in turn, and your answer after each.
+    pub fn thread_but(&self, change: &str, id: &str, text: &str, taken: &[usize]) -> String {
+        self.replies_to(change, id).into_iter().filter(|k| !taken.contains(k)).fold(text.to_string(), |t, k| self.replies[k].after(&t))
+    }
+
+    /// Thread `text` of the comment reply `k` is to as it would be once
+    /// that reply is in it: after the replies before it there, but those
+    /// `taken` already, each with your answer after it.
+    pub fn thread_upto(&self, k: usize, text: &str, taken: &[usize]) -> String {
+        let Some(rp) = self.replies.get(k) else { return text.to_string() };
+        self.replies_to(&rp.change, &rp.id)
+            .into_iter()
+            .take_while(|&j| j <= k)
+            .filter(|j| !taken.contains(j))
+            .fold(text.to_string(), |t, j| self.replies[j].after(&t))
+    }
+
+    /// The comments its follow-ups were asked about.
+    pub fn followed(&self) -> Vec<(String, String)> {
+        let mut out: Vec<(String, String)> = Vec::new();
+        for at in self.follow_ups.iter().flat_map(|f| f.asked.iter()) {
+            if !out.contains(at) {
+                out.push(at.clone());
+            }
+        }
         out
     }
 
@@ -400,7 +487,7 @@ impl Held {
         if let Some(c) = &self.stack {
             out.push(format!("a change of {}", c.of));
         }
-        let replies: Vec<&Reply> = self.replies.iter().enumerate().filter(|(k, _)| !taken.contains(k)).map(|(_, rp)| rp).collect();
+        let replies: Vec<&Reply> = self.replies.iter().enumerate().filter(|(k, rp)| !taken.contains(k) && !rp.read).map(|(_, rp)| rp).collect();
         let edits = replies.iter().filter(|rp| rp.was.is_some()).count();
         if replies.len() > edits {
             out.push(count(replies.len() - edits, "reply", "replies"));
@@ -416,9 +503,13 @@ impl Held {
         if !self.tasks.is_empty() {
             out.insert(0, count(self.tasks.len(), "task to push to try", "tasks to push to try"));
         }
-        // What the linter reported that it did not fix, last.
+        // What the linter reported that it did not fix, and what a build
+        // and test asked as a follow-up found, last: to read.
         if self.lint.as_ref().is_some_and(|l| !l.errors.is_empty()) {
             out.push("what the linter reported".to_string());
+        }
+        if self.found() {
+            out.push(FOUND.to_string());
         }
         if !self.tools.is_empty() {
             out.push(count(self.tools.len(), "tool the agent could not use", "tools the agent could not use"));
@@ -435,6 +526,18 @@ impl Held {
 fn count(n: usize, one: &str, many: &str) -> String {
     if n == 1 { format!("1 {one}") } else { format!("{n} {many}") }
 }
+
+/// What a build and test asked as a follow-up brings into the review, as
+/// what the work holds says it.
+pub const FOUND: &str = "what the build and test found";
+
+/// Why your answer to a reply is not written: a later reply follows it in
+/// its thread.
+pub const LATER_REPLY: &str = "a later reply follows this one in its thread, and answered what you said after it: answer the last one";
+
+/// Why what you wrote on a comment in the review is not written again nor
+/// taken back: the follow-up you asked works on it.
+pub const FOLLOWING: &str = "the follow-up you asked from this review works on this comment: what it brings back comes into the review";
 
 /// Whether what run `r` brought back waits for review.
 pub fn waiting(db: &Db, r: &Run) -> bool {
@@ -672,6 +775,9 @@ pub fn can_take(db: &Db, r: &Run) -> Result<()> {
     if crate::ask::guessing(db, r).is_some() {
         return err("this reply goes on from the work landed before it, which waits for your review: review that one first");
     }
+    if !h.follow_ups.is_empty() || !crate::ask::follow_ups_going(db, &r.id).is_empty() {
+        return err("this reply goes with a follow-up you asked from its review: review them together");
+    }
     Ok(())
 }
 
@@ -733,15 +839,25 @@ pub fn marks(db: &Db, r: &Run) -> BTreeMap<String, bool> {
     marks
 }
 
-/// What you wrote in the review of work `r`: the comments written there,
-/// still open, and your answers to its replies, to the reasons of a try
-/// push's tasks, and to what it said of the tools it could not use. A
-/// comment written there is one you opened in it, or one whose thread you
-/// wrote in there, whoever opened it (a reviewer, the agent); on the stack
-/// or one of its patches, or on a patch the work adds (`added_changes`),
-/// which the stack holds only once the work is accepted. With any, the
-/// work is not accepted: it goes back to the agent.
+/// What you wrote in the review of work `r`, to send back: the comments
+/// written there, still open, that no reply held in the review answers;
+/// and your answers to its replies, each to the last reply of its comment,
+/// to the reasons of a try push's tasks, and to what it said of the tools
+/// it could not use. A comment written there is one you opened in it, or
+/// one whose thread you wrote in there, whoever opened it (a reviewer, the
+/// agent); on the stack or one of its patches, or on a patch the work adds
+/// (`added_changes`), which the stack holds only once the work is accepted.
+/// What went with a follow-up of it that is going is with the agent, and
+/// none of it. With any, the work is not accepted: it goes back to the
+/// agent.
 pub fn yours_in(db: &Db, r: &Run) -> (Vec<(String, String)>, usize) {
+    yours_but(db, r, &crate::ask::following(db, &r.id))
+}
+
+/// As `yours_in`, but for the comments `busy` holds, those a follow-up
+/// going is asked about.
+fn yours_but(db: &Db, r: &Run, busy: &HashSet<(String, String)>) -> (Vec<(String, String)>, usize) {
+    let h = r.held.as_ref();
     let mut notes = db.stack_notes(&r.stack);
     for change in added_changes(db, r) {
         notes.extend(db.notes(&change));
@@ -749,12 +865,98 @@ pub fn yours_in(db: &Db, r: &Run) -> (Vec<(String, String)>, usize) {
     let opened = notes
         .into_iter()
         .filter(|n| n.review.as_deref() == Some(r.id.as_str()))
+        .filter(|n| h.is_none_or(|h| h.replies_to(&n.change, &n.id).is_empty()))
         .map(|n| (n.change.clone(), n.id.clone()))
+        .filter(|at| !busy.contains(at))
         .collect();
-    let answers = r.held.as_ref().map_or(0, |h| {
-        h.replies.iter().filter(|rp| rp.answer.is_some()).count() + h.task_answers() + h.tools.iter().filter(|t| t.answer.is_some()).count()
-    });
+    let answers = h.map_or(0, |h| answered(h, busy).len() + h.task_answers() + h.tools.iter().filter(|t| t.answer.is_some()).count());
     (opened, answers)
+}
+
+/// The replies of work `h` your answer to goes back to the agent with, by
+/// their places: each the last reply of its comment, which no follow-up
+/// going (`busy`) is asked about. Your answer to a reply a later one
+/// follows went with the follow-up that brought that one.
+pub fn answered(h: &Held, busy: &HashSet<(String, String)>) -> Vec<usize> {
+    (0..h.replies.len())
+        .filter(|&k| {
+            let rp = &h.replies[k];
+            rp.answer.is_some() && h.last_reply(k) && !busy.contains(&(rp.change.clone(), rp.id.clone()))
+        })
+        .collect()
+}
+
+/// The comments of the review of work `r`, still open: those its ask was
+/// about, those written in its review, and those its follow-ups were asked
+/// about, each once.
+fn in_review(db: &Db, r: &Run) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = asking_of(r);
+    let mut notes = db.stack_notes(&r.stack);
+    for change in added_changes(db, r) {
+        notes.extend(db.notes(&change));
+    }
+    out.extend(notes.into_iter().filter(|n| n.review.as_deref() == Some(r.id.as_str())).map(|n| (n.change.clone(), n.id.clone())));
+    out.extend(r.held.iter().flat_map(Held::followed));
+    let mut seen: Vec<(String, String)> = Vec::new();
+    for at in out {
+        if !seen.contains(&at) && db.note(&at.0, &at.1).is_some() {
+            seen.push(at);
+        }
+    }
+    seen
+}
+
+/// What goes back to the agent with the comment of the review of work `h`
+/// that asked first, as a turn of yours after its reply: your answers to
+/// why a try push's tasks were selected, then what the review allows of
+/// the tools the agent could not use, as `marks` mark them, and what you
+/// answered to them. None for none.
+fn said_back(h: &Held, marks: &BTreeMap<String, bool>) -> Option<String> {
+    #[cfg_attr(not(feature = "try-push"), allow(unused_mut))]
+    let mut said: Vec<String> = Vec::new();
+    #[cfg(feature = "try-push")]
+    said.extend(crate::try_push::answers_turn(&h.tasks));
+    said.extend(crate::refusals::turn(&h.tools, marks));
+    (!said.is_empty()).then(|| said.join("\n\n"))
+}
+
+/// The comments of the review of work `r` that go back to the agent, as
+/// their threads would be once its replies held are in them: those its ask
+/// was about, those written in its review and those its follow-ups were
+/// asked about (`in_review`) whose last word would be yours or a
+/// reviewer's; and the first that asked, while something goes back with it
+/// (`said_back`, as `marks` mark the tools). Not one a follow-up going is
+/// asked about (`busy`), nor one waiting its turn.
+pub fn going_back(db: &Db, r: &Run, marks: &BTreeMap<String, bool>, busy: &HashSet<(String, String)>) -> Vec<(String, String)> {
+    let Some(h) = &r.held else { return vec![] };
+    let taken = db.review(&r.id).map(|v| v.taken.clone()).unwrap_or_default();
+    // Waiting its turn in a follow-up of this work, not counted as busy: as
+    // it would be once that follow-up is stopped, off the queue.
+    let queued = |n: &Note| n.queued.clone().filter(|q| !(q.follow && q.on.as_deref() == Some(r.id.as_str())));
+    let mut out: Vec<(String, String)> = Vec::new();
+    let first = asking_open(db, r).first().map(|(_, n)| (*n).clone());
+    if said_back(h, marks).is_some()
+        && let Some(n) = &first
+        && queued(n).is_none()
+        && !busy.contains(&(n.change.clone(), n.id.clone()))
+    {
+        out.push((n.change.clone(), n.id.clone()));
+    }
+    for at in in_review(db, r) {
+        if out.contains(&at) || busy.contains(&at) {
+            continue;
+        }
+        let Some(n) = db.note(&at.0, &at.1) else { continue };
+        let would = Note {
+            text: h.thread_but(&n.change, &n.id, &n.text, &taken),
+            queued: queued(n),
+            ..n.clone()
+        };
+        if crate::ask::sendable(&would) {
+            out.push(at);
+        }
+    }
+    out
 }
 
 /// The changes of the patches the stack that work `r` makes holds and its
@@ -786,6 +988,9 @@ fn held_changes(db: &Db, name: &str) -> std::collections::HashSet<String> {
 /// Whether it was a thread from before.
 pub fn take_back(db: &mut Db, id: &str, change: &str, note: &str) -> Result<bool> {
     let n = db.note(change, note).cloned().ok_or_else(|| Error("the comment is gone".into()))?;
+    if crate::ask::following(db, id).contains(&(change.to_string(), note.to_string())) {
+        return err(FOLLOWING);
+    }
     let before = db
         .note_history(change, note)
         .into_iter()
@@ -812,9 +1017,17 @@ impl Held {
 }
 
 /// Writes `text`, your answer to reply `k` of the work run `id` holds, in
-/// its review: empty, it takes it back.
+/// its review: empty, it takes it back. Not to a reply a later one
+/// follows, which answered what you said after it; nor while a follow-up
+/// you asked from the review works on its comment.
 pub fn answer(db: &mut Db, id: &str, k: usize, text: &str) -> Result<()> {
     let (r, mut h, _) = under_review(db, id)?;
+    if k < h.replies.len() && !h.last_reply(k) {
+        return err(LATER_REPLY);
+    }
+    if h.replies.get(k).is_some_and(|rp| crate::ask::following(db, id).contains(&(rp.change.clone(), rp.id.clone()))) {
+        return err(FOLLOWING);
+    }
     let rp = h.replies.get_mut(k).ok_or_else(|| Error(format!("run {id} holds no reply {k}")))?;
     rp.answer = Some(text.trim().to_string()).filter(|t| !t.is_empty());
     db.add_run(Run { held: Some(h), ..r }).map(|_| ())
@@ -850,6 +1063,9 @@ pub struct Round {
     pub effort: Option<crate::db::Effort>,
     /// How many edits that went on from it are asked again.
     pub dropped: usize,
+    /// How many follow-ups asked from its review were stopped, as it went
+    /// back.
+    pub stopped: usize,
     /// What the next round may use for this work, of what the agent was
     /// refused; and what the review saved for good, or could not.
     pub allowed: Vec<String>,
@@ -860,25 +1076,33 @@ pub struct Round {
 /// you wrote in its review asks: its change is not applied, but the next
 /// round goes on from it; its replies go in their threads, your answers
 /// after them; the comments it opened, as `marks` says (those not marked,
-/// kept). What to ask again: the comments of its ask whose last word is
-/// yours now, and those you opened in its review.
+/// kept). A follow-up asked from its review that is still going is
+/// stopped, what it was asked going back with the work. What to ask again:
+/// the comments of its ask whose last word is yours now, those you opened
+/// in its review, and those its follow-ups were asked about.
 pub fn send_back(db: &mut Db, id: &str, marks: &BTreeMap<String, bool>) -> Result<Round> {
     let (r, h, mut v) = under_review(db, id)?;
     if crate::ask::guessing(db, &r).is_some() {
         return err("this work goes on from the work landed before it, which waits for your review: review that one first");
     }
     let i = crate::ask::info(&r).ok_or_else(|| Error(format!("run {id} is not the agent's work: there is no one to send it back to")))?;
-    let (opened, answers) = yours_in(db, &r);
+    // What went with a follow-up going goes back too: it is stopped.
+    let none = HashSet::new();
+    let (opened, answers) = yours_but(db, &r, &none);
     // A tool allowed is reason enough: the agent tries again with it.
     let mut marks = marks.clone();
     let (work, always) = crate::refusals::allowed(&h.tools, &marks);
     if opened.is_empty() && answers == 0 && work.is_empty() && always.is_empty() {
         return err("you wrote nothing in its review to send back, nor allowed a tool the agent could not use: accept or reject it");
     }
+    if going_back(db, &r, &marks, &none).is_empty() {
+        return err("none of what you wrote in its review is open to send back");
+    }
     // What is allowed from now on is saved for the next round to use, once
     // nothing stops the work going back. Where it cannot be, it is allowed
     // for this work instead, the agent told so.
     let early = (!always.is_empty() && crate::refusals::local_of(db, &r).is_err()).then(|| crate::refusals::settle(db, &r, &mut marks, true));
+    let stopped = crate::ask::stop_follow_ups(db, id, crate::ask::FOLLOW_SENT)?;
     for (k, rp) in h.replies.iter().enumerate() {
         if !v.taken.contains(&k) {
             apply_reply(db, &r.stack, rp)?;
@@ -894,21 +1118,15 @@ pub fn send_back(db: &mut Db, id: &str, marks: &BTreeMap<String, bool>) -> Resul
     // Each a turn of yours in the thread of the first comment that asked,
     // still open, as one: with it, that comment is asked again. How you
     // marked each, the next round is told, and given what you allowed.
-    #[cfg_attr(not(feature = "try-push"), allow(unused_mut))]
-    let mut said: Vec<String> = Vec::new();
     #[cfg(feature = "try-push")]
-    {
-        said.extend(crate::try_push::answers_turn(&h.tasks));
-        v.marks.extend(marks.iter().filter(|(k, _)| matches!(Part::of_key(k), Some(Part::Task(_)))).map(|(k, m)| (k.clone(), *m)));
-    }
-    said.extend(crate::refusals::turn(&h.tools, &marks));
-    if !said.is_empty()
+    v.marks.extend(marks.iter().filter(|(k, _)| matches!(Part::of_key(k), Some(Part::Task(_)))).map(|(k, m)| (k.clone(), *m)));
+    if let Some(said) = said_back(&h, &marks)
         && let Some(n) = asking_open(db, &r).first().map(|(_, n)| (*n).clone())
     {
-        db.set_note(Note { text: append_turn(&n.text, Role::You, &said.join("\n\n"), None), ..n })?;
+        db.set_note(Note { text: append_turn(&n.text, Role::You, &said, None), ..n })?;
     }
     let mut notes: Vec<(String, String)> = Vec::new();
-    for at in i.notes.iter().map(|sh| (sh.change.clone(), sh.id.clone())).chain(opened) {
+    for at in in_review(db, &r) {
         if !notes.contains(&at) && db.note(&at.0, &at.1).is_some_and(crate::ask::sendable) {
             notes.push(at);
         }
@@ -924,7 +1142,7 @@ pub fn send_back(db: &mut Db, id: &str, marks: &BTreeMap<String, bool>) -> Resul
     v.marks.extend(marks.iter().filter(|(k, _)| crate::refusals::is_key(k)).map(|(k, m)| (k.clone(), *m)));
     // Asked together, as they were, unless they reach past the place the
     // ask was about.
-    let places: std::collections::HashSet<crate::ask::Scope> = notes.iter().filter_map(|(c, i)| db.note(c, i)).map(crate::ask::scope_of).collect();
+    let places: HashSet<crate::ask::Scope> = notes.iter().filter_map(|(c, i)| db.note(c, i)).map(crate::ask::scope_of).collect();
     let whole = match &i.scope {
         crate::ask::Scope::Stack => notes.iter().any(|(c, _)| !c.starts_with("stack:")),
         place => places.len() > 1 || places.iter().any(|p| p != place),
@@ -944,9 +1162,144 @@ pub fn send_back(db: &mut Db, id: &str, marks: &BTreeMap<String, bool>) -> Resul
         whole,
         effort: i.effort,
         dropped,
+        stopped,
         allowed: crate::refusals::carried(db, id),
         settled,
     })
+}
+
+/// What a follow-up that only reads asks, from the review of the work run
+/// `id` holds, which stays waiting for your review, its marks as they are:
+/// the comments that go back (`going_back`), as their threads would be. The
+/// follow-up reads the stack that work makes. What goes back with the
+/// first comment that asked (`said_back`) goes in its thread as the work
+/// going back would put it there: your answer after its last reply held
+/// here, or, with none, a turn of yours in it. What the review allows from
+/// now on is saved first, as when the work goes back, where it cannot be
+/// allowed for this work instead; and the marks of the tools and of a try
+/// push's tasks are saved, for the follow-up to read. The comments, the
+/// way the work was asked, at what effort, and what the follow-up may use
+/// for this work.
+pub fn follow_up(db: &mut Db, id: &str, marks: &BTreeMap<String, bool>) -> Result<Round> {
+    let (r, mut h, mut v) = under_review(db, id)?;
+    if crate::ask::guessing(db, &r).is_some() {
+        return err("this work goes on from the work landed before it, which waits for your review: review that one first");
+    }
+    let i = crate::ask::info(&r).ok_or_else(|| Error(format!("run {id} is not the agent's work: there is no one to ask")))?;
+    let mut marks = marks.clone();
+    let notes = going_back(db, &r, &marks, &crate::ask::following(db, id));
+    if notes.is_empty() {
+        return err("none of what you wrote in its review is open to send back");
+    }
+    let settled = crate::refusals::settle(db, &r, &mut marks, true);
+    if let Some(said) = said_back(&h, &marks)
+        && let Some(n) = asking_open(db, &r).first().map(|(_, n)| (*n).clone())
+    {
+        match h.replies_to(&n.change, &n.id).into_iter().rfind(|k| !v.taken.contains(k)) {
+            Some(k) => {
+                let rp = &mut h.replies[k];
+                rp.answer = Some(match rp.answer.take() {
+                    Some(a) => format!("{a}\n\n{said}"),
+                    None => said,
+                });
+            }
+            None => db.set_note(Note {
+                text: append_turn(&n.text, Role::You, &said, None),
+                review: Some(id.to_string()),
+                ..n
+            })?,
+        }
+        // Said, as your answer or a turn of yours: no longer to send back.
+        #[cfg(feature = "try-push")]
+        for t in &mut h.tasks {
+            t.answer = None;
+        }
+        for t in &mut h.tools {
+            t.answer = None;
+        }
+        db.add_run(Run {
+            held: Some(h.clone()),
+            ..r.clone()
+        })?;
+    }
+    v.marks.retain(|k, _| !crate::refusals::is_key(k));
+    v.marks.extend(marks.iter().filter(|(k, _)| crate::refusals::is_key(k)).map(|(k, m)| (k.clone(), *m)));
+    #[cfg(feature = "try-push")]
+    v.marks.extend(marks.iter().filter(|(k, _)| matches!(Part::of_key(k), Some(Part::Task(_)))).map(|(k, m)| (k.clone(), *m)));
+    db.set_review(id, v)?;
+    Ok(Round {
+        notes,
+        way: i.way,
+        whole: false,
+        effort: i.effort,
+        dropped: 0,
+        stopped: 0,
+        allowed: crate::refusals::carried(db, id),
+        settled,
+    })
+}
+
+/// What follow-up run `f`, of ask `i`, brought back (`brought`), put into
+/// the review of the work it follows up, while that work waits for your
+/// review: its replies after the work's, a build and test's to read; the
+/// comments an answer opened, among those the work opened; what a build
+/// and test found of each patch, to read; a try push's tasks, but those the
+/// work holds already, each to accept or reject; and the tools it could not
+/// use, but those the work holds already. Landed `ok` or not: failed, its
+/// tools alone come in. What came in, said, for the follow-up's run; none
+/// if it is no follow-up, if the work no longer waits for your review, or
+/// if, failed, it brought nothing that comes in.
+pub fn come_in(db: &mut Db, f: &Run, i: &crate::ask::Info, brought: &Held, ok: bool) -> Result<Option<String>> {
+    let Some(on) = i.on.as_deref().filter(|_| i.follow) else { return Ok(None) };
+    let Some(w) = db.run(on).cloned().filter(|w| waiting(db, w)) else { return Ok(None) };
+    let mut h = w.held.clone().unwrap_or_default();
+    // What came in, as a work of its own would say it.
+    let mut came = Held::default();
+    if ok {
+        let read = i.way == crate::db::Way::Test;
+        came.replies = brought.replies.iter().map(|rp| Reply { read, ..rp.clone() }).collect();
+        h.replies.extend(came.replies.iter().cloned());
+        let found = if read { brought.opened.clone() } else { vec![] };
+        if !read {
+            came.opened = brought.opened.clone();
+            h.opened.extend(came.opened.iter().cloned());
+        }
+        #[cfg(feature = "try-push")]
+        {
+            for t in &brought.tasks {
+                if !h.tasks.iter().any(|x| x.label == t.label) {
+                    h.tasks.push(t.clone());
+                    came.tasks.push(t.clone());
+                }
+            }
+            h.rebuild = h.rebuild.max(brought.rebuild);
+        }
+        let follow = FollowUp {
+            run: f.id.clone(),
+            way: i.way,
+            effort: i.effort,
+            asked: i.notes.iter().map(|sh| (sh.change.clone(), sh.id.clone())).collect(),
+            found,
+        };
+        came.follow_ups.push(follow.clone());
+        h.follow_ups.push(follow);
+    }
+    for t in &brought.tools {
+        if !h.tools.iter().any(|x| x.rule() == t.rule()) {
+            h.tools.push(t.clone());
+            came.tools.push(t.clone());
+        }
+    }
+    if !ok && came.tools.is_empty() {
+        return Ok(None);
+    }
+    db.add_run(Run { held: Some(h), ..w })?;
+    let said = came.said();
+    Ok(Some(match (ok, said.is_empty()) {
+        (true, true) => "the agent brought nothing back into the review of the work it follows up".to_string(),
+        (true, false) => format!("its work came into the review of the work it follows up: {said}"),
+        (false, _) => format!("the tools it could not use came into the review of the work it follows up: {said}"),
+    }))
 }
 
 /// The mark, in a review, of the comment the ask was about at place `k`
@@ -1137,10 +1490,20 @@ pub fn close_with(db: &mut Db, id: &str, marks: &BTreeMap<String, bool>, rest: O
     }
     // The replies where their comments are, then the change, the comments
     // on its lines following them, then the comments opened. A reviewer's
-    // reply to a thread you closed reopens it.
+    // reply to a thread you closed reopens it. A build and test's, asked as
+    // a follow-up, read: after the reply before it in its thread, if that
+    // one goes in, and the change is not rejected.
     let mut reopened = 0;
+    let mut filed: HashMap<(String, String), bool> = HashMap::new();
+    let rejected = matches!(change, Some((_, false)));
     for (k, rp) in h.replies.iter().enumerate() {
-        if all.get(&Part::Reply(k).key()) == Some(&true) && apply_reply(db, &r.stack, rp)? {
+        let at = (rp.change.clone(), rp.id.clone());
+        let goes = match rp.read {
+            true => !rejected && filed.get(&at).copied().unwrap_or(true),
+            false => all.get(&Part::Reply(k).key()) == Some(&true) || v.taken.contains(&k),
+        };
+        filed.insert(at, goes);
+        if goes && !v.taken.contains(&k) && apply_reply(db, &r.stack, rp)? {
             reopened += 1;
         }
     }
@@ -1165,13 +1528,16 @@ pub fn close_with(db: &mut Db, id: &str, marks: &BTreeMap<String, bool>, rest: O
         rev = Some(db.set_stack_on(&r.stack, c.patches.clone(), base, s.repo.clone(), &c.op)?);
         crate::ask::follow_lines(db, &olds, &c.patches)?;
     }
-    // A comment the ask was about, kept open, on a patch the stack held
-    // neither before nor holds now (one that work it went on from added,
-    // the stack never taking it), stays in sight: on the stack's own
-    // comments, moved there from where it was.
+    // A comment the ask was about, or a follow-up, kept open, on a patch the
+    // stack held neither before nor holds now (one that work it went on
+    // from added, the stack never taking it), stays in sight: on the stack's
+    // own comments, moved there from where it was.
     let held_after = held_changes(db, &r.stack);
     let mut moved = 0;
-    for (c, i) in asking_of(&r) {
+    let mut kept = asking_of(&r);
+    let followed: Vec<(String, String)> = h.followed().into_iter().filter(|at| !kept.contains(at)).collect();
+    kept.extend(followed);
+    for (c, i) in kept {
         if held_before.contains(&c) || held_after.contains(&c) || c == crate::db::stack_change(&r.stack) {
             continue;
         }
@@ -1214,6 +1580,10 @@ pub fn close_with(db: &mut Db, id: &str, marks: &BTreeMap<String, bool>, rest: O
     v.marks.retain(|k, _| !crate::refusals::is_key(k));
     v.marks.extend(marks.iter().filter(|(k, _)| crate::refusals::is_key(k)).map(|(k, m)| (k.clone(), *m)));
     let settled = crate::refusals::settle(db, &r, &mut v.marks, false);
+    // A follow-up asked from the review that is still going: stopped, what
+    // it would bring back thrown away unseen, its comments saying so, once
+    // what the review takes is in them.
+    let stopped = crate::ask::stop_follow_ups(db, id, crate::ask::FOLLOW_CLOSED)?;
     v.closed = true;
     db.set_review(id, v.clone())?;
     // Nothing brought back: no part to say, but the tools it could not use.
@@ -1239,6 +1609,9 @@ pub fn close_with(db: &mut Db, id: &str, marks: &BTreeMap<String, bool>, rest: O
     }
     for a in again {
         said += &format!("; {a}");
+    }
+    if stopped > 0 {
+        said += &format!("; {}", count(stopped, "follow-up stopped", "follow-ups stopped"));
     }
     db.add_run(Run {
         summary: format!("reviewed: {said}"),
@@ -1266,7 +1639,8 @@ pub fn said(h: &Held, marks: &BTreeMap<String, bool>) -> String {
             _ => "its change rejected".to_string(),
         });
     }
-    let replies = |edits: bool| (0..h.replies.len()).filter(|&k| h.replies[k].was.is_some() == edits).map(Part::Reply).collect::<Vec<_>>();
+    // Not a build and test's, asked as a follow-up, which was to read.
+    let replies = |edits: bool| (0..h.replies.len()).filter(|&k| !h.replies[k].read && h.replies[k].was.is_some() == edits).map(Part::Reply).collect::<Vec<_>>();
     #[cfg(feature = "try-push")]
     let tasks: Vec<Part> = (0..h.tasks.len()).map(Part::Task).collect();
     #[cfg(not(feature = "try-push"))]
@@ -1286,6 +1660,9 @@ pub fn said(h: &Held, marks: &BTreeMap<String, bool>) -> String {
             (0, n) => out.push(format!("{} rejected", of(n))),
             (y, n) => out.push(format!("{} accepted, {n} rejected", of(y))),
         }
+    }
+    if h.found() {
+        out.push(format!("{FOUND}, read"));
     }
     if let Some(t) = tools_said(h, marks) {
         out.push(t);
@@ -1406,6 +1783,78 @@ mod tests {
             Ok(kept.note)
         })
         .unwrap()
+    }
+
+    #[test]
+    fn what_a_follow_up_brings_back_comes_into_the_review_of_the_work_it_follows_up() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("db.jsonl");
+        Db::create(&path).unwrap();
+        let reply = |text: &str| Reply {
+            change: "c".into(),
+            id: "n".into(),
+            text: text.into(),
+            tag: "answer".into(),
+            ..Default::default()
+        };
+        let tool = |rule: &str| crate::refusals::Refusal {
+            rules: vec![rule.into()],
+            ..Default::default()
+        };
+        let asked = |way: &str| -> crate::ask::Info {
+            let notes = serde_json::json!([{"label": "c1", "change": "c", "id": "n"}]);
+            serde_json::from_value(serde_json::json!({"way": way, "scope": "stack", "from": 0, "notes": notes, "on": "w", "follow": true})).unwrap()
+        };
+        let follow = |id: &str| Run { id: id.into(), ..Default::default() };
+        let work = |db: &Db| db.run("w").unwrap().held.clone().unwrap();
+        Db::edit(&path, |db| {
+            // The work: a reply, which you answered in its review, and a
+            // tool the agent could not use.
+            let held = Held {
+                at: now(),
+                replies: vec![Reply { answer: Some("Why?".into()), ..reply("Seen.") }],
+                tools: vec![tool("Bash(rg *)")],
+                ..Default::default()
+            };
+            db.add_run(Run { id: "w".into(), what: "answer".into(), stack: "s".into(), state: crate::db::RunState::Done, held: Some(held), ..Default::default() })?;
+            // An answer's: its reply after the work's, the tools it could
+            // not use but those the work holds.
+            let brought = Held { replies: vec![reply("Because.")], tools: vec![tool("Bash(rg *)"), tool("WebFetch")], ..Default::default() };
+            let said = come_in(db, &follow("f1"), &asked("answer"), &brought, true)?;
+            assert_eq!(said.as_deref(), Some("its work came into the review of the work it follows up: 1 reply, 1 tool the agent could not use"));
+            let h = work(db);
+            assert_eq!(h.replies.iter().map(|rp| rp.text.as_str()).collect::<Vec<_>>(), ["Seen.", "Because."]);
+            assert_eq!(h.tools.iter().map(crate::refusals::Refusal::rule).collect::<Vec<_>>(), ["Bash(rg *)", "WebFetch"]);
+            assert_eq!((h.follow_ups.len(), h.follow_ups[0].run.as_str(), h.follow_ups[0].asked.clone()), (1, "f1", vec![("c".to_string(), "n".to_string())]));
+            // Your answer went with it: a later reply follows, and answered
+            // it; the thread as it would be has each in turn.
+            assert_eq!((h.last_reply(0), h.last_reply(1), answered(&h, &HashSet::new())), (false, true, vec![]));
+            let thread: Vec<String> = all_turns(&h.thread_but("c", "n", "Loud?", &[])).into_iter().map(|t| t.body).collect();
+            assert_eq!(thread, ["Loud?", "Seen.", "Why?", "Because."]);
+            // A build and test's: its reply to read, not a part, and what it
+            // found of each patch with the follow-up.
+            let found = Note {
+                change: "p".into(),
+                id: "agent:f2:test:1".into(),
+                text: fenced("agent test", "Builds."),
+                ..Default::default()
+            };
+            let brought = Held { replies: vec![reply("All pass.")], opened: vec![found.clone()], ..Default::default() };
+            let said = come_in(db, &follow("f2"), &asked("test"), &brought, true)?;
+            assert_eq!(said.as_deref(), Some(format!("its work came into the review of the work it follows up: {FOUND}").as_str()));
+            let h = work(db);
+            assert!(h.replies[2].read && h.found() && h.opened.is_empty());
+            assert_eq!((h.follow_ups[1].found.clone(), h.parts()), (vec![found], vec![Part::Reply(0), Part::Reply(1)]));
+            assert_eq!(h.said(), format!("2 replies, {FOUND}, 2 tools the agent could not use"));
+            // Failed with nothing that comes in: nothing comes in; nor once
+            // the review of the work is closed.
+            assert_eq!(come_in(db, &follow("f3"), &asked("answer"), &Held::default(), false)?, None);
+            db.set_review("w", Review { closed: true, ..Default::default() })?;
+            assert_eq!(come_in(db, &follow("f4"), &asked("answer"), &brought, true)?, None);
+            assert_eq!(work(db).follow_ups.len(), 2);
+            Ok(())
+        })
+        .unwrap();
     }
 
     /// Pull `run` of stack `s`, holding `replies`, waiting for review.

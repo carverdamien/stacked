@@ -278,6 +278,16 @@ impl App {
         let q = n.queued.as_ref().filter(|q| !q.batched())?;
         let title = format!("take the {} on {} out of the queue? The comment stays open", ask_said(q), comment_of(&self.db, &self.stack, n));
         let note = match (q.on.is_some(), ask::asked_with(&self.db, &self.stack, &q.batch, change, id)) {
+            // A follow-up asked from a review: the work waits for your
+            // review all the same.
+            (true, 0) if q.follow => Some(
+                "This comment is asked about in the follow-up you asked from the review of the agent's work, and no other is: taken out of the queue, nothing is asked, and the work waits for your review as it did."
+                    .to_string(),
+            ),
+            (true, 1) if q.follow => Some("This comment is asked about in the follow-up you asked from the review of the agent's work, as 1 other comment is: that one is still asked.".to_string()),
+            (true, k) if q.follow => Some(format!(
+                "This comment is asked about in the follow-up you asked from the review of the agent's work, as {k} other comments are: those are still asked."
+            )),
             (true, 0) => Some(
                 "This comment goes back to the agent with the work you sent back, and nothing else does: taken out of the queue, nothing goes back to the agent. The work stays as you sent it back, its review closed and its change not applied."
                     .to_string(),
@@ -304,7 +314,11 @@ impl App {
             Ok(Some(q)) => {
                 let of = self.db.note(change, id).map_or_else(|| "the comment".to_string(), |n| comment_of(&self.db, &self.stack, n));
                 let alone = q.on.is_some() && ask::asked_with(&self.db, &self.stack, &q.batch, change, id) == 0;
-                let then = if alone { "nothing goes back to the agent with the work you sent back" } else { "is not sent" };
+                let then = match (q.follow, alone) {
+                    (true, _) => "the follow-up you asked from the review does not ask about it",
+                    (false, true) => "nothing goes back to the agent with the work you sent back",
+                    (false, false) => "is not sent",
+                };
                 self.status = format!("the {} on {of} is taken out of the queue: the comment stays open, and {then}", ask_said(&q));
                 // Written again, its line moved among the banner's comments,
                 // the most recently updated first: the cursor goes with it.

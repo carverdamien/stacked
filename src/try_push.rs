@@ -466,14 +466,26 @@ pub fn locks(db: &Db) -> Vec<((String, String), String)> {
         .collect()
 }
 
+/// The ask landed work `r` pushes its tasks as, closing its review: its own,
+/// a try push's selection; else that of the last try push asked as a
+/// follow-up from its review, whose tasks came into it. None for no ask.
+pub fn asker(db: &Db, r: &Run) -> Option<crate::ask::Info> {
+    let own = crate::ask::info(r)?;
+    if own.way == crate::db::Way::Try {
+        return Some(own);
+    }
+    let followed = r.held.as_ref().and_then(|h| h.follow_ups.iter().rev().find(|f| f.way == crate::db::Way::Try));
+    Some(followed.and_then(|f| crate::ask::info(db.run(&f.run)?)).unwrap_or(own))
+}
+
 /// Under the lock: the try push of `accepted`, the tasks the review of work
 /// `work` accepted, each to run `rebuild` times, begun as a run of its own;
 /// its id. It pushes the stack as it is now, up to the patch of the comment
-/// that asked, or every patch for a comment on the stack. `launch` starts
-/// it.
+/// that asked (`asker`), or every patch for a comment on the stack.
+/// `launch` starts it.
 pub fn begin(db: &mut Db, work: &str, accepted: &[Task], rebuild: Option<u32>) -> Result<String> {
     let r = db.run(work).cloned().ok_or_else(|| Error(format!("no run {work}")))?;
-    let i = crate::ask::info(&r).ok_or_else(|| Error(format!("run {work} is not an ask")))?;
+    let i = asker(db, &r).ok_or_else(|| Error(format!("run {work} is not an ask")))?;
     let asked = i.notes.first().ok_or_else(|| Error("the try push was asked about no comment: nothing is pushed".into()))?;
     if db.note(&asked.change, &asked.id).is_none_or(|n| n.text.is_empty()) {
         return err("the comment that asked for the try push is closed: nothing is pushed");

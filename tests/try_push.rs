@@ -567,6 +567,18 @@ fn ask_as(app: &mut App, permission: &str, button: &str) {
 /// As `ask_as`, the effort set to `effort`.
 fn ask_at(app: &mut App, permission: &str, effort: stacked::db::Effort, button: &str) {
     choose(app, "Ask agent…");
+    set_in_dialog(app, permission, effort);
+    if button == "Ask Later" {
+        key(app, KeyCode::Right);
+    }
+    key(app, KeyCode::Enter);
+    draw(app);
+}
+
+/// In the ask dialog open, `permission` and the effort `effort` set, each
+/// with → on its line (from unset, the first, then on); the cursor then on
+/// its buttons' line, on the first.
+fn set_in_dialog(app: &mut App, permission: &str, effort: stacked::db::Effort) {
     let step = |app: &mut App, done: &dyn Fn(&stacked::tui::AskDialog) -> bool| {
         for _ in 0..8 {
             if let Mode::Ask(d) = &app.mode
@@ -582,11 +594,27 @@ fn ask_at(app: &mut App, permission: &str, effort: stacked::db::Effort, button: 
     key(app, KeyCode::Down);
     step(app, &|d| d.effort == Some(effort));
     key(app, KeyCode::Down);
-    if button == "Ask Later" {
-        key(app, KeyCode::Right);
+}
+
+/// The permissions the ask dialog open offers, as it draws them.
+fn dialog_labels(app: &App) -> Vec<&'static str> {
+    match &app.mode {
+        Mode::Ask(d) => d.permission_labels(),
+        other => panic!("no ask dialog open: {other:?}"),
     }
-    key(app, KeyCode::Enter);
-    draw(app);
+}
+
+/// Waits until the work of run `work` holds a follow-up that came into its
+/// review, and no ask goes, as the editor has them.
+fn came_in(app: &mut App, db: &Path, work: &str) {
+    until(
+        app,
+        |app| {
+            let came = app.db.run(work).and_then(|r| r.held.as_ref()).is_some_and(|h| !h.follow_ups.is_empty());
+            (came && !app.db.runs().iter().any(|r| r.state == stacked::db::RunState::Started)).then_some(())
+        },
+        |app| format!("nothing came into the review of {work}: {:?}\n{}", Db::load(db).unwrap().run(work).map(|r| r.summary.clone()), draw(app)),
+    )
 }
 
 /// The menu's items: label, and whether it can be chosen.
@@ -843,24 +871,45 @@ fn a_try_push_asked_lands_the_tasks_the_comment_asks_for_each_with_why() {
         ],
         "Three tasks now.",
     );
-    choose(&mut app, "Send it back to the agent");
-    assert!(app.status.starts_with("sent back to the agent (try push): 1 comment to ask again"), "{}", app.status);
-    // Your answer in the comment's thread, after the agent's reply.
-    let thread = notes_of(&db, 0)[0].text.clone();
-    assert!(thread.contains("Two tasks."), "{thread}");
-    assert!(thread.ends_with("On the tasks the agent selected:\n- `test-linux2404-64/opt-xpcshell-1`: Run it on Windows too."), "{thread}");
-    landed(&mut app, &db, 1);
-    // The next round is told what it selected before, as you marked it.
-    let prompt = last_prompt(&db);
-    assert!(prompt.contains("This is another round: the user reviewed the tasks you selected"), "{prompt}");
-    assert!(prompt.contains("- `test-linux2404-64/opt-xpcshell-1` (accepted): It runs the tests of a.txt.\n  The user answered: Run it on Windows too."), "{prompt}");
-    assert!(prompt.contains("- `build-linux64/debug` (rejected): The build the tests need."), "{prompt}");
-    // Its tasks, in place of those sent back; all accepted, then closed:
-    // they are pushed.
-    keys(&mut app, &[KeyCode::Esc]);
-    keys(&mut app, &[KeyCode::Enter]);
+    // Sent back as a try push, a follow-up that only reads: the work stays
+    // waiting for your review, its marks as they are.
+    let work = app.reviewing.as_ref().map(|rv| rv.run.clone()).unwrap();
+    choose(&mut app, "Send it back to the agent…");
+    assert!(matches!(app.mode, Mode::Ask(_)), "{:?}", app.mode);
+    assert!(dialog_labels(&app).contains(&"try push"), "{:?}", dialog_labels(&app));
+    set_in_dialog(&mut app, "try push", stacked::db::Effort::High);
+    key(&mut app, KeyCode::Enter);
+    draw(&mut app);
+    assert!(app.status.starts_with("asked as a follow-up (try push): 1 comment"), "{}", app.status);
     assert_eq!(app.screen, Screen::Review);
-    assert!(draw(&mut app).contains("   · test-windows11-64-24h2/opt-xpcshell-1"), "{}", draw(&mut app));
+    // Your answer after the agent's reply, as the comment's thread would be;
+    // the thread itself as it was, the reply held for your review.
+    let d = Db::load(&db).unwrap();
+    let h = d.run(&work).unwrap().held.clone().unwrap();
+    assert_eq!(h.replies[0].text, "Two tasks.");
+    let answer = h.replies[0].answer.clone().unwrap_or_default();
+    assert!(answer.ends_with("On the tasks the agent selected:\n- `test-linux2404-64/opt-xpcshell-1`: Run it on Windows too."), "{answer}");
+    assert!(!notes_of(&db, 0)[0].text.contains("Two tasks."));
+    drop(d);
+    came_in(&mut app, &db, &work);
+    // The follow-up is told what it selected before, as you marked it, and
+    // your answers in the comment's thread, after its reply.
+    let prompt = last_prompt(&db);
+    assert!(prompt.contains("This is a follow-up: the user reviews the work you brought back"), "{prompt}");
+    assert!(prompt.contains("- `test-linux2404-64/opt-xpcshell-1` (accepted): It runs the tests of a.txt."), "{prompt}");
+    assert!(prompt.contains("- `build-linux64/debug` (rejected): The build the tests need."), "{prompt}");
+    assert!(prompt.contains("On the tasks the agent selected:\n- `test-linux2404-64/opt-xpcshell-1`: Run it on Windows too."), "{prompt}");
+    // Its tasks come into the same review, but the one it holds already,
+    // which keeps its mark; all accepted, then closed: they are pushed.
+    let screen = draw(&mut app);
+    for line in ["   ✓ test-linux2404-64/opt-xpcshell-1", "   ✗ build-linux64/debug", "   · test-windows11-64-24h2/opt-xpcshell-1", "   · build-win64/opt"] {
+        assert!(screen.contains(line), "{line:?} in:\n{screen}");
+    }
+    let labels: Vec<String> = Db::load(&db).unwrap().run(&work).unwrap().held.as_ref().unwrap().tasks.iter().map(|t| t.label.clone()).collect();
+    assert_eq!(
+        labels,
+        ["test-linux2404-64/opt-xpcshell-1", "build-linux64/debug", "test-windows11-64-24h2/opt-xpcshell-1", "build-win64/opt"]
+    );
     keys(&mut app, &[KeyCode::Esc]);
     choose(&mut app, "Accept all remaining and Close");
     let note = menu_note(&app);
@@ -871,7 +920,7 @@ fn a_try_push_asked_lands_the_tasks_the_comment_asks_for_each_with_why() {
     assert!(!note.contains("not built yet"), "{note}");
     choose(&mut app, "Accept them and close");
     assert!(
-        app.status.starts_with("reviewed: 3 tasks accepted; 1 reply accepted; the try push has started: the comment that asked shows what mach writes"),
+        app.status.starts_with("reviewed: 3 tasks accepted, 1 rejected; 2 replies accepted; the try push has started: the comment that asked shows what mach writes"),
         "{}",
         app.status
     );
@@ -993,6 +1042,7 @@ fn queued_as_try(db: &Path, id: &str, stage: stacked::db::Stage) {
         on: None,
         was: None,
         effort: None,
+        follow: false,
     };
     Db::edit(db, |d| d.set_note(Note { queued: Some(queued), failed: None, ..n })).unwrap();
 }

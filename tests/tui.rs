@@ -1506,15 +1506,16 @@ fn in_dialog(app: &mut App, permission: &str, effort: &str, button: &str) -> Eff
     key(app, KeyCode::Enter);
     assert_eq!((dialog(app).effort.map(|e| e.name()), dialog(app).list), (Some(effort), None));
     dialog_line(app, 2);
-    let want = Button::ALL.iter().position(|b| b.label() == button).unwrap_or_else(|| panic!("no button {button:?}"));
+    let buttons = dialog(app).buttons();
+    let want = buttons.iter().position(|b| dialog(app).label(*b) == button).unwrap_or_else(|| panic!("no button {button:?}"));
     for _ in 0..3 {
-        let at = dialog(app).button.at();
+        let at = buttons.iter().position(|b| *b == dialog(app).button).unwrap_or(0);
         if at == want {
             break;
         }
         key(app, if want > at { KeyCode::Right } else { KeyCode::Left });
     }
-    assert_eq!(dialog(app).button.label(), button, "{:?}", app.ask_note(dialog(app)));
+    assert_eq!(dialog(app).label(dialog(app).button), button, "{:?}", app.ask_note(dialog(app)));
     let e = key(app, KeyCode::Enter);
     draw(app);
     e
@@ -1532,6 +1533,19 @@ fn ask_via(app: &mut App, label: &str, permission: &str, effort: &str, button: &
 /// As `ask_via`, asked now, at high.
 fn ask_now(app: &mut App, label: &str, permission: &str) -> Effect {
     ask_via(app, label, permission, "high", "Ask Now")
+}
+
+/// In the review, the work sent back to the agent from the menu Esc opens
+/// (opened unless a menu is): `Send it back to the agent…`, which opens the
+/// ask dialog; then, in it, `permission` and `effort` set, and Send Now
+/// pressed (`in_dialog`).
+fn send_back_via(app: &mut App, permission: &str, effort: &str) -> Effect {
+    if !matches!(app.mode, Mode::Menu(_)) {
+        keys(app, &[KeyCode::Esc]);
+    }
+    assert_eq!(choose(app, "Send it back to the agent…"), Effect::None);
+    assert!(matches!(app.mode, Mode::Ask(_)), "no dialog opened: {:?}", app.mode);
+    in_dialog(app, permission, effort, "Send Now")
 }
 
 /// As `ask_via`, asked later, in the batch, at high.
@@ -5517,6 +5531,7 @@ fn what_you_said_last_may_be_written_again() {
                     on: None,
                     was: None,
                     effort: None,
+                    follow: false,
                 }),
                 ..n
             })
@@ -12262,6 +12277,7 @@ fn an_ask_that_waits_goes_at_the_effort_it_was_sent_at() {
                     on: None,
                     was: None,
                     effort,
+                    follow: false,
                 }),
                 ..n.clone()
             })
@@ -12276,7 +12292,7 @@ fn an_ask_that_waits_goes_at_the_effort_it_was_sent_at() {
 }
 
 #[test]
-fn work_sent_back_goes_at_the_effort_it_was_asked_at_unless_another_is_picked() {
+fn work_sent_back_goes_at_the_effort_its_dialog_sets() {
     let (_tmp, db, _src) = setup();
     fake_claude();
     let mut app = open(&db).unwrap();
@@ -12296,18 +12312,19 @@ fn work_sent_back_goes_at_the_effort_it_was_asked_at_unless_another_is_picked() 
     app.refresh();
     keys(&mut app, &[KeyCode::Esc, KeyCode::Enter]);
     assert_eq!(app.screen, Screen::Review);
-    // Answered in its review, it goes back at low, as it was asked; at
-    // another, if one is picked, which no other ask starts at.
+    // Answered in its review, it goes back at the effort its dialog sets,
+    // unset as the dialog opens, whatever the work was asked at: the item
+    // has no dropdown of its own.
     down_to_review(&mut app, "Quieter now.");
     choose(&mut app, "Reply to it");
     save(&mut app, "Still too loud.");
     keys(&mut app, &[KeyCode::Esc]);
-    assert!(draw(&mut app).contains("Send it back to the agent    Effort [low]"), "{}", draw(&mut app));
-    assert_eq!(app.hint(), "↑↓ choose · ←→: effort · enter: do it · esc: close · ?: what it does");
-    keys(&mut app, &[KeyCode::Right]);
-    assert!(draw(&mut app).contains("Send it back to the agent    Effort [medium]"), "{}", draw(&mut app));
-    assert!(app.help()[1].ends_with("The effort picked is this item's alone, and kept for no other ask."), "{:?}", app.help());
-    choose(&mut app, "Send it back to the agent");
+    let screen = draw(&mut app);
+    assert!(screen.contains("Send it back to the agent…") && !screen.contains("Effort [low]"), "{screen}");
+    assert_eq!(app.hint(), "↑↓ choose · enter: do it · esc: close · ?: what it does");
+    choose(&mut app, "Send it back to the agent…");
+    assert_eq!((dialog(&app).permission, dialog(&app).effort), (None, None));
+    in_dialog(&mut app, "change patch", "medium", "Send Now");
     assert!(app.status.starts_with("sent back to the agent (may change the code)"), "{}", app.status);
     assert_eq!(efforts(&mut app, 1), ["medium"]);
 }
@@ -13588,7 +13605,7 @@ fn what_you_wrote_in_a_review_is_in_its_list_to_see_write_again_or_take_back() {
     assert!(!draw(&mut app).contains(" what you wrote, to send back"));
     keys(&mut app, &[KeyCode::Esc]);
     let labels: Vec<String> = items(&app).into_iter().map(|(l, _)| l).collect();
-    assert!(!labels.iter().any(|l| l == "Send it back to the agent"), "{labels:?}");
+    assert!(!labels.iter().any(|l| l == "Send it back to the agent…"), "{labels:?}");
 }
 
 #[test]
@@ -13625,12 +13642,12 @@ fn a_comment_on_a_patch_the_work_adds_is_what_you_wrote_in_its_review_and_goes_b
     assert!(refused.is_err_and(|e| e.0 == "you wrote in its review: it is not accepted nor rejected, but sent back to the agent"));
     keys(&mut app, &[KeyCode::Esc]);
     let labels: Vec<String> = items(&app).into_iter().map(|(l, _)| l).collect();
-    assert_eq!(labels[0], "Send it back to the agent");
+    assert_eq!(labels[0], "Send it back to the agent…");
     assert!(!labels.iter().any(|l| l.contains("Close")), "{labels:?}");
     assert!(menu_note(&app).starts_with("You wrote 1 comment in this review"), "{}", menu_note(&app));
     // Sent back, it is asked again in the next round, from the stack this
     // work makes, the patch it adds there.
-    choose(&mut app, "Send it back to the agent");
+    send_back_via(&mut app, "change stack", "high");
     assert!(app.status.starts_with("sent back to the agent (") && app.status.ends_with(": 1 comment to ask again"), "{}", app.status);
     waiting(&mut app, &db, 1);
     let d = Db::load(&db).unwrap();
@@ -13710,7 +13727,7 @@ fn what_you_write_in_the_review_on_a_thread_the_agent_opened_goes_back_with_the_
     let screen = draw(&mut app);
     assert!(screen.contains(" what you wrote, to send back") && screen.contains("   ✎ a.txt: LINE 39 · Then quiet it. Now."), "{screen}");
     keys(&mut app, &[KeyCode::Esc]);
-    assert_eq!(items(&app)[0].0, "Send it back to the agent");
+    assert_eq!(items(&app)[0].0, "Send it back to the agent…");
     assert!(menu_note(&app).starts_with("You wrote 1 comment in this review"), "{}", menu_note(&app));
     keys(&mut app, &[KeyCode::Esc]);
     // Taken back, the agent's thread is as it was before the review, open.
@@ -13726,13 +13743,12 @@ fn what_you_write_in_the_review_on_a_thread_the_agent_opened_goes_back_with_the_
     let now = notes_of(&db, "s", 0).into_iter().find(|m| m.id == theirs.id).unwrap();
     assert_eq!((now.text.as_str(), now.by.as_deref(), now.review.as_deref()), (theirs.text.as_str(), Some("agent"), None));
     keys(&mut app, &[KeyCode::Esc]);
-    assert!(!items(&app).iter().any(|(l, _)| l == "Send it back to the agent"), "{:?}", items(&app));
+    assert!(!items(&app).iter().any(|(l, _)| l == "Send it back to the agent…"), "{:?}", items(&app));
     keys(&mut app, &[KeyCode::Esc]);
     // Written again and sent back: the agent is asked about the thread again.
     into_thread(&mut app);
     save(&mut app, " Now.");
-    keys(&mut app, &[KeyCode::Esc]);
-    choose(&mut app, "Send it back to the agent");
+    send_back_via(&mut app, "change patch", "high");
     assert!(app.status.ends_with(": 1 comment to ask again"), "{}", app.status);
     waiting(&mut app, &db, 1);
     let d = Db::load(&db).unwrap();
@@ -13786,8 +13802,8 @@ fn a_reply_in_the_review_to_a_reviewer_s_comment_the_agent_was_asked_about_goes_
     assert_eq!((now.by.as_deref(), now.review.as_deref()), (Some("ann"), Some("run-agent")));
     // It goes back to the agent with the work.
     keys(&mut app, &[KeyCode::Esc]);
-    assert_eq!(items(&app)[0].0, "Send it back to the agent");
-    choose(&mut app, "Send it back to the agent");
+    assert_eq!(items(&app)[0].0, "Send it back to the agent…");
+    send_back_via(&mut app, "change patch", "high");
     assert!(app.status.ends_with(": 1 comment to ask again"), "{}", app.status);
     waiting(&mut app, &db, 1);
     let d = Db::load(&db).unwrap();
@@ -14291,7 +14307,7 @@ fn what_you_write_in_the_review_of_the_agent_s_work_sends_it_back_to_the_agent()
     // Not accepted, nor rejected: it goes back to the agent.
     keys(&mut app, &[KeyCode::Esc]);
     let labels: Vec<String> = items(&app).into_iter().map(|(l, _)| l).collect();
-    assert_eq!(labels[0], "Send it back to the agent");
+    assert_eq!(labels[0], "Send it back to the agent…");
     assert!(!labels.iter().any(|l| l.contains("Close")), "{labels:?}");
     let Mode::Menu(m) = &app.mode else { panic!("{:?}", app.mode) };
     assert!(
@@ -14301,7 +14317,7 @@ fn what_you_write_in_the_review_of_the_agent_s_work_sends_it_back_to_the_agent()
         "{:?}",
         m.note
     );
-    choose(&mut app, "Send it back to the agent");
+    send_back_via(&mut app, "change patch", "high");
     assert_eq!(app.screen, Screen::Main);
     assert_eq!(app.status, "sent back to the agent (may change the code): 2 comments to ask again");
     let d = Db::load(&db).unwrap();
@@ -14326,6 +14342,342 @@ fn what_you_write_in_the_review_of_the_agent_s_work_sends_it_back_to_the_agent()
     assert!(stacked::ask::info(r).unwrap().prompt.contains("This is another round"));
     let c = r.held.as_ref().unwrap().stack.as_ref().unwrap();
     assert!(d.patch(&c.patches[0]).diff.contains("+Two"), "the change of the work sent back");
+}
+
+/// In the editor on stack `s`, with its comment `why so loud?` on `+TWO`:
+/// the agent's change of patch 1 (`agent_changed`, run `run-agent`)
+/// landed, its review open, and its reply `Quieter now.` answered there
+/// with `answer`. The comment.
+fn answered_in_review(db: &Path, app: &mut App, answer: &str) -> Note {
+    keys(app, &[KeyCode::Right]);
+    down_to(app, "+TWO");
+    keys(app, &[KeyCode::Enter]);
+    save(app, "why so loud?");
+    let n = notes_of(db, "s", 0).remove(0);
+    agent_changed(db, "run-agent", &n);
+    app.refresh();
+    keys(app, &[KeyCode::Esc, KeyCode::Enter]);
+    assert_eq!(app.screen, Screen::Review);
+    down_to_review(app, "Quieter now.");
+    choose(app, "Reply to it");
+    save(app, answer);
+    n
+}
+
+#[test]
+fn sending_work_back_opens_the_ask_dialog_unset_its_send_now_grayed_until_both_lines_are_set() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    answered_in_review(&db, &mut app, "Still too loud.");
+    // Esc's Send it back to the agent… opens the ask dialog, in place of
+    // sending the work back from the menu, as every ask does; the menu says
+    // what the dialog sets.
+    keys(&mut app, &[KeyCode::Esc]);
+    assert!(menu_note(&app).contains("Send it back to the agent… opens a dialog that sets what the agent may do, and its effort"), "{}", menu_note(&app));
+    choose(&mut app, "Send it back to the agent…");
+    // Its title says it sends back the work, what it holds, and what was
+    // asked; nothing set; the permissions those of the comment going back.
+    let d = dialog(&app).clone();
+    assert_eq!(d.title, "send back the agent's work: a change of patch 1, 1 reply · asked \"why so loud?\"");
+    assert_eq!((d.permission, d.effort, d.line, d.list), (None, None, 0, None));
+    assert_eq!(d.permission_labels(), ["answer only", "change patch", "change stack"]);
+    assert_eq!(app.ask_lines(&d)[1], "Not set yet: ← or → sets answer only, then steps to change patch and change stack. Enter opens the list of them.");
+    // Its buttons, Send Now and Cancel: Send Now grayed until both lines are
+    // set, as the dialog says under them.
+    let screen = draw(&mut app);
+    assert!(screen.contains("< Send Now >   < Cancel >") && !screen.contains("Ask Later"), "{screen}");
+    assert_eq!(app.ask_buttons(dialog(&app)), [false, false, true]);
+    assert_eq!(app.ask_note(dialog(&app)), ["Send Now is grayed until the permission and the effort are set."]);
+    dialog_line(&mut app, 2);
+    assert_eq!(app.help()[0], "Send Now is grayed until the permission and the effort are set.");
+    key(&mut app, KeyCode::Enter);
+    assert_eq!(app.status, "Send Now is grayed until the permission and the effort are set.");
+    assert!(matches!(app.mode, Mode::Ask(_)), "{:?}", app.mode);
+    // Each permission set says what it does with the work: one that only
+    // reads leaves it waiting for your review; one that changes the stack
+    // rejects it.
+    dialog_line(&mut app, 0);
+    keys(&mut app, &[KeyCode::Right]);
+    assert_eq!(
+        app.ask_lines(dialog(&app))[1],
+        "This work stays waiting for your review: the agent answers on the stack this work makes, and changes nothing, and its replies come into this review. 1 comment goes back to the agent."
+    );
+    assert_eq!(app.ask_note(dialog(&app)), ["Send Now is grayed until the effort is set."]);
+    keys(&mut app, &[KeyCode::Right]);
+    assert_eq!(
+        app.ask_lines(dialog(&app))[1],
+        "This work is rejected, its change not applied: the agent may change the code within the comment's place, its patch and no other, going on from the stack this work makes, and its new work lands for your review in place of this one. 1 comment goes back to the agent."
+    );
+    dialog_line(&mut app, 1);
+    keys(&mut app, &[KeyCode::Right]);
+    assert_eq!(dialog(&app).effort, Some(stacked::db::Effort::Low));
+    assert_eq!(app.ask_buttons(dialog(&app)), [true, false, true]);
+    assert!(app.ask_note(dialog(&app)).is_empty(), "{:?}", app.ask_note(dialog(&app)));
+    // ? says what each button does, as the permission set does it.
+    dialog_line(&mut app, 2);
+    assert_eq!(app.hint(), "↑↓ choose · ←→: another button · enter: press it · esc: cancel · ?: what it does");
+    assert_eq!(app.help()[0], "Press Enter to send the work back now, as the two lines say: this work is rejected, and the agent is asked again, going on from it.");
+    dialog_line(&mut app, 0);
+    keys(&mut app, &[KeyCode::Left]);
+    dialog_line(&mut app, 2);
+    assert_eq!(
+        app.help()[0],
+        "Press Enter to ask the follow-up now, as the two lines say: this work stays waiting for your review, and what the agent brings back comes into it."
+    );
+    // Cancel sends nothing: back in the review, the work as it was.
+    keys(&mut app, &[KeyCode::Right]);
+    assert_eq!(dialog(&app).label(dialog(&app).button), "Cancel");
+    assert_eq!(app.help()[0], "Press Enter to close the dialog and go back to the review: nothing is sent.");
+    key(&mut app, KeyCode::Enter);
+    assert_eq!((&app.mode, app.screen), (&Mode::Normal, Screen::Review));
+    let d = Db::load(&db).unwrap();
+    assert!(!d.review("run-agent").is_some_and(|v| v.closed));
+    assert_eq!(d.runs().len(), 1, "nothing asked");
+    assert!(notes_of(&db, "s", 0).iter().all(|n| n.queued.is_none()));
+    drop(d);
+    // Opened again, it is unset again; a click out of it cancels it too.
+    keys(&mut app, &[KeyCode::Esc]);
+    choose(&mut app, "Send it back to the agent…");
+    assert_eq!((dialog(&app).permission, dialog(&app).effort), (None, None));
+    app.click(0, 29, false);
+    assert_eq!((&app.mode, app.screen), (&Mode::Normal, Screen::Review));
+    assert_eq!(Db::load(&db).unwrap().runs().len(), 1, "nothing asked");
+}
+
+#[test]
+fn sent_back_with_a_change_the_work_is_rejected_and_its_round_goes_as_the_dialog_sets() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    let n = answered_in_review(&db, &mut app, "Still too loud.");
+    // Change patch, as the work was asked: rejected, and its round lands in
+    // its place, asked of the patch, from the stack the work makes.
+    send_back_via(&mut app, "change patch", "high");
+    assert_eq!(app.status, "sent back to the agent (may change the code): 1 comment to ask again");
+    assert_eq!(app.screen, Screen::Main);
+    let d = Db::load(&db).unwrap();
+    assert!(d.review("run-agent").unwrap().closed);
+    assert_eq!(d.run("run-agent").unwrap().summary, "reviewed: sent back to the agent, 1 comment to ask again");
+    drop(d);
+    waiting(&mut app, &db, 1);
+    let d = Db::load(&db).unwrap();
+    let round = stacked::held::queue(&d, "s")[0].clone();
+    assert_ne!(round.id, "run-agent");
+    let i = stacked::ask::info(&round).unwrap();
+    assert_eq!((i.way, &i.scope, i.on.as_deref(), i.follow), (stacked::db::Way::Change, &stacked::ask::Scope::Patch(n.change.clone()), Some("run-agent"), false));
+    assert!(i.prompt.contains("You are changing one patch of a stack") && i.prompt.contains("This is another round"), "{}", i.prompt);
+    drop(d);
+    // That round's work, sent back to change the stack from a patch's
+    // comment: the round asked of the whole stack.
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Enter]);
+    assert_eq!(app.reviewing.as_ref().map(|rv| rv.run.clone()), Some(round.id.clone()));
+    down_to_review(&mut app, "Seen.");
+    choose(&mut app, "Reply to it");
+    save(&mut app, "Patch 2 too.");
+    send_back_via(&mut app, "change stack", "high");
+    assert_eq!(app.status, "sent back to the agent (may change the whole stack): 1 comment to ask again");
+    waiting(&mut app, &db, 1);
+    let d = Db::load(&db).unwrap();
+    let next = stacked::held::queue(&d, "s")[0].clone();
+    assert_ne!(next.id, round.id);
+    let i = stacked::ask::info(&next).unwrap();
+    assert_eq!((i.way, &i.scope, i.on.as_deref()), (stacked::db::Way::Change, &stacked::ask::Scope::Stack, Some(round.id.as_str())));
+    assert!(i.prompt.contains("You are changing a stack of patches") && i.prompt.contains("Patch 2 too."), "{}", i.prompt);
+}
+
+#[test]
+fn sent_back_to_answer_only_the_work_stays_for_review_and_the_follow_up_s_replies_come_into_it() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    let n = answered_in_review(&db, &mut app, "Why Two?");
+    // The change marked accepted first: the marks stay as they are.
+    keys(&mut app, &[KeyCode::Home]);
+    down_to_review(&mut app, "modify  1 Bug 1");
+    keys(&mut app, &[KeyCode::Enter]);
+    answer_with(&db, &serde_json::json!({"replies": {"c1": "Because it is quieter."}}));
+    let held = hold(&db);
+    send_back_via(&mut app, "answer only", "high");
+    assert_eq!(app.status, "asked as a follow-up (answer only): 1 comment; what the agent brings back comes into this review");
+    // The work stays waiting for your review, the review open, saying the
+    // follow-up goes, the cursor on it; what you wrote went with it.
+    assert_eq!(app.screen, Screen::Review);
+    assert!(!Db::load(&db).unwrap().review("run-agent").is_some_and(|v| v.closed));
+    let screen = wait_for(&mut app, " the follow-up you asked, with the agent");
+    for line in ["   ● answer only, at high · 1 comment", " stack operations · accepted"] {
+        assert!(screen.contains(line), "{line:?} in:\n{screen}");
+    }
+    assert!(!screen.contains(" what you wrote, to send back"), "{screen}");
+    assert!(selected_line(&mut app).is_some_and(|l| l.contains("answer only, at high")), "{:?}", selected_line(&mut app));
+    assert_eq!(app.hint(), "↑↓ choose · enter: nothing, the follow-up runs · →: look closer · space: menu · esc: save, discard or close");
+    assert!(screen.contains("The follow-up asks the agent about these comments"), "{screen}");
+    drop(held);
+    came_in(&mut app, "run-agent", 1);
+    // Its reply comes into the same review, after the work's, for you to read
+    // and mark; nothing of it waits for a review of its own.
+    let screen = draw(&mut app);
+    assert!(!screen.contains(" the follow-up you asked"), "{screen}");
+    assert!(screen.contains("   · a.txt: TWO · Because it is quieter."), "{screen}");
+    let d = Db::load(&db).unwrap();
+    assert_eq!(stacked::held::left(&d, d.run("run-agent").unwrap()), "a change of patch 1, 2 replies");
+    assert_eq!(stacked::held::queue(&d, "s").into_iter().map(|r| r.id.clone()).collect::<Vec<_>>(), ["run-agent"]);
+    let h = d.run("run-agent").unwrap().held.clone().unwrap();
+    assert_eq!(h.replies.iter().map(|rp| rp.text.as_str()).collect::<Vec<_>>(), ["Quieter now.", "Because it is quieter."]);
+    let f = d.run(&h.follow_ups[0].run).unwrap();
+    assert!(f.held.is_none() && f.summary == "its work came into the review of the work it follows up: 1 reply", "{}", f.summary);
+    // Asked on the stack the work makes, the comment's thread as it would be,
+    // with the work's reply and your answer in it.
+    let i = stacked::ask::info(f).unwrap();
+    assert_eq!((i.way, i.on.as_deref(), i.follow), (stacked::db::Way::Answer, Some("run-agent"), true));
+    assert!(i.prompt.contains("This is a follow-up: the user reviews the work you brought back"), "{}", i.prompt);
+    assert!(i.prompt.contains("Quieter now.") && i.prompt.contains("Why Two?"), "{}", i.prompt);
+    assert!(i.prompt.contains("export s --work run-agent"), "{}", i.prompt);
+    drop(d);
+    // On its reply, the thread as it would be: your answer, then it.
+    down_to_review(&mut app, "Because it is quieter.");
+    let screen = draw(&mut app);
+    let (_, asked) = at_from(&screen, "Why Two?", 49);
+    let (_, replied) = at_from(&screen, "Because it is quieter.", 49);
+    assert!(replied > asked, "{screen}");
+    // Your answer to the reply before it is no longer to send back, nor
+    // written again: a later reply answered it.
+    keys(&mut app, &[KeyCode::Home]);
+    down_to_review(&mut app, "Quieter now.");
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    assert!(items(&app).contains(&("Edit your answer to it".into(), false)), "{:?}", items(&app));
+    keys(&mut app, &[KeyCode::Esc]);
+    // Then the review closes as usual, the replies in their thread in turn.
+    keys(&mut app, &[KeyCode::Esc]);
+    choose(&mut app, "Accept all remaining and Close");
+    choose(&mut app, "Accept them and close");
+    assert!(app.status.starts_with("reviewed: its change accepted; 2 replies accepted"), "{}", app.status);
+    let d = Db::load(&db).unwrap();
+    assert!(d.patch(&d.stack("s").unwrap().patches[0]).diff.contains("+Two"));
+    let thread: Vec<String> = stacked::thread::thread_turns(&d.note(&n.change, &n.id).unwrap().text).into_iter().map(|t| t.body).collect();
+    assert_eq!(thread, ["why so loud?", "Quieter now.", "Why Two?", "Because it is quieter."]);
+}
+
+#[test]
+fn sent_back_to_build_and_test_what_it_found_comes_into_the_review_to_read() {
+    let (_tmp, db, _src) = setup();
+    let (change, id) = stack_note(&db, "s-c1", "and the stack?");
+    answer_landed(&db, "run-landed", &change, &id, "It stacks.");
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Enter]);
+    assert_eq!(app.reviewing.as_ref().map(|rv| rv.run.as_str()), Some("run-landed"));
+    down_to_review(&mut app, "It stacks.");
+    choose(&mut app, "Reply to it");
+    save(&mut app, "Build and test it.");
+    // Of a comment on the stack, built and tested as a follow-up: the work
+    // stays waiting for your review.
+    answer_with(&db, &serde_json::json!({"replies": {"c1": "All tests pass: ran make check."}, "patches": {"1": "Builds; its tests pass."}}));
+    keys(&mut app, &[KeyCode::Esc]);
+    choose(&mut app, "Send it back to the agent…");
+    assert!(dialog(&app).permission_labels().contains(&"build and test"), "{:?}", dialog(&app).permission_labels());
+    in_dialog(&mut app, "build and test", "high", "Send Now");
+    assert_eq!(app.status, "asked as a follow-up (build and test): 1 comment; what the agent brings back comes into this review");
+    came_in(&mut app, "run-landed", 1);
+    // What it found, a section to read: its reply, where it goes, and what
+    // it found of each patch, on the patch's title; nothing to mark.
+    let screen = draw(&mut app);
+    for line in [" what the build and test found, to read", "   the stack · All tests pass: ran make check.", "   Bug 1 - shout two · Builds; its tests pass."] {
+        assert!(screen.contains(line), "{line:?} in:\n{screen}");
+    }
+    assert_eq!(stacked::held::left(&Db::load(&db).unwrap(), app.db.run("run-landed").unwrap()), "1 reply, what the build and test found");
+    keys(&mut app, &[KeyCode::Home]);
+    down_to_review(&mut app, "the stack · All tests pass");
+    assert_eq!(app.hint(), "↑↓ choose · enter: nothing, what the build and test found is to read · →: look closer · space: menu · esc: save, discard or close");
+    let screen = draw(&mut app);
+    assert!(screen.contains(" what the build and test found, as it would be in its thread"), "{screen}");
+    let (_, asked) = at_from(&screen, "Build and test it.", 49);
+    let (_, found) = at_from(&screen, "All tests pass: ran make check.", 49);
+    assert!(found > asked, "{screen}");
+    keys(&mut app, &[KeyCode::Enter]);
+    assert!(draw(&mut app).contains("   the stack · All tests pass"), "nothing marked");
+    down_to_review(&mut app, "Bug 1 - shout two · Builds");
+    assert!(draw(&mut app).contains(" what the build and test found of this patch: to read, never filed"), "{}", draw(&mut app));
+    // The review closes as usual: the reply it follows accepted, its reply
+    // goes in the thread after your answer; what it found of each patch is
+    // not filed.
+    keys(&mut app, &[KeyCode::Esc]);
+    assert!(menu_note(&app).contains("replies: · 1 to review"), "{}", menu_note(&app));
+    choose(&mut app, "Accept all remaining and Close");
+    choose(&mut app, "Accept them and close");
+    assert!(app.status.starts_with("reviewed: 1 reply accepted"), "{}", app.status);
+    let d = Db::load(&db).unwrap();
+    let thread: Vec<String> = stacked::thread::thread_turns(&d.note(&change, &id).unwrap().text).into_iter().map(|t| t.body).collect();
+    assert_eq!(thread, ["and the stack?", "It stacks.", "Build and test it.", "All tests pass: ran make check."]);
+    assert!(notes_of(&db, "s", 0).is_empty(), "nothing filed on patch 1's title");
+}
+
+#[test]
+fn closing_the_review_while_a_follow_up_runs_asks_first_and_stops_it() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    let n = answered_in_review(&db, &mut app, "Why Two?");
+    let held = hold(&db);
+    send_back_via(&mut app, "answer only", "high");
+    // With the agent: its process there.
+    until(
+        &mut app,
+        |app| app.db.runs().iter().any(|r| r.state == stacked::db::RunState::Started && r.pid.is_some()).then_some(()),
+        |app| format!("the follow-up never ran:\n{}", draw(app)),
+    );
+    // Esc says it goes, and that closing stops it; closing asks first,
+    // saying so.
+    keys(&mut app, &[KeyCode::Esc]);
+    let note = menu_note(&app);
+    assert!(
+        note.contains("The follow-up you asked from this review is with the agent: what it brings back comes into this review once it lands. Closing the review stops it."),
+        "{note}"
+    );
+    choose(&mut app, "Accept all remaining and Close");
+    let note = menu_note(&app);
+    assert!(
+        note.contains("Closing the review stops the follow-up you asked from it, which is with the agent: what it would bring back is thrown away, and its comments say that you stopped it."),
+        "{note}"
+    );
+    choose(&mut app, "Accept them and close");
+    assert!(app.status.starts_with("reviewed: its change accepted; 1 reply accepted") && app.status.contains("; 1 follow-up stopped"), "{}", app.status);
+    // Stopped: its ask landed as failed, its comment saying so; nothing came
+    // into a review, nor waits for one of its own.
+    let d = Db::load(&db).unwrap();
+    let f = d.runs().into_iter().find(|r| stacked::ask::info(r).is_some_and(|i| i.follow)).cloned().unwrap();
+    assert_eq!((f.state, f.summary.as_str(), f.held.is_none()), (stacked::db::RunState::Failed, stacked::ask::FOLLOW_CLOSED, true));
+    let now = d.note(&n.change, &n.id).unwrap();
+    assert_eq!(now.failed.as_deref(), Some(stacked::ask::FOLLOW_CLOSED));
+    let thread: Vec<String> = stacked::thread::thread_turns(&now.text).into_iter().map(|t| t.body).collect();
+    assert_eq!(thread, ["why so loud?", "Quieter now.", "Why Two?"]);
+    assert!(stacked::held::queue(&d, "s").is_empty());
+    drop(d);
+    drop(held);
+}
+
+#[test]
+fn send_now_is_grayed_while_the_agent_cannot_be_reached() {
+    let (_tmp, db, _src) = setup();
+    stacked::reach::stand_in(&db, Some(std::sync::Arc::new(|_: &stacked::reach::Target| false)));
+    let mut app = open(&db).unwrap();
+    answered_in_review(&db, &mut app, "Still too loud.");
+    keys(&mut app, &[KeyCode::Esc]);
+    choose(&mut app, "Send it back to the agent…");
+    keys(&mut app, &[KeyCode::Right, KeyCode::Down, KeyCode::Right]);
+    app.settle();
+    // Both lines set, Send Now grayed, as Ask Now is, saying why.
+    let said = dialog(&app).target.clone().expect("checked").said;
+    let unreached = format!("Send Now is grayed: the network does not reach {said}.");
+    let off = "If claude reaches it all the same, `stacked config agent.reach_check false` turns this check off.";
+    assert_eq!(app.ask_buttons(dialog(&app)), [false, false, true]);
+    assert_eq!(app.ask_note(dialog(&app))[..2], [unreached.clone(), off.to_string()]);
+    dialog_line(&mut app, 2);
+    assert_eq!(app.help()[0], unreached);
+    key(&mut app, KeyCode::Enter);
+    assert_eq!(app.status, unreached);
+    // Nothing sent: the work waits for your review as it did.
+    let d = Db::load(&db).unwrap();
+    assert!(!d.review("run-agent").is_some_and(|v| v.closed));
+    assert_eq!(d.runs().len(), 1, "nothing asked");
+    drop(d);
+    keys(&mut app, &[KeyCode::Esc]);
+    stacked::reach::stand_in(&db, None);
 }
 
 #[test]
@@ -14874,19 +15226,23 @@ fn rejecting_or_sending_back_says_first_the_edits_it_asks_again() {
     let labels: Vec<String> = items(&app).into_iter().map(|(l, _)| l).collect();
     assert_eq!(labels, ["Reject them and close", "Keep reviewing"]);
     choose(&mut app, "Keep reviewing");
-    // Sent back, the same.
+    // Sent back, the same: said in its dialog, under its buttons, once the
+    // permission set changes the stack; a follow-up that only reads leaves
+    // the work, and what went on from it, as they are.
     down_to_review(&mut app, "edit run-1.");
     choose(&mut app, "Reply to it");
     save(&mut app, "Not quiet enough.");
     keys(&mut app, &[KeyCode::Esc]);
-    choose(&mut app, "Send it back to the agent");
-    let Mode::Menu(m) = &app.mode else { panic!("{:?}", app.mode) };
-    let note = m.note.clone().unwrap_or_default();
-    assert!(
-        note.contains("Sending this work back throws away the 1 edit that went on from it: 1 waiting for your review is thrown away. It is asked again once the agent's new work lands."),
-        "{note}"
-    );
-    choose(&mut app, "Send it back");
+    choose(&mut app, "Send it back to the agent…");
+    let throws = "Sending this work back throws away the 1 edit that went on from it: 1 waiting for your review is thrown away. It is asked again once the agent's new work lands.";
+    let note = |app: &App| app.ask_note(dialog(app)).join("\n");
+    keys(&mut app, &[KeyCode::Right]);
+    assert_eq!(dialog(&app).permission().map(|p| p.label()), Some("answer only"));
+    assert!(!note(&app).contains(throws), "{}", note(&app));
+    keys(&mut app, &[KeyCode::Right]);
+    assert_eq!(dialog(&app).permission().map(|p| p.label()), Some("change patch"));
+    assert!(note(&app).contains(throws), "{}", note(&app));
+    in_dialog(&mut app, "change patch", "high", "Send Now");
     assert!(app.status.ends_with("; 1 edit that went on from it asked again"), "{}", app.status);
 }
 
@@ -15476,6 +15832,7 @@ fn the_banner_tracks_the_open_comments_and_esc_goes_there_and_back() {
                 on: None,
                 was: None,
                 effort: None,
+                follow: false,
             }),
             ..n
         })
@@ -16238,6 +16595,7 @@ fn delete_takes_a_comment_back_from_the_queue_once_asked_its_comment_open_or_out
             on: None,
             was: None,
             effort: None,
+            follow: false,
         };
         Db::edit(&db, |d| d.set_note(Note { queued: Some(queued), ..n })).unwrap();
     };
@@ -16375,7 +16733,7 @@ fn a_round_sent_back_waiting_its_turn_is_taken_back_once_asked_the_work_staying_
     changing(&db, &change, &id, serde_json::json!("stack"));
     // Your answer to its reply sends the work back: the round waits its turn.
     Db::edit(&db, |d| stacked::held::answer(d, "run-1", 0, "Still too loud.")).unwrap();
-    let said = stacked::ask::send_back(&db, "s", "run-1", &Default::default(), None).unwrap();
+    let said = stacked::ask::send_back(&db, "s", "run-1", &Default::default(), None, None).unwrap();
     assert_eq!(said, "sent back to the agent (may change the code): 1 comment to ask again");
     let rev = Db::load(&db).unwrap().head("s").unwrap().0;
     app.refresh();
@@ -20396,6 +20754,19 @@ fn given(app: &mut App, n: usize) -> Vec<String> {
     until(app, |_| Some(read()).filter(|all| all.len() >= n), |_| format!("not {n} asks started: {:?}", read()))
 }
 
+/// Waits until the work of run `run` holds `n` follow-ups that came into
+/// its review, and no ask goes, as the editor has them.
+fn came_in(app: &mut App, run: &str, n: usize) {
+    until(
+        app,
+        |app| {
+            let came = app.db.run(run).and_then(|r| r.held.as_ref()).is_some_and(|h| h.follow_ups.len() >= n);
+            (came && !app.db.runs().iter().any(|r| r.state == stacked::db::RunState::Started)).then_some(())
+        },
+        |app| format!("no {n} follow-ups came into the review of {run}:\n{}", draw(app)),
+    )
+}
+
 /// Waits until `n` works wait for review on stack `s`, and no ask goes, as
 /// the editor has them: the keys after go to what landed.
 fn waiting(app: &mut App, db: &Path, n: usize) {
@@ -20550,7 +20921,7 @@ fn the_tools_the_agent_could_not_use_are_items_of_its_review_refused_until_allow
     keys(&mut app, &[KeyCode::Esc]);
     let note = menu_note(&app);
     assert!(note.contains("tools the agent could not use: ✓ 1 allowed for this work, ✗ 2 refused, · 1 noted"), "{note}");
-    assert!(items(&app).iter().any(|(l, ok)| l == "Send it back to the agent" && *ok), "{:?}", items(&app));
+    assert!(items(&app).iter().any(|(l, ok)| l == "Send it back to the agent…" && *ok), "{:?}", items(&app));
 }
 
 #[test]
@@ -20563,53 +20934,60 @@ fn sent_back_a_tool_allowed_goes_to_the_next_rounds_and_from_now_on_is_saved_fir
     keys(&mut app, &[KeyCode::Esc]);
     down_to_review(&mut app, "mcp__moz__get_bug");
     keys(&mut app, &[KeyCode::Enter]);
-    // Nothing written in the review: it goes back all the same, asked
-    // first, what the work may use and what is saved for good said.
+    // Nothing written in the review: it goes back all the same, its dialog
+    // saying, once the permission is set, what the work may use and what is
+    // saved for good. Asked to answer only, a follow-up: the work stays
+    // waiting for your review, and the follow-up is given what it was.
+    let work = app.reviewing.as_ref().map(|rv| rv.run.clone()).unwrap();
     keys(&mut app, &[KeyCode::Esc]);
-    choose(&mut app, "Send it back to the agent");
-    let note = menu_note(&app);
-    assert!(note.contains("This work may use, from the next round until its review closes: `Bash(searchfox-cli *)`."), "{note}");
-    assert!(note.contains(&format!("Sending it back saves for good, in {}, for answer-only asks: `mcp__moz__get_bug`.", local.display())), "{note}");
+    choose(&mut app, "Send it back to the agent…");
+    keys(&mut app, &[KeyCode::Right]);
+    let note = app.ask_note(dialog(&app)).join("\n");
+    assert!(note.contains("This work may use, from the follow-up on until its review closes: `Bash(searchfox-cli *)`."), "{note}");
+    assert!(note.contains(&format!("Asking the follow-up saves for good, in {}, for answer-only asks: `mcp__moz__get_bug`.", local.display())), "{note}");
     assert!(!local.exists(), "nothing saved before it is sent back");
     refused_with(&db, &serde_json::json!({"replies": {"c1": "Found it."}}), &[]);
-    choose(&mut app, "Send it back");
+    in_dialog(&mut app, "answer only", "high", "Send Now");
     assert!(
-        app.status.starts_with("sent back to the agent (answer only): 1 comment to ask again; allowed for this work: Bash(searchfox-cli *)"),
+        app.status.starts_with(
+            "asked as a follow-up (answer only): 1 comment; what the agent brings back comes into this review; allowed for this work: Bash(searchfox-cli *)"
+        ),
         "{}",
         app.status
     );
     assert!(app.status.contains(&format!("; saved for good in {}, for answer-only asks: `mcp__moz__get_bug`", local.display())), "{}", app.status);
+    assert_eq!(app.screen, Screen::Review);
     // Saved in the checkout's own settings alone, in answers' list of their
     // own: its other settings, and the settings' file, as they were.
     assert_eq!(std::fs::read_to_string(&local).unwrap(), "[agent]\nanswer_accepted = [\"mcp__moz__get_bug\"]\n");
     assert_eq!(git_said(&src, &["status", "--porcelain"]), "", "nothing of the repository's");
-    // The comment told, as a turn of yours.
-    let thread = thread_of(&db, "where is Foo?");
+    // The comment told, as your answer after the agent's reply, as its
+    // thread would be: the work waits for your review, its reply held.
+    let answer = Db::load(&db).unwrap().run(&work).unwrap().held.as_ref().unwrap().replies[0].answer.clone().unwrap_or_default();
     assert!(
-        thread.ends_with("On the tools you could not use:\n- `Bash(searchfox-cli *)`: you may use it now, for this work.\n- `mcp__moz__get_bug`: you may use it now, and from now on."),
-        "{thread}"
+        answer.ends_with("On the tools you could not use:\n- `Bash(searchfox-cli *)`: you may use it now, for this work.\n- `mcp__moz__get_bug`: you may use it now, and from now on."),
+        "{answer}"
     );
-    // The next round given both, its stream saying what it may use for this
-    // work.
-    waiting(&mut app, &db, 1);
+    // The follow-up given both, its stream saying what it may use for this
+    // work; what it brings back in the same review.
+    came_in(&mut app, &work, 1);
     let tools = given(&mut app, 2);
     assert!(tools[1].ends_with(",Bash(curl *),Bash(jq *),mcp__moz__get_bug,Bash(searchfox-cli *)"), "{}", tools[1]);
     assert!(!tools[0].contains("searchfox") && !tools[0].contains("mcp__moz"), "{}", tools[0]);
     let d = Db::load(&db).unwrap();
-    let round = stacked::held::queue(&d, "s")[0].id.clone();
+    let round = d.run(&work).unwrap().held.as_ref().unwrap().follow_ups[0].run.clone();
     let stream = stacked::ask::tail(&d, &round, 50);
     assert_eq!(stream.first().map(String::as_str), Some("✓ allowed for this work: Bash(searchfox-cli *)"), "{stream:?}");
     drop(d);
     // Its review closed: what it was allowed for itself ends there, as the
     // close says it; the next ask is given what was saved, not that.
-    keys(&mut app, &[KeyCode::Esc, KeyCode::Enter]);
     assert_eq!(app.screen, Screen::Review);
     keys(&mut app, &[KeyCode::Esc]);
     choose(&mut app, "Accept all remaining and Close");
     let note = menu_note(&app);
     assert!(note.contains("What this work was allowed for itself ends with its review: `Bash(searchfox-cli *)`."), "{note}");
     choose(&mut app, "Accept them and close");
-    assert!(app.status.starts_with("reviewed: 1 reply accepted"), "{}", app.status);
+    assert!(app.status.starts_with("reviewed: 2 replies accepted"), "{}", app.status);
     down_to(&mut app, "+LINE 39");
     keys(&mut app, &[KeyCode::Enter]);
     typed(&mut app, "and here?");
@@ -20699,8 +21077,8 @@ fn a_reply_on_a_tool_the_agent_could_not_use_sends_the_work_back_with_it() {
     keys(&mut app, &[KeyCode::Esc]);
     assert!(menu_note(&app).starts_with("You wrote 1 answer to what the agent said of a tool it could not use in this review"), "{}", menu_note(&app));
     refused_with(&db, &serde_json::json!({"replies": {"c1": "Found it."}}), &[]);
-    choose(&mut app, "Send it back to the agent");
-    assert!(app.status.starts_with("sent back to the agent (answer only): 1 comment to ask again"), "{}", app.status);
+    send_back_via(&mut app, "change patch", "high");
+    assert!(app.status.starts_with("sent back to the agent (may change the code): 1 comment to ask again"), "{}", app.status);
     let thread = thread_of(&db, "where is Foo?");
     assert!(thread.ends_with("On the tools you could not use:\n- `Bash(searchfox-cli *)`: still refused. Use rg as you did."), "{thread}");
     waiting(&mut app, &db, 1);

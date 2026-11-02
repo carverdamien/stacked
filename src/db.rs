@@ -246,6 +246,11 @@ fn named_by(r: &Run) -> (Vec<usize>, Vec<String>, Vec<String>) {
         revs.extend(c.from);
         patches.extend(c.patches.iter().cloned());
     }
+    // The follow-ups that came into its review: a try push's of them is
+    // what closing the review pushes as.
+    if let Some(h) = &r.held {
+        runs.extend(h.follow_ups.iter().map(|f| f.run.clone()));
+    }
     if let Some(a) = &r.ask {
         revs.extend(a.get("from").and_then(|f| f.as_u64()).map(|f| f as usize));
         patches.extend(a.get("patch").and_then(|p| p.get(0)).and_then(|p| p.as_str()).map(str::to_string));
@@ -625,7 +630,8 @@ pub struct Queued {
     #[serde(default, skip_serializing_if = "Stage::is_ready")]
     pub stage: Stage,
     /// The landed work, by its run, whose stack the ask starts from: a
-    /// round sent back from that work's review.
+    /// round sent back from that work's review, or a follow-up asked from
+    /// it (`follow`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on: Option<String>,
     /// Asked again: the run before, whose landed work, dropped, the new
@@ -638,6 +644,12 @@ pub struct Queued {
     /// goes at the agent's own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort: Option<Effort>,
+    /// With `on`: a follow-up that only reads (an answer, a build and test,
+    /// a try push's selection), asked from the review of that work, which
+    /// stays waiting for your review: what it brings back comes into that
+    /// review, rather than landing in its place.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub follow: bool,
 }
 
 impl Queued {

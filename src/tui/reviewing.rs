@@ -42,6 +42,13 @@ type View = (String, Vec<Vec<(String, Style)>>, Range<usize>);
 /// What leaving the review of a pull's comments says: they wait for it.
 pub(super) const PULL_WAITS: &str = "the comments pulled wait for your review: closing it files every one of them";
 
+/// The review's item that sends the work back to the agent, from the
+/// dialog it opens.
+pub(super) const SEND_BACK: &str = "Send it back to the agent…";
+
+/// How the work goes back, as the review's menu says under what you wrote.
+const SENT_HOW: &str = "Send it back to the agent… opens a dialog that sets what the agent may do, and its effort: a permission that changes the stack rejects this work, and the agent's new work lands in its place; one that only reads asks a follow-up, this work staying waiting for your review, and what the follow-up brings back comes into this review.";
+
 /// What the review's section of the answers made on the stack before the
 /// change is called, as its heading says it, and its line of what Esc says.
 pub(super) const ANSWERS: &str = "answers made on the stack before the change";
@@ -262,6 +269,20 @@ pub(super) struct Line {
     /// An answer made on the stack before the change, by its run: kept,
     /// restarted or stopped once the change is accepted.
     answer: Option<String>,
+    /// A follow-up asked from the review that is going, by its place among
+    /// them: to see what it asks, and how far the agent is.
+    following: Option<usize>,
+    /// What a build and test asked as a follow-up found: to read.
+    found: Option<Found>,
+}
+
+/// What a build and test asked as a follow-up from the review found, a
+/// line of the review's list: its reply `0` among the work's; or what
+/// follow-up `0` of the work found of a patch, its finding `1`.
+#[derive(Debug, Clone, PartialEq)]
+pub(super) enum Found {
+    Reply(usize),
+    Patch(usize, usize),
 }
 
 impl Line {
@@ -278,24 +299,72 @@ impl Line {
             stacked: false,
             tool: None,
             answer: None,
+            following: None,
+            found: None,
         }
     }
 
     /// Whether the cursor goes on it: a part, a comment that asked, what
     /// you wrote, what the linter reported, stacked's comment, a tool the
-    /// agent could not use, or an answer made on the stack before the
-    /// change; not a section's title.
+    /// agent could not use, an answer made on the stack before the change,
+    /// a follow-up going, or what a build and test asked as one found; not
+    /// a section's title.
     fn selectable(&self) -> bool {
-        self.part.is_some() || self.asking.is_some() || self.yours.is_some() || self.report.is_some() || self.stacked || self.tool.is_some() || self.answer.is_some()
+        self.part.is_some()
+            || self.asking.is_some()
+            || self.yours.is_some()
+            || self.report.is_some()
+            || self.stacked
+            || self.tool.is_some()
+            || self.answer.is_some()
+            || self.following.is_some()
+            || self.found.is_some()
+    }
+
+    /// What it is, to find it again once the list changes under it (a
+    /// follow-up landing): the part, the comment, what you wrote, the
+    /// report, the tool, the answer, the follow-up or what was found it is.
+    fn key(&self) -> Option<String> {
+        if let Some(p) = self.part {
+            return Some(format!("{}{}", p.key(), self.entry.map_or(String::new(), |e| format!(" entry {e}"))));
+        }
+        let key = match (&self.asking, &self.yours, &self.report, &self.tool, &self.answer, &self.following, &self.found) {
+            (Some(k), ..) => format!("asking {k}"),
+            (_, Some(y), ..) => format!("yours {y:?}"),
+            (_, _, Some(k), ..) => format!("report {k}"),
+            (_, _, _, Some(k), ..) => format!("tool {k}"),
+            (_, _, _, _, Some(id), ..) => format!("answer {id}"),
+            (_, _, _, _, _, Some(k), _) => format!("following {k}"),
+            (_, _, _, _, _, _, Some(f)) => format!("found {f:?}"),
+            _ if self.stacked => "stacked".to_string(),
+            _ => return None,
+        };
+        Some(key)
     }
 }
 
-/// How a review closes, for what that asks again.
+/// How a review closes, for what that asks again: or how the work goes back
+/// to the agent while it stays open, followed up.
 #[derive(Clone, Copy, PartialEq)]
 enum Closing {
     Accepting,
     Rejecting,
     SendingBack,
+    FollowingUp,
+}
+
+/// Where a follow-up going stands, said: with the agent, or waiting its
+/// turn.
+fn following_said(f: &ask::Following) -> &'static str {
+    if f.run.is_some() { "with the agent" } else { "waiting its turn" }
+}
+
+/// What a follow-up going is, said, as the review's line of it says it:
+/// how it was asked and at what effort, then how many comments.
+fn following_what(f: &ask::Following) -> String {
+    let at = f.effort.map_or(String::new(), |e| format!(", at {}", e.name()));
+    let n = f.notes.len();
+    format!("{}{at} · {n} comment{}", f.way.said(), if n == 1 { "" } else { "s" })
 }
 
 /// What a part's mark says, as the list shows it.
@@ -495,7 +564,15 @@ impl App {
         self.review_lines()
             .get(rv.sel)
             .is_some_and(|l| {
-                l.asking.is_none() && l.yours.is_none() && l.report.is_none() && !l.stacked && l.tool.is_none() && l.answer.is_none() && matches!(l.part, Some(Part::Stack) | None)
+                l.asking.is_none()
+                    && l.yours.is_none()
+                    && l.report.is_none()
+                    && !l.stacked
+                    && l.tool.is_none()
+                    && l.answer.is_none()
+                    && l.following.is_none()
+                    && l.found.is_none()
+                    && matches!(l.part, Some(Part::Stack) | None)
             })
             && self.review_stacks().is_some()
     }
@@ -664,15 +741,16 @@ impl App {
     /// in the editor in the editor alone.
     fn review_rows(&self, p: &Patch, w: usize) -> Vec<Row> {
         let mut notes: Vec<Note> = Vec::new();
-        if let Some((_, h)) = self.reviewing.as_ref().and_then(|rv| self.work(&rv.run)) {
+        if let Some((r, h)) = self.reviewing.as_ref().and_then(|rv| self.work(&rv.run)) {
+            let taken = self.db.review(&r.id).map(|v| v.taken.clone()).unwrap_or_default();
             notes = self
                 .db
                 .notes(&p.change)
                 .into_iter()
                 .filter(|n| self.review_shows(n))
-                .map(|n| match h.replies.iter().find(|rp| rp.change == n.change && rp.id == n.id) {
-                    Some(rp) => Note { text: rp.after(&n.text), ..n.clone() },
-                    None => n.clone(),
+                .map(|n| Note {
+                    text: h.thread_but(&n.change, &n.id, &n.text, &taken),
+                    ..n.clone()
                 })
                 .collect();
             notes.extend(h.opened.iter().filter(|n| n.change == p.change).cloned());
@@ -689,10 +767,12 @@ impl App {
     }
 
     /// Whether comment `n` is one of the work reviewed: one its ask was
-    /// about, or one you wrote in its review, whoever opened its thread.
+    /// about, one you wrote in its review, whoever opened its thread, or one
+    /// a follow-up asked from the review was asked about.
     pub(super) fn review_shows(&self, n: &Note) -> bool {
-        let Some((r, _)) = self.reviewing.as_ref().and_then(|rv| self.work(&rv.run)) else { return false };
-        crate::held::asking_of(r).iter().any(|(c, i)| *c == n.change && *i == n.id) || n.review.as_deref() == Some(r.id.as_str())
+        let Some((r, h)) = self.reviewing.as_ref().and_then(|rv| self.work(&rv.run)) else { return false };
+        let at = (n.change.clone(), n.id.clone());
+        crate::held::asking_of(r).contains(&at) || n.review.as_deref() == Some(r.id.as_str()) || h.followed().contains(&at)
     }
 
     /// What you wrote in the review, counted: the comments written there,
@@ -723,7 +803,8 @@ impl App {
             }
             return;
         };
-        let replied = self.work(&rv.run).and_then(|(_, h)| h.replies.iter().position(|rp| rp.change == p.change && rp.id == id));
+        // Your answer to the last reply to it, a follow-up's if one replied.
+        let replied = self.work(&rv.run).and_then(|(_, h)| h.replies_to(&p.change, &id).last().copied());
         match (replied, self.db.note(&p.change, &id).map(|n| last_mine(&n.text).is_some())) {
             (Some(k), _) => self.review_answer(k),
             (None, Some(true)) => self.edit_mine(p.change, id, Focus::Diff),
@@ -739,6 +820,20 @@ impl App {
     /// if you wrote one.
     pub(super) fn review_answer(&mut self, k: usize) {
         let Some(run) = self.reviewing.as_ref().map(|rv| rv.run.clone()) else { return };
+        // Not to a reply a later one follows, nor while the follow-up you
+        // asked works on its comment.
+        if let Some((_, h)) = self.work(&run)
+            && let Some(rp) = h.replies.get(k)
+        {
+            if !h.last_reply(k) {
+                self.status = crate::held::LATER_REPLY.into();
+                return;
+            }
+            if ask::following(&self.db, &run).contains(&(rp.change.clone(), rp.id.clone())) {
+                self.status = crate::held::FOLLOWING.into();
+                return;
+            }
+        }
         let was = self.work(&run).and_then(|(_, h)| h.replies.get(k)?.answer.clone()).unwrap_or_default();
         self.write(Target::Answer { run, k }, Focus::Diff, &was);
     }
@@ -1111,6 +1206,7 @@ impl App {
         // Its change, accepted or rejected as marked, else rejected.
         let accepting = self.reviewing.as_ref().and_then(|rv| rv.marks.get(&Part::Stack.key()).copied()) == Some(true);
         said.extend(self.review_again(if accepting { Closing::Accepting } else { Closing::Rejecting }));
+        said.extend(self.follow_stopped(Closing::Rejecting));
         // A try push's: what closing pushes, of the tasks accepted already.
         #[cfg(feature = "try-push")]
         said.extend(self.push_said(Some(false)));
@@ -1133,11 +1229,11 @@ impl App {
     }
 
     /// The work sent back to the agent, with what you wrote in its review:
-    /// another round, from it, at `effort`, else at the effort the work was
-    /// asked at; the review left.
-    pub(super) fn review_send_back(&mut self, effort: Option<Effort>) {
+    /// another round, from it, in `way`, of the whole stack if `whole`, at
+    /// `effort`, as its dialog set them; the review left.
+    pub(super) fn review_send_back(&mut self, way: Way, whole: bool, effort: Effort) {
         let Some(rv) = self.reviewing.clone() else { return };
-        let sent = ask::send_back(&self.path, &self.stack, &rv.run, &rv.marks, effort);
+        let sent = ask::send_back(&self.path, &self.stack, &rv.run, &rv.marks, Some(effort), Some((way, whole)));
         self.reload();
         match sent {
             Ok(said) => {
@@ -1146,6 +1242,93 @@ impl App {
                 self.launch();
             }
             Err(e) => self.status = e.0,
+        }
+    }
+
+    /// A follow-up that only reads asked about what you wrote in the review,
+    /// in `way`, at `effort`, as its dialog set them: the work stays waiting
+    /// for your review, its marks as they are, and the review stays open,
+    /// what the follow-up brings back to come into it.
+    pub(super) fn review_follow_up(&mut self, way: Way, effort: Effort) {
+        let Some(rv) = self.reviewing.clone() else { return };
+        let asked = ask::follow_up(&self.path, &self.stack, &rv.run, &rv.marks, way, effort);
+        self.reload();
+        match asked {
+            Ok(said) => {
+                self.status = said;
+                // On the follow-up's line, which says it goes.
+                if let Some(at) = self.review_lines().iter().position(|l| l.following.is_some())
+                    && let Some(rv) = self.reviewing.as_mut()
+                {
+                    (rv.sel, rv.in_main, rv.in_patch) = (at, false, false);
+                }
+                self.launch();
+            }
+            Err(e) => self.status = e.0,
+        }
+    }
+
+    /// What the review's line the cursor is on is, to find it again once
+    /// the list changes under it: what landed since, a follow-up's work
+    /// coming in, adds lines to it, and takes the follow-up's away.
+    pub(super) fn review_line_key(&self) -> Option<String> {
+        let rv = self.reviewing.as_ref()?;
+        self.review_lines().get(rv.sel)?.key()
+    }
+
+    /// The review's cursor back on the line `key` names, if the list still
+    /// has it; else, its line gone, on the line before it that the cursor
+    /// can be on.
+    pub(super) fn review_line_back(&mut self, key: Option<String>) {
+        let Some(key) = key else { return };
+        let lines = self.review_lines();
+        let Some(rv) = self.reviewing.as_mut() else { return };
+        if let Some(at) = lines.iter().position(|l| l.key().as_deref() == Some(key.as_str())) {
+            rv.sel = at;
+        } else if !lines.get(rv.sel).is_some_and(Line::selectable) {
+            let before = lines.iter().enumerate().take(rv.sel + 1).rev().find(|(_, l)| l.selectable()).map(|(i, _)| i);
+            rv.sel = before.or_else(|| lines.iter().position(Line::selectable)).unwrap_or(0);
+        }
+    }
+
+    /// The follow-ups asked from the review that are going: waiting their
+    /// turn, or with the agent.
+    pub(super) fn review_following(&self) -> Vec<ask::Following> {
+        self.reviewing.as_ref().map(|rv| ask::follow_ups_going(&self.db, &rv.run)).unwrap_or_default()
+    }
+
+    /// What sending the work reviewed back does besides, as the dialog that
+    /// sends it says under its buttons: with a permission that `changes`
+    /// the stack, the edits that went on from it asked again, the follow-ups
+    /// going stopped, and what the next round may use; with one that only
+    /// reads, what the follow-up may use.
+    pub(super) fn sending_back_said(&self, changes: bool) -> Vec<String> {
+        let how = if changes { Closing::SendingBack } else { Closing::FollowingUp };
+        let mut out: Vec<String> = Vec::new();
+        if changes {
+            out.extend(self.review_again(Closing::SendingBack));
+            out.extend(self.follow_stopped(Closing::SendingBack));
+        }
+        out.extend(self.tools_note(how));
+        out
+    }
+
+    /// What closing the review, or sending the work back (`how`), does to
+    /// the follow-ups asked from it that are going, said: each is stopped,
+    /// and what it would bring back thrown away. None while none goes.
+    fn follow_stopped(&self, how: Closing) -> Option<String> {
+        let going = self.review_following();
+        let doing = if how == Closing::SendingBack { "Sending this work back" } else { "Closing the review" };
+        let from = if how == Closing::SendingBack { "from its review" } else { "from it" };
+        match going.len() {
+            0 => None,
+            1 => Some(format!(
+                "{doing} stops the follow-up you asked {from}, which is {}: what it would bring back is thrown away, and its comments say that you stopped it.",
+                following_said(&going[0])
+            )),
+            n => Some(format!(
+                "{doing} stops the {n} follow-ups you asked {from}: what they would bring back is thrown away, and their comments say that you stopped them."
+            )),
         }
     }
 
@@ -1159,6 +1342,25 @@ impl App {
         let Some(rv) = &self.reviewing else { return out };
         let Some((r, h)) = self.work(&rv.run) else { return out };
         let line = |text: String, style: Style| Line::new(vec![(text, style)]);
+        // A follow-up asked from the review, going: first, as what comes of
+        // it comes into the review, and closing the review stops it. Marked
+        // as the comments pane marks a comment with the agent, and one
+        // waiting its turn.
+        let going = ask::follow_ups_going(&self.db, &rv.run);
+        if !going.is_empty() {
+            let heading = match going.as_slice() {
+                [f] => format!(" the follow-up you asked, {}", following_said(f)),
+                _ => " the follow-ups you asked".to_string(),
+            };
+            out.push(line(heading, color::file()));
+            for (k, f) in going.iter().enumerate() {
+                let mark = if f.run.is_some() { "●" } else { "◌" };
+                out.push(Line {
+                    following: Some(k),
+                    ..line(format!("   {mark} {}", following_what(f)), Style::new())
+                });
+            }
+        }
         let asking = self.asking_open();
         if !asking.is_empty() {
             out.push(line((if asking.len() == 1 { " asking comment" } else { " asking comments" }).into(), color::file()));
@@ -1258,6 +1460,29 @@ impl App {
                 });
             }
         }
+        // What a build and test asked as a follow-up found, to read, nothing
+        // to accept or reject: its replies, where each goes, then what it
+        // found of each patch, by its title.
+        if h.found() {
+            out.push(title(&format!(" {}, to read", crate::held::FOUND)));
+            let taken = self.db.review(&r.id).map(|v| v.taken.clone()).unwrap_or_default();
+            for (k, rp) in h.replies.iter().enumerate().filter(|(k, rp)| rp.read && !taken.contains(k)) {
+                let at = self.db.note(&rp.change, &rp.id).map_or("a comment deleted".to_string(), |n| if n.on_stack() { "the stack".to_string() } else { n.where_said() });
+                out.push(Line {
+                    found: Some(Found::Reply(k)),
+                    ..line(format!("   {at} · {}", crate::markdown::first_line(&rp.text)), Style::new())
+                });
+            }
+            for (j, f) in h.follow_ups.iter().enumerate() {
+                for (i, n) in f.found.iter().enumerate() {
+                    let said = crate::thread::thread_turns(&n.text).first().map(|t| crate::markdown::first_line(&t.body)).unwrap_or_default();
+                    out.push(Line {
+                        found: Some(Found::Patch(j, i)),
+                        ..line(format!("   {} · {said}", n.preview), Style::new())
+                    });
+                }
+            }
+        }
         // The tools the agent could not use, each by the rule that would let
         // it, as the review marks it, in a word or two after it, the list
         // being narrow: refused, allowed for this work or from now on; those
@@ -1332,7 +1557,11 @@ impl App {
                 yours.push((text, Yours::Comment(n.change.clone(), n.id.clone())));
             }
         }
-        for (k, rp) in h.replies.iter().enumerate().filter(|(_, rp)| rp.answer.is_some()) {
+        // Your answers each to the last reply of its comment, not one gone
+        // with a follow-up still going.
+        let busy = ask::following(&self.db, &rv.run);
+        for k in crate::held::answered(h, &busy) {
+            let rp = &h.replies[k];
             let at = self.db.note(&rp.change, &rp.id).map_or("a comment".to_string(), |n| n.where_said());
             let text = format!("   ✎ your answer on {at} · {}", crate::markdown::first_line(rp.answer.as_deref().unwrap_or("")));
             yours.push((text, Yours::Answer(k)));
@@ -1382,6 +1611,14 @@ impl App {
         if let Some(y) = &line.yours {
             return self.yours_view(r, h, y, w);
         }
+        // A follow-up going: what it asks, and how far the agent is.
+        if let Some(k) = line.following {
+            return self.following_view(&rv.run, k, w);
+        }
+        // What a build and test asked as a follow-up found: to read.
+        if let Some(f) = &line.found {
+            return self.found_view(r, h, f, w);
+        }
         // What the linter reported and did not fix: its lines, to read.
         if let Some(l) = h.lint.as_ref()
             && let Some(e) = line.report.and_then(|k| l.errors.get(k))
@@ -1427,7 +1664,9 @@ impl App {
                             Goes::Reopens(None) => return (format!(" {}: accepting it reopens the comment", closed_said(rp)), vec![], 0..0),
                             Goes::Nowhere => return ("its comment was deleted: nothing to answer".into(), vec![], 0..0),
                         };
-                        let text = rp.after(&n.text);
+                        // After the replies before it there, a follow-up's.
+                        let taken = self.db.review(&r.id).map(|v| v.taken.clone()).unwrap_or_default();
+                        let text = h.thread_upto(k, &n.text, &taken);
                         let said = match &rp.promote {
                             Some(why) => format!(" its reply, as it would be in its thread; then it moves to the stack's comments: {why}"),
                             None if closed => format!(" {}, as it would be in its thread: accepting it reopens the comment", closed_said(rp)),
@@ -1520,12 +1759,82 @@ impl App {
                 let Some(n) = self.db.note(&rp.change, &rp.id) else {
                     return ("its comment was deleted: nothing to answer".into(), vec![], 0..0);
                 };
-                let n = Note { text: rp.after(&n.text), ..n.clone() };
+                let taken = self.db.review(&r.id).map(|v| v.taken.clone()).unwrap_or_default();
+                let n = Note {
+                    text: h.thread_upto(*k, &n.text, &taken),
+                    ..n.clone()
+                };
                 self.comment_view(r, &n, " your answer, after the work's reply, as it would be in its thread".into(), w)
             }
             #[cfg(feature = "try-push")]
             Yours::TaskAnswer(k) => self.task_view(h, *k, w),
             Yours::ToolAnswer(k) => self.tool_view(h, *k, w),
+        }
+    }
+
+    /// Follow-up `k` going, of the review of run `run`, `w` wide: the
+    /// comments it asks about, each by where it is and how it starts; then,
+    /// with the agent, the last lines the agent wrote; then what closing the
+    /// review does to it. All of it is the part.
+    fn following_view(&self, run: &str, k: usize, w: usize) -> View {
+        let going = ask::follow_ups_going(&self.db, run);
+        let Some(f) = going.get(k) else { return (" this follow-up is no longer going".into(), vec![], 0..0) };
+        let w = w.max(20);
+        let mut lines: Vec<Vec<(String, Style)>> = Vec::new();
+        fn said_in(lines: &mut Vec<Vec<(String, Style)>>, said: &str, w: usize, st: Style) {
+            lines.extend(wrap(said, w).into_iter().map(|l| vec![(l, st)]));
+        }
+        let at = f.effort.map_or(String::new(), |e| format!(", at {}", e.name()));
+        said_in(&mut lines, &format!("The follow-up asks the agent about these comments, {}{at}:", f.way.said()), w, Style::new());
+        for (c, i) in &f.notes {
+            if let Some(n) = self.db.note(c, i) {
+                let place = if n.on_stack() { "the stack".to_string() } else { n.where_said() };
+                said_in(&mut lines, &format!("  {place} · {}", first_words(&n.text)), w, Style::new());
+            }
+        }
+        lines.push(vec![(String::new(), Style::new())]);
+        match &f.run {
+            Some(id) => {
+                said_in(&mut lines, "The agent works on the follow-up. The last lines it wrote:", w, color::dim());
+                for l in ask::tail(&self.db, id, 12) {
+                    said_in(&mut lines, &format!("  {l}"), w, Style::new());
+                }
+            }
+            None => said_in(&mut lines, "The follow-up waits its turn in the agent's queue: nothing is asked yet.", w, color::dim()),
+        }
+        lines.push(vec![(String::new(), Style::new())]);
+        said_in(
+            &mut lines,
+            "Closing the review stops the follow-up: what it would bring back is thrown away, and its comments say that you stopped it.",
+            w,
+            color::note(),
+        );
+        let n = lines.len();
+        (format!(" the follow-up you asked, {}: what it brings back comes into this review", following_said(f)), lines, 0..n)
+    }
+
+    /// What a build and test asked as a follow-up found, `f`, of work `h`
+    /// of run `r`, `w` wide: its reply, as it would be in its thread, after
+    /// the replies before it there; or what it found of a patch, on the
+    /// patch's title. And the lines that are its own.
+    fn found_view(&self, r: &Run, h: &Work, f: &Found, w: usize) -> View {
+        match f {
+            Found::Reply(k) => {
+                let Some(rp) = h.replies.get(*k) else { return (String::new(), vec![], 0..0) };
+                let Some(n) = self.db.note(&rp.change, &rp.id) else {
+                    return ("its comment was deleted: nothing to read there".into(), vec![], 0..0);
+                };
+                let taken = self.db.review(&r.id).map(|v| v.taken.clone()).unwrap_or_default();
+                let n = Note {
+                    text: h.thread_upto(*k, &n.text, &taken),
+                    ..n.clone()
+                };
+                self.comment_view(r, &n, format!(" {}, as it would be in its thread: to read", crate::held::FOUND), w)
+            }
+            Found::Patch(j, i) => {
+                let Some(n) = h.follow_ups.get(*j).and_then(|f| f.found.get(*i)) else { return (String::new(), vec![], 0..0) };
+                self.comment_view(r, n, format!(" {} of this patch: to read, never filed", crate::held::FOUND), w)
+            }
         }
     }
 
@@ -2120,6 +2429,15 @@ impl App {
         if line.stacked {
             return "enter: nothing, stacked's comment is to read";
         }
+        if let Some(k) = line.following {
+            return match self.review_following().get(k).is_some_and(|f| f.run.is_some()) {
+                true => "enter: nothing, the follow-up runs",
+                false => "enter: nothing, the follow-up waits its turn",
+            };
+        }
+        if line.found.is_some() {
+            return "enter: nothing, what the build and test found is to read";
+        }
         if let Some(k) = line.tool {
             return match self.tool_item(k) {
                 Some(t) if !t.offered() => "enter: nothing, this tool is noted, not offered",
@@ -2288,16 +2606,23 @@ impl App {
     /// What Esc asks in the review: what is marked, said; then save the
     /// marks, throw away those made since it was opened, or close it.
     pub(super) fn review_dialog(&self) -> Menu {
+        // Sent back from the dialog the item opens, which sets how; not
+        // while a follow-up asked from the review goes.
+        let run = self.reviewing.as_ref().map(|rv| rv.run.clone()).unwrap_or_default();
+        let going = self.review_following();
+        let back = Item::new(SEND_BACK, Action::AskAgent(AskOf::SendBack(run))).when(going.is_empty());
+        let grayed = |m: &mut Menu| {
+            if !going.is_empty() {
+                let said = format!("{SEND_BACK} is grayed while the follow-up you asked from this review goes: what it brings back comes into this review once it lands.");
+                m.note = Some(m.note.take().map_or(said.clone(), |n| format!("{n}\n{said}")));
+            }
+        };
         // What you wrote in it: it goes back to the agent, neither accepted
         // nor rejected.
         let (comments, answers) = self.review_yours();
         if comments + answers > 0 {
-            // What goes back with it asked first: what it drops, and what
-            // the next round may use.
-            let asks = self.review_again(Closing::SendingBack).is_some() || self.tools_note(Closing::SendingBack).is_some();
-            let back = if asks { Action::AskSendBack } else { Action::SendBack };
             let items = vec![
-                Item::new("Send it back to the agent", back).with(self.effort_choices(self.review_effort())),
+                back,
                 Item::new("Save", Action::ReviewSave),
                 Item::new("Discard", Action::ReviewDiscard),
                 Item::line(),
@@ -2324,9 +2649,10 @@ impl App {
                 }
             }
             m.note = Some(format!(
-                "You wrote {} in this review, so the work is not accepted: it goes back to the agent, which is asked again, starting from this work.",
+                "You wrote {} in this review, so the work is not accepted: it goes back to the agent, which is asked again, starting from this work.\n{SENT_HOW}",
                 what.join(" and "),
             ));
+            grayed(&mut m);
             m.say_parts(self.review_summary());
             return m;
         }
@@ -2342,9 +2668,10 @@ impl App {
             Item::new("Close review", if self.review_close_menu().is_some() { Action::AskClose } else { Action::ReviewClose(None) }).when(done && !waits(None)),
         ];
         // A tool allowed: the work may go back to the agent, to try again
-        // with it, though you wrote nothing; asked first.
-        if self.review_writable() && self.tools_allowed() {
-            items.push(Item::new("Send it back to the agent", Action::AskSendBack).with(self.effort_choices(self.review_effort())));
+        // with it, though you wrote nothing, as its dialog sets.
+        let tools = self.review_writable() && self.tools_allowed();
+        if tools {
+            items.push(back);
         }
         // What remains, accepted or rejected together, a section of its
         // own; over it, whether the comments that asked close with it, and
@@ -2376,6 +2703,20 @@ impl App {
         if (done && waits(None)) || (!done && (waits(Some(true)) || waits(Some(false)))) {
             let said = self.answers_wait_said();
             m.note = Some(m.note.take().map_or(said.clone(), |n| format!("{n}\n{said}")));
+        }
+        // A follow-up going: closing the review stops it.
+        if let Some(f) = going.first() {
+            let said = match going.len() {
+                1 => format!(
+                    "The follow-up you asked from this review is {}: what it brings back comes into this review once it lands. Closing the review stops it.",
+                    following_said(f)
+                ),
+                n => format!("The {n} follow-ups you asked from this review go: what they bring back comes into this review once they land. Closing the review stops them."),
+            };
+            m.note = Some(m.note.take().map_or(said.clone(), |n| format!("{n}\n{said}")));
+        }
+        if tools {
+            grayed(&mut m);
         }
         m
     }
@@ -2497,6 +2838,7 @@ impl App {
         let builds = accepting.then(|| self.review_builds()).flatten();
         let stop = builds.is_some();
         said.extend(builds);
+        said.extend(self.follow_stopped(Closing::Accepting));
         // A try push's: what closing pushes.
         #[cfg(feature = "try-push")]
         said.extend(self.push_said(Some(accept)));
@@ -2514,6 +2856,7 @@ impl App {
         let builds = accepting.then(|| self.review_builds()).flatten();
         let stop = builds.is_some();
         said.extend(builds);
+        said.extend(self.follow_stopped(Closing::Accepting));
         #[cfg(feature = "try-push")]
         said.extend(self.push_said(None));
         said.extend(self.tools_note(if accepting { Closing::Accepting } else { Closing::Rejecting }));
@@ -2551,17 +2894,21 @@ impl App {
             Err(why) => format!("{} cannot be saved for good: {why}.", crate::refusals::listed(rules)),
         };
         match how {
-            Closing::SendingBack => {
+            Closing::SendingBack | Closing::FollowingUp => {
                 let mut may = work.clone();
                 if !always.is_empty() && self.tool_local().is_err() {
                     may.extend(always.iter().cloned());
                 }
                 if !may.is_empty() {
-                    out.push(format!("This work may use, from the next round until its review closes: {}.", crate::refusals::listed(&may)));
+                    out.push(match how {
+                        Closing::SendingBack => format!("This work may use, from the next round until its review closes: {}.", crate::refusals::listed(&may)),
+                        _ => format!("This work may use, from the follow-up on until its review closes: {}.", crate::refusals::listed(&may)),
+                    });
                 }
                 if !always.is_empty() {
+                    let doing = if how == Closing::SendingBack { "Sending it back" } else { "Asking the follow-up" };
                     out.push(match self.tool_local() {
-                        Ok(_) => saved("Sending it back", &always),
+                        Ok(_) => saved(doing, &always),
                         Err(why) => format!("{} cannot be saved for good, so it is allowed for this work instead: {why}.", crate::refusals::listed(&always)),
                     });
                 }
@@ -2596,7 +2943,9 @@ impl App {
         }
         let n = accepted.len();
         let tasks = crate::try_push::tasks_said(n);
-        let what = match ask::run_scope(&self.db, &r.id) {
+        // Pushed as the ask that selected them: the work's own, or the try
+        // push asked as a follow-up from its review.
+        let what = match crate::try_push::asker(&self.db, r).map(|i| i.scope) {
             Some(Scope::Patch(c)) => {
                 let at = self.db.stack(&r.stack).ok().and_then(|s| s.patches.iter().position(|p| self.db.patch(p).change == c));
                 match at {
@@ -2633,17 +2982,6 @@ impl App {
         Some(out)
     }
 
-    /// What sending the work back asks first: what went on from it, asked
-    /// again; the menu on Keep reviewing. It goes at the effort the menu
-    /// before picked, unless another is picked here.
-    pub(super) fn review_send_back_ask(&self) -> Menu {
-        let back = Item::new("Send it back", Action::SendBack).with(self.effort_choices(self.at_effort.or(self.review_effort())));
-        let mut m = Menu::ask("send the work back to the agent?", back, "Keep reviewing", true);
-        let said: Vec<String> = self.review_again(Closing::SendingBack).into_iter().chain(self.tools_note(Closing::SendingBack)).collect();
-        m.note = (!said.is_empty()).then(|| said.join("\n"));
-        m
-    }
-
     /// The name of the effort the work reviewed was asked at, which heads
     /// the agent's words the review shows as comments of its own (why it
     /// selected a task, what it said of a tool it could not use): none for
@@ -2651,13 +2989,6 @@ impl App {
     fn reviewed_at(&self) -> Option<&'static str> {
         let rv = self.reviewing.as_ref()?;
         ask::effort_said(self.db.run(&rv.run)?)
-    }
-
-    /// The effort the work reviewed was asked at, which it goes back to the
-    /// agent at unless another is picked: none for work of before.
-    fn review_effort(&self) -> Option<Effort> {
-        let rv = self.reviewing.as_ref()?;
-        ask::info(self.db.run(&rv.run)?)?.effort
     }
 
     /// A question before closing the review, the parts not marked as `rest`
@@ -2823,12 +3154,22 @@ impl App {
             items.push(Item::new(edit, Action::EditYours));
             items.push(Item::new(back, Action::TakeYoursBack));
         }
-        // A reply of the agent's: answered, the work goes back to it.
+        // A reply of the agent's, or one a build and test asked as a
+        // follow-up brought, to read: answered, the work goes back to it.
+        // Not one a later reply follows in its thread, which answered what
+        // you said after it; nor while a follow-up works on its comment.
+        let reply = lines.get(rv.sel).and_then(|l| match (l.part, l.found.clone()) {
+            (Some(Part::Reply(k)), _) | (_, Some(Found::Reply(k))) => Some(k),
+            _ => None,
+        });
         if self.review_writable()
-            && let Some(Part::Reply(k)) = lines.get(rv.sel).and_then(|l| l.part)
+            && let Some(k) = reply
+            && let Some((_, h)) = self.work(&rv.run)
         {
-            let answered = self.work(&rv.run).is_some_and(|(_, h)| h.replies.get(k).is_some_and(|rp| rp.answer.is_some()));
-            items.push(Item::new(if answered { "Edit your answer to it" } else { "Reply to it" }, Action::Answer(k)));
+            let answered = h.replies.get(k).is_some_and(|rp| rp.answer.is_some());
+            let busy = h.replies.get(k).is_some_and(|rp| ask::following(&self.db, &rv.run).contains(&(rp.change.clone(), rp.id.clone())));
+            let item = Item::new(if answered { "Edit your answer to it" } else { "Reply to it" }, Action::Answer(k));
+            items.push(item.when(h.last_reply(k) && !busy));
         }
         // A try push's task: why the agent selected it, answered, the work
         // goes back to the agent.
