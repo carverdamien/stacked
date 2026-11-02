@@ -54,6 +54,15 @@
 //! failed too, once seen (`land_orphans`). The wrappers of the asks a
 //! process starts are waited for once they have exited (`reap`), so that
 //! none is left a zombie, which would look as if its agent still ran.
+//!
+//! Asks start one at a time, of every process working on the database:
+//! under the launch lock (`launch_lock`), from reading the queue to the
+//! spawn of their agents, the worktree each takes made or moved meanwhile.
+//! Whatever else stacked does to its own worktrees is done under it too:
+//! filing what an ask did there, landing one left behind, making the
+//! editor's ahead and removing them, a lint job's and a try push's made
+//! ready. It is never held while an agent works. It is taken before the
+//! database's lock, never under it.
 
 use std::collections::{HashMap, HashSet};
 use std::io::BufRead;
@@ -1091,11 +1100,49 @@ fn position(db: &Db, name: &str, change: &str) -> Option<usize> {
         .position(|id| db.patch(id).change == change)
 }
 
+/// For the tests: the gate a test sets, `$STACKED_TEST_GATE`, a folder.
+/// This process says it is there, with a file named after its pid, and
+/// waits until `go` is there too, so that the processes a test starts send
+/// at the same instant. Nothing, unset.
+fn at_the_gate() {
+    if let Some(gate) = std::env::var_os("STACKED_TEST_GATE").map(PathBuf::from) {
+        let _ = std::fs::write(gate.join(std::process::id().to_string()), "");
+        until_go(&gate);
+    }
+}
+
+/// For the tests: the folder `$STACKED_TEST_HOLD` names, if set. A start
+/// that has taken its worktree says so there (`start-RUN`), then waits
+/// until `go` is there too, holding the launch lock as a slow start would
+/// (`held_at_start`); a process that finds the launch lock held says so
+/// there (`waits-PID`), then waits for it (`launch_lock`).
+fn test_hold() -> Option<PathBuf> {
+    std::env::var_os("STACKED_TEST_HOLD").map(PathBuf::from)
+}
+
+/// A start of run `id` held midway, its worktree taken, while the tests say
+/// (`test_hold`).
+fn held_at_start(id: &str) {
+    if let Some(hold) = test_hold() {
+        let _ = std::fs::write(hold.join(format!("start-{id}")), "");
+        until_go(&hold);
+    }
+}
+
+/// Waits until `go` is in the folder `at`, a test's: a few minutes at most.
+fn until_go(at: &Path) {
+    let started = std::time::Instant::now();
+    while !at.join("go").exists() && started.elapsed() < std::time::Duration::from_secs(180) {
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+}
+
 /// Sends `notes` (change, id) of stack `name` to the agent, in `way`, to
 /// the whole stack if `whole`, at `effort`: they wait as ready, together,
 /// and go as soon as nothing stands in their way. What they wait on, if
 /// they could not go at once.
 pub fn send(db_path: &Path, name: &str, notes: &[(String, String)], way: Way, whole: bool, effort: Effort) -> Result<Option<String>> {
+    at_the_gate();
     queue(db_path, name, notes, way, whole, effort)?;
     launch(db_path)?;
     let db = Db::load(db_path)?;
@@ -1464,12 +1511,146 @@ pub fn unsend(db_path: &Path, notes: &[(String, String)]) -> Result<()> {
     })
 }
 
+thread_local! {
+    /// How many launch locks this thread holds (`launch_lock`): the first
+    /// holds the file's lock, those taken under it hold it as it is.
+    static LAUNCHING: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// The launch lock, held until dropped (`launch_lock`): the file locked, by
+/// the first this thread took; none by those taken under it. It stays with
+/// the thread that took it.
+pub struct LaunchLock {
+    file: Option<std::fs::File>,
+    _thread: std::marker::PhantomData<*const ()>,
+}
+
+impl Drop for LaunchLock {
+    fn drop(&mut self) {
+        if let Some(f) = &self.file {
+            use std::os::fd::AsRawFd;
+            unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_UN) };
+        }
+        LAUNCHING.with(|l| l.set(l.get().saturating_sub(1)));
+    }
+}
+
+impl LaunchLock {
+    /// The lock handed to `c`, a process to start that goes on with what it
+    /// is held for, away from here: its file left open in that process, the
+    /// lock is held until that process is done, as the kernel keeps a lock
+    /// while any copy of its file is open. Whether it could be: not by a
+    /// lock taken under another of this thread's, which holds no file.
+    fn hand_to(&self, c: &mut Command) -> bool {
+        use std::os::fd::AsRawFd;
+        let Some(f) = &self.file else { return false };
+        let fd = f.as_raw_fd();
+        // Between fork and exec, the child alone keeps the file open across
+        // its exec: fcntl allocates nothing and touches no lock.
+        unsafe {
+            std::os::unix::process::CommandExt::pre_exec(c, move || {
+                let flags = libc::fcntl(fd, libc::F_GETFD);
+                if flags < 0 || libc::fcntl(fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        true
+    }
+
+    /// Given up by this process with its lock left as it is: held by the
+    /// processes it was handed to (`hand_to`) until they are done, else given
+    /// back now, as no copy of its file is left open.
+    fn leave(mut self) {
+        self.file.take();
+    }
+}
+
+/// Where the launch lock of the database at `db_path` is: a file of its
+/// own beside it, `NAME.launch.lock`, by the database's real path, so that
+/// every process finds the same one however it names the database.
+pub fn launch_lock_path(db_path: &Path) -> PathBuf {
+    let real = db_path.canonicalize().unwrap_or_else(|_| db_path.to_path_buf());
+    let name = real.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    real.with_file_name(format!("{name}.launch.lock"))
+}
+
+/// The launch lock of the database at `db_path`, held until what this
+/// gives is dropped: one thread at a time, of every process working on the
+/// database, starts asks, from reading the queue to the spawn of their
+/// agents, and does anything else to stacked's own worktrees, so that no
+/// two touch them at once. A flock on its own file (`launch_lock_path`),
+/// apart from the database's lock, so that the agents running meanwhile go
+/// on writing their streams; the kernel gives it back however the process
+/// ends. A thread that holds it takes it again as it is. A database kept in
+/// memory, as the demo's, has no worktree: nothing is locked.
+///
+/// It comes before the database's lock: asked for by a thread holding that
+/// one, it could wait for ever on a process that holds it and waits for the
+/// database. That is a bug, a panic where debug assertions are on, as in
+/// the tests, else an error.
+pub fn launch_lock(db_path: &Path) -> Result<LaunchLock> {
+    if crate::db::holds_lock() {
+        let why = format!(
+            "{}: the launch lock asked for under the database's lock, which is taken after it",
+            db_path.display()
+        );
+        if cfg!(debug_assertions) {
+            panic!("{why}");
+        }
+        return Err(Error(why));
+    }
+    let first = LAUNCHING.with(|l| {
+        l.set(l.get() + 1);
+        l.get() == 1
+    });
+    // Its count given back if it goes wrong, as it is dropped.
+    let mut held = LaunchLock {
+        file: None,
+        _thread: std::marker::PhantomData,
+    };
+    #[cfg(feature = "demo")]
+    if crate::memory::is_file(db_path) {
+        return Ok(held);
+    }
+    if !first {
+        return Ok(held);
+    }
+    let path = launch_lock_path(db_path);
+    let io = |e: std::io::Error| Error(format!("{}: {e}", path.display()));
+    let f = std::fs::File::options().create(true).append(true).open(&path).map_err(io)?;
+    use std::os::fd::AsRawFd;
+    // Found held, said so where the tests ask (`test_hold`), before it is
+    // waited for.
+    if let Some(hold) = test_hold() {
+        if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+            held.file = Some(f);
+            return Ok(held);
+        }
+        let _ = std::fs::write(hold.join(format!("waits-{}", std::process::id())), "");
+    }
+    loop {
+        if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX) } == 0 {
+            break;
+        }
+        let e = std::io::Error::last_os_error();
+        if e.kind() != std::io::ErrorKind::Interrupted {
+            return Err(io(e));
+        }
+    }
+    held.file = Some(f);
+    Ok(held)
+}
+
 /// Starts every ask that may go now, and the lint job whose turn it is;
-/// the runs started.
+/// the runs started. Under the launch lock, every one of them: its
+/// worktree taken and made ready, and its agent spawned.
 pub fn launch(db_path: &Path) -> Result<Vec<String>> {
     if !Db::exists(db_path) {
         return Ok(vec![]);
     }
+    let _launching = launch_lock(db_path)?;
     let (claimed, lints) = Db::edit(db_path, claim)?;
     for id in &claimed {
         if let Err(e) = start(db_path, id) {
@@ -2730,8 +2911,10 @@ pub fn precreated(agent: &crate::config::Agent) -> Vec<&'static str> {
 /// Stack `name`'s first worktree of each of `kinds` made, if it is not
 /// there, the whole stack applied in it: for the asks to come not to wait
 /// for it; `under`, the settings' `agent.worktrees`. Where they are, to
-/// remove once the editor exits.
+/// remove once the editor exits. Made under the launch lock, as an ask's
+/// worktree is.
 pub fn precreate(db_path: &Path, name: &str, kinds: &[&str], under: Option<&Path>) -> Result<(PathBuf, PathBuf)> {
+    let _launching = launch_lock(db_path)?;
     let db = Db::load(db_path)?;
     let s = db.stack(name)?;
     let (repo, base) = base_of(s)?;
@@ -2753,8 +2936,12 @@ pub type Ahead = (PathBuf, PathBuf, Vec<&'static str>);
 
 /// The worktrees made ahead, `made`, removed, away from the caller, which
 /// need not wait: but those an ask is working in, and, as git refuses to
-/// remove them, those with anything uncommitted.
+/// remove them, those with anything uncommitted. Under the launch lock:
+/// what is free is read under it, and the shell that removes them is
+/// handed it (`LaunchLock::hand_to`), which it holds until it is done,
+/// however soon the caller goes on, or exits.
 pub fn forget(db_path: &Path, made: &[Ahead]) {
+    let Ok(launching) = launch_lock(db_path) else { return };
     let busy: HashSet<String> = Db::load(db_path)
         .map(|db| {
             db.live_runs()
@@ -2790,8 +2977,17 @@ pub fn forget(db_path: &Path, made: &[Ahead]) {
             .stdout(Stdio::null())
             .stderr(Stdio::null());
         std::os::unix::process::CommandExt::process_group(&mut c, 0);
-        let _ = c.spawn();
+        // Taken under another of this thread's, the lock is not this one's
+        // to hand on: they are removed here, while it is held.
+        if !launching.hand_to(&mut c) {
+            let _ = c.status();
+            continue;
+        }
+        if let Ok(child) = c.spawn() {
+            keep_started(child);
+        }
     }
+    launching.leave();
 }
 
 /// Whether rebase plan `text` may be given git as its todo: none of its
@@ -3031,6 +3227,7 @@ fn start(db_path: &Path, id: &str) -> Result<()> {
     };
     let dir = agents_dir(&repo, &s.name, agent.worktrees.as_deref())?;
     let cwd = take_slot(db_path, id, &dir, kind)?;
+    held_at_start(id);
     git::ready(&repo, &cwd, &base, &mbox, upto, &step)?;
     i.worktree = Some(cwd.to_string_lossy().into_owned());
     i.kept = true;
@@ -3353,8 +3550,10 @@ impl Landed {
 
 /// Files what a finished ask did; once, however often it is called. `exit`
 /// says how claude exited when its events cannot (it was killed). Then
-/// starts what was waiting behind it.
+/// starts what was waiting behind it. Under the launch lock, both: what it
+/// did is read from its worktree, which is cleaned up after.
 pub fn land(db_path: &Path, id: &str, exit: Option<&str>) -> Result<Run> {
+    let _launching = launch_lock(db_path)?;
     let run = file_landed(db_path, id, exit)?;
     launch(db_path)?;
     Ok(run)
@@ -4039,9 +4238,19 @@ pub fn fits(db_path: &Path, id: &str) -> Result<String> {
 
 /// Lands every ask whose claude is gone without its wrapper landing it (it
 /// was killed), or that never started; how many. The wrappers this process
-/// started that have exited are waited for first (`reap`).
+/// started that have exited are waited for first (`reap`). Under the launch
+/// lock, the database read again under it: no ask is being started
+/// meanwhile, so one whose agent's pid is not written yet was left so by a
+/// starter that is gone, not by one about to write it. `db`, read before,
+/// only says whether anything is going, to look at.
 pub fn land_orphans(db_path: &Path, db: &Db) -> usize {
     reap();
+    if !db.live_runs().iter().any(|r| r.state == RunState::Started) {
+        return 0;
+    }
+    let Ok(_launching) = launch_lock(db_path) else { return 0 };
+    let Ok(read) = Db::load(db_path) else { return 0 };
+    let db = &read;
     let stale: Vec<String> = db
         .live_runs()
         .into_iter()
@@ -4197,6 +4406,9 @@ pub fn stop(db_path: &Path, id: &str) -> Result<(Run, bool)> {
             gone_within(pid, KILL_GRACE);
         }
     }
+    // Landed under the launch lock, once its agent is gone, as any landing:
+    // not while waiting for it, which its wrapper's own landing could be.
+    let _launching = launch_lock(db_path)?;
     let run = file_landed(db_path, id, Some("killed"))?;
     let stopped = run.state == RunState::Failed && run.summary.starts_with(STOPPED_SAID);
     Ok((run, stopped))
@@ -4900,5 +5112,47 @@ mod tests {
         // Its stream says so.
         let init = serde_json::json!({"type": "system", "subtype": "init", "model": "m"});
         assert_eq!(tail(&streamed(&[init, stop]), "r", 10), ["● session started · m", "■ you stopped the agent"]);
+    }
+
+    #[test]
+    fn the_launch_lock_is_held_by_one_thread_at_a_time_and_again_by_the_one_holding_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("db.jsonl");
+        Db::edit(&path, |db| db.set_view("s", "all")).unwrap();
+        // Its own file, beside the database.
+        let first = launch_lock(&path).unwrap();
+        assert!(tmp.path().join("db.jsonl.launch.lock").exists());
+        // Taken again under it, as a landing starts what waited: held as it
+        // is, and still held once that is given back.
+        drop(launch_lock(&path).unwrap());
+        // The database's lock is taken under it, as a launch's claim is.
+        Db::edit(&path, |db| db.set_view("s", "none")).unwrap();
+        // Another thread waits for it to be given back.
+        let started = std::time::Instant::now();
+        let (took, taken) = std::sync::mpsc::channel();
+        let other = {
+            let path = path.clone();
+            std::thread::spawn(move || {
+                let held = launch_lock(&path).map(|_| ());
+                took.send(()).unwrap();
+                held
+            })
+        };
+        assert!(taken.recv_timeout(std::time::Duration::from_millis(300)).is_err(), "it waits while it is held");
+        drop(first);
+        taken.recv().unwrap();
+        other.join().unwrap().unwrap();
+        assert!(started.elapsed() >= std::time::Duration::from_millis(300));
+    }
+
+    #[test]
+    #[should_panic(expected = "the launch lock asked for under the database's lock")]
+    fn the_launch_lock_asked_for_under_the_database_s_lock_is_a_bug() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("db.jsonl");
+        let _ = Db::edit(&path, |db| {
+            db.set_view("s", "all")?;
+            launch_lock(&path).map(|_| ())
+        });
     }
 }

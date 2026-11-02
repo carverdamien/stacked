@@ -211,6 +211,17 @@ impl Src {
         }
     }
 
+    /// The shared lock for a read of it, the file at `path` (`reading`):
+    /// none for a file kept in memory, each write of which is whole as it
+    /// is made, under the lock of its bytes.
+    fn reading(&self, path: &Path) -> Result<Option<Reading>> {
+        match self {
+            Src::File(f) => reading(f, path).map(Some),
+            #[cfg(feature = "demo")]
+            Src::Memory(_) => Ok(None),
+        }
+    }
+
     /// Every byte from `at` on.
     fn rest(&self, at: u64) -> std::io::Result<Vec<u8>> {
         match self {
@@ -984,6 +995,99 @@ fn give_lock(f: &File) {
     LOCKED.with(|l| l.set(false));
 }
 
+/// Whether this thread holds a database's lock: what must be taken before
+/// it is not asked for meanwhile (`ask::launch_lock`).
+pub(crate) fn holds_lock() -> bool {
+    LOCKED.with(|l| l.get())
+}
+
+/// flock `how` on `f`, asked again when a signal cut the wait short.
+fn flock(f: &File, how: libc::c_int) -> std::io::Result<()> {
+    loop {
+        if unsafe { libc::flock(f.as_raw_fd(), how) } == 0 {
+            return Ok(());
+        }
+        let e = std::io::Error::last_os_error();
+        if e.kind() != std::io::ErrorKind::Interrupted {
+            return Err(e);
+        }
+    }
+}
+
+/// A reader's hold on the file it reads: the database's lock, shared, so
+/// that no writer appends while it reads, and no line is read half
+/// written; given back once dropped. Held through a copy of the file's
+/// descriptor, which gives back the lock of that opening of the file
+/// whatever becomes of the file read. None is taken by a thread that holds
+/// the database's lock already, which keeps every writer out too: asked
+/// for then, on another opening of the file, the shared lock would wait on
+/// that thread for ever.
+struct Reading(Option<File>);
+
+impl Drop for Reading {
+    fn drop(&mut self) {
+        if let Some(f) = &self.0 {
+            let _ = flock(f, libc::LOCK_UN);
+        }
+    }
+}
+
+/// The shared lock on `f`, the file at `path`, for this thread's read of
+/// it (`Reading`).
+fn reading(f: &File, path: &Path) -> Result<Reading> {
+    if holds_lock() {
+        return Ok(Reading(None));
+    }
+    let io = |e: std::io::Error| Error(format!("{}: cannot lock to read: {e}", path.display()));
+    let copy = f.try_clone().map_err(io)?;
+    flock(&copy, libc::LOCK_SH).map_err(io)?;
+    Ok(Reading(Some(copy)))
+}
+
+/// Opens the file at `path` to read it, and takes its shared lock
+/// (`reading`); then sees that it is still the file at `path`, else
+/// (another renamed over it meanwhile, an older file written again) opens
+/// that one, as `open_locked` does. None when there is no file.
+fn open_read(path: &Path) -> Result<Option<(File, Reading)>> {
+    let io = |e: std::io::Error| Error(format!("{}: {e}", path.display()));
+    for _ in 0..1000 {
+        let f = match File::open(path) {
+            Ok(f) => f,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(io(e)),
+        };
+        let held = reading(&f, path)?;
+        let meta = f.metadata().map_err(io)?;
+        if std::fs::metadata(path).is_ok_and(|m| (m.dev(), m.ino()) == (meta.dev(), meta.ino())) {
+            return Ok(Some((f, held)));
+        }
+    }
+    err(format!("{}: renamed over again and again while it was read", path.display()))
+}
+
+/// Writes `bytes`, the lines of records, to `f`, under the database's lock.
+/// Under test, a thread may have them written in two halves, saying so
+/// once the first is, then pausing before the second (`HALVES`): as a
+/// writer slowed down midway, whose half line no reader must read.
+fn write_lines(f: &mut File, bytes: &[u8]) -> std::io::Result<()> {
+    #[cfg(test)]
+    if let Some((said, pause)) = HALVES.with(|h| h.borrow().clone()) {
+        let (first, second) = bytes.split_at(bytes.len() / 2);
+        f.write_all(first)?;
+        let _ = said.send(());
+        std::thread::sleep(pause);
+        return f.write_all(second);
+    }
+    f.write_all(bytes)
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Under test: this thread's writes of records made in two halves, the
+    /// first said on the channel, then the pause before the second.
+    static HALVES: std::cell::RefCell<Option<(std::sync::mpsc::Sender<()>, std::time::Duration)>> = const { std::cell::RefCell::new(None) };
+}
+
 impl Lock {
     /// The file locked, when it is on disk.
     fn file(&mut self) -> &mut File {
@@ -1012,23 +1116,40 @@ impl Db {
     pub fn create(path: &Path) -> Result<()> {
         let io = |e: std::io::Error| Error(format!("{}: {e}", path.display()));
         let mut f = File::options().write(true).create_new(true).open(path).map_err(io)?;
-        f.write_all(format!("{}\n", header_line()).as_bytes()).and_then(|_| f.sync_data()).map_err(io)
+        // Written under its lock, as every write is: a reader reads the
+        // header whole, or nothing.
+        take_lock(&f, path)?;
+        let written = f.write_all(format!("{}\n", header_line()).as_bytes()).and_then(|_| f.sync_data()).map_err(io);
+        give_lock(&f);
+        written
     }
 
-    /// Reads `path`; a missing file is an empty database.
+    /// Reads `path`, under its lock, shared (`open_read`): no record is read
+    /// half written. A missing file is an empty database.
     pub fn load(path: &Path) -> Result<Db> {
         #[cfg(feature = "demo")]
         if let Some(m) = crate::memory::file(path) {
             return Db::read_src(path, Src::Memory(m), None);
         }
-        match File::open(path) {
-            Ok(f) => {
-                let ino = f.metadata().ok().map(|m| (m.dev(), m.ino()));
-                Db::read_src(path, Src::File(f), ino)
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Db::parse(path, &[]),
-            Err(e) => err(format!("{}: {e}", path.display())),
+        let Some((f, held)) = open_read(path)? else { return Db::parse(path, &[]) };
+        let ino = f.metadata().ok().map(|m| (m.dev(), m.ino()));
+        let db = Db::read_src(path, Src::File(f), ino);
+        drop(held);
+        db
+    }
+
+    /// The file at `path` whole, as it is: read under its lock, shared, so
+    /// that its last record is not half written. Nothing when there is no
+    /// file.
+    pub fn bytes(path: &Path) -> Result<Vec<u8>> {
+        #[cfg(feature = "demo")]
+        if let Some(m) = crate::memory::file(path) {
+            return Ok(m.lock().unwrap().clone());
         }
+        let Some((f, held)) = open_read(path)? else { return Ok(vec![]) };
+        let bytes = Src::File(f).rest(0).map_err(|e| Error(format!("{}: {e}", path.display())));
+        drop(held);
+        bytes
     }
 
     /// The database `src` holds: from the checkpoint its header points at
@@ -1433,23 +1554,22 @@ impl Db {
             self.read(&bytes)?;
             return Ok(true);
         }
-        let mut f = match File::open(&self.path) {
-            Ok(f) => f,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                // Gone: an empty database.
-                if self.len == 0 {
-                    return Ok(false);
-                }
-                *self = Db::load(&self.path)?;
-                return Ok(true);
+        // Read under its lock, shared: what was appended is read whole.
+        let Some((mut f, held)) = open_read(&self.path)? else {
+            // Gone: an empty database.
+            if self.len == 0 {
+                return Ok(false);
             }
-            Err(e) => return Err(io(e)),
+            *self = Db::load(&self.path)?;
+            return Ok(true);
         };
         let meta = f.metadata().map_err(io)?;
         let ino = (meta.dev(), meta.ino());
         // Another file renamed over it (an older one written again), or
-        // the file cut, which is not ours to do: read it whole.
+        // the file cut, which is not ours to do: read it whole, the lock
+        // given back first, as reading it whole takes it again.
         if self.ino.is_some_and(|i| i != ino) || meta.len() < self.len {
+            drop(held);
             *self = Db::load(&self.path)?;
             return Ok(true);
         }
@@ -1464,6 +1584,7 @@ impl Db {
         f.seek(std::io::SeekFrom::Start(self.len)).map_err(io)?;
         let mut bytes = Vec::new();
         f.read_to_end(&mut bytes).map_err(io)?;
+        drop(held);
         self.read(&bytes)?;
         Ok(true)
     }
@@ -1501,7 +1622,7 @@ impl Db {
             out.push_str(&serde_json::to_string(rec).unwrap());
             out.push('\n');
         }
-        f.write_all(out.as_bytes()).map_err(io)?;
+        write_lines(f, out.as_bytes()).map_err(io)?;
         f.sync_data().map_err(io)
     }
 
@@ -1742,7 +1863,7 @@ impl Db {
         let io = |e: std::io::Error| Error(format!("{}: {e}", self.path.display()));
         match &mut lock.0 {
             Held::File(f) => {
-                f.write_all(out.as_bytes()).map_err(io)?;
+                write_lines(f, out.as_bytes()).map_err(io)?;
                 f.sync_data().map_err(io)?;
             }
             #[cfg(feature = "demo")]
@@ -1825,11 +1946,18 @@ impl Db {
     /// reader reads now.
     fn reread(&mut self) -> Result<()> {
         let Some(src) = self.src.take() else { return Ok(()) };
-        let bytes = match src.read(0, self.len) {
+        // Under its lock, shared, as every read; none taken under the
+        // database's own, which a checkpoint's writer holds.
+        let read = src.reading(&self.path).and_then(|held| {
+            let bytes = src.read(0, self.len).map_err(|e| Error(format!("{}: {e}", self.path.display())));
+            drop(held);
+            bytes
+        });
+        let bytes = match read {
             Ok(b) => b,
             Err(e) => {
                 self.src = Some(src);
-                return err(format!("{}: {e}", self.path.display()));
+                return Err(e);
             }
         };
         let (path, ino) = (self.path.clone(), self.ino);
@@ -1991,8 +2119,12 @@ impl Db {
         Some(p.at + p.len + 1)
     }
 
-    /// The last rev: how many records there are.
-    pub fn last_rev(&self) -> usize {
+    /// The rev of the last record, the header's @1 in: where the records
+    /// end, a position in the file, and how many there are. It is no sign
+    /// that anything changed: a line read cut short holds a rev of its own,
+    /// which the same line read whole keeps. What says that something the
+    /// editor shows may have changed is `changes`.
+    pub fn end_rev(&self) -> usize {
         self.records.len()
     }
 
@@ -2031,7 +2163,11 @@ impl Db {
     /// one has added since that is not written yet.
     fn read_whole(&self) -> Result<Db> {
         let src = self.src.as_ref().ok_or_else(|| Error("the file it was read from is not kept".into()))?;
+        // Under its lock, shared, as every read: its header is written over
+        // as a checkpoint is pointed at.
+        let held = src.reading(&self.path)?;
         let bytes = src.read(0, self.len).map_err(|e| Error(e.to_string()))?;
+        drop(held);
         let mut db = Db::parse(&self.path, &bytes)?;
         for rec in &self.records[self.saved..] {
             db.index(rec.clone(), Pos::NONE)?;
@@ -2713,7 +2849,9 @@ impl Db {
     }
 
     /// How many records are not lines of an agent's stream: when it moves,
-    /// something the editor shows may have changed.
+    /// something the editor shows may have changed. The one sign of change
+    /// that what the editor works out from the database is kept by: a line
+    /// read cut short is counted only once it is read whole.
     pub fn changes(&self) -> usize {
         self.changes
     }
@@ -2942,24 +3080,24 @@ mod tests {
         add(b"{\"t\":\"checkpoint\",\"sta");
         let db = Db::load(&path).unwrap();
         assert!(db.warnings.is_empty(), "{:?}", db.warnings);
-        assert_eq!(db.last_rev(), 3, "the header and two views");
+        assert_eq!(db.end_rev(), 3, "the header and two views");
         assert!(matches!(db.rev(3), Some(Record::View { show, .. }) if show == "none"));
         // The next write ends the line cut short; its record is the next
         // rev.
         let rev = Db::edit(&path, |db| {
             db.set_view("s", "all")?;
-            Ok(db.last_rev())
+            Ok(db.end_rev())
         })
         .unwrap();
         assert_eq!(rev, 4);
         let db = Db::load(&path).unwrap();
-        assert_eq!((db.last_rev(), db.view("s")), (4, Some("all")));
+        assert_eq!((db.end_rev(), db.view("s")), (4, Some("all")));
         assert!(db.warnings.is_empty(), "{:?}", db.warnings);
         // A line that does not read keeps its rev, and is said by its line.
         let no = std::fs::read(&path).unwrap().iter().filter(|&&b| b == b'\n').count() + 1;
         add(b"garbage\n");
         let db = Db::load(&path).unwrap();
-        assert_eq!(db.last_rev(), 5);
+        assert_eq!(db.end_rev(), 5);
         assert!(db.warnings[0].contains(&format!(":{no}: passed over")), "{:?}", db.warnings);
     }
 
@@ -2993,7 +3131,7 @@ mod tests {
         assert!(bytes[HEADER..].starts_with(&old.as_bytes()[old.find('\n').unwrap() + 1..]), "every line after it as it was");
         assert_ne!(ino(&path), was, "a new file, renamed over the old");
         let db = Db::load(&path).unwrap();
-        assert_eq!(db.last_rev(), 5);
+        assert_eq!(db.end_rev(), 5);
         assert!(matches!(db.rev(3), Some(Record::Broken)));
         assert_eq!(db.view("s"), Some("all"));
         assert_eq!(db.warnings.len(), 1, "{:?}", db.warnings);
@@ -3037,7 +3175,7 @@ mod tests {
         Db::edit(&path, |db| db.set_view("s", "none")).unwrap();
         let db = Db::load(&path).unwrap();
         assert!(db.fixed);
-        assert_eq!((db.last_rev(), db.view("s")), (5, Some("none")));
+        assert_eq!((db.end_rev(), db.view("s")), (5, Some("none")));
     }
 
     #[test]
@@ -3318,7 +3456,7 @@ mod tests {
         Db::edit(&path, |db| db.set_view("s", "none")).unwrap();
         let db = Db::load(&path).unwrap();
         assert!(db.warnings.is_empty() && db.fixed, "{:?}", db.warnings);
-        assert_eq!((db.last_rev(), db.view("s")), (20, Some("none")));
+        assert_eq!((db.end_rev(), db.view("s")), (20, Some("none")));
     }
 
     #[test]
@@ -3396,10 +3534,10 @@ mod tests {
             db.set_moved("t", co, "d4")
         })
         .unwrap();
-        let n = Db::load(&path).unwrap().last_rev();
+        let n = Db::load(&path).unwrap().end_rev();
         Db::edit(&path, |db| db.set_moved("s", co, "b2")).unwrap();
         let db = Db::load(&path).unwrap();
-        assert_eq!(db.last_rev(), n, "nothing written");
+        assert_eq!(db.end_rev(), n, "nothing written");
         assert_eq!((db.moved("s", co), db.moved("s", other), db.moved("t", co), db.moved("t", other)), (Some("b2"), Some("c3"), Some("d4"), None));
         assert_eq!(db.moved_all("s"), [("/checkout", "b2"), ("/other", "c3")]);
         // Read from a checkpoint: the same, the records it stands on read.
@@ -3481,5 +3619,69 @@ mod tests {
         Db::edit(&path, |db| db.set_view("s", "all")).unwrap();
         assert!(started.elapsed() >= std::time::Duration::from_millis(300), "it waited its turn");
         held.join().unwrap().unwrap();
+    }
+
+    #[test]
+    fn a_reader_never_reads_a_record_half_written() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("db.jsonl");
+        Db::edit(&path, |db| db.set_view("s", "all")).unwrap();
+        let mut reader = Db::load(&path).unwrap();
+        // A writer that writes its record in two halves, and pauses between
+        // them, under its lock: as one slowed down midway.
+        let halves = |k: usize, edit: bool| {
+            let (said, half) = std::sync::mpsc::channel();
+            let path = path.clone();
+            let writer = std::thread::spawn(move || {
+                HALVES.with(|h| *h.borrow_mut() = Some((said, std::time::Duration::from_millis(300))));
+                let event = serde_json::json!({"type": "text", "text": format!("line {k}")});
+                match edit {
+                    true => Db::edit(&path, |db| db.add_event("r", event).map(|_| ())),
+                    false => Db::append(&path, &[Record::Event { run: "r".into(), event }]),
+                }
+            });
+            half.recv().unwrap();
+            writer
+        };
+        for (k, edit) in [(0, false), (1, true)] {
+            // Its first half is in the file: a reader catching up, or reading
+            // the file anew, waits for the whole, and reads it whole.
+            let writer = halves(k, edit);
+            assert!(reader.catch_up().unwrap());
+            assert_eq!((reader.events("r").len(), reader.torn), (2 * k + 1, false));
+            assert!(reader.warnings.is_empty(), "{:?}", reader.warnings);
+            writer.join().unwrap().unwrap();
+            let writer = halves(k + 10, edit);
+            let fresh = Db::load(&path).unwrap();
+            assert_eq!((fresh.events("r").len(), fresh.torn), (2 * k + 2, false));
+            assert!(fresh.warnings.is_empty(), "{:?}", fresh.warnings);
+            writer.join().unwrap().unwrap();
+            assert!(reader.catch_up().unwrap());
+        }
+        // The whole file too, as a trim reads it.
+        let writer = halves(20, false);
+        let whole = Db::from_bytes(&path, &Db::bytes(&path).unwrap()).unwrap();
+        assert!(whole.warnings.is_empty() && !whole.torn, "{:?}", whole.warnings);
+        assert_eq!(whole.events("r").len(), 5);
+        writer.join().unwrap().unwrap();
+    }
+
+    #[test]
+    fn a_thread_holding_the_lock_reads_the_file_under_it() {
+        // Under its own lock, a thread reads the file again, as a load inside
+        // an edit does, with no shared lock asked for: that would wait on
+        // the thread for ever.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("db.jsonl");
+        Db::edit(&path, |db| db.set_view("s", "all")).unwrap();
+        let read = Db::edit(&path, |db| {
+            db.set_view("s", "none")?;
+            let mut again = Db::load(&path)?;
+            again.catch_up()?;
+            Ok((again.view("s").map(String::from), Db::bytes(&path)?.len() as u64 == again.len))
+        })
+        .unwrap();
+        assert_eq!(read, (Some("all".to_string()), true));
+        assert_eq!(Db::load(&path).unwrap().view("s"), Some("none"));
     }
 }

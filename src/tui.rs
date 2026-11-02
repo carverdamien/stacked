@@ -3501,11 +3501,10 @@ impl App {
 
     /// The comments the agent is working on: read again only when the
     /// database has read more than an agent's stream (`Db::changes`), which
-    /// they do not depend on. Not when it has more records: a line read cut
-    /// short, as it was being written, holds its record's place, so the
-    /// same line read whole adds none, though it may be an ask landing; the
-    /// stream open in place would then fold only once something more is
-    /// written.
+    /// they do not depend on. Not when it has more records (`Db::end_rev`):
+    /// a line read cut short holds its record's place, so the same line
+    /// read whole adds none, though it may be an ask landing; the stream
+    /// open in place would then fold only once something more is written.
     fn busy(&self) -> std::rc::Rc<Busy> {
         let key = self.db.changes();
         if let Some((k, b)) = &*self.busy_memo.borrow()

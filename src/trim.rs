@@ -149,9 +149,14 @@ pub fn trim(src: &Path, dst: &Path, from: Option<usize>) -> Result<Trimmed> {
     if dst.exists() {
         return err(format!("{} is there already: a trim writes a new file", dst.display()));
     }
-    let bytes = std::fs::read(src).map_err(|e| Error(format!("{}: {e}", src.display())))?;
+    // Read under its lock, shared, as every read of a database: its last
+    // record whole.
+    if let Err(e) = std::fs::metadata(src) {
+        return err(format!("{}: {e}", src.display()));
+    }
+    let bytes = Db::bytes(src)?;
     let all = Db::from_bytes(src, &bytes)?;
-    let len = all.last_rev();
+    let len = all.end_rev();
     let from = from.unwrap_or(len + 1);
     if from < 1 || from > len + 1 {
         return err(format!("@{from} is not a rev of {} (its last is @{len})", src.display()));

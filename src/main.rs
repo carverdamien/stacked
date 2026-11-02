@@ -1435,7 +1435,7 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
             // Unless given, high: nothing picked before is kept.
             let at = effort.unwrap_or_default();
             let db = Db::load(path)?;
-            let since = db.last_rev();
+            let since = db.end_rev();
             let busy = ask::with_agent(&db);
             let picked: Vec<Note> = if batch {
                 db.stack(&name)?;
@@ -1977,7 +1977,7 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
                 println!("{w}");
             }
             if db.warnings.is_empty() {
-                println!("{} records, none passed over", db.last_rev());
+                println!("{} records, none passed over", db.end_rev());
             }
             for s in db.stacks() {
                 match db.verify(s) {

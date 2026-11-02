@@ -548,7 +548,9 @@ pub fn stand_in(program: &Path) {
 /// (ssh, git) has a terminal to ask anything on, and its process group is
 /// its own, which stopping it stops, mach with it; told to keep what is
 /// yours where this one does, and the tests' stand-in for mach, if they set
-/// one.
+/// one. Not under the launch lock: the editor starts it as a review closes,
+/// on its screen, and it touches no worktree; its process takes the lock to
+/// make its worktree ready (`pushing`).
 pub fn launch(db_path: &Path, id: &str) -> Result<()> {
     let exe = crate::ask::stacked_exe()?;
     let db_abs = db_path.canonicalize().map_err(|e| Error(format!("{}: {e}", db_path.display())))?;
@@ -653,15 +655,20 @@ fn pushing(db_path: &Path, r: &Run, scratch: &Scratch) -> std::result::Result<()
     let patches: Vec<&crate::db::Patch> = s.patches.iter().take(p.patches).map(|id| db.patch(id)).collect();
     let mbox = crate::mbox::format_mbox(&patches);
     let (cfg, _) = crate::config::of(&repo);
-    let dir = crate::ask::agents_dir(&repo, &s.name, cfg.agent.worktrees.as_deref())?;
-    // Its worktree: the stack's patches as commits on its base, as far as
-    // the comment's.
-    let at = take_worktree(db_path, id, &dir)?;
     let step = |text: String| record(db_path, id, STEP, &text);
-    if at.join(".git").exists() {
-        let _ = crate::git::scrub(&at);
-    }
-    crate::git::ready(&repo, &at, &base, &mbox, p.patches, &step)?;
+    // Its worktree: the stack's patches as commits on its base, as far as
+    // the comment's. Taken and made ready under the launch lock, as an
+    // ask's is; not while mach runs.
+    let at = {
+        let _launching = crate::ask::launch_lock(db_path)?;
+        let dir = crate::ask::agents_dir(&repo, &s.name, cfg.agent.worktrees.as_deref())?;
+        let at = take_worktree(db_path, id, &dir)?;
+        if at.join(".git").exists() {
+            let _ = crate::git::scrub(&at);
+        }
+        crate::git::ready(&repo, &at, &base, &mbox, p.patches, &step)?;
+        at
+    };
     // The commits mach would push: the stack's patches, and nothing else.
     let remotes = official_remotes(&at)?;
     step(format!("git rev-list --count HEAD --not {}", remote_args(&remotes).join(" ")));

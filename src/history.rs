@@ -87,7 +87,7 @@ fn steps(db: &Db, name: &str) -> Vec<Entry> {
     // The stack the name is on, as the records go.
     let mut on: Option<usize> = None;
     let mut rev = 0;
-    while rev < db.last_rev() {
+    while rev < db.end_rev() {
         rev += 1;
         let (to, time, op, moved) = match db.rev(rev) {
             Some(Record::Stack(s)) if s.name == name => {

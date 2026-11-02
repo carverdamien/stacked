@@ -1994,6 +1994,22 @@ leave, keep it from the next build, which then takes `build-2`.
 `agent.worktrees` puts the agents' worktrees elsewhere than `.stacked/`: in
 that folder, under one of each repository's own.
 
+Asks start one at a time, whichever process starts them: the editor, a
+landing ask, which starts what waited behind it, or `stacked send`. Each
+start holds the launch lock, a lock of the kernel's (flock) on a file of
+its own beside the database (`stacked.jsonl.launch.lock` beside
+`stacked.jsonl`), from reading the queue to the spawn of the agents it
+starts: what goes is chosen, each ask's worktree is taken, made or moved to
+what it is asked about, and the start is written, while no other process
+does any of it. Everything else stacked does to its own worktrees holds the
+lock too: filing what an ask did in its worktree, landing an ask whose
+agent is gone, making the worktrees ahead and removing them, making a lint
+job's worktree and a try push's ready, making `.stacked/NAME/user` the
+first time you edit there. The lock is never held while an agent works, and
+it is apart from the database's lock, so that the agents at work write their
+streams meanwhile. It is taken before the database's lock, never under it.
+The kernel gives it back however the process holding it ends.
+
 Several go at once, by self-review's rule: one changing ask at a time on a
 stack, answer-only asks together, a build and test once no change runs on
 its stack, one at a time of every stack, as builds take the machine (a
@@ -3887,7 +3903,14 @@ bytes long, padded with spaces.
   keeps its rev, so every rev after it stays the same. The next write ends
   a cut line with a newline; nothing is ever cut off the file.
 - Every write holds the file's lock (flock), so two editors, the CLI and
-  landing asks can share it.
+  landing asks can share it. Every read holds the lock too, shared: a
+  reader of the file, or of what was appended to it since it last read,
+  waits for a write under way to end, and never reads a record half
+  written. Readers do not wait for one another, and a writer waits only
+  for the reads under way. While stacked holds the lock to write, it reads
+  the file under that lock, and asks for no other, which would wait on
+  itself. So a line cut short is only ever what a writer killed midway
+  left.
 - A file an older stacked wrote, its header shorter, is written again once,
   the first time something is written to it: the same lines under the new
   header, renamed over the old file, every rev the same. Not while an ask
@@ -4469,7 +4492,28 @@ of them, read all the same, as one with none; and the edits since a state
 of a stack counted along its tree of edits by the index of the stacks
 alone (another version once an edit is undone and another made in its
 place, nothing for what is no state of it), read from a checkpoint as
-when read whole, its history not read.
+when read whole, its history not read. They show a reader that catches
+up, reads the file anew, or reads it whole as a trim does, while a writer
+writes its record in two halves under its lock, a pause between them
+(a hook of the tests'): the reader waits, and reads the record whole,
+never half of it; and a thread that holds the lock to write reading the
+file again under it, with no shared lock asked for, which would wait on
+the thread for ever.
+
+The tests of the launch lock, in `ask.rs`, show it on a file of its own
+beside the database, taken again by the thread that holds it, the
+database's lock taken under it, another thread waiting until it is given
+back; and asked for under the database's lock, a panic, as the lock
+order is broken. In `tests/cli.rs`, two `stacked send`s each send a
+comment at the same instant, twelve times: each process waits at a gate
+the test sets (`$STACKED_TEST_GATE`), and the test lets both go together
+once both are there; every other time on a stack of its own, whose
+worktrees the asks make, else on one whose worktrees they take again. The
+first start is then held midway, its worktree taken, the launch lock its
+own (`$STACKED_TEST_HOLD`, a hook of the tests'), and the other process is
+seen waiting for that lock, with no second start under way, before both
+are let go. Every ask starts and lands, none fails, and each comment is
+answered.
 
 `tests/cli.rs` builds a repo and drives the binary. It covers a round trip
 through `git am`, a stack imported again (a patch whose lines a new
@@ -4675,8 +4719,8 @@ follow-up stopped, its ask landed as failed and said so on its comment,
 nothing of it waiting for review; a comment asked
 about and its stream and answer shown in place, the stream folded in the
 step that reads its landing, as the banner says what landed (its line
-read first cut short, as it is being written, then whole), its agent
-stopped from its
+read first cut short, as a writer holding no lock would leave it, then
+whole), its agent stopped from its
 menu (the ask landed at once as failed, said so, its stream folded, the
 comment's menu whole again, and the agent's wrapper, a child of the
 tests' process, waited for), an ask done leaving no zombie once the

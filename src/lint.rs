@@ -594,19 +594,25 @@ fn linting(db_path: &Path, r: &Run) -> std::result::Result<Linted, String> {
     let patches: Vec<Patch> = s.patches.iter().map(|p| db.patch(p).clone()).collect();
     let words = words(&job.command)?;
     let (cfg, _) = crate::config::of(&repo);
-    let dir = crate::ask::agents_dir(&repo, &s.name, cfg.agent.worktrees.as_deref()).map_err(|e| e.0)?;
-    let at = take_worktree(db_path, id, &dir).map_err(|e| e.0)?;
-    let (program, args) = program(&words, &at)?;
     let step = |text: String| record(db_path, id, STEP, &text);
-    // Its own, kept from the job before: what that left thrown away, and
-    // the lock of git's that a job stopped as git wrote its index left.
-    if at.join(".git").exists() {
-        if let Ok(dir) = crate::git::git(&at, &["rev-parse", "--absolute-git-dir"]) {
-            let _ = std::fs::remove_file(Path::new(dir.trim()).join("index.lock"));
+    // Its worktree taken and made ready under the launch lock, as an ask's
+    // is; not while the linter runs.
+    let (at, program, args) = {
+        let _launching = crate::ask::launch_lock(db_path).map_err(|e| e.0)?;
+        let dir = crate::ask::agents_dir(&repo, &s.name, cfg.agent.worktrees.as_deref()).map_err(|e| e.0)?;
+        let at = take_worktree(db_path, id, &dir).map_err(|e| e.0)?;
+        let (program, args) = program(&words, &at)?;
+        // Its own, kept from the job before: what that left thrown away, and
+        // the lock of git's that a job stopped as git wrote its index left.
+        if at.join(".git").exists() {
+            if let Ok(dir) = crate::git::git(&at, &["rev-parse", "--absolute-git-dir"]) {
+                let _ = std::fs::remove_file(Path::new(dir.trim()).join("index.lock"));
+            }
+            let _ = crate::git::scrub(&at);
         }
-        let _ = crate::git::scrub(&at);
-    }
-    crate::git::ready(&repo, &at, &base, "", 0, &step).map_err(|e| e.0)?;
+        crate::git::ready(&repo, &at, &base, "", 0, &step).map_err(|e| e.0)?;
+        (at, program, args)
+    };
     let mut linter = |at: &Path, files: &[String], place: usize| -> std::result::Result<Ran, String> {
         let _ = update(db_path, id, |j| j.at = place + 1);
         step(format!("{} {}", job.command, quoted(files)));

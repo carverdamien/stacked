@@ -9563,8 +9563,10 @@ fn a_stream_read_in_place_folds_as_its_landing_is_read_though_first_read_cut_sho
     // Its start over, its pid written: the agent, held, writes nothing more.
     app.settle();
     // Its landing, its reply waiting for review, as the line the agent's
-    // wrapper appends: read first cut short, as it is being written, then
-    // whole. Cut short, it is not read: the agent still works on it.
+    // wrapper appends: read first cut short, then whole, as a writer that
+    // held no lock would leave it to be read (stacked's own hold the
+    // database's, and its readers wait for them). Cut short, it is not
+    // read: the agent still works on it.
     let r = Db::load(&db).unwrap().runs().last().map(|r| (*r).clone()).unwrap();
     assert!(r.pid.is_some(), "{r:?}");
     let n = notes_of(&db, "s", 0).remove(0);

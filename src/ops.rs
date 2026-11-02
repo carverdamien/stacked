@@ -1327,7 +1327,12 @@ fn edit_in(
             here_edits(&db, name, d)?;
             crate::git::checkout_of(&repo, d)?
         }
-        Place::Worktree => crate::git::kept_worktree(&repo, name, &base)?,
+        // Made the first time under the launch lock, as the agents' are: the
+        // repository's worktrees made and pruned one at a time.
+        Place::Worktree => {
+            let _launching = crate::ask::launch_lock(path)?;
+            crate::git::kept_worktree(&repo, name, &base)?
+        }
         Place::Copy => return err("a copy is not a checkout"),
     };
     // Nothing of yours to lose, and no switching midway.

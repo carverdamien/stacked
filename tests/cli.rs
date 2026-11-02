@@ -213,16 +213,8 @@ fn as_yours(home: &Path) -> [(&'static str, &Path); 2] {
     [("HOME", home), ("STACKED_HOME", Path::new(""))]
 }
 
-/// stacked run in `dir` on the database `db`, its own things kept in
-/// `home` beside the database (`kept_in`), with `env` over what the tests
-/// set.
-fn stacked_in(
-    dir: &Path,
-    db: &Path,
-    args: &[&str],
-    stdin: &str,
-    env: &[(&str, &Path)],
-) -> (bool, String, String) {
+/// stacked to run in `dir` on the database `db`, as `stacked_in` runs it.
+fn stacked_command(dir: &Path, db: &Path, args: &[&str], env: &[(&str, &Path)]) -> Command {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_stacked"));
     kept_in(&mut cmd, &db.with_file_name("home"))
         .current_dir(dir)
@@ -240,7 +232,20 @@ fn stacked_in(
     for (k, v) in env {
         cmd.env(k, v);
     }
-    let mut child = cmd
+    cmd
+}
+
+/// stacked run in `dir` on the database `db`, its own things kept in
+/// `home` beside the database (`kept_in`), with `env` over what the tests
+/// set.
+fn stacked_in(
+    dir: &Path,
+    db: &Path,
+    args: &[&str],
+    stdin: &str,
+    env: &[(&str, &Path)],
+) -> (bool, String, String) {
+    let mut child = stacked_command(dir, db, args, env)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -839,6 +844,88 @@ fn landed(e: &Env, n: usize) {
         },
         || format!("the runs did not land:\n{}", e.ok(&["runs"])),
     )
+}
+
+#[test]
+fn asks_sent_by_two_processes_at_the_same_instant_start_one_at_a_time() {
+    let e = env();
+    e.ok(&["import", "s", "base"]);
+    let claude = fake_claude(&e, "claude-seen.sh", "", r#"{"replies": {"c1": "Seen."}}"#);
+    // The gate the two wait at, to send at the same instant
+    // (`$STACKED_TEST_GATE`); and where a start is held midway, its
+    // worktree taken, and a process finding the launch lock held says so
+    // (`$STACKED_TEST_HOLD`).
+    let (gate, hold) = (e.root.join("gate"), e.root.join("hold"));
+    let marks = |dir: &Path| -> Vec<String> {
+        std::fs::read_dir(dir).unwrap().map(|f| f.unwrap().file_name().to_string_lossy().into_owned()).collect()
+    };
+    let rounds = 12;
+    for round in 0..rounds {
+        // Every other round, a stack of its own, whose worktrees the asks
+        // make as they start; else s, whose worktrees they take again.
+        let name = match round % 2 {
+            0 => {
+                let name = format!("n{round}");
+                e.ok(&["import", &name, "base"]);
+                name
+            }
+            _ => "s".to_string(),
+        };
+        let ids: Vec<String> = (0..2).map(|k| e.ok(&["comment", &name, "Why", &format!("{round}-{k}?")]).trim().to_string()).collect();
+        for dir in [&gate, &hold] {
+            let _ = std::fs::remove_dir_all(dir);
+            std::fs::create_dir(dir).unwrap();
+        }
+        let sends: Vec<std::process::Child> = ids
+            .iter()
+            .map(|id| {
+                let env = [("STACKED_CLAUDE", claude.as_path()), ("STACKED_TEST_GATE", gate.as_path()), ("STACKED_TEST_HOLD", hold.as_path())];
+                stacked_command(&e.src, &e.db, &["send", &name, id, "--answer-only", "--wait", "--accept"], &env)
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped())
+                    .spawn()
+                    .unwrap()
+            })
+            .collect();
+        // Both at the gate, then let go together: each sends its comment,
+        // and starts what may go, at once.
+        eventually(
+            || (marks(&gate).len() == 2).then_some(()),
+            || format!("round {round}: the two never came to the gate"),
+        );
+        std::fs::write(gate.join("go"), "").unwrap();
+        // One starts an ask, and is held midway, its worktree taken, the
+        // launch lock its own: the other waits for that lock, and starts
+        // nothing meanwhile.
+        let starts = |m: &[String]| m.iter().filter(|f| f.starts_with("start-")).count();
+        let seen = eventually(
+            || {
+                let m = marks(&hold);
+                let waits = m.iter().any(|f| f.starts_with("waits-"));
+                ((waits && starts(&m) >= 1) || starts(&m) > 1).then_some(m)
+            },
+            || format!("round {round}: neither a start held nor the other waiting: {:?}", marks(&hold)),
+        );
+        // Let go, before anything is said of it: no process stays held.
+        std::fs::write(hold.join("go"), "").unwrap();
+        assert_eq!(starts(&seen), 1, "round {round}: two starts at once: {seen:?}");
+        for s in sends {
+            let out = s.wait_with_output().unwrap();
+            assert!(out.status.success(), "round {round}: {}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+        }
+        // Each ask started, worked and landed: none failed, each comment
+        // answered.
+        let db = Db::load(&e.db).unwrap();
+        for r in db.runs() {
+            assert_eq!(r.state, RunState::Done, "round {round}: {} on {}: {}", r.id, r.stack, r.summary);
+        }
+        for id in &ids {
+            let n = db.find_note(&name, id).unwrap();
+            assert!(n.text.contains("Seen."), "round {round}: {}", n.text);
+        }
+    }
+    assert_eq!(Db::load(&e.db).unwrap().runs().len(), 2 * rounds);
 }
 
 #[test]
@@ -4895,7 +4982,7 @@ fn a_trim_writes_a_new_database_from_a_rev_on() {
     })
     .unwrap();
     // The cut: what there is now is the start; then a drop and an undo.
-    let cut = Db::load(&e.db).unwrap().last_rev() + 1;
+    let cut = Db::load(&e.db).unwrap().end_rev() + 1;
     e.ok(&["drop", "s", "1"]);
     e.ok(&["undo", "s"]);
     let before = std::fs::read(&e.db).unwrap();

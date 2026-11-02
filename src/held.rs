@@ -2038,7 +2038,7 @@ mod tests {
             time: 0,
         };
         Db::append(&path, &[crate::db::Record::Stack(stack)]).unwrap();
-        let rev = Db::load(&path).unwrap().last_rev();
+        let rev = Db::load(&path).unwrap().end_rev();
         Db::edit(&path, |db| db.restore_head("s", Some(rev), "again".into()).map(|_| ())).unwrap();
         let db = Db::load(&path).unwrap();
         assert_eq!(db.read_from_checkpoint(), (true, false));
