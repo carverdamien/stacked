@@ -457,6 +457,66 @@ fn fold_parts(parts: &[(String, Style)], w: usize, indent: usize) -> Vec<Parts> 
     out
 }
 
+/// The marks of a review's parts (`reviewing::mark_of`), which its summary
+/// puts before what it counts (`✓ 2 accepted`): a line of them folded
+/// keeps each on the line of the word after it.
+const MARKS: [char; 3] = ['✓', '✗', '·'];
+
+/// A line of `parts` folded at spaces into lines of at most `w` characters,
+/// as `wrap` folds a text, but never between a mark (`MARKS`) and the word
+/// after it: each character in its part's style, a space between two words
+/// in that of the first space between them. A menu's note, drawn in parts.
+fn wrap_parts(parts: &[(String, Style)], w: usize) -> Vec<Parts> {
+    let chars: Vec<(char, Style)> = parts.iter().flat_map(|(text, st)| text.chars().map(move |c| (c, *st))).collect();
+    // Its words, by where each starts and ends among its characters; a mark
+    // and the word after it, one.
+    let mut words: Vec<(usize, usize)> = Vec::new();
+    let mut at = 0;
+    while at < chars.len() {
+        if chars[at].0.is_whitespace() {
+            at += 1;
+            continue;
+        }
+        let start = at;
+        while at < chars.len() && !chars[at].0.is_whitespace() {
+            at += 1;
+        }
+        match words.last_mut() {
+            Some((from, to)) if *to == *from + 1 && MARKS.contains(&chars[*from].0) => *to = at,
+            _ => words.push((start, at)),
+        }
+    }
+    // Characters back into parts, those of a style together.
+    let joined = |cs: &[(char, Style)]| -> Parts {
+        let mut out: Parts = Vec::new();
+        for &(c, st) in cs {
+            match out.last_mut() {
+                Some((text, was)) if *was == st => text.push(c),
+                _ => out.push((c.to_string(), st)),
+            }
+        }
+        out
+    };
+    let mut out = Vec::new();
+    let mut line: Vec<(char, Style)> = Vec::new();
+    let mut after = 0;
+    for (start, end) in words {
+        if !line.is_empty() && line.len() + 1 + (end - start) > w {
+            out.push(joined(&line));
+            line.clear();
+        }
+        if !line.is_empty() {
+            line.push((' ', chars[after].1));
+        }
+        line.extend_from_slice(&chars[start..end]);
+        after = end;
+    }
+    if !line.is_empty() {
+        out.push(joined(&line));
+    }
+    out
+}
+
 fn plural(n: usize) -> &'static str {
     if n == 1 { "" } else { "s" }
 }
@@ -1083,6 +1143,10 @@ pub struct Menu {
     pub sel: usize,
     /// Why some items cannot be chosen, when some cannot.
     pub note: Option<String>,
+    /// The lines of the note drawn in parts, each in its own style, rather
+    /// than in the note's colour, by their place among its lines: what
+    /// `say_parts` added, a review's summary.
+    painted: Vec<(usize, Parts)>,
     /// The cell of the screen that was clicked to open it, when a click
     /// opened it: the menu is drawn next to that cell. A menu opened by a
     /// key has none: it is drawn in the middle, or beside the comment being
@@ -1875,10 +1939,23 @@ impl Menu {
             sel: out.iter().position(|i| i.enabled).unwrap_or(0),
             items: out,
             note: note.filter(|_| blocked),
+            painted: Vec::new(),
             at: None,
             choice: 0,
             top: 0,
         }
+    }
+
+    /// `lines` said under what the note says already, each in its parts'
+    /// own styles rather than in the note's colour; the note reads them as
+    /// text.
+    fn say_parts(&mut self, lines: Vec<Parts>) {
+        let mut said: Vec<String> = self.note.as_deref().map_or(vec![], |n| n.lines().map(String::from).collect());
+        for parts in lines {
+            said.push(parts.iter().map(|(text, _)| text.as_str()).collect());
+            self.painted.push((said.len() - 1, parts));
+        }
+        self.note = (!said.is_empty()).then(|| said.join("\n"));
     }
 
     /// A question: `yes` or `no`, with `no` selected if `careful`.
@@ -10667,8 +10744,18 @@ impl App {
         // A note of short lines, as a review's summary, each line in full.
         let note_w = m.note.as_deref().map_or(0, |n| n.lines().map(|l| l.chars().count()).max().unwrap_or(0).min(60));
         let bw = (widest.max(note_w).max(m.title.chars().count() + 2).max(24) + 4).min(w.saturating_sub(2));
-        // A line of its own for each line of the note.
-        let note: Vec<String> = m.note.as_deref().map_or(vec![], |n| n.lines().flat_map(|l| wrap(l, bw.saturating_sub(4))).collect());
+        // A line of its own for each line of the note, in the note's colour,
+        // or in its parts' own styles, folded at the same places.
+        let fold = bw.saturating_sub(4);
+        let note: Vec<Parts> = m.note.as_deref().map_or(vec![], |n| {
+            n.lines()
+                .enumerate()
+                .flat_map(|(k, l)| match m.painted.iter().find(|(at, _)| *at == k) {
+                    Some((_, parts)) => wrap_parts(parts, fold),
+                    None => wrap(l, fold).into_iter().map(|l| vec![(l, color::note())]).collect(),
+                })
+                .collect()
+        });
         let below = if note.is_empty() { 0 } else { note.len() + 1 };
         let rows = m.items.len().min(h.saturating_sub(2 + below).max(1));
         if m.sel < m.top {
@@ -10719,7 +10806,11 @@ impl App {
             }
         }
         for (k, line) in note.iter().enumerate() {
-            put(buf, area, x + 2, y + 2 + rows + k, bw - 4, line, color::note());
+            let mut at = 0;
+            for (text, st) in line {
+                put(buf, area, x + 2 + at, y + 2 + rows + k, fold.saturating_sub(at), text, *st);
+                at += text.chars().count();
+            }
         }
     }
 
@@ -12487,6 +12578,36 @@ mod tests {
                 // Ending in a word: the room after it, the line's.
                 vec![("+ the total is ".to_string(), plain), ("price".to_string(), word), (String::new(), plain)],
                 vec![("  ".to_string(), plain), ("times quantity".to_string(), word), (" now".to_string(), plain)],
+            ]
+        );
+    }
+
+    #[test]
+    fn a_note_in_parts_folds_at_spaces_as_its_text_would_each_mark_with_the_word_after_it() {
+        use ratatui::style::{Color, Modifier, Style};
+        let (dim, green, red) = (Style::new().add_modifier(Modifier::DIM), Style::new().fg(Color::Green), Style::new().fg(Color::Red));
+        let parts = vec![
+            ("tools: ".to_string(), dim),
+            ("✓ 1 allowed for this work".to_string(), green),
+            (", ".to_string(), dim),
+            ("✗ 2 refused".to_string(), red),
+        ];
+        let texts = |lines: Vec<super::Parts>| -> Vec<String> { lines.iter().map(|l| l.iter().map(|(t, _)| t.as_str()).collect()).collect() };
+        // In room enough, as it is, each part in its style.
+        assert_eq!(super::wrap_parts(&parts, 60), std::slice::from_ref(&parts));
+        // Folded at the spaces `wrap` folds its text at.
+        let text: String = parts.iter().map(|(t, _)| t.as_str()).collect();
+        assert_eq!(texts(super::wrap_parts(&parts, 20)), super::wrap(&text, 20));
+        assert_eq!(texts(super::wrap_parts(&parts, 20)), ["tools: ✓ 1 allowed", "for this work, ✗ 2", "refused"]);
+        // But never between a mark and its count, which `wrap` would leave
+        // apart: each character in its part's style still, a space where the
+        // line goes on in the style of the space it stands for.
+        assert_eq!(super::wrap(&text, 35), ["tools: ✓ 1 allowed for this work, ✗", "2 refused"]);
+        assert_eq!(
+            super::wrap_parts(&parts, 35),
+            [
+                vec![("tools: ".to_string(), dim), ("✓ 1 allowed for this work".to_string(), green), (",".to_string(), dim)],
+                vec![("✗ 2 refused".to_string(), red)],
             ]
         );
     }

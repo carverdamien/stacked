@@ -8425,10 +8425,10 @@ fn work_that_brought_nothing_back_is_reviewed_for_the_comment_it_was_asked_about
     keys(&mut app, &[KeyCode::Esc, KeyCode::Enter]);
     assert_eq!(app.screen, Screen::Review);
     assert!(draw(&mut app).contains(" the agent's work: 1 asking comment to close"));
-    assert!(selected_line(&mut app).unwrap().starts_with("   keep  a.txt: TWO · why so loud?"), "{:?}", selected_line(&mut app));
+    assert!(selected_line(&mut app).unwrap().starts_with("   ✓ keep  a.txt: TWO · why so loud?"), "{:?}", selected_line(&mut app));
     keys(&mut app, &[KeyCode::Esc]);
     let Mode::Menu(m) = &app.mode else { panic!("{:?}", app.mode) };
-    assert_eq!(m.note.as_deref(), Some("the agent brought nothing back\nasking comment: 1 kept"));
+    assert_eq!(m.note.as_deref(), Some("the agent brought nothing back\nasking comment: ✓ 1 kept"));
     choose(&mut app, "Close review");
     assert_eq!(app.status, "reviewed: the agent brought nothing back");
     assert!(!draw(&mut app).contains("⟳"), "nothing waits");
@@ -8566,7 +8566,7 @@ fn landed_work_is_reviewed_from_the_banner_part_by_part() {
     // The change rejected rejects every comment with it; accepted again,
     // each is as it was. (On top, the comments that asked.)
     keys(&mut app, &[KeyCode::Home]);
-    assert!(selected_line(&mut app).unwrap().starts_with("   keep "));
+    assert!(selected_line(&mut app).unwrap().starts_with("   ✓ keep "));
     down_to_review(&mut app, "stack operations");
     choose(&mut app, "Mark as rejected");
     assert!(marks(&app).values().all(|m| !m), "{:?}", marks(&app));
@@ -8577,7 +8577,7 @@ fn landed_work_is_reviewed_from_the_banner_part_by_part() {
     let Mode::Menu(m) = &app.mode else { panic!("{:?}", app.mode) };
     assert_eq!(
         m.note.as_deref(),
-        Some("asking comments: 2 kept\nthe change of the stack: accepted\ncomments opened: 1 accepted\nreplies: 1 rejected, 1 to review")
+        Some("asking comments: ✓ 2 kept\nthe change of the stack: ✓ accepted\ncomments opened: ✓ 1 accepted\nreplies: ✗ 1 rejected, · 1 to review")
     );
     assert!(items(&app).contains(&("Close review".into(), false)), "{:?}", items(&app));
     // Saved, the marks are there when it is opened again.
@@ -8636,6 +8636,111 @@ fn selected_line(app: &mut App) -> Option<String> {
         let reversed = (0..48).all(|x| buf[(x, y)].modifier.contains(ratatui::style::Modifier::REVERSED));
         reversed.then(|| (0..48).map(|x| buf[(x, y)].symbol()).collect())
     })
+}
+
+/// A patch made of `name`, a new file of one line, `line`: its diff.
+fn new_file(name: &str, line: &str) -> String {
+    format!("diff --git a/{name} b/{name}\nnew file mode 100644\n--- /dev/null\n+++ b/{name}\n@@ -0,0 +1 @@\n+{line}\n")
+}
+
+#[test]
+fn the_stack_operations_say_how_the_change_is_marked_each_operation_after_its_mark_in_its_own_colour() {
+    use ratatui::style::Style;
+    use stacked::paint::{color, on_cursor};
+    let (_tmp, db, _src) = setup();
+    // A third patch, which the agent's work drops for one of its own.
+    Db::edit(&db, |d| {
+        let p2 = d.patch(&d.stack("s")?.patches[1]).clone();
+        let draft = stacked::mbox::Draft {
+            message: "Bug 3 - add c".into(),
+            diff: new_file("c.txt", "cee"),
+            ..stacked::mbox::Draft::from(&p2)
+        };
+        stacked::ops::add(d, "s", draft, None).map(|_| ())
+    })
+    .unwrap();
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Enter]);
+    save(&mut app, "why so loud?");
+    // The work: patch 1 modified, patch 2 as it was, patch 3 dropped, and a
+    // patch of the agent's in its place.
+    let n = notes_of(&db, "s", 0).remove(0);
+    agent_changed(&db, "run-agent", &n);
+    Db::edit(&db, |d| {
+        let mut r = d.run("run-agent").unwrap().clone();
+        let mut ask = r.ask.clone().unwrap();
+        ask["scope"] = serde_json::json!("stack");
+        r.ask = Some(ask);
+        let c = r.held.as_mut().unwrap().stack.as_mut().unwrap();
+        let p2 = d.patch(&c.patches[1]).clone();
+        let draft = stacked::mbox::Draft {
+            message: "Bug 4 - add d".into(),
+            diff: new_file("d.txt", "dee"),
+            ..stacked::mbox::Draft::from(&p2)
+        };
+        c.patches[2] = d.add_patch(stacked::ops::new_patch(draft))?;
+        (c.op, c.of) = ("agent: the stack".into(), "the stack".into());
+        d.add_run(r).map(|_| ())
+    })
+    .unwrap();
+    app.refresh();
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Enter]);
+    assert_eq!(app.screen, Screen::Review);
+    // Each operation in its kind's colour, after the change's mark and a
+    // space; the title's word in the colour of that mark, but to review, in
+    // the title's own. Drawn with the cursor on the comment that asked, out
+    // of their way.
+    let ops = [
+        ("modify  1 Bug 1 - shout two", color::hunk()),
+        ("noop    2 Bug 2 - add b", color::dim()),
+        ("remove  3 Bug 3 - add c", color::del()),
+        ("add     3 Bug 4 - add d", color::add()),
+    ];
+    let marked = |app: &mut App, word: &str, said: Style, mark: &str, st: Style| {
+        let title = format!(" stack operations · {word}");
+        let screen = draw(app);
+        assert!(screen.contains(&title), "{title:?}:\n{screen}");
+        assert_eq!(style_after(app, &title, 1, 30), as_drawn(color::file()), "{word}: the title");
+        assert_eq!(style_after(app, &title, 19, 30), as_drawn(color::file()), "{word}: the space before its word");
+        assert_eq!(style_after(app, &title, 20, 30), as_drawn(said), "{word}: its word");
+        assert_eq!(style_after(app, &title, title.chars().count() - 1, 30), as_drawn(said), "{word}: its word's end");
+        for (op, kind) in ops {
+            let line = format!("   {mark} {op}");
+            assert!(screen.contains(&line), "{line:?}:\n{screen}");
+            assert_eq!(style_after(app, &line, 3, 30), as_drawn(st), "{word}, {op}: its mark");
+            assert_eq!(style_after(app, &line, 4, 30), as_drawn(Style::new()), "{word}, {op}: the space after its mark");
+            assert_eq!(style_after(app, &line, 5, 30), as_drawn(kind), "{word}, {op}: its kind's colour");
+            assert_eq!(style_after(app, &line, line.chars().count() - 1, 30), as_drawn(kind), "{word}, {op}: to its end");
+        }
+    };
+    keys(&mut app, &[KeyCode::Home]);
+    assert!(selected_line(&mut app).is_some_and(|l| l.contains("why so loud?")), "{:?}", selected_line(&mut app));
+    marked(&mut app, "to review", color::file(), "·", Style::new());
+    // Accepted: the word and every mark as a part accepted is marked.
+    down_to_review(&mut app, "stack operations");
+    keys(&mut app, &[KeyCode::Enter, KeyCode::Home]);
+    marked(&mut app, "accepted", color::add(), "✓", color::add());
+    // Rejected: as a part rejected is.
+    down_to_review(&mut app, "stack operations");
+    choose(&mut app, "Mark as rejected");
+    keys(&mut app, &[KeyCode::Home]);
+    marked(&mut app, "rejected", color::del(), "✗", color::del());
+    // Under the cursor, as every line of the list: the whole line in the
+    // cursor's colours, its mark too, whatever their own.
+    down_to_review(&mut app, "modify  1");
+    let line = "   ✗ modify  1 Bug 1 - shout two";
+    assert_eq!(selected_line(&mut app).map(|l| l.trim_end().to_string()).as_deref(), Some(line));
+    assert_eq!(style_after(&mut app, line, 3, 30), as_drawn(on_cursor(color::del())), "its mark");
+    assert_eq!(style_after(&mut app, line, 5, 30), as_drawn(on_cursor(color::hunk())), "its operation");
+    // The cursor in the stack diff: the line picked, each part in its own
+    // colours, as `picked` paints them.
+    keys(&mut app, &[KeyCode::Right]);
+    assert!(app.reviewing.as_ref().unwrap().in_main);
+    assert_eq!(style_after(&mut app, line, 0, 30), as_drawn(Style::new().patch(color::picked())), "its indent");
+    assert_eq!(style_after(&mut app, line, 3, 30), as_drawn(color::del().patch(color::picked())), "its mark, picked");
+    assert_eq!(style_after(&mut app, line, 5, 30), as_drawn(color::hunk().patch(color::picked())), "its operation, picked");
 }
 
 fn ctrl(app: &mut App, code: KeyCode) {
@@ -13123,7 +13228,7 @@ fn a_comment_on_a_patch_the_work_adds_is_what_you_wrote_in_its_review_and_goes_b
     // stays in sight, on the stack's own comments, where it came from said.
     keys(&mut app, &[KeyCode::Esc, KeyCode::Enter]);
     assert_eq!(app.reviewing.as_ref().map(|rv| rv.run.as_str()), Some(round.id.as_str()));
-    assert!(draw(&mut app).contains("   keep  c.txt: cee · Why a c?"), "{}", draw(&mut app));
+    assert!(draw(&mut app).contains("   ✓ keep  c.txt: cee · Why a c?"), "{}", draw(&mut app));
     keys(&mut app, &[KeyCode::Esc]);
     choose(&mut app, "Reject all remaining and Close");
     choose(&mut app, "Reject them and close");
@@ -13826,7 +13931,7 @@ fn the_comments_that_asked_are_kept_or_closed_from_the_top_of_the_review() {
     let screen = draw(&mut app);
     assert!(screen.contains(" asking comments"), "{screen}");
     for n in &notes {
-        assert!(screen.contains(&format!("   keep  a.txt: {} · {}", n.preview, n.text)), "{screen}");
+        assert!(screen.contains(&format!("   ✓ keep  a.txt: {} · {}", n.preview, n.text)), "{screen}");
     }
     // Enter on one: closed with the review; its reply, which goes with it,
     // accepted.
@@ -13837,7 +13942,7 @@ fn the_comments_that_asked_are_kept_or_closed_from_the_top_of_the_review() {
     keys(&mut app, &[KeyCode::Enter]);
     let marks = |app: &App| app.reviewing.as_ref().unwrap().marks.clone();
     assert_eq!(marks(&app), [("asking 0", true), ("reply 0", true)].map(|(k, m)| (k.to_string(), m)).into());
-    assert!(selected_line(&mut app).unwrap().starts_with("   close "));
+    assert!(selected_line(&mut app).unwrap().starts_with("   ✗ close "));
     assert_eq!(app.hint(), "↑↓ choose · enter: keep it open · →: look closer · space: menu · esc: save, discard or close");
     // Kept again: the reply as it was.
     keys(&mut app, &[KeyCode::Enter]);
@@ -13851,7 +13956,7 @@ fn the_comments_that_asked_are_kept_or_closed_from_the_top_of_the_review() {
     // is in its thread; the other is kept.
     keys(&mut app, &[KeyCode::Esc]);
     assert!(!items(&app).iter().any(|(l, _)| l.contains("asking")), "{:?}", items(&app));
-    assert!(matches!(&app.mode, Mode::Menu(m) if m.note.as_deref().is_some_and(|n| n.starts_with("asking comments: 1 to close, 1 kept"))), "{:?}", app.mode);
+    assert!(matches!(&app.mode, Mode::Menu(m) if m.note.as_deref().is_some_and(|n| n.starts_with("asking comments: ✗ 1 to close, ✓ 1 kept"))), "{:?}", app.mode);
     choose(&mut app, "Accept all remaining and Close");
     choose(&mut app, "Accept them and close");
     assert_eq!(app.status, "reviewed: 1 opened comment accepted; 2 replies accepted; 1 asking comment closed");
@@ -13860,6 +13965,123 @@ fn the_comments_that_asked_are_kept_or_closed_from_the_top_of_the_review() {
     let was = d.note_history(&notes[0].change, &notes[0].id).into_iter().rev().find(|(_, n)| !n.text.is_empty()).unwrap().1.text.clone();
     assert!(was.contains(&format!("Seen: {}", notes[0].text)), "its reply in first: {was}");
     assert!(d.note(&notes[1].change, &notes[1].id).is_some_and(|n| n.text.contains("Seen: ")));
+}
+
+/// The review of what the agent brought back about two comments on
+/// patch 1, `why so loud?` on `+TWO` and `and this?` on `+LINE 39`: a reply
+/// to each and a comment of its own (`answered`), open. The comments, in
+/// the order the work was asked about them, which its review lists them in.
+fn asked_twice() -> (tempfile::TempDir, Vec<Note>, Editor) {
+    let (tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Enter]);
+    save(&mut app, "why so loud?");
+    down_to(&mut app, "+LINE 39");
+    keys(&mut app, &[KeyCode::Enter]);
+    save(&mut app, "and this?");
+    let notes = notes_of(&db, "s", 0);
+    answered(&db, "run-1", &notes);
+    app.refresh();
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Enter]);
+    assert_eq!(app.screen, Screen::Review);
+    (tmp, notes, app)
+}
+
+#[test]
+fn the_comments_that_asked_are_marked_kept_in_green_and_to_close_in_red() {
+    use stacked::paint::{color, on_cursor};
+    let (_tmp, notes, mut app) = asked_twice();
+    let line = |mark: &str, n: &Note| format!("   {mark} a.txt: {} · {}", n.preview, n.text);
+    // Each kept, as the review opens: `✓`, the line in the colour of a part
+    // accepted. The cursor is on the comment the work opened.
+    let (first, second) = (line("✓ keep ", &notes[0]), line("✓ keep ", &notes[1]));
+    let screen = draw(&mut app);
+    for line in [&first, &second] {
+        assert!(screen.contains(line.as_str()), "{line:?}:\n{screen}");
+        for dx in [3, 5, 11, line.chars().count() - 1] {
+            assert_eq!(style_after(&mut app, line, dx, 30), as_drawn(color::add()), "{line:?} at {dx}");
+        }
+    }
+    // Enter on the first: to close, `✗`, the line in the colour of a part
+    // rejected, drawn with the cursor on the other, which is in the
+    // cursor's colours, its mark too.
+    keys(&mut app, &[KeyCode::Home, KeyCode::Enter, KeyCode::Down]);
+    let closing = line("✗ close", &notes[0]);
+    assert!(draw(&mut app).contains(&closing), "{closing:?}:\n{}", draw(&mut app));
+    for dx in [3, 5, 11, closing.chars().count() - 1] {
+        assert_eq!(style_after(&mut app, &closing, dx, 30), as_drawn(color::del()), "{closing:?} at {dx}");
+    }
+    assert_eq!(selected_line(&mut app).map(|l| l.trim_end().to_string()), Some(second.clone()));
+    for dx in [3, 5] {
+        assert_eq!(style_after(&mut app, &second, dx, 30), as_drawn(on_cursor(color::add())), "under the cursor at {dx}");
+    }
+    // Kept again: as it was.
+    keys(&mut app, &[KeyCode::Up, KeyCode::Enter, KeyCode::Down]);
+    assert!(draw(&mut app).contains(&first), "{}", draw(&mut app));
+    assert_eq!(style_after(&mut app, &first, 3, 30), as_drawn(color::add()));
+}
+
+#[test]
+fn esc_in_a_review_marks_each_count_in_green_or_red_the_rest_dim_and_what_else_its_note_says_is_as_ever() {
+    use ratatui::style::Style;
+    use stacked::paint::color;
+    let (_tmp, notes, mut app) = asked_twice();
+    // The first comment that asked to close, its reply accepted with it; the
+    // comment the work opened rejected; the other reply to review.
+    keys(&mut app, &[KeyCode::Home, KeyCode::Enter]);
+    down_to_review(&mut app, "✉ message");
+    choose(&mut app, "Mark as rejected");
+    keys(&mut app, &[KeyCode::Esc]);
+    assert_eq!(menu_title(&app), "your review of the agent's work");
+    assert_eq!(menu_note(&app), "asking comments: ✗ 1 to close, ✓ 1 kept\ncomments opened: ✗ 1 rejected\nreplies: ✓ 1 accepted, · 1 to review");
+    // Each count marked as the list marks a part, and in its mark's colour:
+    // what is accepted or kept, green; rejected or to close, red. What is
+    // to review, its mark, the labels and the commas, dim, not in the
+    // colour of what a menu says under its items. The first and the last
+    // cell of each part, in its style.
+    let (dim, accepted, rejected) = (color::dim(), color::add(), color::del());
+    let in_parts = |app: &mut App, parts: &[(&str, Style)]| {
+        let line: String = parts.iter().map(|(text, _)| *text).collect();
+        assert!(draw(app).contains(&line), "{line:?}:\n{}", draw(app));
+        let mut at = 0;
+        for (text, st) in parts {
+            let n = text.chars().count();
+            for dx in [at, at + n - 1] {
+                assert_eq!(style_after(app, &line, dx, 30), as_drawn(*st), "{text:?} of {line:?}");
+            }
+            at += n;
+        }
+    };
+    let summary: [&[(&str, Style)]; 3] = [
+        &[("asking comments: ", dim), ("✗ 1 to close", rejected), (", ", dim), ("✓ 1 kept", accepted)],
+        &[("comments opened: ", dim), ("✗ 1 rejected", rejected)],
+        &[("replies: ", dim), ("✓ 1 accepted", accepted), (", ", dim), ("· 1 to review", dim)],
+    ];
+    for parts in summary {
+        in_parts(&mut app, parts);
+    }
+    // What you wrote in the review, said over them: in the note's colour, as
+    // what any menu says under its items; the summary under it as before.
+    keys(&mut app, &[KeyCode::Esc]);
+    down_to_review(&mut app, &format!("Seen: {}", notes[1].text));
+    choose(&mut app, "Reply to it");
+    save(&mut app, "Louder, then.");
+    keys(&mut app, &[KeyCode::Esc]);
+    let note = menu_note(&app);
+    assert!(note.starts_with("You wrote 1 answer to the agent's replies in this review, so the work is not accepted"), "{note}");
+    assert!(note.ends_with("\nasking comments: ✗ 1 to close, ✓ 1 kept\ncomments opened: ✗ 1 rejected\nreplies: ✓ 1 accepted, · 1 to review"), "{note}");
+    let said = "You wrote 1 answer to the agent's";
+    let buf = drawn(&mut app, 30);
+    let (x, y) = at(&text_of(&buf), said);
+    for k in 0..said.chars().count() as u16 {
+        let c = &buf[(x + k, y)];
+        assert_eq!((c.fg, c.bg, c.modifier), as_drawn(color::note()), "{said:?} at {k}");
+    }
+    for parts in summary {
+        in_parts(&mut app, parts);
+    }
 }
 
 #[test]
@@ -19198,7 +19420,7 @@ fn the_tools_the_agent_could_not_use_are_items_of_its_review_refused_until_allow
     // allowed, the work may go back to the agent though nothing is written.
     keys(&mut app, &[KeyCode::Esc]);
     let note = menu_note(&app);
-    assert!(note.contains("tools the agent could not use: 1 allowed for this work, 2 refused, 1 noted"), "{note}");
+    assert!(note.contains("tools the agent could not use: ✓ 1 allowed for this work, ✗ 2 refused, · 1 noted"), "{note}");
     assert!(items(&app).iter().any(|(l, ok)| l == "Send it back to the agent" && *ok), "{:?}", items(&app));
 }
 

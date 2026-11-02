@@ -882,6 +882,44 @@ fn the_tools_the_agent_could_not_use_are_reviewed_in_the_browser_too() {
     until(&mut events, "allowed", |l| text(l).contains("✓ Bash(searchfox-cli *) · from now on"));
 }
 
+/// The runs of row event `l`: each its style, `FG,BG,MODS` as
+/// web/client.rs reads it, and its text.
+fn runs(l: &str) -> Vec<(String, String)> {
+    let runs = l.strip_prefix("data: r ").and_then(|r| r.split_once(' ')).map_or("", |(_, runs)| runs);
+    runs.split('\u{1e}').filter_map(|r| r.split_once('\u{1f}')).map(|(s, t)| (s.to_string(), t.to_string())).collect()
+}
+
+#[test]
+fn esc_in_a_review_marks_each_count_in_green_or_red_the_rest_dim_in_the_browser_too() {
+    let (_tmp, db) = setup();
+    refused_work(&db);
+    stacked::config::init(stacked::config::Config::default());
+    let (port, token) = stacked::web::start(db.clone()).unwrap();
+    let (host, input) = (format!("127.0.0.1:{port}"), format!("POST /input?t={token}"));
+    let mut events = events(port, &token, 100);
+    until(&mut events, "the banner", |l| text(l).contains("1 tool the agent could not use"));
+    ask(port, &host, &input, "k Esc -\n");
+    ask(port, &host, &input, "k Enter -\n");
+    until(&mut events, "the item", |l| text(l).contains("✗ Bash(searchfox-cli *) · refused"));
+    // Esc: what the review marks, said, the count red, as the terminal's
+    // colour 1, the rest dim (ratatui's modifier 2), as the terminal draws
+    // them; then, allowed, green, its colour 2.
+    let row = |events: &mut BufReader<TcpStream>, said: &str| runs(until(events, said, |l| text(l).contains(said)).last().unwrap());
+    ask(port, &host, &input, "k Esc -\n");
+    let note = row(&mut events, "tools the agent could not use: ✗ 1 refused");
+    for run in [(",,2", "tools the agent could not use: "), ("1,,0", "✗ 1 refused")] {
+        assert!(note.contains(&(run.0.into(), run.1.into())), "{run:?} in {note:?}");
+    }
+    ask(port, &host, &input, "k Esc -\n");
+    ask(port, &host, &input, "k Enter -\n");
+    until(&mut events, "allowed", |l| text(l).contains("✓ Bash(searchfox-cli *) · from now on"));
+    ask(port, &host, &input, "k Esc -\n");
+    let note = row(&mut events, "tools the agent could not use: ✓ 1 allowed from now on");
+    for run in [(",,2", "tools the agent could not use: "), ("2,,0", "✓ 1 allowed from now on")] {
+        assert!(note.contains(&(run.0.into(), run.1.into())), "{run:?} in {note:?}");
+    }
+}
+
 /// On stack `s` of `db`, ann's thread on its first patch's title: her
 /// comment, your reply, then her edit of her comment on Phabricator, her
 /// comment as it was redacted. And a pull waiting for your review, holding

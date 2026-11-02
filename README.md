@@ -2309,8 +2309,9 @@ its `Stop…` items.
 
 A review lists the parts on the left, in three sections, under the
 comments the agent was asked about, for its work, on top (`asking
-comments`): each is `keep`, as it is when the review opens, or `close`,
-done with: Enter turns one to the other, as Space's `Close it with the
+comments`): each is `✓ keep`, its line in green, as it is when the review
+opens, or `✗ close`, its line in red, done with: Enter turns one to the
+other, as Space's `Close it with the
 review` and `Keep it open` do, and the review closes those to close as it
 closes, once their replies are in their threads (`Filter comments…`,
 closed, lists them, to reopen). Marked to close, a comment's replies,
@@ -2319,7 +2320,17 @@ the agent brought nothing back, the list has only those comments, and
 `Close review` closes or keeps them as marked. The sections are the stack
 operations of the change (a line for each patch: `noop`, `add`, `modify`,
 `reword` when its message alone changed, `move`, `remove`, and the base
-when it is rebased), the comments it opened, and its replies. On the right
+when it is rebased), the comments it opened, and its replies. Each part is
+marked as it stands: `✓` and green once accepted, `✗` and red once
+rejected, `·` while it is to review, green and red being the colours of
+the lines a patch adds and removes (`added` and `removed` in the
+settings). The title of the stack operations says how the change is
+marked, `stack operations · accepted` with the word in green, `rejected`
+in red, or `to review` as the rest of the title. Each of its lines starts
+with that mark, and the operation after it keeps the colour of its kind:
+`add` green, `modify`, `reword` and the base magenta, `remove` red, `noop`
+dim, and `move` as any text. Under the cursor, a marked line is in the
+cursor's colours, its mark too, as every line of the list is. On the right
 is the part the cursor is on, as it would be:
 the stack diff of the change, from the stack as it is, each new version's
 interdiff under it, its message compared word by word, where its lines
@@ -2345,7 +2356,14 @@ comments accepted` and `… rejected` for the comments the work opened,
 rejected marks the comments rejected too, and marking it accepted again
 puts their marks back as they were; a comment cannot be accepted while
 the change is rejected. Esc says what is marked, by kind of part
-(`replies: 1 accepted, 1 to review`), and asks what to do: `Save` keeps
+(`replies: ✓ 1 accepted, · 1 to review`). Each count is marked as the
+list marks a part: `✓` and green for what is accepted, allowed or kept,
+`✗` and red for what is rejected, refused or to close, and `·` for what is
+to review or noted. Everything else on those lines, the labels, the
+commas, and `·` with its count, is dim, not in the yellow of what a menu
+says under its items, which is hard to tell from the green. The other
+lines there, such as `You wrote 1 comment in this review…`, stay yellow,
+as what every other menu says does. Esc then asks what to do: `Save` keeps
 the marks in the file, for the review to go on from them when you open it
 again; `Discard` throws away the marks made since the review was opened;
 `Close review`, once every part is marked, applies what is accepted;
@@ -4516,7 +4534,16 @@ by what it edits, the turn it edits redacted; replies taken with Enter, the last
 closing their work's review, its comments left open; Enter opening the
 review of work that opened comments too, and saying to review first the
 edit that work goes on from; and work that brought nothing back reviewed
-for its comment alone), a commit message that differs from its patch's
+for its comment alone), the review's list saying how each part stands
+(the title of the stack operations with its word in green once accepted,
+in red once rejected, in the title's colour to review, and each of its
+lines marked `✓` in green, `✗` in red or `·` as any text, the operation
+after the mark in its kind's colour, `modify`, `noop`, `remove` and `add`
+each its own; a line under the cursor in the cursor's colours, its mark
+too, and picked in its own; a comment that asked `✓ keep` in green and
+`✗ close` in red, cell by cell) and Esc's summary of it (each count
+marked so, in green or red, what is to review and the rest dim, and what
+else the menu says, `You wrote 1 answer…`, in the note's colour), a commit message that differs from its patch's
 holding back nothing (none of it in the banner, landed work reviewed and a
 reply taken at once meanwhile, the stack and the commit each keeping its
 own message, s and w doing nothing), HEAD shown where it was while stacked
@@ -4697,7 +4724,9 @@ asked first, → opening the comments pane of a patch with none, saying why,
 its menu there, and ← putting it away, a comment on a patch the agent's
 work adds, and what you write in a thread the agent opened that it was
 asked about, written in its review, listed with what you wrote and
-sending the work back, `Move HEAD…` on the stack's menu
+sending the work back, Esc's summary in a review sent with its count of
+the tools refused in red, then of those allowed in green, the rest dim,
+in the runs of the row the page draws, `Move HEAD…` on the stack's menu
 not grayed while it would not move HEAD, and the view of why opened from
 it, then left, a link of a line of a message opened from the
 menu of a right click on it and with `o` (the status line saying it is
@@ -4742,7 +4771,10 @@ waits its turn (a reconcile with HEAD, a lint job, an edit ask) taken out
 of the queue from the banner with Delete, each asked first; → opening the
 comments pane of a patch with none, saying why, its menu there, and ←
 putting it away; a comment on a patch the agent's work adds, written in
-its review, listed with what you wrote and sending the work back; `Move HEAD…` on the stack's menu drawn as any item while
+its review, listed with what you wrote and sending the work back; Esc's
+summary in a review, its count of the tools refused in red, then of
+those allowed in green, the rest dim, cell by cell of the screen the
+window paints; `Move HEAD…` on the stack's menu drawn as any item while
 it would not move HEAD, and the view of why opened from it, then left; the
 ask dialog opened with nothing set from a click on `Ask agent about all…`,
 Ask Now and Ask Later drawn dim, Ask Now as claude is not found, which it
@@ -5271,7 +5303,9 @@ said in plain words; the patches pane's mark `✓` exactly where the line
 says in sync and `✗` wherever it says what differs, the parent set,
 already its parent or none set, and none while that is not known or for a
 revision not found; and the line folded between words, its pieces under
-its first.
+its first. Those in `tui.rs` show, among others, a line of a menu's note
+drawn in parts folded at the spaces its text folds at, each character in
+its part's colour, but never between a mark and the count after it.
 
 ## Not done yet
 

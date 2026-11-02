@@ -875,6 +875,43 @@ fn the_tools_the_agent_could_not_use_are_reviewed_in_the_window_too() {
     screen(&s, "allowed", |b| text(b).contains("✓ Bash(searchfox-cli *) · from now on"));
 }
 
+#[test]
+fn esc_in_a_review_marks_each_count_in_green_or_red_the_rest_dim_in_the_window_too() {
+    use stacked::paint::color;
+    let (tmp, db) = setup();
+    refused_work(&db);
+    let s = Session::open(&db, tmp.path()).unwrap();
+    s.send(Input::Size(100, 30));
+    screen(&s, "the banner", |b| text(b).contains("1 tool the agent could not use"));
+    press(&s, KeyCode::Esc);
+    press(&s, KeyCode::Enter);
+    screen(&s, "the review", |b| text(b).contains("✗ Bash(searchfox-cli *) · refused"));
+    // Esc: what the review marks, said, the count in the colour of what it
+    // rejects, the rest dim, cell by cell as the terminal draws them; then,
+    // allowed, in the colour of what it accepts.
+    let marked = |label: &str, count: &str, st: ratatui::style::Style| {
+        let said = format!("{label}{count}");
+        let b = screen(&s, &said, |b| find(b, &said).is_some());
+        let (x, y) = find(&b, &said).unwrap();
+        let n = label.chars().count() as u16;
+        for k in 0..n {
+            let c = &b[(x + k, y)];
+            assert!(c.modifier.contains(Modifier::DIM) && c.fg == ratatui::style::Color::Reset, "{said:?} at {k}: {c:?}");
+        }
+        for k in n..n + count.chars().count() as u16 {
+            let c = &b[(x + k, y)];
+            assert!(Some(c.fg) == st.fg && !c.modifier.contains(Modifier::DIM), "{said:?} at {k}: {c:?}");
+        }
+    };
+    press(&s, KeyCode::Esc);
+    marked("tools the agent could not use: ", "✗ 1 refused", color::del());
+    press(&s, KeyCode::Esc);
+    press(&s, KeyCode::Enter);
+    screen(&s, "allowed", |b| text(b).contains("✓ Bash(searchfox-cli *) · from now on"));
+    press(&s, KeyCode::Esc);
+    marked("tools the agent could not use: ", "✓ 1 allowed from now on", color::add());
+}
+
 /// On stack `s` of `db`, ann's thread on its first patch's title: her
 /// comment, your reply, then her edit of her comment on Phabricator, her
 /// comment as it was redacted. And a pull waiting for your review, holding

@@ -151,11 +151,11 @@ pub(super) enum Yours {
     ToolAnswer(usize),
 }
 
-/// A line of the review's list: what it says, how, and the part it is of
-/// (none, a section's title); for the change's, its place in the diff.
+/// A line of the review's list: what it says, in parts, each in its own
+/// style, and the part it is of (none, a section's title); for the
+/// change's, its place in the diff.
 pub(super) struct Line {
-    text: String,
-    style: Style,
+    parts: Parts,
     part: Option<Part>,
     entry: Option<usize>,
     /// The comment the ask was about it is, by its place among them: kept,
@@ -176,6 +176,21 @@ pub(super) struct Line {
 }
 
 impl Line {
+    /// A line saying `parts`, of no part: a section's title, until said
+    /// otherwise.
+    fn new(parts: Parts) -> Line {
+        Line {
+            parts,
+            part: None,
+            entry: None,
+            asking: None,
+            yours: None,
+            report: None,
+            stacked: false,
+            tool: None,
+        }
+    }
+
     /// Whether the cursor goes on it: a part, a comment that asked, what
     /// you wrote, what the linter reported, stacked's comment, or a tool the
     /// agent could not use; not a section's title.
@@ -941,25 +956,17 @@ impl App {
         let mut out = Vec::new();
         let Some(rv) = &self.reviewing else { return out };
         let Some((r, h)) = self.work(&rv.run) else { return out };
-        let line = |text: String, style: Style| Line {
-            text,
-            style,
-            part: None,
-            entry: None,
-            asking: None,
-            yours: None,
-            report: None,
-            stacked: false,
-            tool: None,
-        };
+        let line = |text: String, style: Style| Line::new(vec![(text, style)]);
         let asking = self.asking_open();
         if !asking.is_empty() {
             out.push(line((if asking.len() == 1 { " asking comment" } else { " asking comments" }).into(), color::file()));
+            // Each kept, marked and coloured as a part accepted is; each to
+            // close, as one rejected is.
             for (k, n) in asking {
                 let at = if n.on_stack() { "the stack".to_string() } else { n.where_said() };
                 let (m, st) = match rv.marks.get(&crate::held::asking_key(k)) {
-                    Some(true) => ("close", color::del()),
-                    _ => ("keep ", Style::new()),
+                    Some(true) => ("✗ close", color::del()),
+                    _ => ("✓ keep ", color::add()),
                 };
                 out.push(Line {
                     asking: Some(k),
@@ -971,22 +978,27 @@ impl App {
         let mark = |p: Part| rv.marks.get(&p.key()).copied();
         let title = |text: &str| line(text.into(), color::file());
         if let Some((now, next)) = self.review_stacks() {
-            let said = match mark(Part::Stack) {
-                Some(true) => "accepted",
-                Some(false) => "rejected",
-                None => "to review",
+            // How the change is marked: in its title, the word in its mark's
+            // colour (`mark_of`), to review in the title's; and before each
+            // operation, its mark, the operation in its own colour.
+            let marked = mark(Part::Stack);
+            let said = match marked {
+                Some(true) => ("accepted", color::add()),
+                Some(false) => ("rejected", color::del()),
+                None => ("to review", color::file()),
             };
             out.push(Line {
                 part: Some(Part::Stack),
-                ..line(format!(" stack operations · {said}"), color::file())
+                ..Line::new(vec![(" stack operations · ".into(), color::file()), (said.0.into(), said.1)])
             });
+            let (m, st) = mark_of(marked);
             let diff = crate::history::stacks_diff(&self.db, Some(&now), Some(&next), false);
             for (k, d) in diff.iter().enumerate() {
                 if let Some((text, style)) = operation(d) {
                     out.push(Line {
                         part: Some(Part::Stack),
                         entry: Some(k),
-                        ..line(format!("   {text}"), style)
+                        ..Line::new(vec![("   ".into(), Style::new()), (m.into(), st), (" ".into(), Style::new()), (text, style)])
                     });
                 }
             }
@@ -1435,11 +1447,16 @@ impl App {
                 top = rv.sel + 1 - rows;
             }
             for (y, (i, l)) in lines.iter().enumerate().skip(top).take(rows).enumerate() {
-                let mut st = l.style;
-                if i == rv.sel {
-                    st = if rv.in_main { st.patch(color::picked()) } else { on_cursor(st) };
-                }
-                put(buf, list, 0, y + 1, list_w, &fit(&l.text, list_w), st);
+                // The line the cursor is on: each of its parts in the cursor's
+                // colours, whatever its own, a mark too; picked, the cursor in
+                // the other pane, each in its own, as `picked` paints them.
+                let drawn = |st: Style| match (i == rv.sel, rv.in_main) {
+                    (false, _) => st,
+                    (true, true) => st.patch(color::picked()),
+                    (true, false) => on_cursor(st),
+                };
+                let parts: Parts = l.parts.iter().map(|(text, st)| (text.clone(), drawn(*st))).collect();
+                put_parts(buf, list, 0, y + 1, list_w, &parts);
                 spot_in(&self.spots, list, (0, y + 1, list_w, 1), Spot::ReviewLine(i));
             }
             if let Some(r) = &mut self.reviewing {
@@ -1862,53 +1879,75 @@ impl App {
         }
     }
 
-    /// What is marked, by kind of part: a line for each.
-    pub(super) fn review_summary(&self) -> String {
-        let Some(rv) = &self.reviewing else { return String::new() };
+    /// What is marked, by kind of part: a line for each, in parts. Each
+    /// count is marked as the list marks a part (`mark_of`): what is
+    /// accepted, allowed or kept, `✓` in the colour of a part accepted;
+    /// what is rejected, refused or to close, `✗` in that of one rejected;
+    /// what is to review or noted, `·`. The rest is dim rather than in the
+    /// note's colour, which reads too close to the green.
+    pub(super) fn review_summary(&self) -> Vec<Parts> {
+        let Some(rv) = &self.reviewing else { return vec![] };
         let parts = self.review_parts();
         let mark = |p: &Part| rv.marks.get(&p.key()).copied();
-        let mut out = Vec::new();
+        let rest = color::dim();
+        // What a part, or a count of them, stands at, marked; neither
+        // accepted nor rejected, in the rest's style.
+        let marked = |m: Option<bool>, what: String| {
+            let (sign, st) = mark_of(m);
+            (format!("{sign} {what}"), if m.is_some() { st } else { rest })
+        };
+        // A line: what it counts, then each count but none, commas between.
+        let counted = |of: &str, counts: &[(usize, &str, Option<bool>)]| -> Parts {
+            let mut line = vec![(format!("{of}: "), rest)];
+            for (k, &(n, word, m)) in counts.iter().filter(|(n, ..)| *n > 0).enumerate() {
+                if k > 0 {
+                    line.push((", ".into(), rest));
+                }
+                line.push(marked(m, format!("{n} {word}")));
+            }
+            line
+        };
+        let mut out: Vec<Parts> = Vec::new();
         // Nothing brought back: only the comments that asked, to say.
         if self.work(&rv.run).is_some_and(|(_, h)| h.is_empty()) {
-            out.push(crate::held::NOTHING_BACK.to_string());
+            out.push(vec![(crate::held::NOTHING_BACK.to_string(), rest)]);
         }
         // What the linter reported and did not fix: read, not marked.
         if self.work(&rv.run).is_some_and(|(_, h)| h.lint.as_ref().is_some_and(|l| !l.errors.is_empty())) {
-            out.push("what the linter reported: to read, nothing to accept or reject".to_string());
+            out.push(vec![("what the linter reported: to read, nothing to accept or reject".to_string(), rest)]);
         }
         if self.work(&rv.run).is_some_and(|(r, _)| r.reconcile.is_some()) {
-            out.push("stacked's comment: to read, nothing to accept or reject".to_string());
+            out.push(vec![("stacked's comment: to read, nothing to accept or reject".to_string(), rest)]);
         }
         if let Some((_, h)) = self.work(&rv.run).filter(|(_, h)| !h.tools.is_empty()) {
             let of = |a: Allow| h.tools.iter().enumerate().filter(|(k, t)| t.offered() && crate::refusals::state(&rv.marks, *k) == a).count();
             let noted = h.tools.iter().filter(|t| !t.offered()).count();
-            let said: Vec<String> = [(of(Allow::Always), Allow::Always.said()), (of(Allow::Work), Allow::Work.said()), (of(Allow::Refused), Allow::Refused.said()), (noted, "noted")]
-                .into_iter()
-                .filter(|(n, _)| *n > 0)
-                .map(|(n, what)| format!("{n} {what}"))
-                .collect();
-            out.push(format!("{}: {}", crate::refusals::HEADING, said.join(", ")));
+            out.push(counted(
+                crate::refusals::HEADING,
+                &[
+                    (of(Allow::Always), Allow::Always.said(), Some(true)),
+                    (of(Allow::Work), Allow::Work.said(), Some(true)),
+                    (of(Allow::Refused), Allow::Refused.said(), Some(false)),
+                    (noted, "noted", None),
+                ],
+            ));
         }
+        // The comments that asked: kept, as a part accepted; to close, as one
+        // rejected.
         let asking = self.asking_open();
         if !asking.is_empty() {
             let closing = asking.iter().filter(|(k, _)| rv.marks.get(&crate::held::asking_key(*k)) == Some(&true)).count();
-            let mut said = Vec::new();
-            for (n, word) in [(closing, "to close"), (asking.len() - closing, "kept")] {
-                if n > 0 {
-                    said.push(format!("{n} {word}"));
-                }
-            }
-            out.push(format!("{}: {}", if asking.len() == 1 { "asking comment" } else { "asking comments" }, said.join(", ")));
+            let of = if asking.len() == 1 { "asking comment" } else { "asking comments" };
+            out.push(counted(of, &[(closing, "to close", Some(false)), (asking.len() - closing, "kept", Some(true))]));
         }
         if parts.contains(&Part::Stack) {
-            out.push(format!(
-                "the change of the stack: {}",
-                match mark(&Part::Stack) {
-                    Some(true) => "accepted",
-                    Some(false) => "rejected",
-                    None => "to review",
-                }
-            ));
+            let m = mark(&Part::Stack);
+            let said = match m {
+                Some(true) => "accepted",
+                Some(false) => "rejected",
+                None => "to review",
+            };
+            out.push(vec![("the change of the stack: ".into(), rest), marked(m, said.into())]);
         }
         // Each kind of part apart: a try push's tasks, the comments
         // opened, the replies.
@@ -1925,15 +1964,9 @@ impl App {
                 continue;
             }
             let count = |m: Option<bool>| these.iter().filter(|p| mark(p) == m).count();
-            let mut said = Vec::new();
-            for (n, word) in [(count(Some(true)), "accepted"), (count(Some(false)), "rejected"), (count(None), "to review")] {
-                if n > 0 {
-                    said.push(format!("{n} {word}"));
-                }
-            }
-            out.push(format!("{what}: {}", said.join(", ")));
+            out.push(counted(what, &[(count(Some(true)), "accepted", Some(true)), (count(Some(false)), "rejected", Some(false)), (count(None), "to review", None)]));
         }
-        out.join("\n")
+        out
     }
 
     /// What Esc asks in the review: what is marked, said; then save the
@@ -1975,10 +2008,10 @@ impl App {
                 }
             }
             m.note = Some(format!(
-                "You wrote {} in this review, so the work is not accepted: it goes back to the agent, which is asked again, starting from this work.\n{}",
+                "You wrote {} in this review, so the work is not accepted: it goes back to the agent, which is asked again, starting from this work.",
                 what.join(" and "),
-                self.review_summary()
             ));
+            m.say_parts(self.review_summary());
             return m;
         }
         let parts = self.review_parts();
@@ -2018,7 +2051,7 @@ impl App {
             _ => "the agent's work",
         };
         let mut m = Menu::new(format!("your review of {of}"), items, None);
-        m.note = Some(self.review_summary());
+        m.say_parts(self.review_summary());
         m
     }
 

@@ -833,7 +833,7 @@ fn a_try_push_asked_lands_the_tasks_the_comment_asks_for_each_with_why() {
     // Esc: it goes back to the agent, neither accepted nor rejected.
     keys(&mut app, &[KeyCode::Esc]);
     assert!(menu_note(&app).starts_with("You wrote 1 answer to why the agent selected a task in this review"), "{}", menu_note(&app));
-    assert!(menu_note(&app).contains("tasks: 1 accepted, 1 rejected"), "{}", menu_note(&app));
+    assert!(menu_note(&app).contains("tasks: ✓ 1 accepted, ✗ 1 rejected"), "{}", menu_note(&app));
     tasks_answer(
         &db,
         &[
