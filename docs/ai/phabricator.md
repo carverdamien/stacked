@@ -1,11 +1,11 @@
 # Phabricator
 
 What follows is built by default, with the `moz-phab` feature:
-`--no-default-features --features app,demo,web` builds stacked without it
-(Install). `stacked moz-phab import REVISION` makes a new stack of a
-revision, `D123`, `123` or its link, as `Import from Phabricator…` does in
-the editor (Making a stack in the editor): `imported 2 patches from
-D11..D12 as D12`.
+`--no-default-features --features app,demo,try-push,web` builds stacked
+without it (Install). `stacked moz-phab import REVISION` makes a new stack
+of a revision, `D123`, `123` or its link, as `Import from Phabricator…`
+does in the editor (Making a stack in the editor): `imported 2 patches
+from D11..D12 as D12`.
 
 `stacked moz-phab pull NAME`, or the menu's `Pull reviews from
 Phabricator`, reads the revision in

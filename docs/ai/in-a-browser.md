@@ -1,8 +1,9 @@
 # In a browser
 
 `stacked web` (built by default, with the `web` feature:
-`--no-default-features --features app,demo,moz-phab` builds stacked without
-it) serves the editor on this machine and opens the browser on it: the
+`--no-default-features --features app,demo,moz-phab,try-push` builds
+stacked without it) serves the editor on this machine and opens the
+browser on it: the
 same editor, the same keys, drawn in the page as in a terminal. Over the
 side panes, the patches and the comments, the mouse marks the line under
 it, underlined, and picks nothing: what is picked stays so (reversed in

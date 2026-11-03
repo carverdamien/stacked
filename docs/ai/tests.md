@@ -1,5 +1,28 @@
 # Tests
 
+The full check of a change to stacked, before it is merged, is clippy with
+`--all-targets` over five feature sets, `web,demo,moz-phab,try-push`,
+`app`, none, `try-push` and all five, then the test suites over the same
+five, and once more for `web,demo,moz-phab,try-push` with
+`STACKED_TEST_CHECKPOINTS=1` (below). The [README](../../README.md)'s
+Building and testing gives the same commands, in the same order; a change
+to them is made in both:
+
+```sh
+cargo clippy --all-targets --no-default-features --features web,demo,moz-phab,try-push
+cargo clippy --all-targets --no-default-features --features app
+cargo clippy --all-targets --no-default-features
+cargo clippy --all-targets --no-default-features --features try-push
+cargo clippy --all-targets --no-default-features --features web,demo,moz-phab,app,try-push
+
+cargo test --no-default-features --features web,demo,moz-phab,try-push
+STACKED_TEST_CHECKPOINTS=1 cargo test --no-default-features --features web,demo,moz-phab,try-push
+cargo test --no-default-features
+cargo test --no-default-features --features try-push
+cargo test --no-default-features --features web,demo,moz-phab,app,try-push
+cargo test --no-default-features --features app
+```
+
 Run `cargo test` after any change. With every feature on by default,
 `cargo test` runs every test: the browser's, the tour's, Phabricator's,
 StackED's and the try push's too (the web feature needs the wasm target,

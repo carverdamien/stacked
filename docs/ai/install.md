@@ -19,7 +19,7 @@ The `web` feature adds the editor in a browser (`stacked web`, below). Its
 browser half is compiled to wasm, with Rust's wasm32-unknown-unknown
 target, which `rustup target add` installs (above). Without that target,
 the build stops and says to add it, or to build stacked without `web`, as
-`--no-default-features --features app,demo,moz-phab` does.
+`--no-default-features --features app,demo,moz-phab,try-push` does.
 
 The `demo` feature adds a tour of the editor, to learn it by (`stacked
 demo`, below).

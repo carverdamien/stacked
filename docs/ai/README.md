@@ -1,5 +1,8 @@
 # stacked's specification
 
+The code is the truth: where these files and the code disagree, the files
+are fixed to say what the code does.
+
 These files are stacked's exhaustive specification. They are written for
 the agents that work on stacked, and kept up to date by them: every
 behaviour, every text the screen shows, every setting, the database's
@@ -15,7 +18,8 @@ A change to stacked updates the file of its area here, and `tests.md` for
 its tests. A new section is a new file, listed here in its place.
 
 - [Introduction](introduction.md): what stacked is, in a paragraph, and
-  where help is in the editor.
+  its three front ends; what these files are, and for whom; and where help
+  is in the editor.
 - [Install](install.md): installing with cargo, the five features and what
   each adds, the wasm target, what StackED needs on Linux, and the
   completion in zsh.
@@ -80,7 +84,8 @@ its tests. A new section is a new file, listed here in its place.
 - [Copied from self-review-rs](copied-from-self-review-rs.md): where
   stacked comes from, and what it copies.
 - [Layout of the code](layout-of-the-code.md): what each source file does.
-- [Tests](tests.md): how the tests keep off the network and your files,
-  their stand-ins, `STACKED_TEST_CHECKPOINTS=1`, and what each test shows.
+- [Tests](tests.md): the full check of a change, how the tests keep off
+  the network and your files, their stand-ins,
+  `STACKED_TEST_CHECKPOINTS=1`, and what each test shows.
 - [Not done yet](not-done-yet.md): what stacked does not do yet.
 - [License](license.md): MIT.

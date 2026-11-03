@@ -88,15 +88,15 @@ enum Cmd {
     /// disk but `[demo] seen` in the settings: opened again, it starts on
     /// the list of its sections, to start at any of them. `stacked demo` is
     /// built by default, with the `demo` feature: `--no-default-features
-    /// --features app,moz-phab,web` builds stacked without it.
+    /// --features app,moz-phab,try-push,web` builds stacked without it.
     #[cfg(feature = "demo")]
     Demo,
     /// The editor in a browser: a server on this machine, and the browser
     /// opened on it. The cursor follows the mouse: a click is Enter, a right
     /// click Space; writing a comment, a click outside its box is Esc.
     /// `stacked web` is built by default, with the `web` feature:
-    /// `--no-default-features --features app,demo,moz-phab` builds stacked
-    /// without it.
+    /// `--no-default-features --features app,demo,moz-phab,try-push` builds
+    /// stacked without it.
     #[cfg(feature = "web")]
     Web {
         /// The port of 127.0.0.1 to listen on; else any free one.
@@ -112,7 +112,7 @@ enum Cmd {
     /// box is Esc. `$EDITOR` opens where it was started. The window's File
     /// menu opens more databases, each in a window of its own. `stacked app`
     /// is built by default, with the `app` feature: `--no-default-features
-    /// --features demo,moz-phab,web` builds stacked without it.
+    /// --features demo,moz-phab,try-push,web` builds stacked without it.
     #[cfg(feature = "app")]
     App {
         /// StackED made an app of the system's: on macOS, StackED.app in DIR
@@ -465,7 +465,7 @@ enum Cmd {
     /// Phabricator, over Conduit with moz-phab's token: `pull`, a stack's
     /// reviews; `import`, a stack of its revisions. `stacked moz-phab` is
     /// built by default, with the `moz-phab` feature: `--no-default-features
-    /// --features app,demo,web` builds stacked without it.
+    /// --features app,demo,try-push,web` builds stacked without it.
     #[cfg(feature = "moz-phab")]
     MozPhab {
         #[command(subcommand)]

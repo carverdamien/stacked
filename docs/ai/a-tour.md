@@ -1,13 +1,13 @@
 # A tour
 
 `stacked demo` (built by default, with the `demo` feature:
-`--no-default-features --features app,moz-phab,web` builds stacked without
-it) teaches the editor with a game of tic-tac-toe played in a file,
-board.txt, one patch per move. The tour starts from an empty board and an
-empty stack, and plays five moves as patches. Each patch shows the whole
-board, so the moves before it can be seen. O's fourth move is a mistake,
-and X's fifth move wins because of it. The tour has 14 sections, the most
-useful first, and takes about fifteen minutes:
+`--no-default-features --features app,moz-phab,try-push,web` builds
+stacked without it) teaches the editor with a game of tic-tac-toe played
+in a file, board.txt, one patch per move. The tour starts from an empty
+board and an empty stack, and plays five moves as patches. Each patch
+shows the whole board, so the moves before it can be seen. O's fourth move
+is a mistake, and X's fifth move wins because of it. The tour has 14
+sections, the most useful first, and takes about fifteen minutes:
 
 1. Read a stack and its patches.
 2. Comment on a line: O's mistake.

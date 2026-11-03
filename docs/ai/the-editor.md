@@ -429,10 +429,11 @@ compared again, and reads nothing of Phabricator. Nothing is read, and no
 line drawn, while reviews come from nowhere, nor in the tour. In the
 browser and in StackED, the same.
 
-There are six keys, four more for the middle: three of self-review's
-(Copied from self-review-rs, below, says what it is) and one of stacked's
-own; and `o`, on a line of a commit message. The settings can make any of
-them other keys, and the help then names those:
+There are six keys, four more for the middle, and `o`, on a line of a
+commit message. Of the four, `1`, `2` and `/` are self-review's (Copied
+from self-review-rs, below, says what self-review is), and `3` is
+stacked's own. The settings can make any of them other keys, and the help
+then names those:
 
 - The arrows move. ↑↓ go through the patches (the header is above the
   first), the lines of the patch, or the comments (their header above the

@@ -1,8 +1,9 @@
 # In a window of its own: StackED
 
 `stacked app` (built by default, with the `app` feature:
-`--no-default-features --features demo,moz-phab,web` builds stacked without
-it) opens StackED, the editor in a window of its own, with no terminal and
+`--no-default-features --features demo,moz-phab,try-push,web` builds
+stacked without it) opens StackED, the editor in a window of its own, with
+no terminal and
 no browser: the same editor, the same keys, drawn as in a terminal. The
 window paints the editor's screen as a terminal would, a grid of cells in
 their colours, bold and italic, underlined or struck through, and draws

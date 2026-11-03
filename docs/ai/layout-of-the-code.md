@@ -1,6 +1,11 @@
 # Layout of the code
 
 - `main.rs`: the command line; the library does the rest.
+- `complete.rs`: the shell's completion: what `stacked __complete` offers
+  for the word being typed, from stacked's commands and their options, and
+  from the database (its stacks, a stack's patches and comments, the
+  agent's runs); and the function for zsh that `stacked completions zsh`
+  prints.
 - `db.rs`: the file, its records and its lock.
 - `check.rs`: whether patches apply, before they go in; the files as a
   patch leaves them, and the tree, for a submit.
@@ -74,6 +79,21 @@
 - `mbox.rs`: reading `git format-patch` mail, writing mail for `git am`.
 - `rows.rs`, `view.rs`, `diff.rs`, `thread.rs`: the patch or the stack as
   rows, line keys, comment threads.
+- `markdown.rs`: the markdown of comments, as the editor draws it: each
+  piece of a turn's text marked as what it is (code, bold, italics, a link
+  and where it goes, a heading, a quote's bar, a list's bullet, a line of a
+  code block, a rule, a mention of references), for the editor to colour;
+  the lines broken where the text breaks them and again where they are too
+  wide, a code block's lines keeping their spaces, a table's cells folded
+  within their columns; and a comment said in a line, its markup left out.
+- `refs.rs`: the references of comments: those the agent attaches to what
+  it writes, in a `refs` block (lines of a file, as a patch, the base or
+  the whole stack has it; another comment of the stack; a web link), and
+  those you attach to a comment, numbered `r1`, `r2` once and for all,
+  which mentions name (`@r1`, `@r*`); those that a rewind or an edit
+  detaches, as it takes away their last mention; and a web link checked,
+  then opened in your browser by `$STACKED_OPEN`'s program, else as the
+  system opens one.
 - `panes.rs`: the compact layout's two panes.
 - `whole.rs`: each file of a patch whole, as `3` shows it: how its hunks go
   in it, and its files read once for each patch, in a thread of their own.

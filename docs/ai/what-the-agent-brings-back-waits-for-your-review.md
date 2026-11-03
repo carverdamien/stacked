@@ -25,9 +25,13 @@ rejected is dropped for good, though `Runs…` still shows what the agent
 said and did.
 
 Until its review closes, a change of the stack keeps the stack as the
-agent took it: the stack is not edited by hand, as while the agent works,
-and the next ask that may change the code waits for that review
-(`ready (may change the code), it goes once you have reviewed the agent's
+agent took it: the stack is not edited by hand, as while the agent works.
+Chained (`agent.chain`, on unless set to false; Asking the agent, above),
+the next ask that may change the code does not wait for that review: it
+goes at once, from the stack that change makes, as if you accept it, and
+what it brings back is reviewed after that change.
+Unchained, that ask waits for the review (`ready (may change the code),
+it goes once you have reviewed the agent's
 change of patch 2`). Asks to answer only, or to build and test, do not
 wait. A comment whose reply waits says so on its first line (`the agent's
 reply waits for your review`), and is not written on, nor asked again,

@@ -196,7 +196,14 @@ settings:
   leaves at once, nothing written.
 
   `worktrees`, where the agents' worktrees go, else `.stacked/` at the top
-  of the stack's repository. `schema`, whether the agent gives its answer
+  of the stack's repository. `chain`, whether a stack's asks are chained
+  (Asking the agent, above; on unless set): a change does not wait for the
+  review of the change before it, but goes from the stack that change
+  makes, as if you accept it, one change running at a time, and an answer
+  runs alongside the changes, on the stack as it is. `false` turns
+  chaining off: a change then waits for the review of the change before it
+  and for the running answers to land, and an answer waits for a running
+  change to land. `schema`, whether the agent gives its answer
   as structured output, checked against what the ask asks for (claude's
   `--json-schema`: its replies by the comments' labels, an answer's
   comments, a build and test's findings by the patches' numbers; on
