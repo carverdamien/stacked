@@ -360,7 +360,8 @@ impl Pulling {
 }
 
 /// Pulls the reviews of `name`'s patches, the result a run of its own,
-/// holding what is new for review.
+/// holding what is new for review; the comments of each revision read
+/// stored too, as the Phabricator line counts them (`phab::store_pulled`).
 pub fn pull(db_path: &std::path::Path, name: &str) -> Result<Run> {
     pull_saying(db_path, name, &mut |_| {})
 }
@@ -412,7 +413,14 @@ fn pull_of(db_path: &std::path::Path, name: &str, only: Option<&str>, say: &mut 
         (Some(_), [(_, rev, _)]) => rev.clone(),
         _ => format!("{} revision{}", revs.len(), if revs.len() == 1 { "" } else { "s" }),
     };
-    Db::edit(db_path, |db| file_from(db, name, &id, &of, &fetched))
+    // What it read stored too: each revision's comments, as the Phabricator
+    // line counts those not pulled yet.
+    Db::edit(db_path, |db| {
+        if let Ok(pulled) = &fetched {
+            phab::store_pulled(db, &revs, pulled)?;
+        }
+        file_from(db, name, &id, &of, &fetched)
+    })
 }
 
 #[cfg(test)]

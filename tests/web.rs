@@ -293,16 +293,20 @@ fn a_patch_is_submitted_to_phabricator_from_its_menu_in_the_browser_too() {
     let (host, input) = (format!("127.0.0.1:{port}"), format!("POST /input?t={token}"));
     let mut events = events(port, &token, 100);
     until(&mut events, "the patches", |l| l.starts_with("data: r 3 ") && l.contains("Bug 2 - add b"));
-    // The first patch's menu, opened with a right click, and its item
-    // clicked: what is sent is read, then the dialog says it.
+    // The first patch's menu, opened with a right click, its `Phabricator`
+    // item clicked, then the submit in that menu: what is sent is read,
+    // then the dialog says it.
     ask(port, &host, &input, "m 5 2 r\n");
-    let item = "Submit to Phabricator as WIP";
-    let seen_menu = until(&mut events, "the patch's menu", |l| text(l).contains(item));
-    let row = seen_menu.last().unwrap();
-    let y = row.strip_prefix("data: r ").and_then(|r| r.split(' ').next()).unwrap();
-    let line = text(row);
-    let x = line[..line.find(item).unwrap()].chars().count() + 1;
-    ask(port, &host, &input, &format!("m {x} {y} l\n"));
+    let click = |events: &mut BufReader<TcpStream>, what: &str, item: &str| {
+        let seen = until(events, what, |l| text(l).contains(item));
+        let row = seen.last().unwrap();
+        let y = row.strip_prefix("data: r ").and_then(|r| r.split(' ').next()).unwrap().to_string();
+        let line = text(row);
+        let x = line[..line.find(item).unwrap()].chars().count() + 1;
+        ask(port, &host, &input, &format!("m {x} {y} l\n"));
+    };
+    click(&mut events, "the patch's menu", "Phabricator ");
+    click(&mut events, "the patch's Phabricator menu", "Submit to Phabricator as WIP");
     let title = "send patch 1 to Phabricator as a new revision?";
     let seen_dialog = until(&mut events, "the dialog", |l| text(l).contains(title));
     let row = seen_dialog.last().unwrap().strip_prefix("data: r ").and_then(|r| r.split(' ').next()).unwrap().to_string();
@@ -344,6 +348,20 @@ fn the_status_of_each_patch_s_revision_and_its_phabricator_line_show_in_the_brow
     let (port, token) = stacked::web::start(db.clone()).unwrap();
     let (host, input) = (format!("127.0.0.1:{port}"), format!("POST /input?t={token}"));
     let mut events = events(port, &token, 100);
+    // Nothing read as the page opens: the Phabricator line says that D11
+    // is not fetched yet.
+    until(&mut events, "the line, not fetched yet", |l| text(l).contains("Phabricator: D11 · not fetched yet:"));
+    // Fetched from the stack's menu, its item clicked.
+    ask(port, &host, &input, "k Up -\n");
+    ask(port, &host, &input, "k c 20 -\n");
+    let item = "Fetch the latest from Phabricator";
+    let seen = until(&mut events, "the stack's menu", |l| text(l).contains(item));
+    let row = seen.last().unwrap();
+    let y = row.strip_prefix("data: r ").and_then(|r| r.split(' ').next()).unwrap();
+    let said = text(row);
+    let x = said[..said.find(item).unwrap()].chars().count() + 1;
+    ask(port, &host, &input, &format!("m {x} {y} l\n"));
+    ask(port, &host, &input, "k Down -\n");
     // The Phabricator line over the message, in the middle; and, on the
     // rows under it as they come with it, a letter after the number, then
     // ✗, as the line says D11's diff is otherwise; the patch naming no

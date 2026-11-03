@@ -3,16 +3,20 @@
 //! moz-phab and arc keep in `~/.arcrc`, or the one the settings give, which
 //! curl is given on its standard input (`request`).
 //! Taken from self-review's, less what files them in its sessions:
-//! `review::pull` files them in the database.
+//! `review::pull` files them in the database. Then what the editor shows
+//! of a stack's revisions, read when asked, and stored in the database
+//! (`fetch_latest`): their statuses, their latest diffs, their parents and
+//! their comments.
 
 use std::collections::HashMap;
 use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Stdio};
-use std::time::Duration;
 
 use serde_json::{Value, json};
 
+use crate::db::{Comments, Db, Seen, Stack, State};
+use crate::submit::{Below, Parent};
 use crate::view::{NoteLine, fold};
 
 /// A Conduit endpoint and the token for it.
@@ -23,11 +27,10 @@ pub struct Conduit {
 
 /// What a call of Conduit came to, when not to its result: Phabricator
 /// turning away the requests of this machine for now (HTTP 429, too many
-/// requests), for as long as its `Retry-After` says, when it says a time to
-/// come; or anything else that went wrong, said.
+/// requests); or anything else that went wrong, said.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Error {
-    TurnedAway(Option<Duration>),
+    TurnedAway,
     Said(String),
 }
 
@@ -37,7 +40,7 @@ pub const TURNED_AWAY: &str = "Phabricator is turning away requests from this ma
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
-            Error::TurnedAway(_) => f.write_str(TURNED_AWAY),
+            Error::TurnedAway => f.write_str(TURNED_AWAY),
             Error::Said(said) => f.write_str(said),
         }
     }
@@ -123,9 +126,9 @@ impl Conduit {
 /// the tests' stand-in. The token and the parameters are given on curl's
 /// standard input, never on its command line, where any process of this
 /// machine could read them. Its `result`; or what went wrong: curl failing,
-/// as it says it; Phabricator turning this machine away (HTTP 429), for as
-/// long as it says; a status other than 200, or a page that is not JSON,
-/// said with the page's first line; or the error Conduit gives.
+/// as it says it; Phabricator turning this machine away (HTTP 429); a
+/// status other than 200, or a page that is not JSON, said with the page's
+/// first line; or the error Conduit gives.
 fn request(mut curl: Command, api: &str, token: &str, method: &str, params: Value) -> Result<Value, Error> {
     let mut params = params;
     params["__conduit__"] = json!({"token": token});
@@ -146,13 +149,13 @@ fn request(mut curl: Command, api: &str, token: &str, method: &str, params: Valu
     if !out.status.success() {
         return Err(Error::Said(format!("{method}: {}", String::from_utf8_lossy(&out.stderr).trim())));
     }
-    let (status, retry_after, page) = answered(&out.stdout);
+    let (status, page) = answered(&out.stdout);
     let first = String::from_utf8_lossy(page).lines().map(str::trim).find(|l| !l.is_empty()).map(|l| match l.chars().count() > 80 {
         true => format!("{}…", l.chars().take(80).collect::<String>()),
         false => l.to_string(),
     });
     match (status, &first) {
-        (Some(429), _) => return Err(Error::TurnedAway(retry_after.as_deref().and_then(|v| wait_asked(v, crate::db::now())))),
+        (Some(429), _) => return Err(Error::TurnedAway),
         (Some(s), Some(l)) if s != 200 => return Err(Error::Said(format!("{method}: Phabricator answered HTTP {s} with a page starting \"{l}\""))),
         (Some(s), None) if s != 200 => return Err(Error::Said(format!("{method}: Phabricator answered HTTP {s} with an empty page"))),
         _ => {}
@@ -168,10 +171,10 @@ fn request(mut curl: Command, api: &str, token: &str, method: &str, params: Valu
 }
 
 /// What curl wrote with `-D -`: the status of the last answer, past those
-/// that only say to go on (`100 Continue`), its `Retry-After` if it has
-/// one, and its page. No status where curl wrote no headers.
-fn answered(out: &[u8]) -> (Option<u16>, Option<String>, &[u8]) {
-    let (mut status, mut retry_after, mut rest) = (None, None, out);
+/// that only say to go on (`100 Continue`), and its page. No status where
+/// curl wrote no headers.
+fn answered(out: &[u8]) -> (Option<u16>, &[u8]) {
+    let (mut status, mut rest) = (None, out);
     while rest.starts_with(b"HTTP/") {
         let end = rest
             .windows(4)
@@ -181,37 +184,9 @@ fn answered(out: &[u8]) -> (Option<u16>, Option<String>, &[u8]) {
             .unwrap_or(rest.len());
         let headers = String::from_utf8_lossy(&rest[..end]);
         status = headers.split_whitespace().nth(1).and_then(|s| s.parse().ok());
-        retry_after = headers.lines().skip(1).find_map(|l| {
-            let (name, value) = l.split_once(':')?;
-            name.trim().eq_ignore_ascii_case("retry-after").then(|| value.trim().to_string())
-        });
         rest = &rest[end..];
     }
-    (status, retry_after, rest)
-}
-
-/// How long a `Retry-After` of `value` says to wait, at `now` (seconds since
-/// 1970): its number of seconds, or until its date, as HTTP writes one
-/// (`Wed, 21 Oct 2015 07:28:00 GMT`). None for no time to come.
-fn wait_asked(value: &str, now: i64) -> Option<Duration> {
-    if let Ok(secs) = value.trim().parse::<u64>() {
-        return (secs > 0).then(|| Duration::from_secs(secs));
-    }
-    let [_, day, month, year, time, "GMT"] = value.split_whitespace().collect::<Vec<_>>()[..] else { return None };
-    const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-    let month = MONTHS.iter().position(|m| *m == month)? as i64 + 1;
-    let (day, year): (i64, i64) = (day.parse().ok()?, year.parse().ok()?);
-    let hms: Vec<i64> = time.split(':').map(|n| n.parse().ok()).collect::<Option<_>>()?;
-    let [h, m, s] = hms[..] else { return None };
-    // Days since 1970-01-01, as Howard Hinnant's days_from_civil counts
-    // them: from March, so that February's last day ends a year.
-    let y = if month <= 2 { year - 1 } else { year };
-    let era = y.div_euclid(400);
-    let of_era = y - era * 400;
-    let of_year = (153 * ((month + 9) % 12) + 2) / 5 + day - 1;
-    let days = era * 146_097 + of_era * 365 + of_era / 4 - of_era / 100 + of_year - 719_468;
-    let at = days * 86_400 + h * 3600 + m * 60 + s;
-    (at > now).then(|| Duration::from_secs((at - now) as u64))
+    (status, rest)
 }
 
 /// A comment as Phabricator has it, as it was last edited: its id is that
@@ -686,7 +661,7 @@ pub fn plan(at: &Path, rev: &str, revs: Vec<Revision>) -> Result<Plan, String> {
 /// was imported, said. Not while the settings say reviews come from
 /// nowhere, as the editor offers no import then.
 pub fn import(db: &Path, at: &Path, text: &str, name: Option<&str>) -> crate::db::Result<String> {
-    use crate::db::{Db, err};
+    use crate::db::err;
     if crate::config::get().reviews.source == crate::config::Source::None {
         return err(format!(
             "revisions come from nowhere: reviews.source is \"none\" in {}",
@@ -775,7 +750,7 @@ pub(crate) fn revision_in(message: &str, trailer: &str, url: Option<&str>) -> Op
 
 /// A revision's status on Phabricator, as the patches pane shows it after
 /// each patch's number.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Status {
     Draft,
     ChangesPlanned,
@@ -786,6 +761,7 @@ pub enum Status {
     Published,
     Abandoned,
     /// One stacked does not know.
+    #[default]
     Unknown,
 }
 
@@ -797,15 +773,36 @@ impl Status {
     /// revision in Changes Planned that was never sent for review, as a
     /// submit in work makes one, and one abandoned before then.
     pub fn of(r: &Value) -> Status {
-        match r.pointer("/fields/status/value").and_then(Value::as_str) {
-            Some("draft") => Status::Draft,
-            Some("changes-planned") => Status::ChangesPlanned,
-            Some("needs-review") => Status::NeedsReview,
-            Some("needs-revision") => Status::NeedsRevision,
-            Some("accepted") => Status::Accepted,
-            Some("published") => Status::Published,
-            Some("abandoned") => Status::Abandoned,
+        Status::from_value(r.pointer("/fields/status/value").and_then(Value::as_str).unwrap_or_default())
+    }
+
+    /// The status whose value, as differential.revision.search writes it,
+    /// is `value`: as the database stores it too (`db::State::status`).
+    pub fn from_value(value: &str) -> Status {
+        match value {
+            "draft" => Status::Draft,
+            "changes-planned" => Status::ChangesPlanned,
+            "needs-review" => Status::NeedsReview,
+            "needs-revision" => Status::NeedsRevision,
+            "accepted" => Status::Accepted,
+            "published" => Status::Published,
+            "abandoned" => Status::Abandoned,
             _ => Status::Unknown,
+        }
+    }
+
+    /// Its value, as differential.revision.search writes it, and the
+    /// database stores it: `unknown` for one stacked does not know.
+    pub fn value(self) -> &'static str {
+        match self {
+            Status::Draft => "draft",
+            Status::ChangesPlanned => "changes-planned",
+            Status::NeedsReview => "needs-review",
+            Status::NeedsRevision => "needs-revision",
+            Status::Accepted => "accepted",
+            Status::Published => "published",
+            Status::Abandoned => "abandoned",
+            Status::Unknown => "unknown",
         }
     }
 
@@ -847,29 +844,35 @@ impl Status {
 }
 
 /// A revision as the statuses' search finds it: its status, its title and
-/// summary, and its PHID, which the Phabricator line over a patch's message
-/// reads the revision's latest diff by; and when it was last modified
-/// (`dateModified`, seconds since 1970), when the search says, which the
-/// line reads the rest of the revision again by.
-#[derive(Debug, Clone, PartialEq)]
+/// summary, its bug, and its PHID, which a fetch reads the revision's
+/// latest diff by; and when it was last modified (`dateModified`, seconds
+/// since 1970), when the search says, which a fetch reads the rest of the
+/// revision again by.
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct Searched {
     pub status: Status,
     pub title: String,
     pub summary: String,
+    pub bug: String,
     pub phid: String,
     pub modified: Option<i64>,
 }
 
 /// The statuses of revisions `ids` (`D123`), Conduit called with `call`:
 /// one search for all of them. By revision, those Phabricator has, each
-/// with its title, summary and PHID, and when it was last modified.
+/// with its title, summary, bug and PHID, and when it was last modified.
 pub(crate) fn statuses_over(call: &mut Call, ids: &[String]) -> Result<HashMap<String, Searched>, String> {
     let numbers: Vec<u64> = ids.iter().filter_map(|d| d.strip_prefix('D')?.parse().ok()).collect();
     if numbers.is_empty() {
         return Ok(HashMap::new());
     }
     let found = call("differential.revision.search", json!({"constraints": {"ids": numbers}}))?;
-    let text = |r: &Value, k: &str| r.pointer(&format!("/fields/{k}")).and_then(Value::as_str).unwrap_or_default().to_string();
+    // A number written out, as the bug's may be.
+    let text = |r: &Value, k: &str| match r.pointer(&format!("/fields/{k}")) {
+        Some(Value::String(s)) => s.clone(),
+        Some(Value::Number(n)) => n.to_string(),
+        _ => String::new(),
+    };
     Ok(found
         .get("data")
         .and_then(Value::as_array)
@@ -880,6 +883,7 @@ pub(crate) fn statuses_over(call: &mut Call, ids: &[String]) -> Result<HashMap<S
                 status: Status::of(r),
                 title: text(r, "title"),
                 summary: text(r, "summary"),
+                bug: text(r, "bugzilla.bug-id"),
                 phid: r.get("phid").and_then(Value::as_str).unwrap_or_default().to_string(),
                 modified: r.pointer("/fields/dateModified").and_then(Value::as_i64),
             };
@@ -888,15 +892,14 @@ pub(crate) fn statuses_over(call: &mut Call, ids: &[String]) -> Result<HashMap<S
         .collect())
 }
 
-/// What the Phabricator line over a patch's message reads of its revision
-/// beyond what the statuses' search says: the id of its latest diff, and
-/// that diff, raw; its comments, each as it was last edited, what it was
-/// before kept with it, as a pull reads them (`comments_of`), but for their
-/// authors and the lines they are on, which are not read; its parents,
-/// each its PHID and its `D123`, by PHID (`parents_named`); and when the
-/// revision was last modified as its diff and comments were read, as the
-/// statuses' search said it (`Searched::modified`): none when that is not
-/// known, or what was read is not to be taken as the revision's since.
+/// What a fetch reads of a revision beyond what the statuses' search says
+/// (`fetch_latest`): the id of its latest diff, and that diff, raw; its
+/// comments, each as it was last edited, what it was before kept with it,
+/// as a pull reads them (`comments_of`), but for their authors and the
+/// lines they are on, which are not read; its parents, each its PHID and
+/// its `D123`, by PHID (`parents_named`); and when the revision was last
+/// modified as its diff and comments were read, as the statuses' search
+/// said it (`Searched::modified`): none when that is not known.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Latest {
     pub diff: u64,
@@ -906,14 +909,14 @@ pub struct Latest {
     pub modified: Option<i64>,
 }
 
-/// A revision whose latest diff, comments and parents the Phabricator line
-/// reads (`latests`): its `D123`, its link and its PHID, and when it was
-/// last modified, as the statuses' search found it; what was read of it
-/// before, if anything, which is not read again while the revision was not
-/// modified since, its parents aside, and its raw diff not while it is the
-/// latest; and whether the parents it has are to be named, as a submit
-/// would set it one (not at the stack's bottom, say), so that the view of
-/// what differs names them.
+/// A revision whose latest diff, comments and parents a fetch reads
+/// (`latests`): its `D123`, its link and its PHID, and when it was last
+/// modified, as the statuses' search found it; what is stored of it, if
+/// anything, which is not read again while the revision was not modified
+/// since, its parents aside, and its raw diff not while it is the latest;
+/// and whether the parents it has are to be named, as a submit would set it
+/// one (not at the stack's bottom, say), so that the view of what differs
+/// names them.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Wanted {
     pub d: String,
@@ -983,11 +986,17 @@ pub(crate) fn newest_diffs(call: &mut Call, phids: &[String]) -> Result<HashMap<
 
 /// The parents of revisions `wanted`, `parents` by revision, named, `D123`,
 /// by PHID: those that are revisions of `wanted`, as their search found
-/// them; the others, of those whose parents are to be named, in one search,
-/// if there are any. One it does not find, or a search that fails, leaves
-/// a parent unnamed.
+/// them, or that what is stored of them named, as a PHID's revision never
+/// changes; the others, of those whose parents are to be named, in one
+/// search, if there are any. One it does not find, or a search that fails,
+/// leaves a parent unnamed.
 fn parents_named(call: &mut Call, wanted: &[&Wanted], parents: &HashMap<String, Vec<String>>) -> HashMap<String, String> {
     let mut names: HashMap<String, String> = wanted.iter().map(|w| (w.phid.clone(), w.d.clone())).collect();
+    for (phid, d) in wanted.iter().flat_map(|w| w.had.iter().flat_map(|h| &h.parents)) {
+        if phid != d {
+            names.entry(phid.clone()).or_insert_with(|| d.clone());
+        }
+    }
     let mut others: Vec<String> = wanted
         .iter()
         .filter(|w| w.name_parents)
@@ -1013,10 +1022,10 @@ fn parents_named(call: &mut Call, wanted: &[&Wanted], parents: &HashMap<String, 
 /// Phabricator, in turn: the parents of all of them (`parents_over`), and
 /// their latest diffs (`newest_diffs`), first; those parents named
 /// (`parents_named`); then, for each modified since it was read, or never
-/// read, its latest diff, raw, unless it is the one read before, and every
+/// read, its latest diff, raw, unless it is the one stored, and every
 /// transaction of the revision, for its comments, `got` told it as soon as
-/// it is read; for each other, what was read of it before, its parents
-/// as they are now. A revision with no diff is passed over. Up to the
+/// it is read; for each other, what is stored of it, its parents as they
+/// are now. A revision with no diff is passed over. Up to the
 /// first call that fails, and what is wrong with it.
 pub(crate) fn latests_over(call: &mut Call, wanted: &[&Wanted], got: &mut dyn FnMut(&str, Latest)) -> Result<(), String> {
     let phids: Vec<String> = wanted.iter().map(|w| w.phid.clone()).collect();
@@ -1060,8 +1069,8 @@ fn by_host<T>(all: &[T], link: impl Fn(&T) -> &str) -> Vec<Vec<&T>> {
     out.into_iter().map(|(_, these)| these).collect()
 }
 
-/// What answers Conduit's calls in place of Phabricator for the editors of a
-/// database (`statuses_stand_in`): the tests', which never reach it. Each
+/// What answers Conduit's calls in place of Phabricator for the fetches of
+/// a database (`statuses_stand_in`): the tests', which never reach it. Each
 /// call, a method and its parameters; its `result`, or what went wrong, as
 /// `Conduit::call` says it, Phabricator turning this machine away too.
 pub type StandIn = Box<dyn FnMut(&str, Value) -> Result<Value, Error> + Send>;
@@ -1069,16 +1078,14 @@ pub type StandIn = Box<dyn FnMut(&str, Value) -> Result<Value, Error> + Send>;
 /// A stand-in for Phabricator, shared with the read under way.
 type StatusStandIn = std::sync::Arc<std::sync::Mutex<StandIn>>;
 
-/// What answers the statuses' searches of the editors of a database in
-/// place of Phabricator, by the database's path: the tests', which never
-/// reach it. For the editors of that database alone, not for the whole
-/// process as a submit's stand-in is: every editor reads the statuses of
-/// the stack it shows, so one for the process would answer the editors of
-/// every test at once.
+/// What answers the fetches of a database in place of Phabricator, by the
+/// database's path: the tests', which never reach it. For that database
+/// alone, not for the whole process as a submit's stand-in is: one for the
+/// process would answer the editors of every test at once.
 static STATUS_STAND_INS: std::sync::Mutex<Vec<(std::path::PathBuf, StatusStandIn)>> = std::sync::Mutex::new(Vec::new());
 
-/// Has `p` answer the statuses' searches of the editors of the database at
-/// `db` rather than Phabricator; with none, Phabricator again.
+/// Has `p` answer the fetches of the database at `db` (`fetch_latest`)
+/// rather than Phabricator; with none, Phabricator again.
 pub fn statuses_stand_in(db: &Path, p: Option<StandIn>) {
     let mut all = STATUS_STAND_INS.lock().unwrap_or_else(|e| e.into_inner());
     all.retain(|(at, _)| at != db);
@@ -1087,16 +1094,15 @@ pub fn statuses_stand_in(db: &Path, p: Option<StandIn>) {
     }
 }
 
-/// The stand-in answering for the editors of the database at `db`, if one
-/// does.
+/// The stand-in answering for the database at `db`, if one does.
 fn status_stand_in(db: &Path) -> Option<StatusStandIn> {
     let all = STATUS_STAND_INS.lock().unwrap_or_else(|e| e.into_inner());
     all.iter().find(|(at, _)| at == db).map(|(_, p)| p.clone())
 }
 
-/// Whether the editors of the database at `db` read the statuses of their
-/// revisions: from a stand-in set for it, else from Phabricator, but never
-/// from a process that keeps nothing, as the tests' own.
+/// Whether the editors of the database at `db` read Phabricator, and show
+/// what is stored of it: from a stand-in set for it, else from Phabricator,
+/// but never from a process that keeps nothing, as the tests' own.
 pub fn statuses_read(db: &Path) -> bool {
     status_stand_in(db).is_some() || crate::home::get().dir != Path::new(crate::home::NOWHERE)
 }
@@ -1105,7 +1111,7 @@ pub fn statuses_read(db: &Path) -> bool {
 /// Phabricator without a stand-in.
 const NOT_REACHED: &str = "Phabricator is not reached from a process that keeps nothing, as the tests' own";
 
-/// What `f` comes to, Conduit called with what it is given for the editors
+/// What `f` comes to, Conduit called with what it is given for the fetches
 /// of the database at `db`, on the Phabricator of revision link `link`: the
 /// stand-in set for that database, if one is; else Conduit, with the token
 /// for that Phabricator, never from a process that keeps nothing. Should
@@ -1116,7 +1122,7 @@ fn calling<T>(db: &Path, link: &str, f: impl FnOnce(&mut Call) -> Result<T, Stri
     let done = {
         // What went wrong, as `f` takes it; a call turned away, kept.
         let mut told = |e: Error| {
-            if away.is_none() && matches!(e, Error::TurnedAway(_)) {
+            if away.is_none() && e == Error::TurnedAway {
                 away = Some(e.clone());
             }
             e.to_string()
@@ -1161,20 +1167,221 @@ pub fn statuses(db: &Path, revisions: &[(String, String)]) -> Result<HashMap<Str
     Ok(out)
 }
 
-/// What the Phabricator lines over the patches' messages read of revisions
-/// `wanted`, beyond their search: the latest diff of each, raw, but when it
-/// is the one read before; its comments; and its parents, named; of a
-/// revision not modified since it was read, its parents alone
-/// (`latests_over`): `got` told each revision, by its link, as soon as it
-/// is read, in the order given. The calls of each Phabricator, as the
-/// revisions' links name it, one after another. Through the stand-in set
-/// for the database at `db`, as the statuses are read, else over Conduit;
-/// never from a process that keeps nothing. What is wrong, said, when a
-/// call fails, Phabricator turning this machine away as such: no call is
-/// made after it.
+/// What a fetch reads of revisions `wanted`, beyond their search: the
+/// latest diff of each, raw, but when it is the one stored; its comments;
+/// and its parents, named; of a revision not modified since it was read,
+/// its parents alone (`latests_over`): `got` told each revision, by its
+/// link, as soon as it is read, in the order given. The calls of each
+/// Phabricator, as the revisions' links name it, one after another.
+/// Through the stand-in set for the database at `db`, as the statuses are
+/// read, else over Conduit; never from a process that keeps nothing. What
+/// is wrong, said, when a call fails, Phabricator turning this machine away
+/// as such: no call is made after it.
 pub fn latests(db: &Path, wanted: &[Wanted], got: &mut dyn FnMut(&str, Latest)) -> Result<(), Error> {
     for these in by_host(wanted, |w| w.link.as_str()) {
         calling(db, &these[0].link, |call| latests_over(call, &these, got))?;
+    }
+    Ok(())
+}
+
+// -- what is read of Phabricator, stored ----------------------------------- //
+
+/// A comment of a revision as the database stores it (`db::Seen`): the id
+/// of its version as it was last edited, those of its versions before, and
+/// the comment it replies to, as the count of those not pulled yet reads
+/// them (`review::not_pulled`).
+pub fn seen(c: &Remote) -> Seen {
+    Seen {
+        id: c.phid.clone(),
+        earlier: c.earlier.iter().map(|v| v.phid.clone()).collect(),
+        reply_to: c.reply_to.clone(),
+    }
+}
+
+/// A comment as the database stores it (`seen`), as a comment of
+/// Phabricator's that the count of those not pulled yet reads: its ids and
+/// the comment it replies to, nothing else.
+pub fn remote_of(s: &Seen) -> Remote {
+    Remote {
+        phid: s.id.clone(),
+        reply_to: s.reply_to.clone(),
+        earlier: s.earlier.iter().map(|id| Version { phid: id.clone(), text: String::new() }).collect(),
+        ..Default::default()
+    }
+}
+
+/// The revisions the patches of stack `s` name, `D123` and its link
+/// (`revision_of`): each once, by link.
+pub fn named_by(db: &Db, s: &Stack) -> Vec<(String, String)> {
+    let mut named: Vec<(String, String)> = s.patches.iter().filter_map(|id| revision_of(&db.patch(id).message)).collect();
+    named.sort_by(|a, b| a.1.cmp(&b.1));
+    named.dedup_by(|a, b| a.1 == b.1);
+    named
+}
+
+/// What is stored of the revision at `link` in `db`, as a fetch takes it so
+/// as to read again only what changed (`Wanted::had`): the id of its latest
+/// diff, with that diff raw, when the diff is stored, else no id, so that
+/// it is read again; its comments, and when the revision was last modified
+/// as they were read; its parents. None for one never read, or that
+/// Phabricator did not have.
+fn had_of(db: &Db, link: &str) -> Option<Latest> {
+    let (state, _) = db.revision_state(link).filter(|(s, _)| !s.missing)?;
+    let raw = db.raw_diff(link, state.diff);
+    let comments = db.revision_comments(link).map(|(c, _)| c);
+    Some(Latest {
+        diff: if raw.is_some() { state.diff } else { 0 },
+        raw: raw.unwrap_or_default().to_string(),
+        comments: comments.map_or_else(Vec::new, |c| c.list.iter().map(remote_of).collect()),
+        parents: state.parents.clone(),
+        modified: comments.and_then(|c| c.modified),
+    })
+}
+
+/// The revisions of stack `s` a fetch reads beyond their search
+/// (`Wanted`): those of `named` that the search found, `found` by link,
+/// bottom first, each once; each with when it was last modified, as its
+/// search says, what is stored of it (`had_of`), and whether the parents it
+/// has are to be named, as a submit of a patch naming it would set it one,
+/// whatever parents it has (`submit::parent_with`), the revision of the
+/// patch below as the search found it, else as it is stored. `again`, its
+/// comments read again whatever its search says, as after a submit, which
+/// changed it; its raw diff not while it is the one stored.
+fn wanted_of(db: &Db, s: &Stack, named: &[(String, String)], found: &HashMap<String, Searched>, again: bool) -> Vec<Wanted> {
+    let none: &[String] = &[];
+    let below = |link: &str| -> Result<Below, ()> {
+        if let Some(b) = found.get(link) {
+            return Ok(Below::Found { phid: b.phid.clone(), open: b.status.open(), status: b.status.name().to_string() });
+        }
+        if named.iter().any(|(_, l)| l == link) {
+            return Ok(Below::Missing);
+        }
+        match db.revision_state(link) {
+            Some((st, _)) if st.missing => Ok(Below::Missing),
+            Some((st, _)) => {
+                let status = Status::from_value(&st.status);
+                Ok(Below::Found { phid: st.phid.clone(), open: status.open(), status: status.name().to_string() })
+            }
+            None => Err(()),
+        }
+    };
+    let mut out: Vec<Wanted> = Vec::new();
+    for at in 0..s.patches.len() {
+        let Some((d, link)) = revision_of(&db.patch(&s.patches[at]).message) else { continue };
+        let Some(f) = found.get(&link).filter(|f| !f.phid.is_empty()) else { continue };
+        let sets = crate::submit::parent_with(db, s, at, Some((d.as_str(), none)), |_, b| below(b));
+        let sets = matches!(sets, Ok(Parent::Set { .. }));
+        match out.iter_mut().find(|w| w.link == link) {
+            Some(w) => w.name_parents |= sets,
+            None => {
+                let had = had_of(db, &link).map(|h| if again { Latest { modified: None, ..h } } else { h });
+                out.push(Wanted { d, link, phid: f.phid.clone(), modified: f.modified, had, name_parents: sets });
+            }
+        }
+    }
+    out
+}
+
+/// Parents `parents`, each its PHID and its `D123`, or its PHID again where
+/// the read that found them did not name it: named so, where what is
+/// stored in `db` names it (`Db::revision_name`), as a PHID's revision
+/// never changes; so that a parent once named stays named, whichever read
+/// stores it next.
+pub fn parents_known(db: &Db, parents: &[(String, String)]) -> Vec<(String, String)> {
+    parents
+        .iter()
+        .map(|(phid, d)| match d == phid {
+            true => (phid.clone(), db.revision_name(phid).unwrap_or(phid.as_str()).to_string()),
+            false => (phid.clone(), d.clone()),
+        })
+        .collect()
+}
+
+/// Stores in `db` what a fetch read of revisions `named`: of each, its
+/// state, as its search found it, `found` by link, with its parents and
+/// its latest diff as `read` has them, or that Phabricator does not have
+/// it; its comments, read again or as they were stored, and when the
+/// revision was last modified as they were read; its latest diff, raw,
+/// unless that is stored. Each only where it is not what is stored already
+/// (`Db::store_revision`), as another read may have stored it meanwhile.
+/// Then that the fetch read every one of them, now.
+fn store(db: &mut Db, named: &[(String, String)], found: &HashMap<String, Searched>, read: &HashMap<String, Latest>) -> crate::db::Result<()> {
+    for (d, link) in named {
+        let Some(f) = found.get(link) else {
+            db.store_revision(link, d, Some(State { missing: true, ..Default::default() }), None)?;
+            continue;
+        };
+        let l = read.get(link);
+        let state = State {
+            missing: false,
+            status: f.status.value().into(),
+            title: f.title.clone(),
+            summary: f.summary.clone(),
+            bug: f.bug.clone(),
+            phid: f.phid.clone(),
+            parents: l.map_or_else(Vec::new, |l| parents_known(db, &l.parents)),
+            diff: l.map_or(0, |l| l.diff),
+        };
+        let comments = l.map(|l| Comments { modified: l.modified, list: l.comments.iter().map(seen).collect() });
+        if let Some(l) = l {
+            db.store_raw_diff(link, l.diff, &l.raw)?;
+        }
+        db.store_revision(link, d, Some(state), comments)?;
+    }
+    db.store_fetched(named.iter().map(|(_, link)| link.clone()).collect())
+}
+
+/// Fetch the latest from Phabricator: every revision the patches of stack
+/// `name` in the database at `db` name, or those at the links `only` gives
+/// alone, as after a submit, their comments read again whatever their
+/// search says; read in a few calls for all of them, their search, their
+/// parents and their latest diffs (`statuses`, `latests`), then the
+/// comments and the raw latest diff of each modified since it was stored,
+/// or never stored; then stored, under the database's lock, only what
+/// differs from what is stored (`store`), and when they were read. Through
+/// the stand-in set for the database, else over Conduit; never from a
+/// process that keeps nothing, nor while reviews come from nowhere. What it
+/// read, said; or, nothing stored, what went wrong, Phabricator turning
+/// this machine away as such.
+pub fn fetch_latest(db: &Path, name: &str, only: Option<&[String]>) -> Result<String, Error> {
+    if crate::config::get().reviews.source == crate::config::Source::None {
+        return Err(Error::Said(format!("reviews come from nowhere: reviews.source is \"none\" in {}", crate::config::path().display())));
+    }
+    let d = Db::load(db).map_err(|e| Error::Said(e.0))?;
+    let s = d.stack(name).map_err(|e| Error::Said(e.0))?.clone();
+    let mut named = named_by(&d, &s);
+    if let Some(only) = only {
+        named.retain(|(_, link)| only.contains(link));
+    }
+    if named.is_empty() {
+        return Err(Error::Said("no patch of the stack names a revision".into()));
+    }
+    let found = statuses(db, &named)?;
+    let wanted = wanted_of(&d, &s, &named, &found, only.is_some());
+    let mut read: HashMap<String, Latest> = HashMap::new();
+    latests(db, &wanted, &mut |link, l| {
+        read.insert(link.to_string(), l);
+    })?;
+    Db::edit(db, |d| store(d, &named, &found, &read)).map_err(|e| Error::Said(e.0))?;
+    Ok(match named.as_slice() {
+        [(d, _)] => format!("fetched the latest of {d} from Phabricator"),
+        all => format!("fetched the latest of {} revisions from Phabricator", all.len()),
+    })
+}
+
+/// Stores in `db` the comments a pull read, `pulled`, of revisions `revs`
+/// (`(change, D123, link)`, as `review::revisions` gives them), each by its
+/// link: where they are not those stored, with no time of when the revision
+/// was last modified, as a pull does not read it, so that the next fetch
+/// reads them again.
+pub fn store_pulled(db: &mut Db, revs: &[(String, String, String)], pulled: &Pulled) -> crate::db::Result<()> {
+    for rc in &pulled.revisions {
+        let Some((_, d, link)) = revs.iter().find(|(c, d, _)| *c == rc.source && *d == rc.revision) else { continue };
+        let list: Vec<Seen> = rc.comments.iter().map(seen).collect();
+        if db.revision_comments(link).is_some_and(|(c, _)| c.list == list) {
+            continue;
+        }
+        db.store_revision(link, d, None, Some(Comments { modified: None, list }))?;
     }
     Ok(())
 }
@@ -1394,6 +1601,7 @@ mod tests {
             status,
             title: title.into(),
             summary: summary.into(),
+            bug: String::new(),
             phid: format!("PHID-DREV-{n}"),
             modified,
         };
@@ -1584,6 +1792,96 @@ mod tests {
         let mut refused = |m: &str, _: Value| -> Result<Value, String> { Err(format!("{m}: refused")) };
         let read = latests_over(&mut refused, &all.iter().collect::<Vec<_>>(), &mut |_, _| panic!("nothing read"));
         assert_eq!(read, Err("edge.search: refused".to_string()));
+    }
+
+    #[test]
+    fn a_fetch_stores_what_it_reads_and_one_finding_all_as_stored_writes_nothing_of_it_but_the_fetch() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db = tmp.path().join("db.jsonl");
+        // Stack s: D11, D12 on it, then a patch naming D13, which
+        // Phabricator does not have.
+        let patches = [(1, 11), (2, 12), (3, 13)]
+            .map(|(k, n)| crate::db::Patch::new(format!("c{k}"), None, None, format!("Bug {k}\n\nDifferential Revision: https://p.example/D{n}"), format!("diff --git a/f{k} b/f{k}\n")));
+        let stack = Stack { name: "s".into(), patches: patches.iter().map(|p| p.id.clone()).collect(), base: None, repo: None, parent: None, op: "import".into(), time: 1 };
+        let mut records: Vec<crate::db::Record> = patches.into_iter().map(crate::db::Record::Patch).collect();
+        records.push(crate::db::Record::Stack(stack));
+        Db::append(&db, &records).unwrap();
+        // The tests' own process keeps nothing: with no stand-in, nothing
+        // read, nothing stored.
+        assert_eq!(fetch_latest(&db, "s", None), Err(Error::Said(NOT_REACHED.into())));
+        let calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let modified = std::sync::Arc::new(std::sync::Mutex::new(100i64));
+        let (seen, at) = (calls.clone(), modified.clone());
+        statuses_stand_in(
+            &db,
+            Some(Box::new(move |method, p: Value| {
+                seen.lock().unwrap().push(method.to_string());
+                let at = *at.lock().unwrap();
+                Ok(match method {
+                    "differential.revision.search" => json!({"data": [
+                        {"id": 11, "phid": "PHID-DREV-11", "fields": {"status": {"value": "needs-review"}, "title": "Bug 1", "bugzilla.bug-id": 1, "dateModified": 100}},
+                        {"id": 12, "phid": "PHID-DREV-12", "fields": {"status": {"value": "changes-planned"}, "title": "WIP: Bug 2", "summary": "Why.", "dateModified": at}},
+                    ]}),
+                    "edge.search" => json!({"data": [{"sourcePHID": "PHID-DREV-12", "destinationPHID": "PHID-DREV-11"}]}),
+                    "differential.diff.search" => json!({"data": [{"id": 6, "fields": {"revisionPHID": "PHID-DREV-12"}}, {"id": 5, "fields": {"revisionPHID": "PHID-DREV-11"}}]}),
+                    "differential.getrawdiff" => json!(format!("raw {}", p["diffID"])),
+                    "transaction.search" => match p["objectIdentifier"].as_str() {
+                        Some("D12") => json!({"data": [{"type": "comment", "fields": {}, "comments": [{"phid": "c1", "version": 1, "content": {"raw": "Why?"}}]}]}),
+                        _ => json!({"data": []}),
+                    },
+                    m => return Err(format!("not as Phabricator is asked: {m}").into()),
+                })
+            })),
+        );
+        let link = |n: u64| format!("https://p.example/D{n}");
+        let count = |db: &Path| {
+            Db::load(db).unwrap().records().iter().fold((0, 0, 0), |(r, w, f), rec| match rec {
+                crate::db::Record::Revision(_) => (r + 1, w, f),
+                crate::db::Record::RawDiff { .. } => (r, w + 1, f),
+                crate::db::Record::Fetched { .. } => (r, w, f + 1),
+                _ => (r, w, f),
+            })
+        };
+        // Stored: each revision's state, its comments, its raw latest diff;
+        // D13 as not found; and the fetch, of all three.
+        assert_eq!(fetch_latest(&db, "s", None), Ok("fetched the latest of 3 revisions from Phabricator".into()));
+        let d = Db::load(&db).unwrap();
+        let state = State { status: "needs-review".into(), title: "Bug 1".into(), bug: "1".into(), phid: "PHID-DREV-11".into(), diff: 5, ..Default::default() };
+        assert_eq!(d.revision_state(&link(11)).map(|(s, _)| s.clone()), Some(state));
+        let (s12, _) = d.revision_state(&link(12)).unwrap();
+        assert_eq!((s12.status.as_str(), s12.summary.as_str(), s12.parents.clone(), s12.diff), ("changes-planned", "Why.", vec![("PHID-DREV-11".to_string(), "D11".to_string())], 6));
+        assert_eq!(d.revision_comments(&link(12)).map(|(c, _)| c.clone()), Some(Comments { modified: Some(100), list: vec![Seen { id: "c1".into(), ..Default::default() }] }));
+        assert_eq!((d.raw_diff(&link(11), 5), d.raw_diff(&link(12), 6)), (Some("raw 5"), Some("raw 6")));
+        assert!(d.revision_state(&link(13)).is_some_and(|(s, _)| s.missing));
+        assert!([11, 12, 13].iter().all(|n| d.fetched(&link(*n)).is_some()));
+        assert_eq!(count(&db), (3, 2, 1));
+        // Again, nothing modified: the search, the parents and the latest
+        // diffs read, nothing more; nothing written but the fetch.
+        calls.lock().unwrap().clear();
+        fetch_latest(&db, "s", None).unwrap();
+        assert_eq!(*calls.lock().unwrap(), ["differential.revision.search", "edge.search", "differential.diff.search"]);
+        assert_eq!(count(&db), (3, 2, 2));
+        // D12 modified since: its comments read again, alone, and written
+        // again, its state as it was.
+        *modified.lock().unwrap() = 200;
+        calls.lock().unwrap().clear();
+        fetch_latest(&db, "s", None).unwrap();
+        assert_eq!(*calls.lock().unwrap(), ["differential.revision.search", "edge.search", "differential.diff.search", "transaction.search"]);
+        assert_eq!(count(&db), (4, 2, 3));
+        assert_eq!(Db::load(&db).unwrap().revision_comments(&link(12)).map(|(c, _)| c.modified), Some(Some(200)));
+        // D12 alone, as after a submit: its comments read again whatever
+        // its search says, its raw diff not, as it is the one stored; its
+        // parent named as it was stored, though D11 is not read with it.
+        calls.lock().unwrap().clear();
+        assert_eq!(fetch_latest(&db, "s", Some(&[link(12)])), Ok("fetched the latest of D12 from Phabricator".into()));
+        assert_eq!(*calls.lock().unwrap(), ["differential.revision.search", "edge.search", "differential.diff.search", "transaction.search"]);
+        assert_eq!(count(&db), (4, 2, 4));
+        // Turned away: said so, of its kind, and nothing written.
+        let before = std::fs::read(&db).unwrap();
+        statuses_stand_in(&db, Some(Box::new(|_, _| Err(Error::TurnedAway))));
+        assert_eq!(fetch_latest(&db, "s", None), Err(Error::TurnedAway));
+        assert_eq!(std::fs::read(&db).unwrap(), before);
+        statuses_stand_in(&db, None);
     }
 
     #[test]
@@ -1779,32 +2077,21 @@ mod tests {
     }
 
     #[test]
-    fn a_call_turned_away_says_http_429_and_how_long_phabricator_asks_to_wait() {
+    fn a_call_turned_away_says_http_429_plainly_whatever_phabricator_asks_to_wait() {
         let tmp = tempfile::tempdir().unwrap();
         let away = |retry_after: &str| format!("HTTP/1.1 429 Too Many Requests\r\n{retry_after}Content-Length: 0\r\n\r\n");
         // Two minutes asked, the page empty: its own kind of error, which
         // says HTTP 429 plainly.
         let e = answer_of(tmp.path(), "conduit.ping", &away("Retry-After: 120\r\n")).unwrap_err();
-        assert_eq!(e, Error::TurnedAway(Some(Duration::from_secs(120))));
+        assert_eq!(e, Error::TurnedAway);
         assert_eq!(e.to_string(), "Phabricator is turning away requests from this machine for now (HTTP 429, too many requests)");
         assert_eq!(String::from(e), TURNED_AWAY);
         // Nothing asked, or no time to come: turned away all the same.
-        assert_eq!(answer_of(tmp.path(), "conduit.ping", &away("")), Err(Error::TurnedAway(None)));
-        assert_eq!(answer_of(tmp.path(), "conduit.ping", &away("retry-after: 0\r\n")), Err(Error::TurnedAway(None)));
+        assert_eq!(answer_of(tmp.path(), "conduit.ping", &away("")), Err(Error::TurnedAway));
+        assert_eq!(answer_of(tmp.path(), "conduit.ping", &away("retry-after: 0\r\n")), Err(Error::TurnedAway));
         // As HTTP/2 writes it, after an answer that says to go on.
         let continued = "HTTP/1.1 100 Continue\r\n\r\nHTTP/2 429 \r\nretry-after: 30\r\n\r\n";
-        assert_eq!(answer_of(tmp.path(), "conduit.ping", continued), Err(Error::TurnedAway(Some(Duration::from_secs(30)))));
-        // A Retry-After that is a date: until then.
-        let at = 1_445_412_480;
-        assert_eq!(wait_asked("Wed, 21 Oct 2015 07:28:00 GMT", at - 90), Some(Duration::from_secs(90)));
-        assert_eq!(wait_asked("Tue, 29 Feb 2000 23:59:59 GMT", 951_868_799 - 1), Some(Duration::from_secs(1)));
-        assert_eq!(wait_asked("Sun, 01 Mar 2026 00:00:00 GMT", 1_772_323_200 - 3600), Some(Duration::from_secs(3600)));
-        for gone in ["Wed, 21 Oct 2015 07:28:00 GMT", "Thu, 01 Jan 1970 00:00:00 GMT"] {
-            assert_eq!(wait_asked(gone, at), None, "{gone}");
-        }
-        for wrong in ["soon", "", "-5", "Wed, 21 Oct 2015 07:28 GMT", "Wed, 21 Foo 2015 07:28:00 GMT", "Wed, 21 Oct 2015 07:28:00 CET"] {
-            assert_eq!(wait_asked(wrong, 0), None, "{wrong:?}");
-        }
+        assert_eq!(answer_of(tmp.path(), "conduit.ping", continued), Err(Error::TurnedAway));
     }
 
     #[test]
@@ -1920,7 +2207,7 @@ mod tests {
             c
         };
         let ping = || request(curl(), &api, TOKEN, "conduit.ping", json!({"x": "a b&c=d"}));
-        assert_eq!(ping(), Err(Error::TurnedAway(Some(Duration::from_secs(120)))));
+        assert_eq!(ping(), Err(Error::TurnedAway));
         assert_eq!(ping(), Err(Error::Said("conduit.ping: Phabricator answered HTTP 502 with a page starting \"<html><head><title>502 Bad Gateway</title></head>\"".into())));
         assert_eq!(ping(), Ok(json!("pong")));
         // Each a POST of the form Conduit reads, the token in its
@@ -1938,22 +2225,22 @@ mod tests {
     fn a_read_turned_away_says_so_of_its_kind_whatever_the_calls_make_of_it() {
         let tmp = tempfile::tempdir().unwrap();
         let db = tmp.path().join("db.jsonl");
-        // Phabricator turning this machine away, asking for two minutes.
+        // Phabricator turning this machine away.
         let asked = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let seen = asked.clone();
         statuses_stand_in(
             &db,
             Some(Box::new(move |m, _| {
                 seen.lock().unwrap().push(m.to_string());
-                Err(Error::TurnedAway(Some(Duration::from_secs(120))))
+                Err(Error::TurnedAway)
             })),
         );
         let revisions = [("D11".to_string(), "https://p.example/D11".to_string())];
-        assert_eq!(statuses(&db, &revisions), Err(Error::TurnedAway(Some(Duration::from_secs(120)))));
+        assert_eq!(statuses(&db, &revisions), Err(Error::TurnedAway));
         // The lines' read, though its calls take what went wrong as text,
         // stopped at its first call.
         let all = [wanted(11, false, None)];
-        assert_eq!(latests(&db, &all, &mut |_, _| panic!("nothing read")), Err(Error::TurnedAway(Some(Duration::from_secs(120)))));
+        assert_eq!(latests(&db, &all, &mut |_, _| panic!("nothing read")), Err(Error::TurnedAway));
         assert_eq!(*asked.lock().unwrap(), ["differential.revision.search", "edge.search"]);
         // Another error is said as it was.
         statuses_stand_in(&db, Some(Box::new(|m, _| Err(format!("{m}: Phabricator is down").into()))));

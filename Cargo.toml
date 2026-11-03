@@ -38,9 +38,11 @@ app = ["dep:eframe", "dep:fontdb", "dep:pollster", "dep:rfd", "dep:unicode-width
 demo = []
 # Phabricator, over Conduit with moz-phab's token (`curl` calls it): the
 # reviews pulled (`stacked moz-phab pull`, the editor's `Pull reviews from
-# Phabricator`), stacks imported from its revisions (`stacked moz-phab
-# import`, the editor's `Import from Phabricator…`), and a patch submitted
-# as work in progress (the editor's `Submit to Phabricator as WIP`).
+# Phabricator`), the latest of the stack's revisions fetched and stored
+# (the editor's `Fetch the latest from Phabricator`), stacks imported from
+# its revisions (`stacked moz-phab import`, the editor's `Import from
+# Phabricator…`), and a patch submitted as work in progress (the editor's
+# `Submit to Phabricator as WIP`).
 moz-phab = []
 # A try push of Firefox's CI: the agent asked which tasks the comment asks
 # for, each with why, for your review; then the tasks you accept pushed to

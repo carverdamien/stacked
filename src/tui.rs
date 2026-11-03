@@ -1538,6 +1538,13 @@ pub enum Action {
     /// latest version on Phabricator, on a screen of its own.
     #[cfg(feature = "moz-phab")]
     Differs,
+    /// The menu of every item of the patch picked about Phabricator.
+    #[cfg(feature = "moz-phab")]
+    PhabMenu,
+    /// Fetch the latest from Phabricator: every revision the stack's
+    /// patches name, read and stored.
+    #[cfg(feature = "moz-phab")]
+    Fetch,
     /// The patch picked sent to Phabricator as work in progress, once what
     /// is sent is read and seen: its dialog, or its review. Then sent, or
     /// nothing sent; the review's code side by side (true), or unified.
@@ -1576,7 +1583,7 @@ pub enum Action {
 fn reaches_phabricator(action: &Action) -> bool {
     match action {
         #[cfg(feature = "moz-phab")]
-        Action::Pull | Action::PullPatch(_) | Action::FromPhabricator | Action::Submit | Action::SubmitMeta | Action::SendSubmit => true,
+        Action::Pull | Action::PullPatch(_) | Action::Fetch | Action::FromPhabricator | Action::Submit | Action::SubmitMeta | Action::SendSubmit => true,
         _ => false,
     }
 }
@@ -1820,6 +1827,14 @@ fn about(action: &Action) -> String {
         Action::PullPatch(_) => "pull the reviewers' comments on this patch's revision alone from Phabricator: what is new waits for your review".into(),
         #[cfg(feature = "moz-phab")]
         Action::Differs => "see what differs between Phabricator's latest version of this patch's revision and this version, on a screen of its own: the title and summary as a submit sends them, and the code".into(),
+        #[cfg(feature = "moz-phab")]
+        Action::PhabMenu => {
+            "open the menu of what can be done on Phabricator with this patch: send it, see what differs from its revision, pull the reviews of that revision alone, and fetch the latest from Phabricator".into()
+        }
+        #[cfg(feature = "moz-phab")]
+        Action::Fetch => {
+            "fetch the latest from Phabricator: every revision the stack's patches name, read now and stored in the database, which the Phabricator lines and the patches pane then show, with how long ago it was fetched; stacked reads nothing of Phabricator by itself".into()
+        }
         #[cfg(feature = "moz-phab")]
         Action::Submit => "send this patch alone to Phabricator as work in progress, in Changes Planned: as a new revision, or as a new diff of the revision its message names, once what is sent is read and you have seen it".into(),
         #[cfg(feature = "moz-phab")]
@@ -2281,10 +2296,11 @@ pub struct App {
     planned: Option<Planned>,
     /// Where its HEAD was against a stack, when last looked at.
     head: Option<HeadSeen>,
-    /// The status on Phabricator of each revision the patches name, as last
-    /// read: kept while the editor runs, never written.
+    /// What differs in the code between each revision the patches name, as
+    /// stored, and its patch: worked out as the editor runs, kept in memory
+    /// alone, all else of Phabricator being stored.
     #[cfg(feature = "moz-phab")]
-    statuses: revisions::Statuses,
+    comparisons: revisions::Comparisons,
     /// The work done away from the screen.
     bg: Background,
     /// The comments the agent works on, as last read, and how many changes
@@ -2431,18 +2447,11 @@ enum Done {
     /// can be.
     #[cfg(feature = "moz-phab")]
     Submitting(std::result::Result<Box<crate::submit::Prepared>, String>),
-    /// The statuses of the stack's revisions read from Phabricator, by
-    /// link, each with what else its search says: or what was wrong.
+    /// The stack's revisions fetched from Phabricator and stored: what was
+    /// fetched, said, or what went wrong; and the revision, `D123`, fetched
+    /// again alone after a submit, if it was that.
     #[cfg(feature = "moz-phab")]
-    Statuses(std::result::Result<HashMap<String, crate::phab::Searched>, crate::phab::Error>),
-    /// The latest diff, the comments and the parents of revision `0`, by
-    /// its link, read for the Phabricator lines, as soon as each is.
-    #[cfg(feature = "moz-phab")]
-    Latest(String, crate::phab::Latest),
-    /// The stack's revisions read for the Phabricator lines, or their read
-    /// stopped at a call that failed: what was wrong.
-    #[cfg(feature = "moz-phab")]
-    LatestAll(Option<crate::phab::Error>),
+    Fetched(std::result::Result<String, crate::phab::Error>, Option<String>),
     /// What differs in the code between a revision's latest diff and a
     /// version of its patch, worked out from `0` (`revisions::compare_key`).
     #[cfg(feature = "moz-phab")]
@@ -2771,7 +2780,7 @@ impl App {
             planned: None,
             head: None,
             #[cfg(feature = "moz-phab")]
-            statuses: Default::default(),
+            comparisons: Default::default(),
             bg: Background::new(),
             busy_memo: std::cell::RefCell::new(None),
             files_memo: std::cell::RefCell::new(HashMap::new()),
@@ -3208,21 +3217,15 @@ impl App {
             #[cfg(feature = "moz-phab")]
             Done::Submitting(read) => self.submit_read(read),
             #[cfg(feature = "moz-phab")]
-            Done::Statuses(read) => self.statuses_read(read),
-            #[cfg(feature = "moz-phab")]
-            Done::Latest(link, read) => self.latest_read(link, read),
-            #[cfg(feature = "moz-phab")]
-            Done::LatestAll(failed) => self.latests_done(failed),
+            Done::Fetched(said, after) => self.fetched(said, after),
             #[cfg(feature = "moz-phab")]
             Done::Compared(key, code) => self.code_compared(key, code),
             Done::Said(what, said) => {
                 self.bg.doing.retain(|d| *d != what);
-                // Pulled: the comments the Phabricator lines count, read
-                // again with every revision's latest diff and parents.
+                // Pulled: the banner done with it; what it read is stored.
                 #[cfg(feature = "moz-phab")]
                 if what == "pulling" {
                     self.bg.pull = None;
-                    self.line_again();
                 }
                 self.status = said;
                 // Moved: where HEAD is, looked at again.
@@ -3230,10 +3233,10 @@ impl App {
                     self.bg.moved += 1;
                     self.look_at_head();
                 }
-                // Submitted: the statuses of the revisions read again.
+                // Submitted: the revision it sent to fetched again.
                 #[cfg(feature = "moz-phab")]
                 if what == submitting::SUBMITTING {
-                    self.statuses_again();
+                    self.fetch_sent();
                 }
             }
             Done::Judged { name, rev, why } => {
@@ -3760,11 +3763,12 @@ impl App {
             Some(Err(_)) => "unread",
         };
         let written = self.written_turns();
-        // The Phabricator line over the patch's message, as it changes.
+        // The Phabricator line over the patch's message, as it changes: its
+        // comparisons, and how long ago it was fetched, as it is drawn.
         #[cfg(feature = "moz-phab")]
-        let line = self.line_seq();
+        let line = self.line_key();
         #[cfg(not(feature = "moz-phab"))]
-        let line = 0;
+        let line = "";
         let want = format!(
             "{subject}\0{width}\0{}\0{streams}\0{:?}\0{stream}\0{}\0{}\0{:?}\0{:?}\0{whole_said}\0{line}",
             self.db.changes(),
@@ -4550,8 +4554,9 @@ impl App {
 
     /// Reads what someone appended to the database, if anything, and what
     /// the work away from the screen came to; and starts what is due away
-    /// from it: where HEAD is looked at, the statuses of the stack's
-    /// revisions read, and what the Phabricator lines of its patches need.
+    /// from it: where HEAD is looked at, and what the Phabricator lines of
+    /// the stack's patches need of what is stored, nothing read of
+    /// Phabricator.
     pub fn refresh(&mut self) {
         self.undrawn = true;
         self.poll_search();
@@ -4562,10 +4567,7 @@ impl App {
         }
         self.check_head();
         #[cfg(feature = "moz-phab")]
-        {
-            self.check_statuses();
-            self.check_line();
-        }
+        self.check_line();
     }
 
     /// Reads what was appended: what an edit just wrote, or another
@@ -7260,15 +7262,11 @@ impl App {
         let n = self.patch_count();
         let mut title = self.stack.clone();
         let mut items = Vec::new();
-        // Why the patch's submit is grayed, if it is: HEAD holding it back,
-        // or a reason of its own; and what differs from its revision on
-        // Phabricator.
+        // Why the items about Phabricator of the Phabricator line's menu
+        // are grayed, if any is: HEAD holding the submit back, or a reason
+        // of its own; what differs from its revision.
         #[cfg(feature = "moz-phab")]
-        let mut held_submit: Option<String> = None;
-        #[cfg(feature = "moz-phab")]
-        let mut submit_why: Option<String> = None;
-        #[cfg(feature = "moz-phab")]
-        let mut differs_why: Option<String> = None;
+        let mut phab_why: Vec<String> = Vec::new();
         // What the menu says of the messages its item wraps, if it has one.
         let mut wraps: Option<String> = None;
         // Why the stack's lint is grayed, but for what edits by hand say.
@@ -7326,6 +7324,7 @@ impl App {
                     #[cfg(feature = "moz-phab")]
                     if self.cfg.reviews.source != crate::config::Source::None {
                         items.push(Item::new("Pull reviews from Phabricator", Action::Pull));
+                        items.push(Item::new(revisions::FETCH, Action::Fetch));
                     }
                     if self.head_here().is_some() {
                         items.push(Item::new("Move HEAD…", Action::MoveHead(None)));
@@ -7372,18 +7371,14 @@ impl App {
                 }
                 items.push(Item::new("Drop this patch…", Action::AskDrop).when(h));
                 items.push(Item::new("Versions of this patch…", Action::Versions));
-                // This patch alone, as work in progress, or its revision's
-                // title, summary and parent alone, as its status has it; not
-                // while reviews come from nowhere. Then its revision's: what
-                // differs from it, and its reviews.
+                // Every item of this patch about Phabricator, in a menu of
+                // its own (`phab_menu`): its submit, what differs from its
+                // revision, the pull of its reviews, and the fetch of the
+                // latest. Not while reviews come from nowhere.
                 #[cfg(feature = "moz-phab")]
                 if self.cfg.reviews.source != crate::config::Source::None {
                     items.push(Item::line());
-                    held_submit = self.submit_held(self.sel);
-                    let (item, why) = self.submit_item(w && held_submit.is_none());
-                    items.push(item);
-                    submit_why = why;
-                    differs_why = self.revision_items(&mut items);
+                    items.push(Item::new("Phabricator", Action::PhabMenu));
                 }
             }
             #[cfg(feature = "moz-phab")]
@@ -7416,14 +7411,14 @@ impl App {
                     items.push(Item::line());
                     items.extend(self.comment_link_items(&c));
                 } else {
-                    // On the Phabricator line: what differs from its
-                    // revision, and the reviews of that revision alone.
+                    // On the Phabricator line: every item of the patch about
+                    // Phabricator, as its `Phabricator` menu has them.
                     #[cfg(feature = "moz-phab")]
                     if self.on_line() {
                         if let Some(t) = self.line_title() {
                             title = t;
                         }
-                        differs_why = self.revision_items(&mut items);
+                        phab_why = self.phab_items(&mut items);
                     }
                     if self.commentable().is_some() {
                         // A file's name: the file as a whole.
@@ -7498,11 +7493,7 @@ impl App {
             why.extend(self.here_edits_why().map(|w| format!("Editing in this checkout (pwd) is grayed: {w}.")));
         }
         #[cfg(feature = "moz-phab")]
-        why.extend(held_submit);
-        #[cfg(feature = "moz-phab")]
-        why.extend(submit_why);
-        #[cfg(feature = "moz-phab")]
-        why.extend(differs_why);
+        why.extend(phab_why);
         let mut m = Menu::new(title, items, (!why.is_empty()).then(|| why.join("\n")));
         // What the item wrapping messages wraps, said whether or not an item
         // is grayed.
@@ -8338,6 +8329,10 @@ impl App {
             Action::PullPatch(change) => self.pull_reviews(Some(change)),
             #[cfg(feature = "moz-phab")]
             Action::Differs => self.open_differs(),
+            #[cfg(feature = "moz-phab")]
+            Action::PhabMenu => self.mode = Mode::Menu(self.phab_menu()),
+            #[cfg(feature = "moz-phab")]
+            Action::Fetch => self.fetch_from_phabricator(),
             #[cfg(feature = "moz-phab")]
             Action::Submit => self.submit_patch(false),
             #[cfg(feature = "moz-phab")]

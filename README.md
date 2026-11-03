@@ -39,8 +39,9 @@ The `demo` feature adds a tour of the editor, to learn it by (`stacked
 demo`, below).
 
 The `moz-phab` feature adds Phabricator (below): the reviews pulled from
-its revisions, stacks imported from them, and a patch submitted to it as
-work in progress, over Conduit with the token moz-phab (or arc) keeps,
+its revisions, the latest of them fetched and stored, stacks imported from
+them, and a patch submitted to it as work in progress, over Conduit with
+the token moz-phab (or arc) keeps,
 which `curl` calls. With it, the reading mode
 takes the trailer moz-phab writes in a message as an empty line, which
 needs no reading (Reading). Built without it, stacked has none of it, but
@@ -520,13 +521,13 @@ exact version of the patch, as that line says it: `✓` where the line says
 and summary are those a submit sends, and a submit would not change its
 parent), `✗` where it says what differs, the diff, the title or summary,
 or the parent (`  2 [W]✓ Bug 2 - add b`, `  3 [R]✗ Bug 3 - add c`). The
-mark is blank while what differs is not read and compared yet, or when
+mark is blank while what differs is not fetched and compared yet, or when
 Phabricator does not have the revision; the pane and the line read it in
 one place, so that they never disagree. `?` in the patches pane says what
 the two marks mean. The statuses are a column of their own, as wide as
 the widest of the stack's, so that the titles start together: a patch
-that names no revision, or whose revision's status is not read yet, has
-its column blank, and while no status is known there is no column at
+that names no revision, or whose revision's status is not fetched yet,
+has its column blank, and while no status is known there is no column at
 all; the marks are one more cell of it, there once any patch shows one.
 Expanded, the pane is wider by the column, up to half the screen, so that
 each title keeps the room it had and folds as it did. The tags at the end
@@ -536,37 +537,42 @@ patch's lines are read, not that Phabricator has this version. A revision
 is a draft when its status is Draft: one in Changes Planned that was never
 sent for review, as `Submit to Phabricator as WIP` makes one, is `[W]`,
 though Phabricator says it is a draft too (`isDraft`, as it says of every
-revision it has not sent to reviewers yet). The
-statuses are read away from the screen, over Conduit with the token a pull
-uses, all of the stack's revisions in one search
-(differential.revision.search; one for each Phabricator, should their
-links name more than one): as the stack is shown, again when the
-revisions its patches name change and right after a submit, and every three
-minutes while the editor runs. They are kept as long as it runs, and
-written nowhere. A read that fails leaves them as they were, and the bottom
-line says so once (`The statuses of the stack's revisions could not be read
-from Phabricator: …`), then again only after a read that worked. The
-message names what Phabricator answered: a status other than 200 with the
-first line of the page that came with it, cut short
+revision it has not sent to reviewers yet).
+
+The letters and the marks are what stacked stored the last time it read
+Phabricator, in the database (One file, only appended to, below), and the
+Phabricator line says how long ago that was (below). stacked reads
+Phabricator only when you ask, never by itself, not even as the editor
+opens: a stack none of whose revisions was ever fetched has no letter at
+all. `Fetch the latest from Phabricator`, in the menu of the stack's
+header, in each patch's own `Phabricator` menu and in the menu of its
+Phabricator line (below), reads every revision the stack's patches name,
+away from the screen, over Conduit with the token a pull uses: all of
+them in one search (differential.revision.search; one for each
+Phabricator, should their links name more than one), then the rest of
+what the lines say (below), and stores it. Meanwhile the top bar says
+`fetching…`, and the bottom line `fetching the latest from
+Phabricator…`, then what was fetched (`fetched the latest of 3 revisions
+from Phabricator`, `fetched the latest of D12 from Phabricator`); one
+fetch goes at a time (`already fetching the latest from Phabricator`). A
+submit and a pull read Phabricator too, and store what they read
+(below). A fetch that fails stores nothing of what it read, so that what
+is stored stays as it was, and the bottom line says why (`The stack's
+revisions could not be fetched from Phabricator, so what is stored of
+them stays as it was: …`): what Phabricator answered, a status other
+than 200 with the first line of the page that came with it, cut short
 (`differential.revision.search: Phabricator answered HTTP 502 with a page
 starting "<html>"`), and a page that is not JSON by its first line too.
 When Phabricator turns away the requests of this machine (HTTP 429, too
-many requests), nothing more is read away from the screen for a while,
-neither the statuses nor what the Phabricator lines read (below): for as
-long as Phabricator's `Retry-After` says, when it says a time to come, else
-for five minutes, then twice as long at each refusal in a row, up to half
-an hour; a read that works ends the row. The bottom line says so, in the
-place of the message above, with when stacked reads Phabricator again
-(`Phabricator is turning away requests from this machine for now (HTTP
-429): stacked reads it again at 14:32.`), and the statuses and the lines
-keep what they had meanwhile. What you ask for is tried all the same,
-once: a submit, a pull, the pull of one revision, an import; turned away
-too, each says so plainly (`Phabricator is turning away requests from this
-machine for now (HTTP 429, too many requests)`). The wait lasts as long as
-the editor runs, each editor waiting on its own, and nothing of it is
-written. Nothing is
-read while reviews come from nowhere (`reviews.source = "none"`, Settings
-below), nor in the tour. In the browser (`stacked web`) and in StackED, the
+many requests), the fetch is tried once, and the bottom line says so
+plainly, in the same words (`… stays as it was: Phabricator is turning
+away requests from this machine for now (HTTP 429, too many requests)`);
+nothing waits to read it again, as nothing reads it by itself: you fetch
+again when you choose. What else you ask for is tried once too, a
+submit, a pull, the pull of one revision, an import, and, turned away,
+says so plainly. Nothing is read while reviews come from nowhere
+(`reviews.source = "none"`, Settings below), when no fetch is offered,
+nor in the tour. In the browser (`stacked web`) and in StackED, the
 same.
 
 A commit of the checkout is a patch of the stack when its diff is, but its
@@ -707,7 +713,7 @@ Phabricator line over its message, in every view of the code, reading or
 not, its hunks or each file whole:
 
 ```
-Phabricator: D123456 · Needs Review · the diff differs · 2 new comments to pull
+Phabricator: D123456 · Needs Review · the diff differs · 2 new comments to pull · fetched 2 hours ago
 ✉ message
    Bug 123 - the parser skips the blank lines
 ```
@@ -744,12 +750,25 @@ pulled when a comment open holds it, on the patch or moved to the stack's,
 or when a pull's review waiting holds it. The line does not count the
 comments of a thread you closed, though a pull brings the new ones: without
 the history, a new reply or edit there is not told from the comments filed
-in it before you closed it. What is not read yet is `…` (`Phabricator: D123 ·
-Needs Review · …`), whether it is in sync too while the revision of the
-patch below is not; a revision Phabricator does not have is said so,
-alone (`Phabricator: D123 · not found on Phabricator`). Whether each patch
-is in sync, the patches pane marks too, after its revision's status (`✓`,
-`✗`, above), from the same reading as its line. The line is a row
+in it before you closed it. Last, it says how long ago what it says was
+fetched, worked out as it is drawn: `fetched just now` under a minute,
+then `fetched 3 minutes ago`, `fetched 2 hours ago`, `fetched yesterday`
+from a day to two, `fetched 4 days ago`, so that a state read long ago is
+never taken for one read now. Of what the line says, the part read
+longest ago tells it: a submit reads the revision's state but not its
+comments, and a pull its comments alone, each as of when it read them,
+and a fetch that found the revision as it was stored counts as a read of
+all of it. What is not known yet is `…` (`Phabricator: D123 · Needs
+Review · … · fetched 2 hours ago`): whether it is in sync while the
+revision's latest diff, or the revision of the patch below, is not
+fetched yet, or while what differs is worked out; its comments while only
+a submit read it. A revision Phabricator does not have is said so, with
+how long ago (`Phabricator: D123 · not found on Phabricator · fetched just
+now`); one nothing of which is stored yet says so, and where to fetch it
+(`Phabricator: D123 · not fetched yet: Fetch the latest from Phabricator,
+in its menu`). Whether each patch is in sync, the patches pane marks too,
+after its revision's status (`✓`, `✗`, above), from the same reading as
+its line. The line is a row
 of the patch, over its message's header, and folds between words where
 the middle is narrower; it is not pinned, and scrolls away with the rows,
 the title pinned in its place. The cursor comes to a patch on its
@@ -789,58 +808,73 @@ D12 are those of this version, and its parent is D11, the revision of
 patch 2.`), or saying why a submit sets none, as a submit says it (`…
 Patch 1 is at the bottom of the stack, so D11 gets no parent.`), and
 opens nothing; the screen says the same, in sync (`Nothing differs: …`);
-while what differs is not read yet, Space says that. Space there marks nothing read,
-even in the reading mode, and opens no menu: Enter opens it, titled `D12
-on Phabricator`. Its first items are the revision's: `What differs from
-D12 on Phabricator…` opens the same screen, grayed, the menu saying why, while the revision is not
-read and compared yet, or Phabricator does not have it; and `Pull the
-reviews of D12 from Phabricator` pulls the reviews of that revision alone
-(Phabricator, below). The patch's menu in the patches pane has both too,
-after its submit item: `Submit to Phabricator as WIP`, or, for a revision
-open but not in work, the update of its title, summary and parent alone,
-which the line's comparison names, offers or grays (`Update D12 on
-Phabricator: its title and summary`, Submitting a patch, below). `?`
-says what the line says, and that the patches pane marks the same, what
-Space shows there, and what the menu has.
+while what differs is not known yet, Space says that it is not, and that
+the line says it once the revision is fetched and compared. Space there
+marks nothing read, even in the reading mode, and opens no menu: Enter
+opens it, titled `D12 on Phabricator`. Its first items are every item of
+the patch about Phabricator, as the patch's own `Phabricator` menu holds
+them (below): the patch's submit, `Submit to Phabricator as WIP`, or, for
+a revision open but not in work, the update of its title, summary and
+parent alone, which the line's comparison names, offers or grays
+(`Update D12 on Phabricator: its title and summary`, Submitting a patch,
+below); `What differs from D12 on Phabricator…`, which opens the same
+screen, grayed while the revision is not read and compared yet, or
+Phabricator does not have it; `Pull the reviews of D12 from
+Phabricator`, which pulls the reviews of that revision alone
+(Phabricator, below); and `Fetch the latest from Phabricator` (above).
+In the patches pane, a patch's menu has those items in a menu of their
+own, its `Phabricator` item, which opens a menu titled for the revision,
+`D12 on Phabricator`, or `Phabricator` for a patch that names none yet,
+which holds its submit and the fetch alone; none of them is on the
+patch's menu itself. An item grayed says why under the menu, as every
+item does. `?` says what the line says, and that the patches pane marks
+the same, what Space shows there, and what the menu has.
 
-What the lines say is read away from the screen, with the token the
-statuses use, for every revision the stack's patches name, as the stack is
-shown, so that each patch's line is whole as soon as the patch is: after
-the statuses' search, the revisions' parents (edge.search) and their
-latest diffs (differential.diff.search, the newest first, page after page
-until each revision has its newest), each in one call for all of them;
-the parents that are none of the stack's revisions, of a revision a
-submit would set another, named in one search of their own
-(differential.revision.search); then each revision in turn, that of the
-patch the middle shows first: its latest diff, raw
-(differential.getrawdiff), unless it was read before, and its comments
-(transaction.search). Those two are read only for a revision not read yet,
-or modified since it was read, as the statuses' search says when each was
-last modified (its `dateModified`): what was read of the others is kept,
-and only their parents are read again, as a revision's parents also change
-when another revision is edited to take it as its child. A submit forgets
-what was read of the revision it sends to, and a pull what was read of the
-revisions it reads, so that those are read again in the next round.
-Phabricator says that a revision was modified at each change to it, a new
-comment among them, but not when one of its comments is edited or removed:
-the line counts such a comment once the revision changes otherwise, or
-once a pull reads it. One read of Phabricator after another, the statuses' and
-this: the calls for all of the revisions again each time the statuses are
-read, every three minutes, and right after a submit and after a pull, and
-those of each revision as above. For 15 revisions none of which was
-modified, a round is three calls, as a rule: the statuses' search,
-edge.search and differential.diff.search; one modified adds its
-transaction.search, and its getrawdiff when its latest diff is a new one.
-All of it is kept in memory by revision as long as the editor runs, and
-the raw diff by its id, not read again while it is the latest. What
-differs in the code of each patch is worked out away from the screen too,
-one patch at a time, the one the middle shows first, once for each version
-of the patch on the patches below it and each latest diff. A read that
-fails keeps what was known, and the bottom line says nothing more than the
-statuses' read says, but when Phabricator turns this machine away: then
-nothing is read away from the screen for a while, and the bottom line says
-until when (above). Nothing is read, and no line drawn, while reviews come
-from nowhere, nor in the tour. In the browser and in StackED, the same.
+What the lines say is read by `Fetch the latest from Phabricator`, with
+the token the statuses use, for every revision the stack's patches name:
+after the statuses' search, the revisions' parents (edge.search) and
+their latest diffs (differential.diff.search, the newest first, page
+after page until each revision has its newest), each in one call for all
+of them; the parents that are none of the stack's revisions, of a
+revision a submit would set another, named in one search of their own
+(differential.revision.search), unless what is stored names them already,
+as a parent's number never changes; then each revision in turn, bottom
+first: its latest diff, raw (differential.getrawdiff), unless that diff
+is stored, and its comments (transaction.search). The comments are read
+only for a revision never fetched, or modified since they were stored, as
+the statuses' search says when each was last modified (its
+`dateModified`): what is stored of the others is kept, and only their
+parents are read again, as a revision's parents also change when another
+revision is edited to take it as its child. Phabricator says that a
+revision was modified at each change to it, a new comment among them, but
+not when one of its comments is edited or removed: the line counts such a
+comment once the revision changes otherwise, or once a pull reads it. For
+15 revisions none of which was modified, a fetch is three calls, as a
+rule: the statuses' search, edge.search and differential.diff.search; one
+modified adds its transaction.search, and its getrawdiff when its latest
+diff is a new one. Once all of it is read, it is stored, under the
+database's lock, as records of their own (One file, only appended to,
+below): of each revision, only what differs from what is stored, its
+state, its comments, or both, and its raw latest diff once for each diff
+id; a revision found as it was stored is not written again, and one small
+record says when the fetch read every revision. A fetch that fails
+partway stores nothing. A submit stores what it reads of its revision
+before anything is sent, and what it reads of it again before it sends
+(Submitting a patch, below); once it is done, it fetches that revision
+again, alone, its comments with it whatever its search says, so that its
+line shows what Phabricator has once the submit is done, not what was
+read before it; should that fetch fail, the bottom line says so after
+what the submit came to. A pull stores the comments it reads of each
+revision, where they are not those stored, with no time of when the
+revision was modified, so that the next fetch reads them again. What
+differs in the code of each patch is worked out away from the screen,
+from what is stored, one patch at a time, the one the middle shows first,
+once for each version of the patch on the patches below it and each
+latest diff, and kept in memory as long as the editor runs: an editor
+opened again on the database shows each line as it is stored, the code
+compared again, and reads nothing of Phabricator. Nothing is read, and no
+line drawn, while reviews come from nowhere, nor in the tour. In the
+browser and in StackED, the same.
 
 There are six keys, four more for the middle: three of self-review's
 (Copied from self-review-rs, below, says what it is) and one of stacked's
@@ -3913,10 +3947,11 @@ bytes long, padded with spaces.
   version as it was last edited, those of its versions before and the
   comment it replies to, which the Phabricator line counts those not
   pulled yet by, with when the revision was last modified as they were
-  read (`dateModified`, when the read said it). A read writes only the
-  parts that differ from what is stored, and nothing for a revision it
-  found as it was stored. The latest record with each part is what
-  stands. A rawdiff record holds a revision's raw latest diff
+  read (`dateModified`; none from a pull). A read writes only the parts
+  that differ from what is stored, and nothing for a revision it found as
+  it was stored: `Fetch the latest from Phabricator` writes both, a submit
+  the state alone, a pull the comments alone. The latest record with each
+  part is what stands. A rawdiff record holds a revision's raw latest diff
   (`{"t":"rawdiff","link":…,"diff":456,"raw":"…"}`), written once for each
   diff id, as a diff never changes; and a fetched record says when a
   fetch read revisions (`{"t":"fetched","links":[…],"time":…}`), the latest
@@ -4012,12 +4047,15 @@ this machine (HTTP 429). While it reads them, the banner says which revision it 
 top bar `pulling…`; once it is done, the bottom line says what came of it
 (`1 new comment from 3 revisions: it waits for your review`), or what went
 wrong. In the editor, `Pull the reviews of D12 from Phabricator`, on the
-menu of a patch's Phabricator line (The editor, above) and on the patch's
-own in the patches pane, reads that patch's revision alone, as the stack's
-pull reads each: the banner says so (`⇣ pulling the reviews from
-Phabricator: D12…`), the bottom line says what came of it (`2 new comments
-from D12: they wait for your review`), what it brings is held as a pull's,
-and the line is read again once it is done. As the stack's pull, it is not
+menu of a patch's Phabricator line (The editor, above) and in the patch's
+own `Phabricator` menu in the patches pane, reads that patch's revision
+alone, as the stack's pull reads each: the banner says so (`⇣ pulling the
+reviews from Phabricator: D12…`), the bottom line says what came of it (`2
+new comments from D12: they wait for your review`), what it brings is held
+as a pull's. A pull, of the stack or of one revision, in the editor or by
+`stacked moz-phab pull`, stores the comments it read of each revision, as
+the line counts those not pulled yet (The editor, above), and nothing else
+is read after it. As the stack's pull, it is not
 offered while reviews come from nowhere, and not done in the tour; one
 pull goes at a time (`already pulling the reviews`). What is new waits for
 your review, in the queue of work the agent's
@@ -4081,25 +4119,28 @@ Bugzilla, `reviews.bugzilla` (Settings, below). A line of what a comment
 says opens them from its menu too (Writing comments, above).
 
 The patches pane shows the status of each patch's revision after its number
-(`[W]`: The editor, above), read over Conduit with the same token, all of
-the stack's revisions in one search; and the Phabricator line over the
-message of the patch the middle shows says it by name, whether the
-revision's latest diff and its title and summary are the patch's, its
-parent the one a submit sets, and how many of its comments are not pulled
-yet, all of it read for every patch of the stack as it is shown. Space there shows what differs on
-a screen of its own, and its menu pulls the reviews of that revision alone
-(The editor, above).
+(`[W]`: The editor, above), as `Fetch the latest from Phabricator` read and
+stored it, over Conduit with the same token, all of the stack's revisions
+in one search; and the Phabricator line over the message of the patch the
+middle shows says it by name, whether the revision's latest diff and its
+title and summary are the patch's, its parent the one a submit sets, how
+many of its comments are not pulled yet, and how long ago that was
+fetched. Nothing of it is read by itself. Space there shows what differs
+on a screen of its own, and its menu holds every item of the patch about
+Phabricator (The editor, above).
 
 ### Submitting a patch
 
-`Submit to Phabricator as WIP`, on a patch's menu (not while reviews come
-from nowhere, `reviews.source = "none"`), sends that patch alone to
-Phabricator as work in progress, as `moz-phab submit --wip` sends a single
-commit: in Changes Planned, a status that asks no one for a review. In the
-browser (`stacked web`) and in StackED, the same. Nothing is sent before
-it is read and seen. First, away from the screen, the patch's revision is
-read: the one its trailer names (`Differential Revision:`), or none, and
-the submit makes a new one. A revision there already in work, Changes
+`Submit to Phabricator as WIP`, in a patch's own `Phabricator` menu and
+on the menu of its Phabricator line (not while reviews come from nowhere,
+`reviews.source = "none"`), sends that patch alone to Phabricator as work
+in progress, as `moz-phab submit --wip` sends a single commit: in Changes
+Planned, a status that asks no one for a review. In the browser (`stacked
+web`) and in StackED, the same. Nothing is sent before it is read and
+seen. First, away from the screen, the patch's revision is read, and what
+is read of it stored, as a fetch stores it (The editor, above), whatever
+comes of the rest: the revision its trailer names (`Differential
+Revision:`), or none, and the submit makes a new one. A revision there already in work, Changes
 Planned or a draft, as moz-phab takes it, is sent the patch as work in
 progress; one open but not in work, Needs Review, Needs Revision or
 Accepted, only the patch's title, summary and parent (below); one that
@@ -4156,10 +4197,13 @@ side, or unified again, the lines of the title and summary that differ
 side by side too, Phabricator's on the left, coloured the same way.
 Enter, or `Send it to Phabricator` in its menu, sends it; Esc, or
 `Cancel: send nothing`, sends nothing. Before anything
-is sent, the revision is read again: if its latest diff, its status, its
-title, summary or bug, or its parents changed meanwhile, nothing is (`D123
-changed on Phabricator since you reviewed it, so nothing was sent. Submit
-again to review it as it is now.`).
+is sent, the revision is read again, and what is read stored: if its
+latest diff, its status, its title, summary or bug, or its parents changed
+meanwhile, nothing is (`D123 changed on Phabricator since you reviewed it,
+so nothing was sent. Submit again to review it as it is now.`). Once the
+submit is done, sent or not, the revision it sent to is fetched again,
+alone, as the patch names it then, a new revision too (The editor,
+above).
 
 Only what changed is sent, as moz-phab sends it: a new diff of the patch
 (differential.creatediff, its commit's author, message, parent and tree
@@ -4202,8 +4246,9 @@ the repository the checkout's `.arcconfig` names (`repository.callsign`;
 a revision there already keeps its own).
 
 For a revision open but not in work (Needs Review, Needs Revision,
-Accepted), the patch's menu has, in the place of `Submit to Phabricator as
-WIP`, an item that sends the revision the patch's title, summary and
+Accepted), the patch's `Phabricator` menu, and the menu of its Phabricator
+line, have, in the place of `Submit to Phabricator as WIP`, an item that
+sends the revision the patch's title, summary and
 parent alone, named for what differs as the Phabricator line says it (The
 editor, above): `Update D123 on Phabricator: its title and summary`,
 `Update D123 on Phabricator: its parent`, or `Update D123 on Phabricator:
@@ -4245,10 +4290,10 @@ status, its title, summary or bug, or its parents changed meanwhile,
 nothing is. When nothing differs, nothing is sent, and the bottom line
 says so. Once it is sent, the bottom line says what came of it, as after a
 submit (`D123 has the title and summary of patch 3 now.`), and the
-statuses and the Phabricator lines are read again. While the
-revision's status is not read yet, or is one stacked does not know, the
-menu has `Submit to Phabricator as WIP`, and the status the submit reads
-decides what is sent. For a revision that landed or was abandoned, `Submit
+revision is fetched again, alone. While the revision's status is not
+fetched yet, or is one stacked does not know, the menu has `Submit to
+Phabricator as WIP`, and the status the submit reads decides what is
+sent. For a revision that landed or was abandoned, `Submit
 to Phabricator as WIP` is grayed, and the menu says why (`D123 has landed,
 so stacked sends it nothing.`, `D123 was abandoned, so stacked sends it
 nothing.`).
@@ -4313,11 +4358,13 @@ is typed: `import.rs`). A fix to one may belong in the other.
 - `review.rs`, `phab.rs`, `submit.rs`: Phabricator, built with the
   `moz-phab` feature (on by default): the reviews pulled, the stacks
   imported, a patch submitted as work in progress, or its title, summary
-  and parent alone to a revision in review, the statuses of
-  revisions read, and what the Phabricator line over a patch's message
-  reads and counts; Conduit called by curl, the token on its standard
-  input, what Phabricator answered said, and its refusals of this machine
-  (HTTP 429) an error of their own.
+  and parent alone to a revision in review; Fetch the latest from
+  Phabricator, every revision of a stack read in a few calls, and stored,
+  only what differs from what is stored, as what a submit and a pull read
+  is stored; and what the Phabricator line over a patch's message counts;
+  Conduit called by curl, the token on its standard input, what
+  Phabricator answered said, and its refusals of this machine (HTTP 429)
+  an error of their own.
 - `try_push.rs`: the try push, built with the `try-push` feature (on by
   default): what an ask of a try push is told and answers with, its tasks
   read from its answer, and what a round asked again is told of them; the
@@ -4388,11 +4435,11 @@ is typed: `import.rs`). A fix to one may belong in the other.
   dialog, or reviewed on a screen of its own, before it is sent;
   `tui/revisions.rs`, the status on Phabricator of each patch's revision,
   which the patches pane shows, and the Phabricator line over the message
-  of the patch the middle shows, what differs on a screen of its own, the
-  pull of its reviews alone, the submit item of a patch's menu as its
-  revision's status has it, and when each is read, which revisions are
-  read again, and how long nothing is read once Phabricator turns this
-  machine away; `tui/compared.rs`, two
+  of the patch the middle shows, from what is stored, with how long ago it
+  was fetched, what differs on a screen of its own, the pull of its
+  reviews alone, the submit item as its revision's status has it, the
+  patch's `Phabricator` menu, and the fetch, asked from a menu, or after a
+  submit; `tui/compared.rs`, two
   versions of a text compared word by word where their lines wrap aside,
   as rows: a title and summary in the review of a submit, a reviewer's
   comment edited on Phabricator in the review of a pull, a commit's
@@ -4442,12 +4489,11 @@ the linter; none reaches Phabricator: its revisions and their comments are
 read by stand-ins, and what a submit sends is answered by one, which keeps
 every call made to it, so that a test can see that a refusal wrote
 nothing, and which, as Phabricator does, makes no revision of a diff whose
-commit has no tree; the statuses of a stack's revisions, and what the
-Phabricator line reads, are answered by one set for the test's database
-alone, as every editor reads the statuses of the stack it shows, so that no
-test's stand-in answers another's editors; and
-in a test's own process, which keeps nothing, an editor with no stand-in
-reads none. How a call of Conduit is made is seen with a stand-in for
+commit has no tree; what a fetch reads of a stack's revisions is answered
+by one set for the test's database alone, so that no test's stand-in
+answers another's editors; and in a test's own process, which keeps
+nothing, an editor with no stand-in reads none, and shows nothing of what
+is stored. How a call of Conduit is made is seen with a stand-in for
 curl, a script that `sh` runs, which keeps the arguments it is given and
 what it reads, and answers as the test says; and with curl itself,
 sending to a server that the test runs on the loopback (127.0.0.1), so
@@ -5095,35 +5141,33 @@ once read whole, its patch too, the pane keeping its width from patch to
 patch), the
 statuses of the revisions there (with moz-phab, each status after its
 patch's number, a letter listing files and expanded alike, `[?]` for one
-stacked does not know, no words; none before it is read, nor for a patch
-naming no revision or one Phabricator does not have; the titles starting
+stacked does not know, no words; none before it is fetched, however long
+the editor goes on, nothing read by itself, nor for a patch naming no
+revision or one Phabricator does not have; the titles starting
 together, those folded folding as they did, the pane wider by the column,
 and the tags where they were; right after the letter, `✓` in sync and `✗`
 for a diff, a title or summary, or a parent that differs, listing files
 and expanded alike, each patch's mark the one its Phabricator line says,
 patch by patch, a revision two patches name marked for each, as a patch
 changes and as a reordered stack is submitted again; a blank while what
-differs is not read, no cell for the marks while no patch shows one and
+differs is not fetched, no cell for the marks while no patch shows one and
 one more once one does, the pane a cell wider, a revision named since
 blank while the others keep theirs; none for a patch naming no revision
 or one Phabricator does not have; `?` saying what the marks mean, and in
 the reading mode that the `✓` at a line's end is another, nothing of
-them while there is no column; the stack's revisions read in one search,
-no other call made but the Phabricator lines', not again while they are
-the same, again once its patches name others and right after a submit, a
-new revision's status shown at once; Changes Planned shown as such though
-Phabricator says it is a draft; a read that fails keeping those known and
-saying so once, again only after one that worked; Phabricator turning the
-machine away, two minutes asked: the bottom line saying until when, in the
-place of what a read that fails says, the statuses and the lines keeping
-what they had, nothing read while the wait goes on, though the stack's
-revisions change, and a pull of one revision made all the same, nothing
-read after it; a second asked, all read again once it is over, and a read
-that works making the next refusal the first again, five minutes; none
-read while reviews come from nowhere; built without moz-phab, none shown,
-nor a Phabricator line), the Phabricator line (with moz-phab, over the message's header,
-the cursor coming to the header: the revision alone and `…` before
-anything is read; in sync; the diff differing, the title or summary, the
+them while there is no column; the stack's revisions fetched in one
+search when asked, no other call made but the rest of the fetch, not again
+as the editor goes on, nor once its patches name others, until a fetch is
+asked again; a submit fetching the revision it sent to again, alone, once
+it is done, a new revision's status shown at once; Changes Planned shown
+as such though Phabricator says it is a draft; a fetch that fails keeping
+what is stored and saying why, each time it is asked, a first one showing
+no status; none read nor offered while reviews come from nowhere; built
+without moz-phab, none shown, nor a Phabricator line), the Phabricator
+line (with moz-phab, over the message's header, the cursor coming to the
+header: before anything is fetched, the revision, and that it is not
+fetched yet, with where to fetch it; once it is, how long ago, `fetched
+just now`, last; in sync; the diff differing, the title or summary, the
 parent, and those together, listed plainly; a summary wrapped otherwise, every word the same, differing: Space
 showing the lines of both versions, Phabricator's taken out and this
 version's put in, no word in the colours for words, and saying so, `?`
@@ -5134,66 +5178,96 @@ giving back its title and summary as they were sent, white space ending
 a line and all; a status stacked does not know, and a revision
 Phabricator does not have; the comments to pull, none once a pull holds
 them for review, nor once they are filed, one edited and one new once
-the revision is read
+the revision is fetched
 again, none once their thread is closed; over the message in every view
 of the code, in each half of the middle split in two, reading and with
-each file whole; none over a patch naming no revision, nor while reviews
-come from nowhere, nor without a stand-in in the tests' own process;
+each file whole, folded in three in the narrowest, how long ago with it;
+none over a patch naming no revision, nor while reviews come from nowhere,
+nor without a stand-in in the tests' own process, though what was fetched
+is stored;
 scrolled away with the rows, the title pinned in its place; Space on it
 opening what differs on a screen of its own, its title naming both
 versions and what it shows said first: the code as an interdiff of the
 two diffs, what git derives in them left out, and the title and summary
 compared where their lines wrap aside, what only each has marked in the
 colours for words; Esc going back to the line; in sync, Space saying so,
-the parent named, and opening nothing; not read yet, Space saying that; reading, Space
+the parent named, and opening nothing; not fetched yet, Space saying that; reading, Space
 marking nothing read and Delete taking no mark back; Enter opening the
-menu, titled for the revision, what differs and the pull of its reviews
-first, and the bar and `?` saying what Space does and what the menu has;
-the patch's menu in the patches pane offering both too, after its submit;
-what differs grayed, the menu saying why, while it is not read yet, and
+menu, titled for the revision, every item of the patch about Phabricator
+first, its submit, what differs, the pull of its reviews and the fetch,
+and the bar and `?` saying what Space does and what the menu has; the
+patch's own `Phabricator` menu offering those, the patch's menu none of
+them; what differs grayed, the menu saying why, while it is not fetched yet, and
 for a revision Phabricator does not have; in sync, the screen saying that
 nothing differs, the parent with the rest, Esc going back to the patch; neither item while reviews
 come from nowhere; a latest diff on another base, each file as each
 leaves it, said, or the interdiff all the same, said too, where the
 files cannot be read so; the reviews of one patch's revision pulled
-alone, from the line's menu and from the patch's, that revision read and
-no other, the banner naming it, one pull at a time, what it brings held
-for review as a pull's, every revision read again after it, and the stack's
-pull still reading every revision; every revision of the stack read as
-it is shown, the parents and the latest diffs of all of them in one call
-each, by their PHIDs, then each, that of the patch shown first, each
-patch's line whole as soon as it is shown, nothing read for it, nor as
-patches are shown again, all of it read again each round (the statuses
-read again, a pull), a raw diff not read again while it is the latest; a
-revision whose search says when it was last modified not read again
-while that stays the same, only its parents and its latest diff read,
-with the others'; one modified since read again, alone, its new comment
-counted; one submitted, or pulled alone, read again, alone, though its
-search says it was not modified since; a
-read that fails keeping what was known and saying nothing more than the
-statuses' read, a revision never read `…` but for its status; the
+alone, from the line's menu and from the patch's `Phabricator` menu, that
+revision read and no other, the banner naming it, one pull at a time, what
+it brings held for review as a pull's, the comments it read stored and
+nothing else read, and the stack's pull still reading every revision;
+every revision of the stack fetched, the parents and the latest diffs of
+all of them in one call each, by their PHIDs, then each, bottom first,
+each patch's line whole as soon as it is shown, nothing read for it, nor
+as patches are shown again, nor after a pull, which stores what it read,
+all of it read again once it is fetched again, a raw diff not read again
+while it is stored; a revision whose search says when it was last
+modified not read again while that stays the same, only its parents and
+its latest diff read, with the others', and no record of it written again,
+only the fetch's; one modified since read again, alone, its new comment
+counted; one submitted, fetched again alone once the submit is done, its
+comments read again though its search says it was not modified since;
+one pulled alone, read by the next fetch alone, as the pull stored its
+comments with no time of when it was modified; a fetch that fails partway
+storing nothing and saying why, the line not fetched yet, the next one
+storing it all, one failing later keeping what is stored, a revision
+never fetched not fetched yet; a fetch turned away (HTTP 429) said
+plainly, tried once, its first call turned away and nothing asked after
+it, nothing written, the statuses and the lines as they were, nothing
+waited out nor read by itself after it, a pull asked made all the same,
+nothing read after it, and a fetch after it reading all of it at once;
+what a fetch reads stored as records of their own, a revision's state, its
+comments, its raw latest diff, the fetch, and an editor opened again on
+that database showing the lines, the letters and the marks as they are
+stored, and what differs from the raw diff stored, making no call of
+Phabricator; how long ago it was fetched, said as the line is drawn,
+yesterday, two hours ago, three minutes ago, then just now, and a minute
+ago as the minute goes by, nothing written nor read; the patch's
+`Phabricator` menu titled for its revision, or `Phabricator` for a patch
+naming none, with its submit and the fetch, its items not on the patch's
+menu itself, `?` saying what it opens and what the fetch does, the fetch
+one at a time, the bars saying it is fetching, the line's menu offering
+the same items directly, the stack's menu the fetch after the pull; what a
+submit reads stored, its revision's state and raw diff, though nothing is
+sent, and what it reads again before it would send, and the comments a
+pull reads, with no time of when the revision was modified, none written
+again when they are the same; the
 parent: a reordered stack's revisions differing by their parents alone,
 nothing read for it, Space and the menu's item showing the parent first,
 Phabricator's then the one a submit sets, and nothing under it, `?`
 saying so, a submit setting it and nothing else, then in sync, its
-parents read again with the rest, Space naming the parent; none
+parents fetched again with the rest, Space naming the parent; none
 differing at the bottom of the stack, over a patch with no revision, a
 landed revision, or a patch naming the same revision, Space saying why a
 submit sets none as a submit does, no parent named; a parent that is
 none of the stack's revisions named in a search of its own, where a
-submit sets another; `…` while the revision below is not read; the
-parent with the code, the title or summary, or both, listed plainly, the
-view showing the parent first, then the code; the patch's menu submitting
-as its revision's status has it: `Submit to Phabricator as WIP` while the
-status is not read, and for a revision in work; grayed for one that
+submit sets another, and as it was stored since; `…` while the revision
+below is not fetched; the parent with the code, the title or summary, or
+both, listed plainly, the view showing the parent first, then the code;
+the patch's `Phabricator` menu submitting as its revision's status has
+it: `Submit to Phabricator as WIP` while the status is not fetched, and
+for a revision in work; grayed for one that
 landed, the menu saying why; for one in review, the update of its title,
 summary and parent alone in its place, grayed while what differs is not
-read and compared, saying so, then offered for a summary that differs,
+known, as its revision has no diff yet, saying so, then offered for a
+summary that differs,
 `?` saying what it sends, its review saying at its top that the code is
 not sent and why, the status staying as it is, no code under it, Enter
 sending the summary alone, no diff, no Changes Planned and no reviewers,
-the bottom line saying what came of it, and once read again, the diff
-alone differing, the update grayed, the menu saying why), and the comments pane's states (expanded,
+the bottom line saying what came of it, and once it is fetched again
+after the submit, the diff alone differing, the update grayed, the menu
+saying why), and the comments pane's states (expanded,
 compact, hidden) and the compact view of the code as they were. With the `web` feature, `tests/web.rs`
 serves the editor and asks it over HTTP as a browser would: the token
 needed, the page, the wasm, the rows as they change, a key and a click,
@@ -5234,14 +5308,16 @@ of a line of a comment from its menu, by a stand-in, and the comment
 closed last on a line, longer than its box in a small page, scrolled
 down to its last line with
 ↓, the wheel's ↓ and pgdn, and, with
-moz-phab, the status of a patch's revision after its number, a letter,
-then its mark (`✗`, its diff otherwise) on the screen its Phabricator
-line says so, the next patch's title after the column all the same,
-expanded and listing files, a title folded there, and the Phabricator line
-over its message, Space on it showing what
-differs on a screen of its own, Esc going back to the line, read by a
-stand-in for its database, and the reviews of its revision pulled alone
-from its menu, an item clicked, by a stand-in too; and
+moz-phab, the Phabricator line saying first that the revision is not
+fetched yet, nothing read as the page opens; then, fetched from the
+stack's menu, its item clicked, by a stand-in for its database, the status
+of a patch's revision after its number, a letter, then its mark (`✗`, its
+diff otherwise) on the screen its Phabricator line says so, the next
+patch's title after the column all the same, expanded and listing files, a
+title folded there, and the Phabricator line over its message, Space on it
+showing what differs on a screen of its own, Esc going back to the line,
+and the reviews of its revision pulled alone from its menu, an item
+clicked, by a stand-in too; and
 `web.rs` tests the rows and the lines both ways, with the client's own tests
 (`web/client.rs`, compiled to the machine as well as to wasm), which also
 test the mouse followed only while the page has the focus: the cell where
@@ -5285,14 +5361,16 @@ that line's list and Enter again picking low, and a click on Ask Later
 putting the comment in the batch; the agent's turns headed
 with the effort it was asked at, and its landed work named with it, in
 the banner and its review, a turn of before as ever; with
-moz-phab, the status of a patch's revision after its number, a letter,
-then its mark (`✗`, its diff otherwise) on the screen its Phabricator
-line says so, the next patch's title after the column all the same,
-expanded and listing files, a title folded there, and the Phabricator line
-over its message, Space on it showing what
-differs on a screen of its own, Esc going back to the line, read by a
-stand-in for its database, and the reviews of its revision pulled alone
-from its menu, an item clicked, by a stand-in too; the File menu, its
+moz-phab, the Phabricator line saying first that the revision is not
+fetched yet, nothing read as the window opens; then, fetched from the
+stack's menu, its item clicked, by a stand-in for its database, the status
+of a patch's revision after its number, a letter, then its mark (`✗`, its
+diff otherwise) on the screen its Phabricator line says so, the next
+patch's title after the column all the same, expanded and listing files, a
+title folded there, and the Phabricator line over its message, Space on it
+showing what differs on a screen of its own, Esc going back to the line,
+and the reviews of its revision pulled alone from its menu, an item
+clicked, by a stand-in too; the File menu, its
 dialogs answered by the test: Open… opening each database picked in a
 window of its own (one picked twice, one that cannot be read said, the
 dialog cancelled), New… making an empty database that stacked reads and
@@ -5791,25 +5869,31 @@ its name; the statuses of revisions read in one search, those it does not
 find not known, each with its title, summary and PHID, and a search
 refused said; an editor's read by the stand-in for its database alone, one
 search for each Phabricator the links name, never from a process that
-keeps nothing without one; and what the Phabricator lines read of the
-revisions, in a few calls: the parents of all of them, and their latest
+keeps nothing without one; and what a fetch reads of the revisions, in a
+few calls: the parents of all of them, and their latest
 diffs, the newest first, each in one call, page after page, the diffs
 until each revision has its newest; the parents that are none of them
 named in one search, only of the revisions a submit sets one, a parent it
 does not find left unnamed, none searched with none to name; then each
-revision in the order given, its diff raw unless it is the one read
-before, its comments from every page of its transactions, their authors
-and lines not read; a revision with no diff passed over, and nothing more
-read after a call that fails; a revision not modified since it was read,
-its latest diff the same, not read again, but for its parents, and one
-modified since, given a new diff, never read, or whose modification is
-not known or was forgotten, read as before; by the stand-in for the
-editor's database, the calls of each Phabricator on their own, and a read
-turned away said as such, whatever its calls make of it. They show curl
-given the token and the call's parameters on its standard input, none of
-them in its arguments; a call turned away (HTTP 429) an error of its own,
-which says so, with the wait Phabricator asks for, in seconds or until a
-date, or none, after an answer that says to go on too; another status
+revision in the order given, its diff raw unless it is the one stored,
+its comments from every page of its transactions, their authors and lines
+not read; a revision with no diff passed over, and nothing more read after
+a call that fails; a revision not modified since it was stored, its latest
+diff the same, not read again, but for its parents, and one modified
+since, given a new diff, never read, or whose modification is not known,
+read as before; by the stand-in for the editor's database, the calls of
+each Phabricator on their own, and a read turned away said as such,
+whatever its calls make of it; a fetch storing what it reads, each
+revision's state, comments and raw latest diff, one Phabricator does not
+have as such, and the fetch, never from a process that keeps nothing; one
+finding all as stored writing nothing of it but the fetch, one finding a
+revision modified since reading and writing its comments alone, one of a
+revision alone, as after a submit, reading its comments again whatever
+its search says, its parent named as stored; and one turned away writing
+nothing. They show curl given the token and the call's parameters on its
+standard input, none of them in its arguments; a call turned away (HTTP
+429) an error of its own, which says so plainly, whatever Phabricator asks
+to wait, after an answer that says to go on too; another status
 said with the first line of its page, cut short, or that the page is
 empty, as a page that is not JSON is; Conduit's own error and curl's said
 as before; and curl itself, to a server on the loopback, sending the
@@ -5822,12 +5906,9 @@ reply or edit there, but for one moved to the stack's comments, another
 stack's pull not this one's, and one a review of before rejected counted,
 as a pull brings it again; and where a pull is said, one patch's revision
 pulled alone too. Those in
-`tui/revisions.rs` show when the statuses are due a read: never read, other
-revisions, a submit ended since, or three minutes gone by; how long
-nothing is read once Phabricator turns the machine away: as long as it
-asks, two minutes say, else five minutes, then ten, twice as long each
-time in a row up to thirty, a time it asks taken as it is and counted,
-and five minutes again once a read worked; a title in work
+`tui/revisions.rs` show how long ago what the Phabricator line says was
+fetched, said as the line says it, just now, then in minutes, in hours,
+yesterday, then in days, a time to come just now; a title in work
 as moz-phab reads it; the title and summary compared to the letter as a
 submit sends them, in work or not as the revision's title is, the white
 space at their end aside, their lines wrapped otherwise or other white
@@ -5843,7 +5924,8 @@ as they are; two diffs on other bases told by the files they read before
 the patch, a line otherwise at the same place, the same hunk elsewhere, a
 file one makes and the other finds, but not by more of a file around a
 hunk, nor by another file; the tour pulling nothing from Phabricator, a
-patch's revision alone neither; the comments to pull and what differs
+patch's revision alone neither, nor fetching the latest; the comments to
+pull and what differs
 said in plain words; the patches pane's mark `✓` exactly where the line
 says in sync and `✗` wherever it says what differs, the parent set,
 already its parent or none set, and none while that is not known or for a

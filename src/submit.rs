@@ -496,6 +496,30 @@ fn read_remote(call: &mut Call, id: &str, raw: bool) -> Result<Remote, String> {
     })
 }
 
+/// Stores in `db` what a submit read of revision `r` at `link`, as every
+/// read of Phabricator is stored (`Db::store_revision`): its state, its
+/// parents named by `names`, PHID by PHID, where the submit named them,
+/// else as what is stored names them (`phab::parents_known`); and its
+/// latest diff, raw, when it was read with it (`raw`). Its comments are
+/// not read, and stay as they were stored.
+fn store_read(db: &mut Db, link: &str, r: &Remote, names: Option<&[String]>, raw: bool) -> crate::db::Result<()> {
+    let parents: Vec<(String, String)> = r.parents.iter().enumerate().map(|(k, p)| (p.clone(), names.and_then(|n| n.get(k)).cloned().unwrap_or_else(|| p.clone()))).collect();
+    let state = crate::db::State {
+        missing: false,
+        status: r.status.clone(),
+        title: r.title.clone(),
+        summary: r.summary.clone(),
+        bug: r.bug.clone(),
+        phid: r.phid.clone(),
+        parents: crate::phab::parents_known(db, &parents),
+        diff: r.diff,
+    };
+    if raw {
+        db.store_raw_diff(link, r.diff, &r.raw)?;
+    }
+    db.store_revision(link, &r.id, Some(state), None).map(|_| ())
+}
+
 /// A status as Phabricator names it: its name, else its value written out.
 fn status_said(r: &Remote) -> String {
     if !r.status_name.is_empty() {
@@ -1106,14 +1130,15 @@ fn sendable(p: &Patch, n: usize) -> Result<(), String> {
 
 /// What submitting the patch at `at` of stack `s` sends, read from
 /// Phabricator at `url` with `call`: or why nothing can be, said. `arc`,
-/// the `.arcconfig` of the stack's checkout. For a revision in work, the
-/// patch must be one Phabricator can be sent (`sendable`), as for a new
-/// one (`prepare` checks that before anything is read). A revision open
-/// but not in work gets the title, the summary, the bug and the parent
-/// alone: its title `WIP: ` first only if it has it (`title_against`), its
-/// latest diff left as it is, of whatever version, so that neither its
-/// repository nor the patch's files are looked at.
-fn prepare_with(db: &Db, s: &Stack, at: usize, url: &str, arc: &Arc, call: &mut Call) -> Result<Prepared, String> {
+/// the `.arcconfig` of the stack's checkout. The revision it names, as it
+/// was read, put in `read`, whatever comes of the rest. For a revision in
+/// work, the patch must be one Phabricator can be sent (`sendable`), as
+/// for a new one (`prepare` checks that before anything is read). A
+/// revision open but not in work gets the title, the summary, the bug and
+/// the parent alone: its title `WIP: ` first only if it has it
+/// (`title_against`), its latest diff left as it is, of whatever version,
+/// so that neither its repository nor the patch's files are looked at.
+fn prepare_with(db: &Db, s: &Stack, at: usize, url: &str, arc: &Arc, call: &mut Call, read: &mut Option<Remote>) -> Result<Prepared, String> {
     let p = db.patch(&s.patches[at]);
     let n = at + 1;
     let titled = wip_title(p.title());
@@ -1121,6 +1146,7 @@ fn prepare_with(db: &Db, s: &Stack, at: usize, url: &str, arc: &Arc, call: &mut 
     let (revision, known, repository) = match crate::phab::revision_of(&p.message) {
         Some((d, _)) => {
             let r = read_remote(call, &d, true).map_err(|e| format!("{d} could not be read from Phabricator, so nothing was sent: {e}"))?;
+            *read = Some(r.clone());
             if !r.open() {
                 return Err(format!("{d} is {}, not open: only an open revision is updated, and nothing was sent.", status_said(&r)));
             }
@@ -1204,7 +1230,8 @@ fn base_url(link: Option<&str>, arc: &Arc, via: &Via) -> String {
 /// `path`, to Phabricator sends, read and checked: as work in progress, as
 /// a new revision or to one in work; to one open but not in work, its
 /// title, summary and parent alone. Or why nothing can be, said. Nothing
-/// is sent.
+/// is sent. What it read of the revision is stored, whatever came of the
+/// rest (`store_read`).
 pub fn prepare(path: &Path, name: &str, at: usize) -> Result<Prepared, String> {
     let db = Db::load(path).map_err(|e| e.0)?;
     let s = db.stack(name).map_err(|e| e.0)?.clone();
@@ -1226,7 +1253,15 @@ pub fn prepare(path: &Path, name: &str, at: usize) -> Result<Prepared, String> {
     let via = Via::to(from.as_deref()).map_err(|e| format!("{e}, so nothing was sent."))?;
     let url = base_url(named.as_ref().map(|(_, l)| l.as_str()), &arc, &via);
     let mut call = |m: &str, v: Value| via.call(m, v);
-    let mut out = prepare_with(&db, &s, at, &url, &arc, &mut call)?;
+    let mut read = None;
+    let out = prepare_with(&db, &s, at, &url, &arc, &mut call, &mut read);
+    // Stored as any read of Phabricator, the parents named as the submit
+    // named them: the submit goes on whether that is written or not.
+    if let (Some(r), Some((_, link))) = (&read, &named) {
+        let names = out.as_ref().ok().map(|p| p.parents_now.clone());
+        let _ = Db::edit(path, |d| store_read(d, link, r, names.as_deref(), true));
+    }
+    let mut out = out?;
     out.from = from;
     Ok(out)
 }
@@ -1615,7 +1650,14 @@ fn sent(path: &Path, p: &Prepared, here: Option<&Path>, call: &mut Call) -> Stri
         return format!("Nothing was sent: a new revision's link goes into the stack, but {why}.");
     }
     if let Some(r) = &p.revision {
-        match read_remote(call, &r.id, false) {
+        let read = read_remote(call, &r.id, false);
+        // Stored as any read of Phabricator: its parents named as the review
+        // named them, while they are the same.
+        if let (Ok(now), Some((_, link))) = (&read, crate::phab::revision_of(&patch.message)) {
+            let names = (now.parents == r.parents).then_some(p.parents_now.as_slice());
+            let _ = Db::edit(path, |d| store_read(d, &link, now, names, false));
+        }
+        match read {
             Ok(now) if now.same_as(r) => {}
             Ok(_) => return format!("{} changed on Phabricator since you reviewed it, so nothing was sent. Submit again to review it as it is now.", r.id),
             Err(e) => return format!("{} could not be read from Phabricator again, so nothing was sent: {e}", r.id),
@@ -2081,7 +2123,7 @@ mod tests {
         let d = Db::load(db).unwrap();
         let s = d.stack("s").unwrap().clone();
         let arc = arcconfig(Path::new(s.repo.as_deref().unwrap()));
-        prepare_with(&d, &s, at, "https://phabricator.example.com", &arc, &mut |m, v| fake.call(m, v))
+        prepare_with(&d, &s, at, "https://phabricator.example.com", &arc, &mut |m, v| fake.call(m, v), &mut None)
     }
 
     /// Patch `at` of `s` given its next version at once, of diff `diff`.
@@ -2184,7 +2226,7 @@ mod tests {
             let d = Db::load(&db).unwrap();
             let s = d.stack("s").unwrap().clone();
             let arc = arcconfig(Path::new(s.repo.as_deref().unwrap()));
-            (prepare_with(&d, &s, 2, "https://phabricator.example.com", &arc, &mut |m, v| fake.call(m, v)), ())
+            (prepare_with(&d, &s, 2, "https://phabricator.example.com", &arc, &mut |m, v| fake.call(m, v), &mut None), ())
         };
         let p = ready.unwrap();
         assert!(p.nothing(), "{p:?}");
@@ -2743,7 +2785,7 @@ mod tests {
         let d = Db::load(&db).unwrap();
         let s = d.stack("s").unwrap().clone();
         let arc = arcconfig(Path::new(s.repo.as_deref().unwrap()));
-        let p = prepare_with(&d, &s, 2, "https://phabricator.example.com", &arc, &mut |m, v| fake.call(m, v)).unwrap();
+        let p = prepare_with(&d, &s, 2, "https://phabricator.example.com", &arc, &mut |m, v| fake.call(m, v), &mut None).unwrap();
         fake.revisions.get_mut(&13).unwrap().title = "Someone's title".into();
         let sent = send_with(&db, &p, None, &mut |m, v| fake.call(m, v));
         assert_eq!(sent, "D13 changed on Phabricator since you reviewed it, so nothing was sent. Submit again to review it as it is now.");

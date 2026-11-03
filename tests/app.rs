@@ -251,11 +251,14 @@ fn a_patch_is_submitted_to_phabricator_from_its_menu_in_the_window_too() {
     let s = Session::open(&db, tmp.path()).unwrap();
     s.send(Input::Size(100, 30));
     screen(&s, "the patches", |b| row(b, 3).contains("Bug 2 - add b"));
-    // The first patch's menu, and its item clicked: what is sent is read,
-    // then the dialog says it.
+    // The first patch's menu, its `Phabricator` item clicked, then the
+    // submit in that menu: what is sent is read, then the dialog says it.
     press(&s, KeyCode::Char(' '));
+    let menu = screen(&s, "the patch's menu", |b| find(b, "Phabricator ").is_some());
+    let (x, y) = find(&menu, "Phabricator ").unwrap();
+    s.send(Input::Click { x, y, right: false });
     let item = "Submit to Phabricator as WIP";
-    let menu = screen(&s, "the patch's menu", |b| find(b, item).is_some());
+    let menu = screen(&s, "the patch's Phabricator menu", |b| find(b, item).is_some());
     let (x, y) = find(&menu, item).unwrap();
     s.send(Input::Click { x, y, right: false });
     screen(&s, "the dialog", |b| text(b).contains("send patch 1 to Phabricator as a new revision?") && text(b).contains("Patch 1 is sent to Phabricator, at"));
@@ -290,6 +293,17 @@ fn the_status_of_each_patch_s_revision_and_its_phabricator_line_show_in_the_wind
     );
     let s = Session::open(&db, tmp.path()).unwrap();
     s.send(Input::Size(100, 30));
+    // Nothing read as the window opens: no letter yet, and the Phabricator
+    // line says that D11 is not fetched yet.
+    screen(&s, "the line, not fetched yet", |b| row(b, 2).starts_with("  1 Bug 1 - shout two") && find(b, "Phabricator: D11 · not fetched yet:").is_some());
+    // Fetched from the stack's menu, its item clicked.
+    press(&s, KeyCode::Up);
+    press(&s, KeyCode::Char(' '));
+    let item = "Fetch the latest from Phabricator";
+    let menu = screen(&s, "the stack's menu", |b| find(b, item).is_some());
+    let (x, y) = find(&menu, item).unwrap();
+    s.send(Input::Click { x, y, right: false });
+    press(&s, KeyCode::Down);
     // A letter after the number, then ✗, as D11's diff is otherwise; the
     // patch naming no revision blank, its title after the column all the
     // same. The Phabricator line over the message, in the middle, saying
