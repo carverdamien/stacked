@@ -460,16 +460,45 @@ pub fn interdiff(old: &Patch, new: &Patch) -> String {
 /// first. On a line of the message taken out or put in, what of it the
 /// other version has not, compared word by word (`messages::compare`): ranges of its characters, the sign the first of
 /// them; and whether a break only it has follows it. The rest of such a
-/// line is what both versions say.
+/// line is what both versions say. What part of its version's mail it is
+/// (`Part`): the views of an interdiff draw a line of the two diffs as a
+/// diff draws it. And, a line of a hunk taken out or put in, what changed
+/// in it as its own version's diff pairs it with a line removed or added
+/// in its place (`rows::changed_words`), `words`: ranges of its
+/// characters, the sign the first of them too.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct InterLine {
     pub text: String,
     pub own: Option<(Vec<(usize, usize)>, bool)>,
+    pub part: Part,
+    pub words: Vec<(usize, usize)>,
+}
+
+/// What part of its version's mail a line of an interdiff is: of the mail
+/// around the diff, its headers, its title, its body and the `---` under
+/// them; or of the diff, under that `---`, a file's header (`diff --git`,
+/// `index`, the `---` and `+++` naming its two sides), a hunk's header, or
+/// a line of a hunk, its version's own sign first (git's `\` line too).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Part {
+    #[default]
+    Mail,
+    Head,
+    Hunk,
+    Line,
+}
+
+impl InterLine {
+    /// Whether it is a line of the two versions' diffs, under the `---`
+    /// ending each one's message.
+    pub fn code(&self) -> bool {
+        self.part != Part::Mail
+    }
 }
 
 impl From<&str> for InterLine {
     fn from(text: &str) -> InterLine {
-        InterLine { text: text.into(), own: None }
+        InterLine { text: text.into(), ..Default::default() }
     }
 }
 
@@ -508,11 +537,12 @@ fn inter(old: &Patch, new: &Patch) -> (String, Vec<InterLine>) {
 }
 
 /// As `inter`, the messages compared to the letter if `letter`
-/// (`letter_interdiff_lines`).
+/// (`letter_interdiff_lines`). The lines of the two diffs marked
+/// (`mark_code`).
 fn inter_as(old: &Patch, new: &Patch, letter: bool) -> (String, Vec<InterLine>) {
     let (a, b) = (render(old), render(new));
     let names = (&old.id[..8], &new.id[..8]);
-    match (Mail::of(&a, old), Mail::of(&b, new)) {
+    let (text, mut lines) = match (Mail::of(&a, old), Mail::of(&b, new)) {
         (Some(x), Some(y)) if (x.title, x.body) != (y.title, y.body) => {
             // The same words, only wrapped or spaced otherwise.
             let wrapped = letter && [(x.title, y.title), (x.body, y.body)].iter().all(|(p, q)| crate::messages::diff(p, q).runs.iter().all(|r| r.same));
@@ -523,7 +553,171 @@ fn inter_as(old: &Patch, new: &Patch, letter: bool) -> (String, Vec<InterLine>) 
             let lines = text.lines().map(InterLine::from).collect();
             (text, lines)
         }
+    };
+    mark_code(&mut lines, (old, &a), (new, &b));
+    (text, lines)
+}
+
+/// Where each line of an interdiff, `lines`, is in the two mails it
+/// diffs, from 0, as its hunks' headers say: a line kept, in both; taken
+/// out, in the old one; put in, in the new one; a hunk's header, git's `\`
+/// line, and the two lines naming the versions over the first hunk, in
+/// neither.
+fn mail_places(lines: &[InterLine]) -> Vec<(Option<usize>, Option<usize>)> {
+    // Where a hunk's lines start on side `side` (`-`, `+`) of its header,
+    // `@@ -a,b +c,d @@`: from 0, a range of none starting after its line.
+    let start = |head: &str, side: char| -> usize {
+        let range = head.split(' ').find_map(|w| w.strip_prefix(side)).unwrap_or("1");
+        let (at, n) = range.split_once(',').unwrap_or((range, "1"));
+        let at: usize = at.parse().unwrap_or(1);
+        if n == "0" { at } else { at.saturating_sub(1) }
+    };
+    let (mut old, mut new) = (0, 0);
+    let mut in_hunk = false;
+    lines
+        .iter()
+        .map(|l| {
+            if let Some(head) = l.text.strip_prefix("@@ ") {
+                (old, new, in_hunk) = (start(head, '-'), start(head, '+'), true);
+                return (None, None);
+            }
+            match l.text.chars().next() {
+                _ if !in_hunk => (None, None),
+                Some(' ') => {
+                    (old, new) = (old + 1, new + 1);
+                    (Some(old - 1), Some(new - 1))
+                }
+                Some('-') => {
+                    old += 1;
+                    (Some(old - 1), None)
+                }
+                Some('+') => {
+                    new += 1;
+                    (None, Some(new - 1))
+                }
+                _ => (None, None),
+            }
+        })
+        .collect()
+}
+
+/// What each line of interdiff `lines` is of its version's mail
+/// (`InterLine::part`): under the `---` ending the message in each one's
+/// mail, a line of its diff, a file's header, a hunk's header or a line of
+/// a hunk, as its version's diff has it; and in a line of a hunk taken out
+/// or put in, what changed in it as its own version's diff pairs it
+/// (`InterLine::words`). `old` and `new` are the two versions, each with
+/// its mail as `render` writes it; a mail not written so has no line of
+/// its diff told apart.
+fn mark_code(lines: &mut [InterLine], (old, a): (&Patch, &str), (new, b): (&Patch, &str)) {
+    // Where a version's diff starts in its mail: under its `---`.
+    let start = |p: &Patch, mail: &str| {
+        let all: Vec<&str> = mail.lines().collect();
+        let at = all.len().checked_sub(p.diff.lines().count())?;
+        (at > 0 && all[at - 1] == "---").then_some(at)
+    };
+    let (Some(from_a), Some(from_b)) = (start(old, a), start(new, b)) else { return };
+    let places = mail_places(lines);
+    // The lines of each version's diff taken out, and put in, by the line
+    // of the diff each is: what changed in those is worked out.
+    let (mut taken, mut put) = (vec![false; old.diff.lines().count()], vec![false; new.diff.lines().count()]);
+    for (l, &(o, n)) in lines.iter().zip(&places) {
+        let line = match (l.text.chars().next(), o, n) {
+            (Some('-'), Some(o), _) if o >= from_a => taken.get_mut(o - from_a),
+            (Some('+'), _, Some(n)) if n >= from_b => put.get_mut(n - from_b),
+            _ => None,
+        };
+        if let Some(line) = line {
+            *line = true;
+        }
     }
+    let (was, is) = (line_parts(&old.diff, &taken), line_parts(&new.diff, &put));
+    // A line of a diff, its version's part as `of` has it at `at`; what
+    // changed in it counted from the interdiff's sign, before the version's
+    // line.
+    let part = |of: &[(Part, Vec<(usize, usize)>)], at: usize| match of.get(at) {
+        Some((p, w)) => (*p, w.iter().map(|&(s, e)| (s + 1, e + 1)).collect()),
+        None => (Part::Head, vec![]),
+    };
+    for (l, (o, n)) in lines.iter_mut().zip(places) {
+        (l.part, l.words) = match (l.text.chars().next(), o, n) {
+            (Some(' '), _, Some(n)) if n >= from_b => (part(&is, n - from_b).0, vec![]),
+            (Some('-'), Some(o), _) if o >= from_a => part(&was, o - from_a),
+            (Some('+'), _, Some(n)) if n >= from_b => part(&is, n - from_b),
+            _ => (Part::Mail, vec![]),
+        };
+    }
+}
+
+/// What each line of `diff` is, by the line of it each is, as
+/// `diff::parse_diff` tells them apart: a hunk's header, from a line
+/// starting `@@`; a line of the hunk under it, up to the next header or
+/// file; any other, a file's header. In each hunk holding a line `wanted`
+/// says, what changed in each of its lines, the line paired as the code
+/// view pairs a hunk's (`rows::word_spans`), its sign the first of the
+/// characters; in the others, nothing, as nothing of it is asked.
+fn line_parts(diff: &str, wanted: &[bool]) -> Vec<(Part, Vec<(usize, usize)>)> {
+    let lines: Vec<&str> = diff.lines().collect();
+    let mut out = vec![(Part::Head, vec![]); lines.len()];
+    let mut k = 0;
+    while k < lines.len() {
+        if !lines[k].starts_with("@@") {
+            k += 1;
+            continue;
+        }
+        out[k].0 = Part::Hunk;
+        let start = k + 1;
+        k = start;
+        while k < lines.len() && !lines[k].starts_with("@@") && !lines[k].starts_with("diff --git ") {
+            out[k].0 = Part::Line;
+            k += 1;
+        }
+        if wanted.get(start..k).is_some_and(|w| w.contains(&true)) {
+            for (at, w) in (start..k).zip(crate::rows::word_spans(&lines[start..k])) {
+                out[at].1 = w;
+            }
+        }
+    }
+    out
+}
+
+/// Whether two versions of a patch, of diffs `old` and `new`, are on one
+/// base for their interdiff, `lines`: a line of the base that one
+/// version's diff alone shows, keeping or removing it, is one the other
+/// version leaves as it is on one base, and one it may not have on two
+/// (`other_bases`). With no such line, which is what the interdiff shows
+/// of the bases, they are not asked.
+pub fn one_base(lines: &[InterLine], old: &str, new: &str) -> bool {
+    let alone = lines.iter().any(|l| l.part == Part::Line && matches!(l.text.as_bytes(), [b'-' | b'+', b' ' | b'-', ..]));
+    !alone || !other_bases(old, new)
+}
+
+/// Whether diffs `theirs` and `mine` of a patch are on two bases, as what
+/// each says of the files both change, as they are before the patch,
+/// tells: a line both have at the same place there, kept or taken out, is
+/// another in one; a hunk the same in both, its lines and all, starts
+/// elsewhere in one; or one makes the file, and the other finds it there.
+/// On one base, both read each file as it is there, at the same places.
+pub fn other_bases(theirs: &str, mine: &str) -> bool {
+    use crate::diff::{FileDiff, Hunk};
+    let (a, b) = (crate::diff::parse_diff(theirs, ""), crate::diff::parse_diff(mine, ""));
+    let made = |f: &FileDiff| f.header.iter().any(|l| l.starts_with("new file mode"));
+    // The lines of the file before the patch, by their number there.
+    let before = |f: &FileDiff| -> HashMap<usize, String> {
+        let kept = f.hunks.iter().flat_map(|h| &h.lines).filter(|l| matches!(l.origin, ' ' | '-'));
+        kept.map(|l| (l.old_no, l.text.get(1..).unwrap_or_default().to_string())).collect()
+    };
+    let start = |h: &Hunk| h.lines.first().map(|l| l.old_no);
+    fn lines(h: &crate::diff::Hunk) -> Vec<&str> {
+        h.lines.iter().map(|l| l.text.as_str()).collect()
+    }
+    a.iter().any(|fa| {
+        let Some(fb) = b.iter().find(|f| f.path == fa.path) else { return false };
+        let (x, y) = (before(fa), before(fb));
+        made(fa) != made(fb)
+            || x.iter().any(|(k, t)| y.get(k).is_some_and(|u| u != t))
+            || fa.hunks.iter().any(|ha| fb.hunks.iter().any(|hb| lines(ha) == lines(hb) && start(ha) != start(hb)))
+    })
 }
 
 /// A patch's mail (`render`) in its parts, each its lines with their
@@ -699,7 +893,7 @@ fn hunks(rows: &[Row], names: (&str, &str)) -> (String, Vec<InterLine>) {
     fn put(out: &mut (String, Vec<InterLine>), text: String, own: Option<(Vec<(usize, usize)>, bool)>) {
         out.0.push_str(&text);
         out.0.push('\n');
-        out.1.push(InterLine { text, own });
+        out.1.push(InterLine { text, own, ..Default::default() });
     }
     let mut out = (String::new(), Vec::new());
     for (k, g) in groups.iter().enumerate() {
@@ -719,6 +913,7 @@ fn hunks(rows: &[Row], names: (&str, &str)) -> (String, Vec<InterLine>) {
                 out.1.push(InterLine {
                     text: format!("{}{bare}", r.sign),
                     own: r.own.clone(),
+                    ..Default::default()
                 });
             } else {
                 put(&mut out, format!("{}{bare}", r.sign), r.own.clone());
@@ -2194,6 +2389,71 @@ mod tests {
         let hunks: Vec<&str> = text.lines().filter(|l| l.starts_with("@@")).collect();
         assert_eq!(hunks, ["@@ -1,7 +1,7 @@", "@@ -29,4 +29,4 @@"], "{text}");
         assert!(text.contains("\n-+end\n++END\n"), "{text}");
+    }
+
+    #[test]
+    fn the_lines_of_the_diffs_are_marked_with_what_their_own_version_changed_in_them() {
+        let replaced = |index: &str, line: &str| format!("diff --git a/f b/f\nindex {index} 100644\n--- a/f\n+++ b/f\n@@ -1,3 +1,3 @@\n a\n-    sum += i;\n+{line}\n b\n");
+        let p = |message: &str, index: &str, line: &str| Patch::new("a".into(), Some("T <t@x>".into()), None, message.into(), replaced(index, line));
+        let old = p(WRAPPED, "1..2", "    sum += *i as u64;");
+        // The messages the same, the mails diffed line by line; the title
+        // otherwise, compared as messages are: either way, the lines under
+        // the `---` are the diffs', and none over it; each a file's header,
+        // a hunk's or a line of a hunk, as its version's diff has it.
+        for new in [p(WRAPPED, "1..3", "    sum += u64::from(*i);"), p(&WRAPPED.replace("two", "three"), "1..3", "    sum += u64::from(*i);")] {
+            let lines = interdiff_lines(&old, &new);
+            let sep = lines.iter().position(|l| l.text == " ---").unwrap_or_else(|| panic!("{lines:#?}"));
+            assert!(lines[..=sep].iter().all(|l| l.part == Part::Mail), "{lines:#?}");
+            let parts: Vec<(&str, Part)> = lines[sep + 1..].iter().filter(|l| !l.text.starts_with("@@")).map(|l| (l.text.as_str(), l.part)).collect();
+            assert_eq!(
+                parts,
+                [
+                    (" diff --git a/f b/f", Part::Head),
+                    ("-index 1..2 100644", Part::Head),
+                    ("+index 1..3 100644", Part::Head),
+                    (" --- a/f", Part::Head),
+                    (" +++ b/f", Part::Head),
+                    (" @@ -1,3 +1,3 @@", Part::Hunk),
+                    ("  a", Part::Line),
+                    (" -    sum += i;", Part::Line),
+                    ("-+    sum += *i as u64;", Part::Line),
+                    ("++    sum += u64::from(*i);", Part::Line),
+                    ("  b", Part::Line),
+                ]
+            );
+            // What changed in each line taken out or put in, as its own
+            // version's diff pairs it with the line it removes before it,
+            // counted from the interdiff's sign as `own` is; nothing in a
+            // line both have, nor in one its diff pairs with none.
+            let said = |text: &str| -> Vec<String> {
+                let l = lines.iter().find(|l| l.text == text).unwrap_or_else(|| panic!("no {text:?} in {lines:#?}"));
+                let chars: Vec<char> = l.text.chars().collect();
+                l.words.iter().map(|&(s, e)| chars[s..e].iter().collect()).collect()
+            };
+            assert_eq!(said("-+    sum += *i as u64;"), ["*", " as u64"]);
+            assert!(said("++    sum += u64::from(*i);").concat().contains("u64::from("), "{lines:#?}");
+            assert!(said(" -    sum += i;").is_empty() && said("-index 1..2 100644").is_empty());
+        }
+    }
+
+    #[test]
+    fn two_diffs_are_on_other_bases_when_they_read_a_file_otherwise_before_the_patch() {
+        let diff = |start: usize, lines: &str| format!("diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -{start},3 +{start},3 @@\n{lines}");
+        let mine = diff(10, " line 10\n-line 11\n+LINE 11\n line 12\n");
+        // On one base: the same lines at the same places, whatever each
+        // changes; more of the file around them in one; another file.
+        assert!(!other_bases(&mine, &mine));
+        assert!(!other_bases(&diff(10, " line 10\n-line 11\n+Line 11\n line 12\n"), &mine));
+        let wider = "diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -9,5 +9,5 @@\n line 9\n line 10\n-line 11\n+Line 11\n line 12\n line 13\n";
+        assert!(!other_bases(wider, &mine));
+        assert!(!other_bases(&mine.replace("a.txt", "b.txt"), &mine));
+        // The same hunk elsewhere, as lines were added above it below the
+        // patch; another line at the same place, as one was changed there.
+        assert!(other_bases(&diff(14, " line 10\n-line 11\n+LINE 11\n line 12\n"), &mine));
+        assert!(other_bases(&diff(10, " line 10\n-line 11\n+Line 11\n LINE 12\n"), &mine));
+        // A file the one makes, which the other finds there.
+        let made = "diff --git a/a.txt b/a.txt\nnew file mode 100644\n--- /dev/null\n+++ b/a.txt\n@@ -0,0 +1 @@\n+LINE 11\n";
+        assert!(other_bases(made, &mine) && other_bases(&mine, made));
     }
 
     #[test]

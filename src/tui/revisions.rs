@@ -27,7 +27,7 @@
 use super::compared::{ONLY_WRAPPED, row};
 use super::*;
 use crate::db::State;
-use crate::diff::{FileDiff, Hunk};
+use crate::ops::other_bases;
 use crate::phab::Status;
 use crate::submit::{Below, Parent};
 
@@ -226,6 +226,39 @@ fn only_wrapped(before: &str, after: &str) -> bool {
     before != after && crate::messages::diff(before, after).runs.iter().all(|r| r.same)
 }
 
+/// `code`, each file of change `change` as one version leaves it, then as
+/// the other does, as a diff (`submit::files_diff`), the two side by side
+/// `w` wide, as the code view puts a patch's files side by side: the old
+/// file's lines on the left and the new one's on the right, each as the
+/// middle draws it (`row_parts`), the lines both have dim, as an interdiff
+/// side by side has them (`interdiffs::paired`); the files' names and the
+/// hunks' headers across both halves. Each line drawn with the lines of
+/// `code` it shows, by their places there.
+fn files_side_by_side(change: &str, code: &str, w: usize) -> Vec<(Parts, Vec<usize>)> {
+    let fold = (w.saturating_sub(3) / 2).saturating_sub(1);
+    let all = patch_rows(&Patch::new(change.to_string(), None, None, String::new(), code.to_string()), &[], fold, &Deco::default());
+    // Its message's rows, empty, left out.
+    let from = all.iter().position(|r| r.kind == Kind::Blank).map_or(0, |k| k + 1);
+    let rows: Vec<Row> = all.into_iter().skip(from).collect();
+    let cells: Vec<Parts> = rows
+        .iter()
+        .map(|r| match r.kind {
+            Kind::Ctx => row_parts(r, false).into_iter().map(|(text, st)| (text, st.add_modifier(Modifier::DIM))).collect(),
+            _ => row_parts(r, false),
+        })
+        .collect();
+    // The line of `code` each row is, the one before's where it says none.
+    let mut at = 0;
+    let lines: Vec<usize> = rows
+        .iter()
+        .map(|r| {
+            at = r.diff_at.unwrap_or(at);
+            at
+        })
+        .collect();
+    interdiffs::paired(&rows, &cells, w, 0).into_iter().map(|(parts, cells, _)| (parts, cells.iter().map(|&i| lines[i]).collect())).collect()
+}
+
 /// Diff `d` without what git derives in it, of which Phabricator's raw
 /// diffs have nothing: a file's `index` line and its similarity, the white
 /// space ending a line of a file's header, and the heading git writes after
@@ -257,33 +290,6 @@ fn bare(d: &str) -> String {
         }
     }
     out
-}
-
-/// Whether diffs `theirs` and `mine` of a patch are on two bases, as what
-/// each says of the files both change, as they are before the patch,
-/// tells: a line both have at the same place there, kept or taken out, is
-/// another in one; a hunk the same in both, its lines and all, starts
-/// elsewhere in one; or one makes the file, and the other finds it there.
-/// On one base, both read each file as it is there, at the same places.
-fn other_bases(theirs: &str, mine: &str) -> bool {
-    let (a, b) = (crate::diff::parse_diff(theirs, ""), crate::diff::parse_diff(mine, ""));
-    let made = |f: &FileDiff| f.header.iter().any(|l| l.starts_with("new file mode"));
-    // The lines of the file before the patch, by their number there.
-    let before = |f: &FileDiff| -> HashMap<usize, String> {
-        let kept = f.hunks.iter().flat_map(|h| &h.lines).filter(|l| matches!(l.origin, ' ' | '-'));
-        kept.map(|l| (l.old_no, l.text.get(1..).unwrap_or_default().to_string())).collect()
-    };
-    let start = |h: &Hunk| h.lines.first().map(|l| l.old_no);
-    fn lines(h: &Hunk) -> Vec<&str> {
-        h.lines.iter().map(|l| l.text.as_str()).collect()
-    }
-    a.iter().any(|fa| {
-        let Some(fb) = b.iter().find(|f| f.path == fa.path) else { return false };
-        let (x, y) = (before(fa), before(fb));
-        made(fa) != made(fb)
-            || x.iter().any(|(k, t)| y.get(k).is_some_and(|u| u != t))
-            || fa.hunks.iter().any(|ha| fb.hunks.iter().any(|hb| lines(ha) == lines(hb) && start(ha) != start(hb)))
-    })
 }
 
 /// What the view of what differs from Phabricator shows of the code: of a
@@ -653,7 +659,10 @@ impl App {
     }
 
     /// The view of what differs, `x`, between patch `p`, the one picked,
-    /// and its revision `d` at `link`: its title, and its lines `w` wide.
+    /// and its revision `d` at `link`: its title, and its lines `w` wide,
+    /// each with the lines of what the view shows that it shows
+    /// (`InterText`): what is said first, then the interdiff's, then the
+    /// code's, as the view draws them as an interdiff, each by its place.
     /// What it shows, said first, the parent first when a submit sets one,
     /// then Phabricator's version of the patch, the revision's title and
     /// summary as a submit compares them (`message_against`) over its
@@ -664,23 +673,26 @@ impl App {
     /// latest diff on another base, each file as each leaves it, under the
     /// title and summary (`shown_code`). The code the same, the title and
     /// summary alone; both the same, nothing under what it says. In sync,
-    /// only that nothing differs, the parent named. All of it from what is
-    /// stored, nothing read.
-    fn view_of(&self, p: &Patch, d: &str, link: &str, x: &Differs, w: usize) -> (String, Vec<Parts>) {
+    /// only that nothing differs, the parent named. In view `v`, side by
+    /// side, the interdiff's halves headed with what each version is, and
+    /// each file as each leaves it side by side too (`files_side_by_side`).
+    /// All of it from what is stored, nothing read.
+    fn view_of(&self, p: &Patch, d: &str, link: &str, x: &Differs, w: usize, v: InterLayout) -> InterDrawn {
         let n = self.sel + 1;
         let title = format!("{d} on Phabricator, then patch {n} as it is");
+        let (theirs_said, mine_said) = (format!("{d} on Phabricator"), format!("patch {n} as it is"));
         let mut said: Vec<String> = Vec::new();
-        let mut lines: Vec<Parts> = Vec::new();
-        // A line of a diff, folded to the width under its sign.
-        let folded = |all: &[ops::InterLine]| -> Vec<Parts> {
-            let refs: Vec<&ops::InterLine> = all.iter().collect();
-            inter_parts(&refs).iter().flat_map(|parts| fold_parts(parts, w, 1)).collect()
-        };
+        let mut inter: Vec<ops::InterLine> = Vec::new();
+        let mut files: Option<&str> = None;
+        // The latest diff on another base, its files not read: the two
+        // diffs compared all the same, as the screen says.
+        let mut drifted = false;
         if x.none() {
             said.push(format!("Nothing differs: {}", x.same_said(d, &format!("this version of patch {n}"))));
         } else {
             said.extend(x.parent_said());
             let shown = self.shown_code(p, link, x);
+            drifted = shown == Shown::Interdiff(true);
             said.push(match &x.message {
                 Some((before, after)) if only_wrapped(before, after) => format!(
                     "The title and summary of {d} are compared with those a submit of this version sends, where their lines wrap aside. {ONLY_WRAPPED} Each version's lines are shown as it writes them."
@@ -708,35 +720,85 @@ impl App {
                 _ => (p.diff.clone(), p.diff.clone()),
             };
             let (before, after) = x.message.clone().unwrap_or_else(|| (p.message.clone(), p.message.clone()));
-            let mut inter = ops::letter_interdiff_lines(&Patch { message: before, diff: theirs, ..p.clone() }, &Patch { message: after, diff: mine, ..p.clone() });
+            inter = ops::letter_interdiff_lines(&Patch { message: before, diff: theirs, ..p.clone() }, &Patch { message: after, diff: mine, ..p.clone() });
             // Its two first lines name the two versions.
             if let [a, b, ..] = inter.as_mut_slice()
                 && a.text.starts_with("--- ")
                 && b.text.starts_with("+++ ")
             {
-                a.text = format!("--- {d} on Phabricator");
-                b.text = format!("+++ patch {n} as it is");
-            }
-            if !inter.is_empty() {
-                lines.push(vec![(String::new(), Style::new())]);
-                lines.extend(folded(&inter));
+                a.text = format!("--- {theirs_said}");
+                b.text = format!("+++ {mine_said}");
             }
             if let Shown::Files(code) = shown {
-                lines.push(vec![(String::new(), Style::new())]);
-                lines.push(vec![(" the code: Phabricator's, then this version's".to_string(), color::file())]);
-                lines.extend(folded(&code.lines().map(ops::InterLine::from).collect::<Vec<_>>()));
+                files = Some(code);
             }
         }
-        let mut out: Vec<Parts> = wrap(&said.join(" "), w.saturating_sub(2).max(10)).into_iter().map(|l| vec![(format!(" {l}"), color::meta())]).collect();
-        out.extend(lines);
-        (title, out)
+        let said = wrap(&said.join(" "), w.saturating_sub(2).max(10));
+        let mut out: Vec<Parts> = said.iter().map(|l| vec![(format!(" {l}"), color::meta())]).collect();
+        let mut at: Vec<Vec<usize>> = (0..said.len()).map(|k| vec![k]).collect();
+        // The places of what follows, from there on.
+        let mut id = said.len();
+        // Lines of a diff as an interdiff, folded to the width under their
+        // signs, each piece with its line, the first of them at `from`.
+        let folded = |all: &[ops::InterLine], from: usize, out: &mut Vec<Parts>, at: &mut Vec<Vec<usize>>| {
+            for (j, parts) in inter_parts(&all.iter().collect::<Vec<_>>()).iter().enumerate() {
+                for piece in fold_parts(parts, w, 1) {
+                    out.push(piece);
+                    at.push(vec![from + j]);
+                }
+            }
+        };
+        if !inter.is_empty() {
+            out.push(vec![(String::new(), Style::new())]);
+            at.push(vec![id]);
+            id += 1;
+            // In the view of the interdiffs the screen draws: what says how
+            // to read it first, as an interdiff or in a column per version,
+            // folded to the width under the first sign; side by side, a
+            // heading, its halves folded already. The two versions on one
+            // base unless the screen says that they are not.
+            let two = interdiffs::Two { old: &theirs_said, new: &mine_said, one_base: !drifted };
+            let refs: Vec<&ops::InterLine> = inter.iter().collect();
+            for (drawn, shows) in interdiffs::interdiff_stops(&refs, v, &two, w, 0) {
+                let shows: Vec<usize> = shows.iter().map(|j| id + j).collect();
+                for parts in drawn {
+                    for piece in if v == InterLayout::Sides { vec![parts] } else { fold_parts(&parts, w, 1) } {
+                        out.push(piece);
+                        at.push(shows.clone());
+                    }
+                }
+            }
+            id += inter.len();
+        }
+        if let Some(code) = files {
+            out.push(vec![(String::new(), Style::new())]);
+            // A diff of the files, one sign before each line: as an
+            // interdiff and in a column per version, as it is.
+            let heading = match v {
+                InterLayout::Sides => " the code: Phabricator's on the left, this version's on the right",
+                _ => " the code: Phabricator's, then this version's",
+            };
+            out.push(vec![(heading.to_string(), color::file())]);
+            at.extend([vec![id], vec![id + 1]]);
+            id += 2;
+            if v == InterLayout::Sides {
+                for (parts, shows) in files_side_by_side(&p.change, code, w) {
+                    out.push(parts);
+                    at.push(shows.iter().map(|k| id + k).collect());
+                }
+            } else {
+                folded(&code.lines().map(ops::InterLine::from).collect::<Vec<_>>(), id, &mut out, &mut at);
+            }
+        }
+        (title, out, at)
     }
 
     /// What differs between the patch the middle shows and its revision on
-    /// Phabricator, as its view shows it (`view_of`), its lines as wide as
-    /// the screen: its title and its lines. Or, nothing of it known, or
-    /// Phabricator not having the revision, why, for the status line.
-    fn differs_view(&self) -> std::result::Result<(String, Vec<Parts>), String> {
+    /// Phabricator, as its view shows it (`view_of`), its lines `w` wide in
+    /// view `v`: its title, its lines, and the lines of what the view shows
+    /// each shows. Or, nothing of it known, or Phabricator not having the
+    /// revision, why, for the status line.
+    pub(super) fn differs_view(&self, w: usize, v: InterLayout) -> std::result::Result<InterDrawn, String> {
         let n = self.sel + 1;
         let Some(p) = self.shown_patch() else { return Err("No patch is shown, so nothing of it is compared with Phabricator.".into()) };
         let Some((d, link)) = crate::phab::revision_of(&p.message) else {
@@ -744,7 +806,7 @@ impl App {
         };
         match self.synced(p, &link) {
             Synced::NotFound => Err(format!("Phabricator has no revision {d}, so nothing of it is compared with patch {n}.")),
-            Synced::Known(x) => Ok(self.view_of(p, &d, &link, &x, self.body_w)),
+            Synced::Known(x) => Ok(self.view_of(p, &d, &link, &x, w, v)),
             Synced::Unknown => Err(format!("What differs between patch {n} and {d} on Phabricator is not known yet: the line says it once {d} is fetched and compared.")),
         }
     }
@@ -754,9 +816,8 @@ impl App {
     /// was (`differs_view`): from the Phabricator line's menu and the
     /// patch's, and Space on the line. Not known, the status line says why.
     pub(super) fn open_differs(&mut self) {
-        match self.differs_view() {
-            Ok((title, lines)) => self.open_parts(title, lines),
-            Err(why) => self.status = why,
+        if let Err(why) = self.open_inter(Inter::Differs) {
+            self.status = why;
         }
     }
 
@@ -1392,26 +1453,6 @@ mod tests {
         // with no newline.
         let hunk = "diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -1,2 +1,2 @@\n-index 1..2\n+index 3..4  \n similarity index 1%\n\\ No newline at end of file";
         assert_eq!(bare(hunk), hunk);
-    }
-
-    #[test]
-    fn two_diffs_are_on_other_bases_when_they_read_a_file_otherwise_before_the_patch() {
-        let diff = |start: usize, lines: &str| format!("diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -{start},3 +{start},3 @@\n{lines}");
-        let mine = diff(10, " line 10\n-line 11\n+LINE 11\n line 12\n");
-        // On one base: the same lines at the same places, whatever each
-        // changes; more of the file around them in one; another file.
-        assert!(!other_bases(&mine, &mine));
-        assert!(!other_bases(&diff(10, " line 10\n-line 11\n+Line 11\n line 12\n"), &mine));
-        let wider = "diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -9,5 +9,5 @@\n line 9\n line 10\n-line 11\n+Line 11\n line 12\n line 13\n";
-        assert!(!other_bases(wider, &mine));
-        assert!(!other_bases(&mine.replace("a.txt", "b.txt"), &mine));
-        // The same hunk elsewhere, as lines were added above it below the
-        // patch; another line at the same place, as one was changed there.
-        assert!(other_bases(&diff(14, " line 10\n-line 11\n+LINE 11\n line 12\n"), &mine));
-        assert!(other_bases(&diff(10, " line 10\n-line 11\n+Line 11\n LINE 12\n"), &mine));
-        // A file the one makes, which the other finds there.
-        let made = "diff --git a/a.txt b/a.txt\nnew file mode 100644\n--- /dev/null\n+++ b/a.txt\n@@ -0,0 +1 @@\n+LINE 11\n";
-        assert!(other_bases(made, &mine) && other_bases(&mine, made));
     }
 
     #[cfg(feature = "demo")]

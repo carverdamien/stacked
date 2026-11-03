@@ -352,6 +352,41 @@ fn the_status_of_each_patch_s_revision_and_its_phabricator_line_show_in_the_wind
 }
 
 #[test]
+fn one_picks_the_view_of_the_interdiffs_of_a_patch_s_versions_in_the_window_too() {
+    let (tmp, db) = setup();
+    stacked::db::Db::edit(&db, |d| {
+        let old = d.patch(&d.stack("s")?.patches[0]).clone();
+        let draft = stacked::mbox::Draft {
+            message: "Bug 1 - shout two, reworded".into(),
+            ..stacked::mbox::Draft::from(&old)
+        };
+        stacked::ops::replace(d, "s", 0, draft, "reword").map(|_| ())
+    })
+    .unwrap();
+    let s = Session::open(&db, tmp.path()).unwrap();
+    s.send(Input::Size(120, 30));
+    // The first patch's title, longer, over two rows.
+    screen(&s, "the patches", |b| row(b, 4).contains("Bug 2 - add b"));
+    // The first patch's versions, from its menu.
+    press(&s, KeyCode::Char(' '));
+    let menu = screen(&s, "the patch's menu", |b| find(b, "Versions of this patch…").is_some());
+    let (x, y) = find(&menu, "Versions of this patch…").unwrap();
+    s.send(Input::Click { x, y, right: false });
+    screen(&s, "the versions", |b| text(b).contains("what changed from the version before"));
+    // 1: the menu of the views of the interdiffs, under the heading of what
+    // they draw; a click on side by side picks it, the version's pane then
+    // side by side, each half under a heading of its version.
+    press(&s, KeyCode::Char('1'));
+    let menu = screen(&s, "the menu of 1", |b| find(b, "Side by side: the old version").is_some());
+    assert!(find(&menu, "the interdiff: the two versions' diffs, compared").is_some(), "{}", text(&menu));
+    let (x, y) = find(&menu, "Side by side: the old version").unwrap();
+    s.send(Input::Click { x, y, right: false });
+    screen(&s, "the versions side by side", |b| text(b).contains("│v2"));
+    s.send(Input::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)));
+    until(&s, "bye", |o| *o == Output::Bye);
+}
+
+#[test]
 fn a_message_s_long_lines_are_wrapped_from_its_patch_s_menu_in_the_window_too() {
     let long = "Bug 1 - shout two\n\nThe parser read the whole file before it checked the header, which made it slow on the big files we have.";
     let (tmp, db) = setup_with(long);

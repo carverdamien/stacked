@@ -147,16 +147,24 @@ fn answer_mark_of(m: Option<AnswerMark>) -> (&'static str, Style) {
 }
 
 /// The stack diff of the change, as the right pane shows it: what it is,
-/// said; its lines. For each of its entries: the lines it takes; where
-/// Enter on it goes, the patch it is of (by its entry among the stack
-/// operations) and, on a line of what changed in it, the line of that
-/// patch's mail it is; whether it is a line of what changed, and one
-/// added or taken out. And where each entry of the stack operations is.
+/// said; the diff, and its lines drawn. Its stops of the cursor, a line of
+/// the diff each, or, its interdiffs side by side, each pair of the two
+/// versions' lines (`interdiffs::stack_stops`; a heading over an
+/// interdiff is drawn, and no stop), the cursor on the one that shows its
+/// line of the diff (`Reviewing::entry`), whatever the view: for each, the
+/// lines drawn it takes; the lines of the diff it shows; where Enter on it
+/// goes, the patch it is of (by its entry among the stack operations) and,
+/// on a line of what changed in it, the line of that patch's mail it is,
+/// the new version's where it shows two; whether it is a line of what
+/// changed, and one added or taken out. And the line of the diff each
+/// entry of the stack operations is.
 #[derive(Default)]
 struct DiffView {
     said: String,
+    diff: Vec<Diffed>,
     lines: Vec<Vec<(String, Style)>>,
     spans: Vec<Range<usize>>,
+    shows: Vec<Vec<usize>>,
     goes: Vec<Option<(usize, Option<usize>)>>,
     code: Vec<bool>,
     changed: Vec<bool>,
@@ -164,17 +172,37 @@ struct DiffView {
 }
 
 impl DiffView {
+    /// The stop that shows line `k` of the diff; past them all, the last.
+    fn stop_of(&self, k: usize) -> usize {
+        self.shows.iter().position(|s| s.contains(&k)).unwrap_or(self.shows.len().saturating_sub(1))
+    }
+
+    /// The line of the diff that puts the cursor on stop `i`: the first
+    /// it shows.
+    fn line_of(&self, i: usize) -> usize {
+        self.shows.get(i).and_then(|s| s.first().copied()).unwrap_or(0)
+    }
+
     /// Where the cursor goes in it from entry `entry` of the stack
     /// operations: on the first line that changed of that patch, else on
     /// the patch; from none, the section's title, on the first line that
-    /// changed of any.
+    /// changed of any. The line of the diff that puts it there.
     fn first_change(&self, entry: Option<usize>) -> usize {
-        match entry.and_then(|e| self.of_entry.get(e).copied()) {
-            Some(f) => (f + 1..self.code.len()).take_while(|&k| self.code[k]).find(|&k| self.changed[k]).unwrap_or(f),
+        let stop = match entry.and_then(|e| self.of_entry.get(e).copied()) {
+            Some(f) => {
+                let f = self.stop_of(f);
+                (f + 1..self.code.len()).take_while(|&k| self.code[k]).find(|&k| self.changed[k]).unwrap_or(f)
+            }
             None => self.changed.iter().position(|&c| c).unwrap_or(0),
-        }
+        };
+        self.line_of(stop)
     }
 }
+
+/// What the two versions of each interdiff of the stack diff are named in
+/// the review of what landed, as the views of an interdiff name them: the
+/// patch as the stack has it, and as the work leaves it.
+const AS_IT_IS: (&str, &str) = ("the stack's version", "the work's version");
 
 /// The row of `rows` that is line `at` of their patch: of its message, or
 /// of its diff (a line of a file's header without a row of its own, the row
@@ -702,7 +730,8 @@ impl App {
     /// changed in the stack since, what the patch, as it is in `now`, had
     /// since that version, which the pulled one lacks: the interdiff from
     /// that version to the patch as it is, `w` wide, under a sentence's
-    /// lines. None without it.
+    /// lines; side by side, under a heading of the two versions. None
+    /// without it.
     fn since_lines(&self, now: &Stack, t: &crate::held::Taken, w: usize) -> Vec<Vec<(String, Style)>> {
         let Some(v) = t.since else { return vec![] };
         let versions = self.db.versions(&t.change);
@@ -712,13 +741,10 @@ impl App {
         let lines = crate::ops::interdiff_lines(was, mine);
         let refs: Vec<&crate::ops::InterLine> = lines.iter().filter(|l| !l.text.starts_with("--- ") && !l.text.starts_with("+++ ")).collect();
         let mut out = vec![vec![(String::new(), Style::new())], vec![(format!("      version {v}, then this version, as the stack has it:"), color::file())]];
-        for parts in inter_parts(&refs) {
-            let mut parts = parts;
-            if let Some((text, _)) = parts.first_mut() {
-                text.insert_str(0, "      ");
-            }
-            out.extend(fold_parts(&parts, w.saturating_sub(1), 7));
-        }
+        let version = format!("version {v}");
+        let two = interdiffs::Two { old: &version, new: "this version", one_base: crate::ops::one_base(&lines, &was.diff, &mine.diff) };
+        let stops = interdiffs::interdiff_stops(&refs, self.inter_in(self.inter_w.get()), &two, w.saturating_sub(1), 6);
+        out.extend(stops.iter().flat_map(|(drawn, _)| drawn).flat_map(|parts| fold_parts(parts, w.saturating_sub(1), 7)));
         out
     }
 
@@ -856,7 +882,8 @@ impl App {
             && self.review_stacks().is_some()
     }
 
-    /// The stack diff of the change, `w` wide, as the right pane shows it.
+    /// The stack diff of the change, `w` wide, as the right pane shows it,
+    /// its interdiffs in the view the pane draws them in, as last drawn.
     fn review_diff(&self, w: usize) -> Option<DiffView> {
         let (now, next) = self.review_stacks()?;
         let (_, h) = self.reviewing.as_ref().and_then(|rv| self.work(&rv.run))?;
@@ -866,21 +893,17 @@ impl App {
             said: format!(" the change of {of}: what accepting it does to the stack"),
             ..Default::default()
         };
-        // The patch the lines of code under it are of, by its entry among
-        // the stack operations, which have every entry but those lines.
+        // Where Enter on each line of the diff goes: the patch the lines of
+        // code under it are of, by its entry among the stack operations,
+        // which have every entry but those lines.
+        let mut goes: Vec<Option<(usize, Option<usize>)>> = Vec::new();
         let mut under = None;
-        for (k, (d, parts)) in diff.iter().zip(diff_parts(&diff)).enumerate() {
-            let start = v.lines.len();
-            v.lines.extend(fold_parts(&parts, w.saturating_sub(1), 6));
-            v.spans.push(start..v.lines.len());
-            let code = matches!(d, Diffed::Code(_));
-            if !code {
+        for d in &diff {
+            if !matches!(d, Diffed::Code(_)) {
                 under = matches!(d, Diffed::Patch { .. }).then_some(v.of_entry.len());
-                v.of_entry.push(k);
+                v.of_entry.push(goes.len());
             }
-            v.goes.push(under.map(|e| (e, None)));
-            v.code.push(code);
-            v.changed.push(matches!(d, Diffed::Code(l) if l.text.starts_with('+') || l.text.starts_with('-')));
+            goes.push(under.map(|e| (e, None)));
         }
         // Each interdiff's lines: where each is in its patch's mail.
         let mut k = 0;
@@ -895,12 +918,47 @@ impl App {
             }
             let code: Vec<&str> = diff[start..k].iter().map(|d| if let Diffed::Code(l) = d { l.text.as_str() } else { "" }).collect();
             for (j, at) in crate::ops::interdiff_places(&code).into_iter().enumerate() {
-                if let Some((e, _)) = v.goes[start + j] {
-                    v.goes[start + j] = Some((e, Some(at)));
+                if let Some((e, _)) = goes[start + j] {
+                    goes[start + j] = Some((e, Some(at)));
                 }
             }
         }
+        // Each stop, folded to the pane; a heading drawn, and no stop.
+        let changed = |k: &usize| matches!(&diff[*k], Diffed::Code(l) if l.text.starts_with('+') || l.text.starts_with('-'));
+        for (drawn, shows) in interdiffs::stack_stops(&diff, self.inter_in(self.inter_w.get()), AS_IT_IS, w.saturating_sub(1)) {
+            let start = v.lines.len();
+            v.lines.extend(drawn.iter().flat_map(|parts| fold_parts(parts, w.saturating_sub(1), 6)));
+            let Some(&last) = shows.last() else { continue };
+            v.spans.push(start..v.lines.len());
+            v.goes.push(goes[last]);
+            v.code.push(shows.iter().all(|&k| matches!(diff[k], Diffed::Code(_))));
+            v.changed.push(shows.iter().any(changed));
+            v.shows.push(shows);
+        }
+        v.diff = diff;
         Some(v)
+    }
+
+    /// In the stack diff looked at closer, how far under the right pane's
+    /// top the first line of the cursor's stop is, as last drawn. None
+    /// elsewhere.
+    pub(super) fn review_diff_scroll(&self) -> Option<usize> {
+        let rv = self.reviewing.as_ref().filter(|rv| self.screen == Screen::Review && rv.in_main && !rv.in_patch)?;
+        let v = self.review_diff(self.inter_w.get().saturating_sub(1)).filter(|_| self.review_on_diff())?;
+        Some(v.spans.get(v.stop_of(rv.entry))?.start.saturating_sub(rv.scroll))
+    }
+
+    /// The right pane scrolled for the first line of the cursor's stop in
+    /// the stack diff to be `below` lines under its top again, as it was
+    /// before the interdiffs were drawn otherwise (`review_diff_scroll`).
+    pub(super) fn review_scroll_kept(&mut self, below: Option<usize>) {
+        let Some(below) = below else { return };
+        let Some(v) = self.review_diff(self.inter_w.get().saturating_sub(1)) else { return };
+        if let Some(rv) = self.reviewing.as_mut()
+            && let Some(s) = v.spans.get(v.stop_of(rv.entry))
+        {
+            rv.scroll = s.start.saturating_sub(below);
+        }
     }
 
     /// The patch of the stack the work makes that the list's line the cursor
@@ -939,20 +997,25 @@ impl App {
     /// The line of a commit message the review's cursor is on, as it is
     /// written: on a patch looked at closer, a line of its message; on the
     /// stack diff looked at closer, a line of the message part of an
-    /// interdiff (`message_line_of`). None elsewhere.
-    pub(super) fn review_message_line(&self) -> Option<String> {
-        let rv = self.reviewing.as_ref().filter(|rv| rv.in_main)?;
+    /// interdiff (`message_line_of`), side by side one of each version's,
+    /// each once. None elsewhere.
+    pub(super) fn review_message_lines(&self) -> Vec<String> {
+        let Some(rv) = self.reviewing.as_ref().filter(|rv| rv.in_main) else { return Vec::new() };
         if rv.in_patch {
-            let (_, p, row) = self.review_row()?;
-            let at = row.msg_at.filter(|_| row.kind == Kind::Msg && row.note.is_none())?;
-            return p.message.split('\n').nth(at).map(String::from);
+            let line = self.review_row().and_then(|(_, p, row)| {
+                let at = row.msg_at.filter(|_| row.kind == Kind::Msg && row.note.is_none())?;
+                p.message.split('\n').nth(at).map(String::from)
+            });
+            return line.into_iter().collect();
         }
-        if !self.review_on_diff() {
-            return None;
+        let (Some((_, next)), Some(v)) = (self.review_stacks(), self.review_diff(80).filter(|_| self.review_on_diff())) else { return Vec::new() };
+        let mut out: Vec<String> = Vec::new();
+        for &k in v.shows.get(v.stop_of(rv.entry)).into_iter().flatten() {
+            if let Some(line) = message_line_of(&self.db, &v.diff, &next, k).filter(|l| !out.contains(l)) {
+                out.push(line);
+            }
         }
-        let (now, next) = self.review_stacks()?;
-        let diff = crate::history::stacks_diff(&self.db, Some(&now), Some(&next), true);
-        message_line_of(&self.db, &diff, &next, rv.entry.min(diff.len().saturating_sub(1)))
+        out
     }
 
     /// The comment of its own that Enter writes on row `row` of patch `p`,
@@ -999,7 +1062,7 @@ impl App {
             && !rv.in_patch
             && self.review_on_diff()
             && let Some(v) = self.review_diff(80)
-            && let Some((entry, m)) = v.goes.get(rv.entry.min(v.goes.len().saturating_sub(1))).copied().flatten()
+            && let Some((entry, m)) = v.goes.get(v.stop_of(rv.entry)).copied().flatten()
             && let Some((at, p)) = self.entry_patch(entry)
         {
             let row = m.and_then(|m| {
@@ -2005,8 +2068,8 @@ impl App {
                 let Some(mut v) = self.review_diff(w) else {
                     return ("the agent changed nothing of the stack".into(), vec![], 0..0);
                 };
-                // Where the patch of the list's line is, among every entry.
-                let at = line.entry.and_then(|e| v.of_entry.get(e)).copied();
+                // Where the patch of the list's line is, among every stop.
+                let at = line.entry.and_then(|e| v.of_entry.get(e)).map(|&k| v.stop_of(k));
                 let first = at.map_or(0, |k| v.spans[k].start);
                 // On an operation, the cursor in the list: what it needs, and
                 // what needs it, said under its line, over what changed in its
@@ -2404,6 +2467,9 @@ impl App {
         // Wide, the part the cursor is on has it all, the list out of sight.
         let wide = rv.in_main && rv.wide;
         let rows = h.saturating_sub(1);
+        // How wide the pane on the right draws the stack diff's interdiffs:
+        // too narrow for both panes, wide, as → shows it.
+        self.inter_w.set(if wide || w < 60 { w } else { w - list_w - 1 });
         if !wide {
             // What is left of it to review: not the replies taken already.
             let title = self.work(&rv.run).map_or(String::new(), |(r, h)| {
@@ -2531,7 +2597,7 @@ impl App {
         let picked = (rv.in_main && self.review_on_diff())
             .then(|| self.review_diff(main_w.saturating_sub(1)))
             .flatten()
-            .and_then(|v| v.spans.get(rv.entry.min(v.spans.len().saturating_sub(1))).cloned());
+            .and_then(|v| v.spans.get(v.stop_of(rv.entry)).cloned());
         if let Some(c) = &picked {
             scroll = scroll.min(c.start).max(c.end.saturating_sub(rows));
         }
@@ -2580,7 +2646,7 @@ impl App {
         let diff = (on_diff || (!in_main && k.code == KeyCode::Right)).then(|| self.review_diff(80)).flatten();
         let entry = self.reviewing.as_ref().and_then(|rv| lines.get(rv.sel)).and_then(|l| l.entry);
         let first = diff.as_ref().map_or(0, |v| v.first_change(entry));
-        let goes = diff.filter(|_| on_diff).map(|v| v.goes);
+        let stops = diff.filter(|_| on_diff);
         // A pull's comments: all accepted, nothing to mark.
         let pulled = self.review_pulled();
         // The operation of the line the cursor is on, if it is one; those of
@@ -2627,8 +2693,8 @@ impl App {
             // On the stack diff looked at closer, ↑↓ go from line to line, and
             // Enter to the line in its patch as the work leaves it: the cursor
             // on it there, to comment on it.
-            (true, KeyCode::Enter) if goes.is_some() => {
-                let to = goes.as_ref().and_then(|g| g.get(rv.entry).copied().flatten());
+            (true, KeyCode::Enter) if stops.is_some() => {
+                let to = stops.as_ref().and_then(|v| v.goes.get(v.stop_of(rv.entry)).copied().flatten());
                 match to.and_then(|(e, m)| Some((lines.iter().position(|l| l.entry == Some(e))?, m))) {
                     Some((sel, m)) => {
                         rv.sel = sel;
@@ -2638,18 +2704,22 @@ impl App {
                     None => self.status = "this line is of a patch dropped, or of the base: there is no line of a patch to go to".into(),
                 }
             }
+            // From stop to stop: a line of the diff, or, side by side, a
+            // pair of the two versions' lines.
             (true, code @ (KeyCode::Up | KeyCode::Down | KeyCode::PageUp | KeyCode::PageDown | KeyCode::Home | KeyCode::End))
-                if goes.is_some() =>
+                if stops.is_some() =>
             {
-                let last = goes.as_ref().map_or(0, |g| g.len().saturating_sub(1));
-                rv.entry = match code {
-                    KeyCode::Down => (rv.entry + 1).min(last),
-                    KeyCode::Up => rv.entry.saturating_sub(1),
-                    KeyCode::PageDown => (rv.entry + page).min(last),
-                    KeyCode::PageUp => rv.entry.saturating_sub(page),
-                    KeyCode::Home => 0,
-                    _ => last,
-                };
+                if let Some(v) = &stops {
+                    let (at, last) = (v.stop_of(rv.entry), v.shows.len().saturating_sub(1));
+                    rv.entry = v.line_of(match code {
+                        KeyCode::Down => (at + 1).min(last),
+                        KeyCode::Up => at.saturating_sub(1),
+                        KeyCode::PageDown => (at + page).min(last),
+                        KeyCode::PageUp => at.saturating_sub(page),
+                        KeyCode::Home => 0,
+                        _ => last,
+                    });
+                }
             }
             (_, KeyCode::Enter) => {
                 if let Some(y) = lines.get(rv.sel).and_then(|l| l.yours.clone()) {
@@ -2884,6 +2954,9 @@ impl App {
         let delete = self.delete_hint().map_or(String::new(), |d| format!("{d} · "));
         // On a line of a message that has links: the key that opens them.
         let open = self.open_hint();
+        // The stack diff of the change on the right: the view of its
+        // interdiffs.
+        let view = if self.inter_screen() { "1: view · " } else { "" };
         match &self.reviewing {
             Some(rv) if rv.in_main && rv.in_patch && self.review_patch().is_some() => {
                 let enter = if self.review_writable() { "enter: comment · " } else { "" };
@@ -2892,11 +2965,11 @@ impl App {
             }
             Some(rv) if rv.in_main && self.review_on_diff() => {
                 let side = if rv.wide { "←: narrower" } else { "→: wider · ←: back to the list" };
-                format!("↑↓: a line · enter: go to it in the patch · {open}{delete}{side} · {esc}")
+                format!("↑↓: a line · enter: go to it in the patch · {open}{delete}{side} · {view}{esc}")
             }
             Some(rv) if rv.in_main && rv.wide => format!("↑↓: scroll · {enter} · {delete}←: narrower · {esc}"),
             Some(rv) if rv.in_main => format!("↑↓: scroll · {enter} · {delete}→: wider · ←: back to the list · {esc}"),
-            _ => format!("↑↓ choose · {enter} · {delete}→: look closer · space: menu · {esc}"),
+            _ => format!("↑↓ choose · {enter} · {delete}→: look closer · space: menu · {view}{esc}"),
         }
     }
 

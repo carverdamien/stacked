@@ -59,6 +59,8 @@ pub mod finding;
 pub use finding::Find;
 pub mod head_why;
 pub use head_why::HeadWhy;
+mod interdiffs;
+pub use crate::config::InterLayout;
 pub mod places;
 pub mod reviewing;
 pub use reviewing::Reviewing;
@@ -1282,6 +1284,9 @@ impl Choices {
 pub enum Action {
     /// A line between groups of items.
     Line,
+    /// The heading of a section of a menu, over the items of the section:
+    /// drawn as a box's title is, never picked.
+    Heading,
     /// A line that says something, to read: nothing to do.
     Said,
     /// The ways to make a new stack, as a menu.
@@ -1511,6 +1516,9 @@ pub enum Action {
     SetShow(Show),
     /// The code drawn as `0` from now on, picked in the menu of 1.
     View(Layout),
+    /// Every interdiff drawn as `0` from now on, picked in the menu of 1 on
+    /// a screen of interdiffs.
+    InterView(InterLayout),
     Undo,
     Redo,
     EditList,
@@ -1609,6 +1617,7 @@ fn about(action: &Action) -> String {
     match action {
         Action::Line | Action::Cancel => "change nothing".into(),
         Action::Said => "nothing: it says what it says".into(),
+        Action::Heading => "nothing: it heads the items under it".into(),
         Action::NewStack if cfg!(feature = "moz-phab") => "make a new stack: from the workspace's commits, from Phabricator's revisions, or by the agent".into(),
         Action::NewStack => "make a new stack: from the workspace's commits, or by the agent".into(),
         Action::FromWorkspace => "import a stack from the workspace: its branch, another branch, or a range, its staged and unstaged changes on top if checked".into(),
@@ -1825,6 +1834,15 @@ fn about(action: &Action) -> String {
         Action::View(Layout::Halves) => {
             "draw the patch twice, unified in each half of the middle: each half has its own cursor and scroll, its own search, reading and whole files, and ← → go from one half to the other".into()
         }
+        Action::InterView(InterLayout::Interdiff) => {
+            "draw every interdiff as an interdiff, as long as the editor is open: before each line, a sign for which version has it, a space for both, - for the old version alone, + for the new one alone; then that version's own sign".into()
+        }
+        Action::InterView(InterLayout::Columns) => {
+            "draw every interdiff in a column per version, as long as the editor is open: before each line, what the old version's patch does with it, then what the new one's does, + it adds the line, - it removes it, a space it leaves it as it is, = the version has it as a header or a line of its message, · the version does not have it".into()
+        }
+        Action::InterView(InterLayout::Sides) => {
+            "draw every interdiff side by side, as long as the editor is open: the old version on the left and the new one on the right, each line as its own diff draws it, the lines both have dim".into()
+        }
         Action::Undo => "go back to the stack before this edit".into(),
         Action::Redo => "make that edit again".into(),
         Action::EditList => "edit the stack as `git rebase -i` does, in $EDITOR".into(),
@@ -1938,6 +1956,15 @@ impl Item {
         }
     }
 
+    /// The heading of a section of the menu, `label`, over the items of
+    /// the section: never picked.
+    fn heading(label: impl Into<String>) -> Item {
+        Item {
+            enabled: false,
+            ..Item::new(label, Action::Heading)
+        }
+    }
+
     /// What its row says: its label, then its dropdowns, which start past
     /// `pad` columns (the menu's first dropdowns in one column); and where
     /// a click picks in them: for each choice drawn, its dropdown, which
@@ -2009,7 +2036,9 @@ impl Menu {
             out.pop();
         }
         // An item grayed, or a choice of one: the note says why.
-        let blocked = out.iter().any(|i| (!i.enabled && i.action != Action::Line) || i.choices.iter().any(|c| c.list.iter().any(|ch| !ch.enabled)));
+        let blocked = out
+            .iter()
+            .any(|i| (!i.enabled && !matches!(i.action, Action::Line | Action::Heading)) || i.choices.iter().any(|c| c.list.iter().any(|ch| !ch.enabled)));
         Menu {
             title: title.into(),
             sel: out.iter().position(|i| i.enabled).unwrap_or(0),
@@ -2129,6 +2158,37 @@ pub struct TextView {
     pub lines: Vec<Parts>,
     pub scroll: usize,
     back: Screen,
+    /// A text of interdiffs: what to draw it again from, in another view of
+    /// them or at another width (`InterText`).
+    inter: Option<InterText>,
+}
+
+/// What a text screen of interdiffs shows, to draw it again from: what
+/// differs from Phabricator, or what an edit changed; the lines of what it
+/// shows that each line drawn shows with the others of its stop of the
+/// cursor (`interdiffs::Stop`), none for a heading; the width and view it
+/// was drawn in; and, drawn again, the top line it was drawn from and the
+/// line of what it shows that top line was on (`interdiffs::line_of`).
+#[derive(Debug, Clone)]
+struct InterText {
+    of: Inter,
+    at: Vec<Vec<usize>>,
+    built: (usize, InterLayout),
+    kept: Option<(usize, usize)>,
+}
+
+/// A text screen of interdiffs, drawn: its title, its lines, and the lines
+/// of what it shows that each shows (`InterText`).
+type InterDrawn = (String, Vec<Parts>, Vec<Vec<usize>>);
+
+/// What a text screen of interdiffs shows: what differs between the patch
+/// the middle shows and its revision on Phabricator; or what the edit that
+/// made stack `0` changed.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Inter {
+    #[cfg(feature = "moz-phab")]
+    Differs,
+    Changed(usize),
 }
 
 impl TextView {
@@ -2208,6 +2268,13 @@ pub struct App {
     /// whose comments it listed: as the patches pane's start, kept.
     notes_top: Option<(String, usize)>,
     pub layout: Layout,
+    /// How the interdiffs are drawn, on every screen that shows one: picked
+    /// with 1 there, and kept while the editor is open, the settings' at
+    /// the start. And how wide the pane the screen draws its interdiffs in
+    /// was last drawn: one too narrow for two sides draws them as
+    /// interdiffs meanwhile.
+    pub inter: InterLayout,
+    inter_w: std::cell::Cell<usize>,
     /// The unified view split in two, while it is the view: the middle's
     /// fields are the half the cursor is in, and this holds the other.
     halves: Option<Halves>,
@@ -2284,12 +2351,19 @@ pub struct App {
     pub hist_cursor: usize,
     hist_top: usize,
     /// The lines of the stack diff of the record picked, and what they were
-    /// made of: the stacks diffed, the width.
+    /// made of: the stacks diffed, the width, the view of its interdiffs.
     pub hist_rows: Vec<Parts>,
-    hist_built: Option<(Option<usize>, Option<usize>, usize)>,
-    /// That stack diff, and the line of it each of those is, folded.
+    hist_built: Option<(Option<usize>, Option<usize>, usize, InterLayout)>,
+    /// That stack diff, and the lines of it each of those shows, folded:
+    /// one, or, side by side, one of each version's; none, a heading.
     hist_diff: Vec<Diffed>,
-    hist_of: Vec<usize>,
+    hist_of: Vec<Vec<usize>>,
+    /// Another view of the interdiffs picked: the line of that stack diff
+    /// the cursor was on, and how far under the pane's top, for the cursor
+    /// to be on it again once it is drawn so; and, once it is, the row it
+    /// went on and that line (`interdiffs::line_of`).
+    hist_keep: Option<(usize, usize)>,
+    hist_line: Option<(usize, usize)>,
     /// The run a transcript is of, and how far it is scrolled up.
     transcript: Option<String>,
     scroll: usize,
@@ -2782,6 +2856,8 @@ impl App {
             notes_head: false,
             notes_top: None,
             layout: Layout::Unified,
+            inter: cfg.view.interdiff,
+            inter_w: std::cell::Cell::new(0),
             halves: None,
             drawing_beside: false,
             compact: Compact::default(),
@@ -2819,6 +2895,8 @@ impl App {
             hist_built: None,
             hist_diff: vec![],
             hist_of: vec![],
+            hist_keep: None,
+            hist_line: None,
             transcript: None,
             scroll: 0,
             versions: None,
@@ -4594,6 +4672,13 @@ impl App {
                     self.cfg.view.split_width
                 ),
             },
+            // Side by side, on a pane too narrow for it: as interdiffs there
+            // meanwhile.
+            Action::InterView(InterLayout::Sides) if self.inter_narrow() => format!(
+                "{}. This pane is under {} columns, too narrow for side by side: picked, its interdiffs are drawn as interdiffs until it has room",
+                about(action),
+                self.cfg.view.split_width
+            ),
             _ => about(action),
         }
     }
@@ -4956,6 +5041,12 @@ impl App {
                 KeyCode::Char(' ') if self.reading_here() => return self.perform(Action::MarkRead),
                 _ => {}
             }
+        }
+        // 1 on the screens of interdiffs, as in the middle: the menu of their
+        // views.
+        if k.code == KeyCode::Char('1') && self.inter_screen() {
+            self.mode = Mode::Menu(self.inter_menu());
+            return Effect::None;
         }
         if k.code == KeyCode::Char(' ') {
             self.menu_here();
@@ -6293,6 +6384,7 @@ impl App {
                 } else {
                     out.push("Press Enter to accept the part the cursor is on, or, accepted, to put it back to review; Delete to reject it; Space for its menu, to reject it too, or to reply to the agent's reply; → to scroll what it looks like, → again to see it wide, the list out of sight, and ← to come back. On the stack operations, → goes into the stack diff, where Enter on a line goes to it in its patch as the work leaves it, to comment on it.".into());
                 }
+                out.extend(self.inter_help());
                 out.extend(self.delete_help());
                 // The stack operations: each on its own, and what each needs;
                 // or the change as one, and why.
@@ -6511,6 +6603,7 @@ impl App {
             Screen::Versions => {
                 out.push("Press Enter, or Space, to put this version back in the stack, or read it whole.".into());
                 out.push("Press ↑↓ for another version, Esc to go back.".into());
+                out.extend(self.inter_help());
             }
             Screen::History => {
                 out.push("The history lists what changed the stack: its edits, and the moves of its head (undo, redo, select, delete); beside each, the stack diff from the stack before it to the one after: + added, − dropped, ~ a new version (what changed in it under it), ↕ moved.".into());
@@ -6524,9 +6617,11 @@ impl App {
                         out.push("Press ↑↓ (pgup pgdn home end) to scroll, ← for the history. Only to look at: Esc leaves the history, to edit or comment.".into());
                     }
                 }
+                out.extend(self.inter_help());
             }
             Screen::Transcript | Screen::Text => {
-                out.push("Press ↑↓ (pgup pgdn home end) to scroll, Esc to go back.".into())
+                out.push("Press ↑↓ (pgup pgdn home end) to scroll, Esc to go back.".into());
+                out.extend(self.inter_help());
             }
             #[cfg(feature = "moz-phab")]
             Screen::Submit => out.extend(self.submit_help()),
@@ -6679,6 +6774,8 @@ impl App {
                 if self.pick != was {
                     self.hist_cursor = 0;
                     self.hist_top = 0;
+                    // Another record's stack diff: no line of it to keep.
+                    (self.hist_keep, self.hist_line) = (None, None);
                 }
             }
             (HistFocus::Diff, KeyCode::Left) => self.hist_focus = HistFocus::List,
@@ -7817,7 +7914,7 @@ impl App {
             return Effect::None;
         }
         match action {
-            Action::Line | Action::Cancel | Action::Said => {}
+            Action::Line | Action::Heading | Action::Cancel | Action::Said => {}
             Action::NewStack => {
                 let mut items = Vec::new();
                 self.new_stack_items(&mut items);
@@ -8400,11 +8497,9 @@ impl App {
                 }
             }
             Action::WhatChanged(rev) => {
-                let Ok(s) = self.db.node(rev) else { return Effect::None };
-                let mut lines: Vec<Parts> = vec![vec![(format!("@{rev} · {} · {}", local_time(s.time), s.op), color::file())]];
-                lines.extend(diff_parts(&crate::history::what_changed(&self.db, rev)));
-                self.open_parts(format!("what the edit that made @{rev} changed"), lines);
+                let _ = self.open_inter(Inter::Changed(rev));
             }
+            Action::InterView(v) => self.pick_inter(v),
             Action::History => self.open_list(Screen::History),
             Action::Versions => {
                 if let Some(id) = self.patch_id() {
@@ -9713,15 +9808,16 @@ impl App {
     /// wherever a screen puts its cursor on one: in the middle, a line of the
     /// patch's message, commenting or reading; in the review of landed work,
     /// one of a patch looked at closer, or of the message part of an
-    /// interdiff in the stack diff; in the history's stack diff, the same; in
-    /// what a submit sends, one of the title and summary, both sides' when
-    /// they are side by side. None elsewhere: the versions of a patch have
-    /// their cursor on a version.
+    /// interdiff in the stack diff, both versions' when the interdiffs are
+    /// side by side; in the history's stack diff, the same; in what a submit
+    /// sends, one of the title and summary, both sides' when they are side
+    /// by side. None elsewhere: the versions of a patch have their cursor on
+    /// a version.
     fn message_lines_here(&self) -> Vec<String> {
         match self.screen {
             Screen::Main => self.middle_message_line().into_iter().collect(),
-            Screen::Review => self.review_message_line().into_iter().collect(),
-            Screen::History => self.history_message_line().into_iter().collect(),
+            Screen::Review => self.review_message_lines(),
+            Screen::History => self.history_message_lines(),
             #[cfg(feature = "moz-phab")]
             Screen::Submit => self.submit_message_lines(),
             _ => Vec::new(),
@@ -9739,15 +9835,19 @@ impl App {
         self.db.patch(&id).message.split('\n').nth(row.msg_at?).map(String::from)
     }
 
-    /// The line of a message the cursor is on in the history's stack diff,
-    /// as it is written (`message_line_of`).
-    fn history_message_line(&self) -> Option<String> {
-        if self.hist_focus != HistFocus::Diff {
-            return None;
+    /// The lines of a message the cursor is on in the history's stack diff,
+    /// each as it is written (`message_line_of`): one, or, side by side, one
+    /// of each version's, each once.
+    fn history_message_lines(&self) -> Vec<String> {
+        let Some((_, Some(to), ..)) = self.hist_built.filter(|_| self.hist_focus == HistFocus::Diff) else { return Vec::new() };
+        let Ok(after) = self.db.node(to) else { return Vec::new() };
+        let mut out: Vec<String> = Vec::new();
+        for &k in self.hist_of.get(self.hist_cursor).into_iter().flatten() {
+            if let Some(line) = message_line_of(&self.db, &self.hist_diff, after, k).filter(|l| !out.contains(l)) {
+                out.push(line);
+            }
         }
-        let (_, to, _) = self.hist_built?;
-        let after = self.db.node(to?).ok()?;
-        message_line_of(&self.db, &self.hist_diff, after, *self.hist_of.get(self.hist_cursor)?)
+        out
     }
 
     /// The links of the lines of a commit message the cursor is on, each
@@ -10011,8 +10111,69 @@ impl App {
             lines,
             scroll: 0,
             back: self.screen,
+            inter: None,
         });
         self.screen = Screen::Text;
+    }
+
+    /// The text screen of interdiffs `of`, as wide as the screen, in the
+    /// view a pane so wide draws them (`inter_text`); or why there is
+    /// nothing to show, for the status line.
+    fn open_inter(&mut self, of: Inter) -> std::result::Result<(), String> {
+        let w = self.body_w;
+        let (title, lines, at) = self.inter_text(of, w)?;
+        self.open_parts(title, lines);
+        let built = (w, self.inter_in(w));
+        if let Some(t) = &mut self.text {
+            t.inter = Some(InterText { of, at, built, kept: None });
+        }
+        Ok(())
+    }
+
+    /// What text screen of interdiffs `of` shows, `w` wide, in the view a
+    /// pane so wide draws them: its title, its lines, and the lines of what
+    /// it shows each shows (`InterText`). What an edit changed: what it is,
+    /// then its stack diff, the two versions of each patch named as the
+    /// stack it was edited from and the one it made (`@10`, `@12`). Or why
+    /// there is nothing to show.
+    fn inter_text(&self, of: Inter, w: usize) -> std::result::Result<InterDrawn, String> {
+        let v = self.inter_in(w);
+        match of {
+            #[cfg(feature = "moz-phab")]
+            Inter::Differs => self.differs_view(w, v),
+            Inter::Changed(rev) => {
+                let s = self.db.node(rev).map_err(|e| e.0)?;
+                let mut lines: Vec<Parts> = vec![vec![(format!("@{rev} · {} · {}", local_time(s.time), s.op), color::file())]];
+                // What the edit is, line 0; line k of its stack diff, k + 1.
+                let mut at = vec![vec![0]];
+                let before = s.parent.map_or(String::new(), |p| format!("@{p}"));
+                let after = format!("@{rev}");
+                for (drawn, shows) in interdiffs::stack_stops(&crate::history::what_changed(&self.db, rev), v, (&before, &after), w.saturating_sub(1)) {
+                    let shows: Vec<usize> = shows.iter().map(|k| k + 1).collect();
+                    at.extend(std::iter::repeat_n(shows, drawn.len()));
+                    lines.extend(drawn);
+                }
+                Ok((format!("what the edit that made @{rev} changed"), lines, at))
+            }
+        }
+    }
+
+    /// The text screen of interdiffs drawn again `w` wide, when it is one
+    /// and was drawn otherwise: in another view of them, at another width.
+    /// Its top line on the line of what it shows that the top line was on
+    /// (`interdiffs::line_of`), else on the next one there.
+    fn text_again(&mut self, w: usize) {
+        let Some(t) = &self.text else { return };
+        let Some(i) = t.inter.as_ref().filter(|i| i.built != (w, self.inter_in(w))) else { return };
+        let of = i.of;
+        let top = interdiffs::line_of(&i.at, t.scroll, i.kept);
+        let Ok((title, lines, at)) = self.inter_text(of, w) else { return };
+        let scroll = top.map_or(0, |line| interdiffs::line_at(&at, line));
+        let built = (w, self.inter_in(w));
+        if let Some(t) = &mut self.text {
+            (t.title, t.lines, t.scroll) = (title, lines, scroll);
+            t.inter = Some(InterText { of, at, built, kept: top.map(|line| (scroll, line)) });
+        }
     }
 
     fn runs_newest(&self) -> Vec<&crate::db::Run> {
@@ -10381,6 +10542,9 @@ impl App {
             Screen::Transcript => self.draw_transcript(buf, body),
             Screen::History => {
                 let w = body.width as usize;
+                // The stack diff's width, drawn or not: too narrow for both
+                // panes, the screen's.
+                self.inter_w.set(if w < 60 { w } else { w - (w * 2 / 5).max(30) - 1 });
                 // Too narrow for both: the one the cursor is in.
                 if w < 60 && self.hist_focus == HistFocus::Diff {
                     self.draw_history_diff(buf, body);
@@ -10711,6 +10875,10 @@ impl App {
                         text += if self.whole_reading() { " · whole files: reading…" } else { " · whole files" };
                     }
                 }
+                // On a screen of interdiffs, their view when it is not the
+                // first, as the code's says its own; side by side on a pane
+                // too narrow for it, so.
+                text += &self.inter_bar();
             }
             None => text += " · no stack",
         }
@@ -10838,6 +11006,8 @@ impl App {
                     (Screen::Main, false, true) => "1: view · 2: read · 3: hunks · ",
                     (Screen::Main, true, false) => "1: view · 2: comment · 3: whole · ",
                     (Screen::Main, true, true) => "1: view · 2: comment · 3: hunks · ",
+                    // The screens of interdiffs: the view of them.
+                    _ if self.inter_screen() => "1: view · ",
                     _ => "",
                 };
                 let ask = match self.marks_pointer() {
@@ -10955,6 +11125,11 @@ impl App {
         for (r, (i, item)) in m.items.iter().enumerate().skip(m.top).take(rows).enumerate() {
             if item.action == Action::Line {
                 put(buf, area, x + 1, y + 1 + r, bw - 2, &"─".repeat(bw - 2), color::meta());
+                continue;
+            }
+            // A section's heading: as a box's title is, no item to click.
+            if item.action == Action::Heading {
+                put(buf, area, x + 1, y + 1 + r, bw - 2, &fit(&format!(" {}", item.label), bw - 2), color::file());
                 continue;
             }
             spot_in(&self.spots, area, (x + 1, y + 1 + r, bw - 2, 1), Spot::Item(i));
@@ -12170,15 +12345,18 @@ impl App {
         }
     }
 
-    /// The version picked: what changed from the version before, or the
-    /// whole of it.
+    /// The version picked: what changed from the version before, in the
+    /// view the pane draws interdiffs in, the two versions named as the
+    /// list names them; or the whole of it.
     fn draw_version(&self, buf: &mut Buffer, area: Rect) {
         let (w, h) = (area.width as usize, area.height as usize);
+        self.inter_w.set(w);
         let list = self.versions_list();
         let Some((p, first)) = list.get(self.pick) else { return };
-        let lines = match (self.whole, self.pick.checked_sub(1).and_then(|i| list.get(i))) {
-            (false, Some((before, _))) => ops::interdiff_lines(before, p),
-            _ => ops::render(p).lines().map(ops::InterLine::from).collect(),
+        let before = self.pick.checked_sub(1).and_then(|i| list.get(i)).filter(|_| !self.whole);
+        let lines = match before {
+            Some((before, _)) => ops::interdiff_lines(before, p),
+            None => ops::render(p).lines().map(ops::InterLine::from).collect(),
         };
         let say = if self.whole || self.pick == 0 { "the version whole" } else { "what changed from the version before" };
         let made = first
@@ -12186,8 +12364,18 @@ impl App {
             .map_or("never in the stack".to_string(), |(r, s)| format!("@{r} {} · {}", local_time(s.time), s.op));
         let here = if self.current().is_some_and(|s| s.patches.contains(&p.id)) { ", in the stack" } else { "" };
         put(buf, area, 0, 0, w, &fit(&format!(" v{}{here} · {say} · {made}", self.pick + 1), w), color::file());
-        let lines: Vec<&ops::InterLine> = lines.iter().collect();
-        for (y, parts) in inter_parts(&lines).iter().take(h.saturating_sub(1)).enumerate() {
+        let refs: Vec<&ops::InterLine> = lines.iter().collect();
+        let drawn: Vec<Parts> = match before {
+            // What changed, in the view the pane draws interdiffs in, the two
+            // versions named as the list names them.
+            Some((before, _)) => {
+                let (old, new) = (format!("v{}", self.pick), format!("v{}", self.pick + 1));
+                let two = interdiffs::Two { old: &old, new: &new, one_base: ops::one_base(&lines, &before.diff, &p.diff) };
+                interdiffs::interdiff_stops(&refs, self.inter_in(w), &two, w, 0).into_iter().flat_map(|(lines, _)| lines).collect()
+            }
+            None => inter_parts(&refs),
+        };
+        for (y, parts) in drawn.iter().take(h.saturating_sub(1)).enumerate() {
             put_parts(buf, area, 0, y + 1, w, parts);
         }
     }
@@ -12268,17 +12456,33 @@ impl App {
             put(buf, area, 1, 0, w, "nothing changed the stack yet", color::dim());
             return;
         };
-        let want = (e.from, e.to, w);
+        self.inter_w.set(w);
+        let want = (e.from, e.to, w, self.inter_in(w));
         if self.hist_built != Some(want) {
             // Made, or deleted, its header says.
             let mut diff = crate::history::stack_diff(&self.db, e.from, e.to, true);
             diff.retain(|d| !matches!(d, Diffed::Made | Diffed::Deleted));
-            // Each line folded to the pane, with the line each row is of.
-            let folded: Vec<Vec<Parts>> = diff_parts(&diff).into_iter().map(|parts| fold_parts(&parts, w.saturating_sub(1), 6)).collect();
-            self.hist_of = folded.iter().enumerate().flat_map(|(k, rows)| std::iter::repeat_n(k, rows.len())).collect();
-            self.hist_rows = folded.into_iter().flatten().collect();
-            self.hist_diff = diff;
-            self.hist_built = Some(want);
+            // Each line folded to the pane, with the lines of the diff each
+            // row shows; side by side, each interdiff under a heading of the
+            // stacks before and after.
+            let say = |rev: Option<usize>| rev.map_or(String::new(), |r| format!("@{r}"));
+            let (before, after) = (say(e.from), say(e.to));
+            let (mut rows, mut of) = (Vec::new(), Vec::new());
+            for (drawn, shows) in interdiffs::stack_stops(&diff, want.3, (&before, &after), w.saturating_sub(1)) {
+                for parts in drawn.iter().flat_map(|parts| fold_parts(parts, w.saturating_sub(1), 6)) {
+                    rows.push(parts);
+                    of.push(shows.clone());
+                }
+            }
+            (self.hist_rows, self.hist_of, self.hist_diff, self.hist_built) = (rows, of, diff, Some(want));
+            // Another view picked: the cursor on the line it was on, on its
+            // line of the pane.
+            self.hist_line = None;
+            if let Some((line, below)) = self.hist_keep.take() {
+                self.hist_cursor = interdiffs::line_at(&self.hist_of, line);
+                self.hist_top = self.hist_cursor.saturating_sub(below);
+                self.hist_line = Some((self.hist_cursor, line));
+            }
             self.hist_cursor = self.hist_cursor.min(self.hist_rows.len().saturating_sub(1));
         }
         let focus = self.hist_focus == HistFocus::Diff;
@@ -12305,8 +12509,15 @@ impl App {
         }
     }
 
-    fn draw_text(&self, buf: &mut Buffer, area: Rect) {
+    /// The text screen: its title, then its lines from the top one shown.
+    /// Of interdiffs, drawn again first in the view a pane as wide as the
+    /// screen draws them, when it was drawn otherwise (`text_again`).
+    fn draw_text(&mut self, buf: &mut Buffer, area: Rect) {
         let (w, h) = (area.width as usize, area.height as usize);
+        if self.text.as_ref().is_some_and(|t| t.inter.is_some()) {
+            self.inter_w.set(w);
+            self.text_again(w);
+        }
         let Some(t) = &self.text else { return };
         put(buf, area, 0, 0, w, &fit(&format!(" {}", t.title), w), color::file());
         for (y, parts) in t.lines.iter().skip(t.scroll).take(h.saturating_sub(1)).enumerate() {

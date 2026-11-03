@@ -419,7 +419,7 @@ an edit does.
 | `?` | say what can be done here |
 | Esc | go back; in the panes, go to the banner of what waits for you |
 | Delete or Backspace | close, drop, stop or reject what the cursor is on (it asks first) |
-| `1` | pick a view of the code: unified, side by side, compact, or unified split in two |
+| `1` | pick a view of the code: unified, side by side, compact, or unified split in two; where interdiffs are shown, how to draw them: as an interdiff, a column per version, or side by side |
 | `2` | switch between commenting and reading, where Space marks code read |
 | `3` | switch between the hunks and each file whole |
 | `/` | search what the middle shows; Tab and shift-Tab go from match to match |
@@ -453,8 +453,9 @@ The main ones:
   kind of ask may use, where the agents' worktrees go, and `chain`.
 - `[reviews]`: Phabricator's address, token and trailer, and Bugzilla's
   address; `source = "none"` turns Phabricator off.
-- `[view]`: the layout and the panes at the start, the reading mode, and
-  the width long message lines are wrapped at.
+- `[view]`: the layout and the panes at the start, the view of the
+  interdiffs, the reading mode, and the width long message lines are
+  wrapped at.
 - `[colors]`: every colour of the screen, written as git writes colours
   (`stacked config colors.you 208`).
 - `[keys]`: the keys of each thing the editor does.

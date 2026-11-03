@@ -57,6 +57,40 @@ impl Layout {
     }
 }
 
+/// How the interdiffs are drawn at the start, on every screen that shows
+/// one: as an interdiff, each line a sign saying which version has it
+/// before that version's own sign; in a column per version, what each
+/// version's patch does with each line, as git's combined diff draws a
+/// merge; or side by side, the old version on the left and the new one on
+/// the right.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum InterLayout {
+    #[default]
+    Interdiff,
+    Columns,
+    Sides,
+}
+
+impl InterLayout {
+    pub fn name(self) -> &'static str {
+        match self {
+            InterLayout::Interdiff => "interdiff",
+            InterLayout::Columns => "columns",
+            InterLayout::Sides => "side-by-side",
+        }
+    }
+
+    /// The view `s` names.
+    fn parse(s: &str) -> Option<InterLayout> {
+        match s {
+            "interdiff" => Some(InterLayout::Interdiff),
+            "columns" => Some(InterLayout::Columns),
+            "side-by-side" => Some(InterLayout::Sides),
+            _ => None,
+        }
+    }
+}
+
 /// How the patches pane is shown: not at all; listing the files of the
 /// patch picked under it, a line each, to jump to; or expanded, each patch
 /// its title whole.
@@ -331,6 +365,9 @@ pub const BUGZILLA: &str = "https://bugzilla.mozilla.org";
 #[derive(Debug, Clone, PartialEq)]
 pub struct View {
     pub layout: Layout,
+    /// How the interdiffs are drawn at the start, on every screen that
+    /// shows one: as interdiffs, in a column per version, or side by side.
+    pub interdiff: InterLayout,
     /// Reading rather than commenting, at the start.
     pub reading: bool,
     /// Whether changed lines that are empty or white space alone need
@@ -343,7 +380,8 @@ pub struct View {
     pub comments: Pane,
     /// The lines of claude's stream under a comment it works on.
     pub stream_lines: usize,
-    /// The columns the middle needs for two sides, or for two halves.
+    /// The columns the middle needs for two sides, or for two halves; and
+    /// a pane, for its interdiffs side by side.
     pub split_width: usize,
     /// The columns a commit message's lines are wrapped at, when a menu
     /// offers to wrap its long lines (`wrap`).
@@ -354,6 +392,7 @@ impl Default for View {
     fn default() -> View {
         View {
             layout: Layout::Unified,
+            interdiff: InterLayout::Interdiff,
             reading: false,
             whitespace_needs_review: false,
             patches: PatchesPane::Expanded,
@@ -529,6 +568,7 @@ struct WrittenReviews {
 #[serde(default, deny_unknown_fields)]
 struct WrittenView {
     layout: Option<String>,
+    interdiff: Option<String>,
     reading: Option<bool>,
     whitespace_needs_review: Option<bool>,
     patches: Option<WrittenPane>,
@@ -685,6 +725,12 @@ impl Config {
             match Layout::parse(&l) {
                 Some(l) => c.view.layout = l,
                 None => wrong.push(format!("view.layout: {l:?} is not unified, side-by-side, compact or unified-split")),
+            }
+        }
+        if let Some(i) = v.interdiff {
+            match InterLayout::parse(&i) {
+                Some(i) => c.view.interdiff = i,
+                None => wrong.push(format!("view.interdiff: {i:?} is not interdiff, columns or side-by-side")),
             }
         }
         c.view.reading = v.reading.unwrap_or(c.view.reading);
@@ -971,6 +1017,13 @@ impl Config {
              # \"unified-split\", the patch unified in each half of the middle (1 picks one).\n",
         );
         out.push_str(&format!("layout = {}\n", q(v.layout.name())));
+        out.push_str(
+            "# How every interdiff is drawn at the start: \"interdiff\", a sign for which version\n\
+             # has a line before that version's own sign; \"columns\", a column per version, what\n\
+             # each one's patch does with the line; or \"side-by-side\", the old version on the left\n\
+             # and the new one on the right (1 picks one there).\n",
+        );
+        out.push_str(&format!("interdiff = {}\n", q(v.interdiff.name())));
         out.push_str("# Reading rather than commenting, at the start (2 switches).\n");
         out.push_str(&format!("reading = {}\n", v.reading));
         out.push_str(
@@ -987,7 +1040,7 @@ impl Config {
         out.push_str(&format!("patches = {}\ncomments = {}\n", q(v.patches.name()), q(v.comments.name())));
         out.push_str("# The lines of claude's stream under a comment it works on.\n");
         out.push_str(&format!("stream_lines = {}\n", v.stream_lines));
-        out.push_str("# The columns the middle needs for two sides, or for two halves.\n");
+        out.push_str("# The columns the middle needs for two sides, or for two halves; and a pane, for its\n# interdiffs side by side.\n");
         out.push_str(&format!("split_width = {}\n", v.split_width));
         out.push_str(
             "# The columns a commit message's lines are wrapped at, when a menu offers to wrap\n\
@@ -1120,6 +1173,7 @@ const SETTINGS: &[(&str, Kind)] = &[
     ("reviews.trailer", Kind::Text),
     ("reviews.bugzilla", Kind::Text),
     ("view.layout", Kind::Text),
+    ("view.interdiff", Kind::Text),
     ("view.reading", Kind::Flag),
     ("view.whitespace_needs_review", Kind::Flag),
     ("view.patches", Kind::Patches),
@@ -1244,6 +1298,7 @@ pub fn value_of(c: &Config, key: &str) -> Result<Vec<String>, String> {
         "reviews.trailer" => vec![c.reviews.trailer.clone()],
         "reviews.bugzilla" => vec![c.reviews.bugzilla.clone()],
         "view.layout" => vec![c.view.layout.name().into()],
+        "view.interdiff" => vec![c.view.interdiff.name().into()],
         "view.reading" => vec![c.view.reading.to_string()],
         "view.whitespace_needs_review" => vec![c.view.whitespace_needs_review.to_string()],
         "view.patches" => vec![c.view.patches.name().into()],
@@ -2052,6 +2107,31 @@ mod tests {
         set(&path, "view.layout", &["unified-split".to_string()]).unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "[view]\nlayout = \"unified-split\"\n");
         assert_eq!(value_of(&Config::load(&path).0, "view.layout"), Ok(vec!["unified-split".to_string()]));
+    }
+
+    #[test]
+    fn the_interdiffs_start_as_interdiffs_in_columns_or_side_by_side() {
+        // As stacked always drew them, unless set.
+        assert_eq!(Config::default().view.interdiff, InterLayout::Interdiff);
+        assert!(Config::default().render().contains("\ninterdiff = \"interdiff\"\n"), "{}", Config::default().render());
+        let (c, wrong) = Config::parse("[view]\ninterdiff = \"side-by-side\"\n").unwrap();
+        assert!(wrong.is_empty(), "{wrong:?}");
+        assert_eq!(c.view.interdiff, InterLayout::Sides);
+        assert_eq!(value_of(&c, "view.interdiff"), Ok(vec!["side-by-side".to_string()]));
+        let (c, wrong) = Config::parse("[view]\ninterdiff = \"columns\"\n").unwrap();
+        assert!(wrong.is_empty() && c.view.interdiff == InterLayout::Columns, "{wrong:?}");
+        let (c, wrong) = Config::parse("[view]\ninterdiff = \"split\"\n").unwrap();
+        assert_eq!(c.view.interdiff, InterLayout::Interdiff, "what is wrong keeps its default");
+        assert_eq!(wrong, ["view.interdiff: \"split\" is not interdiff, columns or side-by-side"]);
+        // Written and read as any setting is; a view there is not, refused.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("settings.toml");
+        set(&path, "view.interdiff", &["side-by-side".to_string()]).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "[view]\ninterdiff = \"side-by-side\"\n");
+        assert_eq!(Config::load(&path).0.view.interdiff, InterLayout::Sides);
+        let e = set(&path, "view.interdiff", &["compact".to_string()]).unwrap_err();
+        assert!(e.contains("view.interdiff: \"compact\" is not interdiff, columns or side-by-side") && e.contains("nothing written"), "{e}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "[view]\ninterdiff = \"side-by-side\"\n");
     }
 
     #[test]

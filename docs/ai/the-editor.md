@@ -334,7 +334,9 @@ shows what differs on a screen of its own, titled `D12 on Phabricator,
 then patch 2 as it is`: Phabricator's version of the patch, the
 revision's title and summary as a submit compares them over its latest
 diff, then the patch as it is, as an interdiff, the way `Versions of this
-patch…` shows two versions. The screen first says what it shows: the
+patch…` shows two versions, in the view of the interdiffs that `1` picks
+there (below), the two versions named `D12 on Phabricator` and `patch 2
+as it is`. The screen first says what it shows: the
 parent first, when a submit would set one, the revision's parents on
 Phabricator then the one a submit sets (`Parent: D10 on Phabricator; a
 submit sets D11, the revision of patch 2.`, `Parent: none` for a revision
@@ -353,12 +355,20 @@ version (the two read a file before the patch otherwise: a line at the
 same place is not the same, the same hunk is at another place, or one
 makes a file the other finds there), the code is instead each file as
 that diff leaves it, then as this version leaves it, both on the patches
-below it, as the line compares them, and the screen says so; where the
-files cannot be read so, the code is the interdiff all the same, and the
-screen says that too. When the code is the same, the screen shows the
+below it, as the line compares them, and the screen says so: a diff of
+the files under `the code: Phabricator's, then this version's`, as an
+interdiff and in a column per version; side by side, under `the code:
+Phabricator's on the left, this version's on the right`, each file as
+Phabricator's diff leaves it beside the same file as this version leaves
+it, as the code view's side by side draws a patch, the lines both have
+dim. Where the files cannot be read so, the code is the interdiff all the
+same, and the screen says that too: in a column per version, the two
+versions are then on two bases (below). When the code is the same, the
+screen shows the
 title and summary alone; both the same, the parent alone differing, it
-shows nothing under what it says. ↑↓ (pgup pgdn home end) scroll it, and
-Esc goes back to the line. In sync, Space says so on the bottom line,
+shows nothing under what it says. ↑↓ (pgup pgdn home end) scroll it, `1`
+opens the menu of the views of its interdiff (below), and Esc goes back
+to the line. In sync, Space says so on the bottom line,
 naming the parent (`Phabricator has this exact version of patch 3: the
 latest diff of D12 does what this version does, the title and summary of
 D12 are those of this version, and its parent is D11, the revision of
@@ -440,8 +450,9 @@ browser and in StackED, the same.
 There are six keys, four more for the middle, and `o`, on a line of a
 commit message. Of the four, `1`, `2` and `/` are self-review's (Copied
 from self-review-rs, below, says what self-review is), and `3` is
-stacked's own. The settings can make any of them other keys, and the help
-then names those:
+stacked's own; `1` is also the key of the views of the interdiffs, on the
+screens that show them. The settings can make any of them other keys, and
+the help then names those:
 
 - The arrows move. ↑↓ go through the patches (the header is above the
   first), the lines of the patch, or the comments (their header above the
@@ -662,6 +673,151 @@ then names those:
   (History, below). Made
   shorter than the cursor's line, the screen keeps the cursor's line in
   sight, on its last line, in every view.
+- On a screen that shows interdiffs, `1` opens the menu of their views,
+  titled `the view of the interdiffs`: on the versions of a patch;
+  History…, on its history and on its stack diff; the review of what
+  landed, while its right pane shows the stack diff of its change (the
+  cursor on its stack operations, or in the stack diff), not on a comment
+  nor on a patch looked at closer; and the screens of what an edit
+  changed (History, below) and of what differs from Phabricator (above).
+  The menu is in sections, each what it draws under a heading, then the
+  views it is drawn in, the heading no item: Enter, a click and ↑↓ pass it
+  by. Its one section is the interdiff, `the interdiff: the two versions'
+  diffs, compared`, in three views, each item saying how it reads:
+  `Interdiff: a sign for which version has the line, then its own sign`,
+  `A column per version: what each one's patch does with the line`, and
+  `Side by side: the old version on the left, the new one on the right`.
+  The view the interdiffs are drawn in is marked `●`; Enter or a click
+  picks one, and Esc leaves the view as it is; `?` on an item says what it
+  draws. The view picked holds for every interdiff, on every screen, as
+  long as the editor is open, the status line saying how it reads (`each
+  interdiff is drawn in a column per version: what each one's patch does
+  with each line, the old version's first`); the settings'
+  `view.interdiff` is the one they start in (Settings, below), as an
+  interdiff unless set. The screen keeps its place: the line its cursor is
+  on, else its top line, a row showing two lines, the old version's and
+  the new one's, being on the line it was on of the two, else on the old
+  version's; switching back, it is on the line it was on before. Every
+  other key does there what it does in each view: the arrows move or
+  scroll, Esc goes back, Enter on the review's stack diff goes to the line
+  in its patch as the work leaves it (of a row of two, the new version's),
+  and `o` opens the links of the line of a message the cursor is on (of a
+  row of two, both versions'). The bottom bar says `1: view` there, `?`
+  says what `1` does, and the top bar says the view when it is not the
+  first (`· interdiffs in columns`, `· interdiffs side-by-side`). The
+  versions are named as the screen names them: `D12 on Phabricator` and
+  `patch 2 as it is` on the screen of what differs from Phabricator; `v2`
+  and `v3` on the versions of a patch; `@4` and `@12`, the stacks before
+  and after, in History…'s stack diffs and on the screen of what an edit
+  changed; `the stack's version` and `the work's version` in the review of
+  what landed; and `version 3` and `this version`, in the review of a
+  pull, for what a patch had since the version a pull takes.
+
+  As an interdiff, as stacked always drew it, git range-diff's diff of two
+  diffs: each line's first sign says which version has it, a space for
+  both, `-` for the old one alone, `+` for the new one alone; its second
+  is that version's own sign. The code says so once, over the interdiff,
+  or, in a stack diff, over its first (`The first sign of each line says
+  which version has it: a space for both, - for D12 on Phabricator alone,
+  + for patch 2 as it is alone. The second is that version's own sign: +
+  for a line its patch adds, - for one it removes, a space for one it
+  leaves as it is.`); the lines are as they ever were.
+
+  In a column per version, as git's combined diff draws a merge (`git diff
+  --cc`): two columns before each line, the old version's first, each
+  saying what that version's patch does with the line: `+` it adds it, `-`
+  it removes it, a space it leaves it as it is; `=` the version has the
+  line, a header or a line of its message, which no sign of a diff marks;
+  `·` the version does not have it. The code says so once, over the
+  interdiff or the stack diff's first (`The first column is D12 on
+  Phabricator, the second patch 2 as it is. In each, + says that the
+  version's patch adds the line, - that it removes it, a space that it
+  leaves it as it is, = that the version has the line, a header or a line
+  of its message, and · that the version does not have the line.`). Each
+  line is worked out from the interdiff's: a line both versions have, what
+  each does with it, the same (`  ` for a line both leave, `--` one both
+  remove, `++` one both add, `==` a header both have). A run of lines that
+  one version alone has, between two that both have, holds those of the
+  two versions that are one line: the same text after their own signs,
+  matched in their order, a diff of the run's lines of each version,
+  never across a line both have, which would move a line past it. On one
+  base, a line a patch adds (`+`) is never one of the base (a space or
+  `-`), which is another line there; on two bases (below), it is the line
+  the other's base has, moved there, as when part of the patch went into
+  a patch below it, or came out of one. Such a line is drawn once, where
+  the old version has it, what each does with it (` -x`: the old version
+  leaves it, the new one removes it; `+ x`, on two bases: the old version
+  adds it, the new one has it before its patch).
+  Two hunk's headers that differ only in their ranges are one header, both
+  versions' ranges in it, the old one's first (`@@ -15,7 +15,7 → -17,7
+  +17,7 @@`). The rest of the run, the old version's first: a line the one
+  version adds, which the other does not have (`+·`, `·+`); a line of the
+  base the one version's diff alone shows, keeping or removing it, which
+  the other leaves as it is when the two are on one base (`- `), and is
+  not known to have when they are not (`-·`): on two bases, as when a
+  patch below changed between the two versions, or when the screen of what
+  differs from Phabricator says that the latest diff is on another base,
+  a line of the base of one is not a line of the other's, and the views
+  say `·`. Two diffs are on two bases when what each says of the files
+  both change, before the patch, differs (a line at the same place is
+  another, the same hunk starts elsewhere, or one makes a file the other
+  finds there), as the screen of what differs from Phabricator tells
+  them; each version's diff is read so only when a line of the base shows
+  in one alone. A header, the title and the body of the message, the
+  files' headers and git's `\` line: `=` where a version has it, `·` where
+  it does not. The interdiff's own hunks' headers are as the interdiff
+  cuts them, alone on their lines. Its colours: a line both versions have
+  and do the same with dim, in its own sign's colour as a diff draws it,
+  so that what differs stands out; any other line as any text, each column
+  in its own colour (`+` as a line added, `-` as a line removed, `·` dim,
+  `=` and a space as any text), but a line of the message compared with
+  the other version's, word by word, where their lines wrap aside, its
+  words only one version has in the colours for words (`removed_word` the
+  old version's, `added_word` the new one's), as an interdiff compares two
+  messages (History, below); a header the two have otherwise (`Date:`),
+  what changed in it so too, as an interdiff pairs it; and a line one
+  version adds beside the one the other adds in its place (`+·` then
+  `·+`), the two almost the same, at least half of what they say, what
+  changed in each in the colours for words, as the interdiff pairs them.
+
+  Side by side, after moz-phab-diff's split view: the old version on the
+  left and the new one on the right, each half under a heading of its
+  version, over each interdiff (`D12 on Phabricator │patch 2 as it is`),
+  the interdiff's lines paired as the code view's side by side pairs a
+  diff's (`rows.rs`, copied from self-review-rs): a line both versions
+  have on both sides of one row; a run of lines the old one has beside the
+  run the new one has after it, row by row; a line only one has alone in
+  its row, `~` dim on the other side. The interdiff's hunks are as it cuts
+  them, their headers across both halves. Each cell is its version's line
+  as a diff draws it, its own sign once, with no sign of the interdiff: a
+  line of the diffs in the colour of its own sign, as the code view
+  colours a diff's lines (`added`, `removed`, a hunk's header in its own);
+  a line of the mail, its headers and its message, as the interdiff draws
+  it. A row both versions have is dim, in its own colours, so that what
+  differs stands out. In each half, a line its version's own diff removes
+  and the one it adds in its place, almost the same, show what changed in
+  them in the colours for words, as the code view pairs a patch's lines,
+  however much of the version's hunk the interdiff shows; a line of the
+  message is compared across the two halves instead, word by word, as the
+  interdiff compares two messages. A line too wide folds in its half, a
+  column short of it, as the code view's side by side folds its lines: a
+  line of code where the half ends, each piece after the first `↪` in
+  place of its sign, and any other between words, a bullet's pieces under
+  what follows the bullet. Side by side needs a pane of 60 columns, as the
+  code view's side by side needs a middle so wide (`view.split_width`): a
+  pane narrower than that draws its interdiffs as interdiffs meanwhile,
+  the view picked kept. Picked on such a pane, side by side is the view
+  all the same, of every pane wide enough, and the status line says why
+  this one does not draw it (`each interdiff is drawn side by side where
+  its pane has 60 columns: this pane has 59, so its interdiffs are drawn
+  as interdiffs until it is wider`); `?` on its item says so before it is
+  picked; and while the pane is narrower, the top bar says `· interdiffs
+  side-by-side: too narrow`, and `?` says why the interdiffs are drawn as
+  interdiffs. Such panes are the review's right pane and History…'s stack
+  diff on a screen of 100 columns or fewer (→ again, in the review, gives
+  its pane the screen's width), the versions' on one of 80 or fewer, and
+  a screen of its own under 60. In the browser (`stacked web`) and in
+  StackED, the same.
 - Unified split in two shows the patch picked twice, side by side, each
   half a unified view of its own with a line between them, to read one
   place of the patch while going through another: a function's definition

@@ -197,12 +197,16 @@ pub enum Diffed {
     Base { what: &'static str, was: String, is: String },
     /// Patch `at` (from 1) of the stack after: added, a new version (its
     /// message alone changed, `reworded`), moved from `was`, or as it was.
+    /// A new version told with what changed in it says whether its diff
+    /// and the old one's are on two bases (`ops::other_bases`), as when a
+    /// patch below it changed: `rebased`.
     Patch {
         at: usize,
         title: String,
         added: bool,
         changed: bool,
         reworded: bool,
+        rebased: bool,
         was: Option<usize>,
     },
     /// Patch `was` (from 1) of the stack before, not in the one after.
@@ -341,22 +345,20 @@ fn put(out: &mut Vec<Diffed>, j: usize, p: &Patch, old: Option<&Patch>, was: Opt
     let changed = old.is_some_and(|o| o.id != p.id);
     // Its message alone changed: reworded.
     let reworded = changed && old.is_some_and(|o| o.message != p.message && crate::ops::same_effect(&o.diff, &p.diff));
+    let lines: Vec<crate::ops::InterLine> = match (code, changed, old) {
+        (true, true, Some(o)) => crate::ops::interdiff_lines(o, p).into_iter().skip_while(|l| l.text.starts_with("--- ") || l.text.starts_with("+++ ")).collect(),
+        _ => vec![],
+    };
     out.push(Diffed::Patch {
         at: j + 1,
         title: p.title().to_string(),
         added: old.is_none(),
         changed,
         reworded,
+        rebased: old.is_some_and(|o| !lines.is_empty() && !crate::ops::one_base(&lines, &o.diff, &p.diff)),
         was: was.map(|i| i + 1),
     });
-    if let (true, true, Some(o)) = (code, changed, old) {
-        out.extend(
-            crate::ops::interdiff_lines(o, p)
-                .into_iter()
-                .skip_while(|l| l.text.starts_with("--- ") || l.text.starts_with("+++ "))
-                .map(Diffed::Code),
-        );
-    }
+    out.extend(lines.into_iter().map(Diffed::Code));
 }
 
 /// A stack diff in short: how many patches were added, dropped, given a
@@ -715,7 +717,8 @@ mod tests {
         // A new version, one dropped where it was, one kept, one added.
         let diff = stack_diff(&d, Some(7), Some(8), true);
         assert_eq!(texts(&diff), [" 1 ~ A", "   − B, was 2", " 2   C", " 3 + D"]);
-        assert!(diff.contains(&Diffed::Code("-+a1".into())) && diff.contains(&Diffed::Code("++a2".into())), "{diff:?}");
+        let code = |text: &str| diff.iter().any(|d| matches!(d, Diffed::Code(l) if l.text == text && l.part == crate::ops::Part::Line));
+        assert!(code("-+a1") && code("++a2"), "{diff:?}");
         assert_eq!(summary(&diff), "+1 −1 ~1");
         assert!(!stack_diff(&d, Some(7), Some(8), false).iter().any(|l| matches!(l, Diffed::Code(_))));
         // Moved, the others keeping their order.

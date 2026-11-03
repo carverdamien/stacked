@@ -10,9 +10,12 @@
 - `check.rs`: whether patches apply, before they go in; the files as a
   patch leaves them, and the tree, for a submit.
 - `ops.rs`: edits to a stack, `$EDITOR` (the patch as mail, its code); the
-  interdiff of two versions of a patch; a patch made again on other
-  patches under it, its conflicts marked where they disagree, as a pull
-  makes one (`rebased`).
+  interdiff of two versions of a patch, each of its lines told apart by
+  what part of its version's mail it is, and what changed in a line of a
+  hunk as its own version's diff pairs it, for the views of the
+  interdiffs to draw; whether two diffs of a patch are on two bases
+  (`other_bases`); a patch made again on other patches under it, its
+  conflicts marked where they disagree, as a pull makes one (`rebased`).
 - `git.rs`: what stacked asks of git: mail from a range, the stack's
   worktrees and the agents', a checkout to edit a patch in.
 - `ask.rs`, `claude.rs`: asking the agent about comments, from the queue to
@@ -164,7 +167,11 @@
   comment edited on Phabricator, or read again with its suggested edit,
   in the review of a pull, a commit's
   message against its patch's; and a diff, or a commit, as the middle
-  draws a patch; `tui/head_why.rs`, the view of why Move HEAD does not
+  draws a patch; `tui/interdiffs.rs`, the views of an interdiff that `1`
+  picks on every screen that shows one, as an interdiff, in a column per
+  version or side by side, what says how each reads, the menu of them in
+  sections, and where a screen's place is found again in another view;
+  `tui/head_why.rs`, the view of why Move HEAD does not
   move HEAD, and what you can do in your checkout so that it can;
   `tui/banner.rs`, the banner of the agent's work; `tui/places.rs`, where
   each pane's cursor was, each half's of the middle split in two;

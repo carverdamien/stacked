@@ -1526,3 +1526,31 @@ fn a_thread_the_agent_opened_written_in_its_review_sends_the_work_back_in_the_br
     let now = d.note(&n.change, &n.id).unwrap();
     assert_eq!((now.by.as_deref(), now.review.as_deref()), (Some("agent"), Some("run-agent")));
 }
+
+#[test]
+fn one_picks_the_view_of_the_interdiffs_of_a_patch_s_versions_in_the_browser_too() {
+    let (_tmp, db) = setup();
+    reworded(&db, "Bug 1 - shout two, reworded");
+    stacked::config::init(stacked::config::Config::default());
+    let (port, token) = stacked::web::start(db).unwrap();
+    let (host, input) = (format!("127.0.0.1:{port}"), format!("POST /input?t={token}"));
+    let mut events = events(port, &token, 120);
+    // The first patch's title, longer, over two rows.
+    until(&mut events, "the patches", |l| l.starts_with("data: r 4 ") && l.contains("Bug 2 - add b"));
+    // The first patch's versions, from its menu, a right click opening it.
+    ask(port, &host, &input, "m 5 2 r\n");
+    let seen = until(&mut events, "the patch's menu", |l| text(l).contains("Versions of this patch…"));
+    let (x, y) = cell_of(seen.last().unwrap(), "Versions of this patch…");
+    ask(port, &host, &input, &format!("m {x} {y} l\n"));
+    until(&mut events, "the versions", |l| text(l).contains("what changed from the version before"));
+    // 1: the menu of the views of the interdiffs, under the heading of what
+    // they draw; a click on side by side picks it, the version's pane then
+    // side by side, each half under a heading of its version.
+    ask(port, &host, &input, "k c 31 -\n");
+    until(&mut events, "the menu's heading", |l| text(l).contains("the interdiff: the two versions' diffs, compared"));
+    let item = "Side by side: the old version";
+    let seen = until(&mut events, "side by side in the menu", |l| text(l).contains(item));
+    let (x, y) = cell_of(seen.last().unwrap(), item);
+    ask(port, &host, &input, &format!("m {x} {y} l\n"));
+    until(&mut events, "the versions side by side", |l| text(l).contains("│v2"));
+}

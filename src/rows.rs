@@ -263,25 +263,30 @@ pub fn word_spans(lines: &[&str]) -> Vec<Spans> {
     out
 }
 
+/// How far in the lines after the first of a line of a message, `text`,
+/// folded, start: under its text, its indent kept; a bullet's (`- `, `* `,
+/// `+ `, `1. `, `2) `) under what follows the bullet.
+pub fn hang(text: &str) -> usize {
+    let indent = text.chars().take_while(|c| *c == ' ').count();
+    let rest = &text[indent..];
+    let digits = rest.chars().take_while(char::is_ascii_digit).count();
+    let mark = match rest[digits..].chars().next() {
+        Some('-' | '*' | '+') if digits == 0 => 1,
+        Some('.' | ')') if digits > 0 => digits + 1,
+        _ => 0,
+    };
+    indent + if mark > 0 && rest[mark..].starts_with(' ') { mark + 1 } else { 0 }
+}
+
 /// A line of a patch's message, `text`, folded into lines of at most `w`
 /// characters, between words: its indent kept, and each line after the
-/// first under its text, a bullet's under what follows the bullet; a word
-/// longer than a line broken where the line ends. As it is when it fits,
-/// or the pane is too narrow to fold it.
+/// first under its text, a bullet's under what follows the bullet (`hang`);
+/// a word longer than a line broken where the line ends. As it is when it
+/// fits, or the pane is too narrow to fold it.
 fn fold_prose(text: &str, w: usize) -> Vec<String> {
     let indent: String = text.chars().take_while(|c| *c == ' ').collect();
     let rest = &text[indent.len()..];
-    // `- `, `* `, `+ `, `1. `, `2) `: what follows it is where the lines go.
-    let bullet = {
-        let digits = rest.chars().take_while(char::is_ascii_digit).count();
-        let mark = match rest[digits..].chars().next() {
-            Some('-' | '*' | '+') if digits == 0 => 1,
-            Some('.' | ')') if digits > 0 => digits + 1,
-            _ => 0,
-        };
-        if mark > 0 && rest[mark..].starts_with(' ') { mark + 1 } else { 0 }
-    };
-    let hang = indent.chars().count() + bullet;
+    let hang = hang(text);
     if text.chars().count() <= w || w < hang + 10 {
         return vec![text.to_string()];
     }

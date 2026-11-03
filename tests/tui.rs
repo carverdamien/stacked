@@ -7,7 +7,7 @@ use ratatui::layout::Rect;
 
 use stacked::db::{Db, Note, stack_change};
 use stacked::thread::{Role, append_turn};
-use stacked::tui::{App, AskDialog, Button, Effect, Focus, Layout, Mode, Pane, PatchesPane, Screen, Show, Spot};
+use stacked::tui::{App, AskDialog, Button, Effect, Focus, InterLayout, Layout, Mode, Pane, PatchesPane, Screen, Show, Spot};
 
 fn git(dir: &Path, args: &[&str]) {
     let out = Command::new("git")
@@ -8973,10 +8973,10 @@ fn landed_work_is_reviewed_from_the_banner_part_by_part() {
     }
     assert!(screen.contains("what accepting it does to the stack"), "{screen}");
     // Enter accepts; each comment is shown where it would be.
-    assert_eq!(app.hint(), "↑↓ choose · enter: accept · delete: reject · →: look closer · space: menu · esc: save, discard or close");
+    assert_eq!(app.hint(), "↑↓ choose · enter: accept · delete: reject · →: look closer · space: menu · 1: view · esc: save, discard or close");
     keys(&mut app, &[KeyCode::Enter]);
     assert!(draw(&mut app).contains("stack operations · ✓ 1 accepted"));
-    assert_eq!(app.hint(), "↑↓ choose · enter: to review again · delete: reject · →: look closer · space: menu · esc: save, discard or close");
+    assert_eq!(app.hint(), "↑↓ choose · enter: to review again · delete: reject · →: look closer · space: menu · 1: view · esc: save, discard or close");
     down_to_review(&mut app, "Patch 2 is");
     assert!(draw(&mut app).contains("a comment it opened, where it would be"));
     keys(&mut app, &[KeyCode::Enter]);
@@ -9351,7 +9351,7 @@ fn rejecting_an_operation_that_another_needs_is_refused_and_the_one_needing_it_g
     }
     // Patch 4's operation: patch 5's new version needs it.
     down_to_review(&mut app, "modify  4");
-    assert_eq!(app.hint(), "↑↓ choose · enter: accept · delete: reject · →: look closer · space: menu · esc: save, discard or close");
+    assert_eq!(app.hint(), "↑↓ choose · enter: accept · delete: reject · →: look closer · space: menu · 1: view · esc: save, discard or close");
     keys(&mut app, &[KeyCode::Delete]);
     assert_eq!(app.status, "patch 5's new version applies only on patch 4's new version: reject patch 5's operation first");
     assert!(selected_line(&mut app).is_some_and(|l| l.starts_with("   · modify  4")), "{:?}", selected_line(&mut app));
@@ -9422,7 +9422,7 @@ fn accepting_an_operation_whose_needed_one_is_rejected_is_refused_until_that_one
     keys(&mut app, &[KeyCode::Delete, KeyCode::Up, KeyCode::Delete, KeyCode::Down]);
     assert!(draw(&mut app).contains(" stack operations · ✗ 2 rejected, · 2 to review"));
     // Patch 5's new version needs patch 4's, which is rejected.
-    assert_eq!(app.hint(), "↑↓ choose · enter: accept · →: look closer · space: menu · esc: save, discard or close");
+    assert_eq!(app.hint(), "↑↓ choose · enter: accept · →: look closer · space: menu · 1: view · esc: save, discard or close");
     keys(&mut app, &[KeyCode::Delete]);
     assert_eq!(app.status, "this operation is rejected already");
     keys(&mut app, &[KeyCode::Enter]);
@@ -9586,7 +9586,7 @@ fn the_right_pane_says_what_an_operation_needs_and_what_needs_it() {
     keys(&mut app, &[KeyCode::Home]);
     down_to_review(&mut app, "noop    1");
     assert!(pane(&mut app).contains("The change leaves this patch as it is: there is nothing to accept or reject."));
-    assert_eq!(app.hint(), "↑↓ choose · enter: nothing, the change leaves this patch as it is · →: look closer · space: menu · esc: save, discard or close");
+    assert_eq!(app.hint(), "↑↓ choose · enter: nothing, the change leaves this patch as it is · →: look closer · space: menu · 1: view · esc: save, discard or close");
     keys(&mut app, &[KeyCode::Enter]);
     assert_eq!(app.status, "the change leaves this patch as it is: there is nothing to accept or reject");
     // Rejected, both: patch 4's can be accepted alone, patch 5's needs it.
@@ -11431,6 +11431,489 @@ fn the_diff_of_an_interdiff_is_drawn_as_ever_whatever_its_message_does() {
     assert_eq!(style_after(&mut app, new, new.find("entire").unwrap(), 50), as_drawn(color::add_word()), "entire");
     assert_eq!(style_after(&mut app, new, new.find("file").unwrap(), 50), as_drawn(ratatui::style::Style::new()), "file");
     assert_eq!(style_after(&mut app, "+before it checks the header.", 1, 50), as_drawn(ratatui::style::Style::new()), "before");
+}
+
+/// Patch 1 of `setup`'s stack given two versions more, each saying its
+/// line 39 otherwise: `line 39 was`, then `line 39 said`, its title
+/// reworded and web link `link` put in its message in the last.
+fn three_versions(db: &Path, link: &str) {
+    let d = Db::load(db).unwrap();
+    let diff = d.patch(&d.stack("s").unwrap().patches[0]).diff.clone();
+    drop(d);
+    reword(db, 0, "Bug 1 - shout two\n\nBecause.", Some(&diff.replace("+LINE 39", "+line 39 was")));
+    reword(db, 0, &format!("Bug 1 - shout two, reworded\n\nBecause {link} says so."), Some(&diff.replace("+LINE 39", "+line 39 said")));
+}
+
+/// Opens the menu of the views of the interdiffs (1), and picks the view
+/// whose item starts with `name`, past the mark of the one they are drawn
+/// in: ↓ to it, and Enter; the screen drawn `w` columns wide after each
+/// key.
+fn inter_view_at(app: &mut App, name: &str, w: u16) {
+    assert_eq!(key(app, KeyCode::Char('1')), Effect::None);
+    draw_sized(app, w, 30);
+    assert_eq!(menu_title(app), "the view of the interdiffs");
+    let all = items(app);
+    let want = all
+        .iter()
+        .position(|(l, _)| l.trim_start_matches(['●', ' ']).starts_with(name))
+        .unwrap_or_else(|| panic!("no view {name:?} in {all:?}"));
+    for _ in 0..all.len() * 2 {
+        match &app.mode {
+            Mode::Menu(m) if m.sel == want => break,
+            _ => {
+                key(app, KeyCode::Down);
+            }
+        }
+    }
+    assert_eq!(key(app, KeyCode::Enter), Effect::None);
+    draw_sized(app, w, 30);
+}
+
+/// As `inter_view_at`, 120 columns wide.
+fn inter_view(app: &mut App, name: &str) {
+    inter_view_at(app, name, 120);
+}
+
+/// The row of History…'s stack diff the cursor is on, as it reads, the
+/// spaces around it gone.
+fn hist_row(app: &App) -> String {
+    let parts = app.hist_rows.get(app.hist_cursor).cloned().unwrap_or_default();
+    parts.iter().map(|(t, _)| t.as_str()).collect::<String>().trim().to_string()
+}
+
+/// Down History…'s stack diff until the cursor is on a row `wanted` says.
+fn down_to_hist(app: &mut App, wanted: impl Fn(&str) -> bool) {
+    draw(app);
+    for _ in 0..80 {
+        if wanted(&hist_row(app)) {
+            return;
+        }
+        keys(app, &[KeyCode::Down]);
+    }
+    panic!("no such row in the stack diff: {:#?}", app.hist_rows.len());
+}
+
+/// What each view of the interdiffs is in the menu of 1, the one drawn
+/// `marked`, under the heading of what they draw.
+fn inter_views(marked: InterLayout) -> Vec<String> {
+    let mut out = vec!["the interdiff: the two versions' diffs, compared".to_string()];
+    for (v, l) in [
+        (InterLayout::Interdiff, "Interdiff: a sign for which version has the line, then its own sign"),
+        (InterLayout::Columns, "A column per version: what each one's patch does with the line"),
+        (InterLayout::Sides, "Side by side: the old version on the left, the new one on the right"),
+    ] {
+        out.push(format!("{}{l}", if v == marked { "● " } else { "  " }));
+    }
+    out
+}
+
+#[test]
+fn one_on_every_screen_of_interdiffs_opens_the_menu_of_their_views_the_one_drawn_marked() {
+    let (_tmp, db, _src) = setup();
+    three_versions(&db, "https://example.com/why");
+    let mut app = open(&db).unwrap();
+    draw(&mut app);
+    let labels = |app: &App| items(app).into_iter().map(|(l, _)| l).collect::<Vec<_>>();
+    // The versions of a patch: 1, the menu of the views of the interdiffs,
+    // under the heading of what they draw, each saying how it reads, the
+    // one they are drawn in marked and picked; the heading no item, ↑ from
+    // the first view going round to the last.
+    choose(&mut app, "Versions of this patch…");
+    assert!(app.hint().contains("1: view · "), "{}", app.hint());
+    keys(&mut app, &[KeyCode::Char('1')]);
+    assert_eq!((menu_title(&app), labels(&app)), ("the view of the interdiffs".to_string(), inter_views(InterLayout::Interdiff)));
+    assert!(matches!(&app.mode, Mode::Menu(m) if m.sel == 1), "{:?}", app.mode);
+    keys(&mut app, &[KeyCode::Up]);
+    assert!(matches!(&app.mode, Mode::Menu(m) if m.sel == 3), "{:?}", app.mode);
+    // Esc leaves things as they are.
+    keys(&mut app, &[KeyCode::Esc]);
+    assert_eq!((app.mode.clone(), app.inter, app.status.as_str()), (Mode::Normal, InterLayout::Interdiff, ""));
+    // ? says what an item draws.
+    keys(&mut app, &[KeyCode::Char('1'), KeyCode::Down, KeyCode::Char('?')]);
+    let Mode::Help { lines, .. } = &app.mode else { panic!("{:?}", app.mode) };
+    assert!(lines[0].starts_with("Press Enter to draw every interdiff in a column per version, as long as the editor is open: before each line, what the old version's patch does with it"), "{lines:#?}");
+    keys(&mut app, &[KeyCode::Char('?')]);
+    // A click on the heading picks nothing; one on side by side picks it,
+    // marked the next time, and picked.
+    let screen = draw(&mut app);
+    let (x, y) = at(&screen, "the interdiff: the two versions' diffs");
+    assert_eq!(app.click(x, y, false), Effect::None);
+    assert!(matches!(&app.mode, Mode::Menu(m) if m.sel == 2), "{:?}", app.mode);
+    let (x, y) = at(&screen, "Side by side: the old version");
+    assert_eq!(app.click(x, y, false), Effect::None);
+    assert_eq!((app.mode.clone(), app.inter), (Mode::Normal, InterLayout::Sides));
+    assert_eq!(app.status, "each interdiff is drawn side by side: the old version on the left, the new one on the right, the lines both have dim");
+    keys(&mut app, &[KeyCode::Char('1')]);
+    assert_eq!(labels(&app), inter_views(InterLayout::Sides));
+    assert!(matches!(&app.mode, Mode::Menu(m) if m.sel == 3), "{:?}", app.mode);
+    keys(&mut app, &[KeyCode::Esc]);
+    // ? says what 1 does there.
+    assert!(app.help().iter().any(|l| l.starts_with("Press 1 to pick how the interdiffs are drawn: as interdiffs")), "{:?}", app.help());
+    keys(&mut app, &[KeyCode::Esc]);
+    // History…, on the history and on its stack diff.
+    keys(&mut app, &[KeyCode::Home]);
+    choose(&mut app, "History…");
+    assert!(app.hint().contains("1: view · "), "{}", app.hint());
+    keys(&mut app, &[KeyCode::Char('1')]);
+    assert_eq!(labels(&app), inter_views(InterLayout::Sides));
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Right]);
+    assert!(app.hint().contains("1: view · "), "{}", app.hint());
+    keys(&mut app, &[KeyCode::Char('1')]);
+    assert_eq!(menu_title(&app), "the view of the interdiffs");
+    keys(&mut app, &[KeyCode::Esc]);
+    // The tree, which draws no interdiff: 1 does nothing. What an edit
+    // changed, from there, on a screen of its own: 1 there too.
+    keys(&mut app, &[KeyCode::Left, KeyCode::Enter]);
+    assert_eq!(app.screen, Screen::Tree);
+    keys(&mut app, &[KeyCode::Char('1')]);
+    assert_eq!(app.mode, Mode::Normal);
+    choose(&mut app, "What this edit changed…");
+    assert_eq!(app.screen, Screen::Text);
+    assert!(app.hint().contains("1: view · "), "{}", app.hint());
+    keys(&mut app, &[KeyCode::Char('1')]);
+    assert_eq!(labels(&app), inter_views(InterLayout::Sides));
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Esc, KeyCode::Esc]);
+    // In the middle, 1 is the views of the code, as ever.
+    assert_eq!(app.screen, Screen::Main);
+    keys(&mut app, &[KeyCode::Down, KeyCode::Char('1')]);
+    assert_eq!(menu_title(&app), "the view");
+    keys(&mut app, &[KeyCode::Esc]);
+    // 1 is the settings' `view` there too: another key opens the menu, and
+    // 1 does nothing.
+    let (cfg, wrong) = stacked::config::Config::parse("[keys]\nview = \"v\"\n").unwrap();
+    assert!(wrong.is_empty(), "{wrong:?}");
+    stacked::config::init(settings());
+    let mut app = App::with_config(&db, cfg).unwrap();
+    draw(&mut app);
+    choose(&mut app, "Versions of this patch…");
+    let screen = draw(&mut app);
+    assert!(screen.lines().last().unwrap().contains("v: view · "), "{screen}");
+    keys(&mut app, &[KeyCode::Char('1')]);
+    assert_eq!(app.mode, Mode::Normal);
+    keys(&mut app, &[KeyCode::Char('v')]);
+    assert_eq!(menu_title(&app), "the view of the interdiffs");
+}
+
+#[test]
+fn each_view_of_an_interdiff_says_how_it_reads_and_side_by_side_is_the_old_version_left_and_the_new_one_right() {
+    use stacked::paint::color;
+    let (_tmp, db, _src) = setup();
+    three_versions(&db, "https://example.com/why");
+    let mut app = open(&db).unwrap();
+    choose(&mut app, "Versions of this patch…");
+    // The pane of the version, from column 31, 89 wide.
+    let pane = |app: &mut App| -> Vec<String> { draw_sized(app, 120, 40).lines().map(|l| l.chars().skip(31).collect::<String>().trim_end().to_string()).collect() };
+    let dim = |st: ratatui::style::Style| st.add_modifier(ratatui::style::Modifier::DIM);
+    // As an interdiff: what its two signs say, once, over the code, the
+    // versions named as the list names them; then the lines as ever.
+    let lines = pane(&mut app);
+    // Under the top bar and the version's own line.
+    let said: Vec<String> = lines.iter().skip(2).take_while(|l| !l.starts_with("--- ")).cloned().collect();
+    assert_eq!(
+        said.join(" "),
+        "The first sign of each line says which version has it: a space for both, - for v2 alone, + for v3 alone. The second is that version's own sign: + for a line its patch adds, - for one it removes, a space for one it leaves as it is."
+    );
+    assert!(lines.contains(&"-+line 39 was".to_string()) && lines.contains(&"++line 39 said".to_string()), "{lines:#?}");
+    // In a column per version: what each column is, then before each line
+    // what the old version's patch does with it, then what the new one's
+    // does. A line both remove, dim; the one each adds alone, the other
+    // version's column `·`, what changed in each in the colours for words;
+    // the title each has, `=`, and the other `·`, compared as words.
+    inter_view(&mut app, "A column per version");
+    let lines = pane(&mut app);
+    let said: Vec<String> = lines.iter().skip(2).take_while(|l| !l.starts_with("@@")).cloned().collect();
+    assert_eq!(
+        said.join(" "),
+        "The first column is v2, the second v3. In each, + says that the version's patch adds the line, - that it removes it, a space that it leaves it as it is, = that the version has the line, a header or a line of its message, and · that the version does not have the line."
+    );
+    for line in ["=·Subject: Bug 1 - shout two", "·=Subject: Bug 1 - shout two, reworded", "--line 39", "+·line 39 was", "·+line 39 said", "  line 40"] {
+        assert!(lines.contains(&line.to_string()), "{line:?} in {lines:#?}");
+    }
+    assert_eq!(style_after(&mut app, "--line 39", 0, 40), as_drawn(dim(color::del())), "a line both remove");
+    assert_eq!(style_after(&mut app, "+·line 39 was", 0, 40), as_drawn(color::add()), "the old version adds it");
+    assert_eq!(style_after(&mut app, "+·line 39 was", 1, 40), as_drawn(color::dim()), "the new one has it not");
+    assert_eq!(style_after(&mut app, "+·line 39 was", 2, 40), as_drawn(ratatui::style::Style::new()), "the line");
+    assert_eq!(style_after(&mut app, "+·line 39 was", 10, 40), as_drawn(color::del_word()), "was");
+    assert_eq!(style_after(&mut app, "·+line 39 said", 10, 40), as_drawn(color::add_word()), "said");
+    let reworded = "·=Subject: Bug 1 - shout two, reworded";
+    assert_eq!(style_after(&mut app, reworded, reworded.chars().count() - "reworded".len(), 40), as_drawn(color::add_word()), "reworded");
+    assert!(draw(&mut app).lines().next().unwrap().contains("· interdiffs in columns"));
+    // Side by side: the old version on the left, from column 31, the new
+    // one on the right, from 76, each half under a heading of its version;
+    // each line as its own version's diff draws it, its own sign alone: a
+    // line both have dim, those that differ in their own colours, what each
+    // version's own diff changed in a line in the colours for words; the
+    // title compared across, as words.
+    inter_view(&mut app, "Side by side");
+    let screen = draw_sized(&mut app, 120, 40);
+    let (x, y) = at_from(&screen, "v2", 31);
+    assert_eq!((x, at_from(&screen, "│v3", 31)), (31, (75, y)), "{screen}");
+    let (x, y) = at_from(&screen, "+line 39 was", 31);
+    assert_eq!((x, at_from(&screen, "+line 39 said", 31)), (31, (76, y)), "{screen}");
+    assert!(!screen.contains("-+line 39 was") && !screen.contains("The first sign"), "{screen}");
+    assert_eq!(style_after(&mut app, "-line 39", 0, 40), as_drawn(dim(color::del())), "a line both remove");
+    assert_eq!(style_after(&mut app, "+line 39 was", 0, 40), as_drawn(color::add()), "the old version adds it");
+    assert_eq!(style_after(&mut app, "+line 39 was", 9, 40), as_drawn(color::add_word()), "was, as its own diff changes it");
+    assert_eq!(style_after(&mut app, "+line 39 said", 9, 40), as_drawn(color::add_word()), "said");
+    let title = "Subject: Bug 1 - shout two, reworded";
+    assert_eq!(style_after(&mut app, title, title.len() - "reworded".len(), 40), as_drawn(color::add_word()), "reworded");
+    assert_eq!(style_after(&mut app, title, 0, 40), as_drawn(ratatui::style::Style::new()), "Subject");
+    assert!(draw(&mut app).lines().next().unwrap().contains("· interdiffs side-by-side"));
+}
+
+#[test]
+fn side_by_side_on_a_pane_too_narrow_for_it_the_interdiffs_are_drawn_as_interdiffs_and_that_is_said() {
+    let (_tmp, db, _src) = setup();
+    three_versions(&db, "https://example.com/why");
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Home]);
+    choose(&mut app, "History…");
+    // 100 columns: the history 40 wide, its stack diff 59, under the 60 two
+    // sides need.
+    let narrow = |app: &mut App| draw_sized(app, 100, 30);
+    for code in [KeyCode::Right, KeyCode::Char('1'), KeyCode::Down, KeyCode::Down, KeyCode::Char('?')] {
+        key(&mut app, code);
+        narrow(&mut app);
+    }
+    // ? on side by side says what picking it does there.
+    let Mode::Help { lines, .. } = &app.mode else { panic!("{:?}", app.mode) };
+    assert!(lines[0].ends_with("This pane is under 60 columns, too narrow for side by side: picked, its interdiffs are drawn as interdiffs until it has room."), "{lines:#?}");
+    // Picked: the view holds, but this pane draws its interdiffs as
+    // interdiffs, and the status line, the top bar and ? say why.
+    for code in [KeyCode::Char('?'), KeyCode::Enter] {
+        key(&mut app, code);
+    }
+    assert_eq!(app.inter, InterLayout::Sides);
+    assert_eq!(
+        app.status,
+        "each interdiff is drawn side by side where its pane has 60 columns: this pane has 59, so its interdiffs are drawn as interdiffs until it is wider"
+    );
+    let screen = narrow(&mut app);
+    assert!(screen.lines().next().unwrap().contains("· interdiffs side-by-side: too narrow"), "{screen}");
+    let rows: Vec<String> = app.hist_rows.iter().map(|p| p.iter().map(|(t, _)| t.as_str()).collect::<String>().trim().to_string()).collect();
+    assert!(rows.iter().any(|r| r == "-+line 39 was"), "as an interdiff: {rows:#?}");
+    let said = "This pane is under 60 columns, too narrow for side by side: its interdiffs are drawn as interdiffs until the pane has room.";
+    assert!(app.help().iter().any(|l| l == said), "{:?}", app.help());
+    // 120 columns: the stack diff 71 wide, side by side.
+    let screen = draw(&mut app);
+    assert!(screen.lines().next().unwrap().contains("· interdiffs side-by-side") && !screen.contains("too narrow"), "{screen}");
+    let rows: Vec<String> = app.hist_rows.iter().map(|p| p.iter().map(|(t, _)| t.as_str()).collect::<String>().trim().to_string()).collect();
+    assert!(rows.iter().any(|r| r.starts_with("+line 39 was") && r.ends_with("│+line 39 said")), "{rows:#?}");
+    assert!(!app.help().iter().any(|l| l == said), "{:?}", app.help());
+}
+
+#[test]
+fn the_settings_start_the_interdiffs_side_by_side_and_the_view_picked_holds_on_every_screen() {
+    let (_tmp, db, _src) = setup();
+    three_versions(&db, "https://example.com/why");
+    let mut app = open_set(&db, |c| c.view.interdiff = InterLayout::Sides);
+    assert_eq!(app.inter, InterLayout::Sides);
+    // The versions: side by side at once, the menu of 1 marking it.
+    choose(&mut app, "Versions of this patch…");
+    let screen = draw(&mut app);
+    assert!(screen.lines().any(|l| l.contains("+line 39 was") && l.contains("│+line 39 said")), "{screen}");
+    keys(&mut app, &[KeyCode::Char('1')]);
+    assert_eq!(items(&app).into_iter().map(|(l, _)| l).collect::<Vec<_>>(), inter_views(InterLayout::Sides));
+    // In a column per version from there: History's stack diff so too,
+    // then the versions again.
+    keys(&mut app, &[KeyCode::Up, KeyCode::Enter]);
+    assert_eq!(app.inter, InterLayout::Columns);
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Home]);
+    choose(&mut app, "History…");
+    keys(&mut app, &[KeyCode::Right]);
+    let rows: Vec<String> = app.hist_rows.iter().map(|p| p.iter().map(|(t, _)| t.as_str()).collect::<String>().trim().to_string()).collect();
+    assert!(rows.iter().any(|r| r == "+·line 39 was") && rows.iter().any(|r| r == "·+line 39 said"), "{rows:#?}");
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Down]);
+    choose(&mut app, "Versions of this patch…");
+    assert!(draw(&mut app).contains("·+line 39 said"));
+}
+
+#[test]
+fn switching_the_view_of_the_interdiffs_keeps_the_cursor_on_its_line_and_a_text_on_its_top_line() {
+    let (tmp, db, _src) = setup();
+    let here = tmp.path().file_name().unwrap().to_string_lossy().to_string();
+    let why = format!("https://example.com/{here}/why");
+    three_versions(&db, &why);
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Home]);
+    choose(&mut app, "History…");
+    // History…'s stack diff: on the new version's line, each view keeps
+    // the cursor on that line; back as an interdiff, on the line it was
+    // on.
+    keys(&mut app, &[KeyCode::Right]);
+    down_to_hist(&mut app, |r| r == "++line 39 said");
+    inter_view(&mut app, "A column per version");
+    assert_eq!(hist_row(&app), "·+line 39 said");
+    inter_view(&mut app, "Side by side");
+    let row = hist_row(&app);
+    assert!(row.starts_with("+line 39 was") && row.ends_with("│+line 39 said"), "{row}");
+    inter_view(&mut app, "Interdiff");
+    assert_eq!(hist_row(&app), "++line 39 said");
+    // On the old version's line, the same.
+    keys(&mut app, &[KeyCode::Up]);
+    assert_eq!(hist_row(&app), "-+line 39 was");
+    inter_view(&mut app, "Side by side");
+    inter_view(&mut app, "Interdiff");
+    assert_eq!(hist_row(&app), "-+line 39 was");
+    // o on a line of the message side by side: the links of each version's
+    // line of it.
+    inter_view(&mut app, "Side by side");
+    keys(&mut app, &[KeyCode::Home]);
+    down_to_hist(&mut app, |r| r.starts_with("Because.") && r.contains("│Because https://"));
+    assert!(app.hint().contains("o: open the link · "), "{}", app.hint());
+    assert_eq!(opened_with(&mut app, 'o'), format!("opened {why} in your browser"));
+    assert!(opened(&why));
+    // What an edit changed, on a screen of its own: its top line kept.
+    keys(&mut app, &[KeyCode::Left, KeyCode::Enter]);
+    choose(&mut app, "What this edit changed…");
+    inter_view(&mut app, "Interdiff");
+    let top = |app: &App| app.text.as_ref().map(|t| t.texts()[t.scroll].trim().to_string()).unwrap_or_default();
+    for _ in 0..40 {
+        if top(&app) == "-line 39" {
+            break;
+        }
+        keys(&mut app, &[KeyCode::Down]);
+    }
+    assert_eq!(top(&app), "-line 39");
+    inter_view(&mut app, "A column per version");
+    assert_eq!(top(&app), "--line 39");
+    inter_view(&mut app, "Side by side");
+    assert!(top(&app).starts_with("-line 39") && top(&app).ends_with("│-line 39"), "{}", top(&app));
+    inter_view(&mut app, "Interdiff");
+    assert_eq!(top(&app), "-line 39");
+}
+
+#[test]
+fn in_the_review_of_what_landed_one_draws_its_stack_diff_s_interdiffs_in_each_view_the_cursor_on_its_line() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Enter]);
+    save(&mut app, "why so loud?");
+    let n = notes_of(&db, "s", 0).remove(0);
+    agent_changed_to(&db, "run-agent", &n, None);
+    app.refresh();
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Enter]);
+    assert_eq!(app.screen, Screen::Review);
+    keys(&mut app, &[KeyCode::Home]);
+    down_to_review(&mut app, "modify  1 Bug 1 - shout two");
+    // On an operation, its patch in the stack diff on the right: 1 there,
+    // the bar and ? saying so.
+    assert!(app.hint().contains("1: view · "), "{}", app.hint());
+    assert!(app.help().iter().any(|l| l.starts_with("Press 1 to pick how the interdiffs are drawn")), "{:?}", app.help());
+    // Into the stack diff, on its first line that changed: as an interdiff,
+    // what its signs say once, over its first interdiff, the versions named
+    // as the review names them.
+    keys(&mut app, &[KeyCode::Right]);
+    assert_eq!(work_row(&mut app).as_deref(), Some("-+TWO"));
+    let pane = review_pane(&mut app).join(" ");
+    assert!(pane.contains("The first sign of each line says which version has it: a space for both, - for the stack's version alone, + for the work's version alone."), "{pane}");
+    // Each view keeps the cursor on its line.
+    inter_view(&mut app, "A column per version");
+    assert_eq!(work_row(&mut app).as_deref(), Some("+·TWO"));
+    let pane = review_pane(&mut app).join(" ");
+    assert!(pane.contains("The first column is the stack's version, the second the work's version."), "{pane}");
+    inter_view(&mut app, "Side by side");
+    let row = work_row(&mut app).unwrap();
+    assert!(row.starts_with("+TWO") && row.ends_with("│+Two"), "{row}");
+    inter_view(&mut app, "Interdiff");
+    assert_eq!(work_row(&mut app).as_deref(), Some("-+TWO"));
+    keys(&mut app, &[KeyCode::Down]);
+    assert_eq!(work_row(&mut app).as_deref(), Some("++Two"));
+    inter_view(&mut app, "Side by side");
+    inter_view(&mut app, "Interdiff");
+    assert_eq!(work_row(&mut app).as_deref(), Some("++Two"));
+    // Side by side, Enter on the line of the two versions goes to the new
+    // one's line in its patch as the work leaves it.
+    inter_view(&mut app, "Side by side");
+    keys(&mut app, &[KeyCode::Enter]);
+    assert_eq!(work_row(&mut app).as_deref(), Some("+Two"));
+    // On a reply, no interdiff: 1 does nothing.
+    keys(&mut app, &[KeyCode::Left, KeyCode::Left]);
+    down_to_review(&mut app, "Quieter now.");
+    assert!(!app.hint().contains("1: view"), "{}", app.hint());
+    keys(&mut app, &[KeyCode::Char('1')]);
+    assert_eq!(app.mode, Mode::Normal);
+}
+
+#[cfg(feature = "moz-phab")]
+#[test]
+fn what_differs_from_phabricator_is_drawn_in_each_view_of_the_interdiffs_its_two_versions_named_as_its_title_names_them() {
+    let (_tmp, db, _phab, _) = three_revisions();
+    let mut app = open(&db).unwrap();
+    fetched(&mut app);
+    next_patch(&mut app);
+    keys(&mut app, &[KeyCode::Right, KeyCode::Up, KeyCode::Char(' ')]);
+    assert!(differs_seen(&mut app).is_some());
+    assert!(app.hint().contains("1: view · "), "{}", app.hint());
+    // In a column per version: what each column is, the two versions named
+    // as the title names them; before each line, what each does with it.
+    inter_view(&mut app, "A column per version");
+    let (title, lines) = differs_seen(&mut app).unwrap();
+    assert_eq!(title, "D12 on Phabricator, then patch 2 as it is");
+    let shown = differs_shown(&lines);
+    let at = shown.iter().position(|l| l.starts_with("@@")).unwrap_or_else(|| panic!("{shown:#?}"));
+    assert!(shown[..at].join(" ").starts_with("The first column is D12 on Phabricator, the second patch 2 as it is. In each, + says"), "{shown:#?}");
+    assert_eq!(shown[at + 1..], ["==--- /dev/null", "==+++ b/b.txt", "==@@ -0,0 +1 @@", "+·bea", "·+bee"]);
+    // Side by side: Phabricator's on the left, the patch as it is on the
+    // right, each half under a heading of its version.
+    inter_view(&mut app, "Side by side");
+    let (_, lines) = differs_seen(&mut app).unwrap();
+    let shown = differs_shown(&lines);
+    let beside = |left: &str, right: &str| format!("{left:58} │{right}");
+    assert_eq!(shown[0].trim_end(), beside("D12 on Phabricator", "patch 2 as it is"));
+    assert!(shown.iter().any(|l| l.trim_end() == beside("+bea", "+bee")), "{shown:#?}");
+    // Esc: back on the line, as ever.
+    keys(&mut app, &[KeyCode::Esc]);
+    assert!(app.on_line());
+    stacked::phab::statuses_stand_in(&db, None);
+}
+
+#[cfg(feature = "moz-phab")]
+#[test]
+fn on_another_base_the_files_go_side_by_side_and_in_a_column_per_version_a_line_of_one_base_is_not_known_to_the_other() {
+    let (_tmp, db) = phab_setup(["Bug 1 - one", "Bug 2 - two", &format!("Bug 3 - three\n\n{LINK}13")]);
+    let mine = patch_of(&db, 2).diff;
+    // D13 made on a base with two lines fewer over line 20, as in the test
+    // of the files as each diff leaves them.
+    let at = mine.find("@@ -17,7 +17,7 @@").unwrap_or_else(|| panic!("{mine}"));
+    let raw = format!("{}@@ -15,7 +15,7 @@{}", &mine[..at], &mine[at + "@@ -17,7 +17,7 @@".len()..]).replace("+LINE 20", "+Line 20");
+    let p = Phab::default().with(13, "changes-planned", "WIP: Bug 3 - three", &raw);
+    let phab = std::sync::Arc::new(std::sync::Mutex::new(p));
+    statuses_from(&db, &phab);
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Down, KeyCode::Down]);
+    fetched(&mut app);
+    keys(&mut app, &[KeyCode::Right, KeyCode::Up, KeyCode::Char(' ')]);
+    // Side by side, each file as each version leaves it, Phabricator's on
+    // the left, this version's on the right.
+    inter_view(&mut app, "Side by side");
+    let (_, lines) = differs_seen(&mut app).expect("the view of what differs");
+    let shown = differs_shown(&lines);
+    assert_eq!(shown[0], " the code: Phabricator's on the left, this version's on the right", "{shown:#?}");
+    assert!(shown.iter().any(|l| l.trim_end() == format!("{:58} │{}", "-Line 20", "+LINE 20")), "{shown:#?}");
+    keys(&mut app, &[KeyCode::Esc]);
+    // Its lines there otherwise too, so that it applies nowhere: the two
+    // diffs compared all the same, which a column per version draws as two
+    // bases: the hunk's header moved, one line with both ranges; a line of
+    // each base that the other's diff does not show, `·` in the other's
+    // column.
+    let raw = raw.replace(" line 19\n", " LINE 19\n");
+    {
+        let mut p = phab.lock().unwrap();
+        *p = std::mem::take(&mut *p).with(14, "changes-planned", "WIP: Bug 3 - three", &raw);
+    }
+    next_version(&db, 2, &format!("Bug 3 - three\n\n{LINK}14"), &mine);
+    fetched(&mut app);
+    keys(&mut app, &[KeyCode::Home, KeyCode::Char(' ')]);
+    inter_view(&mut app, "A column per version");
+    let (_, lines) = differs_seen(&mut app).expect("the view of what differs");
+    let shown = differs_shown(&lines);
+    for line in ["==@@ -15,7 +15,7 → -17,7 +17,7 @@", " ·LINE 19", "· line 19", "--line 20", "+·Line 20", "·+LINE 20"] {
+        assert!(shown.contains(&line), "{line:?} in {shown:#?}");
+    }
+    stacked::phab::statuses_stand_in(&db, None);
 }
 
 #[test]
@@ -14710,7 +15193,7 @@ fn enter_on_a_line_of_the_interdiff_goes_to_that_line_of_the_patch() {
     assert_eq!(work_row(&mut app).as_deref(), Some("-Subject: Bug 1 - shout two"));
     // With moz-phab, the title names its bug, which o opens.
     let bug = if cfg!(feature = "moz-phab") { "o: open bug 1 · " } else { "" };
-    assert_eq!(app.hint(), format!("↑↓: a line · enter: go to it in the patch · {bug}delete: reject · →: wider · ←: back to the list · esc: save, discard or close"));
+    assert_eq!(app.hint(), format!("↑↓: a line · enter: go to it in the patch · {bug}delete: reject · →: wider · ←: back to the list · 1: view · esc: save, discard or close"));
     // Enter: the patch as the work leaves it, the cursor on its title.
     keys(&mut app, &[KeyCode::Enter]);
     let screen = draw(&mut app);
@@ -16451,21 +16934,21 @@ fn right_in_a_review_goes_into_its_right_pane_then_makes_it_wide() {
     assert_eq!(app.screen, Screen::Review);
     // Into the pane on the right: the list beside it still.
     keys(&mut app, &[KeyCode::Right]);
-    assert_eq!(app.hint(), "↑↓: a line · enter: go to it in the patch · delete: reject · →: wider · ←: back to the list · esc: save, discard or close");
+    assert_eq!(app.hint(), "↑↓: a line · enter: go to it in the patch · delete: reject · →: wider · ←: back to the list · 1: view · esc: save, discard or close");
     assert!(draw(&mut app).contains(" stack operations"));
     // Wide: the list out of sight.
     keys(&mut app, &[KeyCode::Right]);
     let screen = draw(&mut app);
     assert!(!screen.contains(" stack operations"), "{screen}");
     assert!(screen.lines().nth(1).unwrap().starts_with(" the change of patch 1: what accepting it does to the stack"), "{screen}");
-    assert_eq!(app.hint(), "↑↓: a line · enter: go to it in the patch · delete: reject · ←: narrower · esc: save, discard or close");
+    assert_eq!(app.hint(), "↑↓: a line · enter: go to it in the patch · delete: reject · ←: narrower · 1: view · esc: save, discard or close");
     // ← narrower, then back to the list.
     keys(&mut app, &[KeyCode::Left]);
     assert!(draw(&mut app).contains(" stack operations"));
     assert!(app.reviewing.as_ref().unwrap().in_main);
     keys(&mut app, &[KeyCode::Left]);
     assert!(!app.reviewing.as_ref().unwrap().in_main);
-    assert_eq!(app.hint(), "↑↓ choose · enter: accept · delete: reject · →: look closer · space: menu · esc: save, discard or close");
+    assert_eq!(app.hint(), "↑↓ choose · enter: accept · delete: reject · →: look closer · space: menu · 1: view · esc: save, discard or close");
 }
 
 #[test]
@@ -18128,7 +18611,7 @@ fn in_a_review_delete_rejects_closes_or_takes_back_as_its_menu_does() {
     // said.
     keys(&mut app, &[KeyCode::Home]);
     down_to_review(&mut app, "stack operations");
-    assert_eq!(app.hint(), "↑↓ choose · enter: accept · delete: reject · →: look closer · space: menu · esc: save, discard or close");
+    assert_eq!(app.hint(), "↑↓ choose · enter: accept · delete: reject · →: look closer · space: menu · 1: view · esc: save, discard or close");
     let said = "Press Delete to mark this part rejected: it is dropped when the review closes.";
     assert!(app.help().iter().any(|l| l == said), "{:?}", app.help());
     keys(&mut app, &[KeyCode::Delete]);
@@ -20212,6 +20695,20 @@ fn differs_shown(lines: &[String]) -> Vec<&str> {
     lines.iter().map(String::as_str).skip_while(|l| !l.is_empty()).skip(1).collect()
 }
 
+/// Of what the view of what differs from revision `d` shows of patch `n`,
+/// `shown` (`differs_shown`), drawn as an interdiff: what it says first of
+/// how to read the interdiff, checked; then the interdiff, and what
+/// follows it.
+#[cfg(feature = "moz-phab")]
+fn past_how_to_read<'a>(shown: &[&'a str], d: &str, n: usize) -> Vec<&'a str> {
+    let at = shown.iter().position(|l| l.starts_with("--- ")).unwrap_or_else(|| panic!("{shown:#?}"));
+    let said = format!(
+        "The first sign of each line says which version has it: a space for both, - for {d} on Phabricator alone, + for patch {n} as it is alone. The second is that version's own sign: + for a line its patch adds, - for one it removes, a space for one it leaves as it is."
+    );
+    assert_eq!(shown[..at].join(" "), said, "{shown:#?}");
+    shown[at..].to_vec()
+}
+
 /// A stack of three patches naming D11, D12 and D13 (`phab_setup`), and the
 /// stand-in for Phabricator answering for its database: D11 as patch 1 is,
 /// in review; D12 in work, its diff adding b.txt otherwise, and two
@@ -20470,7 +20967,7 @@ fn space_on_the_phabricator_line_shows_what_differs_on_a_screen_of_its_own_esc_c
         differs_said(&lines),
         "The title and summary of D12 are those of this version. The code is shown as an interdiff of the latest diff of D12 and this version's diff."
     );
-    let shown = differs_shown(&lines);
+    let shown = past_how_to_read(&differs_shown(&lines), "D12", 2);
     assert_eq!(shown[..2], ["--- D12 on Phabricator", "+++ patch 2 as it is"], "{shown:#?}");
     assert!(shown[2].starts_with("@@ -"), "{shown:#?}");
     assert_eq!(shown[3..], [" --- /dev/null", " +++ b/b.txt", " @@ -0,0 +1 @@", "-+bea", "++bee"]);
@@ -20526,7 +21023,7 @@ fn space_on_the_phabricator_line_shows_what_differs_on_a_screen_of_its_own_esc_c
         differs_said(&lines),
         "The title and summary of D13 are compared with those a submit of this version sends, where their lines wrap aside. The latest diff of D13 does what this version does."
     );
-    let shown = differs_shown(&lines);
+    let shown = past_how_to_read(&differs_shown(&lines), "D13", 3);
     let changed: Vec<&str> = shown[2..].iter().copied().filter(|l| l.starts_with(['-', '+'])).collect();
     assert_eq!(changed, ["-Subject: Bug 3 - an older title", "+Subject: Bug 3 - three"]);
     use stacked::paint::color;
@@ -20769,7 +21266,7 @@ fn the_code_of_a_latest_diff_on_another_base_is_each_file_as_each_leaves_it_wher
         differs_said(&lines),
         "The title and summary of D14 are those of this version. The latest diff of D14 is on another base than this version, and the files could not be read as the patches below this one leave them, so the code is shown as an interdiff of the two diffs all the same."
     );
-    let shown = differs_shown(&lines);
+    let shown = past_how_to_read(&differs_shown(&lines), "D14", 3);
     assert_eq!(shown[..2], ["--- D14 on Phabricator", "+++ patch 3 as it is"], "{shown:#?}");
     assert!(shown.contains(&"-@@ -15,7 +15,7 @@") && shown.contains(&"+@@ -17,7 +17,7 @@") && shown.contains(&"-+Line 20"), "{shown:#?}");
     stacked::phab::statuses_stand_in(&db, None);
@@ -21639,7 +22136,7 @@ fn what_differs_with_the_parent_is_listed_plainly_the_view_showing_the_parent_fi
         differs_said(&lines),
         "Parent: D11 on Phabricator; a submit sets D13, the revision of patch 2. The title and summary of D12 are those of this version. The code is shown as an interdiff of the latest diff of D12 and this version's diff."
     );
-    let shown = differs_shown(&lines);
+    let shown = past_how_to_read(&differs_shown(&lines), "D12", 3);
     assert_eq!(shown[..2], ["--- D12 on Phabricator", "+++ patch 3 as it is"], "{shown:#?}");
     assert!(shown.contains(&"-+bea") && shown.contains(&"++bee"), "{shown:#?}");
     keys(&mut app, &[KeyCode::Esc, KeyCode::Char('?')]);

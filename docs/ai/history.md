@@ -6,7 +6,10 @@ every comment and every run; the editor shows them where they belong:
 - `Tree of edits…`, on the stack's header: every state of the stack, the
   one being edited marked; enter edits from another. Beside each, its
   patches and what its edit changed; Space, `What this edit changed…` in
-  full: its stack diff (below), from the stack it was edited from.
+  full: its stack diff (below), from the stack it was edited from, on a
+  screen of its own, its interdiffs in the view `1` picks there (The
+  editor, above), the two stacks named `@10` and `@12`, its top line kept
+  from one view to another.
 - `History…`, on the stack's header: what changed the stack, newest first:
   its edits, and the moves of its head (undo, redo, select, delete) that
   took it to another stack. Comments, runs and the rest change nothing of
@@ -36,14 +39,21 @@ every comment and every run; the editor shows them where they belong:
   its mail under it, `↕` moved, from where it was; unmarked, as it was),
   and each patch dropped, marked `−`, where it was. A patch is known across
   its versions, so one only shifted by what was added or dropped below it
-  is not taken for moved. → goes into it, ↑↓ scroll it, ← goes back. It is
-  only to look at: nothing is edited, commented on or asked from it, nor
-  undone or redone from History…; esc leaves it, for the stack as it is.
+  is not taken for moved. → goes into it, ↑↓ scroll it, ← goes back; `1`,
+  on the history or in the stack diff, picks the view of its interdiffs
+  (The editor, above), the two stacks named `@4` and `@12`, the cursor on
+  its line. It is only to look at: nothing is edited, commented on or
+  asked from it, nor undone or redone from History…; esc leaves it, for
+  the stack as it is.
 
   ```
    the stack @4 → @12
    edit e80b0801 as e35c91e0 · 2026-10-17 19:50
     1 ~ Bug 1 - parse skips blank lines, total does not overflow (reworded)
+        The first sign of each line says which version has it: a space for
+        both, - for @4 alone, + for @12 alone. The second is that version's
+        own sign: + for a line its patch adds, - for one it removes, a space
+        for one it leaves as it is.
         @@ -1,6 +1,6 @@
          From: A <a@b>
          Date: Sat, 17 Oct 2026 19:50:52 +0200
@@ -90,11 +100,18 @@ every comment and every run; the editor shows them where they belong:
   the other is a change. With the title and the body the same, the mails
   are diffed line by line. The interdiffs of the review of the agent's
   work, of `What this edit changed…`, of `Versions of this patch…` and of
-  `stacked interdiff` are made the same way.
+  `stacked interdiff` are made the same way. Each line of one is also told
+  apart by what part of its version's mail it is, the mail's headers and
+  message, or under the `---`, a file's header, a hunk's header or a line
+  of a hunk; and, a line of a hunk taken out or put in, what changed in it
+  as its own version's diff pairs it with the line removed or added in its
+  place: what the views of the interdiffs draw (The editor, above).
 - `Versions of this patch…`, on a patch: every version, oldest first, each
   with the edit that first had it; beside it what changed from the version
-  before, or the version whole. `Put this version back in the stack` is an
-  edit like any.
+  before, in the view of the interdiffs `1` picks there (The editor,
+  above), the two versions named as the list names them (`v2`, `v3`), or
+  the version whole. `Put this version back in the stack` is an edit like
+  any.
 - `History of this comment…`, on a comment: every state it was in, with the
   rev and time of each; a closed one's too, from `Filter comments…`,
   `closed`.
