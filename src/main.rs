@@ -1657,7 +1657,11 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
                         stacked::held::Part::Stack => h.stack.as_ref().map_or(String::new(), |c| format!("change\t{}", c.op)),
                         stacked::held::Part::Reply(k) => {
                             let rp = &h.replies[k];
-                            let what = if rp.was.is_some() { "edited" } else { "reply" };
+                            let what = match (rp.is_edit(), rp.is_anew()) {
+                                (true, _) => "edited",
+                                (_, true) => "suggested edit",
+                                _ => "reply",
+                            };
                             // To a comment you closed, which accepting it reopens.
                             let closed = match stacked::held::goes(&db, &name, rp) {
                                 stacked::held::Goes::Reopens(_) => "\tto a comment you closed: accepting it reopens the comment",

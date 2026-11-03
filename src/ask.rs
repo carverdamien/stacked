@@ -2321,9 +2321,12 @@ anywhere.";
 
 /// A thread as a conversation, for claude. A reviewer's comment edited on
 /// Phabricator is said so: the turn of its edit by what it edits, the turn
-/// it replaces as redacted by the edit below it.
+/// it replaces as redacted by the edit below it. One read again with the
+/// suggested edit Phabricator gives with it is said for what it is, no
+/// edit: the turn it replaces as redacted by that comment, read with it.
 fn transcript(text: &str) -> String {
-    thread_turns(text)
+    let turns = thread_turns(text);
+    turns
         .iter()
         .enumerate()
         .map(|(i, t)| {
@@ -2337,7 +2340,10 @@ fn transcript(text: &str) -> String {
                         who += &format!(", {}", t.named(i));
                     }
                     if t.redacted {
-                        who += &format!(" (redacted: {name} edited it on Phabricator, and the edit below replaces it)");
+                        who += &match crate::thread::replacing(&turns, i).is_some_and(|n| n.anew) {
+                            true => " (redacted: stacked had not read the suggested edit Phabricator gives with this comment; the turn below, the same comment read with it, replaces it)".to_string(),
+                            false => format!(" (redacted: {name} edited it on Phabricator, and the edit below replaces it)"),
+                        };
                     }
                     who
                 }
@@ -5129,7 +5135,7 @@ mod tests {
     }
 
     #[test]
-    fn the_agent_is_told_a_reviewer_s_edit_and_the_turn_it_redacts_in_plain_words() {
+    fn the_agent_is_told_a_reviewer_s_edit_or_their_comment_read_anew_and_the_turn_it_redacts_in_plain_words() {
         // ann's comment, your reply, her edit of it on Phabricator: her
         // comment as it was, then what answered it, then the edit.
         let text = [
@@ -5143,6 +5149,17 @@ mod tests {
             "ann (a reviewer, on Phabricator), ann's comment (redacted: ann edited it on Phabricator, and the edit below replaces it): Hi Da\n\
              The user: Hi ann! My name is Damien\n\
              ann (a reviewer, on Phabricator), ann's edit of the comment that said \"Hi Da\": Hi Damien!"
+        );
+        // Her comment read again with the suggested edit Phabricator gives
+        // with it, which no one edited: told for what it is.
+        let now = "Hi Da\n\nann suggests this edit of line 2:\n```diff\n-hi\n+Hi\n```";
+        let text = [fenced("reviewer ann redacted", "Hi Da"), fenced("reviewer ann anew Hi Da", now)].join("\n");
+        assert_eq!(
+            transcript(&text),
+            format!(
+                "ann (a reviewer, on Phabricator), ann's comment (redacted: stacked had not read the suggested edit Phabricator gives with this comment; the turn below, the same comment read with it, replaces it): Hi Da\n\
+                 ann (a reviewer, on Phabricator), ann's comment that said \"Hi Da\", with its suggested edit: {now}"
+            )
         );
     }
 

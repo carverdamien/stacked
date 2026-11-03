@@ -41,8 +41,10 @@
 //! waiting for review that holds it, so pulling again holds only what is
 //! new. A comment edited on Phabricator since it was filed is held as an
 //! edit of its turn: accepted, it is the reviewer's latest turn, the turn
-//! it edits redacted. Each version of a comment has an id of its own, so
-//! that one pulled before is known by any of them.
+//! it edits redacted; and so is one filed without the suggested edit
+//! Phabricator gives with it, once a pull reads that (`phab::Remote`).
+//! Each version of a comment has an id of its own, so that one pulled
+//! before is known by any of them.
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -173,7 +175,9 @@ fn pulled_before(db: &Db, name: &str, change: &str) -> Before {
 /// How many of `comments`, those of a revision on Phabricator, the patch of
 /// `change` in stack `name` has not got yet, as the Phabricator line over
 /// its message counts them: those new, then those edited since they were
-/// filed. Told from what the database holds as it stands, its history never
+/// filed, then those filed without the suggested edit Phabricator gives
+/// with them, read now with it (`phab::anew`), which no one edited. Told
+/// from what the database holds as it stands, its history never
 /// read: the comments open (the change's, and the stack's own, as those
 /// moved there), the threads of the change, open or closed, by their ids
 /// (a thread pulled is `phab:` and the id of its first comment as it was
@@ -181,7 +185,7 @@ fn pulled_before(db: &Db, name: &str, change: &str) -> Before {
 /// there is not counted, nor one of a thread closed: without the history,
 /// a new reply or edit there is not told from the comments filed in it
 /// before it was closed, though a pull brings the new ones.
-pub fn not_pulled(db: &Db, name: &str, change: &str, comments: &[Remote]) -> (usize, usize) {
+pub fn not_pulled(db: &Db, name: &str, change: &str, comments: &[Remote]) -> (usize, usize, usize) {
     let stack = stack_change(name);
     let on_stack = db.notes(&stack);
     // Filed in a thread open: on the patch, or on the stack. A comment's id
@@ -216,19 +220,20 @@ pub fn not_pulled(db: &Db, name: &str, change: &str, comments: &[Remote]) -> (us
             db.note_rev(change, &id).is_some() && db.note(change, &id).is_none() && !moved
         })
     };
-    let (mut new, mut edited) = (0, 0);
+    let (mut new, mut edited, mut anew) = (0, 0, 0);
     for c in comments {
         let all = versions(c);
         if all.iter().any(|v| waiting.contains(v.as_str())) || filed.contains(c.phid.as_str()) {
             continue;
         }
-        if c.earlier.iter().any(|v| filed.contains(v.phid.as_str())) {
-            edited += 1;
-        } else if !closed(first(&of, c)) {
-            new += 1;
+        match c.earlier.iter().find(|v| filed.contains(v.phid.as_str())) {
+            Some(v) if phab::anew(&c.phid, &v.phid) => anew += 1,
+            Some(_) => edited += 1,
+            None if !closed(first(&of, c)) => new += 1,
+            None => {}
         }
     }
-    (new, edited)
+    (new, edited, anew)
 }
 
 /// What `pulled` brings that is new on `name`'s patches, held: each remote
@@ -262,6 +267,18 @@ fn hold_on(db: &Db, name: &str, patches: &[Patch], pulled: &phab::Pulled) -> Res
         let mut thread_of: HashMap<String, (String, String)> = before.waiting.clone();
         thread_of.extend(before.closed.iter().map(|(r, &k)| (r.clone(), place(&before.shut[k].note))));
         thread_of.extend(before.filed.clone());
+        // A comment held by one of its versions is in that thread by every
+        // other too: a reply answers the version it saw, which need not be
+        // the one held (the one a comment read with its suggested edit is
+        // read from, say: `phab::comments_of`).
+        for c in &rc.comments {
+            let versions: Vec<&String> = std::iter::once(&c.phid).chain(c.earlier.iter().map(|v| &v.phid)).collect();
+            if let Some(at) = versions.iter().find_map(|v| thread_of.get(*v)).cloned() {
+                for v in versions {
+                    thread_of.entry(v.clone()).or_insert_with(|| at.clone());
+                }
+            }
+        }
         // The threads this pull opens: by each remote comment in them, their
         // place in what it holds.
         let mut opened: HashMap<String, usize> = HashMap::new();
@@ -292,7 +309,9 @@ fn hold_on(db: &Db, name: &str, patches: &[Patch], pulled: &phab::Pulled) -> Res
             // was last filed, its turn says.
             let filed_as = c.earlier.iter().find_map(|v| before.filed.get(&v.phid).cloned().or_else(|| before.closed_at(&v.phid)).map(|at| (v, at)));
             if let Some((v, at)) = filed_as {
-                let rp = reply(&at, Some(&v.text));
+                // The same version read again with its suggested edit, no
+                // one having edited it: said so, not as an edit.
+                let rp = Reply { anew: phab::anew(&c.phid, &v.phid), ..reply(&at, Some(&v.text)) };
                 thread_of.extend(versions.iter().map(|v| ((*v).clone(), place_of(&rp))));
                 held.replies.push(rp);
                 continue;
@@ -347,9 +366,9 @@ pub fn file(db: &mut Db, name: &str, id: &str, revisions: usize, fetched: &std::
     let (state, summary, held) = match fetched {
         Ok(pulled) => {
             let h = hold(db, name, pulled)?;
-            let (new, edited) = comments_counted(&h);
-            let summary = summary_of(&Brought { new, edited, ..Default::default() }, &of);
-            (RunState::Done, summary, (new + edited > 0).then(|| Held { at: now(), ..h }))
+            let (new, edited, anew) = comments_counted(&h);
+            let summary = summary_of(&Brought { new, edited, anew, ..Default::default() }, &of);
+            (RunState::Done, summary, (new + edited + anew > 0).then(|| Held { at: now(), ..h }))
         }
         Err(e) => (RunState::Failed, e.clone(), None),
     };
@@ -366,15 +385,18 @@ pub fn file(db: &mut Db, name: &str, id: &str, revisions: usize, fetched: &std::
     Ok(run)
 }
 
-/// How many of the comments `h` holds are new, and how many are edits of
-/// comments filed: each new thread's comments, each reply.
-fn comments_counted(h: &Held) -> (usize, usize) {
-    let edited = h.replies.iter().filter(|rp| rp.was.is_some()).count();
-    (h.opened.iter().map(|n| n.remote.len()).sum::<usize>() + h.replies.len() - edited, edited)
+/// How many of the comments `h` holds are new, how many are edits of
+/// comments filed, and how many are comments filed read again with their
+/// suggested edits: each new thread's comments, each reply.
+fn comments_counted(h: &Held) -> (usize, usize, usize) {
+    let edited = h.replies.iter().filter(|rp| rp.is_edit()).count();
+    let anew = h.replies.iter().filter(|rp| rp.is_anew()).count();
+    (h.opened.iter().map(|n| n.remote.len()).sum::<usize>() + h.replies.len() - edited - anew, edited, anew)
 }
 
 /// What a pull brings, counted, as what came of it says it: new versions of
-/// the stack's patches, new patches, new comments and edited ones; and the
+/// the stack's patches, new patches, new comments and edited ones, and the
+/// suggested edits it reads of comments filed without them; and the
 /// patches it made again on the pulled versions with their conflicts
 /// marked, by their places, from 0.
 #[derive(Debug, Clone, Default)]
@@ -383,6 +405,7 @@ struct Brought {
     added: usize,
     new: usize,
     edited: usize,
+    anew: usize,
     marked: Vec<usize>,
 }
 
@@ -402,12 +425,13 @@ fn summary_of(b: &Brought, of: &str) -> String {
         (b.added, "new patch", "new patches"),
         (b.new, "new comment", "new comments"),
         (b.edited, "edited comment", "edited comments"),
+        (b.anew, "suggested edit", "suggested edits"),
     ] {
         if n > 0 {
             what.push(count(n, one, many));
         }
     }
-    let total = b.versions + b.added + b.new + b.edited;
+    let total = b.versions + b.added + b.new + b.edited + b.anew;
     let mut out = match total {
         0 => return format!("nothing new from {of}"),
         1 => format!("{} from {of}: it waits for your review", crate::submit::and(&what)),
@@ -1225,11 +1249,12 @@ fn file_made(db: &mut Db, r: Run, job: Job, planned: &Planned, patches: &[Patch]
             .collect(),
     };
     let h = hold_on(db, &r.stack, patches, &pulled)?;
-    let (new, edited) = comments_counted(&h);
+    let (new, edited, anew) = comments_counted(&h);
     let changed = planned.patches != from.patches;
     let brought = Brought {
         new,
         edited,
+        anew,
         ..match changed {
             true => planned.brought.clone(),
             false => Brought::default(),
@@ -1243,7 +1268,7 @@ fn file_made(db: &mut Db, r: Run, job: Job, planned: &Planned, patches: &[Patch]
         of: planned.of.clone(),
         from: after.is_none().then_some(rev),
     });
-    let any = change.is_some() || new + edited > 0;
+    let any = change.is_some() || new + edited + anew > 0;
     let took = change.as_ref().map(|_| planned.took.clone());
     let held = any.then(|| Held {
         at: now(),
@@ -1790,20 +1815,25 @@ mod tests {
         let db = Db::load(&path).unwrap();
         // New: a3, n1, n2 and m2; edited: e1. Neither those filed, nor b2 in
         // its thread closed, nor w1 waiting.
-        assert_eq!(not_pulled(&db, "s", "c", &comments), (4, 1));
-        assert_eq!(not_pulled(&db, "s", "c", &comments[..3]), (1, 0), "a3 alone");
-        assert_eq!(not_pulled(&db, "s", "c", &[]), (0, 0));
+        assert_eq!(not_pulled(&db, "s", "c", &comments), (4, 1, 0));
+        assert_eq!(not_pulled(&db, "s", "c", &comments[..3]), (1, 0, 0), "a3 alone");
+        assert_eq!(not_pulled(&db, "s", "c", &[]), (0, 0, 0));
         // In the thread closed, b2 edited since and a reply to it, b3: not
         // counted either, though a pull brings them.
         let mut since = comments.to_vec();
         since[4] = remote("b2v2", Some("b1"), &["b2"]);
         since.push(remote("b3", Some("b2v2"), &[]));
-        assert_eq!(not_pulled(&db, "s", "c", &since), (4, 1));
+        assert_eq!(not_pulled(&db, "s", "c", &since), (4, 1, 0));
         // The pull's review closed, w1 filed nowhere, as a stacked of before
         // let you reject it: told as new, as a pull brings it again.
         Db::edit(&path, |db| db.set_review("pull-1", crate::held::Review { closed: true, ..Default::default() }).map(|_| ())).unwrap();
         let db = Db::load(&path).unwrap();
-        assert_eq!(not_pulled(&db, "s", "c", &comments), (5, 1));
+        assert_eq!(not_pulled(&db, "s", "c", &comments), (5, 1, 0));
+        // e0, filed without the suggested edit Phabricator gives with it,
+        // read with it now: no edit, counted apart; a1 edited since and
+        // read with its suggested edit too: an edit.
+        let anew = [remote("e0+suggestion", None, &["e0"]), remote("a1v2+suggestion", None, &["a1v2", "a1+suggestion", "a1"])];
+        assert_eq!(not_pulled(&db, "s", "c", &anew), (0, 1, 1));
     }
 
     #[test]
@@ -1829,10 +1859,16 @@ mod tests {
 
     #[test]
     fn what_a_pull_brings_is_said_counted_its_conflicts_marked_last() {
-        let b = |versions, added, new, edited, marked: &[usize]| Brought { versions, added, new, edited, marked: marked.to_vec() };
+        let b = |versions, added, new, edited, marked: &[usize]| Brought { versions, added, new, edited, marked: marked.to_vec(), ..Default::default() };
         assert_eq!(summary_of(&b(0, 0, 0, 0, &[]), "3 revisions"), "nothing new from 3 revisions");
         assert_eq!(summary_of(&b(0, 0, 1, 0, &[]), "D12"), "1 new comment from D12: it waits for your review");
         assert_eq!(summary_of(&b(0, 0, 2, 1, &[]), "1 revision"), "2 new comments and 1 edited comment from 1 revision: they wait for your review");
+        // Comments filed read with their suggested edits, apart from edits.
+        assert_eq!(summary_of(&Brought { anew: 2, ..Default::default() }, "D11"), "2 suggested edits from D11: they wait for your review");
+        assert_eq!(
+            summary_of(&Brought { new: 1, edited: 1, anew: 1, ..Default::default() }, "D11"),
+            "1 new comment, 1 edited comment and 1 suggested edit from D11: they wait for your review"
+        );
         assert_eq!(
             summary_of(&b(1, 1, 2, 0, &[2]), "3 revisions"),
             "1 new version, 1 new patch and 2 new comments from 3 revisions: they wait for your review; patch 3 no longer applies on the pulled versions: its conflicts are marked, to resolve"

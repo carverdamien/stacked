@@ -449,16 +449,20 @@ fn operation(d: &Diffed) -> Option<(String, Style)> {
     })
 }
 
-/// Reviewer's edit `rp` of their comment, which said `was`, as its review
-/// shows it over its thread, `w` wide: under a heading, the comment as it
-/// was filed, then as it is now, compared as two versions of a message are
-/// (`compared::message_rows`), what only each has marked; a line between
-/// them and the thread.
+/// Reviewer's edit `rp` of their comment, which said `was`, or that
+/// comment read again with the suggested edit Phabricator gives with it
+/// (`Reply::anew`), as its review shows it over its thread, `w` wide: under
+/// a heading saying which, the comment as it was filed, then as it is now,
+/// compared as two versions of a message are (`compared::message_rows`),
+/// what only each has marked; a line between them and the thread.
 fn edit_lines(rp: &crate::held::Reply, was: &str, w: usize) -> Vec<Vec<(String, Style)>> {
     // Each line as it ends aside: Phabricator's may end with a carriage
     // return.
     let plain = |s: &str| s.lines().map(str::trim_end).collect::<Vec<_>>().join("\n").trim().to_string();
-    let heading = format!("{}'s comment as it was filed, then as it was edited on Phabricator", rp.who());
+    let heading = match rp.is_anew() {
+        true => format!("{}'s comment as it was filed, then with the suggested edit that stacked now reads from Phabricator", rp.who()),
+        false => format!("{}'s comment as it was filed, then as it was edited on Phabricator", rp.who()),
+    };
     let mut rows = vec![super::compared::row(Kind::File, heading)];
     super::compared::message_rows(&mut rows, &plain(was), &plain(&rp.text), w);
     rows.push(super::compared::row(Kind::Blank, ""));
@@ -517,7 +521,8 @@ fn taken_said(t: &crate::held::Taken, n: usize, resolved: bool) -> Vec<String> {
 }
 
 /// Reviewer's reply `rp` to a comment you closed, said: `ann's reply to a
-/// comment you closed`, `ann's edit of a comment you closed`.
+/// comment you closed`, `ann's edit of a comment you closed`, `ann's
+/// suggested edit of a comment you closed`.
 fn closed_said(rp: &crate::held::Reply) -> String {
     let to = if rp.was.is_some() { "of" } else { "to" };
     format!("{} {to} a comment you closed", rp.said())
@@ -2067,6 +2072,7 @@ impl App {
                         let said = match &rp.promote {
                             Some(why) => format!(" its reply, as it would be in its thread; then it moves to the stack's comments: {why}"),
                             None if closed => format!(" {}, as it would be in its thread: accepting it reopens the comment", closed_said(rp)),
+                            None if rp.is_anew() => format!(" {}'s comment, with the suggested edit that stacked now reads from Phabricator, as it would be in its thread", rp.who()),
                             None if rp.was.is_some() => format!(" {}'s comment, edited on Phabricator, as it would be in its thread", rp.who()),
                             None => " its reply, as it would be in its thread".to_string(),
                         };
@@ -2079,8 +2085,9 @@ impl App {
                     Part::Task(_) => unreachable!(),
                 };
                 let (said, mut lines, at) = self.comment_view(r, &n, said, w);
-                // A reviewer's comment edited on Phabricator: as it was filed,
-                // then as it is now, over its thread.
+                // A reviewer's comment edited on Phabricator, or read again
+                // with its suggested edit: as it was filed, then as it is now,
+                // over its thread.
                 if let Part::Reply(k) = p
                     && let Some(was) = &h.replies[k].was
                 {

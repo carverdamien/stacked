@@ -3340,6 +3340,7 @@ fn reviews_from_phabricator_wait_for_review_then_are_threads() {
         created: 0,
         path: path.map(String::from),
         line,
+        old_side: false,
         line_text: path.map(|_| "new".into()),
         reply_to: reply.map(String::from),
         earlier: vec![],
@@ -3469,14 +3470,14 @@ fn a_reviewer_s_reply_to_a_comment_you_closed_reopens_it_once_accepted() {
     .unwrap();
     // The Phabricator line counts no comment of a thread closed.
     let counted = |comments: &[stacked::phab::Remote]| stacked::review::not_pulled(&Db::load(&e.db).unwrap(), "s", &p.change, comments);
-    assert_eq!(counted(&[c1.clone(), c2.clone()]), (0, 0));
+    assert_eq!(counted(&[c1.clone(), c2.clone()]), (0, 0, 0));
     // ann's reply to it since: pulled, held with the thread as it was when
     // closed, for its review to show it.
     let run = pull_into(&e, "pull-2", &[c1.clone(), c2.clone()]);
     assert_eq!(run.summary, "1 new comment from 1 revision: it waits for your review");
     let rp = run.held.unwrap().replies.remove(0);
     assert_eq!((rp.id.as_str(), rp.closed.map(|c| c.note.text)), ("phab:c1", Some(filed.text.clone())));
-    assert_eq!(counted(&[c1.clone(), c2.clone()]), (0, 0), "nor while it waits");
+    assert_eq!(counted(&[c1.clone(), c2.clone()]), (0, 0, 0), "nor while it waits");
     let landed = e.ok(&["landed", "s"]);
     assert!(landed.contains("\tPing?\tto a comment you closed: accepting it reopens the comment\n"), "{landed}");
     // Not rejected: accepted, it reopens the thread as it was, her reply its

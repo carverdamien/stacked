@@ -365,10 +365,11 @@ Space on that line shows what differs, and Enter opens its menu.
   or rejected on its own; a patch above that no longer applies is made
   again with its conflicts marked, to resolve, to reject, or to send back
   to the agent. Closing that review files the comments as threads, to
-  reply to or to ask the agent about. Phabricator's API does not give
-  suggested edits: a comment that is a suggested edit alone comes in
-  saying so, with its link on Phabricator, and one with words too comes
-  with its words alone. `Pull D123 from Phabricator`, in a
+  reply to or to ask the agent about. A reviewer's suggested edit comes
+  with their comment, as a diff of the lines it replaces, from a
+  Phabricator that gives suggested edits, as Mozilla's does; from one that
+  does not, a comment that is a suggested edit alone comes in saying so,
+  with its link. `Pull D123 from Phabricator`, in a
   patch's `Phabricator` menu, pulls that patch's revision with its
   parents, or with those stacked on it too.
 - **A new stack.** `Pull from Phabricator…`, under `New stack…`, or

@@ -5,22 +5,24 @@
 //! it opened; or nothing, while one of those comments is still open, for
 //! its review to close it or keep it. Reviews pulled from Phabricator are
 //! held the same way, in their pull's run: the reviewers' new comments,
-//! their replies, and their comments edited on Phabricator since they were
-//! filed. Each part is accepted or rejected, the change of the stack
-//! operation by operation (`operations`), as what each operation needs,
-//! worked out as the work landed, is stored with it (`Held::needs`); work
-//! with nothing stored has its change marked as a whole. Once every part
-//! is marked, the review closes: what was accepted is applied, the change
-//! whole or in part, and the rest is dropped for good. A pull's parts are not
-//! rejected: closing its review files every comment it pulled, a reply to
-//! a thread you closed reopening that thread. Until then, the stack is not
-//! edited by hand if the agent changed it, and the comments it answered
-//! are not written on. Replies that are all their work holds may also be
-//! taken at once, one by one, out of its review, unless that work goes on
-//! from work under review: the last one taken, the review closes, and the
-//! comments the ask was about stay open, as any comment does. Work that
-//! brought nothing back has no part: it waits until you close its review,
-//! which closes the comments it was asked about or keeps them.
+//! their replies, their comments edited on Phabricator since they were
+//! filed, and those filed without the suggested edit Phabricator gives with
+//! them, read again with it. Each part is accepted or rejected, the change
+//! of the stack operation by operation (`operations`), as what each
+//! operation needs, worked out as the work landed, is stored with it
+//! (`Held::needs`); work with nothing stored has its change marked as a
+//! whole. Once every part is marked, the review closes: what was accepted
+//! is applied, the change whole or in part, and the rest is dropped for
+//! good. A pull's parts are not rejected: closing its review files every
+//! comment it pulled, a reply to a thread you closed reopening that thread.
+//! Until then, the stack is not edited by hand if the agent changed it, and
+//! the comments it answered are not written on. Replies that are all their
+//! work holds may also be taken at once, one by one, out of its review,
+//! unless that work goes on from work under review: the last one taken, the
+//! review closes, and the comments the ask was about stay open, as any
+//! comment does. Work that brought nothing back has no part: it waits until
+//! you close its review, which closes the comments it was asked about or
+//! keeps them.
 //!
 //! A change of the stack accepted leaves behind the answers made on the
 //! stack before it, running or waiting for your review, chained: its
@@ -272,6 +274,13 @@ pub struct Reply {
     /// turn is redacted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub was: Option<String>,
+    /// Pulled with what it said (`was`), not an edit: the same comment, the
+    /// same version on Phabricator, filed without the suggested edit
+    /// Phabricator gives with it, and read again with it now
+    /// (`phab::anew`). Accepted, it takes the place of their turn as an
+    /// edit does, said for what it is, as no one edited it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub anew: bool,
     /// Pulled, to a thread you closed: that thread as it was when you
     /// closed it, kept by the pull, which read it from the history, so that
     /// its review shows it, and accepting reopens it, without reading the
@@ -319,10 +328,11 @@ impl Reply {
     /// wrote it, or the agent's, the effort its run was asked at on it, and
     /// an answer-only ask's the stack it was asked on; your answer to it
     /// after, if you wrote one. A reviewer's edit is their edit of their
-    /// turn as it was, which it redacts (`edited`).
+    /// turn as it was, which it redacts (`edited`), as their comment read
+    /// again with its suggested edit (`anew`) is that comment so read.
     pub fn after(&self, text: &str) -> String {
         let text = match (&self.reviewer, &self.was) {
-            (Some(who), Some(was)) => edited(text, who, was, &self.text),
+            (Some(who), Some(was)) => edited(text, who, was, &self.text, self.anew),
             (Some(who), None) => append_turn(text, Role::Reviewer, &self.text, Some(who)),
             (None, _) => append_agent_on(text, &self.text, &self.tag, self.effort_said(), self.asked_on),
         };
@@ -337,11 +347,29 @@ impl Reply {
         self.reviewer.as_deref().unwrap_or("the agent")
     }
 
-    /// It, said: `the agent's reply`, `ann's reply`, `ann's edit`; the
-    /// agent's, its run asked at an effort, `the agent's reply (max)`.
+    /// It, said: `the agent's reply`, `ann's reply`, `ann's edit`; their
+    /// comment read again with its suggested edit, `ann's suggested edit`;
+    /// the agent's, its run asked at an effort, `the agent's reply (max)`.
     pub fn said(&self) -> String {
-        let what = if self.was.is_some() { "edit" } else { "reply" };
+        let what = match (self.is_edit(), self.is_anew()) {
+            (true, _) => "edit",
+            (_, true) => "suggested edit",
+            _ => "reply",
+        };
         crate::thread::named_at(&format!("{}'s {what}", self.who()), self.effort_said())
+    }
+
+    /// Whether it is a reviewer's edit, on Phabricator, of their comment
+    /// filed: what it said then kept with it (`was`).
+    pub fn is_edit(&self) -> bool {
+        self.was.is_some() && !self.anew
+    }
+
+    /// Whether it is a reviewer's comment filed without the suggested edit
+    /// Phabricator gives with it, read again with it (`anew`): not an edit,
+    /// what it said then kept with it all the same.
+    pub fn is_anew(&self) -> bool {
+        self.was.is_some() && self.anew
     }
 
     /// The name of the effort the agent's run was asked at, if it is the
@@ -354,11 +382,13 @@ impl Reply {
 /// Thread `text` with the comment of reviewer `who` that said `was` saying
 /// `now`, as Phabricator has it since they edited it: their edit of it, as
 /// their last turn, its heading quoting what it edits (`ann's edit of the
-/// comment that said "Hi Da"`). Their turn that said it, the latest version
-/// of their comment, stays as it was, for what answered it to read as it
-/// was written, redacted. That turn gone (rewound, say), `now` is their
-/// last turn, and nothing is redacted.
-fn edited(text: &str, who: &str, was: &str, now: &str) -> String {
+/// comment that said "Hi Da"`); or, `anew`, as stacked reads it since, with
+/// the suggested edit Phabricator gives with it, no one having edited it
+/// (`ann's comment that said "Hi Da", with its suggested edit`). Their turn
+/// that said it, the latest version of their comment, stays as it was, for
+/// what answered it to read as it was written, redacted. That turn gone
+/// (rewound, say), `now` is their last turn, and nothing is redacted.
+fn edited(text: &str, who: &str, was: &str, now: &str, anew: bool) -> String {
     // Each line as it ends aside: Phabricator's may end with a carriage
     // return, a turn's lines do not.
     let plain = |s: &str| s.lines().map(str::trim_end).collect::<Vec<_>>().join("\n").trim().to_string();
@@ -371,12 +401,14 @@ fn edited(text: &str, who: &str, was: &str, now: &str) -> String {
         turns[i].redacted = true;
         turns[i].body.lines().next().unwrap_or("").trim().to_string()
     });
+    let anew = anew && edit.is_some();
     turns.push(Turn {
         role: Role::Reviewer,
         body: now.trim().to_string(),
         tag: Some(who.to_string()),
         deleted: false,
         edit,
+        anew,
         redacted: false,
         effort: None,
         stack: None,
@@ -614,12 +646,16 @@ impl Held {
             out.push(format!("a change of {}", c.of));
         }
         let replies: Vec<&Reply> = self.replies.iter().enumerate().filter(|(k, rp)| !taken.contains(k) && !rp.read).map(|(_, rp)| rp).collect();
-        let edits = replies.iter().filter(|rp| rp.was.is_some()).count();
-        if replies.len() > edits {
-            out.push(count(replies.len() - edits, "reply", "replies"));
+        let edits = replies.iter().filter(|rp| rp.is_edit()).count();
+        let anew = replies.iter().filter(|rp| rp.is_anew()).count();
+        if replies.len() > edits + anew {
+            out.push(count(replies.len() - edits - anew, "reply", "replies"));
         }
         if edits > 0 {
             out.push(count(edits, "edited comment", "edited comments"));
+        }
+        if anew > 0 {
+            out.push(count(anew, "suggested edit", "suggested edits"));
         }
         if !self.opened.is_empty() {
             out.push(count(self.opened.len(), "opened comment", "opened comments"));
@@ -2117,8 +2153,10 @@ fn said_of(h: &Held, marks: &BTreeMap<String, bool>, part: Option<String>) -> St
             (None, _) => "its change rejected".to_string(),
         });
     }
-    // Not a build and test's, asked as a follow-up, which was to read.
-    let replies = |edits: bool| (0..h.replies.len()).filter(|&k| !h.replies[k].read && h.replies[k].was.is_some() == edits).map(Part::Reply).collect::<Vec<_>>();
+    // Not a build and test's, asked as a follow-up, which was to read; each
+    // as what it is, a reply, an edit, or a comment read again with its
+    // suggested edit.
+    let replies = |of: fn(&Reply) -> bool| (0..h.replies.len()).filter(|&k| !h.replies[k].read && of(&h.replies[k])).map(Part::Reply).collect::<Vec<_>>();
     #[cfg(feature = "try-push")]
     let tasks: Vec<Part> = (0..h.tasks.len()).map(Part::Task).collect();
     #[cfg(not(feature = "try-push"))]
@@ -2126,8 +2164,9 @@ fn said_of(h: &Held, marks: &BTreeMap<String, bool>, part: Option<String>) -> St
     for (one, many, parts) in [
         ("task", "tasks", tasks),
         ("opened comment", "opened comments", (0..h.opened.len()).map(Part::Opened).collect::<Vec<_>>()),
-        ("reply", "replies", replies(false)),
-        ("edited comment", "edited comments", replies(true)),
+        ("reply", "replies", replies(|rp| rp.was.is_none())),
+        ("edited comment", "edited comments", replies(Reply::is_edit)),
+        ("suggested edit", "suggested edits", replies(Reply::is_anew)),
     ] {
         let yes = parts.iter().filter(|p| mark(**p) == Some(true)).count();
         let no = parts.len() - yes;
@@ -2232,6 +2271,39 @@ mod tests {
         assert_eq!(h.said(), "1 reply, 1 edited comment");
         let marks = [("reply 0".to_string(), true), ("reply 1".to_string(), false)].into();
         assert_eq!(said(&h, &marks), "1 reply rejected; 1 edited comment accepted");
+    }
+
+    #[test]
+    fn a_comment_read_again_with_its_suggested_edit_takes_the_place_of_its_turn_said_for_what_it_is() {
+        // ann's comment filed without the suggested edit Phabricator gives
+        // with it, read again with it: no one edited it, though it takes the
+        // place of her turn as an edit does.
+        let anew = |was: &str, now: &str| Reply {
+            text: now.into(),
+            reviewer: Some("ann".into()),
+            was: Some(was.into()),
+            anew: true,
+            ..Default::default()
+        };
+        let now = "Shout less.\n\nann suggests this edit of line 2:\n```diff\n-LINE 2\n+line 2\n```";
+        let text = anew("Shout less.", now).after(&fenced("reviewer ann", "Shout less."));
+        assert_eq!(text, format!("```reviewer ann redacted\nShout less.\n```\n{}", fenced("reviewer ann anew Shout less.", now)));
+        let names: Vec<String> = all_turns(&text).iter().enumerate().map(|(i, t)| t.name(i)).collect();
+        assert_eq!(names, ["ann's comment (redacted)", "ann's comment that said \"Shout less.\", with its suggested edit"]);
+        // Said so wherever it is named, and counted apart from edits.
+        let edit = Reply { anew: false, ..anew("a", "b") };
+        let reply = Reply {
+            reviewer: Some("ann".into()),
+            ..Default::default()
+        };
+        assert_eq!((anew("a", "b").said(), edit.said()), ("ann's suggested edit".into(), "ann's edit".into()));
+        let h = Held {
+            replies: vec![anew("a", "b"), edit, reply, anew("c", "d")],
+            ..Default::default()
+        };
+        assert_eq!(h.said(), "1 reply, 1 edited comment, 2 suggested edits");
+        let marks: BTreeMap<String, bool> = (0..4).map(|k| (format!("reply {k}"), true)).collect();
+        assert_eq!(said(&h, &marks), "1 reply accepted; 1 edited comment accepted; 2 suggested edits accepted");
     }
 
     /// A database at `path` holding ann's thread `phab:a1` on change `c`,

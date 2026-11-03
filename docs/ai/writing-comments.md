@@ -10,7 +10,10 @@ name says the effort its run was asked at, when it was asked at one
 A reviewer's
 comment edited on Phabricator is a turn of its own, headed by what it
 edits (`ann's edit of the comment that said "Hi Da":`), and the turn it
-edits stays, headed `ann (redacted):` (Phabricator, below). The colours
+edits stays, headed `ann (redacted):` (Phabricator, below); one filed
+without the suggested edit Phabricator gives with it, read again with it,
+the same way, headed for what it is, no edit (`ann's comment that said
+"Hi Da", with its suggested edit:`). The colours
 are settings (`[colors]`, below).
 
 What was said is read as markdown, as comments write it: `**bold**` is

@@ -1254,6 +1254,7 @@ mod tests {
             tag: (role != Role::You).then(|| "answer".to_string()),
             deleted,
             edit: None,
+            anew: false,
             redacted: false,
             effort: None,
             stack: None,

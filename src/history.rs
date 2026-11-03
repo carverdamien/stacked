@@ -453,10 +453,14 @@ pub fn note_change(before: Option<&Note>, n: &Note) -> String {
         {
             return "you edited it".into();
         }
-        // A reviewer's comment edited on Phabricator: their edit of it, last.
-        let edit = thread_turns(&n.text).last().is_some_and(|t| t.edit.is_some());
+        // A reviewer's comment edited on Phabricator: their edit of it, last;
+        // or one read again with the suggested edit Phabricator gives with
+        // it, which no one edited.
+        let last = thread_turns(&n.text).pop();
+        let edit = last.as_ref().is_some_and(|t| t.edit.is_some());
         return match last_role(&n.text) {
             Some(Role::Agent) => replied_said(&n.text),
+            Some(Role::Reviewer) if edit && last.as_ref().is_some_and(|t| t.anew) => "stacked read a reviewer's comment again, with its suggested edit".into(),
             Some(Role::Reviewer) if edit => "a reviewer edited a comment on Phabricator".into(),
             Some(Role::Reviewer) => "a reviewer replied".into(),
             _ => "you replied".into(),
@@ -522,6 +526,22 @@ mod tests {
 
     fn texts(diff: &[Diffed]) -> Vec<String> {
         diff.iter().filter(|d| !matches!(d, Diffed::Code(_))).map(Diffed::text).collect()
+    }
+
+    #[test]
+    fn a_reviewer_s_comment_read_anew_with_its_suggested_edit_is_said_so_never_edited() {
+        use crate::thread::fenced;
+        let note = |text: String| Note { change: "c".into(), id: "phab:s1".into(), text, ..Default::default() };
+        let filed = note(fenced("reviewer ann", "Shout less."));
+        let redacted = fenced("reviewer ann redacted", "Shout less.");
+        // Read again with the suggested edit Phabricator gives with it: no
+        // one edited it.
+        let now = "Shout less.\n\nann suggests this edit of line 2:\n```diff\n-A\n+a\n```";
+        let anew = note(format!("{redacted}\n{}", fenced("reviewer ann anew Shout less.", now)));
+        assert_eq!(note_change(Some(&filed), &anew), "stacked read a reviewer's comment again, with its suggested edit");
+        // Edited on Phabricator: said as ever.
+        let edited = note(format!("{redacted}\n{}", fenced("reviewer ann edit Shout less.", "Shout less, please.")));
+        assert_eq!(note_change(Some(&filed), &edited), "a reviewer edited a comment on Phabricator");
     }
 
     #[test]

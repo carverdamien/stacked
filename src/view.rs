@@ -30,6 +30,8 @@ pub struct NoteLine {
     pub key: String,
     /// Its line number in the new version.
     pub new_no: usize,
+    /// Its line number in the old version, the file before the patch.
+    pub old_no: usize,
 }
 
 /// The keys of the message's lines.
@@ -86,6 +88,7 @@ pub fn note_lines(p: &Patch) -> Vec<NoteLine> {
             text: fold(line),
             key,
             new_no: 0,
+            old_no: 0,
         })
         .collect();
     for fd in parse_diff(&p.diff, &mode(&p.change)) {
@@ -97,6 +100,7 @@ pub fn note_lines(p: &Patch) -> Vec<NoteLine> {
                     text: fold(&l.text.chars().skip(1).collect::<String>()),
                     key: l.key,
                     new_no: l.new_no,
+                    old_no: l.old_no,
                 });
             }
         }

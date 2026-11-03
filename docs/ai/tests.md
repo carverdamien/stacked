@@ -877,13 +877,34 @@ revision stacked on the top added on top, each with the author and the
 message of its commit as uploaded, and a reviewer's comment, in one
 review, each operation said with what it takes and marked on its own,
 the stack the four once it is accepted, the comment filed, and pulled
-again nothing new; a suggested edit alone, an inline comment with no
-words, counted by the Phabricator line, pulled and filed as any comment,
-a thread of its own on its first line saying so, with its link at the
-diff it was made on, another, answering a comment, pulled into its
+again nothing new; from a Phabricator that gives no suggested edits, a
+suggested edit alone, an inline comment with no words, counted by the
+Phabricator line, pulled and filed as any comment, a thread of its own on
+its first line saying so, that this Phabricator gives none, with its link
+at the diff it was made on, another, answering a comment, pulled into its
 thread, one removed neither counted nor pulled, and the first edited on
 Phabricator to have words, counted and held as an edit of it, its turn
-redacted; a version stacked knows bringing nothing, a revision
+redacted; suggested edits as Mozilla's Phabricator gives them, the
+stand-in for Phabricator giving a diff's lines too: a suggested edit
+alone filed by a stacked of before saying it could not be read, and a
+comment filed with its words alone by a pull from a Phabricator that gave
+none, both read anew once their suggested edits are given, counted by the
+Phabricator line and by the pull apart from a comment edited on
+Phabricator meanwhile, held, their review listing each for what it is
+and showing a comment read anew as it was filed, then with its suggested
+edit, said so, never as edited, the edit as edited on Phabricator, and
+each accepted as it closes, saying so of each kind: each then the diff of
+the lines it replaces, as they are, after its words, in the place of the
+turn it replaces, redacted, a comment read anew headed for what it is,
+the edit as an edit; a new
+one on the old side of its diff, on the line the patch removes, saying
+so, a reply to it by its id on Phabricator pulled into its thread, and
+another pulled since too, none counted after; and each diff drawn in its
+thread as a block of code, each line as it is, its sign first, no list's
+bullet nor fence, and the turn read anew headed for what it is; a pull
+whose read of a diff's lines fails, failed, saying why, nothing of
+Phabricator stored, the stack free, turned away there said plainly, then
+read, a line the diff holds read, one it does not hold said not read; a version stacked knows bringing nothing, a revision
 retitled elsewhere rewording its patch, known since; both changed,
 Phabricator's taken, the review showing what the patch had since the
 last version stacked knew, the patch above made again on it, its
@@ -1314,10 +1335,15 @@ though `kill` still finds it, its exit left for whoever started it, the
 wrapper of an ask the process started waited for once it has exited, and
 an ask whose agent you stopped landing as stopped, unless the agent was
 done as you stopped it, and the thread the agent is told, a reviewer's edit
-and the turn it redacts in plain words; what is said of landed work left
+and the turn it redacts in plain words, and their comment read again with
+its suggested edit and the turn it takes the place of, told for what they
+are, no edit; what is said of landed work left
 to review is tested in `held.rs`, with a reviewer's edit as their latest
 turn, the turn it edits redacted, again on a later edit, nothing redacted
-when that turn is gone; and a reviewer's reply to a comment you closed
+when that turn is gone; their comment read again with its suggested edit
+in the place of their turn, redacted, headed for what it is, and named
+and counted apart from edits, as the review's closing says it too; and a
+reviewer's reply to a comment you closed
 reopening it once accepted, as the review closes, taken at once or sent
 back with the agent's work, as the pull kept it, as its history has it
 last when written since, filed where it is open since rather than
@@ -1332,7 +1358,10 @@ from one failed with nothing to bring, nor once the work's review is
 closed. Those in
 `thread.rs` show the fences of a reviewer's edit and of a turn redacted
 read and written again, their headings, the first line an edit quotes cut
-short with `…`, and a name alone as ever; and the effort on the fence of
+short with `…`, and a name alone as ever; the fence of their comment read
+anew with its suggested edit read and written again, headed for what it
+is, the turn it replaces found by the line it quotes, and an edit's not
+taken for one; and the effort on the fence of
 the agent's turn, after the way, read, headed and named with it, kept as
 the thread is written again, a reply added, a turn edited or one holding
 a code block, a turn of before read and written as it was, a comment the
@@ -1609,14 +1638,38 @@ file there, a link moved as a link, and nothing moved that an override
 names the place of; what stacked runs told the same places; and nowhere in
 a test's own process. Those in `phab.rs` show a comment read as it was
 last edited, its versions before kept with it, by when it was first
-written, one removed none; an inline comment that is a suggested edit
-alone, with no words and not removed, read saying so, with its lines,
-one or more, and its link, at the diff it was made on and its anchor, a
-reply in its thread, its version before so too once it is edited to have
-words, none once removed, and a comment on the whole revision with no
-words none; a revision's status read from
-its value alone, whatever Phabricator says of drafts, with its letter and
-its name; the statuses of revisions read in one search, those it does not
+written, one removed none; from a Phabricator that gives no suggested
+edits, an inline comment that is a suggested edit alone, with no words and
+not removed, read saying so, that this Phabricator gives none, with its
+lines, one or more, and its link, at the diff it was made on and its
+anchor, a reply in its thread, its version before so too once it is edited
+to have words, none once removed, one with words read with its words, each
+on the new side, and a comment on the whole revision with no words none.
+They show suggested edits as Mozilla's Phabricator gives them, read with
+the lines they replace from the diff each was made on: D337641's suggested
+edit alone, read as a diff of the lines it replaces, then of its own,
+fenced, each as it is, a version of its own whose id says so, the version
+it is read from before it, saying what a stacked of before filed of it;
+one with words after them, trimmed, its own lines not, white space
+starting and ending one kept, the version before it its words alone, and
+edited since, the version before that known by both its ids; one of no
+lines deleting the lines it is on, and its diff not read, said so; a
+newline ending its last line rather than adding one, as on D337641, one
+line in the place of two and six in the place of seven, and a line left
+empty before that newline one of its lines; one on the old side of its
+diff reading that side's lines and its line's text there, said to be of
+the file before the patch, and sitting on the patch's line it removes, by
+its text there or by its number, one on the new side on the line the patch
+adds, and a line of context on both; one whose lines are not all in the
+diff read, one in no hunk of it or the diff not in Phabricator's answer,
+its own lines alone, said so, nothing guessed; a read of a diff's lines
+that fails failing the read, saying why, Phabricator turning this machine
+away there said as such, as at any of a pull's calls; and a removed comment none, whatever it suggested,
+one said to suggest nothing read with its words alone, by its own id, with
+none, none, and edited, its version before known by both its ids, saying
+what a stacked of before said. They show a revision's status read from its
+value alone, whatever Phabricator says of drafts, with its letter and its
+name; the statuses of revisions read in one search, those it does not
 find not known, each with its title, summary and PHID, and a search
 refused said; an editor's read by the stand-in for its database alone, one
 search for each Phabricator the links name, never from a process that
@@ -1658,13 +1711,16 @@ token in the form of its request, and saying a 429, a gateway's error page
 and Conduit's answer. Those in `review.rs` show the comments not
 pulled yet counted from the comments open, the threads by their ids and
 the pulls waiting: those filed or waiting not counted, one edited since
-it was filed counted as edited, a thread closed not counted, nor a new
+it was filed counted as edited, one filed without its suggested edit and
+read again with it counted apart, and one edited since and read with its
+suggested edit as edited, a thread closed not counted, nor a new
 reply or edit there, but for one moved to the stack's comments, another
 stack's pull not this one's, and one a review of before rejected counted,
 as a pull brings it again; where a pull is said, one patch's revision
 pulled alone too, what it reads on its line of the banner, and each of
 its phases, as what changes the stack says it and as its line; and what
-a pull brings said counted, its conflicts marked last. Those in
+a pull brings said counted, the suggested edits it reads of comments
+filed apart from the edits, its conflicts marked last. Those in
 `tui/revisions.rs` show how long ago what the Phabricator line says was
 fetched, said as the line says it, just now, then in minutes, in hours,
 yesterday, then in days, a time to come just now; a title in work
@@ -1684,8 +1740,8 @@ the patch, a line otherwise at the same place, the same hunk elsewhere, a
 file one makes and the other finds, but not by more of a file around a
 hunk, nor by another file; the tour pulling nothing from Phabricator, a
 patch's revision alone neither, nor fetching the latest; the comments to
-pull and what differs
-said in plain words; the patches pane's mark `✓` exactly where the line
+pull, the suggested edits to pull apart from the comments edited, and
+what differs said in plain words; the patches pane's mark `✓` exactly where the line
 says in sync and `✗` wherever it says what differs, the parent set,
 already its parent or none set, and none while that is not known or for a
 revision not found; and the line folded between words, its pieces under

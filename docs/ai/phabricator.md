@@ -40,7 +40,10 @@ diff is on, and the author and message of that diff's commit as uploaded
 unless it is stored; while that diff is no version of its patch stacked
 knows, the older ones, the newest first, to the first that is one; and
 its comments (transaction.search, user.search for their authors' names,
-and the lines a comment on a line is on). What it read is stored as a
+and differential.querydiffs, once for each diff an inline comment is on,
+for the lines a comment on a line is on, on its side of the diff, and
+those its suggested edit replaces, a call of it failing the read as any
+call does). What it read is stored as a
 fetch stores it (The editor, above): of each revision, its state and its
 comments, with when it was last modified as its search said, where they
 are not what is stored; each raw diff it read; the revisions asked that
@@ -274,26 +277,104 @@ is reopened. Replies and edits to a thread moved to the stack's comments
 go to it there. A comment removed on Phabricator stays in its thread as it was. A
 reviewer's comment can be asked about like any.
 
-Suggested edits cannot be pulled: Phabricator's API does not give them,
-transaction.search giving a comment's words alone. An inline comment that
-is a suggested edit alone, with no words, and not removed, is pulled all
-the same, as any comment is: a thread of its own on its line, or a reply
-in the thread it answers; and the Phabricator line counts it among the
-comments not pulled yet. Its text says what it is, and where Phabricator
-shows it: `ann suggested an edit to lines 2906–2909 here, which stacked
-cannot read, as Phabricator's API does not give suggested edits: see it
-on Phabricator,
-https://phabricator.services.mozilla.com/D337641?id=1385262#inline-1234567`,
-`line 2906` for one line. The link is the revision's page showing the
-diff the comment was made on (`?id=`), at the comment's anchor (`#inline-`
-and transaction.search's `id` of the comment), as the revision's history
-on Phabricator links an inline comment made on another diff than the one
-it shows: there the comment is drawn, whatever diffs came after it. Edited
-on Phabricator since to have words, it is a comment like any other: the
-edit is held as an edit of the turn that says it is a suggested edit
-(above), which it redacts once accepted. A suggested edit that comes with
-words is not seen at all: the comment is pulled with its words alone, and
-nothing says that it suggests an edit.
+A reviewer's suggested edit is pulled with their comment, where
+Phabricator gives it, as Mozilla's does: transaction.search gives an inline
+comment's suggested edit, as the comment is now, in its fields, whether it
+has one (`hasSuggestion`, which alone says so, as `suggestionText` is none
+without one, but empty on Phabricators of before, as it is for an edit
+that deletes its lines) and what replaces the lines the comment is on
+(`suggestionText`), with the side of its diff the comment is on
+(`isNewFile`). The comment's text says its words, if it has any, then who
+suggests the edit and of which lines, then the edit as a unified diff
+writes it, between the fences of a `diff` code block: each line it
+replaces, as the diff the comment was made on has it on that side, after
+`-`, then each line of the edit after `+`, a newline ending the edit's
+last line rather than starting another, nothing trimmed:
+
+````
+ochameau suggests this edit of lines 2906–2909:
+```diff
+-  // MOZ_LOG already logs the module name, so only the prefix is added.
+-  const nsString& label = aIsForMozLog ? mPrefix : mLogModuleAndPrefix;
+-  nsString message = (aIsForMozLog ? u""_ns : u"console."_ns) + aMethodString +
+-                     u": "_ns + label + (label.IsEmpty() ? u""_ns : u": "_ns);
++  const nsString& prefix = aIsForMozLog ? mMozLogPrefix : mConsolePrefix;
++  nsString message = (aIsForMozLog ? u""_ns : u"console."_ns) + aMethodString +
++                     u": "_ns + prefix + (prefix.IsEmpty() ? u""_ns : u": "_ns);
+```
+````
+
+The fence makes the diff a code block, so the editor, in the browser and
+in StackED too, shows its lines as they are, as one block in the colours
+for code (Writing comments, above), cut only where the pane ends: without
+it, markdown would bullet each `-` and `+` line as a list's item, its
+indentation lost, and fold it between words. The agent, asked about the
+comment, is told the diff for what it is. An edit with no line of its
+own deletes the lines: `ann suggests deleting lines 3–4:`, its `-` lines
+alone. Where a line it replaces is not in the diff read (the diff not in
+Phabricator's answer, or the line in no hunk of it), nothing is guessed:
+`ann suggests this edit of
+lines 3–4, but the lines replaced could not be read from Phabricator, so
+only the new lines are shown:`, its `+` lines alone; `ann suggests
+deleting lines 3–4, but those lines could not be read from Phabricator.`
+A comment on the old side of its diff (`isNewFile` false), with a
+suggested edit or not, is on the lines the patch found: its suggested
+edit says so after its lines (`lines 2–3 of the file before the patch`),
+its `-` lines that side's, and its thread is on the patch's line it is on
+there, one the patch removes or one of context, found by that side's text
+near that side's number, else by the number, as a comment on the new side
+is found among the lines the patch leaves. Where Phabricator does not say
+which side a comment is on, it is on the new side, as before.
+
+A comment read with its suggested edit is a version of its own, its id the
+latest version's and `+suggestion`, the version it is read from, as read
+without it, the one before it. So a comment filed without its suggested
+edit, with its words alone, or by a stacked of before that read no
+suggested edit (`ann suggested an edit to line 2 here, which stacked
+cannot read, as Phabricator's API does not give suggested edits: see it on
+Phabricator, …`), is read anew by the next pull, which holds it to take
+the place of its turn as an edit does (above). No one edited it, so
+nothing says it was edited: it is counted apart from the comments edited
+(`2 suggested edits to pull`, `1 edited comment and 2 suggested edits from
+D11: they wait for your review`), named for what it is (`ann's suggested
+edit waits for your review`, `Accept ann's suggested edit`), and its
+review shows `ann's comment as it was filed, then with the suggested edit
+that stacked now reads from Phabricator`, over `ann's comment, with the
+suggested edit that stacked now reads from Phabricator, as it would be in
+its thread`; closing that review says `reviewed: 2 suggested edits
+accepted`. Accepted, it redacts the turn it takes the place of, and is
+headed `ann's comment that said "Shout less here.", with its suggested
+edit` (its fence says `anew` where an edit's says `edit`); the agent is
+told that stacked had not read the suggested edit, and that the turn below,
+the same comment read with it, replaces the one redacted. A comment
+edited on Phabricator, a new version of it, with a suggested edit or not,
+is an edit, said as ever; a pull that brings both counts each. A reply is
+pulled into the thread of the comment it answers by either id. Phabricator gives no suggested edit of an older
+version of a comment: an older version is known by both its ids, and says
+its words, or with none, what a stacked of before said. A comment removed
+is none, whatever it suggested. An inline comment Phabricator says has no
+suggested edit is pulled with its words alone; with no words, it says
+nothing, and is not pulled, as a comment on the whole revision with no
+words is not.
+
+Where Phabricator gives no suggested edits, its transactions saying
+nothing of them, an inline comment that is a suggested edit alone, with no
+words, and not removed, is pulled all the same, as any comment is: a
+thread of its own on its line, or a reply in the thread it answers; and
+the Phabricator line counts it among the comments not pulled yet. Its text
+says what it is, and where Phabricator shows it: `ann suggested an edit to
+lines 2906–2909 here, which stacked cannot read, as this Phabricator's API
+does not give suggested edits: see it on Phabricator,
+https://phabricator.example.com/D123?id=456#inline-789`, `line 2906` for
+one line. The link is the revision's page showing the diff the comment was
+made on (`?id=`), at the comment's anchor (`#inline-` and
+transaction.search's `id` of the comment), as the revision's history on
+Phabricator links an inline comment made on another diff than the one it
+shows: there the comment is drawn, whatever diffs came after it. Edited on
+Phabricator since to have words, it is a comment like any other: the edit
+is held as an edit of the turn that says it is a suggested edit (above),
+which it redacts once accepted. A suggested edit that comes with words is
+not seen there: the comment is pulled with its words alone.
 
 A line of a commit message that names a bug (`Bug 123`), or the revision
 (`Differential Revision:`), opens it in your browser: `o` there, or the

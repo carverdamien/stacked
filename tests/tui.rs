@@ -16991,6 +16991,7 @@ fn reviews_pulled_wait_in_the_banner_as_the_agent_s_work_does() {
         created: 0,
         path: None,
         line: 0,
+        old_side: false,
         line_text: None,
         reply_to: reply.map(String::from),
         earlier: vec![],
@@ -18953,7 +18954,8 @@ impl Phab {
             }
             // A revision's diffs, each the commit it is on and, when a submit
             // or the test set them, its commits as uploaded; a diff asked by
-            // its id alone, for its lines, nothing of them.
+            // its id alone, for its lines, its files' hunks, as Phabricator
+            // gives them, from its raw diff.
             "differential.querydiffs" => match p["revisionIDs"][0].as_u64() {
                 Some(n) => {
                     let Some(r) = self.revisions.get(&n) else { return Ok(json!({})) };
@@ -18967,7 +18969,10 @@ impl Phab {
                             .collect(),
                     )
                 }
-                None => json!({}),
+                None => match p["ids"][0].as_u64().and_then(|id| Some((id, self.diffs.get(&id)?))) {
+                    Some((id, raw)) => json!({ id.to_string(): {"id": id.to_string(), "changes": changes_of(raw)} }),
+                    None => json!({}),
+                },
             },
             // The names of the users asked, as their PHIDs end.
             "user.search" => {
@@ -22229,6 +22234,34 @@ fn a_diff(was: &[(usize, &str)], is: &[(usize, &str)]) -> String {
     format!("diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n{body}")
 }
 
+/// The files of raw diff `raw` as differential.querydiffs gives them, each
+/// its path and its hunks: where each starts on the old side and on the
+/// new one, written out as Conduit writes them, and its lines, each its
+/// origin first (`corpus`).
+#[cfg(feature = "moz-phab")]
+fn changes_of(raw: &str) -> serde_json::Value {
+    let mut files: Vec<serde_json::Value> = Vec::new();
+    let mut in_hunk = false;
+    for l in raw.lines() {
+        if let Some(rest) = l.strip_prefix("diff --git ") {
+            let path = rest.rsplit_once(" b/").map_or(rest, |(_, p)| p);
+            files.push(serde_json::json!({"oldPath": path, "currentPath": path, "hunks": []}));
+            in_hunk = false;
+        } else if let Some(at) = l.strip_prefix("@@ -") {
+            let (old, new) = at.split_once(" +").unwrap();
+            let start = |s: &str| s.split([',', ' ']).next().unwrap().to_string();
+            let hunk = serde_json::json!({"oldOffset": start(old), "newOffset": start(new), "corpus": ""});
+            files.last_mut().unwrap()["hunks"].as_array_mut().unwrap().push(hunk);
+            in_hunk = true;
+        } else if in_hunk {
+            let hunk = files.last_mut().unwrap()["hunks"].as_array_mut().unwrap().last_mut().unwrap();
+            let corpus = format!("{}{l}\n", hunk["corpus"].as_str().unwrap());
+            hunk["corpus"] = corpus.into();
+        }
+    }
+    files.into()
+}
+
 #[cfg(feature = "moz-phab")]
 impl Phab {
     /// Revision `n` given a new latest diff, `raw`: its id.
@@ -22384,15 +22417,15 @@ fn a_stack_pulled_takes_new_versions_its_parents_and_those_stacked_on_top_with_t
 
 #[cfg(feature = "moz-phab")]
 #[test]
-fn a_suggested_edit_alone_is_counted_and_pulled_on_its_lines_saying_so_with_its_link_and_edited_to_have_words_is_an_edit() {
+fn where_phabricator_gives_no_suggested_edits_one_alone_is_counted_and_pulled_on_its_lines_saying_so_with_its_link_and_edited_to_have_words_is_an_edit() {
     use stacked::thread::fenced;
     // Stack s: D11, a.txt's lines 2 to 5 shouted.
     let (_tmp, db, phab, _) = pull_setup(11, &[("Bug 11 - shout", &[(2, "LINE 2"), (3, "LINE 3"), (4, "LINE 4"), (5, "LINE 5")])]);
     // An inline comment of ann's on a.txt as transaction.search gives it:
     // from `line` on `length` lines, made on D11's diff, answering `reply`
     // if it says; its versions, the latest first, each its id, its PHID, its
-    // words and whether it is removed. A suggested edit alone has no words:
-    // Conduit never gives what it suggests.
+    // words and whether it is removed. This Phabricator gives no suggested
+    // edits, saying nothing of them: a suggested edit alone has no words.
     let inline = |line: u64, length: u64, reply: Option<&str>, versions: &[(u64, &str, &str, bool)]| {
         let mut fields = serde_json::json!({"path": "a.txt", "line": line, "length": length, "diff": {"id": 1000}});
         if let Some(r) = reply {
@@ -22425,7 +22458,7 @@ fn a_suggested_edit_alone_is_counted_and_pulled_on_its_lines_saying_so_with_its_
     assert_eq!(run.summary, "2 new comments from D11: they wait for your review");
     Db::edit(&db, |d| stacked::held::close(d, &run.id, &Default::default(), Some(true))).unwrap();
     let suggestion = |lines: &str, id: u64| {
-        format!("ann suggested an edit to {lines} here, which stacked cannot read, as Phabricator's API does not give suggested edits: see it on Phabricator, https://phabricator.example.com/D11?id=1000#inline-{id}")
+        format!("ann suggested an edit to {lines} here, which stacked cannot read, as this Phabricator's API does not give suggested edits: see it on Phabricator, https://phabricator.example.com/D11?id=1000#inline-{id}")
     };
     let thread = |id: &str| notes_of(&db, "s", 0).into_iter().find(|n| n.id == id).unwrap_or_else(|| panic!("no {id}"));
     let on = |n: usize| stacked::view::note_lines(&patch_of(&db, 0)).into_iter().find(|l| l.file == "a.txt" && l.new_no == n && l.origin == '+').unwrap().key;
@@ -22459,6 +22492,224 @@ fn a_suggested_edit_alone_is_counted_and_pulled_on_its_lines_saying_so_with_its_
     assert_eq!(notes_of(&db, "s", 0).len(), 2);
     app.refresh();
     assert_eq!(count(&mut app), "no new comments");
+    stacked::phab::statuses_stand_in(&db, None);
+}
+
+#[cfg(feature = "moz-phab")]
+#[test]
+fn a_suggested_edit_phabricator_gives_is_pulled_as_a_diff_in_its_thread_and_a_comment_filed_without_it_is_read_anew_with_it() {
+    use stacked::thread::fenced;
+    // Stack s: D11, a.txt's lines 2 to 5 shouted.
+    let (_tmp, db, phab, _) = pull_setup(11, &[("Bug 11 - shout", &[(2, "LINE 2"), (3, "LINE 3"), (4, "LINE 4"), (5, "LINE 5")])]);
+    // An inline comment of ann's on a.txt as transaction.search gives it,
+    // made on D11's diff, from `line` on `length` lines, answering `reply`
+    // if it says: its versions, the latest first, each its id, its PHID and
+    // its words.
+    let inline = |line: u64, length: u64, versions: &[(u64, &str, &str)], reply: Option<&str>| {
+        let mut fields = serde_json::json!({"path": "a.txt", "line": line, "length": length, "diff": {"id": 1000}});
+        if let Some(r) = reply {
+            fields["replyToCommentPHID"] = r.into();
+        }
+        let n = versions.len();
+        let versions: Vec<serde_json::Value> = versions
+            .iter()
+            .enumerate()
+            .map(|(k, (id, phid, raw))| serde_json::json!({"id": id, "phid": phid, "version": n - k, "dateCreated": id, "removed": false, "content": {"raw": raw}}))
+            .collect();
+        serde_json::json!({"type": "inline", "authorPHID": "PHID-USER-ann", "fields": fields, "comments": versions})
+    };
+    // The same, as Mozilla's Phabricator gives it: the side it is on, the
+    // new one unless `old`, and its suggested edit, `edit`, if it has one.
+    let mozilla = |c: &serde_json::Value, old: bool, edit: Option<&str>| {
+        let mut c = c.clone();
+        c["fields"]["isNewFile"] = (!old).into();
+        c["fields"]["hasSuggestion"] = edit.is_some().into();
+        c["fields"]["suggestionText"] = edit.into();
+        c
+    };
+    let set = |comments: Vec<serde_json::Value>| phab.lock().unwrap().revisions.get_mut(&11).unwrap().comments = comments;
+    let thread = |id: &str| notes_of(&db, "s", 0).into_iter().find(|n| n.id == id).unwrap_or_else(|| panic!("no {id}"));
+    let key = |origin: char, text: &str| stacked::view::note_lines(&patch_of(&db, 0)).into_iter().find(|l| l.file == "a.txt" && l.origin == origin && l.text == text).unwrap().key;
+    let close = |run: &str| {
+        Db::edit(&db, |d| stacked::held::close(d, run, &Default::default(), Some(true))).unwrap();
+    };
+    // ann's suggested edit alone on line 2, as a stacked of before pulled
+    // and filed it, reading no suggested edit: saying so, with its link.
+    let link = "https://phabricator.example.com/D11";
+    let before = format!("ann suggested an edit to line 2 here, which stacked cannot read, as Phabricator's API does not give suggested edits: see it on Phabricator, {link}?id=1000#inline-501");
+    let filed = stacked::phab::Remote {
+        phid: "s1".into(),
+        author: "ann".into(),
+        text: before.clone(),
+        created: 501,
+        path: Some("a.txt".into()),
+        line: 2,
+        line_text: Some("LINE 2".into()),
+        ..Default::default()
+    };
+    let read: Result<stacked::phab::Pulled, String> =
+        Ok(stacked::phab::Pulled { revisions: vec![stacked::phab::RevisionComments { revision: "D11".into(), source: patch_of(&db, 0).change, comments: vec![filed] }] });
+    Db::edit(&db, |d| stacked::review::file(d, "s", "pull-0", 1, &read)).unwrap();
+    close("pull-0");
+    assert_eq!((thread("phab:s1").line, thread("phab:s1").text), (key('+', "LINE 2"), fenced("reviewer ann", &before)));
+    // From a Phabricator that gives no suggested edits: that one, filed
+    // already, and ann's words on lines 3 to 5 and on line 7, pulled with
+    // their words alone.
+    let s1 = inline(2, 1, &[(501, "s1", "")], None);
+    let c1 = inline(3, 3, &[(502, "c1", "Shout less here.")], None);
+    let e1 = inline(7, 1, &[(503, "e1", "Fix it.")], None);
+    set(vec![s1.clone(), c1.clone(), e1.clone()]);
+    let run = pulled(&db, stacked::review::Asked::Stack).unwrap();
+    assert_eq!(run.summary, "2 new comments from D11: they wait for your review");
+    close(&run.id);
+    assert_eq!((thread("phab:c1").line, thread("phab:c1").text), (key('+', "LINE 3"), fenced("reviewer ann", "Shout less here.")));
+    // As Mozilla's Phabricator gives them, with their suggested edits; the
+    // one on line 7 edited on Phabricator since, a new version of it. The
+    // Phabricator line counts each kind apart: an edit, and two comments
+    // read anew with their suggested edits, which no one edited.
+    let s1 = mozilla(&s1, false, Some("  line two\n"));
+    let c1 = mozilla(&c1, false, Some("Line 3\nLine 4\nLine 5"));
+    let e1 = mozilla(&inline(7, 1, &[(508, "e1v2", "Fix it, please."), (503, "e1", "Fix it.")], None), false, Some("Line 7\n"));
+    set(vec![s1.clone(), c1.clone(), e1.clone()]);
+    let mut app = open(&db).unwrap();
+    fetched(&mut app);
+    let count = |app: &mut App| phab_line(app).unwrap().rsplit(" · ").next().unwrap().to_string();
+    assert_eq!(count(&mut app), "1 edited comment and 2 suggested edits to pull");
+    let run = pulled(&db, stacked::review::Asked::Stack).unwrap();
+    assert_eq!(run.summary, "1 edited comment and 2 suggested edits from D11: they wait for your review");
+    // Its review lists each for what it is, and shows a comment read anew
+    // as it was filed, then with its suggested edit, said so; the edit, as
+    // edited on Phabricator. Closed, each is accepted.
+    let screen = the_review(&mut app);
+    for line in [
+        " · ann's suggested edit: ann suggests this edit of line 2:",
+        " · ann's suggested edit: Shout less here.",
+        " · ann's edit: Fix it, please.",
+        "ann's comment as it was filed, then with the suggested edit that stacked now reads from Phabricator",
+        " ann's comment, with the suggested edit that stacked now reads from Phabricator, as it would be in its thread",
+    ] {
+        assert!(screen.contains(line), "{line:?} in:\n{screen}");
+    }
+    assert!(!screen.contains("edited on Phabricator"), "{screen}");
+    keys(&mut app, &[KeyCode::Down, KeyCode::Down]);
+    let screen = draw_sized(&mut app, 240, 40);
+    assert!(screen.contains("ann's comment as it was filed, then as it was edited on Phabricator"), "{screen}");
+    keys(&mut app, &[KeyCode::Esc]);
+    choose(&mut app, "Close review");
+    assert_eq!(app.status, "reviewed: 1 edited comment accepted; 2 suggested edits accepted");
+    // Accepted: each read anew says the diff of the lines it replaces, as
+    // they are, after what it says, in the place of its turn, redacted,
+    // headed for what it is; the edit is an edit, as ever.
+    let replaced = |by: &str, was: &str, now: &str| format!("{}\n{}", fenced("reviewer ann redacted", was), fenced(&format!("reviewer ann {by} {was}"), now));
+    let s1_now = "ann suggests this edit of line 2:\n```diff\n-LINE 2\n+  line two\n```";
+    assert_eq!(thread("phab:s1").text, replaced("anew", &before, s1_now));
+    let c1_now = "Shout less here.\n\nann suggests this edit of lines 3–5:\n```diff\n-LINE 3\n-LINE 4\n-LINE 5\n+Line 3\n+Line 4\n+Line 5\n```";
+    assert_eq!(thread("phab:c1").text, replaced("anew", "Shout less here.", c1_now));
+    let e1_now = "Fix it, please.\n\nann suggests this edit of line 7:\n```diff\n-line 7\n+Line 7\n```";
+    assert_eq!(thread("phab:e1").text, replaced("edit", "Fix it.", e1_now));
+    let said: Vec<String> = stacked::thread::all_turns(&thread("phab:c1").text).iter().enumerate().map(|(i, t)| t.name(i)).collect();
+    assert_eq!(said, ["ann's comment (redacted)", "ann's comment that said \"Shout less here.\", with its suggested edit"]);
+    app.refresh();
+    assert_eq!(count(&mut app), "no new comments");
+    // A new one, on the old side: ann's edit of line 4 as it was before the
+    // patch, which the patch removes, on that line; and her reply to it, by
+    // its id on Phabricator, in its thread.
+    let s2 = mozilla(&inline(4, 1, &[(504, "s2", "")], None), true, Some("line four\n"));
+    let r1 = mozilla(&inline(4, 1, &[(505, "r1", "Or drop it.")], Some("s2")), true, None);
+    set(vec![s1.clone(), c1.clone(), e1.clone(), s2.clone(), r1.clone()]);
+    let run = pulled(&db, stacked::review::Asked::Stack).unwrap();
+    assert_eq!(run.summary, "2 new comments from D11: they wait for your review");
+    close(&run.id);
+    let s2_now = "ann suggests this edit of line 4 of the file before the patch:\n```diff\n-line 4\n+line four\n```";
+    let s2t = thread("phab:s2+suggestion");
+    assert_eq!((s2t.line, s2t.text), (key('-', "line 4"), format!("{}\n{}", fenced("reviewer ann", s2_now), fenced("reviewer ann", "Or drop it."))));
+    // Another reply to it, pulled since: into its thread too.
+    let r2 = mozilla(&inline(4, 1, &[(506, "r2", "Either way.")], Some("s2")), true, None);
+    set(vec![s1, c1, e1, s2, r1, r2]);
+    let run = pulled(&db, stacked::review::Asked::Stack).unwrap();
+    assert_eq!(run.summary, "1 new comment from D11: it waits for your review");
+    close(&run.id);
+    assert!(thread("phab:s2+suggestion").text.ends_with(&fenced("reviewer ann", "Either way.")));
+    assert_eq!(notes_of(&db, "s", 0).len(), 4);
+    app.refresh();
+    assert_eq!(count(&mut app), "no new comments");
+    // Drawn in its thread, a diff is a block of code, each line as it is,
+    // its sign first: no list's bullet, no fence, nothing folded between
+    // words; the turn read anew headed for what it is.
+    draw(&mut app);
+    let rows: Vec<String> = app.rows.iter().map(|r| r.text.trim_end().to_string()).collect();
+    for line in [
+        "     ▎   ann suggests this edit of line 2:",
+        "     ▎    -LINE 2",
+        "     ▎    +  line two",
+        "     ▎    -line 4",
+        "     ▎    +line four",
+        "     ▎    +Line 5",
+    ] {
+        assert!(rows.iter().any(|r| r == line), "{line:?} in {rows:#?}");
+    }
+    assert!(rows.iter().any(|r| r.starts_with("     ▎ ann's comment that said \"Shout less here.\"")), "{rows:#?}");
+    assert!(!rows.iter().any(|r| r.contains('•') || r.contains("```")), "{rows:#?}");
+    stacked::phab::statuses_stand_in(&db, None);
+}
+
+#[cfg(feature = "moz-phab")]
+#[test]
+fn a_pull_whose_read_of_a_diff_s_lines_fails_fails_saying_why_and_stores_nothing() {
+    use stacked::thread::fenced;
+    // Stack s: D11, a.txt's line 3 shouted; on Phabricator, ann's suggested
+    // edits of line 3, in D11's diff, and of line 25, which it does not
+    // hold.
+    let (_tmp, db, phab, _) = pull_setup(11, &[("Bug 11 - shout", &[(3, "LINE 3")])]);
+    let suggesting = |line: u64, (id, phid): (u64, &str), edit: &str| {
+        serde_json::json!({"type": "inline", "authorPHID": "PHID-USER-ann",
+            "fields": {"path": "a.txt", "line": line, "length": 1, "diff": {"id": 1000}, "isNewFile": true, "hasSuggestion": true, "suggestionText": edit},
+            "comments": [{"id": id, "phid": phid, "version": 1, "dateCreated": id, "removed": false, "content": {"raw": ""}}]})
+    };
+    phab.lock().unwrap().revisions.get_mut(&11).unwrap().comments = vec![suggesting(3, (501, "s1"), "Line 3\n"), suggesting(25, (502, "s2"), "Line 25\n")];
+    // The stand-in, refusing the read of a diff's lines as `refusing` says.
+    let refusing: std::sync::Arc<std::sync::Mutex<Option<stacked::phab::Error>>> = Default::default();
+    let (p, refused) = (phab.clone(), refusing.clone());
+    stacked::phab::statuses_stand_in(
+        &db,
+        Some(Box::new(move |m, v| {
+            if m == "differential.querydiffs"
+                && v["ids"].is_array()
+                && let Some(e) = refused.lock().unwrap().clone()
+            {
+                return Err(e);
+            }
+            Ok(p.lock().unwrap().call(m, v)?)
+        })),
+    );
+    let pulls = |db: &Path| -> Vec<(stacked::db::RunState, String)> {
+        Db::load(db).unwrap().runs().into_iter().filter(|r| stacked::held::pulled(r)).map(|r| (r.state, r.summary.clone())).collect()
+    };
+    // Refused: the pull fails, saying why, its run failed, nothing of
+    // Phabricator stored, the stack free.
+    let why = "differential.querydiffs: Phabricator is down";
+    *refusing.lock().unwrap() = Some(why.to_string().into());
+    assert_eq!(pulled(&db, stacked::review::Asked::Stack).unwrap_err().0, why);
+    assert_eq!(pulls(&db), [(stacked::db::RunState::Failed, why.to_string())]);
+    assert_eq!(phab_records(&db), (0, 0, 0), "nothing stored");
+    assert_eq!(stacked::ask::blocked(&Db::load(&db).unwrap(), "s"), None, "the stack free");
+    // Phabricator turning this machine away there: said plainly.
+    *refusing.lock().unwrap() = Some(stacked::phab::Error::TurnedAway);
+    assert_eq!(pulled(&db, stacked::review::Asked::Stack).unwrap_err().0, stacked::phab::TURNED_AWAY);
+    assert_eq!(pulls(&db)[1], (stacked::db::RunState::Failed, stacked::phab::TURNED_AWAY.to_string()));
+    assert_eq!(phab_records(&db), (0, 0, 0), "nothing stored");
+    // Read: the lines line 3's replaces, read; line 25's, which the diff
+    // read does not hold, could not be read, said so.
+    *refusing.lock().unwrap() = None;
+    let run = pulled(&db, stacked::review::Asked::Stack).unwrap();
+    assert_eq!(run.summary, "2 new comments from D11: they wait for your review");
+    Db::edit(&db, |d| stacked::held::close(d, &run.id, &Default::default(), Some(true))).unwrap();
+    let thread = |id: &str| notes_of(&db, "s", 0).into_iter().find(|n| n.id == id).unwrap_or_else(|| panic!("no {id}")).text;
+    assert_eq!(thread("phab:s1+suggestion"), fenced("reviewer ann", "ann suggests this edit of line 3:\n```diff\n-LINE 3\n+Line 3\n```"));
+    assert_eq!(
+        thread("phab:s2+suggestion"),
+        fenced("reviewer ann", "ann suggests this edit of line 25, but the lines replaced could not be read from Phabricator, so only the new lines are shown:\n```diff\n+Line 25\n```")
+    );
     stacked::phab::statuses_stand_in(&db, None);
 }
 

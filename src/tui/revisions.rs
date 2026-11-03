@@ -302,15 +302,15 @@ enum Shown<'a> {
     Files(&'a str),
 }
 
-/// How many comments are not pulled yet, new and edited (`review::not_pulled`), as
-/// the Phabricator line says it.
-fn comments_said((new, edited): (usize, usize)) -> String {
-    let n = |k: usize, what: &str| format!("{k} {what} comment{}", if k == 1 { "" } else { "s" });
-    match (new, edited) {
-        (0, 0) => "no new comments".into(),
-        (k, 0) => format!("{} to pull", n(k, "new")),
-        (0, e) => format!("{} to pull", n(e, "edited")),
-        (k, e) => format!("{} and {} to pull", n(k, "new"), n(e, "edited")),
+/// How many comments are not pulled yet, new and edited, and how many
+/// suggested edits of comments filed without them (`review::not_pulled`),
+/// as the Phabricator line says it.
+fn comments_said((new, edited, anew): (usize, usize, usize)) -> String {
+    let n = |k: usize, what: &str| format!("{k} {what}{}", if k == 1 { "" } else { "s" });
+    let what: Vec<String> = [(new, "new comment"), (edited, "edited comment"), (anew, "suggested edit")].into_iter().filter(|(k, _)| *k > 0).map(|(k, what)| n(k, what)).collect();
+    match what.is_empty() {
+        true => "no new comments".into(),
+        false => format!("{} to pull", crate::head::and(&what)),
     }
 }
 
@@ -1447,11 +1447,14 @@ mod tests {
 
     #[test]
     fn the_comments_not_pulled_are_said_new_then_edited() {
-        assert_eq!(comments_said((0, 0)), "no new comments");
-        assert_eq!(comments_said((1, 0)), "1 new comment to pull");
-        assert_eq!(comments_said((2, 0)), "2 new comments to pull");
-        assert_eq!(comments_said((0, 1)), "1 edited comment to pull");
-        assert_eq!(comments_said((3, 2)), "3 new comments and 2 edited comments to pull");
+        assert_eq!(comments_said((0, 0, 0)), "no new comments");
+        assert_eq!(comments_said((1, 0, 0)), "1 new comment to pull");
+        assert_eq!(comments_said((2, 0, 0)), "2 new comments to pull");
+        assert_eq!(comments_said((0, 1, 0)), "1 edited comment to pull");
+        assert_eq!(comments_said((3, 2, 0)), "3 new comments and 2 edited comments to pull");
+        // Comments filed read with their suggested edits, apart from edits.
+        assert_eq!(comments_said((0, 0, 2)), "2 suggested edits to pull");
+        assert_eq!(comments_said((1, 1, 1)), "1 new comment, 1 edited comment and 1 suggested edit to pull");
     }
 
     #[test]

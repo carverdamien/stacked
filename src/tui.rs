@@ -6272,7 +6272,7 @@ impl App {
             }
             Screen::Review if self.review_pulled() => {
                 out.push(
-                    "The review of a pull from Phabricator: the stack operations of its change, when it brings new versions of the patches or new patches, each accepted or rejected on its own; then the comments opened, the replies, and the comments edited on Phabricator. None of those is rejected: closing the review files every one of them, and a reply to a comment you closed reopens that comment."
+                    "The review of a pull from Phabricator: the stack operations of its change, when it brings new versions of the patches or new patches, each accepted or rejected on its own; then the comments opened, the replies, the comments edited on Phabricator, and the comments filed before whose suggested edit stacked now reads. None of those is rejected: closing the review files every one of them, and a reply to a comment you closed reopens that comment."
                         .into(),
                 );
                 out.push(match self.review_ops().is_some() {

@@ -18,7 +18,12 @@
 //! the comment that said "Hi Da"`). The comment's own turn stays as it was,
 //! for what answered it to read as it was written, redacted: `redacted`
 //! after the reviewer's name on its fence (```reviewer ann redacted), and
-//! on its heading (`ann's comment (redacted)`).
+//! on its heading (`ann's comment (redacted)`). A reviewer's comment filed
+//! without the suggested edit Phabricator gives with it, and read again
+//! with it, replaces its turn the same way, though no one edited it: its
+//! fence says `anew` where an edit's says `edit` (```reviewer ann anew Hi
+//! Da), and its heading what it is (`ann's comment that said "Hi Da", with
+//! its suggested edit`).
 //!
 //! A turn of the agent's whose run was asked at an effort (claude's
 //! `--effort`) says so on its fence, after the way it was asked: `effort`
@@ -54,8 +59,14 @@ pub const FENCE_CLOSE: &str = "```";
 /// The word after a reviewer's name on the fence of their edit of a
 /// comment of theirs above it, the first line of that comment after it.
 pub const EDIT: &str = "edit";
+/// The word after a reviewer's name on the fence of their comment read
+/// again with the suggested edit Phabricator gives with it, which takes the
+/// place of their turn above that said it without, as an edit does, the
+/// first line of that turn after it.
+pub const ANEW: &str = "anew";
 /// The word after a reviewer's name on the fence of a turn of theirs that
-/// an edit of it below replaces, before `edit` if it is one too.
+/// an edit of it below replaces, or that comment read anew, before `edit`
+/// or `anew` if it is one too.
 pub const REDACTED: &str = "redacted";
 /// The word before the name of the effort the agent's run was asked at, on
 /// the fence of a turn of the agent's, after the way it was asked
@@ -89,8 +100,12 @@ pub struct Turn {
     /// A reviewer's edit, on Phabricator, of a comment of theirs above it:
     /// that comment's first line, as it was filed.
     pub edit: Option<String>,
-    /// A reviewer's turn that an edit of it below replaces: shown, and told,
-    /// as it was, said redacted.
+    /// That turn, `edit`, is no edit: it is the reviewer's comment above it
+    /// read again with the suggested edit Phabricator gives with it, which
+    /// stacked had not read, no one having edited it.
+    pub anew: bool,
+    /// A reviewer's turn that an edit of it below replaces, or that comment
+    /// read anew: shown, and told, as it was, said redacted.
     pub redacted: bool,
     /// The agent's, its run asked at an effort: that effort's name, as
     /// claude's `--effort` takes it (`max`). None for a turn of before
@@ -104,9 +119,10 @@ pub struct Turn {
 
 impl Turn {
     /// Turn `i` of its thread, said: `your comment`, `the agent's reply`,
-    /// `ann's reply`, `ann's edit of the comment that said "Hi Da"`; one an
-    /// edit replaces, `ann's comment (redacted)`; the agent's, its run
-    /// asked at an effort, `the agent's reply (max)`.
+    /// `ann's reply`, `ann's edit of the comment that said "Hi Da"`, `ann's
+    /// comment that said "Hi Da", with its suggested edit`; one an edit
+    /// replaces, `ann's comment (redacted)`; the agent's, its run asked at
+    /// an effort, `the agent's reply (max)`.
     pub fn name(&self, i: usize) -> String {
         match self.redacted {
             true => format!("{} ({REDACTED})", self.named(i)),
@@ -124,10 +140,13 @@ impl Turn {
                 _ => "the reviewer's".to_string(),
             },
         };
-        // A reviewer's edit of a comment of theirs above: that comment,
-        // quoted.
+        // A reviewer's edit of a comment of theirs above, or that comment
+        // read anew: that comment, quoted.
         if let Some(was) = &self.edit {
-            return format!("{whose} edit of the comment that said \"{}\"", quoted(was));
+            return match self.anew {
+                true => format!("{whose} comment that said \"{}\", with its suggested edit", quoted(was)),
+                false => format!("{whose} edit of the comment that said \"{}\"", quoted(was)),
+            };
         }
         named_at(&format!("{whose} {}", if i == 0 { "comment" } else { "reply" }), self.agent_effort())
     }
@@ -268,25 +287,31 @@ fn closed(role: Role, tag: &str, deleted: bool, body: &[&str]) -> Turn {
     };
     let tag = tag.as_str();
     // A reviewer's: their name; `redacted`, if an edit of it replaces it;
-    // `edit`, if it is one, then the first line of the comment it edits.
-    let mut marks = (tag, false, None);
+    // `edit`, if it is one, or `anew`, if it is their comment read anew,
+    // then the first line of the comment it takes the place of.
+    let mut marks = (tag, false, None, false);
     if let Some((who, rest)) = tag.split_once(' ').filter(|_| role == Role::Reviewer && !deleted) {
         let (redacted, rest) = match after_word(rest, REDACTED) {
             Some(rest) => (true, rest),
             None => (false, rest),
         };
-        let edit = after_word(rest, EDIT).map(str::to_string);
+        let (edit, anew) = match (after_word(rest, EDIT), after_word(rest, ANEW)) {
+            (Some(was), _) => (Some(was.to_string()), false),
+            (None, Some(was)) => (Some(was.to_string()), true),
+            (None, None) => (None, false),
+        };
         if redacted || edit.is_some() {
-            marks = (who, redacted, edit);
+            marks = (who, redacted, edit, anew);
         }
     }
-    let (tag, redacted, edit) = marks;
+    let (tag, redacted, edit, anew) = marks;
     Turn {
         role,
         body: lines.join("\n").trim().to_string(),
         tag: (role != Role::You).then(|| tag.to_string()),
         deleted,
         edit,
+        anew,
         redacted,
         effort,
         stack,
@@ -352,6 +377,7 @@ pub fn all_turns(text: &str) -> Vec<Turn> {
                 tag: None,
                 deleted: false,
                 edit: None,
+                anew: false,
                 redacted: false,
                 effort: None,
                 stack: None,
@@ -423,6 +449,16 @@ pub fn said_lines(text: &str) -> Vec<String> {
     out
 }
 
+/// The turn of `turns` that takes the place of turn `i`, redacted: the
+/// first after it of the same reviewer's that is their edit of it, or that
+/// comment read anew (`Turn::anew`), by the first line it quotes. None once
+/// that turn is gone.
+pub fn replacing(turns: &[Turn], i: usize) -> Option<&Turn> {
+    let t = turns.get(i)?;
+    let first = t.body.lines().next().unwrap_or("").trim();
+    turns[i + 1..].iter().find(|n| n.role == Role::Reviewer && n.tag == t.tag && n.edit.as_deref() == Some(first))
+}
+
 /// The turns of a stored comment that stand, those deleted left out: what
 /// the agent is told, and whose the last word is.
 pub fn thread_turns(text: &str) -> Vec<Turn> {
@@ -461,7 +497,8 @@ pub fn render_thread(turns: &[Turn]) -> String {
                     open += &format!(" {REDACTED}");
                 }
                 if let Some(was) = &t.edit {
-                    open += &format!(" {EDIT} {}", was.lines().next().unwrap_or("").trim());
+                    let word = if t.anew { ANEW } else { EDIT };
+                    open += &format!(" {word} {}", was.lines().next().unwrap_or("").trim());
                 }
                 return fenced(&open, &t.body);
             }
@@ -514,6 +551,7 @@ fn appended(text: &str, role: Role, body: &str, tag: Option<&str>, effort: Optio
         tag: tag.map(String::from),
         deleted: false,
         edit: None,
+        anew: false,
         redacted: false,
         effort: effort.map(String::from),
         stack,
@@ -578,6 +616,7 @@ pub fn rewind(text: &str, k: usize, body: &str) -> Option<String> {
         tag: None,
         deleted: false,
         edit: None,
+        anew: false,
         redacted: false,
         effort: None,
         stack: None,
@@ -837,6 +876,26 @@ mod tests {
         // A reviewer's name and nothing else after it, as ever: a name.
         let t = &all_turns(&fenced("reviewer ann smith", "Hi."))[0];
         assert_eq!((t.tag.as_deref(), t.redacted, &t.edit), (Some("ann smith"), false, &None));
+    }
+
+    #[test]
+    fn a_reviewer_s_comment_read_anew_with_its_suggested_edit_is_headed_so_not_as_an_edit() {
+        // As the fences have them: the comment, redacted; the same comment
+        // read again with its suggested edit, the turn's first line on its
+        // fence after `anew`.
+        let now = "Hi Da\n\nann suggests this edit of line 2:\n```diff\n-hi\n+Hi\n```";
+        let text = [fenced("reviewer ann redacted", "Hi Da"), fenced("reviewer ann anew Hi Da", now)].join("\n");
+        let turns = all_turns(&text);
+        assert_eq!((turns[1].edit.as_deref(), turns[1].anew, turns[1].body.as_str()), (Some("Hi Da"), true, now));
+        let names: Vec<String> = turns.iter().enumerate().map(|(i, t)| t.name(i)).collect();
+        assert_eq!(names, ["ann's comment (redacted)", "ann's comment that said \"Hi Da\", with its suggested edit"]);
+        // Written again as read; the turn it replaces found by the line it
+        // quotes, and an edit's not taken for it.
+        assert_eq!(render_thread(&turns), text);
+        assert!(replacing(&turns, 0).is_some_and(|t| t.anew));
+        let edited = [fenced("reviewer ann redacted", "Hi Da"), fenced("reviewer ann edit Hi Da", "Hi Damien!")].join("\n");
+        assert!(replacing(&all_turns(&edited), 0).is_some_and(|t| !t.anew));
+        assert_eq!(said_lines(&text)[1], "ann's comment that said \"Hi Da\", with its suggested edit: Hi Da");
     }
 
     #[test]

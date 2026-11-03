@@ -161,7 +161,8 @@
   fetch, asked from a menu, or after a submit; `tui/compared.rs`, two
   versions of a text compared word by word where their lines wrap aside,
   as rows: a title and summary in the review of a submit, a reviewer's
-  comment edited on Phabricator in the review of a pull, a commit's
+  comment edited on Phabricator, or read again with its suggested edit,
+  in the review of a pull, a commit's
   message against its patch's; and a diff, or a commit, as the middle
   draws a patch; `tui/head_why.rs`, the view of why Move HEAD does not
   move HEAD, and what you can do in your checkout so that it can;

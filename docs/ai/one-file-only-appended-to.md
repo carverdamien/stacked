@@ -29,7 +29,9 @@ bytes long, padded with spaces.
   edit of it replaces has `redacted` after the name (```` ```reviewer ann
   redacted ````), and their edit `edit` and the first line of the comment it
   edits (```` ```reviewer ann edit Hi Da ````), both when it is an edit
-  redacted in its turn; a turn holding fences of its own (a
+  redacted in its turn; their comment read again with the suggested edit
+  Phabricator gives with it, which no one edited, `anew` in the place of
+  `edit` (```` ```reviewer ann anew Hi Da ````); a turn holding fences of its own (a
   code block) is fenced with one backtick more than they have, and only a
   line of as many backticks ends it. A turn of yours is as you wrote it,
   unless a line of it would read as one of those fences: then it is fenced

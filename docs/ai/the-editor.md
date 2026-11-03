@@ -299,7 +299,9 @@ the parent differ`, `the title or summary and the parent differ`, or `the
 diff, the title or summary, and the parent differ`, always against the
 patch as it is, never its older versions; and how many of the revision's comments are not
 pulled yet: `2 new comments to pull`, `1 edited comment to pull` (edited on
-Phabricator since it was filed), `no new comments`. Those are counted from
+Phabricator since it was filed), `2 suggested edits to pull` (filed without
+the suggested edit Phabricator gives with them, which a pull reads now:
+Phabricator, below), `no new comments`. Those are counted from
 what the database holds as it stands, never from its history: a comment is
 pulled when a comment open holds it, on the patch or moved to the stack's,
 or when a pull's review waiting holds it. The line does not count the
