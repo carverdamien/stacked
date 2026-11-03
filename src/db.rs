@@ -15,6 +15,12 @@
 //!   there starts a new branch, and the old one stays.
 //! - A comment is on a line of a change, kept as the change gets new
 //!   versions; the latest record for a line is the comment.
+//! - What a read of Phabricator learnt of a revision, its state and its
+//!   comments, is a record of its own, written only where it differs from
+//!   what is stored; the latest record with each is what stands. A
+//!   revision's raw latest diff is stored once for each diff id, and a
+//!   fetch that found a revision as stored writes only a small record of
+//!   when it read it.
 //!
 //! The records are only ever appended, so a crash can only leave a last
 //! line cut short. Such a line, or any line that cannot be read, is passed
@@ -32,7 +38,8 @@
 //! saying where the records are that the state stands on (each stack's
 //! head and the stacks one undo and one redo go to, the comments open, the
 //! runs under way and what they name, what is chosen and marked read, where
-//! stacked last left HEAD of each checkout) and
+//! stacked last left HEAD of each checkout, what stands of each revision
+//! read from Phabricator and the raw diff its state names) and
 //! how the indexes stood. A reader reads the header, the checkpoint, those
 //! records and the lines after it, not the whole file; the records it did
 //! not read are `Unloaded`. What needs the history (an older stack, the
@@ -162,6 +169,19 @@ struct Checkpoint {
     /// wrote, as such a stacked wrote none of them.
     #[serde(default)]
     moved: Vec<(String, String, usize)>,
+    /// What was read of Phabricator's revisions, each by its link: the rev
+    /// of its latest record with its state, and of its latest with its
+    /// comments; the rev of each raw diff stored, by link and diff id; and
+    /// the rev of the latest fetch that read each. None in a checkpoint a
+    /// stacked of before wrote, as such a stacked wrote none of them.
+    #[serde(default)]
+    revisions: Vec<(String, usize)>,
+    #[serde(default)]
+    revision_comments: Vec<(String, usize)>,
+    #[serde(default)]
+    raw_diffs: Vec<(String, u64, usize)>,
+    #[serde(default)]
+    fetched: Vec<(String, usize)>,
     collapsed: Vec<(String, String)>,
     reviews: Vec<(String, usize)>,
     marks: Vec<(String, Vec<usize>)>,
@@ -345,6 +365,31 @@ pub enum Record {
     /// Lines of a patch marked read, in the reading mode; or a mark taken
     /// back.
     Read(Mark),
+    /// What a read of Phabricator learnt of a revision (Fetch the latest
+    /// from Phabricator, a submit, a pull): its state, its comments, or
+    /// both, each only when it differs from what is stored. The latest
+    /// record with each is what stands. A database a stacked of before
+    /// wrote has none.
+    Revision(Revision),
+    /// The raw latest diff of the revision at `link` on Phabricator, of id
+    /// `diff`: stored once for each id, as a diff never changes.
+    RawDiff {
+        #[serde(default)]
+        link: String,
+        #[serde(default)]
+        diff: u64,
+        #[serde(default)]
+        raw: String,
+    },
+    /// When Fetch the latest from Phabricator read the revisions at
+    /// `links`, whether it stored anything of them or found each as it was
+    /// stored.
+    Fetched {
+        #[serde(default)]
+        links: Vec<String>,
+        #[serde(default)]
+        time: i64,
+    },
     /// A line of what a run's claude wrote, as it wrote it.
     Event {
         run: String,
@@ -371,6 +416,91 @@ pub struct Mark {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub undo: Option<usize>,
     pub time: i64,
+}
+
+/// What a read of Phabricator learnt of one revision, as a record of its
+/// own (`Record::Revision`): its state, its comments, or both; none of a
+/// part the read did not read, or found as it was stored.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+pub struct Revision {
+    /// The revision's link, as a patch's trailer names it: what it is
+    /// stored by.
+    #[serde(default)]
+    pub link: String,
+    /// `D123`.
+    #[serde(default)]
+    pub d: String,
+    /// What its search, its edges and its diffs said of it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state: Option<State>,
+    /// Its comments.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub comments: Option<Comments>,
+    /// When it was read, in seconds since 1970.
+    #[serde(default)]
+    pub time: i64,
+}
+
+/// A revision's state on Phabricator, as a read stored it (`Revision`):
+/// its status, title, summary and bug, its PHID, its parents, and the id of
+/// its latest diff. Or that Phabricator does not have it.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+pub struct State {
+    /// Phabricator has no such revision: the rest is empty.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub missing: bool,
+    /// Its status, as differential.revision.search writes its value:
+    /// `needs-review`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub status: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub title: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub summary: String,
+    /// Its bug, empty for none.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub bug: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub phid: String,
+    /// Its parents, each its PHID and its `D123`, or its PHID again where
+    /// it was not named.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub parents: Vec<(String, String)>,
+    /// The id of its latest diff: 0 for none, or none read.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub diff: u64,
+}
+
+/// A revision's comments, as a read stored them (`Revision`): what the
+/// count of those not pulled yet needs, and when the revision was last
+/// modified as they were read.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+pub struct Comments {
+    /// When the revision was last modified as they were read, as its
+    /// search said (`dateModified`, seconds since 1970): none when the read
+    /// did not say, as a pull does not. While it stays the same, a fetch
+    /// does not read them again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub modified: Option<i64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub list: Vec<Seen>,
+}
+
+/// A comment of a revision, as a read stored it (`Comments`): the id of
+/// its version as it was last edited, the ids of its versions before, the
+/// newest first, and the comment it replies to, if it does.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+pub struct Seen {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub earlier: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply_to: Option<String>,
+}
+
+fn is_zero(n: &u64) -> bool {
+    *n == 0
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -881,6 +1011,15 @@ pub struct Db {
     /// (stack name, checkout) to the index of its latest record of where
     /// stacked left HEAD.
     moved: BTreeMap<(String, String), usize>,
+    /// A revision's link to the index of its latest record that has its
+    /// state on Phabricator; and of its latest that has its comments.
+    revisions: BTreeMap<String, usize>,
+    revision_comments: BTreeMap<String, usize>,
+    /// (A revision's link, a diff's id) to the index of the record of that
+    /// raw diff.
+    raw_diffs: BTreeMap<(String, u64), usize>,
+    /// A revision's link to the index of the latest fetch that read it.
+    fetched: BTreeMap<String, usize>,
     /// The comments collapsed: (change, comment id).
     collapsed: HashSet<(String, String)>,
     /// Run id to the index of its latest review record.
@@ -1290,6 +1429,36 @@ impl Db {
             }
             self.moved.insert((stack, checkout), i);
         }
+        // What stands of each revision read from Phabricator, read with it;
+        // its raw diffs, read with it only for the latest each state names.
+        for (link, rev) in cp.revisions {
+            let i = ix(rev)?;
+            if !matches!(&self.records[i], Record::Revision(r) if r.link == link && r.state.is_some()) {
+                return None;
+            }
+            self.revisions.insert(link, i);
+        }
+        for (link, rev) in cp.revision_comments {
+            let i = ix(rev)?;
+            if !matches!(&self.records[i], Record::Revision(r) if r.link == link && r.comments.is_some()) {
+                return None;
+            }
+            self.revision_comments.insert(link, i);
+        }
+        for (link, diff, rev) in cp.raw_diffs {
+            let i = ix(rev)?;
+            if read(self, i) && !matches!(&self.records[i], Record::RawDiff { link: l, diff: d, .. } if *l == link && *d == diff) {
+                return None;
+            }
+            self.raw_diffs.insert((link, diff), i);
+        }
+        for (link, rev) in cp.fetched {
+            let i = ix(rev)?;
+            if !matches!(&self.records[i], Record::Fetched { links, .. } if links.contains(&link)) {
+                return None;
+            }
+            self.fetched.insert(link, i);
+        }
         self.collapsed = cp.collapsed.into_iter().collect();
         for (run, rev) in cp.reviews {
             let i = ix(rev)?;
@@ -1353,15 +1522,22 @@ impl Db {
         same!(len, lines, torn, torn_slot, tail, saved, version, fixed, changes, warnings, last_cp);
         same!(patches, latest, heads, stacks, on, notes, note_first, last_queued, note_lines);
         same!(views, choices, moved, collapsed, reviews, marks, runs, run_order);
+        same!(revisions, revision_comments, raw_diffs, fetched);
         if self.records.len() != whole.records.len() {
             return Some(format!("{} records, read whole {}", self.records.len(), whole.records.len()));
         }
+        // The raw diffs the stored states name: read with it.
+        let named: HashSet<usize> = self.phab_needed();
         for (i, r) in self.records.iter().enumerate() {
             match r {
-                // Not read: a comment's latest only when it is closed.
+                // Not read: a comment's latest only when it is closed; never
+                // what stands of a revision read from Phabricator.
                 Record::Unloaded => {
                     if matches!(&whole.records[i], Record::Comment(n) if !n.text.is_empty()) && self.notes.values().any(|&k| k == i) {
                         return Some(format!("@{}: an open comment not read", i + 1));
+                    }
+                    if named.contains(&i) {
+                        return Some(format!("@{}: what stands of a revision read from Phabricator not read", i + 1));
                     }
                 }
                 r if *r != whole.records[i] => return Some(format!("@{}: {r:?}, read whole {:?}", i + 1, whole.records[i])),
@@ -1410,6 +1586,10 @@ impl Db {
             views: HashMap::new(),
             choices: BTreeMap::new(),
             moved: BTreeMap::new(),
+            revisions: BTreeMap::new(),
+            revision_comments: BTreeMap::new(),
+            raw_diffs: BTreeMap::new(),
+            fetched: BTreeMap::new(),
             collapsed: HashSet::new(),
             reviews: HashMap::new(),
             marks: HashMap::new(),
@@ -1685,6 +1865,23 @@ impl Db {
             }
             Record::Moved { stack, checkout, .. } => {
                 self.moved.insert((stack.clone(), checkout.clone()), at);
+            }
+            Record::Revision(r) => {
+                if r.state.is_some() {
+                    self.revisions.insert(r.link.clone(), at);
+                }
+                if r.comments.is_some() {
+                    self.revision_comments.insert(r.link.clone(), at);
+                }
+            }
+            // Once for each id: the first, should two have come.
+            Record::RawDiff { link, diff, .. } => {
+                self.raw_diffs.entry((link.clone(), *diff)).or_insert(at);
+            }
+            Record::Fetched { links, .. } => {
+                for link in links {
+                    self.fetched.insert(link.clone(), at);
+                }
             }
             Record::Collapse { change, id, collapsed } => {
                 let key = (change.clone(), id.clone());
@@ -2021,6 +2218,7 @@ impl Db {
         need.extend(self.choices.values().copied());
         need.extend(self.moved.values().copied());
         need.extend(self.marks.values().flatten().copied());
+        need.extend(self.phab_needed());
         for s in stacks {
             let Some(Record::Stack(st)) = self.records.get(s) else { return None };
             need.insert(s);
@@ -2030,6 +2228,22 @@ impl Db {
         need.iter()
             .all(|&i| !matches!(self.records[i], Record::Unloaded | Record::Broken) && self.pos[i] != Pos::NONE)
             .then_some(need)
+    }
+
+    /// The records that what stands of the revisions read from Phabricator
+    /// is in, by index: each one's latest with its state, its latest with
+    /// its comments, the latest fetch that read it, and the raw diff its
+    /// state names, when that is stored.
+    fn phab_needed(&self) -> HashSet<usize> {
+        let mut need: HashSet<usize> = self.revisions.values().chain(self.revision_comments.values()).chain(self.fetched.values()).copied().collect();
+        for (link, &at) in &self.revisions {
+            if let Record::Revision(Revision { state: Some(s), .. }) = &self.records[at]
+                && let Some(&k) = self.raw_diffs.get(&(link.clone(), s.diff))
+            {
+                need.insert(k);
+            }
+        }
+        need
     }
 
     /// The checkpoint of the state as it is, reading `need` with it.
@@ -2070,6 +2284,10 @@ impl Db {
             views: sorted(self.views.iter().map(|(s, i)| (s.clone(), i + 1)).collect()),
             choices: self.choices.iter().map(|((s, o), i)| (s.clone(), o.clone(), i + 1)).collect(),
             moved: self.moved.iter().map(|((s, c), i)| (s.clone(), c.clone(), i + 1)).collect(),
+            revisions: self.revisions.iter().map(|(l, i)| (l.clone(), i + 1)).collect(),
+            revision_comments: self.revision_comments.iter().map(|(l, i)| (l.clone(), i + 1)).collect(),
+            raw_diffs: self.raw_diffs.iter().map(|((l, d), i)| (l.clone(), *d, i + 1)).collect(),
+            fetched: self.fetched.iter().map(|(l, i)| (l.clone(), i + 1)).collect(),
             collapsed: sorted(self.collapsed.iter().cloned().collect()),
             reviews: sorted(self.reviews.iter().map(|(r, i)| (r.clone(), i + 1)).collect()),
             marks: sorted(self.marks.iter().map(|(c, at)| (c.clone(), revs(at))).collect()),
@@ -2722,6 +2940,133 @@ impl Db {
             })?;
         }
         Ok(())
+    }
+
+    /// What stands of the state on Phabricator of the revision at `link`, as
+    /// the last read of it stored it, and when that read was: none before
+    /// any read stored it.
+    pub fn revision_state(&self, link: &str) -> Option<(&State, i64)> {
+        match self.at(*self.revisions.get(link)?) {
+            Record::Revision(r) => r.state.as_ref().map(|s| (s, r.time)),
+            _ => None,
+        }
+    }
+
+    /// What stands of the comments on Phabricator of the revision at
+    /// `link`, as the last read of them stored them, and when that read
+    /// was: none before any read stored them.
+    pub fn revision_comments(&self, link: &str) -> Option<(&Comments, i64)> {
+        match self.at(*self.revision_comments.get(link)?) {
+            Record::Revision(r) => r.comments.as_ref().map(|c| (c, r.time)),
+            _ => None,
+        }
+    }
+
+    /// The raw diff of id `diff` of the revision at `link`, if it is
+    /// stored.
+    pub fn raw_diff(&self, link: &str, diff: u64) -> Option<&str> {
+        match self.at(*self.raw_diffs.get(&(link.to_string(), diff))?) {
+            Record::RawDiff { raw, .. } => Some(raw),
+            _ => None,
+        }
+    }
+
+    /// When Fetch the latest from Phabricator last read the revision at
+    /// `link`, if it ever did.
+    pub fn fetched(&self, link: &str) -> Option<i64> {
+        match self.at(*self.fetched.get(link)?) {
+            Record::Fetched { time, .. } => Some(*time),
+            _ => None,
+        }
+    }
+
+    /// The `D123` of the revision of PHID `phid`, as what is stored of the
+    /// revisions read from Phabricator names it: one's own, or as the
+    /// parent of another. A revision's PHID and number never change, so
+    /// that a name once read holds.
+    pub fn revision_name(&self, phid: &str) -> Option<&str> {
+        let states = self.revisions.values().filter_map(|&i| match self.at(i) {
+            Record::Revision(r) => r.state.as_ref().map(|s| (r, s)),
+            _ => None,
+        });
+        let mut named = None;
+        for (r, s) in states {
+            if s.phid == phid {
+                return Some(&r.d);
+            }
+            named = named.or_else(|| s.parents.iter().find(|(p, d)| p == phid && d != phid).map(|(_, d)| d.as_str()));
+        }
+        named
+    }
+
+    /// The links of the revisions something of which is stored: a state,
+    /// comments, or a fetch that read them.
+    pub fn stored_revisions(&self) -> Vec<&str> {
+        let mut all: BTreeSet<&str> = self.revisions.keys().map(String::as_str).collect();
+        all.extend(self.revision_comments.keys().map(String::as_str));
+        all.extend(self.fetched.keys().map(String::as_str));
+        all.into_iter().collect()
+    }
+
+    /// The records what stands of the revision at `link` is in: its latest
+    /// with its state, and its latest with its comments, when that is
+    /// another, the older first, each with the part it stands for alone.
+    pub fn revision_records(&self, link: &str) -> Vec<Revision> {
+        let at = |m: &BTreeMap<String, usize>| m.get(link).copied();
+        let rec = |i: usize| match self.at(i) {
+            Record::Revision(r) => Some(r.clone()),
+            _ => None,
+        };
+        match (at(&self.revisions), at(&self.revision_comments)) {
+            (Some(s), Some(c)) if s == c => rec(s).into_iter().collect(),
+            (s, c) => {
+                let mut out: Vec<(usize, Revision)> = Vec::new();
+                out.extend(s.and_then(|i| rec(i).map(|r| (i, Revision { comments: None, ..r }))));
+                out.extend(c.and_then(|i| rec(i).map(|r| (i, Revision { state: None, ..r }))));
+                out.sort_by_key(|(i, _)| *i);
+                out.into_iter().map(|(_, r)| r).collect()
+            }
+        }
+    }
+
+    /// Stores what a read of Phabricator learnt of revision `d` at `link`:
+    /// its state and its comments, each only where it is not what is
+    /// stored already, none of either written when both are. Whether it
+    /// wrote a record.
+    pub fn store_revision(&mut self, link: &str, d: &str, state: Option<State>, comments: Option<Comments>) -> Result<bool> {
+        let state = state.filter(|s| self.revision_state(link).is_none_or(|(was, _)| was != s));
+        let comments = comments.filter(|c| self.revision_comments(link).is_none_or(|(was, _)| was != c));
+        if state.is_none() && comments.is_none() {
+            return Ok(false);
+        }
+        self.push(Record::Revision(Revision {
+            link: link.into(),
+            d: d.into(),
+            state,
+            comments,
+            time: now(),
+        }))?;
+        Ok(true)
+    }
+
+    /// Stores raw diff `raw`, of id `diff`, of the revision at `link`, unless
+    /// it is stored already. Whether it wrote it.
+    pub fn store_raw_diff(&mut self, link: &str, diff: u64, raw: &str) -> Result<bool> {
+        if self.raw_diffs.contains_key(&(link.to_string(), diff)) {
+            return Ok(false);
+        }
+        self.push(Record::RawDiff {
+            link: link.into(),
+            diff,
+            raw: raw.into(),
+        })?;
+        Ok(true)
+    }
+
+    /// Remembers that Fetch the latest from Phabricator read the revisions
+    /// at `links` now.
+    pub fn store_fetched(&mut self, links: Vec<String>) -> Result<()> {
+        self.push(Record::Fetched { links, time: now() }).map(|_| ())
     }
 
     /// Whether comment (change, id) is collapsed, in the middle pane.
@@ -3580,6 +3925,122 @@ mod tests {
         assert_eq!((db.differs(&whole), db.moved("s", Path::new("/checkout"))), (None, None));
         Db::edit(&path, |db| db.set_moved("s", Path::new("/checkout"), "a1")).unwrap();
         assert_eq!(Db::load(&path).unwrap().moved("s", Path::new("/checkout")), Some("a1"));
+    }
+
+    /// What a read of Phabricator learnt of D`n`: its state, its latest
+    /// diff `diff`, and its comments, of ids `ids`, as of when it was
+    /// modified, `modified`.
+    fn revision_read(n: u64, diff: u64, modified: Option<i64>, ids: &[&str]) -> (State, Comments) {
+        let state = State { status: "needs-review".into(), title: format!("Bug {n}"), phid: format!("PHID-DREV-{n}"), diff, ..Default::default() };
+        let comments = Comments { modified, list: ids.iter().map(|id| Seen { id: id.to_string(), ..Default::default() }).collect() };
+        (state, comments)
+    }
+
+    #[test]
+    fn what_is_read_of_phabricator_is_stored_once_and_read_from_a_checkpoint_as_read_whole() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("db.jsonl");
+        history(&path);
+        let link = |n: u64| format!("https://p.example/D{n}");
+        // D11 and D12 read, with their raw diffs; D13 not found; the fetch.
+        Db::edit(&path, |db| {
+            for (n, diff) in [(11, 5), (12, 6)] {
+                let (s, c) = revision_read(n, diff, Some(100), &["c1"]);
+                assert!(db.store_revision(&link(n), &format!("D{n}"), Some(s), Some(c))?);
+                assert!(db.store_raw_diff(&link(n), diff, &format!("raw {diff}"))?);
+            }
+            db.store_revision(&link(13), "D13", Some(State { missing: true, ..Default::default() }), None)?;
+            db.store_fetched(vec![link(11), link(12), link(13)])
+        })
+        .unwrap();
+        let n = Db::load(&path).unwrap().end_rev();
+        // The same again: nothing written of it, but that it was fetched.
+        Db::edit(&path, |db| {
+            let (s, c) = revision_read(11, 5, Some(100), &["c1"]);
+            assert!(!db.store_revision(&link(11), "D11", Some(s), Some(c))?);
+            assert!(!db.store_raw_diff(&link(11), 5, "raw 5")?);
+            db.store_fetched(vec![link(11)])
+        })
+        .unwrap();
+        assert_eq!(Db::load(&path).unwrap().end_rev(), n + 1);
+        // D12 commented on since: its comments alone written again, its
+        // state as it was; then a new diff of it: its state alone, and that
+        // raw diff.
+        Db::edit(&path, |db| {
+            let (s, c) = revision_read(12, 6, Some(200), &["c1", "c2"]);
+            db.store_revision(&link(12), "D12", Some(s), Some(c))?;
+            let (s, c) = revision_read(12, 7, Some(200), &["c1", "c2"]);
+            db.store_revision(&link(12), "D12", Some(s), Some(c))?;
+            db.store_raw_diff(&link(12), 7, "raw 7").map(|_| ())
+        })
+        .unwrap();
+        let db = Db::load(&path).unwrap();
+        let of_d12: Vec<(Option<u64>, Option<usize>)> = db
+            .records()
+            .iter()
+            .filter_map(|r| match r {
+                Record::Revision(r) if r.link == link(12) => Some((r.state.as_ref().map(|s| s.diff), r.comments.as_ref().map(|c| c.list.len()))),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(of_d12, [(Some(6), Some(1)), (None, Some(2)), (Some(7), None)]);
+        // What stands: each part as the latest record with it has it.
+        assert_eq!(db.revision_state(&link(12)).map(|(s, _)| s.diff), Some(7));
+        assert_eq!(db.revision_comments(&link(12)).map(|(c, _)| (c.modified, c.list.len())), Some((Some(200), 2)));
+        assert_eq!((db.raw_diff(&link(12), 6), db.raw_diff(&link(12), 7), db.raw_diff(&link(12), 8)), (Some("raw 6"), Some("raw 7"), None));
+        assert!(db.revision_state(&link(13)).is_some_and(|(s, _)| s.missing) && db.revision_comments(&link(13)).is_none());
+        assert_eq!(db.stored_revisions(), [link(11), link(12), link(13)]);
+        assert_eq!((db.revision_name("PHID-DREV-12"), db.revision_name("PHID-DREV-9")), (Some("D12"), None));
+        drop(db);
+        // Read from a checkpoint: the same, what stands read with it, the
+        // raw diff no state names not.
+        checkpoint(&path);
+        let whole = Db::from_bytes(&path, &std::fs::read(&path).unwrap()).unwrap();
+        let db = Db::load(&path).unwrap();
+        assert!(db.cp.is_some(), "read from its checkpoint");
+        assert_eq!(db.differs(&whole), None);
+        let read = |i: usize| !matches!(db.records[i], Record::Unloaded);
+        assert!(read(db.revisions[&link(12)]) && read(db.revision_comments[&link(12)]) && read(db.raw_diffs[&(link(12), 7)]) && read(db.fetched[&link(11)]));
+        assert!(!read(db.raw_diffs[&(link(12), 6)]), "the raw diff of D12's diff before");
+        assert_eq!(db.revision_state(&link(12)).map(|(s, _)| s.diff), Some(7));
+        assert_eq!(db.revision_comments(&link(12)).map(|(c, _)| c.list.len()), Some(2));
+        assert_eq!((db.raw_diff(&link(12), 7), db.fetched(&link(13))), (Some("raw 7"), whole.fetched(&link(13))));
+        assert!(db.shadow.get().is_none(), "nothing has read the whole history");
+        // Written as records of their own.
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains(r#"{"t":"rawdiff","link":"https://p.example/D12","diff":7,"raw":"raw 7"}"#), "{text}");
+        assert!(text.contains(r#"{"t":"revision","link":"https://p.example/D13","d":"D13","state":{"missing":true},"time":"#), "{text}");
+        assert!(text.contains(r#"{"t":"fetched","links":["https://p.example/D11"],"time":"#), "{text}");
+    }
+
+    #[test]
+    fn a_checkpoint_of_before_what_is_read_of_phabricator_was_stored_reads_as_one_with_none() {
+        // A checkpoint a stacked of before wrote: no index of what was read
+        // of Phabricator, as it stored none.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("db.jsonl");
+        history(&path);
+        checkpoint(&path);
+        let good = std::fs::read(&path).unwrap();
+        let ptr = serde_json::from_slice::<Header>(&good[..HEADER - 1]).unwrap().checkpoint.unwrap();
+        let mut v: serde_json::Value = serde_json::from_slice(&good[ptr.at as usize..(ptr.at + ptr.len) as usize]).unwrap();
+        for k in ["revisions", "revision_comments", "raw_diffs", "fetched"] {
+            assert!(v.as_object_mut().unwrap().remove(k).is_some(), "{k}");
+        }
+        let line = serde_json::to_string(&v).unwrap();
+        let mut b = good[..ptr.at as usize].to_vec();
+        b.extend_from_slice(line.as_bytes());
+        b.push(b'\n');
+        b[..HEADER - 1].copy_from_slice(header_with(Some(&Pointer::new(ptr.at, ptr.rev, line.as_bytes()))).unwrap().as_bytes());
+        std::fs::write(&path, &b).unwrap();
+        // Read from it all the same, as read whole; then a revision stored.
+        let whole = Db::from_bytes(&path, &b).unwrap();
+        let db = Db::load(&path).unwrap();
+        assert!(db.cp.is_some(), "read from its checkpoint");
+        assert_eq!((db.differs(&whole), db.revision_state("https://p.example/D11")), (None, None));
+        let (s, c) = revision_read(11, 5, None, &[]);
+        Db::edit(&path, |db| db.store_revision("https://p.example/D11", "D11", Some(s), Some(c)).map(|_| ())).unwrap();
+        assert_eq!(Db::load(&path).unwrap().revision_state("https://p.example/D11").map(|(s, _)| s.diff), Some(5));
     }
 
     #[test]

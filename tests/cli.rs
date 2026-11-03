@@ -4978,6 +4978,16 @@ fn a_trim_writes_a_new_database_from_a_rev_on() {
                 ..Default::default()
             },
         )?;
+        // What was read of Phabricator: a revision's state and comments, its
+        // raw diffs, its state read again since, its comments not; a fetch.
+        let link = "https://phabricator.example.com/D11";
+        let state = |diff: u64| stacked::db::State { status: "needs-review".into(), phid: "PHID-DREV-11".into(), diff, ..Default::default() };
+        let comments = stacked::db::Comments { modified: Some(100), list: vec![stacked::db::Seen { id: "c1".into(), ..Default::default() }] };
+        db.store_revision(link, "D11", Some(state(5)), Some(comments))?;
+        db.store_raw_diff(link, 5, "raw 5")?;
+        db.store_raw_diff(link, 6, "raw 6")?;
+        db.store_revision(link, "D11", Some(state(6)), None)?;
+        db.store_fetched(vec![link.into()])?;
         db.mark_read(&p.change, keys.clone()).map(|_| ())
     })
     .unwrap();
@@ -5007,6 +5017,15 @@ fn a_trim_writes_a_new_database_from_a_rev_on() {
     let queue = stacked::held::queue(&made, "s");
     assert_eq!(queue.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(), ["run-held"], "what waits for review, kept");
     assert_eq!(made.review("run-held").unwrap().marks.get("reply 0"), Some(&false), "its marks too");
+    // What was read of Phabricator as it stands: the state and the comments
+    // each as the read that stored it left it, the raw diff the state
+    // names, when it was last fetched.
+    let old = Db::load(&e.db).unwrap();
+    let link = "https://phabricator.example.com/D11";
+    assert_eq!((made.revision_state(link), made.revision_comments(link)), (old.revision_state(link), old.revision_comments(link)));
+    assert_eq!(made.revision_state(link).map(|(s, _)| s.diff), Some(6));
+    assert_eq!((made.raw_diff(link, 6), made.raw_diff(link, 5)), (Some("raw 6"), None));
+    assert_eq!(made.fetched(link), old.fetched(link));
     assert!(made.warnings.is_empty() && on(&["check"]).contains("s: applies"));
     // The history kept: its start, then the drop and the undo; the ask that
     // landed before is left out.

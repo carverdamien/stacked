@@ -8,7 +8,8 @@
 //! record names: the parent of a later edit, where an undo goes, where an
 //! ask started), the patches they need, the comments as they stood, the
 //! read marks standing, each stack's filter, where stacked last left HEAD
-//! of each checkout, and the runs still going (with
+//! of each checkout, what stands of each revision read from Phabricator,
+//! and the runs still going (with
 //! what their agent had written). Runs that had landed, earlier states no
 //! one names, earlier versions of comments: that is the history left out.
 
@@ -306,6 +307,33 @@ pub fn trim(src: &Path, dst: &Path, from: Option<usize>) -> Result<Trimmed> {
     marked.sort_by_key(|(r, _)| *r);
     for (old, m) in marked {
         new.push(Record::Read(m.clone()), Some(old));
+    }
+    // What stands of each revision read from Phabricator, its state and its
+    // comments each read when they were, the raw diff its state names, and
+    // when a fetch last read it.
+    let mut fetched: BTreeMap<i64, Vec<String>> = BTreeMap::new();
+    for link in before.stored_revisions() {
+        for r in before.revision_records(link) {
+            new.push(Record::Revision(r), None);
+        }
+        if let Some((s, _)) = before.revision_state(link)
+            && let Some(raw) = before.raw_diff(link, s.diff)
+        {
+            new.push(
+                Record::RawDiff {
+                    link: link.to_string(),
+                    diff: s.diff,
+                    raw: raw.to_string(),
+                },
+                None,
+            );
+        }
+        if let Some(time) = before.fetched(link) {
+            fetched.entry(time).or_default().push(link.to_string());
+        }
+    }
+    for (time, links) in fetched {
+        new.push(Record::Fetched { links, time }, None);
     }
     // The runs kept, as they stood, and what their agent had written.
     for id in &kept_runs {

@@ -3454,9 +3454,13 @@ old one). Without `--from`, only what there is now is kept.
 The start holds each stack as it was, and any earlier state a later record
 names (the parent of a later edit, where a later undo goes, where an ask
 started), the patches they need, the comments as they stood, the read marks
-standing, each stack's filter, and the runs still going with what their
-agent had written. Runs that had landed, earlier states no one names, the
-earlier versions of comments and patches: that is what is left out. Every
+standing, each stack's filter, what stands of each revision read from
+Phabricator (its state and its comments, each as the read that stored it
+left it, the raw diff its state names, and when it was last fetched), and
+the runs still going with what their agent had written. Runs that had
+landed, earlier states no one names, the earlier versions of comments and
+patches, the raw diffs of a revision's diffs before its latest: that is
+what is left out. Every
 record from `@N` on follows, its revs made the new file's. The new file is
 written whole, then read back: every stack must be as in the old one, or
 nothing is written.
@@ -3832,8 +3836,9 @@ Everything is in the database, one JSON object per line, and a line once
 written is never changed, but the header: patches, every state of every
 stack, which state each stack is on, comments and their replies, every run
 (an ask, a lint job, a pull) with what came of it, every line the agent
-wrote while it worked, what each stack's comments pane shows, and what is
-read. A record is named by its place among the records, its rev: `@12`.
+wrote while it worked, what each stack's comments pane shows, what is
+read, and what was read of Phabricator. A record is named by its place
+among the records, its rev: `@12`.
 The first line, the header, is `@1`: it says the file's format, and is 128
 bytes long, padded with spaces.
 
@@ -3898,6 +3903,28 @@ bytes long, padded with spaces.
   moved it. The last one of a stack and checkout is what stands. A file a
   stacked of before wrote has none, and reads as if stacked had left HEAD
   nowhere.
+- A revision record holds what a read of Phabricator learnt of a
+  revision, by the link its patch's trailer gives
+  (`{"t":"revision","link":"https://…/D123","d":"D123","state":{…},"comments":{…},"time":…}`):
+  its state, its status as Phabricator writes its value (`needs-review`),
+  its title, summary and bug, its PHID, its parents, each its PHID and its
+  `D123`, and the id of its latest diff, or that Phabricator does not have
+  it (`"state":{"missing":true}`); and its comments, each the id of its
+  version as it was last edited, those of its versions before and the
+  comment it replies to, which the Phabricator line counts those not
+  pulled yet by, with when the revision was last modified as they were
+  read (`dateModified`, when the read said it). A read writes only the
+  parts that differ from what is stored, and nothing for a revision it
+  found as it was stored. The latest record with each part is what
+  stands. A rawdiff record holds a revision's raw latest diff
+  (`{"t":"rawdiff","link":…,"diff":456,"raw":"…"}`), written once for each
+  diff id, as a diff never changes; and a fetched record says when a
+  fetch read revisions (`{"t":"fetched","links":[…],"time":…}`), the latest
+  that names a revision what stands of it. A file a stacked of before wrote
+  has none of them, and reads as if nothing had been fetched yet; a
+  stacked of before passes over these lines as lines it cannot read, with
+  its warning (`stacked check` lists them), and reads the rest of the file
+  as ever.
 - A crash can only cut the last line short. A line that cannot be read is
   passed over with a warning (`stacked check` lists them, by line) and
   keeps its rev, so every rev after it stays the same. The next write ends
@@ -3924,8 +3951,10 @@ bytes long, padded with spaces.
   stands on (each stack's head, the stacks one undo and one redo go to,
   the comments open, the asks going or waiting for your review and what
   they need, what is chosen and marked read, where stacked last left HEAD
-  of each checkout), and how the indexes stood; a checkpoint of before,
-  with no index of where stacked left HEAD, reads as one with none.
+  of each checkout, what stands of each revision read from Phabricator,
+  the raw diff its state names and when it was last fetched), and how the
+  indexes stood; a checkpoint of before, with no index of where stacked
+  left HEAD, or of what was read of Phabricator, reads as one with none.
   stacked reads the header, that checkpoint, the records it says, and the
   lines after it: not the whole file. What needs the history (an older
   stack, the log and the tree, the versions of a patch, a comment's
@@ -4488,7 +4517,13 @@ or to what reads it, as `STACKED_TEST_CHECKPOINTS=1 cargo test`. The tests
 in `db.rs` show where stacked left HEAD kept per stack and checkout, each
 move replacing it and the same again writing nothing, read from a
 checkpoint as when read whole, and a checkpoint of before, with no index
-of them, read all the same, as one with none; and the edits since a state
+of them, read all the same, as one with none; what is read of Phabricator
+stored only where it differs from what is stored, each part of a revision
+on its own, its state, its comments, a raw diff once for each id, a fetch
+always, what stands each part's latest, a revision's PHID named, read from
+a checkpoint as when read whole, the raw diff no state names not read
+with it, and a checkpoint of before, with no index of them, read as one
+with none; and the edits since a state
 of a stack counted along its tree of edits by the index of the stacks
 alone (another version once an edit is undone and another made in its
 place, nothing for what is no state of it), read from a checkpoint as
