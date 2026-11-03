@@ -1021,8 +1021,9 @@ fn testing(db: &Db) -> Option<&Run> {
 
 /// Why stack `name` cannot be edited by hand now, if it cannot: the agent
 /// is changing it, from the stack as it took it, or is about to go on from
-/// work you sent back, from the stack as that work left it; so nothing else
-/// may change the stack meanwhile.
+/// work you sent back, from the stack as that work left it; a lint job or
+/// a pull from Phabricator waits its turn or is under way; so nothing else
+/// may change the stack meanwhile. Or a change of it waits for your review.
 pub fn blocked(db: &Db, name: &str) -> Option<String> {
     match changer(db, name) {
         Some(Changer::Agent(on)) => {
@@ -1048,6 +1049,12 @@ pub fn blocked(db: &Db, name: &str) -> Option<String> {
                 r.map(|r| r.request.as_str()).unwrap_or_default()
             ));
         }
+        #[cfg(feature = "moz-phab")]
+        Some(Changer::Pull(said, asked)) => {
+            return Some(format!(
+                "a pull from Phabricator {said} ({asked}): the stack can be edited by hand again once the pull is made and you have reviewed its change of the stack, if it makes one"
+            ));
+        }
         None => {}
     }
     let r = crate::held::change_waiting(db, name)?;
@@ -1061,16 +1068,21 @@ pub fn blocked(db: &Db, name: &str) -> Option<String> {
 /// What changes stack `name` from the stack as it was, its work to land:
 /// the agent, at a place (`patch 2`, `the stack`); or, soon, a round sent
 /// back to it; or a lint job, where it is said (`lints patch 2 of 5`,
-/// `waits its turn to lint the stack`).
+/// `waits its turn to lint the stack`); or a pull from Phabricator, where it
+/// is said (`waits its turn`, `is being made`), with what it was asked
+/// (`the stack's revisions, with their parents and those stacked on top`).
 enum Changer {
     Agent(String),
     Round,
     Lint(String),
+    #[cfg(feature = "moz-phab")]
+    Pull(&'static str, String),
 }
 
 /// What changes stack `name` now, if anything does: the agent changing it
-/// from the stack as it took it, a round sent back about to, or a lint job
-/// waiting its turn or running.
+/// from the stack as it took it, a round sent back about to, a lint job
+/// waiting its turn or running, or a pull from Phabricator waiting its turn
+/// or being made, as an edit is (`review::make`).
 fn changer(db: &Db, name: &str) -> Option<Changer> {
     if let Some((_, i)) = asks_going(db, name).into_iter().find(|(_, i)| i.way == Way::Change) {
         return Some(Changer::Agent(match &i.scope {
@@ -1081,19 +1093,35 @@ fn changer(db: &Db, name: &str) -> Option<Changer> {
     if let Some(j) = crate::lint::pending(db, name).and_then(|r| r.lint.as_deref()) {
         return Some(Changer::Lint(j.said()));
     }
-    round_waiting(db, name).then_some(Changer::Round)
+    if round_waiting(db, name) {
+        return Some(Changer::Round);
+    }
+    // A pull waits its turn while what goes before it holds it back, as its
+    // banner line's menu says; else its turn has come, and it is made.
+    #[cfg(feature = "moz-phab")]
+    if let Some(r) = crate::review::pending(db, name) {
+        let said = match pull_waits_on(db, name) {
+            Some(_) => "waits its turn",
+            None => "is being made",
+        };
+        return Some(Changer::Pull(said, r.request.clone()));
+    }
+    None
 }
 
 /// What changes stack `name` from the stack as it was, its work still to
-/// land, said, if anything does: `the agent is changing patch 2`, or work
-/// you sent back waiting to go back to the agent. Nothing else may change
-/// the stack until that work lands, or its change would be made from a
-/// stack that is no longer.
+/// land, said, if anything does: `the agent is changing patch 2`, work you
+/// sent back waiting to go back to the agent, `the linter lints patch 2 of
+/// 5`, `a pull from Phabricator is being made`. Nothing else may change the
+/// stack until that work lands, or its change would be made from a stack
+/// that is no longer.
 pub fn changing(db: &Db, name: &str) -> Option<String> {
     Some(match changer(db, name)? {
         Changer::Agent(on) => format!("the agent is changing {on}"),
         Changer::Round => "the work you sent back waits to go back to the agent".into(),
         Changer::Lint(said) => format!("the linter {said}"),
+        #[cfg(feature = "moz-phab")]
+        Changer::Pull(said, _) => format!("a pull from Phabricator {said}"),
     })
 }
 
@@ -1177,7 +1205,7 @@ fn held_at_start(id: &str) {
 }
 
 /// Waits until `go` is in the folder `at`, a test's: a few minutes at most.
-fn until_go(at: &Path) {
+pub(crate) fn until_go(at: &Path) {
     let started = std::time::Instant::now();
     while !at.join("go").exists() && started.elapsed() < std::time::Duration::from_secs(180) {
         std::thread::sleep(std::time::Duration::from_millis(1));

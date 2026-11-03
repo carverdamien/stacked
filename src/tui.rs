@@ -9044,11 +9044,19 @@ impl App {
         Menu::new(title, items, None)
     }
 
-    /// The import seen, made: its stack shown.
+    /// The import seen, made: its stack shown. Into a new stack only: a
+    /// stack named so meanwhile is not imported into, as that would edit it
+    /// by hand unasked.
     fn import_planned(&mut self) {
         let Some(p) = self.planned.clone() else { return };
         let (name, from, n) = (p.name.clone(), p.from.clone(), p.drafts.len());
-        if self.edit(|db| crate::ops::import(db, &p.name, p.drafts, false, Some((p.base, p.repo)))).is_some() {
+        let made = self.edit(|db| {
+            if let Some(why) = crate::import::name_wrong(db, &p.name) {
+                return crate::db::err(why);
+            }
+            crate::ops::import(db, &p.name, p.drafts, false, Some((p.base, p.repo)))
+        });
+        if made.is_some() {
             self.planned = None;
             self.switch_stack(&name);
             self.status = format!("imported {n} patch{} from {from} as {name}", if n == 1 { "" } else { "es" });

@@ -22726,6 +22726,381 @@ fn a_pull_waits_its_turn_as_an_edit_does_dropped_from_its_line_or_the_runs_else_
     stacked::phab::statuses_stand_in(&db, None);
 }
 
+/// Where the pulls of a test's database are held in the middle of their
+/// making (`review::hold_making`), from `pulls_held` on: let go, and held
+/// no more, once this is dropped, whatever came of the test.
+#[cfg(feature = "moz-phab")]
+struct PullsHeld {
+    db: PathBuf,
+    at: PathBuf,
+}
+
+#[cfg(feature = "moz-phab")]
+impl PullsHeld {
+    /// How many times the pulls were made, in all, each held midway.
+    fn makings(&self) -> usize {
+        std::fs::read_dir(&self.at)
+            .unwrap()
+            .filter_map(|f| f.ok())
+            .filter(|f| f.file_name().to_string_lossy().starts_with("made-"))
+            .map(|f| std::fs::read_to_string(f.path()).unwrap_or_default().lines().count())
+            .sum()
+    }
+
+    /// Waits until the pulls were made `n` times in all: the last one is
+    /// held midway, planned and not filed, unless they were let go.
+    fn made(&self, n: usize) {
+        eventually(|| (self.makings() >= n).then_some(()), || format!("the pulls were made {} times, not {n}", self.makings()));
+    }
+
+    /// Lets the pull held go, and those made from now on.
+    fn go(&self) {
+        std::fs::write(self.at.join("go"), "").unwrap();
+    }
+}
+
+#[cfg(feature = "moz-phab")]
+impl Drop for PullsHeld {
+    fn drop(&mut self) {
+        let _ = std::fs::write(self.at.join("go"), "");
+        stacked::review::hold_making(&self.db, None);
+    }
+}
+
+/// The pulls of `db` held in the middle of their making from now on, in a
+/// folder beside it.
+#[cfg(feature = "moz-phab")]
+fn pulls_held(db: &Path) -> PullsHeld {
+    let at = db.with_file_name("pulls-held");
+    std::fs::create_dir_all(&at).unwrap();
+    stacked::review::hold_making(db, Some(at.clone()));
+    PullsHeld { db: db.to_path_buf(), at }
+}
+
+/// A pull of stack `s`, as `pulled` asks it, away from the test, as it may
+/// be held midway: what it comes to once it is made, or waits its turn.
+#[cfg(feature = "moz-phab")]
+fn pulling(db: &Path) -> std::thread::JoinHandle<stacked::db::Result<stacked::db::Run>> {
+    let db = db.to_path_buf();
+    std::thread::spawn(move || pulled(&db, stacked::review::Asked::Stack))
+}
+
+/// That stack `s` is not edited by hand, `why` said: in the editor, the
+/// edits of the stack's menu and of patch 1's grayed, each menu saying
+/// why, and Delete on patch 1 saying why; on the command line, its edits
+/// refused, saying why.
+#[cfg(feature = "moz-phab")]
+fn not_by_hand(app: &mut App, src: &Path, db: &Path, why: &str) {
+    app.refresh();
+    app.screen = Screen::Main;
+    (app.on_banner, app.focus, app.on_stack) = (false, Focus::List, true);
+    draw(app);
+    keys(app, &[KeyCode::Char(' ')]);
+    assert!(items(app).contains(&("Edit the stack as a list in $EDITOR".to_string(), false)), "{:?}", items(app));
+    assert!(menu_note(app).contains(why), "{}", menu_note(app));
+    keys(app, &[KeyCode::Esc]);
+    on_patch(app, 0);
+    keys(app, &[KeyCode::Char(' ')]);
+    let all = items(app);
+    for l in ["Move this patch…", "Edit this patch in $EDITOR", "Drop this patch…"] {
+        assert!(all.contains(&(l.to_string(), false)), "{l}: {all:?}");
+    }
+    assert!(menu_note(app).contains(why), "{}", menu_note(app));
+    keys(app, &[KeyCode::Esc, KeyCode::Delete]);
+    assert_eq!(app.status, why);
+    for args in [&["drop", "s", "1"][..], &["move", "s", "1", "2"], &["undo", "s"], &["delete", "s"]] {
+        let err = stacked_fails(src, db, args);
+        assert!(err.contains(why), "{args:?}: {err}");
+    }
+}
+
+#[cfg(feature = "moz-phab")]
+#[test]
+fn while_a_pull_waits_its_turn_or_is_made_the_stack_is_not_edited_by_hand_the_menus_and_the_commands_saying_why() {
+    use stacked::db::RunState;
+    let (tmp, db, phab, _) = pull_setup(11, &[("Bug 11 - two", &[(2, "LINE 2")]), ("Bug 12 - ten", &[(2, "LINE 2"), (10, "LINE 10")])]);
+    let src = tmp.path().join("src");
+    phab.lock().unwrap().revisions.get_mut(&12).unwrap().title = "Bug 12 - ten, retitled".into();
+    // Unchained, a pull waits for the change waiting for your review: the
+    // agent's, asked by a comment on the stack.
+    std::fs::create_dir_all(src.join(".stacked")).unwrap();
+    std::fs::write(src.join(".stacked/local.toml"), "[agent]\nchain = false\n").unwrap();
+    let (change, id) = stack_note(&db, "s-c1", "Make it better.");
+    held(&db, "run-w", &change, &id, "Better now.", true);
+    let run = pulled(&db, stacked::review::Asked::Stack).unwrap();
+    assert_eq!(run.state, RunState::Started);
+    // Waiting its turn, it changes the stack as an edit does: the stack is
+    // not edited by hand, the menus and the commands saying why.
+    let mut app = open(&db).unwrap();
+    let asked = "the stack's revisions, with their parents and those stacked on top";
+    let then = "the stack can be edited by hand again once the pull is made and you have reviewed its change of the stack, if it makes one";
+    not_by_hand(&mut app, &src, &db, &format!("a pull from Phabricator waits its turn ({asked}): {then}"));
+    assert_eq!(stacked::ask::changing(&Db::load(&db).unwrap(), "s").as_deref(), Some("a pull from Phabricator waits its turn"));
+    // That change reviewed, its turn comes: it is made, and held midway,
+    // planned and not filed yet. Nor is the stack edited by hand meanwhile.
+    let hold = pulls_held(&db);
+    Db::edit(&db, |d| stacked::held::close(d, "run-w", &answers_kept(d, "run-w"), Some(true)).map(|_| ())).unwrap();
+    let making = {
+        let db = db.clone();
+        std::thread::spawn(move || stacked::ask::launch(&db))
+    };
+    hold.made(1);
+    not_by_hand(&mut app, &src, &db, &format!("a pull from Phabricator is being made ({asked}): {then}"));
+    assert_eq!(stacked::ask::changing(&Db::load(&db).unwrap(), "s").as_deref(), Some("a pull from Phabricator is being made"));
+    // Let go, it is filed, once: its change waits for your review, and the
+    // stack with it, until that review closes.
+    hold.go();
+    making.join().unwrap().unwrap();
+    assert_eq!(hold.makings(), 1);
+    let d = Db::load(&db).unwrap();
+    assert_eq!(d.run(&run.id).unwrap().state, RunState::Done);
+    assert_eq!(stacked::ask::changing(&d, "s"), None);
+    assert_eq!(
+        stacked::ask::blocked(&d, "s").as_deref(),
+        Some("the pull's change of patch 2 waits for your review: the stack can be edited by hand again once you have reviewed it")
+    );
+    drop(d);
+    Db::edit(&db, |d| stacked::held::close(d, &run.id, &Default::default(), Some(true)).map(|_| ())).unwrap();
+    assert_eq!(stacked::ask::blocked(&Db::load(&db).unwrap(), "s"), None);
+    stacked::phab::statuses_stand_in(&db, None);
+}
+
+/// The agent's change of stack `s`, landed as run `run` and waiting for
+/// your review, asked by comment (change, id): patch 1 given `title` for
+/// its first line, as a new version, and its reply. What each operation
+/// needs worked out, as a landing does.
+#[cfg(feature = "moz-phab")]
+fn retitling_held(db: &Path, run: &str, change: &str, id: &str, title: &str) {
+    Db::edit(db, |d| {
+        let (from, s) = d.head("s").map(|(r, s)| (r, s.clone())).unwrap();
+        let old = d.patch(&s.patches[0]).clone();
+        let message = old.message.replacen(old.title(), title, 1);
+        let new = d.add_patch(stacked::ops::revise(&old, stacked::mbox::Draft { message, ..stacked::mbox::Draft::from(&old) }))?;
+        let mut patches = s.patches.clone();
+        patches[0] = new;
+        let ask = serde_json::json!({"way": "change", "scope": "stack", "from": from, "notes": [{"label": "c1", "change": change, "id": id}]});
+        let reply = stacked::held::Reply {
+            change: change.into(),
+            id: id.into(),
+            text: "Retitled.".into(),
+            tag: "change".into(),
+            ..Default::default()
+        };
+        d.add_run(stacked::db::Run {
+            id: run.into(),
+            what: "change".into(),
+            stack: "s".into(),
+            state: stacked::db::RunState::Done,
+            ask: Some(ask),
+            held: Some(stacked::held::Held {
+                at: stacked::db::now(),
+                stack: Some(stacked::held::Change {
+                    patches,
+                    base: s.base.clone(),
+                    op: "agent: the stack".into(),
+                    of: "the stack".into(),
+                    from: None,
+                }),
+                replies: vec![reply],
+                ..Default::default()
+            }),
+            ..Default::default()
+        })
+        .map(|_| ())
+    })
+    .unwrap();
+    stacked::held::work_out(db, run).unwrap();
+}
+
+/// A pull made on work under review (`pulled_on_work_under_review`): the
+/// test's folder and database, the pull, away from the test, and where it
+/// is held; the stack's patches as they are, and as that work makes them.
+#[cfg(feature = "moz-phab")]
+struct OnWork {
+    _tmp: tempfile::TempDir,
+    db: PathBuf,
+    pull: std::thread::JoinHandle<stacked::db::Result<stacked::db::Run>>,
+    hold: PullsHeld,
+    was: Vec<String>,
+    work: Vec<String>,
+}
+
+/// Stack `s` of D11 and D12, D12 retitled on Phabricator, and the agent's
+/// change retitling patch 1 waiting for your review (`retitling_held`);
+/// then a pull of the stack, made at once, chained on that change, from
+/// the stack it makes, and held midway.
+#[cfg(feature = "moz-phab")]
+fn pulled_on_work_under_review() -> OnWork {
+    let (tmp, db, phab, _) = pull_setup(11, &[("Bug 11 - two", &[(2, "LINE 2")]), ("Bug 12 - ten", &[(2, "LINE 2"), (10, "LINE 10")])]);
+    phab.lock().unwrap().revisions.get_mut(&12).unwrap().title = "Bug 12 - ten, retitled".into();
+    let (change, id) = stack_note(&db, "s-c1", "Retitle patch 1.");
+    retitling_held(&db, "run-w", &change, &id, "Bug 11 - two, retitled by the agent");
+    let d = Db::load(&db).unwrap();
+    let was = d.stack("s").unwrap().patches.clone();
+    let work = stacked::ask::work_stack(&d, "run-w").unwrap().patches;
+    drop(d);
+    let hold = pulls_held(&db);
+    let pull = pulling(&db);
+    hold.made(1);
+    OnWork { _tmp: tmp, db, pull, hold, was, work }
+}
+
+#[cfg(feature = "moz-phab")]
+#[test]
+fn a_chained_pull_whose_base_work_is_accepted_whole_while_it_is_made_is_filed_once_on_the_stack_that_work_made() {
+    use stacked::db::RunState;
+    let OnWork { _tmp, db, pull, hold, work, .. } = pulled_on_work_under_review();
+    // That work accepted whole while the pull is made: the stack is the one
+    // it made, the very stack the pull was made from.
+    Db::edit(&db, |d| stacked::held::close(d, "run-w", &answers_kept(d, "run-w"), Some(true)).map(|_| ())).unwrap();
+    let (rev, now) = Db::load(&db).unwrap().head("s").map(|(rev, s)| (rev, s.patches.clone())).unwrap();
+    assert_eq!(now, work);
+    // Let go, it is filed on it, not made again, chained no more: reviewed
+    // as any, what each operation needs stored from that stack.
+    hold.go();
+    let run = pull.join().unwrap().unwrap();
+    assert_eq!(hold.makings(), 1, "made once");
+    assert_eq!(run.state, RunState::Done, "{}", run.summary);
+    let h = run.held.clone().unwrap();
+    let c = h.stack.clone().unwrap();
+    assert_eq!((run.pull.as_ref().and_then(|j| j.after.clone()), c.from), (None, Some(rev)));
+    assert_eq!(c.patches[0], work[0], "patch 1 as that work made it");
+    assert!(h.needs.as_ref().is_some_and(|n| n.failed.is_none()), "{:?}", h.needs);
+    assert_eq!(stacked::ask::guessing(&Db::load(&db).unwrap(), &run), None);
+    // Its review: what it pulled onto that stack, each operation marked on
+    // its own. Accepted, the stack holds both.
+    let mut app = open(&db).unwrap();
+    let screen = the_review(&mut app);
+    for line in [" stack operations · · 1 to review", "  noop    1 Bug 11 - two, retitled by the agent", "· reword  2 Bug 12 - ten, retitled, from D12's title and summary"] {
+        assert!(screen.contains(line), "{line:?} in:\n{screen}");
+    }
+    keys(&mut app, &[KeyCode::Esc]);
+    choose(&mut app, "Accept all remaining and Close");
+    choose(&mut app, "Accept them and close");
+    assert!(app.status.starts_with("reviewed: its change accepted"), "{}", app.status);
+    let ps = patches_of(&db);
+    assert!(ps[0].0.starts_with("Bug 11 - two, retitled by the agent\n") && ps[1].0.starts_with("Bug 12 - ten, retitled\n"), "{ps:?}");
+    stacked::phab::statuses_stand_in(&db, None);
+}
+
+#[cfg(feature = "moz-phab")]
+#[test]
+fn a_chained_pull_whose_base_work_is_rejected_while_it_is_made_is_made_again_from_the_stack_as_it_then_is() {
+    use stacked::db::RunState;
+    let OnWork { _tmp, db, pull, hold, was, .. } = pulled_on_work_under_review();
+    // That work rejected while the pull is made: the stack stays as it was,
+    // which is not the stack the pull was made from.
+    Db::edit(&db, |d| stacked::held::close(d, "run-w", &Default::default(), Some(false)).map(|_| ())).unwrap();
+    let (rev, now) = Db::load(&db).unwrap().head("s").map(|(rev, s)| (rev, s.patches.clone())).unwrap();
+    assert_eq!(now, was);
+    // Let go, it is made again, from the stack as it then is, and filed.
+    hold.go();
+    let run = pull.join().unwrap().unwrap();
+    assert_eq!(hold.makings(), 2, "made again");
+    assert_eq!(run.state, RunState::Done, "{}", run.summary);
+    let c = run.held.as_ref().and_then(|h| h.stack.clone()).unwrap();
+    assert_eq!((run.pull.as_ref().and_then(|j| j.after.clone()), c.from), (None, Some(rev)));
+    assert_eq!(c.patches[0], was[0], "patch 1 as the stack holds it");
+    // Its review shows what it pulled onto that stack: patch 1 as it was,
+    // patch 2 retitled. Accepted, the stack holds that.
+    let mut app = open(&db).unwrap();
+    let screen = the_review(&mut app);
+    for line in [" stack operations · · 1 to review", "· reword  2 Bug 12 - ten, retitled, from D12's title and summary"] {
+        assert!(screen.contains(line), "{line:?} in:\n{screen}");
+    }
+    assert!(screen.lines().any(|l| l.contains("  noop    1 Bug 11 - two") && !l.contains("by the agent")), "{screen}");
+    keys(&mut app, &[KeyCode::Esc]);
+    choose(&mut app, "Accept all remaining and Close");
+    choose(&mut app, "Accept them and close");
+    let ps = patches_of(&db);
+    assert!(ps[0].0.starts_with("Bug 11 - two\n") && ps[1].0.starts_with("Bug 12 - ten, retitled\n"), "{ps:?}");
+    stacked::phab::statuses_stand_in(&db, None);
+}
+
+#[cfg(feature = "moz-phab")]
+#[test]
+fn a_pull_whose_stack_moves_while_it_is_made_by_a_path_that_asks_nothing_is_made_again_then_filed() {
+    use stacked::db::RunState;
+    let (_tmp, db, phab, _) = pull_setup(11, &[("Bug 11 - two", &[(2, "LINE 2")]), ("Bug 12 - ten", &[(2, "LINE 2"), (10, "LINE 10")])]);
+    phab.lock().unwrap().revisions.get_mut(&12).unwrap().title = "Bug 12 - ten, retitled".into();
+    let hold = pulls_held(&db);
+    let pull = pulling(&db);
+    hold.made(1);
+    // A write of the test's own moves the stack while the pull is made,
+    // past what refuses edits by hand: patch 1 retitled, at once.
+    let moved = Db::edit(&db, |d| {
+        let old = d.patch(&d.stack("s")?.patches[0]).clone();
+        let message = old.message.replacen("Bug 11 - two", "Bug 11 - two, moved", 1);
+        stacked::ops::replace(d, "s", 0, stacked::mbox::Draft { message, ..stacked::mbox::Draft::from(&old) }, "reword")
+    })
+    .unwrap();
+    // Let go, it is made again, from the stack as it then is, and filed.
+    hold.go();
+    let run = pull.join().unwrap().unwrap();
+    assert_eq!(hold.makings(), 2, "made again");
+    assert_eq!(run.state, RunState::Done, "{}", run.summary);
+    let c = run.held.as_ref().and_then(|h| h.stack.clone()).unwrap();
+    assert_eq!(c.from, Some(moved));
+    assert_eq!(c.patches[0], Db::load(&db).unwrap().stack("s").unwrap().patches[0]);
+    let mut app = open(&db).unwrap();
+    let screen = the_review(&mut app);
+    for line in ["  noop    1 Bug 11 - two, moved", "· reword  2 Bug 12 - ten, retitled, from D12's title and summary"] {
+        assert!(screen.contains(line), "{line:?} in:\n{screen}");
+    }
+    stacked::phab::statuses_stand_in(&db, None);
+}
+
+#[cfg(feature = "moz-phab")]
+#[test]
+fn the_stack_s_list_open_in_editor_as_a_pull_is_made_opens_again_with_why_at_its_top() {
+    let (tmp, db, phab, _) = pull_setup(11, &[("Bug 11 - two", &[(2, "LINE 2")]), ("Bug 12 - ten", &[(2, "LINE 2"), (10, "LINE 10")])]);
+    let src = tmp.path().join("src");
+    phab.lock().unwrap().revisions.get_mut(&12).unwrap().title = "Bug 12 - ten, retitled".into();
+    let hold = std::rc::Rc::new(pulls_held(&db));
+    let rev = Db::load(&db).unwrap().head("s").unwrap().0;
+    // The list open in $EDITOR, a pull is asked, and made, held midway; the
+    // list saved reordered meanwhile comes back, why at its top; emptied,
+    // nothing changes.
+    let (pull, tops) = (std::rc::Rc::new(std::cell::RefCell::new(None)), std::rc::Rc::new(std::cell::RefCell::new(Vec::new())));
+    let editor: stacked::ops::Editing = Box::new({
+        let (db, hold, pull, tops) = (db.clone(), hold.clone(), pull.clone(), tops.clone());
+        move |file: &Path, _| {
+            let text = std::fs::read_to_string(file).unwrap();
+            if text.starts_with("# stacked: ") {
+                tops.borrow_mut().extend(text.lines().take_while(|l| l.starts_with("# stacked: ")).map(String::from));
+                std::fs::write(file, "").unwrap();
+                return Ok(());
+            }
+            *pull.borrow_mut() = Some(pulling(&db));
+            hold.made(1);
+            let picks: Vec<&str> = text.lines().filter(|l| l.starts_with("pick ")).collect();
+            std::fs::write(file, format!("{}\n{}\n", picks[1], picks[0])).unwrap();
+            Ok(())
+        }
+    });
+    stacked::ops::stand_in(Some(editor));
+    let done = stacked::ops::edit_stack(&db, "s", None, &src);
+    stacked::ops::stand_in(None);
+    assert_eq!(done.unwrap(), stacked::ops::Edited::Unchanged("the list was emptied; nothing changed".into()));
+    let asked = "the stack's revisions, with their parents and those stacked on top";
+    assert_eq!(
+        *tops.borrow(),
+        [
+            format!("# stacked: a pull from Phabricator is being made ({asked}): the stack can be edited by hand again once the pull is made and you have reviewed its change of the stack, if it makes one"),
+            "# stacked: save again then, or empty the list to give up".to_string(),
+        ]
+    );
+    // Let go, the pull is filed, and nothing else: the stack as it was, no
+    // edit by hand waiting for review.
+    hold.go();
+    let run = pull.borrow_mut().take().unwrap().join().unwrap().unwrap();
+    assert_eq!(run.summary, "1 new version from 2 revisions: it waits for your review");
+    let d = Db::load(&db).unwrap();
+    assert_eq!(d.head("s").unwrap().0, rev);
+    assert_eq!(d.runs().len(), 1, "the pull's run alone");
+    stacked::phab::statuses_stand_in(&db, None);
+}
+
 #[cfg(feature = "moz-phab")]
 #[test]
 fn a_new_stack_is_pulled_from_a_revision_its_parent_and_the_one_stacked_on_it_its_review_open() {

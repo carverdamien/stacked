@@ -63,9 +63,19 @@ the waiting pull from Phabricator…`, which asks first; dropped, what it
 read stays stored, and nothing of it waits for your review. One pull of a
 stack waits at a time (`a pull from Phabricator of this stack waits its
 turn already: one at a time`), and the editor reads one pull at a time
-(`already pulling from Phabricator: one pull at a time`). At its turn, it
-is made away from the database's lock, on a copy of the database, then
-filed:
+(`already pulling from Phabricator: one pull at a time`). From when it is
+queued to when it is filed, waiting its turn and being made, it changes
+the stack as the agent's edit does: the stack is not edited by hand
+meanwhile (Asking the agent, above), the menus saying why (`a pull from
+Phabricator waits its turn (the stack's revisions, with their parents and
+those stacked on top): the stack can be edited by hand again once the
+pull is made and you have reviewed its change of the stack, if it makes
+one`; its turn come, `a pull from Phabricator is being made (…): …`), and
+the same commands refuse on the command line. Before, while it reads
+Phabricator, it is not queued yet, and nothing keeps the stack from being
+edited by hand: it is made from the stack as it is at its turn. At its
+turn, it is made away from the database's lock, on a copy of the
+database, then filed:
 
 - A patch whose revision is open takes as its new version its revision's
   latest diff, where that is no version of the patch stacked knows (as a
@@ -108,8 +118,15 @@ them; nothing is filed before you close that review. The bottom line
 says what came of it (`1 new version, 2 new patches and 1 new comment
 from 4 revisions: they wait for your review`; `nothing new from 3
 revisions`; `…: it waits for your review; patch 3 no longer applies on
-the pulled versions: its conflicts are marked, to resolve`). The stack,
-or the work it goes on from, changed while it was made, it is made again.
+the pulled versions: its conflicts are marked, to resolve`). It is filed
+only on the very stack it was made from: its patches, its base and its
+repository. Chained, the work it goes on from accepted whole while it is
+made, the stack is now the one that work made: it is filed on it, and
+reviewed as any. That work rejected, accepted in part, sent back or
+edited by hand from its review, the pull is made again from the stack as
+it then is, as a chained edit of the agent's is dropped and asked again:
+what it brings is then what it pulls onto that stack. Should the stack
+move all the same while it is made, it is made again too.
 
 Its review is the review of a change of the stack (What the agent brings
 back, above), each operation marked on its own, and what it takes from

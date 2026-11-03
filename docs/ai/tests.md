@@ -896,7 +896,25 @@ one at a time, its line of the banner and its menu saying what it waits
 for, dropped from its line and from the runs, asked first, else made on
 the stack that change makes, reviewed after it, what each operation
 needs worked out from that stack, its review marking each on its own once
-that change is accepted; a new stack pulled from a revision typed,
+that change is accepted; the stack not edited by hand while a pull waits
+its turn, unchained, behind the change under review, then while it is
+made, held midway (`review::hold_making`, a hook of the tests' for one
+database's pulls, as the editor's tests share their process: planned on
+its copy and not filed yet, the launch lock held, each making says so in
+a folder, then waits there until the test lets it go), the stack's menu
+and a patch's graying their edits and saying why, Delete on the patch
+saying why, `stacked drop`, `move`, `undo` and `delete` refusing, saying
+why, then the pull filed once, its change waiting for your review, and
+the stack free once that review closes; a chained pull whose base work is
+accepted whole while it is made filed once, on the stack that work made,
+chained no more, what each operation needs stored from that stack, its
+review marking each on its own; one whose base work is rejected
+meanwhile made again from the stack as it then is, its review showing
+what it pulled onto that stack; one whose stack a write of the test's own
+moves while it is made, past what refuses edits by hand, made again, and
+filed after on the stack as it then is; the stack's list open in $EDITOR
+as a pull is made, saved, coming back with why at its top, emptied,
+nothing changed; a new stack pulled from a revision typed,
 refused until it names one, made empty on the bottom one's base, named
 after it, its parent and the one stacked on it added, the review open,
 the commit's message as uploaded, or Phabricator's title and summary for

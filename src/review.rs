@@ -10,8 +10,10 @@
 //! edits before it make, chained on the last of them waiting for your
 //! review as edits are (`Job::after`), on a copy of the database with no
 //! lock held, what each operation of its change needs worked out there
-//! too, then filed, and it waits for your review in turn. Its change of
-//! the stack takes, as a new version of a patch, its
+//! too, then filed, and it waits for your review in turn. From when it is
+//! queued to when it is filed, it changes the stack as the agent's edit
+//! does: the stack is not edited by hand meanwhile (`ask::changing`). Its
+//! change of the stack takes, as a new version of a patch, its
 //! revision's latest diff, or its title and summary, where they are no
 //! version of the patch stacked knows; adds the revisions the stack does
 //! not hold, a parent below the patch of the revision it is the parent of,
@@ -760,13 +762,19 @@ fn read_with(db_path: &Path, db: &Db, s: Option<&Stack>, wants: &Wants, say: &mu
 /// them. That, and what each operation of the change it makes needs
 /// (`operations::Ops::needs`), are worked out on a copy of the database,
 /// with no lock held, as their checks read the repository and may take
-/// long on a big one. Then, under the lock, it is filed: its patches, the
+/// long on a big one. Meanwhile, as from when it was asked, the stack is
+/// not edited by hand (`ask::changing`). Then, under the lock, it is filed
+/// on the very stack it was planned on (`filed_on`): its patches, the
 /// comments of each revision held, anchored on the patches as the pull
 /// leaves them, and what each operation needs (`held::needs_filed`); it
 /// waits for your review, or, with nothing new, lands with nothing to
-/// review, as said. Whether it was filed: not when the stack, or the work
-/// it goes on from, changed meanwhile, as it is made again then, at its
-/// next turn. A pull that cannot be made fails, saying why.
+/// review, as said. The work it goes on from accepted whole meanwhile, the
+/// stack is the one that work made, which it was planned on: it is filed
+/// on it, chained no more. Whether it was filed: not when the stack it
+/// would go on from is another now (that work rejected, accepted in part,
+/// sent back or edited by hand; or the stack moved by a path that does not
+/// ask first), as it is made again then, at its next turn, from the stack
+/// as it then is. A pull that cannot be made fails, saying why.
 pub(crate) fn make(db_path: &Path, id: &str, after: Option<String>) -> Result<bool> {
     let mut dry = Db::load(db_path)?;
     let Some(r) = dry.run(id).cloned().filter(|r| r.state == RunState::Started) else { return Ok(true) };
@@ -787,22 +795,73 @@ pub(crate) fn make(db_path: &Path, id: &str, after: Option<String>) -> Result<bo
     let needs = (planned.patches != from.patches).then(|| crate::operations::of(&dry, &from, &next).needs(&dry));
     let patches: Vec<Patch> = planned.patches.iter().map(|p| dry.patch(p).clone()).collect();
     drop(dry);
+    held_making(db_path, id);
     Db::edit(db_path, |db| {
         let Some(r) = db.run(id).cloned().filter(|r| r.state == RunState::Started) else { return Ok(true) };
-        // Made from what changed meanwhile: made again.
-        let still = match &after {
-            Some(a) => db.run(a).is_some_and(|w| crate::held::waiting(db, w)),
-            None => db.head(&r.stack).map(|(rev, _)| rev) == Some(rev),
-        };
-        if !still {
+        // Made from what is no longer the stack it would go on from: made
+        // again.
+        let Some((rev, after)) = filed_on(db, &r.stack, &from, rev, after.as_deref()) else {
             return Ok(false);
-        }
+        };
         for p in &patches {
             db.add_patch(p.clone())?;
         }
-        file_made(db, r, job.clone(), &planned, &patches, &from, rev, after.clone(), needs.clone())?;
+        file_made(db, r, job, &planned, &patches, &from, rev, after, needs)?;
         Ok(true)
     })
+}
+
+/// Under the lock: where a pull of stack `name` planned on stack `from` is
+/// filed, if `from` is still the stack it would go on from: chained on the
+/// work `after` while that work waits for your review and still makes
+/// `from`, with that work; unchained, on the stack at `rev`, `from`, while
+/// the stack is still on it; and chained on work accepted whole meanwhile,
+/// on the stack as it is now, which that work made, while it holds what
+/// `from` holds (its patches, base and repository), chained no more, at
+/// its rev. Else none, as it is made again: that work rejected, accepted
+/// in part, sent back or edited by hand, the stack is not the one it made;
+/// or the stack moved meanwhile.
+fn filed_on(db: &Db, name: &str, from: &Stack, rev: usize, after: Option<&str>) -> Option<(usize, Option<String>)> {
+    let same = |s: &Stack| s.patches == from.patches && s.base == from.base && s.repo == from.repo;
+    let (now, s) = db.head(name)?;
+    match after {
+        Some(a) if db.run(a).is_some_and(|w| crate::held::waiting(db, w)) => {
+            crate::ask::work_stack(db, a).ok().filter(|w| same(w)).map(|_| (rev, Some(a.to_string())))
+        }
+        Some(_) => same(s).then_some((now, None)),
+        None => (now == rev).then_some((rev, None)),
+    }
+}
+
+/// For the tests, which share their process: the folder each database's
+/// pulls are held in, in the middle of their making (`hold_making`).
+static HOLDS: std::sync::Mutex<Vec<(std::path::PathBuf, std::path::PathBuf)>> = std::sync::Mutex::new(Vec::new());
+
+/// For the tests: from now on, each pull of the database at `db` held in
+/// the middle of its making, in the folder `at`, as a start of an ask is
+/// held (`$STACKED_TEST_HOLD`): planned on its copy of the database, what
+/// each operation needs worked out, not filed yet, the launch lock held, it
+/// says so there, a line added to `made-RUN` each time it is made, then
+/// waits until `go` is there too, a few minutes at most. With none, no pull
+/// of it is held any more.
+pub fn hold_making(db: &Path, at: Option<std::path::PathBuf>) {
+    let mut all = HOLDS.lock().unwrap_or_else(|e| e.into_inner());
+    all.retain(|(d, _)| d != db);
+    if let Some(at) = at {
+        all.push((db.to_path_buf(), at));
+    }
+}
+
+/// Pull `id` of the database at `db_path`, in the middle of its making,
+/// held while the tests say (`hold_making`).
+fn held_making(db_path: &Path, id: &str) {
+    let at = HOLDS.lock().unwrap_or_else(|e| e.into_inner()).iter().find(|(d, _)| d == db_path).map(|(_, at)| at.clone());
+    let Some(at) = at else { return };
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(at.join(format!("made-{id}"))) {
+        use std::io::Write;
+        let _ = writeln!(f, "made");
+    }
+    crate::ask::until_go(&at);
 }
 
 /// Pull `id`, still waiting its turn, failed, `why` its summary: filed.

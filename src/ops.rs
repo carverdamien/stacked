@@ -863,9 +863,10 @@ pub fn edit_stack(path: &std::path::Path, name: &str, work: Option<&str>, here: 
         let Some(lines) = todo::parse(&strip_errors(&edited))? else {
             return Ok(Edited::Unchanged("the list was emptied; nothing changed".into()));
         };
-        // The agent took the stack meanwhile: the list waits in the editor.
+        // The stack taken meanwhile, by the agent or a pull from Phabricator
+        // say: the list waits in the editor, why at its top.
         if let Err(e) = Db::load(path).and_then(|now| may_edit(&now, name, work)) {
-            list = with_error(&e.0, &edited, "save again once the agent's work has landed, or empty the list to give up");
+            list = with_error(&e.0, &edited, "save again then, or empty the list to give up");
             continue;
         }
         let plan = || -> Result<Plan> {
@@ -996,9 +997,10 @@ pub fn edit_patch(
         if edited.trim().is_empty() {
             return Ok(Edited::Unchanged("the patch was emptied; nothing changed".into()));
         }
-        // The agent took the stack meanwhile: the edit waits in the editor.
+        // The stack taken meanwhile, by the agent or a pull from Phabricator
+        // say: the edit waits in the editor, why at its top.
         if let Err(e) = Db::load(path).and_then(|now| may_edit(&now, name, work)) {
-            text = with_error(&e.0, &edited, "save again once the agent's work has landed, or empty the file to give up");
+            text = with_error(&e.0, &edited, "save again then, or empty the file to give up");
             continue;
         }
         let tried = crate::mbox::parse_mail(&edited).and_then(|d| {

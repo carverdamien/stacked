@@ -491,18 +491,34 @@ answers running, and accepting it leaves those waiting for your review as
 they are: its review lists none.
 
 While the agent changes a stack, the stack is not edited by hand: the
-agent's change is made from the stack as it took it. The menus' edits of
-the stack and its patches are off meanwhile, and the menu says why:
-editing a patch or one of its files, editing the stack as a list, moving,
-dropping, undo and redo, picking a state from the tree or a version,
-deleting the stack. The same commands refuse on the command line.
-Comments are written as ever, except those the agent works on: their
-`Reply` and edits wait for the agent's reply to land, as the reply is to
-what was asked. An edit by hand open in $EDITOR when the agent takes the
-stack is not lost: a file's edit is kept, to `Edit it again` later; a
-patch's mail, or the stack's list, opens again with why at its top. A
-comment waiting its turn is off the agent's queue while you reply to it,
-and goes back on with your reply.
+agent's change is made from the stack as it took it. Nor is it while
+other work is about to change it: work you sent back, waiting to go back
+to the agent; a lint job of the stack, waiting its turn or running
+(Linting, below); a pull from Phabricator of the stack, waiting its turn
+or being made, from when it is queued to when it is filed (Phabricator,
+below), as a pull is an edit too. Nor is it while a change of the stack
+waits for your review, as that change was made from the stack as it is.
+The menus' edits of the stack and its patches are off meanwhile, and the
+menu says why (`the agent is changing patch 2: the stack can be edited by
+hand again once you have reviewed the agent's work`; `a pull from
+Phabricator waits its turn (the stack's revisions, with their parents and
+those stacked on top): the stack can be edited by hand again once the
+pull is made and you have reviewed its change of the stack, if it makes
+one`, then, its turn come, `a pull from Phabricator is being made (…):
+…`): editing a patch or one of its files, editing the stack as a list,
+moving, dropping, undo and redo, picking a state from the tree or a
+version, deleting the stack. The same commands refuse on the command
+line. The work waiting for your review is still edited by hand from its
+review, in its place: what went on from it is dropped then, as above, and
+a pull made on it meanwhile is made again. Comments are written as ever,
+except those the agent works on: their `Reply` and edits wait for the
+agent's reply to land, as the reply is to what was asked. An edit by hand
+open in $EDITOR when the agent takes the stack, or a pull is queued, is
+not lost: a file's edit is kept, to `Edit it again` later; a patch's
+mail, or the stack's list, opens again with why at its top (`save again
+then, or empty the list to give up`). A comment waiting its turn is off
+the agent's queue while you reply to it, and goes back on with your
+reply.
 
 To change commits below the top of the stack, the agent writes its rebase
 plan (a `pick`, `edit`, `squash`, `fixup` or `drop` line for each commit)
