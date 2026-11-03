@@ -24,9 +24,10 @@ the build stops and says to add it, or to build stacked without `web`, as
 The `demo` feature adds a tour of the editor, to learn it by (`stacked
 demo`, below).
 
-The `moz-phab` feature adds Phabricator (below): the reviews pulled from
-its revisions, the latest of them fetched and stored, stacks imported from
-them, and a patch submitted to it as work in progress, over Conduit with
+The `moz-phab` feature adds Phabricator (below): a stack pulled from its
+revisions, their new versions, parents and those stacked on top, and the
+reviews, a new stack pulled from a revision, the latest of them fetched
+and stored, and a patch submitted to it as work in progress, over Conduit with
 the token moz-phab (or arc) keeps,
 which `curl` calls. With it, the reading mode
 takes the trailer moz-phab writes in a message as an empty line, which

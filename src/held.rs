@@ -97,6 +97,117 @@ pub struct Held {
     pub needs: Option<crate::operations::Needs>,
 }
 
+/// What the change of the stack a pull from Phabricator holds takes from
+/// it, a patch at a time (`Taken`), and what the pull found that changes
+/// nothing, a sentence each, to read: a revision that landed or was
+/// abandoned, a parent Phabricator gives that the stack's order disagrees
+/// with, a revision not added, a diff not taken, and why. Kept with the
+/// pull's job (`review::Job::took`), which its review reads (`took`).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+pub struct Took {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub took: Vec<Taken>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub found: Vec<String>,
+}
+
+/// What a patch of a pull's change takes from Phabricator: the patch, by
+/// its change; its revision, `D123` (none for a patch of the stack with no
+/// revision, made again on what the pull changed under it); its revision's
+/// latest diff, as its code, and its title and summary, as its message;
+/// added, how the pull came to it; the version of the patch the last diff
+/// of its revision stacked knows was, when the patch changed in the stack
+/// since; and, made again on the pulled versions under it, which it no
+/// longer applied on as it was, the files whose conflicts it marks, none
+/// when they merged.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+pub struct Taken {
+    pub change: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub d: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub diff: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub message: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub added: Option<Added>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub since: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remade: Option<Vec<String>>,
+}
+
+/// How a pull came to a revision it adds: the one asked, of a new stack;
+/// the parent of revision `D123`; stacked on revision `D123`.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum Added {
+    Asked,
+    Parent(String),
+    Child(String),
+}
+
+impl Taken {
+    /// What it takes, said after its operation's line in the review: `from
+    /// D123's latest diff`, `D11, the parent of D12`, `D125, stacked on
+    /// D124`, `no longer applies on the pulled version`; its conflicts
+    /// `resolved` by hand since, so.
+    pub fn said(&self, resolved: bool) -> String {
+        let mut out: Vec<String> = Vec::new();
+        match (&self.added, self.diff, self.message) {
+            (Some(Added::Parent(of)), ..) => out.push(format!("{}, the parent of {of}", self.d)),
+            (Some(Added::Child(on)), ..) => out.push(format!("{}, stacked on {on}", self.d)),
+            (Some(Added::Asked), ..) => out.push(self.d.clone()),
+            (None, true, _) => out.push(format!("from {}'s latest diff", self.d)),
+            (None, false, true) => out.push(format!("from {}'s title and summary", self.d)),
+            (None, false, false) => {}
+        }
+        let pulled = self.diff;
+        match &self.remade {
+            Some(m) if !m.is_empty() && resolved => out.push("its conflicts resolved by hand".into()),
+            Some(m) if !m.is_empty() && pulled => out.push("its conflicts with the patches under it marked".into()),
+            Some(m) if !m.is_empty() => out.push("no longer applies on the pulled version".into()),
+            Some(_) if pulled => out.push("made again on the patches under it".into()),
+            Some(_) => out.push("made again on the pulled version".into()),
+            None => {}
+        }
+        out.join(", ")
+    }
+
+    /// Whether it holds conflicts marked, to resolve.
+    pub fn marked(&self) -> bool {
+        self.remade.as_ref().is_some_and(|m| !m.is_empty())
+    }
+}
+
+/// What the change pull `r` holds takes from Phabricator, and what the pull
+/// found that changes nothing (`Took`): none for any other work, nor for a
+/// pull that changes nothing of the stack.
+pub fn took(r: &Run) -> Option<&Took> {
+    #[cfg(feature = "moz-phab")]
+    return r.pull.as_ref()?.took.as_ref();
+    #[cfg(not(feature = "moz-phab"))]
+    return {
+        let _ = r;
+        None
+    };
+}
+
+/// What the change pull `r` holds takes from Phabricator for the patch of
+/// `change`, if it takes something.
+pub fn taken<'a>(r: &'a Run, change: &str) -> Option<&'a Taken> {
+    took(r)?.took.iter().find(|t| t.change == change)
+}
+
+/// Whether patch `p` holds a conflict a pull marked, to resolve: a line
+/// its diff adds is the marker over the patches under the conflict
+/// (`ops::PULL_OURS`). A review does not close with such a patch in the
+/// stack.
+pub fn marked(p: &Patch) -> bool {
+    let marker = format!("+<<<<<<< {}", crate::ops::PULL_OURS);
+    p.diff.lines().any(|l| l.trim_end() == marker)
+}
+
 /// A follow-up that only reads, asked from the review of the work it came
 /// into once it landed.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -774,6 +885,9 @@ fn apply_reply(db: &mut Db, name: &str, rp: &Reply) -> Result<bool> {
 /// waits for review, which is reviewed first. If not, why.
 pub fn can_take(db: &Db, r: &Run) -> Result<()> {
     let Some(h) = &r.held else { return err(format!("run {} holds nothing to review", r.id)) };
+    if h.stack.is_some() && pulled(r) {
+        return err("this reply goes with the patches pulled with it: review them together");
+    }
     if h.stack.is_some() {
         return err("this reply goes with the agent's change of the stack: review them together");
     }
@@ -823,7 +937,7 @@ pub fn take(db: &mut Db, id: &str, k: usize) -> Result<()> {
 }
 
 /// Saves the marks of run `id`'s review, to take up again: nothing is
-/// applied. A pull's parts are not rejected.
+/// applied. A pull's comments are not rejected.
 pub fn save(db: &mut Db, id: &str, marks: &BTreeMap<String, bool>) -> Result<()> {
     let (r, h, mut v) = under_review(db, id)?;
     if pulled(&r) && rejects(&h, marks) {
@@ -837,22 +951,24 @@ pub fn save(db: &mut Db, id: &str, marks: &BTreeMap<String, bool>) -> Result<()>
 /// filed as its pull's review closes.
 pub const FILED: &str = "a comment pulled from Phabricator cannot be rejected: close the review to file it";
 
-/// Whether `marks` rejects a part of work `h`.
+/// Whether `marks` rejects a comment of work `h`, a part other than its
+/// change of the stack, whose operations a pull's review marks as any.
 fn rejects(h: &Held, marks: &BTreeMap<String, bool>) -> bool {
-    h.parts().iter().any(|p| marks.get(&p.key()) == Some(&false))
+    h.parts().iter().filter(|p| **p != Part::Stack).any(|p| marks.get(&p.key()) == Some(&false))
 }
 
 /// The marks of the review of the work run `r` holds, as saved; of a
-/// pull's, every part accepted, as none is rejected: closing its review
-/// files each comment it pulled. Marks a stacked of before saved
-/// rejecting some are passed over. The change of the stack marked as a
-/// whole, as a stacked of before marked it (`stack`), each of its
-/// operations has that mark, once each is marked on its own
-/// (`operations::of_review`); a change marked as one keeps it.
+/// pull's, every comment accepted, as none is rejected: closing its review
+/// files each comment it pulled. Its change of the stack's operations are
+/// marked as any change's. Marks a stacked of before saved rejecting a
+/// comment are passed over. The change of the stack marked as a whole, as
+/// a stacked of before marked it (`stack`), each of its operations has
+/// that mark, once each is marked on its own (`operations::of_review`); a
+/// change marked as one keeps it.
 pub fn marks(db: &Db, r: &Run) -> BTreeMap<String, bool> {
     let mut marks = db.review(&r.id).map(|v| v.marks.clone()).unwrap_or_default();
     if pulled(r) {
-        marks.extend(r.held.iter().flat_map(Held::parts).map(|p| (p.key(), true)));
+        marks.extend(r.held.iter().flat_map(Held::parts).filter(|p| *p != Part::Stack).map(|p| (p.key(), true)));
     }
     if let Some(&m) = marks.get(&Part::Stack.key())
         && let Some(ops) = r.held.as_ref().and_then(|h| crate::operations::of_review(db, r, h)).filter(|o| !o.whole())
@@ -1111,6 +1227,9 @@ pub fn send_back(db: &mut Db, id: &str, marks: &BTreeMap<String, bool>) -> Resul
     if crate::ask::guessing(db, &r).is_some() {
         return err("this work goes on from the work landed before it, which waits for your review: review that one first");
     }
+    if pulled(&r) {
+        return send_back_pull(db, id);
+    }
     let i = crate::ask::info(&r).ok_or_else(|| Error(format!("run {id} is not the agent's work: there is no one to send it back to")))?;
     // What went with a follow-up going goes back too: it is stopped.
     let none = HashSet::new();
@@ -1191,6 +1310,133 @@ pub fn send_back(db: &mut Db, id: &str, marks: &BTreeMap<String, bool>) -> Resul
         stopped,
         allowed: crate::refusals::carried(db, id),
         settled,
+    })
+}
+
+/// The patches of `patches`, a stack the review of a pull would leave, that
+/// hold a conflict it marked, said with what to do, when one does: the
+/// review does not close with them.
+pub fn marked_said(db: &Db, patches: &[String]) -> Option<String> {
+    let at: Vec<usize> = patches.iter().enumerate().filter(|(_, id)| marked(db.patch(id))).map(|(k, _)| k).collect();
+    match at.as_slice() {
+        [] => None,
+        [k] => Some(format!(
+            "patch {} ({}) holds the conflicts the pull marked where it does not apply on the patches under it: reject its operation, resolve them by hand in the patch, or send the pull back to the agent",
+            k + 1,
+            db.patch(&patches[*k]).title()
+        )),
+        _ => Some(format!(
+            "{} hold the conflicts the pull marked where they do not apply on the patches under them: reject their operations, resolve them by hand in the patches, or send the pull back to the agent",
+            crate::head::patches_said(&at)
+        )),
+    }
+}
+
+/// What goes back to the agent from the review of a pull whose change
+/// holds patches whose conflicts it marked: the comment of yours that hands
+/// them over, as the lint job hands its fixes over, on the patch whose
+/// conflicts are marked, or on the stack for more than one; its text says
+/// which patches no longer apply on the pulled versions, the files their
+/// conflicts are marked in, and what to do. The patches, by their places
+/// in the stack the pull makes, from 0, and the comment; none without a
+/// conflict marked.
+pub fn handed_over(db: &Db, r: &Run, h: &Held) -> Option<(Vec<usize>, Note)> {
+    let c = h.stack.as_ref()?;
+    let at: Vec<usize> = c.patches.iter().enumerate().filter(|(_, p)| marked(db.patch(p))).map(|(k, _)| k).collect();
+    let files = |k: usize| taken(r, &db.patch(&c.patches[k]).change).and_then(|t| t.remade.clone()).unwrap_or_default();
+    let markers = format!("`<<<<<<< {}`, `=======` and `>>>>>>>`", crate::ops::PULL_OURS);
+    let note = match at.as_slice() {
+        [] => return None,
+        [k] => {
+            let p = db.patch(&c.patches[*k]);
+            let fs = files(*k);
+            let shown = if fs.is_empty() { String::new() } else { format!(", in {}", crate::head::and(&fs)) };
+            Note {
+                change: p.change.clone(),
+                id: format!("p{}", crate::db::unique()),
+                line: crate::view::title_key(p),
+                file: crate::view::MSG_PATH.into(),
+                preview: p.title().chars().take(80).collect(),
+                text: crate::thread::yours(&format!(
+                    "This patch no longer applies on the versions pulled from Phabricator under it: its conflicts are marked in its files{shown}, as {markers}. Resolve them, keeping what this patch changes, and take every marker out, so that every patch of the stack applies."
+                )),
+                time: now(),
+                ..Default::default()
+            }
+        }
+        _ => {
+            let each: Vec<String> = at
+                .iter()
+                .map(|&k| {
+                    let fs = files(k);
+                    let p = db.patch(&c.patches[k]);
+                    match fs.is_empty() {
+                        true => format!("patch {} ({})", k + 1, p.title()),
+                        false => format!("patch {} ({}), in {}", k + 1, p.title(), crate::head::and(&fs)),
+                    }
+                })
+                .collect();
+            Note {
+                change: crate::db::stack_change(&r.stack),
+                id: format!("p{}", crate::db::unique()),
+                text: crate::thread::yours(&format!(
+                    "These patches no longer apply on the versions pulled from Phabricator under them, their conflicts marked in their files, as {markers}: {}. Resolve each, keeping what each patch changes, and take every marker out, so that every patch of the stack applies.",
+                    each.join("; ")
+                )),
+                time: now(),
+                ..Default::default()
+            }
+        }
+    };
+    Some((at, note))
+}
+
+/// The work of pull `id` sent back, its change holding patches whose
+/// conflicts it marked: to an agent asked to rework them, starting from the
+/// stack the pull makes. Its review closes: its comments filed, as closing
+/// files them, those of a patch the stack does not hold left to be pulled
+/// again; its change not applied. Then the comment of yours that hands the
+/// conflicts over (`handed_over`) is opened, for the round to ask the agent
+/// about: as a change of the stack, from the work.
+fn send_back_pull(db: &mut Db, id: &str) -> Result<Round> {
+    let (r, h, mut v) = under_review(db, id)?;
+    let Some((at, note)) = handed_over(db, &r, &h) else {
+        return err("no patch of this pull's change holds a conflict it marked: there is nothing to send back to the agent, so accept or reject it");
+    };
+    let mut reopened = 0;
+    for (k, rp) in h.replies.iter().enumerate() {
+        if !v.taken.contains(&k) && apply_reply(db, &r.stack, rp)? {
+            reopened += 1;
+        }
+    }
+    let held_now = held_changes(db, &r.stack);
+    for n in &h.opened {
+        if held_now.contains(&n.change) || n.on_stack() {
+            db.set_note(Note { time: now(), ..n.clone() })?;
+        }
+    }
+    db.set_note(note.clone())?;
+    v.marks.insert(Part::Stack.key(), false);
+    v.closed = true;
+    db.set_review(id, v)?;
+    let dropped = crate::ask::guessed_wrong(db, id, "sent back")?;
+    let mut said = format!("reviewed: its change sent back to the agent, to rework {}", crate::head::patches_said(&at));
+    if !h.opened.is_empty() || !h.replies.is_empty() {
+        said += "; the comments it pulled filed";
+    }
+    if reopened > 0 {
+        said += &format!("; {}", count(reopened, "comment reopened", "comments reopened"));
+    }
+    db.add_run(Run { summary: said, ..r })?;
+    Ok(Round {
+        notes: vec![(note.change.clone(), note.id.clone())],
+        way: crate::db::Way::Change,
+        whole: false,
+        effort: None,
+        dropped,
+        stopped: 0,
+        allowed: Vec::new(),
+        settled: crate::refusals::Settled::default(),
     })
 }
 
@@ -1477,12 +1723,13 @@ pub fn close_with(db: &mut Db, id: &str, marks: &BTreeMap<String, bool>, rest: O
     if !opened.is_empty() || answers > 0 {
         return err("you wrote in its review: it is not accepted nor rejected, but sent back to the agent");
     }
-    // A pull's: every comment it pulled is filed, none rejected.
-    let rest = match pulled(&r) {
-        true if rest == Some(false) || rejects(&h, marks) => return err(FILED),
-        true => Some(true),
-        false => rest,
-    };
+    // A pull's: every comment it pulled is filed, none rejected; its change
+    // of the stack, by its operations, as any. With no change, nothing of it
+    // is rejected.
+    let pull = pulled(&r);
+    if pull && (rejects(&h, marks) || (rest == Some(false) && h.stack.is_none())) {
+        return err(FILED);
+    }
     // The change of the stack, by its operations, each as marked or as
     // `rest` says; with none to mark, nothing stored of what each needs, or
     // its stack gone, as a whole.
@@ -1500,27 +1747,35 @@ pub fn close_with(db: &mut Db, id: &str, marks: &BTreeMap<String, bool>, rest: O
             }
             continue;
         }
+        if pull && p != Part::Stack {
+            all.insert(p.key(), true);
+            continue;
+        }
         let Some(m) = marks.get(&p.key()).copied().or(rest) else { return unmarked() };
         all.insert(p.key(), m);
     }
     let taken = h.stack.as_ref().map(|_| match &ops {
         Some(ops) => match ops.counts(&all) {
-            (_, 0, _) => Taken::Whole,
-            (0, _, _) => Taken::Nothing,
-            _ => Taken::Part,
+            (_, 0, _) => Accepted::Whole,
+            (0, _, _) => Accepted::Nothing,
+            _ => Accepted::Part,
         },
-        None if all.get(&Part::Stack.key()) == Some(&true) => Taken::Whole,
-        None => Taken::Nothing,
+        None if all.get(&Part::Stack.key()) == Some(&true) => Accepted::Whole,
+        None => Accepted::Nothing,
     });
     let change = h.stack.as_ref().zip(taken);
-    if let Some((_, Taken::Nothing)) = change {
+    // Every operation rejected, the agent's replies and comments with them;
+    // a pull's comments are the reviewers', filed all the same.
+    if let Some((_, Accepted::Nothing)) = change
+        && !pull
+    {
         for (key, m) in all.iter_mut() {
             if !crate::operations::is_key(key) && key != "stack" {
                 *m = false;
             }
         }
     }
-    let accepted = matches!(change, Some((_, Taken::Whole | Taken::Part)));
+    let accepted = matches!(change, Some((_, Accepted::Whole | Accepted::Part)));
     let from = made_from(&r, &h);
     if accepted && db.head(&r.stack).map(|(rev, _)| rev) != from {
         return err("the stack changed since this change was made from it: it can only be rejected");
@@ -1530,7 +1785,7 @@ pub fn close_with(db: &mut Db, id: &str, marks: &BTreeMap<String, bool>, rest: O
     // its screen, and so does `stacked review` before it takes the lock
     // (`closing_check`): here, what that check found is only read again.
     let part = match (change, &ops) {
-        (Some((c, Taken::Part)), Some(ops)) => {
+        (Some((c, Accepted::Part)), Some(ops)) => {
             let stands = ops.standing(&all);
             let (left, base) = ops.leave(&stands);
             let s = db.stack(&r.stack)?;
@@ -1546,6 +1801,15 @@ pub fn close_with(db: &mut Db, id: &str, marks: &BTreeMap<String, bool>, rest: O
         }
         _ => None,
     };
+    // A patch that holds a conflict a pull marked does not go in.
+    let taking: Option<&Vec<String>> = match (change, &part) {
+        (Some((c, Accepted::Whole)), _) => Some(&c.patches),
+        (Some((_, Accepted::Part)), Some((s, _))) => Some(&s.patches),
+        _ => None,
+    };
+    if let Some(why) = taking.and_then(|p| marked_said(db, p)) {
+        return err(format!("{why}; nothing changed"));
+    }
     // Its change accepted, chained, wholly or in part: the answers made on
     // the stack before it, running or waiting for your review, each go as
     // marked, kept, restarted or stopped. None goes unmarked: nothing is
@@ -1565,7 +1829,7 @@ pub fn close_with(db: &mut Db, id: &str, marks: &BTreeMap<String, bool>, rest: O
     // one goes in, and the change is not rejected.
     let mut reopened = 0;
     let mut filed: HashMap<(String, String), bool> = HashMap::new();
-    let rejected = matches!(change, Some((_, Taken::Nothing)));
+    let rejected = matches!(change, Some((_, Accepted::Nothing)));
     for (k, rp) in h.replies.iter().enumerate() {
         let at = (rp.change.clone(), rp.id.clone());
         let goes = match rp.read {
@@ -1594,8 +1858,8 @@ pub fn close_with(db: &mut Db, id: &str, marks: &BTreeMap<String, bool>, rest: O
     // Accepted whole, the stack the change makes; in part, the stack its
     // operations accepted leave, the history naming those rejected.
     let made = match (change, part) {
-        (Some((c, Taken::Whole)), _) => Some((c.patches.clone(), c.base.clone(), c.op.clone())),
-        (Some((_, Taken::Part)), Some((s, op))) => Some((s.patches, s.base, op)),
+        (Some((c, Accepted::Whole)), _) => Some((c.patches.clone(), c.base.clone(), c.op.clone())),
+        (Some((_, Accepted::Part)), Some((s, op))) => Some((s.patches, s.base, op)),
         _ => None,
     };
     if let Some((patches, base, op)) = made {
@@ -1637,19 +1901,21 @@ pub fn close_with(db: &mut Db, id: &str, marks: &BTreeMap<String, bool>, rest: O
         Ok(())
     };
     match (change, rev) {
-        (Some((_, Taken::Whole)), Some(at)) => {
+        (Some((_, Accepted::Whole)), Some(at)) => {
             crate::ask::guessed_right(db, id, at)?;
             again.extend(crate::ask::leave_answers(db, &left, marks)?);
         }
-        (Some((_, Taken::Part)), _) => {
+        (Some((_, Accepted::Part)), _) => {
             wrong(db, "accepted in part", &mut again)?;
             again.extend(crate::ask::leave_answers(db, &left, marks)?);
         }
-        (Some((_, Taken::Nothing)), _) => wrong(db, "rejected", &mut again)?,
+        (Some((_, Accepted::Nothing)), _) => wrong(db, "rejected", &mut again)?,
         _ => {}
     }
+    // A pull's new threads, on a patch the stack holds now: one on a patch it
+    // added that the stack does not take is pulled again with it, next time.
     for (k, n) in h.opened.iter().enumerate() {
-        if all.get(&Part::Opened(k).key()) == Some(&true) {
+        if all.get(&Part::Opened(k).key()) == Some(&true) && (!pull || held_after.contains(&n.change) || n.on_stack()) {
             db.set_note(Note { time: now(), ..n.clone() })?;
         }
     }
@@ -1657,8 +1923,8 @@ pub fn close_with(db: &mut Db, id: &str, marks: &BTreeMap<String, bool>, rest: O
     // in part, as a stacked of before reads it.
     v.marks.retain(|k, _| !crate::operations::is_key(k) && k != "stack");
     match change.map(|(_, t)| t) {
-        Some(Taken::Whole) => v.marks.insert(Part::Stack.key(), true),
-        Some(Taken::Nothing) => v.marks.insert(Part::Stack.key(), false),
+        Some(Accepted::Whole) => v.marks.insert(Part::Stack.key(), true),
+        Some(Accepted::Nothing) => v.marks.insert(Part::Stack.key(), false),
         _ => None,
     };
     v.marks.extend(all);
@@ -1681,7 +1947,7 @@ pub fn close_with(db: &mut Db, id: &str, marks: &BTreeMap<String, bool>, rest: O
     db.set_review(id, v.clone())?;
     // Nothing brought back: no part to say, but the tools it could not use.
     // What the linter reported and fixed nothing of is only read.
-    let taken_said = change.and_then(|(_, t)| (t == Taken::Part).then(|| ops.as_ref().map(|o| part_said(o, &v.marks)))).flatten();
+    let taken_said = change.and_then(|(_, t)| (t == Accepted::Part).then(|| ops.as_ref().map(|o| part_said(o, &v.marks)))).flatten();
     let mut said = match (h.is_empty(), said_of(&h, &v.marks, taken_said)) {
         (true, s) if s.is_empty() => NOTHING_BACK.to_string(),
         (true, s) => format!("{NOTHING_BACK}; {s}"),
@@ -1720,12 +1986,9 @@ pub fn close_with(db: &mut Db, id: &str, marks: &BTreeMap<String, bool>, rest: O
 /// its operations, and those that would stand. None for any other close,
 /// which checks no stack of its own: accepted whole, the stack the change
 /// makes was checked as the work landed; rejected, the stack stays as it
-/// is; marked as a whole, its change is one.
+/// is; marked as a whole, its change is one. A pull's change as any.
 pub fn closing_stands(db: &Db, id: &str, marks: &BTreeMap<String, bool>, rest: Option<bool>) -> Option<(crate::operations::Ops, BTreeSet<String>)> {
     let r = db.run(id)?;
-    if pulled(r) {
-        return None;
-    }
     let ops = crate::operations::of_review(db, r, r.held.as_ref()?).filter(|o| !o.whole())?;
     let mut all = BTreeMap::new();
     for o in ops.marked() {
@@ -1821,7 +2084,7 @@ pub fn accepted_tasks(h: &Held, marks: &BTreeMap<String, bool>, rest: Option<boo
 /// How much of a change of the stack a review takes: every operation,
 /// some of them, or none.
 #[derive(Clone, Copy, Debug, PartialEq)]
-enum Taken {
+enum Accepted {
     Whole,
     Part,
     Nothing,

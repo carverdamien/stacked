@@ -355,14 +355,22 @@ Phabricator: D123456 · Needs Review · the diff differs · 2 new comments to pu
 
 Space on that line shows what differs, and Enter opens its menu.
 
-- **Pulling reviews.** `Pull reviews from Phabricator`, on the stack's
-  menu, or `stacked moz-phab pull NAME`, brings in the reviewers' new
-  comments, replies and edits. They wait for your review, as the agent's
-  work does; closing that review files them as threads, to reply to or to
-  ask the agent about.
-- **Importing.** `Import from Phabricator…`, or `stacked moz-phab import
-  D123`, makes a stack of a revision, with the revisions it stacks on and
-  those stacked on it.
+- **Pulling.** `Pull from Phabricator`, on the stack's menu, or `stacked
+  moz-phab pull NAME`, brings in what changed there: each revision's
+  latest diff, title and summary that are no version of its patch stacked
+  knows, as new versions; the open revisions the stack stacks on and does
+  not hold, and those stacked on its top, as new patches; and the
+  reviewers' new comments, replies and edits. All of it waits for your
+  review, as the agent's work does, each operation of the stack accepted
+  or rejected on its own; a patch above that no longer applies is made
+  again with its conflicts marked, to resolve, to reject, or to send back
+  to the agent. Closing that review files the comments as threads, to
+  reply to or to ask the agent about. `Pull D123 from Phabricator`, in a
+  patch's `Phabricator` menu, pulls that patch's revision with its
+  parents, or with those stacked on it too.
+- **A new stack.** `Pull from Phabricator…`, under `New stack…`, or
+  `stacked moz-phab import D123`, pulls a revision, with the revisions it
+  stacks on and those stacked on it, into a new stack, for your review.
 - **Submitting.** `Submit to Phabricator as WIP`, in a patch's
   `Phabricator` menu, sends that one patch as work in progress (Changes
   Planned, which asks no one for a review), once you have seen what it

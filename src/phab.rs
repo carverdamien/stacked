@@ -13,6 +13,7 @@ use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::db::{Comments, Db, Seen, Stack, State};
@@ -190,29 +191,39 @@ fn answered(out: &[u8]) -> (Option<u16>, &[u8]) {
 }
 
 /// A comment as Phabricator has it, as it was last edited: its id is that
-/// version's, each edit making one of its own.
-#[derive(Debug, Clone, PartialEq, Default)]
+/// version's, each edit making one of its own. Kept so in the run of a
+/// pull while it waits its turn (`review::Job`).
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct Remote {
     pub phid: String,
+    #[serde(default)]
     pub author: String,
+    #[serde(default)]
     pub text: String,
     /// When it was first written.
+    #[serde(default)]
     pub created: i64,
     /// None for a comment on the revision as a whole.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
+    #[serde(default)]
     pub line: usize,
     /// The line's text in the diff it was made on, when that is known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub line_text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reply_to: Option<String>,
     /// What it was before its last edit, the version before it first: none
     /// if it was never edited.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub earlier: Vec<Version>,
 }
 
 /// A comment as it was before an edit: its id then, and what it said.
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct Version {
     pub phid: String,
+    #[serde(default)]
     pub text: String,
 }
 
@@ -229,10 +240,11 @@ pub struct Pulled {
     pub revisions: Vec<RevisionComments>,
 }
 
-/// New-side line number -> text, from a Phabricator diff's hunks.
-fn diff_lines(conduit: &Conduit, diff: u64) -> HashMap<(String, usize), String> {
+/// New-side line number -> text, from a Phabricator diff's hunks, Conduit
+/// called with `call`: none when it cannot be read.
+fn diff_lines(call: &mut Call, diff: u64) -> HashMap<(String, usize), String> {
     let mut out = HashMap::new();
-    let Ok(r) = conduit.call("differential.querydiffs", json!({"ids": [diff]})) else {
+    let Ok(r) = call("differential.querydiffs", json!({"ids": [diff]})) else {
         return out;
     };
     let Some(d) = r.get(diff.to_string()) else {
@@ -303,9 +315,11 @@ fn transactions(call: &mut Call, revision: &str) -> Result<Vec<Value>, String> {
     Ok(txns)
 }
 
-/// Reads every comment on `revision`.
-pub fn fetch(conduit: &Conduit, revision: &str, source: &str) -> Result<RevisionComments, String> {
-    let txns = transactions(&mut |m, v| conduit.call(m, v).map_err(String::from), revision)?;
+/// Every comment on `revision` (`D123`), Conduit called with `call`: as a
+/// pull reads them, each by its author's name, its line's text read from
+/// the diff it was made on.
+fn comments_over(call: &mut Call, revision: &str) -> Result<Vec<Remote>, String> {
+    let txns = transactions(call, revision)?;
     let mut authors: Vec<String> = txns
         .iter()
         .filter_map(|t| {
@@ -318,7 +332,7 @@ pub fn fetch(conduit: &Conduit, revision: &str, source: &str) -> Result<Revision
     authors.dedup();
     let mut names: HashMap<String, String> = HashMap::new();
     if !authors.is_empty() {
-        let r = conduit.call("user.search", json!({"constraints": {"phids": authors}}))?;
+        let r = call("user.search", json!({"constraints": {"phids": authors}}))?;
         for u in r
             .get("data")
             .and_then(Value::as_array)
@@ -334,14 +348,9 @@ pub fn fetch(conduit: &Conduit, revision: &str, source: &str) -> Result<Revision
         }
     }
     let mut diffs: HashMap<u64, HashMap<(String, usize), String>> = HashMap::new();
-    let comments = comments_of(&txns, &names, |path, diff, line| {
-        diffs.entry(diff).or_insert_with(|| diff_lines(conduit, diff)).get(&(path.to_string(), line)).cloned()
-    });
-    Ok(RevisionComments {
-        revision: revision.into(),
-        source: source.into(),
-        comments,
-    })
+    Ok(comments_of(&txns, &names, |path, diff, line| {
+        diffs.entry(diff).or_insert_with(|| diff_lines(call, diff)).get(&(path.to_string(), line)).cloned()
+    }))
 }
 
 /// The comments of a revision, oldest first, from its transactions as
@@ -409,83 +418,6 @@ fn comments_of(txns: &[Value], names: &HashMap<String, String>, mut read_line: i
     comments
 }
 
-/// What reads one revision's comments, from `(source key, D123, link)`.
-pub type Fetch = fn(&str, &str, &str) -> Result<RevisionComments, String>;
-
-/// What reads the revisions in place of Conduit, when one is set: the
-/// tests', which never reach Phabricator, as `ask::stand_in` is for the
-/// agent.
-static STAND_IN: std::sync::Mutex<Option<Fetch>> = std::sync::Mutex::new(None);
-
-/// Reads the revisions with `fetch` rather than over Conduit; with none,
-/// over Conduit again.
-pub fn stand_in(fetch: Option<Fetch>) {
-    *STAND_IN.lock().unwrap() = fetch;
-}
-
-/// Reads the comments of every commit's revision: `revisions` is
-/// `(source key, D123, link)`. `progress` is told of each, by its place
-/// from 0, as it starts reading it.
-pub fn pull(revisions: &[(String, String, String)], progress: &mut dyn FnMut(usize)) -> Result<Pulled, String> {
-    let fake = *STAND_IN.lock().unwrap();
-    if let Some(fetch) = fake {
-        return read_each(revisions, progress, fetch);
-    }
-    let mut conduits: HashMap<String, Conduit> = HashMap::new();
-    read_each(revisions, progress, |source, rev, url| {
-        let host = url.split('/').take(3).collect::<Vec<_>>().join("/");
-        if !conduits.contains_key(&host) {
-            conduits.insert(host.clone(), Conduit::for_url(Some(url))?);
-        }
-        fetch(&conduits[&host], rev, source)
-    })
-}
-
-/// Reads each of `revisions` with `fetch`, `progress` told of each, by its
-/// place from 0, as it starts reading it: up to the first that fails, and
-/// what is wrong with it.
-fn read_each(
-    revisions: &[(String, String, String)],
-    progress: &mut dyn FnMut(usize),
-    mut fetch: impl FnMut(&str, &str, &str) -> Result<RevisionComments, String>,
-) -> Result<Pulled, String> {
-    let mut out = Pulled::default();
-    for (k, (source, rev, url)) in revisions.iter().enumerate() {
-        progress(k);
-        out.revisions.push(fetch(source, rev, url)?);
-    }
-    Ok(out)
-}
-
-/// A revision of Phabricator as an import takes it: its latest diff, as a
-/// patch, and the commit that diff is on.
-#[derive(Debug, Clone, PartialEq, Default)]
-pub struct Revision {
-    /// `D123`.
-    pub id: String,
-    /// The patch's message: its commit's, as uploaded, else the revision's
-    /// title and summary; with its trailer (`Differential Revision:`).
-    pub message: String,
-    /// Who wrote it, `Name <email>`, as its commit says, if it does.
-    pub author: Option<String>,
-    /// The diff, as git writes one.
-    pub diff: String,
-    /// The commit its diff is on, as it says, if it does.
-    pub base: Option<String>,
-}
-
-/// What reads a stack of revisions in place of Conduit, from (`D123`, its
-/// link if given): the tests', which never reach Phabricator.
-pub type ReadStack = Box<dyn Fn(&str, Option<&str>) -> Result<Vec<Revision>, String> + Send + Sync>;
-
-static STACK_STAND_IN: std::sync::Mutex<Option<ReadStack>> = std::sync::Mutex::new(None);
-
-/// Reads stacks of revisions with `read` rather than over Conduit; with
-/// none, over Conduit again.
-pub fn stack_stand_in(read: Option<ReadStack>) {
-    *STACK_STAND_IN.lock().unwrap() = read;
-}
-
 /// The revision `text` names, `D123` (or `123`) or its link: its `D123`,
 /// and the link if one was given. None if it names none.
 pub fn revision_named(text: &str) -> Option<(String, Option<String>)> {
@@ -504,18 +436,6 @@ pub fn revision_named(text: &str) -> Option<(String, Option<String>)> {
         return None;
     }
     Some((format!("D{digits}"), link.then(|| t.to_string())))
-}
-
-/// Revision `rev` (`D123`), at `link` if given, read with the revisions it
-/// stacks on, down to the first that is not open, and those that stack on
-/// it while one is open: bottom first, each as an import takes it.
-pub fn read_stack(rev: &str, link: Option<&str>) -> Result<Vec<Revision>, String> {
-    if let Some(read) = STACK_STAND_IN.lock().unwrap().as_ref() {
-        return read(rev, link);
-    }
-    let conduit = Conduit::for_url(link)?;
-    let trailer = crate::config::get().reviews.trailer.clone();
-    stack_over(&mut |method, params| conduit.call(method, params).map_err(String::from), &conduit.api, &trailer, rev)
 }
 
 /// How Conduit is called: a method, its parameters; its `result`.
@@ -546,151 +466,340 @@ pub(crate) fn edges(call: &mut Call, phid: &str, kind: &str) -> Result<Vec<Strin
         .collect())
 }
 
-/// As `read_stack`, Conduit called with `call` at `api`, the trailer named
-/// `trailer`: down while a revision stacks on one other, open; up while one
-/// open revision stacks on it.
-fn stack_over(call: &mut Call, api: &str, trailer: &str, rev: &str) -> Result<Vec<Revision>, String> {
-    let n: u64 = rev.trim_start_matches('D').parse().map_err(|_| format!("{rev} names no revision"))?;
-    let first = revision_by(call, json!({ "ids": [n] }))?.ok_or(format!("no revision {rev}"))?;
-    let phid = |r: &Value| r.get("phid").and_then(Value::as_str).unwrap_or("").to_string();
-    let mut chain = vec![first.clone()];
-    for (kind, down) in [("revision.parent", true), ("revision.child", false)] {
-        let mut at = first.clone();
-        while chain.len() < 100 {
-            let mut next = Vec::new();
-            for p in edges(call, &phid(&at), kind)? {
-                if let Some(r) = revision_by(call, json!({ "phids": [p] }))?.filter(open) {
-                    next.push(r);
-                }
-            }
-            let [r] = next.as_slice() else { break };
-            if down {
-                chain.insert(0, r.clone());
-            } else {
-                chain.push(r.clone());
-            }
-            at = r.clone();
-        }
-    }
-    chain.iter().map(|r| revision_patch(call, api, trailer, r)).collect()
+// -- a pull: the revisions, their parents and those stacked on them ------ //
+
+/// How a pull came to read a revision: asked (a revision the stack names,
+/// the patch's own, the one a new stack is pulled from); the parent on
+/// Phabricator, open, of revision `D123` it read, which the stack does not
+/// hold; or stacked there on revision `D123` it read. Where an added
+/// revision goes is told by it: below the patch of the one it is the parent
+/// of, above that of the one it is stacked on.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum Reached {
+    #[default]
+    Asked,
+    Parent(String),
+    Child(String),
 }
 
-/// Revision `r`, as differential.revision.search gives it, as an import
-/// takes it: its latest diff, raw; the commit that diff is on; and the
-/// message and author of its commit as uploaded.
-fn revision_patch(call: &mut Call, api: &str, trailer: &str, r: &Value) -> Result<Revision, String> {
-    let n = r.get("id").and_then(Value::as_u64).ok_or("a revision without its id")?;
-    let field = |k: &str| r.pointer(&format!("/fields/{k}")).and_then(Value::as_str).unwrap_or("").trim().to_string();
-    let diffs = call("differential.querydiffs", json!({ "revisionIDs": [n] }))?;
-    let (id, d) = diffs
-        .as_object()
+/// A revision as a pull reads it (`read_pull`): its `D123`, its link and
+/// its PHID; its status, as Phabricator writes its value (`needs-review`),
+/// its title, summary and bug; its parents, each its PHID and its `D123`
+/// (its PHID again where none was read), however open; how the pull came to
+/// read it; the id of its latest diff (0 for none), stored raw as a
+/// rawdiff record, and the older diffs whose raw diff it read too, the
+/// newest first, to the first that is a version of its patch stacked knows;
+/// the commit its latest diff is on, and the author and message of that
+/// diff's commit, as uploaded, when it says; its comments, as a pull reads
+/// them; and when it was last modified, as its search said. Kept in the
+/// pull's run while it waits its turn, and made from at its turn
+/// (`review::make`).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+pub struct Read {
+    pub d: String,
+    pub link: String,
+    pub phid: String,
+    pub status: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub title: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub summary: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub bug: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub parents: Vec<(String, String)>,
+    #[serde(default)]
+    pub reached: Reached,
+    #[serde(default)]
+    pub diff: u64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub older: Vec<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub comments: Vec<Remote>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub modified: Option<i64>,
+}
+
+impl Read {
+    /// Its status, as stacked knows it.
+    pub fn status(&self) -> Status {
+        Status::from_value(&self.status)
+    }
+}
+
+/// What a pull asks of Phabricator: the revisions `asked`, each `D123` and
+/// its link, bottom first; `held`, the links of the revisions the stack
+/// holds, where the walks down and up stop; and `up`, the link of the
+/// revision to walk up from, through the revisions stacked on it, if those
+/// are pulled too.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Wants {
+    pub asked: Vec<(String, String)>,
+    pub held: Vec<String>,
+    pub up: Option<String>,
+}
+
+/// What a pull read: each revision, in the order it read them (the asked
+/// first, bottom first, then their parents as the walk down found them,
+/// then those stacked on top, as the walk up found them); the raw diffs it
+/// read, by link and id, to store; and the asked revisions Phabricator does
+/// not have, each `D123` and its link.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct PullRead {
+    pub revisions: Vec<Read>,
+    pub raws: Vec<(String, u64, String)>,
+    pub missing: Vec<(String, String)>,
+}
+
+/// Why a pull reads nothing more: revision `d` has more than one open
+/// parent on Phabricator, `on`, or more than one open revision stacked on
+/// it, `on`, the walk up going through it. A stack is one line of patches.
+fn more_than_one(d: &str, on: &[String], parents: bool) -> String {
+    let on = crate::submit::and(on);
+    match parents {
+        true => format!("{d} is stacked on more than one open revision on Phabricator, {on}: a stack is one line of patches, so nothing was pulled"),
+        false => format!("More than one open revision is stacked on {d} on Phabricator, {on}: a stack is one line of patches, so nothing was pulled"),
+    }
+}
+
+/// A revision as a search finds it, as a pull reads it: its `D123`, its
+/// link on `base` (`https://phabricator.example.com`), and what the search
+/// says, `reached` as the pull came to it.
+fn read_of(d: &str, base: &str, s: &Searched, reached: Reached) -> Read {
+    Read {
+        d: d.to_string(),
+        link: format!("{base}/{d}"),
+        phid: s.phid.clone(),
+        status: s.status.value().to_string(),
+        title: s.title.clone(),
+        summary: s.summary.clone(),
+        bug: s.bug.clone(),
+        reached,
+        modified: s.modified,
+        ..Default::default()
+    }
+}
+
+/// The revisions of PHIDs `phids`, as one search finds them, each with its
+/// `D123`, by PHID.
+fn searched_by_phid(call: &mut Call, phids: &[String]) -> Result<HashMap<String, (String, Searched)>, String> {
+    if phids.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let found = call("differential.revision.search", json!({"constraints": {"phids": phids}}))?;
+    Ok(found
+        .get("data")
+        .and_then(Value::as_array)
         .into_iter()
         .flatten()
-        .filter_map(|(k, v)| Some((k.parse::<u64>().ok()?, v)))
-        .max_by_key(|(k, _)| *k)
-        .ok_or(format!("D{n} has no diff"))?;
-    let commit = d.pointer("/properties/local:commits").and_then(Value::as_object).and_then(|m| m.values().next());
-    let said = |k: &str| commit.and_then(|c| c.get(k)).and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty());
-    let author = said("author").map(|name| match said("authorEmail") {
-        Some(e) => format!("{name} <{e}>"),
-        None => name.to_string(),
-    });
-    let mut message = said("message")
-        .map(String::from)
-        .unwrap_or_else(|| format!("{}\n\n{}", field("title"), field("summary")).trim().to_string());
-    let trailer = format!("{trailer}:");
-    if !message.lines().any(|l| l.starts_with(&trailer)) {
-        message = format!("{message}\n\n{trailer} {}D{n}", api.trim_end_matches("api/"));
-    }
-    let diff = call("differential.getrawdiff", json!({ "diffID": id }))?;
-    Ok(Revision {
-        id: format!("D{n}"),
-        message,
-        author,
-        diff: diff.as_str().unwrap_or("").to_string(),
-        base: d.get("sourceControlBaseRevision").and_then(Value::as_str).filter(|b| !b.is_empty()).map(String::from),
-    })
+        .filter_map(searched_of)
+        .map(|(d, s)| (s.phid.clone(), (d, s)))
+        .collect())
 }
 
-/// A stack of revisions as an import makes it: where it is from (`D1..D3`),
-/// its patches, bottom first, the commit the bottom one is on, and the
-/// repository.
-pub struct Plan {
-    pub from: String,
-    pub drafts: Vec<crate::mbox::Draft>,
-    pub base: String,
-    pub repo: String,
+/// Reads for a pull what `wants` asks (`Wants`), through the stand-in set
+/// for the database at `db`, else over Conduit on the Phabricator the first
+/// revision asked is on, never from a process that keeps nothing: first the
+/// revisions asked, then, down from each, its open parent while the stack
+/// does not hold it, then, up from `wants.up`, the open revision stacked on
+/// it while there is one, the stack holding it or not; each with its
+/// parents, named. More than one open parent, or more than one open
+/// revision stacked on one where the walk up goes, and nothing more is read,
+/// said why. Then each revision in turn, `say` told it as it starts (`D123`,
+/// from 1, of how many): its diffs, its latest raw unless `stored(link,
+/// id)` has it; while `known(link, raw)` says that diff is no version of
+/// its patch stacked knows (`Some(false)`), the older ones, the newest
+/// first, until it says one is; and its comments. What is wrong, said, when
+/// a call fails, Phabricator turning this machine away as such: no call is
+/// made after it.
+pub fn read_pull(
+    db: &Path,
+    wants: &Wants,
+    known: &dyn Fn(&str, &str) -> Option<bool>,
+    stored: &dyn Fn(&str, u64) -> Option<String>,
+    say: &mut dyn FnMut(&str, usize, usize),
+) -> Result<PullRead, Error> {
+    let Some((_, first)) = wants.asked.first() else { return Ok(PullRead::default()) };
+    calling(db, first, |call| pull_over(call, wants, known, stored, say))
 }
 
-/// Revisions `revs`, read for `rev`, bottom first, as an import makes them
-/// in the checkout at `at`: on the commit the bottom one is on, which the
-/// checkout must have. What is wrong, said, if they cannot be.
-pub fn plan(at: &Path, rev: &str, revs: Vec<Revision>) -> Result<Plan, String> {
-    let Some(bottom) = revs.first() else {
-        return Err(format!("{rev}: nothing to import"));
-    };
-    let Some(base) = bottom.base.clone() else {
-        return Err(format!("{} does not say what commit it is on", bottom.id));
-    };
-    let Ok(repo) = crate::git::toplevel(at) else {
-        return Err("not in a git repository: a stack is imported into the checkout stacked runs in".into());
-    };
-    let Ok(base) = crate::git::rev_parse(at, &base) else {
-        return Err(format!("{} is on {}, which this repository does not have: fetch it first", bottom.id, &base[..12.min(base.len())]));
-    };
-    let from = match revs.as_slice() {
-        [a, .., b] => format!("{}..{}", a.id, b.id),
-        _ => rev.to_string(),
-    };
-    let drafts = revs
-        .into_iter()
-        .map(|r| crate::mbox::Draft {
-            author: r.author,
-            message: r.message,
-            diff: r.diff,
-            ..Default::default()
-        })
-        .collect();
-    Ok(Plan { from, drafts, base, repo })
-}
-
-/// `stacked moz-phab import`: the revision `text` names (`D123`, `123`, or
-/// its link) read with those it stacks on, and those that stack on it while
-/// one is open, imported as a new stack of the database at `db`, in the
-/// checkout at `at`, named `name` (else the revision's, or one free): what
-/// was imported, said. Not while the settings say reviews come from
-/// nowhere, as the editor offers no import then.
-pub fn import(db: &Path, at: &Path, text: &str, name: Option<&str>) -> crate::db::Result<String> {
-    use crate::db::err;
-    if crate::config::get().reviews.source == crate::config::Source::None {
-        return err(format!(
-            "revisions come from nowhere: reviews.source is \"none\" in {}",
-            crate::config::path().display()
-        ));
-    }
-    let Some((rev, link)) = revision_named(text) else {
-        return err(format!("{text:?} names no revision: give D123, 123, or its link"));
-    };
-    if let Some(n) = name
-        && let Some(why) = crate::import::name_wrong(&Db::load(db)?, n)
-    {
-        return err(why);
-    }
-    let revs = read_stack(&rev, link.as_deref()).map_err(crate::db::Error)?;
-    let p = plan(at, &rev, revs).map_err(crate::db::Error)?;
-    let n = p.drafts.len();
-    let name = Db::edit(db, |d| {
-        let name = match name {
-            Some(n) => n.trim().to_string(),
-            None => crate::import::free_name(d, &rev),
-        };
-        if let Some(why) = crate::import::name_wrong(d, &name) {
-            return err(why);
+/// As `read_pull`, Conduit called with `call`.
+fn pull_over(
+    call: &mut Call,
+    wants: &Wants,
+    known: &dyn Fn(&str, &str) -> Option<bool>,
+    stored: &dyn Fn(&str, u64) -> Option<String>,
+    say: &mut dyn FnMut(&str, usize, usize),
+) -> Result<PullRead, String> {
+    let base = wants.asked.first().and_then(|(_, l)| l.rsplit_once('/')).map_or(String::new(), |(b, _)| b.to_string());
+    let ids: Vec<String> = wants.asked.iter().map(|(d, _)| d.clone()).collect();
+    let found = statuses_over(call, &ids)?;
+    let mut out = PullRead::default();
+    let mut reads: Vec<Read> = Vec::new();
+    for (d, link) in &wants.asked {
+        match found.get(d) {
+            Some(s) => reads.push(Read { link: link.clone(), ..read_of(d, &base, s, Reached::Asked) }),
+            None => out.missing.push((d.clone(), link.clone())),
         }
-        crate::ops::import(d, &name, p.drafts, false, Some((p.base, p.repo)))?;
-        Ok(name)
-    })?;
-    Ok(format!("imported {n} patch{} from {} as {name}", if n == 1 { "" } else { "es" }, p.from))
+    }
+    // What is known of each revision met, by PHID: its `D123`, and what its
+    // search said.
+    let mut met: HashMap<String, (String, Searched)> = HashMap::new();
+    for r in &reads {
+        if let Some(s) = found.get(&r.d) {
+            met.insert(r.phid.clone(), (r.d.clone(), s.clone()));
+        }
+    }
+    let held = |link: &str| wants.held.iter().any(|l| l == link);
+    // Their parents, each named, then down: the open parent of each, while
+    // the stack does not hold it and it is not read already, read too.
+    let mut looked = 0;
+    while looked < reads.len() {
+        let these: Vec<String> = reads[looked..].iter().map(|r| r.phid.clone()).collect();
+        let parents = parents_over(call, &these)?;
+        let unknown: Vec<String> = {
+            let mut u: Vec<String> = parents.values().flatten().filter(|p| !met.contains_key(*p)).cloned().collect();
+            u.sort();
+            u.dedup();
+            u
+        };
+        met.extend(searched_by_phid(call, &unknown)?);
+        let end = reads.len();
+        for i in looked..end {
+            let ps = parents.get(&reads[i].phid).cloned().unwrap_or_default();
+            reads[i].parents = ps.iter().map(|p| (p.clone(), met.get(p).map_or_else(|| p.clone(), |(d, _)| d.clone()))).collect();
+            let open: Vec<&(String, Searched)> = ps.iter().filter_map(|p| met.get(p)).filter(|(_, s)| s.status.open()).collect();
+            if open.len() > 1 {
+                let on: Vec<String> = open.iter().map(|(d, _)| d.clone()).collect();
+                return Err(more_than_one(&reads[i].d, &on, true));
+            }
+            let [(d, s)] = open.as_slice() else { continue };
+            if held(&format!("{base}/{d}")) || reads.iter().any(|r| r.phid == s.phid) {
+                continue;
+            }
+            let at = reads[i].d.clone();
+            reads.push(read_of(d, &base, s, Reached::Parent(at)));
+        }
+        looked = end;
+    }
+    // Up: the open revision stacked on each, while there is one, read too,
+    // the stack holding it or not: it is pulled with the one under it.
+    if let Some(mut at) = wants.up.as_ref().and_then(|up| reads.iter().position(|r| r.link == *up)) {
+        loop {
+            let on = reads[at].phid.clone();
+            let kids = edges_over(call, std::slice::from_ref(&on), "revision.child")?.remove(&on).unwrap_or_default();
+            let unknown: Vec<String> = kids.iter().filter(|p| !met.contains_key(*p)).cloned().collect();
+            met.extend(searched_by_phid(call, &unknown)?);
+            let open: Vec<(String, Searched)> = kids.iter().filter_map(|p| met.get(p)).filter(|(_, s)| s.status.open()).cloned().collect();
+            if open.len() > 1 {
+                let on: Vec<String> = open.iter().map(|(d, _)| d.clone()).collect();
+                return Err(more_than_one(&reads[at].d, &on, false));
+            }
+            let [(d, s)] = open.as_slice() else { break };
+            // Met again: the stack holds it below, or Phabricator goes round.
+            if reads.iter().any(|r| r.phid == s.phid) {
+                break;
+            }
+            let under = reads[at].d.clone();
+            reads.push(read_of(d, &base, s, Reached::Child(under)));
+            at = reads.len() - 1;
+            // Its parents, named, and more than one refused.
+            let parents = parents_over(call, std::slice::from_ref(&s.phid))?;
+            let ps = parents.get(&s.phid).cloned().unwrap_or_default();
+            let unknown: Vec<String> = ps.iter().filter(|p| !met.contains_key(*p)).cloned().collect();
+            met.extend(searched_by_phid(call, &unknown)?);
+            reads[at].parents = ps.iter().map(|p| (p.clone(), met.get(p).map_or_else(|| p.clone(), |(d, _)| d.clone()))).collect();
+            let open: Vec<String> = ps.iter().filter_map(|p| met.get(p)).filter(|(_, s)| s.status.open()).map(|(d, _)| d.clone()).collect();
+            if open.len() > 1 {
+                return Err(more_than_one(d, &open, true));
+            }
+        }
+    }
+    // Then each in turn: its diffs, its comments.
+    let n = reads.len();
+    for (k, r) in reads.iter_mut().enumerate() {
+        say(&r.d, k + 1, n);
+        let num: u64 = r.d.trim_start_matches('D').parse().map_err(|_| format!("{} names no revision", r.d))?;
+        let diffs = call("differential.querydiffs", json!({"revisionIDs": [num]}))?;
+        let mut all: Vec<(u64, &Value)> = diffs.as_object().into_iter().flatten().filter_map(|(k, v)| Some((k.parse::<u64>().ok()?, v))).collect();
+        all.sort_by(|a, b| b.0.cmp(&a.0));
+        let mut raw_of = |id: u64, out: &mut PullRead| -> Result<String, String> {
+            if let Some(raw) = stored(&r.link, id).or_else(|| out.raws.iter().find(|(l, i, _)| *l == r.link && *i == id).map(|(_, _, raw)| raw.clone())) {
+                return Ok(raw);
+            }
+            let raw = call("differential.getrawdiff", json!({"diffID": id}))?.as_str().unwrap_or_default().to_string();
+            out.raws.push((r.link.clone(), id, raw.clone()));
+            Ok(raw)
+        };
+        if let Some((latest, d)) = all.first() {
+            r.diff = *latest;
+            r.base = d.get("sourceControlBaseRevision").and_then(Value::as_str).filter(|b| !b.is_empty()).map(String::from);
+            let commit = d.pointer("/properties/local:commits").and_then(Value::as_object).and_then(|m| m.values().next());
+            let said = |k: &str| commit.and_then(|c| c.get(k)).and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty()).map(String::from);
+            r.author = said("author").map(|name| match said("authorEmail") {
+                Some(e) => format!("{name} <{e}>"),
+                None => name,
+            });
+            r.message = said("message");
+            let raw = raw_of(*latest, &mut out)?;
+            // Not a version of its patch stacked knows: the version it was
+            // last, the older diffs read to the first that is one.
+            if known(&r.link, &raw) == Some(false) {
+                for (id, _) in all.iter().skip(1) {
+                    let raw = raw_of(*id, &mut out)?;
+                    r.older.push(*id);
+                    if known(&r.link, &raw) == Some(true) {
+                        break;
+                    }
+                }
+            }
+        }
+        r.comments = comments_over(call, &r.d)?;
+    }
+    out.revisions = reads;
+    Ok(out)
+}
+
+/// Stores in `db` what a pull read, `read`, as a fetch stores what it reads
+/// (`store`): of each revision, its state and its comments, with when the
+/// revision was last modified as they were read, only where they differ
+/// from what is stored; each raw diff it read, unless it is stored; the
+/// revisions asked that Phabricator does not have, as such; then that
+/// every one of them was read, now.
+pub fn store_read(db: &mut Db, read: &PullRead) -> crate::db::Result<()> {
+    for (link, id, raw) in &read.raws {
+        db.store_raw_diff(link, *id, raw)?;
+    }
+    for r in &read.revisions {
+        let state = State {
+            missing: false,
+            status: r.status.clone(),
+            title: r.title.clone(),
+            summary: r.summary.clone(),
+            bug: r.bug.clone(),
+            phid: r.phid.clone(),
+            parents: parents_known(db, &r.parents),
+            diff: r.diff,
+        };
+        let comments = Comments { modified: r.modified, list: r.comments.iter().map(seen).collect() };
+        db.store_revision(&r.link, &r.d, Some(state), Some(comments))?;
+    }
+    for (d, link) in &read.missing {
+        db.store_revision(link, d, Some(State { missing: true, ..Default::default() }), None)?;
+    }
+    let mut links: Vec<String> = read.revisions.iter().map(|r| r.link.clone()).collect();
+    links.extend(read.missing.iter().map(|(_, l)| l.clone()));
+    if links.is_empty() {
+        return Ok(());
+    }
+    db.store_fetched(links)
 }
 
 /// The key of the line a comment is on: the line with its text near its
@@ -867,29 +976,27 @@ pub(crate) fn statuses_over(call: &mut Call, ids: &[String]) -> Result<HashMap<S
         return Ok(HashMap::new());
     }
     let found = call("differential.revision.search", json!({"constraints": {"ids": numbers}}))?;
+    Ok(found.get("data").and_then(Value::as_array).into_iter().flatten().filter_map(searched_of).collect())
+}
+
+/// Revision `r`, as differential.revision.search gives it: its `D123`, and
+/// what the search says of it (`Searched`). None without its number.
+fn searched_of(r: &Value) -> Option<(String, Searched)> {
     // A number written out, as the bug's may be.
-    let text = |r: &Value, k: &str| match r.pointer(&format!("/fields/{k}")) {
+    let text = |k: &str| match r.pointer(&format!("/fields/{k}")) {
         Some(Value::String(s)) => s.clone(),
         Some(Value::Number(n)) => n.to_string(),
         _ => String::new(),
     };
-    Ok(found
-        .get("data")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(|r| {
-            let searched = Searched {
-                status: Status::of(r),
-                title: text(r, "title"),
-                summary: text(r, "summary"),
-                bug: text(r, "bugzilla.bug-id"),
-                phid: r.get("phid").and_then(Value::as_str).unwrap_or_default().to_string(),
-                modified: r.pointer("/fields/dateModified").and_then(Value::as_i64),
-            };
-            Some((format!("D{}", r.get("id")?.as_u64()?), searched))
-        })
-        .collect())
+    let searched = Searched {
+        status: Status::of(r),
+        title: text("title"),
+        summary: text("summary"),
+        bug: text("bugzilla.bug-id"),
+        phid: r.get("phid").and_then(Value::as_str).unwrap_or_default().to_string(),
+        modified: r.pointer("/fields/dateModified").and_then(Value::as_i64),
+    };
+    Some((format!("D{}", r.get("id")?.as_u64()?), searched))
 }
 
 /// What a fetch reads of a revision beyond what the statuses' search says
@@ -931,10 +1038,18 @@ pub struct Wanted {
 /// go, by revision: their PHIDs, sorted, none for one with no parent. One
 /// edge.search for all of them, page after page.
 pub(crate) fn parents_over(call: &mut Call, phids: &[String]) -> Result<HashMap<String, Vec<String>>, String> {
+    edges_over(call, phids, "revision.parent")
+}
+
+/// Where the edges of kind `kind` (`revision.parent`, `revision.child`)
+/// from each of revisions `phids` go, by revision: their PHIDs, sorted,
+/// none for one with no such edge. One edge.search for all of them, page
+/// after page.
+fn edges_over(call: &mut Call, phids: &[String], kind: &str) -> Result<HashMap<String, Vec<String>>, String> {
     let mut out: HashMap<String, Vec<String>> = phids.iter().map(|p| (p.clone(), Vec::new())).collect();
     let mut after: Option<String> = None;
     loop {
-        let mut params = json!({"sourcePHIDs": phids, "types": ["revision.parent"]});
+        let mut params = json!({"sourcePHIDs": phids, "types": [kind]});
         if let Some(a) = &after {
             params["after"] = a.clone().into();
         }
@@ -1369,38 +1484,9 @@ pub fn fetch_latest(db: &Path, name: &str, only: Option<&[String]>) -> Result<St
     })
 }
 
-/// Stores in `db` the comments a pull read, `pulled`, of revisions `revs`
-/// (`(change, D123, link)`, as `review::revisions` gives them), each by its
-/// link: where they are not those stored, with no time of when the revision
-/// was last modified, as a pull does not read it, so that the next fetch
-/// reads them again.
-pub fn store_pulled(db: &mut Db, revs: &[(String, String, String)], pulled: &Pulled) -> crate::db::Result<()> {
-    for rc in &pulled.revisions {
-        let Some((_, d, link)) = revs.iter().find(|(c, d, _)| *c == rc.source && *d == rc.revision) else { continue };
-        let list: Vec<Seen> = rc.comments.iter().map(seen).collect();
-        if db.revision_comments(link).is_some_and(|(c, _)| c.list == list) {
-            continue;
-        }
-        db.store_revision(link, d, None, Some(Comments { modified: None, list }))?;
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn revisions() -> Vec<(String, String, String)> {
-        ["D1", "D2", "D3"].iter().map(|d| (format!("c{d}"), d.to_string(), format!("https://p.example/{d}"))).collect()
-    }
-
-    fn none_said(source: &str, rev: &str) -> Result<RevisionComments, String> {
-        Ok(RevisionComments {
-            revision: rev.into(),
-            source: source.into(),
-            comments: vec![],
-        })
-    }
 
     #[test]
     fn a_comment_is_read_as_it_was_last_edited_what_it_was_kept_with_it() {
@@ -1438,71 +1524,123 @@ mod tests {
         assert_eq!((got[0].phid.as_str(), got[0].text.as_str(), got[0].earlier.clone()), ("v2", "Fine!", vec![v("v1", "Fine.")]));
     }
 
-    #[test]
-    fn a_stack_of_revisions_is_read_down_while_open_and_up_while_one_child_is() {
-        // D10 landed; D11 on it, D12 on D11, D13 on D12: read from D12.
-        let rev = |n: u64, status: &str, title: &str| {
-            json!({"id": n, "phid": format!("PHID-DREV-{n}"), "fields": {"title": title, "summary": "Why.", "status": {"value": status}}})
+    /// Phabricator as the tests of a pull's reading have it: revisions by
+    /// number, each its status, its parents and its diffs (their ids, the
+    /// latest last); D11's latest diff with its commit as uploaded; ann's
+    /// comment on D12. `extra` parents, by revision, to make more than one.
+    fn pulled_from(extra: &[(u64, u64)]) -> impl FnMut(&str, Value) -> Result<Value, String> + use<'_> {
+        let status = |n: u64| if n == 10 { "published" } else { "needs-review" };
+        let parents = move |n: u64| -> Vec<u64> {
+            let mut out: Vec<u64> = if (11..=14).contains(&n) { vec![n - 1] } else { vec![] };
+            out.extend(extra.iter().filter(|(of, _)| *of == n).map(|(_, p)| *p));
+            out
         };
-        let diff = |n: u64| format!("diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-{n}\n+{}\n", n + 1);
-        let mut calls = Vec::new();
-        let mut call = |method: &str, params: Value| -> Result<Value, String> {
-            calls.push(method.to_string());
-            let first = |k: &str| params.pointer(k).and_then(|v| v.get(0)).cloned().unwrap_or(Value::Null);
+        let num = |v: &Value| v.as_str().map_or(v.as_u64(), |s| s.trim_start_matches("PHID-DREV-").trim_start_matches('D').parse().ok());
+        move |method: &str, p: Value| -> Result<Value, String> {
+            let rev = |n: u64| json!({"id": n, "phid": format!("PHID-DREV-{n}"), "fields": {"title": format!("Bug {n}"), "summary": "Why.", "status": {"value": status(n)}}});
             Ok(match method {
                 "differential.revision.search" => {
-                    let n = match first("/constraints/ids").as_u64() {
-                        Some(n) => n,
-                        None => first("/constraints/phids").as_str().unwrap().trim_start_matches("PHID-DREV-").parse().unwrap(),
-                    };
-                    let status = if n == 10 { "published" } else { "needs-review" };
-                    json!({"data": [rev(n, status, &format!("Bug {n}"))]})
+                    let c = &p["constraints"];
+                    let ns: Vec<u64> = c["ids"].as_array().or(c["phids"].as_array()).into_iter().flatten().filter_map(num).filter(|n| (9..=20).contains(n)).collect();
+                    json!({"data": ns.into_iter().map(rev).collect::<Vec<_>>()})
                 }
                 "edge.search" => {
-                    let n: u64 = first("/sourcePHIDs").as_str().unwrap().trim_start_matches("PHID-DREV-").parse().unwrap();
-                    let to = match first("/types").as_str().unwrap() {
-                        "revision.parent" => n - 1,
-                        _ if n < 13 => n + 1,
-                        _ => return Ok(json!({"data": []})),
-                    };
-                    json!({"data": [{"destinationPHID": format!("PHID-DREV-{to}")}]})
+                    let from: Vec<u64> = p["sourcePHIDs"].as_array().into_iter().flatten().filter_map(num).collect();
+                    let up = p["types"][0] == "revision.child";
+                    let edges: Vec<Value> = from
+                        .iter()
+                        .flat_map(|&n| {
+                            let to: Vec<u64> = match up {
+                                true => (9..=20).filter(|c| parents(*c).contains(&n)).collect(),
+                                false => parents(n),
+                            };
+                            to.into_iter().map(move |t| json!({"sourcePHID": format!("PHID-DREV-{n}"), "destinationPHID": format!("PHID-DREV-{t}")}))
+                        })
+                        .collect();
+                    json!({"data": edges, "cursor": {"after": null}})
                 }
-                // Two diffs of D11, the latest read; D11's commit as uploaded,
-                // the others' none.
-                "differential.querydiffs" => match first("/revisionIDs").as_u64().unwrap() {
-                    11 => json!({
-                        "101": {"sourceControlBaseRevision": "aaa", "properties": {}},
-                        "111": {"sourceControlBaseRevision": "bbb", "properties": {"local:commits": {"c1": {
-                            "author": "Ann", "authorEmail": "ann@example.com",
-                            "message": "Bug 11 - as committed\n\nDifferential Revision: https://p.example/D11"
-                        }}}}
-                    }),
-                    n => json!({ (n * 10 + 2).to_string(): {"sourceControlBaseRevision": "ccc", "properties": []} }),
+                // D11's latest diff as uploaded; D12's two diffs.
+                "differential.querydiffs" => match num(&p["revisionIDs"][0]) {
+                    Some(11) => json!({"111": {"sourceControlBaseRevision": "bbb", "properties": {"local:commits": {"c1": {
+                        "author": "Ann", "authorEmail": "ann@example.com", "message": "Bug 11 - as committed"
+                    }}}}}),
+                    Some(12) => json!({"121": {}, "122": {"sourceControlBaseRevision": "ccc"}}),
+                    Some(n) => json!({ (n * 10 + 1).to_string(): {} }),
+                    None => json!({}),
                 },
-                "differential.getrawdiff" => Value::String(diff(params["diffID"].as_u64().unwrap())),
+                "differential.getrawdiff" => json!(format!("raw {}", p["diffID"])),
+                "transaction.search" => match p["objectIdentifier"].as_str() {
+                    Some("D12") => json!({"data": [{"type": "comment", "authorPHID": "PHID-USER-ann", "fields": {}, "comments": [{"phid": "c1", "version": 1, "content": {"raw": "Why?"}}]}]}),
+                    _ => json!({"data": []}),
+                },
+                "user.search" => json!({"data": [{"phid": "PHID-USER-ann", "fields": {"username": "ann"}}]}),
                 m => return Err(format!("not as Phabricator is asked: {m}")),
             })
-        };
-        let revs = stack_over(&mut call, "https://p.example/api/", "Differential Revision", "D12").unwrap();
-        assert_eq!(revs.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(), ["D11", "D12", "D13"]);
+        }
+    }
+
+    #[test]
+    fn a_pull_reads_the_revisions_asked_down_their_open_parents_and_up_through_those_stacked_on_them() {
+        // D10 landed; D11 on it, D12 on D11, D13 on D12, D14 on D13. D12
+        // asked, with those stacked on it: D11 below it, then D13 and D14.
+        let link = |n: u64| format!("https://p.example/D{n}");
+        let wants = Wants { asked: vec![("D12".into(), link(12))], held: vec![], up: Some(link(12)) };
+        // D12's latest diff no version of its patch stacked knows, the one
+        // before it one.
+        let known = |l: &str, raw: &str| (l == link(12)).then(|| raw == "raw 121");
+        let mut told = Vec::new();
+        let mut call = pulled_from(&[]);
+        let read = pull_over(&mut call, &wants, &known, &|_, _| None, &mut |d, at, of| told.push(format!("{d} {at}/{of}"))).unwrap();
+        let said: Vec<(&str, &Reached)> = read.revisions.iter().map(|r| (r.d.as_str(), &r.reached)).collect();
         assert_eq!(
-            revs[0],
-            Revision {
-                id: "D11".into(),
-                message: "Bug 11 - as committed\n\nDifferential Revision: https://p.example/D11".into(),
-                author: Some("Ann <ann@example.com>".into()),
-                diff: diff(111),
-                base: Some("bbb".into()),
-            }
+            said,
+            [("D12", &Reached::Asked), ("D11", &Reached::Parent("D12".into())), ("D13", &Reached::Child("D12".into())), ("D14", &Reached::Child("D13".into()))]
         );
-        // No commit as uploaded: the revision's title and summary, and its
-        // trailer.
-        assert_eq!(revs[1].message, "Bug 12\n\nWhy.\n\nDifferential Revision: https://p.example/D12");
-        assert_eq!((revs[1].author.clone(), revs[1].diff.clone()), (None, diff(122)));
-        assert!(calls.contains(&"edge.search".to_string()));
-        // A revision that is not there: said.
-        let mut none = |_: &str, _: Value| -> Result<Value, String> { Ok(json!({"data": []})) };
-        assert_eq!(stack_over(&mut none, "https://p.example/api/", "Differential Revision", "D9"), Err("no revision D9".to_string()));
+        assert_eq!(told, ["D12 1/4", "D11 2/4", "D13 3/4", "D14 4/4"]);
+        // Each its parents, named; its latest diff, raw, and the commit it
+        // is on; as uploaded, its commit's author and message.
+        let d11 = &read.revisions[1];
+        assert_eq!((d11.parents.clone(), d11.diff, d11.base.as_deref()), (vec![("PHID-DREV-10".to_string(), "D10".to_string())], 111, Some("bbb")));
+        assert_eq!((d11.author.as_deref(), d11.message.as_deref(), d11.status.as_str()), (Some("Ann <ann@example.com>"), Some("Bug 11 - as committed"), "needs-review"));
+        let d12 = &read.revisions[0];
+        assert_eq!((d12.diff, d12.older.clone(), d12.link.as_str(), d12.title.as_str()), (122, vec![121], "https://p.example/D12", "Bug 12"));
+        assert_eq!(d12.comments.iter().map(|c| (c.author.as_str(), c.text.as_str())).collect::<Vec<_>>(), [("ann", "Why?")]);
+        assert_eq!(read.raws.iter().map(|(l, id, _)| (l.as_str(), *id)).collect::<Vec<_>>()[..2], [("https://p.example/D12", 122), ("https://p.example/D12", 121)]);
+        // The stack holding D11: not read, the walk down stops there; a raw
+        // diff stored, not read again; only the asked, with nothing above.
+        let wants = Wants { asked: vec![("D12".into(), link(12))], held: vec![link(11)], up: None };
+        let stored = |l: &str, id: u64| (l == link(12) && id == 122).then(|| "raw 122".to_string());
+        let mut call = pulled_from(&[]);
+        let read = pull_over(&mut call, &wants, &|_, _| None, &stored, &mut |_, _, _| {}).unwrap();
+        assert_eq!((read.revisions.len(), read.raws.len(), read.revisions[0].older.len()), (1, 0, 0));
+        // One Phabricator does not have: said apart, nothing read of it.
+        let wants = Wants { asked: vec![("D99".into(), link(99)), ("D12".into(), link(12))], held: vec![link(11)], up: None };
+        let mut call = pulled_from(&[]);
+        let read = pull_over(&mut call, &wants, &|_, _| None, &|_, _| None, &mut |_, _, _| {}).unwrap();
+        assert_eq!((read.missing.clone(), read.revisions.len()), (vec![("D99".to_string(), link(99))], 1));
+    }
+
+    #[test]
+    fn more_than_one_open_parent_or_one_stacked_on_where_the_walk_up_goes_reads_nothing_more_saying_which() {
+        let link = |n: u64| format!("https://p.example/D{n}");
+        // D12 on D11 and on D20, both open.
+        let wants = Wants { asked: vec![("D12".into(), link(12))], held: vec![], up: None };
+        let mut call = pulled_from(&[(12, 20)]);
+        let e = pull_over(&mut call, &wants, &|_, _| None, &|_, _| None, &mut |_, _, _| panic!("nothing read")).unwrap_err();
+        assert_eq!(e, "D12 is stacked on more than one open revision on Phabricator, D11 and D20: a stack is one line of patches, so nothing was pulled");
+        // D13 and D20 both on D12: refused going up, not without it.
+        let wants = Wants { asked: vec![("D12".into(), link(12))], held: vec![link(11)], up: Some(link(12)) };
+        let mut call = pulled_from(&[(20, 12)]);
+        let e = pull_over(&mut call, &wants, &|_, _| None, &|_, _| None, &mut |_, _, _| panic!("nothing read")).unwrap_err();
+        assert_eq!(e, "More than one open revision is stacked on D12 on Phabricator, D13 and D20: a stack is one line of patches, so nothing was pulled");
+        let wants = Wants { up: None, ..wants };
+        let mut call = pulled_from(&[(20, 12)]);
+        assert_eq!(pull_over(&mut call, &wants, &|_, _| None, &|_, _| None, &mut |_, _, _| {}).unwrap().revisions.len(), 1);
+        // D10, landed, under D11 with D9: one open parent, read.
+        let wants = Wants { asked: vec![("D11".into(), link(11))], held: vec![], up: None };
+        let mut call = pulled_from(&[(11, 9)]);
+        let read = pull_over(&mut call, &wants, &|_, _| None, &|_, _| None, &mut |_, _, _| {}).unwrap();
+        assert_eq!(read.revisions.iter().map(|r| r.d.as_str()).collect::<Vec<_>>(), ["D11", "D9"]);
     }
 
     #[test]
@@ -1531,18 +1669,20 @@ mod tests {
     }
 
     #[test]
-    fn each_revision_is_told_as_it_starts_being_read_up_to_one_that_fails() {
+    fn each_revision_is_told_as_it_starts_being_read_up_to_a_call_that_fails() {
+        let link = |n: u64| format!("https://p.example/D{n}");
+        let wants = Wants { asked: vec![("D12".into(), link(12)), ("D13".into(), link(13))], held: vec![link(11)], up: None };
+        let mut inner = pulled_from(&[]);
+        // D12's comments refused: D13 never read.
+        let mut call = |m: &str, p: Value| -> Result<Value, String> {
+            if m == "transaction.search" && p["objectIdentifier"] == "D12" {
+                return Err("transaction.search: D12 is gone".into());
+            }
+            inner(m, p)
+        };
         let mut told = Vec::new();
-        let pulled = read_each(&revisions(), &mut |k| told.push(k), |source, rev, _| none_said(source, rev)).unwrap();
-        assert_eq!(told, [0, 1, 2]);
-        assert_eq!(pulled.revisions.iter().map(|r| r.revision.as_str()).collect::<Vec<_>>(), ["D1", "D2", "D3"]);
-        // One fails: none is read after it, and what is wrong is said.
-        let mut told = Vec::new();
-        let pulled = read_each(&revisions(), &mut |k| told.push(k), |source, rev, _| {
-            if rev == "D2" { Err("transaction.search: D2 is gone".into()) } else { none_said(source, rev) }
-        });
-        assert_eq!(told, [0, 1]);
-        assert_eq!(pulled, Err("transaction.search: D2 is gone".to_string()));
+        let read = pull_over(&mut call, &wants, &|_, _| None, &|_, _| None, &mut |d, _, _| told.push(d.to_string()));
+        assert_eq!((told, read), (vec!["D12".to_string()], Err("transaction.search: D12 is gone".to_string())));
     }
 
     /// A revision as differential.revision.search gives it: its number, its

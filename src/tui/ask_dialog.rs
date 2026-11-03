@@ -122,6 +122,22 @@ impl Permission {
         }
     }
 
+    /// What sending a pull's change back with it does, as the line under
+    /// the permission says it: the change of the patches whose conflicts it
+    /// marked, from the stack it makes, a comment of yours saying what to
+    /// rework.
+    fn pull_sent_said(self) -> String {
+        let what = match self {
+            Permission::ChangePatch => {
+                "The pull's change is not applied, and the comments it pulled are filed: the agent may change the patch whose conflicts the pull marked, and no other, going on from the stack the pull makes, and its new work lands for your review in place of this one."
+            }
+            _ => {
+                "The pull's change is not applied, and the comments it pulled are filed: the agent works with the whole stack the pull makes in its worktree, and may change any patch; its new work lands for your review in place of this one."
+            }
+        };
+        format!("{what} A comment of yours goes back with it, saying which patches no longer apply on the pulled versions, and where their conflicts are marked.")
+    }
+
     /// What a comment is asked for with it, as the dialog says that none of
     /// those listed can be.
     fn asked(self) -> &'static str {
@@ -488,6 +504,22 @@ impl App {
                 let (patch, test) = self.written_ways(&e.target);
                 Some((title, !patch, ways(patch, test)))
             }
+            // A pull's change holding patches whose conflicts it marked: a
+            // change of them, the comment that hands them over on the patch,
+            // or on the stack for more than one.
+            #[cfg(feature = "moz-phab")]
+            AskOf::SendBack(run) if self.db.run(run).is_some_and(crate::held::pulled) => {
+                let (r, h) = self.work(run)?;
+                let (at, note) = crate::held::handed_over(&self.db, r, h)?;
+                let apply = if at.len() == 1 { "applies" } else { "apply" };
+                let title = format!("send back the pull from Phabricator: {} no longer {apply} on the pulled versions", crate::head::patches_said(&at));
+                let mut ways = Vec::new();
+                if !note.on_stack() {
+                    ways.push((Permission::ChangePatch, None));
+                }
+                ways.push((Permission::ChangeStack, None));
+                Some((title, note.on_stack(), ways))
+            }
             AskOf::SendBack(run) => {
                 let notes = self.going_back(run);
                 if notes.is_empty() {
@@ -713,6 +745,9 @@ impl App {
             // comments go back.
             (Some(p), _) if d.sends_back() => {
                 let AskOf::SendBack(run) = &d.about else { return String::new() };
+                if self.db.run(run).is_some_and(crate::held::pulled) {
+                    return p.pull_sent_said();
+                }
                 p.sent_said(self.going_back(run).len())
             }
             (Some(p), Some(0)) => format!("{} No comment listed can be asked so.", p.said(listed)),

@@ -452,7 +452,10 @@ review, below). Nothing is asked on a stack that
 does not apply. A lint job of the stack takes its turn as a change does,
 the changes asked after it waiting for it (Linting, below); so does a
 reconcile with HEAD (The editor, above), the changes asked after it
-waiting until it is reviewed.
+waiting until it is reviewed; and so does a pull from Phabricator
+(Phabricator, below), read as it is asked, then made at its turn, under
+the launch lock but away from the database's lock, on a copy of the
+database, and filed, the changes asked after it waiting until it is made.
 
 Chained (`agent.chain`, on unless set to false), a change
 does not wait for the review of the change before it: it goes at once, from

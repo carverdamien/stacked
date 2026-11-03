@@ -120,8 +120,9 @@ plainly, in the same words (`… stays as it was: Phabricator is turning
 away requests from this machine for now (HTTP 429, too many requests)`);
 nothing waits to read it again, as nothing reads it by itself: you fetch
 again when you choose. What else you ask for is tried once too, a
-submit, a pull, the pull of one revision, an import, and, turned away,
-says so plainly. Nothing is read while reviews come from nowhere
+submit, a pull of the stack, of one revision, or into a new stack, and,
+turned away, says so plainly, a pull storing nothing then. Nothing is
+read while reviews come from nowhere
 (`reviews.source = "none"`, Settings below), when no fetch is offered,
 nor in the tour. In the browser (`stacked web`) and in StackED, the
 same.
@@ -309,9 +310,9 @@ then `fetched 3 minutes ago`, `fetched 2 hours ago`, `fetched yesterday`
 from a day to two, `fetched 4 days ago`, so that a state read long ago is
 never taken for one read now. Of what the line says, the part read
 longest ago tells it: a submit reads the revision's state but not its
-comments, and a pull its comments alone, each as of when it read them,
-and a fetch that found the revision as it was stored counts as a read of
-all of it. What is not known yet is `…` (`Phabricator: D123 · Needs
+comments, as of when it read it, a pull reads all of it, as a fetch
+does, and a fetch that found the revision as it was stored counts as a
+read of all of it. What is not known yet is `…` (`Phabricator: D123 · Needs
 Review · … · fetched 2 hours ago`): whether it is in sync while the
 revision's latest diff, or the revision of the patch below, is not
 fetched yet, or while what differs is worked out; its comments while only
@@ -372,9 +373,10 @@ parent alone, which the line's comparison names, offers or grays
 (`Update D12 on Phabricator: its title and summary`, Submitting a patch,
 below); `What differs from D12 on Phabricator…`, which opens the same
 screen, grayed while the revision is not read and compared yet, or
-Phabricator does not have it; `Pull the reviews of D12 from
-Phabricator`, which pulls the reviews of that revision alone
-(Phabricator, below); and `Fetch the latest from Phabricator` (above).
+Phabricator does not have it; `Pull D12 from Phabricator`, which pulls
+that revision with its parents, or with the revisions stacked on it too,
+as its choice picks (Phabricator, below); and `Fetch the latest from
+Phabricator` (above).
 In the patches pane, a patch's menu has those items in a menu of their
 own, its `Phabricator` item, which opens a menu titled for the revision,
 `D12 on Phabricator`, or `Phabricator` for a patch that names none yet,
@@ -417,9 +419,12 @@ before anything is sent, and what it reads of it again before it sends
 again, alone, its comments with it whatever its search says, so that its
 line shows what Phabricator has once the submit is done, not what was
 read before it; should that fetch fail, the bottom line says so after
-what the submit came to. A pull stores the comments it reads of each
-revision, where they are not those stored, with no time of when the
-revision was modified, so that the next fetch reads them again. What
+what the submit came to. A pull stores what it reads of each revision as
+a fetch stores it: its state and its comments, with when the revision
+was last modified as its search said, each only where it is not what is
+stored, the raw diffs it read, and that it read every one of them; the
+next fetch reads none of it again while the revision is not modified
+since. What
 differs in the code of each patch is worked out away from the screen,
 from what is stored, one patch at a time, the one the middle shows first,
 once for each version of the patch on the patches below it and each
@@ -549,16 +554,20 @@ then names those:
   patch's changes to that file (Editing a patch by hand, below). In the
   review of landed work, it is `Mark as rejected` on a part, `Close it with
   the review` on a comment the ask was about, and `Take it back` or `Take
-  your answer back` on what you wrote there; on a part of a pull's, which
-  is not rejected, it does nothing, and the status line says why. On the
-  banner, it rejects all that remains of the landed work picked and closes
-  its review, as the review's `Reject all remaining and Close` does, but
-  for a pull's, which it does not reject; on a comment's line, it
+  your answer back` on what you wrote there; on a comment of a pull's,
+  which is not rejected, it does nothing, and the status line says why,
+  and on an operation of a pull's change it marks it rejected, as on any.
+  On the banner, it rejects all that remains of the landed work picked
+  and closes its review, as the review's `Reject all remaining and Close`
+  does: of a pull's, its change alone, its comments filed, and nothing of
+  a pull that brought comments alone; on a comment's line, it
   does what it does on the comment; on the stack's lint job, it is `Drop
   the waiting lint job…`, or `Stop the linter…` once it runs; on a
   reconcile with HEAD waiting its turn, it is `Drop the waiting reconcile
-  with HEAD…`. On the runs, it stops an ask that runs, and drops a lint
-  job or a reconcile with HEAD that waits its turn. An item ending with `…` asks first, and so does Delete; Delete also
+  with HEAD…`; on a pull from Phabricator waiting its turn, `Drop the
+  waiting pull from Phabricator…`. On the runs, it stops an ask that
+  runs, and drops a lint job, a reconcile with HEAD or a pull from
+  Phabricator that waits its turn. An item ending with `…` asks first, and so does Delete; Delete also
   asks before it takes back what you wrote in a review, and before it
   rejects landed work from the banner. On a comment closed, it does
   nothing, and the status line says so. In the reading mode, on the code

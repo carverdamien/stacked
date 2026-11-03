@@ -301,6 +301,9 @@ pub(super) struct Line {
     following: Option<usize>,
     /// What a build and test asked as a follow-up found: to read.
     found: Option<Found>,
+    /// What a pull from Phabricator found that changes nothing, by its
+    /// place among what it found: to read.
+    noted: Option<usize>,
 }
 
 /// What a build and test asked as a follow-up from the review found, a
@@ -328,14 +331,15 @@ impl Line {
             answer: None,
             following: None,
             found: None,
+            noted: None,
         }
     }
 
     /// Whether the cursor goes on it: a part, a comment that asked, what
     /// you wrote, what the linter reported, stacked's comment, a tool the
     /// agent could not use, an answer made on the stack before the change,
-    /// a follow-up going, or what a build and test asked as one found; not
-    /// a section's title.
+    /// a follow-up going, what a build and test asked as one found, or what
+    /// a pull found; not a section's title.
     fn selectable(&self) -> bool {
         self.part.is_some()
             || self.asking.is_some()
@@ -346,6 +350,7 @@ impl Line {
             || self.answer.is_some()
             || self.following.is_some()
             || self.found.is_some()
+            || self.noted.is_some()
     }
 
     /// What it is, to find it again once the list changes under it (a
@@ -364,7 +369,10 @@ impl Line {
             (_, _, _, _, _, Some(k), _) => format!("following {k}"),
             (_, _, _, _, _, _, Some(f)) => format!("found {f:?}"),
             _ if self.stacked => "stacked".to_string(),
-            _ => return None,
+            _ => match self.noted {
+                Some(k) => format!("noted {k}"),
+                None => return None,
+            },
         };
         Some(key)
     }
@@ -455,6 +463,57 @@ fn edit_lines(rp: &crate::held::Reply, was: &str, w: usize) -> Vec<Vec<(String, 
     super::compared::message_rows(&mut rows, &plain(was), &plain(&rp.text), w);
     rows.push(super::compared::row(Kind::Blank, ""));
     rows.iter().map(|row| row_parts(row, false)).collect()
+}
+
+/// What a pull's operation on patch `n` (from 1) takes from Phabricator,
+/// `t`, said as the review's right pane says it under the operation, a
+/// sentence each: where the patch comes from, and why; its conflicts
+/// marked, and what to do with them, or that they are `resolved` by hand
+/// since.
+fn taken_said(t: &crate::held::Taken, n: usize, resolved: bool) -> Vec<String> {
+    use crate::held::Added;
+    let d = &t.d;
+    let mut out = Vec::new();
+    let as_uploaded = "its latest diff, with the author and the message of its commit as uploaded, or its title and summary where Phabricator has them otherwise";
+    match &t.added {
+        Some(Added::Parent(of)) => out.push(format!("{d} is the parent of {of} on Phabricator, open, and the stack does not hold it: the pull adds it under the patch of {of}, as patch {n}, {as_uploaded}.")),
+        Some(Added::Child(on)) => out.push(format!("{d} is stacked on {on} on Phabricator, open, and the stack does not hold it: the pull adds it over the patch of {on}, as patch {n}, {as_uploaded}.")),
+        Some(Added::Asked) => out.push(format!("{d} is the revision this stack is pulled from: the pull adds it as patch {n}, {as_uploaded}.")),
+        None => match (t.diff, t.message) {
+            (true, true) => out.push(format!("The latest diff of {d}, and its title and summary, are no version of patch {n} that stacked knows: they came from elsewhere, and the pull takes them as patch {n}'s new version.")),
+            (true, false) => out.push(format!("The latest diff of {d} is no version of patch {n} that stacked knows: it came from elsewhere, and the pull takes it as patch {n}'s new version, its message as it was.")),
+            (false, true) => out.push(format!("The title and summary of {d} are no version of patch {n}'s message that stacked knows: they came from elsewhere, and the pull takes them as its message, its code as it was.")),
+            (false, false) => {}
+        },
+    }
+    if let Some(v) = t.since {
+        out.push(format!(
+            "Patch {n} changed in the stack since version {v}, the last diff of {d} stacked knows: the pull takes Phabricator's all the same, and what this version had since version {v}, which the pulled one lacks, is under this."
+        ));
+    }
+    let markers = format!("<<<<<<< {} … >>>>>>>", crate::ops::PULL_OURS);
+    match (&t.remade, t.diff) {
+        (Some(files), true) if !files.is_empty() && resolved => out.push(format!(
+            "The latest diff of {d} does not apply on the patches under patch {n}: the pull made it again on them, its conflicts marked in {}, which are resolved by hand since.",
+            crate::head::and(files)
+        )),
+        (Some(files), false) if !files.is_empty() && resolved => out.push(format!(
+            "Patch {n} as it was no longer applies on the pulled version under it: the pull made it again on it, its conflicts marked in {}, which are resolved by hand since.",
+            crate::head::and(files)
+        )),
+        (Some(files), true) if !files.is_empty() => out.push(format!(
+            "The latest diff of {d} does not apply on the patches under patch {n}: it is made again on them, its conflicts marked in {} ({markers}), to resolve. The review does not close with this operation accepted while they are marked: reject it, resolve them by hand in the patch from here, or send the pull back to the agent.",
+            crate::head::and(files)
+        )),
+        (Some(_), true) => out.push(format!("The latest diff of {d} does not apply on the patches under patch {n} as it is: it is made again on them, its files merged with no conflict, to look over.")),
+        (Some(files), false) if !files.is_empty() => out.push(format!(
+            "Patch {n} as it was no longer applies on the pulled version under it: this new version is patch {n} made again on it, its conflicts marked in {} ({markers}), to resolve. The review does not close with this operation accepted while they are marked: reject it, which takes the operation that breaks it along, resolve them by hand in the patch from here, or send the pull back to the agent.",
+            crate::head::and(files)
+        )),
+        (Some(_), false) => out.push(format!("Patch {n} as it was no longer applies on the pulled version under it: this new version is patch {n} made again on it, its files merged with no conflict, to look over.")),
+        (None, _) => {}
+    }
+    out
 }
 
 /// Reviewer's reply `rp` to a comment you closed, said: `ann's reply to a
@@ -611,6 +670,53 @@ impl App {
         crate::operations::whole_why(&self.db, r, h)
     }
 
+    /// What the work of run `r`, a pull's, takes from Phabricator for the
+    /// patch that line `d` of the stack diff to `next` is of, said after its
+    /// line, if it takes something.
+    fn taken_line(&self, r: &Run, next: &Stack, d: &Diffed) -> Option<String> {
+        let Diffed::Patch { at, .. } = d else { return None };
+        let t = self.op_taken(r, next, *at)?;
+        Some(t.said(self.resolved(next, *at))).filter(|s| !s.is_empty())
+    }
+
+    /// Whether patch `at` (from 1) of `next`, the stack a pull makes, holds
+    /// no conflict the pull marked: none was, or they were resolved by hand
+    /// since.
+    fn resolved(&self, next: &Stack, at: usize) -> bool {
+        next.patches.get(at.wrapping_sub(1)).is_some_and(|id| !crate::held::marked(self.db.patch(id)))
+    }
+
+    /// What the work of run `r`, a pull's, takes from Phabricator for patch
+    /// `at` (from 1) of `next`, the stack it makes, if it takes something.
+    fn op_taken<'a>(&self, r: &'a Run, next: &Stack, at: usize) -> Option<&'a crate::held::Taken> {
+        let id = next.patches.get(at.checked_sub(1)?)?;
+        crate::held::taken(r, &self.db.patch(id).change)
+    }
+
+    /// Of a pull's new version `t` that takes Phabricator's for a patch
+    /// changed in the stack since, what the patch, as it is in `now`, had
+    /// since that version, which the pulled one lacks: the interdiff from
+    /// that version to the patch as it is, `w` wide, under a sentence's
+    /// lines. None without it.
+    fn since_lines(&self, now: &Stack, t: &crate::held::Taken, w: usize) -> Vec<Vec<(String, Style)>> {
+        let Some(v) = t.since else { return vec![] };
+        let versions = self.db.versions(&t.change);
+        let (Some(was), Some(mine)) = (versions.get(v.saturating_sub(1)), now.patches.iter().map(|id| self.db.patch(id)).find(|p| p.change == t.change)) else {
+            return vec![];
+        };
+        let lines = crate::ops::interdiff_lines(was, mine);
+        let refs: Vec<&crate::ops::InterLine> = lines.iter().filter(|l| !l.text.starts_with("--- ") && !l.text.starts_with("+++ ")).collect();
+        let mut out = vec![vec![(String::new(), Style::new())], vec![(format!("      version {v}, then this version, as the stack has it:"), color::file())]];
+        for parts in inter_parts(&refs) {
+            let mut parts = parts;
+            if let Some((text, _)) = parts.first_mut() {
+                text.insert_str(0, "      ");
+            }
+            out.extend(fold_parts(&parts, w.saturating_sub(1), 7));
+        }
+        out
+    }
+
     /// The operation of the review's line `line`, of `ops`: one of the stack
     /// operations' lines but their title.
     fn line_op<'a>(ops: &'a Ops, line: &Line) -> Option<&'a crate::operations::Op> {
@@ -673,10 +779,50 @@ impl App {
         crate::held::asking_open(&self.db, r).into_iter().map(|(k, n)| (k, n.clone())).collect()
     }
 
-    /// Whether the work reviewed is a pull's, whose parts are all accepted:
-    /// none of the comments it pulled is rejected.
+    /// Whether the work reviewed is a pull's, whose comments are all
+    /// accepted: none of the comments it pulled is rejected. Its change of
+    /// the stack's operations are marked as any change's.
     pub(super) fn review_pulled(&self) -> bool {
         self.reviewing.as_ref().and_then(|rv| self.db.run(&rv.run)).is_some_and(crate::held::pulled)
+    }
+
+    /// Whether part `p` of the work reviewed is accepted as it is, with
+    /// nothing to mark: a comment of a pull's.
+    pub(super) fn part_fixed(&self, p: Part) -> bool {
+        p != Part::Stack && self.review_pulled()
+    }
+
+    /// The patches the stack would hold as the review of a pull leaves it,
+    /// the operations of its change marked as `marks` mark them, those not
+    /// marked as `rest` says (to review, with none), when one of them holds
+    /// a conflict the pull marked: why the review does not close so, said.
+    /// Its change marked as a whole, the patches it makes, once it is
+    /// accepted.
+    fn marked_closing(&self, marks: &BTreeMap<String, bool>, rest: Option<bool>) -> Option<String> {
+        if !self.review_pulled() {
+            return None;
+        }
+        let ops = self.review_ops()?;
+        let patches: Vec<String> = match ops.whole() {
+            true => {
+                let rv = self.reviewing.as_ref()?;
+                if marks.get(&Part::Stack.key()).copied().or(rest) != Some(true) {
+                    return None;
+                }
+                self.work(&rv.run)?.1.stack.as_ref()?.patches.clone()
+            }
+            false => {
+                let mut marks = marks.clone();
+                if let Some(m) = rest {
+                    for o in ops.marked() {
+                        marks.entry(o.key.clone()).or_insert(m);
+                    }
+                }
+                let (left, _) = ops.leave(&ops.standing(&marks));
+                left.into_iter().map(|p| p.id).collect()
+            }
+        };
+        crate::held::marked_said(&self.db, &patches)
     }
 
     /// Whether the work reviewed is the agent's, to send back to it with
@@ -1102,7 +1248,7 @@ impl App {
             });
         }
         let p = line.part?;
-        if self.review_pulled() {
+        if self.part_fixed(p) {
             return Some(Err(crate::held::FILED.into()));
         }
         // An operation of the change, by its own mark; their title, the
@@ -1145,7 +1291,7 @@ impl App {
     /// the stack, nor unchained.
     fn answers_of(&self, run: &str) -> Vec<String> {
         match self.work(run) {
-            Some((r, h)) if h.stack.is_some() && !crate::held::pulled(r) => ask::answers_left(&self.db, &r.stack, run).into_iter().map(|a| a.id).collect(),
+            Some((r, h)) if h.stack.is_some() => ask::answers_left(&self.db, &r.stack, run).into_iter().map(|a| a.id).collect(),
             _ => vec![],
         }
     }
@@ -1315,8 +1461,9 @@ impl App {
     /// first, nor with no part left that is not marked, as that item is
     /// not: why is said.
     pub(super) fn reject_work_here(&self, run: &str) -> std::result::Result<Action, String> {
-        let Some((r, _)) = self.work(run) else { return Err("this work is gone".into()) };
-        if crate::held::pulled(r) {
+        let Some((r, h)) = self.work(run) else { return Err("this work is gone".into()) };
+        // A pull's comments are not rejected: what of it is, its change.
+        if crate::held::pulled(r) && h.stack.is_none() {
             return Err(crate::held::FILED.into());
         }
         if ask::guessing(&self.db, r).is_some() {
@@ -1581,16 +1728,30 @@ impl App {
             });
             let diff = crate::history::stacks_diff(&self.db, Some(&now), Some(&next), false);
             for (k, d) in diff.iter().enumerate() {
-                if let Some((text, style)) = operation(d) {
+                if let Some((mut text, style)) = operation(d) {
                     let (m, st) = match ops.by_entry(k) {
                         Some(o) if o.marked() => mark_of(ops.mark(&rv.marks, o)),
                         None if ops.one() => mark_of(mark(Part::Stack)),
                         _ => (" ", Style::new()),
                     };
+                    // A pull's: what it takes from Phabricator, said after it.
+                    if let Some(said) = self.taken_line(r, &next, d) {
+                        text += &format!(", {said}");
+                    }
                     out.push(Line {
                         part: Some(Part::Stack),
                         entry: Some(k),
                         ..Line::new(vec![("   ".into(), Style::new()), (m.into(), st), (" ".into(), Style::new()), (text, style)])
+                    });
+                }
+            }
+            // What the pull found that changes nothing: to read.
+            if let Some(found) = crate::held::took(r).map(|t| &t.found).filter(|f| !f.is_empty()) {
+                out.push(title(" what the pull found, to read"));
+                for (k, said) in found.iter().enumerate() {
+                    out.push(Line {
+                        noted: Some(k),
+                        ..line(format!("   {}", short(said, 120)), Style::new())
                     });
                 }
             }
@@ -1828,6 +1989,12 @@ impl App {
         if let Some(id) = &line.answer {
             return self.answer_view(r, id, w);
         }
+        // What a pull found that changes nothing: its sentence, to read.
+        if let Some(said) = line.noted.and_then(|k| crate::held::took(r)?.found.get(k)) {
+            let lines: Vec<Vec<(String, Style)>> = wrap(said, w.max(20)).into_iter().map(|l| vec![(l, Style::new())]).collect();
+            let n = lines.len();
+            return (" what the pull found: it changes nothing of the stack".into(), lines, 0..n);
+        }
         match line.part {
             Some(Part::Stack) | None => {
                 let Some(mut v) = self.review_diff(w) else {
@@ -1852,7 +2019,16 @@ impl App {
                     && let Some(o) = Self::line_op(&ops, line)
                     && let Some(needs) = self.review_needs()
                 {
-                    let under = said_lines(&ops.pane_said(needs, &rv.marks, &o.key));
+                    let mut under = said_lines(&ops.pane_said(needs, &rv.marks, &o.key));
+                    // A pull's: what it takes from Phabricator, and why; and,
+                    // the patch changed in the stack since, what this
+                    // version had since that the pulled one lacks.
+                    if let Some((now, next)) = self.review_stacks()
+                        && let Some(t) = self.op_taken(r, &next, o.at)
+                    {
+                        under.extend(said_lines(&taken_said(t, o.at, self.resolved(&next, o.at))));
+                        under.extend(self.since_lines(&now, t, w));
+                    }
                     let end = v.spans[k].end.min(v.lines.len());
                     let n = under.len();
                     v.lines.splice(end..end, under);
@@ -2398,7 +2574,7 @@ impl App {
         let entry = self.reviewing.as_ref().and_then(|rv| lines.get(rv.sel)).and_then(|l| l.entry);
         let first = diff.as_ref().map_or(0, |v| v.first_change(entry));
         let goes = diff.filter(|_| on_diff).map(|v| v.goes);
-        // A pull's parts: all accepted, nothing to mark.
+        // A pull's comments: all accepted, nothing to mark.
         let pulled = self.review_pulled();
         // The operation of the line the cursor is on, if it is one; those of
         // the change, and whether every one is accepted, for their title.
@@ -2482,7 +2658,7 @@ impl App {
                 } else if let Some(id) = lines.get(rv.sel).and_then(|l| l.answer.clone()) {
                     // An answer made on the stack before the change: kept.
                     self.mark_answer(&id, AnswerMark::Keep);
-                } else if let Some(p) = lines.get(rv.sel).and_then(|l| l.part).filter(|_| !pulled) {
+                } else if let Some(p) = lines.get(rv.sel).and_then(|l| l.part).filter(|p| !pulled || *p == Part::Stack) {
                     // An operation of the change: accepted, or back to
                     // review; their title, every one of them.
                     match (p, op) {
@@ -2550,7 +2726,7 @@ impl App {
     /// one of its operations at once (`mark_ops`). A comment is not accepted
     /// while the change it goes with is rejected, every operation of it.
     pub(super) fn mark(&mut self, p: Part, accept: bool) {
-        if !accept && self.review_pulled() {
+        if !accept && self.part_fixed(p) {
             self.status = crate::held::FILED.into();
             return;
         }
@@ -2574,7 +2750,10 @@ impl App {
     /// the comments of the work are rejected with them; one accepted again,
     /// they are as they were.
     fn mark_ops(&mut self, keys: &[String], accept: bool) {
-        let comments: Vec<Part> = self.review_parts().into_iter().filter(|p| *p != Part::Stack).collect();
+        // A pull's comments are the reviewers': filed whatever becomes of
+        // its change.
+        let pulled = self.review_pulled();
+        let comments: Vec<Part> = self.review_parts().into_iter().filter(|p| *p != Part::Stack && !pulled).collect();
         let Some(was) = self.reviewing.as_ref().map(|rv| self.change_rejected(&rv.marks)) else { return };
         let mut marks = self.reviewing.as_ref().map(|rv| rv.marks.clone()).unwrap_or_default();
         for k in keys {
@@ -2758,7 +2937,7 @@ impl App {
         match (line.asking, line.part) {
             (Some(k), _) if rv.marks.get(&crate::held::asking_key(k)) == Some(&true) => "enter: keep it open",
             (Some(_), _) => "enter: close it with the review",
-            (None, Some(_)) if self.review_pulled() => "enter: nothing, what was pulled is filed as the review closes",
+            (None, Some(p)) if self.part_fixed(p) => "enter: nothing, what was pulled is filed as the review closes",
             (None, Some(Part::Stack)) => match op {
                 Some(o) if !o.marked() => "enter: nothing, the change leaves this patch as it is",
                 Some(o) if rv.marks.get(&o.key) == Some(&true) => "enter: to review again",
@@ -2931,7 +3110,7 @@ impl App {
         // while a follow-up asked from the review goes.
         let run = self.reviewing.as_ref().map(|rv| rv.run.clone()).unwrap_or_default();
         let going = self.review_following();
-        let back = Item::new(SEND_BACK, Action::AskAgent(AskOf::SendBack(run))).when(going.is_empty());
+        let back = Item::new(SEND_BACK, Action::AskAgent(AskOf::SendBack(run.clone()))).when(going.is_empty());
         let grayed = |m: &mut Menu| {
             if !going.is_empty() {
                 let said = format!("{SEND_BACK} is grayed while the follow-up you asked from this review goes: what it brings back comes into this review once it lands.");
@@ -2982,11 +3161,15 @@ impl App {
         // Closing with the change accepted waits for each answer made on the
         // stack before it to be marked.
         let waits = |rest: Option<bool>| self.waits_for_answers(rest);
+        // A pull's: not with a patch whose conflicts it marked in the stack.
+        let marks = self.reviewing.as_ref().map(|rv| rv.marks.clone()).unwrap_or_default();
+        let conflicts = |rest: Option<bool>| self.marked_closing(&marks, rest);
         // Every part marked, nothing remains for the others to mark.
         let mut items = vec![
             Item::new("Save", Action::ReviewSave),
             Item::new("Discard", Action::ReviewDiscard),
-            Item::new("Close review", if self.review_close_menu().is_some() { Action::AskClose } else { Action::ReviewClose(None) }).when(done && !waits(None)),
+            Item::new("Close review", if self.review_close_menu().is_some() { Action::AskClose } else { Action::ReviewClose(None) })
+                .when(done && !waits(None) && conflicts(None).is_none()),
         ];
         // A tool allowed: the work may go back to the agent, to try again
         // with it, though you wrote nothing, as its dialog sets.
@@ -2994,23 +3177,30 @@ impl App {
         if tools {
             items.push(back);
         }
+        // A pull's change holding a patch whose conflicts it marked: an agent
+        // may rework it, from the stack the pull makes.
+        if conflicts(None).is_some() {
+            items.push(Item::new(SEND_BACK, Action::AskAgent(AskOf::SendBack(run.clone()))));
+        }
         // What remains, accepted or rejected together, a section of its
         // own; over it, whether the comments that asked close with it, and
         // whether HEAD follows the stack.
         items.push(Item::line());
         items.extend(self.asking_row());
         items.extend(self.head_row());
-        // A pull's: every part accepted already, none to reject.
-        if !self.review_pulled() {
+        // A pull's with no change: every part accepted already, none to
+        // reject; with one, what remains is its operations.
+        if !self.review_pulled() || self.review_ops().is_some() {
             items.extend([
-                Item::new("Accept all remaining and Close", Action::AskReviewClose(true)).when(!done && !waits(Some(true))),
-                Item::new("Reject all remaining and Close", Action::AskReviewClose(false)).when(!done && !waits(Some(false))),
+                Item::new("Accept all remaining and Close", Action::AskReviewClose(true)).when(!done && !waits(Some(true)) && conflicts(Some(true)).is_none()),
+                Item::new("Reject all remaining and Close", Action::AskReviewClose(false)).when(!done && !waits(Some(false)) && conflicts(Some(false)).is_none()),
                 Item::line(),
             ]);
         }
         items.push(Item::new("Keep reviewing", Action::Cancel));
         let run = self.reviewing.as_ref().and_then(|rv| self.db.run(&rv.run));
         let of = match run {
+            Some(r) if crate::held::pulled(r) && r.held.as_ref().is_some_and(|h| h.stack.is_some()) => "the pull from Phabricator",
             Some(r) if crate::held::pulled(r) => "the comments pulled",
             Some(r) if crate::held::by_hand(r) => "your edit by hand",
             Some(r) if crate::held::linted(r) => "the linter's work",
@@ -3019,6 +3209,12 @@ impl App {
         };
         let mut m = Menu::new(format!("your review of {of}"), items, None);
         m.say_parts(self.review_summary());
+        // A closing grayed for the conflicts a pull marked: which, and what
+        // to do.
+        if let Some(why) = conflicts(None).or_else(|| conflicts(Some(true))) {
+            let said = format!("The review closes with the change accepted only once no patch of it holds a conflict the pull marked: {why}.");
+            m.note = Some(m.note.take().map_or(said.clone(), |n| format!("{n}\n{said}")));
+        }
         // A closing grayed for the answers not marked yet: which they are,
         // under the rest.
         if (done && waits(None)) || (!done && (waits(Some(true)) || waits(Some(false)))) {
@@ -3582,11 +3778,12 @@ impl App {
             items.push(Item::new("Close it with the review", Action::CloseAsking(k, true)).when(!closing));
             items.push(Item::new("Keep it open", Action::CloseAsking(k, false)).when(closing));
         }
-        // A pull's parts: all accepted, none rejected, nothing to mark.
+        // A pull's comments: all accepted, none rejected, nothing to mark;
+        // its operations, as any.
         let marked = !self.review_pulled();
         let line = lines.get(rv.sel);
         let op = ops.as_ref().zip(line).and_then(|(o, l)| Self::line_op(o, l));
-        if let Some(p) = line.and_then(|l| l.part).filter(|_| marked) {
+        if let Some(p) = line.and_then(|l| l.part).filter(|p| marked || *p == Part::Stack) {
             let may_accept = p == Part::Stack || !rejected;
             // An operation of the change, by its own mark; their title, the
             // change as a whole, by theirs: every one accepted, or rejected,
@@ -3614,7 +3811,7 @@ impl App {
         // Every operation of the change at once, but on their title, which
         // marks them all as it is.
         let on_title = line.is_some_and(|l| l.part == Some(Part::Stack) && l.entry.is_none());
-        if marked && !on_title && ops.as_ref().is_some_and(|o| !o.whole()) {
+        if !on_title && ops.as_ref().is_some_and(|o| !o.whole()) {
             items.push(Item::new("Mark all operations accepted", Action::MarkOps(true)));
             items.push(Item::new("Mark all operations rejected", Action::MarkOps(false)));
         }
@@ -3717,7 +3914,9 @@ impl App {
     /// The review's marks saved, to go on from them later.
     pub(super) fn review_save(&mut self) {
         let Some(rv) = self.reviewing.clone() else { return };
-        let pulled = self.review_pulled();
+        // A pull's with no change: nothing marked, all of it filed as it
+        // closes.
+        let pulled = self.review_pulled() && self.review_ops().is_none();
         if self.edit(|db| crate::held::save(db, &rv.run, &rv.marks)).is_some() {
             self.status = match pulled {
                 // A pull's: nothing marked, all of it filed as it closes.

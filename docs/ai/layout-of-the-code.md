@@ -10,7 +10,9 @@
 - `check.rs`: whether patches apply, before they go in; the files as a
   patch leaves them, and the tree, for a submit.
 - `ops.rs`: edits to a stack, `$EDITOR` (the patch as mail, its code); the
-  interdiff of two versions of a patch.
+  interdiff of two versions of a patch; a patch made again on other
+  patches under it, its conflicts marked where they disagree, as a pull
+  makes one (`rebased`).
 - `git.rs`: what stacked asks of git: mail from a range, the stack's
   worktrees and the agents', a checkout to edit a patch in.
 - `ask.rs`, `claude.rs`: asking the agent about comments, from the queue to
@@ -19,7 +21,9 @@
 - `reach.rs`: whether the agent can be reached, for the ask dialog's Ask
   Now: its program found, and the network reaching the host claude talks
   to, a stand-in answering for the tests.
-- `held.rs`: what an ask brought back, held for your review; work sent
+- `held.rs`: what an ask brought back, held for your review, a pull's too,
+  what each of its patches takes from Phabricator and the conflicts it
+  marked, which keep its review from closing with them; work sent
   back, and the follow-ups that only read asked from its review, what they
   bring back coming into it (`come_in`); and the marks of the answers made
   on the stack before a change, kept, restarted or stopped as the change
@@ -49,12 +53,16 @@
   the `moz-phab` feature, the bugs it names and the revision its trailer
   names.
 - `review.rs`, `phab.rs`, `submit.rs`: Phabricator, built with the
-  `moz-phab` feature (on by default): the reviews pulled, the stacks
-  imported, a patch submitted as work in progress, or its title, summary
-  and parent alone to a revision in review; Fetch the latest from
-  Phabricator, every revision of a stack read in a few calls, and stored,
-  only what differs from what is stored, as what a submit and a pull read
-  is stored; and what the Phabricator line over a patch's message counts;
+  `moz-phab` feature (on by default): a pull, of a stack, of one patch's
+  revision or into a new stack, read (`phab.rs`), queued as an edit,
+  then made on a copy of the database and filed for one review, its new
+  versions, the patches it adds, those it makes again on what it changed
+  under them, and the reviewers' comments (`review.rs`); a patch submitted
+  as work in progress, or its title, summary and parent alone to a
+  revision in review; Fetch the latest from Phabricator, every revision of
+  a stack read in a few calls, and stored, only what differs from what is
+  stored, as what a submit and a pull read is stored; and what the
+  Phabricator line over a patch's message counts;
   Conduit called by curl, the token on its standard input, what
   Phabricator answered said, and its refusals of this machine (HTTP 429)
   an error of their own.
@@ -144,10 +152,11 @@
   `tui/revisions.rs`, the status on Phabricator of each patch's revision,
   which the patches pane shows, and the Phabricator line over the message
   of the patch the middle shows, from what is stored, with how long ago it
-  was fetched, what differs on a screen of its own, the pull of its
-  reviews alone, the submit item as its revision's status has it, the
-  patch's `Phabricator` menu, and the fetch, asked from a menu, or after a
-  submit; `tui/compared.rs`, two
+  was fetched, what differs on a screen of its own, the pulls, of the
+  stack, of the patch's revision, with its choice, or into a new stack,
+  and a pull waiting its turn, its menu and its drop, the submit item as
+  its revision's status has it, the patch's `Phabricator` menu, and the
+  fetch, asked from a menu, or after a submit; `tui/compared.rs`, two
   versions of a text compared word by word where their lines wrap aside,
   as rows: a title and summary in the review of a submit, a reviewer's
   comment edited on Phabricator in the review of a pull, a commit's

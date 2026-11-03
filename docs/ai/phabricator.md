@@ -2,41 +2,146 @@
 
 What follows is built by default, with the `moz-phab` feature:
 `--no-default-features --features app,demo,try-push,web` builds stacked
-without it (Install). `stacked moz-phab import REVISION` makes a new stack
-of a revision, `D123`, `123` or its link, as `Import from Phabricator…`
-does in the editor (Making a stack in the editor): `imported 2 patches
-from D11..D12 as D12`.
+without it (Install).
 
-`stacked moz-phab pull NAME`, or the menu's `Pull reviews from
-Phabricator`, reads the revision in
-each patch's `Differential Revision:` trailer (the settings can name
-another) over Conduit, with the token moz-phab keeps in `~/.arcrc`, or the
-settings'. Every call of Conduit is made by curl, which is given the token
-and the call's parameters on its standard input, never on its command
-line, where any process of this machine could read them; what went wrong
-is said as Phabricator answered it (The editor, above): a status other
-than 200, a page that is not JSON, or its turning away the requests of
-this machine (HTTP 429). While it reads them, the banner says which revision it reads
-(`⇣ pulling the reviews from Phabricator: D12, revision 2 of 3…`), and the
-top bar `pulling…`; once it is done, the bottom line says what came of it
-(`1 new comment from 3 revisions: it waits for your review`), or what went
-wrong. In the editor, `Pull the reviews of D12 from Phabricator`, on the
-menu of a patch's Phabricator line (The editor, above) and in the patch's
-own `Phabricator` menu in the patches pane, reads that patch's revision
-alone, as the stack's pull reads each: the banner says so (`⇣ pulling the
-reviews from Phabricator: D12…`), the bottom line says what came of it (`2
-new comments from D12: they wait for your review`), what it brings is held
-as a pull's. A pull, of the stack or of one revision, in the editor or by
-`stacked moz-phab pull`, stores the comments it read of each revision, as
-the line counts those not pulled yet (The editor, above), and nothing else
-is read after it. As the stack's pull, it is not
-offered while reviews come from nowhere, and not done in the tour; one
-pull goes at a time (`already pulling the reviews`). What is new waits for
-your review, in the queue of work the agent's
-asks land in (below): nothing is filed before you close that review. A
-pull's parts are all accepted, never rejected: closing its review files
-every comment it pulled (`Close review`, or `stacked review NAME RUN
---accept-all`; `--reject-all` refuses). Each
+`stacked moz-phab pull NAME`, or the stack menu's `Pull from
+Phabricator`, pulls the stack from Phabricator, as one job held for one
+review: every revision its patches name in their `Differential
+Revision:` trailer (the settings can name another), with the revisions
+they stack on that the stack does not hold (the open parent of each,
+down to one the stack holds or to the first that is not open), and those
+stacked on top of the top's revision (the open one stacked on each, while
+there is one); their latest diffs, titles and summaries, as new versions
+or new patches, and the reviewers' comments. It reads them over Conduit,
+with the token moz-phab keeps in `~/.arcrc`, or the settings'. Every call
+of Conduit is made by curl, which is given the token and the call's
+parameters on its standard input, never on its command line, where any
+process of this machine could read them; what went wrong is said as
+Phabricator answered it (The editor, above): a status other than 200, a
+page that is not JSON, or its turning away the requests of this machine
+(HTTP 429).
+
+It reads first, away from the screen: the revisions asked, in one search
+(differential.revision.search); their parents (edge.search), named, the
+parents the stack does not hold in a search of their own, then down, the
+open parent of each that the stack does not hold; up, the open revision
+stacked on the top's (edge.search, `revision.child`), and on each found,
+with its parents; then each revision in turn, the banner saying which
+(`⇣ pulling from Phabricator: D12, revision 2 of 3…`) and the top bar
+`pulling…`: its diffs (differential.querydiffs), the commit its latest
+diff is on, and the author and message of that diff's commit as uploaded
+(`local:commits`); its latest diff, raw (differential.getrawdiff),
+unless it is stored; while that diff is no version of its patch stacked
+knows, the older ones, the newest first, to the first that is one; and
+its comments (transaction.search, user.search for their authors' names,
+and the lines a comment on a line is on). A revision with more than one
+open parent, or more than one open revision stacked on one where the
+walk up goes, and nothing is pulled nor stored, the bottom line saying
+which: `D11 is stacked on more than one open revision on Phabricator, D10
+and D9: a stack is one line of patches, so nothing was pulled`, `More
+than one open revision is stacked on D11 on Phabricator, D10 and D9: a
+stack is one line of patches, so nothing was pulled`. What it read is
+stored as a fetch stores it (The editor, above): of each revision, its
+state and its comments, with when it was last modified as its search
+said, where they are not what is stored; each raw diff it read; the
+revisions asked that Phabricator does not have, as such; and that it
+read every one of them, now. A call that fails stores nothing; turned
+away, it is tried once, and the bottom line says so plainly (`Phabricator
+is turning away requests from this machine for now (HTTP 429, too many
+requests)`). Phabricator is read only when you ask.
+
+Then the pull waits its turn as an edit of the agent's does (Asking the
+agent, above), the first asked first: unchained, until the change of the
+stack waiting for your review is reviewed (`the pull from Phabricator
+waits its turn: it is made once you have reviewed the agent's change of
+patch 2, and what it brings then waits for your review`); chained
+(`agent.chain`), at once, from the stack that change makes, and reviewed
+after it. Waiting, it has a line of the banner (`◌ The pull from
+Phabricator, waiting its turn: the stack's revisions, with their parents
+and those stacked on top`), whose menu, and the stack's menu, have `Drop
+the waiting pull from Phabricator…`, which asks first; dropped, what it
+read stays stored, and nothing of it waits for your review. One pull of a
+stack waits at a time (`a pull from Phabricator of this stack waits its
+turn already: one at a time`), and the editor reads one pull at a time
+(`already pulling from Phabricator: one pull at a time`). At its turn, it
+is made away from the database's lock, on a copy of the database, then
+filed:
+
+- A patch whose revision is open takes as its new version its revision's
+  latest diff, where that is no version of the patch stacked knows (as a
+  submit knows one: Submitting a patch, below), with the author of its
+  commit as uploaded; and its title and summary, as its message, its
+  trailer kept, where no version of the patch would send them (a submit's
+  `WIP: ` aside). A version stacked knows takes nothing: the stack is
+  ahead of it.
+- A patch changed in the stack since the last diff of its revision
+  stacked knows, its revision given a new diff since: Phabricator's is
+  taken all the same, and the review shows what the patch had since that
+  version, which the pulled one lacks.
+- A revision the stack does not hold, open, is added: a parent below the
+  patch of the revision it is the parent of, one stacked on another above
+  that one's patch. The patch is its latest diff, with the author of its
+  commit as uploaded, and that commit's message while the revision's
+  title and summary are what it says, else those, the trailer naming the
+  revision put in.
+- Then each patch is made to apply on those under it, from the bottom. A
+  patch above the pulled versions that no longer applies on them is made
+  again on them, as `git merge-file` makes a file, its conflicts marked
+  where they disagree (`<<<<<<< the stack below, as the pull leaves it`,
+  `>>>>>>> patch 3`, and `||||||| the stack below, as it was` with the
+  repository's `merge.conflictStyle` diff3 or zdiff3), so that the stack
+  the change makes still applies; a pulled diff that does not apply on the
+  patches under it is made again on them the same way (`>>>>>>> D12's
+  latest diff`). Where that cannot be done either, what keeps it from
+  applying is not taken, and the review says so.
+- A revision that landed or was abandoned leaves its patch as it is, and
+  a parent Phabricator gives that the stack's order disagrees with leaves
+  the order as it is: the review says each, under `what the pull found,
+  to read`.
+
+What each operation of its change needs is worked out on that copy too,
+as every landing works it out (What the agent brings back, above), and
+stored with it. Filed, what it brings waits for your review, in the queue
+of work the agent's asks land in: its change of the stack, if it
+makes one, and the comments, anchored on the patches as the pull leaves
+them; nothing is filed before you close that review. The bottom line
+says what came of it (`1 new version, 2 new patches and 1 new comment
+from 4 revisions: they wait for your review`; `nothing new from 3
+revisions`; `…: it waits for your review; patch 3 no longer applies on
+the pulled versions: its conflicts are marked, to resolve`). The stack,
+or the work it goes on from, changed while it was made, it is made again.
+
+Its review is the review of a change of the stack (What the agent brings
+back, above), each operation marked on its own, and what it takes from
+Phabricator said after it: `modify  3 Bug 3 - …, from D13's latest diff`,
+`reword  2 Bug 2 - …, from D12's title and summary`, `add     1 Bug 1 -
+…, D11, the parent of D12`, `add     4 Bug 4 - …, D14, stacked on D13`,
+`modify  3 Bug 3 - …, no longer applies on the pulled version`. On an
+operation, the right pane says where its patch comes from, and why, and,
+for a patch changed in the stack since, what it had since then that the
+pulled version lacks. A patch whose conflicts are marked does not go in:
+closing with its operation standing is refused, the review's `Close
+review` and `Accept all remaining and Close` grayed, saying why (`patch 3
+(Bug 13 - eleven) holds the conflicts the pull marked where it does not
+apply on the patches under it: reject its operation, resolve them by hand
+in the patch, or send the pull back to the agent`). Rejecting its
+operation takes the operation that breaks it along, as the patch as it
+was does not apply on the pulled version (`reject patch 3's operation
+with patch 2's operation?`). Resolved by hand from the review (`Edit
+this patch in $EDITOR`), the edit lands in the place of the pull's work,
+a pull's still (`modify  3 Bug 3 - …, its conflicts resolved by hand`),
+which then closes as any. `Send it back to the agent…`, offered then,
+with a permission to change (`change patch` for one patch, `change
+stack`), has the agent rework it from the stack the pull makes, a comment
+of yours handing the conflicts over, on the patch, or on the stack for
+more than one, as the linter's work hands its conflicts over (Linting,
+above): the review closes, its comments filed and its change not applied,
+and the agent's work lands for review in its turn. A pull's comments are
+never rejected: closing its review files each one (`Close review`, or
+`stacked review NAME RUN --accept-all`); `--reject-all` rejects its
+change alone, and is refused for a pull that brought comments alone. A
+comment on a patch the pull adds is filed only with that patch: rejected,
+the next pull brings both again. Each
 new thread is a comment opened, on its line, or on the patch's title for
 one on the whole revision, its replies pulled with it turns of it; a reply
 to a thread there already is a reply to it, the reviewer's turn (`ann's
@@ -50,6 +155,40 @@ waits in a pull's review is pulled once that review closes. Nothing
 remembers a rejection: a comment a stacked of before let you reject, which
 no thread holds, comes back once, with the next pull, and is filed as its
 review closes; a reply or an edit as well.
+
+In the editor, `Pull D12 from Phabricator`, on the menu of a patch's
+Phabricator line (The editor, above) and in the patch's own `Phabricator`
+menu in the patches pane, pulls that patch's revision with its parents
+that the stack does not hold, or, as its choice picks (`with its
+parents`, `and the revisions on it`, kept for the stack), with the
+revisions stacked on it too, as the stack's pull pulls them: the banner
+says so (`⇣ pulling from Phabricator: D12…`), and the bottom line what
+came of it (`2 new comments from D12: they wait for your review`). No
+pull is offered while reviews come from nowhere (`reviews.source =
+"none"`, Settings), nor in the tour, and `stacked moz-phab` refuses then
+(`reviews come from nowhere: …`, `revisions come from nowhere: …`).
+
+`Pull from Phabricator…`, under the stack menu's `New stack…` and on the
+menu of an editor with no stack (Making a stack in the editor), pulls a
+new stack: it asks for a revision (`a revision of Phabricator, to pull
+into a new stack: D123, or its link`), saying what it gives as it is
+typed (`D12, with the revisions it stacks on and those stacked on it`;
+`give a revision: D123, or its link`), and refusing one a stack holds
+(`D13 is patch 3 of D12: pull it there`) or one that the work waiting for
+your review on a stack adds (`D31 would be patch 1 of fix once the work
+waiting for your review there is accepted: review that work first`). It
+reads the revision with its parents and those stacked on it (`pulling D12
+from Phabricator, with the revisions it stacks on and those stacked on
+it…`), none of which a stack may hold; then it makes the stack, empty,
+on the commit the bottom revision's diff is on, which the repository must
+have (`D21 is on 0123456789ab, which this repository does not have:
+fetch it first`), named after the revision (`D12`, else the first of
+`D12-2`, `D12-3`, … that no stack has), and the pull lands into it, its
+review open: a patch to add for each revision (`3 new patches and 1 new
+comment from D11..D13: they wait for your review`). Rejected, the stack
+stays, empty. `stacked moz-phab import REVISION [--name NAME]`, of
+`D123`, `123` or its link, does the same from the command line and
+prints the run, which `stacked review NAME RUN --accept-all` takes.
 
 A comment the reviewer edited on Phabricator since it was filed (each edit
 makes a version of it, with an id of its own) is held as an edit of their

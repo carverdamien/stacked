@@ -273,11 +273,14 @@ pub fn of_work(db: &Db, r: &Run, h: &Held) -> Option<Ops> {
 /// The operations of the change work `h` of run `r` holds, as its review is
 /// to see them, worked out as it lands: from the stack as it is; or,
 /// chained on other work that waits for your review (an ask asked after it,
-/// a reconcile with HEAD made on it), from the stack that work makes, which
-/// the stack is once that work is accepted, and only then is this one
-/// reviewed.
+/// a reconcile with HEAD or a pull from Phabricator made on it), from the
+/// stack that work makes, which the stack is once that work is accepted,
+/// and only then is this one reviewed.
 pub fn of_landed(db: &Db, r: &Run, h: &Held) -> Option<Ops> {
-    let after = crate::ask::info(r).and_then(|i| i.after).or_else(|| crate::reconcile::after(r).map(String::from));
+    let after = crate::ask::info(r)
+        .and_then(|i| i.after)
+        .or_else(|| crate::reconcile::after(r).map(String::from))
+        .or_else(|| crate::ask::pull_after(r));
     let from = match after {
         Some(a) => crate::ask::work_stack(db, &a).ok()?,
         None => db.stack(&r.stack).ok()?.clone(),

@@ -5383,72 +5383,127 @@ fn mail_parsing() {
 #[cfg(feature = "moz-phab")]
 #[test]
 fn a_stack_is_imported_from_phabricator_by_its_revision() {
-    use stacked::phab::{Revision, import, stack_stand_in};
+    use serde_json::json;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
-    // The settings of no file: a developer's own must not change it.
+    // The settings of no file: a developer's own must not change it. The
+    // checkout's `.arcconfig` names Phabricator, for a revision given by its
+    // number alone.
     stacked::config::init(stacked::config::Config::default());
     let e = env();
+    std::fs::write(e.src.join(".arcconfig"), r#"{"phabricator.uri": "https://phabricator.example.com/"}"#).unwrap();
     let base = git(&e.src, &["rev-parse", "base"]).trim().to_string();
-    // Phabricator as the test has it: D21 on base, D22 on it, read from
-    // either, or from its link; each read counted.
+    // Phabricator as the test has it, for this database alone: D21 on the
+    // commit `on` says, its commit as uploaded Ann's; D22 on D21; D31 on
+    // that commit too, alone; each call counted.
     let on = Arc::new(Mutex::new(base.clone()));
-    let reads = Arc::new(AtomicUsize::new(0));
-    let (at, read) = (on.clone(), reads.clone());
-    stack_stand_in(Some(Box::new(move |rev, link| {
-        read.fetch_add(1, Ordering::SeqCst);
-        if !["D21", "D22"].contains(&rev) || link.is_some_and(|l| l != format!("https://phabricator.example.com/{rev}")) {
-            return Err(format!("not as the test reads it: {rev} {link:?}"));
-        }
-        let trailer = |n: u32| format!("\n\nDifferential Revision: https://phabricator.example.com/D{n}");
-        Ok(vec![
-            Revision {
-                id: "D21".into(),
-                message: format!("Bug 1 - change two{}", trailer(21)),
-                author: Some("Ann <ann@example.com>".into()),
-                diff: "diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -1,5 +1,5 @@\n one\n-two\n+2\n three\n four\n five\n".into(),
-                base: Some(at.lock().unwrap().clone()),
-            },
-            Revision {
-                id: "D22".into(),
-                message: format!("Bug 2 - add b{}", trailer(22)),
-                author: None,
-                diff: new_file("b.txt", "new"),
-                base: None,
-            },
-        ])
-    })));
-    // Its number alone: the stack of both, named as it, on the commit the
-    // bottom one is on.
-    assert_eq!(import(&e.db, &e.src, "22", None).unwrap(), "imported 2 patches from D21..D22 as D22");
+    let calls = Arc::new(AtomicUsize::new(0));
+    let (at, count) = (on.clone(), calls.clone());
+    let two = "diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -1,5 +1,5 @@\n one\n-two\n+2\n three\n four\n five\n".to_string();
+    let (b, c) = (new_file("b.txt", "new"), new_file("c.txt", "sea"));
+    stacked::phab::statuses_stand_in(
+        &e.db,
+        Some(Box::new(move |m, v| {
+            count.fetch_add(1, Ordering::SeqCst);
+            let n = |v: &serde_json::Value| v.as_u64().or_else(|| v.as_str()?.trim_start_matches("PHID-DREV-").parse().ok());
+            let titles = [(21, "Bug 1 - change two"), (22, "Bug 2 - add b"), (31, "Bug 3 - add c")];
+            Ok(match m {
+                "differential.revision.search" => {
+                    let k = &v["constraints"];
+                    let found: Vec<serde_json::Value> = k["ids"]
+                        .as_array()
+                        .or(k["phids"].as_array())
+                        .into_iter()
+                        .flatten()
+                        .filter_map(n)
+                        .filter_map(|n| titles.iter().find(|(x, _)| *x == n))
+                        .map(|(n, t)| json!({"id": n, "phid": format!("PHID-DREV-{n}"), "fields": {"title": t, "summary": "", "status": {"value": "needs-review"}}}))
+                        .collect();
+                    json!({"data": found})
+                }
+                // D22's parent, D21; stacked on D21, D22.
+                "edge.search" => {
+                    let kind = v["types"][0].as_str().unwrap_or_default().to_string();
+                    let edges: Vec<serde_json::Value> = v["sourcePHIDs"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|p| p.as_str())
+                        .filter_map(|p| {
+                            let to = match (kind.as_str(), p) {
+                                ("revision.parent", "PHID-DREV-22") => "PHID-DREV-21",
+                                ("revision.child", "PHID-DREV-21") => "PHID-DREV-22",
+                                _ => return None,
+                            };
+                            Some(json!({"sourcePHID": p, "edgeType": kind, "destinationPHID": to}))
+                        })
+                        .collect();
+                    json!({"data": edges, "cursor": {"after": null}})
+                }
+                "differential.querydiffs" => match v["revisionIDs"][0].as_u64() {
+                    Some(21) => json!({"121": {"sourceControlBaseRevision": *at.lock().unwrap(),
+                        "properties": {"local:commits": {"c": {"author": "Ann", "authorEmail": "ann@example.com", "message": "Bug 1 - change two"}}}}}),
+                    Some(22) => json!({"122": {"sourceControlBaseRevision": "", "properties": {}}}),
+                    Some(31) => json!({"131": {"sourceControlBaseRevision": *at.lock().unwrap(), "properties": {}}}),
+                    _ => json!({}),
+                },
+                "differential.getrawdiff" => json!(match v["diffID"].as_u64() {
+                    Some(121) => two.clone(),
+                    Some(122) => b.clone(),
+                    _ => c.clone(),
+                }),
+                "transaction.search" => json!({"data": [], "cursor": {"after": null}}),
+                _ => return Err(format!("{m}: not asked in this test").into()),
+            })
+        })),
+    );
+    let import = |text: &str, name: Option<&str>| stacked::review::import(&e.db, &e.src, text, name, &mut |_| {});
+    // Its number alone: a stack named as it, made empty on the commit the
+    // bottom one is on, and the pull of both landed into it, for review.
+    let run = import("22", None).unwrap();
+    assert_eq!((run.stack.as_str(), run.summary.as_str()), ("D22", "2 new patches from D21..D22: they wait for your review"));
     let d = Db::load(&e.db).unwrap();
     let s = d.stack("D22").unwrap();
-    assert_eq!(s.base.as_deref(), Some(base.as_str()));
-    let ps: Vec<stacked::db::Patch> = s.patches.iter().map(|id| d.patch(id).clone()).collect();
+    assert!(s.patches.is_empty() && s.base.as_deref() == Some(base.as_str()), "{s:?}");
+    drop(d);
+    // Accepted from the command line: the two patches, the first Ann's
+    // commit as uploaded, each naming its revision.
+    let reviewed = e.ok(&["review", "D22", &run.id, "--accept-all"]);
+    assert!(reviewed.starts_with(&format!("{}\treviewed: its change accepted", run.id)), "{reviewed}");
+    let d = Db::load(&e.db).unwrap();
+    let ps: Vec<stacked::db::Patch> = d.stack("D22").unwrap().patches.iter().map(|id| d.patch(id).clone()).collect();
     assert_eq!(ps.iter().map(|p| p.title().to_string()).collect::<Vec<_>>(), ["Bug 1 - change two", "Bug 2 - add b"]);
     assert_eq!(ps[0].author.as_deref(), Some("Ann <ann@example.com>"));
+    assert_eq!(ps[0].message, "Bug 1 - change two\n\nDifferential Revision: https://phabricator.example.com/D21");
     assert!(ps[1].message.ends_with("Differential Revision: https://phabricator.example.com/D22"), "{}", ps[1].message);
     drop(d);
-    // Its link, as the browser gives it; the revision again, a name free.
-    assert_eq!(import(&e.db, &e.src, "https://phabricator.example.com/D21#inline-5", None).unwrap(), "imported 2 patches from D21..D22 as D21");
-    assert_eq!(import(&e.db, &e.src, "D22", None).unwrap(), "imported 2 patches from D21..D22 as D22-2");
-    // Named: so; a name taken, or none can have, refused before Phabricator
-    // is read.
-    assert_eq!(import(&e.db, &e.src, "D22", Some("fix")).unwrap(), "imported 2 patches from D21..D22 as fix");
-    let before = reads.load(Ordering::SeqCst);
-    assert_eq!(import(&e.db, &e.src, "D22", Some("fix")).unwrap_err().0, "there is a stack fix already");
-    assert_eq!(import(&e.db, &e.src, "D22", Some("a b")).unwrap_err().0, "\"a b\" cannot name a stack: no blank, no /, no - first");
-    assert_eq!(reads.load(Ordering::SeqCst), before);
+    // Either again, by its link as the browser gives it or by its number:
+    // refused, as a stack holds it, before Phabricator is read.
+    let before = calls.load(Ordering::SeqCst);
+    assert_eq!(import("https://phabricator.example.com/D21#inline-5", None).unwrap_err().0, "D21 is patch 1 of D22: pull it there");
+    assert_eq!(import("D22", None).unwrap_err().0, "D22 is patch 2 of D22: pull it there");
+    assert_eq!(calls.load(Ordering::SeqCst), before);
     // What names no revision, said.
-    assert_eq!(import(&e.db, &e.src, "D2x", None).unwrap_err().0, "\"D2x\" names no revision: give D123, 123, or its link");
-    // On a commit the repository does not have: said, nothing imported.
+    assert_eq!(import("D2x", None).unwrap_err().0, "\"D2x\" names no revision: give D123, 123, or its link");
+    // On a commit the repository does not have: said, no stack made.
     *on.lock().unwrap() = "0123456789abcdef0123456789abcdef01234567".into();
+    assert_eq!(import("D31", None).unwrap_err().0, "D31 is on 0123456789ab, which this repository does not have: fetch it first");
+    assert_eq!(Db::load(&e.db).unwrap().names(), ["D22"]);
+    // Named: so; a name taken, or none can have, refused before Phabricator
+    // is read; and, while the pull into it waits for your review, the
+    // revision refused all the same.
+    *on.lock().unwrap() = base.clone();
+    let run = import("D31", Some("fix")).unwrap();
+    assert_eq!((run.stack.as_str(), run.summary.as_str()), ("fix", "1 new patch from D31: it waits for your review"));
+    let before = calls.load(Ordering::SeqCst);
+    assert_eq!(import("D31", Some("fix")).unwrap_err().0, "there is a stack fix already");
+    assert_eq!(import("D31", Some("a b")).unwrap_err().0, "\"a b\" cannot name a stack: no blank, no /, no - first");
     assert_eq!(
-        import(&e.db, &e.src, "D22", None).unwrap_err().0,
-        "D21 is on 0123456789ab, which this repository does not have: fetch it first"
+        import("D31", None).unwrap_err().0,
+        "D31 would be patch 1 of fix once the work waiting for your review there is accepted: review that work first"
     );
-    assert_eq!(Db::load(&e.db).unwrap().names().len(), 4);
-    stack_stand_in(None);
+    assert_eq!(calls.load(Ordering::SeqCst), before);
+    stacked::phab::statuses_stand_in(&e.db, None);
 }
 
 #[cfg(feature = "moz-phab")]

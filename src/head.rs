@@ -272,7 +272,7 @@ fn not_made(on: &OnStack) -> String {
 }
 
 /// `a`, `a and b`, `a, b and c`.
-fn and(parts: &[String]) -> String {
+pub fn and(parts: &[String]) -> String {
     match parts {
         [] => String::new(),
         [one] => one.clone(),

@@ -356,6 +356,25 @@ pub fn title_against(first: &str, theirs: &str) -> String {
     }
 }
 
+/// The title and summary of a revision, `title` and `summary` as its search
+/// found them, and as patch `p` would send them, as a submit reads them
+/// (`wip_title`, `summary_of`, the lines naming a revision left out of
+/// both): its title `WIP: ` first, or not, as the revision's is
+/// (`title_against`, which a submit to a revision not in work sends). None
+/// when they are the same to the letter, the white space at their end
+/// aside, as a submit compares them before it sends them: where their lines
+/// wrap too, as that is what lands, so that a message wrapped again since it
+/// was submitted differs until it is submitted again. Phabricator gives a
+/// title and summary back as a submit sent them, over Conduit, to the
+/// letter: nothing else is to be allowed for. What the Phabricator line
+/// compares, and what a pull takes as no version of the patch's message.
+pub(crate) fn message_against(title: &str, summary: &str, p: &Patch, trailer: &str) -> Option<(String, String)> {
+    let before = format!("{title}\n\n{}", summary_of(&format!("\n{summary}"), trailer)).trim_end().to_string();
+    let mine = title_against(p.title(), title);
+    let after = format!("{mine}\n\n{}", summary_of(&p.message, trailer)).trim_end().to_string();
+    (before != after).then_some((before, after))
+}
+
 /// Whether `line` names a revision: as moz-phab's ARC_DIFF_REV_RE has it
 /// (`Differential Revision: https://host/D123`), or as `revision_of` reads
 /// the settings' trailer, `trailer`.
@@ -610,14 +629,7 @@ pub enum Parent {
     Nothing(String),
 }
 
-/// `a`, `a and b`, `a, b and c`.
-pub fn and(items: &[String]) -> String {
-    match items {
-        [] => String::new(),
-        [one] => one.clone(),
-        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
-    }
-}
+pub use crate::head::and;
 
 /// What a submit of one patch sends, read and checked before anything is.
 #[derive(Debug, Clone, PartialEq)]
@@ -866,7 +878,7 @@ fn trailer() -> String {
 /// that context, the diff no longer applies on what is below the patch.
 /// Known so, it is never the version in the stack, as that diff was made on
 /// what was below the patch before: a new diff of the patch is sent.
-fn known(db: &Db, s: &Stack, at: usize, raw: &str) -> Option<Known> {
+pub(crate) fn known(db: &Db, s: &Stack, at: usize, raw: &str) -> Option<Known> {
     let p = db.patch(&s.patches[at]);
     let versions = db.versions(&p.change);
     let mut list: Vec<(usize, &Patch)> = versions.iter().enumerate().map(|(k, v)| (k + 1, *v)).collect();

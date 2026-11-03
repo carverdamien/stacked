@@ -2,7 +2,8 @@
 
 When an ask lands, nothing changes under you while you read or write.
 What the agent brought back is held, in a queue of work to review, the
-first landed first; the reviews pulled from Phabricator wait in it too
+first landed first; what a pull from Phabricator brings waits in it too,
+its change of the stack, if it makes one, and the reviewers' comments
 (Phabricator, below). One landed ask may hold three kinds of parts: its
 change of the stack, if it changed it; its replies to the comments it was
 asked about; and the comments it opened (an answer's, or a build and
@@ -12,8 +13,8 @@ back waits for your review all the same while a comment it was asked
 about is still open: its review has no part, only those comments, to
 close or keep. If every comment it was asked about was closed or deleted
 meanwhile, it is not held, and its run says that the agent brought
-nothing back. You accept or reject each part, but those of a pull from
-Phabricator, which are all accepted (Phabricator, below). A
+nothing back. You accept or reject each part, but the comments of a pull
+from Phabricator, which are all accepted (Phabricator, below). A
 comment is one part. The change of the stack is a part for each of its
 operations, each patch's and the base's, accepted or rejected on its own
 as far as what each needs to apply allows, which is worked out as the
@@ -57,8 +58,9 @@ your review · the next: a change of patch 2, 1 reply, asked at max: "…"`,
 the effort the agent was asked at before what it was asked; edits by
 hand, lints and reconciles with HEAD counted apart), a reconcile with HEAD
 waiting its turn (`Reconcile with HEAD waits its turn`), a pull
-from Phabricator under way and the revision it reads (`pulling the reviews
-from Phabricator: D12, revision 2 of 3…`), what the asks batched (`3
+from Phabricator under way and the revision it reads (`pulling from
+Phabricator: D12, revision 2 of 3…`), a pull waiting its turn (`the pull
+from Phabricator waits its turn`), what the asks batched (`3
 batched asks`), what the agent works on (`the agent works on 1 ask`), the
 comments that wait their turn (`1 comment waits its turn`), and how many
 comments are open (`5 open comments`); it is there while any of it is. Landing writes nothing
@@ -68,14 +70,17 @@ well, but not the mouse going by. With the cursor on it, the banner opens,
 a line for each, in sections under their titles, and the cursor is in
 none of the panes: what each has picked shows as in a pane the cursor is
 not in (`picked`), not reversed. First, `read only, to review`: `⟳ Review …` for what landed and changes nothing (an answer, an
-ask that brought nothing back, the comments pulled from Phabricator), each
+ask that brought nothing back, a pull that brought comments alone), each
 said by what is left of it to review, the first landed first, then `◌ … after
 the edit under review` for those going on from it, then, while a pull from
-Phabricator is under way, `⇣ Pulling the reviews from Phabricator: D12,
-revision 2 of 3…`: what it brings waits there once it is done. `edits, to
-review`: the
+Phabricator is under way, `⇣ Pulling from Phabricator: D12, revision 2 of
+3…`: what it brings waits there once it is done, or under `edits, to
+review` when it changes the stack. `edits, to review`: the
 change of the stack you review now, then those going on from it, which you
-review after it. `open comments`: while there is a batch, `◇ Send the
+review after it, a pull's among them; then a reconcile with HEAD waiting
+its turn, and a pull from Phabricator waiting its turn (`◌ The pull from
+Phabricator, waiting its turn: the stack's revisions, with their parents
+and those stacked on top`). `open comments`: while there is a batch, `◇ Send the
 batch… 2 edits, 1 answer only`; then every comment open on the stack, the
 most recently updated first, marked as the comments pane marks it (`●` with the agent,
 `◇` batched, `◌` waiting its turn, `◆` its reply waiting for review, `✓`
@@ -120,10 +125,15 @@ stack's reconcile with HEAD waiting its turn: Enter on its line opens its
 menu, which says what it waits for, with `Drop the waiting reconcile with
 HEAD…`, which the banner's menu, HEAD's, the patch marked's and the runs
 have too; it asks `drop the reconcile with HEAD that waits its turn?
-Nothing was changed yet`. Dropped, either is as if it was never asked:
-nothing is linted or taken from HEAD, nothing changes in the stack, the
-marks stay, and the edits asked after it no longer wait for it (the
-question says how many), so that they go in their turn. What runs keeps
+Nothing was changed yet`. The stack's pull from Phabricator waiting its
+turn: Enter on its line opens its menu, which says what it waits for,
+with `Drop the waiting pull from Phabricator…`, which the banner's menu,
+the stack's and the runs have too; it asks `drop the pull from
+Phabricator that waits its turn? Nothing was held yet`, what it read of
+Phabricator staying stored. Dropped, each is as if it was never asked:
+nothing is linted, taken from HEAD or pulled, nothing changes in the
+stack, the marks stay, and the edits asked after it no longer wait for it
+(the question says how many), so that they go in their turn. What runs keeps
 its `Stop…` items.
 
 A review lists the parts on the left, in three sections, under the
@@ -246,7 +256,9 @@ work is filed, if the stacks it was worked out for are still those (else
 why not is stored). A lint job's is worked out once the linter is done,
 before its work is filed; an edit by hand's, once it is filed, before its
 review opens; a reconcile with HEAD's as it is made, its operations
-taking messages alone, which nothing needs, with no check. An operation
+taking messages alone, which nothing needs, with no check; a pull from
+Phabricator's as it is made, on a copy of the database with no lock
+held, before it is filed (Phabricator, below). An operation
 whose rejection leaves every diff of the stack as it was, as a `reword`'s
 does, is told with no check. The review then decides from what is
 stored, at once: the right pane's sentences, Enter, Delete and Space, and
@@ -393,12 +405,19 @@ HEAD and of a lint job lists them the same. A build and test is none of
 them: it goes on, of the stack as it was, and closing offers to stop it,
 as ever.
 
-The review of a pull from Phabricator rejects nothing: each part shows as
-accepted (`✓`), Enter, Delete and Space mark none of them (Delete says
-`a comment pulled from Phabricator cannot be rejected: close the review to
-file it`), and Esc offers `Close review`, which files every comment it
-pulled, with `Save` and `Discard` to leave it waiting for you; there is no
-`Accept all remaining and Close` nor `Reject all remaining and Close`.
+The review of a pull from Phabricator rejects none of its comments: each
+shows as accepted (`✓`), Enter, Delete and Space mark none of them
+(Delete says `a comment pulled from Phabricator cannot be rejected: close
+the review to file it`), and Esc offers `Close review`, which files every
+comment it pulled, with `Save` and `Discard` to leave it waiting for you.
+Its change of the stack, when it makes one, is reviewed as any change,
+operation by operation, from what was worked out as it was made, each
+operation saying after it what it takes from Phabricator; Esc then offers
+`Accept all remaining and Close` and `Reject all remaining and Close` for
+those operations, the comments filed whatever becomes of them; with no
+change, there are neither. A patch whose conflicts the pull marked does
+not go in: closing with its operation standing is refused, and `Send it
+back to the agent…` is offered (Phabricator, below).
 
 What you write in the review of the agent's work goes back to the agent
 with that work. In the patch as the work leaves it, ↑↓ move from line to line,
@@ -559,9 +578,10 @@ accepted is applied, the change as the operations accepted leave the
 stack; a stack that does not apply is refused, saying why, and nothing
 changes. There is no option for one operation: the review in the editor
 marks each, and saved, those marks stand. `--close-asking` closes the
-comments the agent was asked about too. A pull's review is not rejected:
-`--reject-all` refuses it, and `--accept-all` files every comment it
-pulled. Accepting a change, chained, `--accept-all` goes by the marks its
+comments the agent was asked about too. A pull's comments are not
+rejected: `--accept-all` files every comment it pulled, and so does
+`--reject-all`, which rejects its change of the stack alone, and is
+refused for a pull that brought comments alone. Accepting a change, chained, `--accept-all` goes by the marks its
 review saved for the answers made on the stack before the change, and
 marks none of them: while one is not marked keep, restart or stop, it
 refuses, naming each by its run, where it stands and what it was asked

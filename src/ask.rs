@@ -607,19 +607,26 @@ pub fn reads(way: Way) -> bool {
 
 /// What a comment sent on stack `name` in `way` would wait on, if anything.
 pub fn waits_on(db: &Db, name: &str, way: Way) -> Option<String> {
-    waits_for(db, name, way, true)
+    waits_for(db, name, way, true, true)
 }
 
 /// What the reconcile with HEAD of stack `name`, waiting its turn, waits
 /// for, if anything: what a change asked now would wait for, but for that
 /// reconcile.
 pub fn reconcile_waits_on(db: &Db, name: &str) -> Option<String> {
-    waits_for(db, name, Way::Change, false)
+    waits_for(db, name, Way::Change, false, true)
+}
+
+/// What the pull from Phabricator of stack `name`, waiting its turn, waits
+/// for, if anything: what a change asked now would wait for, but for that
+/// pull.
+pub fn pull_waits_on(db: &Db, name: &str) -> Option<String> {
+    waits_for(db, name, Way::Change, true, false)
 }
 
 /// What `waits_on` says, a reconcile with HEAD under way counted if
-/// `reconciles`.
-fn waits_for(db: &Db, name: &str, way: Way, reconciles: bool) -> Option<String> {
+/// `reconciles`, a pull from Phabricator waiting its turn if `pulls`.
+fn waits_for(db: &Db, name: &str, way: Way, reconciles: bool, pulls: bool) -> Option<String> {
     let going = asks_going(db, name);
     let chain = chains(&agent_of(db, name));
     // A lint job takes its turn as a change does: a change waits for it, a
@@ -640,6 +647,14 @@ fn waits_for(db: &Db, name: &str, way: Way, reconciles: bool) -> Option<String> 
             _ => "once you have reviewed the reconcile with HEAD".into(),
         });
     }
+    // A pull from Phabricator waiting its turn, as a change: a change goes
+    // once it is made, from the stack it makes.
+    #[cfg(feature = "moz-phab")]
+    if way == Way::Change && pulls && crate::review::pending(db, name).is_some() {
+        return Some("once the pull from Phabricator before it is made".into());
+    }
+    #[cfg(not(feature = "moz-phab"))]
+    let _ = pulls;
     // Chained, an answer runs alongside a change, on the stack as it is.
     let change = going.iter().find(|(_, i)| i.way == Way::Change).filter(|_| !(chain && reads(way)));
     if let Some((_, i)) = change {
@@ -690,11 +705,28 @@ fn guessed_from(db: &Db, name: &str) -> Option<String> {
 }
 
 /// The work run `r` goes on from, guessing you accept it, while that work
-/// waits for your review: it is reviewed first. An ask's, or a reconcile
-/// with HEAD's (`reconcile::after`).
+/// waits for your review: it is reviewed first. An ask's, a reconcile with
+/// HEAD's (`reconcile::after`), or a pull's (`review::after`).
 pub fn guessing(db: &Db, r: &Run) -> Option<String> {
-    let after = info(r).and_then(|i| i.after).or_else(|| crate::reconcile::after(r).map(String::from))?;
+    let after = info(r).and_then(|i| i.after).or_else(|| crate::reconcile::after(r).map(String::from)).or_else(|| pull_after(r))?;
     db.run(&after).is_some_and(|w| crate::held::waiting(db, w)).then_some(after)
+}
+
+/// The work pull `r` goes on from, if it is a pull chained on some.
+pub(crate) fn pull_after(r: &Run) -> Option<String> {
+    #[cfg(feature = "moz-phab")]
+    return crate::review::after(r).map(String::from);
+    #[cfg(not(feature = "moz-phab"))]
+    return {
+        let _ = r;
+        None
+    };
+}
+
+/// Whether, with the agent's settings for stack `name`, the edits of it go
+/// on from the change waiting for your review, guessing you accept it.
+pub fn chained(db: &Db, name: &str) -> bool {
+    chains(&agent_of(db, name))
 }
 
 /// The runs going on from landed work `id`, guessing it is accepted, that
@@ -719,6 +751,8 @@ pub fn guessed_right(db: &mut Db, id: &str, rev: usize) -> Result<()> {
             ..r
         })?;
     }
+    #[cfg(feature = "moz-phab")]
+    crate::review::followed(db, id, rev)?;
     crate::reconcile::followed(db, id, rev)
 }
 
@@ -762,8 +796,12 @@ pub fn guessed_wrong(db: &mut Db, id: &str, why: &str) -> Result<usize> {
         drop_run(db, &r, i, format!("dropped: the work it went on from was {why}; asked again"))?;
         n += 1 + guessed_wrong(db, &r.id, "dropped")?;
     }
-    // A reconcile with HEAD gone on from it: dropped, and made again at its
-    // next turn.
+    // A reconcile with HEAD gone on from it, or a pull: dropped, and made
+    // again at its next turn.
+    #[cfg(feature = "moz-phab")]
+    {
+        n += crate::review::dropped(db, id, why)?;
+    }
     Ok(n + crate::reconcile::dropped(db, id, why)?)
 }
 
@@ -775,6 +813,10 @@ pub fn guesses_after(db: &Db, id: &str) -> (usize, usize) {
         let (running, waiting) = guesses_after(db, &r.id);
         let own = usize::from(r.state == RunState::Started);
         out = (out.0 + own + running, out.1 + (1 - own) + waiting);
+    }
+    #[cfg(feature = "moz-phab")]
+    {
+        out.1 += crate::review::going_on_from(db, id).len();
     }
     (out.0, out.1 + crate::reconcile::going_on_from(db, id).len())
 }
@@ -966,6 +1008,9 @@ struct Going {
     /// A reconcile with HEAD waits its turn ahead, or for your review: the
     /// changes after it go once it is accepted or rejected.
     reconciling: bool,
+    /// A pull from Phabricator waits its turn ahead, or is to be made once
+    /// the lock is given back: the changes after it go once it is made.
+    pulling: bool,
 }
 
 /// The build and test in flight, of whichever stack: one at a time, as
@@ -1086,6 +1131,8 @@ pub fn whose_change(r: &Run) -> &'static str {
         "the linter's change"
     } else if crate::reconcile::is(r) {
         "the reconcile with HEAD"
+    } else if crate::held::pulled(r) {
+        "the pull's change"
     } else {
         "the agent's change"
     }
@@ -1643,45 +1690,75 @@ pub fn launch_lock(db_path: &Path) -> Result<LaunchLock> {
     Ok(held)
 }
 
+/// How many times a launch makes the pulls from Phabricator whose turn
+/// came, then claims what waited behind them: a pull whose stack changed
+/// as it was made is made again, and once these are spent waits for the
+/// next launch.
+const PULL_ROUNDS: usize = 4;
+
 /// Starts every ask that may go now, and the lint job whose turn it is;
 /// the runs started. Under the launch lock, every one of them: its
-/// worktree taken and made ready, and its agent spawned.
+/// worktree taken and made ready, and its agent spawned. A pull from
+/// Phabricator whose turn came is made then, the database's lock given
+/// back (`review::make`), and what waited behind it claimed in turn.
 pub fn launch(db_path: &Path) -> Result<Vec<String>> {
     if !Db::exists(db_path) {
         return Ok(vec![]);
     }
     let _launching = launch_lock(db_path)?;
-    let (claimed, lints) = Db::edit(db_path, claim)?;
-    for id in &claimed {
-        if let Err(e) = start(db_path, id) {
-            fail_start(db_path, id, &e.0)?;
+    let mut started = Vec::new();
+    let mut rounds = 0;
+    loop {
+        let (claimed, lints, pulls) = Db::edit(db_path, claim)?;
+        for id in &claimed {
+            if let Err(e) = start(db_path, id) {
+                fail_start(db_path, id, &e.0)?;
+            }
+        }
+        for id in &lints {
+            if let Err(e) = crate::lint::start(db_path, id) {
+                crate::lint::not_started(db_path, id, &e.0);
+            }
+        }
+        started.extend(claimed.into_iter().chain(lints));
+        if pulls.is_empty() || rounds == PULL_ROUNDS {
+            break;
+        }
+        rounds += 1;
+        #[cfg(feature = "moz-phab")]
+        for (id, after) in pulls {
+            crate::review::make(db_path, &id, after)?;
         }
     }
-    for id in &lints {
-        if let Err(e) = crate::lint::start(db_path, id) {
-            crate::lint::not_started(db_path, id, &e.0);
-        }
-    }
-    Ok(claimed.into_iter().chain(lints).collect())
+    Ok(started)
 }
 
 /// What `claim` goes through, in their turn: a batch of comments, by its
-/// key; a lint job or a reconcile with HEAD waiting, by its run, and its
-/// stack.
+/// key; a lint job, a reconcile with HEAD or a pull from Phabricator
+/// waiting, by its run, and its stack.
 enum Turn {
     Batch(String),
     Lint(String, String),
     Reconcile(String, String),
+    #[cfg_attr(not(feature = "moz-phab"), allow(dead_code))]
+    Pull(String, String),
 }
+
+/// What `claim` comes to: the asks begun, the lint jobs running, and the
+/// pulls from Phabricator whose turn came, each with the landed work it
+/// goes on from, chained, to make once the lock is given back.
+type Claimed = (Vec<String>, Vec<String>, Vec<(String, Option<String>)>);
 
 /// Under the lock: the ready batches that may go now, each a run begun,
 /// its comments taken off the queue; and the lint job whose turn it is, if
 /// one's is, running from now on. A lint job takes its turn as a change
 /// does, among the batches, the first asked first: one at a time of every
 /// stack. So does a reconcile with HEAD, made at once at its turn, chained
-/// as a change is; the changes after it wait until it is reviewed. Their
-/// run ids: the asks', and the lint job's.
-fn claim(db: &mut Db) -> Result<(Vec<String>, Vec<String>)> {
+/// as a change is; the changes after it wait until it is reviewed. So does
+/// a pull from Phabricator, made once the lock is given back, the changes
+/// after it waiting until it is made. Their run ids: the asks', the lint
+/// job's, and the pulls'.
+fn claim(db: &mut Db) -> Result<Claimed> {
     // The ready batches: stack, way, scope, comments, the landed work a
     // round sent back starts from, the run asked before it, the effort they
     // were sent at (the highest, should they differ), and whether they are
@@ -1730,15 +1807,20 @@ fn claim(db: &mut Db) -> Result<(Vec<String>, Vec<String>)> {
     let mut turns: Vec<Turn> = order.into_iter().map(Turn::Batch).collect();
     turns.extend(crate::lint::waiting(db).into_iter().map(|(id, name)| Turn::Lint(id, name)));
     turns.extend(crate::reconcile::waiting(db).into_iter().map(|(id, name)| Turn::Reconcile(id, name)));
-    // A batch's key is `b` and when it was made; a lint job's id, and a
-    // reconcile's, when it was asked.
+    #[cfg(feature = "moz-phab")]
+    turns.extend(crate::review::waiting(db).into_iter().map(|(id, name)| Turn::Pull(id, name)));
+    // A batch's key is `b` and when it was made; a lint job's id, a
+    // reconcile's, and a pull's after `pull-`, when it was asked.
     let key = |t: &Turn| match t {
         Turn::Batch(b) => (batches[b].4.is_none(), b.clone()),
         Turn::Lint(id, _) | Turn::Reconcile(id, _) => (true, format!("b{id}")),
+        Turn::Pull(id, _) => (true, format!("b{}", id.trim_start_matches("pull-"))),
     };
     turns.sort_by_key(key);
     let mut started = Vec::new();
     let mut lints = Vec::new();
+    #[cfg_attr(not(feature = "moz-phab"), allow(unused_mut))]
+    let mut pulls = Vec::new();
     // Per stack: what is going, as the batches are started; whether a change
     // waits for its review; and, chained, what the next goes on from. Of
     // every stack: whether a build and test is going, and a lint job.
@@ -1757,6 +1839,7 @@ fn claim(db: &mut Db) -> Result<(Vec<String>, Vec<String>)> {
             tail: guessed_from(db, name),
             lint: false,
             reconciling: crate::reconcile::reviewing(db, name),
+            pulling: false,
         }
     };
     for t in &turns {
@@ -1767,7 +1850,7 @@ fn claim(db: &mut Db) -> Result<(Vec<String>, Vec<String>)> {
             // run; and while no other lint job runs.
             Turn::Lint(id, name) => {
                 let st = state.entry(name.clone()).or_insert_with(|| going_of(db, name));
-                if !linting && !st.change && !st.lint && !st.reviewing && !st.reconciling && (st.chain || st.answers == 0) {
+                if !linting && !st.change && !st.lint && !st.reviewing && !st.reconciling && !st.pulling && (st.chain || st.answers == 0) {
                     crate::lint::claim(db, id)?;
                     linting = true;
                     st.change = true;
@@ -1785,7 +1868,7 @@ fn claim(db: &mut Db) -> Result<(Vec<String>, Vec<String>)> {
             // until it is reviewed, made or not.
             Turn::Reconcile(id, name) => {
                 let st = state.entry(name.clone()).or_insert_with(|| going_of(db, name));
-                if !st.change && !st.lint && !st.reconciling && (st.chain || (!st.reviewing && st.answers == 0)) {
+                if !st.change && !st.lint && !st.reconciling && !st.pulling && (st.chain || (!st.reviewing && st.answers == 0)) {
                     let after = if st.chain { st.tail.clone() } else { None };
                     crate::reconcile::make(db, id, after)?;
                     st.reviewing = true;
@@ -1795,6 +1878,25 @@ fn claim(db: &mut Db) -> Result<(Vec<String>, Vec<String>)> {
                 st.reconciling = true;
                 continue;
             }
+            // A pull from Phabricator, as a change: its turn come, made once
+            // the lock is given back (`review::make`), chained on the change
+            // under review, if any. What goes after it waits until it is
+            // made, as behind a pull waiting its turn; then its change, if
+            // it makes one, waits for your review, and the changes behind it
+            // go on from it, chained, as from any change.
+            #[cfg(feature = "moz-phab")]
+            Turn::Pull(id, name) => {
+                let st = state.entry(name.clone()).or_insert_with(|| going_of(db, name));
+                if !st.change && !st.lint && !st.reconciling && !st.pulling && (st.chain || (!st.reviewing && st.answers == 0)) {
+                    let after = if st.chain { st.tail.clone() } else { None };
+                    pulls.push((id.clone(), after));
+                }
+                st.change_waits |= st.chain || !st.reviewing;
+                st.pulling = true;
+                continue;
+            }
+            #[cfg(not(feature = "moz-phab"))]
+            Turn::Pull(..) => continue,
         };
         let (name, way, scope, notes, on, was, effort, follow) = batches[b].clone();
         let st = state.entry(name.clone()).or_insert_with(|| going_of(db, &name));
@@ -1805,7 +1907,7 @@ fn claim(db: &mut Db) -> Result<(Vec<String>, Vec<String>)> {
             // for what runs holds back the answers behind it, so it goes next.
             // Not before a lint job asked before it.
             Way::Change => {
-                if !st.change && !st.lint && !st.reconciling && (st.chain || (!st.reviewing && st.answers == 0)) {
+                if !st.change && !st.lint && !st.reconciling && !st.pulling && (st.chain || (!st.reviewing && st.answers == 0)) {
                     st.change = true;
                     true
                 } else {
@@ -1899,7 +2001,7 @@ fn claim(db: &mut Db) -> Result<(Vec<String>, Vec<String>)> {
         }
         started.push(id);
     }
-    Ok((started, lints))
+    Ok((started, lints, pulls))
 }
 
 fn first_line(text: &str) -> String {
@@ -2516,10 +2618,23 @@ fn prompt(db: &Db, i: &Info, s: &Stack, cmd: &str, run: &str, structured: bool, 
         });
         p.push_str(&brought(db, i, on, &s.name, cmd, false));
     }
+    // A pull from Phabricator's change sent back: the worktree holds the
+    // stack it makes, the conflicts it marked in it, which the comment below
+    // hands over, as the lint job hands its fixes over.
+    let from_pull = i.on.as_ref().filter(|_| !i.follow).and_then(|on| db.run(on)).is_some_and(crate::held::pulled);
+    if let Some(on) = i.on.as_ref().filter(|_| from_pull) {
+        p.push_str(&format!(
+            " This starts from the stack a pull from Phabricator makes, which the worktree holds: the pull took the latest diffs \
+             of revisions as new versions of their patches, or as new patches, and made again on them the patches that no longer \
+             applied, their conflicts marked in their files, as the comment below says; `{cmd} export {} --work {on}` prints that \
+             stack. Rework those patches as it asks.",
+            s.name
+        ));
+    }
     // Another round: what it brought back was sent back. What it changed
     // then, and the comments it opened, shown, as to a round asked again;
     // its replies are in their threads.
-    if let Some(on) = i.on.as_ref().filter(|_| !i.follow) {
+    if let Some(on) = i.on.as_ref().filter(|_| !i.follow && !from_pull) {
         let changed = db.run(on).and_then(|r| r.held.as_ref()).is_some_and(|h| h.stack.is_some());
         p.push_str(&match i.way {
             Way::Change if changed => format!(

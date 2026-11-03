@@ -924,6 +924,14 @@ pub struct Run {
     /// takes, and the work it went on from, if it is chained on some.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reconcile: Option<Box<crate::reconcile::Job>>,
+    /// For a pull from Phabricator (`pull`), built with the `moz-phab`
+    /// feature: what it was asked, what it read of Phabricator, and the work
+    /// it went on from, if it is chained on some. A pull of before, which
+    /// held the comments it read at once, has none; built without the
+    /// feature, the run reads all the same, this passed over.
+    #[cfg(feature = "moz-phab")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pull: Option<Box<crate::review::Job>>,
     pub time: i64,
 }
 

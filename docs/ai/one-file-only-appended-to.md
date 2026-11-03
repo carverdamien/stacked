@@ -47,7 +47,7 @@ bytes long, padded with spaces.
   review closes. With its change of the stack, it holds what each
   operation of that change needs, worked out as it landed (`needs`, and so
   does any run holding a change of the stack: a lint job's, an edit by
-  hand's, a reconcile with HEAD's): the operations it was worked out for,
+  hand's, a reconcile with HEAD's, a pull's): the operations it was worked out for,
   by a digest of the two stacks they follow from, their repository, bases
   and patches (`of`), as another change, or the same from another stack,
   is not theirs; and each operation that something needs, or that
@@ -87,6 +87,27 @@ bytes long, padded with spaces.
 - A reconcile with HEAD's run holds what it takes, each patch's change,
   its commit and that commit's message, and the work it went on from, if it
   was chained; made, its change of the stack, as an ask's.
+- A pull from Phabricator's run (`"what":"pull"`) holds its job (`pull`,
+  in a stacked of before none: such a run holds the comments it pulled
+  alone): what it was asked (`asked`: `"stack"`, `{"patch":{"change":…,
+  "children":true}}`, `{"new":"D123"}`); each revision it read, in the
+  order it read them (`read`: its `D123`, link and PHID, its status,
+  title, summary and bug, its parents, how the pull came to it,
+  `"reached"`: `"asked"`, `{"parent":"D12"}`, `{"child":"D12"}`, the id of
+  its latest diff and of the older diffs it read, the commit its latest
+  diff is on, the author and message of that diff's commit as uploaded,
+  its comments, and when it was last modified); the work it went on from,
+  if it was chained (`after`); and, made with a change of the stack, what
+  each patch of it takes from Phabricator (`took`: by the patch's change,
+  its revision, whether its diff and its message are Phabricator's, how
+  it was added, the version the patch was at the last diff stacked knew
+  since when it changed in the stack, and, made again on what the pull
+  changed under it, the files whose conflicts it marks), and what it found
+  that changes nothing, a sentence each (`found`). Waiting its turn, it is
+  started; made, done, its change of the stack and the comments it pulled
+  held as an ask's work is. The raw diffs it read are rawdiff records,
+  older ones too, and what it read of each revision revision records, as a
+  fetch writes them (below).
 - A moved record says where stacked left HEAD of a checkout on a stack
   (`{"t":"moved","stack":"s","checkout":"/path/to/top","commit":"…"}`):
   the commit HEAD was at right after Move HEAD, or HEAD following a review,
@@ -103,15 +124,16 @@ bytes long, padded with spaces.
   version as it was last edited, those of its versions before and the
   comment it replies to, which the Phabricator line counts those not
   pulled yet by, with when the revision was last modified as they were
-  read (`dateModified`; none from a pull). A read writes only the parts
-  that differ from what is stored, and nothing for a revision it found as
-  it was stored: `Fetch the latest from Phabricator` writes both, a submit
-  the state alone, a pull the comments alone. The latest record with each
-  part is what stands. A rawdiff record holds a revision's raw latest diff
-  (`{"t":"rawdiff","link":…,"diff":456,"raw":"…"}`), written once for each
-  diff id, as a diff never changes; and a fetched record says when a
-  fetch read revisions (`{"t":"fetched","links":[…],"time":…}`), the latest
-  that names a revision what stands of it. A file a stacked of before wrote
+  read (`dateModified`; none from a pull of a stacked of before). A read
+  writes only the parts that differ from what is stored, and nothing for a
+  revision it found as it was stored: `Fetch the latest from Phabricator`
+  and a pull write both, a submit the state alone. The latest record with
+  each part is what stands. A rawdiff record holds a revision's raw diff
+  (`{"t":"rawdiff","link":…,"diff":456,"raw":"…"}`), its latest, or an
+  older one a pull read, written once for each diff id, as a diff never
+  changes; and a fetched record says when a fetch, or a pull, read
+  revisions (`{"t":"fetched","links":[…],"time":…}`), the latest that
+  names a revision what stands of it. A file a stacked of before wrote
   has none of them, and reads as if nothing had been fetched yet; a
   stacked of before passes over these lines as lines it cannot read, with
   its warning (`stacked check` lists them), and reads the rest of the file

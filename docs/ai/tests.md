@@ -255,10 +255,13 @@ of before rejected, back once; an edit held as an edit of its turn, then
 the reviewer's latest turn, the turn it edits redacted; a reply or an edit
 in a thread you closed held with the thread as it was, `stacked landed`
 saying so, and reopening it once accepted, on the stack's comments for one
-moved there, as its history has it last when written since), a stack
-imported from Phabricator's revisions (by
-number or link, named or not), Phabricator's commands there only when
-built with it, and
+moved there, as its history has it last when written since), a new stack
+pulled from Phabricator's revisions (by number or link, named or not,
+made empty on the bottom one's base, the pull's review accepted from the
+command line making its patches, a revision a stack holds, or that the
+work waiting for your review adds, refused before Phabricator is read,
+one on a commit the repository lacks refused, no stack made),
+Phabricator's commands there only when built with it, and
 what does not apply being refused, edited again, or read-only. `tests/tui.rs` draws the editor into a buffer and presses keys:
 that no letter but 1, 2, 3 and / does anything, keys mapped by the settings
 (the bottom bar naming them, but as they are where what is typed is read),
@@ -545,7 +548,7 @@ collapsed the first line it says, the comments pane expanded the line it
 says under the comment (none compact, none when that line is code), and
 `o` opening none there, a stack made with none there (imported from the workspace, a
 range typed and refused until it holds a commit, the changes staged on top;
-from Phabricator, its revisions read by a stand-in; or by the agent), a
+pulled from Phabricator, its revisions read by a stand-in; or by the agent), a
 comment moved to the stack
 taking the cursor with it, the mouse (a side pane's line marked under it and picked by a click,
 elsewhere the cursor following it, a click as
@@ -568,9 +571,9 @@ one edit; offered but not to be chosen, the menu saying why, on a
 read-only stack and while an edit by hand waits for review), searching (what is in sight first, the patches then the
 files they touch, the history), the agents' worktrees made ahead as the
 stack's checkout says, the banner of the agent's work (Esc to it and
-back, open a line for each, Enter on each; the reviews pulled waiting in
-it as the agent's work does, their review rejecting nothing (no Delete, no
-item, nothing to reject as it closes), a reply to a comment you closed
+back, open a line for each, Enter on each; the comments pulled waiting in
+it as the agent's work does, their review rejecting none of them (no
+Delete, no item, nothing to reject as it closes), a reply to a comment you closed
 shown with the comment as it was, reopening it once the review closes, an
 edit shown as it was filed and as it is now over its thread, then headed
 by what it edits, the turn it edits redacted; replies taken with Enter, the last one
@@ -803,7 +806,7 @@ colours for words; Esc going back to the line; in sync, Space saying so,
 the parent named, and opening nothing; not fetched yet, Space saying that; reading, Space
 marking nothing read and Delete taking no mark back; Enter opening the
 menu, titled for the revision, every item of the patch about Phabricator
-first, its submit, what differs, the pull of its reviews and the fetch,
+first, its submit, what differs, the pull of its revision and the fetch,
 and the bar and `?` saying what Space does and what the menu has; the
 patch's own `Phabricator` menu offering those, the patch's menu none of
 them; what differs grayed, the menu saying why, while it is not fetched yet, and
@@ -811,31 +814,42 @@ for a revision Phabricator does not have; in sync, the screen saying that
 nothing differs, the parent with the rest, Esc going back to the patch; neither item while reviews
 come from nowhere; a latest diff on another base, each file as each
 leaves it, said, or the interdiff all the same, said too, where the
-files cannot be read so; the reviews of one patch's revision pulled
-alone, from the line's menu and from the patch's `Phabricator` menu, that
-revision read and no other, the banner naming it, one pull at a time, what
-it brings held for review as a pull's, the comments it read stored and
-nothing else read, and the stack's pull still reading every revision;
+files cannot be read so; one patch's revision pulled with its parents,
+which is that revision alone, the stack holding the one under it, from
+the line's menu and from the patch's `Phabricator` menu, that revision's
+diffs and comments read and no other's, after its parent's search, the
+banner naming it, one pull at a time, its diff, which no version of the
+patch is, a new version, and its comments, held for review as a pull's,
+what it read stored, the line saying no comments to pull, a pull of it
+again going on from that change and bringing nothing new, and the stack's
+pull reading every revision, an older title taken as a new version;
 every revision of the stack fetched, the parents and the latest diffs of
 all of them in one call each, by their PHIDs, then each, bottom first,
 each patch's line whole as soon as it is shown, nothing read for it, nor
-as patches are shown again, nor after a pull, which stores what it read,
-all of it read again once it is fetched again, a raw diff not read again
-while it is stored; a revision whose search says when it was last
+as patches are shown again; the stack's pull reading, after their search,
+the parents of all of them and what is stacked on the top, then each, its
+diffs, its raw latest diff only where it is not stored, and its comments,
+with their authors' names, storing it as a fetch does, the line of a
+revision whose new diff it read in sync, its comments held for review
+none to pull, and an older title a new version; all of it read again
+once it is fetched again, a raw diff not read again while it is stored,
+the one the pull read among them; a revision whose search says when it was last
 modified not read again while that stays the same, only its parents and
 its latest diff read, with the others', and no record of it written again,
 only the fetch's; one modified since read again, alone, its new comment
 counted; one submitted, fetched again alone once the submit is done, its
 comments read again though its search says it was not modified since;
-one pulled alone, read by the next fetch alone, as the pull stored its
-comments with no time of when it was modified; a fetch that fails partway
+one commented on and pulled alone, read whole by the pull, its raw diff
+stored already, and not by the next fetch, as the pull stored its
+comments with when it was modified; a fetch that fails partway
 storing nothing and saying why, the line not fetched yet, the next one
 storing it all, one failing later keeping what is stored, a revision
 never fetched not fetched yet; a fetch turned away (HTTP 429) said
 plainly, tried once, its first call turned away and nothing asked after
 it, nothing written, the statuses and the lines as they were, nothing
-waited out nor read by itself after it, a pull asked made all the same,
-nothing read after it, and a fetch after it reading all of it at once;
+waited out nor read by itself after it, a pull asked tried all the same,
+turned away too, said plainly, nothing written, and a fetch after it
+reading all of it at once;
 what a fetch reads stored as records of their own, a revision's state, its
 comments, its raw latest diff, the fetch, and an editor opened again on
 that database showing the lines, the letters and the marks as they are
@@ -849,9 +863,47 @@ menu itself, `?` saying what it opens and what the fetch does, the fetch
 one at a time, the bars saying it is fetching, the line's menu offering
 the same items directly, the stack's menu the fetch after the pull; what a
 submit reads stored, its revision's state and raw diff, though nothing is
-sent, and what it reads again before it would send, and the comments a
-pull reads, with no time of when the revision was modified, none written
-again when they are the same; the
+sent, and what it reads again before it would send, and what a pull
+reads, its comments with no time of when the revision was modified, as
+its search says none, its title and summary, which no version of the
+patch has, a new version, and, accepted and pulled again, nothing new,
+nothing of the revision written again, only that it was read; a stack
+pulled from Phabricator: a revision given a diff from elsewhere taken as
+a new version, its parent the stack does not hold added below it and the
+revision stacked on the top added on top, each with the author and the
+message of its commit as uploaded, and a reviewer's comment, in one
+review, each operation said with what it takes and marked on its own,
+the stack the four once it is accepted, the comment filed, and pulled
+again nothing new; a version stacked knows bringing nothing, a revision
+retitled elsewhere rewording its patch, known since; both changed,
+Phabricator's taken, the review showing what the patch had since the
+last version stacked knew, the patch above made again on it, its
+conflicts marked, closing with it refused, in the editor and under the
+lock, saying why, `Send it back to the agent…` offered with a permission
+to change; rejecting that patch's operation taking the one that breaks it
+along, the review closing then, the stack as it was; the conflicts
+resolved by hand from the review, the edit a pull's still, closing
+accepted; a leaf's add rejected alone, from what was stored of what each
+operation needs, its comment not filed, closing in part checked away from
+the screen, and pulled again, both back; more than one open parent, or
+more than one open revision stacked on one where the pull goes up,
+refused, nothing stored nor held, the pull of a patch's revision with its
+parents alone going all the same; a pull turned away saying so plainly
+and storing nothing; a patch's revision pulled with its parents, then
+with those stacked on it too, as its item's choice picks, kept for the
+stack; a pull waiting its turn as an edit does behind the agent's change,
+one at a time, its line of the banner and its menu saying what it waits
+for, dropped from its line and from the runs, asked first, else made on
+the stack that change makes, reviewed after it, what each operation
+needs worked out from that stack, its review marking each on its own once
+that change is accepted; a new stack pulled from a revision typed,
+refused until it names one, made empty on the bottom one's base, named
+after it, its parent and the one stacked on it added, the review open,
+the commit's message as uploaded, or Phabricator's title and summary for
+one whose summary was written otherwise since, a revision a stack holds
+refused as it is typed, one on a commit the repository lacks refused,
+nothing written; the banner saying where a pull is as it reads, and why
+one that failed did; the
 parent: a reordered stack's revisions differing by their parents alone,
 nothing read for it, Space and the menu's item showing the parent first,
 Phabricator's then the one a submit sets, and nothing under it, `?`
@@ -930,8 +982,10 @@ diff otherwise) on the screen its Phabricator line says so, the next
 patch's title after the column all the same, expanded and listing files, a
 title folded there, and the Phabricator line over its message, Space on it
 showing what differs on a screen of its own, Esc going back to the line,
-and the reviews of its revision pulled alone from its menu, an item
-clicked, by a stand-in too; and
+and its revision pulled from its menu, an item clicked, by the same
+stand-in, its diff a new version of the patch and a reviewer's comment
+held for review, the review then opened from the banner, its operation
+marked on its own; and
 `web.rs` tests the rows and the lines both ways, with the client's own tests
 (`web/client.rs`, compiled to the machine as well as to wasm), which also
 test the mouse followed only while the page has the focus: the cell where
@@ -988,8 +1042,10 @@ diff otherwise) on the screen its Phabricator line says so, the next
 patch's title after the column all the same, expanded and listing files, a
 title folded there, and the Phabricator line over its message, Space on it
 showing what differs on a screen of its own, Esc going back to the line,
-and the reviews of its revision pulled alone from its menu, an item
-clicked, by a stand-in too; the File menu, its
+and its revision pulled from its menu, an item clicked, by the same
+stand-in, its diff a new version of the patch and a reviewer's comment
+held for review, the review then opened from the banner, its operation
+marked on its own; the File menu, its
 dialogs answered by the test: Open… opening each database picked in a
 window of its own (one picked twice, one that cannot be read said, the
 dialog cancelled), New… making an empty database that stacked reads and
@@ -1528,7 +1584,13 @@ finding all as stored writing nothing of it but the fetch, one finding a
 revision modified since reading and writing its comments alone, one of a
 revision alone, as after a submit, reading its comments again whatever
 its search says, its parent named as stored; and one turned away writing
-nothing. They show curl given the token and the call's parameters on its
+nothing. They show what a pull reads: the revisions asked, down their
+open parents the stack does not hold, and up through the open ones
+stacked on the top, each named with its parents, the older diffs of one
+whose latest is no version stacked knows, to the first that is one;
+more than one open parent, or more than one open revision stacked on one
+where the pull goes up, read no further, saying which; and each revision
+told as it starts being read, up to a call that fails. They show curl given the token and the call's parameters on its
 standard input, none of them in its arguments; a call turned away (HTTP
 429) an error of its own, which says so plainly, whatever Phabricator asks
 to wait, after an answer that says to go on too; another status
@@ -1542,8 +1604,9 @@ the pulls waiting: those filed or waiting not counted, one edited since
 it was filed counted as edited, a thread closed not counted, nor a new
 reply or edit there, but for one moved to the stack's comments, another
 stack's pull not this one's, and one a review of before rejected counted,
-as a pull brings it again; and where a pull is said, one patch's revision
-pulled alone too. Those in
+as a pull brings it again; where a pull is said, one patch's revision
+pulled alone too; and what a pull brings said counted, its conflicts
+marked last. Those in
 `tui/revisions.rs` show how long ago what the Phabricator line says was
 fetched, said as the line says it, just now, then in minutes, in hours,
 yesterday, then in days, a time to come just now; a title in work

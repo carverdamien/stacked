@@ -28,8 +28,8 @@ stacked send bug123 --batch --fan-out   # the batch: edits to one agent, answers
 stacked send bug123 4f1c2a --effort max   # at claude's --effort max, rather than high
 stacked stop 1761650000000-4242    # the agent of that run (stacked runs lists them) stopped: its ask lands as failed at once
 stacked reply bug123 4f1c2a and keep the title
-stacked moz-phab pull bug123       # reviewers' comments from Phabricator, held for your review (moz-phab)
-stacked moz-phab import D123       # a new stack of D123, those it stacks on and those on it (moz-phab)
+stacked moz-phab pull bug123       # the stack's revisions, new versions, parents, those on top, comments: for your review (moz-phab)
+stacked moz-phab import D123       # a new stack pulled from D123, those it stacks on and those on it, for your review (moz-phab)
 stacked export bug123 | git am     # or put it anywhere by hand
 stacked trim new.jsonl --from @40  # a new database, the history before @40 left out
 stacked config > ~/.stacked/config.toml   # every setting, to start a settings file from (once ~/.stacked is made)

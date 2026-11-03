@@ -37,6 +37,12 @@ pub(super) const FETCHING: &str = "fetching";
 /// The item of the menus that fetches the latest from Phabricator.
 pub(super) const FETCH: &str = "Fetch the latest from Phabricator";
 
+/// The item of the stack's menu that pulls the stack from Phabricator.
+pub(super) const PULL: &str = "Pull from Phabricator";
+
+/// What the bottom line says when a pull is asked while one goes.
+const PULLING_ALREADY: &str = "already pulling from Phabricator: one pull at a time";
+
 /// What the Phabricator line says of a revision nothing of which is stored
 /// yet.
 const NOT_FETCHED: &str = "not fetched yet: Fetch the latest from Phabricator, in its menu";
@@ -207,21 +213,10 @@ fn compare(job: Job) -> Code {
 }
 
 /// The title and summary of a revision, `title` and `summary` as its search
-/// found them, and as patch `p` would send them, as a submit reads them
-/// (`submit::wip_title`, `submit::summary_of`, the lines naming a revision
-/// left out of both): its title `WIP: ` first, or not, as the revision's is
-/// (`submit::title_against`, which a submit to a revision not in work
-/// sends). None when they are the same to the letter, the white space at
-/// their end aside, as a submit compares them before it sends them: where
-/// their lines wrap too, as that is what lands, so that a message wrapped
-/// again since it was submitted differs until it is submitted again.
-/// Phabricator gives a title and summary back as a submit sent them, over
-/// Conduit, to the letter: nothing else is to be allowed for.
+/// found them, and as patch `p` would send them (`submit::message_against`):
+/// none when they are the same to the letter.
 fn message_against(title: &str, summary: &str, p: &Patch, trailer: &str) -> Option<(String, String)> {
-    let before = format!("{title}\n\n{}", crate::submit::summary_of(&format!("\n{summary}"), trailer)).trim_end().to_string();
-    let mine = crate::submit::title_against(p.title(), title);
-    let after = format!("{mine}\n\n{}", crate::submit::summary_of(&p.message, trailer)).trim_end().to_string();
-    (before != after).then_some((before, after))
+    crate::submit::message_against(title, summary, p, trailer)
 }
 
 /// Whether two versions of a title and summary, `before` and `after`, have
@@ -785,9 +780,10 @@ impl App {
 
     /// The items about the revision of the patch the middle shows: what
     /// differs from it on Phabricator, on a screen of its own, grayed while
-    /// that is not known; and a pull of its reviews alone. Why the first is
-    /// grayed, if it is, for the menu to say. No item, while reviews come
-    /// from nowhere, or the patch names no revision.
+    /// that is not known; and a pull of it, with its parents, and, as the
+    /// item's choice picks, the revisions stacked on it (`pull_choices`).
+    /// Why the first is grayed, if it is, for the menu to say. No item,
+    /// while reviews come from nowhere, or the patch names no revision.
     fn revision_items(&self, items: &mut Vec<Item>) -> Option<String> {
         if self.cfg.reviews.source == crate::config::Source::None {
             return None;
@@ -800,14 +796,37 @@ impl App {
             Synced::Unknown => Some(format!("{d} is not read from Phabricator and compared with this patch yet.")),
         };
         items.push(Item::new(format!("What differs from {d} on Phabricator…"), Action::Differs).when(why.is_none()));
-        items.push(Item::new(format!("Pull the reviews of {d} from Phabricator"), Action::PullPatch(p.change.clone())));
+        let change = p.change.clone();
+        items.push(Item::new(format!("Pull {d} from Phabricator"), Action::PullPatch(change.clone(), false)).with(self.pull_choices(&change)));
         why.map(|why| format!("What differs from {d} on Phabricator is grayed: {why}"))
+    }
+
+    /// What the pull of the revision of the patch of `change` pulls with
+    /// it, as radio buttons: the revisions it stacks on that the stack does
+    /// not hold; or those, and the revisions stacked on it. Kept for the
+    /// stack, as the menus' choices are.
+    fn pull_choices(&self, change: &str) -> Choices {
+        let list = vec![
+            Choice::new(
+                "parents",
+                "with its parents",
+                "with the revisions it stacks on that the stack does not hold, down to one it holds or the first that is not open",
+                Some(Action::PullPatch(change.to_string(), false)),
+            ),
+            Choice::new(
+                "children",
+                "and the revisions on it",
+                "with the revisions it stacks on that the stack does not hold, and the revisions stacked on it, while one is open",
+                Some(Action::PullPatch(change.to_string(), true)),
+            ),
+        ];
+        Choices::new("pull", "with", list, self.db.choice(&self.stack, "pull"))
     }
 
     /// Every item of the patch the middle shows about Phabricator, in the
     /// patch's `Phabricator` menu (`phab_menu`) and in the menu of its
     /// Phabricator line alike: its submit (`submit_item`), what differs from
-    /// its revision and the pull of its reviews alone (`revision_items`),
+    /// its revision and the pull of it (`revision_items`),
     /// and Fetch the latest from Phabricator. Why those grayed are, for the
     /// menu to say: HEAD holding the submit back, or a reason of its own,
     /// then what differs. None while reviews come from nowhere.
@@ -976,27 +995,35 @@ impl App {
         }
     }
 
-    /// The reviews pulled from Phabricator, away from the screen: of every
-    /// revision the stack's patches name, or of the patch of change `only`'s
-    /// alone; the banner saying where the pull is as it goes, what it brings
-    /// held for review, the comments it read stored. One pull at a time.
-    pub(super) fn pull_reviews(&mut self, only: Option<String>) {
+    /// A pull from Phabricator, as `asked` asks, away from the screen: of
+    /// every revision the stack's patches name, or of the patch's whose
+    /// change it names, with their parents and, as asked, those stacked on
+    /// them (`review::pull`); the banner saying where the pull is as it reads,
+    /// what it read stored, and the pull queued as an edit is, what it brings
+    /// waiting for your review once it is made. One pull at a time, and not
+    /// while one of the stack waits its turn.
+    pub(super) fn pull_from_phabricator(&mut self, asked: review::Asked) {
         if self.bg.doing.contains(&"pulling") {
-            self.status = "already pulling the reviews".into();
+            self.status = PULLING_ALREADY.into();
+            return;
+        }
+        if let Some(why) = review::not_now(&self.db, &self.stack) {
+            self.status = why;
             return;
         }
         let name = self.stack.clone();
         // Of one patch: its revision, said from the start.
-        let alone = only.as_ref().and_then(|change| {
-            let s = self.current()?;
-            let p = s.patches.iter().map(|id| self.db.patch(id)).find(|p| p.change == *change)?;
-            crate::phab::revision_of(&p.message)
-        });
-        let alone = alone.map(|(d, _)| d);
+        let alone = match &asked {
+            review::Asked::Patch { change, .. } => self.current().and_then(|s| {
+                let p = s.patches.iter().map(|id| self.db.patch(id)).find(|p| p.change == *change)?;
+                crate::phab::revision_of(&p.message).map(|(d, _)| d)
+            }),
+            _ => None,
+        };
         self.bg.doing.push("pulling");
         self.status = match &alone {
-            Some(d) => format!("pulling the reviews of {d} from Phabricator…"),
-            None => "pulling the reviews from Phabricator…".into(),
+            Some(d) => format!("pulling {d} from Phabricator…"),
+            None => "pulling from Phabricator…".into(),
         };
         self.bg.pull = Some((name.clone(), alone.map_or(review::Pulling::Starting, review::Pulling::Alone)));
         let (path, tx) = (self.path.clone(), self.bg.tx.clone());
@@ -1005,18 +1032,117 @@ impl App {
             let mut say = |p| {
                 let _ = tx.send(Done::Pulling(p));
             };
-            let pulled = match &only {
-                Some(change) => review::pull_patch_saying(&path, &name, change, &mut say),
-                None => review::pull_saying(&path, &name, &mut say),
+            let said = match review::pull(&path, &name, asked, &mut say) {
+                Ok(r) => Db::load(&path).map_or_else(|_| r.summary.clone(), |db| review::said(&db, &r)),
+                Err(e) => e.0,
             };
-            Done::Said(
-                "pulling",
-                match pulled {
-                    Ok(r) => r.summary,
-                    Err(e) => e.0,
-                },
-            )
+            Done::Said("pulling", said)
         });
+    }
+
+    /// A new stack pulled from Phabricator, from the revision `text` names,
+    /// away from the screen (`review::import`): made empty, on the commit
+    /// the bottom revision is on, and what the pull brings landing into it
+    /// for review; then shown, its review open. One pull at a time.
+    pub(super) fn pull_new_stack(&mut self, text: &str) {
+        let Some((rev, _)) = crate::phab::revision_named(text) else { return };
+        if self.bg.doing.contains(&"pulling") {
+            self.status = PULLING_ALREADY.into();
+            return;
+        }
+        self.bg.doing.push("pulling");
+        self.status = format!("pulling {rev} from Phabricator, with the revisions it stacks on and those stacked on it…");
+        // Shown in the banner of the stack shown, as it has none yet.
+        self.bg.pull = Some((self.stack.clone(), review::Pulling::Alone(rev)));
+        let (path, at, tx, text) = (self.path.clone(), self.checkout.clone(), self.bg.tx.clone(), text.to_string());
+        self.spawn(move || {
+            let mut say = |p| {
+                let _ = tx.send(Done::Pulling(p));
+            };
+            let pulled = review::import(&path, &at, &text, None, &mut say).and_then(|r| {
+                let said = review::said(&Db::load(&path)?, &r);
+                Ok((r.stack.clone(), r.id.clone(), said))
+            });
+            Done::PulledStack(pulled.map_err(|e| e.0))
+        });
+    }
+
+    /// What pulling a new stack came to (`pull_new_stack`): its stack
+    /// shown, the pull's review open once it waits for your review; else
+    /// why nothing was made.
+    pub(super) fn pulled_stack(&mut self, pulled: std::result::Result<(String, String, String), String>) {
+        self.bg.doing.retain(|d| *d != "pulling");
+        self.bg.pull = None;
+        match pulled {
+            Ok((name, run, said)) => {
+                self.reload();
+                self.switch_stack(&name);
+                if self.db.run(&run).is_some_and(|r| crate::held::waiting(&self.db, r)) {
+                    self.open_review(&run, None);
+                }
+                self.status = said;
+            }
+            Err(e) => self.status = e,
+        }
+    }
+
+    /// The item that drops the stack's pull from Phabricator waiting its
+    /// turn, asking first, if one waits.
+    pub(super) fn pull_drop_item(&self) -> Option<Item> {
+        let r = review::pending(&self.db, &self.stack)?;
+        Some(Item::new("Drop the waiting pull from Phabricator…", Action::AskDropPull(r.id.clone())))
+    }
+
+    /// What the stack's pull from Phabricator, waiting its turn, waits for,
+    /// said.
+    pub(super) fn pull_waits(&self, name: &str) -> String {
+        let on = crate::ask::pull_waits_on(&self.db, name).unwrap_or_else(|| "next".into());
+        format!("The pull from Phabricator waits its turn: stacked makes it {on}, and what it brings then waits for your review")
+    }
+
+    /// Pull `run`, if it waits its turn.
+    fn pull_waiting(&self, run: &str) -> Option<&crate::db::Run> {
+        self.db.run(run).filter(|r| review::is(r) && r.state == RunState::Started && r.pull.is_some())
+    }
+
+    /// The menu of pull `run` waiting its turn, which Enter on its line of
+    /// the banner opens: what it waits for, and its drop. None once it no
+    /// longer waits.
+    pub(super) fn pull_menu(&self, run: &str) -> Option<Menu> {
+        let r = self.pull_waiting(run)?;
+        let items = vec![Item::new("Drop the waiting pull from Phabricator…", Action::AskDropPull(run.into()))];
+        let mut m = Menu::new("pull from Phabricator, waiting its turn", items, None);
+        m.note = Some(format!("{}.", self.pull_waits(&r.stack)));
+        Some(m)
+    }
+
+    /// What dropping pull `run`, waiting its turn, asks first: that nothing
+    /// was changed, and what is then of the edits asked after it. None once
+    /// it no longer waits.
+    pub(super) fn drop_pull_ask(&self, run: &str) -> Option<Menu> {
+        let r = self.pull_waiting(run)?;
+        let mut said = vec!["It is taken off the queue: what it read of Phabricator stays stored, and nothing changes in the stack.".to_string()];
+        said.extend(super::banner::edits_after_said(&self.db, &r.stack, run.trim_start_matches("pull-")));
+        let yes = Item::new("Drop it", Action::DropPull(run.into()));
+        let mut m = Menu::ask("drop the pull from Phabricator that waits its turn? Nothing was held yet", yes, "Keep it", true);
+        m.note = Some(said.join("\n"));
+        Some(m)
+    }
+
+    /// Pull `run`, waiting its turn, dropped: the status line says so, and
+    /// what waited behind it goes.
+    pub(super) fn drop_pull(&mut self, run: &str) {
+        match review::drop_waiting(&self.path, run) {
+            Ok((_, dropped)) => {
+                self.reload();
+                self.status = match dropped {
+                    true => review::DROPPED.into(),
+                    false => "the pull from Phabricator no longer waits its turn: it was made meanwhile".into(),
+                };
+                self.launch();
+            }
+            Err(e) => self.status = e.0,
+        }
     }
 
     /// What `?` says on the Phabricator line: what the line says, where it
@@ -1026,7 +1152,7 @@ impl App {
         let Some((d, link)) = crate::phab::revision_of(&p.message) else { return Vec::new() };
         let n = self.sel + 1;
         let mut out = vec![format!(
-            "This line says what Phabricator has of patch {n}: its revision, {d}; the status of {d}, by its name; whether {d} is in sync with this version; how many of the comments of {d} are not pulled yet; and how long ago that was fetched. In sync, the latest diff of {d} does what this version does; the title and summary of {d} are exactly those a submit sends, where their lines wrap too; and a submit would not change the parent of {d}, which a submit sets to the revision of the patch below, when that is open. What this line says is what stacked stored the last time it read Phabricator: stacked reads nothing of it by itself. Fetch the latest from Phabricator, in this line's menu, reads every revision of the stack again; a submit reads its revision, and a pull the comments it pulls. Where something is not fetched yet, the line says … in its place. The patches pane says the same after the status of each patch's revision: ✓ in sync, ✗ when something differs."
+            "This line says what Phabricator has of patch {n}: its revision, {d}; the status of {d}, by its name; whether {d} is in sync with this version; how many of the comments of {d} are not pulled yet; and how long ago that was fetched. In sync, the latest diff of {d} does what this version does; the title and summary of {d} are exactly those a submit sends, where their lines wrap too; and a submit would not change the parent of {d}, which a submit sets to the revision of the patch below, when that is open. What this line says is what stacked stored the last time it read Phabricator: stacked reads nothing of it by itself. Fetch the latest from Phabricator, in this line's menu, reads every revision of the stack again; a submit reads its revision, and a pull the revisions it pulls. Where something is not fetched yet, the line says … in its place. The patches pane says the same after the status of each patch's revision: ✓ in sync, ✗ when something differs."
         )];
         out.push(match self.synced(p, &link) {
             Synced::NotFound => format!("Phabricator has no revision {d}, so nothing of it is compared with this patch, and Space only says so."),
@@ -1057,7 +1183,7 @@ impl App {
             ),
         });
         out.push(format!(
-            "Press Enter for all that can be done here: the submit of this patch, what differs from {d} on Phabricator, a pull of the reviews of {d} alone, and Fetch the latest from Phabricator."
+            "Press Enter for all that can be done here: the submit of this patch, what differs from {d} on Phabricator, the pull of {d} with its parents, or with the revisions stacked on it too, as its choice picks, and Fetch the latest from Phabricator."
         ));
         out
     }
@@ -1236,7 +1362,7 @@ mod tests {
     #[cfg(feature = "demo")]
     #[test]
     fn the_tour_pulls_nothing_from_phabricator_a_patch_s_revision_alone_neither() {
-        assert!(reaches_phabricator(&Action::Pull) && reaches_phabricator(&Action::PullPatch("c".into())));
+        assert!(reaches_phabricator(&Action::Pull) && reaches_phabricator(&Action::PullPatch("c".into(), true)));
         // Nor does it fetch the latest.
         assert!(reaches_phabricator(&Action::Fetch));
         // What differs shows what is stored, and reads nothing; the menu of

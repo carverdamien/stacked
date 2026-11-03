@@ -1601,6 +1601,20 @@ fn conflict_of(db: &Db, s: &Stack, edits: Vec<(usize, Draft)>, said: &str) -> Op
 /// disagree, in the style the repository's git is set to
 /// (`merge.conflictStyle`). None if git could not merge them.
 fn merge(repo: &std::path::Path, ours: &str, was: &str, theirs: &str, at: usize) -> Option<String> {
+    merge_as(repo, ours, was, theirs, [OURS, BASE, &format!("patch {}", at + 1)]).map(|(text, _)| text)
+}
+
+/// How a pull's conflict markers name the patches under a patch it makes
+/// again on the versions it pulled, as the pull leaves them, and as they
+/// were; the third, the patch's (`patch 3`) or the revision's diff it
+/// pulled (`D12's latest diff`).
+pub const PULL_OURS: &str = "the stack below, as the pull leaves it";
+pub const PULL_BASE: &str = "the stack below, as it was";
+
+/// As `merge`, the markers labelled `labels`: what `ours` is, what `was`
+/// is, and what `theirs` is. The merged text, and whether it holds a
+/// conflict marked.
+fn merge_as(repo: &std::path::Path, ours: &str, was: &str, theirs: &str, labels: [&str; 3]) -> Option<(String, bool)> {
     use std::process::{Command, Stdio};
     use std::sync::atomic::{AtomicUsize, Ordering};
     // A folder for each merge, named as all that stacked makes in the
@@ -1623,13 +1637,80 @@ fn merge(repo: &std::path::Path, ours: &str, was: &str, theirs: &str, at: usize)
         }
         _ => {}
     }
-    let label = format!("patch {}", at + 1);
-    cmd.args(["-L", OURS, "-L", BASE, "-L", &label]).args(&files).current_dir(repo).stderr(Stdio::null());
+    cmd.args(["-L", labels[0], "-L", labels[1], "-L", labels[2]]).args(&files).current_dir(repo).stderr(Stdio::null());
     let out = if written { cmd.output().ok() } else { None };
     let _ = std::fs::remove_dir_all(&dir);
     // The number of conflicts, 127 at most; else git could not merge.
     let out = out.filter(|o| o.status.code().is_some_and(|c| (0..=127).contains(&c)))?;
-    String::from_utf8(out.stdout).ok()
+    let conflicts = out.status.code().is_some_and(|c| c > 0);
+    Some((String::from_utf8(out.stdout).ok()?, conflicts))
+}
+
+/// Diff `diff`, of a patch made on the diffs `was` applied in turn on
+/// `base` in the repository at `repo`, made again on the diffs `ours`
+/// instead, as a pull makes a patch above the versions it pulled: each file
+/// of it that applies on `ours` as it is, as it is; each other merged as a
+/// conflict resolved by hand is (`merge_as`), the file as `ours` leaves it,
+/// as `was` left it, and as the diff left it on `was`, conflict markers
+/// labelled `labels` where they disagree, its part of the diff made again
+/// from that. The new diff, and the files it marks a conflict in, none when
+/// each merged; or why it cannot be made so, said: a file that does not
+/// apply which it adds, deletes, renames or copies, or that is not text, or
+/// the diff not applying on `was` either. Nothing is written but in a pad
+/// of the check's own (`check::Pad`): the repository is only read.
+#[cfg(feature = "moz-phab")]
+pub(crate) fn rebased(repo: &std::path::Path, base: &str, ours: &[&str], was: &[&str], diff: &str, labels: [&str; 3]) -> std::result::Result<(String, Vec<String>), String> {
+    use crate::check::Pad;
+    let all: Vec<&str> = ours.iter().chain(was).chain([&diff]).copied().collect();
+    let now = Pad::new(repo, base, &all, &[]).map_err(|e| e.0)?;
+    if now.apply_each(ours).is_err() {
+        return Err("the patches under it do not apply on the stack's base".into());
+    }
+    let then = Pad::new(repo, base, &all, &[]).map_err(|e| e.0)?;
+    if then.apply_each(was).is_err() {
+        return Err("the patches it was made on cannot be read".into());
+    }
+    // What comes before the first file, then each file.
+    let head: String = diff.split_inclusive('\n').take_while(|l| !l.starts_with("diff --git ")).collect();
+    let parts = parts_of(diff);
+    let files = crate::diff::parse_diff(diff, "");
+    if parts.len() != files.len() {
+        return Err("its files cannot be told apart".into());
+    }
+    let mut out = head;
+    let mut marked = Vec::new();
+    for (part, fd) in parts.iter().zip(&files) {
+        if now.would_apply(part) {
+            out.push_str(part);
+            continue;
+        }
+        let whole = fd.header.iter().any(|l| {
+            ["new file mode ", "deleted file mode ", "rename from ", "copy from ", "Binary files ", "GIT binary patch"]
+                .iter()
+                .any(|h| l.starts_with(h))
+        });
+        if whole {
+            return Err(format!("its conflict in {} cannot be marked, as it adds, deletes, renames or copies the file, or the file is not text", fd.path));
+        }
+        let from = from_of(fd);
+        let not_text = || format!("its conflict in {} cannot be marked, as the file is not text", fd.path);
+        let ours_text = now.text(&from).map_err(|e| e.0)?.ok_or_else(not_text)?;
+        let was_text = then.text(&from).map_err(|e| e.0)?.ok_or_else(not_text)?;
+        if !then.apply(part) {
+            return Err(format!("its change of {} does not apply on what it was made on either", fd.path));
+        }
+        let theirs_text = then.text(&fd.path).map_err(|e| e.0)?.ok_or_else(not_text)?;
+        let (merged, conflicts) = merge_as(repo, &ours_text, &was_text, &theirs_text, labels).ok_or_else(|| format!("git could not merge its change of {}", fd.path))?;
+        if conflicts {
+            marked.push(fd.path.clone());
+        }
+        let section = file_section(repo, fd, &from, Some(&ours_text), &merged).map_err(|e| e.0)?;
+        out.push_str(section.as_deref().unwrap_or(""));
+    }
+    if !out.lines().any(|l| l.starts_with("diff --git ")) {
+        return Err("made again, it would change nothing".into());
+    }
+    Ok((out, marked))
 }
 
 /// Whether `text` still holds a conflict marker `merge` wrote for patch

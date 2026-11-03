@@ -1066,7 +1066,7 @@ impl Asking {
             Asking::ImportName => "the name of the stack it makes",
             Asking::AgentName => "the name of the stack the agent makes",
             #[cfg(feature = "moz-phab")]
-            Asking::Revision => "a revision of Phabricator, with those it stacks on: D123, or its link",
+            Asking::Revision => "a revision of Phabricator, to pull into a new stack: D123, or its link",
         }
     }
 
@@ -1077,7 +1077,7 @@ impl Asking {
             Asking::ImportName => "name it so",
             Asking::AgentName => "make it, empty, then say what it should hold",
             #[cfg(feature = "moz-phab")]
-            Asking::Revision => "read it, and the revisions it stacks on",
+            Asking::Revision => "pull it, with the revisions it stacks on and those stacked on it",
         }
     }
 }
@@ -1305,8 +1305,8 @@ pub enum Action {
     /// A stack for the agent to make: named, made empty, then said in a
     /// comment on it, to ask the agent.
     AgentStack,
-    /// A revision of Phabricator to type, to import with those it stacks
-    /// on.
+    /// A revision of Phabricator to type, to pull into a new stack with
+    /// those it stacks on, and those stacked on it.
     #[cfg(feature = "moz-phab")]
     FromPhabricator,
     Cancel,
@@ -1534,12 +1534,22 @@ pub enum Action {
     Whole(bool),
     MarkRead,
     MarkUnread,
+    /// The stack pulled from Phabricator: every revision its patches name,
+    /// their parents, and those stacked on top.
     #[cfg(feature = "moz-phab")]
     Pull,
-    /// The reviews of the revision of the patch of change `0` pulled from
-    /// Phabricator, that revision's alone.
+    /// The revision of the patch of change `0` pulled from Phabricator, with
+    /// its parents; with those stacked on it too, `1`.
     #[cfg(feature = "moz-phab")]
-    PullPatch(String),
+    PullPatch(String, bool),
+    /// The pull of stack `0` waiting its turn, its run: what it waits for,
+    /// and its drop; asked first; dropped.
+    #[cfg(feature = "moz-phab")]
+    PullMenu(String),
+    #[cfg(feature = "moz-phab")]
+    AskDropPull(String),
+    #[cfg(feature = "moz-phab")]
+    DropPull(String),
     /// What differs between the patch the middle shows and its revision's
     /// latest version on Phabricator, on a screen of its own.
     #[cfg(feature = "moz-phab")]
@@ -1589,7 +1599,7 @@ pub enum Action {
 fn reaches_phabricator(action: &Action) -> bool {
     match action {
         #[cfg(feature = "moz-phab")]
-        Action::Pull | Action::PullPatch(_) | Action::Fetch | Action::FromPhabricator | Action::Submit | Action::SubmitMeta | Action::SendSubmit => true,
+        Action::Pull | Action::PullPatch(..) | Action::Fetch | Action::FromPhabricator | Action::Submit | Action::SubmitMeta | Action::SendSubmit => true,
         _ => false,
     }
 }
@@ -1611,7 +1621,9 @@ fn about(action: &Action) -> String {
         Action::NameImport => "give the stack it makes another name".into(),
         Action::AgentStack => "make a stack, empty, on HEAD of the workspace, then say in a comment on it what the agent should make of it, to ask the agent".into(),
         #[cfg(feature = "moz-phab")]
-        Action::FromPhabricator => "import a stack from Phabricator: a revision, with those it stacks on, and those that stack on it while one is open".into(),
+        Action::FromPhabricator => {
+            "pull a new stack from Phabricator: a revision, with those it stacks on, and those stacked on it while one is open; the stack is made empty, and what the pull brings waits for your review, accepting it making the patches".into()
+        }
         Action::Open => "read this patch".into(),
         Action::GoToNote => "go to this comment".into(),
         Action::MovePatch => "pick this patch up and put it elsewhere in the stack".into(),
@@ -1834,14 +1846,28 @@ fn about(action: &Action) -> String {
         Action::MarkRead => "mark this block as read".into(),
         Action::MarkUnread => "mark this block as unread".into(),
         #[cfg(feature = "moz-phab")]
-        Action::Pull => "pull the reviewers' comments from Phabricator".into(),
+        Action::Pull => {
+            "pull the stack from Phabricator: every revision its patches name, with the revisions they stack on that the stack does not hold, and those stacked on top; their latest diffs, titles and summaries, as new versions or new patches, and the reviewers' comments, all of it waiting for your review".into()
+        }
         #[cfg(feature = "moz-phab")]
-        Action::PullPatch(_) => "pull the reviewers' comments on this patch's revision alone from Phabricator: what is new waits for your review".into(),
+        Action::PullPatch(_, false) => {
+            "pull this patch's revision from Phabricator, with the revisions it stacks on that the stack does not hold: what is new waits for your review".into()
+        }
+        #[cfg(feature = "moz-phab")]
+        Action::PullPatch(_, true) => {
+            "pull this patch's revision from Phabricator, with the revisions it stacks on that the stack does not hold, and those stacked on it: what is new waits for your review".into()
+        }
+        #[cfg(feature = "moz-phab")]
+        Action::PullMenu(_) => "see what the pull from Phabricator waits for, to drop it".into(),
+        #[cfg(feature = "moz-phab")]
+        Action::AskDropPull(_) | Action::DropPull(_) => {
+            "drop the pull from Phabricator that waits its turn, as if it was never asked: what it read stays stored, nothing changes in the stack; what waits after it in the queue goes on".into()
+        }
         #[cfg(feature = "moz-phab")]
         Action::Differs => "see what differs between Phabricator's latest version of this patch's revision and this version, on a screen of its own: the title and summary as a submit sends them, and the code".into(),
         #[cfg(feature = "moz-phab")]
         Action::PhabMenu => {
-            "open the menu of what can be done on Phabricator with this patch: send it, see what differs from its revision, pull the reviews of that revision alone, and fetch the latest from Phabricator".into()
+            "open the menu of what can be done on Phabricator with this patch: send it, see what differs from its revision, pull that revision, and fetch the latest from Phabricator".into()
         }
         #[cfg(feature = "moz-phab")]
         Action::Fetch => {
@@ -2451,10 +2477,10 @@ enum Done {
     /// Where the pull under way is.
     #[cfg(feature = "moz-phab")]
     Pulling(review::Pulling),
-    /// Revision `0` read from Phabricator, with those it stacks on: or what
-    /// was wrong.
+    /// A new stack pulled from Phabricator: its name, the pull's run, and
+    /// what came of it, said; or what was wrong.
     #[cfg(feature = "moz-phab")]
-    Revisions(String, std::result::Result<Vec<crate::phab::Revision>, String>),
+    PulledStack(std::result::Result<(String, String, String), String>),
     /// What submitting a patch to Phabricator sends, read: or why nothing
     /// can be.
     #[cfg(feature = "moz-phab")]
@@ -3230,13 +3256,7 @@ impl App {
                 }
             }
             #[cfg(feature = "moz-phab")]
-            Done::Revisions(rev, read) => {
-                self.bg.doing.retain(|d| *d != "importing");
-                match read {
-                    Ok(revs) => self.plan_revisions(&rev, revs),
-                    Err(e) => self.status = e,
-                }
-            }
+            Done::PulledStack(pulled) => self.pulled_stack(pulled),
             #[cfg(feature = "moz-phab")]
             Done::Submitting(read) => self.submit_read(read),
             #[cfg(feature = "moz-phab")]
@@ -5983,8 +6003,11 @@ impl App {
                 // The stack's lint job: the linter stopped, or the job
                 // dropped.
                 BannerLine::Lint(run) => self.lint_stop_said(run).map(|_| Ok(Action::AskStop(run.clone()))),
-                // The stack's reconcile with HEAD waiting its turn: dropped.
+                // The stack's reconcile with HEAD waiting its turn: dropped;
+                // and its pull from Phabricator.
                 BannerLine::Reconcile(run) => Some(Ok(Action::AskDropReconcile(run.clone()))),
+                #[cfg(feature = "moz-phab")]
+                BannerLine::PullWaits(run) => Some(Ok(Action::AskDropPull(run.clone()))),
                 _ => None,
             },
             Screen::Main => match self.focus {
@@ -6012,9 +6035,14 @@ impl App {
             Screen::Review => self.review_deleting(),
             Screen::Runs => {
                 let r = *self.runs_newest().get(self.pick)?;
-                // A reconcile with HEAD waiting its turn: dropped.
+                // A reconcile with HEAD waiting its turn: dropped; and a pull
+                // from Phabricator.
                 if crate::reconcile::is(r) && r.state == RunState::Started {
                     return Some(Ok(Action::AskDropReconcile(r.id.clone())));
+                }
+                #[cfg(feature = "moz-phab")]
+                if review::is(r) && r.state == RunState::Started && r.pull.is_some() {
+                    return Some(Ok(Action::AskDropPull(r.id.clone())));
                 }
                 // A lint job under way, running or waiting its turn.
                 let lint = crate::lint::step_of(r).is_some();
@@ -6083,6 +6111,8 @@ impl App {
             Action::AskStop(run) => self.push_stop_said(&run).or_else(|| self.lint_stop_said(&run)).unwrap_or("stop the agent"),
             Action::AskUnsend(..) => "take it back from the queue",
             Action::AskDropReconcile(_) => "drop the waiting reconcile",
+            #[cfg(feature = "moz-phab")]
+            Action::AskDropPull(_) => "drop the waiting pull",
             Action::Unbatch => "remove it from the batch",
             Action::AskDrop => "drop it",
             Action::AskDeleteStack => "delete the stack",
@@ -6116,6 +6146,8 @@ impl App {
                 | Action::AskTakeYoursBack
                 | Action::AskRejectWork(_)
         );
+        #[cfg(feature = "moz-phab")]
+        let asks = asks || matches!(a, Action::AskDropPull(_));
         let first = if asks { " Delete asks first." } else { "" };
         Some(format!("Press Delete to {}.{first}", self.about_here(&a)))
     }
@@ -6206,6 +6238,8 @@ impl App {
                         "The linter lints the stack, patch by patch, away from the screen, one lint at a time of every stack: what it fixes lands here for your review. Press Enter to read what it writes.".into()
                     }
                     Some(BannerLine::Reconcile(_)) => format!("{}. Press Enter for its menu, to drop it.", self.reconcile_waits()),
+                    #[cfg(feature = "moz-phab")]
+                    Some(BannerLine::PullWaits(_)) => format!("{}. Press Enter for its menu, to drop it.", self.pull_waits(&self.stack)),
                     _ => "Press Enter to go to this comment.".into(),
                 });
                 out.extend(self.delete_help());
@@ -6213,10 +6247,13 @@ impl App {
             }
             Screen::Review if self.review_pulled() => {
                 out.push(
-                    "The review of the comments pulled from Phabricator: the comments opened, the replies, and the comments edited on Phabricator. None is rejected: closing the review files every one of them, and a reply to a comment you closed reopens that comment."
+                    "The review of a pull from Phabricator: the stack operations of its change, when it brings new versions of the patches or new patches, each accepted or rejected on its own; then the comments opened, the replies, and the comments edited on Phabricator. None of those is rejected: closing the review files every one of them, and a reply to a comment you closed reopens that comment."
                         .into(),
                 );
-                out.push("Press ↑↓ for another part; → to scroll what it looks like, → again to see it wide, the list out of sight, and ← to come back; Esc, then Close review, to file them.".into());
+                out.push(match self.review_ops().is_some() {
+                    true => "Press ↑↓ for another part; Enter to accept the operation the cursor is on, or to put it back to review, and Delete to reject it; → to scroll what it looks like, → again to see it wide, the list out of sight, and ← to come back; Esc, then Close review, to apply the operations you accepted and file the comments.".into(),
+                    false => "Press ↑↓ for another part; → to scroll what it looks like, → again to see it wide, the list out of sight, and ← to come back; Esc, then Close review, to file them.".into(),
+                });
                 out.extend(self.delete_help());
             }
             Screen::Review => {
@@ -6427,6 +6464,10 @@ impl App {
                     // What waits its turn: its menu, to drop it.
                     Some(r) if crate::reconcile::is(r) && r.state == RunState::Started => {
                         out.push(format!("{}. Press Enter for its menu, to drop it.", self.reconcile_waits_of(&r.stack)));
+                    }
+                    #[cfg(feature = "moz-phab")]
+                    Some(r) if review::is(r) && r.state == RunState::Started && r.pull.is_some() => {
+                        out.push(format!("{}. Press Enter for its menu, to drop it.", self.pull_waits(&r.stack)));
                     }
                     Some(r) if crate::lint::step_of(r) == Some(crate::lint::Step::Waiting) => {
                         out.push("This lint job waits its turn. Press Enter to see what the linter writes, or to drop it.".into());
@@ -7363,8 +7404,11 @@ impl App {
                     items.push(Item::new("History…", Action::History));
                     #[cfg(feature = "moz-phab")]
                     if self.cfg.reviews.source != crate::config::Source::None {
-                        items.push(Item::new("Pull reviews from Phabricator", Action::Pull));
+                        items.push(Item::new(revisions::PULL, Action::Pull));
                         items.push(Item::new(revisions::FETCH, Action::Fetch));
+                        // The stack's pull waiting its turn: dropped from the
+                        // queue.
+                        items.extend(self.pull_drop_item());
                     }
                     if self.head_here().is_some() {
                         items.push(Item::new("Move HEAD…", Action::MoveHead(None)));
@@ -7413,7 +7457,7 @@ impl App {
                 items.push(Item::new("Versions of this patch…", Action::Versions));
                 // Every item of this patch about Phabricator, in a menu of
                 // its own (`phab_menu`): its submit, what differs from its
-                // revision, the pull of its reviews, and the fetch of the
+                // revision, the pull of that revision, and the fetch of the
                 // latest. Not while reviews come from nowhere.
                 #[cfg(feature = "moz-phab")]
                 if self.cfg.reviews.source != crate::config::Source::None {
@@ -7997,8 +8041,9 @@ impl App {
             Action::MarkOpsWith(keys, accept) => self.mark_ops_with(&keys, accept),
             Action::ReviewSave => self.review_save(),
             Action::ReviewDiscard => {
-                // A pull's: nothing marked, all of it filed as it closes.
-                let pulled = self.review_pulled();
+                // A pull's with no change: nothing marked, all of it filed as
+                // it closes.
+                let pulled = self.review_pulled() && self.review_ops().is_none();
                 self.leave_review();
                 self.status = match pulled {
                     true => reviewing::PULL_WAITS.into(),
@@ -8360,9 +8405,22 @@ impl App {
             Action::MarkRead => self.mark_read(),
             Action::MarkUnread => self.mark_unread(),
             #[cfg(feature = "moz-phab")]
-            Action::Pull => self.pull_reviews(None),
+            Action::Pull => self.pull_from_phabricator(review::Asked::Stack),
             #[cfg(feature = "moz-phab")]
-            Action::PullPatch(change) => self.pull_reviews(Some(change)),
+            Action::PullPatch(change, children) => self.pull_from_phabricator(review::Asked::Patch { change, children }),
+            #[cfg(feature = "moz-phab")]
+            Action::PullMenu(run) => {
+                if let Some(m) = self.pull_menu(&run) {
+                    self.mode = Mode::Menu(m);
+                }
+            }
+            #[cfg(feature = "moz-phab")]
+            Action::AskDropPull(run) => match self.drop_pull_ask(&run) {
+                Some(m) => self.mode = Mode::Menu(m),
+                None => self.status = "the pull from Phabricator no longer waits its turn".into(),
+            },
+            #[cfg(feature = "moz-phab")]
+            Action::DropPull(run) => self.drop_pull(&run),
             #[cfg(feature = "moz-phab")]
             Action::Differs => self.open_differs(),
             #[cfg(feature = "moz-phab")]
@@ -8859,53 +8917,8 @@ impl App {
         items.push(Item::new("Import from the workspace…", Action::FromWorkspace));
         #[cfg(feature = "moz-phab")]
         if self.cfg.reviews.source != crate::config::Source::None {
-            items.push(Item::new("Import from Phabricator…", Action::FromPhabricator));
+            items.push(Item::new("Pull from Phabricator…", Action::FromPhabricator));
         }
-    }
-
-    /// The stack of the revision `text` names read from Phabricator, away
-    /// from the screen: seen once it is, before it is imported.
-    #[cfg(feature = "moz-phab")]
-    fn read_revisions(&mut self, text: &str) {
-        let Some((rev, link)) = crate::phab::revision_named(text) else { return };
-        self.mode = Mode::Normal;
-        if self.bg.doing.contains(&"importing") {
-            self.status = "already reading revisions from Phabricator".into();
-            return;
-        }
-        self.bg.doing.push("importing");
-        self.status = format!("reading {rev} and the revisions it stacks on, from Phabricator…");
-        self.spawn(move || {
-            let read = crate::phab::read_stack(&rev, link.as_deref());
-            Done::Revisions(rev, read)
-        });
-    }
-
-    /// Revisions `revs` read, bottom first, `rev` among them: seen before
-    /// they are imported, on the commit the bottom one is on, which the
-    /// checkout must have. Not while a comment is written, which it would
-    /// take the place of.
-    #[cfg(feature = "moz-phab")]
-    fn plan_revisions(&mut self, rev: &str, revs: Vec<crate::phab::Revision>) {
-        if self.writing().is_some() {
-            self.status = format!("{rev} and the revisions it stacks on are read, but a comment is being written: import them once it is done");
-            return;
-        }
-        let p = match crate::phab::plan(&self.checkout, rev, revs) {
-            Ok(p) => p,
-            Err(e) => {
-                self.status = e;
-                return;
-            }
-        };
-        self.planned = Some(Planned {
-            from: p.from,
-            drafts: p.drafts,
-            base: p.base,
-            repo: p.repo,
-            name: crate::import::free_name(&self.db, rev),
-        });
-        self.mode = Mode::Menu(self.preview_menu());
     }
 
     /// Stack `name` made, empty, on HEAD of the checkout stacked runs in,
@@ -9063,9 +9076,13 @@ impl App {
                 Some(why) => (why, false),
                 None => (format!("the stack {}", text.trim()), true),
             },
+            // A revision a stack holds already: pulled there.
             #[cfg(feature = "moz-phab")]
             Asking::Revision => match crate::phab::revision_named(text) {
-                Some((rev, _)) => (format!("{rev}, and the revisions it stacks on"), true),
+                Some((rev, link)) => match review::held_by(&self.db, &rev, link.as_deref()) {
+                    Some(why) => (why, false),
+                    None => (format!("{rev}, with the revisions it stacks on and those stacked on it"), true),
+                },
                 None => ("give a revision: D123, or its link".into(), false),
             },
         }
@@ -9094,7 +9111,10 @@ impl App {
                     }
                     Asking::AgentName => self.agent_stack(&text),
                     #[cfg(feature = "moz-phab")]
-                    Asking::Revision => self.read_revisions(&text),
+                    Asking::Revision => {
+                        self.mode = Mode::Normal;
+                        self.pull_new_stack(&text);
+                    }
                 }
             }
             KeyCode::Enter => {
@@ -9995,8 +10015,13 @@ impl App {
                     return;
                 };
                 // A reconcile with HEAD waiting its turn: what it waits for,
-                // and its drop.
+                // and its drop; and a pull from Phabricator.
                 if let Some(m) = self.reconcile_menu(&r.id) {
+                    self.mode = Mode::Menu(m);
+                    return;
+                }
+                #[cfg(feature = "moz-phab")]
+                if let Some(m) = self.pull_menu(&r.id) {
                     self.mode = Mode::Menu(m);
                     return;
                 }
@@ -10728,6 +10753,8 @@ impl App {
                     Some(BannerLine::Batch) => "pick what to send",
                     Some(BannerLine::Lint(_)) => "read what the linter writes",
                     Some(BannerLine::Reconcile(_)) => "say what it waits for, or drop it",
+                    #[cfg(feature = "moz-phab")]
+                    Some(BannerLine::PullWaits(_)) => "say what it waits for, or drop it",
                     _ => "go to it",
                 };
                 let delete = self.delete_hint().map_or(String::new(), |d| format!("{d} · "));

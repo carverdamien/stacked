@@ -117,6 +117,9 @@ pub enum BannerLine {
     Lint(String),
     /// The stack's reconcile with HEAD, waiting its turn: its run.
     Reconcile(String),
+    /// The stack's pull from Phabricator, waiting its turn: its run.
+    #[cfg(feature = "moz-phab")]
+    PullWaits(String),
     /// The batch: the comments asked about later, to send.
     Batch,
     /// A comment open on the stack: (change, id).
@@ -154,8 +157,11 @@ impl App {
                 out.push(BannerLine::Pulling);
             }
         }
-        // The stack's reconcile with HEAD waiting its turn, among the edits.
+        // The stack's reconcile with HEAD waiting its turn, among the edits;
+        // and its pull from Phabricator.
         out.extend(crate::reconcile::pending(&self.db, &self.stack).filter(|r| r.state == crate::db::RunState::Started).map(|r| BannerLine::Reconcile(r.id.clone())));
+        #[cfg(feature = "moz-phab")]
+        out.extend(crate::review::pending(&self.db, &self.stack).map(|r| BannerLine::PullWaits(r.id.clone())));
         // The stack's lint job, waiting or running.
         out.extend(crate::lint::pending(&self.db, &self.stack).map(|r| BannerLine::Lint(r.id.clone())));
         // The try pushes of the stack under way, the first started first.
@@ -190,6 +196,8 @@ impl App {
             BannerLine::Push(_) => 4,
             BannerLine::Lint(_) => 5,
             BannerLine::Reconcile(_) => 2,
+            #[cfg(feature = "moz-phab")]
+            BannerLine::PullWaits(_) => 2,
             _ => 3,
         }
     }
@@ -452,9 +460,13 @@ impl App {
             said.push(format!("the linter {}", self.lint_progress(&r.id)));
         }
         let linting = usize::from(lint.and_then(|r| r.lint.as_deref()).is_some_and(|j| j.step == crate::lint::Step::Running));
-        // The reconcile with HEAD waiting its turn.
+        // The reconcile with HEAD waiting its turn; the pull.
         if lines.iter().any(|l| matches!(l, BannerLine::Reconcile(_))) {
             said.push("Reconcile with HEAD waits its turn".into());
+        }
+        #[cfg(feature = "moz-phab")]
+        if lines.iter().any(|l| matches!(l, BannerLine::PullWaits(_))) {
+            said.push("the pull from Phabricator waits its turn".into());
         }
         if batched > 0 {
             said.push(of(batched, "batched ask", "batched asks"));
@@ -500,6 +512,8 @@ impl App {
             items.push(Item::new(format!("Review {left}{}", landed_how(r, 40)), Action::Review(id.clone(), None)).when(first));
         }
         items.extend(self.reconcile_drop_item());
+        #[cfg(feature = "moz-phab")]
+        items.extend(self.pull_drop_item());
         // The stack's lint job: what the linter writes, as Enter on its line
         // shows it; the linter stopped, or the job dropped.
         if let Some(r) = crate::lint::pending(&self.db, &self.stack) {
@@ -675,6 +689,11 @@ impl App {
                 let of = self.db.run(run).map_or(String::new(), |r| r.request.clone());
                 format!("   ◌ Reconcile with HEAD, waiting its turn: {of}")
             }
+            #[cfg(feature = "moz-phab")]
+            BannerLine::PullWaits(run) => {
+                let of = self.db.run(run).map_or(String::new(), |r| r.request.clone());
+                format!("   ◌ The pull from Phabricator, waiting its turn: {of}")
+            }
             BannerLine::Batch => format!("   ◇ Send the batch… {}", self.batch_said()),
             BannerLine::Comment(change, id) => {
                 let Some(n) = self.db.note(change, id) else { return String::new() };
@@ -745,6 +764,14 @@ impl App {
                 // waits for, and its drop.
                 Some(BannerLine::Reconcile(run)) => {
                     if let Some(m) = self.reconcile_menu(&run) {
+                        self.mode = Mode::Menu(m);
+                    }
+                }
+                // A pull waiting its turn: its menu, what it waits for, and
+                // its drop.
+                #[cfg(feature = "moz-phab")]
+                Some(BannerLine::PullWaits(run)) => {
+                    if let Some(m) = self.pull_menu(&run) {
                         self.mode = Mode::Menu(m);
                     }
                 }

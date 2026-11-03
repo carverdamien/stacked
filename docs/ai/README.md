@@ -78,9 +78,11 @@ its tests. A new section is a new file, listed here in its place.
   database's records, its lock, its header and its checkpoints.
 - [The tree of edits](the-tree-of-edits.md): undo, redo, branches, and
   `stacked tree`.
-- [Phabricator](phabricator.md): revisions imported, reviews pulled and
-  filed, reviewers' edits, links to bugs, the statuses, and a patch
-  submitted as work in progress or a revision in review updated.
+- [Phabricator](phabricator.md): a stack pulled, its revisions' new
+  versions, their parents and those stacked on top, and the reviews, in
+  one review; a new stack pulled from a revision; reviewers' edits, links
+  to bugs, the statuses, and a patch submitted as work in progress or a
+  revision in review updated.
 - [Copied from self-review-rs](copied-from-self-review-rs.md): where
   stacked comes from, and what it copies.
 - [Layout of the code](layout-of-the-code.md): what each source file does.

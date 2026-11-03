@@ -423,8 +423,10 @@ enum Cmd {
     /// stack not marked yet too. What is accepted is applied, a change of
     /// the stack as the operations accepted leave it; what is rejected is
     /// dropped for good. Rejecting every operation of a change of the stack
-    /// rejects its replies too. A pull's reviews are not rejected:
-    /// --accept-all files every comment it pulled. Accepting a change of
+    /// rejects its replies too. A pull's comments are not rejected: closing
+    /// its review files every comment it pulled, and --reject-all rejects
+    /// its change of the stack alone, refused for a pull that brought
+    /// comments alone. Accepting a change of
     /// the stack waits until each answer made on the stack before it is
     /// marked keep, restart or stop, in the review of that work in the
     /// editor: --accept-all marks none of them.
@@ -463,9 +465,10 @@ enum Cmd {
     /// stack. A lint job waiting its turn is dropped.
     Stop { id: String },
     /// Phabricator, over Conduit with moz-phab's token: `pull`, a stack's
-    /// reviews; `import`, a stack of its revisions. `stacked moz-phab` is
-    /// built by default, with the `moz-phab` feature: `--no-default-features
-    /// --features app,demo,try-push,web` builds stacked without it.
+    /// revisions and their reviews; `import`, a new stack of its revisions.
+    /// `stacked moz-phab` is built by default, with the `moz-phab` feature:
+    /// `--no-default-features --features app,demo,try-push,web` builds
+    /// stacked without it.
     #[cfg(feature = "moz-phab")]
     MozPhab {
         #[command(subcommand)]
@@ -591,12 +594,16 @@ fn stdin() -> Result<String> {
 #[cfg(feature = "moz-phab")]
 #[derive(Subcommand)]
 enum MozPhabWhat {
-    /// Import a new stack from Phabricator: revision REVISION (D123, 123,
-    /// or its link) with the revisions it stacks on, down to the first that
-    /// is not open, and those that stack on it while one is open. Each is a
-    /// patch of its latest diff, with its commit's message as uploaded
-    /// (else its title and summary), on the commit the bottom one's diff is
-    /// on, which the repository here must have.
+    /// Pull a new stack from Phabricator: revision REVISION (D123, 123, or
+    /// its link) with the revisions it stacks on, down to the first that is
+    /// not open, and those stacked on it while one is open; none that a
+    /// stack holds already. The stack is made empty, on the commit the
+    /// bottom one's diff is on, which the repository here must have, and
+    /// the pull lands into it for your review, a patch of each revision's
+    /// latest diff, with its commit's message as uploaded while the
+    /// revision's title and summary are what that message says, else
+    /// those, and the reviewers' comments: `stacked review NAME RUN
+    /// --accept-all` makes the patches. Prints the run.
     Import {
         /// D123, 123, or the revision's link.
         revision: String,
@@ -605,8 +612,12 @@ enum MozPhabWhat {
         #[arg(long)]
         name: Option<String>,
     },
-    /// Pull a stack's reviews from Phabricator: what is new waits for your
-    /// review, as the agent's work does (`landed`, `review`).
+    /// Pull a stack from Phabricator: every revision its patches name, with
+    /// the revisions they stack on that it does not hold, and those stacked
+    /// on top; each revision's latest diff, title and summary where they are
+    /// no version of its patch stacked knows, and the reviewers' comments.
+    /// It is queued as an edit is, and what it brings waits for your review,
+    /// as the agent's work does (`landed`, `review`). Prints the run.
     Pull { name: String },
 }
 
@@ -1615,9 +1626,9 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
                 // The agent's: the effort it was asked at.
                 let at = ask::effort_said(r).map_or(String::new(), |e| format!("\tasked at {e}"));
                 println!("{}\t{}\t{}{at}{after}", r.id, time(h.at), stacked::held::left(&db, r));
-                // A pull's parts are not marked: each is filed as its review
-                // closes.
-                let marked = !stacked::held::pulled(r);
+                // A pull's comments are not marked: each is filed as its
+                // review closes. Its change's operations are, as any.
+                let pulled = stacked::held::pulled(r);
                 // The change's operations, each marked on its own: as one
                 // when every one is marked the same, else counted. Marked
                 // as a whole, nothing stored of what each needs, as one.
@@ -1636,6 +1647,7 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
                         }),
                         _ => None,
                     };
+                    let marked = !pulled || p == stacked::held::Part::Stack;
                     let mark = match counted.unwrap_or_else(|| review.marks.get(&p.key()).copied()).filter(|_| marked) {
                         Some(true) => "\taccepted",
                         Some(false) => "\trejected",
@@ -1799,10 +1811,16 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
         }
         #[cfg(feature = "moz-phab")]
         Cmd::MozPhab { what: MozPhabWhat::Import { revision, name } } => {
-            println!("{}", stacked::phab::import(path, &here(), &revision, name.as_deref())?)
+            let r = review::import(path, &here(), &revision, name.as_deref(), &mut |_| {})?;
+            let summary = review::said(&Db::load(path)?, &r);
+            print_run(&stacked::db::Run { summary, ..r });
         }
         #[cfg(feature = "moz-phab")]
-        Cmd::MozPhab { what: MozPhabWhat::Pull { name } } => print_run(&review::pull(path, &name)?),
+        Cmd::MozPhab { what: MozPhabWhat::Pull { name } } => {
+            let r = review::pull(path, &name, review::Asked::Stack, &mut |_| {})?;
+            let summary = review::said(&Db::load(path)?, &r);
+            print_run(&stacked::db::Run { summary, ..r });
+        }
         Cmd::Trim { new, from } => {
             let from = from.as_deref().map(parse_rev).transpose()?;
             println!("{}", stacked::trim::trim(path, &new, from)?.said(&new));

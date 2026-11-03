@@ -16,18 +16,27 @@ with stacks, the stack's own menu has them under `New stack…`:
   commits`), taken only once it holds a commit. The staged changes, and the
   unstaged ones, when there are, may each be checked to go on top of what
   ends at HEAD, a patch of their own (`Staged changes`, `Unstaged changes`).
-- `Import from Phabricator…` (built with the `moz-phab` feature, on by
-  default): a revision, `D123` (or `123`) or its link, read away from the
-  screen with the revisions it stacks on, down to the first that is not
-  open, and those stacked on it while one is open; each its latest diff,
-  with the message and author of its commit as uploaded. They go on the
-  commit the bottom one is on, which the repository must have (`D11 is on
-  0123456789ab, which this repository does not have: fetch it first`).
-  `stacked moz-phab import D123` makes the same stack from the command
-  line, at once, named after the revision as no stack is, or `--name
-  NAME`.
+- `Pull from Phabricator…` (built with the `moz-phab` feature, on by
+  default; not while reviews come from nowhere): a revision, `D123` (or
+  `123`) or its link, said as it is typed (`D12, with the revisions it
+  stacks on and those stacked on it`), refused while a stack holds it, or
+  the work waiting for your review on a stack adds it (`D13 is patch 3 of
+  D12: pull it there`). It is pulled away from the screen with the
+  revisions it stacks on, down to the first that is not open, and those
+  stacked on it while one is open, none of which a stack may hold, as a
+  stack's pull pulls them (Phabricator, below). The stack is made empty,
+  named after the revision as no stack is, on the commit the bottom one's
+  diff is on, which the repository must have (`D11 is on 0123456789ab,
+  which this repository does not have: fetch it first`), and the pull
+  lands into it for your review, its review open: a patch to add for each
+  revision, its latest diff with the author and the message of its commit
+  as uploaded (or its title and summary, where Phabricator has them
+  otherwise), and the reviewers' comments. `stacked moz-phab import D123`
+  does the same from the command line, named after the revision, or
+  `--name NAME`, and prints the run, which `stacked review NAME RUN
+  --accept-all` takes.
 
-An import is seen before it is made: its patches, bottom first, the commit
-they go on, and the name of the stack it makes, after the branch or the
-revision, as no stack is (`Name it otherwise…`). `Import it as NAME` makes
-it, and shows it.
+An import from the workspace is seen before it is made: its patches,
+bottom first, the commit they go on, and the name of the stack it makes,
+after the branch, as no stack is (`Name it otherwise…`). `Import it as
+NAME` makes it, and shows it.

@@ -217,7 +217,8 @@ settings:
   through, say. The program run as claude is looked for all the same.
 - `[reviews]` (built with the `moz-phab` feature, on by default; read
   either way, so one file serves both builds): `source`, `"phabricator"`
-  or `"none"` (no pulling, no importing, no statuses of revisions read);
+  or `"none"` (no pulling, of a stack or into a new one, no statuses of
+  revisions read);
   `url`, the Phabricator a bare
   `D123` trailer is on; `arcrc`, where the tokens are; `token`, one for
   `url` instead; `trailer`, the trailer naming a revision

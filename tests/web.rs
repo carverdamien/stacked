@@ -317,14 +317,16 @@ fn a_patch_is_submitted_to_phabricator_from_its_menu_in_the_browser_too() {
     stacked::submit::stand_in(None);
 }
 
-/// A stand-in for Phabricator, answering the statuses' searches of the
-/// editors of `db` alone, and what their Phabricator line reads: D11 needs
-/// review, its latest diff the first patch's, but `Two` where the patch
-/// says `TWO`.
+/// A stand-in for Phabricator, answering the fetches and the pulls of the
+/// editors of `db` alone: D11 needs review, its latest diff the first
+/// patch's, but `Two` where the patch says `TWO`; and, once what this gives
+/// says so, ann's comment on it.
 #[cfg(feature = "moz-phab")]
-fn d11_needs_review(db: &Path) {
+fn d11_needs_review(db: &Path) -> std::sync::Arc<std::sync::atomic::AtomicBool> {
     let d = stacked::db::Db::load(db).unwrap();
     let raw = d.patch(&d.stack("s").unwrap().patches[0]).diff.replace("+TWO", "+Two");
+    let commented = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let said = commented.clone();
     stacked::phab::statuses_stand_in(
         db,
         Some(Box::new(move |m, _| match m {
@@ -332,18 +334,26 @@ fn d11_needs_review(db: &Path) {
                 "fields": {"status": {"value": "needs-review"}, "title": "Bug 1 - shout two", "summary": ""}}]})),
             "edge.search" => Ok(serde_json::json!({"data": []})),
             "differential.diff.search" => Ok(serde_json::json!({"data": [{"id": 5, "fields": {"revisionPHID": "PHID-DREV-11"}}]})),
+            "differential.querydiffs" => Ok(serde_json::json!({"5": {"sourceControlBaseRevision": "", "properties": {}}})),
             "differential.getrawdiff" => Ok(serde_json::Value::String(raw.clone())),
-            "transaction.search" => Ok(serde_json::json!({"data": [], "cursor": {"after": null}})),
+            "transaction.search" => {
+                let ann = serde_json::json!({"type": "comment", "authorPHID": "PHID-USER-ann", "fields": {},
+                    "comments": [{"phid": "c1", "version": 1, "dateCreated": 1, "content": {"raw": "Why shout?"}}]});
+                let data = if said.load(std::sync::atomic::Ordering::SeqCst) { vec![ann] } else { vec![] };
+                Ok(serde_json::json!({"data": data, "cursor": {"after": null}}))
+            }
+            "user.search" => Ok(serde_json::json!({"data": [{"phid": "PHID-USER-ann", "fields": {"username": "ann"}}]})),
             _ => Err(format!("{m}: not asked in this test").into()),
         })),
     );
+    commented
 }
 
 #[cfg(feature = "moz-phab")]
 #[test]
 fn the_status_of_each_patch_s_revision_and_its_phabricator_line_show_in_the_browser_too() {
     let (_tmp, db) = setup_with("Bug 1 - shout two\n\nDifferential Revision: https://phabricator.example.com/D11");
-    d11_needs_review(&db);
+    let commented = d11_needs_review(&db);
     stacked::config::init(stacked::config::Config::default());
     let (port, token) = stacked::web::start(db.clone()).unwrap();
     let (host, input) = (format!("127.0.0.1:{port}"), format!("POST /input?t={token}"));
@@ -386,11 +396,11 @@ fn the_status_of_each_patch_s_revision_and_its_phabricator_line_show_in_the_brow
     until(&mut events, "the line of Phabricator's diff", |l| text(l).starts_with("-+Two"));
     ask(port, &host, &input, "k Esc -\n");
     until(&mut events, "the line again", |l| text(l).contains(line));
-    // Its menu: what differs, and the reviews of D11 pulled alone, clicked,
-    // held for review.
-    stacked::phab::stand_in(Some(one_on_d11));
+    // Its menu: what differs, and D11 pulled, clicked: ann's comment, and
+    // D11's diff as a new version of patch 1, held for review.
+    commented.store(true, std::sync::atomic::Ordering::SeqCst);
     ask(port, &host, &input, "k Enter -\n");
-    let item = "Pull the reviews of D11 from Phabricator";
+    let item = "Pull D11 from Phabricator";
     let seen = until(&mut events, "the line's menu", |l| text(l).contains(item));
     assert!(seen.iter().any(|l| text(l).contains("What differs from D11 on Phabricator…")), "{seen:#?}");
     let row = seen.last().unwrap();
@@ -398,19 +408,14 @@ fn the_status_of_each_patch_s_revision_and_its_phabricator_line_show_in_the_brow
     let said = text(row);
     let x = said[..said.find(item).unwrap()].chars().count() + 1;
     ask(port, &host, &input, &format!("m {x} {y} l\n"));
-    until(&mut events, "what the pull brought", |l| text(l).contains("1 new comment from D11: it waits for your review"));
-    stacked::phab::stand_in(None);
+    until(&mut events, "what the pull brought", |l| text(l).contains("1 new version and 1 new comment from D11: they wait for your review"));
+    // Its review opens from the banner: the new version, an operation of
+    // the stack's change, and the comment.
+    ask(port, &host, &input, "k Esc -\n");
+    ask(port, &host, &input, "k Enter -\n");
+    let seen = until(&mut events, "the pull's review", |l| text(l).contains("· modify  1 Bug 1 - shout two"));
+    assert!(seen.iter().any(|l| text(l).starts_with(" pulled from Phabricator: ")), "{seen:#?}");
     stacked::phab::statuses_stand_in(&db, None);
-}
-
-/// The stand-in for Phabricator in the pull of
-/// `the_status_of_each_patch_s_revision_…`: a comment of ann's on D11, none
-/// on any other.
-#[cfg(feature = "moz-phab")]
-fn one_on_d11(source: &str, rev: &str, _url: &str) -> Result<stacked::phab::RevisionComments, String> {
-    let ann = stacked::phab::Remote { phid: "c1".into(), author: "ann".into(), text: "Why shout?".into(), created: 1, ..Default::default() };
-    let comments = if rev == "D11" { vec![ann] } else { vec![] };
-    Ok(stacked::phab::RevisionComments { revision: rev.into(), source: source.into(), comments })
 }
 
 /// Patch 1 of stack `s` in `db` given a new version whose message is

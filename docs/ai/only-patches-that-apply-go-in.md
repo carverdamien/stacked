@@ -13,6 +13,15 @@ An edit by hand that does not apply comes back in `$EDITOR` with why at its
 top, as `git rebase -i` does: put it right, or empty the file to give up.
 So does a todo list, with the patches already edited as you left them.
 
+A pull from Phabricator keeps the rule too (Phabricator, below): a patch
+that no longer applies on the versions it pulled under it, or a pulled
+diff that does not apply on the patches under it, is made again on them,
+its conflicts marked in its files where they disagree, so that the stack
+its change makes applies; and such a patch does not go in while it holds
+them: its review does not close with it, until its operation is
+rejected, its conflicts are resolved by hand, or the agent reworks it.
+What cannot be made again so is not taken, said in its review.
+
 The check never touches the worktree, nor the repository's index or object
 store. Each patch is applied with `git apply --cached` to an index of the
 check's own, holding only the files the patches touch, and what it writes
@@ -37,7 +46,8 @@ refuses to close, saying why, if that stack does not apply.
 A stack with no base (a stack from before the check), or whose repository
 or base commit is not there (the database copied to another machine, or
 the repository moved), cannot be checked, and so is read-only: comments can
-still be added, Phabricator pulled, the patches read and exported, but
+still be added, the reviewers' comments pulled from Phabricator (a pull
+takes no patch then), the patches read and exported, but
 nothing changes the stack and the agent is asked nothing. The editor's bar
 says why, in yellow (`colors.warn`). `stacked base NAME REV`, from the repository, gives it
 a base it applies to, and it can change again. `stacked check` says, for
