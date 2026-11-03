@@ -19,6 +19,11 @@
   bring back coming into it (`come_in`); and the marks of the answers made
   on the stack before a change, kept, restarted or stopped as the change
   is accepted (`ask.rs` does what each mark says).
+- `operations.rs`: the operations of a change of the stack, a line of its
+  stack diff each, as its review marks them one by one; the stack the
+  operations accepted leave; and what each needs to apply, by the check
+  of `check.rs`, which keeps what it found of each stack it applied, with
+  what refusing to mark one alone says, and what goes with it.
 - `head.rs`: where HEAD of your checkout is against a stack, its commits
   marked, and HEAD moved along it, only as stacked left it or with no mark;
   what the view of why Move HEAD does not move HEAD reads of the checkout.

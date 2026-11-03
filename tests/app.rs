@@ -1351,6 +1351,38 @@ fn added_work(tmp: &Path, db: &Path) {
 }
 
 #[test]
+fn each_stack_operation_is_marked_on_its_own_in_the_window_too() {
+    use stacked::paint::color;
+    let (tmp, db) = setup();
+    added_work(tmp.path(), &db);
+    let s = Session::open(&db, tmp.path()).unwrap();
+    s.send(Input::Size(120, 30));
+    screen(&s, "the banner", |b| text(b).contains("1 landed ask waits for your review"));
+    // Its review: two operations to review, the patch left as it was with
+    // no mark.
+    press(&s, KeyCode::Esc);
+    press(&s, KeyCode::Enter);
+    screen(&s, "the review", |b| {
+        let t = text(b);
+        t.contains(" stack operations · · 2 to review")
+            && t.contains("   · modify  1 Bug 1 - shout two")
+            && t.contains("   · add     2 Bug 1 - a c too")
+            && t.contains("     noop    3 Bug 2 - add b")
+    });
+    // The first accepted, alone, the cursor gone below it: its mark in the
+    // colour of what is accepted.
+    for code in [KeyCode::Down, KeyCode::Enter, KeyCode::Down] {
+        press(&s, code);
+    }
+    let mark = |b: &Buffer| find(b, "   ✓ modify  1 Bug 1 - shout two").map(|(x, y)| b[(x + 3, y)].clone());
+    let b = screen(&s, "the first accepted, the cursor below it", |b| {
+        text(b).contains(" stack operations · ✓ 1 accepted, · 1 to review") && mark(b).is_some_and(|c| !c.modifier.contains(Modifier::REVERSED))
+    });
+    let c = mark(&b).unwrap();
+    assert_eq!((c.symbol(), Some(c.fg)), ("✓", color::add().fg), "{c:?}");
+}
+
+#[test]
 fn a_comment_on_a_patch_the_work_adds_sends_it_back_from_its_review_in_the_window_too() {
     let (tmp, db) = setup();
     added_work(tmp.path(), &db);

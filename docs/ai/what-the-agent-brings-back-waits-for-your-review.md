@@ -14,12 +14,15 @@ close or keep. If every comment it was asked about was closed or deleted
 meanwhile, it is not held, and its run says that the agent brought
 nothing back. You accept or reject each part, but those of a pull from
 Phabricator, which are all accepted (Phabricator, below). A
-comment is one part, and the change of the stack is one part, taken whole
-or not at all. Rejecting the change of the stack rejects the replies that
-go with it too, since each says what the agent changed. Once every part is
-accepted or rejected, the review closes. What was accepted is applied
-then; what was rejected is dropped for good, though `Runs…` still shows
-what the agent said and did.
+comment is one part. The change of the stack is a part for each of its
+operations, each patch's and the base's, accepted or rejected on its own
+as far as what each needs to apply allows (below). Rejecting every
+operation of the change rejects the replies that go with it too, since
+each says what the agent changed. Once every part is accepted or
+rejected, the review closes. What was accepted is applied then, the
+change of the stack as its operations accepted leave the stack; what was
+rejected is dropped for good, though `Runs…` still shows what the agent
+said and did.
 
 Until its review closes, a change of the stack keeps the stack as the
 agent took it: the stack is not edited by hand, as while the agent works,
@@ -134,12 +137,18 @@ when it is rebased), the comments it opened, and its replies. Each part is
 marked as it stands: `✓` and green once accepted, `✗` and red once
 rejected, `·` while it is to review, green and red being the colours of
 the lines a patch adds and removes (`added` and `removed` in the
-settings). The title of the stack operations says how the change is
-marked, `stack operations · accepted` with the word in green, `rejected`
-in red, or `to review` as the rest of the title. Each of its lines starts
-with that mark, and the operation after it keeps the colour of its kind:
-`add` green, `modify`, `reword` and the base magenta, `remove` red, `noop`
-dim, and `move` as any text. Under the cursor, a marked line is in the
+settings). Each stack operation is a part of its own, marked so; a `noop`
+changes nothing, and has no mark. The title of the stack operations
+counts how they are marked, each count after its mark and in its colour,
+those to review in the title's own: `stack operations · ✓ 3 accepted, ✗ 1
+rejected, · 1 to review`, those it has; the list cuts what is too long
+for it. A change that leaves every patch as it was, and the base too, has
+no operation to mark: it is marked as a whole, its title saying `stack
+operations · accepted` with the word in green, `rejected` in red, or `to
+review` as the rest of the title. The line of each operation starts with
+its mark, and the operation after it keeps the colour of its kind: `add`
+green, `modify`, `reword` and the base magenta, `remove` red, `noop` dim,
+and `move` as any text. Under the cursor, a marked line is in the
 cursor's colours, its mark too, as every line of the list is. On the right
 is the part the cursor is on, as it would be:
 the stack diff of the change, from the stack as it is, each new version's
@@ -157,16 +166,20 @@ the work leaves it, a line at a time, the cursor on that line, and the
 work's comments under their lines, no other comment of the patch: those it
 was asked about, its replies in their threads, those it opened, and yours
 written in the review; ← goes back to the stack diff. Enter accepts the
-part the cursor is on, or puts it back to review if accepted (rejecting is
-Space's); every line of the stack
-operations is the one part of the change. Space has `Mark as
-accepted` or `Mark as rejected`; and, each kind apart, `Mark all opened
+part the cursor is on, or puts it back to review if accepted, and Delete
+rejects it, as Space's `Mark as rejected` does. On the title of the stack
+operations, Enter accepts every one of them, or, every one accepted, puts
+each back to review, and Delete rejects every one. Space has `Mark as
+accepted` or `Mark as rejected` (on the title, for every operation); and,
+each kind apart, `Mark all operations accepted` and `… rejected` on every
+other line, for the stack operations, `Mark all opened
 comments accepted` and `… rejected` for the comments the work opened,
-`Mark all replies accepted` and `… rejected` for its replies. Marking the change
-rejected marks the comments rejected too, and marking it accepted again
-puts their marks back as they were; a comment cannot be accepted while
-the change is rejected. Esc says what is marked, by kind of part
-(`replies: ✓ 1 accepted, · 1 to review`). Each count is marked as the
+`Mark all replies accepted` and `… rejected` for its replies. Rejecting
+every operation of the change marks the comments rejected too, and
+accepting one again puts their marks back as they were; a comment cannot
+be accepted while every operation is rejected. Esc says what is marked,
+by kind of part (`stack operations: ✓ 3 accepted, · 1 to review`,
+`replies: ✓ 1 accepted, · 1 to review`). Each count is marked as the
 list marks a part: `✓` and green for what is accepted, allowed or kept,
 `✗` and red for what is rejected, refused or to close, and `·` for what is
 to review or noted. Everything else on those lines, the labels, the
@@ -197,6 +210,66 @@ picked unless you picked otherwise in this review, and the pick is not
 kept for the stack. A reply that goes with a change of the stack
 opens that review, on the reply, from its comment (Enter, or `Review the
 agent's work…` in its menu).
+
+An operation needs another when its patch does not apply, in the stack
+as the operations stand, without the other: without a `modify`'s or a
+`reword`'s, that patch as it was; without an `add`'s, that patch absent;
+without a `remove`'s, that patch still there; without a `move`'s, that
+patch at its old place; without the base's, the base as it was. Whether
+a patch applies is told by the check every stack passes before it goes
+in the database (Only patches that apply go in, below), on the stacks the
+operations leave as they are marked, worked out again as a mark changes;
+what that check found of a stack, it tells again at once. The stack as
+the operations stand, those accepted and those to review, always applies.
+Rejecting an operation is refused while one that is accepted or to review
+needs it, the status line saying which (`patch 5's new version applies
+only on patch 4's new version: reject patch 5's operation first`), and so
+is rejecting one that a patch the change leaves as it was needs (`patch
+6, which the change leaves as it is, applies only on patch 4's new
+version, so patch 4's operation cannot be rejected alone`): operations
+are rejected from the leaves inward. Accepting one is refused while one
+it needs is rejected (`patch 5's new version applies only on patch 4's
+new version: accept patch 4's operation first`), or while a patch that
+stands would no longer apply once it is accepted. A `reword` changes no
+diff, so nothing needs it. When an operation's patch as it was would no
+longer apply on what the others leave, as a patch made again on the new
+version of the one under it, the operation that makes it so goes with
+it: rejecting the one asks first whether to reject both (`reject patch 5's
+operation with patch 4's operation?`, the question saying why: `Patch 5 as
+it was applies only on patch 4 as it was. Rejected alone, patch 5's
+operation would leave a stack that does not apply.`), with `Reject them`
+and `Keep them as they are`, and accepting the other again asks the same.
+On an operation, the right pane shows the stack diff at its patch, as on
+any line of the stack operations, and under the operation's line, while
+the cursor is in the list, what it needs and what needs it, a sentence
+each: `Patch 5's new version applies only on patch 4's new version.`, then
+`Nothing else needs this operation: it can be rejected alone.` or `Patch 5's
+new version applies only on patch 4's new version: reject patch 5's
+operation before this one.`; rejected, `Nothing it needs is rejected: it
+can be accepted alone.` or what to accept before it. On a `noop`, it says
+that the change leaves the patch as it is, with nothing to accept or
+reject.
+
+Closing, the stack becomes the stack as the operations accepted leave it:
+each patch whose operation is accepted as the change leaves it, every
+other as it was, where it was, and the base as its operation is marked.
+That stack is checked first, and the review stays open, nothing done, the
+status line saying why, if it does not apply, as when `Reject all
+remaining and Close` would reject an operation that one accepted needs
+(`the stack the operations you accepted leave does not apply: patch 5
+(…) does not apply to the patches below it (…); nothing changed`).
+Accepted in part, the history names the operations rejected, by their
+word and place as the list says them (`agent: the stack; rejected:
+modify 5`), and so does the run (`reviewed: its change accepted in part, 3
+operations accepted and 1 rejected (modify 5)`). A change accepted in part
+is not the stack that the chained edits going on from it went on from:
+they are dropped and asked again, as for a rejection (Asking the agent,
+above), and closing says so first (`Accepting this change in part throws
+away the 1 edit that went on from it, as if you accepted it whole: 1
+waiting for your review is thrown away. It is asked again from the stack
+the operations you accepted leave.`). Once any operation is accepted, the
+stack changes: the answers made on the stack before the change go as they
+are marked (below), and HEAD of your checkout may follow the stack.
 
 The review of a change of the stack, chained (Asking the agent, above),
 lists in a section of its own, `answers made on the stack before the
@@ -232,11 +305,12 @@ comment it answers, its reply after it once it waits for your review, then
 how it is marked and what that does. One that fails, or is reviewed, while
 the review is open says so, dim, and needs no mark; one running that lands
 keeps its mark, which then goes for the work it brought back. The marks
-count only once the change is accepted: rejected or sent back, the change
-leaves the stack as it is, and the answers go on as they are. Until each
-answer is marked, the review does not close with its change accepted:
+count only once the change is accepted, wholly or in part: rejected, every
+operation of it, or sent back, the change leaves the stack as it is, and
+the answers go on as they are. Until each answer is marked, the review
+does not close with its change accepted:
 `Close review` and `Accept all remaining and Close` are grayed, and so is
-`Reject all remaining and Close` while the change is marked accepted, Esc
+`Reject all remaining and Close` while an operation is marked accepted, Esc
 saying what they wait for (`Not marked yet: the stack · and the stack?
 (waiting for your review)`) under how they are marked (`answers made on
 the stack before the change: ✓ 1 kept, · 1 to mark`). `Accept all
@@ -244,7 +318,8 @@ remaining and Close` marks none of them. Closing with the change accepted
 asks first, saying what becomes of each (`Closing this review applies its
 change. Of the answers made on the stack before it, 1 running goes on, and
 lands for your review on the stack it was asked on; 1 waiting for your
-review is thrown away unseen, its comment left open, not asked again.`),
+review is thrown away unseen, its comment left open, not asked again.`;
+accepted in part, `Closing this review applies its change in part.`),
 in place of what closing asked again before; and the status line, then
 the run, says what came of them (`1 answer-only ask kept`, `… asked
 again`, `… stopped`). The review of an edit by hand, of a reconcile with
@@ -395,7 +470,7 @@ in $EDITOR` is there too. An edit that is not taken opens again at the
 same file and line with `Edit it again`.
 Saved, that work is rejected, and the work with your edit in it lands in
 its place: its replies and the comments it opened go with it, as you had
-marked them, and its change is to review again. The review goes on there,
+marked them, and its change is to review again, each of its operations. The review goes on there,
 its title saying what you edited (`then you edited a.txt in Bug 1`). The
 review of an edit by hand has the same, to edit it again. On the command
 line, `stacked edit NAME PATCH --work RUN` edits the patch as that landed
@@ -405,12 +480,19 @@ On the command line, `stacked landed NAME` lists the queue: each landed ask
 by its run, what is left of it to review (with no part left, the comments
 the agent was asked about: `1 asking comment to close or keep, nothing
 brought back`), the effort it was asked at, if it was asked at one (`asked
-at max`), and each part of it; then what a build and test asked as a
+at max`), and each part of it, the change's line saying `accepted` or
+`rejected` once every one of its operations is, and else how many are
+marked each way, once one is (`operations: 1 rejected, 3 to review`); then
+what a build and test asked as a
 follow-up found, a line each (`found`), and each follow-up going, how it
 was asked and where it stands (`following`). `stacked review NAME [RUN]
 --accept-all` (or `--reject-all`) closes the review of that ask, the first
 landed if no run is given: the parts not marked yet are accepted (or
-rejected), and what is accepted is applied; `--close-asking` closes the
+rejected), each operation of its change not marked yet too, and what is
+accepted is applied, the change as the operations accepted leave the
+stack; a stack that does not apply is refused, saying why, and nothing
+changes. There is no option for one operation: the review in the editor
+marks each, and saved, those marks stand. `--close-asking` closes the
 comments the agent was asked about too. A pull's review is not rejected:
 `--reject-all` refuses it, and `--accept-all` files every comment it
 pulled. Accepting a change, chained, `--accept-all` goes by the marks its

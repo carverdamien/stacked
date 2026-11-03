@@ -40,6 +40,7 @@ pub mod mbox;
 #[cfg(feature = "demo")]
 pub mod memory;
 pub mod messages;
+pub mod operations;
 pub mod ops;
 pub mod paint;
 pub mod panes;

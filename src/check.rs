@@ -19,6 +19,12 @@ use crate::git::{git, git_env};
 /// The stacks seen to apply, by `key`: checked once per process.
 static APPLIES: Mutex<Option<HashSet<String>>> = Mutex::new(None);
 
+/// The stacks seen not to apply, by `key`, and the first patch that does
+/// not, by place: what `first_failure` found, checked once per process. A
+/// stack is its base and its patches by their ids, which are their
+/// contents: what was found of it holds for good.
+static FAILS: Mutex<Option<HashMap<String, usize>>> = Mutex::new(None);
+
 fn key(repo: &Path, base: &str, patches: &[&Patch]) -> String {
     let mut s = format!("{}\0{base}", repo.display());
     for p in patches {
@@ -105,6 +111,66 @@ pub fn applies(repo: &Path, base: &str, patches: &[&Patch]) -> Result<()> {
     }
     APPLIES.lock().unwrap().get_or_insert_with(HashSet::new).insert(key);
     Ok(())
+}
+
+/// The first of `patches` that does not apply, in order, to `base` in
+/// `repo`, by place (from 0); none when they all apply. Checked as `applies`
+/// checks a stack, the same patch failing against the whole base too before
+/// it is believed, and kept for the process, as a stack seen to apply is:
+/// the operations of a change are checked again and again as their marks
+/// change, the same stacks among them. A patch with no diff is one that
+/// does not apply. The base not there is an error.
+pub fn first_failure(repo: &Path, base: &str, patches: &[&Patch]) -> Result<Option<usize>> {
+    // A repository kept in memory: applied there, as git would.
+    #[cfg(feature = "demo")]
+    if let Some(tree) = crate::memory::tree(repo, base) {
+        let mut tree = tree?;
+        return Ok(patches.iter().position(|p| crate::memory::apply(&mut tree, &p.diff).is_err()));
+    }
+    let key = key(repo, base, patches);
+    if APPLIES.lock().unwrap().as_ref().is_some_and(|s| s.contains(&key)) {
+        return Ok(None);
+    }
+    if let Some(k) = FAILS.lock().unwrap().as_ref().and_then(|f| f.get(&key).copied()) {
+        return Ok(Some(k));
+    }
+    reachable(repo, base)?;
+    // Those before the first patch with no diff, if one has none: it does
+    // not apply.
+    let empty = patches.iter().position(|p| !p.diff.lines().any(|l| l.starts_with("diff ")));
+    let checked = &patches[..empty.unwrap_or(patches.len())];
+    let found = match checked.is_empty() {
+        true => None,
+        false => match first_failing(repo, base, Some(&touched(repo, checked)), checked)? {
+            // A failure is believed only once the whole base sees it too.
+            Some(_) => first_failing(repo, base, None, checked)?,
+            None => None,
+        },
+    };
+    let found = found.or(empty);
+    match found {
+        None => {
+            APPLIES.lock().unwrap().get_or_insert_with(HashSet::new).insert(key);
+        }
+        Some(k) => {
+            FAILS.lock().unwrap().get_or_insert_with(HashMap::new).insert(key, k);
+        }
+    }
+    Ok(found)
+}
+
+/// The first of `patches` that does not apply, in turn, to an index
+/// holding `paths` of `base`, or all of it, by place; none when they all
+/// do. All at once, as one series, and only if that fails one by one, to
+/// tell which: `git apply` changes nothing when it fails, so the one by one
+/// start from the base.
+fn first_failing(repo: &Path, base: &str, paths: Option<&BTreeSet<String>>, patches: &[&Patch]) -> Result<Option<usize>> {
+    let ix = Index::new(repo, base, paths)?;
+    let series: String = patches.iter().map(|p| p.diff.as_str()).collect();
+    if ix.apply(repo, &series).is_ok() {
+        return Ok(None);
+    }
+    Ok(ix.apply_each(repo, &patches.iter().map(|p| p.diff.as_str()).collect::<Vec<_>>()).err().map(|(k, _)| k))
 }
 
 /// A directory of its own in the temporary directory, gone when dropped:
@@ -675,6 +741,24 @@ mod tests {
         // And applied twice, it does not.
         let e = try_apply(&r, &base, Some(&paths), &[&p, &p]).unwrap_err();
         assert!(e.0.contains("patch 2 (p) does not apply to the patches below it"), "{}", e.0);
+    }
+
+    #[test]
+    fn the_first_patch_that_does_not_apply_is_told_by_place_and_kept() {
+        let (_tmp, r, base, p) = repo();
+        assert_eq!(first_failure(&r, &base, &[]).unwrap(), None);
+        assert_eq!(first_failure(&r, &base, &[&p]).unwrap(), None);
+        // Twice, the second does not; a patch with no diff does not either.
+        assert_eq!(first_failure(&r, &base, &[&p, &p]).unwrap(), Some(1));
+        assert_eq!(first_failure(&r, &base, &[&patch(String::new()), &p]).unwrap(), Some(0));
+        assert_eq!(first_failure(&r, &base, &[&p, &patch(String::new())]).unwrap(), Some(1));
+        // Kept: asked again, it is told without git, as is one seen to apply.
+        let k = key(&r, &base, &[&p, &p]);
+        assert_eq!(FAILS.lock().unwrap().as_ref().and_then(|f| f.get(&k).copied()), Some(1));
+        assert!(APPLIES.lock().unwrap().as_ref().is_some_and(|s| s.contains(&key(&r, &base, &[&p]))));
+        assert_eq!(first_failure(&r, &base, &[&p, &p]).unwrap(), Some(1));
+        // A base that is not there is no answer.
+        assert!(first_failure(&r, &"0".repeat(40), &[&p]).is_err());
     }
 
     #[test]

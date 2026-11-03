@@ -1438,6 +1438,31 @@ fn a_comment_on_a_patch_the_work_adds_sends_it_back_from_its_review_in_the_brows
 }
 
 #[test]
+fn each_stack_operation_is_marked_on_its_own_in_the_browser_too() {
+    let (tmp, db) = setup();
+    work_on_two(tmp.path(), &db, "why so loud?", true, false);
+    stacked::config::init(stacked::config::Config::default());
+    let (port, token) = stacked::web::start(db.clone()).unwrap();
+    let (host, input) = (format!("127.0.0.1:{port}"), format!("POST /input?t={token}"));
+    let mut events = events(port, &token, 120);
+    until(&mut events, "the banner", |l| text(l).contains("1 landed ask waits for your review"));
+    // Its review: two operations to review, the patch left as it was with
+    // no mark.
+    ask(port, &host, &input, "k Esc -\nk Enter -\n");
+    until(&mut events, "the title", |l| text(l).contains(" stack operations · · 2 to review"));
+    for said in ["   · modify  1 Bug 1 - shout two", "   · add     2 Bug 1 - a c too", "     noop    3 Bug 2 - add b"] {
+        until(&mut events, said, |l| text(l).contains(said));
+    }
+    // The first accepted, alone, the cursor gone below it: its mark green,
+    // the terminal's colour 2.
+    ask(port, &host, &input, "k Down -\nk Enter -\nk Down -\n");
+    until(&mut events, "the title counted", |l| text(l).contains(" stack operations · ✓ 1 accepted, · 1 to review"));
+    until(&mut events, "its mark, green", |l| {
+        text(l).contains("   ✓ modify  1 Bug 1 - shout two") && runs(l).contains(&("2,,0".to_string(), "✓".to_string()))
+    });
+}
+
+#[test]
 fn a_thread_the_agent_opened_written_in_its_review_sends_the_work_back_in_the_browser_too() {
     use stacked::thread::{Role, append_turn};
     let (tmp, db) = setup();

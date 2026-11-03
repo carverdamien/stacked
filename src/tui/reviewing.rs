@@ -31,6 +31,7 @@ use super::*;
 use crate::db::Run;
 use crate::held::{AnswerMark, Goes, Held as Work, Part};
 use crate::history::Diffed;
+use crate::operations::Ops;
 use crate::refusals::{Allow, Refusal};
 #[cfg(feature = "try-push")]
 use crate::try_push::thousands;
@@ -52,6 +53,9 @@ const SENT_HOW: &str = "Send it back to the agent… opens a dialog that sets wh
 /// What the review's section of the answers made on the stack before the
 /// change is called, as its heading says it, and its line of what Esc says.
 pub(super) const ANSWERS: &str = "answers made on the stack before the change";
+
+/// What marking a patch the change leaves as it was says: it has no mark.
+pub(super) const NOTHING_TO_MARK: &str = "the change leaves this patch as it is: there is nothing to accept or reject";
 
 /// Where an answer made on the stack before the change stands, as its line
 /// of the review says it: running, or landed and waiting for your review,
@@ -189,10 +193,12 @@ impl WorkPlace {
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Reviewing {
     pub run: String,
-    /// Each part marked: accepted, or rejected. As saved, and since.
+    /// Each part marked: accepted, or rejected; each operation of the
+    /// change of the stack on its own. As saved, and since.
     pub marks: BTreeMap<String, bool>,
-    /// The comments' marks when the change of the stack was rejected,
-    /// rejecting them with it: they come back if it is accepted again.
+    /// The comments' marks when every operation of the change of the stack
+    /// was rejected, rejecting them with it: they come back once one is
+    /// accepted again.
     before: Option<BTreeMap<String, bool>>,
     /// The line of the list the cursor is on, and the first one shown.
     pub sel: usize,
@@ -343,11 +349,13 @@ impl Line {
     }
 }
 
-/// How a review closes, for what that asks again: or how the work goes back
-/// to the agent while it stays open, followed up.
+/// How a review closes, for what that asks again, its change accepted
+/// whole, in part, or rejected: or how the work goes back to the agent
+/// while it stays open, followed up.
 #[derive(Clone, Copy, PartialEq)]
 enum Closing {
     Accepting,
+    Partly,
     Rejecting,
     SendingBack,
     FollowingUp,
@@ -374,6 +382,23 @@ fn mark_of(m: Option<bool>) -> (&'static str, Style) {
         Some(false) => ("✗", color::del()),
         None => ("·", Style::new()),
     }
+}
+
+/// What marking operation `key` of `ops` accepted (`accept`), or rejected,
+/// asks first when operations `with` go with it: whether to mark them all,
+/// and why they go with it; the menu on keeping them as they are.
+fn with_ask(ops: &Ops, key: &str, with: &[crate::operations::With], accept: bool) -> Menu {
+    let others: Vec<String> = with.iter().map(|w| w.key.clone()).collect();
+    let mut keys = vec![key.to_string()];
+    keys.extend(others.iter().cloned());
+    let (doing, done, yes) = match accept {
+        true => ("accept", "Accepted", "Accept them"),
+        false => ("reject", "Rejected", "Reject them"),
+    };
+    let title = format!("{doing} {} with {}?", ops.said(key), ops.listed(&others));
+    let mut m = Menu::ask(title, Item::new(yes, Action::MarkOpsWith(keys, accept)), "Keep them as they are", true);
+    m.note = Some(format!("{} {done} alone, {} would leave a stack that does not apply.", ops.with_all_said(with), ops.said(key)));
+    m
 }
 
 /// A line of the stack diff, as one of the stack operations: what is done
@@ -507,7 +532,7 @@ impl App {
         let was = self.review_was(run).filter(|&k| lines.get(k).is_some_and(|l| l.part.is_some()));
         let at = match part {
             Some(p) => lines.iter().position(|l| l.part == Some(p)),
-            None => was.or_else(|| lines.iter().position(|l| l.part.is_some_and(|p| !marks.contains_key(&p.key())))),
+            None => was.or_else(|| lines.iter().position(|l| l.part.is_some_and(|p| !self.part_marked(&marks, p)))),
         };
         // No part left: on the first tool the agent could not use, else on
         // the first comment that asked.
@@ -536,6 +561,68 @@ impl App {
             ..now.clone()
         };
         Some((now, next))
+    }
+
+    /// The operations of the change reviewed, from the stack as it is: none
+    /// for work that changes nothing of the stack.
+    pub(super) fn review_ops(&self) -> Option<Ops> {
+        let (now, next) = self.review_stacks()?;
+        Some(crate::operations::of(&self.db, &now, &next))
+    }
+
+    /// The operation of the review's line `line`, of `ops`: one of the stack
+    /// operations' lines but their title.
+    fn line_op<'a>(ops: &'a Ops, line: &Line) -> Option<&'a crate::operations::Op> {
+        line.part.filter(|p| *p == Part::Stack).and(line.entry).and_then(|e| ops.by_entry(e))
+    }
+
+    /// The operation of the review's line the cursor is on, if it is one:
+    /// its key, and whether it is marked (not a patch left as it was).
+    pub(super) fn review_op(&self) -> Option<(String, bool)> {
+        let rv = self.reviewing.as_ref()?;
+        let ops = self.review_ops()?;
+        let o = Self::line_op(&ops, self.review_lines().get(rv.sel)?)?;
+        Some((o.key.clone(), o.marked()))
+    }
+
+    /// Whether `marks` reject the change of the stack: every one of its
+    /// operations, the comments of the work with it.
+    fn change_rejected(&self, marks: &BTreeMap<String, bool>) -> bool {
+        self.review_ops().is_some_and(|ops| matches!(ops.tally(marks), (0, n, 0) if n > 0))
+    }
+
+    /// Whether closing the review, the parts not marked yet as `rest`
+    /// says, accepts the change of the stack, wholly or in part: an
+    /// operation of it is accepted.
+    fn change_taken(&self, marks: &BTreeMap<String, bool>, rest: Option<bool>) -> bool {
+        self.review_ops().is_some_and(|ops| {
+            let (yes, _, open) = ops.tally(marks);
+            yes > 0 || (open > 0 && rest == Some(true))
+        })
+    }
+
+    /// Whether closing the review, the parts not marked yet as `rest` says,
+    /// accepts the change of the stack in part: some of its operations, not
+    /// all.
+    fn change_in_part(&self, marks: &BTreeMap<String, bool>, rest: Option<bool>) -> bool {
+        self.review_ops().is_some_and(|ops| {
+            let (yes, no, open) = ops.tally(marks);
+            let (yes, no) = match rest {
+                Some(true) => (yes + open, no),
+                Some(false) => (yes, no + open),
+                None => (yes, no),
+            };
+            yes > 0 && no > 0
+        })
+    }
+
+    /// Whether part `p` of what is reviewed is marked, as `marks` mark it:
+    /// the change of the stack once each of its operations is.
+    fn part_marked(&self, marks: &BTreeMap<String, bool>, p: Part) -> bool {
+        match (p, self.review_ops()) {
+            (Part::Stack, Some(ops)) => ops.tally(marks).2 == 0,
+            _ => marks.contains_key(&p.key()),
+        }
     }
 
     /// The comments the ask of what is reviewed was about, still open, each
@@ -977,6 +1064,21 @@ impl App {
         if self.review_pulled() {
             return Some(Err(crate::held::FILED.into()));
         }
+        // An operation of the change, by its own mark; their title, the
+        // change as a whole, every one rejected or not.
+        if p == Part::Stack
+            && let Some(ops) = self.review_ops()
+        {
+            return Some(match Self::line_op(&ops, line) {
+                Some(o) if !o.marked() => Err(NOTHING_TO_MARK.into()),
+                Some(o) if ops.mark(&rv.marks, o) == Some(false) => Err("this operation is rejected already".into()),
+                Some(_) => Ok(Action::MarkPart(false)),
+                None => match ops.tally(&rv.marks) {
+                    (0, _, 0) => Err("this part is rejected already".into()),
+                    _ => Ok(Action::MarkPart(false)),
+                },
+            });
+        }
         Some(match rv.marks.get(&p.key()) {
             Some(false) => Err("this part is rejected already".into()),
             _ => Ok(Action::MarkPart(false)),
@@ -1048,7 +1150,7 @@ impl App {
     /// marked: then it does not close.
     fn waits_for_answers(&self, rest: Option<bool>) -> bool {
         let Some(rv) = &self.reviewing else { return false };
-        rv.marks.get(&Part::Stack.key()).copied().or(rest) == Some(true) && !self.unmarked_in(rv).is_empty()
+        self.change_taken(&rv.marks, rest) && !self.unmarked_in(rv).is_empty()
     }
 
     /// The answer of run `id`, made on the stack before the change, marked
@@ -1180,12 +1282,20 @@ impl App {
             return Err("this work goes on from the work landed before it, which waits for your review: review that one first".into());
         }
         let rv = self.review_of(run);
-        if crate::held::parts_left(&self.db, r).iter().all(|p| rv.marks.contains_key(&p.key())) {
+        // The change of that work, by its operations, as its review marks
+        // them.
+        let ops = r.held.as_ref().and_then(|h| crate::operations::of_work(&self.db, r, h));
+        let marked = crate::held::parts_left(&self.db, r).iter().all(|p| match (p, &ops) {
+            (Part::Stack, Some(ops)) => ops.tally(&rv.marks).2 == 0,
+            _ => rv.marks.contains_key(&p.key()),
+        });
+        let taken = ops.as_ref().is_some_and(|ops| ops.tally(&rv.marks).0 > 0);
+        if marked {
             return Err(self.say_keys("nothing of this work is left to reject: press Enter to review it, and close the review there".into()));
         }
-        // Its change marked accepted, it closes accepted: once each answer
-        // made on the stack before it is marked.
-        if rv.marks.get(&Part::Stack.key()) == Some(&true) && !self.unmarked_in(&rv).is_empty() {
+        // Its change marked accepted, wholly or in part, it closes accepted:
+        // once each answer made on the stack before it is marked.
+        if taken && !self.unmarked_in(&rv).is_empty() {
             return Err(self.say_keys(
                 "its change is marked accepted, and an answer made on the stack before it is not marked keep, restart or stop: press Enter to review it, and mark each there".into(),
             ));
@@ -1204,8 +1314,7 @@ impl App {
             self.review_left().join(", ")
         )];
         // Its change, accepted or rejected as marked, else rejected.
-        let accepting = self.reviewing.as_ref().and_then(|rv| rv.marks.get(&Part::Stack.key()).copied()) == Some(true);
-        said.extend(self.review_again(if accepting { Closing::Accepting } else { Closing::Rejecting }));
+        said.extend(self.review_again(self.closing_as(Some(false))));
         said.extend(self.follow_stopped(Closing::Rejecting));
         // A try push's: what closing pushes, of the tasks accepted already.
         #[cfg(feature = "try-push")]
@@ -1382,23 +1491,42 @@ impl App {
         let mark = |p: Part| rv.marks.get(&p.key()).copied();
         let title = |text: &str| line(text.into(), color::file());
         if let Some((now, next)) = self.review_stacks() {
-            // How the change is marked: in its title, the word in its mark's
-            // colour (`mark_of`), to review in the title's; and before each
-            // operation, its mark, the operation in its own colour.
-            let marked = mark(Part::Stack);
-            let said = match marked {
-                Some(true) => ("accepted", color::add()),
-                Some(false) => ("rejected", color::del()),
-                None => ("to review", color::file()),
-            };
+            // How the operations are marked: in their title, a count of each
+            // mark, in that mark's colour (`mark_of`), those to review in the
+            // title's; and before each operation, its own mark, the operation
+            // in the colour of its kind. A patch left as it was has none.
+            let ops = crate::operations::of(&self.db, &now, &next);
+            let mut parts: Parts = vec![(" stack operations · ".into(), color::file())];
+            match ops.whole() {
+                // No operation to mark: the change as a whole, its word in
+                // its mark's colour.
+                true => parts.push(match mark(Part::Stack) {
+                    Some(true) => ("accepted".into(), color::add()),
+                    Some(false) => ("rejected".into(), color::del()),
+                    None => ("to review".into(), color::file()),
+                }),
+                false => {
+                    let (yes, no, open) = ops.counts(&rv.marks);
+                    let counts = [(yes, "accepted", color::add(), "✓"), (no, "rejected", color::del(), "✗"), (open, "to review", color::file(), "·")];
+                    for (k, (n, word, st, sign)) in counts.into_iter().filter(|(n, ..)| *n > 0).enumerate() {
+                        if k > 0 {
+                            parts.push((", ".into(), color::file()));
+                        }
+                        parts.push((format!("{sign} {n} {word}"), st));
+                    }
+                }
+            }
             out.push(Line {
                 part: Some(Part::Stack),
-                ..Line::new(vec![(" stack operations · ".into(), color::file()), (said.0.into(), said.1)])
+                ..Line::new(parts)
             });
-            let (m, st) = mark_of(marked);
             let diff = crate::history::stacks_diff(&self.db, Some(&now), Some(&next), false);
             for (k, d) in diff.iter().enumerate() {
                 if let Some((text, style)) = operation(d) {
+                    let (m, st) = match ops.by_entry(k) {
+                        Some(o) if o.marked() => mark_of(ops.mark(&rv.marks, o)),
+                        _ => (" ", Style::new()),
+                    };
                     out.push(Line {
                         part: Some(Part::Stack),
                         entry: Some(k),
@@ -1642,11 +1770,30 @@ impl App {
         }
         match line.part {
             Some(Part::Stack) | None => {
-                let Some(v) = self.review_diff(w) else {
+                let Some(mut v) = self.review_diff(w) else {
                     return ("the agent changed nothing of the stack".into(), vec![], 0..0);
                 };
                 // Where the patch of the list's line is, among every entry.
-                let first = line.entry.and_then(|e| v.of_entry.get(e)).map_or(0, |&k| v.spans[k].start);
+                let at = line.entry.and_then(|e| v.of_entry.get(e)).copied();
+                let first = at.map_or(0, |k| v.spans[k].start);
+                // On an operation, the cursor in the list: what it needs, and
+                // what needs it, said under its line, over what changed in its
+                // patch. Not once the cursor is in the stack diff, which goes
+                // from entry to entry as it is.
+                if let Some(k) = at.filter(|_| !rv.in_main)
+                    && let Some(ops) = self.review_ops()
+                    && let Some(o) = Self::line_op(&ops, line)
+                {
+                    let indent = "      ";
+                    let mut under: Vec<Vec<(String, Style)>> = Vec::new();
+                    for said in ops.pane_said(&self.db, &rv.marks, &o.key) {
+                        under.extend(wrap(&said, w.saturating_sub(indent.len()).max(20)).into_iter().map(|l| vec![(format!("{indent}{l}"), color::note())]));
+                    }
+                    let end = v.spans[k].end.min(v.lines.len());
+                    let n = under.len();
+                    v.lines.splice(end..end, under);
+                    return (v.said, v.lines, first..end + n);
+                }
                 (v.said, v.lines, first..first)
             }
             // A try push's task: why the agent selected it, as its comment.
@@ -2179,6 +2326,12 @@ impl App {
         let goes = diff.filter(|_| on_diff).map(|v| v.goes);
         // A pull's parts: all accepted, nothing to mark.
         let pulled = self.review_pulled();
+        // The operation of the line the cursor is on, if it is one; those of
+        // the change, and whether every one is accepted, for their title.
+        let op = self.review_op();
+        let ops = self.review_ops();
+        let op_keys: Vec<String> = ops.iter().flat_map(|o| o.keys()).collect();
+        let all_accepted = self.reviewing.as_ref().zip(ops.as_ref()).is_some_and(|(rv, o)| matches!(o.tally(&rv.marks), (y, 0, 0) if y > 0));
         let Some(rv) = self.reviewing.as_mut() else {
             self.screen = Screen::Main;
             return Effect::None;
@@ -2256,8 +2409,20 @@ impl App {
                     // An answer made on the stack before the change: kept.
                     self.mark_answer(&id, AnswerMark::Keep);
                 } else if let Some(p) = lines.get(rv.sel).and_then(|l| l.part).filter(|_| !pulled) {
-                    match rv.marks.get(&p.key()) {
-                        Some(true) => {
+                    // An operation of the change: accepted, or back to
+                    // review; their title, every one of them.
+                    match (p, op) {
+                        (Part::Stack, Some((_, false))) => self.status = NOTHING_TO_MARK.into(),
+                        (Part::Stack, Some((key, true))) if rv.marks.get(&key) == Some(&true) => {
+                            rv.marks.remove(&key);
+                        }
+                        (Part::Stack, Some((key, true))) => self.mark_op(&key, true),
+                        (Part::Stack, None) if all_accepted => {
+                            for key in op_keys {
+                                rv.marks.remove(&key);
+                            }
+                        }
+                        _ if rv.marks.get(&p.key()) == Some(&true) => {
                             rv.marks.remove(&p.key());
                         }
                         _ => self.mark(p, true),
@@ -2307,40 +2472,108 @@ impl App {
         Effect::None
     }
 
-    /// Part `p` marked accepted, or rejected. The change of the stack
-    /// rejected rejects the comments of the work with it; accepted again,
-    /// they are as they were. A comment is not accepted while the change it
-    /// goes with is rejected.
+    /// Part `p` marked accepted, or rejected: the change of the stack, every
+    /// one of its operations at once (`mark_ops`). A comment is not accepted
+    /// while the change it goes with is rejected, every operation of it.
     pub(super) fn mark(&mut self, p: Part, accept: bool) {
         if !accept && self.review_pulled() {
             self.status = crate::held::FILED.into();
             return;
         }
-        let comments: Vec<Part> = self.review_parts().into_iter().filter(|p| *p != Part::Stack).collect();
-        let whose = self.reviewing.as_ref().and_then(|rv| self.db.run(&rv.run)).map_or("the agent's change", ask::whose_change);
-        let Some(rv) = self.reviewing.as_mut() else { return };
-        let rejected = rv.marks.get(&Part::Stack.key()) == Some(&false);
         if p == Part::Stack {
-            if !accept && !rejected {
-                rv.before = Some(comments.iter().filter_map(|c| Some((c.key(), *rv.marks.get(&c.key())?))).collect());
-                for c in &comments {
-                    rv.marks.insert(c.key(), false);
-                }
-            }
-            if accept && rejected {
-                let before = rv.before.take().unwrap_or_default();
-                for c in &comments {
-                    match before.get(&c.key()) {
-                        Some(m) => rv.marks.insert(c.key(), *m),
-                        None => rv.marks.remove(&c.key()),
-                    };
-                }
-            }
-        } else if accept && rejected {
+            let keys = self.review_ops().map_or_else(|| vec![Part::Stack.key()], |o| o.keys());
+            self.mark_ops(&keys, accept);
+            return;
+        }
+        let whose = self.reviewing.as_ref().and_then(|rv| self.db.run(&rv.run)).map_or("the agent's change", ask::whose_change);
+        if accept && self.reviewing.as_ref().is_some_and(|rv| self.change_rejected(&rv.marks)) {
             self.status = format!("{whose} of the stack is rejected, and the comments with it: accept the change first");
             return;
         }
-        rv.marks.insert(p.key(), accept);
+        if let Some(rv) = self.reviewing.as_mut() {
+            rv.marks.insert(p.key(), accept);
+        }
+    }
+
+    /// Operations `keys` of the change marked accepted, or rejected, as
+    /// they are: what they need is not looked at. Every operation rejected,
+    /// the comments of the work are rejected with them; one accepted again,
+    /// they are as they were.
+    fn mark_ops(&mut self, keys: &[String], accept: bool) {
+        let comments: Vec<Part> = self.review_parts().into_iter().filter(|p| *p != Part::Stack).collect();
+        let Some(was) = self.reviewing.as_ref().map(|rv| self.change_rejected(&rv.marks)) else { return };
+        let mut marks = self.reviewing.as_ref().map(|rv| rv.marks.clone()).unwrap_or_default();
+        for k in keys {
+            marks.insert(k.clone(), accept);
+        }
+        let now = self.change_rejected(&marks);
+        let Some(rv) = self.reviewing.as_mut() else { return };
+        if now && !was {
+            rv.before = Some(comments.iter().filter_map(|c| Some((c.key(), *marks.get(&c.key())?))).collect());
+            for c in &comments {
+                marks.insert(c.key(), false);
+            }
+        }
+        if was && !now {
+            let before = rv.before.take().unwrap_or_default();
+            for c in &comments {
+                match before.get(&c.key()) {
+                    Some(m) => marks.insert(c.key(), *m),
+                    None => marks.remove(&c.key()),
+                };
+            }
+        }
+        rv.marks = marks;
+    }
+
+    /// Operation `key` of the change marked accepted, or rejected, as what
+    /// it needs allows. Rejecting is refused while an operation that is
+    /// accepted or to review needs it, and accepting while one it needs is
+    /// rejected: the status line says which. Its patch as it was, or one
+    /// rejected already, not applying once it is marked, the operations
+    /// that go with it are marked with it, once asked.
+    pub(super) fn mark_op(&mut self, key: &str, accept: bool) {
+        let (Some(rv), Some(ops)) = (self.reviewing.as_ref(), self.review_ops()) else { return };
+        let Some(o) = ops.op(key) else { return };
+        if !o.marked() {
+            self.status = NOTHING_TO_MARK.into();
+            return;
+        }
+        let now = ops.mark(&rv.marks, o);
+        if now == Some(accept) {
+            self.status = format!("this operation is {} already", if accept { "accepted" } else { "rejected" });
+            return;
+        }
+        // One to review accepted: the stack stands as it did.
+        if accept && now.is_none() {
+            self.mark_ops(&[key.to_string()], true);
+            return;
+        }
+        let stands = ops.standing(&rv.marks);
+        let plan = if accept { ops.accept(&self.db, &stands, key) } else { ops.reject(&self.db, &stands, key) };
+        match plan {
+            Ok(with) if with.is_empty() => self.mark_ops(&[key.to_string()], accept),
+            Ok(with) => self.mode = Mode::Menu(with_ask(&ops, key, &with, accept)),
+            Err(r) => self.status = ops.refused_said(key, accept, &r),
+        }
+    }
+
+    /// Operations `keys`, the one marked and those that go with it, marked
+    /// accepted, or rejected, together, as the question before asked: once
+    /// the stack they then leave is seen to apply.
+    pub(super) fn mark_ops_with(&mut self, keys: &[String], accept: bool) {
+        let (Some(rv), Some(ops)) = (self.reviewing.as_ref(), self.review_ops()) else { return };
+        let mut marks = rv.marks.clone();
+        for k in keys {
+            marks.insert(k.clone(), accept);
+        }
+        match ops.failing(&self.db, &ops.standing(&marks)) {
+            Ok(None) => self.mark_ops(keys, accept),
+            Ok(Some(q)) => {
+                self.status = format!("{} does not apply on what the other operations leave in the stack: nothing is marked", ops.patch_said(&q.key, q.new));
+            }
+            Err(e) => self.status = e.0,
+        }
     }
 
     /// The comment the ask was about at place `k` marked to close with the
@@ -2361,8 +2594,8 @@ impl App {
             .map(|(j, _)| Part::Reply(j))
             .filter(|p| parts.contains(p))
             .collect();
+        let rejected = self.reviewing.as_ref().is_some_and(|rv| self.change_rejected(&rv.marks));
         let Some(rv) = self.reviewing.as_mut() else { return };
-        let rejected = rv.marks.get(&Part::Stack.key()) == Some(&false);
         if close {
             rv.marks.insert(crate::held::asking_key(k), true);
             if !rejected {
@@ -2451,10 +2684,22 @@ impl App {
                 _ => "enter: nothing, this answer has nothing to mark",
             };
         }
+        // An operation of the change, by its own mark; their title, by
+        // theirs, every one accepted or not.
+        let ops = self.review_ops();
+        let op = ops.as_ref().and_then(|o| Self::line_op(o, line));
+        let all = ops.as_ref().is_some_and(|o| matches!(o.tally(&rv.marks), (y, 0, 0) if y > 0));
         match (line.asking, line.part) {
             (Some(k), _) if rv.marks.get(&crate::held::asking_key(k)) == Some(&true) => "enter: keep it open",
             (Some(_), _) => "enter: close it with the review",
             (None, Some(_)) if self.review_pulled() => "enter: nothing, what was pulled is filed as the review closes",
+            (None, Some(Part::Stack)) => match op {
+                Some(o) if !o.marked() => "enter: nothing, the change leaves this patch as it is",
+                Some(o) if rv.marks.get(&o.key) == Some(&true) => "enter: to review again",
+                Some(_) => "enter: accept",
+                None if all => "enter: to review again",
+                None => "enter: accept",
+            },
             (None, Some(p)) if rv.marks.get(&p.key()) == Some(&true) => "enter: to review again",
             _ => "enter: accept",
         }
@@ -2549,14 +2794,24 @@ impl App {
             let of = if asking.len() == 1 { "asking comment" } else { "asking comments" };
             out.push(counted(of, &[(closing, "to close", Some(false)), (asking.len() - closing, "kept", Some(true))]));
         }
+        // The stack operations, each marked on its own: a count of each mark;
+        // with none to mark, the change as a whole.
         if parts.contains(&Part::Stack) {
-            let m = mark(&Part::Stack);
-            let said = match m {
-                Some(true) => "accepted",
-                Some(false) => "rejected",
-                None => "to review",
-            };
-            out.push(vec![("the change of the stack: ".into(), rest), marked(m, said.into())]);
+            match self.review_ops().filter(|o| !o.whole()) {
+                Some(ops) => {
+                    let (yes, no, open) = ops.counts(&rv.marks);
+                    out.push(counted("stack operations", &[(yes, "accepted", Some(true)), (no, "rejected", Some(false)), (open, "to review", None)]));
+                }
+                None => {
+                    let m = mark(&Part::Stack);
+                    let said = match m {
+                        Some(true) => "accepted",
+                        Some(false) => "rejected",
+                        None => "to review",
+                    };
+                    out.push(vec![("the change of the stack: ".into(), rest), marked(m, said.into())]);
+                }
+            }
         }
         // The answers made on the stack before the change: kept, as a part
         // accepted is counted; stopped, as one rejected; restarted, and those
@@ -2657,7 +2912,7 @@ impl App {
             return m;
         }
         let parts = self.review_parts();
-        let done = self.reviewing.as_ref().is_some_and(|rv| parts.iter().all(|p| rv.marks.contains_key(&p.key())));
+        let done = self.reviewing.as_ref().is_some_and(|rv| parts.iter().all(|p| self.part_marked(&rv.marks, *p)));
         // Closing with the change accepted waits for each answer made on the
         // stack before it to be marked.
         let waits = |rest: Option<bool>| self.waits_for_answers(rest);
@@ -2793,7 +3048,7 @@ impl App {
     fn head_can_follow(&self) -> bool {
         let Some(rv) = &self.reviewing else { return false };
         let Some((now, _)) = self.review_stacks() else { return false };
-        if rv.marks.get(&Part::Stack.key()) == Some(&false) {
+        if self.change_rejected(&rv.marks) {
             return false;
         }
         let rev = self.db.head(&self.stack).map(|(r, _)| r);
@@ -2833,16 +3088,16 @@ impl App {
         };
         let mut said = vec![format!("Not marked yet: {}. The review closes then: {then}.", self.review_left().join(", "))];
         // Its change, accepted or rejected as marked, else as the rest.
-        let accepting = self.reviewing.as_ref().and_then(|rv| rv.marks.get(&Part::Stack.key()).copied()).unwrap_or(accept);
-        said.extend(self.review_again(if accepting { Closing::Accepting } else { Closing::Rejecting }));
-        let builds = accepting.then(|| self.review_builds()).flatten();
+        let how = self.closing_as(Some(accept));
+        said.extend(self.review_again(how));
+        let builds = (how != Closing::Rejecting).then(|| self.review_builds()).flatten();
         let stop = builds.is_some();
         said.extend(builds);
         said.extend(self.follow_stopped(Closing::Accepting));
         // A try push's: what closing pushes.
         #[cfg(feature = "try-push")]
         said.extend(self.push_said(Some(accept)));
-        said.extend(self.tools_note(if accepting { Closing::Accepting } else { Closing::Rejecting }));
+        said.extend(self.tools_note(how));
         self.close_choices(title, yes, Some(accept), said, stop)
     }
 
@@ -2850,17 +3105,33 @@ impl App {
     /// something again, leaves a build and test behind, or decides what a
     /// try push pushes; the menu on Keep reviewing.
     pub(super) fn review_close_menu(&self) -> Option<Menu> {
-        let rv = self.reviewing.as_ref()?;
-        let accepting = rv.marks.get(&Part::Stack.key()) == Some(&true);
-        let mut said: Vec<String> = self.review_again(if accepting { Closing::Accepting } else { Closing::Rejecting }).into_iter().collect();
-        let builds = accepting.then(|| self.review_builds()).flatten();
+        self.reviewing.as_ref()?;
+        let how = self.closing_as(None);
+        let mut said: Vec<String> = self.review_again(how).into_iter().collect();
+        let builds = (how != Closing::Rejecting).then(|| self.review_builds()).flatten();
         let stop = builds.is_some();
         said.extend(builds);
         said.extend(self.follow_stopped(Closing::Accepting));
         #[cfg(feature = "try-push")]
         said.extend(self.push_said(None));
-        said.extend(self.tools_note(if accepting { Closing::Accepting } else { Closing::Rejecting }));
+        said.extend(self.tools_note(how));
         (!said.is_empty()).then(|| self.close_choices("close the review?", "Close it", None, said, stop))
+    }
+
+    /// How closing the review, the parts not marked yet as `rest` says,
+    /// goes for its change of the stack: accepted whole, accepted in part,
+    /// or rejected. Of work that changes nothing of the stack, as `rest`
+    /// says.
+    fn closing_as(&self, rest: Option<bool>) -> Closing {
+        let Some(rv) = &self.reviewing else { return Closing::Rejecting };
+        if self.review_ops().is_none() {
+            return if rest == Some(true) { Closing::Accepting } else { Closing::Rejecting };
+        }
+        match (self.change_taken(&rv.marks, rest), self.change_in_part(&rv.marks, rest)) {
+            (true, true) => Closing::Partly,
+            (true, false) => Closing::Accepting,
+            (false, _) => Closing::Rejecting,
+        }
     }
 
     /// Whether the review allows a tool the agent could not use, for this
@@ -2913,7 +3184,7 @@ impl App {
                     });
                 }
             }
-            Closing::Accepting | Closing::Rejecting => {
+            Closing::Accepting | Closing::Partly | Closing::Rejecting => {
                 if !always.is_empty() {
                     out.push(saved("Closing the review", &always));
                 }
@@ -3009,18 +3280,19 @@ impl App {
     /// What closing the review as `how` does to the asks it leaves behind,
     /// said: its change accepted, to the answers made on the stack before
     /// it, each as marked (`answers_closing`); rejected, or the work sent
-    /// back, the edits that went on from it, asked again. None for nothing,
-    /// or for work with no change of the stack.
+    /// back, the edits that went on from it, asked again; accepted in part,
+    /// both. None for nothing, or for work with no change of the stack.
     fn review_again(&self, how: Closing) -> Option<String> {
         let rv = self.reviewing.as_ref()?;
         self.work(&rv.run).filter(|(_, h)| h.stack.is_some())?;
         if how == Closing::Accepting {
-            return self.answers_closing();
+            return self.answers_closing(false);
         }
+        let answers = if how == Closing::Partly { self.answers_closing(true) } else { None };
         let (running, waiting) = ask::guesses_after(&self.db, &rv.run);
         let n = running + waiting;
         if n == 0 {
-            return None;
+            return answers;
         }
         let is = |k: usize| if k == 1 { "is" } else { "are" };
         let mut how_each = Vec::new();
@@ -3033,19 +3305,26 @@ impl App {
         let each = how_each.join(", and ");
         let they = if n == 1 { "It is" } else { "They are" };
         let edits = if n == 1 { "1 edit".to_string() } else { format!("{n} edits") };
-        Some(match how {
+        let dropped = match how {
             Closing::Rejecting => format!(
                 "Rejecting this change throws away the {edits} that went on from it, as if you accepted it: {each}. {they} asked again from the stack as it is."
             ),
+            Closing::Partly => format!(
+                "Accepting this change in part throws away the {edits} that went on from it, as if you accepted it whole: {each}. {they} asked again from the stack the operations you accepted leave."
+            ),
             _ => format!("Sending this work back throws away the {edits} that went on from it: {each}. {they} asked again once the agent's new work lands."),
+        };
+        Some(match answers {
+            Some(a) => format!("{a}\n{dropped}"),
+            None => dropped,
         })
     }
 
-    /// What closing the review with its change accepted does to the answers
-    /// made on the stack before it, running or waiting for your review, as
-    /// each is marked: kept, restarted and stopped, a count each, said. None
-    /// without any.
-    fn answers_closing(&self) -> Option<String> {
+    /// What closing the review with its change accepted, whole or `in_part`,
+    /// does to the answers made on the stack before it, running or waiting
+    /// for your review, as each is marked: kept, restarted and stopped, a
+    /// count each, said. None without any.
+    fn answers_closing(&self, in_part: bool) -> Option<String> {
         let rv = self.reviewing.as_ref()?;
         let items: Vec<(String, Going)> = self.answer_items().into_iter().filter(|(_, g)| g.markable()).collect();
         let of = |m: AnswerMark, going: Going| items.iter().filter(|(id, g)| *g == going && crate::held::answer_mark(&rv.marks, id) == Some(m)).count();
@@ -3088,7 +3367,8 @@ impl App {
                 one(n, "its comment", "their comments")
             ));
         }
-        (!each.is_empty()).then(|| format!("Closing this review applies its change. Of the answers made on the stack before it, {}.", each.join("; ")))
+        let applies = if in_part { "applies its change in part" } else { "applies its change" };
+        (!each.is_empty()).then(|| format!("Closing this review {applies}. Of the answers made on the stack before it, {}.", each.join("; ")))
     }
 
     /// The build and test of the stack as it was, going, that accepting a
@@ -3098,14 +3378,19 @@ impl App {
             .then(|| "A build and test of the stack as it was is going: it is not asked again, and you may stop it.".to_string())
     }
 
-    /// The parts not marked yet, said by kind: the change of the stack,
-    /// `2 opened comments`, `1 reply`.
+    /// The parts not marked yet, said by kind: the change of the stack, or
+    /// some of its operations (`2 stack operations`), `2 opened comments`,
+    /// `1 reply`.
     fn review_left(&self) -> Vec<String> {
         let Some(rv) = &self.reviewing else { return vec![] };
-        let left: Vec<Part> = self.review_parts().into_iter().filter(|p| !rv.marks.contains_key(&p.key())).collect();
+        let left: Vec<Part> = self.review_parts().into_iter().filter(|p| !self.part_marked(&rv.marks, *p)).collect();
         let mut out = Vec::new();
         if left.contains(&Part::Stack) {
-            out.push("the change of the stack".to_string());
+            out.push(match self.review_ops().map(|o| o.tally(&rv.marks)) {
+                Some((0, 0, _)) | None => "the change of the stack".to_string(),
+                Some((_, _, 1)) => "1 stack operation".to_string(),
+                Some((_, _, n)) => format!("{n} stack operations"),
+            });
         }
         let opened = left.iter().filter(|p| matches!(p, Part::Opened(_))).count();
         let replies = left.iter().filter(|p| matches!(p, Part::Reply(_))).count();
@@ -3127,7 +3412,8 @@ impl App {
     pub(super) fn review_items(&self, items: &mut Vec<Item>) {
         let lines = self.review_lines();
         let Some(rv) = &self.reviewing else { return };
-        let rejected = rv.marks.get(&Part::Stack.key()) == Some(&false);
+        let rejected = self.change_rejected(&rv.marks);
+        let ops = self.review_ops();
         // On a line of a message, each of its links, to open in your browser:
         // after the comment on the line, as in the middle; else after the
         // rest, Space then Enter doing what it does without them.
@@ -3232,16 +3518,39 @@ impl App {
         }
         // A pull's parts: all accepted, none rejected, nothing to mark.
         let marked = !self.review_pulled();
-        if let Some(p) = lines.get(rv.sel).and_then(|l| l.part).filter(|_| marked) {
+        let line = lines.get(rv.sel);
+        let op = ops.as_ref().zip(line).and_then(|(o, l)| Self::line_op(o, l));
+        if let Some(p) = line.and_then(|l| l.part).filter(|_| marked) {
             let may_accept = p == Part::Stack || !rejected;
-            match rv.marks.get(&p.key()) {
-                Some(true) => items.push(Item::new("Mark as rejected", Action::MarkPart(false))),
-                Some(false) => items.push(Item::new("Mark as accepted", Action::MarkPart(true)).when(may_accept)),
-                None => {
+            // An operation of the change, by its own mark; their title, the
+            // change as a whole, by theirs: every one accepted, or rejected,
+            // or neither. A patch left as it was has none.
+            let now = match (p, &ops, op) {
+                (Part::Stack, Some(_), Some(o)) if !o.marked() => None,
+                (Part::Stack, Some(ops), Some(o)) => Some(ops.mark(&rv.marks, o)),
+                (Part::Stack, Some(ops), None) => match ops.tally(&rv.marks) {
+                    (_, 0, 0) => Some(Some(true)),
+                    (0, _, 0) => Some(Some(false)),
+                    _ => Some(None),
+                },
+                _ => Some(rv.marks.get(&p.key()).copied()),
+            };
+            match now {
+                Some(Some(true)) => items.push(Item::new("Mark as rejected", Action::MarkPart(false))),
+                Some(Some(false)) => items.push(Item::new("Mark as accepted", Action::MarkPart(true)).when(may_accept)),
+                Some(None) => {
                     items.push(Item::new("Mark as accepted", Action::MarkPart(true)).when(may_accept));
                     items.push(Item::new("Mark as rejected", Action::MarkPart(false)));
                 }
+                None => {}
             }
+        }
+        // Every operation of the change at once, but on their title, which
+        // marks them all as it is.
+        let on_title = line.is_some_and(|l| l.part == Some(Part::Stack) && l.entry.is_none());
+        if marked && !on_title && ops.as_ref().is_some_and(|o| !o.whole()) {
+            items.push(Item::new("Mark all operations accepted", Action::MarkOps(true)));
+            items.push(Item::new("Mark all operations rejected", Action::MarkOps(false)));
         }
         // The comments it opened, and its replies, each kind apart.
         let parts: Vec<Part> = self.review_parts().into_iter().filter(|_| marked).collect();
@@ -3306,14 +3615,21 @@ impl App {
     }
 
     /// The marks made so far in the review of `run`, for the work that takes
-    /// its place: all but its change of the stack's, which is new; the
-    /// comments as they were before that change was rejected, if it was.
+    /// its place: all but those of its change of the stack's operations,
+    /// which is new; the comments as they were before every one of those was
+    /// rejected, if each was.
     pub(super) fn carried_marks(&self, run: &str) -> BTreeMap<String, bool> {
         let (mut marks, before) = match &self.reviewing {
             Some(rv) if rv.run == run => (rv.marks.clone(), rv.before.clone()),
             _ => (self.db.review(run).map(|v| v.marks.clone()).unwrap_or_default(), None),
         };
-        if marks.remove(&Part::Stack.key()) == Some(false) {
+        let ops = self.db.run(run).and_then(|r| crate::operations::of_work(&self.db, r, r.held.as_ref()?));
+        let rejected = match &ops {
+            Some(ops) => matches!(ops.tally(&marks), (0, n, 0) if n > 0),
+            None => marks.get(&Part::Stack.key()) == Some(&false),
+        };
+        marks.retain(|k, _| !crate::operations::is_key(k) && *k != Part::Stack.key());
+        if rejected {
             marks = before.unwrap_or_default();
         }
         marks
@@ -3352,7 +3668,8 @@ impl App {
     /// can safely and you did not pick otherwise.
     pub(super) fn review_close(&mut self, rest: Option<bool>) {
         let Some(rv) = self.reviewing.clone() else { return };
-        let accepted = rv.marks.get(&Part::Stack.key()).copied().or(rest) == Some(true);
+        // Its change accepted, wholly or in part: the stack changes.
+        let accepted = self.change_taken(&rv.marks, rest);
         let follow = accepted && !rv.stay && self.head_can_follow();
         // A try push's tasks accepted, pushed once the review closes: not
         // on a base that mach would push more than the patches on, which

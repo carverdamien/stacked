@@ -231,7 +231,7 @@ asked after it do not start before it is accepted or rejected, and then go
 on from the stack that leaves (`ready (may change the code), it goes once
 you have reviewed the reconcile with HEAD`); answers go at once, as ever.
 The work it went on from accepted, it goes on from the stack that made;
-rejected, sent back or edited by hand, it is dropped and made again at its
+rejected, accepted in part, sent back or edited by hand, it is dropped and made again at its
 next turn, from the stack as it then is. One at a time: while one is under
 way, the item is grayed, its menu saying why, as it is when no commit is
 marked or the stack cannot change.
@@ -245,7 +245,9 @@ commits the stack's messages instead, from the top down: `git commit
 --amend` for HEAD's own commit, `git rebase -i COMMIT^` for one below,
 marked `reword`, each reworded to its patch's message as the diff shows
 it. Accepted, the patches have their commits' messages, and the marks are
-gone; rejected, nothing changes in the stack, and the marks stay.
+gone; accepted in part, only those whose operations are accepted, the
+others keeping their marks; rejected, nothing changes in the stack, and
+the marks stay.
 
 The middle shows what the left pane's cursor is on: a patch (its message,
 then its diff, the comments under the

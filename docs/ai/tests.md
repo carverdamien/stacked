@@ -550,10 +550,11 @@ closing their work's review, its comments left open; Enter opening the
 review of work that opened comments too, and saying to review first the
 edit that work goes on from; and work that brought nothing back reviewed
 for its comment alone), the review's list saying how each part stands
-(the title of the stack operations with its word in green once accepted,
-in red once rejected, in the title's colour to review, and each of its
-lines marked `✓` in green, `✗` in red or `·` as any text, the operation
-after the mark in its kind's colour, `modify`, `noop`, `remove` and `add`
+(the title of the stack operations counting each mark, `✓ 3 accepted` in
+green, `✗ 3 rejected` in red, `· 3 to review` in the title's colour, and
+each operation's line marked `✓` in green, `✗` in red or `·` as any text,
+the patch left as it was with no mark, the operation after the mark in
+its kind's colour, `modify`, `noop`, `remove` and `add`
 each its own; a line under the cursor in the cursor's colours, its mark
 too, and picked in its own; a comment that asked `✓ keep` in green and
 `✗ close` in red, cell by cell) and Esc's summary of it (each count
@@ -578,6 +579,35 @@ rejected, each going on as it was; unchained, none listed, the answer
 waiting as it was, its heading saying how old its stack is all the same;
 `stacked review --accept-all` refusing, naming the answer and where to
 mark it, then accepting once it is marked keep and the review saved), the
+stack operations of a change of five patches each marked on its own
+(patch 4's new version changing a line in sight of patch 5's new version:
+rejecting patch 4's operation refused, the status line saying that patch
+5's new version applies only on patch 4's new version, to reject patch 5's
+operation first, and its menu refusing the same; patch 5's, then patch
+4's, each rejected alone, then the rest accepted, the stack holding
+neither new version, the history and the run naming those two rejected;
+patch 3's, a leaf, rejected alone, the stack holding patch 3 as it was
+and the others' new versions; a reword rejected alone; accepting patch
+5's while patch 4's is rejected refused, then patch 4's and patch 5's
+accepted, and the change accepted whole; every operation accepted, put
+back to review and rejected from their title, and from Space's items on
+any other line, the title and Esc counting them, and `Reject all
+remaining and Close` rejecting the one not marked yet; rejecting all that
+remains refused while patch 5's, accepted, needs patch 4's, nothing
+changed and the review still open; a change accepted in part dropping the
+edit that went on from it, closing saying so first, the edit asked again;
+the marks saved with the review, by each patch's change, and there once it
+is opened again; the right pane's sentences under the operation's line,
+what it needs and what needs it, nothing to mark on a patch left as it
+was, and, rejected, whether it can be accepted alone, none of them once
+the cursor is in the stack diff; patch 5 made again on patch 4's new
+version, so that patch 5 as it was no longer applies there: rejecting
+patch 5's operation asking first to reject patch 4's with it, saying why,
+Esc keeping them as they were, and accepting patch 4's again asking the
+same; on the command line, `--reject-all` rejecting every operation, and,
+patch 5's marked accepted in the review saved, refusing with the stack's
+reason, nothing changed, then `--accept-all` taking every operation not
+marked yet, patch 5's marked rejected), the
 heading of an answer's turn counting the edits since the stack it was
 asked on (1, then 2; `on another version of the stack` once an edit is
 undone and another made in its place; nothing in a closed thread), a commit message that differs from its patch's
@@ -822,7 +852,10 @@ sending the work back (Esc's `Send it back to the agent…` opening the ask
 dialog, nothing set, Send Now and Cancel its buttons), Esc's summary in a
 review sent with its count of
 the tools refused in red, then of those allowed in green, the rest dim,
-in the runs of the row the page draws, `Move HEAD…` on the stack's menu
+in the runs of the row the page draws, the stack operations of a change
+each marked on its own in its review, the title counting them, the patch
+left as it was with no mark, and one accepted alone, its `✓` in green in
+the runs of its row, `Move HEAD…` on the stack's menu
 not grayed while it would not move HEAD, and the view of why opened from
 it, then left, a link of a line of a message opened from the
 menu of a right click on it and with `o` (the status line saying it is
@@ -874,7 +907,10 @@ its review, listed with what you wrote and sending the work back, Esc's
 and Cancel its buttons; Esc's
 summary in a review, its count of the tools refused in red, then of
 those allowed in green, the rest dim, cell by cell of the screen the
-window paints; `Move HEAD…` on the stack's menu drawn as any item while
+window paints; the stack operations of a change each marked on its own in
+its review, the title counting them, the patch left as it was with no
+mark, and one accepted alone, its `✓` in green on the screen the window
+paints; `Move HEAD…` on the stack's menu drawn as any item while
 it would not move HEAD, and the view of why opened from it, then left; the
 ask dialog opened with nothing set from a click on `Ask agent about all…`,
 Ask Now and Ask Later drawn dim, Ask Now as claude is not found, which it
@@ -1145,7 +1181,18 @@ to the repository (nor does the tree a patch leaves, written for a
 submit), how a patch's files are read before and after it, and where a
 diff of the same effect as its draft does otherwise (git applying
 it at another copy of its lines, it not applying), the drafts not
-applying an error;
+applying an error, and which patch of a stack is the first that does not
+apply (none, the second of one patch twice, one with no diff), kept for
+the process as a stack seen to apply is, a base not there no answer;
+those in `operations.rs`, that each line of a stack diff is an operation
+on its entry, a patch removed and one added in its place among them, the
+stacks the operations leave keeping the order of both stacks (all of
+them, the stack after; none, the stack before; the remove rejected, the
+patch back where it was), which operation needs which (a patch added
+over a new version needing it, and a patch's new version rebased on the
+new version under it, whose patch as it was goes with that one, rejected
+or accepted together), what refusing says, and a stack that cannot be
+checked marking none of its operations alone;
 those in `git.rs`, that stacked's looks at a checkout, its worktree or
 yours, take no lock of its index (a file touched as it was, the index
 left as it was, where git's own status writes it again);

@@ -1369,10 +1369,16 @@ pub enum Action {
     /// The review of what run `0` brought back opened, on part `1`.
     Review(String, Option<crate::held::Part>),
     /// In the review: the part the cursor is on marked accepted (true) or
-    /// rejected; every comment the work opened so, or every reply.
+    /// rejected, or the operation of the change it is on, as what it needs
+    /// allows; every comment the work opened so, or every reply.
     MarkPart(bool),
     MarkOpened(bool),
     MarkReplies(bool),
+    /// In the review: every operation of the change marked accepted (true),
+    /// or rejected; the operations `0`, one and those that go with it,
+    /// marked so together, once asked.
+    MarkOps(bool),
+    MarkOpsWith(Vec<String>, bool),
     /// The review's marks saved; those made since it opened thrown away;
     /// the review closed, the parts not marked yet accepted or rejected
     /// if said.
@@ -1665,6 +1671,12 @@ fn about(action: &Action) -> String {
         Action::MarkOpened(false) => "mark every comment this work opened rejected".into(),
         Action::MarkReplies(true) => "mark every reply of this work accepted".into(),
         Action::MarkReplies(false) => "mark every reply of this work rejected".into(),
+        Action::MarkOps(true) => "mark every operation of the change accepted: the stack takes the change whole when the review closes".into(),
+        Action::MarkOps(false) => {
+            "mark every operation of the change rejected: the stack stays as it is when the review closes, and the comments of the work are rejected with it".into()
+        }
+        Action::MarkOpsWith(_, true) => "mark these operations accepted together: accepted alone, the one you marked would leave a stack that does not apply".into(),
+        Action::MarkOpsWith(_, false) => "mark these operations rejected together: rejected alone, the one you marked would leave a stack that does not apply".into(),
         Action::ReviewSave => "save your marks and leave: the review goes on from them when you open it again".into(),
         Action::ReviewDiscard => "leave, throwing away the marks you made since you opened the review".into(),
         Action::ReviewClose(None) => "close the review: what you accepted is applied, what you rejected is dropped for good".into(),
@@ -4488,6 +4500,13 @@ impl App {
         match action {
             Action::CommentLine if on_file => "create a comment on this file, as a whole".into(),
             Action::Open if self.file_on().is_some() => "read this file".into(),
+            // An operation of a change, in its review: on its own.
+            Action::MarkPart(true) if self.screen == Screen::Review && self.review_op().is_some_and(|(_, m)| m) => {
+                "mark this operation accepted: the stack takes it when the review closes, unless an operation it needs is rejected".into()
+            }
+            Action::MarkPart(false) if self.screen == Screen::Review && self.review_op().is_some_and(|(_, m)| m) => {
+                "mark this operation rejected: the stack does without it when the review closes, unless an operation that is accepted or to review needs it".into()
+            }
             // Moving nothing: why, and what you can do, in a view of its own.
             Action::MoveHead(_) if self.head_moves_here().is_some_and(|m| m.case.is_err()) => {
                 "see why Move HEAD does not move HEAD of your checkout from where HEAD is, and what you can do in your checkout so that Move HEAD can move HEAD: a view of its own, only to read, with a line for each thing that keeps Move HEAD from moving HEAD, its diff, and stacked's comment saying what to do; Esc there comes back here".into()
@@ -6190,7 +6209,7 @@ impl App {
             }
             Screen::Review => {
                 out.push(
-                    "The review of what landed, the agent's work or the comments pulled from Phabricator: the stack operations of a change, the comments opened, the replies. Each is accepted or rejected; a change of the stack is one part, and rejecting it rejects the comments too."
+                    "The review of what landed, the agent's work or the comments pulled from Phabricator: the stack operations of a change, the comments opened, the replies. Each is accepted or rejected, each stack operation on its own; rejecting every stack operation rejects the comments too."
                         .into(),
                 );
                 if self.reviewing.as_ref().is_some_and(|rv| rv.in_main && rv.in_patch) && self.review_patch().is_some() {
@@ -6201,6 +6220,10 @@ impl App {
                     out.push("Press Enter to accept the part the cursor is on, or, accepted, to put it back to review; Delete to reject it; Space for its menu, to reject it too, or to reply to the agent's reply; → to scroll what it looks like, → again to see it wide, the list out of sight, and ← to come back. On the stack operations, → goes into the stack diff, where Enter on a line goes to it in its patch as the work leaves it, to comment on it.".into());
                 }
                 out.extend(self.delete_help());
+                // The stack operations: each on its own, and what each needs.
+                if self.review_ops().is_some_and(|o| o.marked().next().is_some()) {
+                    out.push("The stack operations are a line for each patch, and one for the base when the change rebases, each accepted, rejected or to review on its own; a noop changes nothing, and has no mark. Closing the review, the stack becomes the stack as the operations accepted leave it: a patch whose operation is rejected stays as it was, where it was. An operation needs another when its patch does not apply without the other's: rejecting one is refused while an operation accepted or to review needs it, and accepting one while one it needs is rejected, the status line saying which, so that operations are rejected from the leaves inward. When an operation's patch as it was would not apply on what the others leave, the operation that makes it so goes with it, marked with it once you say so. On an operation, the right pane says what it needs and what needs it. On their title, Enter accepts every operation, and Delete rejects every one; Space on any other line has Mark all operations accepted and Mark all operations rejected. Accepted in part, the change is not the stack that the edits going on from it went on from: they are dropped and asked again, as for a rejection.".into());
+                }
                 // A try push's: its tasks, and what closing does with them.
                 #[cfg(feature = "try-push")]
                 if self.reviewing.as_ref().and_then(|rv| self.work(&rv.run)).is_some_and(|(_, h)| !h.tasks.is_empty()) {
@@ -7943,13 +7966,18 @@ impl App {
                 }
             }
             Action::Review(run, part) => self.open_review(&run, part),
-            Action::MarkPart(accept) => {
-                if let Some(p) = self.review_part() {
-                    self.mark(p, accept);
+            Action::MarkPart(accept) => match self.review_op() {
+                Some((key, _)) => self.mark_op(&key, accept),
+                None => {
+                    if let Some(p) = self.review_part() {
+                        self.mark(p, accept);
+                    }
                 }
-            }
+            },
             Action::MarkOpened(accept) => self.mark_all(false, accept),
             Action::MarkReplies(accept) => self.mark_all(true, accept),
+            Action::MarkOps(accept) => self.mark(crate::held::Part::Stack, accept),
+            Action::MarkOpsWith(keys, accept) => self.mark_ops_with(&keys, accept),
             Action::ReviewSave => self.review_save(),
             Action::ReviewDiscard => {
                 // A pull's: nothing marked, all of it filed as it closes.

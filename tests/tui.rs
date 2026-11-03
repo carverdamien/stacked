@@ -8957,14 +8957,14 @@ fn landed_work_is_reviewed_from_the_banner_part_by_part() {
     assert_eq!(app.screen, Screen::Review);
     // Its three sections; the change of the stack, a line for each patch.
     let screen = draw(&mut app);
-    for l in ["stack operations · to review", "noop    1 Bug 1 - shout two", "remove  2 Bug 2 - add b", " comments opened", " replies"] {
+    for l in ["stack operations · · 1 to review", "noop    1 Bug 1 - shout two", "remove  2 Bug 2 - add b", " comments opened", " replies"] {
         assert!(screen.contains(l), "{l}:\n{screen}");
     }
     assert!(screen.contains("what accepting it does to the stack"), "{screen}");
     // Enter accepts; each comment is shown where it would be.
     assert_eq!(app.hint(), "↑↓ choose · enter: accept · delete: reject · →: look closer · space: menu · esc: save, discard or close");
     keys(&mut app, &[KeyCode::Enter]);
-    assert!(draw(&mut app).contains("stack operations · accepted"));
+    assert!(draw(&mut app).contains("stack operations · ✓ 1 accepted"));
     assert_eq!(app.hint(), "↑↓ choose · enter: to review again · delete: reject · →: look closer · space: menu · esc: save, discard or close");
     down_to_review(&mut app, "Patch 2 is");
     assert!(draw(&mut app).contains("a comment it opened, where it would be"));
@@ -8977,7 +8977,12 @@ fn landed_work_is_reviewed_from_the_banner_part_by_part() {
     assert!(!marks(&app).contains_key("reply 0"), "{:?}", marks(&app));
     choose(&mut app, "Mark as rejected");
     let m = marks(&app);
-    assert_eq!((m["stack"], m["opened 0"], m["reply 0"]), (true, true, false));
+    // The change's one operation, patch 2 removed, marked by its change.
+    let op = {
+        let d = Db::load(&db).unwrap();
+        stacked::operations::key_of(&d.patch(&d.stack("s").unwrap().patches[1]).change)
+    };
+    assert_eq!((m[&op], m["opened 0"], m["reply 0"]), (true, true, false));
     // The change rejected rejects every comment with it; accepted again,
     // each is as it was. (On top, the comments that asked.)
     keys(&mut app, &[KeyCode::Home]);
@@ -8986,13 +8991,13 @@ fn landed_work_is_reviewed_from_the_banner_part_by_part() {
     choose(&mut app, "Mark as rejected");
     assert!(marks(&app).values().all(|m| !m), "{:?}", marks(&app));
     choose(&mut app, "Mark as accepted");
-    assert_eq!(marks(&app), [("opened 0", true), ("reply 0", false), ("stack", true)].map(|(k, m)| (k.to_string(), m)).into());
+    assert_eq!(marks(&app), [("opened 0".to_string(), true), ("reply 0".to_string(), false), (op.clone(), true)].into());
     // Esc says what is marked, by kind, and closes only once all are.
     keys(&mut app, &[KeyCode::Esc]);
     let Mode::Menu(m) = &app.mode else { panic!("{:?}", app.mode) };
     assert_eq!(
         m.note.as_deref(),
-        Some("asking comments: ✓ 2 kept\nthe change of the stack: ✓ accepted\ncomments opened: ✓ 1 accepted\nreplies: ✗ 1 rejected, · 1 to review")
+        Some("asking comments: ✓ 2 kept\nstack operations: ✓ 1 accepted\ncomments opened: ✓ 1 accepted\nreplies: ✗ 1 rejected, · 1 to review")
     );
     assert!(items(&app).contains(&("Close review".into(), false)), "{:?}", items(&app));
     // Saved, the marks are there when it is opened again.
@@ -9103,10 +9108,10 @@ fn the_stack_operations_say_how_the_change_is_marked_each_operation_after_its_ma
     app.refresh();
     keys(&mut app, &[KeyCode::Esc, KeyCode::Enter]);
     assert_eq!(app.screen, Screen::Review);
-    // Each operation in its kind's colour, after the change's mark and a
-    // space; the title's word in the colour of that mark, but to review, in
-    // the title's own. Drawn with the cursor on the comment that asked, out
-    // of their way.
+    // Each operation in its kind's colour, after its own mark and a space,
+    // and the patch left as it was after none; the title counting each mark,
+    // in the colour of that mark, but those to review, in the title's own.
+    // Drawn with the cursor on the comment that asked, out of their way.
     let ops = [
         ("modify  1 Bug 1 - shout two", color::hunk()),
         ("noop    2 Bug 2 - add b", color::dim()),
@@ -9118,10 +9123,11 @@ fn the_stack_operations_say_how_the_change_is_marked_each_operation_after_its_ma
         let screen = draw(app);
         assert!(screen.contains(&title), "{title:?}:\n{screen}");
         assert_eq!(style_after(app, &title, 1, 30), as_drawn(color::file()), "{word}: the title");
-        assert_eq!(style_after(app, &title, 19, 30), as_drawn(color::file()), "{word}: the space before its word");
-        assert_eq!(style_after(app, &title, 20, 30), as_drawn(said), "{word}: its word");
-        assert_eq!(style_after(app, &title, title.chars().count() - 1, 30), as_drawn(said), "{word}: its word's end");
+        assert_eq!(style_after(app, &title, 19, 30), as_drawn(color::file()), "{word}: the space before its count");
+        assert_eq!(style_after(app, &title, 20, 30), as_drawn(said), "{word}: its count");
+        assert_eq!(style_after(app, &title, title.chars().count() - 1, 30), as_drawn(said), "{word}: its count's end");
         for (op, kind) in ops {
+            let (mark, st) = if op.starts_with("noop") { (" ", Style::new()) } else { (mark, st) };
             let line = format!("   {mark} {op}");
             assert!(screen.contains(&line), "{line:?}:\n{screen}");
             assert_eq!(style_after(app, &line, 3, 30), as_drawn(st), "{word}, {op}: its mark");
@@ -9132,16 +9138,17 @@ fn the_stack_operations_say_how_the_change_is_marked_each_operation_after_its_ma
     };
     keys(&mut app, &[KeyCode::Home]);
     assert!(selected_line(&mut app).is_some_and(|l| l.contains("why so loud?")), "{:?}", selected_line(&mut app));
-    marked(&mut app, "to review", color::file(), "·", Style::new());
-    // Accepted: the word and every mark as a part accepted is marked.
+    marked(&mut app, "· 3 to review", color::file(), "·", Style::new());
+    // Every one accepted, from their title: the count and every mark as a
+    // part accepted is marked.
     down_to_review(&mut app, "stack operations");
     keys(&mut app, &[KeyCode::Enter, KeyCode::Home]);
-    marked(&mut app, "accepted", color::add(), "✓", color::add());
+    marked(&mut app, "✓ 3 accepted", color::add(), "✓", color::add());
     // Rejected: as a part rejected is.
     down_to_review(&mut app, "stack operations");
     choose(&mut app, "Mark as rejected");
     keys(&mut app, &[KeyCode::Home]);
-    marked(&mut app, "rejected", color::del(), "✗", color::del());
+    marked(&mut app, "✗ 3 rejected", color::del(), "✗", color::del());
     // Under the cursor, as every line of the list: the whole line in the
     // cursor's colours, its mark too, whatever their own.
     down_to_review(&mut app, "modify  1");
@@ -9156,6 +9163,488 @@ fn the_stack_operations_say_how_the_change_is_marked_each_operation_after_its_ma
     assert_eq!(style_after(&mut app, line, 0, 30), as_drawn(Style::new().patch(color::picked())), "its indent");
     assert_eq!(style_after(&mut app, line, 3, 30), as_drawn(color::del().patch(color::picked())), "its mark, picked");
     assert_eq!(style_after(&mut app, line, 5, 30), as_drawn(color::hunk().patch(color::picked())), "its operation, picked");
+}
+
+/// The lines of f.txt of `setup_five`, sixty of them: `L7`, or, changed,
+/// `7x` with the last mark `changed` gives line 7.
+fn sixty(changed: &[(usize, &str)]) -> String {
+    (1..=60)
+        .map(|k| match changed.iter().rev().find(|(at, _)| *at == k) {
+            Some((_, m)) => format!("{k}{m}\n"),
+            None => format!("L{k}\n"),
+        })
+        .collect()
+}
+
+/// What each patch of `setup_five` changes in f.txt, by place: the line,
+/// and its mark.
+const FIVE: [&[(usize, &str)]; 5] = [&[(5, "a")], &[(15, "b")], &[(25, "c")], &[(35, "d")], &[(49, "e")]];
+
+/// A database holding stack `s` of five patches, from `Bug 1 - line 5`
+/// to `Bug 5 - line 49`, each changing a line of f.txt of its own
+/// (`FIVE`), far enough apart that each applies without the others; and
+/// the repository.
+fn setup_five() -> (tempfile::TempDir, PathBuf, PathBuf) {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("src");
+    std::fs::create_dir(&src).unwrap();
+    git(&src, &["init", "-q", "-b", "main"]);
+    git(&src, &["config", "commit.gpgsign", "false"]);
+    git(&src, &["config", "tag.gpgsign", "false"]);
+    std::fs::write(src.join("f.txt"), sixty(&[])).unwrap();
+    git(&src, &["add", "."]);
+    git(&src, &["commit", "-qm", "base"]);
+    let mut changed: Vec<(usize, &str)> = Vec::new();
+    for (k, lines) in FIVE.iter().enumerate() {
+        changed.extend(lines.iter());
+        std::fs::write(src.join("f.txt"), sixty(&changed)).unwrap();
+        git(&src, &["commit", "-qam", &format!("Bug {} - line {}", k + 1, lines[0].0)]);
+    }
+    let db = tmp.path().join("db.jsonl");
+    stacked(&src, &db, &["import", "s", "HEAD~5"]);
+    (tmp, db, src)
+}
+
+/// The diff of f.txt from `was` to `is`, as git writes it.
+fn f_diff(was: &str, is: &str) -> String {
+    let tmp = tempfile::tempdir().unwrap();
+    let (a, b) = (tmp.path().join("a"), tmp.path().join("b"));
+    std::fs::write(&a, was).unwrap();
+    std::fs::write(&b, is).unwrap();
+    let out = Command::new("git").args(["diff", "--no-index", "--no-color"]).arg(&a).arg(&b).output().unwrap();
+    let text = String::from_utf8(out.stdout).unwrap();
+    let hunks: String = text.lines().skip_while(|l| !l.starts_with("@@")).map(|l| format!("{l}\n")).collect();
+    format!("diff --git a/f.txt b/f.txt\n--- a/f.txt\n+++ b/f.txt\n{hunks}")
+}
+
+/// The agent's work on the stack of `setup_five`, landed as run `run`,
+/// waiting for your review: a change of the whole stack giving each patch
+/// at place `k` (from 0) that `versions` names a new version, which changes
+/// the lines it says, each on the patches before it as the change leaves
+/// them; and each `reworded` its new message alone.
+fn five_changed(db: &Path, run: &str, versions: &[(usize, &[(usize, &str)])], reworded: &[(usize, &str)]) {
+    Db::edit(db, |d| {
+        let (from, s) = d.head("s").map(|(r, s)| (r, s.clone())).unwrap();
+        let mut patches = s.patches.clone();
+        let mut before: Vec<(usize, &str)> = Vec::new();
+        for k in 0..5 {
+            let old = d.patch(&s.patches[k]).clone();
+            let lines = versions.iter().find(|(at, _)| *at == k).map_or(FIVE[k], |(_, l)| *l);
+            let mut after = before.clone();
+            after.extend(lines.iter());
+            if versions.iter().any(|(at, _)| *at == k) {
+                let draft = stacked::mbox::Draft {
+                    diff: f_diff(&sixty(&before), &sixty(&after)),
+                    ..stacked::mbox::Draft::from(&old)
+                };
+                patches[k] = d.add_patch(stacked::ops::revise(&old, draft))?;
+            }
+            if let Some((_, message)) = reworded.iter().find(|(at, _)| *at == k) {
+                let draft = stacked::mbox::Draft {
+                    message: message.to_string(),
+                    ..stacked::mbox::Draft::from(&old)
+                };
+                patches[k] = d.add_patch(stacked::ops::revise(&old, draft))?;
+            }
+            before = after;
+        }
+        d.add_run(stacked::db::Run {
+            id: run.into(),
+            what: "change".into(),
+            stack: "s".into(),
+            state: stacked::db::RunState::Done,
+            request: "make it so".into(),
+            ask: Some(serde_json::json!({"way": "change", "scope": "stack", "from": from, "notes": []})),
+            held: Some(stacked::held::Held {
+                at: stacked::db::now(),
+                stack: Some(stacked::held::Change {
+                    patches,
+                    base: s.base.clone(),
+                    op: "agent: the stack".into(),
+                    of: "the stack".into(),
+                    from: None,
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        })
+        .map(|_| ())
+    })
+    .unwrap();
+}
+
+/// The work `five_changed` makes, of five patches: patch 2 reworded, patch
+/// 3 given a new version on its own line, patch 4 one changing line 42 too,
+/// and patch 5 one changing line 44, in sight of line 42: patch 5's new
+/// version applies only on patch 4's, and patch 5 as it was applies on
+/// either.
+fn five_needing(db: &Path, run: &str) {
+    five_changed(db, run, &[(2, &[(25, "C")]), (3, &[(35, "d"), (42, "X")]), (4, &[(44, "Z"), (49, "e")])], &[(1, "Bug 2 - line 15, said better")]);
+}
+
+/// The ids of stack `s`'s patches in `db`, bottom first.
+fn ids_of(db: &Path) -> Vec<String> {
+    Db::load(db).unwrap().stack("s").unwrap().patches.clone()
+}
+
+/// The patches of `setup_five` before the work and after it, in `db`: the
+/// stack as it is, and as run `run`'s change makes it.
+fn five_versions(db: &Path, run: &str) -> (Vec<String>, Vec<String>) {
+    let d = Db::load(db).unwrap();
+    let held = d.run(run).unwrap().held.as_ref().unwrap().stack.as_ref().unwrap().patches.clone();
+    (d.stack("s").unwrap().patches.clone(), held)
+}
+
+/// The review of the work `five_needing` makes, opened from the banner, the
+/// stack's before and after.
+fn five_review() -> (tempfile::TempDir, PathBuf, Editor, Vec<String>, Vec<String>) {
+    let (tmp, db, _src) = setup_five();
+    five_needing(&db, "run-five");
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Enter]);
+    assert_eq!(app.screen, Screen::Review);
+    let (before, after) = five_versions(&db, "run-five");
+    (tmp, db, app, before, after)
+}
+
+#[test]
+fn rejecting_an_operation_that_another_needs_is_refused_and_the_one_needing_it_goes_first() {
+    let (_tmp, db, mut app, before, after) = five_review();
+    // A line each, each marked on its own; patch 1, as it was, has no mark.
+    let screen = draw(&mut app);
+    for l in [
+        " stack operations · · 4 to review",
+        "     noop    1 Bug 1 - line 5",
+        "   · reword  2 Bug 2 - line 15, said better",
+        "   · modify  3 Bug 3 - line 25",
+        "   · modify  4 Bug 4 - line 35",
+        "   · modify  5 Bug 5 - line 49",
+    ] {
+        assert!(screen.contains(l), "{l:?}:\n{screen}");
+    }
+    // Patch 4's operation: patch 5's new version needs it.
+    down_to_review(&mut app, "modify  4");
+    assert_eq!(app.hint(), "↑↓ choose · enter: accept · delete: reject · →: look closer · space: menu · esc: save, discard or close");
+    keys(&mut app, &[KeyCode::Delete]);
+    assert_eq!(app.status, "patch 5's new version applies only on patch 4's new version: reject patch 5's operation first");
+    assert!(selected_line(&mut app).is_some_and(|l| l.starts_with("   · modify  4")), "{:?}", selected_line(&mut app));
+    // Its menu refuses it the same.
+    choose(&mut app, "Mark as rejected");
+    assert_eq!(app.status, "patch 5's new version applies only on patch 4's new version: reject patch 5's operation first");
+    // Patch 5's first, then patch 4's: each alone.
+    down_to_review(&mut app, "modify  5");
+    keys(&mut app, &[KeyCode::Delete]);
+    assert!(selected_line(&mut app).is_some_and(|l| l.starts_with("   ✗ modify  5")), "{:?}", selected_line(&mut app));
+    keys(&mut app, &[KeyCode::Up, KeyCode::Delete]);
+    assert!(selected_line(&mut app).is_some_and(|l| l.starts_with("   ✗ modify  4")), "{:?}", selected_line(&mut app));
+    assert!(draw(&mut app).contains(" stack operations · ✗ 2 rejected, · 2 to review"));
+    // The rest accepted, closed: the stack has neither new version.
+    keys(&mut app, &[KeyCode::Esc]);
+    choose(&mut app, "Accept all remaining and Close");
+    choose(&mut app, "Accept them and close");
+    assert_eq!(app.status, "reviewed: its change accepted in part, 2 operations accepted and 2 rejected (modify 4, modify 5)");
+    assert_eq!(ids_of(&db), [before[0].clone(), after[1].clone(), after[2].clone(), before[3].clone(), before[4].clone()]);
+    // The history says which were rejected.
+    let d = Db::load(&db).unwrap();
+    assert_eq!(d.stack("s").unwrap().op, "agent: the stack; rejected: modify 4, modify 5");
+    let v = d.review("run-five").unwrap();
+    assert!(v.closed && !v.marks.contains_key("stack"), "{v:?}");
+}
+
+#[test]
+fn a_leaf_is_rejected_alone_the_stack_keeping_its_patch_as_it_was_and_the_others_new() {
+    let (_tmp, db, mut app, before, after) = five_review();
+    // Patch 3's: patches 4 and 5 apply without it, so nothing needs it.
+    down_to_review(&mut app, "modify  3");
+    let pane = review_pane(&mut app).join(" ");
+    assert!(pane.contains("Nothing else needs this operation: it can be rejected alone."), "{pane}");
+    keys(&mut app, &[KeyCode::Delete]);
+    assert!(selected_line(&mut app).is_some_and(|l| l.starts_with("   ✗ modify  3")), "{:?}", selected_line(&mut app));
+    assert!(draw(&mut app).contains(" stack operations · ✗ 1 rejected, · 3 to review"));
+    keys(&mut app, &[KeyCode::Esc]);
+    choose(&mut app, "Accept all remaining and Close");
+    choose(&mut app, "Accept them and close");
+    assert_eq!(app.status, "reviewed: its change accepted in part, 3 operations accepted and 1 rejected (modify 3)");
+    assert_eq!(ids_of(&db), [before[0].clone(), after[1].clone(), before[2].clone(), after[3].clone(), after[4].clone()]);
+}
+
+#[test]
+fn a_reword_is_needed_by_nothing_and_rejected_alone() {
+    let (_tmp, db, mut app, before, after) = five_review();
+    down_to_review(&mut app, "reword  2");
+    let pane = review_pane(&mut app).join(" ");
+    assert!(pane.contains("Nothing else needs this operation: it can be rejected alone."), "{pane}");
+    keys(&mut app, &[KeyCode::Delete]);
+    assert!(selected_line(&mut app).is_some_and(|l| l.starts_with("   ✗ reword  2")), "{:?}", selected_line(&mut app));
+    keys(&mut app, &[KeyCode::Esc]);
+    choose(&mut app, "Accept all remaining and Close");
+    choose(&mut app, "Accept them and close");
+    assert_eq!(app.status, "reviewed: its change accepted in part, 3 operations accepted and 1 rejected (reword 2)");
+    let ids = ids_of(&db);
+    assert_eq!(ids, [before[0].clone(), before[1].clone(), after[2].clone(), after[3].clone(), after[4].clone()]);
+    assert_eq!(Db::load(&db).unwrap().patch(&ids[1]).title(), "Bug 2 - line 15");
+}
+
+#[test]
+fn accepting_an_operation_whose_needed_one_is_rejected_is_refused_until_that_one_is_accepted() {
+    let (_tmp, db, mut app, _before, after) = five_review();
+    down_to_review(&mut app, "modify  5");
+    keys(&mut app, &[KeyCode::Delete, KeyCode::Up, KeyCode::Delete, KeyCode::Down]);
+    assert!(draw(&mut app).contains(" stack operations · ✗ 2 rejected, · 2 to review"));
+    // Patch 5's new version needs patch 4's, which is rejected.
+    assert_eq!(app.hint(), "↑↓ choose · enter: accept · →: look closer · space: menu · esc: save, discard or close");
+    keys(&mut app, &[KeyCode::Delete]);
+    assert_eq!(app.status, "this operation is rejected already");
+    keys(&mut app, &[KeyCode::Enter]);
+    assert_eq!(app.status, "patch 5's new version applies only on patch 4's new version: accept patch 4's operation first");
+    assert!(selected_line(&mut app).is_some_and(|l| l.starts_with("   ✗ modify  5")), "{:?}", selected_line(&mut app));
+    choose(&mut app, "Mark as accepted");
+    assert_eq!(app.status, "patch 5's new version applies only on patch 4's new version: accept patch 4's operation first");
+    // Patch 4's first, then patch 5's.
+    keys(&mut app, &[KeyCode::Up, KeyCode::Enter, KeyCode::Down, KeyCode::Enter]);
+    assert!(selected_line(&mut app).is_some_and(|l| l.starts_with("   ✓ modify  5")), "{:?}", selected_line(&mut app));
+    keys(&mut app, &[KeyCode::Esc]);
+    choose(&mut app, "Accept all remaining and Close");
+    choose(&mut app, "Accept them and close");
+    assert_eq!(app.status, "reviewed: its change accepted");
+    assert_eq!(ids_of(&db), after);
+}
+
+#[test]
+fn accept_all_and_reject_all_mark_every_operation_together() {
+    let (_tmp, db, mut app, before, after) = five_review();
+    // On their title, Enter accepts every one, and again puts every one back
+    // to review; Delete rejects every one, the change rejected.
+    down_to_review(&mut app, "stack operations");
+    keys(&mut app, &[KeyCode::Enter]);
+    assert!(draw(&mut app).contains(" stack operations · ✓ 4 accepted"));
+    keys(&mut app, &[KeyCode::Enter]);
+    assert!(draw(&mut app).contains(" stack operations · · 4 to review"));
+    keys(&mut app, &[KeyCode::Delete]);
+    assert!(draw(&mut app).contains(" stack operations · ✗ 4 rejected"));
+    // On any other line, Space has them all marked at once.
+    down_to_review(&mut app, "modify  3");
+    choose(&mut app, "Mark all operations accepted");
+    assert!(draw(&mut app).contains(" stack operations · ✓ 4 accepted"));
+    choose(&mut app, "Mark all operations rejected");
+    assert!(draw(&mut app).contains(" stack operations · ✗ 4 rejected"));
+    // Esc says how they are marked, and what is left.
+    keys(&mut app, &[KeyCode::Enter]);
+    keys(&mut app, &[KeyCode::Esc]);
+    assert!(menu_note(&app).contains("stack operations: ✓ 1 accepted, ✗ 3 rejected"), "{}", menu_note(&app));
+    keys(&mut app, &[KeyCode::Esc]);
+    choose(&mut app, "Mark all operations accepted");
+    keys(&mut app, &[KeyCode::Enter]);
+    keys(&mut app, &[KeyCode::Esc]);
+    assert!(menu_note(&app).contains("stack operations: ✓ 3 accepted, · 1 to review"), "{}", menu_note(&app));
+    // Reject all remaining: every operation not marked yet.
+    choose(&mut app, "Reject all remaining and Close");
+    assert!(menu_note(&app).starts_with("Not marked yet: 1 stack operation."), "{}", menu_note(&app));
+    choose(&mut app, "Reject them and close");
+    assert_eq!(app.status, "reviewed: its change accepted in part, 3 operations accepted and 1 rejected (modify 3)");
+    assert_eq!(ids_of(&db), [before[0].clone(), after[1].clone(), before[2].clone(), after[3].clone(), after[4].clone()]);
+}
+
+#[test]
+fn rejecting_all_that_remains_is_refused_while_an_operation_accepted_needs_one_of_them() {
+    let (_tmp, db, mut app, before, _after) = five_review();
+    // Patch 5's accepted, patch 4's left to review: rejected with the rest,
+    // the stack would not apply.
+    down_to_review(&mut app, "modify  5");
+    keys(&mut app, &[KeyCode::Enter, KeyCode::Esc]);
+    choose(&mut app, "Reject all remaining and Close");
+    choose(&mut app, "Reject them and close");
+    assert!(
+        app.status.starts_with("the stack the operations you accepted leave does not apply: patch 5 (Bug 5 - line 49) does not apply to the patches below it"),
+        "{}",
+        app.status
+    );
+    assert_eq!(app.screen, Screen::Review, "still open");
+    assert_eq!(ids_of(&db), before, "nothing changed");
+}
+
+#[test]
+fn a_change_accepted_in_part_drops_the_work_that_went_on_from_it_and_asks_it_again() {
+    let (_tmp, db, _src) = setup_five();
+    five_needing(&db, "run-five");
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "+5a");
+    keys(&mut app, &[KeyCode::Enter]);
+    save(&mut app, "why five?");
+    // Chained: an edit that went on from it, waiting for your review after
+    // it.
+    let n = notes_of(&db, "s", 0).remove(0);
+    held(&db, "run-after", &n.change, &n.id, "Done after.", true);
+    Db::edit(&db, |d| {
+        let mut r = d.run("run-after").unwrap().clone();
+        let mut ask = r.ask.clone().unwrap();
+        ask["after"] = serde_json::json!("run-five");
+        r.ask = Some(ask);
+        d.add_run(r).map(|_| ())
+    })
+    .unwrap();
+    app.refresh();
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Home, KeyCode::Enter]);
+    assert_eq!(app.reviewing.as_ref().map(|rv| rv.run.as_str()), Some("run-five"));
+    down_to_review(&mut app, "modify  3");
+    keys(&mut app, &[KeyCode::Delete, KeyCode::Home]);
+    for op in ["reword  2", "modify  4", "modify  5"] {
+        down_to_review(&mut app, op);
+        keys(&mut app, &[KeyCode::Enter]);
+    }
+    // Closing says first that what went on from it is thrown away, and
+    // asked again.
+    keys(&mut app, &[KeyCode::Esc]);
+    choose(&mut app, "Close review");
+    let note = menu_note(&app);
+    assert!(
+        note.contains("Accepting this change in part throws away the 1 edit that went on from it, as if you accepted it whole: 1 waiting for your review is thrown away. It is asked again from the stack the operations you accepted leave."),
+        "{note}"
+    );
+    choose(&mut app, "Close it");
+    assert!(app.status.starts_with("reviewed: its change accepted in part, 3 operations accepted and 1 rejected (modify 3)"), "{}", app.status);
+    assert!(app.status.contains("; 1 edit that went on from it asked again"), "{}", app.status);
+    let d = Db::load(&db).unwrap();
+    let after = d.run("run-after").unwrap();
+    assert!(after.summary.starts_with("dropped: the work it went on from was accepted in part; asked again"), "{}", after.summary);
+    assert!(d.review("run-after").is_some_and(|v| v.closed));
+}
+
+#[test]
+fn the_operations_marks_are_saved_with_the_review_and_there_when_it_is_opened_again() {
+    let (_tmp, db, mut app, before, _after) = five_review();
+    down_to_review(&mut app, "modify  3");
+    keys(&mut app, &[KeyCode::Enter]);
+    down_to_review(&mut app, "modify  5");
+    keys(&mut app, &[KeyCode::Delete, KeyCode::Esc]);
+    choose(&mut app, "Save");
+    assert_eq!(app.screen, Screen::Main);
+    // Each by its patch's change.
+    let d = Db::load(&db).unwrap();
+    let key = |k: usize| stacked::operations::key_of(&d.patch(&before[k]).change);
+    let marks = d.review("run-five").unwrap().marks.clone();
+    assert_eq!(marks, [(key(2), true), (key(4), false)].into());
+    // Opened again: as they were. (The title whole on a screen wide enough
+    // for it: the list cuts a line too long for it.)
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Enter]);
+    assert_eq!(app.screen, Screen::Review);
+    let screen = draw_sized(&mut app, 160, 30);
+    for l in [" stack operations · ✓ 1 accepted, ✗ 1 rejected, · 2 to review", "   ✓ modify  3", "   ✗ modify  5", "   · modify  4"] {
+        assert!(screen.contains(l), "{l:?}:\n{screen}");
+    }
+    assert_eq!(app.reviewing.as_ref().unwrap().marks, marks);
+}
+
+#[test]
+fn the_right_pane_says_what_an_operation_needs_and_what_needs_it() {
+    let (_tmp, _db, mut app, _before, _after) = five_review();
+    let pane = |app: &mut App| review_pane(app).join(" ");
+    // Patch 5's: what it needs, and that nothing needs it.
+    down_to_review(&mut app, "modify  5");
+    let said = pane(&mut app);
+    assert!(said.contains("Patch 5's new version applies only on patch 4's new version."), "{said}");
+    assert!(said.contains("Nothing else needs this operation: it can be rejected alone."), "{said}");
+    // Patch 4's: what needs it, and what to reject first.
+    keys(&mut app, &[KeyCode::Up]);
+    let said = pane(&mut app);
+    assert!(said.contains("Patch 5's new version applies only on patch 4's new version: reject patch 5's operation before this one."), "{said}");
+    // Patch 1's, as it was: nothing to mark.
+    keys(&mut app, &[KeyCode::Home]);
+    down_to_review(&mut app, "noop    1");
+    assert!(pane(&mut app).contains("The change leaves this patch as it is: there is nothing to accept or reject."));
+    assert_eq!(app.hint(), "↑↓ choose · enter: nothing, the change leaves this patch as it is · →: look closer · space: menu · esc: save, discard or close");
+    keys(&mut app, &[KeyCode::Enter]);
+    assert_eq!(app.status, "the change leaves this patch as it is: there is nothing to accept or reject");
+    // Rejected, both: patch 4's can be accepted alone, patch 5's needs it.
+    down_to_review(&mut app, "modify  5");
+    keys(&mut app, &[KeyCode::Delete, KeyCode::Up, KeyCode::Delete]);
+    assert!(pane(&mut app).contains("Nothing it needs is rejected: it can be accepted alone."));
+    keys(&mut app, &[KeyCode::Down]);
+    let said = pane(&mut app);
+    assert!(said.contains("Patch 5's new version applies only on patch 4's new version: accept patch 4's operation before this one."), "{said}");
+    // In the stack diff, the cursor going from entry to entry, it is as it
+    // is.
+    keys(&mut app, &[KeyCode::Right]);
+    assert!(!pane(&mut app).contains("accept patch 4's operation before this one"));
+}
+
+#[test]
+fn an_operation_whose_patch_as_it_was_no_longer_applies_goes_with_the_one_under_it_once_asked() {
+    let (_tmp, db, _src) = setup_five();
+    // Patch 4's new version changes line 47, which patch 5 has in sight:
+    // patch 5's new version is patch 5 made again on it.
+    five_changed(&db, "run-five", &[(3, &[(35, "d"), (47, "Y")]), (4, &[(49, "e")])], &[]);
+    let (before, after) = five_versions(&db, "run-five");
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Enter]);
+    // Patch 4's is needed by patch 5's new version.
+    down_to_review(&mut app, "modify  4");
+    keys(&mut app, &[KeyCode::Delete]);
+    assert_eq!(app.status, "patch 5's new version applies only on patch 4's new version: reject patch 5's operation first");
+    // Patch 5's, rejected alone, would leave patch 5 as it was on patch 4's
+    // new version, which it does not apply on: asked first, with patch 4's.
+    keys(&mut app, &[KeyCode::Down]);
+    let pane = review_pane(&mut app).join(" ");
+    assert!(pane.contains("Patch 5 as it was applies only on patch 4 as it was. So this operation is rejected only with patch 4's operation."), "{pane}");
+    keys(&mut app, &[KeyCode::Delete]);
+    let (title, items, sel) = asked(&app);
+    assert_eq!((title.as_str(), sel), ("reject patch 5's operation with patch 4's operation?", 1));
+    assert_eq!(items, labels(&["Reject them", "Keep them as they are"]));
+    assert_eq!(
+        menu_note(&app),
+        "Patch 5 as it was applies only on patch 4 as it was. Rejected alone, patch 5's operation would leave a stack that does not apply."
+    );
+    keys(&mut app, &[KeyCode::Esc]);
+    assert!(draw(&mut app).contains(" stack operations · · 2 to review"), "kept as they are");
+    keys(&mut app, &[KeyCode::Delete]);
+    choose(&mut app, "Reject them");
+    assert!(draw(&mut app).contains(" stack operations · ✗ 2 rejected"));
+    // Accepting patch 4's again brings patch 5's with it, once asked.
+    keys(&mut app, &[KeyCode::Up, KeyCode::Enter]);
+    assert_eq!(asked(&app).0, "accept patch 4's operation with patch 5's operation?");
+    assert_eq!(
+        menu_note(&app),
+        "Patch 5 as it was applies only on patch 4 as it was. Accepted alone, patch 4's operation would leave a stack that does not apply."
+    );
+    choose(&mut app, "Accept them");
+    assert!(draw(&mut app).contains(" stack operations · ✓ 2 accepted"));
+    keys(&mut app, &[KeyCode::Esc]);
+    choose(&mut app, "Close review");
+    assert_eq!(app.status, "reviewed: its change accepted");
+    assert_eq!(ids_of(&db), after);
+    assert_ne!(before, after);
+}
+
+#[test]
+fn on_the_command_line_accept_all_and_reject_all_mark_every_operation_not_marked_yet() {
+    let (_tmp, db, src) = setup_five();
+    // Nothing marked: --reject-all rejects every one.
+    five_needing(&db, "run-none");
+    let (before, after) = five_versions(&db, "run-none");
+    let out = stacked(&src, &db, &["review", "s", "run-none", "--reject-all"]);
+    assert_eq!(out.trim_end(), "run-none\treviewed: its change rejected");
+    assert_eq!(ids_of(&db), before);
+    // The same work again, patch 5's marked accepted in its review, saved:
+    // --reject-all would reject patch 4's, which it needs. Refused, nothing
+    // changed.
+    five_needing(&db, "run-five");
+    let key = |k: usize| stacked::operations::key_of(&Db::load(&db).unwrap().patch(&before[k]).change);
+    let marked = |db: &Path, m: bool| {
+        let marks = [(key(4), m)].into();
+        Db::edit(db, |d| d.set_review("run-five", stacked::held::Review { marks, ..Default::default() }).map(|_| ())).unwrap();
+    };
+    marked(&db, true);
+    let landed = stacked(&src, &db, &["landed", "s"]);
+    assert!(landed.contains("\n  change\tagent: the stack\toperations: 1 accepted, 3 to review\n"), "{landed}");
+    let said = stacked_fails(&src, &db, &["review", "s", "run-five", "--reject-all"]);
+    assert!(said.contains("the stack the operations you accepted leave does not apply: patch 5 (Bug 5 - line 49) does not apply to the patches below it"), "{said}");
+    assert_eq!(ids_of(&db), before, "nothing changed");
+    // Patch 5's marked rejected: --accept-all takes every other one.
+    marked(&db, false);
+    let out = stacked(&src, &db, &["review", "s", "run-five", "--accept-all"]);
+    assert_eq!(out.trim_end(), "run-five\treviewed: its change accepted in part, 3 operations accepted and 1 rejected (modify 5)");
+    assert_eq!(ids_of(&db), [before[0].clone(), after[1].clone(), after[2].clone(), after[3].clone(), before[4].clone()]);
 }
 
 fn ctrl(app: &mut App, code: KeyCode) {
@@ -13051,7 +13540,7 @@ fn an_edit_by_hand_lands_and_its_review_opens_at_once() {
     assert_eq!(app.status, "edited a.txt in Bug 1 - shout two: it waits for your review");
     let screen = draw(&mut app);
     assert!(screen.contains(" your edit by hand: a change of patch 1 · edited"), "{screen}");
-    assert!(screen.contains(" stack operations · to review") && screen.contains("modify  1 Bug 1 - shout two"), "{screen}");
+    assert!(screen.contains(" stack operations · · 1 to review") && screen.contains("modify  1 Bug 1 - shout two"), "{screen}");
     assert!(screen.contains("+Two"), "what it does to the stack:\n{screen}");
     assert_eq!(Db::load(&db).unwrap().stack("s").unwrap().patches, before, "nothing changed yet");
     // Left for later: the banner says it, and the stack is not edited by
@@ -13476,7 +13965,7 @@ fn landed_work_is_edited_by_hand_from_its_review_in_its_place() {
     assert_eq!(app.status, "edited a.txt in Bug 1 - shout two: it lands in place of the work you were reviewing, which is rejected");
     let screen = draw(&mut app);
     assert!(screen.contains(" the agent's work: a change of patch 1, 1 reply"), "{screen}");
-    assert!(screen.contains(" stack operations · to review") && screen.contains("modify  1 Bug 1 - shout two"), "{screen}");
+    assert!(screen.contains(" stack operations · · 1 to review") && screen.contains("modify  1 Bug 1 - shout two"), "{screen}");
     assert!(screen.contains("✓ a.txt: TWO · Quieter now."), "its mark kept:\n{screen}");
     let d = Db::load(&db).unwrap();
     assert!(d.review(&run).unwrap().closed);
@@ -14558,7 +15047,7 @@ fn sent_back_to_answer_only_the_work_stays_for_review_and_the_follow_up_s_replie
     assert_eq!(app.screen, Screen::Review);
     assert!(!Db::load(&db).unwrap().review("run-agent").is_some_and(|v| v.closed));
     let screen = wait_for(&mut app, " the follow-up you asked, with the agent");
-    for line in ["   ● answer only, at high · 1 comment", " stack operations · accepted"] {
+    for line in ["   ● answer only, at high · 1 comment", " stack operations · ✓ 1 accepted"] {
         assert!(screen.contains(line), "{line:?} in:\n{screen}");
     }
     assert!(!screen.contains(" what you wrote, to send back"), "{screen}");
@@ -17390,7 +17879,7 @@ fn in_a_review_delete_rejects_closes_or_takes_back_as_its_menu_does() {
     assert!(app.help().iter().any(|l| l == said), "{:?}", app.help());
     keys(&mut app, &[KeyCode::Delete]);
     assert_eq!(app.mode, Mode::Normal);
-    assert!(draw(&mut app).contains("stack operations · rejected"));
+    assert!(draw(&mut app).contains("stack operations · ✗ 1 rejected"));
     keys(&mut app, &[KeyCode::Delete]);
     assert_eq!(app.status, "this part is rejected already");
     // The comment the ask was about: closed with the review, at once.

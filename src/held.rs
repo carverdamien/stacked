@@ -6,9 +6,10 @@
 //! its review to close it or keep it. Reviews pulled from Phabricator are
 //! held the same way, in their pull's run: the reviewers' new comments,
 //! their replies, and their comments edited on Phabricator since they were
-//! filed. Each part is accepted or rejected, the change of the stack as
-//! one; once every part is, the review closes: what was accepted is
-//! applied, and the rest is dropped for good. A pull's parts are not
+//! filed. Each part is accepted or rejected, the change of the stack
+//! operation by operation (`operations`); once every part is, the review
+//! closes: what was accepted is applied, the change whole or in part, and
+//! the rest is dropped for good. A pull's parts are not
 //! rejected: closing its review files every comment it pulled, a reply to
 //! a thread you closed reopening that thread. Until then, the stack is not
 //! edited by hand if the agent changed it, and the comments it answered
@@ -35,7 +36,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 
-use crate::db::{Db, Error, Note, Patch, Result, Run, err, now};
+use crate::db::{Db, Error, Note, Patch, Result, Run, Stack, err, now};
 use crate::thread::{Role, Turn, all_turns, append_agent_on, append_turn, render_thread};
 
 /// What an ask brought back, held until it is reviewed.
@@ -830,11 +831,21 @@ fn rejects(h: &Held, marks: &BTreeMap<String, bool>) -> bool {
 /// The marks of the review of the work run `r` holds, as saved; of a
 /// pull's, every part accepted, as none is rejected: closing its review
 /// files each comment it pulled. Marks a stacked of before saved
-/// rejecting some are passed over.
+/// rejecting some are passed over. The change of the stack marked as a
+/// whole, as a stacked of before marked it (`stack`), each of its
+/// operations has that mark; a change with no operation to mark keeps it.
 pub fn marks(db: &Db, r: &Run) -> BTreeMap<String, bool> {
     let mut marks = db.review(&r.id).map(|v| v.marks.clone()).unwrap_or_default();
     if pulled(r) {
         marks.extend(r.held.iter().flat_map(Held::parts).map(|p| (p.key(), true)));
+    }
+    if let Some(&m) = marks.get(&Part::Stack.key())
+        && let Some(ops) = r.held.as_ref().and_then(|h| crate::operations::of_work(db, r, h)).filter(|o| !o.whole())
+    {
+        marks.remove(&Part::Stack.key());
+        if !marks.keys().any(|k| crate::operations::is_key(k)) {
+            marks.extend(ops.marked().map(|o| (o.key.clone(), m)));
+        }
     }
     marks
 }
@@ -1420,15 +1431,19 @@ pub fn asking_open<'a>(db: &'a Db, r: &Run) -> Vec<(usize, &'a Note)> {
 
 /// Closes run `id`'s review: each part as marked in `marks`, those left
 /// unmarked accepted or rejected as `rest` says (with none, every part must
-/// be marked). Rejecting the change of the stack rejects its replies and
-/// comments too. What is accepted is applied, the change of the stack only
-/// if the stack is still the one the agent took; the rest is dropped. A
+/// be marked), the change of the stack operation by operation. Rejecting
+/// every operation of the change rejects its replies and comments too.
+/// What is accepted is applied, the change of the stack only if the stack
+/// is still the one the agent took: whole, or in part, as the stack its
+/// operations accepted leave, which must apply, what went on from it then
+/// dropped and asked again, as for a rejection; the rest is dropped. A
 /// pull's parts are all accepted, a mark or `rest` rejecting any refused:
 /// each comment is filed, a reviewer's reply to a thread you closed
-/// reopening it. Its change accepted, chained, each answer made on the
-/// stack before it, running or waiting for your review, goes as `marks`
-/// mark it, kept, restarted or stopped (`answer_mark`), and none may be
-/// left unmarked: `rest` marks none of them. What came of it, said.
+/// reopening it. Its change accepted, chained, wholly or in part, each
+/// answer made on the stack before it, running or waiting for your review,
+/// goes as `marks` mark it, kept, restarted or stopped (`answer_mark`), and
+/// none may be left unmarked: `rest` marks none of them. What came of it,
+/// said.
 pub fn close(db: &mut Db, id: &str, marks: &BTreeMap<String, bool>, rest: Option<bool>) -> Result<String> {
     close_with(db, id, marks, rest, false)
 }
@@ -1453,36 +1468,73 @@ pub fn close_with(db: &mut Db, id: &str, marks: &BTreeMap<String, bool>, rest: O
         true => Some(true),
         false => rest,
     };
+    // The change of the stack, by its operations, each as marked or as
+    // `rest` says; with none to mark, or its stack gone, as a whole.
+    let ops = crate::operations::of_work(db, &r, &h).filter(|o| !o.whole());
     let mut all = BTreeMap::new();
     for p in h.parts() {
         if matches!(p, Part::Reply(k) if v.taken.contains(&k)) {
             continue;
         }
-        let Some(m) = marks.get(&p.key()).copied().or(rest) else {
-            return err("not every part is marked yet: mark each, or accept or reject all that remain");
-        };
+        let unmarked = || err("not every part is marked yet: mark each, or accept or reject all that remain");
+        if let (Part::Stack, Some(ops)) = (p, &ops) {
+            for o in ops.marked() {
+                let Some(m) = ops.mark(marks, o).or(rest) else { return unmarked() };
+                all.insert(o.key.clone(), m);
+            }
+            continue;
+        }
+        let Some(m) = marks.get(&p.key()).copied().or(rest) else { return unmarked() };
         all.insert(p.key(), m);
     }
-    let change = h.stack.as_ref().map(|c| (c, all.get(&Part::Stack.key()) == Some(&true)));
-    if let Some((_, false)) = change {
+    let taken = h.stack.as_ref().map(|_| match &ops {
+        Some(ops) => match ops.counts(&all) {
+            (_, 0, _) => Taken::Whole,
+            (0, _, _) => Taken::Nothing,
+            _ => Taken::Part,
+        },
+        None if all.get(&Part::Stack.key()) == Some(&true) => Taken::Whole,
+        None => Taken::Nothing,
+    });
+    let change = h.stack.as_ref().zip(taken);
+    if let Some((_, Taken::Nothing)) = change {
         for (key, m) in all.iter_mut() {
-            if key != "stack" {
+            if !crate::operations::is_key(key) && key != "stack" {
                 *m = false;
             }
         }
     }
+    let accepted = matches!(change, Some((_, Taken::Whole | Taken::Part)));
     let from = made_from(&r, &h);
-    if let Some((_, true)) = change
-        && db.head(&r.stack).map(|(rev, _)| rev) != from
-    {
+    if accepted && db.head(&r.stack).map(|(rev, _)| rev) != from {
         return err("the stack changed since this change was made from it: it can only be rejected");
     }
-    // Its change accepted, chained: the answers made on the stack before it,
-    // running or waiting for your review, each go as marked, kept, restarted
-    // or stopped. None goes unmarked: nothing is done before each is.
-    let left = match change {
-        Some((_, true)) => crate::ask::answers_left(db, &r.stack, id),
-        _ => vec![],
+    // Accepted in part: the stack the operations accepted leave, which must
+    // apply, before anything is done.
+    let part = match (change, &ops) {
+        (Some((c, Taken::Part)), Some(ops)) => {
+            let stands = ops.standing(&all);
+            let (left, base) = ops.leave(&stands);
+            let s = db.stack(&r.stack)?;
+            let made = Stack {
+                patches: left.into_iter().map(|p| p.id).collect(),
+                base,
+                ..s.clone()
+            };
+            if let Err(e) = db.verify(&made) {
+                return err(format!("the stack the operations you accepted leave does not apply: {}", e.0));
+            }
+            Some((made, format!("{}; rejected: {}", c.op, ops.rejected_said(&all))))
+        }
+        _ => None,
+    };
+    // Its change accepted, chained, wholly or in part: the answers made on
+    // the stack before it, running or waiting for your review, each go as
+    // marked, kept, restarted or stopped. None goes unmarked: nothing is
+    // done before each is.
+    let left = match accepted {
+        true => crate::ask::answers_left(db, &r.stack, id),
+        false => vec![],
     };
     let unmarked: Vec<&Run> = left.iter().filter(|a| answer_mark(marks, &a.id).is_none()).collect();
     if !unmarked.is_empty() {
@@ -1495,7 +1547,7 @@ pub fn close_with(db: &mut Db, id: &str, marks: &BTreeMap<String, bool>, rest: O
     // one goes in, and the change is not rejected.
     let mut reopened = 0;
     let mut filed: HashMap<(String, String), bool> = HashMap::new();
-    let rejected = matches!(change, Some((_, false)));
+    let rejected = matches!(change, Some((_, Taken::Nothing)));
     for (k, rp) in h.replies.iter().enumerate() {
         let at = (rp.change.clone(), rp.id.clone());
         let goes = match rp.read {
@@ -1521,12 +1573,19 @@ pub fn close_with(db: &mut Db, id: &str, marks: &BTreeMap<String, bool>, rest: O
     }
     let mut rev = r.rev;
     let held_before = held_changes(db, &r.stack);
-    if let Some((c, true)) = change {
+    // Accepted whole, the stack the change makes; in part, the stack its
+    // operations accepted leave, the history naming those rejected.
+    let made = match (change, part) {
+        (Some((c, Taken::Whole)), _) => Some((c.patches.clone(), c.base.clone(), c.op.clone())),
+        (Some((_, Taken::Part)), Some((s, op))) => Some((s.patches, s.base, op)),
+        _ => None,
+    };
+    if let Some((patches, base, op)) = made {
         let s = db.stack(&r.stack)?.clone();
         let olds: Vec<Patch> = s.patches.iter().map(|p| db.patch(p).clone()).collect();
-        let base = c.base.clone().or(s.base.clone());
-        rev = Some(db.set_stack_on(&r.stack, c.patches.clone(), base, s.repo.clone(), &c.op)?);
-        crate::ask::follow_lines(db, &olds, &c.patches)?;
+        let base = base.or(s.base.clone());
+        rev = Some(db.set_stack_on(&r.stack, patches.clone(), base, s.repo.clone(), &op)?);
+        crate::ask::follow_lines(db, &olds, &patches)?;
     }
     // A comment the ask was about, or a follow-up, kept open, on a patch the
     // stack held neither before nor holds now (one that work it went on
@@ -1549,18 +1608,26 @@ pub fn close_with(db: &mut Db, id: &str, marks: &BTreeMap<String, bool>, rest: O
     // What went on from it, guessing it would be accepted: right, or wrong.
     // Its change accepted, the answers made on the stack before it go as
     // marked: kept, asked again on the stack as it is now, or stopped.
+    // Accepted in part, it is not the stack what went on from it went on
+    // from: that is dropped and asked again, as for a rejection.
     let mut again = Vec::new();
+    let wrong = |db: &mut Db, why: &str, again: &mut Vec<String>| -> Result<()> {
+        let n = crate::ask::guessed_wrong(db, id, why)?;
+        if n > 0 {
+            again.push(count(n, "edit that went on from it asked again", "edits that went on from it asked again"));
+        }
+        Ok(())
+    };
     match (change, rev) {
-        (Some((_, true)), Some(at)) => {
+        (Some((_, Taken::Whole)), Some(at)) => {
             crate::ask::guessed_right(db, id, at)?;
             again.extend(crate::ask::leave_answers(db, &left, marks)?);
         }
-        (Some((_, false)), _) => {
-            let n = crate::ask::guessed_wrong(db, id, "rejected")?;
-            if n > 0 {
-                again.push(count(n, "edit that went on from it asked again", "edits that went on from it asked again"));
-            }
+        (Some((_, Taken::Part)), _) => {
+            wrong(db, "accepted in part", &mut again)?;
+            again.extend(crate::ask::leave_answers(db, &left, marks)?);
         }
+        (Some((_, Taken::Nothing)), _) => wrong(db, "rejected", &mut again)?,
         _ => {}
     }
     for (k, n) in h.opened.iter().enumerate() {
@@ -1568,6 +1635,14 @@ pub fn close_with(db: &mut Db, id: &str, marks: &BTreeMap<String, bool>, rest: O
             db.set_note(Note { time: now(), ..n.clone() })?;
         }
     }
+    // Each operation as it went; the change as a whole too, unless it went
+    // in part, as a stacked of before reads it.
+    v.marks.retain(|k, _| !crate::operations::is_key(k) && k != "stack");
+    match change.map(|(_, t)| t) {
+        Some(Taken::Whole) => v.marks.insert(Part::Stack.key(), true),
+        Some(Taken::Nothing) => v.marks.insert(Part::Stack.key(), false),
+        _ => None,
+    };
     v.marks.extend(all);
     v.marks.extend(marks.iter().filter(|(k, _)| k.starts_with("asking ")).map(|(k, m)| (k.clone(), *m)));
     // The answers made on the stack before it, as they went: those of the
@@ -1588,7 +1663,8 @@ pub fn close_with(db: &mut Db, id: &str, marks: &BTreeMap<String, bool>, rest: O
     db.set_review(id, v.clone())?;
     // Nothing brought back: no part to say, but the tools it could not use.
     // What the linter reported and fixed nothing of is only read.
-    let mut said = match (h.is_empty(), said(&h, &v.marks)) {
+    let taken_said = change.and_then(|(_, t)| (t == Taken::Part).then(|| ops.as_ref().map(|o| part_said(o, &v.marks)))).flatten();
+    let mut said = match (h.is_empty(), said_of(&h, &v.marks, taken_said)) {
         (true, s) if s.is_empty() => NOTHING_BACK.to_string(),
         (true, s) => format!("{NOTHING_BACK}; {s}"),
         (false, s) if s.is_empty() && h.lint.is_some() => "what the linter reported, read".to_string(),
@@ -1628,15 +1704,40 @@ pub fn accepted_tasks(h: &Held, marks: &BTreeMap<String, bool>, rest: Option<boo
     h.tasks.iter().enumerate().filter(|(k, _)| marks.get(&Part::Task(*k).key()).copied().or(rest) == Some(true)).map(|(_, t)| t.clone()).collect()
 }
 
+/// How much of a change of the stack a review takes: every operation,
+/// some of them, or none.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Taken {
+    Whole,
+    Part,
+    Nothing,
+}
+
+/// A change of the stack accepted in part, by its operations as `marks`
+/// mark them, said as what a review made of it: `its change accepted in
+/// part, 3 operations accepted and 1 rejected (remove 2)`.
+fn part_said(ops: &crate::operations::Ops, marks: &BTreeMap<String, bool>) -> String {
+    let (yes, no, _) = ops.counts(marks);
+    let accepted = count(yes, "operation", "operations");
+    format!("its change accepted in part, {accepted} accepted and {no} rejected ({})", ops.rejected_said(marks))
+}
+
 /// What a review made of the work held, by its marks: `its change
 /// accepted; 2 replies accepted, 1 rejected`.
 pub fn said(h: &Held, marks: &BTreeMap<String, bool>) -> String {
+    said_of(h, marks, None)
+}
+
+/// As `said`, its change accepted in part said `part`, as `part_said`
+/// says it.
+fn said_of(h: &Held, marks: &BTreeMap<String, bool>, part: Option<String>) -> String {
     let mark = |p: Part| marks.get(&p.key()).copied();
     let mut out = Vec::new();
     if h.stack.is_some() {
-        out.push(match mark(Part::Stack) {
-            Some(true) => "its change accepted".to_string(),
-            _ => "its change rejected".to_string(),
+        out.push(match (part, mark(Part::Stack)) {
+            (Some(part), _) => part,
+            (None, Some(true)) => "its change accepted".to_string(),
+            (None, _) => "its change rejected".to_string(),
         });
     }
     // Not a build and test's, asked as a follow-up, which was to read.

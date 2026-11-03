@@ -419,8 +419,10 @@ enum Cmd {
     /// Close the review of what landed, an ask's work or a pull's reviews
     /// (by its run, as `landed` lists it, else the first landed): accept all
     /// of it that is
-    /// not marked yet, or reject it. What is accepted is applied; what is
-    /// rejected is dropped for good. Rejecting a change of the stack
+    /// not marked yet, or reject it, each operation of a change of the
+    /// stack not marked yet too. What is accepted is applied, a change of
+    /// the stack as the operations accepted leave it; what is rejected is
+    /// dropped for good. Rejecting every operation of a change of the stack
     /// rejects its replies too. A pull's reviews are not rejected:
     /// --accept-all files every comment it pulled. Accepting a change of
     /// the stack waits until each answer made on the stack before it is
@@ -1616,8 +1618,24 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
                 // A pull's parts are not marked: each is filed as its review
                 // closes.
                 let marked = !stacked::held::pulled(r);
+                // The change's operations, each marked on its own: as one
+                // when every one is marked the same, else counted.
+                let ops = stacked::operations::of_work(&db, r, h);
                 for p in stacked::held::parts_left(&db, r) {
-                    let mark = match review.marks.get(&p.key()).filter(|_| marked) {
+                    let counted = match (p, &ops) {
+                        (stacked::held::Part::Stack, Some(ops)) => Some(match ops.tally(&review.marks) {
+                            (y, 0, 0) if y > 0 => Some(true),
+                            (0, n, 0) if n > 0 => Some(false),
+                            (0, 0, _) => None,
+                            (y, n, open) => {
+                                let each: Vec<String> = [(y, "accepted"), (n, "rejected"), (open, "to review")].iter().filter(|(k, _)| *k > 0).map(|(k, w)| format!("{k} {w}")).collect();
+                                println!("  change\t{}\toperations: {}", h.stack.as_ref().map_or("", |c| c.op.as_str()), each.join(", "));
+                                continue;
+                            }
+                        }),
+                        _ => None,
+                    };
+                    let mark = match counted.unwrap_or_else(|| review.marks.get(&p.key()).copied()).filter(|_| marked) {
                         Some(true) => "\taccepted",
                         Some(false) => "\trejected",
                         None => "",

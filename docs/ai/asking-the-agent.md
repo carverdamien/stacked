@@ -455,7 +455,8 @@ time. What it brings back is reviewed after the work it went on from: the
 banner lists it after that work, `◌ … after the edit under review`, and its
 review does not open before (`stacked review NAME RUN` refuses too).
 Accepted, that work makes it an ask of the stack as any other. Rejected,
-sent back or edited by hand, what went on from it is dropped: its agent is
+accepted in part (some of its operations rejected), sent back or edited
+by hand, what went on from it is dropped: its agent is
 stopped if it still works, what it brought back is thrown away unseen, and
 its comments go back to their turn, to start again from the stack as it
 then is (a round sent back goes first). It reads the stack it went on from

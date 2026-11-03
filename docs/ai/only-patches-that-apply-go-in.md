@@ -20,6 +20,16 @@ goes to an object store of its own. On a repository of 300,000 files, a
 move in a stack of ten patches takes 0.2s, and one refused 0.4s: a failure
 is checked again against the whole base before it is believed.
 
+The review of a change of the stack checks the same way the stacks its
+operations leave, as they are marked, to tell which operation needs which
+(What the agent brings back waits for your review, above): which patch is
+the first that does not apply, if one does not. What it finds of a stack,
+applying or not, holds for good, a stack being its base and its patches
+by their contents: it is kept while stacked runs, and told again at once.
+A stack of twenty patches, each with an operation, is twenty checks the
+first time the right pane shows what its top operation needs: 0.14s in
+all on Linux, on a small repository.
+
 A stack with no base (a stack from before the check), or whose repository
 or base commit is not there (the database copied to another machine, or
 the repository moved), cannot be checked, and so is read-only: comments can

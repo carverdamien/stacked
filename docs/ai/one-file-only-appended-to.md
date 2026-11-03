@@ -57,7 +57,13 @@ bytes long, padded with spaces.
   job's run holds the command it runs and where it stands, waiting its turn
   or running, and the stack it lints once it runs; landed, what it brought
   back, as an ask's does, with what the linter reported. A review
-  record holds the marks saved for a run's review (each answer made on the
+  record holds the marks saved for a run's review (each operation of its
+  change of the stack, accepted or rejected, by the change of its patch,
+  `op CHANGE`, and the base's, `op base`; a change with no operation to
+  mark, and a change closed whole, marked as a whole too, `stack`, which
+  is how a stacked of before marked every change, a mark each of its
+  operations takes when such a review is opened again; each answer made on
+  the
   stack before its change, kept, restarted or stopped, by that answer's
   run: `keep RUN`, `restart RUN`, `stop RUN`),
   the replies taken already, and whether it is closed; the last one is
