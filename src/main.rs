@@ -1619,8 +1619,9 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
                 // closes.
                 let marked = !stacked::held::pulled(r);
                 // The change's operations, each marked on its own: as one
-                // when every one is marked the same, else counted.
-                let ops = stacked::operations::of_work(&db, r, h);
+                // when every one is marked the same, else counted. Marked
+                // as a whole, nothing stored of what each needs, as one.
+                let ops = stacked::operations::of_review(&db, r, h);
                 for p in stacked::held::parts_left(&db, r) {
                     let counted = match (p, &ops) {
                         (stacked::held::Part::Stack, Some(ops)) => Some(match ops.tally(&review.marks) {
@@ -1718,16 +1719,31 @@ fn run(path: &Path, cmd: Cmd) -> Result<()> {
             return err("--effort goes with --send-back: accepting or rejecting the work asks the agent nothing");
         }
         Cmd::Review { name, run, accept_all, close_asking, .. } => {
-            let said = Db::edit(path, |db| {
+            let queued = |db: &Db| -> Result<String> {
                 let queue: Vec<String> = stacked::held::queue(db, &name).into_iter().map(|r| r.id.clone()).collect();
-                let id = match &run {
+                Ok(match &run {
                     Some(run) => match queue.iter().filter(|id| id.starts_with(run.as_str())).collect::<Vec<_>>().as_slice() {
                         [id] => (*id).clone(),
                         [] => return err(format!("no work on {name} waits for review as {run}: `stacked landed {name}` lists what does")),
                         _ => return err(format!("{run} names more than one run: give more of it")),
                     },
                     None => queue.first().cloned().ok_or_else(|| Error(format!("nothing on {name} waits for your review")))?,
-                };
+                })
+            };
+            // Accepted in part, the stack the operations accepted leave is
+            // checked first, with no lock held, as the editor checks it away
+            // from its screen: refused, with why, nothing changed. Under the
+            // lock, what that check found is only read again.
+            {
+                let db = Db::load(path)?;
+                let id = queued(&db)?;
+                let marks = db.run(&id).map(|r| stacked::held::marks(&db, r)).unwrap_or_default();
+                if let Some(refused) = stacked::held::closing_check(&db, &id, &marks, Some(accept_all))? {
+                    return err(refused);
+                }
+            }
+            let said = Db::edit(path, |db| {
+                let id = queued(db)?;
                 // A pull's: every part accepted, none rejected.
                 let marks = db.run(&id).map(|r| stacked::held::marks(db, r)).unwrap_or_default();
                 let said = stacked::held::close_with(db, &id, &marks, Some(accept_all), close_asking)?;

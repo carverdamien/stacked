@@ -361,6 +361,18 @@ pub(crate) fn land(db: &mut Db, name: &str, was: &[String], patches: Vec<String>
     Ok(Edited::Landed { said: said.into(), run })
 }
 
+/// What an edit by hand came to, `done`, as it lands: once it is filed,
+/// before its review opens, what each operation of its change needs worked
+/// out and stored with it, with no lock held (`held::work_out`). Should the
+/// database not be read or written then, nothing is stored, and its change
+/// is marked as a whole.
+fn filed(path: &std::path::Path, done: Result<Edited>) -> Result<Edited> {
+    if let Ok(Edited::Landed { run, .. }) = &done {
+        let _ = crate::held::work_out(path, run);
+    }
+    done
+}
+
 /// `patches` with `d` the new version of the one at `at`, stored, and the
 /// edit as the history says it; none when it is the same.
 pub(crate) fn revised(db: &mut Db, patches: &[String], at: usize, d: Draft) -> Result<Option<(Vec<String>, String)>> {
@@ -900,7 +912,7 @@ pub fn edit_stack(path: &std::path::Path, name: &str, work: Option<&str>, here: 
             Err(e) => list = with_error(&e.0, &edited, "change the list and save, or empty it to give up"),
         }
     };
-    Db::edit(path, |db| {
+    filed(path, Db::edit(path, |db| {
         may_edit(db, name, work)?;
         if db.head(name).map(|(r, _)| r) != Some(rev) || edited_from(db, name, work)?.patches != s.patches {
             return err(format!("{name} changed while it was being edited; nothing changed"));
@@ -929,7 +941,7 @@ pub fn edit_stack(path: &std::path::Path, name: &str, work: Option<&str>, here: 
         };
         let said = format!("the stack edited as a list: {op}");
         land(db, name, &s.patches, patches, &op, "the stack", &said, work)
-    })
+    }))
 }
 
 /// The line (from 1) of `p`'s mail, as it is edited, that `row` of its
@@ -1004,7 +1016,7 @@ pub fn edit_patch(
             }
         }
     };
-    Db::edit(path, |db| {
+    filed(path, Db::edit(path, |db| {
         may_edit(db, name, work)?;
         let now = edited_from(db, name, work)?;
         if now.patches.get(at) != Some(&old.id) {
@@ -1014,7 +1026,7 @@ pub fn edit_patch(
             None => Ok(Edited::Unchanged("nothing changed".into())),
             Some((patches, op)) => land(db, name, &now.patches, patches, &op, &format!("patch {}", at + 1), &format!("edited {}", old.title()), work),
         }
-    })
+    }))
 }
 
 /// Drops the changes the patch at `at` of stack `name` makes to `file`:
@@ -1046,7 +1058,7 @@ pub fn drop_file(path: &std::path::Path, name: &str, at: usize, file: &str) -> R
     all[at] = &new;
     crate::check::stack(&s, &all)?;
     let said = format!("dropped the changes to {file} from {}", old.title());
-    Db::edit(path, |db| {
+    filed(path, Db::edit(path, |db| {
         by_hand(db, name)?;
         let now = db.stack(name)?.clone();
         if now.patches.get(at) != Some(&old.id) {
@@ -1056,7 +1068,7 @@ pub fn drop_file(path: &std::path::Path, name: &str, at: usize, file: &str) -> R
             None => Ok(Edited::Unchanged("nothing changed".into())),
             Some((patches, op)) => land(db, name, &now.patches, patches, &op, &format!("patch {}", at + 1), &said, None),
         }
-    })
+    }))
 }
 
 /// Wraps the long lines of the messages of the patches at `places` (from
@@ -1070,7 +1082,7 @@ pub fn wrap_messages(path: &std::path::Path, name: &str, places: &[usize], width
     let mut places = places.to_vec();
     places.sort_unstable();
     places.dedup();
-    Db::edit(path, |db| {
+    filed(path, Db::edit(path, |db| {
         db.writable(name)?;
         by_hand(db, name)?;
         let was = db.stack(name)?.patches.clone();
@@ -1097,7 +1109,7 @@ pub fn wrap_messages(path: &std::path::Path, name: &str, places: &[usize], width
         let op = format!("wrap the long lines of the {} of {of} at {width} columns", messages(done.len()));
         let said = format!("wrapped the long lines of the {} of {of} at {width} columns", messages(done.len()));
         land(db, name, &was, patches, &op, &of, &said, None)
-    })
+    }))
 }
 
 /// What came of an edit by hand.
@@ -1275,7 +1287,7 @@ fn edit_copy(
             conflict: of_work(conflict_of(&db, &s, vec![(at, draft)], &said), work),
         });
     }
-    Db::edit(path, |db| {
+    filed(path, Db::edit(path, |db| {
         // The agent took the stack meanwhile: yours is kept, to take up again.
         if let Err(e) = may_edit(db, name, work) {
             return Ok(Edited::Refused {
@@ -1292,7 +1304,7 @@ fn edit_copy(
             None => Ok(Edited::Unchanged("nothing changed".into())),
             Some((patches, op)) => land(db, name, &now.patches, patches, &op, &format!("patch {}", at + 1), &said, work),
         }
-    })
+    }))
 }
 
 /// Edits the patch at `at` of stack `name` in a checkout of the stack up
@@ -1372,7 +1384,7 @@ fn edit_in(
             kept: kept(commit),
             conflict: of_work(conflict, work),
         }),
-        Taken::Ready { draft, said, commit } => Db::edit(path, |db| {
+        Taken::Ready { draft, said, commit } => filed(path, Db::edit(path, |db| {
             if let Err(e) = may_edit(db, name, work) {
                 return Ok(Edited::Refused {
                     why: e.0,
@@ -1393,7 +1405,7 @@ fn edit_in(
                 None => Ok(Edited::Unchanged("nothing changed".into())),
                 Some((patches, op)) => land(db, name, &now.patches, patches, &op, &format!("patch {}", at + 1), &said, work),
             }
-        }),
+        })),
     }
 }
 
@@ -1689,7 +1701,7 @@ pub fn resolve(path: &std::path::Path, name: &str, c: &Conflict, kept: Kept, her
         });
     }
     let said = format!("{}, and resolved {} by hand", c.said, said_places(&edits[1..]));
-    Db::edit(path, |db| {
+    filed(path, Db::edit(path, |db| {
         // The agent took the stack meanwhile: what you resolved is kept, to
         // take up again.
         if let Err(e) = may_edit(db, name, work) {
@@ -1700,7 +1712,7 @@ pub fn resolve(path: &std::path::Path, name: &str, c: &Conflict, kept: Kept, her
         }
         let (patches, op) = put_edits(db, &c.patches, &edits)?;
         land(db, name, &c.patches, patches, &op, &said_places(&edits), &said, work)
-    })
+    }))
 }
 
 /// `patches` with each of `edits` the new version of the patch at its

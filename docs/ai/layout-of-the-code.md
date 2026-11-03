@@ -26,9 +26,13 @@
   is accepted (`ask.rs` does what each mark says).
 - `operations.rs`: the operations of a change of the stack, a line of its
   stack diff each, as its review marks them one by one; the stack the
-  operations accepted leave; and what each needs to apply, by the check
-  of `check.rs`, which keeps what it found of each stack it applied, with
-  what refusing to mark one alone says, and what goes with it.
+  operations accepted leave; what each needs to apply, worked out as the
+  work lands by the check of `check.rs`, which keeps what it found of each
+  stack it applied, and stored with the work (`Needs`); what the review
+  decides from it, at once, with what refusing to mark one alone says, and
+  what goes with it; why a change is marked as a whole instead; and the
+  check closing in part makes, away from the screen, of the stack the
+  operations accepted leave.
 - `head.rs`: where HEAD of your checkout is against a stack, its commits
   marked, and HEAD moved along it, only as stacked left it or with no mark;
   what the view of why Move HEAD does not move HEAD reads of the checkout.

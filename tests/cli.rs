@@ -1476,6 +1476,42 @@ fn what_the_agent_brings_back_waits_for_review_and_may_be_rejected() {
 }
 
 #[test]
+fn what_each_operation_of_the_agent_s_change_needs_is_worked_out_as_it_lands_and_stored_with_it() {
+    let e = env();
+    e.ok(&["import", "s", "base"]);
+    let id = comment(&e, &["Rework", "the", "top", "two."]);
+    // The agent gives patch 2 a new version, b.txt `newer`, and patch 3 one
+    // that adds a line after it there: patch 3's new version applies only on
+    // patch 2's, and patch 3 as it was on either.
+    let claude = fake_claude(
+        &e,
+        "claude-two.sh",
+        r#"top=$(git rev-parse HEAD); git reset -q --hard HEAD~1; echo newer > b.txt; git -c user.name=C -c user.email=c@x commit -q -a --amend --no-edit; git checkout -q "$top" -- a.txt; echo more >> b.txt; git -c user.name=C -c user.email=c@x commit -q -a -C "$top""#,
+        r#"{"replies": {"c1": "Reworked."}}"#,
+    );
+    let (fine, out, err) = stacked_in(&e.src, &e.db, &["send", "s", &id, "--wait"], "", &[("STACKED_CLAUDE", &claude)]);
+    assert!(fine, "{err}");
+    assert!(out.contains("waits for your review: a change of the stack, 1 reply"), "{out}");
+    // Landed, what each operation needs is stored with the work, for its
+    // operations from the stack as it is: rejected alone, patch 2's leaves
+    // patch 3's new version not applying; nothing needs patch 3's.
+    let d = Db::load(&e.db).unwrap();
+    let r = d.runs().into_iter().find(|r| r.held.as_ref().is_some_and(|h| h.stack.is_some())).unwrap().clone();
+    let h = r.held.clone().unwrap();
+    let key = |k: usize| stacked::operations::key_of(&d.patch(&h.stack.as_ref().unwrap().patches[k]).change);
+    let needs = h.needs.clone().expect("stored as it landed");
+    assert_eq!(needs.failed, None);
+    assert!(needs.fits(&stacked::operations::of_work(&d, &r, &h).unwrap()));
+    let alone: Vec<(String, Vec<String>)> = needs.alone.iter().map(|a| (a.key.clone(), a.needed_by.clone())).collect();
+    assert_eq!(alone, [(key(1), vec![key(2)])]);
+    // Its review marks each operation on its own: `stacked landed` counts
+    // them once some are marked.
+    let ops = stacked::operations::of_review(&d, &r, &h).unwrap();
+    assert_eq!(ops.marked().count(), 2);
+    assert!(!ops.one());
+}
+
+#[test]
 fn a_reply_with_a_code_block_of_its_own_stays_the_agent_s_once_accepted() {
     use stacked::thread::{Role, thread_turns};
     let e = env();

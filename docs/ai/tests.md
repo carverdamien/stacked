@@ -210,7 +210,12 @@ it changed keeping its message as stored, a patch with two
 copies of its lines in its file a new version when its diff as stored
 would go to the other copy (lines added between the two by a patch
 below) and when the agent moved its hunk to the other copy, the stack not
-edited by hand while the agent changes it, failures kept to look at, comments staying on their line
+edited by hand while the agent changes it, what each operation of the
+agent's change of the stack needs worked out as it lands and stored with
+it (patch 2 made again, and patch 3's new version adding a line after
+it: patch 2's operation needed by patch 3's, nothing needing patch 3's,
+for the operations of the change from the stack as it is, each marked on
+its own), failures kept to look at, comments staying on their line
 across versions, a patch edited by hand (as mail and as code, at a line,
 refused and taken up again; in this checkout, refused while Move HEAD
 would not move HEAD, and taken once stacked has put HEAD on the stack),
@@ -630,7 +635,33 @@ Esc keeping them as they were, and accepting patch 4's again asking the
 same; on the command line, `--reject-all` rejecting every operation, and,
 patch 5's marked accepted in the review saved, refusing with the stack's
 reason, nothing changed, then `--accept-all` taking every operation not
-marked yet, patch 5's marked rejected), the
+marked yet, patch 5's marked rejected; closing in part, each of those,
+waiting for its check of the stack the operations accepted leave, the
+status line saying `checking the stack the operations you accepted
+leave…` until the editor reads what it came to; what each operation needs
+stored as the work landed (patch 4's, needed by patch 5's new version),
+and the right pane, Delete refused, Delete and Enter taken and Enter
+refused decided from it at once, no check made on the screen's thread,
+`?` saying when it was worked out and what closing checks; an edit by
+hand of patch 3, as mail in $EDITOR, landing with what each operation
+needs stored, its review marking its one operation on its own; work with
+nothing stored, as a stacked of before landed it, reviewed whole, its
+title saying its mark and every line of its operations that mark, none of
+their own, the right pane on the title and on a line, and `?`, saying
+why, Delete and Enter marking the change whole, no check made on the
+screen's thread, and, what could not be worked out stored, the right pane
+saying so and why, then closed, the change taken whole; three patches
+whose new versions, the first two, each add the same block, the third's
+changing that block with one line of context, which finds it in either:
+nothing stored, each of the first two rejected alone, then closing
+refused, saying that patch 3 does not apply and that patch 3's new
+version needs patch 2's operation, which is rejected, nothing changed and
+the review open, then patch 2's accepted again and the review closed in
+part; and closing in part waiting for its check, the cursor moving and the
+right pane following it meanwhile, a mark changed meanwhile calling the
+close off (`the review changed while the stack the operations you accepted
+leave was being checked, so nothing changed: close it again`), nothing
+changed, then closed again, once checked), the
 heading of an answer's turn counting the edits since the stack it was
 asked on (1, then 2; `on another version of the stack` once an edit is
 undone and another made in its place; nothing in a closed thread), a commit message that differs from its patch's
@@ -671,7 +702,9 @@ header too), HEAD following
 a review remembered where it went, Reconcile with HEAD (on the menus of
 the patches marked and of HEAD's row, not of another, `?` saying what it
 does; made at once, waiting for review in the banner, grayed while it is
-under way; its review saying what it takes, stacked's comment saying what
+under way, what each of its operations needs stored as it is made, with
+no check, nothing needing any; its review saying what it takes, each
+operation marked on its own, stacked's comment saying what
 to run from the top down, `git commit --amend` for HEAD's own commit and
 `git rebase -i` for one below; accepted, the messages taken and the marks
 gone; rejected, nothing changed and the marks there; asked while the
@@ -878,7 +911,9 @@ the tools refused in red, then of those allowed in green, the rest dim,
 in the runs of the row the page draws, the stack operations of a change
 each marked on its own in its review, the title counting them, the patch
 left as it was with no mark, and one accepted alone, its `✓` in green in
-the runs of its row, `Move HEAD…` on the stack's menu
+the runs of its row, the review closed in part from the page's keys, the
+patch the work adds rejected alone, closing once its check away from the
+screen is done, as the rows the page is sent say, `Move HEAD…` on the stack's menu
 not grayed while it would not move HEAD, and the view of why opened from
 it, then left, a link of a line of a message opened from the
 menu of a right click on it and with `o` (the status line saying it is
@@ -933,7 +968,9 @@ those allowed in green, the rest dim, cell by cell of the screen the
 window paints; the stack operations of a change each marked on its own in
 its review, the title counting them, the patch left as it was with no
 mark, and one accepted alone, its `✓` in green on the screen the window
-paints; `Move HEAD…` on the stack's menu drawn as any item while
+paints, and the review closed in part from its keys, the patch the work
+adds rejected alone, closing once its check away from the screen is
+done, as the screen it paints says; `Move HEAD…` on the stack's menu drawn as any item while
 it would not move HEAD, and the view of why opened from it, then left; the
 ask dialog opened with nothing set from a click on `Ask agent about all…`,
 Ask Now and Ask Later drawn dim, Ask Now as claude is not found, which it
@@ -1114,7 +1151,8 @@ mach's arguments, nothing written; each patch linted at its place, on its
 files, in the stack's lint worktree, its stdin closed, the checkout not
 touched, each fix folded into the earliest patch it shows in, the change
 landing for review as one, named so in the banner, the review and the
-history; a fix that would keep the patch above from applying stopping the
+history, what each of its operations needs stored as it landed, nothing
+needing another, each marked on its own; a fix that would keep the patch above from applying stopping the
 patches' run, the linter run once at the top, its fixes in a patch at the
 end with your comment on it, ready to send and sent to no one; nothing
 landing when the linter fixes and reports nothing, said quietly; what it
@@ -1214,8 +1252,15 @@ them, the stack after; none, the stack before; the remove rejected, the
 patch back where it was), which operation needs which (a patch added
 over a new version needing it, and a patch's new version rebased on the
 new version under it, whose patch as it was goes with that one, rejected
-or accepted together), what refusing says, and a stack that cannot be
-checked marking none of its operations alone;
+or accepted together), each decided from what is worked out of them as
+the work lands (`Needs`), what refusing says, a stack that cannot be
+checked marking none of its operations alone, what is worked out stored
+as it is read back, for those operations alone (another change, or the
+same from another stack, not theirs), and deciding from it checking
+nothing, a change of messages alone worked out with no check, and two
+rejections that together break a patch neither breaks alone passing
+alone and found by closing's check, which says which patch and what it
+needs;
 those in `git.rs`, that stacked's looks at a checkout, its worktree or
 yours, take no lock of its index (a file touched as it was, the index
 left as it was, where git's own status writes it again);

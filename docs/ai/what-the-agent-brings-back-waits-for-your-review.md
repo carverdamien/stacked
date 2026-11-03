@@ -16,7 +16,9 @@ nothing back. You accept or reject each part, but those of a pull from
 Phabricator, which are all accepted (Phabricator, below). A
 comment is one part. The change of the stack is a part for each of its
 operations, each patch's and the base's, accepted or rejected on its own
-as far as what each needs to apply allows (below). Rejecting every
+as far as what each needs to apply allows, which is worked out as the
+work lands (below); the change of work that landed before stacked worked
+that out is one part, accepted or rejected whole. Rejecting every
 operation of the change rejects the replies that go with it too, since
 each says what the agent changed. Once every part is accepted or
 rejected, the review closes. What was accepted is applied then, the
@@ -149,7 +151,11 @@ rejected, · 1 to review`, those it has; the list cuts what is too long
 for it. A change that leaves every patch as it was, and the base too, has
 no operation to mark: it is marked as a whole, its title saying `stack
 operations · accepted` with the word in green, `rejected` in red, or `to
-review` as the rest of the title. The line of each operation starts with
+review` as the rest of the title. So is the change of work with nothing
+stored of what each operation needs (below), every line of its operations
+starting with the change's mark, none of its own (`   · modify  4 Bug 4
+- line 35`, `   · noop    1 Bug 1 - line 5`): Enter, Delete and Space on
+any of them mark the change as a whole. The line of each operation starts with
 its mark, and the operation after it keeps the colour of its kind: `add`
 green, `modify`, `reword` and the base magenta, `remove` red, `noop` dim,
 and `move` as any text. Under the cursor, a marked line is in the
@@ -221,10 +227,34 @@ as the operations stand, without the other: without a `modify`'s or a
 without a `remove`'s, that patch still there; without a `move`'s, that
 patch at its old place; without the base's, the base as it was. Whether
 a patch applies is told by the check every stack passes before it goes
-in the database (Only patches that apply go in, below), on the stacks the
-operations leave as they are marked, worked out again as a mark changes;
-what that check found of a stack, it tells again at once. The stack as
-the operations stand, those accepted and those to review, always applies.
+in the database (Only patches that apply go in, below). What each
+operation needs follows from two stacks alone, the one the change went on
+from and the one it makes, which are fixed once the work lands: it is
+worked out then, by the landing, and stored with the work (One file, only
+appended to, below), for the stack the change makes, every operation
+standing, and each operation rejected alone: the operations that go with
+it (its patch as it was, or one of theirs, applying only on what they
+leave as they were), worked out from the bottom of the stack up, and the
+operations whose patches then no longer apply, which need it, from the
+top down, each found taken as rejected too, as you would reject it first,
+to see past it; each worked out from what was found of those before it,
+so that a chain of them is a few checks each. An agent's change works it
+out as it lands: what the agent did is read from its worktree under the
+launch lock, made on a copy of the database, then what each operation
+needs is worked out from that copy with no lock held, and stored as the
+work is filed, if the stacks it was worked out for are still those (else
+why not is stored). A lint job's is worked out once the linter is done,
+before its work is filed; an edit by hand's, once it is filed, before its
+review opens; a reconcile with HEAD's as it is made, its operations
+taking messages alone, which nothing needs, with no check. An operation
+whose rejection leaves every diff of the stack as it was, as a `reword`'s
+does, is told with no check. The review then decides from what is
+stored, at once: the right pane's sentences, Enter, Delete and Space, and
+the questions about operations that go together check nothing. The stack
+as the operations stand, those accepted and those to review, applies as
+far as what is stored tells, each operation rejected alone: two
+rejections together may, rarely, leave a patch that applies on neither,
+which closing finds (below).
 Rejecting an operation is refused while one that is accepted or to review
 needs it, the status line saying which (`patch 5's new version applies
 only on patch 4's new version: reject patch 5's operation first`), and so
@@ -233,8 +263,7 @@ is rejecting one that a patch the change leaves as it was needs (`patch
 version, so patch 4's operation cannot be rejected alone`): operations
 are rejected from the leaves inward. Accepting one is refused while one
 it needs is rejected (`patch 5's new version applies only on patch 4's
-new version: accept patch 4's operation first`), or while a patch that
-stands would no longer apply once it is accepted. A `reword` changes no
+new version: accept patch 4's operation first`). A `reword` changes no
 diff, so nothing needs it. When an operation's patch as it was would no
 longer apply on what the others leave, as a patch made again on the new
 version of the one under it, the operation that makes it so goes with
@@ -254,14 +283,47 @@ can be accepted alone.` or what to accept before it. On a `noop`, it says
 that the change leaves the patch as it is, with nothing to accept or
 reject.
 
+Work with nothing stored of what each operation of its change needs is
+not worked out as it is reviewed, nor stored later: its change is one
+part, accepted or rejected as a whole, as before stacked marked each
+operation, and its review says why, on the stack operations' right pane,
+under the line the cursor is on (over the stack diff on their title), and
+in `?`: `This work landed before stacked worked out what each operation
+needs, so its change is accepted or rejected as a whole.`; for work whose
+landing could not work it out, `What each operation needs could not be
+worked out when this work landed, so its change is accepted or rejected
+as a whole: ` and why; for work whose stack changed since it landed, `What
+each operation needs was worked out for the stack as it was when this
+work landed, and the stack has changed since, so its change is accepted
+or rejected as a whole.` (its change can then only be rejected, as
+ever). Nothing is checked as it is reviewed, and closing it checks
+nothing of its own: the stack its change makes was checked as it landed.
+
 Closing, the stack becomes the stack as the operations accepted leave it:
 each patch whose operation is accepted as the change leaves it, every
 other as it was, where it was, and the base as its operation is marked.
-That stack is checked first, and the review stays open, nothing done, the
-status line saying why, if it does not apply, as when `Reject all
-remaining and Close` would reject an operation that one accepted needs
+Accepted in part, that stack is checked first, away from the screen: the
+status line says `checking the stack the operations you accepted leave…`
+meanwhile, the keys going as ever (the cursor moves, the right pane
+follows it), and the review closes once it is seen to apply. If it does
+not, as when `Reject all remaining and Close` would reject an operation
+that one accepted needs, or two rejections together leave a patch that
+applies on neither, the review stays open, nothing done, the status line
+saying which patch does not apply, as git says it, and what it needs: the
+operation rejected nearest under it whose acceptance would let it apply,
+or, a patch as it was, the operation accepted whose rejection would
 (`the stack the operations you accepted leave does not apply: patch 5
-(…) does not apply to the patches below it (…); nothing changed`).
+(…) does not apply to the patches below it (…); patch 5's new version
+needs patch 4's operation, which is rejected; nothing changed`). A mark
+changed while that stack is checked calls the close off, nothing done:
+what was checked is not what would close (`the review changed while the
+stack the operations you accepted leave was being checked, so nothing
+changed: close it again`). Closing again while one is checked takes its
+place. Accepted whole, or rejected, closing checks no stack of its own:
+the stack the change makes was checked as the work landed, and rejected,
+the stack stays as it is. `stacked review --accept-all` and
+`--reject-all` check the stack the operations accepted leave the same
+before they take the database's lock, and refuse as the review does.
 Accepted in part, the history names the operations rejected, by their
 word and place as the list says them (`agent: the stack; rejected:
 modify 5`), and so does the run (`reviewed: its change accepted in part, 3

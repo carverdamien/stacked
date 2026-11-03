@@ -248,7 +248,11 @@ Each stack operation is marked on its own, so you can accept part of a
 change: the stack then takes the operations you accepted, and keeps the
 other patches as they were. Rejecting an operation is refused while
 another one still needs it, its patch not applying without it, and the
-status line says which one to reject first.
+status line says which one to reject first. What each operation needs is
+worked out once, as the work lands, so each mark is decided at once;
+closing a review in part checks the stack you leave before anything
+changes. Work that landed before stacked worked that out is reviewed as a
+whole, as its review says.
 
 Until the review of a change closes, you cannot edit the stack by hand. A
 reply that came alone needs no review screen: Enter on its comment takes

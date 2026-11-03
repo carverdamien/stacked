@@ -431,7 +431,13 @@ job's worktree and a try push's ready, making `.stacked/NAME/user` the
 first time you edit there. The lock is never held while an agent works, and
 it is apart from the database's lock, so that the agents at work write their
 streams meanwhile. It is taken before the database's lock, never under it.
-The kernel gives it back however the process holding it ends.
+The kernel gives it back however the process holding it ends. A landing
+holds it twice: once to read what the ask did from its worktree, made on a
+copy of the database, nothing written; then, once what each operation of
+its change needs is worked out from that copy with neither lock held (What
+the agent brings back waits for your review, below), to file it, as it was
+read again under both locks. Landing an ask whose agent is gone, from
+within a launch of its own, works that out under the launch lock held.
 
 Several go at once, by self-review's rule: one changing ask at a time on a
 stack, answer-only asks together, a build and test once no change runs on

@@ -53,7 +53,7 @@ use std::process::{Command, Stdio};
 
 use serde::{Deserialize, Serialize};
 
-use crate::db::{Db, Error, Note, Patch, Record, Result, Run, RunState, err, now};
+use crate::db::{Db, Error, Note, Patch, Record, Result, Run, RunState, Stack, err, now};
 use crate::held::{Change, Held};
 use crate::mbox::Draft;
 
@@ -576,9 +576,27 @@ pub fn run(db_path: &Path, id: &str) -> Result<()> {
     })?;
     let Some(r) = started else { return Ok(()) };
     let done = linting(db_path, &r);
-    land(db_path, id, done)?;
+    // What each operation of the change it makes needs, worked out with no
+    // lock held, as its checks only read the repository.
+    let needs = done.as_ref().ok().and_then(|l| needs_of(db_path, &r, l));
+    land(db_path, id, done, needs)?;
     crate::ask::launch(db_path)?;
     Ok(())
+}
+
+/// What each operation of the change lint job `r` makes with `l` needs,
+/// worked out as it lands (`operations::Ops::needs`), from the stack it
+/// linted: on a copy of the database that holds its fixes, nothing of it
+/// written. None if the database cannot be read.
+fn needs_of(db_path: &Path, r: &Run, l: &Linted) -> Option<crate::operations::Needs> {
+    let mut dry = Db::load(db_path).ok()?;
+    let s = dry.node(r.lint.as_deref()?.rev?).ok()?.clone();
+    let mut patches = Vec::new();
+    for p in &l.patches {
+        patches.push(dry.add_patch(p.clone()).ok()?);
+    }
+    let next = Stack { patches, ..s.clone() };
+    Some(crate::operations::of(&dry, &s, &next).needs(&dry))
 }
 
 /// The work of `run`: the stack lint job `r` lints, linted in its
@@ -631,13 +649,13 @@ fn linting(db_path: &Path, r: &Run) -> std::result::Result<Linted, String> {
 /// a comment on the patch on top if there is one; or what it reported alone,
 /// to read; or nothing, said in its run's summary; or why it failed. Once
 /// you stopped it, nothing of it lands: it is stopped.
-fn land(db_path: &Path, id: &str, done: std::result::Result<Linted, String>) -> Result<()> {
+fn land(db_path: &Path, id: &str, done: std::result::Result<Linted, String>, needs: Option<crate::operations::Needs>) -> Result<()> {
     Db::edit(db_path, |db| {
         let Some(r) = db.run(id).filter(|r| r.state == RunState::Started).cloned() else { return Ok(()) };
         let (state, summary, held) = if r.lint.as_deref().is_some_and(|j| j.stopping) {
             (RunState::Failed, STOPPED.to_string(), None)
         } else {
-            match landed(db, &r, done) {
+            match landed(db, &r, done, needs) {
                 Ok((summary, held)) => (RunState::Done, summary, held),
                 Err(why) => (RunState::Failed, why, None),
             }
@@ -657,7 +675,9 @@ fn land(db_path: &Path, id: &str, done: std::result::Result<Linted, String>) -> 
 /// Under the lock: what lint job `r` landed with `done`, its summary and
 /// the work held, if any; or why nothing landed. The stack must be as the
 /// job took it: it is not edited meanwhile, but if it is, nothing lands.
-fn landed(db: &mut Db, r: &Run, done: std::result::Result<Linted, String>) -> std::result::Result<(String, Option<Held>), String> {
+/// `needs`, what each operation of its change needs, worked out before with
+/// no lock held, is stored with it, if it is for that change.
+fn landed(db: &mut Db, r: &Run, done: std::result::Result<Linted, String>, needs: Option<crate::operations::Needs>) -> std::result::Result<(String, Option<Held>), String> {
     let l = done?;
     let job = r.lint.as_deref().ok_or("the run is not a lint job")?;
     let (head, s) = db.head(&r.stack).map(|(rev, s)| (rev, s.clone())).ok_or_else(|| format!("the stack {} is gone: nothing landed", r.stack))?;
@@ -697,7 +717,8 @@ fn landed(db: &mut Db, r: &Run, done: std::result::Result<Linted, String>) -> st
             lint: Some(l.report),
             ..Default::default()
         };
-        return Ok((format!("landed: {op}"), Some(held)));
+        let needs = crate::held::needs_filed(db, r, &held, needs);
+        return Ok((format!("landed: {op}"), Some(Held { needs, ..held })));
     }
     if !l.report.errors.is_empty() {
         let summary = format!("the linter fixed nothing, and reported what it did not fix: {}", l.report.errors_said());

@@ -1346,7 +1346,7 @@ fn work_on_two(tmp: &Path, db: &Path, said: &str, add: bool, quiet: bool) -> sta
         .output()
         .unwrap();
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
-    stacked::db::Db::edit(db, |d| {
+    let n = stacked::db::Db::edit(db, |d| {
         let (from, s) = d.head("s").map(|(r, s)| (r, s.clone())).unwrap();
         let old = d.patch(&s.patches[0]).clone();
         let n = d.notes(&old.change).into_iter().next().cloned().unwrap();
@@ -1398,7 +1398,11 @@ fn work_on_two(tmp: &Path, db: &Path, said: &str, add: bool, quiet: bool) -> sta
         })
         .map(|_| n)
     })
-    .unwrap()
+    .unwrap();
+    // Landed, as a landing does it: what each operation of its change needs,
+    // worked out and stored with it.
+    stacked::held::work_out(db, "run-agent").unwrap();
+    n
 }
 
 /// `said` typed in the page, a key for each of its characters.
@@ -1460,6 +1464,29 @@ fn each_stack_operation_is_marked_on_its_own_in_the_browser_too() {
     until(&mut events, "its mark, green", |l| {
         text(l).contains("   ✓ modify  1 Bug 1 - shout two") && runs(l).contains(&("2,,0".to_string(), "✓".to_string()))
     });
+}
+
+#[test]
+fn a_review_closed_in_part_closes_once_its_check_away_from_the_screen_is_done_in_the_browser_too() {
+    let (tmp, db) = setup();
+    work_on_two(tmp.path(), &db, "why so loud?", true, false);
+    stacked::config::init(stacked::config::Config::default());
+    let (port, token) = stacked::web::start(db.clone()).unwrap();
+    let (host, input) = (format!("127.0.0.1:{port}"), format!("POST /input?t={token}"));
+    let mut events = events(port, &token, 120);
+    until(&mut events, "the banner", |l| text(l).contains("1 landed ask waits for your review"));
+    // The patch the work adds rejected, alone: nothing needs it.
+    ask(port, &host, &input, "k Esc -\nk Enter -\n");
+    until(&mut events, "the title", |l| text(l).contains(" stack operations · · 2 to review"));
+    ask(port, &host, &input, "k Down -\nk Down -\nk Delete -\n");
+    until(&mut events, "the add rejected", |l| text(l).contains(" stack operations · ✗ 1 rejected, · 1 to review"));
+    // The rest accepted, closed: the stack the operations accepted leave is
+    // checked away from the screen, then the review closes, as the page
+    // shows once it is done.
+    ask(port, &host, &input, "k Esc -\nk Up -\nk Up -\nk Up -\nk Enter -\n");
+    until(&mut events, "the question", |l| text(l).contains("accept every part not marked yet?"));
+    ask(port, &host, &input, "k Up -\nk Enter -\n");
+    until(&mut events, "closed", |l| text(l).contains("reviewed: its change accepted in part, 1 operation accepted and 1 rejected (add 2)"));
 }
 
 #[test]

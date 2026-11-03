@@ -24,7 +24,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use crate::db::{Db, Error, Result, Run, RunState, err, now};
+use crate::db::{Db, Error, Result, Run, RunState, Stack, err, now};
 use crate::head::{At, patches_said};
 use crate::held::{Change, Held, Review};
 use crate::mbox::Draft;
@@ -218,6 +218,14 @@ pub(crate) fn make(db: &mut Db, id: &str, after: Option<String>) -> Result<()> {
     }
     places.sort_unstable();
     let of = patches_said(&places);
+    // What each operation needs: each takes a message alone, its diff as it
+    // was, so nothing needs any, told with no check (`Ops::needs`), here
+    // under the lock as the change is made.
+    let next = Stack {
+        patches: patches.clone(),
+        ..from.clone()
+    };
+    let needs = crate::operations::of(db, &from, &next).needs(db);
     let held = Held {
         at: now(),
         stack: Some(Change {
@@ -227,6 +235,7 @@ pub(crate) fn make(db: &mut Db, id: &str, after: Option<String>) -> Result<()> {
             of: of.clone(),
             from: after.is_none().then_some(rev),
         }),
+        needs: Some(needs),
         ..Default::default()
     };
     db.add_run(Run {

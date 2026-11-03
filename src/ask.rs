@@ -3551,29 +3551,51 @@ impl Landed {
 /// Files what a finished ask did; once, however often it is called. `exit`
 /// says how claude exited when its events cannot (it was killed). Then
 /// starts what was waiting behind it. Under the launch lock, both: what it
-/// did is read from its worktree, which is cleaned up after.
+/// did is read from its worktree, which is cleaned up after. What it would
+/// file is made first on a copy, under the launch lock too; what each
+/// operation of its change needs is then worked out from that copy with no
+/// lock held (`operations::needs_of`), as its checks only read the
+/// repository and may take long on a big one, and stored with it as it is
+/// filed (`held::needs_filed`).
 pub fn land(db_path: &Path, id: &str, exit: Option<&str>) -> Result<Run> {
+    let dry = {
+        let _launching = launch_lock(db_path)?;
+        dry_run(db_path, id, exit)
+    };
+    let needs = dry.and_then(|(db, r, h)| crate::operations::needs_of(&db, &r, &h));
     let _launching = launch_lock(db_path)?;
-    let run = file_landed(db_path, id, exit)?;
+    let run = file_landed(db_path, id, exit, Some(needs))?;
     launch(db_path)?;
     Ok(run)
 }
 
-/// What `land` does, but start what waits.
-fn file_landed(db_path: &Path, id: &str, exit: Option<&str>) -> Result<Run> {
-    // What landing does is done once first, on a copy, with no lock held:
-    // what takes long (the stack made checked to apply, on a big
-    // repository) is then remembered, and under the lock it is only
-    // written. Nothing of the copy is written.
-    if let Ok(mut dry) = Db::load(db_path)
-        && let Some(started) = dry.run(id).cloned()
-        && started.state == RunState::Started
-        && let Some(i) = info(&started)
-        && exit_code(&dry, id, exit) == "0"
-    {
-        let output = result_text(&dry.events(id));
-        let _ = file(&mut dry, &started, &i, &output);
+/// What landing run `id` would file, made on a copy of the database, with
+/// no lock of the database held, nothing of the copy written: what takes
+/// long (the stack made checked to apply, on a big repository) is then
+/// remembered, and under the lock it is only written. The copy, the run as
+/// it started, and what it would hold; none when it would file nothing of
+/// its own (it failed, or is filed already).
+fn dry_run(db_path: &Path, id: &str, exit: Option<&str>) -> Option<(Db, Run, Held)> {
+    let mut dry = Db::load(db_path).ok()?;
+    let started = dry.run(id).cloned().filter(|r| r.state == RunState::Started)?;
+    let i = info(&started)?;
+    if exit_code(&dry, id, exit) != "0" {
+        return None;
     }
+    let output = result_text(&dry.events(id));
+    let landed = file(&mut dry, &started, &i, &output).ok()?;
+    Some((dry, started, landed.held))
+}
+
+/// What `land` does, but start what waits. `worked`, what each operation of
+/// its change needs, worked out before (an outer `None` when it was not:
+/// then made here, under the launch lock held, as a landing of an agent
+/// gone, or stopped, is).
+fn file_landed(db_path: &Path, id: &str, exit: Option<&str>, worked: Option<Option<crate::operations::Needs>>) -> Result<Run> {
+    let worked = match worked {
+        Some(needs) => needs,
+        None => dry_run(db_path, id, exit).and_then(|(db, r, h)| crate::operations::needs_of(&db, &r, &h)),
+    };
     // Where it worked, to leave as it should be once it is filed.
     let mut after: Option<Info> = None;
     let run = Db::edit(db_path, |db| {
@@ -3624,6 +3646,11 @@ fn file_landed(db_path: &Path, id: &str, exit: Option<&str>) -> Result<Run> {
             })
         };
         landed.held.tools = refusals;
+        // What each operation of its change needs, worked out before with no
+        // lock held: stored with it, if it is for that change from that stack.
+        if landed.held.stack.is_some() {
+            landed.held.needs = crate::held::needs_filed(db, &started, &landed.held, worked);
+        }
         let tools = landed.held.tools.len();
         // Bringing nothing back, it waits for your review all the same while
         // a comment it was asked about is still open: to close or keep.
@@ -4409,7 +4436,7 @@ pub fn stop(db_path: &Path, id: &str) -> Result<(Run, bool)> {
     // Landed under the launch lock, once its agent is gone, as any landing:
     // not while waiting for it, which its wrapper's own landing could be.
     let _launching = launch_lock(db_path)?;
-    let run = file_landed(db_path, id, Some("killed"))?;
+    let run = file_landed(db_path, id, Some("killed"), None)?;
     let stopped = run.state == RunState::Failed && run.summary.starts_with(STOPPED_SAID);
     Ok((run, stopped))
 }

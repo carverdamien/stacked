@@ -44,7 +44,23 @@ bytes long, padded with spaces.
   stack its change makes (its patches stored already, by their content),
   each reply (an answer-only ask's with the rev of the stack it was asked
   on), each comment it opened. Nothing of it is applied before its
-  review closes. Bringing nothing back, it holds none of them, and is held
+  review closes. With its change of the stack, it holds what each
+  operation of that change needs, worked out as it landed (`needs`, and so
+  does any run holding a change of the stack: a lint job's, an edit by
+  hand's, a reconcile with HEAD's): the operations it was worked out for,
+  by a digest of the two stacks they follow from, their repository, bases
+  and patches (`of`), as another change, or the same from another stack,
+  is not theirs; and each operation that something needs, or that
+  something goes with, rejected alone (`alone`): its key (`op CHANGE`,
+  `op base`), the operations whose patches then no longer apply
+  (`needed_by`), those that go with it, each with the operation whose
+  patch as it was needs it (`with`: `key`, `because`, `by`), and the
+  operation whose patch as it was nothing makes apply (`stuck`); or, could
+  it not be worked out, why (`failed`). Its review decides from it. A run
+  a stacked of before landed holds none, nor is one stored for it later:
+  its change is reviewed as a whole. It is part of the run's record,
+  written again with it: nothing of it is indexed, so the checkpoints are
+  as they were. Bringing nothing back, it holds none of them, and is held
   all the same while a comment it was asked about is still open. A
   follow-up asked from a review is queued as the comments it asks about,
   each naming the work it follows up (`on`) and saying it is one

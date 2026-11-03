@@ -2502,6 +2502,10 @@ enum Done {
     /// The try pushes followed looked at: what came of those now over.
     #[cfg(feature = "try-push")]
     Followed(Vec<String>),
+    /// What the check of the stack the operations accepted leave came to,
+    /// for close `0` of a review: none when it applies; else why not, or why
+    /// it could not be checked.
+    Closing(usize, std::result::Result<Option<String>, String>),
 }
 
 /// What the bar says while an agent is being stopped, its ask landed then.
@@ -2565,6 +2569,10 @@ struct Background {
     /// Treeherder.
     #[cfg(feature = "try-push")]
     following: bool,
+    /// The close of a review that waits for its check of the stack the
+    /// operations accepted leave, by its count; and how many were asked.
+    closing: Option<(usize, reviewing::ToClose)>,
+    closes: usize,
 }
 
 impl Background {
@@ -2589,6 +2597,8 @@ impl Background {
             pushes: None,
             #[cfg(feature = "try-push")]
             following: false,
+            closing: None,
+            closes: 0,
         }
     }
 }
@@ -3195,6 +3205,7 @@ impl App {
     fn done(&mut self, d: Done) {
         match d {
             Done::Reached(t, ok) => self.reach_found(t, ok),
+            Done::Closing(n, found) => self.closing_checked(n, found),
             #[cfg(feature = "try-push")]
             Done::Followed(news) => {
                 self.bg.following = false;
@@ -3471,7 +3482,7 @@ impl App {
     /// Whether work is being done away from the screen: starting asks,
     /// pulling, importing, checking.
     pub fn working(&self) -> bool {
-        self.bg.launching || !self.bg.doing.is_empty() || self.bg.judging.is_some() || self.following()
+        self.bg.launching || !self.bg.doing.is_empty() || self.bg.judging.is_some() || self.bg.closing.is_some() || self.following()
     }
 
     /// Whether the try pushes followed are being looked at: never, built
@@ -3500,6 +3511,7 @@ impl App {
         while self.bg.launching
             || !self.bg.doing.is_empty()
             || self.bg.judging.is_some()
+            || self.bg.closing.is_some()
             || self.bg.heading
             || self.following()
             || self.reading_statuses()
@@ -6220,9 +6232,14 @@ impl App {
                     out.push("Press Enter to accept the part the cursor is on, or, accepted, to put it back to review; Delete to reject it; Space for its menu, to reject it too, or to reply to the agent's reply; → to scroll what it looks like, → again to see it wide, the list out of sight, and ← to come back. On the stack operations, → goes into the stack diff, where Enter on a line goes to it in its patch as the work leaves it, to comment on it.".into());
                 }
                 out.extend(self.delete_help());
-                // The stack operations: each on its own, and what each needs.
+                // The stack operations: each on its own, and what each needs;
+                // or the change as one, and why.
                 if self.review_ops().is_some_and(|o| o.marked().next().is_some()) {
                     out.push("The stack operations are a line for each patch, and one for the base when the change rebases, each accepted, rejected or to review on its own; a noop changes nothing, and has no mark. Closing the review, the stack becomes the stack as the operations accepted leave it: a patch whose operation is rejected stays as it was, where it was. An operation needs another when its patch does not apply without the other's: rejecting one is refused while an operation accepted or to review needs it, and accepting one while one it needs is rejected, the status line saying which, so that operations are rejected from the leaves inward. When an operation's patch as it was would not apply on what the others leave, the operation that makes it so goes with it, marked with it once you say so. On an operation, the right pane says what it needs and what needs it. On their title, Enter accepts every operation, and Delete rejects every one; Space on any other line has Mark all operations accepted and Mark all operations rejected. Accepted in part, the change is not the stack that the edits going on from it went on from: they are dropped and asked again, as for a rejection.".into());
+                    out.push("What each operation needs was worked out once, as the work landed, for each operation rejected alone, and stored with the work: marking an operation is decided from it at once, and checks nothing. Two operations rejected together may still leave a patch that applies on neither: closing the review in part checks the stack the operations accepted leave first, the status line saying so meanwhile, and refuses to close if that stack does not apply, saying which patch does not apply and what it needs.".into());
+                }
+                if let Some(why) = self.review_whole_why() {
+                    out.push(why);
                 }
                 // A try push's: its tasks, and what closing does with them.
                 #[cfg(feature = "try-push")]
@@ -7989,7 +8006,7 @@ impl App {
                 };
             }
             Action::AskReviewClose(accept) => self.mode = Mode::Menu(self.review_close_ask(accept)),
-            Action::ReviewClose(rest) => self.review_close(rest),
+            Action::ReviewClose(rest) => self.review_close(rest, false),
             Action::CloseAsking(k, close) => self.mark_asking(k, close),
             Action::AskClose => {
                 if let Some(m) = self.review_close_menu() {
@@ -8055,16 +8072,7 @@ impl App {
                     self.mode = Mode::Edit(Box::new(e));
                 }
             }
-            Action::ReviewCloseStop(rest) => {
-                let builds = ask::builds_going(&self.db, &self.stack);
-                self.review_close(rest);
-                if self.reviewing.is_none() && !builds.is_empty() {
-                    for r in builds {
-                        self.stop(r.id, false);
-                    }
-                    self.status += "; the build and test of the stack as it was is being stopped, and lands as failed";
-                }
-            }
+            Action::ReviewCloseStop(rest) => self.review_close(rest, true),
             Action::Answer(k) => self.review_answer(k),
             #[cfg(feature = "try-push")]
             Action::AnswerTask(k) => self.review_task_answer(k),

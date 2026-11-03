@@ -530,6 +530,9 @@ fn each_fix_is_folded_into_the_earliest_patch_it_shows_in_away_from_the_checkout
     let h = r.held.clone().unwrap();
     let c = h.stack.clone().unwrap();
     assert_eq!(c.op, "lint fixes in patches 1 and 2 (./lint.sh --fix)");
+    // What each operation of its change needs, worked out as it landed:
+    // nothing needs another.
+    assert!(h.needs.as_ref().is_some_and(|n| n.failed.is_none() && n.alone.is_empty()), "{:?}", h.needs);
     assert_eq!(r.summary, "landed: lint fixes in patches 1 and 2 (./lint.sh --fix)");
     let report = h.lint.clone().unwrap();
     assert_eq!((report.fixed.clone(), report.stopped.clone(), report.on_top), (vec![0, 1], None, false));
@@ -542,6 +545,7 @@ fn each_fix_is_folded_into_the_earliest_patch_it_shows_in_away_from_the_checkout
     let screen = draw(&mut app);
     assert!(screen.contains(" the linter's work: a change of patches 1 and 2 ·"), "{screen}");
     assert!(screen.contains("modify  1 Bug 1 - patch 1") && screen.contains("modify  2 Bug 2 - patch 2"), "{screen}");
+    assert!(screen.contains(" stack operations · · 2 to review"), "each marked on its own:\n{screen}");
     // Nothing changes before it is accepted; accepted, the history says it.
     assert_eq!(file_at(&src, &db, 2, "a.txt"), two);
     accept(&db, &r);

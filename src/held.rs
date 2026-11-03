@@ -7,9 +7,11 @@
 //! held the same way, in their pull's run: the reviewers' new comments,
 //! their replies, and their comments edited on Phabricator since they were
 //! filed. Each part is accepted or rejected, the change of the stack
-//! operation by operation (`operations`); once every part is, the review
-//! closes: what was accepted is applied, the change whole or in part, and
-//! the rest is dropped for good. A pull's parts are not
+//! operation by operation (`operations`), as what each operation needs,
+//! worked out as the work landed, is stored with it (`Held::needs`); work
+//! with nothing stored has its change marked as a whole. Once every part
+//! is marked, the review closes: what was accepted is applied, the change
+//! whole or in part, and the rest is dropped for good. A pull's parts are not
 //! rejected: closing its review files every comment it pulled, a reply to
 //! a thread you closed reopening that thread. Until then, the stack is not
 //! edited by hand if the agent changed it, and the comments it answered
@@ -32,7 +34,8 @@
 //! with your edit in it lands in its place, its replies and comments as
 //! they were.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
@@ -85,6 +88,13 @@ pub struct Held {
     /// among the tasks; what they could not use, among the tools.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub follow_ups: Vec<FollowUp>,
+    /// What each operation of its change of the stack needs, worked out as
+    /// it landed (`operations::Needs`), for the stacks it was worked out
+    /// for: its review decides from it, each operation marked on its own.
+    /// None for work that landed before stacked worked it out, or that
+    /// changes nothing of the stack: its change is marked as a whole.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub needs: Option<crate::operations::Needs>,
 }
 
 /// A follow-up that only reads, asked from the review of the work it came
@@ -290,7 +300,10 @@ fn made_from(r: &Run, h: &Held) -> Option<usize> {
 /// calls it, `of` what it changes, and `said` what the edit was. Made from
 /// the stack as it is; or, editing the work run `work` holds, from the
 /// stack that work makes, in its place: that work is rejected, and the new
-/// holds its replies and comments as they were. The new run.
+/// holds its replies and comments as they were. The new run. What each
+/// operation of its change needs is worked out once it is filed, no lock
+/// held (`work_out`): none of what that work held, which was another
+/// change's.
 pub fn hold_by_hand(db: &mut Db, name: &str, patches: Vec<String>, op: &str, of: &str, said: &str, work: Option<&str>) -> Result<String> {
     let id = crate::db::unique();
     let Some(work) = work else {
@@ -331,6 +344,7 @@ pub fn hold_by_hand(db: &mut Db, name: &str, patches: Vec<String>, op: &str, of:
             ..c
         }),
         edits,
+        needs: None,
         ..h.clone()
     };
     db.add_run(Run {
@@ -833,14 +847,15 @@ fn rejects(h: &Held, marks: &BTreeMap<String, bool>) -> bool {
 /// files each comment it pulled. Marks a stacked of before saved
 /// rejecting some are passed over. The change of the stack marked as a
 /// whole, as a stacked of before marked it (`stack`), each of its
-/// operations has that mark; a change with no operation to mark keeps it.
+/// operations has that mark, once each is marked on its own
+/// (`operations::of_review`); a change marked as one keeps it.
 pub fn marks(db: &Db, r: &Run) -> BTreeMap<String, bool> {
     let mut marks = db.review(&r.id).map(|v| v.marks.clone()).unwrap_or_default();
     if pulled(r) {
         marks.extend(r.held.iter().flat_map(Held::parts).map(|p| (p.key(), true)));
     }
     if let Some(&m) = marks.get(&Part::Stack.key())
-        && let Some(ops) = r.held.as_ref().and_then(|h| crate::operations::of_work(db, r, h)).filter(|o| !o.whole())
+        && let Some(ops) = r.held.as_ref().and_then(|h| crate::operations::of_review(db, r, h)).filter(|o| !o.whole())
     {
         marks.remove(&Part::Stack.key());
         if !marks.keys().any(|k| crate::operations::is_key(k)) {
@@ -1469,8 +1484,9 @@ pub fn close_with(db: &mut Db, id: &str, marks: &BTreeMap<String, bool>, rest: O
         false => rest,
     };
     // The change of the stack, by its operations, each as marked or as
-    // `rest` says; with none to mark, or its stack gone, as a whole.
-    let ops = crate::operations::of_work(db, &r, &h).filter(|o| !o.whole());
+    // `rest` says; with none to mark, nothing stored of what each needs, or
+    // its stack gone, as a whole.
+    let ops = crate::operations::of_review(db, &r, &h).filter(|o| !o.whole());
     let mut all = BTreeMap::new();
     for p in h.parts() {
         if matches!(p, Part::Reply(k) if v.taken.contains(&k)) {
@@ -1510,7 +1526,9 @@ pub fn close_with(db: &mut Db, id: &str, marks: &BTreeMap<String, bool>, rest: O
         return err("the stack changed since this change was made from it: it can only be rejected");
     }
     // Accepted in part: the stack the operations accepted leave, which must
-    // apply, before anything is done.
+    // apply, before anything is done. The editor checks it first, away from
+    // its screen, and so does `stacked review` before it takes the lock
+    // (`closing_check`): here, what that check found is only read again.
     let part = match (change, &ops) {
         (Some((c, Taken::Part)), Some(ops)) => {
             let stands = ops.standing(&all);
@@ -1695,6 +1713,102 @@ pub fn close_with(db: &mut Db, id: &str, marks: &BTreeMap<String, bool>, rest: O
         ..r
     })?;
     Ok(said)
+}
+
+/// Accepted in part, operation by operation, as closing run `id`'s review
+/// with `marks`, those not marked as `rest` says, would accept its change:
+/// its operations, and those that would stand. None for any other close,
+/// which checks no stack of its own: accepted whole, the stack the change
+/// makes was checked as the work landed; rejected, the stack stays as it
+/// is; marked as a whole, its change is one.
+pub fn closing_stands(db: &Db, id: &str, marks: &BTreeMap<String, bool>, rest: Option<bool>) -> Option<(crate::operations::Ops, BTreeSet<String>)> {
+    let r = db.run(id)?;
+    if pulled(r) {
+        return None;
+    }
+    let ops = crate::operations::of_review(db, r, r.held.as_ref()?).filter(|o| !o.whole())?;
+    let mut all = BTreeMap::new();
+    for o in ops.marked() {
+        all.insert(o.key.clone(), ops.mark(marks, o).or(rest)?);
+    }
+    match ops.counts(&all) {
+        (yes, no, _) if yes > 0 && no > 0 => {
+            let stands = ops.standing(&all);
+            Some((ops, stands))
+        }
+        _ => None,
+    }
+}
+
+/// What closing run `id`'s review with `marks`, those not marked as `rest`
+/// says, checks first, before any lock is taken: accepted in part, whether
+/// the stack the operations accepted leave applies (`Ops::closing`); if
+/// not, the refusal, saying why (`refused_closing`). None when it applies,
+/// or when the close checks no stack of its own (`closing_stands`).
+pub fn closing_check(db: &Db, id: &str, marks: &BTreeMap<String, bool>, rest: Option<bool>) -> Result<Option<String>> {
+    let Some((ops, stands)) = closing_stands(db, id, marks, rest) else { return Ok(None) };
+    Ok(ops.closing(db, &stands)?.map(|why| refused_closing(&why)))
+}
+
+/// What closing refuses with, the stack the operations accepted leave not
+/// applying: why (`Ops::closing`), and that nothing changed.
+pub fn refused_closing(why: &str) -> String {
+    format!("the stack the operations you accepted leave does not apply: {why}; nothing changed")
+}
+
+/// Why what each operation of a change needs, worked out before the work
+/// was filed, is not stored with it: nothing was, the work not read then.
+const NOT_READ: &str = "the work could not be read before it was filed";
+
+/// Why what each operation of a change needs, worked out before the work
+/// was filed, is not stored with it: it is for other stacks.
+const NOT_THESE: &str = "the stack it went on from changed as it landed";
+
+/// What is stored of what each operation of the change `h` of run `r`
+/// needs, as the work is filed, under the lock: `worked`, worked out before
+/// with no lock held, if it is for that change from that stack; else why
+/// not, so that the change is marked as a whole. None for work that changes
+/// nothing of the stack. Nothing is checked here.
+pub fn needs_filed(db: &Db, r: &Run, h: &Held, worked: Option<crate::operations::Needs>) -> Option<crate::operations::Needs> {
+    let of = crate::operations::of_landed(db, r, h)?.digest();
+    let failed = |why: &str| crate::operations::Needs {
+        of: of.clone(),
+        failed: Some(why.into()),
+        alone: vec![],
+    };
+    Some(match worked {
+        Some(n) if n.of == of => n,
+        Some(_) => failed(NOT_THESE),
+        None => failed(NOT_READ),
+    })
+}
+
+/// What each operation of the change run `id` holds needs, worked out and
+/// stored with it (`Held::needs`), unless what is stored is for that change
+/// already: as an edit by hand lands, once it is filed, before its review
+/// opens. Worked out with no lock held, as its checks read the repository
+/// and may take long on a big one; stored under the lock, if the run still
+/// holds that change, waiting for your review. Why it could not be worked
+/// out is stored as well: the change is marked as a whole then.
+pub fn work_out(path: &Path, id: &str) -> Result<()> {
+    let db = Db::load(path)?;
+    let Some(r) = db.run(id) else { return Ok(()) };
+    let Some(h) = r.held.as_ref() else { return Ok(()) };
+    let Some(ops) = crate::operations::of_landed(&db, r, h) else { return Ok(()) };
+    if h.needs.as_ref().is_some_and(|n| n.of == ops.digest()) {
+        return Ok(());
+    }
+    let needs = ops.needs(&db);
+    Db::edit(path, |db| {
+        let Some(r) = db.run(id).cloned() else { return Ok(()) };
+        let Some(mut h) = r.held.clone() else { return Ok(()) };
+        let now = crate::operations::of_landed(db, &r, &h).map(|o| o.digest());
+        if !waiting(db, &r) || now.as_deref() != Some(needs.of.as_str()) || h.needs.as_ref() == Some(&needs) {
+            return Ok(());
+        }
+        h.needs = Some(needs);
+        db.add_run(Run { held: Some(h), ..r }).map(|_| ())
+    })
 }
 
 /// The tasks of the try push work `h` that `marks` accepts, those it does

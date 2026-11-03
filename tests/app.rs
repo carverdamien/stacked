@@ -1348,6 +1348,9 @@ fn added_work(tmp: &Path, db: &Path) {
         .map(|_| ())
     })
     .unwrap();
+    // Landed, as a landing does it: what each operation of its change needs,
+    // worked out and stored with it.
+    stacked::held::work_out(db, "run-agent").unwrap();
 }
 
 #[test]
@@ -1380,6 +1383,33 @@ fn each_stack_operation_is_marked_on_its_own_in_the_window_too() {
     });
     let c = mark(&b).unwrap();
     assert_eq!((c.symbol(), Some(c.fg)), ("✓", color::add().fg), "{c:?}");
+}
+
+#[test]
+fn a_review_closed_in_part_closes_once_its_check_away_from_the_screen_is_done_in_the_window_too() {
+    let (tmp, db) = setup();
+    added_work(tmp.path(), &db);
+    let s = Session::open(&db, tmp.path()).unwrap();
+    s.send(Input::Size(120, 30));
+    screen(&s, "the banner", |b| text(b).contains("1 landed ask waits for your review"));
+    // The patch the work adds rejected, alone: nothing needs it.
+    press(&s, KeyCode::Esc);
+    press(&s, KeyCode::Enter);
+    screen(&s, "the review", |b| text(b).contains(" stack operations · · 2 to review"));
+    for code in [KeyCode::Down, KeyCode::Down, KeyCode::Delete] {
+        press(&s, code);
+    }
+    screen(&s, "the add rejected", |b| text(b).contains(" stack operations · ✗ 1 rejected, · 1 to review"));
+    // The rest accepted, closed: the stack the operations accepted leave is
+    // checked away from the screen, then the review closes, as the window
+    // shows once it is done.
+    for code in [KeyCode::Esc, KeyCode::Up, KeyCode::Up, KeyCode::Up, KeyCode::Enter] {
+        press(&s, code);
+    }
+    screen(&s, "the question", |b| text(b).contains("accept every part not marked yet?"));
+    press(&s, KeyCode::Up);
+    press(&s, KeyCode::Enter);
+    screen(&s, "closed", |b| text(b).contains("reviewed: its change accepted in part, 1 operation accepted and 1 rejected (add 2)"));
 }
 
 #[test]

@@ -337,12 +337,16 @@ fn agent(path: &Path, id: &str) -> Result<()> {
                 None,
             ),
         };
-        let held = crate::held::Held {
+        let mut held = crate::held::Held {
             at: crate::db::now(),
             stack,
             replies: replies(&reply, None),
             ..Default::default()
         };
+        // What each operation of its change needs, as a real landing works it
+        // out: the tour's repository is kept in memory, where each check is
+        // made at once.
+        held.needs = crate::operations::needs_of(db, &run, &held);
         let (summary, held) = held_or_in(db, &run, &info, held)?;
         db.add_run(Run {
             state: RunState::Done,

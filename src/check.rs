@@ -214,8 +214,22 @@ struct Index {
     theirs: PathBuf,
 }
 
+thread_local! {
+    /// How many indexes of their own the checks made on this thread.
+    static MADE: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// For the tests: how many indexes of their own the checks made on this
+/// thread, each a check applying patches to a base (or a pad), as it reads
+/// the repository: none made, nothing was checked there. What was found of
+/// a stack before, and is kept, is no check.
+pub fn made_here() -> usize {
+    MADE.with(|m| m.get())
+}
+
 impl Index {
     fn new(repo: &Path, base: &str, paths: Option<&BTreeSet<String>>) -> Result<Index> {
+        MADE.with(|m| m.set(m.get() + 1));
         let dir = Scratch::new("check")?;
         let index = dir.path().join("index");
         let objects = dir.path().join("objects");
