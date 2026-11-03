@@ -477,7 +477,37 @@ each file of a latest diff on another base side by side, and in a column
 per version the interdiff all the same where the files cannot be read so,
 its hunks' headers that differ in their ranges one line with both ranges,
 a line of each base the other's diff does not show `·` in the other's
-column), what changed in a line almost the same as the
+column), the change from one version to another as a patch of its own
+(the menu's second section, under its heading, on the versions of a
+patch, on History…'s history and its stack diff, on the screen of what an
+edit changed, in the review and, with moz-phab, on what differs from
+Phabricator, each of its items can be picked there; from v2 to v3, on one
+base, what it is said once, the messages' lines over it, then a.txt as v2
+leaves it, then as v3 leaves it, `-line 39 was`, `+line 39 said`, nothing
+dim, the status line, the bar `1: view · 3: whole` and the top bar saying
+so, side by side the two on one row, compact too; across a change of
+base, in History…'s stack diff of an edit giving both patches new
+versions, what dim is said once, patch 1's change on one base, nothing of
+it dim, c.txt in it, patch 2's the lines the change of base made in place
+of line 25 dim, its own line 35 not, line 28, which the old version took
+out and the new one keeps as the new base has it, not, c.txt, which only
+the change of base touches, left out, and as an interdiff as ever; `3`
+each file of it whole, the lines in no hunk dim, the bar `3: hunks` and
+the top bar `· whole files`, then its hunks again, nothing drawing the
+interdiff, and the settings' `whole` key doing it, 3 not; the settings'
+`change-side-by-side` starting it side by side, its item marked, unified
+on the versions' pane at 80 columns and `?` saying why, on History…'s at
+100 the top bar saying so, compact picked there the status line; the
+cursor from the interdiff's `++line 39 said` on the change's `+line 39
+said`, side by side on its row, back on its line as an interdiff, and from
+a line of the change no line of the interdiff is, on the nearest, and back
+on it; in the review, its items there, the cursor from the interdiff's
+`-+TWO` on the change's `-TWO`, ↓ from line to line, Enter going to the
+line of the patch as the work leaves it; with moz-phab, Phabricator saying
+no commit for the latest diff, the change's items grayed and the menu
+saying why, then, a fetch reading the commit, the change from the diff
+on it to the patch as it is, on one base, nothing dim), what changed in a
+line almost the same as the
 one removed painted as words (and lines quite other, not), in the code, in
 a version's interdiff and in the history's stack diff, none of the room after
 a word last in its line, and the words keeping their own colours under the
@@ -1046,7 +1076,8 @@ serves the editor and asks it over HTTP as a browser would: the token
 needed, the page, the wasm, the rows as they change, a key and a click,
 1 on the versions of a patch opening the menu of the views of the
 interdiffs under its heading, a click picking side by side, the version
-drawn so,
+drawn so, and the change from a version to the next, picked so, drawn as
+a patch of its own once its files are read,
 the wheel's ↑ on a patch, listing files, going to the last file of the
 patch above, and the editor left, the page told, the worktree made ahead
 removed (Quit in the page; `stacked web` itself sent SIGINT, SIGTERM or
@@ -1112,7 +1143,9 @@ the `app` feature, `tests/app.rs` runs StackED's editor as its window runs
 it, with no window: nothing drawn before the window's size, a key, a
 click, 1 on the versions of a patch opening the menu of the views of the
 interdiffs under its heading, a click picking side by side, the version
-drawn so, ↑ on a patch, listing files, going to the last file of the patch
+drawn so, and the change from a version to the next, under its own
+heading, picked so, drawn as a patch of its own once its files are read,
+↑ on a patch, listing files, going to the last file of the patch
 above, as the wheel's ↑ does, the mouse over a patch then gone, a window
 too small, the wait while `$EDITOR` runs (an editor that edits nothing,
 set in the test's settings), quit, the command there, a link of a line of
@@ -1610,8 +1643,24 @@ bug opens on taken when it is a web link to a site, else said and not
 written, the keys listed by the context they are read in, and the sync's
 keys of before said to be gone where a file names them, refused to
 `stacked config` and taken out by its `--unset`, the view the interdiffs
-start in, as interdiffs unless set, in columns or side by side, another
-refused and nothing written; those in
+start in, as interdiffs unless set, in columns or side by side, or the
+change unified, side by side or compact, another refused and nothing
+written; those in `change.rs`, the change from one version to another
+on one base, each file from the one to the other, nothing dim, the same
+files no change; across a change of base, the line it made in place of
+another dim on both sides, each patch's line put in its own; a line the
+change of base touched where a patch takes it out, or the other keeps it,
+not dim, both taking it out no change, both keeping it dim, a line each
+puts in beside it its own; a line moved into a patch below, or out of
+one, no change, and one moved there then changed, the old version's line
+its own and the new base's dim; a file the change of base renames, the
+old path's lines it made dim and the old version's own not, the new
+path's dim but the new version's own, a file one version alone touches as
+the other leaves it on its base, and one the old version renames and the
+new one does not, its own; and read from a repository, each version on
+its own base, a file only the change of base touches left out, one base
+nothing dim, and a version not applying on its base said so, by name;
+those in
 `wrap.rs`, a message's
 long lines wrapped: a paragraph of prose filled to the width (lines broken
 by hand, gaps of white space), one within it left as it is, its short
@@ -1824,4 +1873,6 @@ dim, the columns each in its own colour; what the views as an interdiff and in a
 once at the top of the code of one interdiff, naming its versions, and
 over the first interdiff of a stack diff alone, side by side a heading
 over each; and the line a line drawn shows found again in another view,
-the old version's of two, or the one a switch kept.
+the old version's of two, or the one a switch kept, a line of the change
+by its own line, else by the line of the interdiff nearest it, kept
+across a switch where no line drawn shows it.

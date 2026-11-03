@@ -35,7 +35,8 @@ stacked on the top's (edge.search, `revision.child`), and on each found,
 with its parents; then each revision in turn, the banner saying which
 (`⇣ pulling from Phabricator: D12, revision 2 of 3…`) and the top bar
 `pulling…`: its diffs (differential.querydiffs), the commit its latest
-diff is on, and the author and message of that diff's commit as uploaded
+diff is on, stored with its state, and the author and message of that
+diff's commit as uploaded
 (`local:commits`); its latest diff, raw (differential.getrawdiff),
 unless it is stored; while that diff is no version of its patch stacked
 knows, the older ones, the newest first, to the first that is one; and
@@ -393,7 +394,10 @@ title and summary are the patch's, its parent the one a submit sets, how
 many of its comments are not pulled yet, and how long ago that was
 fetched. Nothing of it is read by itself. Space there shows what differs
 on a screen of its own, in the view of the interdiffs that `1` picks there
-(as an interdiff, in a column per version, or side by side), and its menu
+(as an interdiff, in a column per version, or side by side, or the change
+from the latest diff, on the commit it is on, to the patch as it is, as a
+patch of its own, a fetch, a pull and a submit storing that commit as
+Phabricator names it), and its menu
 holds every item of the patch about Phabricator (The editor, above).
 
 ## Submitting a patch

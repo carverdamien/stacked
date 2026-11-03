@@ -13,6 +13,7 @@ pub mod ask;
 pub mod blocks;
 #[cfg(feature = "app")]
 pub mod bundle;
+pub mod change;
 pub mod check;
 pub mod claude;
 pub mod complete;

@@ -352,6 +352,36 @@ fn the_status_of_each_patch_s_revision_and_its_phabricator_line_show_in_the_wind
 }
 
 #[test]
+fn one_picks_the_change_from_a_version_to_the_next_as_a_patch_of_its_own_in_the_window_too() {
+    let (tmp, db) = setup();
+    stacked::db::Db::edit(&db, |d| {
+        let old = d.patch(&d.stack("s")?.patches[0]).clone();
+        let draft = stacked::mbox::Draft { diff: old.diff.replace("+TWO", "+Two"), ..stacked::mbox::Draft::from(&old) };
+        stacked::ops::replace(d, "s", 0, draft, "edit").map(|_| ())
+    })
+    .unwrap();
+    let s = Session::open(&db, tmp.path()).unwrap();
+    s.send(Input::Size(120, 30));
+    screen(&s, "the patches", |b| text(b).contains("Bug 2 - add b"));
+    // The first patch's versions, from its menu.
+    press(&s, KeyCode::Char(' '));
+    let menu = screen(&s, "the patch's menu", |b| find(b, "Versions of this patch…").is_some());
+    let (x, y) = find(&menu, "Versions of this patch…").unwrap();
+    s.send(Input::Click { x, y, right: false });
+    screen(&s, "the versions", |b| text(b).contains("what changed from the version before"));
+    // 1, then a click on the change unified: the change from v1 to v2 as a
+    // patch of its own, its files read away from the screen.
+    press(&s, KeyCode::Char('1'));
+    let menu = screen(&s, "the menu of 1", |b| find(b, "Unified: - for a line only").is_some());
+    assert!(find(&menu, "the change: each file from the old version to the new one").is_some(), "{}", text(&menu));
+    let (x, y) = find(&menu, "Unified: - for a line only").unwrap();
+    s.send(Input::Click { x, y, right: false });
+    screen(&s, "the change", |b| text(b).contains("The code is the change from v1 to v2") && text(b).lines().any(|l| l.trim_end().ends_with("+Two") && !l.contains("++Two")));
+    s.send(Input::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)));
+    until(&s, "bye", |o| *o == Output::Bye);
+}
+
+#[test]
 fn one_picks_the_view_of_the_interdiffs_of_a_patch_s_versions_in_the_window_too() {
     let (tmp, db) = setup();
     stacked::db::Db::edit(&db, |d| {

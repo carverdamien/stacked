@@ -11494,15 +11494,24 @@ fn down_to_hist(app: &mut App, wanted: impl Fn(&str) -> bool) {
 }
 
 /// What each view of the interdiffs is in the menu of 1, the one drawn
-/// `marked`, under the heading of what they draw.
+/// `marked`, under the heading of what they draw: the interdiff, then the
+/// change from the old version to the new one.
 fn inter_views(marked: InterLayout) -> Vec<String> {
-    let mut out = vec!["the interdiff: the two versions' diffs, compared".to_string()];
+    let mut out = Vec::new();
     for (v, l) in [
-        (InterLayout::Interdiff, "Interdiff: a sign for which version has the line, then its own sign"),
-        (InterLayout::Columns, "A column per version: what each one's patch does with the line"),
-        (InterLayout::Sides, "Side by side: the old version on the left, the new one on the right"),
+        (None, "the interdiff: the two versions' diffs, compared"),
+        (Some(InterLayout::Interdiff), "Interdiff: a sign for which version has the line, then its own sign"),
+        (Some(InterLayout::Columns), "A column per version: what each one's patch does with the line"),
+        (Some(InterLayout::Sides), "Side by side: the old version on the left, the new one on the right"),
+        (None, "the change: each file from the old version to the new one, as a patch of its own"),
+        (Some(InterLayout::ChangeUnified), "Unified: - for a line only the old version's code has, + for one only the new one's has"),
+        (Some(InterLayout::ChangeSides), "Side by side: the old version's code on the left, the new one's on the right"),
+        (Some(InterLayout::ChangeCompact), "Side by side, compact: each side's lines one after another, no gap where the other has more"),
     ] {
-        out.push(format!("{}{l}", if v == marked { "● " } else { "  " }));
+        out.push(match v {
+            None => l.to_string(),
+            Some(v) => format!("{}{l}", if v == marked { "● " } else { "  " }),
+        });
     }
     out
 }
@@ -11524,7 +11533,7 @@ fn one_on_every_screen_of_interdiffs_opens_the_menu_of_their_views_the_one_drawn
     assert_eq!((menu_title(&app), labels(&app)), ("the view of the interdiffs".to_string(), inter_views(InterLayout::Interdiff)));
     assert!(matches!(&app.mode, Mode::Menu(m) if m.sel == 1), "{:?}", app.mode);
     keys(&mut app, &[KeyCode::Up]);
-    assert!(matches!(&app.mode, Mode::Menu(m) if m.sel == 3), "{:?}", app.mode);
+    assert!(matches!(&app.mode, Mode::Menu(m) if m.sel == 7), "{:?}", app.mode);
     // Esc leaves things as they are.
     keys(&mut app, &[KeyCode::Esc]);
     assert_eq!((app.mode.clone(), app.inter, app.status.as_str()), (Mode::Normal, InterLayout::Interdiff, ""));
@@ -19474,7 +19483,11 @@ impl Phab {
                 let of: Vec<u64> = p["constraints"]["revisionPHIDs"].as_array().into_iter().flatten().filter_map(num).collect();
                 let mut diffs: Vec<(u64, u64)> = of.iter().filter_map(|n| self.revisions.get(n).map(|r| (n, r))).flat_map(|(n, r)| r.diffs.iter().map(move |id| (*id, *n))).collect();
                 diffs.sort_by(|a, b| b.cmp(a));
-                let data: Vec<serde_json::Value> = diffs.iter().map(|(id, n)| json!({"id": id, "fields": {"revisionPHID": format!("PHID-DREV-{n}")}})).collect();
+                // The commit each is on, where its revision says one.
+                let refs = |n: &u64| -> Vec<serde_json::Value> {
+                    self.revisions.get(n).filter(|r| !r.base.is_empty()).map(|r| json!({"type": "base", "identifier": r.base})).into_iter().collect()
+                };
+                let data: Vec<serde_json::Value> = diffs.iter().map(|(id, n)| json!({"id": id, "fields": {"revisionPHID": format!("PHID-DREV-{n}"), "refs": refs(n)}})).collect();
                 json!({"data": data, "cursor": {"after": null}})
             }
             "transaction.search" => {
@@ -24320,5 +24333,393 @@ fn a_new_stack_is_pulled_from_a_revision_its_parent_and_the_one_stacked_on_it_it
     assert_eq!((r.state, r.summary.as_str(), r.held.is_none()), (stacked::db::RunState::Failed, why, true));
     assert_eq!(stacked::ask::blocked(&d, "D21"), None);
     drop(d);
+    stacked::phab::statuses_stand_in(&db, None);
+}
+
+/// What git says in `dir`, as it says it.
+fn git_out(dir: &Path, args: &[&str]) -> String {
+    let out = Command::new("git").args(args).current_dir(dir).output().unwrap();
+    assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+/// A stack `s` of two patches of a.txt, of fifty lines `line 1` to `line
+/// 50`, beside c.txt, `sea`: patch 1 makes line 2 `TWO`; patch 2 takes line
+/// 28 out and makes line 30 `THIRTY`. Then, in one edit, a new version of
+/// each: patch 1 makes lines 25 and 28 `TWENTY-FIVE` and `TWENTY-EIGHT`
+/// too, and c.txt `SEA`; patch 2, on it, keeps line 28 as patch 1 leaves
+/// it, and makes line 35 `THIRTY-FIVE` too. So patch 2's two versions are
+/// on two bases, patch 1's.
+fn rebased_versions() -> (tempfile::TempDir, PathBuf, PathBuf) {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("src");
+    std::fs::create_dir(&src).unwrap();
+    git(&src, &["init", "-q", "-b", "main"]);
+    git(&src, &["config", "commit.gpgsign", "false"]);
+    let lines: String = (1..=50).map(|n| format!("line {n}\n")).collect();
+    let with = |pairs: &[(&str, &str)]| pairs.iter().fold(lines.clone(), |t, (a, b)| t.replace(&format!("{a}\n"), &format!("{b}\n")));
+    std::fs::write(src.join("a.txt"), &lines).unwrap();
+    std::fs::write(src.join("c.txt"), "sea\n").unwrap();
+    git(&src, &["add", "."]);
+    git(&src, &["commit", "-qm", "base"]);
+    std::fs::write(src.join("a.txt"), with(&[("line 2", "TWO")])).unwrap();
+    git(&src, &["commit", "-qam", "Bug 1 - two"]);
+    std::fs::write(src.join("a.txt"), with(&[("line 2", "TWO"), ("line 30", "THIRTY")]).replace("line 28\n", "")).unwrap();
+    git(&src, &["commit", "-qam", "Bug 2 - thirty"]);
+    let db = tmp.path().join("db.jsonl");
+    stacked(&src, &db, &["import", "s", "HEAD~2"]);
+    // The new versions, made on the base, on a branch of their own.
+    git(&src, &["checkout", "-q", "-b", "again", "HEAD~2"]);
+    let one = [("line 2", "TWO"), ("line 25", "TWENTY-FIVE"), ("line 28", "TWENTY-EIGHT")];
+    std::fs::write(src.join("a.txt"), with(&one)).unwrap();
+    std::fs::write(src.join("c.txt"), "SEA\n").unwrap();
+    git(&src, &["commit", "-qam", "one"]);
+    let two: Vec<(&str, &str)> = one.iter().copied().chain([("line 30", "THIRTY"), ("line 35", "THIRTY-FIVE")]).collect();
+    std::fs::write(src.join("a.txt"), with(&two)).unwrap();
+    git(&src, &["commit", "-qam", "two"]);
+    let diffs = [git_out(&src, &["diff", "HEAD~2", "HEAD~1"]), git_out(&src, &["diff", "HEAD~1", "HEAD"])];
+    Db::edit(&db, |d| {
+        let s = d.stack("s")?.clone();
+        let mut ids = Vec::new();
+        for (k, diff) in diffs.iter().enumerate() {
+            let old = d.patch(&s.patches[k]).clone();
+            let draft = stacked::mbox::Draft { diff: diff.clone(), ..stacked::mbox::Draft::from(&old) };
+            ids.push(d.add_patch(stacked::ops::revise(&old, draft))?);
+        }
+        d.set_stack("s", ids, "edit").map(|_| ())
+    })
+    .unwrap();
+    (tmp, db, src)
+}
+
+/// The pane of the versions of a patch, 120 columns wide: each line from
+/// column 31, its spaces at the end gone, and how it is drawn there.
+fn versions_pane(app: &mut App) -> Vec<(String, Vec<ratatui::style::Style>)> {
+    let mut buf = Buffer::empty(Rect::new(0, 0, 120, 60));
+    app.draw(&mut buf);
+    (0..60)
+        .map(|y| {
+            let cells: Vec<&ratatui::buffer::Cell> = (31..120).map(|x| &buf[(x, y)]).collect();
+            let text: String = cells.iter().map(|c| c.symbol()).collect::<String>().trim_end().to_string();
+            (text, cells.iter().map(|c| c.style()).collect())
+        })
+        .collect()
+}
+
+/// Whether line `text` of `pane` is drawn dim where it is written.
+fn dim_in(pane: &[(String, Vec<ratatui::style::Style>)], text: &str) -> bool {
+    let (line, styles) = pane.iter().find(|(l, _)| l.trim() == text).unwrap_or_else(|| panic!("no {text:?} in {:#?}", pane.iter().map(|(l, _)| l).collect::<Vec<_>>()));
+    let at = line.len() - line.trim_start().len();
+    styles[at].add_modifier.contains(ratatui::style::Modifier::DIM)
+}
+
+#[test]
+fn the_change_from_one_version_to_the_next_is_drawn_as_a_patch_of_its_own_on_one_base_nothing_dim() {
+    let (_tmp, db, _src) = setup();
+    three_versions(&db, "https://example.com/why");
+    let mut app = open(&db).unwrap();
+    choose(&mut app, "Versions of this patch…");
+    // The change from v2 to v3, unified: what it is said once, the
+    // messages' lines over it, then each file as v2 leaves it, then as v3
+    // leaves it, as the middle draws a patch.
+    inter_view(&mut app, "Unified: - for a line only");
+    assert_eq!(app.status, "the change from the old version to the new one is drawn as a patch of its own, unified: each file as the old version leaves it, then as the new one leaves it");
+    app.wait_files();
+    let pane = versions_pane(&mut app);
+    let lines: Vec<&str> = pane.iter().map(|(l, _)| l.as_str()).collect();
+    let said: Vec<&str> = lines.iter().skip(2).take_while(|l| !l.starts_with("@@")).copied().collect();
+    assert_eq!(
+        said.join(" "),
+        "The code is the change from v2 to v3 as a patch of its own, each file as v2 leaves it on its base, then as v3 leaves it on its own: - for a line only v2 has, + for one only v3 has. Where the messages differ, their lines are over the code, - for those of v2, + for those of v3."
+    );
+    assert!(lines.iter().any(|l| l.starts_with("-Subject: ") && !l.contains("reworded")) && lines.iter().any(|l| l.starts_with("+Subject: ") && l.contains("reworded")), "{lines:#?}");
+    let at = lines.iter().position(|l| *l == "a.txt").unwrap_or_else(|| panic!("{lines:#?}"));
+    assert_eq!(lines[at + 1..at + 8], ["@@ -39,5 +39,5 @@", " line 36", " line 37", " line 38", "-line 39 was", "+line 39 said", " line 40"]);
+    // On one base: nothing dim, each line in its own colour.
+    assert!(!dim_in(&pane, "-line 39 was") && !dim_in(&pane, "+line 39 said"));
+    let screen = draw_sized(&mut app, 120, 60);
+    assert!(screen.lines().next().unwrap().contains(" · change unified"), "{screen}");
+    assert!(app.hint().contains("1: view · 3: whole · "), "{}", app.hint());
+    assert!(app.help().iter().any(|l| l == "Press 3 to see each file of the change whole rather than its hunks."), "{:?}", app.help());
+    // Side by side: v2's files on the left, v3's on the right.
+    inter_view(&mut app, "Side by side: the old version's code");
+    let pane = versions_pane(&mut app);
+    let row = pane.iter().map(|(l, _)| l.as_str()).find(|l| l.starts_with("-line 39 was")).unwrap_or_else(|| panic!("{pane:#?}"));
+    assert!(row.ends_with("│+line 39 said"), "{row}");
+    // Compact: each side's lines one after another.
+    inter_view(&mut app, "Side by side, compact");
+    let pane = versions_pane(&mut app);
+    assert!(pane.iter().any(|(l, _)| l.starts_with("-line 39 was") && l.contains("│+line 39 said")), "{pane:#?}");
+    assert!(draw_sized(&mut app, 120, 60).lines().next().unwrap().contains(" · change side-by-side, compact"));
+}
+
+#[test]
+fn across_a_change_of_base_the_lines_it_made_are_dim_and_the_patches_lines_are_not() {
+    let (_tmp, db, _src) = rebased_versions();
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Home]);
+    choose(&mut app, "History…");
+    keys(&mut app, &[KeyCode::Right]);
+    inter_view(&mut app, "Unified: - for a line only");
+    app.wait_files();
+    draw(&mut app);
+    let rows: Vec<(String, bool)> = app
+        .hist_rows
+        .iter()
+        .map(|parts| {
+            let text: String = parts.iter().map(|(t, _)| t.as_str()).collect();
+            let dim = parts.iter().filter(|(t, _)| !t.trim().is_empty()).all(|(_, st)| st.add_modifier.contains(ratatui::style::Modifier::DIM));
+            (text.trim().to_string(), dim)
+        })
+        .collect();
+    let texts: Vec<&str> = rows.iter().map(|(t, _)| t.as_str()).collect();
+    // What it is, said once, and what is dim, the two being on other bases.
+    let said = texts.join(" ");
+    assert!(said.contains("The two are on other bases: a line drawn dim is one the change of base made, not either patch"), "{texts:#?}");
+    assert_eq!(texts.iter().filter(|t| t.starts_with("The code is the change")).count(), 1, "{texts:#?}");
+    let second = texts.iter().position(|t| t.starts_with("2 ~ Bug 2 - thirty")).unwrap_or_else(|| panic!("{texts:#?}"));
+    // Patch 1's change, on one base: nothing dim, c.txt with it.
+    let first: Vec<&(String, bool)> = rows[..second].iter().collect();
+    for line in ["-line 25", "+TWENTY-FIVE", "-line 28", "+TWENTY-EIGHT", "-sea", "+SEA"] {
+        assert!(first.iter().any(|(t, dim)| t == line && !dim), "{line}: {first:#?}");
+    }
+    // Patch 2's: the line the change of base made in place of line 25, dim
+    // on both sides; line 28, which the old version took out and the new
+    // one keeps as its base has it now, its own; its own line 35, as ever.
+    // Of c.txt, which only the change of base touches, nothing.
+    let last = &rows[second..];
+    let is = |line: &str| last.iter().find(|(t, _)| t == line).map(|(_, dim)| *dim).unwrap_or_else(|| panic!("no {line:?} in {last:#?}"));
+    assert_eq!((is("-line 25"), is("+TWENTY-FIVE")), (true, true));
+    assert_eq!((is("+TWENTY-EIGHT"), is("-line 35"), is("+THIRTY-FIVE")), (false, false, false));
+    assert!(!last.iter().any(|(t, _)| t == "c.txt" || t.ends_with("sea") || t.ends_with("SEA")), "{last:#?}");
+    // As an interdiff, as ever.
+    inter_view(&mut app, "Interdiff");
+    assert!(!app.hist_rows.iter().any(|p| p.iter().any(|(t, _)| t.contains("The code is the change"))));
+}
+
+#[test]
+fn three_shows_each_file_of_the_change_whole_or_as_its_hunks_again_as_the_middle_s_key_does() {
+    let (_tmp, db, _src) = setup();
+    three_versions(&db, "https://example.com/why");
+    let mut app = open(&db).unwrap();
+    choose(&mut app, "Versions of this patch…");
+    inter_view(&mut app, "Unified: - for a line only");
+    app.wait_files();
+    let lines = |app: &mut App| versions_pane(app).into_iter().map(|(l, _)| l).collect::<Vec<_>>();
+    assert!(!lines(&mut app).contains(&" line 20".to_string()));
+    // 3: each file whole, the lines in no hunk dim, as the middle draws them.
+    keys(&mut app, &[KeyCode::Char('3')]);
+    assert_eq!((app.change_whole, app.status.as_str()), (true, "whole files: each file of the change is shown whole"));
+    let pane = versions_pane(&mut app);
+    assert!(dim_in(&pane, "line 20") && !dim_in(&pane, "-line 39 was"), "{pane:#?}");
+    let screen = draw_sized(&mut app, 120, 60);
+    assert!(screen.lines().next().unwrap().contains(" · change unified · whole files"), "{screen}");
+    assert!(app.hint().contains("1: view · 3: hunks · "), "{}", app.hint());
+    // 3 again: its hunks.
+    keys(&mut app, &[KeyCode::Char('3')]);
+    assert_eq!((app.change_whole, app.status.as_str()), (false, "hunks: each file of the change is shown as its hunks"));
+    assert!(!lines(&mut app).contains(&" line 20".to_string()));
+    // Drawing the interdiff, 3 does nothing there.
+    inter_view(&mut app, "Interdiff");
+    keys(&mut app, &[KeyCode::Char('3')]);
+    assert!(!app.change_whole);
+    // 3 is the settings' `whole`: another key does it, and 3 nothing.
+    let (cfg, wrong) = stacked::config::Config::parse("[keys]\nwhole = \"w\"\n[view]\ninterdiff = \"change-unified\"\n").unwrap();
+    assert!(wrong.is_empty(), "{wrong:?}");
+    stacked::config::init(settings());
+    let mut app = App::with_config(&db, cfg).unwrap();
+    draw(&mut app);
+    choose(&mut app, "Versions of this patch…");
+    draw(&mut app);
+    keys(&mut app, &[KeyCode::Char('3')]);
+    assert!(!app.change_whole);
+    keys(&mut app, &[KeyCode::Char('w')]);
+    assert_eq!((app.change_whole, app.status.as_str()), (true, "whole files: each file of the change is shown whole"));
+}
+
+#[test]
+fn the_change_side_by_side_on_a_pane_too_narrow_for_it_is_drawn_unified_and_that_is_said() {
+    let (_tmp, db, _src) = setup();
+    three_versions(&db, "https://example.com/why");
+    // The settings start the change side by side.
+    let (cfg, wrong) = stacked::config::Config::parse("[view]\ninterdiff = \"change-side-by-side\"\n").unwrap();
+    assert!(wrong.is_empty(), "{wrong:?}");
+    stacked::config::init(settings());
+    let mut app = App::with_config(&db, cfg).unwrap();
+    draw(&mut app);
+    choose(&mut app, "Versions of this patch…");
+    draw(&mut app);
+    app.wait_files();
+    let pane = versions_pane(&mut app);
+    assert!(pane.iter().any(|(l, _)| l.starts_with("-line 39 was") && l.ends_with("│+line 39 said")), "{pane:#?}");
+    keys(&mut app, &[KeyCode::Char('1')]);
+    assert_eq!(items(&app).into_iter().map(|(l, _)| l).collect::<Vec<_>>(), inter_views(InterLayout::ChangeSides));
+    keys(&mut app, &[KeyCode::Esc]);
+    // 80 columns: the version's pane has 59, under the 60 two sides need:
+    // unified meanwhile.
+    let screen = draw_sized(&mut app, 80, 40);
+    assert!(screen.contains("-line 39 was") && screen.contains("+line 39 said"), "{screen}");
+    assert!(!screen.lines().any(|l| l.contains("-line 39 was") && l.contains("+line 39 said")), "{screen}");
+    assert!(
+        app.help().iter().any(|l| l == "This pane is under 60 columns, too narrow for the change side by side: it is drawn unified until the pane has room."),
+        "{:?}",
+        app.help()
+    );
+    // History…'s stack diff on 100 columns, its pane 59 wide: the top bar
+    // saying so; compact picked there, the status line too.
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Home]);
+    choose(&mut app, "History…");
+    let screen = draw_sized(&mut app, 100, 40);
+    assert!(screen.lines().next().unwrap().trim_end().ends_with(" · change side-by-side: too narrow"), "{screen}");
+    inter_view_at(&mut app, "Side by side, compact", 100);
+    assert_eq!(app.status, "the change is drawn side by side and compact where its pane has 60 columns: this pane has 59, so it is drawn unified until the pane is wider");
+    assert!(draw_sized(&mut app, 100, 40).lines().next().unwrap().trim_end().ends_with(" · change side-by-side, compact: too narrow"));
+}
+
+#[test]
+fn switching_from_the_interdiff_to_the_change_keeps_the_cursor_on_the_nearest_line_and_back_on_its_own() {
+    let (_tmp, db, _src) = setup();
+    three_versions(&db, "https://example.com/why");
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Home]);
+    choose(&mut app, "History…");
+    keys(&mut app, &[KeyCode::Right]);
+    down_to_hist(&mut app, |r| r == "++line 39 said");
+    // The change: on its line of the new version.
+    inter_view(&mut app, "Unified: - for a line only");
+    app.wait_files();
+    draw(&mut app);
+    assert_eq!(hist_row(&app), "+line 39 said");
+    // Side by side, on the row of that line; back as an interdiff, on the
+    // line the cursor was on.
+    inter_view(&mut app, "Side by side: the old version's code");
+    let row = hist_row(&app);
+    assert!(row.starts_with("-line 39 was") && row.ends_with("│+line 39 said"), "{row}");
+    inter_view(&mut app, "Interdiff");
+    assert_eq!(hist_row(&app), "++line 39 said");
+    // A line of the change no line of the interdiff is: the nearest there,
+    // and back on it.
+    inter_view(&mut app, "Unified: - for a line only");
+    keys(&mut app, &[KeyCode::Up]);
+    assert_eq!(hist_row(&app), "-line 39 was");
+    inter_view(&mut app, "A column per version");
+    assert_eq!(hist_row(&app), "+·line 39 was");
+    inter_view(&mut app, "Unified: - for a line only");
+    assert_eq!(hist_row(&app), "-line 39 was");
+}
+
+#[test]
+fn the_second_section_of_the_menu_is_on_every_screen_of_interdiffs() {
+    let (_tmp, db, _src) = setup();
+    three_versions(&db, "https://example.com/why");
+    let mut app = open(&db).unwrap();
+    draw(&mut app);
+    let enabled = |app: &App| -> Vec<bool> {
+        let Mode::Menu(m) = &app.mode else { panic!("{:?}", app.mode) };
+        m.items.iter().map(|i| i.enabled).collect()
+    };
+    // The versions; History…, on its history and its stack diff; what an
+    // edit changed: the change's items there, each can be picked.
+    choose(&mut app, "Versions of this patch…");
+    keys(&mut app, &[KeyCode::Char('1')]);
+    assert_eq!(items(&app).into_iter().map(|(l, _)| l).collect::<Vec<_>>(), inter_views(InterLayout::Interdiff));
+    assert_eq!(enabled(&app)[5..], [true, true, true]);
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Esc, KeyCode::Home]);
+    choose(&mut app, "History…");
+    for k in [None, Some(KeyCode::Right)] {
+        keys(&mut app, &k.into_iter().chain([KeyCode::Char('1')]).collect::<Vec<_>>());
+        assert_eq!(items(&app).into_iter().map(|(l, _)| l).collect::<Vec<_>>(), inter_views(InterLayout::Interdiff));
+        assert_eq!(enabled(&app)[5..], [true, true, true]);
+        keys(&mut app, &[KeyCode::Esc]);
+    }
+    keys(&mut app, &[KeyCode::Left, KeyCode::Enter]);
+    assert_eq!(app.screen, Screen::Tree);
+    choose(&mut app, "What this edit changed…");
+    keys(&mut app, &[KeyCode::Char('1')]);
+    assert_eq!(enabled(&app)[5..], [true, true, true]);
+    // Picked there: the change of what the edit changed, the stacks before
+    // and after it named.
+    keys(&mut app, &[KeyCode::Esc]);
+    inter_view(&mut app, "Unified: - for a line only");
+    app.wait_files();
+    draw(&mut app);
+    let texts = app.text.as_ref().unwrap().texts();
+    assert!(texts.iter().any(|l| l.trim().starts_with("+line 39 ")), "{texts:#?}");
+    assert!(texts.join(" ").contains("The code is the change from @"), "{texts:#?}");
+}
+
+#[test]
+fn in_the_review_of_what_landed_its_stack_diff_is_drawn_as_the_change_of_each_patch_the_cursor_going_line_by_line() {
+    let (_tmp, db, _src) = setup();
+    let mut app = open(&db).unwrap();
+    keys(&mut app, &[KeyCode::Right]);
+    down_to(&mut app, "+TWO");
+    keys(&mut app, &[KeyCode::Enter]);
+    save(&mut app, "why so loud?");
+    let n = notes_of(&db, "s", 0).remove(0);
+    agent_changed_to(&db, "run-agent", &n, None);
+    app.refresh();
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Enter]);
+    keys(&mut app, &[KeyCode::Home]);
+    down_to_review(&mut app, "modify  1 Bug 1 - shout two");
+    keys(&mut app, &[KeyCode::Char('1')]);
+    let Mode::Menu(m) = &app.mode else { panic!("{:?}", app.mode) };
+    assert!(m.items[5..].iter().all(|i| i.enabled), "{:?}", m.items);
+    keys(&mut app, &[KeyCode::Esc]);
+    // Into the stack diff, as an interdiff; then the change, the cursor on
+    // the nearest line of it, the stack's version on its base, the work's
+    // on its own.
+    keys(&mut app, &[KeyCode::Right]);
+    assert_eq!(work_row(&mut app).as_deref(), Some("-+TWO"));
+    inter_view(&mut app, "Unified: - for a line only");
+    app.wait_files();
+    assert_eq!(work_row(&mut app).as_deref(), Some("-TWO"));
+    let pane = review_pane(&mut app).join(" ");
+    assert!(pane.contains("The code is the change from the stack's version to the work's version as a patch of its own"), "{pane}");
+    // ↓ from line to line of it.
+    keys(&mut app, &[KeyCode::Down]);
+    assert_eq!(work_row(&mut app).as_deref(), Some("+Two"));
+    keys(&mut app, &[KeyCode::Down]);
+    assert_eq!(work_row(&mut app).as_deref(), Some("three"));
+    // Enter goes to the line in the patch as the work leaves it.
+    keys(&mut app, &[KeyCode::Up, KeyCode::Enter]);
+    assert_eq!(work_row(&mut app).as_deref(), Some("+Two"));
+}
+
+#[cfg(feature = "moz-phab")]
+#[test]
+fn what_differs_from_phabricator_is_drawn_as_the_change_from_the_latest_diff_on_the_commit_it_is_on() {
+    let (tmp, db, phab, _) = three_revisions();
+    let mut app = open(&db).unwrap();
+    fetched(&mut app);
+    next_patch(&mut app);
+    keys(&mut app, &[KeyCode::Right, KeyCode::Up, KeyCode::Char(' ')]);
+    assert!(differs_seen(&mut app).is_some());
+    // Phabricator not saying which commit the diff is on: the change's
+    // items cannot be picked, the menu saying why; the interdiff's can.
+    keys(&mut app, &[KeyCode::Char('1')]);
+    let Mode::Menu(m) = &app.mode else { panic!("{:?}", app.mode) };
+    assert_eq!(m.items.iter().map(|i| i.enabled).collect::<Vec<_>>(), [false, true, true, true, false, false, false, false]);
+    assert_eq!(
+        m.note.as_deref(),
+        Some("The change cannot be drawn here: the commit D12 on Phabricator is on is not known: Phabricator said none, or it was fetched before stacked read that.")
+    );
+    keys(&mut app, &[KeyCode::Esc, KeyCode::Esc]);
+    // Saying it, the commit of patch 1 as the stack's base has it: the
+    // change from the diff on it to patch 2 as it is, on one base.
+    let src = tmp.path().join("src");
+    let below = git_said(&src, &["rev-parse", "HEAD~2"]);
+    phab.lock().unwrap().revisions.get_mut(&12).unwrap().base = below;
+    fetched(&mut app);
+    keys(&mut app, &[KeyCode::Char(' ')]);
+    inter_view(&mut app, "Unified: - for a line only");
+    app.wait_files();
+    let (title, lines) = differs_seen(&mut app).unwrap();
+    assert_eq!(title, "D12 on Phabricator, then patch 2 as it is");
+    let all = lines.join("\n");
+    assert!(all.contains("The code is the change from D12 on Phabricator to patch 2 as it is as a patch of its own"), "{all}");
+    let at = lines.iter().position(|l| l == "b.txt").unwrap_or_else(|| panic!("{lines:#?}"));
+    assert_eq!(lines[at + 1..at + 4], ["@@ -1 +1 @@", "-bea", "+bee"]);
+    assert!(!all.contains("drawn dim"), "{all}");
     stacked::phab::statuses_stand_in(&db, None);
 }

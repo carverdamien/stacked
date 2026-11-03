@@ -73,11 +73,13 @@ pub enum Key {
     FindNext,
     FindPrevious,
     /// The menu of the views of the code, to pick one: unified, side by
-    /// side, compact, unified split in two.
+    /// side, compact, unified split in two; on a screen of interdiffs, the
+    /// menu of their views, and of the change's.
     View,
     /// Reading rather than commenting, or back.
     Read,
-    /// Each file whole rather than its hunks, or back.
+    /// Each file whole rather than its hunks, or back: of the patch the
+    /// middle shows, and, on a screen of interdiffs, of the change drawn.
     Whole,
     /// The link of the line of a commit message the cursor is on, opened in
     /// the browser; of several, the menu of them.

@@ -563,7 +563,7 @@ fn inter_as(old: &Patch, new: &Patch, letter: bool) -> (String, Vec<InterLine>) 
 /// out, in the old one; put in, in the new one; a hunk's header, git's `\`
 /// line, and the two lines naming the versions over the first hunk, in
 /// neither.
-fn mail_places(lines: &[InterLine]) -> Vec<(Option<usize>, Option<usize>)> {
+fn mail_places<'a>(lines: impl Iterator<Item = &'a str>) -> Vec<(Option<usize>, Option<usize>)> {
     // Where a hunk's lines start on side `side` (`-`, `+`) of its header,
     // `@@ -a,b +c,d @@`: from 0, a range of none starting after its line.
     let start = |head: &str, side: char| -> usize {
@@ -575,13 +575,12 @@ fn mail_places(lines: &[InterLine]) -> Vec<(Option<usize>, Option<usize>)> {
     let (mut old, mut new) = (0, 0);
     let mut in_hunk = false;
     lines
-        .iter()
         .map(|l| {
-            if let Some(head) = l.text.strip_prefix("@@ ") {
+            if let Some(head) = l.strip_prefix("@@ ") {
                 (old, new, in_hunk) = (start(head, '-'), start(head, '+'), true);
                 return (None, None);
             }
-            match l.text.chars().next() {
+            match l.chars().next() {
                 _ if !in_hunk => (None, None),
                 Some(' ') => {
                     (old, new) = (old + 1, new + 1);
@@ -610,14 +609,8 @@ fn mail_places(lines: &[InterLine]) -> Vec<(Option<usize>, Option<usize>)> {
 /// its mail as `render` writes it; a mail not written so has no line of
 /// its diff told apart.
 fn mark_code(lines: &mut [InterLine], (old, a): (&Patch, &str), (new, b): (&Patch, &str)) {
-    // Where a version's diff starts in its mail: under its `---`.
-    let start = |p: &Patch, mail: &str| {
-        let all: Vec<&str> = mail.lines().collect();
-        let at = all.len().checked_sub(p.diff.lines().count())?;
-        (at > 0 && all[at - 1] == "---").then_some(at)
-    };
-    let (Some(from_a), Some(from_b)) = (start(old, a), start(new, b)) else { return };
-    let places = mail_places(lines);
+    let (Some(from_a), Some(from_b)) = (diff_start(old, a), diff_start(new, b)) else { return };
+    let places = mail_places(lines.iter().map(|l| l.text.as_str()));
     // The lines of each version's diff taken out, and put in, by the line
     // of the diff each is: what changed in those is worked out.
     let (mut taken, mut put) = (vec![false; old.diff.lines().count()], vec![false; new.diff.lines().count()]);
@@ -647,6 +640,70 @@ fn mark_code(lines: &mut [InterLine], (old, a): (&Patch, &str), (new, b): (&Patc
             _ => (Part::Mail, vec![]),
         };
     }
+}
+
+/// Where version `p`'s diff starts in its mail `mail`, as `render` writes
+/// it: its line under the `---` ending the message. None for a mail not
+/// written so.
+fn diff_start(p: &Patch, mail: &str) -> Option<usize> {
+    let all: Vec<&str> = mail.lines().collect();
+    let at = all.len().checked_sub(p.diff.lines().count())?;
+    (at > 0 && all[at - 1] == "---").then_some(at)
+}
+
+/// Where a line of an interdiff is in its version's code (`code_places`):
+/// the file, as its version's diff names it after, and the line of the
+/// file the version leaves it at (`diff::Line::new_no`); a line the version
+/// takes out, `gone`, where it was; a hunk's header at the first line of
+/// its hunk, a file's header at line 0.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CodePlace {
+    pub path: String,
+    pub line: usize,
+    pub gone: bool,
+}
+
+/// Where each line of `lines`, those of the interdiff of versions `old` and
+/// `new` from its first hunk's header, is in the code of each (`Place`):
+/// the old version's, then the new one's; none for a line of the mail
+/// around the diffs, nor for the version without the line. As
+/// `interdiff_lines` made them, of mails `render` writes.
+pub fn code_places(lines: &[&InterLine], old: &Patch, new: &Patch) -> Vec<[Option<CodePlace>; 2]> {
+    let (a, b) = (render(old), render(new));
+    let (Some(from_a), Some(from_b)) = (diff_start(old, &a), diff_start(new, &b)) else {
+        return vec![[None, None]; lines.len()];
+    };
+    // Each line of a diff's place, by the line of the diff it is.
+    let places = |diff: &str| -> Vec<Option<CodePlace>> {
+        let mut out = vec![None; diff.lines().count()];
+        for fd in crate::diff::parse_diff(diff, "") {
+            let at = |line: usize, gone: bool| Some(CodePlace { path: fd.path.clone(), line, gone });
+            for j in 0..fd.header.len() {
+                if let Some(o) = out.get_mut(fd.at + j) {
+                    *o = at(0, false);
+                }
+            }
+            for h in &fd.hunks {
+                if let Some(o) = out.get_mut(h.at) {
+                    *o = at(h.new_start, false);
+                }
+                for l in &h.lines {
+                    if let Some(o) = out.get_mut(l.at) {
+                        *o = at(l.new_no, l.origin == '-');
+                    }
+                }
+            }
+        }
+        out
+    };
+    let (was, is) = (places(&old.diff), places(&new.diff));
+    mail_places(lines.iter().map(|l| l.text.as_str()))
+        .into_iter()
+        .map(|(o, n)| {
+            let of = |at: Option<usize>, from: usize, all: &[Option<CodePlace>]| at.and_then(|k| k.checked_sub(from)).and_then(|k| all.get(k).cloned().flatten());
+            [of(o, from_a, &was), of(n, from_b, &is)]
+        })
+        .collect()
 }
 
 /// What each line of `diff` is, by the line of it each is, as

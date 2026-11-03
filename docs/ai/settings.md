@@ -230,8 +230,10 @@ settings:
   every screen that shows one (The editor, above): `"interdiff"`, a sign
   for which version has a line before that version's own sign, as stacked
   always drew them, unless set; `"columns"`, a column per version, what
-  each one's patch does with each line; or `"side-by-side"`, the old
-  version on the left and the new one on the right (what `1` picks there
+  each one's patch does with each line; `"side-by-side"`, the old version
+  on the left and the new one on the right; or the change from the old
+  version to the new one as a patch of its own, `"change-unified"`,
+  `"change-side-by-side"` or `"change-compact"` (what `1` picks there
   holds while the editor is open, and is not written);
   `reading`, to start reading; `whitespace_needs_review`, whether changed
   lines that are empty or white space alone, the message's empty lines and
@@ -244,7 +246,8 @@ settings:
   and `false`, as before, are expanded and hidden); `stream_lines`, the
   agent's lines under a comment;
   `split_width`, the columns two sides, or two halves, need, the middle's
-  for the code and a pane's for its interdiffs side by side; and
+  for the code and a pane's for its interdiffs side by side, or the change
+  side by side or compact; and
   `message_width`, the columns the menus wrap a commit message's long
   lines at (Editing a patch by hand, above): 72 unless set, and 20 at
   least.

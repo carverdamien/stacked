@@ -1008,6 +1008,7 @@ pub fn store_read(db: &mut Db, read: &PullRead) -> crate::db::Result<()> {
             phid: r.phid.clone(),
             parents: parents_known(db, &r.parents),
             diff: r.diff,
+            base: r.base.clone().unwrap_or_default(),
         };
         let comments = Comments { modified: r.modified, list: r.comments.iter().map(seen).collect() };
         db.store_revision(&r.link, &r.d, Some(state), Some(comments))?;
@@ -1238,6 +1239,9 @@ fn searched_of(r: &Value) -> Option<(String, Searched)> {
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Latest {
     pub diff: u64,
+    /// The commit `diff` is on, as Phabricator names it: empty where it
+    /// says none.
+    pub base: String,
     pub raw: String,
     pub comments: Vec<Remote>,
     pub parents: Vec<(String, String)>,
@@ -1301,11 +1305,12 @@ fn edges_over(call: &mut Call, phids: &[String], kind: &str) -> Result<HashMap<S
 }
 
 /// The id of the latest diff of each of revisions `phids`, by revision (its
-/// `fields.revisionPHID`): differential.diff.search for all of them, the
-/// newest first, page after page until each has its newest, or no page is
-/// left. None for a revision with no diff.
-pub(crate) fn newest_diffs(call: &mut Call, phids: &[String]) -> Result<HashMap<String, u64>, String> {
-    let mut out: HashMap<String, u64> = HashMap::new();
+/// `fields.revisionPHID`), with the commit it is on as Phabricator names it
+/// (its `base` ref), empty where it says none: differential.diff.search for
+/// all of them, the newest first, page after page until each has its
+/// newest, or no page is left. None for a revision with no diff.
+pub(crate) fn newest_diffs(call: &mut Call, phids: &[String]) -> Result<HashMap<String, (u64, String)>, String> {
+    let mut out: HashMap<String, (u64, String)> = HashMap::new();
     let mut after: Option<String> = None;
     loop {
         let mut params = json!({"constraints": {"revisionPHIDs": phids}, "order": "newest"});
@@ -1315,8 +1320,18 @@ pub(crate) fn newest_diffs(call: &mut Call, phids: &[String]) -> Result<HashMap<
         let r = call("differential.diff.search", params)?;
         for d in r.get("data").and_then(Value::as_array).into_iter().flatten() {
             let (Some(id), Some(rev)) = (d.get("id").and_then(Value::as_u64), d.pointer("/fields/revisionPHID").and_then(Value::as_str)) else { continue };
-            let newest = out.entry(rev.to_string()).or_insert(id);
-            *newest = (*newest).max(id);
+            let base = d
+                .pointer("/fields/refs")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .find(|r| r.get("type").and_then(Value::as_str) == Some("base"))
+                .and_then(|r| r.get("identifier").and_then(Value::as_str))
+                .unwrap_or_default();
+            let newest = out.entry(rev.to_string()).or_insert((id, base.to_string()));
+            if id > newest.0 {
+                *newest = (id, base.to_string());
+            }
         }
         after = r.pointer("/cursor/after").and_then(Value::as_str).map(String::from);
         // The newest first: once each revision has one, the rest are older.
@@ -1376,7 +1391,7 @@ pub(crate) fn latests_over(call: &mut Call, wanted: &[&Wanted], got: &mut dyn Fn
     let diffs = newest_diffs(call, &phids)?;
     let names = parents_named(call, wanted, &parents);
     for w in wanted {
-        let Some(&diff) = diffs.get(&w.phid) else { continue };
+        let Some((diff, base)) = diffs.get(&w.phid).cloned() else { continue };
         let named = |p: &String| (p.clone(), names.get(p).cloned().unwrap_or_else(|| p.clone()));
         let parents = parents.get(&w.phid).into_iter().flatten().map(named).collect();
         // Not modified since it was read, its latest diff the same: as it
@@ -1384,7 +1399,7 @@ pub(crate) fn latests_over(call: &mut Call, wanted: &[&Wanted], got: &mut dyn Fn
         // too, when another revision is edited to take it as its child.
         let unchanged = |h: &&Latest| h.diff == diff && h.modified.is_some() && h.modified == w.modified;
         if let Some(had) = w.had.as_ref().filter(unchanged) {
-            got(&w.link, Latest { parents, ..had.clone() });
+            got(&w.link, Latest { parents, base, ..had.clone() });
             continue;
         }
         let raw = match &w.had {
@@ -1393,7 +1408,7 @@ pub(crate) fn latests_over(call: &mut Call, wanted: &[&Wanted], got: &mut dyn Fn
         };
         let txns = transactions(call, &w.d)?;
         let comments = comments_of(&txns, &w.link, &HashMap::new(), |_, _, _, _| None);
-        got(&w.link, Latest { diff, raw, comments, parents, modified: w.modified });
+        got(&w.link, Latest { diff, base, raw, comments, parents, modified: w.modified });
     }
     Ok(())
 }
@@ -1574,6 +1589,7 @@ fn had_of(db: &Db, link: &str) -> Option<Latest> {
     let comments = db.revision_comments(link).map(|(c, _)| c);
     Some(Latest {
         diff: if raw.is_some() { state.diff } else { 0 },
+        base: state.base.clone(),
         raw: raw.unwrap_or_default().to_string(),
         comments: comments.map_or_else(Vec::new, |c| c.list.iter().map(remote_of).collect()),
         parents: state.parents.clone(),
@@ -1664,6 +1680,7 @@ fn store(db: &mut Db, named: &[(String, String)], found: &HashMap<String, Search
             phid: f.phid.clone(),
             parents: l.map_or_else(Vec::new, |l| parents_known(db, &l.parents)),
             diff: l.map_or(0, |l| l.diff),
+            base: l.map_or(String::new(), |l| l.base.clone()),
         };
         let comments = l.map(|l| Comments { modified: l.modified, list: l.comments.iter().map(seen).collect() });
         if let Some(l) = l {
@@ -2394,7 +2411,13 @@ mod tests {
     fn the_revisions_are_read_in_few_calls_their_parents_and_latest_diffs_all_at_once_each_raw_diff_once() {
         let comment = |phid: &str, text: &str| json!({"type": "comment", "authorPHID": "PHID-USER-ann", "fields": {}, "comments": [{"phid": phid, "version": 1, "dateCreated": 5, "content": {"raw": text}}]});
         let edge = |from: u64, to: u64| json!({"sourcePHID": format!("PHID-DREV-{from}"), "edgeType": "revision.parent", "destinationPHID": format!("PHID-DREV-{to}")});
-        let diff = |id: u64, of: u64| json!({"id": id, "phid": format!("PHID-DIFF-{id}"), "fields": {"revisionPHID": format!("PHID-DREV-{of}")}});
+        // The commit each diff is on, among its refs: none for D11's.
+        let refs = |id: u64| match id {
+            9 => json!([{"type": "branch", "name": "main"}, {"type": "base", "identifier": "b9"}]),
+            7 | 8 => json!([{"type": "base", "identifier": format!("b{id}")}]),
+            _ => json!([]),
+        };
+        let diff = |id: u64, of: u64| json!({"id": id, "phid": format!("PHID-DIFF-{id}"), "fields": {"revisionPHID": format!("PHID-DREV-{of}"), "refs": refs(id)}});
         let asked = std::cell::RefCell::new(Vec::new());
         // D12 on D11; D13 on D12 and on D9, which none of them is. D13's
         // diffs 7 and 9, its latest; D12's 8; D11's 5; another of D11's, 3,
@@ -2464,6 +2487,8 @@ mod tests {
             got.iter().map(|(link, l)| (link.as_str(), l.diff, l.raw.as_str())).collect::<Vec<_>>(),
             [("https://p.example/D13", 9, "raw 9"), ("https://p.example/D11", 5, "raw 5"), ("https://p.example/D12", 8, "as before")]
         );
+        // The commit each latest diff is on, as its refs name it.
+        assert_eq!(got.iter().map(|(_, l)| l.base.as_str()).collect::<Vec<_>>(), ["b9", "", "b8"]);
         assert_eq!(got[0].1.comments.iter().map(|c| (c.phid.as_str(), c.text.as_str())).collect::<Vec<_>>(), [("c1", "Why?"), ("c2", "Because.")]);
         let named = |ps: &[(&str, &str)]| ps.iter().map(|(p, d)| (p.to_string(), d.to_string())).collect::<Vec<_>>();
         assert_eq!(got[0].1.parents, named(&[("PHID-DREV-12", "D12"), ("PHID-DREV-9", "D9")]));

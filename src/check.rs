@@ -463,6 +463,13 @@ impl Pad {
     pub fn text(&self, path: &str) -> Result<Option<String>> {
         Ok(self.ix.texts(&self.repo, &[path.to_string()])?.pop().flatten())
     }
+
+    /// The files at `paths`, each its mode and its text (`Left`).
+    fn left(&self, paths: &[String]) -> Result<Vec<Left>> {
+        let entries = self.ix.entries(&self.repo, paths)?;
+        let texts = self.ix.texts(&self.repo, paths)?;
+        Ok(paths.iter().zip(texts).map(|(p, text)| entries.get(p).map(|e| (e.split(' ').next().unwrap_or_default().to_string(), text))).collect())
+    }
 }
 
 /// Where diffs `planned`, applied in turn on `base` in `repo`, first do
@@ -536,15 +543,95 @@ pub fn left_by(repo: &Path, base: &str, below: &[&str], diff: &str, paths: &[Str
     if pad.apply_each(below).is_err() || !pad.apply(diff) {
         return Ok(None);
     }
-    let entries = pad.ix.entries(repo, paths)?;
-    let texts = pad.ix.texts(repo, paths)?;
-    Ok(Some(
-        paths
-            .iter()
-            .zip(texts)
-            .map(|(p, text)| entries.get(p).map(|e| (e.split(' ').next().unwrap_or_default().to_string(), text)))
-            .collect(),
-    ))
+    pad.left(paths).map(Some)
+}
+
+/// The files at `paths` around `diff`: as they are on `base` in `repo`
+/// with `below` applied in turn, then as `diff` leaves them, applied
+/// after, each `Left`, read as `left_by` reads them, the repository only
+/// read. None for them all when `below` or `diff` does not apply there.
+pub fn around(repo: &Path, base: &str, below: &[&str], diff: &str, paths: &[String]) -> Result<Option<(Vec<Left>, Vec<Left>)>> {
+    // A repository kept in memory: applied there, as git would, each file
+    // a plain one.
+    #[cfg(feature = "demo")]
+    if let Some(tree) = crate::memory::tree(repo, base) {
+        let mut tree = tree?;
+        let left = |t: &crate::memory::Tree| -> Vec<Left> { paths.iter().map(|p| t.get(p).map(|text| ("100644".to_string(), Some(text.clone())))).collect() };
+        for d in below {
+            if crate::memory::apply(&mut tree, d).is_err() {
+                return Ok(None);
+            }
+        }
+        let before = left(&tree);
+        if crate::memory::apply(&mut tree, diff).is_err() {
+            return Ok(None);
+        }
+        return Ok(Some((before, left(&tree))));
+    }
+    let all: Vec<&str> = below.iter().chain([&diff]).copied().collect();
+    let also: Vec<&str> = paths.iter().map(String::as_str).collect();
+    let pad = Pad::new(repo, base, &all, &also)?;
+    if pad.apply_each(below).is_err() {
+        return Ok(None);
+    }
+    let before = pad.left(paths)?;
+    if !pad.apply(diff) {
+        return Ok(None);
+    }
+    Ok(Some((before, pad.left(paths)?)))
+}
+
+/// A path as git writes it in a diff's header, on side `side` (`a/`,
+/// `b/`): quoted as C quotes it when it holds what git quotes.
+pub(crate) fn git_path(side: &str, path: &str) -> String {
+    let plain = path.bytes().all(|b| (0x20..0x7f).contains(&b) && b != b'"' && b != b'\\');
+    if plain {
+        return format!("{side}{path}");
+    }
+    let mut out = String::from("\"");
+    for b in format!("{side}{path}").bytes() {
+        match b {
+            b'"' => out.push_str("\\\""),
+            b'\\' => out.push_str("\\\\"),
+            b'\t' => out.push_str("\\t"),
+            b'\n' => out.push_str("\\n"),
+            0x20..0x7f => out.push(b as char),
+            _ => out.push_str(&format!("\\{b:03o}")),
+        }
+    }
+    out.push('"');
+    out
+}
+
+/// File `path` from `a` to `b`, as git would write that diff: none when
+/// they are the same.
+pub(crate) fn file_diff(path: &str, a: &Left, b: &Left) -> Option<String> {
+    if a == b {
+        return None;
+    }
+    let mut out = format!("diff --git {} {}\n", git_path("a/", path), git_path("b/", path));
+    match (a, b) {
+        (None, Some((m, _))) => out.push_str(&format!("new file mode {m}\n")),
+        (Some((m, _)), None) => out.push_str(&format!("deleted file mode {m}\n")),
+        (Some((ma, _)), Some((mb, _))) if ma != mb => out.push_str(&format!("old mode {ma}\nnew mode {mb}\n")),
+        _ => {}
+    }
+    let text = |l: &Left| l.as_ref().map(|(_, t)| t.clone());
+    match (text(a), text(b)) {
+        (Some(None), _) | (_, Some(None)) => {
+            out.push_str(&format!("Binary files {} and {} differ\n", git_path("a/", path), git_path("b/", path)));
+        }
+        (old, new) => {
+            let (o, n) = (old.flatten().unwrap_or_default(), new.flatten().unwrap_or_default());
+            if o != n {
+                let from = if a.is_some() { git_path("a/", path) } else { "/dev/null".into() };
+                let to = if b.is_some() { git_path("b/", path) } else { "/dev/null".into() };
+                let d = similar::TextDiff::from_lines(o.as_str(), n.as_str());
+                out.push_str(&d.unified_diff().context_radius(3).header(&from, &to).to_string());
+            }
+        }
+    }
+    Some(out)
 }
 
 /// Every path `diffs` name, before or after, as `touched` reads them.

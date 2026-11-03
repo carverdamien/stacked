@@ -1528,6 +1528,38 @@ fn a_thread_the_agent_opened_written_in_its_review_sends_the_work_back_in_the_br
 }
 
 #[test]
+fn one_picks_the_change_from_a_version_to_the_next_as_a_patch_of_its_own_in_the_browser_too() {
+    let (_tmp, db) = setup();
+    stacked::db::Db::edit(&db, |d| {
+        let old = d.patch(&d.stack("s")?.patches[0]).clone();
+        let draft = stacked::mbox::Draft { diff: old.diff.replace("+TWO", "+Two"), ..stacked::mbox::Draft::from(&old) };
+        stacked::ops::replace(d, "s", 0, draft, "edit").map(|_| ())
+    })
+    .unwrap();
+    stacked::config::init(stacked::config::Config::default());
+    let (port, token) = stacked::web::start(db).unwrap();
+    let (host, input) = (format!("127.0.0.1:{port}"), format!("POST /input?t={token}"));
+    let mut events = events(port, &token, 120);
+    until(&mut events, "the patches", |l| l.starts_with("data: r ") && l.contains("Bug 2 - add b"));
+    // The first patch's versions, from its menu, a right click opening it.
+    ask(port, &host, &input, "m 5 2 r\n");
+    let seen = until(&mut events, "the patch's menu", |l| text(l).contains("Versions of this patch…"));
+    let (x, y) = cell_of(seen.last().unwrap(), "Versions of this patch…");
+    ask(port, &host, &input, &format!("m {x} {y} l\n"));
+    until(&mut events, "the versions", |l| text(l).contains("what changed from the version before"));
+    // 1, then a click on the change unified: the change from v1 to v2 as a
+    // patch of its own, its files read away from the screen.
+    ask(port, &host, &input, "k c 31 -\n");
+    until(&mut events, "the change's heading", |l| text(l).contains("the change: each file from the old version to the new one"));
+    let item = "Unified: - for a line only";
+    let seen = until(&mut events, "the change unified in the menu", |l| text(l).contains(item));
+    let (x, y) = cell_of(seen.last().unwrap(), item);
+    ask(port, &host, &input, &format!("m {x} {y} l\n"));
+    until(&mut events, "the change said", |l| text(l).contains("The code is the change from v1 to v2"));
+    until(&mut events, "its line", |l| text(l).trim_end().ends_with("+Two") && !text(l).contains("++Two"));
+}
+
+#[test]
 fn one_picks_the_view_of_the_interdiffs_of_a_patch_s_versions_in_the_browser_too() {
     let (_tmp, db) = setup();
     reworded(&db, "Bug 1 - shout two, reworded");

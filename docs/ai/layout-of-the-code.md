@@ -8,12 +8,19 @@
   prints.
 - `db.rs`: the file, its records and its lock.
 - `check.rs`: whether patches apply, before they go in; the files as a
-  patch leaves them, and the tree, for a submit.
+  patch leaves them, and the tree, for a submit; the files around a
+  version, before and after it on its base, and a file from one of them
+  to another as git writes a diff.
+- `change.rs`: the change from one version of a patch to another as a
+  patch of its own, each version's files read on its own base, nothing
+  made again on another; what of it the change of base made, drawn dim;
+  and the changes read away from the screen, a few at a time.
 - `ops.rs`: edits to a stack, `$EDITOR` (the patch as mail, its code); the
   interdiff of two versions of a patch, each of its lines told apart by
   what part of its version's mail it is, and what changed in a line of a
   hunk as its own version's diff pairs it, for the views of the
-  interdiffs to draw; whether two diffs of a patch are on two bases
+  interdiffs to draw; where each of its lines is in each version's code
+  (`code_places`); whether two diffs of a patch are on two bases
   (`other_bases`); a patch made again on other patches under it, its
   conflicts marked where they disagree, as a pull makes one (`rebased`).
 - `git.rs`: what stacked asks of git: mail from a range, the stack's
@@ -171,6 +178,9 @@
   picks on every screen that shows one, as an interdiff, in a column per
   version or side by side, what says how each reads, the menu of them in
   sections, and where a screen's place is found again in another view;
+  `tui/change.rs`, the change from one version to another as a patch of
+  its own in the views of the code there, what each screen knows of each
+  version's base, and the line of the interdiff nearest each line of it;
   `tui/head_why.rs`, the view of why Move HEAD does not
   move HEAD, and what you can do in your checkout so that it can;
   `tui/banner.rs`, the banner of the agent's work; `tui/places.rs`, where

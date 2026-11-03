@@ -336,7 +336,8 @@ revision's title and summary as a submit compares them over its latest
 diff, then the patch as it is, as an interdiff, the way `Versions of this
 patch…` shows two versions, in the view of the interdiffs that `1` picks
 there (below), the two versions named `D12 on Phabricator` and `patch 2
-as it is`. The screen first says what it shows: the
+as it is`: the interdiff, or the change from the latest diff, on the
+commit it is on, to the patch as it is, as a patch of its own. The screen first says what it shows: the
 parent first, when a submit would set one, the revision's parents on
 Phabricator then the one a submit sets (`Parent: D10 on Phabricator; a
 submit sets D11, the revision of patch 2.`, `Parent: none` for a revision
@@ -403,7 +404,9 @@ the token the statuses use, for every revision the stack's patches name:
 after the statuses' search, the revisions' parents (edge.search) and
 their latest diffs (differential.diff.search, the newest first, page
 after page until each revision has its newest), each in one call for all
-of them; the parents that are none of the stack's revisions, of a
+of them, with the commit each latest diff is on as Phabricator names it
+(its `base` ref), stored, for the change from it to the patch as a patch
+of its own (`1`, below); the parents that are none of the stack's revisions, of a
 revision a submit would set another, named in one search of their own
 (differential.revision.search), unless what is stored names them already,
 as a parent's number never changes; then each revision in turn, bottom
@@ -682,11 +685,17 @@ the help then names those:
   changed (History, below) and of what differs from Phabricator (above).
   The menu is in sections, each what it draws under a heading, then the
   views it is drawn in, the heading no item: Enter, a click and ↑↓ pass it
-  by. Its one section is the interdiff, `the interdiff: the two versions'
-  diffs, compared`, in three views, each item saying how it reads:
-  `Interdiff: a sign for which version has the line, then its own sign`,
-  `A column per version: what each one's patch does with the line`, and
-  `Side by side: the old version on the left, the new one on the right`.
+  by. Its first section is the interdiff, `the interdiff: the two
+  versions' diffs, compared`, in three views, each item saying how it
+  reads: `Interdiff: a sign for which version has the line, then its own
+  sign`, `A column per version: what each one's patch does with the line`,
+  and `Side by side: the old version on the left, the new one on the
+  right`. Its second is the change, `the change: each file from the old
+  version to the new one, as a patch of its own`, in the code view's own
+  views (below): `Unified: - for a line only the old version's code has, +
+  for one only the new one's has`, `Side by side: the old version's code on
+  the left, the new one's on the right`, and `Side by side, compact: each
+  side's lines one after another, no gap where the other has more`.
   The view the interdiffs are drawn in is marked `●`; Enter or a click
   picks one, and Esc leaves the view as it is; `?` on an item says what it
   draws. The view picked holds for every interdiff, on every screen, as
@@ -704,7 +713,8 @@ the help then names those:
   and `o` opens the links of the line of a message the cursor is on (of a
   row of two, both versions'). The bottom bar says `1: view` there, `?`
   says what `1` does, and the top bar says the view when it is not the
-  first (`· interdiffs in columns`, `· interdiffs side-by-side`). The
+  first (`· interdiffs in columns`, `· interdiffs side-by-side`, `· change
+  unified`, `· change side-by-side`, `· change side-by-side, compact`). The
   versions are named as the screen names them: `D12 on Phabricator` and
   `patch 2 as it is` on the screen of what differs from Phabricator; `v2`
   and `v3` on the versions of a patch; `@4` and `@12`, the stacks before
@@ -818,6 +828,97 @@ the help then names those:
   its pane the screen's width), the versions' on one of 80 or fewer, and
   a screen of its own under 60. In the browser (`stacked web`) and in
   StackED, the same.
+
+  The change, the second section: the change from the old version to the
+  new one as a patch of its own, each file either version touches as the
+  old version leaves it on its own base, then as the new one leaves it on
+  its own, as a diff; nothing is made again on another base. It is drawn
+  as the code view draws a patch: unified; side by side, its rows paired,
+  `~` dim where a side has nothing; compact, the old side's lines in the
+  left column and the new side's in the right, each side's one after
+  another, with no gap where the other has more, the two scrolled
+  together (← → keep their meaning on these screens). The code says so
+  once, over the change, or over a stack diff's first (`The code is the
+  change from v2 to v3 as a patch of its own, each file as v2 leaves it on
+  its base, then as v3 leaves it on its own: - for a line only v2 has, +
+  for one only v3 has. Where the messages differ, their lines are over the
+  code, - for those of v2, + for those of v3.`). It is of the code: the
+  title and the message are compared as the interdiff compares them, the
+  interdiff's lines of the mail over the code, as an interdiff draws them,
+  where they differ. Each version's base is what its screen knows of it:
+  on the versions of a patch, the stack that first held each version, its
+  base commit and the patches below it there; in History…'s stack diffs,
+  and on the screen of what an edit changed, the stacks before and after;
+  in the review of what landed, the stack as it is and as the work leaves
+  it; in the review of a pull, the version a pull takes on the stack that
+  first held it, and this version on the stack as it is; on the screen of
+  what differs from Phabricator, the revision's latest diff on the commit
+  it is on, as Phabricator names it (Phabricator, below), as git names it,
+  else, a Mercurial changeset, as git-cinnabar has it (`git cinnabar
+  hg2git`), and the patch as it is on the stack's base, the patches below
+  it applied. The files are read from the repository alone, as `3` reads a
+  patch's files whole, in an index of stacked's own, never a checkout, away
+  from the screen (`Reading the files of both versions…` meanwhile), two
+  changes at a time, each once while the editor is open. Where a base
+  cannot be read (a stack with no base, a commit the repository lacks, a
+  version never in a stack, a latest diff whose commit Phabricator did not
+  say, or stacked did not read yet), the section's items cannot be picked,
+  and the menu says why (`The change cannot be drawn here: the commit D12
+  on Phabricator is on is not known: Phabricator said none, or it was
+  fetched before stacked read that.`); the first section keeps working.
+  Where a version does not apply on its base, the change says why, the
+  interdiff after it, as an interdiff (`The change cannot be drawn: v2 does
+  not apply on its base, 0123456789ab, with the patches below it. Here is
+  the interdiff instead.`); two versions that leave each file they touch
+  the same say so (`The two versions leave each file they touch the
+  same.`).
+
+  Where the two bases differ in a file either version touches, the code
+  also says what dim is (`The two are on other bases: a line drawn dim is
+  one the change of base made, not either patch, one taken out that the
+  base of v2 has and the base of v3 has not, or one put in that only the
+  base of v3 has. A file only the change of base touches is left out.`),
+  and a line of the change is drawn dim, over its own colours, where the
+  change of base made it: a line taken out that the old version keeps of
+  its base and the new base has not, while the new version takes out
+  nothing the new base has in its place; a line put in that the new
+  version keeps of its base and the old base has not, while the old
+  version takes out nothing the old base had there. Each version's files
+  are matched line by line with its base's (a file with the one it is
+  renamed or copied from), and each file of one base with the other's, a
+  diff of their lines, each run of lines one base has and the other has
+  not a place the change of base changed. Every line either patch puts in,
+  or takes out, keeps its colours; so does a line where a patch took out
+  what the change of base changed (the old version took out `x`, the new
+  base has `X` there, and the new version keeps it), as which of them made
+  it cannot be told. On one base, nothing is dim. A line moved into a patch
+  below, or out of one, is no change, both versions leaving the file the
+  same; a file the change of base adds, deletes or renames is each file as
+  each version leaves it, by its path, the base's lines dim and each
+  version's own as ever; a file one version touches and the other does
+  not, as that other leaves it on its base. A file only the change of base
+  touches is left out.
+
+  `3` there, the settings' `whole` key as in the middle, shows each file of
+  the change whole, rather than its hunks, the lines in no hunk dim as the
+  middle draws them, then its hunks again, held while the editor is open:
+  the bottom bar says `3: whole` (`3: hunks`), `?` says so, and the top bar
+  `· whole files`. Side by side and compact need a pane of 60 columns, as
+  the code view does (`view.split_width`): a narrower one draws the change
+  unified meanwhile, the status line, `?` on the item, `?` and the top bar
+  saying so as for the interdiff (`the change is drawn side by side where
+  its pane has 60 columns: this pane has 59, so it is drawn unified until
+  the pane is wider`, `· change side-by-side: too narrow`). From the
+  interdiff to the change, and back, the screen keeps its place: each line
+  of the change has the line of the interdiff nearest it, by its file and
+  its line as each version leaves it, a line a version keeps before one it
+  takes out there; from the interdiff, the cursor goes on the first line of
+  the change nearest its line; from the change, on that line of the
+  interdiff; from one view of the change to another, on the same line of
+  it; and back where it came from, on the line it was on. A change read
+  once the screen is drawn, the cursor goes on to the line it was found
+  for. Enter on a line of the change in the review's stack diff goes to the
+  line of its patch the line of the interdiff nearest it goes to.
 - Unified split in two shows the patch picked twice, side by side, each
   half a unified view of its own with a line between them, to read one
   place of the patch while going through another: a function's definition

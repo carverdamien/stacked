@@ -58,17 +58,23 @@ impl Layout {
 }
 
 /// How the interdiffs are drawn at the start, on every screen that shows
-/// one: as an interdiff, each line a sign saying which version has it
-/// before that version's own sign; in a column per version, what each
-/// version's patch does with each line, as git's combined diff draws a
-/// merge; or side by side, the old version on the left and the new one on
-/// the right.
+/// one: the interdiff, as an interdiff, each line a sign saying which
+/// version has it before that version's own sign; in a column per version,
+/// what each version's patch does with each line, as git's combined diff
+/// draws a merge; or side by side, the old version on the left and the new
+/// one on the right. Or the change from the old version to the new one as
+/// a patch of its own, each file as the one leaves it on its base, then as
+/// the other leaves it on its own, in the views of the code: unified, side
+/// by side, or side by side and compact.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum InterLayout {
     #[default]
     Interdiff,
     Columns,
     Sides,
+    ChangeUnified,
+    ChangeSides,
+    ChangeCompact,
 }
 
 impl InterLayout {
@@ -77,6 +83,9 @@ impl InterLayout {
             InterLayout::Interdiff => "interdiff",
             InterLayout::Columns => "columns",
             InterLayout::Sides => "side-by-side",
+            InterLayout::ChangeUnified => "change-unified",
+            InterLayout::ChangeSides => "change-side-by-side",
+            InterLayout::ChangeCompact => "change-compact",
         }
     }
 
@@ -86,10 +95,27 @@ impl InterLayout {
             "interdiff" => Some(InterLayout::Interdiff),
             "columns" => Some(InterLayout::Columns),
             "side-by-side" => Some(InterLayout::Sides),
+            "change-unified" => Some(InterLayout::ChangeUnified),
+            "change-side-by-side" => Some(InterLayout::ChangeSides),
+            "change-compact" => Some(InterLayout::ChangeCompact),
             _ => None,
         }
     }
+
+    /// Whether it draws the change as a patch of its own, rather than the
+    /// interdiff.
+    pub fn change(self) -> bool {
+        matches!(self, InterLayout::ChangeUnified | InterLayout::ChangeSides | InterLayout::ChangeCompact)
+    }
+
+    /// Whether it needs two sides, and the room for them (`split_width`).
+    pub fn sides(self) -> bool {
+        matches!(self, InterLayout::Sides | InterLayout::ChangeSides | InterLayout::ChangeCompact)
+    }
 }
+
+/// What `view.interdiff` is told it is not, when it names no view.
+const NOT_AN_INTERDIFF_VIEW: &str = "interdiff, columns, side-by-side, change-unified, change-side-by-side or change-compact";
 
 /// How the patches pane is shown: not at all; listing the files of the
 /// patch picked under it, a line each, to jump to; or expanded, each patch
@@ -366,7 +392,9 @@ pub const BUGZILLA: &str = "https://bugzilla.mozilla.org";
 pub struct View {
     pub layout: Layout,
     /// How the interdiffs are drawn at the start, on every screen that
-    /// shows one: as interdiffs, in a column per version, or side by side.
+    /// shows one: as interdiffs, in a column per version, or side by side;
+    /// or as the change from one version to the other, a patch of its own,
+    /// unified, side by side, or compact.
     pub interdiff: InterLayout,
     /// Reading rather than commenting, at the start.
     pub reading: bool,
@@ -381,7 +409,8 @@ pub struct View {
     /// The lines of claude's stream under a comment it works on.
     pub stream_lines: usize,
     /// The columns the middle needs for two sides, or for two halves; and
-    /// a pane, for its interdiffs side by side.
+    /// a pane, for its interdiffs side by side, or the change of a patch's
+    /// version side by side.
     pub split_width: usize,
     /// The columns a commit message's lines are wrapped at, when a menu
     /// offers to wrap its long lines (`wrap`).
@@ -730,7 +759,7 @@ impl Config {
         if let Some(i) = v.interdiff {
             match InterLayout::parse(&i) {
                 Some(i) => c.view.interdiff = i,
-                None => wrong.push(format!("view.interdiff: {i:?} is not interdiff, columns or side-by-side")),
+                None => wrong.push(format!("view.interdiff: {i:?} is not {NOT_AN_INTERDIFF_VIEW}")),
             }
         }
         c.view.reading = v.reading.unwrap_or(c.view.reading);
@@ -1021,7 +1050,9 @@ impl Config {
             "# How every interdiff is drawn at the start: \"interdiff\", a sign for which version\n\
              # has a line before that version's own sign; \"columns\", a column per version, what\n\
              # each one's patch does with the line; or \"side-by-side\", the old version on the left\n\
-             # and the new one on the right (1 picks one there).\n",
+             # and the new one on the right. Or the change from the old version to the new one as\n\
+             # a patch of its own: \"change-unified\", \"change-side-by-side\" or \"change-compact\"\n\
+             # (1 picks one there).\n",
         );
         out.push_str(&format!("interdiff = {}\n", q(v.interdiff.name())));
         out.push_str("# Reading rather than commenting, at the start (2 switches).\n");
@@ -1040,7 +1071,7 @@ impl Config {
         out.push_str(&format!("patches = {}\ncomments = {}\n", q(v.patches.name()), q(v.comments.name())));
         out.push_str("# The lines of claude's stream under a comment it works on.\n");
         out.push_str(&format!("stream_lines = {}\n", v.stream_lines));
-        out.push_str("# The columns the middle needs for two sides, or for two halves; and a pane, for its\n# interdiffs side by side.\n");
+        out.push_str("# The columns the middle needs for two sides, or for two halves; and a pane, for its\n# interdiffs side by side, or the change from one version to another.\n");
         out.push_str(&format!("split_width = {}\n", v.split_width));
         out.push_str(
             "# The columns a commit message's lines are wrapped at, when a menu offers to wrap\n\
@@ -2110,7 +2141,7 @@ mod tests {
     }
 
     #[test]
-    fn the_interdiffs_start_as_interdiffs_in_columns_or_side_by_side() {
+    fn the_interdiffs_start_as_interdiffs_in_columns_side_by_side_or_as_the_change_in_the_views_of_the_code() {
         // As stacked always drew them, unless set.
         assert_eq!(Config::default().view.interdiff, InterLayout::Interdiff);
         assert!(Config::default().render().contains("\ninterdiff = \"interdiff\"\n"), "{}", Config::default().render());
@@ -2122,7 +2153,15 @@ mod tests {
         assert!(wrong.is_empty() && c.view.interdiff == InterLayout::Columns, "{wrong:?}");
         let (c, wrong) = Config::parse("[view]\ninterdiff = \"split\"\n").unwrap();
         assert_eq!(c.view.interdiff, InterLayout::Interdiff, "what is wrong keeps its default");
-        assert_eq!(wrong, ["view.interdiff: \"split\" is not interdiff, columns or side-by-side"]);
+        assert_eq!(wrong, ["view.interdiff: \"split\" is not interdiff, columns, side-by-side, change-unified, change-side-by-side or change-compact"]);
+        // The change as a patch of its own, in each of the views of the
+        // code.
+        for (name, v) in [("change-unified", InterLayout::ChangeUnified), ("change-side-by-side", InterLayout::ChangeSides), ("change-compact", InterLayout::ChangeCompact)] {
+            let (c, wrong) = Config::parse(&format!("[view]\ninterdiff = \"{name}\"\n")).unwrap();
+            assert!(wrong.is_empty() && c.view.interdiff == v && v.change(), "{name}: {wrong:?}");
+            assert_eq!((value_of(&c, "view.interdiff"), v.name()), (Ok(vec![name.to_string()]), name));
+        }
+        assert!(Config::default().render().contains("\"change-unified\", \"change-side-by-side\" or \"change-compact\""), "{}", Config::default().render());
         // Written and read as any setting is; a view there is not, refused.
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("settings.toml");
@@ -2130,7 +2169,7 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "[view]\ninterdiff = \"side-by-side\"\n");
         assert_eq!(Config::load(&path).0.view.interdiff, InterLayout::Sides);
         let e = set(&path, "view.interdiff", &["compact".to_string()]).unwrap_err();
-        assert!(e.contains("view.interdiff: \"compact\" is not interdiff, columns or side-by-side") && e.contains("nothing written"), "{e}");
+        assert!(e.contains("view.interdiff: \"compact\" is not interdiff, columns, side-by-side, change-unified, change-side-by-side or change-compact") && e.contains("nothing written"), "{e}");
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "[view]\ninterdiff = \"side-by-side\"\n");
     }
 

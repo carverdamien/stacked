@@ -23,7 +23,7 @@ use std::sync::Mutex;
 
 use serde_json::{Value, json};
 
-use crate::check::Left;
+use crate::check::file_diff;
 use crate::db::{Db, Patch, Stack};
 // A word character as Python's `re` reads `\w`, and the first bug of a
 // title as moz-phab reads it: a line of a message is read so too, for the
@@ -444,8 +444,10 @@ pub struct Remote {
     pub repository: Option<String>,
     /// Its parents' PHIDs, sorted.
     pub parents: Vec<String>,
-    /// Its latest diff: its id, and the diff, raw.
+    /// Its latest diff: its id, the commit it is on, as Phabricator names it
+    /// (empty where it says none), and the diff, raw.
     pub diff: u64,
+    pub base: String,
     pub raw: String,
 }
 
@@ -487,13 +489,14 @@ fn read_remote(call: &mut Call, id: &str, raw: bool) -> Result<Remote, String> {
     let mut parents = crate::phab::edges(call, &phid, "revision.parent")?;
     parents.sort();
     let diffs = call("differential.querydiffs", json!({"revisionIDs": [n]}))?;
-    let diff = diffs
+    let (diff, latest) = diffs
         .as_object()
         .into_iter()
         .flatten()
-        .filter_map(|(k, _)| k.parse::<u64>().ok())
-        .max()
+        .filter_map(|(k, v)| Some((k.parse::<u64>().ok()?, v)))
+        .max_by_key(|(k, _)| *k)
         .ok_or(format!("{id} has no diff"))?;
+    let base = latest.get("sourceControlBaseRevision").and_then(Value::as_str).unwrap_or_default().to_string();
     let raw = match raw {
         true => call("differential.getrawdiff", json!({"diffID": diff}))?.as_str().unwrap_or_default().to_string(),
         false => String::new(),
@@ -511,6 +514,7 @@ fn read_remote(call: &mut Call, id: &str, raw: bool) -> Result<Remote, String> {
         repository,
         parents,
         diff,
+        base,
         raw,
     })
 }
@@ -532,6 +536,7 @@ fn store_read(db: &mut Db, link: &str, r: &Remote, names: Option<&[String]>, raw
         phid: r.phid.clone(),
         parents: crate::phab::parents_known(db, &parents),
         diff: r.diff,
+        base: r.base.clone(),
     };
     if raw {
         db.store_raw_diff(link, r.diff, &r.raw)?;
@@ -994,59 +999,6 @@ fn revision_names(call: &mut Call, phids: &[String]) -> Vec<String> {
             .and_then(|r| r.get("id").and_then(Value::as_u64))
     };
     phids.iter().map(|p| id_of(p).map_or(p.clone(), |n| format!("D{n}"))).collect()
-}
-
-/// A path as git writes it in a diff's header, on side `side` (`a/`,
-/// `b/`): quoted as C quotes it when it holds what git quotes.
-fn git_path(side: &str, path: &str) -> String {
-    let plain = path.bytes().all(|b| (0x20..0x7f).contains(&b) && b != b'"' && b != b'\\');
-    if plain {
-        return format!("{side}{path}");
-    }
-    let mut out = String::from("\"");
-    for b in format!("{side}{path}").bytes() {
-        match b {
-            b'"' => out.push_str("\\\""),
-            b'\\' => out.push_str("\\\\"),
-            b'\t' => out.push_str("\\t"),
-            b'\n' => out.push_str("\\n"),
-            0x20..0x7f => out.push(b as char),
-            _ => out.push_str(&format!("\\{b:03o}")),
-        }
-    }
-    out.push('"');
-    out
-}
-
-/// File `path` from `a` to `b`, as git would write that diff: none when
-/// they are the same.
-fn file_diff(path: &str, a: &Left, b: &Left) -> Option<String> {
-    if a == b {
-        return None;
-    }
-    let mut out = format!("diff --git {} {}\n", git_path("a/", path), git_path("b/", path));
-    match (a, b) {
-        (None, Some((m, _))) => out.push_str(&format!("new file mode {m}\n")),
-        (Some((m, _)), None) => out.push_str(&format!("deleted file mode {m}\n")),
-        (Some((ma, _)), Some((mb, _))) if ma != mb => out.push_str(&format!("old mode {ma}\nnew mode {mb}\n")),
-        _ => {}
-    }
-    let text = |l: &Left| l.as_ref().map(|(_, t)| t.clone());
-    match (text(a), text(b)) {
-        (Some(None), _) | (_, Some(None)) => {
-            out.push_str(&format!("Binary files {} and {} differ\n", git_path("a/", path), git_path("b/", path)));
-        }
-        (old, new) => {
-            let (o, n) = (old.flatten().unwrap_or_default(), new.flatten().unwrap_or_default());
-            if o != n {
-                let from = if a.is_some() { git_path("a/", path) } else { "/dev/null".into() };
-                let to = if b.is_some() { git_path("b/", path) } else { "/dev/null".into() };
-                let d = similar::TextDiff::from_lines(o.as_str(), n.as_str());
-                out.push_str(&d.unified_diff().context_radius(3).header(&from, &to).to_string());
-            }
-        }
-    }
-    Some(out)
 }
 
 /// The code from `theirs` to `mine`, two diffs of the patch at `at` of

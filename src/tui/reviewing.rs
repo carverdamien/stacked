@@ -149,10 +149,11 @@ fn answer_mark_of(m: Option<AnswerMark>) -> (&'static str, Style) {
 /// The stack diff of the change, as the right pane shows it: what it is,
 /// said; the diff, and its lines drawn. Its stops of the cursor, a line of
 /// the diff each, or, its interdiffs side by side, each pair of the two
-/// versions' lines (`interdiffs::stack_stops`; a heading over an
-/// interdiff is drawn, and no stop), the cursor on the one that shows its
-/// line of the diff (`Reviewing::entry`), whatever the view: for each, the
-/// lines drawn it takes; the lines of the diff it shows; where Enter on it
+/// versions' lines, or, in a view of the change, each line of it
+/// (`interdiffs::stack_stops`; a heading over an interdiff is drawn, and no
+/// stop), the cursor on the one its line of the diff puts it on
+/// (`Reviewing::entry`, `keys`), whatever the view: for each, the lines
+/// drawn it takes; what it shows (`interdiffs::Seen`); where Enter on it
 /// goes, the patch it is of (by its entry among the stack operations) and,
 /// on a line of what changed in it, the line of that patch's mail it is,
 /// the new version's where it shows two; whether it is a line of what
@@ -164,23 +165,36 @@ struct DiffView {
     diff: Vec<Diffed>,
     lines: Vec<Vec<(String, Style)>>,
     spans: Vec<Range<usize>>,
-    shows: Vec<Vec<usize>>,
+    seen: Vec<interdiffs::Seen>,
+    keys: Vec<usize>,
     goes: Vec<Option<(usize, Option<usize>)>>,
     code: Vec<bool>,
     changed: Vec<bool>,
     of_entry: Vec<usize>,
 }
 
+/// Where the lines that put the cursor on a line of the change as a patch
+/// of its own start (`DiffView::keys`): past any line of the diff.
+const CHANGE_KEYS: usize = usize::MAX / 2;
+
 impl DiffView {
-    /// The stop that shows line `k` of the diff; past them all, the last.
+    /// The stop the line of the diff `k` puts the cursor on: the one that
+    /// shows it; a line of the change, the one it is the key of; past them
+    /// all, the last.
     fn stop_of(&self, k: usize) -> usize {
-        self.shows.iter().position(|s| s.contains(&k)).unwrap_or(self.shows.len().saturating_sub(1))
+        let last = self.keys.len().saturating_sub(1);
+        match k >= CHANGE_KEYS {
+            true => self.keys.iter().position(|&key| key == k),
+            false => self.seen.iter().position(|s| s.shows.contains(&k)),
+        }
+        .unwrap_or(last)
     }
 
-    /// The line of the diff that puts the cursor on stop `i`: the first
-    /// it shows.
+    /// The line of the diff that puts the cursor on stop `i`: the first it
+    /// shows; of a line of the change, a key of its own, by its patch and
+    /// its place among the lines of its change.
     fn line_of(&self, i: usize) -> usize {
-        self.shows.get(i).and_then(|s| s.first().copied()).unwrap_or(0)
+        self.keys.get(i).copied().unwrap_or(0)
     }
 
     /// Where the cursor goes in it from entry `entry` of the stack
@@ -202,7 +216,7 @@ impl DiffView {
 /// What the two versions of each interdiff of the stack diff are named in
 /// the review of what landed, as the views of an interdiff name them: the
 /// patch as the stack has it, and as the work leaves it.
-const AS_IT_IS: (&str, &str) = ("the stack's version", "the work's version");
+pub(super) const AS_IT_IS: (&str, &str) = ("the stack's version", "the work's version");
 
 /// The row of `rows` that is line `at` of their patch: of its message, or
 /// of its diff (a line of a file's header without a row of its own, the row
@@ -663,7 +677,7 @@ impl App {
     }
 
     /// The stack as it is, and as accepting the change would make it.
-    fn review_stacks(&self) -> Option<(Stack, Stack)> {
+    pub(super) fn review_stacks(&self) -> Option<(Stack, Stack)> {
         let rv = self.reviewing.as_ref()?;
         let (r, h) = self.work(&rv.run)?;
         let c = h.stack.as_ref()?;
@@ -743,8 +757,16 @@ impl App {
         let mut out = vec![vec![(String::new(), Style::new())], vec![(format!("      version {v}, then this version, as the stack has it:"), color::file())]];
         let version = format!("version {v}");
         let two = interdiffs::Two { old: &version, new: "this version", one_base: crate::ops::one_base(&lines, &was.diff, &mine.diff) };
-        let stops = interdiffs::interdiff_stops(&refs, self.inter_in(self.inter_w.get()), &two, w.saturating_sub(1), 6);
-        out.extend(stops.iter().flat_map(|(drawn, _)| drawn).flat_map(|parts| fold_parts(parts, w.saturating_sub(1), 7)));
+        let view = self.inter_in(self.inter_w.get());
+        // The change: version `v` on the stack that first held it, this one
+        // on the stack as it is.
+        let change = view.change().then(|| {
+            let near = super::change::Near::new(&crate::ops::code_places(&refs, was, mine), 0, 0);
+            let at = now.patches.iter().position(|id| *id == mine.id).unwrap_or_default();
+            (self.changed(self.on_first(was, &version), self.on_stack(now, at, "this version"), [&version, "this version"]), near)
+        });
+        let stops = interdiffs::view_stops(&refs, view, &two, change.as_ref(), self.change_whole, w.saturating_sub(1), 6);
+        out.extend(stops.iter().flat_map(|s| &s.lines).flat_map(|parts| fold_parts(parts, w.saturating_sub(1), 7)));
         out
     }
 
@@ -923,41 +945,75 @@ impl App {
                 }
             }
         }
-        // Each stop, folded to the pane; a heading drawn, and no stop.
+        // Each stop, folded to the pane; a heading drawn, and no stop. In a
+        // view of the change, each patch's, as the stack has it and as the
+        // work leaves it.
+        let view = self.inter_in(self.inter_w.get());
+        let changes = self.stack_changes(&diff, (Some(&now), Some(&next)), [AS_IT_IS.0, AS_IT_IS.1], view);
         let changed = |k: &usize| matches!(&diff[*k], Diffed::Code(l) if l.text.starts_with('+') || l.text.starts_with('-'));
-        for (drawn, shows) in interdiffs::stack_stops(&diff, self.inter_in(self.inter_w.get()), AS_IT_IS, w.saturating_sub(1)) {
+        let mut ordinal: HashMap<usize, usize> = HashMap::new();
+        for stop in interdiffs::stack_stops(&diff, view, AS_IT_IS, w.saturating_sub(1), &changes, self.change_whole) {
             let start = v.lines.len();
-            v.lines.extend(drawn.iter().flat_map(|parts| fold_parts(parts, w.saturating_sub(1), 6)));
-            let Some(&last) = shows.last() else { continue };
+            v.lines.extend(stop.lines.iter().flat_map(|parts| fold_parts(parts, w.saturating_sub(1), 6)));
+            let (Some(&first), Some(&last)) = (stop.shows.first(), stop.shows.last()) else { continue };
             v.spans.push(start..v.lines.len());
             v.goes.push(goes[last]);
-            v.code.push(shows.iter().all(|&k| matches!(diff[k], Diffed::Code(_))));
-            v.changed.push(shows.iter().any(changed));
-            v.shows.push(shows);
+            let key = match stop.slot {
+                Some(slot) => {
+                    let n = ordinal.entry(slot).or_default();
+                    *n += 1;
+                    CHANGE_KEYS.saturating_add(slot.saturating_mul(1 << 20)).saturating_add(*n)
+                }
+                None => first,
+            };
+            v.keys.push(key);
+            v.code.push(stop.slot.is_some() || stop.shows.iter().all(|&k| matches!(diff[k], Diffed::Code(_))));
+            v.changed.push(if stop.slot.is_some() { stop.changed } else { stop.shows.iter().any(changed) });
+            v.seen.push(interdiffs::Seen::from(&stop));
         }
         v.diff = diff;
         Some(v)
     }
 
-    /// In the stack diff looked at closer, how far under the right pane's
-    /// top the first line of the cursor's stop is, as last drawn. None
-    /// elsewhere.
-    pub(super) fn review_diff_scroll(&self) -> Option<usize> {
+    /// In the stack diff looked at closer, where the cursor is
+    /// (`interdiffs::At`), and how far under the right pane's top the first
+    /// line of its stop is, as last drawn: for `review_found` to put it
+    /// there again once the stack diff is drawn otherwise. None elsewhere.
+    pub(super) fn review_place(&self) -> Option<(interdiffs::At, usize)> {
         let rv = self.reviewing.as_ref().filter(|rv| self.screen == Screen::Review && rv.in_main && !rv.in_patch)?;
         let v = self.review_diff(self.inter_w.get().saturating_sub(1)).filter(|_| self.review_on_diff())?;
-        Some(v.spans.get(v.stop_of(rv.entry))?.start.saturating_sub(rv.scroll))
+        let i = v.stop_of(rv.entry);
+        let kept = self.review_kept.filter(|k| k.0 == rv.entry).map(|(_, at, ..)| (i, at));
+        let at = interdiffs::locate(&v.seen, i, kept)?;
+        Some((at, v.spans.get(i)?.start.saturating_sub(rv.scroll)))
     }
 
-    /// The right pane scrolled for the first line of the cursor's stop in
-    /// the stack diff to be `below` lines under its top again, as it was
-    /// before the interdiffs were drawn otherwise (`review_diff_scroll`).
-    pub(super) fn review_scroll_kept(&mut self, below: Option<usize>) {
-        let Some(below) = below else { return };
+    /// The cursor of the stack diff looked at closer on place `kept`
+    /// again, drawn otherwise, the first line of its stop as far under the
+    /// right pane's top as it was (`review_place`); kept, for a switch back
+    /// to find the place it came from.
+    pub(super) fn review_found(&mut self, kept: Option<(interdiffs::At, usize)>) {
+        let Some((at, below)) = kept else { return };
         let Some(v) = self.review_diff(self.inter_w.get().saturating_sub(1)) else { return };
-        if let Some(rv) = self.reviewing.as_mut()
-            && let Some(s) = v.spans.get(v.stop_of(rv.entry))
-        {
-            rv.scroll = s.start.saturating_sub(below);
+        let i = interdiffs::find(&v.seen, at);
+        let ended = self.changes.ended();
+        if let Some(rv) = self.reviewing.as_mut() {
+            rv.entry = v.line_of(i);
+            if let Some(s) = v.spans.get(i) {
+                rv.scroll = s.start.saturating_sub(below);
+            }
+            self.review_kept = Some((rv.entry, at, below, ended));
+        }
+    }
+
+    /// The review's stack diff drawn again as a change of it was read
+    /// since a switch of view: the cursor on the place it came with, again
+    /// (`review_found`), as long as it was not moved since.
+    pub(super) fn review_found_again(&mut self) {
+        let Some((entry, at, below, _)) = self.review_kept.filter(|k| k.3 != self.changes.ended()) else { return };
+        match self.reviewing.as_ref().is_some_and(|rv| rv.entry == entry) {
+            true => self.review_found(Some((at, below))),
+            false => self.review_kept = None,
         }
     }
 
@@ -1010,7 +1066,7 @@ impl App {
         }
         let (Some((_, next)), Some(v)) = (self.review_stacks(), self.review_diff(80).filter(|_| self.review_on_diff())) else { return Vec::new() };
         let mut out: Vec<String> = Vec::new();
-        for &k in v.shows.get(v.stop_of(rv.entry)).into_iter().flatten() {
+        for &k in v.seen.get(v.stop_of(rv.entry)).into_iter().flat_map(|s| &s.shows) {
             if let Some(line) = message_line_of(&self.db, &v.diff, &next, k).filter(|l| !out.contains(l)) {
                 out.push(line);
             }
@@ -2459,6 +2515,7 @@ impl App {
     /// The review: its list on the left, what the cursor's part would be on
     /// the right.
     pub(super) fn draw_review(&mut self, buf: &mut Buffer, body: Rect) -> Option<(u16, u16)> {
+        self.review_found_again();
         let (w, h) = (body.width as usize, body.height as usize);
         let lines = self.review_lines();
         let rv = self.reviewing.clone()?;
@@ -2710,7 +2767,7 @@ impl App {
                 if stops.is_some() =>
             {
                 if let Some(v) = &stops {
-                    let (at, last) = (v.stop_of(rv.entry), v.shows.len().saturating_sub(1));
+                    let (at, last) = (v.stop_of(rv.entry), v.keys.len().saturating_sub(1));
                     rv.entry = v.line_of(match code {
                         KeyCode::Down => (at + 1).min(last),
                         KeyCode::Up => at.saturating_sub(1),
@@ -2956,7 +3013,7 @@ impl App {
         let open = self.open_hint();
         // The stack diff of the change on the right: the view of its
         // interdiffs.
-        let view = if self.inter_screen() { "1: view · " } else { "" };
+        let view = self.inter_keys();
         match &self.reviewing {
             Some(rv) if rv.in_main && rv.in_patch && self.review_patch().is_some() => {
                 let enter = if self.review_writable() { "enter: comment · " } else { "" };

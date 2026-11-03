@@ -54,6 +54,7 @@ pub mod ask_dialog;
 pub use ask_dialog::{AskDialog, AskOf, Button, Permission};
 pub mod banner;
 pub use banner::BannerLine;
+mod change;
 mod compared;
 pub mod finding;
 pub use finding::Find;
@@ -1843,6 +1844,15 @@ fn about(action: &Action) -> String {
         Action::InterView(InterLayout::Sides) => {
             "draw every interdiff side by side, as long as the editor is open: the old version on the left and the new one on the right, each line as its own diff draws it, the lines both have dim".into()
         }
+        Action::InterView(InterLayout::ChangeUnified) => {
+            "draw, as long as the editor is open, the change from the old version to the new one as a patch of its own, unified: each file as the old version leaves it on its base, then as the new one leaves it on its own, - before a line only the old version's code has, + before one only the new one's has, the lines the change of base made dim".into()
+        }
+        Action::InterView(InterLayout::ChangeSides) => {
+            "draw, as long as the editor is open, the change from the old version to the new one as a patch of its own, side by side: each file as the old version leaves it on its base on the left, as the new one leaves it on its own on the right, the lines the change of base made dim".into()
+        }
+        Action::InterView(InterLayout::ChangeCompact) => {
+            "draw, as long as the editor is open, the change from the old version to the new one as a patch of its own, side by side and compact: the old version's lines on the left and the new one's on the right, each side's one after another, with no gap where the other has more, the lines the change of base made dim".into()
+        }
         Action::Undo => "go back to the stack before this edit".into(),
         Action::Redo => "make that edit again".into(),
         Action::EditList => "edit the stack as `git rebase -i` does, in $EDITOR".into(),
@@ -2164,22 +2174,28 @@ pub struct TextView {
 }
 
 /// What a text screen of interdiffs shows, to draw it again from: what
-/// differs from Phabricator, or what an edit changed; the lines of what it
-/// shows that each line drawn shows with the others of its stop of the
-/// cursor (`interdiffs::Stop`), none for a heading; the width and view it
-/// was drawn in; and, drawn again, the top line it was drawn from and the
-/// line of what it shows that top line was on (`interdiffs::line_of`).
+/// differs from Phabricator, or what an edit changed; what each line drawn
+/// shows with the others of its stop of the cursor (`interdiffs::Seen`),
+/// none for a heading; the width and view it was drawn in, each file of the
+/// change whole or not, and how many changes were read then; and, drawn
+/// again, the top line it was drawn from and the place of what it shows
+/// that top line was on (`interdiffs::locate`).
 #[derive(Debug, Clone)]
 struct InterText {
     of: Inter,
-    at: Vec<Vec<usize>>,
-    built: (usize, InterLayout),
-    kept: Option<(usize, usize)>,
+    at: Vec<interdiffs::Seen>,
+    built: (usize, InterLayout, bool, u64),
+    kept: Option<(usize, interdiffs::At)>,
 }
 
-/// A text screen of interdiffs, drawn: its title, its lines, and the lines
-/// of what it shows that each shows (`InterText`).
-type InterDrawn = (String, Vec<Parts>, Vec<Vec<usize>>);
+/// A text screen of interdiffs, drawn: its title, its lines, and what each
+/// shows (`InterText`).
+type InterDrawn = (String, Vec<Parts>, Vec<interdiffs::Seen>);
+
+/// What History…'s stack diff was drawn from: the stacks diffed, the
+/// width, the view of its interdiffs, each file of the change whole or not,
+/// and how many changes were read then (`change::Reader::ended`).
+type HistBuilt = (Option<usize>, Option<usize>, usize, InterLayout, bool, u64);
 
 /// What a text screen of interdiffs shows: what differs between the patch
 /// the middle shows and its revision on Phabricator; or what the edit that
@@ -2272,9 +2288,17 @@ pub struct App {
     /// with 1 there, and kept while the editor is open, the settings' at
     /// the start. And how wide the pane the screen draws its interdiffs in
     /// was last drawn: one too narrow for two sides draws them as
-    /// interdiffs meanwhile.
+    /// interdiffs meanwhile, and the change unified.
     pub inter: InterLayout,
     inter_w: std::cell::Cell<usize>,
+    /// The change from one version of a patch to another, as a patch of its
+    /// own, drawn with each file whole rather than as its hunks (`3`, on a
+    /// screen of interdiffs drawing one); the changes read, by what they are
+    /// read from, away from the screen; and of the bases they are read on,
+    /// whether each can be read (`App::changed`).
+    pub change_whole: bool,
+    changes: crate::change::Reader,
+    bases_read: std::cell::RefCell<HashMap<(String, String), std::result::Result<String, String>>>,
     /// The unified view split in two, while it is the view: the middle's
     /// fields are the half the cursor is in, and this holds the other.
     halves: Option<Halves>,
@@ -2351,19 +2375,27 @@ pub struct App {
     pub hist_cursor: usize,
     hist_top: usize,
     /// The lines of the stack diff of the record picked, and what they were
-    /// made of: the stacks diffed, the width, the view of its interdiffs.
+    /// made of: the stacks diffed, the width, the view of its interdiffs,
+    /// each file of the change whole or not, and how many changes were read
+    /// then (`change::Reader::ended`).
     pub hist_rows: Vec<Parts>,
-    hist_built: Option<(Option<usize>, Option<usize>, usize, InterLayout)>,
+    hist_built: Option<HistBuilt>,
     /// That stack diff, and the lines of it each of those shows, folded:
-    /// one, or, side by side, one of each version's; none, a heading.
+    /// one, or, side by side, one of each version's; none, a heading
+    /// (`interdiffs::Seen`).
     hist_diff: Vec<Diffed>,
-    hist_of: Vec<Vec<usize>>,
-    /// Another view of the interdiffs picked: the line of that stack diff
-    /// the cursor was on, and how far under the pane's top, for the cursor
-    /// to be on it again once it is drawn so; and, once it is, the row it
-    /// went on and that line (`interdiffs::line_of`).
-    hist_keep: Option<(usize, usize)>,
-    hist_line: Option<(usize, usize)>,
+    hist_of: Vec<interdiffs::Seen>,
+    /// Another view of the interdiffs picked: the place of the line the
+    /// cursor was on, and how far under the pane's top, for the cursor to
+    /// be on it again once it is drawn so; and, once it is, the row it went
+    /// on and that place (`interdiffs::locate`).
+    hist_keep: Option<(interdiffs::At, usize)>,
+    hist_line: Option<(usize, interdiffs::At)>,
+    /// The review's stack diff drawn otherwise: the line that put its cursor
+    /// on its stop (`Reviewing::entry`), the place it came with
+    /// (`interdiffs::locate`), how far under the pane's top, and how many
+    /// changes were read then (`review_found_again`).
+    review_kept: Option<(usize, interdiffs::At, usize, u64)>,
     /// The run a transcript is of, and how far it is scrolled up.
     transcript: Option<String>,
     scroll: usize,
@@ -2858,6 +2890,9 @@ impl App {
             layout: Layout::Unified,
             inter: cfg.view.interdiff,
             inter_w: std::cell::Cell::new(0),
+            change_whole: false,
+            changes: crate::change::Reader::default(),
+            bases_read: std::cell::RefCell::new(HashMap::new()),
             halves: None,
             drawing_beside: false,
             compact: Compact::default(),
@@ -2897,6 +2932,7 @@ impl App {
             hist_of: vec![],
             hist_keep: None,
             hist_line: None,
+            review_kept: None,
             transcript: None,
             scroll: 0,
             versions: None,
@@ -3635,6 +3671,7 @@ impl App {
             }
         }
         self.wholes.wait();
+        self.changes.wait();
         self.reload();
     }
 
@@ -4673,11 +4710,17 @@ impl App {
                 ),
             },
             // Side by side, on a pane too narrow for it: as interdiffs there
-            // meanwhile.
+            // meanwhile, the change unified.
             Action::InterView(InterLayout::Sides) if self.inter_narrow() => format!(
                 "{}. This pane is under {} columns, too narrow for side by side: picked, its interdiffs are drawn as interdiffs until it has room",
                 about(action),
                 self.cfg.view.split_width
+            ),
+            Action::InterView(v @ (InterLayout::ChangeSides | InterLayout::ChangeCompact)) if self.inter_narrow() => format!(
+                "{}. This pane is under {} columns, too narrow for {}: picked, the change is drawn unified until it has room",
+                about(action),
+                self.cfg.view.split_width,
+                if *v == InterLayout::ChangeSides { "the change side by side" } else { "the change side by side and compact" }
             ),
             _ => about(action),
         }
@@ -5046,6 +5089,12 @@ impl App {
         // views.
         if k.code == KeyCode::Char('1') && self.inter_screen() {
             self.mode = Mode::Menu(self.inter_menu());
+            return Effect::None;
+        }
+        // 3 there, drawing the change as a patch of its own, as in the
+        // middle: each of its files whole, or as its hunks again.
+        if k.code == KeyCode::Char('3') && self.change_drawn() {
+            self.toggle_change_whole();
             return Effect::None;
         }
         if k.code == KeyCode::Char(' ') {
@@ -5755,10 +5804,12 @@ impl App {
         self.whole_files && !self.on_stack && self.blocks_key().is_some_and(|k| self.wholes.going(&k))
     }
 
-    /// Waits for the files being read to show whole.
+    /// Waits for the files being read to show whole, and for the changes
+    /// of versions being read (`change::Reader`).
     pub fn wait_files(&mut self) {
         self.whole_here();
         self.wholes.wait();
+        self.changes.wait();
     }
 
     /// The line of the middle the cursor is on, when it is in no hunk, each
@@ -9842,7 +9893,7 @@ impl App {
         let Some((_, Some(to), ..)) = self.hist_built.filter(|_| self.hist_focus == HistFocus::Diff) else { return Vec::new() };
         let Ok(after) = self.db.node(to) else { return Vec::new() };
         let mut out: Vec<String> = Vec::new();
-        for &k in self.hist_of.get(self.hist_cursor).into_iter().flatten() {
+        for &k in self.hist_of.get(self.hist_cursor).into_iter().flat_map(|s| &s.shows) {
             if let Some(line) = message_line_of(&self.db, &self.hist_diff, after, k).filter(|l| !out.contains(l)) {
                 out.push(line);
             }
@@ -10123,7 +10174,7 @@ impl App {
         let w = self.body_w;
         let (title, lines, at) = self.inter_text(of, w)?;
         self.open_parts(title, lines);
-        let built = (w, self.inter_in(w));
+        let built = self.text_built(w);
         if let Some(t) = &mut self.text {
             t.inter = Some(InterText { of, at, built, kept: None });
         }
@@ -10145,34 +10196,44 @@ impl App {
                 let s = self.db.node(rev).map_err(|e| e.0)?;
                 let mut lines: Vec<Parts> = vec![vec![(format!("@{rev} · {} · {}", local_time(s.time), s.op), color::file())]];
                 // What the edit is, line 0; line k of its stack diff, k + 1.
-                let mut at = vec![vec![0]];
+                let mut at = vec![interdiffs::Seen { shows: vec![0], rows: vec![] }];
                 let before = s.parent.map_or(String::new(), |p| format!("@{p}"));
                 let after = format!("@{rev}");
-                for (drawn, shows) in interdiffs::stack_stops(&crate::history::what_changed(&self.db, rev), v, (&before, &after), w.saturating_sub(1)) {
-                    let shows: Vec<usize> = shows.iter().map(|k| k + 1).collect();
-                    at.extend(std::iter::repeat_n(shows, drawn.len()));
-                    lines.extend(drawn);
+                let diff = crate::history::what_changed(&self.db, rev);
+                let parent = s.parent.and_then(|p| self.db.node(p).ok());
+                let changes = self.stack_changes(&diff, (parent, Some(s)), [&before, &after], v);
+                for stop in interdiffs::stack_stops(&diff, v, (&before, &after), w.saturating_sub(1), &changes, self.change_whole) {
+                    let seen = interdiffs::Seen { shows: stop.shows.iter().map(|k| k + 1).collect(), rows: stop.rows.clone() };
+                    at.extend(std::iter::repeat_n(seen, stop.lines.len()));
+                    lines.extend(stop.lines);
                 }
                 Ok((format!("what the edit that made @{rev} changed"), lines, at))
             }
         }
     }
 
+    /// What a text screen of interdiffs drawn `w` wide is drawn from
+    /// (`InterText::built`).
+    fn text_built(&self, w: usize) -> (usize, InterLayout, bool, u64) {
+        (w, self.inter_in(w), self.change_whole, self.changes.ended())
+    }
+
     /// The text screen of interdiffs drawn again `w` wide, when it is one
-    /// and was drawn otherwise: in another view of them, at another width.
-    /// Its top line on the line of what it shows that the top line was on
-    /// (`interdiffs::line_of`), else on the next one there.
+    /// and was drawn otherwise: in another view of them, at another width,
+    /// each file of the change whole or not, a change read since. Its top
+    /// line on the place of what it shows that the top line was on
+    /// (`interdiffs::locate`), else on the next one there.
     fn text_again(&mut self, w: usize) {
         let Some(t) = &self.text else { return };
-        let Some(i) = t.inter.as_ref().filter(|i| i.built != (w, self.inter_in(w))) else { return };
+        let Some(i) = t.inter.as_ref().filter(|i| i.built != self.text_built(w)) else { return };
         let of = i.of;
-        let top = interdiffs::line_of(&i.at, t.scroll, i.kept);
+        let top = interdiffs::locate(&i.at, t.scroll, i.kept);
         let Ok((title, lines, at)) = self.inter_text(of, w) else { return };
-        let scroll = top.map_or(0, |line| interdiffs::line_at(&at, line));
-        let built = (w, self.inter_in(w));
+        let scroll = top.map_or(0, |place| interdiffs::find(&at, place));
+        let built = self.text_built(w);
         if let Some(t) = &mut self.text {
             (t.title, t.lines, t.scroll) = (title, lines, scroll);
-            t.inter = Some(InterText { of, at, built, kept: top.map(|line| (scroll, line)) });
+            t.inter = Some(InterText { of, at, built, kept: top.map(|place| (scroll, place)) });
         }
     }
 
@@ -11002,13 +11063,12 @@ impl App {
                 let open = self.open_hint();
                 let delete = self.delete_hint().map_or(String::new(), |d| format!("{d} · "));
                 let keys = match (self.screen, self.reading, self.whole_files) {
-                    (Screen::Main, false, false) => "1: view · 2: read · 3: whole · ",
-                    (Screen::Main, false, true) => "1: view · 2: read · 3: hunks · ",
-                    (Screen::Main, true, false) => "1: view · 2: comment · 3: whole · ",
-                    (Screen::Main, true, true) => "1: view · 2: comment · 3: hunks · ",
+                    (Screen::Main, false, false) => "1: view · 2: read · 3: whole · ".into(),
+                    (Screen::Main, false, true) => "1: view · 2: read · 3: hunks · ".into(),
+                    (Screen::Main, true, false) => "1: view · 2: comment · 3: whole · ".into(),
+                    (Screen::Main, true, true) => "1: view · 2: comment · 3: hunks · ".into(),
                     // The screens of interdiffs: the view of them.
-                    _ if self.inter_screen() => "1: view · ",
-                    _ => "",
+                    _ => self.inter_keys(),
                 };
                 let ask = match self.marks_pointer() {
                     Some(p) => p,
@@ -12347,7 +12407,7 @@ impl App {
 
     /// The version picked: what changed from the version before, in the
     /// view the pane draws interdiffs in, the two versions named as the
-    /// list names them; or the whole of it.
+    /// list names them, the interdiff or the change; or the whole of it.
     fn draw_version(&self, buf: &mut Buffer, area: Rect) {
         let (w, h) = (area.width as usize, area.height as usize);
         self.inter_w.set(w);
@@ -12367,11 +12427,14 @@ impl App {
         let refs: Vec<&ops::InterLine> = lines.iter().collect();
         let drawn: Vec<Parts> = match before {
             // What changed, in the view the pane draws interdiffs in, the two
-            // versions named as the list names them.
+            // versions named as the list names them: the interdiff, or the
+            // change, each version on the stack that first held it.
             Some((before, _)) => {
                 let (old, new) = (format!("v{}", self.pick), format!("v{}", self.pick + 1));
                 let two = interdiffs::Two { old: &old, new: &new, one_base: ops::one_base(&lines, &before.diff, &p.diff) };
-                interdiffs::interdiff_stops(&refs, self.inter_in(w), &two, w, 0).into_iter().flat_map(|(lines, _)| lines).collect()
+                let v = self.inter_in(w);
+                let change = v.change().then(|| self.versions_change(before, p, &refs, [&old, &new]));
+                interdiffs::view_stops(&refs, v, &two, change.as_ref(), self.change_whole, w, 0).into_iter().flat_map(|s| s.lines).collect()
             }
             None => inter_parts(&refs),
         };
@@ -12457,31 +12520,43 @@ impl App {
             return;
         };
         self.inter_w.set(w);
-        let want = (e.from, e.to, w, self.inter_in(w));
+        let want = (e.from, e.to, w, self.inter_in(w), self.change_whole, self.changes.ended());
         if self.hist_built != Some(want) {
+            // The same record drawn otherwise (in another view, at another
+            // width, a change read meanwhile): the cursor kept on its line.
+            if self.hist_keep.is_none()
+                && self.hist_built.is_some_and(|b| (b.0, b.1) == (e.from, e.to))
+                && let Some(at) = interdiffs::locate(&self.hist_of, self.hist_cursor, self.hist_line)
+            {
+                self.hist_keep = Some((at, self.hist_cursor.saturating_sub(self.hist_top)));
+            }
             // Made, or deleted, its header says.
             let mut diff = crate::history::stack_diff(&self.db, e.from, e.to, true);
             diff.retain(|d| !matches!(d, Diffed::Made | Diffed::Deleted));
             // Each line folded to the pane, with the lines of the diff each
             // row shows; side by side, each interdiff under a heading of the
-            // stacks before and after.
+            // stacks before and after; in a view of the change, each patch's
+            // change, its versions on those stacks.
             let say = |rev: Option<usize>| rev.map_or(String::new(), |r| format!("@{r}"));
             let (before, after) = (say(e.from), say(e.to));
+            let node = |rev: Option<usize>| rev.and_then(|r| self.db.node(r).ok());
+            let changes = self.stack_changes(&diff, (node(e.from), node(e.to)), [&before, &after], want.3);
             let (mut rows, mut of) = (Vec::new(), Vec::new());
-            for (drawn, shows) in interdiffs::stack_stops(&diff, want.3, (&before, &after), w.saturating_sub(1)) {
-                for parts in drawn.iter().flat_map(|parts| fold_parts(parts, w.saturating_sub(1), 6)) {
+            for stop in interdiffs::stack_stops(&diff, want.3, (&before, &after), w.saturating_sub(1), &changes, self.change_whole) {
+                let seen = interdiffs::Seen::from(&stop);
+                for parts in stop.lines.iter().flat_map(|parts| fold_parts(parts, w.saturating_sub(1), 6)) {
                     rows.push(parts);
-                    of.push(shows.clone());
+                    of.push(seen.clone());
                 }
             }
             (self.hist_rows, self.hist_of, self.hist_diff, self.hist_built) = (rows, of, diff, Some(want));
-            // Another view picked: the cursor on the line it was on, on its
-            // line of the pane.
+            // Drawn otherwise: the cursor on the line it was on, on its line
+            // of the pane.
             self.hist_line = None;
-            if let Some((line, below)) = self.hist_keep.take() {
-                self.hist_cursor = interdiffs::line_at(&self.hist_of, line);
+            if let Some((at, below)) = self.hist_keep.take() {
+                self.hist_cursor = interdiffs::find(&self.hist_of, at);
                 self.hist_top = self.hist_cursor.saturating_sub(below);
-                self.hist_line = Some((self.hist_cursor, line));
+                self.hist_line = Some((self.hist_cursor, at));
             }
             self.hist_cursor = self.hist_cursor.min(self.hist_rows.len().saturating_sub(1));
         }

@@ -469,6 +469,11 @@ pub struct State {
     /// The id of its latest diff: 0 for none, or none read.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub diff: u64,
+    /// The commit its latest diff is on, as Phabricator names it
+    /// (`sourceControlBaseRevision`): empty where it said none, or what
+    /// read it did not read that.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub base: String,
 }
 
 /// A revision's comments, as a read stored them (`Revision`): what the

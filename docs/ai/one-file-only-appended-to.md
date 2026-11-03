@@ -121,8 +121,10 @@ bytes long, padded with spaces.
   (`{"t":"revision","link":"https://…/D123","d":"D123","state":{…},"comments":{…},"time":…}`):
   its state, its status as Phabricator writes its value (`needs-review`),
   its title, summary and bug, its PHID, its parents, each its PHID and its
-  `D123`, and the id of its latest diff, or that Phabricator does not have
-  it (`"state":{"missing":true}`); and its comments, each the id of its
+  `D123`, the id of its latest diff, and the commit that diff is on as
+  Phabricator names it (`"base"`, none in a state a stacked of before
+  wrote, or where Phabricator says none), or that Phabricator does not
+  have it (`"state":{"missing":true}`); and its comments, each the id of its
   version as it was last edited, those of its versions before and the
   comment it replies to, which the Phabricator line counts those not
   pulled yet by, with when the revision was last modified as they were

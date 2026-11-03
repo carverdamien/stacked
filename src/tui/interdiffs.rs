@@ -24,19 +24,32 @@
 //! stands out; the interdiff's hunks are as it cuts them, their headers
 //! across. Side by side, a line too wide folds in its half, as the code
 //! view's side by side folds its lines: one of code where the half ends,
-//! one of the message between words. The view picked holds for every
-//! interdiff while the editor is open, the settings' `view.interdiff` the
-//! one they start in; a pane narrower than two sides need
-//! (`view.split_width`, as the code view's) draws its interdiffs as
-//! interdiffs meanwhile, and says so.
+//! one of the message between words. Or the change from the old version
+//! to the new one as a patch of its own, in the views of the code
+//! (`change.rs`). The menu of 1 is in sections, each what it draws under a
+//! heading, then the views it is drawn in: the interdiff, and the change.
+//! The view picked holds for every interdiff while the editor is open, the
+//! settings' `view.interdiff` the one they start in; a pane narrower than
+//! two sides need (`view.split_width`, as the code view's) draws its
+//! interdiffs as interdiffs meanwhile, the change unified, and says so.
+//! Switching from one view to another, a screen keeps its place (`At`).
 
+use super::change::{Changed, Near, change_said, code_stops, code_view, message_stops};
 use super::*;
 use crate::ops::{InterLine, Part};
 use crate::rows::FOLDED;
 
 impl InterLayout {
-    /// Each, in the order the menu of 1 lists them.
-    pub const ALL: [InterLayout; 3] = [InterLayout::Interdiff, InterLayout::Columns, InterLayout::Sides];
+    /// Each, in the order the menu of 1 lists them: the interdiff's views,
+    /// then the change's.
+    pub const ALL: [InterLayout; 6] = [
+        InterLayout::Interdiff,
+        InterLayout::Columns,
+        InterLayout::Sides,
+        InterLayout::ChangeUnified,
+        InterLayout::ChangeSides,
+        InterLayout::ChangeCompact,
+    ];
 
     /// As the menu of 1 lists it: how it reads.
     pub fn item(self) -> &'static str {
@@ -44,6 +57,9 @@ impl InterLayout {
             InterLayout::Interdiff => "Interdiff: a sign for which version has the line, then its own sign",
             InterLayout::Columns => "A column per version: what each one's patch does with the line",
             InterLayout::Sides => "Side by side: the old version on the left, the new one on the right",
+            InterLayout::ChangeUnified => "Unified: - for a line only the old version's code has, + for one only the new one's has",
+            InterLayout::ChangeSides => "Side by side: the old version's code on the left, the new one's on the right",
+            InterLayout::ChangeCompact => "Side by side, compact: each side's lines one after another, no gap where the other has more",
         }
     }
 }
@@ -55,6 +71,11 @@ pub(super) const INTER_MENU: &str = "the view of the interdiffs";
 /// the two versions' diffs, compared, in each of the views of the section
 /// (`InterLayout`).
 pub(super) const INTERDIFF_SECTION: &str = "the interdiff: the two versions' diffs, compared";
+
+/// The heading of the menu of 1's section of the change from the old
+/// version to the new one, a patch of its own, in each of the views of the
+/// code.
+pub(super) const CHANGE_SECTION: &str = "the change: each file from the old version to the new one, as a patch of its own";
 
 /// The two versions an interdiff compares, as the screen names them, the
 /// old one first; and whether both are on one base (`ops::other_bases`):
@@ -89,15 +110,57 @@ pub(super) fn columns_said(two: &Two) -> String {
 /// A stop of the cursor in an interdiff's lines, as drawn: its lines in
 /// parts; and the lines of what is drawn it shows, by their places there
 /// (one, or two, the old version's then the new one's), none for what is
-/// said of them or a heading.
-pub(super) type Stop = (Vec<Parts>, Vec<usize>);
+/// said of them or a heading. A stop of the change as a patch of its own
+/// shows the line of the interdiff nearest it (`change::Near`); and, as its
+/// own, the lines of the change it shows, each by the place of its patch's
+/// line among what is drawn and its line of the change's diff, the place of
+/// its patch's line, and whether a line of it is taken out or put in.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(super) struct Stop {
+    pub lines: Vec<Parts>,
+    pub shows: Vec<usize>,
+    pub rows: Vec<(usize, usize)>,
+    pub slot: Option<usize>,
+    pub changed: bool,
+}
+
+impl Stop {
+    /// Lines `lines`, showing `shows`.
+    pub(super) fn new(lines: Vec<Parts>, shows: Vec<usize>) -> Stop {
+        Stop { lines, shows, ..Default::default() }
+    }
+}
+
+/// What a line drawn of interdiffs shows (`Stop::shows`, `Stop::rows`), for
+/// a screen to find its place again once it draws them otherwise.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(super) struct Seen {
+    pub shows: Vec<usize>,
+    pub rows: Vec<(usize, usize)>,
+}
+
+impl From<&Stop> for Seen {
+    fn from(s: &Stop) -> Seen {
+        Seen { shows: s.shows.clone(), rows: s.rows.clone() }
+    }
+}
+
+/// Where a screen of interdiffs is, to be found again in another view of
+/// them: the line of what is drawn its cursor's stop shows, the one it is
+/// on of two; and on a line of the change as a patch of its own, that line
+/// (`Stop::rows`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) struct At {
+    pub line: usize,
+    pub row: Option<(usize, usize)>,
+}
 
 /// What a view says once, at the top of an interdiff's code, of how to read
 /// it, `said`, folded `w` wide after `indent` columns: a stop that shows no
 /// line.
-fn said_stop(said: &str, w: usize, indent: usize) -> Stop {
+pub(super) fn said_stop(said: &str, w: usize, indent: usize) -> Stop {
     let lines = wrap(said, w.max(20)).into_iter().map(|l| vec![(" ".repeat(indent), Style::new()), (l, color::meta())]).collect();
-    (lines, vec![])
+    Stop::new(lines, vec![])
 }
 
 /// Characters, each in its style, back into parts, those of a style
@@ -115,7 +178,7 @@ fn joined(cs: &[(char, Style)]) -> Parts {
 
 /// `parts` cut to their first `w` characters, and how many characters
 /// they hold then.
-fn cut(parts: &[(String, Style)], w: usize) -> (Parts, usize) {
+pub(super) fn cut(parts: &[(String, Style)], w: usize) -> (Parts, usize) {
     let mut out = Vec::new();
     let mut n = 0;
     for (text, st) in parts {
@@ -138,7 +201,7 @@ fn unsigned(w: &[(usize, usize)]) -> Vec<(usize, usize)> {
 /// The two halves of a line side by side `w` wide, as the code view's
 /// side by side has them: each this wide, the old one's from its start, a
 /// line between them after a column, the new one's after the line.
-fn half_of(w: usize) -> usize {
+pub(super) fn half_of(w: usize) -> usize {
     w.saturating_sub(3) / 2
 }
 
@@ -266,13 +329,13 @@ fn stops_of(drawn: Vec<(Parts, Vec<usize>, bool)>, of: &[usize]) -> Vec<Stop> {
     for (parts, at, first) in drawn {
         let shows = at.iter().map(|&i| of[i]);
         match out.last_mut() {
-            Some((lines, was)) if !first => {
-                lines.push(parts);
-                was.extend(shows);
-                was.sort_unstable();
-                was.dedup();
+            Some(s) if !first => {
+                s.lines.push(parts);
+                s.shows.extend(shows);
+                s.shows.sort_unstable();
+                s.shows.dedup();
             }
-            _ => out.push((vec![parts], shows.collect())),
+            _ => out.push(Stop::new(vec![parts], shows.collect())),
         }
     }
     out
@@ -323,7 +386,7 @@ pub(super) fn side_by_side(lines: &[&InterLine], heads: (&str, &str), w: usize, 
             of.push(k);
         }
     }
-    let mut out: Vec<Stop> = vec![(vec![heading(heads, w, indent)], vec![])];
+    let mut out: Vec<Stop> = vec![Stop::new(vec![heading(heads, w, indent)], vec![])];
     out.extend(stops_of(paired(&rows, &cells, w, indent), &of));
     out
 }
@@ -466,7 +529,7 @@ pub(super) fn columns(lines: &[&InterLine], one_base: bool, indent: usize) -> Ve
             };
             let (mine, theirs) = cols_of(l);
             let cols = if old { [mine, theirs] } else { [theirs, mine] };
-            out.push((vec![draw(cols, text, mine == theirs)], vec![i]));
+            out.push(Stop::new(vec![draw(cols, text, mine == theirs)], vec![i]));
         }
         out
     };
@@ -487,7 +550,7 @@ pub(super) fn columns(lines: &[&InterLine], one_base: bool, indent: usize) -> Ve
             None if cols[0] == cols[1] => (agreeing(a), true),
             None => (vec![(after_signs(a).to_string(), Style::new())], false),
         };
-        (vec![draw(cols, text, agree)], vec![k, m])
+        Stop::new(vec![draw(cols, text, agree)], vec![k, m])
     };
     let key = |k: usize| -> Key {
         let l = lines[k];
@@ -507,7 +570,7 @@ pub(super) fn columns(lines: &[&InterLine], one_base: bool, indent: usize) -> Ve
             // Both have it, and do the same with it.
             Some(' ') => {
                 let col = own_sign(l).map_or(Col::Has, Col::Sign);
-                out.push((vec![draw([col, col], agreeing(l), true)], vec![k]));
+                out.push(Stop::new(vec![draw([col, col], agreeing(l), true)], vec![k]));
                 k += 1;
             }
             // A run of lines one version alone has: those of the two that
@@ -536,7 +599,7 @@ pub(super) fn columns(lines: &[&InterLine], one_base: bool, indent: usize) -> Ve
             // The interdiff's own hunk's header, and git's `\` line: across,
             // as the interdiff draws them.
             _ => {
-                out.push((vec![vec![(" ".repeat(indent), Style::new()), (l.text.clone(), diff_style(&l.text))]], vec![k]));
+                out.push(Stop::new(vec![vec![(" ".repeat(indent), Style::new()), (l.text.clone(), diff_style(&l.text))]], vec![k]));
                 k += 1;
             }
         }
@@ -550,22 +613,14 @@ pub(super) fn columns(lines: &[&InterLine], one_base: bool, indent: usize) -> Ve
 /// under what says how to read it, each line as `inter_parts` draws it; in
 /// a column per version, under what says what each column is, the two
 /// lines naming the versions left out (`columns`); side by side, those left
-/// out too, each half under a heading of its version (`side_by_side`). Each
-/// stop with the lines of `lines` it shows.
+/// out too, each half under a heading of its version (`side_by_side`). In
+/// a view of the change, as an interdiff: `view_stops` draws the change.
+/// Each stop with the lines of `lines` it shows.
 pub(super) fn interdiff_stops(lines: &[&InterLine], v: InterLayout, two: &Two, w: usize, indent: usize) -> Vec<Stop> {
     let names = lines.iter().take_while(|l| l.text.starts_with("--- ") || l.text.starts_with("+++ ")).count();
-    let shifted = |stops: Vec<Stop>| -> Vec<Stop> { stops.into_iter().map(|(drawn, shows)| (drawn, shows.into_iter().map(|k| k + names).collect())).collect() };
+    let shifted = |stops: Vec<Stop>| -> Vec<Stop> { stops.into_iter().map(|s| Stop { shows: s.shows.iter().map(|k| k + names).collect(), ..s }).collect() };
     let block = w.saturating_sub(indent);
     match v {
-        InterLayout::Interdiff => {
-            let mut out = vec![said_stop(&interdiff_said(two), block, indent)];
-            for (k, parts) in inter_parts(lines).into_iter().enumerate() {
-                let mut drawn = vec![(" ".repeat(indent), Style::new())];
-                drawn.extend(parts);
-                out.push((vec![drawn], vec![k]));
-            }
-            out
-        }
         InterLayout::Columns => {
             let mut out = vec![said_stop(&columns_said(two), block, indent)];
             out.extend(shifted(columns(&lines[names..], two.one_base, indent)));
@@ -574,11 +629,31 @@ pub(super) fn interdiff_stops(lines: &[&InterLine], v: InterLayout, two: &Two, w
         // The heading stands for the two lines it names.
         InterLayout::Sides => {
             let mut out = shifted(side_by_side(&lines[names..], (two.old, two.new), block, indent));
-            if let Some((_, shows)) = out.first_mut() {
-                *shows = (0..names).collect();
+            if let Some(s) = out.first_mut() {
+                s.shows = (0..names).collect();
             }
             out
         }
+        _ => {
+            let mut out = vec![said_stop(&interdiff_said(two), block, indent)];
+            for (k, parts) in inter_parts(lines).into_iter().enumerate() {
+                let mut drawn = vec![(" ".repeat(indent), Style::new())];
+                drawn.extend(parts);
+                out.push(Stop::new(vec![drawn], vec![k]));
+            }
+            out
+        }
+    }
+}
+
+/// One interdiff's stops in view `v` (`interdiff_stops`); in a view of the
+/// change, the change of its patch as `change` has it, with the lines of
+/// the interdiff nearest each of its lines, each file whole with `whole`
+/// (`change::one_change_stops`), and without it, as an interdiff.
+pub(super) fn view_stops(lines: &[&InterLine], v: InterLayout, two: &Two, change: Option<&(Changed, Near)>, whole: bool, w: usize, indent: usize) -> Vec<Stop> {
+    match change {
+        Some((c, near)) if v.change() => super::change::one_change_stops(lines, v, two, (c, near), whole, w, indent),
+        _ => interdiff_stops(lines, v, two, w, indent),
     }
 }
 
@@ -587,19 +662,24 @@ pub(super) fn interdiff_stops(lines: &[&InterLine], v: InterLayout, two: &Two, w
 /// its interdiffs, under the line of their patch, after the indent
 /// `Diffed::text` gives them, in a column per version (`columns`) or side
 /// by side (`side_by_side`, each under a heading of the two versions), a
-/// stop for each line drawn of their versions. As an interdiff and in a
-/// column per version, what says how to read them once, over the first.
-/// The two versions named `names`, each patch's on one base or not as its
-/// line says (`Diffed::Patch::rebased`). Each stop with the lines of
-/// `diff` it shows.
-pub(super) fn stack_stops(diff: &[Diffed], v: InterLayout, (old, new): (&str, &str), w: usize) -> Vec<Stop> {
+/// stop for each line drawn of their versions. In a view of the change, the
+/// lines of each interdiff comparing its patch's messages
+/// (`change::message_stops`), then the change of its patch, as `changes`
+/// has it by the place of the patch's line (`change::code_stops`), each
+/// file whole with `whole`. As an interdiff, in a column per version and in
+/// a view of the change, what says how to read them once, over the first;
+/// what dim is, where a change read is on other bases. The two versions
+/// named `names`, each patch's on one base or not as its line says
+/// (`Diffed::Patch::rebased`). Each stop with the lines of `diff` it shows.
+pub(super) fn stack_stops(diff: &[Diffed], v: InterLayout, (old, new): (&str, &str), w: usize, changes: &HashMap<usize, (Changed, Near)>, whole: bool) -> Vec<Stop> {
     let indent = 1 + Diffed::Code(Default::default()).text().chars().count();
     let block = w.saturating_sub(indent);
     let lines = diff_lines(diff);
     let plain = match v {
-        InterLayout::Interdiff => diff_parts(diff),
-        _ => vec![],
+        InterLayout::Columns | InterLayout::Sides => vec![],
+        _ => diff_parts(diff),
     };
+    let rebased_change = changes.values().any(|(c, _)| matches!(c, Changed::Read(c) if c.rebased));
     let mut out = Vec::new();
     let (mut said, mut rebased) = (false, false);
     let mut k = 0;
@@ -612,19 +692,20 @@ pub(super) fn stack_stops(diff: &[Diffed], v: InterLayout, (old, new): (&str, &s
             k += 1;
         }
         if k == start {
-            out.push((vec![plain.get(k).cloned().unwrap_or_else(|| vec![lines[k].clone()])], vec![k]));
+            out.push(Stop::new(vec![plain.get(k).cloned().unwrap_or_else(|| vec![lines[k].clone()])], vec![k]));
             k += 1;
             continue;
         }
         let two = Two { old, new, one_base: !rebased };
         let code: Vec<&InterLine> = diff[start..k].iter().filter_map(|d| if let Diffed::Code(l) = d { Some(l) } else { None }).collect();
-        let at = |stops: Vec<Stop>| -> Vec<Stop> { stops.into_iter().map(|(drawn, shows)| (drawn, shows.into_iter().map(|j| start + j).collect())).collect() };
+        let at = |stops: Vec<Stop>| -> Vec<Stop> { stops.into_iter().map(|s| Stop { shows: s.shows.iter().map(|j| start + j).collect(), ..s }).collect() };
+        let as_interdiff = || -> Vec<Stop> { (start..k).map(|j| Stop::new(vec![plain[j].clone()], vec![j])).collect() };
         match v {
             InterLayout::Interdiff => {
                 if !std::mem::replace(&mut said, true) {
                     out.push(said_stop(&interdiff_said(&two), block, indent));
                 }
-                out.extend((start..k).map(|j| (vec![plain[j].clone()], vec![j])));
+                out.extend(as_interdiff());
             }
             InterLayout::Columns => {
                 if !std::mem::replace(&mut said, true) {
@@ -633,42 +714,65 @@ pub(super) fn stack_stops(diff: &[Diffed], v: InterLayout, (old, new): (&str, &s
                 out.extend(at(columns(&code, two.one_base, indent)));
             }
             InterLayout::Sides => out.extend(at(side_by_side(&code, (old, new), block, indent))),
+            _ => {
+                let how = code_view(v);
+                if !std::mem::replace(&mut said, true) {
+                    out.push(said_stop(&change_said(&two, how, rebased_change), block, indent));
+                }
+                // The change of the patch whose line is over its code.
+                match start.checked_sub(1).and_then(|p| changes.get(&p).map(|c| (p, c))) {
+                    Some((p, (c, near))) => {
+                        if matches!(c, Changed::Read(_) | Changed::Reading) {
+                            out.extend(message_stops(&code, start, indent));
+                        }
+                        out.extend(code_stops(c, how, (near, p), whole, (w, indent), as_interdiff));
+                    }
+                    None => out.extend(as_interdiff()),
+                }
+            }
         }
     }
     out
 }
 
-/// Of lines drawn, each with the lines of what is drawn that its stop of
-/// the cursor shows, `at` (`Stop`): the first that shows line `line`, else
-/// the first that shows one past it; none, the last.
-pub(super) fn line_at(at: &[Vec<usize>], line: usize) -> usize {
-    at.iter()
-        .position(|a| a.contains(&line))
-        .or_else(|| at.iter().position(|a| a.iter().any(|&l| l > line)))
-        .unwrap_or(at.len().saturating_sub(1))
+/// Of the lines drawn, `seen`, the one where place `at` is: the first that
+/// shows its line of the change, else its line of what is drawn, else the
+/// first that shows one past that; none, the last.
+pub(super) fn find(seen: &[Seen], at: At) -> usize {
+    at.row
+        .and_then(|r| seen.iter().position(|s| s.rows.contains(&r)))
+        .or_else(|| seen.iter().position(|s| s.shows.contains(&at.line)))
+        .or_else(|| seen.iter().position(|s| s.shows.iter().any(|&l| l > at.line)))
+        .unwrap_or(seen.len().saturating_sub(1))
 }
 
-/// The line of what is drawn that line `i` of those drawn is at, `at`
-/// saying what each shows (`line_at`): the first it shows, the old
-/// version's of two; none, a heading's, the next one's. Kept, `kept`, the
-/// line that a switch of view found line `i` at, which it shows too: so
-/// that switching back and forth, the cursor on the new version's line of
-/// two goes back to that line.
-pub(super) fn line_of(at: &[Vec<usize>], i: usize, kept: Option<(usize, usize)>) -> Option<usize> {
-    match kept {
-        Some((k, line)) if k == i && at.get(i).is_some_and(|a| a.contains(&line)) => Some(line),
-        _ => at.get(i..)?.iter().find_map(|a| a.first().copied()),
+/// Where line `i` of those drawn, `seen`, is (`At`): the first line of what
+/// is drawn it shows, the old version's of two, none (a heading) the next
+/// one's; and its first line of the change. Kept, `kept`, where a switch
+/// of view put line `i`, the place it came with: so that switching back and
+/// forth, the cursor on the new version's line of two, or on a line of the
+/// change, goes back to that line; and that drawn again as the change is
+/// read, the cursor goes on to it.
+pub(super) fn locate(seen: &[Seen], i: usize, kept: Option<(usize, At)>) -> Option<At> {
+    let here = seen.get(i)?;
+    if let Some((k, at)) = kept
+        && k == i
+    {
+        return Some(at);
     }
+    let line = seen.get(i..)?.iter().find_map(|s| s.shows.first().copied())?;
+    Some(At { line, row: here.rows.first().copied() })
 }
 
 impl App {
     /// The view a pane `w` wide draws its interdiffs in: the one picked,
-    /// but as interdiffs, side by side picked, while the pane is too narrow
-    /// for two sides (`view.split_width`, as the code view's side by side
-    /// needs).
+    /// but, while the pane is too narrow for two sides (`view.split_width`,
+    /// as the code view's side by side needs), as interdiffs, side by side
+    /// picked, and the change unified, side by side or compact picked.
     pub(super) fn inter_in(&self, w: usize) -> InterLayout {
         match self.inter {
             InterLayout::Sides if w < self.cfg.view.split_width => InterLayout::Interdiff,
+            InterLayout::ChangeSides | InterLayout::ChangeCompact if w < self.cfg.view.split_width => InterLayout::ChangeUnified,
             v => v,
         }
     }
@@ -687,18 +791,66 @@ impl App {
     }
 
     /// The menu of 1 on an interdiff's screen, in sections, each what it
-    /// draws under a heading, then the views it is drawn in: the interdiff,
-    /// in each of its views, each saying how it reads, the one picked
-    /// marked and picked.
+    /// draws under a heading, then the views it is drawn in, each saying
+    /// how it reads, the one picked marked and picked: the interdiff, in
+    /// each of its views; and the change from the old version to the new
+    /// one as a patch of its own, in each view of the code, which cannot be
+    /// picked where the screen cannot read the versions' bases, the menu
+    /// saying why (`change_why`).
     pub(super) fn inter_menu(&self) -> Menu {
-        let mut items = vec![Item::heading(INTERDIFF_SECTION)];
-        items.extend(InterLayout::ALL.iter().map(|&v| {
+        let why = self.change_why();
+        let item = |v: InterLayout| {
             let mark = if v == self.inter { "● " } else { "  " };
-            Item::new(format!("{mark}{}", v.item()), Action::InterView(v))
-        }));
-        let mut m = Menu::new(INTER_MENU, items, None);
-        m.sel = m.items.iter().position(|i| i.action == Action::InterView(self.inter)).unwrap_or(0);
+            Item::new(format!("{mark}{}", v.item()), Action::InterView(v)).when(!v.change() || why.is_none())
+        };
+        let mut items = vec![Item::heading(INTERDIFF_SECTION)];
+        items.extend(InterLayout::ALL.iter().filter(|v| !v.change()).map(|&v| item(v)));
+        items.push(Item::heading(CHANGE_SECTION));
+        items.extend(InterLayout::ALL.iter().filter(|v| v.change()).map(|&v| item(v)));
+        let note = why.map(|w| format!("The change cannot be drawn here: {w}."));
+        let mut m = Menu::new(INTER_MENU, items, note);
+        if let Some(at) = m.items.iter().position(|i| i.action == Action::InterView(self.inter) && i.enabled) {
+            m.sel = at;
+        }
         m
+    }
+
+    /// Why the screen cannot draw the change of what it shows, the bases of
+    /// its versions not read: the versions of a patch, each on the stack
+    /// that first held it; History…'s stack diff, and what an edit changed,
+    /// on the stacks before and after; the review's stack diff, on the stack
+    /// as it is and as the work leaves it; what differs from Phabricator,
+    /// the revision's latest diff on the commit it is on. None where it can,
+    /// or shows no interdiff.
+    pub(super) fn change_why(&self) -> Option<String> {
+        let node = |rev: Option<usize>| rev.and_then(|r| self.db.node(r).ok());
+        let at = |rev: Option<usize>| rev.map_or(String::new(), |r| format!("@{r}"));
+        match self.screen {
+            Screen::Versions => {
+                let list = self.versions_list();
+                let (p, _) = list.get(self.pick)?;
+                let (before, _) = self.pick.checked_sub(1).and_then(|i| list.get(i)).filter(|_| !self.whole)?;
+                let (old, new) = (format!("v{}", self.pick), format!("v{}", self.pick + 1));
+                self.on_first(before, &old).and_then(|_| self.on_first(p, &new)).err()
+            }
+            Screen::History => {
+                let e = self.hist_entry()?;
+                self.stacks_why(&[(node(e.from), &at(e.from)), (node(e.to), &at(e.to))])
+            }
+            Screen::Review => {
+                let (now, next) = self.review_stacks()?;
+                self.stacks_why(&[(Some(&now), super::reviewing::AS_IT_IS.0), (Some(&next), super::reviewing::AS_IT_IS.1)])
+            }
+            Screen::Text => match self.text.as_ref()?.inter.as_ref()?.of {
+                #[cfg(feature = "moz-phab")]
+                Inter::Differs => self.differs_why(),
+                Inter::Changed(rev) => {
+                    let s = self.db.node(rev).ok()?;
+                    self.stacks_why(&[(node(s.parent), &at(s.parent)), (Some(s), &at(Some(rev)))])
+                }
+            },
+            _ => None,
+        }
     }
 
     /// Whether the pane the screen draws its interdiffs in, as last drawn,
@@ -710,66 +862,122 @@ impl App {
 
     /// View `v`, picked in the menu of 1: every interdiff drawn so from now
     /// on, while the editor is open, on every screen; this one keeping its
-    /// place, the line its cursor is on, else its top line, on its line of
-    /// the screen. The status line says how the view reads, or, side by
-    /// side on a pane too narrow for it, that this pane draws its
-    /// interdiffs as interdiffs until it has the room.
+    /// place (`keep_inter_place`). The status line says how the view reads,
+    /// or, side by side on a pane too narrow for it, that this pane draws
+    /// its interdiffs as interdiffs until it has the room, the change
+    /// unified.
     pub(super) fn pick_inter(&mut self, v: InterLayout) {
-        // History…'s stack diff: on the line its cursor was on, found again
-        // once it is drawn in the view.
-        if self.screen == Screen::History
-            && let Some(line) = line_of(&self.hist_of, self.hist_cursor, self.hist_line)
-        {
-            self.hist_keep = Some((line, self.hist_cursor.saturating_sub(self.hist_top)));
-        }
-        let was = self.review_diff_scroll();
+        let kept = self.keep_inter_place();
         self.inter = v;
-        self.hist_built = None;
-        self.review_scroll_kept(was);
-        if self.screen == Screen::Text {
-            self.text_again(self.body_w);
-        }
-        let need = self.cfg.view.split_width;
+        self.find_inter_place(kept);
+        let (need, has) = (self.cfg.view.split_width, self.inter_w.get());
+        let narrow = self.inter_narrow();
         self.status = match v {
             InterLayout::Interdiff => "each interdiff is drawn as an interdiff: a sign for which version has each line, then that version's own sign".into(),
             InterLayout::Columns => "each interdiff is drawn in a column per version: what each one's patch does with each line, the old version's first".into(),
-            InterLayout::Sides if self.inter_narrow() => format!(
-                "each interdiff is drawn side by side where its pane has {need} columns: this pane has {}, so its interdiffs are drawn as interdiffs until it is wider",
-                self.inter_w.get()
+            InterLayout::Sides if narrow => format!(
+                "each interdiff is drawn side by side where its pane has {need} columns: this pane has {has}, so its interdiffs are drawn as interdiffs until it is wider"
             ),
             InterLayout::Sides => "each interdiff is drawn side by side: the old version on the left, the new one on the right, the lines both have dim".into(),
+            InterLayout::ChangeUnified => "the change from the old version to the new one is drawn as a patch of its own, unified: each file as the old version leaves it, then as the new one leaves it".into(),
+            InterLayout::ChangeSides if narrow => format!(
+                "the change is drawn side by side where its pane has {need} columns: this pane has {has}, so it is drawn unified until the pane is wider"
+            ),
+            InterLayout::ChangeSides => "the change from the old version to the new one is drawn as a patch of its own, side by side: the old version's files on the left, the new one's on the right".into(),
+            InterLayout::ChangeCompact if narrow => format!(
+                "the change is drawn side by side and compact where its pane has {need} columns: this pane has {has}, so it is drawn unified until the pane is wider"
+            ),
+            InterLayout::ChangeCompact => "the change from the old version to the new one is drawn as a patch of its own, side by side and compact: each side's lines one after another, with no gap where the other has more".into(),
         };
     }
 
+    /// Where the screen of interdiffs is, kept before it is drawn otherwise
+    /// (in another view, each file of the change whole or not): History…'s
+    /// stack diff, the place of its cursor's line, on its line of the pane,
+    /// found again as it is drawn; the review's stack diff, the place of its
+    /// cursor's stop, and how far under the pane's top it is, for
+    /// `find_inter_place`. The text's is found again as it is drawn
+    /// (`text_again`).
+    pub(super) fn keep_inter_place(&mut self) -> Option<(At, usize)> {
+        if self.screen == Screen::History
+            && let Some(at) = locate(&self.hist_of, self.hist_cursor, self.hist_line)
+        {
+            self.hist_keep = Some((at, self.hist_cursor.saturating_sub(self.hist_top)));
+        }
+        self.review_place()
+    }
+
+    /// The place `kept` the review's stack diff was at (`keep_inter_place`)
+    /// found again, drawn otherwise; History…'s stack diff, and the text,
+    /// drawn again.
+    pub(super) fn find_inter_place(&mut self, kept: Option<(At, usize)>) {
+        self.hist_built = None;
+        self.review_found(kept);
+        if self.screen == Screen::Text {
+            self.text_again(self.body_w);
+        }
+    }
+
     /// What `?` says of 1 on an interdiff's screen; side by side, on a pane
-    /// too narrow for it, why the interdiffs here are drawn as interdiffs.
+    /// too narrow for it, why the interdiffs here are drawn as interdiffs,
+    /// or the change unified; in a view of the change, what 3 does there.
     /// Nothing elsewhere.
     pub(super) fn inter_help(&self) -> Vec<String> {
         if !self.inter_screen() {
             return vec![];
         }
         let mut out = vec![
-            "Press 1 to pick how the interdiffs are drawn: as interdiffs, a sign for which version has each line before that version's own sign; in a column per version, what each one's patch does with each line; or side by side, the old version on the left and the new one on the right, the lines both have dim.".to_string(),
+            "Press 1 to pick how the interdiffs are drawn: as interdiffs, a sign for which version has each line before that version's own sign; in a column per version, what each one's patch does with each line; or side by side, the old version on the left and the new one on the right, the lines both have dim. Or how the change from the old version to the new one is drawn as a patch of its own: unified, side by side, or side by side and compact.".to_string(),
         ];
-        if self.inter == InterLayout::Sides && self.inter_narrow() {
-            out.push(format!(
-                "This pane is under {} columns, too narrow for side by side: its interdiffs are drawn as interdiffs until the pane has room.",
-                self.cfg.view.split_width
-            ));
+        let need = self.cfg.view.split_width;
+        if self.inter_narrow() {
+            match self.inter {
+                InterLayout::Sides => out.push(format!("This pane is under {need} columns, too narrow for side by side: its interdiffs are drawn as interdiffs until the pane has room.")),
+                InterLayout::ChangeSides => out.push(format!("This pane is under {need} columns, too narrow for the change side by side: it is drawn unified until the pane has room.")),
+                InterLayout::ChangeCompact => out.push(format!("This pane is under {need} columns, too narrow for the change side by side and compact: it is drawn unified until the pane has room.")),
+                _ => {}
+            }
+        }
+        if self.change_drawn() {
+            out.push(match self.change_whole {
+                true => "Press 3 to see each file of the change as its hunks again.".into(),
+                false => "Press 3 to see each file of the change whole rather than its hunks.".into(),
+            });
         }
         out
     }
 
+    /// The keys the bottom bar names on a screen of interdiffs: 1, for
+    /// their view; drawing the change, 3, for each of its files whole, or
+    /// as its hunks again. None elsewhere.
+    pub(super) fn inter_keys(&self) -> String {
+        match (self.inter_screen(), self.change_drawn(), self.change_whole) {
+            (false, ..) => String::new(),
+            (true, true, false) => "1: view · 3: whole · ".into(),
+            (true, true, true) => "1: view · 3: hunks · ".into(),
+            (true, false, _) => "1: view · ".into(),
+        }
+    }
+
     /// What the top bar says of the interdiffs on their screens, drawn
     /// otherwise than as interdiffs: in columns, or side by side, as the
-    /// code view's side by side says it, too narrow so.
+    /// code view's side by side says it, too narrow so; the change, in the
+    /// view of the code it is drawn in, its files whole.
     pub(super) fn inter_bar(&self) -> String {
-        match (self.inter, self.inter_screen()) {
-            (InterLayout::Columns, true) => " · interdiffs in columns".into(),
-            (InterLayout::Sides, true) if self.inter_narrow() => " · interdiffs side-by-side: too narrow".into(),
-            (InterLayout::Sides, true) => " · interdiffs side-by-side".into(),
-            _ => String::new(),
+        if !self.inter_screen() {
+            return String::new();
         }
+        let narrow = if self.inter_narrow() { ": too narrow" } else { "" };
+        let view = match self.inter {
+            InterLayout::Interdiff => String::new(),
+            InterLayout::Columns => " · interdiffs in columns".into(),
+            InterLayout::Sides => format!(" · interdiffs side-by-side{narrow}"),
+            InterLayout::ChangeUnified => " · change unified".into(),
+            InterLayout::ChangeSides => format!(" · change side-by-side{narrow}"),
+            InterLayout::ChangeCompact => format!(" · change side-by-side, compact{narrow}"),
+        };
+        let whole = if self.change_drawn() && self.change_whole { " · whole files" } else { "" };
+        view + whole
     }
 }
 
@@ -793,7 +1001,7 @@ mod tests {
 
     /// The text of each line drawn, the spaces at its end left out.
     fn said(stops: &[Stop]) -> Vec<String> {
-        stops.iter().flat_map(|(ls, _)| ls.iter().map(|l| l.iter().map(|(t, _)| t.as_str()).collect::<String>().trim_end().to_string())).collect()
+        stops.iter().flat_map(|s| s.lines.iter().map(|l| l.iter().map(|(t, _)| t.as_str()).collect::<String>().trim_end().to_string())).collect()
     }
 
     /// A line side by side, as `said` reads it: `left` in its half, `half`
@@ -851,14 +1059,14 @@ mod tests {
         );
         // Each stop with the lines it shows: none for the heading, both of a
         // pair.
-        let shows: Vec<Vec<usize>> = stops.iter().map(|(_, s)| s.clone()).collect();
+        let shows: Vec<Vec<usize>> = stops.iter().map(|s| s.shows.clone()).collect();
         assert_eq!(shows, [vec![], vec![0], vec![1], vec![2, 3], vec![4], vec![5], vec![6], vec![7, 9], vec![8, 10]]);
         // A line only one version has: alone in its row, `~` dim on the
         // other side.
         let all = lines(&["@@ -1 +1,2 @@", " ---", "  a", "++b"]);
         let stops = side_by_side(&all.iter().collect::<Vec<_>>(), ("old", "new"), 53, 0);
         assert_eq!(said(&stops)[4..], [row("~", "+b")]);
-        assert!(stops[4].0[0].contains(&(fit("~", 25), color::dim())), "{:?}", stops[4]);
+        assert!(stops[4].lines[0].contains(&(fit("~", 25), color::dim())), "{:?}", stops[4]);
     }
 
     #[test]
@@ -872,7 +1080,7 @@ mod tests {
         let refs: Vec<&InterLine> = all.iter().collect();
         // Halves of 20: the old one from column 0, the new one from 22.
         let stops = side_by_side(&refs, ("old", "new"), 43, 0);
-        let row = |k: usize| stops[k].0[0].clone();
+        let row = |k: usize| stops[k].lines[0].clone();
         // A line both have: in its own colour, dim, on both sides.
         let shared = row(4);
         assert_eq!((style_at(&shared, 0), style_at(&shared, 22)), (color::del().add_modifier(Modifier::DIM), color::del().add_modifier(Modifier::DIM)));
@@ -896,7 +1104,7 @@ mod tests {
         all[3].own = Some((vec![(22, 27)], false));
         all[4].own = Some((vec![(22, 28)], false));
         let stops = side_by_side(&all.iter().collect::<Vec<_>>(), ("old", "new"), 83, 0);
-        let parts = &stops[4].0[0];
+        let parts = &stops[4].lines[0];
         let plain = Style::new();
         // Each side its version's line, the words only it has in the colours
         // for words, the rest as any text.
@@ -916,7 +1124,7 @@ mod tests {
             said(&stops)[3..],
             [beside(2, "+let total = price ", 20, "+let total = price "), beside(2, "↪* quantity * rate;", 20, "↪* quantity;")]
         );
-        assert_eq!(stops[3].1, [2, 3], "one stop, both pieces");
+        assert_eq!(stops[3].shows, [2, 3], "one stop, both pieces");
         // A line of the message, between words, a bullet's pieces under
         // what follows the bullet.
         let all = lines(&["@@ -1 +1 @@", "-- the parser skips blank lines", "+- the parser skips empty lines", " ---"]);
@@ -977,7 +1185,7 @@ mod tests {
                 "    z();",
             ]
         );
-        let shows: Vec<Vec<usize>> = stops.iter().map(|(_, s)| s.clone()).collect();
+        let shows: Vec<Vec<usize>> = stops.iter().map(|s| s.shows.clone()).collect();
         assert_eq!(shows, [vec![0], vec![1], vec![2], vec![3], vec![4], vec![5, 6], vec![7], vec![8], vec![9], vec![12], vec![10, 13], vec![11]]);
         // On two bases, a line the old version's diff alone shows is one the
         // new one is not known to have.
@@ -995,9 +1203,9 @@ mod tests {
         // it, in its own colour.
         let stops = columns(&refs, false, 0);
         assert_eq!(said(&stops), ["==---", "  a", "+ b", " +c", "  d"]);
-        let shows: Vec<Vec<usize>> = stops.iter().map(|(_, s)| s.clone()).collect();
+        let shows: Vec<Vec<usize>> = stops.iter().map(|s| s.shows.clone()).collect();
         assert_eq!(shows, [vec![0], vec![1], vec![2, 4], vec![3, 5], vec![6]]);
-        assert_eq!((style_at(&stops[2].0[0], 0), style_at(&stops[2].0[0], 1), style_at(&stops[3].0[0], 1)), (color::add(), Style::new(), color::add()));
+        assert_eq!((style_at(&stops[2].lines[0], 0), style_at(&stops[2].lines[0], 1), style_at(&stops[3].lines[0], 1)), (color::add(), Style::new(), color::add()));
         // On one base, a line a patch adds is another than the line of the
         // base: each alone, a line of the base both leave as it is.
         assert_eq!(said(&columns(&refs, true, 0)), ["==---", "  a", "+·b", "  c", "  b", "·+c", "  d"]);
@@ -1007,7 +1215,7 @@ mod tests {
     fn in_a_column_per_version_what_both_do_alike_is_dim_and_a_line_each_adds_in_place_of_the_other_s_in_the_colours_for_words() {
         let all = drifted();
         let stops = columns(&all.iter().collect::<Vec<_>>(), true, 2);
-        let row = |k: usize| stops[k].0[0].clone();
+        let row = |k: usize| stops[k].lines[0].clone();
         let dim = |st: Style| st.add_modifier(Modifier::DIM);
         // After the indent, the two columns, then the line: a line both
         // remove, dim, in the colour of a line removed.
@@ -1043,7 +1251,7 @@ mod tests {
         assert_eq!(said(&stops[..1]), [columns_said(&two)]);
         assert!(columns_said(&two).starts_with("The first column is v2, the second v3."), "{}", columns_said(&two));
         assert_eq!(said(&stops[1..3]), ["@@ -5,4 +5,4 @@", "==---"]);
-        assert_eq!(stops[1].1, [2], "each line by its place among them all");
+        assert_eq!(stops[1].shows, [2], "each line by its place among them all");
         // Side by side: a heading of the two instead.
         let stops = interdiff_stops(&refs, InterLayout::Sides, &two, 43, 0);
         assert_eq!(said(&stops[..1]), [beside(0, "v2", 20, "v3")]);
@@ -1055,24 +1263,37 @@ mod tests {
         diff.push(patch(2));
         diff.extend(all[2..].iter().cloned().map(Diffed::Code));
         for (v, said_once) in [(InterLayout::Interdiff, interdiff_said(&two)), (InterLayout::Columns, columns_said(&two))] {
-            let stops = stack_stops(&diff, v, ("v2", "v3"), 400);
+            let stops = stack_stops(&diff, v, ("v2", "v3"), 400, &HashMap::new(), false);
             let lines = said(&stops);
             assert_eq!(lines.iter().filter(|l| l.trim() == said_once).count(), 1, "{lines:#?}");
             assert_eq!(lines[1].trim(), said_once, "{lines:#?}");
-            assert_eq!((lines[0].trim(), stops[1].1.len()), ("1 ~ Bug 1", 0));
+            assert_eq!((lines[0].trim(), stops[1].shows.len()), ("1 ~ Bug 1", 0));
         }
-        let stops = stack_stops(&diff, InterLayout::Sides, ("v2", "v3"), 400);
+        let stops = stack_stops(&diff, InterLayout::Sides, ("v2", "v3"), 400, &HashMap::new(), false);
         assert_eq!(said(&stops).iter().filter(|l| l.trim().starts_with("v2 ")).count(), 2, "a heading over each");
     }
 
     #[test]
     fn of_the_lines_drawn_the_one_showing_a_line_is_found_again() {
         // A heading, a line, two side by side over two pieces, a line.
-        let at = [vec![], vec![0], vec![2, 4], vec![2, 4], vec![5]];
-        assert_eq!((line_at(&at, 4), line_at(&at, 3), line_at(&at, 9)), (2, 2, 4));
+        let seen = |all: &[&[usize]]| -> Vec<Seen> { all.iter().map(|s| Seen { shows: s.to_vec(), rows: vec![] }).collect() };
+        let at = seen(&[&[], &[0], &[2, 4], &[2, 4], &[5]]);
+        let line = |line: usize| At { line, row: None };
+        assert_eq!((find(&at, line(4)), find(&at, line(3)), find(&at, line(9))), (2, 2, 4));
         // The line of each: the old version's of two, a heading the next
         // one's; but the one a switch found there, kept.
-        assert_eq!((line_of(&at, 0, None), line_of(&at, 3, None)), (Some(0), Some(2)));
-        assert_eq!((line_of(&at, 3, Some((3, 4))), line_of(&at, 2, Some((3, 4)))), (Some(4), Some(2)));
+        assert_eq!((locate(&at, 0, None), locate(&at, 3, None)), (Some(line(0)), Some(line(2))));
+        assert_eq!((locate(&at, 3, Some((3, line(4)))), locate(&at, 2, Some((3, line(4))))), (Some(line(4)), Some(line(2))));
+        // Lines of the change: found by their line of it first, else by the
+        // line of the interdiff nearest them; kept, a line of the change
+        // the switch came from, though no line drawn here shows it.
+        let mut change = seen(&[&[], &[1], &[1], &[3]]);
+        change[1].rows = vec![(0, 7)];
+        change[2].rows = vec![(0, 8)];
+        assert_eq!(find(&change, At { line: 1, row: Some((0, 8)) }), 2);
+        assert_eq!(find(&change, At { line: 1, row: None }), 1);
+        assert_eq!(locate(&change, 2, None), Some(At { line: 1, row: Some((0, 8)) }));
+        let inter = seen(&[&[0], &[1], &[3]]);
+        assert_eq!(locate(&inter, 1, Some((1, At { line: 1, row: Some((0, 8)) }))), Some(At { line: 1, row: Some((0, 8)) }));
     }
 }

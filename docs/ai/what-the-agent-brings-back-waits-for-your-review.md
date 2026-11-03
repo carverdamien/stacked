@@ -182,11 +182,15 @@ wraps otherwise is no change, nor a line to read again; or the comment
 where it would be, the reply as the last turn of its thread. While the
 right pane shows the stack diff, the cursor on the stack operations or in
 the stack diff, `1` picks the view of its interdiffs (The editor, above),
-the two versions named `the stack's version` and `the work's version`;
-in the stack diff, the cursor stays on its line from one view to another,
-↑↓ go from one line drawn to the next (side by side, a row of the two
-versions' lines), and Enter on a row of two goes to the new version's
-line. → goes into
+the two versions named `the stack's version` and `the work's version`,
+or of the change of each patch from the one to the other as a patch of
+its own, the stack's version on the stack as it is, the work's on the
+stack the work makes, `3` showing its files whole; in the stack diff, the
+cursor stays on its line from one view to another, ↑↓ go from one line
+drawn to the next (side by side, a row of the two versions' lines), and
+Enter on a row of two goes to the new version's line, on a line of the
+change to the line of its patch the nearest line of the interdiff goes
+to. → goes into
 it to scroll, → again makes it wide, the list out of sight, and ← narrows
 it, then comes back to the list (too narrow for both side by side, →
 shows it wide at once). On the stack
