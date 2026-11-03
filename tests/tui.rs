@@ -22372,6 +22372,86 @@ fn a_stack_pulled_takes_new_versions_its_parents_and_those_stacked_on_top_with_t
 
 #[cfg(feature = "moz-phab")]
 #[test]
+fn a_suggested_edit_alone_is_counted_and_pulled_on_its_lines_saying_so_with_its_link_and_edited_to_have_words_is_an_edit() {
+    use stacked::thread::fenced;
+    // Stack s: D11, a.txt's lines 2 to 5 shouted.
+    let (_tmp, db, phab, _) = pull_setup(11, &[("Bug 11 - shout", &[(2, "LINE 2"), (3, "LINE 3"), (4, "LINE 4"), (5, "LINE 5")])]);
+    // An inline comment of ann's on a.txt as transaction.search gives it:
+    // from `line` on `length` lines, made on D11's diff, answering `reply`
+    // if it says; its versions, the latest first, each its id, its PHID, its
+    // words and whether it is removed. A suggested edit alone has no words:
+    // Conduit never gives what it suggests.
+    let inline = |line: u64, length: u64, reply: Option<&str>, versions: &[(u64, &str, &str, bool)]| {
+        let mut fields = serde_json::json!({"path": "a.txt", "line": line, "length": length, "diff": {"id": 1000}});
+        if let Some(r) = reply {
+            fields["replyToCommentPHID"] = r.into();
+        }
+        let n = versions.len();
+        let versions: Vec<serde_json::Value> = versions
+            .iter()
+            .enumerate()
+            .map(|(k, (id, phid, raw, removed))| serde_json::json!({"id": id, "phid": phid, "version": n - k, "dateCreated": id, "removed": removed, "content": {"raw": raw}}))
+            .collect();
+        serde_json::json!({"type": "inline", "authorPHID": "PHID-USER-ann", "fields": fields, "comments": versions})
+    };
+    let set = |comments: Vec<serde_json::Value>| phab.lock().unwrap().revisions.get_mut(&11).unwrap().comments = comments;
+    // On Phabricator: ann's comment on line 2; her suggested edit alone on
+    // lines 3 to 5; and one removed, every version of it saying nothing.
+    let c1 = inline(2, 1, None, &[(501, "c1", "Why shout?", false)]);
+    let s1 = inline(3, 3, None, &[(502, "s1", "", false)]);
+    let r1 = inline(4, 1, None, &[(504, "r1v2", "", true), (503, "r1", "", false)]);
+    set(vec![c1.clone(), s1, r1.clone()]);
+    // Fetched: the Phabricator line counts it, not the one removed.
+    let mut app = open(&db).unwrap();
+    fetched(&mut app);
+    let count = |app: &mut App| phab_line(app).unwrap().rsplit(" · ").next().unwrap().to_string();
+    assert_eq!(count(&mut app), "2 new comments to pull");
+    // Pulled, then filed as any comment: a thread of its own on its first
+    // line, saying what it is, with its link on Phabricator, at the diff it
+    // was made on.
+    let run = pulled(&db, stacked::review::Asked::Stack).unwrap();
+    assert_eq!(run.summary, "2 new comments from D11: they wait for your review");
+    Db::edit(&db, |d| stacked::held::close(d, &run.id, &Default::default(), Some(true))).unwrap();
+    let suggestion = |lines: &str, id: u64| {
+        format!("ann suggested an edit to {lines} here, which stacked cannot read, as Phabricator's API does not give suggested edits: see it on Phabricator, https://phabricator.example.com/D11?id=1000#inline-{id}")
+    };
+    let thread = |id: &str| notes_of(&db, "s", 0).into_iter().find(|n| n.id == id).unwrap_or_else(|| panic!("no {id}"));
+    let on = |n: usize| stacked::view::note_lines(&patch_of(&db, 0)).into_iter().find(|l| l.file == "a.txt" && l.new_no == n && l.origin == '+').unwrap().key;
+    let s1 = thread("phab:s1");
+    assert_eq!((s1.file.as_str(), s1.line.clone(), s1.text.clone()), ("a.txt", on(3), fenced("reviewer ann", &suggestion("lines 3–5", 502))));
+    assert_eq!((thread("phab:c1").line, notes_of(&db, "s", 0).len()), (on(2), 2), "the one removed not pulled");
+    app.refresh();
+    assert_eq!(count(&mut app), "no new comments");
+    // Another, answering ann's comment: counted, and pulled into its thread.
+    let s2 = inline(2, 1, Some("c1"), &[(505, "s2", "", false)]);
+    set(vec![c1.clone(), inline(3, 3, None, &[(502, "s1", "", false)]), r1.clone(), s2.clone()]);
+    fetched(&mut app);
+    assert_eq!(count(&mut app), "1 new comment to pull");
+    let run = pulled(&db, stacked::review::Asked::Stack).unwrap();
+    assert_eq!(run.summary, "1 new comment from D11: it waits for your review");
+    Db::edit(&db, |d| stacked::held::close(d, &run.id, &Default::default(), Some(true))).unwrap();
+    assert_eq!(thread("phab:c1").text, format!("{}\n{}", fenced("reviewer ann", "Why shout?"), fenced("reviewer ann", &suggestion("line 2", 505))));
+    // Edited on Phabricator to have words: an edit of it, as of any comment,
+    // both versions in its thread, the one it edits redacted.
+    let s1v2 = inline(3, 3, None, &[(506, "s1v2", "Shout less here.", false), (502, "s1", "", false)]);
+    set(vec![c1, s1v2, r1, s2]);
+    fetched(&mut app);
+    assert_eq!(count(&mut app), "1 edited comment to pull");
+    let run = pulled(&db, stacked::review::Asked::Stack).unwrap();
+    assert_eq!(run.summary, "1 edited comment from D11: it waits for your review");
+    Db::edit(&db, |d| stacked::held::close(d, &run.id, &Default::default(), Some(true))).unwrap();
+    let was = suggestion("lines 3–5", 502);
+    assert_eq!(thread("phab:s1").text, format!("{}\n{}", fenced("reviewer ann redacted", &was), fenced(&format!("reviewer ann edit {was}"), "Shout less here.")));
+    let said: Vec<String> = stacked::thread::all_turns(&thread("phab:s1").text).iter().enumerate().map(|(i, t)| t.name(i)).collect();
+    assert_eq!(said, ["ann's comment (redacted)", "ann's edit of the comment that said \"ann suggested an edit to lines 3–5 here, which stacked cann…\""]);
+    assert_eq!(notes_of(&db, "s", 0).len(), 2);
+    app.refresh();
+    assert_eq!(count(&mut app), "no new comments");
+    stacked::phab::statuses_stand_in(&db, None);
+}
+
+#[cfg(feature = "moz-phab")]
+#[test]
 fn a_revision_holding_a_version_stacked_knows_brings_nothing_and_one_retitled_elsewhere_rewords_its_patch() {
     let (_tmp, db, phab, _) = pull_setup(11, &[("Bug 11 - two", &[(2, "LINE 2")]), ("Bug 12 - ten", &[(2, "LINE 2"), (10, "LINE 10")])]);
     // Patch 1 given a new version since D11 was sent: the stack is ahead.

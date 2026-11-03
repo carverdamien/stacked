@@ -242,6 +242,27 @@ is reopened. Replies and edits to a thread moved to the stack's comments
 go to it there. A comment removed on Phabricator stays in its thread as it was. A
 reviewer's comment can be asked about like any.
 
+Suggested edits cannot be pulled: Phabricator's API does not give them,
+transaction.search giving a comment's words alone. An inline comment that
+is a suggested edit alone, with no words, and not removed, is pulled all
+the same, as any comment is: a thread of its own on its line, or a reply
+in the thread it answers; and the Phabricator line counts it among the
+comments not pulled yet. Its text says what it is, and where Phabricator
+shows it: `ann suggested an edit to lines 2906–2909 here, which stacked
+cannot read, as Phabricator's API does not give suggested edits: see it
+on Phabricator,
+https://phabricator.services.mozilla.com/D337641?id=1385262#inline-1234567`,
+`line 2906` for one line. The link is the revision's page showing the
+diff the comment was made on (`?id=`), at the comment's anchor (`#inline-`
+and transaction.search's `id` of the comment), as the revision's history
+on Phabricator links an inline comment made on another diff than the one
+it shows: there the comment is drawn, whatever diffs came after it. Edited
+on Phabricator since to have words, it is a comment like any other: the
+edit is held as an edit of the turn that says it is a suggested edit
+(above), which it redacts once accepted. A suggested edit that comes with
+words is not seen at all: the comment is pulled with its words alone, and
+nothing says that it suggests an edit.
+
 A line of a commit message that names a bug (`Bug 123`), or the revision
 (`Differential Revision:`), opens it in your browser: `o` there, or the
 line's `Open bug 123 in your browser` (The editor, above), the bug on

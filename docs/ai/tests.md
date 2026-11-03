@@ -874,7 +874,13 @@ revision stacked on the top added on top, each with the author and the
 message of its commit as uploaded, and a reviewer's comment, in one
 review, each operation said with what it takes and marked on its own,
 the stack the four once it is accepted, the comment filed, and pulled
-again nothing new; a version stacked knows bringing nothing, a revision
+again nothing new; a suggested edit alone, an inline comment with no
+words, counted by the Phabricator line, pulled and filed as any comment,
+a thread of its own on its first line saying so, with its link at the
+diff it was made on, another, answering a comment, pulled into its
+thread, one removed neither counted nor pulled, and the first edited on
+Phabricator to have words, counted and held as an edit of it, its turn
+redacted; a version stacked knows bringing nothing, a revision
 retitled elsewhere rewording its patch, known since; both changed,
 Phabricator's taken, the review showing what the patch had since the
 last version stacked knew, the patch above made again on it, its
@@ -1575,7 +1581,14 @@ one `$STACKED_HOME` names, a file named over it, nowhere with neither);
 the files of before moved in once by a run of yours and said, never over a
 file there, a link moved as a link, and nothing moved that an override
 names the place of; what stacked runs told the same places; and nowhere in
-a test's own process. Those in `phab.rs` show a revision's status read from
+a test's own process. Those in `phab.rs` show a comment read as it was
+last edited, its versions before kept with it, by when it was first
+written, one removed none; an inline comment that is a suggested edit
+alone, with no words and not removed, read saying so, with its lines,
+one or more, and its link, at the diff it was made on and its anchor, a
+reply in its thread, its version before so too once it is edited to have
+words, none once removed, and a comment on the whole revision with no
+words none; a revision's status read from
 its value alone, whatever Phabricator says of drafts, with its letter and
 its name; the statuses of revisions read in one search, those it does not
 find not known, each with its title, summary and PHID, and a search

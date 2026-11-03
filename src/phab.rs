@@ -315,10 +315,10 @@ fn transactions(call: &mut Call, revision: &str) -> Result<Vec<Value>, String> {
     Ok(txns)
 }
 
-/// Every comment on `revision` (`D123`), Conduit called with `call`: as a
-/// pull reads them, each by its author's name, its line's text read from
-/// the diff it was made on.
-fn comments_over(call: &mut Call, revision: &str) -> Result<Vec<Remote>, String> {
+/// Every comment on `revision` (`D123`), at `link`, Conduit called with
+/// `call`: as a pull reads them, each by its author's name, its line's text
+/// read from the diff it was made on.
+fn comments_over(call: &mut Call, revision: &str, link: &str) -> Result<Vec<Remote>, String> {
     let txns = transactions(call, revision)?;
     let mut authors: Vec<String> = txns
         .iter()
@@ -348,17 +348,51 @@ fn comments_over(call: &mut Call, revision: &str) -> Result<Vec<Remote>, String>
         }
     }
     let mut diffs: HashMap<u64, HashMap<(String, usize), String>> = HashMap::new();
-    Ok(comments_of(&txns, &names, |path, diff, line| {
+    Ok(comments_of(&txns, link, &names, |path, diff, line| {
         diffs.entry(diff).or_insert_with(|| diff_lines(call, diff)).get(&(path.to_string(), line)).cloned()
     }))
 }
 
-/// The comments of a revision, oldest first, from its transactions as
-/// transaction.search gives them: each its author's name, from `names` by
-/// their PHID, and its line's text, as `read_line` reads it from (path,
-/// diff, line). Each is as it was last edited, what it was before kept with
-/// it; a comment removed is none.
-fn comments_of(txns: &[Value], names: &HashMap<String, String>, mut read_line: impl FnMut(&str, u64, usize) -> Option<String>) -> Vec<Remote> {
+/// What an inline comment of `who`'s that is a suggested edit alone says,
+/// as a pull reads it. Phabricator's API never gives a suggested edit:
+/// transaction.search gives a comment's words alone, and such a comment
+/// has none. So it says that `who` suggested an edit to the lines it is on,
+/// the `length` lines from `line` on (Conduit's `length`, how many lines it
+/// is on), which stacked cannot read, and where Phabricator shows it, `at`
+/// (`inline_at`).
+fn suggested(who: &str, line: usize, length: usize, at: &str) -> String {
+    let lines = match length {
+        0 | 1 => format!("line {line}"),
+        n => format!("lines {line}–{}", line + n - 1),
+    };
+    format!("{who} suggested an edit to {lines} here, which stacked cannot read, as Phabricator's API does not give suggested edits: see it on Phabricator, {at}")
+}
+
+/// Where Phabricator shows the inline comment of id `id` (the `id`
+/// transaction.search gives of it), made on diff `diff`, of the revision at
+/// `link`: at its anchor, `#inline-` and its id, as Phabricator names each
+/// inline comment it draws, on the revision's page showing that diff
+/// (`?id=`), as the revision's history links an inline comment made on
+/// another diff than the one it shows. It is drawn with the diff it was
+/// made on, whatever diffs came after. Its diff not known, the anchor on the
+/// revision's page; its id not known, that page.
+fn inline_at(link: &str, diff: Option<u64>, id: Option<u64>) -> String {
+    match (diff, id) {
+        (Some(diff), Some(id)) => format!("{link}?id={diff}#inline-{id}"),
+        (None, Some(id)) => format!("{link}#inline-{id}"),
+        (_, None) => link.to_string(),
+    }
+}
+
+/// The comments of a revision, the one at `link`, oldest first, from its
+/// transactions as transaction.search gives them: each its author's name,
+/// from `names` by their PHID, and its line's text, as `read_line` reads it
+/// from (path, diff, line). Each is as it was last edited, what it was
+/// before kept with it; a comment removed is none. A version of an inline
+/// comment that has no words is a suggested edit alone, which Conduit never
+/// gives: it says so, with where Phabricator shows it (`suggested`). A
+/// suggested edit given with words is not seen at all.
+fn comments_of(txns: &[Value], link: &str, names: &HashMap<String, String>, mut read_line: impl FnMut(&str, u64, usize) -> Option<String>) -> Vec<Remote> {
     let mut comments = Vec::new();
     for t in txns {
         let kind = t.get("type").and_then(Value::as_str).unwrap_or("");
@@ -376,7 +410,10 @@ fn comments_of(txns: &[Value], names: &HashMap<String, String>, mut read_line: i
             .then(|| fields.get("path").and_then(Value::as_str).map(String::from))
             .flatten();
         let line = fields.get("line").and_then(Value::as_u64).unwrap_or(0) as usize;
-        let line_text = match (&path, fields.pointer("/diff/id").and_then(Value::as_u64)) {
+        // How many lines it is on, from `line`: Conduit's `length`.
+        let length = fields.get("length").and_then(Value::as_u64).unwrap_or(1) as usize;
+        let diff = fields.pointer("/diff/id").and_then(Value::as_u64);
+        let line_text = match (&path, diff) {
             (Some(p), Some(d)) => read_line(p, d, line),
             _ => None,
         };
@@ -393,25 +430,38 @@ fn comments_of(txns: &[Value], names: &HashMap<String, String>, mut read_line: i
             .flatten()
             .collect();
         versions.sort_by_key(|c| std::cmp::Reverse(c.get("version").and_then(Value::as_i64).unwrap_or(0)));
-        let text = |c: &Value| c.pointer("/content/raw").and_then(Value::as_str).unwrap_or("").trim().to_string();
+        let removed = |c: &Value| c.get("removed").and_then(Value::as_bool).unwrap_or(false);
+        // Removed, it is gone: its latest version says so, and what every
+        // version of it said is hidden, an older version saying nothing,
+        // though it is not removed itself.
+        if versions.first().is_none_or(|c| removed(c)) {
+            continue;
+        }
+        // What a version says: its words; an inline comment's with none, a
+        // suggested edit alone, said so.
+        let text = |c: &Value| {
+            let words = c.pointer("/content/raw").and_then(Value::as_str).unwrap_or("").trim().to_string();
+            match words.is_empty() && kind == "inline" {
+                true => suggested(&author, line, length, &inline_at(link, diff, c.get("id").and_then(Value::as_u64))),
+                false => words,
+            }
+        };
         let phid = |c: &Value| c.get("phid").and_then(Value::as_str).unwrap_or("").to_string();
-        // Removed, it is gone: what every version of it said is hidden.
-        let Some(at) = versions
-            .iter()
-            .position(|c| !c.get("removed").and_then(Value::as_bool).unwrap_or(false) && !text(c).is_empty())
-        else {
+        let Some(at) = versions.iter().position(|c| !removed(c) && !text(c).is_empty()) else {
             continue;
         };
+        let earlier = versions[at + 1..].iter().map(|c| Version { phid: phid(c), text: text(c) }).collect();
+        let text = text(versions[at]);
         comments.push(Remote {
             phid: phid(versions[at]),
             author,
-            text: text(versions[at]),
+            text,
             created: versions.last().and_then(|c| c.get("dateCreated")).and_then(Value::as_i64).unwrap_or(0),
             path,
             line,
             line_text,
             reply_to,
-            earlier: versions[at + 1..].iter().map(|c| Version { phid: phid(c), text: text(c) }).collect(),
+            earlier,
         });
     }
     comments.sort_by_key(|c| c.created);
@@ -761,7 +811,7 @@ fn pull_over(
                 }
             }
         }
-        r.comments = comments_over(call, &r.d)?;
+        r.comments = comments_over(call, &r.d, &r.link)?;
     }
     out.revisions = reads;
     Ok(out)
@@ -1164,7 +1214,7 @@ pub(crate) fn latests_over(call: &mut Call, wanted: &[&Wanted], got: &mut dyn Fn
             _ => call("differential.getrawdiff", json!({"diffID": diff}))?.as_str().unwrap_or_default().to_string(),
         };
         let txns = transactions(call, &w.d)?;
-        let comments = comments_of(&txns, &HashMap::new(), |_, _, _| None);
+        let comments = comments_of(&txns, &w.link, &HashMap::new(), |_, _, _| None);
         got(&w.link, Latest { diff, raw, comments, parents, modified: w.modified });
     }
     Ok(())
@@ -1509,7 +1559,7 @@ mod tests {
             json!({"type": "comment", "authorPHID": "PHID-USER-ann", "fields": {}, "comments": [version("r2", 2, 400, "", true), version("r1", 1, 120, "", false)]}),
             json!({"type": "accept", "authorPHID": "PHID-USER-ann", "fields": {}}),
         ];
-        let got = comments_of(&txns, &names, |path, diff, line| Some(format!("{path}@{diff}:{line}")));
+        let got = comments_of(&txns, "https://p.example/D12", &names, |path, diff, line| Some(format!("{path}@{diff}:{line}")));
         let said: Vec<(&str, &str, &str, i64)> = got.iter().map(|c| (c.phid.as_str(), c.author.as_str(), c.text.as_str(), c.created)).collect();
         // By when each was first written, edited later or not.
         assert_eq!(said, [("v3", "ann", "Fine, but the title.\r\nAnd the date.", 100), ("i1", "someone", "Why?", 150), ("i2", "ann", "Because.", 160)]);
@@ -1520,8 +1570,72 @@ mod tests {
         assert_eq!((got[2].reply_to.as_deref(), got[0].path.as_deref()), (Some("i1"), None));
         // Its versions out of order, the latest is still the one read.
         let txns = vec![json!({"type": "comment", "authorPHID": "PHID-USER-ann", "fields": {}, "comments": [version("v1", 1, 100, "Fine.", false), version("v2", 2, 200, "Fine!", false)]})];
-        let got = comments_of(&txns, &names, |_, _, _| None);
+        let got = comments_of(&txns, "https://p.example/D12", &names, |_, _, _| None);
         assert_eq!((got[0].phid.as_str(), got[0].text.as_str(), got[0].earlier.clone()), ("v2", "Fine!", vec![v("v1", "Fine.")]));
+    }
+
+    #[test]
+    fn an_inline_comment_that_is_a_suggested_edit_alone_is_read_saying_so_with_its_lines_and_its_link() {
+        let names: HashMap<String, String> = [("PHID-USER-ann".to_string(), "ann".to_string())].into();
+        let link = "https://p.example/D12";
+        // A version as transaction.search gives it, its id with it.
+        let version = |id: u64, phid: &str, n: i64, at: i64, text: &str, removed: bool| {
+            json!({"id": id, "phid": phid, "version": n, "dateCreated": at, "removed": removed, "content": {"raw": text}})
+        };
+        // An inline comment of `author`'s on a.txt, from `line` on `length`
+        // lines, as Conduit counts them, made on diff 7 unless it says.
+        let inline = |author: &str, line: u64, length: u64, diff: Option<u64>, reply: Option<&str>, versions: Vec<Value>| {
+            let mut fields = json!({"path": "a.txt", "line": line, "length": length});
+            if let Some(d) = diff {
+                fields["diff"] = json!({"id": d});
+            }
+            if let Some(r) = reply {
+                fields["replyToCommentPHID"] = r.into();
+            }
+            json!({"type": "inline", "authorPHID": author, "fields": fields, "comments": versions})
+        };
+        let ann = "PHID-USER-ann";
+        let txns = vec![
+            // ann's suggested edit alone, on four lines: no words, as
+            // transaction.search gives it, nor removed.
+            inline(ann, 2906, 4, Some(7), None, vec![version(501, "s1", 1, 100, "", false)]),
+            // One on a line, answering it, of an author not known; one whose
+            // diff is not said.
+            inline("PHID-USER-bob", 2906, 1, Some(7), Some("s1"), vec![version(502, "s2", 1, 110, " \n", false)]),
+            inline(ann, 40, 1, None, None, vec![version(503, "s3", 1, 120, "", false)]),
+            // Removed: none, every version's text hidden, the older one's
+            // not removed itself.
+            inline(ann, 30, 2, Some(7), None, vec![version(505, "r1v2", 2, 130, "", true), version(504, "r1", 1, 125, "", false)]),
+            inline(ann, 31, 1, Some(7), None, vec![version(506, "r2", 1, 135, "", true)]),
+            // On the whole revision, with no words: none, as before.
+            json!({"type": "comment", "authorPHID": ann, "fields": {}, "comments": [version(507, "g1", 1, 140, "", false)]}),
+        ];
+        let got = comments_of(&txns, link, &names, |path, diff, line| Some(format!("{path}@{diff}:{line}")));
+        let said: Vec<(&str, &str)> = got.iter().map(|c| (c.phid.as_str(), c.text.as_str())).collect();
+        let sentence = |who: &str, lines: &str, at: &str| {
+            format!("{who} suggested an edit to {lines} here, which stacked cannot read, as Phabricator's API does not give suggested edits: see it on Phabricator, {at}")
+        };
+        assert_eq!(
+            said,
+            [
+                ("s1", sentence("ann", "lines 2906–2909", "https://p.example/D12?id=7#inline-501").as_str()),
+                ("s2", sentence("someone", "line 2906", "https://p.example/D12?id=7#inline-502").as_str()),
+                ("s3", sentence("ann", "line 40", "https://p.example/D12#inline-503").as_str()),
+            ]
+        );
+        // On its lines, as any comment is, a reply in its thread.
+        assert_eq!((got[0].path.as_deref(), got[0].line, got[0].line_text.as_deref(), got[0].created), (Some("a.txt"), 2906, Some("a.txt@7:2906"), 100));
+        assert_eq!((got[1].reply_to.as_deref(), got[0].reply_to.as_deref(), got[0].earlier.len()), (Some("s1"), None, 0));
+        // Edited since to have words: a comment as any, as it was before
+        // kept with it, saying what it said then.
+        let txns = vec![inline(ann, 2906, 4, Some(7), None, vec![version(601, "s1v2", 2, 200, "Use a constant.", false), version(501, "s1", 1, 100, "", false)])];
+        let got = comments_of(&txns, link, &names, |_, _, _| None);
+        assert_eq!((got[0].phid.as_str(), got[0].text.as_str(), got[0].created), ("s1v2", "Use a constant.", 100));
+        let was = sentence("ann", "lines 2906–2909", "https://p.example/D12?id=7#inline-501");
+        assert_eq!(got[0].earlier, [Version { phid: "s1".into(), text: was }]);
+        // And removed later: none.
+        let txns = vec![inline(ann, 2906, 4, Some(7), None, vec![version(602, "s1v3", 3, 300, "", true), version(601, "s1v2", 2, 200, "", false), version(501, "s1", 1, 100, "", false)])];
+        assert!(comments_of(&txns, link, &names, |_, _, _| None).is_empty());
     }
 
     /// Phabricator as the tests of a pull's reading have it: revisions by
